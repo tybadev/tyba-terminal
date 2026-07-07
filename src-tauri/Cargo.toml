@@ -19,6 +19,7 @@ portable-pty = "0.9"
 parking_lot = "0.12"
 base64 = "0.22"
 thiserror = "2"
+regex = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

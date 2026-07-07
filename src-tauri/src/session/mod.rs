@@ -1,7 +1,4 @@
-//! Sessões: modelo de dados e gerenciamento de ciclo de vida.
-//!
-//! Princípio #1 do CLAUDE.md: todo estado vive aqui, no core.
-//! O webview só renderiza snapshots e emite intenções.
+pub mod redact;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -59,7 +56,6 @@ pub struct Session {
 pub struct CreateSessionOpts {
     pub kind: SessionKind,
     pub title: Option<String>,
-    /// cwd inicial (shell) ou repo alvo (agente).
     pub cwd: Option<PathBuf>,
     pub cols: u16,
     pub rows: u16,
@@ -75,8 +71,6 @@ impl SessionManager {
         Self::default()
     }
 
-    /// Cria uma sessão de shell interativo (Fase 1/2).
-    /// Sessões de agente (Fase 4) passam pelo AgentRunner + Sandbox.
     pub fn create_shell_session(
         &self,
         app: AppHandle,
@@ -87,7 +81,6 @@ impl SessionManager {
 
         let shell = default_shell();
         let mut cmd = CommandBuilder::new(&shell);
-        // Login shell para carregar o profile do usuário (PATH, prompt, etc).
         if cfg!(unix) {
             cmd.arg("-l");
         }
@@ -95,12 +88,9 @@ impl SessionManager {
             cmd.cwd(cwd);
         }
         cmd.env("TERM", "xterm-256color");
-        // Identifica a TYBA para shell integration futura (OSC 133).
         cmd.env("TYBA", "1");
         cmd.env("TYBA_SESSION_ID", id.to_string());
 
-        // Shell manual herda o env do usuário (env: None).
-        // Agente NUNCA — receberá allowlist filtrada (princípio #6).
         pty_pool.spawn(app.clone(), id, cmd, None, opts.cols, opts.rows)?;
 
         let session = Session {
@@ -134,7 +124,6 @@ impl SessionManager {
     pub fn dispose(&self, pty_pool: &SharedPtyPool, id: SessionId) {
         let _ = pty_pool.kill(id);
         self.sessions.write().remove(&id);
-        // TODO(fase 3): remover worktree se `removeWorktree`.
     }
 }
 
