@@ -33,11 +33,7 @@ fn create_session(
 }
 
 #[tauri::command]
-fn write_to_session(
-    state: State<'_, AppState>,
-    id: SessionId,
-    data: String,
-) -> Result<(), String> {
+fn write_to_session(state: State<'_, AppState>, id: SessionId, data: String) -> Result<(), String> {
     // Teclado chega como base64 do frontend (simetria com o output;
     // preserva bytes de sequências de controle).
     let bytes = base64::engine::general_purpose::STANDARD

@@ -1,12 +1,3 @@
-//! PTY pool: spawn, I/O e batching de output.
-//!
-//! Princípio #3 do CLAUDE.md: NUNCA um evento IPC por chunk de PTY.
-//! O reader thread acumula bytes e flusha para o webview a cada
-//! `FLUSH_INTERVAL` (~1 frame), via evento `pty://output/{session_id}`.
-//! Payload em base64 porque chunks de PTY podem quebrar UTF-8 no meio
-//! de uma sequência — o frontend decodifica para Uint8Array e passa
-//! direto ao xterm.js.
-
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -38,7 +29,6 @@ pub enum PtyError {
 
 #[derive(Clone, Serialize)]
 pub struct PtyOutputPayload {
-    /// Bytes do PTY em base64 (decodificar no frontend antes do xterm.write).
     pub data: String,
 }
 
@@ -51,9 +41,9 @@ struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
+    leader_pid: Option<u32>,
 }
 
-/// Pool de PTYs vivos, indexados por id de sessão.
 #[derive(Default)]
 pub struct PtyPool {
     ptys: Mutex<HashMap<PtyId, PtyHandle>>,
@@ -64,11 +54,6 @@ impl PtyPool {
         Self::default()
     }
 
-    /// Spawna `cmd` num PTY novo e inicia o reader thread com batching.
-    ///
-    /// `env` é a allowlist já filtrada pelo chamador (princípio #6:
-    /// sessões de agente NUNCA herdam o env completo do usuário —
-    /// o filtro acontece antes de chegar aqui).
     pub fn spawn(
         &self,
         app: AppHandle,
@@ -101,6 +86,8 @@ impl PtyPool {
             .map_err(|e| PtyError::Spawn(e.to_string()))?;
         drop(pair.slave);
 
+        let leader_pid = child.process_id();
+
         let mut reader = pair
             .master
             .try_clone_reader()
@@ -116,10 +103,10 @@ impl PtyPool {
                 master: pair.master,
                 writer,
                 child,
+                leader_pid,
             },
         );
 
-        // Reader thread: acumula e flusha a cada FLUSH_INTERVAL.
         let output_event = format!("pty://output/{session_id}");
         let exit_event = format!("pty://exit/{session_id}");
         std::thread::Builder::new()
@@ -140,7 +127,7 @@ impl PtyPool {
 
                 loop {
                     match reader.read(&mut buf) {
-                        Ok(0) => break, // EOF: processo saiu
+                        Ok(0) => break,
                         Ok(n) => {
                             pending.extend_from_slice(&buf[..n]);
                             if last_flush.elapsed() >= FLUSH_INTERVAL {
@@ -183,14 +170,14 @@ impl PtyPool {
         Ok(())
     }
 
-    /// Mata a sessão inteira. Princípio #9: process group, não só o pai.
-    /// `portable_pty::Child::kill` no Unix envia sinal ao processo líder
-    /// do PTY; como spawmamos o shell como líder de sessão do PTY, o
-    /// SIGHUP na destruição do master derruba o grupo. Para agentes que
-    /// ignoram SIGHUP, o killpg explícito entra na trait Sandbox (fase 5).
     pub fn kill(&self, id: PtyId) -> Result<(), PtyError> {
-        let mut ptys = self.ptys.lock();
-        let mut handle = ptys.remove(&id).ok_or(PtyError::NotFound(id))?;
+        let mut handle = {
+            let mut ptys = self.ptys.lock();
+            ptys.remove(&id).ok_or(PtyError::NotFound(id))?
+        };
+        if let Some(pid) = handle.leader_pid {
+            let _ = kill_process_group(pid);
+        }
         let _ = handle.child.kill();
         Ok(())
     }
@@ -200,4 +187,96 @@ impl PtyPool {
     }
 }
 
+#[cfg(unix)]
+fn kill_process_group(leader_pid: u32) -> std::io::Result<()> {
+    let pgid = unsafe { libc::getpgid(leader_pid as libc::pid_t) };
+    if pgid < 0 {
+        let err = std::io::Error::last_os_error();
+        return match err.raw_os_error() {
+            Some(libc::ESRCH) => Ok(()),
+            _ => Err(err),
+        };
+    }
+    let rc = unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    if rc == -1 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::ESRCH) {
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_leader_pid: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
 pub type SharedPtyPool = Arc<PtyPool>;
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::kill_process_group;
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    fn is_alive(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    fn wait_dead(pid: i32, within: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < within {
+            if !is_alive(pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        !is_alive(pid)
+    }
+
+    #[test]
+    fn kills_entire_process_group() {
+        let mut leader = unsafe {
+            Command::new("sh")
+                .arg("-c")
+                .arg("sleep 60 & echo $$ $!; wait")
+                .stdout(Stdio::piped())
+                .pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                })
+                .spawn()
+                .expect("spawn leader")
+        };
+
+        let stdout = leader.stdout.take().expect("piped stdout");
+        let mut line = String::new();
+        BufReader::new(stdout)
+            .read_line(&mut line)
+            .expect("read pids");
+
+        let mut ids = line.split_whitespace();
+        let leader_pid: i32 = ids.next().unwrap().parse().unwrap();
+        let child_pid: i32 = ids.next().unwrap().parse().unwrap();
+
+        assert!(is_alive(leader_pid));
+        assert!(is_alive(child_pid));
+
+        kill_process_group(leader_pid as u32).expect("kill group");
+
+        assert!(
+            wait_dead(child_pid, Duration::from_secs(2)),
+            "child survived group kill"
+        );
+
+        let status = leader.wait().expect("reap leader");
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGKILL),
+            "leader not killed by SIGKILL"
+        );
+    }
+}

@@ -20,6 +20,9 @@ parking_lot = "0.12"
 base64 = "0.22"
 thiserror = "2"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lib]
 name = "tyba_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
