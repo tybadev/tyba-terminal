@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+/* Identidade TYBA: canvas quase-preto, Space Grotesk na marca.
+   O gradiente dos "rios" é a assinatura — usado com parcimônia
+   (marca e estados de destaque), nunca espalhado pela UI. */
+
+:root {
+  --tyba-gradient: linear-gradient(
+    115deg,
+    #a3e635 0%,
+    #fbbf24 30%,
+    #ec4899 55%,
+    #8b5cf6 78%,
+    #38bdf8 100%
+  );
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: #0a0a0c;
+}
+
+.brand {
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  background: var(--tyba-gradient);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+/* xterm ocupa o container inteiro */
+.xterm {
+  height: 100%;
+}
