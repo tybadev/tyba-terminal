@@ -18,10 +18,10 @@ import {
 // canvas quase-preto, cursor no verde do terminal, ANSI na paleta da marca.
 // Hexes duplicados aqui porque o xterm não lê CSS custom properties.
 const TYBA_THEME = {
-  background: "#0a0a0c", // --tyba-bg
+  background: "#070709", // --tyba-sunken: terminal mais fundo que o canvas
   foreground: "#f2f2f5", // --tyba-text
   cursor: "#7cc544", // --tyba-green: terminal é verde na identidade
-  cursorAccent: "#0a0a0c",
+  cursorAccent: "#070709",
   selectionBackground: "#7cc5444d",
   black: "#1a1a20", // --tyba-raised
   red: "#f0503c", // --tyba-red
@@ -119,7 +119,7 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
   return (
     <div
       ref={containerRef}
-      className="h-full w-full overflow-hidden bg-tyba-bg p-2"
+      className="h-full w-full overflow-hidden bg-tyba-sunken p-2"
       style={{ display: active ? "block" : "none" }}
     />
   );

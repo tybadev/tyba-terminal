@@ -1,8 +1,12 @@
 // TYBA — shell da aplicação: barra de tabs + terminais.
 // Fase 2 do roadmap traz sidebar/inbox; por ora, tabs horizontais.
+// Direção visual: "o gradiente é luz" — linha viva marca a tab ativa,
+// aurora no canvas, header de vidro. Tokens em src/styles.css.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Plus, X } from "@phosphor-icons/react";
 
+import { Button } from "@/components/ui/button";
 import { TerminalView } from "./components/TerminalView";
 import {
   createSession,
@@ -10,6 +14,7 @@ import {
   type Session,
   type SessionId,
 } from "./lib/ipc";
+import tybaMark from "./assets/tyba-mark.svg";
 
 export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -48,22 +53,23 @@ export default function App() {
   }, [newShell]);
 
   return (
-    <div className="flex h-screen flex-col bg-tyba-bg text-tyba-text">
+    <div className="tyba-aurora flex h-screen flex-col text-tyba-text">
       <header
         data-tauri-drag-region
-        className="flex h-10 shrink-0 items-center gap-2 border-b border-tyba-border px-3"
+        className="tyba-glass flex h-10 shrink-0 items-center gap-2 border-b border-tyba-border px-3"
       >
-        <span className="tyba-gradient-text select-none text-sm font-semibold tracking-[0.2em]">
-          TYBA
+        <span className="flex select-none items-center gap-2">
+          <img src={tybaMark} alt="" className="h-5 w-5" />
+          <span className="text-sm font-bold tracking-[0.2em]">TYBA</span>
         </span>
         <div className="ml-3 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {sessions.map((s) => (
             <button
               key={s.id}
               onClick={() => setActiveId(s.id)}
-              className={`group flex shrink-0 items-center gap-2 rounded-md px-2.5 py-1 text-xs transition-colors ${
+              className={`group relative flex shrink-0 items-center gap-2 rounded-md px-2.5 py-1 text-xs transition-colors ${
                 s.id === activeId
-                  ? "bg-tyba-raised text-tyba-text"
+                  ? "bg-white/[.04] text-tyba-text"
                   : "text-tyba-text-faint hover:bg-tyba-surface hover:text-tyba-text-muted"
               }`}
             >
@@ -75,29 +81,38 @@ export default function App() {
                   e.stopPropagation();
                   void closeSession(s.id);
                 }}
-                className="rounded px-1 text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-text group-hover:opacity-100"
+                className="rounded text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-text group-hover:opacity-100"
               >
-                ×
+                <X size={12} weight="bold" />
               </span>
+              {s.id === activeId && (
+                <span className="tyba-flow-line absolute inset-x-2 -bottom-px" />
+              )}
             </button>
           ))}
         </div>
-        <button
+        <Button
+          variant="ghost"
+          size="icon"
           onClick={() => void newShell()}
           aria-label="Nova sessão"
-          className="shrink-0 rounded-md px-2 py-1 text-sm text-tyba-text-faint transition-colors hover:bg-tyba-surface hover:text-tyba-text"
+          className="size-7 shrink-0 text-tyba-text-faint hover:text-tyba-text"
         >
-          +
-        </button>
+          <Plus size={16} />
+        </Button>
       </header>
 
       <main className="relative min-h-0 flex-1">
         {sessions.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-tyba-text-faint">
-            Nenhuma sessão. Crie uma com{" "}
-            <kbd className="mx-1 rounded border border-tyba-border-strong bg-tyba-raised px-1.5 py-0.5 font-mono">
-              +
-            </kbd>
+          <div className="flex h-full flex-col items-center justify-center gap-4">
+            <img src={tybaMark} alt="" className="h-12 w-12 opacity-90" />
+            <p className="text-sm text-tyba-text-faint">
+              Nenhuma sessão aberta.
+            </p>
+            <Button onClick={() => void newShell()}>
+              <Plus size={16} weight="bold" />
+              Nova sessão
+            </Button>
           </div>
         ) : (
           sessions.map((s) => (
