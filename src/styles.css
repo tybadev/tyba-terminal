@@ -1,18 +1,101 @@
 @import "tailwindcss";
 
-/* Identidade TYBA: canvas quase-preto, Space Grotesk na marca.
+/* ============================================================
+   Identidade TYBA — tokens do design system.
+   Fonte da verdade: repo tyba-design-system (ds-bundle/tokens/tyba.css),
+   espelhado no projeto "TYBA Design System" do claude.ai/design.
+   Os nomes --tyba-* são idênticos aos publicados lá: telas geradas
+   pelo agente de design usam o mesmo vocabulário deste app.
+
+   Dark-first: o TYBA é um terminal; não existe tema claro.
    O gradiente dos "rios" é a assinatura — usado com parcimônia
-   (marca e estados de destaque), nunca espalhado pela UI. */
+   (marca e estados de destaque), nunca espalhado pela UI.
+   ============================================================ */
 
 :root {
+  /* Superfícies */
+  --tyba-bg: #0a0a0c;
+  --tyba-surface: #121216;
+  --tyba-raised: #1a1a20;
+  --tyba-overlay: #22222a;
+  --tyba-border: #26262e;
+  --tyba-border-strong: #3a3a46;
+
+  /* Texto */
+  --tyba-text: #f2f2f5;
+  --tyba-text-muted: #a0a0ac;
+  --tyba-text-faint: #6a6a76;
+  --tyba-text-inverse: #0a0a0c;
+
+  /* Acentos da marca */
+  --tyba-green: #7cc544;
+  --tyba-lime: #a8e05f;
+  --tyba-amber: #f5a93b;
+  --tyba-magenta: #ec4899;
+  --tyba-violet: #8b5cf6;
+  --tyba-blue: #4c7df0;
+  --tyba-cyan: #2dd4bf;
+  --tyba-red: #f0503c;
+
+  /* Tints translúcidos (fundos de badge/status) */
+  --tyba-green-tint: rgba(124, 197, 68, 0.14);
+  --tyba-amber-tint: rgba(245, 169, 59, 0.14);
+  --tyba-magenta-tint: rgba(236, 72, 153, 0.14);
+  --tyba-violet-tint: rgba(139, 92, 246, 0.14);
+  --tyba-blue-tint: rgba(76, 125, 240, 0.14);
+  --tyba-cyan-tint: rgba(45, 212, 191, 0.14);
+  --tyba-red-tint: rgba(240, 80, 60, 0.14);
+
+  /* Gradiente-assinatura: rios que se encontram */
   --tyba-gradient: linear-gradient(
-    115deg,
-    #a3e635 0%,
-    #fbbf24 30%,
-    #ec4899 55%,
-    #8b5cf6 78%,
-    #38bdf8 100%
+    120deg,
+    #7cc544 0%,
+    #f5c93b 20%,
+    #f5a93b 34%,
+    #ec4899 52%,
+    #8b5cf6 70%,
+    #4c7df0 86%,
+    #2dd4bf 100%
   );
+  --tyba-gradient-soft: linear-gradient(120deg, #7cc544, #2dd4bf 55%, #8b5cf6);
+
+  /* Efeitos */
+  --tyba-focus-ring: 0 0 0 2px var(--tyba-bg), 0 0 0 4px var(--tyba-green);
+}
+
+/* Vocabulário Tailwind: bg-tyba-raised, text-tyba-green, border-tyba-border… */
+@theme inline {
+  --color-tyba-bg: var(--tyba-bg);
+  --color-tyba-surface: var(--tyba-surface);
+  --color-tyba-raised: var(--tyba-raised);
+  --color-tyba-overlay: var(--tyba-overlay);
+  --color-tyba-border: var(--tyba-border);
+  --color-tyba-border-strong: var(--tyba-border-strong);
+
+  --color-tyba-text: var(--tyba-text);
+  --color-tyba-text-muted: var(--tyba-text-muted);
+  --color-tyba-text-faint: var(--tyba-text-faint);
+  --color-tyba-text-inverse: var(--tyba-text-inverse);
+
+  --color-tyba-green: var(--tyba-green);
+  --color-tyba-lime: var(--tyba-lime);
+  --color-tyba-amber: var(--tyba-amber);
+  --color-tyba-magenta: var(--tyba-magenta);
+  --color-tyba-violet: var(--tyba-violet);
+  --color-tyba-blue: var(--tyba-blue);
+  --color-tyba-cyan: var(--tyba-cyan);
+  --color-tyba-red: var(--tyba-red);
+
+  --color-tyba-green-tint: var(--tyba-green-tint);
+  --color-tyba-amber-tint: var(--tyba-amber-tint);
+  --color-tyba-magenta-tint: var(--tyba-magenta-tint);
+  --color-tyba-violet-tint: var(--tyba-violet-tint);
+  --color-tyba-blue-tint: var(--tyba-blue-tint);
+  --color-tyba-cyan-tint: var(--tyba-cyan-tint);
+  --color-tyba-red-tint: var(--tyba-red-tint);
+
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 html,
@@ -20,15 +103,40 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: #0a0a0c;
+  background: var(--tyba-bg);
+  color: var(--tyba-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
 }
 
-.brand {
-  font-family: "Space Grotesk", system-ui, sans-serif;
+::selection {
+  background: rgba(124, 197, 68, 0.3);
+}
+
+/* Texto com o gradiente-assinatura (momentos de marca apenas) */
+.tyba-gradient-text {
   background: var(--tyba-gradient);
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
+}
+
+/* Borda com gradiente (cards de destaque) — dois fundos, não ::before */
+.tyba-gradient-border {
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background:
+    linear-gradient(var(--tyba-raised), var(--tyba-raised)) padding-box,
+    var(--tyba-gradient) border-box;
+}
+
+/* Label de seção em caixa alta (estilo do brand board) */
+.tyba-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tyba-text-faint);
 }
 
 /* xterm ocupa o container inteiro */

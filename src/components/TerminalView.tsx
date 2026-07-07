@@ -14,30 +14,31 @@ import {
   type SessionId,
 } from "../lib/ipc";
 
-// Tema TYBA: canvas quase-preto da identidade, gradiente fica na marca —
-// o terminal em si é disciplinado (cores ANSI legíveis, sem ruído).
+// Tema TYBA derivado dos tokens do design system (src/styles.css / --tyba-*):
+// canvas quase-preto, cursor no verde do terminal, ANSI na paleta da marca.
+// Hexes duplicados aqui porque o xterm não lê CSS custom properties.
 const TYBA_THEME = {
-  background: "#0a0a0c",
-  foreground: "#e6e6ea",
-  cursor: "#8b5cf6",
+  background: "#0a0a0c", // --tyba-bg
+  foreground: "#f2f2f5", // --tyba-text
+  cursor: "#7cc544", // --tyba-green: terminal é verde na identidade
   cursorAccent: "#0a0a0c",
-  selectionBackground: "#8b5cf640",
-  black: "#1a1a1f",
-  red: "#f472b6",
-  green: "#a3e635",
-  yellow: "#fbbf24",
-  blue: "#60a5fa",
-  magenta: "#a78bfa",
-  cyan: "#2dd4bf",
-  white: "#e6e6ea",
-  brightBlack: "#52525b",
-  brightRed: "#fb7185",
-  brightGreen: "#bef264",
-  brightYellow: "#fcd34d",
-  brightBlue: "#93c5fd",
-  brightMagenta: "#c4b5fd",
+  selectionBackground: "#7cc5444d",
+  black: "#1a1a20", // --tyba-raised
+  red: "#f0503c", // --tyba-red
+  green: "#7cc544", // --tyba-green
+  yellow: "#f5a93b", // --tyba-amber
+  blue: "#4c7df0", // --tyba-blue
+  magenta: "#ec4899", // --tyba-magenta
+  cyan: "#2dd4bf", // --tyba-cyan
+  white: "#f2f2f5", // --tyba-text
+  brightBlack: "#6a6a76", // --tyba-text-faint
+  brightRed: "#f4715f",
+  brightGreen: "#a8e05f", // --tyba-lime
+  brightYellow: "#f5c93b",
+  brightBlue: "#7da3f5",
+  brightMagenta: "#a78bfa", // --tyba-violet clareado
   brightCyan: "#5eead4",
-  brightWhite: "#fafafa",
+  brightWhite: "#ffffff",
 };
 
 interface Props {
@@ -118,7 +119,7 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
   return (
     <div
       ref={containerRef}
-      className="h-full w-full overflow-hidden bg-[#0a0a0c] p-2"
+      className="h-full w-full overflow-hidden bg-tyba-bg p-2"
       style={{ display: active ? "block" : "none" }}
     />
   );

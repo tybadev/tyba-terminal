@@ -48,12 +48,12 @@ export default function App() {
   }, [newShell]);
 
   return (
-    <div className="flex h-screen flex-col bg-[#0a0a0c] text-zinc-200">
+    <div className="flex h-screen flex-col bg-tyba-bg text-tyba-text">
       <header
         data-tauri-drag-region
-        className="flex h-10 shrink-0 items-center gap-2 border-b border-zinc-800/80 px-3"
+        className="flex h-10 shrink-0 items-center gap-2 border-b border-tyba-border px-3"
       >
-        <span className="brand select-none text-sm font-semibold tracking-[0.2em]">
+        <span className="tyba-gradient-text select-none text-sm font-semibold tracking-[0.2em]">
           TYBA
         </span>
         <div className="ml-3 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
@@ -63,8 +63,8 @@ export default function App() {
               onClick={() => setActiveId(s.id)}
               className={`group flex shrink-0 items-center gap-2 rounded-md px-2.5 py-1 text-xs transition-colors ${
                 s.id === activeId
-                  ? "bg-zinc-800 text-zinc-100"
-                  : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
+                  ? "bg-tyba-raised text-tyba-text"
+                  : "text-tyba-text-faint hover:bg-tyba-surface hover:text-tyba-text-muted"
               }`}
             >
               {s.title}
@@ -75,7 +75,7 @@ export default function App() {
                   e.stopPropagation();
                   void closeSession(s.id);
                 }}
-                className="rounded px-1 text-zinc-600 opacity-0 transition-opacity hover:text-zinc-200 group-hover:opacity-100"
+                className="rounded px-1 text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-text group-hover:opacity-100"
               >
                 ×
               </span>
@@ -85,7 +85,7 @@ export default function App() {
         <button
           onClick={() => void newShell()}
           aria-label="Nova sessão"
-          className="shrink-0 rounded-md px-2 py-1 text-sm text-zinc-500 transition-colors hover:bg-zinc-900 hover:text-zinc-200"
+          className="shrink-0 rounded-md px-2 py-1 text-sm text-tyba-text-faint transition-colors hover:bg-tyba-surface hover:text-tyba-text"
         >
           +
         </button>
@@ -93,9 +93,11 @@ export default function App() {
 
       <main className="relative min-h-0 flex-1">
         {sessions.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-zinc-600">
+          <div className="flex h-full items-center justify-center text-sm text-tyba-text-faint">
             Nenhuma sessão. Crie uma com{" "}
-            <kbd className="mx-1 rounded bg-zinc-900 px-1.5 py-0.5">+</kbd>
+            <kbd className="mx-1 rounded border border-tyba-border-strong bg-tyba-raised px-1.5 py-0.5 font-mono">
+              +
+            </kbd>
           </div>
         ) : (
           sessions.map((s) => (
