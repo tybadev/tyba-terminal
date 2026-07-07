@@ -1,4 +1,5 @@
 pub mod redact;
+pub mod store;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
