@@ -12,6 +12,7 @@ import {
   SidebarSimple,
   Sun,
   TerminalWindow,
+  TextAa,
   X,
 } from "@phosphor-icons/react";
 
@@ -26,7 +27,14 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { LANGUAGES, setLanguage } from "../i18n";
-import { applyTheme, THEMES, type Theme, type ThemeMode } from "../theme";
+import {
+  applyTheme,
+  DEFAULT_THEME_IDS,
+  THEMES,
+  type Theme,
+  type ThemeMode,
+} from "../theme";
+import { getUiFont, setUiFont, UI_FONTS, type UiFont } from "../font";
 import {
   importThemeCmd,
   listThemes,
@@ -79,13 +87,17 @@ export function CommandPalette({
   onGoToWorkspace,
 }: Props) {
   const { t, i18n } = useTranslation();
-  const [customThemes, setCustomThemes] = useState<Theme[]>([]);
+  const [selectableThemes, setSelectableThemes] = useState<Theme[]>([]);
 
   useEffect(() => {
     if (!open) return;
     void listThemes()
-      .then((all) => setCustomThemes(all.filter((item) => !item.builtin)))
-      .catch(() => setCustomThemes([]));
+      .then((all) =>
+        setSelectableThemes(
+          all.filter((item) => !DEFAULT_THEME_IDS.includes(item.id)),
+        ),
+      )
+      .catch(() => setSelectableThemes([]));
   }, [open]);
 
   const run = (fn: () => void) => () => {
@@ -187,20 +199,32 @@ export function CommandPalette({
               </CommandItem>
             );
           })}
-          {customThemes.map((custom) => (
+          {selectableThemes.map((item) => (
             <CommandItem
-              key={custom.id}
-              value={`theme ${custom.name}`}
-              onSelect={run(() => void applyTheme(custom))}
+              key={item.id}
+              value={`theme ${item.name}`}
+              onSelect={run(() => void applyTheme(item))}
             >
               <Palette size={15} />
-              {t("useTheme", { name: custom.name })}
+              {t("useTheme", { name: item.name })}
             </CommandItem>
           ))}
           <CommandItem onSelect={run(() => void importTheme())}>
             <DownloadSimple size={15} />
             {t("importTheme")}
           </CommandItem>
+        </CommandGroup>
+
+        <CommandSeparator />
+        <CommandGroup heading={t("uiFont")}>
+          {UI_FONTS.filter((f) => f !== getUiFont()).map((f: UiFont) => (
+            <CommandItem key={f} onSelect={run(() => setUiFont(f))}>
+              <TextAa size={15} />
+              {t("switchFontTo", {
+                font: f === "mono" ? "JetBrains Mono" : "Space Grotesk",
+              })}
+            </CommandItem>
+          ))}
         </CommandGroup>
 
         <CommandSeparator />

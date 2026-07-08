@@ -15,6 +15,11 @@ export type { Theme, ThemeMode, ThemeState };
 
 const STORAGE_KEY = "tyba.theme";
 const MIGRATED_KEY = "tyba.theme.migrated";
+const SLOT_KEYS = { dark: "tyba.theme.dark", light: "tyba.theme.light" } as const;
+
+export const DEFAULT_DARK_ID = "tyba-dark";
+export const DEFAULT_LIGHT_ID = "tyba-light";
+export const DEFAULT_THEME_IDS: string[] = [DEFAULT_DARK_ID, DEFAULT_LIGHT_ID];
 
 export const THEMES: ThemeMode[] = ["dark", "light", "system"];
 
@@ -55,6 +60,11 @@ let mode: ThemeMode = (() => {
 })();
 
 let state: ThemeState | null = null;
+
+let slotCache: Record<"dark" | "light", string | null> = {
+  dark: localStorage.getItem(SLOT_KEYS.dark),
+  light: localStorage.getItem(SLOT_KEYS.light),
+};
 
 const terminalListeners = new Set<(theme: ITheme) => void>();
 const modeListeners = new Set<(mode: ThemeMode) => void>();
@@ -149,10 +159,21 @@ export function onThemeModeChange(cb: (mode: ThemeMode) => void): () => void {
   return () => modeListeners.delete(cb);
 }
 
+function themeAttr(): string | null {
+  const base = effectiveBase();
+  const theme = activeTheme();
+  if (theme && !theme.builtin) return base === "light" ? "light" : null;
+  const id = theme?.id ?? slotCache[base];
+  if (!id || id === DEFAULT_DARK_ID) return base === "light" ? "light" : null;
+  if (id === DEFAULT_LIGHT_ID) return "light";
+  return id;
+}
+
 function apply() {
   const root = document.documentElement;
-  if (effectiveBase() === "light") {
-    root.setAttribute("data-theme", "light");
+  const attr = themeAttr();
+  if (attr) {
+    root.setAttribute("data-theme", attr);
   } else {
     root.removeAttribute("data-theme");
   }
@@ -198,6 +219,9 @@ export async function applyTheme(theme: Theme): Promise<void> {
 
 function absorb(next: ThemeState) {
   state = next;
+  slotCache = { dark: next.dark.id, light: next.light.id };
+  localStorage.setItem(SLOT_KEYS.dark, next.dark.id);
+  localStorage.setItem(SLOT_KEYS.light, next.light.id);
   if (next.mode !== mode) {
     mode = next.mode;
     localStorage.setItem(STORAGE_KEY, next.mode);
