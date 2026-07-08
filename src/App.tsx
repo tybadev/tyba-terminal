@@ -45,6 +45,7 @@ import {
   NotificationLink,
   NotificationTitle,
 } from "@/components/ui/notification";
+import { Clock } from "./components/Clock";
 import { CommandPalette } from "./components/CommandPalette";
 import { ContainersView } from "./components/ContainersView";
 import { DockerIcon } from "./components/icons/DockerIcon";
@@ -110,12 +111,12 @@ import {
   captureState,
   comboOf,
   DEFAULT_BINDINGS,
-  formatCombo,
   parseBindings,
   BINDINGS_PREF_KEY,
   type Bindings,
   type KeyAction,
 } from "./lib/keys";
+import { Shortcut } from "@/components/ui/kbd";
 
 const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
 const TOGGLE_PREF_KEY = "pref.sidebar_toggle";
@@ -155,14 +156,6 @@ const copyText = (text: string) => {
 
 type SidebarMode = "open" | "rail" | "hidden";
 
-function Kbd({ children }: { children: React.ReactNode }) {
-  return (
-    <kbd className="rounded-[4px] border border-tyba-border-strong bg-tyba-raised px-1 py-px font-mono text-[10px] text-tyba-text-muted">
-      {children}
-    </kbd>
-  );
-}
-
 function IconAction({
   label,
   shortcut,
@@ -189,7 +182,7 @@ function IconAction({
       </TooltipTrigger>
       <TooltipContent side="bottom" className="flex items-center gap-2">
         {label}
-        {shortcut && <Kbd>{shortcut}</Kbd>}
+        {shortcut && <Shortcut combo={shortcut} />}
       </TooltipContent>
     </Tooltip>
   );
@@ -962,7 +955,7 @@ export default function App() {
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="start"
-                className="w-52 border-tyba-border-strong bg-tyba-overlay shadow-lg"
+                className="w-52"
               >
                 <DropdownMenuItem
                   className="text-xs"
@@ -974,7 +967,7 @@ export default function App() {
                   <DropdownMenuSubTrigger className="text-xs">
                     {t("groupSession")}
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-44 border-tyba-border-strong bg-tyba-overlay shadow-lg">
+                  <DropdownMenuSubContent className="w-44">
                     {groupNames.map((name) => (
                       <DropdownMenuItem
                         key={name}
@@ -1137,7 +1130,7 @@ export default function App() {
         >
           <IconAction
             label={t("panelToggle")}
-            shortcut={formatCombo(bindings.panel)}
+            shortcut={bindings.panel}
             onClick={toggleSidebar}
           >
             <SidebarSimple size={16} />
@@ -1145,7 +1138,7 @@ export default function App() {
 
           <IconAction
             label={t("commandPalette")}
-            shortcut={formatCombo(bindings.palette)}
+            shortcut={bindings.palette}
             onClick={() => setPaletteOpen(true)}
           >
             <MagnifyingGlass size={16} />
@@ -1153,9 +1146,11 @@ export default function App() {
 
           <div className="h-full flex-1" data-tauri-drag-region />
 
+          <Clock />
+
           <IconAction
             label={t("openProjectFolder")}
-            shortcut={formatCombo(bindings.openFolder)}
+            shortcut={bindings.openFolder}
             onClick={() => void openProjectFolder()}
           >
             <FolderOpen size={16} />
@@ -1216,7 +1211,7 @@ export default function App() {
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
-              className="w-56 border-tyba-border-strong bg-tyba-overlay shadow-lg"
+              className="w-56"
             >
               <DropdownMenuLabel className="flex min-w-0 flex-col">
                 <span className="truncate text-xs font-medium text-tyba-text">
@@ -1505,7 +1500,7 @@ export default function App() {
                             <span className="flex-1 text-left">
                               {t("newSession")}
                             </span>
-                            <Kbd>{formatCombo(bindings.newTab)}</Kbd>
+                            <Shortcut combo={bindings.newTab} />
                           </button>
                         ) : (
                           <button
@@ -1516,7 +1511,7 @@ export default function App() {
                             <span className="flex-1 text-left">
                               {t("newTab")}
                             </span>
-                            <Kbd>{formatCombo(bindings.newTab)}</Kbd>
+                            <Shortcut combo={bindings.newTab} />
                           </button>
                         )}
                         <button
@@ -1527,7 +1522,7 @@ export default function App() {
                           <span className="flex-1 text-left">
                             {t("commandPalette")}
                           </span>
-                          <Kbd>{formatCombo(bindings.palette)}</Kbd>
+                          <Shortcut combo={bindings.palette} />
                         </button>
                         <button
                           onClick={toggleSidebar}
@@ -1537,7 +1532,7 @@ export default function App() {
                           <span className="flex-1 text-left">
                             {t("togglePanel")}
                           </span>
-                          <Kbd>{formatCombo(bindings.panel)}</Kbd>
+                          <Shortcut combo={bindings.panel} />
                         </button>
                       </div>
                     </div>

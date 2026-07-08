@@ -36,11 +36,11 @@ import {
 import {
   captureState,
   comboOf,
-  formatCombo,
   KEY_ACTIONS,
   type Bindings,
   type KeyAction,
 } from "../lib/keys";
+import { Shortcut } from "@/components/ui/kbd";
 import { FONT_SIZE_EVENT, setDefaultFontSize } from "./TerminalView";
 
 export type SidebarTogglePref = "hidden" | "rail";
@@ -254,13 +254,13 @@ function ShortcutRow({
       </span>
       <button
         onClick={() => setListening(true)}
-        className={`rounded-[4px] border px-2 py-0.5 font-mono text-[11px] transition-colors ${
+        className={`flex h-7 items-center gap-1 rounded-[4px] border px-2 text-[11px] transition-colors ${
           listening
-            ? "border-tyba-green text-tyba-green"
-            : "border-tyba-border-strong text-tyba-text-muted hover:text-tyba-text"
+            ? "border-tyba-green font-mono text-tyba-green"
+            : "border-transparent hover:bg-white/[.04]"
         }`}
       >
-        {listening ? t("pressKeys") : formatCombo(combo)}
+        {listening ? t("pressKeys") : <Shortcut combo={combo} />}
       </button>
     </div>
   );

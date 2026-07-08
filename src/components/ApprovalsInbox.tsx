@@ -5,7 +5,7 @@
 
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Bell, Warning } from "@phosphor-icons/react";
+import { Tray, Warning } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -69,15 +69,17 @@ export function ApprovalsInbox({
           aria-label={t("approvals")}
           className="relative size-6 rounded-[4px] text-tyba-text-muted hover:text-tyba-text"
         >
-          <Bell size={16} />
+          <Tray size={16} weight={count > 0 ? "fill" : "regular"} />
           {count > 0 && (
-            <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-violet [box-shadow:var(--tyba-glow-violet)]" />
+            <span className="absolute -right-0.5 -top-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-tyba-violet px-1 font-mono text-[9px] font-semibold leading-none text-white [box-shadow:var(--tyba-glow-violet)]">
+              {count}
+            </span>
           )}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="w-96 border-tyba-border-strong bg-tyba-overlay shadow-lg"
+        className="w-96"
       >
         <DropdownMenuLabel className="tyba-label flex items-center justify-between">
           {t("approvals")}
