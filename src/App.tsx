@@ -211,11 +211,14 @@ export default function App() {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     void (async () => {
-      unlisten = await onLayoutChanged((state) => {
+      const un = await onLayoutChanged((state) => {
         if (!cancelled) setLayout(state);
       });
-      if (booted.current) return;
-      booted.current = true;
+      if (cancelled) {
+        un();
+        return;
+      }
+      unlisten = un;
       const [existing, currentLayout] = await Promise.all([
         listSessions(),
         layoutState(),
@@ -223,7 +226,8 @@ export default function App() {
       if (cancelled) return;
       setSessions(existing);
       setLayout(currentLayout);
-      if (existing.length === 0) {
+      if (existing.length === 0 && !booted.current) {
+        booted.current = true;
         void newShell();
       }
     })();
