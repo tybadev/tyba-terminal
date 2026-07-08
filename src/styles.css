@@ -244,6 +244,24 @@ body,
   background: rgba(124, 197, 68, 0.3);
 }
 
+/* Scrollbar discreta, estilo app desktop (vale também pro xterm) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--tyba-border-strong);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--tyba-text-faint);
+}
+
 /* ---------- Utilitárias de marca ---------- */
 
 /* Texto com o gradiente-assinatura (momentos de marca apenas) */

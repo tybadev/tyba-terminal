@@ -54,9 +54,10 @@ export default function App() {
 
   return (
     <div className="tyba-aurora flex h-screen flex-col text-tyba-text">
+      {/* pl-20: espaço dos semáforos do macOS (title bar em overlay) */}
       <header
         data-tauri-drag-region
-        className="tyba-glass flex h-10 shrink-0 items-center gap-2 border-b border-tyba-border px-3"
+        className="tyba-glass flex h-10 shrink-0 items-center gap-2 border-b border-tyba-border pl-20 pr-3"
       >
         <span className="flex select-none items-center gap-2">
           <img src={tybaMark} alt="" className="h-5 w-5" />
