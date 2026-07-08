@@ -34,7 +34,13 @@ import {
   type Theme,
   type ThemeMode,
 } from "../theme";
-import { getUiFont, setUiFont, UI_FONTS, type UiFont } from "../font";
+import {
+  getUiFont,
+  setUiFont,
+  UI_FONT_LABELS,
+  UI_FONTS,
+  type UiFont,
+} from "../font";
 import {
   importThemeCmd,
   listThemes,
@@ -220,9 +226,7 @@ export function CommandPalette({
           {UI_FONTS.filter((f) => f !== getUiFont()).map((f: UiFont) => (
             <CommandItem key={f} onSelect={run(() => setUiFont(f))}>
               <TextAa size={15} />
-              {t("switchFontTo", {
-                font: f === "mono" ? "JetBrains Mono" : "Space Grotesk",
-              })}
+              {t("switchFontTo", { font: UI_FONT_LABELS[f] })}
             </CommandItem>
           ))}
         </CommandGroup>

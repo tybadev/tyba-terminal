@@ -159,14 +159,19 @@ export function onThemeModeChange(cb: (mode: ThemeMode) => void): () => void {
   return () => modeListeners.delete(cb);
 }
 
+function attrFor(theme: Theme): string {
+  if (!theme.builtin) return theme.base === "light" ? "light" : "";
+  if (theme.id === DEFAULT_DARK_ID) return "";
+  if (theme.id === DEFAULT_LIGHT_ID) return "light";
+  return theme.id;
+}
+
 function themeAttr(): string | null {
-  const base = effectiveBase();
   const theme = activeTheme();
-  if (theme && !theme.builtin) return base === "light" ? "light" : null;
-  const id = theme?.id ?? slotCache[base];
-  if (!id || id === DEFAULT_DARK_ID) return base === "light" ? "light" : null;
-  if (id === DEFAULT_LIGHT_ID) return "light";
-  return id;
+  if (theme) return attrFor(theme) || null;
+  const cached = slotCache[effectiveBase()];
+  if (cached !== null) return cached || null;
+  return effectiveBase() === "light" ? "light" : null;
 }
 
 function apply() {
@@ -219,9 +224,13 @@ export async function applyTheme(theme: Theme): Promise<void> {
 
 function absorb(next: ThemeState) {
   state = next;
-  slotCache = { dark: next.dark.id, light: next.light.id };
-  localStorage.setItem(SLOT_KEYS.dark, next.dark.id);
-  localStorage.setItem(SLOT_KEYS.light, next.light.id);
+  for (const base of ["dark", "light"] as const) {
+    const attr = attrFor(next[base]);
+    if (slotCache[base] !== attr) {
+      slotCache[base] = attr;
+      localStorage.setItem(SLOT_KEYS[base], attr);
+    }
+  }
   if (next.mode !== mode) {
     mode = next.mode;
     localStorage.setItem(STORAGE_KEY, next.mode);

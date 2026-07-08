@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -270,6 +270,19 @@ fn is_reserved(id: &str) -> bool {
     id == BUILTIN_DARK || id == BUILTIN_LIGHT || schemes::IDS.contains(&id)
 }
 
+fn cached_schemes() -> &'static [Theme] {
+    static CACHE: OnceLock<Vec<Theme>> = OnceLock::new();
+    CACHE.get_or_init(schemes::all)
+}
+
+fn builtin_by_id(id: &str) -> Option<Theme> {
+    match id {
+        BUILTIN_DARK => Some(builtin(ThemeBase::Dark)),
+        BUILTIN_LIGHT => Some(builtin(ThemeBase::Light)),
+        _ => cached_schemes().iter().find(|t| t.id == id).cloned(),
+    }
+}
+
 fn builtin(base: ThemeBase) -> Theme {
     match base {
         ThemeBase::Dark => Theme {
@@ -325,7 +338,7 @@ impl ThemeManager {
 
     pub fn list(&self) -> Vec<Theme> {
         let mut themes = vec![builtin(ThemeBase::Dark), builtin(ThemeBase::Light)];
-        themes.extend(schemes::all());
+        themes.extend(cached_schemes().iter().cloned());
         themes.extend(self.scan());
         themes
     }
@@ -360,7 +373,7 @@ impl ThemeManager {
     }
 
     fn find(&self, id: &str) -> Option<Theme> {
-        self.list().into_iter().find(|t| t.id == id)
+        builtin_by_id(id).or_else(|| self.scan().into_iter().find(|t| t.id == id))
     }
 
     fn slot(&self, key: &str, base: ThemeBase) -> Theme {
@@ -594,6 +607,12 @@ mod tests {
             assert!(theme.builtin);
             assert!(theme.ui.is_empty());
             assert_eq!(theme.terminal.ansi.len(), 16);
+            assert_eq!(
+                theme.base == ThemeBase::Light,
+                theme.id.ends_with("light"),
+                "{}: convenção quebrada — todo tema claro termina em 'light'",
+                theme.id
+            );
             for (label, color) in theme.terminal.colors() {
                 assert!(is_hex_color(color), "{}: cor inválida em {label}: {color}", theme.id);
             }
