@@ -111,7 +111,8 @@
   --border: var(--tyba-border);
   --input: var(--tyba-border-strong);
   --ring: var(--tyba-green);
-  --radius: 10px;
+  /* raios contidos: é terminal, não site */
+  --radius: 6px;
 }
 
 /* Tema light — completo. Acentos escurecidos p/ contraste. */
@@ -275,7 +276,7 @@ body,
 /* Borda com gradiente (cards de destaque) — dois fundos, não ::before */
 .tyba-gradient-border {
   border: 1px solid transparent;
-  border-radius: 14px;
+  border-radius: 8px;
   background:
     linear-gradient(var(--tyba-raised), var(--tyba-raised)) padding-box,
     var(--tyba-gradient) border-box;
