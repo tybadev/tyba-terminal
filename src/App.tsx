@@ -1164,7 +1164,7 @@ export default function App() {
       <div className="tyba-aurora flex h-screen flex-col text-tyba-text">
         <header
           data-tauri-drag-region
-          className="tyba-glass flex h-9 shrink-0 items-center gap-1 border-b border-tyba-border pl-20 pr-2.5"
+          className="tyba-glass relative flex h-9 shrink-0 items-center gap-1 border-b border-tyba-border pl-20 pr-2.5"
         >
           <IconAction
             label={t("panelToggle")}
@@ -1182,38 +1182,42 @@ export default function App() {
             <MagnifyingGlass size={16} />
           </IconAction>
 
-          <div className="ml-1 flex items-center gap-0.5 rounded-[5px] border border-tyba-border bg-white/[.02] p-0.5">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  aria-label={t("terminalView")}
-                  aria-pressed
-                  className="flex h-6 items-center gap-1.5 rounded-[3px] bg-white/[.06] px-2 text-[11px] text-tyba-text"
-                >
-                  <TerminalWindow size={14} />
+          <div className="pointer-events-none absolute inset-x-0 top-0 flex h-9 items-center justify-center">
+            <div className="pointer-events-auto flex items-center gap-0.5 rounded-[5px] border border-tyba-border bg-white/[.02] p-0.5">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    aria-label={t("terminalView")}
+                    aria-pressed
+                    className="flex h-6 items-center gap-1.5 rounded-[3px] bg-white/[.06] px-2 text-[11px] text-tyba-text"
+                  >
+                    <TerminalWindow size={14} />
+                    {t("terminalView")}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
                   {t("terminalView")}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">{t("terminalView")}</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  disabled
-                  aria-label={t("workspaceView")}
-                  className="flex h-6 items-center gap-1.5 rounded-[3px] px-2 text-[11px] text-tyba-text-faint disabled:cursor-not-allowed"
-                >
-                  <SquaresFour size={14} />
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    disabled
+                    aria-label={t("workspaceView")}
+                    className="flex h-6 items-center gap-1.5 rounded-[3px] px-2 text-[11px] text-tyba-text-faint disabled:cursor-not-allowed"
+                  >
+                    <SquaresFour size={14} />
+                    {t("workspaceView")}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="flex items-center gap-2">
                   {t("workspaceView")}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="flex items-center gap-2">
-                {t("workspaceView")}
-                <span className="rounded-full bg-tyba-violet-tint px-1.5 py-px text-[9px] font-medium text-tyba-violet">
-                  {t("comingSoon")}
-                </span>
-              </TooltipContent>
-            </Tooltip>
+                  <span className="rounded-full bg-tyba-violet-tint px-1.5 py-px text-[9px] font-medium text-tyba-violet">
+                    {t("comingSoon")}
+                  </span>
+                </TooltipContent>
+              </Tooltip>
+            </div>
           </div>
 
           <div className="h-full flex-1" data-tauri-drag-region />
