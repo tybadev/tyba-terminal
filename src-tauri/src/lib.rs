@@ -265,6 +265,42 @@ fn repo_branch(path: String) -> Option<String> {
     }
 }
 
+#[derive(serde::Serialize)]
+struct RepoStatus {
+    dirty: bool,
+    changed: u32,
+}
+
+#[tauri::command]
+fn repo_status(path: String) -> Option<RepoStatus> {
+    let path = session::expand_home(std::path::Path::new(&path));
+    let out = std::process::Command::new("git")
+        .args(["-C"])
+        .arg(&path)
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "-z",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let changed = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|entry| !entry.is_empty())
+        .count() as u32;
+    Some(RepoStatus {
+        dirty: changed > 0,
+        changed,
+    })
+}
+
 #[tauri::command]
 fn new_window(app: AppHandle) -> Result<(), String> {
     let label = format!("tyba-{}", uuid::Uuid::new_v4().simple());
@@ -877,6 +913,7 @@ pub fn run() {
             set_workspace_color,
             set_workspace_group,
             repo_branch,
+            repo_status,
             new_window,
             create_tab,
             close_tab,

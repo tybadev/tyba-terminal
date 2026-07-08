@@ -78,6 +78,8 @@ interface Props {
   onAccountNameChange: (value: string) => void;
   showContainers: boolean;
   onShowContainersChange: (value: boolean) => void;
+  showGitStatus: boolean;
+  onShowGitStatusChange: (value: boolean) => void;
 }
 
 const THEME_MODE_KEYS: Record<ThemeMode, string> = {
@@ -269,6 +271,8 @@ export function SettingsView({
   onAccountNameChange,
   showContainers,
   onShowContainersChange,
+  showGitStatus,
+  onShowGitStatusChange,
 }: Props) {
   const { t, i18n } = useTranslation();
   const [section, setSection] = useState<Section>("general");
@@ -622,6 +626,22 @@ export function SettingsView({
               <Switch
                 checked={detailsPref === "on"}
                 onCheckedChange={(c) => onDetailsPrefChange(c ? "on" : "off")}
+              />
+            </label>
+
+            <label className="flex items-start justify-between gap-4 pb-6">
+              <span className="min-w-0">
+                <span className="text-[13px] text-tyba-text">
+                  {t("gitStatusToggle")}
+                </span>
+                <span className="block pt-0.5 text-[11px] text-tyba-text-faint">
+                  {t("gitStatusHint")}
+                </span>
+              </span>
+              <Switch
+                checked={showGitStatus}
+                onCheckedChange={onShowGitStatusChange}
+                className="mt-0.5"
               />
             </label>
 

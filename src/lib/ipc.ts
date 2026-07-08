@@ -180,6 +180,14 @@ export const setWorkspaceGroup = (id: WorkspaceId, group: string | null) =>
 export const repoBranch = (path: string) =>
   invoke<string | null>("repo_branch", { path });
 
+export interface RepoStatus {
+  dirty: boolean;
+  changed: number;
+}
+
+export const repoStatus = (path: string) =>
+  invoke<RepoStatus | null>("repo_status", { path });
+
 export const newWindow = () => invoke<void>("new_window");
 
 export const createTab = (sessionId: SessionId, workspaceId?: WorkspaceId) =>
