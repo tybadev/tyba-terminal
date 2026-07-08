@@ -65,13 +65,12 @@ function Notification({
       {...props}
     >
       <div className="flex gap-3">
-        {icon ?? (
-          <Icon
-            aria-hidden="true"
-            size={16}
-            className="mt-0.5 shrink-0 text-[var(--notification-accent)]"
-          />
-        )}
+        <span
+          aria-hidden="true"
+          className="mt-0.5 shrink-0 text-[var(--notification-accent)]"
+        >
+          {icon ?? <Icon size={16} />}
+        </span>
         <div className="flex grow flex-wrap justify-between gap-x-3 gap-y-1">
           {children}
         </div>
