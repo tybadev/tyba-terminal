@@ -603,43 +603,39 @@ export function SettingsView({
               hint={t("preferencesHint")}
             />
             <span className="tyba-label">{t("sidebarToggleBehavior")}</span>
-            <div className="flex gap-2 pt-2 pb-6">
-              <Choice
-                active={togglePref === "hidden"}
-                label={t("collapseAll")}
-                onClick={() => onTogglePrefChange("hidden")}
-              />
-              <Choice
-                active={togglePref === "rail"}
-                label={t("collapseRail")}
-                onClick={() => onTogglePrefChange("rail")}
+            <div className="pt-2 pb-6">
+              <Select
+                value={togglePref}
+                onChange={(v) => onTogglePrefChange(v as SidebarTogglePref)}
+                className="w-56"
+                options={[
+                  { value: "hidden", label: t("collapseAll") },
+                  { value: "rail", label: t("collapseRail") },
+                ]}
               />
             </div>
 
-            <span className="tyba-label">{t("sidebarDetails")}</span>
-            <div className="flex gap-2 pt-2 pb-6">
-              <Choice
-                active={detailsPref === "on"}
-                label={t("detailsShow")}
-                onClick={() => onDetailsPrefChange("on")}
+            <label className="flex items-center justify-between gap-4 pb-6">
+              <span className="text-[13px] text-tyba-text">
+                {t("sidebarDetails")}
+              </span>
+              <Switch
+                checked={detailsPref === "on"}
+                onCheckedChange={(c) => onDetailsPrefChange(c ? "on" : "off")}
               />
-              <Choice
-                active={detailsPref === "off"}
-                label={t("detailsHide")}
-                onClick={() => onDetailsPrefChange("off")}
-              />
-            </div>
+            </label>
 
             <span className="tyba-label">{t("language")}</span>
-            <div className="flex gap-2 pt-2">
-              {LANGUAGES.map((lang) => (
-                <Choice
-                  key={lang.code}
-                  active={i18n.language === lang.code}
-                  label={lang.label}
-                  onClick={() => setLanguage(lang.code as LanguageCode)}
-                />
-              ))}
+            <div className="pt-2">
+              <Select
+                value={i18n.language}
+                onChange={(v) => setLanguage(v as LanguageCode)}
+                className="w-56"
+                options={LANGUAGES.map((l) => ({
+                  value: l.code,
+                  label: l.label,
+                }))}
+              />
             </div>
           </section>
         )}
