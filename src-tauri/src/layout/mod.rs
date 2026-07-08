@@ -487,33 +487,25 @@ impl LayoutManager {
             drop(inner);
             return self.persist();
         }
+        // Uma view (ex.: Configurações) é uma página, não uma sessão: vive
+        // no seu próprio workspace dedicado (aparece na sidebar, sem tab),
+        // nunca como aba de um workspace de terminal.
         let tab = Tab::from_view(view);
         let tab_id = tab.id;
-        match inner
-            .active
-            .and_then(|id| ws_index(&inner.workspaces, id).ok())
-        {
-            Some(idx) => {
-                inner.workspaces[idx].tabs.push(tab);
-                inner.workspaces[idx].active_tab = Some(tab_id);
-            }
-            None => {
-                let workspace = Workspace {
-                    id: Uuid::new_v4(),
-                    name: FALLBACK_WORKSPACE_NAME.to_string(),
-                    repo_root: None,
-                    color: None,
-                    group: None,
-                    kind: WorkspaceKind::User,
-                    active_tab: Some(tab_id),
-                    tabs: vec![tab],
-                    created_at: Utc::now(),
-                };
-                let ws_id = workspace.id;
-                inner.workspaces.push(workspace);
-                inner.active = Some(ws_id);
-            }
-        }
+        let workspace = Workspace {
+            id: Uuid::new_v4(),
+            name: FALLBACK_WORKSPACE_NAME.to_string(),
+            repo_root: None,
+            color: None,
+            group: None,
+            kind: WorkspaceKind::User,
+            active_tab: Some(tab_id),
+            tabs: vec![tab],
+            created_at: Utc::now(),
+        };
+        let ws_id = workspace.id;
+        inner.workspaces.push(workspace);
+        inner.active = Some(ws_id);
         drop(inner);
         self.persist()
     }
@@ -1399,27 +1391,46 @@ mod tests {
     }
 
     #[test]
-    fn open_view_tab_is_singleton_and_focuses_existing() {
+    fn open_view_tab_uses_dedicated_workspace_and_is_singleton() {
         let mgr = manager();
         let w1 = ws(&mgr);
         mgr.open_view_tab(VIEW_SETTINGS).unwrap();
         let state = mgr.state();
-        let target = state.workspaces.iter().find(|w| w.id == w1).unwrap();
-        assert_eq!(target.tabs.len(), 2);
-        let settings_tab = target
-            .tabs
+        // A view não vira aba do workspace de terminal: ganha o seu próprio.
+        let terminal = state.workspaces.iter().find(|w| w.id == w1).unwrap();
+        assert_eq!(terminal.tabs.len(), 1);
+        let settings_ws = state
+            .workspaces
             .iter()
-            .find(|t| t.view.as_deref() == Some(VIEW_SETTINGS))
-            .unwrap()
-            .id;
+            .find(|w| {
+                w.id != w1
+                    && w.tabs
+                        .iter()
+                        .any(|t| t.view.as_deref() == Some(VIEW_SETTINGS))
+            })
+            .unwrap();
+        assert_eq!(settings_ws.tabs.len(), 1);
+        assert_eq!(state.active_workspace, Some(settings_ws.id));
+        let settings_ws_id = settings_ws.id;
+        let total = state.workspaces.len();
 
+        // Reabrir foca o mesmo workspace de settings (singleton), sem duplicar.
         ws(&mgr);
         mgr.open_view_tab(VIEW_SETTINGS).unwrap();
         let state = mgr.state();
-        assert_eq!(state.active_workspace, Some(w1));
-        let target = state.workspaces.iter().find(|w| w.id == w1).unwrap();
-        assert_eq!(target.active_tab, Some(settings_tab));
-        assert_eq!(target.tabs.len(), 2);
+        assert_eq!(
+            state
+                .workspaces
+                .iter()
+                .filter(|w| w
+                    .tabs
+                    .iter()
+                    .any(|t| t.view.as_deref() == Some(VIEW_SETTINGS)))
+                .count(),
+            1
+        );
+        assert_eq!(state.active_workspace, Some(settings_ws_id));
+        assert_eq!(state.workspaces.len(), total + 1);
     }
 
     #[test]
