@@ -46,9 +46,11 @@ import {
   type ThemeState,
 } from "../lib/ipc";
 import {
+  actionsByCategory,
+  ACTION_LABEL_KEYS,
   captureState,
   comboOf,
-  KEY_ACTIONS,
+  KEY_CATEGORY_LABEL_KEYS,
   type Bindings,
   type KeyAction,
 } from "../lib/keys";
@@ -82,28 +84,6 @@ const THEME_MODE_KEYS: Record<ThemeMode, string> = {
   dark: "themeDark",
   light: "themeLight",
   system: "themeSystem",
-};
-
-const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
-  palette: "commandPalette",
-  panel: "togglePanel",
-  settings: "settings",
-  newSession: "newSession",
-  newTab: "newTab",
-  newWindow: "newWindow",
-  closePane: "closePane",
-  openFolder: "openProjectFolder",
-  prevSession: "prevSessionNav",
-  nextSession: "nextSessionNav",
-  prevTab: "prevTabNav",
-  nextTab: "nextTabNav",
-  splitRight: "splitRight",
-  splitDown: "splitDown",
-  nextPane: "nextPane",
-  paneLeft: "paneLeft",
-  paneRight: "paneRight",
-  paneUp: "paneUp",
-  paneDown: "paneDown",
 };
 
 const FONT_SIZES = [11, 12, 13, 14, 15, 16];
@@ -592,18 +572,27 @@ export function SettingsView({
               title={t("settingsShortcuts")}
               hint={t("shortcutsHint")}
             />
-            <div className="flex flex-col gap-px">
-              {KEY_ACTIONS.map((action) => (
-                <ShortcutRow
-                  key={action}
-                  action={action}
-                  combo={bindings[action]}
-                  onRebind={(combo) =>
-                    onBindingsChange({ ...bindings, [action]: combo })
-                  }
-                />
-              ))}
-            </div>
+            {actionsByCategory().map(([category, actions]) =>
+              actions.length === 0 ? null : (
+                <div key={category} className="mb-5 last:mb-0">
+                  <span className="tyba-label">
+                    {t(KEY_CATEGORY_LABEL_KEYS[category])}
+                  </span>
+                  <div className="flex flex-col gap-px pt-2">
+                    {actions.map((action) => (
+                      <ShortcutRow
+                        key={action}
+                        action={action}
+                        combo={bindings[action]}
+                        onRebind={(combo) =>
+                          onBindingsChange({ ...bindings, [action]: combo })
+                        }
+                      />
+                    ))}
+                  </div>
+                </div>
+              ),
+            )}
           </section>
         )}
 

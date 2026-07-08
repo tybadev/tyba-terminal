@@ -7,7 +7,7 @@ import {
   FolderOpen,
   GearSix,
   GitBranch,
-  Info,
+  Keyboard,
   MagnifyingGlass,
   Plus,
   Prohibit,
@@ -47,6 +47,7 @@ import {
 } from "@/components/ui/notification";
 import { Clock } from "./components/Clock";
 import { CommandPalette } from "./components/CommandPalette";
+import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ContainersView } from "./components/ContainersView";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
@@ -219,6 +220,7 @@ export default function App() {
   const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [inboxOpen, setInboxOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const booted = useRef(false);
 
   useEffect(() => {
@@ -1094,6 +1096,11 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={400}>
+      <ShortcutsPanel
+        open={shortcutsOpen}
+        bindings={bindings}
+        onClose={() => setShortcutsOpen(false)}
+      />
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -1257,12 +1264,14 @@ export default function App() {
                   <MagnifyingGlass size={16} className="opacity-60" />
                   {t("commandPalette")}
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-xs"
+                  onSelect={() => setShortcutsOpen(true)}
+                >
+                  <Keyboard size={16} className="opacity-60" />
+                  {t("shortcuts")}
+                </DropdownMenuItem>
               </DropdownMenuGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem disabled className="text-xs">
-                <Info size={16} className="opacity-60" />
-                {t("about")}
-              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </header>
