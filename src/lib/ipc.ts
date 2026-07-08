@@ -65,6 +65,51 @@ export const listSessions = () => invoke<Session[]>("list_sessions");
 export const disposeSession = (id: SessionId) =>
   invoke<void>("dispose_session", { id });
 
+export type RiskLevel = "green" | "yellow" | "red";
+export type ApprovalDecision = "approved" | "denied";
+
+export interface ApprovalRequest {
+  id: number;
+  session_id: SessionId;
+  command: string;
+  cwd: string | null;
+  risk: RiskLevel;
+  context: string | null;
+  requested_at_ms: number;
+}
+
+export const requestApproval = (
+  sessionId: SessionId,
+  command: string,
+  cwd?: string,
+  context?: string,
+) =>
+  invoke<ApprovalRequest>("request_approval", {
+    sessionId,
+    command,
+    cwd: cwd ?? null,
+    context: context ?? null,
+  });
+
+export const listApprovals = () =>
+  invoke<ApprovalRequest[]>("list_approvals");
+
+export const resolveApproval = (id: number, decision: ApprovalDecision) =>
+  invoke<void>("resolve_approval", { id, decision });
+
+export const onApprovalRequested = (
+  handler: (request: ApprovalRequest) => void,
+): Promise<UnlistenFn> =>
+  listen<ApprovalRequest>("approvals://requested", (e) => handler(e.payload));
+
+export const onApprovalResolved = (
+  handler: (resolved: { id: number; decision: ApprovalDecision }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ id: number; decision: ApprovalDecision }>(
+    "approvals://resolved",
+    (e) => handler(e.payload),
+  );
+
 export const onPtyOutput = (
   id: SessionId,
   handler: (bytes: Uint8Array) => void,

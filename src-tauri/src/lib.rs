@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod approvals;
 pub mod pty;
 pub mod sandbox;
 pub mod session;
@@ -11,12 +12,14 @@ use std::time::Duration;
 use base64::Engine;
 use tauri::{AppHandle, Manager, State};
 
+use approvals::{ApprovalRequest, Decision, SharedApprovals};
 use pty::SharedPtyPool;
 use session::{CreateSessionOpts, Session, SessionId, SharedSessionManager};
 
 struct AppState {
     pty_pool: SharedPtyPool,
     sessions: SharedSessionManager,
+    approvals: SharedApprovals,
 }
 
 #[tauri::command]
@@ -68,6 +71,35 @@ fn dispose_session(state: State<'_, AppState>, id: SessionId) {
     state.sessions.dispose(&state.pty_pool, id);
 }
 
+#[tauri::command]
+fn request_approval(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    command: String,
+    cwd: Option<String>,
+    context: Option<String>,
+) -> Result<ApprovalRequest, String> {
+    state
+        .approvals
+        .request(&app, session_id, command, cwd, context)
+}
+
+#[tauri::command]
+fn list_approvals(state: State<'_, AppState>) -> Vec<ApprovalRequest> {
+    state.approvals.list_pending()
+}
+
+#[tauri::command]
+fn resolve_approval(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: u64,
+    decision: Decision,
+) -> Result<(), String> {
+    state.approvals.resolve(&app, id, decision)
+}
+
 const SCROLLBACK_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
 fn open_store(app: &AppHandle) -> session::store::Store {
@@ -98,6 +130,7 @@ pub fn run() {
             app.manage(AppState {
                 pty_pool: Arc::clone(&pty_pool),
                 sessions: Arc::clone(&sessions),
+                approvals: Arc::new(approvals::ApprovalsManager::new()),
             });
 
             std::thread::Builder::new()
@@ -127,6 +160,9 @@ pub fn run() {
             resize_session,
             list_sessions,
             dispose_session,
+            request_approval,
+            list_approvals,
+            resolve_approval,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tyba")
