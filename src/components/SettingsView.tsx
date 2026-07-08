@@ -47,10 +47,9 @@ export type SidebarTogglePref = "hidden" | "rail";
 export type DetailsPref = "on" | "off";
 
 type Section =
-  | "account"
   | "general"
+  | "appearance"
   | "code"
-  | "themes"
   | "shortcuts"
   | "preferences";
 
@@ -356,27 +355,21 @@ export function SettingsView({
       <aside className="tyba-glass flex w-48 shrink-0 flex-col gap-px px-2 pt-3">
         <NavItem
           active={section === "general"}
-          icon={<SlidersHorizontal size={15} />}
+          icon={<User size={15} />}
           label={t("settingsGeneral")}
           onClick={() => setSection("general")}
         />
         <NavItem
-          active={section === "account"}
-          icon={<User size={15} />}
-          label={t("settingsAccount")}
-          onClick={() => setSection("account")}
+          active={section === "appearance"}
+          icon={<Palette size={15} />}
+          label={t("settingsAppearance")}
+          onClick={() => setSection("appearance")}
         />
         <NavItem
           active={section === "code"}
           icon={<Code size={15} />}
           label={t("settingsCode")}
           onClick={() => setSection("code")}
-        />
-        <NavItem
-          active={section === "themes"}
-          icon={<Palette size={15} />}
-          label={t("settingsThemes")}
-          onClick={() => setSection("themes")}
         />
         <NavItem
           active={section === "shortcuts"}
@@ -399,6 +392,26 @@ export function SettingsView({
               title={t("settingsGeneral")}
               hint={t("generalHint")}
             />
+            <span className="tyba-label">{t("account")}</span>
+            <div className="mt-2 mb-6 flex items-center gap-3 rounded-[6px] border border-tyba-border px-4 py-3">
+              <span
+                className="rounded-full p-px"
+                style={{ background: "var(--tyba-gradient)" }}
+              >
+                <span className="flex size-8 items-center justify-center rounded-full bg-tyba-raised text-tyba-text-muted">
+                  <User size={15} weight="bold" />
+                </span>
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="pb-1 text-[13px]">{t("localAccount")}</p>
+                <TextField
+                  value={accountName}
+                  placeholder={t("accountNamePlaceholder")}
+                  onCommit={onAccountNameChange}
+                />
+              </div>
+            </div>
+
             <span className="tyba-label">{t("defaultSessionDir")}</span>
             <div className="flex gap-2 pt-2">
               <TextField
@@ -422,48 +435,9 @@ export function SettingsView({
           </section>
         )}
 
-        {section === "account" && (
-          <section className="mx-auto w-full max-w-lg">
-            <SectionHeader
-              title={t("settingsAccount")}
-              hint={t("accountHint")}
-            />
-            <div className="flex items-center gap-3 rounded-[6px] border border-tyba-border px-4 py-3">
-              <span
-                className="rounded-full p-px"
-                style={{ background: "var(--tyba-gradient)" }}
-              >
-                <span className="flex size-8 items-center justify-center rounded-full bg-tyba-raised text-tyba-text-muted">
-                  <User size={15} weight="bold" />
-                </span>
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="pb-1 text-[13px]">{t("localAccount")}</p>
-                <TextField
-                  value={accountName}
-                  placeholder={t("accountNamePlaceholder")}
-                  onCommit={onAccountNameChange}
-                />
-              </div>
-            </div>
-          </section>
-        )}
-
         {section === "code" && (
           <section className="mx-auto w-full max-w-lg">
             <SectionHeader title={t("settingsCode")} hint={t("codeHint")} />
-            <span className="tyba-label">{t("terminalFontSize")}</span>
-            <div className="flex gap-2 pt-2 pb-6">
-              {FONT_SIZES.map((size) => (
-                <Choice
-                  key={size}
-                  active={fontSize === size}
-                  label={`${size}px`}
-                  onClick={() => changeFontSize(size)}
-                />
-              ))}
-            </div>
-
             <span className="tyba-label">{t("showContainersToggle")}</span>
             <div className="flex gap-2 pt-2">
               <Choice
@@ -483,11 +457,11 @@ export function SettingsView({
           </section>
         )}
 
-        {section === "themes" && (
+        {section === "appearance" && (
           <section className="mx-auto w-full max-w-lg">
             <SectionHeader
-              title={t("settingsThemes")}
-              hint={t("themesHint")}
+              title={t("settingsAppearance")}
+              hint={t("appearanceHint")}
             />
             <span className="tyba-label">{t("theme")}</span>
             <div className="flex gap-2 pt-2 pb-6">
@@ -497,6 +471,32 @@ export function SettingsView({
                   active={mode === m}
                   label={t(THEME_MODE_KEYS[m])}
                   onClick={() => setThemeMode(m)}
+                />
+              ))}
+            </div>
+
+            <span className="tyba-label">{t("uiFont")}</span>
+            <div className="flex gap-2 pt-2 pb-6">
+              <Choice
+                active={uiFont === "mono"}
+                label={t("fontMono")}
+                onClick={() => setUiFont("mono")}
+              />
+              <Choice
+                active={uiFont === "grotesk"}
+                label={t("fontGrotesk")}
+                onClick={() => setUiFont("grotesk")}
+              />
+            </div>
+
+            <span className="tyba-label">{t("terminalFontSize")}</span>
+            <div className="flex gap-2 pt-2 pb-6">
+              {FONT_SIZES.map((size) => (
+                <Choice
+                  key={size}
+                  active={fontSize === size}
+                  label={`${size}px`}
+                  onClick={() => changeFontSize(size)}
                 />
               ))}
             </div>
@@ -616,20 +616,6 @@ export function SettingsView({
                 active={detailsPref === "off"}
                 label={t("detailsHide")}
                 onClick={() => onDetailsPrefChange("off")}
-              />
-            </div>
-
-            <span className="tyba-label">{t("uiFont")}</span>
-            <div className="flex gap-2 pt-2 pb-6">
-              <Choice
-                active={uiFont === "mono"}
-                label={t("fontMono")}
-                onClick={() => setUiFont("mono")}
-              />
-              <Choice
-                active={uiFont === "grotesk"}
-                label={t("fontGrotesk")}
-                onClick={() => setUiFont("grotesk")}
               />
             </div>
 

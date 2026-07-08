@@ -1356,6 +1356,32 @@ export default function App() {
                       </TooltipContent>
                     </Tooltip>
                   </nav>
+
+                  <div className="shrink-0 border-t border-tyba-border/60 p-2">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          onClick={() => void openViewTab("settings").catch(() => {})}
+                          aria-label={t("settings")}
+                          className={`h-8 w-full shrink-0 gap-2 rounded-[4px] text-[13px] font-normal transition-colors ${
+                            activeTab?.view === "settings"
+                              ? "bg-white/[.05] text-tyba-text"
+                              : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text"
+                          } ${open ? "justify-start px-2" : "justify-center px-0"}`}
+                        >
+                          <GearSix size={15} />
+                          {open && t("settings")}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side={open ? "top" : "right"}
+                        className="flex items-center gap-2"
+                      >
+                        {t("settings")}
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
                 </aside>
               )}
 
