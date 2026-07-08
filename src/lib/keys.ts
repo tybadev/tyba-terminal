@@ -41,6 +41,80 @@ export const KEY_ACTIONS: KeyAction[] = [
   "paneDown",
 ];
 
+export type KeyCategory =
+  | "general"
+  | "sessions"
+  | "tabs"
+  | "panes"
+  | "navigation";
+
+export const KEY_CATEGORY_ORDER: KeyCategory[] = [
+  "general",
+  "sessions",
+  "tabs",
+  "panes",
+  "navigation",
+];
+
+export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
+  palette: "general",
+  panel: "general",
+  settings: "general",
+  newSession: "sessions",
+  newWindow: "sessions",
+  openFolder: "sessions",
+  newTab: "tabs",
+  closePane: "tabs",
+  splitRight: "panes",
+  splitDown: "panes",
+  prevSession: "navigation",
+  nextSession: "navigation",
+  prevTab: "navigation",
+  nextTab: "navigation",
+  nextPane: "navigation",
+  paneLeft: "navigation",
+  paneRight: "navigation",
+  paneUp: "navigation",
+  paneDown: "navigation",
+};
+
+export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
+  palette: "commandPalette",
+  panel: "togglePanel",
+  settings: "settings",
+  newSession: "newSession",
+  newTab: "newTab",
+  newWindow: "newWindow",
+  closePane: "closePane",
+  openFolder: "openProjectFolder",
+  prevSession: "prevSessionNav",
+  nextSession: "nextSessionNav",
+  prevTab: "prevTabNav",
+  nextTab: "nextTabNav",
+  splitRight: "splitRight",
+  splitDown: "splitDown",
+  nextPane: "nextPane",
+  paneLeft: "paneLeft",
+  paneRight: "paneRight",
+  paneUp: "paneUp",
+  paneDown: "paneDown",
+};
+
+export const KEY_CATEGORY_LABEL_KEYS: Record<KeyCategory, string> = {
+  general: "catGeneral",
+  sessions: "catSessions",
+  tabs: "catTabs",
+  panes: "catPanes",
+  navigation: "catNavigation",
+};
+
+export function actionsByCategory(): [KeyCategory, KeyAction[]][] {
+  return KEY_CATEGORY_ORDER.map((cat) => [
+    cat,
+    KEY_ACTIONS.filter((a) => KEY_ACTION_CATEGORY[a] === cat),
+  ]);
+}
+
 export type Bindings = Record<KeyAction, string>;
 
 export const DEFAULT_BINDINGS: Bindings = {
