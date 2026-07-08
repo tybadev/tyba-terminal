@@ -6,6 +6,7 @@ pub mod status;
 pub mod worktree;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine;
 use tauri::{AppHandle, Manager, State};
@@ -67,14 +68,46 @@ fn dispose_session(state: State<'_, AppState>, id: SessionId) {
     state.sessions.dispose(&state.pty_pool, id);
 }
 
+const SCROLLBACK_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
+
+fn open_store(app: &AppHandle) -> session::store::Store {
+    let db_path = app
+        .path()
+        .app_data_dir()
+        .map(|dir| {
+            let _ = std::fs::create_dir_all(&dir);
+            dir.join("tyba.db")
+        })
+        .ok();
+
+    db_path
+        .and_then(|path| session::store::Store::open(&path).ok())
+        .or_else(|| session::store::Store::open_in_memory().ok())
+        .expect("failed to open session store")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            let store = Arc::new(open_store(app.handle()));
+            let pty_pool: SharedPtyPool = Arc::new(pty::PtyPool::new());
+            let sessions: SharedSessionManager = Arc::new(session::SessionManager::new(store));
+            let _ = sessions.restore();
+
             app.manage(AppState {
-                pty_pool: Arc::new(pty::PtyPool::new()),
-                sessions: Arc::new(session::SessionManager::new()),
+                pty_pool: Arc::clone(&pty_pool),
+                sessions: Arc::clone(&sessions),
             });
+
+            std::thread::Builder::new()
+                .name("scrollback-flush".into())
+                .spawn(move || loop {
+                    std::thread::sleep(SCROLLBACK_FLUSH_INTERVAL);
+                    sessions.flush_scrollback(&pty_pool);
+                })
+                .expect("failed to spawn scrollback flush thread");
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
