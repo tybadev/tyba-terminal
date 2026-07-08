@@ -133,15 +133,47 @@ export interface Tab {
   created_at: string;
 }
 
-export interface LayoutState {
-  tabs: Tab[];
+export type WorkspaceId = string;
+
+export interface Workspace {
+  id: WorkspaceId;
+  name: string;
+  repo_root: string | null;
   active_tab: TabId | null;
+  tabs: Tab[];
+  created_at: string;
+}
+
+export interface LayoutState {
+  workspaces: Workspace[];
+  active_workspace: WorkspaceId | null;
 }
 
 export const layoutState = () => invoke<LayoutState>("layout_state");
 
-export const createTab = (sessionId: SessionId) =>
-  invoke<TabId>("create_tab", { sessionId });
+export const createWorkspace = (
+  name: string,
+  repoRoot: string | null,
+  sessionId: SessionId,
+) => invoke<WorkspaceId>("create_workspace", { name, repoRoot, sessionId });
+
+export const closeWorkspace = (id: WorkspaceId) =>
+  invoke<void>("close_workspace", { id });
+
+export const activateWorkspace = (id: WorkspaceId) =>
+  invoke<void>("activate_workspace", { id });
+
+export const createTab = (sessionId: SessionId, workspaceId?: WorkspaceId) =>
+  invoke<TabId>("create_tab", {
+    sessionId,
+    workspaceId: workspaceId ?? null,
+  });
+
+export const getPref = (key: string) =>
+  invoke<string | null>("get_pref", { key });
+
+export const setPref = (key: string, value: string) =>
+  invoke<void>("set_pref", { key, value });
 
 export const closeTab = (id: TabId) => invoke<void>("close_tab", { id });
 
@@ -151,7 +183,7 @@ export const moveTab = (id: TabId, to: number) =>
   invoke<void>("move_tab", { id, to });
 
 export const openSessionInTab = (sessionId: SessionId) =>
-  invoke<TabId>("open_session_in_tab", { sessionId });
+  invoke<void>("open_session_in_tab", { sessionId });
 
 export const splitPane = (
   paneId: PaneId,

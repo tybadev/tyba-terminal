@@ -119,6 +119,10 @@ impl SessionManager {
         v
     }
 
+    pub fn get(&self, id: SessionId) -> Option<Session> {
+        self.sessions.read().get(&id).cloned()
+    }
+
     pub fn set_status(&self, app: &AppHandle, id: SessionId, status: SessionStatus) {
         let mut sessions = self.sessions.write();
         if let Some(s) = sessions.get_mut(&id) {
@@ -147,6 +151,10 @@ impl SessionManager {
         let persisted = self.store.load_sessions()?;
         let mut sessions = self.sessions.write();
         for mut s in persisted {
+            if matches!(s.kind, SessionKind::Shell) {
+                let _ = self.store.remove_session(s.id);
+                continue;
+            }
             if !matches!(
                 s.status,
                 SessionStatus::Exited { .. } | SessionStatus::Failed { .. }
@@ -185,62 +193,61 @@ pub type SharedSessionManager = Arc<SessionManager>;
 mod tests {
     use super::*;
 
-    #[test]
-    fn restore_loads_persisted_sessions_from_store() {
-        let store = Arc::new(Store::open_in_memory().unwrap());
-        let persisted = Session {
+    fn make(kind: SessionKind, status: SessionStatus) -> Session {
+        Session {
             id: SessionId::new_v4(),
-            kind: SessionKind::Shell,
-            title: "restored".into(),
-            repo_root: None,
-            worktree: None,
-            status: SessionStatus::Running,
-            created_at: Utc::now(),
-        };
-        store.upsert_session(&persisted).unwrap();
-
-        let manager = SessionManager::new(store);
-        manager.restore().unwrap();
-
-        let listed = manager.list();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, persisted.id);
-        assert_eq!(listed[0].title, "restored");
-    }
-
-    #[test]
-    fn restore_downgrades_stale_live_status_to_exited() {
-        let store = Arc::new(Store::open_in_memory().unwrap());
-        let make = |status: SessionStatus| Session {
-            id: SessionId::new_v4(),
-            kind: SessionKind::Shell,
+            kind,
             title: "s".into(),
             repo_root: None,
             worktree: None,
             status,
             created_at: Utc::now(),
-        };
-        let running = make(SessionStatus::Running);
-        let idle = make(SessionStatus::Idle);
-        let done = make(SessionStatus::Exited { code: 0 });
-        for s in [&running, &idle, &done] {
+        }
+    }
+
+    #[test]
+    fn restore_removes_dead_shell_rows() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let shell = make(SessionKind::Shell, SessionStatus::Running);
+        store.upsert_session(&shell).unwrap();
+
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+
+        assert!(manager.list().is_empty());
+        assert!(store.load_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn restore_keeps_agents_downgrading_stale_live_status() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let running = make(
+            SessionKind::Agent {
+                runner: AgentRunnerKind::ClaudeCode,
+            },
+            SessionStatus::Running,
+        );
+        let done = make(
+            SessionKind::Agent {
+                runner: AgentRunnerKind::ClaudeCode,
+            },
+            SessionStatus::Exited { code: 0 },
+        );
+        for s in [&running, &done] {
             store.upsert_session(s).unwrap();
         }
 
         let manager = SessionManager::new(Arc::clone(&store));
         manager.restore().unwrap();
 
-        for s in manager.list() {
+        let listed = manager.list();
+        assert_eq!(listed.len(), 2);
+        for s in listed {
             if s.id == done.id {
                 assert!(matches!(s.status, SessionStatus::Exited { code: 0 }));
             } else {
                 assert!(matches!(s.status, SessionStatus::Exited { code: -1 }));
             }
         }
-        let persisted_again = store.load_sessions().unwrap();
-        assert!(persisted_again
-            .iter()
-            .filter(|s| s.id != done.id)
-            .all(|s| matches!(s.status, SessionStatus::Exited { code: -1 })));
     }
 }

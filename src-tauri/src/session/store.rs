@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 
-use crate::layout::{LayoutRows, PaneRow, TabRow};
+use crate::layout::{LayoutRows, PaneRow, TabRow, WorkspaceRow};
 use crate::session::redact::redact;
 use crate::session::{Session, SessionId, SessionKind, SessionStatus};
 use crate::worktree::Worktree;
@@ -24,8 +24,17 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    repo_root TEXT,
+    position INTEGER NOT NULL,
+    active_tab TEXT,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tabs (
     id TEXT PRIMARY KEY,
+    workspace_id TEXT,
     title TEXT,
     position INTEGER NOT NULL,
     active_pane TEXT,
@@ -72,6 +81,7 @@ impl Store {
     fn init(conn: Connection) -> Result<Self, StoreError> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        let _ = conn.execute("ALTER TABLE tabs ADD COLUMN workspace_id TEXT", []);
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -166,11 +176,26 @@ impl Store {
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM panes", [])?;
         tx.execute("DELETE FROM tabs", [])?;
+        tx.execute("DELETE FROM workspaces", [])?;
+        for w in &rows.workspaces {
+            tx.execute(
+                "INSERT INTO workspaces (id, name, repo_root, position, active_tab, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![w.id, w.name, w.repo_root, w.position, w.active_tab, w.created_at],
+            )?;
+        }
         for t in &rows.tabs {
             tx.execute(
-                "INSERT INTO tabs (id, title, position, active_pane, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![t.id, t.title, t.position, t.active_pane, t.created_at],
+                "INSERT INTO tabs (id, workspace_id, title, position, active_pane, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    t.id,
+                    t.workspace_id,
+                    t.title,
+                    t.position,
+                    t.active_pane,
+                    t.created_at
+                ],
             )?;
         }
         for p in &rows.panes {
@@ -195,16 +220,35 @@ impl Store {
     pub fn load_layout(&self) -> Result<LayoutRows, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, title, position, active_pane, created_at FROM tabs ORDER BY position",
+            "SELECT id, name, repo_root, position, active_tab, created_at
+             FROM workspaces ORDER BY position",
+        )?;
+        let workspaces = stmt
+            .query_map([], |row| {
+                Ok(WorkspaceRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    repo_root: row.get(2)?,
+                    position: row.get(3)?,
+                    active_tab: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, workspace_id, title, position, active_pane, created_at
+             FROM tabs ORDER BY position",
         )?;
         let tabs = stmt
             .query_map([], |row| {
                 Ok(TabRow {
                     id: row.get(0)?,
-                    title: row.get(1)?,
-                    position: row.get(2)?,
-                    active_pane: row.get(3)?,
-                    created_at: row.get(4)?,
+                    workspace_id: row.get(1)?,
+                    title: row.get(2)?,
+                    position: row.get(3)?,
+                    active_pane: row.get(4)?,
+                    created_at: row.get(5)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -226,7 +270,11 @@ impl Store {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(LayoutRows { tabs, panes })
+        Ok(LayoutRows {
+            workspaces,
+            tabs,
+            panes,
+        })
     }
 
     pub fn load_sessions(&self) -> Result<Vec<Session>, StoreError> {

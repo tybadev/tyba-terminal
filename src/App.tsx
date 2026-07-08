@@ -1,14 +1,6 @@
-// TYBA — shell da aplicação: header geral + sidebar de sessões + terminal.
-// Direção visual: "o gradiente é luz" — linha viva marca a sessão ativa,
-// itens flat (terminal, não web), raios contidos. Tokens em src/styles.css.
-// Atalhos: ⌘K paleta · ⌘B painel (aberto → ícones → oculto) ·
-// ⌘T nova sessão · ⌘W fechar.
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  CaretDown,
-  CaretRight,
   FolderOpen,
   MagnifyingGlass,
   Plus,
@@ -17,6 +9,7 @@ import {
   User,
   X,
 } from "@phosphor-icons/react";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -24,78 +17,45 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LANGUAGES, setLanguage, type LanguageCode } from "./i18n";
-import {
-  getThemeMode,
-  onThemeModeChange,
-  setThemeMode,
-  type ThemeMode,
-} from "./theme";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { getThemeMode, onThemeModeChange, setThemeMode, type ThemeMode } from "./theme";
 import { ApprovalsInbox } from "./components/ApprovalsInbox";
 import { CommandPalette } from "./components/CommandPalette";
+import { NewSessionPrompt } from "./components/NewSessionPrompt";
+import { SettingsView, type SidebarTogglePref } from "./components/SettingsView";
 import { TabBar } from "./components/TabBar";
 import { TerminalView } from "./components/TerminalView";
 import {
   activateTab,
+  activateWorkspace,
   closePane,
   closeTab,
+  closeWorkspace,
   createSession,
   createTab,
-  disposeSession,
+  createWorkspace,
+  getPref,
   layoutState,
-  leafSessions,
   listSessions,
   onLayoutChanged,
-  openSessionInTab,
   paneSession,
+  setPref,
   type LayoutState,
   type Session,
-  type SessionId,
 } from "./lib/ipc";
 
-const EMPTY_LAYOUT: LayoutState = { tabs: [], active_tab: null };
-
-interface SessionGroup {
-  key: string;
-  label: string | null;
-  sessions: Session[];
-}
-
-function groupSessions(sessions: Session[]): SessionGroup[] {
-  const map = new Map<string, Session[]>();
-  for (const s of sessions) {
-    const key = s.repo_root ?? "";
-    map.set(key, [...(map.get(key) ?? []), s]);
-  }
-  return [...map.entries()]
-    .sort(([a], [b]) =>
-      a === "" ? 1 : b === "" ? -1 : a.localeCompare(b),
-    )
-    .map(([key, list]) => ({
-      key: key || "loose",
-      label: key ? (key.split("/").pop() ?? key) : null,
-      sessions: list,
-    }));
-}
+const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
+const TOGGLE_PREF_KEY = "pref.sidebar_toggle";
 
 type SidebarMode = "open" | "rail" | "hidden";
-
-const NEXT_MODE: Record<SidebarMode, SidebarMode> = {
-  open: "rail",
-  rail: "hidden",
-  hidden: "open",
-};
 
 function Kbd({ children }: { children: React.ReactNode }) {
   return (
@@ -137,14 +97,18 @@ function IconAction({
   );
 }
 
+const basename = (dir: string) => dir.split("/").filter(Boolean).pop() ?? dir;
+
 export default function App() {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [layout, setLayout] = useState<LayoutState>(EMPTY_LAYOUT);
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [togglePref, setTogglePref] = useState<SidebarTogglePref>("hidden");
   const [sessionQuery, setSessionQuery] = useState("");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
   const booted = useRef(false);
 
@@ -155,9 +119,17 @@ export default function App() {
 
   useEffect(() => onThemeModeChange(setTheme), []);
 
-  const activeTab = useMemo(
-    () => layout.tabs.find((tab) => tab.id === layout.active_tab) ?? null,
+  const activeWorkspace = useMemo(
+    () =>
+      layout.workspaces.find((w) => w.id === layout.active_workspace) ?? null,
     [layout],
+  );
+
+  const activeTab = useMemo(
+    () =>
+      activeWorkspace?.tabs.find((tab) => tab.id === activeWorkspace.active_tab) ??
+      null,
+    [activeWorkspace],
   );
 
   const activeId = useMemo(
@@ -166,76 +138,85 @@ export default function App() {
     [activeTab],
   );
 
-  const boundSessions = useMemo(
-    () => new Set(layout.tabs.flatMap((tab) => leafSessions(tab.root))),
-    [layout],
+  const workspaces = useMemo(() => {
+    const query = sessionQuery.trim().toLowerCase();
+    if (!query) return layout.workspaces;
+    return layout.workspaces.filter((w) =>
+      `${w.name} ${w.repo_root ?? ""}`.toLowerCase().includes(query),
+    );
+  }, [layout.workspaces, sessionQuery]);
+
+  const refreshSessions = useCallback(async () => {
+    const all = await listSessions().catch(() => null);
+    if (all) setSessions(all);
+  }, []);
+
+  const newSession = useCallback(
+    async (cwd: string | null, name: string) => {
+      const session = await createSession({
+        kind: { type: "shell" },
+        cwd: cwd ?? undefined,
+        cols: 100,
+        rows: 30,
+      });
+      setSessions((prev) => [...prev, session]);
+      await createWorkspace(name, cwd, session.id);
+    },
+    [],
   );
 
-  const groups = useMemo(() => {
-    const query = sessionQuery.trim().toLowerCase();
-    const all = groupSessions(sessions);
-    if (!query) return all;
-    return all
-      .map((group) => ({
-        ...group,
-        sessions: group.sessions.filter((s) =>
-          `${s.title} ${group.label ?? ""}`.toLowerCase().includes(query),
-        ),
-      }))
-      .filter((group) => group.sessions.length > 0);
-  }, [sessions, sessionQuery]);
-
-  const newShell = useCallback(async () => {
+  const newTab = useCallback(async () => {
+    if (!activeWorkspace) {
+      setNewSessionOpen(true);
+      return;
+    }
     const session = await createSession({
       kind: { type: "shell" },
+      cwd: activeWorkspace.repo_root ?? undefined,
       cols: 100,
       rows: 30,
     });
     setSessions((prev) => [...prev, session]);
-    await createTab(session.id);
-  }, []);
+    await createTab(session.id, activeWorkspace.id);
+  }, [activeWorkspace]);
 
-  const goToSession = useCallback((id: SessionId) => {
-    void openSessionInTab(id);
-  }, []);
+  const openProjectFolder = useCallback(async () => {
+    const dir = await openFileDialog({ directory: true, multiple: false });
+    if (typeof dir !== "string") return;
+    void setPref("pref.last_session_dir", dir).catch(() => {});
+    await newSession(dir, basename(dir));
+  }, [newSession]);
 
-  const killSession = useCallback(async (id: SessionId) => {
-    await disposeSession(id);
-    setSessions((prev) => prev.filter((s) => s.id !== id));
-  }, []);
-
-  const closeActivePane = useCallback(() => {
-    if (activeTab) void closePane(activeTab.active_pane);
-  }, [activeTab]);
-
-  const exitedCount = useMemo(
-    () =>
-      sessions.filter(
-        (s) => s.status.state === "exited" || s.status.state === "failed",
-      ).length,
-    [sessions],
+  const killWorkspace = useCallback(
+    async (id: string) => {
+      await closeWorkspace(id);
+      await refreshSessions();
+    },
+    [refreshSessions],
   );
 
-  const clearExitedSessions = useCallback(async () => {
-    const dead = sessions.filter(
-      (s) => s.status.state === "exited" || s.status.state === "failed",
-    );
-    await Promise.allSettled(dead.map((s) => disposeSession(s.id)));
-    const deadIds = new Set(dead.map((s) => s.id));
-    setSessions((prev) => prev.filter((s) => !deadIds.has(s.id)));
-  }, [sessions]);
+  const closeActivePane = useCallback(async () => {
+    if (!activeTab) return;
+    await closePane(activeTab.active_pane);
+    await refreshSessions();
+  }, [activeTab, refreshSessions]);
 
-  const toggleGroup = useCallback((key: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
+  const closeTabAndRefresh = useCallback(
+    async (id: string) => {
+      await closeTab(id);
+      await refreshSessions();
+    },
+    [refreshSessions],
+  );
+
+  const changeTogglePref = useCallback((value: SidebarTogglePref) => {
+    setTogglePref(value);
+    void setPref(TOGGLE_PREF_KEY, value).catch(() => {});
   }, []);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebar((current) => (current === "open" ? togglePref : "open"));
+  }, [togglePref]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -249,23 +230,25 @@ export default function App() {
         return;
       }
       unlisten = un;
-      const [existing, currentLayout] = await Promise.all([
-        listSessions(),
-        layoutState(),
+      const [existing, currentLayout, pref] = await Promise.all([
+        listSessions().catch(() => [] as Session[]),
+        layoutState().catch(() => EMPTY_LAYOUT),
+        getPref(TOGGLE_PREF_KEY).catch(() => null),
       ]);
       if (cancelled) return;
       setSessions(existing);
       setLayout(currentLayout);
-      if (existing.length === 0 && !booted.current) {
+      if (pref === "rail" || pref === "hidden") setTogglePref(pref);
+      if (currentLayout.workspaces.length === 0 && !booted.current) {
         booted.current = true;
-        void newShell();
+        setNewSessionOpen(true);
       }
     })();
     return () => {
       cancelled = true;
       unlisten?.();
     };
-  }, [newShell]);
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -276,15 +259,18 @@ export default function App() {
         setPaletteOpen((v) => !v);
       } else if (k === "b") {
         e.preventDefault();
-        setSidebar((m) => NEXT_MODE[m]);
+        toggleSidebar();
       } else if (k === "t") {
         e.preventDefault();
-        void newShell();
+        void newTab();
+      } else if (k === "o") {
+        e.preventDefault();
+        void openProjectFolder();
       } else if (k === "w") {
         e.preventDefault();
-        closeActivePane();
+        void closeActivePane();
       } else if (k >= "1" && k <= "9") {
-        const target = layout.tabs[Number(k) - 1];
+        const target = activeWorkspace?.tabs[Number(k) - 1];
         if (target) {
           e.preventDefault();
           void activateTab(target.id);
@@ -293,7 +279,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [newShell, closeActivePane, layout.tabs]);
+  }, [newTab, closeActivePane, toggleSidebar, openProjectFolder, activeWorkspace]);
 
   const open = sidebar === "open";
 
@@ -302,22 +288,23 @@ export default function App() {
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
-        sessions={sessions}
-        activeId={activeId}
+        workspaces={layout.workspaces}
+        activeWorkspace={layout.active_workspace}
         theme={theme}
         onChangeTheme={changeTheme}
-        onNewSession={() => void newShell()}
-        onCloseActive={closeActivePane}
-        onKillActive={() => {
-          if (activeId) void killSession(activeId);
-        }}
-        exitedCount={exitedCount}
-        onClearExited={() => void clearExitedSessions()}
-        onTogglePanel={() => setSidebar((m) => NEXT_MODE[m])}
-        onGoToSession={goToSession}
+        onNewSession={() => setNewSessionOpen(true)}
+        onNewTab={() => void newTab()}
+        onCloseActive={() => void closeActivePane()}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onTogglePanel={toggleSidebar}
+        onGoToWorkspace={(id) => void activateWorkspace(id)}
+      />
+      <NewSessionPrompt
+        open={newSessionOpen}
+        onOpenChange={setNewSessionOpen}
+        onCreate={(cwd, name) => void newSession(cwd, name)}
       />
       <div className="tyba-aurora flex h-screen flex-col text-tyba-text">
-        {/* ---------- Header geral: delicado, 36px ---------- */}
         <header
           data-tauri-drag-region
           className="tyba-glass flex h-9 shrink-0 items-center gap-1 border-b border-tyba-border pl-20 pr-2.5"
@@ -325,7 +312,7 @@ export default function App() {
           <IconAction
             label={t("panelToggle")}
             shortcut="⌘B"
-            onClick={() => setSidebar((m) => NEXT_MODE[m])}
+            onClick={toggleSidebar}
           >
             <SidebarSimple size={16} />
           </IconAction>
@@ -340,7 +327,11 @@ export default function App() {
 
           <div className="h-full flex-1" data-tauri-drag-region />
 
-          <IconAction label={t("openProjectFolder")} shortcut="⌘O">
+          <IconAction
+            label={t("openProjectFolder")}
+            shortcut="⌘O"
+            onClick={() => void openProjectFolder()}
+          >
             <FolderOpen size={16} />
           </IconAction>
 
@@ -366,43 +357,10 @@ export default function App() {
                 {t("localAccount")}
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuLabel className="tyba-label">
-                {t("language")}
-              </DropdownMenuLabel>
-              <DropdownMenuRadioGroup
-                value={i18n.language}
-                onValueChange={(v) => setLanguage(v as LanguageCode)}
+              <DropdownMenuItem
+                className="text-xs"
+                onSelect={() => setSettingsOpen(true)}
               >
-                {LANGUAGES.map((lang) => (
-                  <DropdownMenuRadioItem
-                    key={lang.code}
-                    value={lang.code}
-                    className="text-xs"
-                  >
-                    {lang.label}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel className="tyba-label">
-                {t("theme")}
-              </DropdownMenuLabel>
-              <DropdownMenuRadioGroup
-                value={theme}
-                onValueChange={(v) => changeTheme(v as ThemeMode)}
-              >
-                <DropdownMenuRadioItem value="dark" className="text-xs">
-                  {t("themeDark")}
-                </DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="light" className="text-xs">
-                  {t("themeLight")}
-                </DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="system" className="text-xs">
-                  {t("themeSystem")}
-                </DropdownMenuRadioItem>
-              </DropdownMenuRadioGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem disabled className="text-xs">
                 {t("settings")}
               </DropdownMenuItem>
               <DropdownMenuItem disabled className="text-xs">
@@ -412,209 +370,202 @@ export default function App() {
           </DropdownMenu>
         </header>
 
-        {/* ---------- Sidebar + conteúdo ---------- */}
         <div className="flex min-h-0 flex-1">
-          {sidebar !== "hidden" && (
-            <aside
-              className={`tyba-glass flex shrink-0 flex-col ${
-                open ? "w-56" : "w-11"
-              }`}
-            >
-              {open && (
-                <>
-                  <span className="tyba-label px-3.5 pt-3.5">
-                    {t("sessions")}
-                  </span>
-                  <label className="mx-2 mt-2 flex h-7 items-center gap-1.5 rounded-[4px] bg-white/[.03] px-2 focus-within:bg-white/[.05]">
-                    <MagnifyingGlass
-                      size={12}
-                      className="shrink-0 text-tyba-text-faint"
-                    />
-                    <input
-                      value={sessionQuery}
-                      onChange={(e) => setSessionQuery(e.target.value)}
-                      placeholder={t("searchSessions")}
-                      className="w-full bg-transparent text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
-                    />
-                  </label>
-                </>
-              )}
-              <nav
-                className={`flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2 pb-2 ${
-                  open ? "mt-1.5" : "mt-2"
-                }`}
-              >
-                {groups.map((group) => {
-                  const isCollapsed = collapsed.has(group.key);
-                  return (
-                    <div key={group.key} className="flex flex-col gap-px">
-                      {open && (
-                        <button
-                          onClick={() => toggleGroup(group.key)}
-                          className="flex h-6 shrink-0 items-center gap-1 rounded-[4px] px-1.5 text-[11px] font-medium tracking-wide text-tyba-text-faint transition-colors hover:text-tyba-text-muted"
-                        >
-                          {isCollapsed ? (
-                            <CaretRight size={9} weight="bold" />
-                          ) : (
-                            <CaretDown size={9} weight="bold" />
-                          )}
-                          <span className="truncate">
-                            {group.label ?? t("looseSessions")}
-                          </span>
-                        </button>
-                      )}
-                      {(!open || !isCollapsed) &&
-                        group.sessions.map((s) => {
-                          const isActive = s.id === activeId;
-                          const isBound = boundSessions.has(s.id);
-                          const isDead =
-                            s.status.state === "exited" ||
-                            s.status.state === "failed";
-                          return (
-                            <button
-                              key={s.id}
-                              onClick={() => goToSession(s.id)}
-                              title={open ? undefined : s.title}
-                              className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
-                                open ? "px-2 pl-4" : "justify-center px-0"
-                              } ${
-                                isActive
-                                  ? "text-tyba-text"
-                                  : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
-                              }`}
-                            >
-                              {isActive && (
-                                <span
-                                  className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
-                                  style={{
-                                    background: "var(--tyba-gradient-soft)",
-                                  }}
-                                />
-                              )}
-                              <TerminalWindow
-                                size={16}
-                                className={
-                                  isActive
-                                    ? "shrink-0 text-tyba-green [filter:drop-shadow(0_0_6px_rgba(124,197,68,.55))]"
-                                    : `shrink-0 ${isDead ? "opacity-40" : ""}`
-                                }
-                              />
-                              {open && (
-                                <>
-                                  <span className="min-w-0 flex-1 truncate text-left">
-                                    {s.title}
-                                  </span>
-                                  {isBound && !isActive && (
-                                    <span className="size-1 shrink-0 rounded-full bg-tyba-green/60" />
-                                  )}
-                                  <span
-                                    role="button"
-                                    aria-label={t("killSession")}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      void killSession(s.id);
-                                    }}
-                                    className="rounded-[3px] text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-red group-hover:opacity-100"
-                                  >
-                                    <X size={11} weight="bold" />
-                                  </span>
-                                </>
-                              )}
-                            </button>
-                          );
-                        })}
-                    </div>
-                  );
-                })}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      onClick={() => void newShell()}
-                      aria-label={t("newSession")}
-                      className={`mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text ${
-                        open ? "justify-start px-2" : "justify-center px-0"
-                      }`}
-                    >
-                      <Plus size={14} />
-                      {open && t("newSession")}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent
-                    side={open ? "bottom" : "right"}
-                    className="flex items-center gap-2"
+          {settingsOpen ? (
+            <SettingsView
+              onClose={() => setSettingsOpen(false)}
+              togglePref={togglePref}
+              onTogglePrefChange={changeTogglePref}
+            />
+          ) : (
+            <>
+              {sidebar !== "hidden" && (
+                <aside
+                  className={`tyba-glass flex shrink-0 flex-col ${
+                    open ? "w-56" : "w-11"
+                  }`}
+                >
+                  {open && (
+                    <label className="mx-2 mt-3 flex h-7 items-center gap-1.5 rounded-[4px] bg-white/[.03] px-2 focus-within:bg-white/[.05]">
+                      <MagnifyingGlass
+                        size={12}
+                        className="shrink-0 text-tyba-text-faint"
+                      />
+                      <input
+                        value={sessionQuery}
+                        onChange={(e) => setSessionQuery(e.target.value)}
+                        placeholder={t("searchSessions")}
+                        className="w-full bg-transparent text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
+                      />
+                    </label>
+                  )}
+                  <nav
+                    className={`flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2 pb-2 ${
+                      open ? "mt-2" : "mt-3"
+                    }`}
                   >
-                    {t("newSession")}
-                    <Kbd>⌘T</Kbd>
-                  </TooltipContent>
-                </Tooltip>
-              </nav>
-            </aside>
-          )}
-
-          <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {layout.tabs.length > 0 && (
-              <TabBar
-                tabs={layout.tabs}
-                activeTab={layout.active_tab}
-                sessions={sessions}
-                onActivate={(id) => void activateTab(id)}
-                onClose={(id) => void closeTab(id)}
-                onNew={() => void newShell()}
-              />
-            )}
-            <div className="relative min-h-0 flex-1">
-              {sessions.map((s) => (
-                <TerminalView
-                  key={s.id}
-                  sessionId={s.id}
-                  active={s.id === activeId}
-                  onExit={() => void killSession(s.id)}
-                />
-              ))}
-              {!activeTab && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-5">
-                  <TerminalWindow
-                    size={36}
-                    className="text-tyba-text-faint"
-                  />
-                  <p className="text-sm text-tyba-text-faint">
-                    {sessions.length === 0 ? t("noSessions") : t("noTabs")}
-                  </p>
-                  <div className="flex w-64 flex-col gap-px">
-                    <button
-                      onClick={() => void newShell()}
-                      className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
-                    >
-                      <Plus size={14} className="text-tyba-green" />
-                      <span className="flex-1 text-left">{t("newTab")}</span>
-                      <Kbd>⌘T</Kbd>
-                    </button>
-                    <button
-                      onClick={() => setPaletteOpen(true)}
-                      className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
-                    >
-                      <MagnifyingGlass size={14} />
-                      <span className="flex-1 text-left">
-                        {t("commandPalette")}
-                      </span>
-                      <Kbd>⌘K</Kbd>
-                    </button>
-                    <button
-                      onClick={() => setSidebar((m) => NEXT_MODE[m])}
-                      className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
-                    >
-                      <SidebarSimple size={14} />
-                      <span className="flex-1 text-left">
-                        {t("togglePanel")}
-                      </span>
-                      <Kbd>⌘B</Kbd>
-                    </button>
-                  </div>
-                </div>
+                    {workspaces.map((w) => {
+                      const isActive = w.id === layout.active_workspace;
+                      return (
+                        <button
+                          key={w.id}
+                          onClick={() => void activateWorkspace(w.id)}
+                          title={open ? (w.repo_root ?? undefined) : w.name}
+                          className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
+                            open ? "px-2" : "justify-center px-0"
+                          } ${
+                            isActive
+                              ? "text-tyba-text"
+                              : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
+                          }`}
+                        >
+                          {isActive && (
+                            <span
+                              className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
+                              style={{
+                                background: "var(--tyba-gradient-soft)",
+                              }}
+                            />
+                          )}
+                          <TerminalWindow
+                            size={16}
+                            className={
+                              isActive
+                                ? "shrink-0 text-tyba-green [filter:drop-shadow(0_0_6px_rgba(124,197,68,.55))]"
+                                : "shrink-0"
+                            }
+                          />
+                          {open && (
+                            <>
+                              <span className="min-w-0 flex-1 truncate text-left">
+                                {w.name}
+                              </span>
+                              <span className="font-mono text-[10px] text-tyba-text-faint">
+                                {w.tabs.length > 0 ? w.tabs.length : ""}
+                              </span>
+                              <span
+                                role="button"
+                                aria-label={t("killSession")}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void killWorkspace(w.id);
+                                }}
+                                className="rounded-[3px] text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-red group-hover:opacity-100"
+                              >
+                                <X size={11} weight="bold" />
+                              </span>
+                            </>
+                          )}
+                        </button>
+                      );
+                    })}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          onClick={() => setNewSessionOpen(true)}
+                          aria-label={t("newSession")}
+                          className={`mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text ${
+                            open ? "justify-start px-2" : "justify-center px-0"
+                          }`}
+                        >
+                          <Plus size={14} />
+                          {open && t("newSession")}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side={open ? "bottom" : "right"}
+                        className="flex items-center gap-2"
+                      >
+                        {t("newSession")}
+                      </TooltipContent>
+                    </Tooltip>
+                  </nav>
+                </aside>
               )}
-            </div>
-          </main>
+
+              <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+                {activeWorkspace && activeWorkspace.tabs.length > 0 && (
+                  <TabBar
+                    tabs={activeWorkspace.tabs}
+                    activeTab={activeWorkspace.active_tab}
+                    sessions={sessions}
+                    onActivate={(id) => void activateTab(id)}
+                    onClose={(id) => void closeTabAndRefresh(id)}
+                    onNew={() => void newTab()}
+                  />
+                )}
+                <div className="relative min-h-0 flex-1">
+                  {sessions.map((s) => (
+                    <TerminalView
+                      key={s.id}
+                      sessionId={s.id}
+                      active={s.id === activeId}
+                      onExit={() => void refreshSessions()}
+                    />
+                  ))}
+                  {!activeTab && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-5">
+                      <TerminalWindow
+                        size={36}
+                        className="text-tyba-text-faint"
+                      />
+                      <p className="text-sm text-tyba-text-faint">
+                        {layout.workspaces.length === 0
+                          ? t("noSessions")
+                          : t("noTabs")}
+                      </p>
+                      <div className="flex w-64 flex-col gap-px">
+                        {layout.workspaces.length === 0 ? (
+                          <button
+                            onClick={() => setNewSessionOpen(true)}
+                            className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
+                          >
+                            <Plus size={14} className="text-tyba-green" />
+                            <span className="flex-1 text-left">
+                              {t("newSession")}
+                            </span>
+                            <Kbd>⌘T</Kbd>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => void newTab()}
+                            className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
+                          >
+                            <Plus size={14} className="text-tyba-green" />
+                            <span className="flex-1 text-left">
+                              {t("newTab")}
+                            </span>
+                            <Kbd>⌘T</Kbd>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setPaletteOpen(true)}
+                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
+                        >
+                          <MagnifyingGlass size={14} />
+                          <span className="flex-1 text-left">
+                            {t("commandPalette")}
+                          </span>
+                          <Kbd>⌘K</Kbd>
+                        </button>
+                        <button
+                          onClick={toggleSidebar}
+                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
+                        >
+                          <SidebarSimple size={14} />
+                          <span className="flex-1 text-left">
+                            {t("togglePanel")}
+                          </span>
+                          <Kbd>⌘B</Kbd>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </main>
+            </>
+          )}
         </div>
       </div>
     </TooltipProvider>

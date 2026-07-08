@@ -11,22 +11,27 @@ use crate::session::SessionId;
 
 pub const EVENT_CHANGED: &str = "layout://changed";
 
-const KEY_ACTIVE_TAB: &str = "layout.active_tab";
+const KEY_ACTIVE_WORKSPACE: &str = "layout.active_workspace";
 const MIN_RATIO: f64 = 0.1;
 const MAX_RATIO: f64 = 0.9;
 
+pub type WorkspaceId = Uuid;
 pub type TabId = Uuid;
 pub type PaneId = Uuid;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LayoutError {
+    #[error("sessão não encontrada: {0}")]
+    WorkspaceNotFound(WorkspaceId),
+    #[error("nenhuma sessão ativa")]
+    NoActiveWorkspace,
     #[error("tab não encontrada: {0}")]
     TabNotFound(TabId),
     #[error("pane não encontrado: {0}")]
     PaneNotFound(PaneId),
     #[error("pane não é um split: {0}")]
     NotASplit(PaneId),
-    #[error("sessão já aberta em um pane: {0}")]
+    #[error("processo já aberto em um pane: {0}")]
     SessionAlreadyBound(SessionId),
     #[error("store: {0}")]
     Store(#[from] crate::session::store::StoreError),
@@ -102,6 +107,16 @@ impl PaneNode {
             PaneNode::Split { first, second, .. } => first
                 .find_leaf_by_session(session)
                 .or_else(|| second.find_leaf_by_session(session)),
+        }
+    }
+
+    fn leaf_session(&self, pane: PaneId) -> Option<SessionId> {
+        match self {
+            PaneNode::Leaf { id, session_id } if *id == pane => Some(*session_id),
+            PaneNode::Leaf { .. } => None,
+            PaneNode::Split { first, second, .. } => first
+                .leaf_session(pane)
+                .or_else(|| second.leaf_session(pane)),
         }
     }
 
@@ -185,7 +200,6 @@ impl PaneNode {
         }
     }
 
-    #[cfg(test)]
     fn leaf_sessions(&self, out: &mut Vec<SessionId>) {
         match self {
             PaneNode::Leaf { session_id, .. } => out.push(*session_id),
@@ -235,14 +249,45 @@ pub struct Tab {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct LayoutState {
-    pub tabs: Vec<Tab>,
+pub struct Workspace {
+    pub id: WorkspaceId,
+    pub name: String,
+    pub repo_root: Option<String>,
     pub active_tab: Option<TabId>,
+    pub tabs: Vec<Tab>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl Workspace {
+    fn bound_sessions(&self) -> Vec<SessionId> {
+        let mut out = Vec::new();
+        for tab in &self.tabs {
+            tab.root.leaf_sessions(&mut out);
+        }
+        out
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LayoutState {
+    pub workspaces: Vec<Workspace>,
+    pub active_workspace: Option<WorkspaceId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceRow {
+    pub id: String,
+    pub name: String,
+    pub repo_root: Option<String>,
+    pub position: i64,
+    pub active_tab: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct TabRow {
     pub id: String,
+    pub workspace_id: Option<String>,
     pub title: Option<String>,
     pub position: i64,
     pub active_pane: Option<String>,
@@ -262,13 +307,14 @@ pub struct PaneRow {
 
 #[derive(Debug, Clone, Default)]
 pub struct LayoutRows {
+    pub workspaces: Vec<WorkspaceRow>,
     pub tabs: Vec<TabRow>,
     pub panes: Vec<PaneRow>,
 }
 
 struct Inner {
-    tabs: Vec<Tab>,
-    active_tab: Option<TabId>,
+    workspaces: Vec<Workspace>,
+    active: Option<WorkspaceId>,
 }
 
 pub struct LayoutManager {
@@ -283,45 +329,29 @@ impl LayoutManager {
         Self {
             store,
             inner: RwLock::new(Inner {
-                tabs: Vec::new(),
-                active_tab: None,
+                workspaces: Vec::new(),
+                active: None,
             }),
         }
     }
 
     pub fn load(&self, valid_sessions: &HashSet<SessionId>) {
         let rows = self.store.load_layout().unwrap_or_default();
-        let mut tabs = rows_to_tabs(&rows);
-        tabs = tabs
-            .into_iter()
-            .filter_map(|tab| {
-                let root = tab.root.retain_sessions(valid_sessions)?;
-                let active_pane = if root.contains(tab.active_pane) {
-                    tab.active_pane
-                } else {
-                    root.first_leaf()
-                };
-                Some(Tab {
-                    root,
-                    active_pane,
-                    ..tab
-                })
-            })
-            .collect();
+        let workspaces = rows_to_workspaces(&rows, valid_sessions);
 
         let saved_active = self
             .store
-            .get_setting(KEY_ACTIVE_TAB)
+            .get_setting(KEY_ACTIVE_WORKSPACE)
             .ok()
             .flatten()
             .and_then(|s| Uuid::parse_str(&s).ok());
-        let active_tab = saved_active
-            .filter(|id| tabs.iter().any(|t| t.id == *id))
-            .or_else(|| tabs.first().map(|t| t.id));
+        let active = saved_active
+            .filter(|id| workspaces.iter().any(|w| w.id == *id))
+            .or_else(|| workspaces.first().map(|w| w.id));
 
         let mut inner = self.inner.write();
-        inner.tabs = tabs;
-        inner.active_tab = active_tab;
+        inner.workspaces = workspaces;
+        inner.active = active;
         drop(inner);
         let _ = self.persist();
     }
@@ -329,14 +359,19 @@ impl LayoutManager {
     pub fn state(&self) -> LayoutState {
         let inner = self.inner.read();
         LayoutState {
-            tabs: inner.tabs.clone(),
-            active_tab: inner.active_tab,
+            workspaces: inner.workspaces.clone(),
+            active_workspace: inner.active,
         }
     }
 
-    pub fn create_tab(&self, session: SessionId) -> Result<TabId, LayoutError> {
+    pub fn create_workspace(
+        &self,
+        name: &str,
+        repo_root: Option<String>,
+        session: SessionId,
+    ) -> Result<WorkspaceId, LayoutError> {
         let mut inner = self.inner.write();
-        if find_session_pane(&inner.tabs, session).is_some() {
+        if find_session_pane(&inner.workspaces, session).is_some() {
             return Err(LayoutError::SessionAlreadyBound(session));
         }
         let leaf = PaneNode::Leaf {
@@ -350,63 +385,146 @@ impl LayoutManager {
             root: leaf,
             created_at: Utc::now(),
         };
-        let id = tab.id;
-        inner.tabs.push(tab);
-        inner.active_tab = Some(id);
+        let workspace = Workspace {
+            id: Uuid::new_v4(),
+            name: name.trim().to_string(),
+            repo_root,
+            active_tab: Some(tab.id),
+            tabs: vec![tab],
+            created_at: Utc::now(),
+        };
+        let id = workspace.id;
+        inner.workspaces.push(workspace);
+        inner.active = Some(id);
         drop(inner);
         self.persist()?;
         Ok(id)
     }
 
-    pub fn close_tab(&self, tab: TabId) -> Result<(), LayoutError> {
+    pub fn close_workspace(&self, id: WorkspaceId) -> Result<Vec<SessionId>, LayoutError> {
         let mut inner = self.inner.write();
-        let idx = index_of(&inner.tabs, tab)?;
-        inner.tabs.remove(idx);
-        if inner.active_tab == Some(tab) {
-            inner.active_tab = inner
-                .tabs
-                .get(idx.min(inner.tabs.len().saturating_sub(1)))
-                .map(|t| t.id)
-                .filter(|_| !inner.tabs.is_empty());
+        let idx = ws_index(&inner.workspaces, id)?;
+        let removed = inner.workspaces.remove(idx);
+        if inner.active == Some(id) {
+            inner.active = inner
+                .workspaces
+                .get(idx.min(inner.workspaces.len().saturating_sub(1)))
+                .map(|w| w.id)
+                .filter(|_| !inner.workspaces.is_empty());
         }
+        drop(inner);
+        self.persist()?;
+        Ok(removed.bound_sessions())
+    }
+
+    pub fn activate_workspace(&self, id: WorkspaceId) -> Result<(), LayoutError> {
+        let mut inner = self.inner.write();
+        ws_index(&inner.workspaces, id)?;
+        inner.active = Some(id);
         drop(inner);
         self.persist()
     }
 
+    pub fn create_tab(
+        &self,
+        session: SessionId,
+        workspace: Option<WorkspaceId>,
+    ) -> Result<TabId, LayoutError> {
+        let mut inner = self.inner.write();
+        if find_session_pane(&inner.workspaces, session).is_some() {
+            return Err(LayoutError::SessionAlreadyBound(session));
+        }
+        let target = workspace
+            .or(inner.active)
+            .ok_or(LayoutError::NoActiveWorkspace)?;
+        let idx = ws_index(&inner.workspaces, target)?;
+        let leaf = PaneNode::Leaf {
+            id: Uuid::new_v4(),
+            session_id: session,
+        };
+        let tab = Tab {
+            id: Uuid::new_v4(),
+            title: None,
+            active_pane: leaf.id(),
+            root: leaf,
+            created_at: Utc::now(),
+        };
+        let tab_id = tab.id;
+        inner.workspaces[idx].tabs.push(tab);
+        inner.workspaces[idx].active_tab = Some(tab_id);
+        inner.active = Some(target);
+        drop(inner);
+        self.persist()?;
+        Ok(tab_id)
+    }
+
+    pub fn close_tab(&self, tab: TabId) -> Result<Vec<SessionId>, LayoutError> {
+        let mut inner = self.inner.write();
+        let (w_idx, t_idx) = tab_index(&inner.workspaces, tab)?;
+        let removed = inner.workspaces[w_idx].tabs.remove(t_idx);
+        let ws = &mut inner.workspaces[w_idx];
+        if ws.active_tab == Some(tab) {
+            ws.active_tab = ws
+                .tabs
+                .get(t_idx.min(ws.tabs.len().saturating_sub(1)))
+                .map(|t| t.id)
+                .filter(|_| !ws.tabs.is_empty());
+        }
+        drop(inner);
+        self.persist()?;
+        let mut bound = Vec::new();
+        removed.root.leaf_sessions(&mut bound);
+        Ok(bound)
+    }
+
     pub fn activate_tab(&self, tab: TabId) -> Result<(), LayoutError> {
         let mut inner = self.inner.write();
-        index_of(&inner.tabs, tab)?;
-        inner.active_tab = Some(tab);
+        let (w_idx, _) = tab_index(&inner.workspaces, tab)?;
+        let ws_id = inner.workspaces[w_idx].id;
+        inner.workspaces[w_idx].active_tab = Some(tab);
+        inner.active = Some(ws_id);
         drop(inner);
         self.persist()
     }
 
     pub fn move_tab(&self, tab: TabId, to: usize) -> Result<(), LayoutError> {
         let mut inner = self.inner.write();
-        let idx = index_of(&inner.tabs, tab)?;
-        let moved = inner.tabs.remove(idx);
-        let to = to.min(inner.tabs.len());
-        inner.tabs.insert(to, moved);
+        let (w_idx, t_idx) = tab_index(&inner.workspaces, tab)?;
+        let ws = &mut inner.workspaces[w_idx];
+        let moved = ws.tabs.remove(t_idx);
+        let to = to.min(ws.tabs.len());
+        ws.tabs.insert(to, moved);
         drop(inner);
         self.persist()
     }
 
-    pub fn open_session(&self, session: SessionId) -> Result<TabId, LayoutError> {
+    pub fn open_session(&self, session: SessionId) -> Result<(), LayoutError> {
         let existing = {
             let inner = self.inner.read();
-            find_session_pane(&inner.tabs, session)
+            find_session_pane(&inner.workspaces, session)
         };
-        if let Some((tab_id, pane_id)) = existing {
-            let mut inner = self.inner.write();
-            inner.active_tab = Some(tab_id);
-            if let Ok(idx) = index_of(&inner.tabs, tab_id) {
-                inner.tabs[idx].active_pane = pane_id;
+        match existing {
+            Some((ws_id, tab_id, pane_id)) => {
+                let mut inner = self.inner.write();
+                inner.active = Some(ws_id);
+                if let Ok(idx) = ws_index(&inner.workspaces, ws_id) {
+                    inner.workspaces[idx].active_tab = Some(tab_id);
+                    if let Some(tab) = inner.workspaces[idx]
+                        .tabs
+                        .iter_mut()
+                        .find(|t| t.id == tab_id)
+                    {
+                        tab.active_pane = pane_id;
+                    }
+                }
+                drop(inner);
+                self.persist()
             }
-            drop(inner);
-            self.persist()?;
-            return Ok(tab_id);
+            None => {
+                self.create_tab(session, None)?;
+                Ok(())
+            }
         }
-        self.create_tab(session)
     }
 
     pub fn split_pane(
@@ -416,34 +534,55 @@ impl LayoutManager {
         session: SessionId,
     ) -> Result<PaneId, LayoutError> {
         let mut inner = self.inner.write();
-        if find_session_pane(&inner.tabs, session).is_some() {
+        if find_session_pane(&inner.workspaces, session).is_some() {
             return Err(LayoutError::SessionAlreadyBound(session));
         }
-        let tab = inner
-            .tabs
-            .iter_mut()
-            .find(|t| t.root.contains(pane))
-            .ok_or(LayoutError::PaneNotFound(pane))?;
-        let tab_id = tab.id;
-        let new_pane = tab
-            .root
-            .split_leaf(pane, kind, session)
-            .ok_or(LayoutError::PaneNotFound(pane))?;
-        tab.active_pane = new_pane;
-        inner.active_tab = Some(tab_id);
-        drop(inner);
-        self.persist()?;
-        Ok(new_pane)
+        for ws in inner.workspaces.iter_mut() {
+            let ws_id = ws.id;
+            for tab in ws.tabs.iter_mut() {
+                if tab.root.contains(pane) {
+                    let new_pane = tab
+                        .root
+                        .split_leaf(pane, kind, session)
+                        .ok_or(LayoutError::PaneNotFound(pane))?;
+                    tab.active_pane = new_pane;
+                    let tab_id = tab.id;
+                    ws.active_tab = Some(tab_id);
+                    inner.active = Some(ws_id);
+                    drop(inner);
+                    self.persist()?;
+                    return Ok(new_pane);
+                }
+            }
+        }
+        Err(LayoutError::PaneNotFound(pane))
     }
 
-    pub fn close_pane(&self, pane: PaneId) -> Result<(), LayoutError> {
+    pub fn close_pane(&self, pane: PaneId) -> Result<Vec<SessionId>, LayoutError> {
+        let unbound = {
+            let inner = self.inner.read();
+            inner
+                .workspaces
+                .iter()
+                .flat_map(|w| w.tabs.iter())
+                .find_map(|t| t.root.leaf_session(pane))
+        };
+        let Some(session) = unbound else {
+            return Err(LayoutError::PaneNotFound(pane));
+        };
+
         let mut inner = self.inner.write();
-        let idx = inner
-            .tabs
-            .iter()
-            .position(|t| t.root.contains(pane))
-            .ok_or(LayoutError::PaneNotFound(pane))?;
-        let tab = inner.tabs[idx].clone();
+        let mut target: Option<(usize, usize)> = None;
+        'outer: for (wi, ws) in inner.workspaces.iter().enumerate() {
+            for (ti, tab) in ws.tabs.iter().enumerate() {
+                if tab.root.contains(pane) {
+                    target = Some((wi, ti));
+                    break 'outer;
+                }
+            }
+        }
+        let (wi, ti) = target.ok_or(LayoutError::PaneNotFound(pane))?;
+        let tab = inner.workspaces[wi].tabs[ti].clone();
         match tab.root.remove_leaf(pane) {
             Some(root) => {
                 let active_pane = if root.contains(tab.active_pane) {
@@ -451,46 +590,53 @@ impl LayoutManager {
                 } else {
                     root.first_leaf()
                 };
-                inner.tabs[idx] = Tab {
+                inner.workspaces[wi].tabs[ti] = Tab {
                     root,
                     active_pane,
                     ..tab
                 };
             }
             None => {
-                inner.tabs.remove(idx);
-                if inner.active_tab == Some(tab.id) {
-                    inner.active_tab = inner
+                inner.workspaces[wi].tabs.remove(ti);
+                let ws = &mut inner.workspaces[wi];
+                if ws.active_tab == Some(tab.id) {
+                    ws.active_tab = ws
                         .tabs
-                        .get(idx.min(inner.tabs.len().saturating_sub(1)))
+                        .get(ti.min(ws.tabs.len().saturating_sub(1)))
                         .map(|t| t.id)
-                        .filter(|_| !inner.tabs.is_empty());
+                        .filter(|_| !ws.tabs.is_empty());
                 }
             }
         }
         drop(inner);
-        self.persist()
+        self.persist()?;
+        Ok(vec![session])
     }
 
     pub fn focus_pane(&self, pane: PaneId) -> Result<(), LayoutError> {
         let mut inner = self.inner.write();
-        let tab = inner
-            .tabs
-            .iter_mut()
-            .find(|t| t.root.contains(pane))
-            .ok_or(LayoutError::PaneNotFound(pane))?;
-        let tab_id = tab.id;
-        tab.active_pane = pane;
-        inner.active_tab = Some(tab_id);
-        drop(inner);
-        self.persist()
+        for ws in inner.workspaces.iter_mut() {
+            let ws_id = ws.id;
+            for tab in ws.tabs.iter_mut() {
+                if tab.root.contains(pane) {
+                    tab.active_pane = pane;
+                    let tab_id = tab.id;
+                    ws.active_tab = Some(tab_id);
+                    inner.active = Some(ws_id);
+                    drop(inner);
+                    return self.persist();
+                }
+            }
+        }
+        Err(LayoutError::PaneNotFound(pane))
     }
 
     pub fn set_split_ratio(&self, pane: PaneId, ratio: f64) -> Result<(), LayoutError> {
         let mut inner = self.inner.write();
         let found = inner
-            .tabs
+            .workspaces
             .iter_mut()
+            .flat_map(|w| w.tabs.iter_mut())
             .any(|t| t.root.set_ratio(pane, ratio));
         if !found {
             return Err(LayoutError::NotASplit(pane));
@@ -503,10 +649,12 @@ impl LayoutManager {
         loop {
             let target = {
                 let inner = self.inner.read();
-                find_session_pane(&inner.tabs, session).map(|(_, pane)| pane)
+                find_session_pane(&inner.workspaces, session).map(|(_, _, pane)| pane)
             };
             match target {
-                Some(pane) => self.close_pane(pane)?,
+                Some(pane) => {
+                    self.close_pane(pane)?;
+                }
                 None => return Ok(()),
             }
         }
@@ -514,12 +662,12 @@ impl LayoutManager {
 
     fn persist(&self) -> Result<(), LayoutError> {
         let state = self.state();
-        let rows = tabs_to_rows(&state.tabs);
+        let rows = workspaces_to_rows(&state.workspaces);
         self.store.save_layout(&rows)?;
         self.store.set_setting(
-            KEY_ACTIVE_TAB,
+            KEY_ACTIVE_WORKSPACE,
             &state
-                .active_tab
+                .active_workspace
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
         )?;
@@ -527,21 +675,42 @@ impl LayoutManager {
     }
 }
 
-fn index_of(tabs: &[Tab], tab: TabId) -> Result<usize, LayoutError> {
-    tabs.iter()
-        .position(|t| t.id == tab)
-        .ok_or(LayoutError::TabNotFound(tab))
+fn ws_index(workspaces: &[Workspace], id: WorkspaceId) -> Result<usize, LayoutError> {
+    workspaces
+        .iter()
+        .position(|w| w.id == id)
+        .ok_or(LayoutError::WorkspaceNotFound(id))
 }
 
-fn find_session_pane(tabs: &[Tab], session: SessionId) -> Option<(TabId, PaneId)> {
-    tabs.iter().find_map(|t| {
-        t.root
-            .find_leaf_by_session(session)
-            .map(|pane| (t.id, pane))
+fn tab_index(workspaces: &[Workspace], tab: TabId) -> Result<(usize, usize), LayoutError> {
+    for (wi, ws) in workspaces.iter().enumerate() {
+        if let Some(ti) = ws.tabs.iter().position(|t| t.id == tab) {
+            return Ok((wi, ti));
+        }
+    }
+    Err(LayoutError::TabNotFound(tab))
+}
+
+fn find_session_pane(
+    workspaces: &[Workspace],
+    session: SessionId,
+) -> Option<(WorkspaceId, TabId, PaneId)> {
+    workspaces.iter().find_map(|w| {
+        w.tabs.iter().find_map(|t| {
+            t.root
+                .find_leaf_by_session(session)
+                .map(|pane| (w.id, t.id, pane))
+        })
     })
 }
 
-fn push_pane_rows(node: &PaneNode, tab_id: &str, parent: Option<String>, position: Option<i64>, out: &mut Vec<PaneRow>) {
+fn push_pane_rows(
+    node: &PaneNode,
+    tab_id: &str,
+    parent: Option<String>,
+    position: Option<i64>,
+    out: &mut Vec<PaneRow>,
+) {
     match node {
         PaneNode::Leaf { id, session_id } => out.push(PaneRow {
             id: id.to_string(),
@@ -575,18 +744,30 @@ fn push_pane_rows(node: &PaneNode, tab_id: &str, parent: Option<String>, positio
     }
 }
 
-pub fn tabs_to_rows(tabs: &[Tab]) -> LayoutRows {
+pub fn workspaces_to_rows(workspaces: &[Workspace]) -> LayoutRows {
     let mut rows = LayoutRows::default();
-    for (i, tab) in tabs.iter().enumerate() {
-        let tab_id = tab.id.to_string();
-        rows.tabs.push(TabRow {
-            id: tab_id.clone(),
-            title: tab.title.clone(),
-            position: i as i64,
-            active_pane: Some(tab.active_pane.to_string()),
-            created_at: tab.created_at.to_rfc3339(),
+    for (wi, ws) in workspaces.iter().enumerate() {
+        let ws_id = ws.id.to_string();
+        rows.workspaces.push(WorkspaceRow {
+            id: ws_id.clone(),
+            name: ws.name.clone(),
+            repo_root: ws.repo_root.clone(),
+            position: wi as i64,
+            active_tab: ws.active_tab.map(|id| id.to_string()),
+            created_at: ws.created_at.to_rfc3339(),
         });
-        push_pane_rows(&tab.root, &tab_id, None, None, &mut rows.panes);
+        for (ti, tab) in ws.tabs.iter().enumerate() {
+            let tab_id = tab.id.to_string();
+            rows.tabs.push(TabRow {
+                id: tab_id.clone(),
+                workspace_id: Some(ws_id.clone()),
+                title: tab.title.clone(),
+                position: ti as i64,
+                active_pane: Some(tab.active_pane.to_string()),
+                created_at: tab.created_at.to_rfc3339(),
+            });
+            push_pane_rows(&tab.root, &tab_id, None, None, &mut rows.panes);
+        }
     }
     rows
 }
@@ -625,31 +806,62 @@ fn build_node(id: &str, panes: &[PaneRow]) -> Option<PaneNode> {
     }
 }
 
-pub fn rows_to_tabs(rows: &LayoutRows) -> Vec<Tab> {
-    let mut tabs: Vec<&TabRow> = rows.tabs.iter().collect();
-    tabs.sort_by_key(|t| t.position);
-    tabs.into_iter()
-        .filter_map(|t| {
-            let tab_id = Uuid::parse_str(&t.id).ok()?;
-            let root_row = rows
-                .panes
+fn build_tab(row: &TabRow, panes: &[PaneRow], valid: &HashSet<SessionId>) -> Option<Tab> {
+    let tab_id = Uuid::parse_str(&row.id).ok()?;
+    let root_row = panes
+        .iter()
+        .find(|p| p.tab_id == row.id && p.parent_id.is_none())?;
+    let root = build_node(&root_row.id, panes)?.retain_sessions(valid)?;
+    let active_pane = row
+        .active_pane
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .filter(|id| root.contains(*id))
+        .unwrap_or_else(|| root.first_leaf());
+    let created_at = DateTime::parse_from_rfc3339(&row.created_at)
+        .ok()?
+        .with_timezone(&Utc);
+    Some(Tab {
+        id: tab_id,
+        title: row.title.clone(),
+        active_pane,
+        root,
+        created_at,
+    })
+}
+
+pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<Workspace> {
+    let mut ws_rows: Vec<&WorkspaceRow> = rows.workspaces.iter().collect();
+    ws_rows.sort_by_key(|w| w.position);
+    ws_rows
+        .into_iter()
+        .filter_map(|w| {
+            let ws_id = Uuid::parse_str(&w.id).ok()?;
+            let mut tab_rows: Vec<&TabRow> = rows
+                .tabs
                 .iter()
-                .find(|p| p.tab_id == t.id && p.parent_id.is_none())?;
-            let root = build_node(&root_row.id, &rows.panes)?;
-            let active_pane = t
-                .active_pane
+                .filter(|t| t.workspace_id.as_deref() == Some(w.id.as_str()))
+                .collect();
+            tab_rows.sort_by_key(|t| t.position);
+            let tabs: Vec<Tab> = tab_rows
+                .into_iter()
+                .filter_map(|t| build_tab(t, &rows.panes, valid))
+                .collect();
+            let active_tab = w
+                .active_tab
                 .as_deref()
                 .and_then(|s| Uuid::parse_str(s).ok())
-                .filter(|id| root.contains(*id))
-                .unwrap_or_else(|| root.first_leaf());
-            let created_at = DateTime::parse_from_rfc3339(&t.created_at)
+                .filter(|id| tabs.iter().any(|t| t.id == *id))
+                .or_else(|| tabs.first().map(|t| t.id));
+            let created_at = DateTime::parse_from_rfc3339(&w.created_at)
                 .ok()?
                 .with_timezone(&Utc);
-            Some(Tab {
-                id: tab_id,
-                title: t.title.clone(),
-                active_pane,
-                root,
+            Some(Workspace {
+                id: ws_id,
+                name: w.name.clone(),
+                repo_root: w.repo_root.clone(),
+                active_tab,
+                tabs,
                 created_at,
             })
         })
@@ -668,129 +880,172 @@ mod tests {
         Uuid::new_v4()
     }
 
-    #[test]
-    fn create_tab_activates_it() {
-        let mgr = manager();
-        let s = sid();
-        let tab = mgr.create_tab(s).unwrap();
-        let state = mgr.state();
-        assert_eq!(state.tabs.len(), 1);
-        assert_eq!(state.active_tab, Some(tab));
-        assert!(matches!(state.tabs[0].root, PaneNode::Leaf { session_id, .. } if session_id == s));
+    fn ws(mgr: &LayoutManager) -> WorkspaceId {
+        mgr.create_workspace("dev", None, sid()).unwrap()
     }
 
     #[test]
-    fn create_tab_rejects_already_bound_session() {
+    fn create_workspace_starts_with_one_tab_and_activates() {
         let mgr = manager();
         let s = sid();
-        mgr.create_tab(s).unwrap();
+        let id = mgr.create_workspace("api", Some("/repo".into()), s).unwrap();
+        let state = mgr.state();
+        assert_eq!(state.active_workspace, Some(id));
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].name, "api");
+        assert_eq!(state.workspaces[0].tabs.len(), 1);
         assert!(matches!(
-            mgr.create_tab(s).unwrap_err(),
-            LayoutError::SessionAlreadyBound(_)
+            state.workspaces[0].tabs[0].root,
+            PaneNode::Leaf { session_id, .. } if session_id == s
         ));
     }
 
     #[test]
-    fn split_pane_replaces_leaf_and_focuses_new_pane() {
+    fn create_tab_defaults_to_active_workspace() {
         let mgr = manager();
-        mgr.create_tab(sid()).unwrap();
-        let root_pane = mgr.state().tabs[0].active_pane;
-
-        let new_pane = mgr.split_pane(root_pane, SplitKind::V, sid()).unwrap();
+        let w1 = ws(&mgr);
+        let w2 = ws(&mgr);
+        let tab = mgr.create_tab(sid(), None).unwrap();
         let state = mgr.state();
-        let tab = &state.tabs[0];
-        assert_eq!(tab.active_pane, new_pane);
-        match &tab.root {
-            PaneNode::Split { split, ratio, first, second, .. } => {
-                assert_eq!(*split, SplitKind::V);
-                assert!((ratio - 0.5).abs() < f64::EPSILON);
-                assert_eq!(first.id(), root_pane);
-                assert_eq!(second.id(), new_pane);
-            }
-            other => panic!("esperava split, veio {other:?}"),
-        }
+        let target = state.workspaces.iter().find(|w| w.id == w2).unwrap();
+        assert_eq!(target.tabs.len(), 2);
+        assert_eq!(target.active_tab, Some(tab));
+        let other = state.workspaces.iter().find(|w| w.id == w1).unwrap();
+        assert_eq!(other.tabs.len(), 1);
     }
 
     #[test]
-    fn close_pane_promotes_sibling_and_refocuses() {
+    fn create_tab_without_workspace_fails_when_none_active() {
         let mgr = manager();
-        mgr.create_tab(sid()).unwrap();
-        let first_pane = mgr.state().tabs[0].active_pane;
-        let second_pane = mgr.split_pane(first_pane, SplitKind::H, sid()).unwrap();
-
-        mgr.close_pane(second_pane).unwrap();
-        let state = mgr.state();
-        assert_eq!(state.tabs.len(), 1);
-        assert_eq!(state.tabs[0].root.id(), first_pane);
-        assert_eq!(state.tabs[0].active_pane, first_pane);
+        assert!(matches!(
+            mgr.create_tab(sid(), None).unwrap_err(),
+            LayoutError::NoActiveWorkspace
+        ));
     }
 
     #[test]
-    fn closing_last_pane_closes_the_tab() {
+    fn close_tab_returns_bound_sessions_and_keeps_workspace() {
         let mgr = manager();
-        let tab = mgr.create_tab(sid()).unwrap();
-        let pane = mgr.state().tabs[0].active_pane;
-        mgr.close_pane(pane).unwrap();
+        ws(&mgr);
+        let s2 = sid();
+        let tab = mgr.create_tab(s2, None).unwrap();
+        let pane = mgr.state().workspaces[0]
+            .tabs
+            .iter()
+            .find(|t| t.id == tab)
+            .unwrap()
+            .active_pane;
+        let s3 = sid();
+        mgr.split_pane(pane, SplitKind::V, s3).unwrap();
+
+        let bound = mgr.close_tab(tab).unwrap();
+        assert_eq!(bound.len(), 2);
+        assert!(bound.contains(&s2) && bound.contains(&s3));
         let state = mgr.state();
-        assert!(state.tabs.is_empty());
-        assert_ne!(state.active_tab, Some(tab));
-        assert_eq!(state.active_tab, None);
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].tabs.len(), 1);
     }
 
     #[test]
-    fn open_session_focuses_existing_binding_instead_of_new_tab() {
+    fn closing_last_tab_leaves_workspace_empty_but_alive() {
+        let mgr = manager();
+        let id = ws(&mgr);
+        let tab = mgr.state().workspaces[0].tabs[0].id;
+        mgr.close_tab(tab).unwrap();
+        let state = mgr.state();
+        assert_eq!(state.workspaces.len(), 1);
+        assert!(state.workspaces[0].tabs.is_empty());
+        assert_eq!(state.workspaces[0].active_tab, None);
+        assert_eq!(state.active_workspace, Some(id));
+    }
+
+    #[test]
+    fn close_workspace_returns_all_bound_sessions() {
         let mgr = manager();
         let s1 = sid();
-        let t1 = mgr.create_tab(s1).unwrap();
-        mgr.create_tab(sid()).unwrap();
+        let id = mgr.create_workspace("x", None, s1).unwrap();
+        let s2 = sid();
+        mgr.create_tab(s2, Some(id)).unwrap();
 
-        let opened = mgr.open_session(s1).unwrap();
-        assert_eq!(opened, t1);
-        let state = mgr.state();
-        assert_eq!(state.tabs.len(), 2);
-        assert_eq!(state.active_tab, Some(t1));
+        let bound = mgr.close_workspace(id).unwrap();
+        assert_eq!(bound.len(), 2);
+        assert!(mgr.state().workspaces.is_empty());
+        assert_eq!(mgr.state().active_workspace, None);
     }
 
     #[test]
-    fn open_session_creates_tab_when_unbound() {
+    fn activate_tab_also_activates_its_workspace() {
         let mgr = manager();
-        mgr.create_tab(sid()).unwrap();
+        let w1 = ws(&mgr);
+        let w1_tab = mgr.state().workspaces[0].tabs[0].id;
+        ws(&mgr);
+        mgr.activate_tab(w1_tab).unwrap();
+        assert_eq!(mgr.state().active_workspace, Some(w1));
+    }
+
+    #[test]
+    fn open_session_focuses_existing_binding_across_workspaces() {
+        let mgr = manager();
+        let s1 = sid();
+        let w1 = mgr.create_workspace("a", None, s1).unwrap();
+        ws(&mgr);
+        mgr.open_session(s1).unwrap();
+        let state = mgr.state();
+        assert_eq!(state.active_workspace, Some(w1));
+    }
+
+    #[test]
+    fn open_session_unbound_creates_tab_in_active_workspace() {
+        let mgr = manager();
+        let id = ws(&mgr);
         let s = sid();
         mgr.open_session(s).unwrap();
-        assert_eq!(mgr.state().tabs.len(), 2);
+        let state = mgr.state();
+        let target = state.workspaces.iter().find(|w| w.id == id).unwrap();
+        assert_eq!(target.tabs.len(), 2);
     }
 
     #[test]
-    fn session_disposed_removes_every_binding() {
+    fn split_and_close_pane_promote_sibling() {
+        let mgr = manager();
+        ws(&mgr);
+        let first_pane = mgr.state().workspaces[0].tabs[0].active_pane;
+        let s2 = sid();
+        let second = mgr.split_pane(first_pane, SplitKind::H, s2).unwrap();
+
+        let unbound = mgr.close_pane(second).unwrap();
+        assert_eq!(unbound, vec![s2]);
+        let state = mgr.state();
+        assert_eq!(state.workspaces[0].tabs[0].root.id(), first_pane);
+        assert_eq!(state.workspaces[0].tabs[0].active_pane, first_pane);
+    }
+
+    #[test]
+    fn session_disposed_removes_bindings_everywhere() {
         let mgr = manager();
         let s = sid();
-        mgr.create_tab(s).unwrap();
-        let other = sid();
-        let pane = mgr.state().tabs[0].active_pane;
-        mgr.split_pane(pane, SplitKind::V, other).unwrap();
-
+        mgr.create_workspace("a", None, s).unwrap();
         mgr.session_disposed(s).unwrap();
         let state = mgr.state();
-        assert_eq!(state.tabs.len(), 1);
-        let mut sessions = Vec::new();
-        state.tabs[0].root.leaf_sessions(&mut sessions);
-        assert_eq!(sessions, vec![other]);
+        assert_eq!(state.workspaces.len(), 1);
+        assert!(state.workspaces[0].tabs.is_empty());
     }
 
     #[test]
-    fn ratio_is_clamped() {
+    fn ratio_is_clamped_and_leaf_rejected() {
         let mgr = manager();
-        mgr.create_tab(sid()).unwrap();
-        let pane = mgr.state().tabs[0].active_pane;
+        ws(&mgr);
+        let pane = mgr.state().workspaces[0].tabs[0].active_pane;
         mgr.split_pane(pane, SplitKind::V, sid()).unwrap();
-        let split_id = mgr.state().tabs[0].root.id();
+        let split_id = mgr.state().workspaces[0].tabs[0].root.id();
 
         mgr.set_split_ratio(split_id, 0.01).unwrap();
-        match &mgr.state().tabs[0].root {
-            PaneNode::Split { ratio, .. } => assert!((ratio - MIN_RATIO).abs() < f64::EPSILON),
+        match &mgr.state().workspaces[0].tabs[0].root {
+            PaneNode::Split { ratio, .. } => {
+                assert!((ratio - MIN_RATIO).abs() < f64::EPSILON)
+            }
             _ => panic!("esperava split"),
         }
-
         assert!(matches!(
             mgr.set_split_ratio(pane, 0.5).unwrap_err(),
             LayoutError::NotASplit(_)
@@ -798,100 +1053,79 @@ mod tests {
     }
 
     #[test]
-    fn move_tab_reorders() {
+    fn move_tab_reorders_within_workspace() {
         let mgr = manager();
-        let t1 = mgr.create_tab(sid()).unwrap();
-        let t2 = mgr.create_tab(sid()).unwrap();
-        let t3 = mgr.create_tab(sid()).unwrap();
+        let id = ws(&mgr);
+        let t1 = mgr.state().workspaces[0].tabs[0].id;
+        let t2 = mgr.create_tab(sid(), Some(id)).unwrap();
+        let t3 = mgr.create_tab(sid(), Some(id)).unwrap();
 
         mgr.move_tab(t3, 0).unwrap();
-        let ids: Vec<TabId> = mgr.state().tabs.iter().map(|t| t.id).collect();
+        let ids: Vec<TabId> = mgr.state().workspaces[0].tabs.iter().map(|t| t.id).collect();
         assert_eq!(ids, vec![t3, t1, t2]);
     }
 
     #[test]
-    fn close_tab_moves_activation_to_neighbor() {
-        let mgr = manager();
-        let t1 = mgr.create_tab(sid()).unwrap();
-        let t2 = mgr.create_tab(sid()).unwrap();
-        assert_eq!(mgr.state().active_tab, Some(t2));
-
-        mgr.close_tab(t2).unwrap();
-        assert_eq!(mgr.state().active_tab, Some(t1));
-    }
-
-    #[test]
-    fn nested_tree_round_trips_through_rows() {
-        let mgr = manager();
-        mgr.create_tab(sid()).unwrap();
-        let p1 = mgr.state().tabs[0].active_pane;
-        let p2 = mgr.split_pane(p1, SplitKind::V, sid()).unwrap();
-        mgr.split_pane(p2, SplitKind::H, sid()).unwrap();
-
-        let before = mgr.state();
-        let rows = tabs_to_rows(&before.tabs);
-        let rebuilt = rows_to_tabs(&rows);
-        assert_eq!(rebuilt.len(), 1);
-        assert_eq!(rebuilt[0].root, before.tabs[0].root);
-        assert_eq!(rebuilt[0].active_pane, before.tabs[0].active_pane);
-    }
-
-    #[test]
-    fn load_persists_and_restores_from_store() {
+    fn layout_round_trips_through_store() {
         let store = Arc::new(Store::open_in_memory().unwrap());
         let s1 = sid();
         let s2 = sid();
         {
             let mgr = LayoutManager::new(Arc::clone(&store));
-            let tab = mgr.create_tab(s1).unwrap();
-            let pane = mgr.state().tabs[0].active_pane;
+            mgr.create_workspace("api", Some("/repo".into()), s1).unwrap();
+            let pane = mgr.state().workspaces[0].tabs[0].active_pane;
             mgr.split_pane(pane, SplitKind::H, s2).unwrap();
-            mgr.activate_tab(tab).unwrap();
         }
 
         let mgr = LayoutManager::new(Arc::clone(&store));
         mgr.load(&HashSet::from([s1, s2]));
         let state = mgr.state();
-        assert_eq!(state.tabs.len(), 1);
-        assert!(matches!(state.tabs[0].root, PaneNode::Split { .. }));
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].name, "api");
+        assert_eq!(state.workspaces[0].repo_root.as_deref(), Some("/repo"));
+        assert!(matches!(
+            state.workspaces[0].tabs[0].root,
+            PaneNode::Split { .. }
+        ));
     }
 
     #[test]
-    fn load_drops_orphan_leaves_and_collapses_splits() {
+    fn load_gc_drops_dead_panes_but_keeps_empty_workspace() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let dead = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("api", Some("/repo".into()), dead).unwrap();
+        }
+
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load(&HashSet::new());
+        let state = mgr.state();
+        assert_eq!(state.workspaces.len(), 1);
+        assert!(state.workspaces[0].tabs.is_empty());
+        assert_eq!(state.workspaces[0].active_tab, None);
+        assert_eq!(state.active_workspace, Some(state.workspaces[0].id));
+    }
+
+    #[test]
+    fn load_partial_gc_collapses_split_with_dead_leaf() {
         let store = Arc::new(Store::open_in_memory().unwrap());
         let alive = sid();
         let dead = sid();
         {
             let mgr = LayoutManager::new(Arc::clone(&store));
-            mgr.create_tab(alive).unwrap();
-            let pane = mgr.state().tabs[0].active_pane;
+            mgr.create_workspace("api", None, alive).unwrap();
+            let pane = mgr.state().workspaces[0].tabs[0].active_pane;
             mgr.split_pane(pane, SplitKind::V, dead).unwrap();
-            mgr.create_tab(dead).unwrap_err();
         }
 
         let mgr = LayoutManager::new(Arc::clone(&store));
         mgr.load(&HashSet::from([alive]));
         let state = mgr.state();
-        assert_eq!(state.tabs.len(), 1);
-        match &state.tabs[0].root {
+        assert_eq!(state.workspaces[0].tabs.len(), 1);
+        match &state.workspaces[0].tabs[0].root {
             PaneNode::Leaf { session_id, .. } => assert_eq!(*session_id, alive),
             other => panic!("esperava leaf colapsado, veio {other:?}"),
         }
-        assert_eq!(state.tabs[0].active_pane, state.tabs[0].root.id());
-    }
-
-    #[test]
-    fn load_drops_tab_whose_sessions_all_died() {
-        let store = Arc::new(Store::open_in_memory().unwrap());
-        let dead = sid();
-        {
-            let mgr = LayoutManager::new(Arc::clone(&store));
-            mgr.create_tab(dead).unwrap();
-        }
-        let mgr = LayoutManager::new(Arc::clone(&store));
-        mgr.load(&HashSet::new());
-        let state = mgr.state();
-        assert!(state.tabs.is_empty());
-        assert_eq!(state.active_tab, None);
     }
 }

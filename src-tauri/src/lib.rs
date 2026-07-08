@@ -16,9 +16,11 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use approvals::{ApprovalRequest, Decision, SharedApprovals};
 use pty::SharedPtyPool;
-use session::{CreateSessionOpts, Session, SessionId, SharedSessionManager};
+use session::store::Store;
+use session::{CreateSessionOpts, Session, SessionId, SessionKind, SharedSessionManager};
 
 struct AppState {
+    store: Arc<Store>,
     pty_pool: SharedPtyPool,
     sessions: SharedSessionManager,
     approvals: SharedApprovals,
@@ -28,6 +30,22 @@ struct AppState {
 
 fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
     let _ = app.emit(layout::EVENT_CHANGED, state.layout.state());
+}
+
+fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
+    for id in ids {
+        if let Some(s) = state.sessions.get(*id) {
+            if matches!(s.kind, SessionKind::Shell) {
+                state.sessions.dispose(&state.pty_pool, *id);
+            }
+        }
+    }
+}
+
+fn dispose_all(state: &State<'_, AppState>, ids: &[SessionId]) {
+    for id in ids {
+        state.sessions.dispose(&state.pty_pool, *id);
+    }
 }
 
 #[tauri::command]
@@ -87,14 +105,60 @@ fn layout_state(state: State<'_, AppState>) -> layout::LayoutState {
 }
 
 #[tauri::command]
+fn create_workspace(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+    repo_root: Option<String>,
+    session_id: SessionId,
+) -> Result<layout::WorkspaceId, String> {
+    let id = state
+        .layout
+        .create_workspace(&name, repo_root, session_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(id)
+}
+
+#[tauri::command]
+fn close_workspace(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::WorkspaceId,
+) -> Result<(), String> {
+    let bound = state
+        .layout
+        .close_workspace(id)
+        .map_err(|e| e.to_string())?;
+    dispose_all(&state, &bound);
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn activate_workspace(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::WorkspaceId,
+) -> Result<(), String> {
+    state
+        .layout
+        .activate_workspace(id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
 fn create_tab(
     app: AppHandle,
     state: State<'_, AppState>,
     session_id: SessionId,
+    workspace_id: Option<layout::WorkspaceId>,
 ) -> Result<layout::TabId, String> {
     let id = state
         .layout
-        .create_tab(session_id)
+        .create_tab(session_id, workspace_id)
         .map_err(|e| e.to_string())?;
     emit_layout(&app, &state);
     Ok(id)
@@ -106,9 +170,29 @@ fn close_tab(
     state: State<'_, AppState>,
     id: layout::TabId,
 ) -> Result<(), String> {
-    state.layout.close_tab(id).map_err(|e| e.to_string())?;
+    let bound = state.layout.close_tab(id).map_err(|e| e.to_string())?;
+    dispose_shells(&state, &bound);
     emit_layout(&app, &state);
     Ok(())
+}
+
+#[tauri::command]
+fn get_pref(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+    if !key.starts_with("pref.") {
+        return Err("chave de preferência inválida".into());
+    }
+    state.store.get_setting(&key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_pref(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+    if !key.starts_with("pref.") {
+        return Err("chave de preferência inválida".into());
+    }
+    state
+        .store
+        .set_setting(&key, &value)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -139,13 +223,13 @@ fn open_session_in_tab(
     app: AppHandle,
     state: State<'_, AppState>,
     session_id: SessionId,
-) -> Result<layout::TabId, String> {
-    let id = state
+) -> Result<(), String> {
+    state
         .layout
         .open_session(session_id)
         .map_err(|e| e.to_string())?;
     emit_layout(&app, &state);
-    Ok(id)
+    Ok(())
 }
 
 #[tauri::command]
@@ -170,10 +254,11 @@ fn close_pane(
     state: State<'_, AppState>,
     pane_id: layout::PaneId,
 ) -> Result<(), String> {
-    state
+    let unbound = state
         .layout
         .close_pane(pane_id)
         .map_err(|e| e.to_string())?;
+    dispose_shells(&state, &unbound);
     emit_layout(&app, &state);
     Ok(())
 }
@@ -324,6 +409,7 @@ pub fn run() {
                 Arc::new(theme::ThemeManager::new(Arc::clone(&store), themes_dir));
 
             app.manage(AppState {
+                store: Arc::clone(&store),
                 pty_pool: Arc::clone(&pty_pool),
                 sessions: Arc::clone(&sessions),
                 approvals: Arc::new(approvals::ApprovalsManager::new()),
@@ -367,6 +453,9 @@ pub fn run() {
             set_theme_slot,
             import_theme,
             layout_state,
+            create_workspace,
+            close_workspace,
+            activate_workspace,
             create_tab,
             close_tab,
             activate_tab,
@@ -376,6 +465,8 @@ pub fn run() {
             close_pane,
             focus_pane,
             set_split_ratio,
+            get_pref,
+            set_pref,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tyba")
