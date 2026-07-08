@@ -880,7 +880,7 @@ export default function App() {
           showDetails ? "h-12" : "h-8"
         } ${open ? "px-2" : "justify-center px-0"} ${
           isActive
-            ? "text-tyba-text"
+            ? `text-tyba-text ${w.color ? "" : "bg-white/[.05]"}`
             : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
         }`}
       >
