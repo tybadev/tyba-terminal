@@ -97,10 +97,13 @@ const SYMBOLS: Record<string, string> = {
 };
 
 export function formatCombo(combo: string): string {
+  return comboKeys(combo).join("");
+}
+
+export function comboKeys(combo: string): string[] {
   return combo
     .split("+")
-    .map((part) => SYMBOLS[part] ?? part.toUpperCase())
-    .join("");
+    .map((part) => SYMBOLS[part] ?? part.toUpperCase());
 }
 
 export function parseBindings(raw: string | null): Bindings {

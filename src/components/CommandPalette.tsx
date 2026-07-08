@@ -24,8 +24,8 @@ import {
   CommandItem,
   CommandList,
   CommandSeparator,
-  CommandShortcut,
 } from "@/components/ui/command";
+import { Kbd, Shortcut } from "@/components/ui/kbd";
 import { LANGUAGES, setLanguage } from "../i18n";
 import {
   applyTheme,
@@ -47,7 +47,7 @@ import {
   type Workspace,
   type WorkspaceId,
 } from "../lib/ipc";
-import { formatCombo, type Bindings } from "../lib/keys";
+import { type Bindings } from "../lib/keys";
 
 const THEME_ICONS: Record<ThemeMode, typeof Moon> = {
   dark: Moon,
@@ -146,19 +146,19 @@ export function CommandPalette({
           <CommandItem onSelect={run(onNewTab)}>
             <Plus size={15} />
             {t("newTab")}
-            <CommandShortcut>{formatCombo(bindings.newTab)}</CommandShortcut>
+            <Shortcut combo={bindings.newTab} className="ml-auto" />
           </CommandItem>
           {activeWorkspace && (
             <CommandItem onSelect={run(onCloseActive)}>
               <X size={15} />
               {t("closePane")}
-              <CommandShortcut>{formatCombo(bindings.closePane)}</CommandShortcut>
+              <Shortcut combo={bindings.closePane} className="ml-auto" />
             </CommandItem>
           )}
           <CommandItem onSelect={run(onTogglePanel)}>
             <SidebarSimple size={15} />
             {t("togglePanel")}
-            <CommandShortcut>{formatCombo(bindings.panel)}</CommandShortcut>
+            <Shortcut combo={bindings.panel} className="ml-auto" />
           </CommandItem>
           <CommandItem onSelect={run(onOpenSettings)}>
             <GearSix size={15} />
@@ -244,10 +244,20 @@ export function CommandPalette({
           ))}
         </CommandGroup>
       </CommandList>
-      <div className="flex items-center gap-4 border-t border-tyba-border px-3 py-1.5 font-mono text-[10px] text-tyba-text-faint">
-        <span>↑↓ {t("hintNavigate")}</span>
-        <span>↵ {t("hintRun")}</span>
-        <span className="ml-auto">esc {t("hintClose")}</span>
+      <div className="flex items-center gap-3 border-t border-tyba-border px-3 py-1.5 text-[10px] text-tyba-text-faint">
+        <span className="flex items-center gap-1">
+          <Kbd>↑</Kbd>
+          <Kbd>↓</Kbd>
+          {t("hintNavigate")}
+        </span>
+        <span className="flex items-center gap-1">
+          <Kbd>↵</Kbd>
+          {t("hintRun")}
+        </span>
+        <span className="ml-auto flex items-center gap-1">
+          <Kbd>⎋</Kbd>
+          {t("hintClose")}
+        </span>
       </div>
     </CommandDialog>
   );
