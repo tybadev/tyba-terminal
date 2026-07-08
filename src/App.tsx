@@ -224,19 +224,33 @@ export default function App() {
   useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
+    const track = (p: Promise<() => void>) => {
+      void p.then((un) => (disposed ? un() : unlisteners.push(un)));
+    };
+    // Listeners primeiro: eventos que chegam antes do snapshot viram deltas
+    // sobre ele (união por id no requested; filtro no resolved), em vez de
+    // serem sobrescritos por listApprovals().
+    track(
+      onApprovalRequested((request) =>
+        setApprovals((prev) =>
+          prev.some((p) => p.id === request.id) ? prev : [...prev, request],
+        ),
+      ),
+    );
+    track(
+      onApprovalResolved(({ id }) =>
+        setApprovals((prev) => prev.filter((p) => p.id !== id)),
+      ),
+    );
     listApprovals()
       .then((pending) => {
-        if (!disposed) setApprovals(pending);
+        if (disposed) return;
+        setApprovals((prev) => {
+          const seen = new Set(prev.map((p) => p.id));
+          return [...prev, ...pending.filter((p) => !seen.has(p.id))];
+        });
       })
       .catch(() => {});
-    void onApprovalRequested((request) =>
-      setApprovals((prev) =>
-        prev.some((p) => p.id === request.id) ? prev : [...prev, request],
-      ),
-    ).then((un) => unlisteners.push(un));
-    void onApprovalResolved(({ id }) =>
-      setApprovals((prev) => prev.filter((p) => p.id !== id)),
-    ).then((un) => unlisteners.push(un));
     return () => {
       disposed = true;
       unlisteners.forEach((un) => un());
