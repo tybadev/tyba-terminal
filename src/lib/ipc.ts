@@ -110,6 +110,51 @@ export const onApprovalResolved = (
     (e) => handler(e.payload),
   );
 
+export type ThemeMode = "dark" | "light" | "system";
+export type ThemeBase = "dark" | "light";
+
+export interface TerminalPalette {
+  background: string;
+  foreground: string;
+  cursor: string;
+  cursorAccent?: string;
+  selectionBackground?: string;
+  ansi: string[];
+}
+
+export interface Theme {
+  id: string;
+  name: string;
+  base: ThemeBase;
+  builtin: boolean;
+  ui: Record<string, string>;
+  terminal: TerminalPalette;
+}
+
+export interface ThemeState {
+  mode: ThemeMode;
+  dark: Theme;
+  light: Theme;
+}
+
+export const listThemes = () => invoke<Theme[]>("list_themes");
+
+export const getThemeState = () => invoke<ThemeState>("get_theme_state");
+
+export const setThemeModeCmd = (mode: ThemeMode) =>
+  invoke<void>("set_theme_mode", { mode });
+
+export const setThemeSlot = (base: ThemeBase, id: string) =>
+  invoke<void>("set_theme_slot", { base, id });
+
+export const importThemeCmd = (path: string) =>
+  invoke<Theme>("import_theme", { path });
+
+export const onThemeChanged = (
+  handler: (state: ThemeState) => void,
+): Promise<UnlistenFn> =>
+  listen<ThemeState>("theme://changed", (e) => handler(e.payload));
+
 export const onPtyOutput = (
   id: SessionId,
   handler: (bytes: Uint8Array) => void,

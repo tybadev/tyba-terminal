@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Capabilities da janela principal",
   "windows": ["main"],
-  "permissions": ["core:default", "core:event:default", "core:window:default"]
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "dialog:allow-open"
+  ]
 }

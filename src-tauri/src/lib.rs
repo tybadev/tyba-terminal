@@ -4,6 +4,7 @@ pub mod pty;
 pub mod sandbox;
 pub mod session;
 pub mod status;
+pub mod theme;
 pub mod worktree;
 
 use std::sync::Arc;
@@ -20,6 +21,7 @@ struct AppState {
     pty_pool: SharedPtyPool,
     sessions: SharedSessionManager,
     approvals: SharedApprovals,
+    themes: theme::SharedThemes,
 }
 
 #[tauri::command]
@@ -100,6 +102,50 @@ fn resolve_approval(
     state.approvals.resolve(&app, id, decision)
 }
 
+#[tauri::command]
+fn list_themes(state: State<'_, AppState>) -> Vec<theme::Theme> {
+    state.themes.list()
+}
+
+#[tauri::command]
+fn get_theme_state(state: State<'_, AppState>) -> theme::ThemeState {
+    state.themes.state()
+}
+
+#[tauri::command]
+fn set_theme_mode(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mode: theme::ThemeMode,
+) -> Result<(), String> {
+    state.themes.set_mode(&app, mode).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_theme_slot(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    base: theme::ThemeBase,
+    id: String,
+) -> Result<(), String> {
+    state
+        .themes
+        .set_slot(&app, base, &id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_theme(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<theme::Theme, String> {
+    state
+        .themes
+        .import(&app, &path)
+        .map_err(|e| e.to_string())
+}
+
 const SCROLLBACK_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
 fn open_store(app: &AppHandle) -> session::store::Store {
@@ -121,16 +167,27 @@ fn open_store(app: &AppHandle) -> session::store::Store {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let store = Arc::new(open_store(app.handle()));
             let pty_pool: SharedPtyPool = Arc::new(pty::PtyPool::new());
-            let sessions: SharedSessionManager = Arc::new(session::SessionManager::new(store));
+            let sessions: SharedSessionManager =
+                Arc::new(session::SessionManager::new(Arc::clone(&store)));
             let _ = sessions.restore();
+
+            let themes_dir = app
+                .path()
+                .app_config_dir()
+                .unwrap_or_else(|_| std::env::temp_dir().join("tyba"))
+                .join("themes");
+            let themes: theme::SharedThemes =
+                Arc::new(theme::ThemeManager::new(Arc::clone(&store), themes_dir));
 
             app.manage(AppState {
                 pty_pool: Arc::clone(&pty_pool),
                 sessions: Arc::clone(&sessions),
                 approvals: Arc::new(approvals::ApprovalsManager::new()),
+                themes,
             });
 
             std::thread::Builder::new()
@@ -163,6 +220,11 @@ pub fn run() {
             request_approval,
             list_approvals,
             resolve_approval,
+            list_themes,
+            get_theme_state,
+            set_theme_mode,
+            set_theme_slot,
+            import_theme,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tyba")
