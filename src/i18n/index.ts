@@ -42,6 +42,11 @@ const resources = {
       actions: "Ações",
       togglePanel: "Alternar painel",
       switchLanguageTo: "Mudar idioma para {{lang}}",
+      theme: "Tema",
+      themeDark: "Escuro",
+      themeLight: "Claro",
+      themeSystem: "Sistema",
+      switchThemeTo: "Mudar tema para {{theme}}",
     },
   },
   en: {
@@ -70,6 +75,11 @@ const resources = {
       actions: "Actions",
       togglePanel: "Toggle panel",
       switchLanguageTo: "Switch language to {{lang}}",
+      theme: "Theme",
+      themeDark: "Dark",
+      themeLight: "Light",
+      themeSystem: "System",
+      switchThemeTo: "Switch theme to {{theme}}",
     },
   },
 } as const;
