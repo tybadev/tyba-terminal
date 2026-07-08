@@ -477,12 +477,12 @@ export function SettingsView({
             <div className="flex gap-2 pt-2">
               <Choice
                 active={showContainers}
-                label={t("detailsShow")}
+                label={t("optionShow")}
                 onClick={() => onShowContainersChange(true)}
               />
               <Choice
                 active={!showContainers}
-                label={t("detailsHide")}
+                label={t("optionHide")}
                 onClick={() => onShowContainersChange(false)}
               />
             </div>

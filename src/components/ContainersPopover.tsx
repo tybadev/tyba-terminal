@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowSquareOut,
@@ -32,6 +32,7 @@ import {
 } from "../lib/ipc";
 
 const REFRESH_MS = 3000;
+const HEALTHCHECK_MS = 30_000;
 const IS_MAC = navigator.platform.toUpperCase().includes("MAC");
 
 interface Props {
@@ -80,12 +81,24 @@ export function ContainersPopover({ repoRoot, workspaceId, projectName }: Props)
   const [showAll, setShowAll] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
-  const loadedOnce = useRef(false);
+  const [showStopped, setShowStopped] = useState(false);
 
   useEffect(() => {
-    void dockerAvailable()
-      .then(setAvailable)
-      .catch(() => setAvailable(false));
+    let cancelled = false;
+    const check = () =>
+      void dockerAvailable()
+        .then((ok) => {
+          if (!cancelled) setAvailable(ok);
+        })
+        .catch(() => {
+          if (!cancelled) setAvailable(false);
+        });
+    check();
+    const timer = window.setInterval(check, HEALTHCHECK_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   const effectiveAll = showAll || !repoRoot;
@@ -96,7 +109,6 @@ export function ContainersPopover({ repoRoot, workspaceId, projectName }: Props)
         effectiveAll ? null : repoRoot,
         effectiveAll,
       );
-      loadedOnce.current = true;
       setContainers(list);
       setError(null);
       setAvailable(true);
@@ -140,8 +152,72 @@ export function ContainersPopover({ repoRoot, workspaceId, projectName }: Props)
     [confirming, load],
   );
 
-  const hasRunning =
-    containers?.some((c) => c.state === "running") ?? false;
+  const running = containers?.filter((c) => c.state === "running") ?? [];
+  const stopped = containers?.filter((c) => c.state !== "running") ?? [];
+
+  const renderContainer = (c: ContainerInfo) => {
+    const isRunning = c.state === "running";
+    return (
+      <div
+        key={c.id}
+        className={`group rounded-md px-2 py-1.5 transition-colors hover:bg-white/[.03] ${
+          removing === c.id ? "opacity-40" : ""
+        }`}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            className={`size-1.5 shrink-0 rounded-full ${
+              isRunning
+                ? "bg-tyba-green [box-shadow:0_0_5px_rgba(124,197,68,.5)]"
+                : "bg-tyba-text-faint"
+            }`}
+          />
+          <span className="min-w-0 flex-1 truncate text-[12px] text-tyba-text">
+            {c.name}
+          </span>
+          <span className="max-w-28 truncate font-mono text-[10px] text-tyba-text-faint">
+            {c.image}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 pl-3.5">
+          <span className="min-w-0 flex-1 truncate font-mono text-[10px] leading-5 text-tyba-text-faint">
+            {c.status}
+            {c.ports ? ` · ${c.ports}` : ""}
+          </span>
+          <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+            <RowAction
+              label={t("containerLogs")}
+              onClick={() => openTab("logs", c.id)}
+            >
+              <FileText size={13} />
+            </RowAction>
+            <RowAction
+              label={t("containerShell")}
+              onClick={() => openTab("shell", c.id)}
+            >
+              <TerminalWindow size={13} />
+            </RowAction>
+            {confirming === c.id ? (
+              <button
+                onClick={() => remove(c.id)}
+                className="rounded-[3px] bg-tyba-red px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-tyba-red/90"
+              >
+                {t("containerRemoveConfirm")}
+              </button>
+            ) : (
+              <RowAction
+                label={t("containerRemove")}
+                destructive
+                onClick={() => remove(c.id)}
+              >
+                <Trash size={13} />
+              </RowAction>
+            )}
+          </span>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <DropdownMenu
@@ -149,6 +225,7 @@ export function ContainersPopover({ repoRoot, workspaceId, projectName }: Props)
       onOpenChange={(next) => {
         setOpen(next);
         setConfirming(null);
+        setShowStopped(false);
         if (next) setError(null);
       }}
     >
@@ -165,8 +242,12 @@ export function ContainersPopover({ repoRoot, workspaceId, projectName }: Props)
           }`}
         >
           <DockerIcon size={16} />
-          {hasRunning && (
-            <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-green [box-shadow:0_0_6px_rgba(124,197,68,.55)]" />
+          {!available ? (
+            <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-red [box-shadow:0_0_6px_rgba(239,68,68,.6)]" />
+          ) : (
+            running.length > 0 && (
+              <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-green [box-shadow:0_0_6px_rgba(124,197,68,.55)]" />
+            )
           )}
         </Button>
       </DropdownMenuTrigger>
@@ -228,69 +309,23 @@ export function ContainersPopover({ repoRoot, workspaceId, projectName }: Props)
           </div>
         ) : (
           <div className="flex max-h-80 flex-col gap-px overflow-y-auto p-1">
-            {containers.map((c) => {
-              const running = c.state === "running";
-              return (
-                <div
-                  key={c.id}
-                  className={`group rounded-md px-2 py-1.5 transition-colors hover:bg-white/[.03] ${
-                    removing === c.id ? "opacity-40" : ""
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`size-1.5 shrink-0 rounded-full ${
-                        running
-                          ? "bg-tyba-green [box-shadow:0_0_5px_rgba(124,197,68,.5)]"
-                          : "bg-tyba-text-faint"
-                      }`}
-                    />
-                    <span className="min-w-0 flex-1 truncate text-[12px] text-tyba-text">
-                      {c.name}
-                    </span>
-                    <span className="max-w-28 truncate font-mono text-[10px] text-tyba-text-faint">
-                      {c.image}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 pl-3.5">
-                    <span className="min-w-0 flex-1 truncate font-mono text-[10px] leading-5 text-tyba-text-faint">
-                      {c.status}
-                      {c.ports ? ` · ${c.ports}` : ""}
-                    </span>
-                    <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-                      <RowAction
-                        label={t("containerLogs")}
-                        onClick={() => openTab("logs", c.id)}
-                      >
-                        <FileText size={13} />
-                      </RowAction>
-                      <RowAction
-                        label={t("containerShell")}
-                        onClick={() => openTab("shell", c.id)}
-                      >
-                        <TerminalWindow size={13} />
-                      </RowAction>
-                      {confirming === c.id ? (
-                        <button
-                          onClick={() => remove(c.id)}
-                          className="rounded-[3px] bg-tyba-red px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-tyba-red/90"
-                        >
-                          {t("containerRemoveConfirm")}
-                        </button>
-                      ) : (
-                        <RowAction
-                          label={t("containerRemove")}
-                          destructive
-                          onClick={() => remove(c.id)}
-                        >
-                          <Trash size={13} />
-                        </RowAction>
-                      )}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
+            {running.map(renderContainer)}
+            {running.length === 0 && (
+              <p className="px-2 py-2 text-center text-xs text-tyba-text-faint">
+                {t("containersNoneRunning")}
+              </p>
+            )}
+            {stopped.length > 0 && (
+              <button
+                onClick={() => setShowStopped((v) => !v)}
+                className="flex h-7 items-center justify-center gap-1 rounded-md text-[11px] text-tyba-text-faint transition-colors hover:bg-white/[.03] hover:text-tyba-text-muted"
+              >
+                {showStopped
+                  ? t("containersHideStopped")
+                  : t("containersShowStopped", { count: stopped.length })}
+              </button>
+            )}
+            {showStopped && stopped.map(renderContainer)}
           </div>
         )}
 
