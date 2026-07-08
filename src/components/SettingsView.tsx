@@ -352,7 +352,7 @@ export function SettingsView({
 
   return (
     <div className="flex min-h-0 flex-1">
-      <aside className="tyba-glass flex w-48 shrink-0 flex-col gap-px px-2 pt-3">
+      <aside className="flex w-48 shrink-0 flex-col gap-px border-x border-tyba-border bg-tyba-surface px-2 pt-3">
         <NavItem
           active={section === "general"}
           icon={<User size={15} />}
