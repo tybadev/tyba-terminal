@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  DotsThree,
   FolderOpen,
   MagnifyingGlass,
   Plus,
+  Robot,
   SidebarSimple,
   TerminalWindow,
   User,
@@ -30,9 +32,17 @@ import { getThemeMode, onThemeModeChange, setThemeMode, type ThemeMode } from ".
 import { ApprovalsInbox } from "./components/ApprovalsInbox";
 import { CommandPalette } from "./components/CommandPalette";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
-import { SettingsView, type SidebarTogglePref } from "./components/SettingsView";
+import {
+  SettingsView,
+  type DetailsPref,
+  type SidebarTogglePref,
+} from "./components/SettingsView";
 import { TabBar } from "./components/TabBar";
-import { TerminalView } from "./components/TerminalView";
+import {
+  requestTerminalRelayout,
+  setDefaultFontSize,
+  TerminalView,
+} from "./components/TerminalView";
 import {
   activateTab,
   activateWorkspace,
@@ -44,16 +54,47 @@ import {
   createWorkspace,
   getPref,
   layoutState,
+  leafSessions,
   listSessions,
   onLayoutChanged,
   paneSession,
   setPref,
   type LayoutState,
   type Session,
+  type SessionKind,
+  type Workspace,
 } from "./lib/ipc";
+import {
+  captureState,
+  comboOf,
+  DEFAULT_BINDINGS,
+  formatCombo,
+  parseBindings,
+  BINDINGS_PREF_KEY,
+  type Bindings,
+  type KeyAction,
+} from "./lib/keys";
 
 const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
 const TOGGLE_PREF_KEY = "pref.sidebar_toggle";
+const DETAILS_PREF_KEY = "pref.sidebar_details";
+const DETAILS_OVERRIDES_KEY = "pref.session_details";
+const ACCOUNT_NAME_KEY = "pref.account_name";
+const FONT_SIZE_KEY = "pref.code.font_size";
+
+function runnerLabel(kind: SessionKind): string | null {
+  if (kind.type !== "agent") return null;
+  if (kind.runner === "claude_code") return "claude";
+  if (kind.runner === "codex") return "codex";
+  return kind.runner.custom;
+}
+
+function compactPath(dir: string): string {
+  const home = dir.replace(/^\/Users\/[^/]+/, "~");
+  const parts = home.split("/").filter(Boolean);
+  if (home.length <= 34 || parts.length <= 3) return home;
+  return `…/${parts.slice(-2).join("/")}`;
+}
 
 type SidebarMode = "open" | "rail" | "hidden";
 
@@ -105,6 +146,12 @@ export default function App() {
   const [layout, setLayout] = useState<LayoutState>(EMPTY_LAYOUT);
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
   const [togglePref, setTogglePref] = useState<SidebarTogglePref>("hidden");
+  const [detailsPref, setDetailsPref] = useState<DetailsPref>("on");
+  const [detailOverrides, setDetailOverrides] = useState<
+    Record<string, DetailsPref>
+  >({});
+  const [bindings, setBindings] = useState<Bindings>(DEFAULT_BINDINGS);
+  const [accountName, setAccountName] = useState("");
   const [sessionQuery, setSessionQuery] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
@@ -150,6 +197,30 @@ export default function App() {
     const all = await listSessions().catch(() => null);
     if (all) setSessions(all);
   }, []);
+
+  const sessionById = useMemo(
+    () => new Map(sessions.map((s) => [s.id, s])),
+    [sessions],
+  );
+
+  const workspaceAgent = useCallback(
+    (w: Workspace): string | null => {
+      for (const tab of w.tabs) {
+        for (const sid of leafSessions(tab.root)) {
+          const session = sessionById.get(sid);
+          const label = session && runnerLabel(session.kind);
+          if (label) return label;
+        }
+      }
+      return null;
+    },
+    [sessionById],
+  );
+
+  const detailsFor = useCallback(
+    (id: string): boolean => (detailOverrides[id] ?? detailsPref) === "on",
+    [detailOverrides, detailsPref],
+  );
 
   const newSession = useCallback(
     async (cwd: string | null, name: string) => {
@@ -211,12 +282,48 @@ export default function App() {
 
   const changeTogglePref = useCallback((value: SidebarTogglePref) => {
     setTogglePref(value);
+    setSidebar((current) => (current === "open" ? current : value));
     void setPref(TOGGLE_PREF_KEY, value).catch(() => {});
+  }, []);
+
+  const changeDetailsPref = useCallback((value: DetailsPref) => {
+    setDetailsPref(value);
+    void setPref(DETAILS_PREF_KEY, value).catch(() => {});
+  }, []);
+
+  const toggleWorkspaceDetails = useCallback(
+    (id: string) => {
+      setDetailOverrides((prev) => {
+        const globalOn = detailsPref === "on";
+        const current = prev[id] ?? detailsPref;
+        const next = { ...prev, [id]: current === "on" ? "off" : ("on" as DetailsPref) };
+        if ((next[id] === "on") === globalOn) delete next[id];
+        void setPref(DETAILS_OVERRIDES_KEY, JSON.stringify(next)).catch(
+          () => {},
+        );
+        return next;
+      });
+    },
+    [detailsPref],
+  );
+
+  const changeAccountName = useCallback((value: string) => {
+    setAccountName(value);
+    void setPref(ACCOUNT_NAME_KEY, value).catch(() => {});
+  }, []);
+
+  const changeBindings = useCallback((value: Bindings) => {
+    setBindings(value);
+    void setPref(BINDINGS_PREF_KEY, JSON.stringify(value)).catch(() => {});
   }, []);
 
   const toggleSidebar = useCallback(() => {
     setSidebar((current) => (current === "open" ? togglePref : "open"));
   }, [togglePref]);
+
+  useEffect(() => {
+    requestTerminalRelayout();
+  }, [sidebar, settingsOpen]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -230,15 +337,47 @@ export default function App() {
         return;
       }
       unlisten = un;
-      const [existing, currentLayout, pref] = await Promise.all([
+      const [
+        existing,
+        currentLayout,
+        togglePrefRaw,
+        detailsRaw,
+        overridesRaw,
+        nameRaw,
+        bindingsRaw,
+        fontRaw,
+      ] = await Promise.all([
         listSessions().catch(() => [] as Session[]),
         layoutState().catch(() => EMPTY_LAYOUT),
         getPref(TOGGLE_PREF_KEY).catch(() => null),
+        getPref(DETAILS_PREF_KEY).catch(() => null),
+        getPref(DETAILS_OVERRIDES_KEY).catch(() => null),
+        getPref(ACCOUNT_NAME_KEY).catch(() => null),
+        getPref(BINDINGS_PREF_KEY).catch(() => null),
+        getPref(FONT_SIZE_KEY).catch(() => null),
       ]);
       if (cancelled) return;
       setSessions(existing);
       setLayout(currentLayout);
-      if (pref === "rail" || pref === "hidden") setTogglePref(pref);
+      if (togglePrefRaw === "rail" || togglePrefRaw === "hidden") {
+        setTogglePref(togglePrefRaw);
+      }
+      if (detailsRaw === "on" || detailsRaw === "off") {
+        setDetailsPref(detailsRaw);
+      }
+      if (overridesRaw) {
+        try {
+          setDetailOverrides(
+            JSON.parse(overridesRaw) as Record<string, DetailsPref>,
+          );
+        } catch {
+          setDetailOverrides({});
+        }
+      }
+      if (nameRaw) setAccountName(nameRaw);
+      setBindings(parseBindings(bindingsRaw));
+      const fontSize = Number(fontRaw);
+      if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
       if (currentLayout.workspaces.length === 0 && !booted.current) {
         booted.current = true;
         setNewSessionOpen(true);
@@ -252,25 +391,42 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.repeat || e.shiftKey || e.altKey || e.ctrlKey) return;
-      const k = e.key.toLowerCase();
-      if (k === "k") {
+      if (captureState.active) return;
+      const combo = comboOf(e);
+      if (!combo) return;
+      const action = (Object.keys(bindings) as KeyAction[]).find(
+        (a) => bindings[a] === combo,
+      );
+      if (action) {
         e.preventDefault();
-        setPaletteOpen((v) => !v);
-      } else if (k === "b") {
-        e.preventDefault();
-        toggleSidebar();
-      } else if (k === "t") {
-        e.preventDefault();
-        void newTab();
-      } else if (k === "o") {
-        e.preventDefault();
-        void openProjectFolder();
-      } else if (k === "w") {
-        e.preventDefault();
-        void closeActivePane();
-      } else if (k >= "1" && k <= "9") {
-        const target = activeWorkspace?.tabs[Number(k) - 1];
+        if (e.repeat) return;
+        if (action === "palette") {
+          setPaletteOpen((v) => !v);
+        } else if (action === "panel") {
+          toggleSidebar();
+        } else if (action === "newTab") {
+          if (!settingsOpen) void newTab();
+        } else if (action === "closePane") {
+          if (settingsOpen) {
+            setSettingsOpen(false);
+          } else {
+            void closeActivePane();
+          }
+        } else if (action === "openFolder") {
+          void openProjectFolder();
+        }
+        return;
+      }
+      if (
+        e.metaKey &&
+        !e.repeat &&
+        !e.shiftKey &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        e.key >= "1" &&
+        e.key <= "9"
+      ) {
+        const target = activeWorkspace?.tabs[Number(e.key) - 1];
         if (target) {
           e.preventDefault();
           void activateTab(target.id);
@@ -279,7 +435,15 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [newTab, closeActivePane, toggleSidebar, openProjectFolder, activeWorkspace]);
+  }, [
+    bindings,
+    settingsOpen,
+    newTab,
+    closeActivePane,
+    toggleSidebar,
+    openProjectFolder,
+    activeWorkspace,
+  ]);
 
   const open = sidebar === "open";
 
@@ -290,6 +454,7 @@ export default function App() {
         onOpenChange={setPaletteOpen}
         workspaces={layout.workspaces}
         activeWorkspace={layout.active_workspace}
+        bindings={bindings}
         theme={theme}
         onChangeTheme={changeTheme}
         onNewSession={() => setNewSessionOpen(true)}
@@ -311,7 +476,7 @@ export default function App() {
         >
           <IconAction
             label={t("panelToggle")}
-            shortcut="⌘B"
+            shortcut={formatCombo(bindings.panel)}
             onClick={toggleSidebar}
           >
             <SidebarSimple size={16} />
@@ -319,7 +484,7 @@ export default function App() {
 
           <IconAction
             label={t("commandPalette")}
-            shortcut="⌘K"
+            shortcut={formatCombo(bindings.palette)}
             onClick={() => setPaletteOpen(true)}
           >
             <MagnifyingGlass size={16} />
@@ -329,7 +494,7 @@ export default function App() {
 
           <IconAction
             label={t("openProjectFolder")}
-            shortcut="⌘O"
+            shortcut={formatCombo(bindings.openFolder)}
             onClick={() => void openProjectFolder()}
           >
             <FolderOpen size={16} />
@@ -354,7 +519,7 @@ export default function App() {
               className="w-52 border-tyba-border-strong bg-tyba-overlay shadow-lg"
             >
               <DropdownMenuLabel className="text-xs">
-                {t("localAccount")}
+                {accountName || t("localAccount")}
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -376,6 +541,12 @@ export default function App() {
               onClose={() => setSettingsOpen(false)}
               togglePref={togglePref}
               onTogglePrefChange={changeTogglePref}
+              detailsPref={detailsPref}
+              onDetailsPrefChange={changeDetailsPref}
+              bindings={bindings}
+              onBindingsChange={changeBindings}
+              accountName={accountName}
+              onAccountNameChange={changeAccountName}
             />
           ) : (
             <>
@@ -406,12 +577,16 @@ export default function App() {
                   >
                     {workspaces.map((w) => {
                       const isActive = w.id === layout.active_workspace;
+                      const showDetails = open && detailsFor(w.id);
+                      const agent = showDetails ? workspaceAgent(w) : null;
                       return (
                         <button
                           key={w.id}
                           onClick={() => void activateWorkspace(w.id)}
                           title={open ? (w.repo_root ?? undefined) : w.name}
-                          className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
+                          className={`group relative flex shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
+                            showDetails ? "h-12" : "h-8"
+                          } ${
                             open ? "px-2" : "justify-center px-0"
                           } ${
                             isActive
@@ -437,23 +612,64 @@ export default function App() {
                           />
                           {open && (
                             <>
-                              <span className="min-w-0 flex-1 truncate text-left">
-                                {w.name}
+                              <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
+                                <span className="w-full truncate text-left leading-none">
+                                  {w.name}
+                                </span>
+                                {showDetails && (
+                                  <span className="flex w-full items-center gap-1.5">
+                                    <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-faint">
+                                      {w.repo_root
+                                        ? compactPath(w.repo_root)
+                                        : "~"}
+                                    </span>
+                                    {agent && (
+                                      <span className="flex shrink-0 items-center gap-1 rounded-[3px] bg-tyba-violet-tint px-1 py-px font-mono text-[9px] leading-none text-tyba-violet">
+                                        <Robot size={9} weight="bold" />
+                                        {agent}
+                                      </span>
+                                    )}
+                                  </span>
+                                )}
                               </span>
                               <span className="font-mono text-[10px] text-tyba-text-faint">
                                 {w.tabs.length > 0 ? w.tabs.length : ""}
                               </span>
-                              <span
-                                role="button"
-                                aria-label={t("killSession")}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void killWorkspace(w.id);
-                                }}
-                                className="rounded-[3px] text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-red group-hover:opacity-100"
-                              >
-                                <X size={11} weight="bold" />
-                              </span>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <span
+                                    role="button"
+                                    aria-label={t("sessionOptions")}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="rounded-[3px] text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-text group-hover:opacity-100"
+                                  >
+                                    <DotsThree size={14} weight="bold" />
+                                  </span>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent
+                                  align="start"
+                                  className="w-44 border-tyba-border-strong bg-tyba-overlay shadow-lg"
+                                >
+                                  <DropdownMenuItem
+                                    className="text-xs"
+                                    onSelect={() =>
+                                      toggleWorkspaceDetails(w.id)
+                                    }
+                                  >
+                                    {detailsFor(w.id)
+                                      ? t("detailsHide")
+                                      : t("detailsShow")}
+                                  </DropdownMenuItem>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    className="text-xs text-tyba-red focus:text-tyba-red"
+                                    onSelect={() => void killWorkspace(w.id)}
+                                  >
+                                    <X size={12} weight="bold" />
+                                    {t("killSession")}
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
                             </>
                           )}
                         </button>
@@ -525,7 +741,7 @@ export default function App() {
                             <span className="flex-1 text-left">
                               {t("newSession")}
                             </span>
-                            <Kbd>⌘T</Kbd>
+                            <Kbd>{formatCombo(bindings.newTab)}</Kbd>
                           </button>
                         ) : (
                           <button
@@ -536,7 +752,7 @@ export default function App() {
                             <span className="flex-1 text-left">
                               {t("newTab")}
                             </span>
-                            <Kbd>⌘T</Kbd>
+                            <Kbd>{formatCombo(bindings.newTab)}</Kbd>
                           </button>
                         )}
                         <button
@@ -547,7 +763,7 @@ export default function App() {
                           <span className="flex-1 text-left">
                             {t("commandPalette")}
                           </span>
-                          <Kbd>⌘K</Kbd>
+                          <Kbd>{formatCombo(bindings.palette)}</Kbd>
                         </button>
                         <button
                           onClick={toggleSidebar}
@@ -557,7 +773,7 @@ export default function App() {
                           <span className="flex-1 text-left">
                             {t("togglePanel")}
                           </span>
-                          <Kbd>⌘B</Kbd>
+                          <Kbd>{formatCombo(bindings.panel)}</Kbd>
                         </button>
                       </div>
                     </div>

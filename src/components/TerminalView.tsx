@@ -16,6 +16,19 @@ import {
 } from "../lib/ipc";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
+export const RELAYOUT_EVENT = "tyba:relayout";
+export const FONT_SIZE_EVENT = "tyba:font-size";
+
+export function requestTerminalRelayout() {
+  requestAnimationFrame(() => window.dispatchEvent(new Event(RELAYOUT_EVENT)));
+}
+
+let defaultFontSize = 13;
+
+export function setDefaultFontSize(size: number) {
+  if (size >= 10 && size <= 20) defaultFontSize = size;
+}
+
 function loadWebgl(term: Terminal, onLost: () => void): WebglAddon | null {
   try {
     const webgl = new WebglAddon();
@@ -59,7 +72,7 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
       theme,
       fontFamily:
         '"JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
-      fontSize: 13,
+      fontSize: defaultFontSize,
       lineHeight: 1.35,
       cursorBlink: true,
       allowProposedApi: true,
@@ -98,15 +111,29 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
     }).then((un) => unlisteners.push(un));
 
     // resize: observa o container e propaga cols/rows pro PTY
-    const ro = new ResizeObserver(() => {
+    const refit = () => {
+      if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
       fit.fit();
       void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
-    });
+    };
+    const ro = new ResizeObserver(refit);
     ro.observe(el);
+    const onRelayout = () => refit();
+    const onFontSize = (e: Event) => {
+      const size = (e as CustomEvent<number>).detail;
+      if (typeof size === "number" && size >= 10 && size <= 20) {
+        term.options.fontSize = size;
+        refit();
+      }
+    };
+    window.addEventListener(RELAYOUT_EVENT, onRelayout);
+    window.addEventListener(FONT_SIZE_EVENT, onFontSize);
     void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
 
     return () => {
       ro.disconnect();
+      window.removeEventListener(RELAYOUT_EVENT, onRelayout);
+      window.removeEventListener(FONT_SIZE_EVENT, onFontSize);
       offTheme();
       dataSub.dispose();
       unlisteners.forEach((un) => un());

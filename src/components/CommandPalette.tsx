@@ -33,6 +33,7 @@ import {
   type Workspace,
   type WorkspaceId,
 } from "../lib/ipc";
+import { formatCombo, type Bindings } from "../lib/keys";
 
 const THEME_ICONS: Record<ThemeMode, typeof Moon> = {
   dark: Moon,
@@ -51,6 +52,7 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   workspaces: Workspace[];
   activeWorkspace: WorkspaceId | null;
+  bindings: Bindings;
   theme: ThemeMode;
   onChangeTheme: (mode: ThemeMode) => void;
   onNewSession: () => void;
@@ -66,6 +68,7 @@ export function CommandPalette({
   onOpenChange,
   workspaces,
   activeWorkspace,
+  bindings,
   theme,
   onChangeTheme,
   onNewSession,
@@ -125,19 +128,19 @@ export function CommandPalette({
           <CommandItem onSelect={run(onNewTab)}>
             <Plus size={15} />
             {t("newTab")}
-            <CommandShortcut>⌘T</CommandShortcut>
+            <CommandShortcut>{formatCombo(bindings.newTab)}</CommandShortcut>
           </CommandItem>
           {activeWorkspace && (
             <CommandItem onSelect={run(onCloseActive)}>
               <X size={15} />
               {t("closePane")}
-              <CommandShortcut>⌘W</CommandShortcut>
+              <CommandShortcut>{formatCombo(bindings.closePane)}</CommandShortcut>
             </CommandItem>
           )}
           <CommandItem onSelect={run(onTogglePanel)}>
             <SidebarSimple size={15} />
             {t("togglePanel")}
-            <CommandShortcut>⌘B</CommandShortcut>
+            <CommandShortcut>{formatCombo(bindings.panel)}</CommandShortcut>
           </CommandItem>
           <CommandItem onSelect={run(onOpenSettings)}>
             <GearSix size={15} />

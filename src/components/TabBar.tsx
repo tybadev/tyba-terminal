@@ -78,7 +78,7 @@ export function TabBar({
       <button
         onClick={onNew}
         aria-label={t("newTab")}
-        title="⌘T"
+        
         className="flex w-8 shrink-0 items-center justify-center rounded-[4px] text-tyba-text-faint transition-colors hover:bg-white/[.03] hover:text-tyba-text"
       >
         <Plus size={13} weight="bold" />

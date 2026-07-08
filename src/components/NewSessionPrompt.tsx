@@ -12,6 +12,7 @@ import {
 import { getPref, setPref } from "../lib/ipc";
 
 const LAST_DIR_KEY = "pref.last_session_dir";
+const DEFAULT_DIR_KEY = "pref.default_session_dir";
 
 interface Props {
   open: boolean;
@@ -24,12 +25,16 @@ const basename = (dir: string) => dir.split("/").filter(Boolean).pop() ?? dir;
 export function NewSessionPrompt({ open, onOpenChange, onCreate }: Props) {
   const { t } = useTranslation();
   const [lastDir, setLastDir] = useState<string | null>(null);
+  const [defaultDir, setDefaultDir] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     void getPref(LAST_DIR_KEY)
       .then(setLastDir)
       .catch(() => setLastDir(null));
+    void getPref(DEFAULT_DIR_KEY)
+      .then((v) => setDefaultDir(v || null))
+      .catch(() => setDefaultDir(null));
   }, [open]);
 
   const create = (dir: string | null) => {
@@ -54,7 +59,21 @@ export function NewSessionPrompt({ open, onOpenChange, onCreate }: Props) {
     >
       <CommandList>
         <CommandGroup heading={t("newSessionWhere")}>
-          {lastDir && (
+          {defaultDir && (
+            <CommandItem
+              onSelect={() => {
+                onOpenChange(false);
+                create(defaultDir);
+              }}
+            >
+              <FolderOpen size={15} className="text-tyba-green" />
+              <span className="min-w-0 flex-1 truncate">{defaultDir}</span>
+              <span className="ml-auto font-mono text-[10px] text-tyba-text-faint">
+                {t("defaultFolder")}
+              </span>
+            </CommandItem>
+          )}
+          {lastDir && lastDir !== defaultDir && (
             <CommandItem
               onSelect={() => {
                 onOpenChange(false);
