@@ -11,6 +11,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { getPref, setPref } from "../lib/ipc";
+import { basename } from "@/lib/utils";
 
 const LAST_DIR_KEY = "pref.last_session_dir";
 const DEFAULT_DIR_KEY = "pref.default_session_dir";
@@ -20,8 +21,6 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   onCreate: (cwd: string | null, name: string) => void;
 }
-
-const basename = (dir: string) => dir.split("/").filter(Boolean).pop() ?? dir;
 
 export function NewSessionPrompt({ open, onOpenChange, onCreate }: Props) {
   const { t } = useTranslation();

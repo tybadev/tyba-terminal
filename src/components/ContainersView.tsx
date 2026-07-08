@@ -39,7 +39,6 @@ const IS_MAC = navigator.platform.toUpperCase().includes("MAC");
 const LOOSE_KEY = "__loose__";
 
 interface Props {
-  repoRoot: string | null;
   onRunningChange?: (running: boolean) => void;
   onAvailableChange?: (available: boolean) => void;
 }
@@ -50,14 +49,6 @@ interface ProjectGroup {
   workingDir: string | null;
   hasComposeFile: boolean;
   items: ContainerInfo[];
-  active: boolean;
-}
-
-function dirMatches(workingDir: string | null, repoRoot: string | null): boolean {
-  if (!workingDir || !repoRoot) return false;
-  const root = repoRoot.replace(/\/+$/, "");
-  const wd = workingDir.replace(/\/+$/, "");
-  return wd === root || wd.startsWith(`${root}/`);
 }
 
 function PanelAction({
@@ -92,7 +83,6 @@ function PanelAction({
 }
 
 export function ContainersView({
-  repoRoot,
   onRunningChange,
   onAvailableChange,
 }: Props) {
@@ -142,18 +132,16 @@ export function ContainersView({
         workingDir,
         hasComposeFile: items.some((c) => c.config_files),
         items,
-        active: dirMatches(workingDir, repoRoot),
       };
     });
     result.sort((a, b) => {
-      if (a.active !== b.active) return a.active ? -1 : 1;
       if ((a.project === null) !== (b.project === null)) {
         return a.project === null ? 1 : -1;
       }
       return (a.project ?? "").localeCompare(b.project ?? "");
     });
     return result;
-  }, [containers, repoRoot]);
+  }, [containers]);
 
   const openTab = useCallback((kind: "logs" | "shell", id: string) => {
     const call = kind === "logs" ? dockerOpenLogs : dockerOpenShell;
@@ -205,7 +193,7 @@ export function ContainersView({
           <span
             className={`size-1.5 shrink-0 rounded-full ${
               isRunning
-                ? "bg-tyba-green [box-shadow:0_0_5px_rgba(124,197,68,.5)]"
+                ? "bg-tyba-green [box-shadow:var(--tyba-glow-green)]"
                 : "bg-tyba-text-faint"
             }`}
           />
@@ -282,11 +270,7 @@ export function ContainersView({
           ) : (
             <CaretDown size={10} className="shrink-0 text-tyba-text-faint" />
           )}
-          <span
-            className={`min-w-0 flex-1 truncate text-[11px] font-medium uppercase tracking-[0.1em] ${
-              group.active ? "text-tyba-text" : "text-tyba-text-faint"
-            }`}
-          >
+          <span className="min-w-0 flex-1 truncate text-[11px] font-medium uppercase tracking-[0.1em] text-tyba-text-faint">
             {group.project ?? t("containersLoose")}
           </span>
           {running.length > 0 && (

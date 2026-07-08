@@ -13,6 +13,7 @@ use uuid::Uuid;
 const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 const READ_BUF_SIZE: usize = 8 * 1024;
 const SCROLLBACK_LINES: usize = 1000;
+const CHANNEL_CAPACITY: usize = 128;
 
 pub type PtyId = Uuid;
 
@@ -120,7 +121,7 @@ impl PtyPool {
 
         let output_event = format!("pty://output/{session_id}");
         let exit_event = format!("pty://exit/{session_id}");
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(CHANNEL_CAPACITY);
 
         std::thread::Builder::new()
             .name(format!("pty-reader-{session_id}"))

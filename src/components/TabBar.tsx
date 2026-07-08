@@ -25,11 +25,6 @@ interface Props {
   onNew: () => void;
 }
 
-const VIEW_LABEL_KEYS: Record<string, string> = {
-  containers: "containers",
-  settings: "settings",
-};
-
 function tabIcon(tab: Tab): React.ReactNode {
   if (tab.view === "containers") return <ShippingContainer size={12} />;
   if (tab.view === "settings") return <SlidersHorizontal size={12} />;
@@ -38,7 +33,7 @@ function tabIcon(tab: Tab): React.ReactNode {
 
 function tabLabel(tab: Tab, sessions: Map<SessionId, Session>): string {
   if (tab.title) return tab.title;
-  if (tab.view) return i18n.t(VIEW_LABEL_KEYS[tab.view] ?? tab.view);
+  if (tab.view) return i18n.t(tab.view);
   if (!tab.root) return "shell";
   const bound = leafSessions(tab.root)
     .map((id) => sessions.get(id)?.title)

@@ -216,8 +216,8 @@ export const closePane = (paneId: PaneId) =>
 export const focusPane = (paneId: PaneId) =>
   invoke<void>("focus_pane", { paneId });
 
-export const setSplitRatio = (paneId: PaneId, ratio: number) =>
-  invoke<void>("set_split_ratio", { paneId, ratio });
+export const setSplitRatio = (paneId: PaneId, ratio: number, commit = true) =>
+  invoke<void>("set_split_ratio", { paneId, ratio, commit });
 
 export const onLayoutChanged = (
   handler: (state: LayoutState) => void,

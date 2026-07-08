@@ -61,7 +61,9 @@ import {
   createSession,
   createTab,
   createWorkspace,
+  disposeSession,
   dockerAvailable,
+  dockerListContainers,
   dockerOpenDashboard,
   getPref,
   focusPane,
@@ -85,6 +87,7 @@ import {
   type SplitKind,
   type Workspace,
 } from "./lib/ipc";
+import { basename } from "@/lib/utils";
 import {
   computeRects,
   findAncestorSplit,
@@ -179,8 +182,6 @@ function IconAction({
   );
 }
 
-const basename = (dir: string) => dir.split("/").filter(Boolean).pop() ?? dir;
-
 export default function App() {
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -259,6 +260,11 @@ export default function App() {
     [sessions],
   );
 
+  const sessionIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    sessionIdsRef.current = new Set(sessions.map((s) => s.id));
+  }, [sessions]);
+
   const workspaceAgent = useCallback(
     (w: Workspace): string | null => {
       for (const tab of w.tabs) {
@@ -303,26 +309,33 @@ export default function App() {
     };
   }, [workspaces]);
 
+  const repoRootsKey = useMemo(() => {
+    const roots = new Set<string>();
+    for (const w of layout.workspaces) {
+      if (w.repo_root) roots.add(w.repo_root);
+    }
+    return [...roots].sort().join("\n");
+  }, [layout.workspaces]);
+
   useEffect(() => {
     let cancelled = false;
-    const targets = layout.workspaces.filter((w) => w.repo_root);
+    const roots = repoRootsKey ? repoRootsKey.split("\n") : [];
     void Promise.all(
-      targets.map(
-        async (w) =>
-          [w.id, await repoBranch(w.repo_root as string).catch(() => null)] as const,
+      roots.map(
+        async (root) => [root, await repoBranch(root).catch(() => null)] as const,
       ),
     ).then((entries) => {
       if (cancelled) return;
       const next: Record<string, string> = {};
-      for (const [id, branch] of entries) {
-        if (branch) next[id] = branch;
+      for (const [root, branch] of entries) {
+        if (branch) next[root] = branch;
       }
       setBranches(next);
     });
     return () => {
       cancelled = true;
     };
-  }, [layout.workspaces]);
+  }, [repoRootsKey]);
 
   const cycleWorkspace = useCallback(
     (dir: 1 | -1) => {
@@ -345,7 +358,11 @@ export default function App() {
         rows: 24,
       });
       setSessions((prev) => [...prev, session]);
-      await splitPane(activeTab.active_pane as string, kind, session.id);
+      try {
+        await splitPane(activeTab.active_pane as string, kind, session.id);
+      } catch {
+        void disposeSession(session.id).catch(() => {});
+      }
     },
     [activeWorkspace, activeTab],
   );
@@ -438,12 +455,12 @@ export default function App() {
         const now = Date.now();
         if (now - dragThrottle.current < 80) return;
         dragThrottle.current = now;
-        void setSplitRatio(divider.split, compute(ev)).catch(() => {});
+        void setSplitRatio(divider.split, compute(ev), false).catch(() => {});
       };
       const up = (ev: PointerEvent) => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
-        void setSplitRatio(divider.split, compute(ev)).catch(() => {});
+        void setSplitRatio(divider.split, compute(ev), true).catch(() => {});
       };
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", up);
@@ -460,8 +477,12 @@ export default function App() {
         rows: 30,
       });
       setSessions((prev) => [...prev, session]);
-      const workspaceId = await createWorkspace(name, cwd, session.id);
-      if (group) await setWorkspaceGroup(workspaceId, group);
+      try {
+        const workspaceId = await createWorkspace(name, cwd, session.id);
+        if (group) await setWorkspaceGroup(workspaceId, group);
+      } catch {
+        void disposeSession(session.id).catch(() => {});
+      }
     },
     [],
   );
@@ -483,7 +504,11 @@ export default function App() {
       rows: 30,
     });
     setSessions((prev) => [...prev, session]);
-    await createTab(session.id, activeWorkspace.id);
+    try {
+      await createTab(session.id, activeWorkspace.id);
+    } catch {
+      void disposeSession(session.id).catch(() => {});
+    }
   }, [activeWorkspace]);
 
   const openProjectFolder = useCallback(async () => {
@@ -580,16 +605,28 @@ export default function App() {
   useEffect(() => {
     if (!showContainers) return;
     let cancelled = false;
-    const check = () =>
-      void dockerAvailable()
-        .then((ok) => {
-          if (!cancelled) setDockerUp(ok);
-        })
-        .catch(() => {
-          if (!cancelled) setDockerUp(false);
-        });
-    check();
-    const timer = window.setInterval(check, 30_000);
+    const check = async () => {
+      try {
+        const ok = await dockerAvailable();
+        if (cancelled) return;
+        setDockerUp(ok);
+        if (!ok) {
+          setDockerRunning(false);
+          return;
+        }
+        const list = await dockerListContainers(null, true);
+        if (!cancelled) {
+          setDockerRunning(list.some((c) => c.state === "running"));
+        }
+      } catch {
+        if (!cancelled) {
+          setDockerUp(false);
+          setDockerRunning(false);
+        }
+      }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), 30_000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -603,7 +640,15 @@ export default function App() {
       const un = await onLayoutChanged((state) => {
         if (cancelled) return;
         setLayout(state);
-        void refreshSessions();
+        const known = sessionIdsRef.current;
+        const hasUnknownSession = state.workspaces.some((w) =>
+          w.tabs.some(
+            (tab) =>
+              tab.root !== null &&
+              leafSessions(tab.root).some((id) => !known.has(id)),
+          ),
+        );
+        if (hasUnknownSession) void refreshSessions();
       });
       if (cancelled) {
         un();
@@ -770,7 +815,7 @@ export default function App() {
     const isActive = w.id === layout.active_workspace;
     const showDetails = open && detailsFor(w.id);
     const agent = showDetails ? workspaceAgent(w) : null;
-    const branch = branches[w.id];
+    const branch = w.repo_root ? branches[w.repo_root] : undefined;
     return (
       <button
         key={w.id}
@@ -1085,10 +1130,10 @@ export default function App() {
                 >
                   <DockerIcon size={16} />
                   {!dockerUp ? (
-                    <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-red [box-shadow:0_0_6px_rgba(239,68,68,.6)]" />
+                    <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-red [box-shadow:var(--tyba-glow-red)]" />
                   ) : (
                     dockerRunning && (
-                      <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-green [box-shadow:0_0_6px_rgba(124,197,68,.55)]" />
+                      <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)]" />
                     )
                   )}
                 </Button>
@@ -1236,7 +1281,6 @@ export default function App() {
                   {activeTab?.view === "containers" && (
                     <div className="absolute inset-0 flex">
                       <ContainersView
-                        repoRoot={null}
                         onAvailableChange={setDockerUp}
                         onRunningChange={setDockerRunning}
                       />

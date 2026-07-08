@@ -355,6 +355,7 @@ impl DockerManager {
                 known.insert(c.id.clone(), c.name.clone());
             }
         }
+        self.prune_tabs();
         {
             let mut projects = self.projects.lock();
             projects.clear();
@@ -394,7 +395,15 @@ impl DockerManager {
         self.container_name(id)?;
         run_docker(&["rm", "-f", id], RM_TIMEOUT)?;
         self.known.lock().remove(id);
+        self.prune_tabs();
         Ok(())
+    }
+
+    fn prune_tabs(&self) {
+        let known = self.known.lock();
+        self.tabs
+            .lock()
+            .retain(|(container_id, _), _| known.contains_key(container_id));
     }
 
     pub fn project_info(&self, name: &str) -> Result<ProjectInfo, DockerError> {
@@ -583,6 +592,19 @@ not-json-line
         assert!(!is_valid_container_id(&"a".repeat(65)));
         assert!(!is_valid_container_id("../etc/passwd"));
         assert!(!is_valid_container_id("tyba-db-1; rm -rf /"));
+    }
+
+    #[test]
+    fn prune_tabs_drops_sessions_of_unknown_containers() {
+        let mgr = DockerManager::new();
+        let alive = "a".repeat(64);
+        let dead = "b".repeat(64);
+        mgr.known.lock().insert(alive.clone(), "db".into());
+        mgr.remember_tab(&alive, ContainerTab::Logs, SessionId::new_v4());
+        mgr.remember_tab(&dead, ContainerTab::Shell, SessionId::new_v4());
+        mgr.prune_tabs();
+        assert!(mgr.tab_session(&alive, ContainerTab::Logs).is_some());
+        assert!(mgr.tab_session(&dead, ContainerTab::Shell).is_none());
     }
 
     #[test]

@@ -790,7 +790,12 @@ impl LayoutManager {
         Err(LayoutError::PaneNotFound(pane))
     }
 
-    pub fn set_split_ratio(&self, pane: PaneId, ratio: f64) -> Result<(), LayoutError> {
+    pub fn set_split_ratio(
+        &self,
+        pane: PaneId,
+        ratio: f64,
+        commit: bool,
+    ) -> Result<(), LayoutError> {
         let mut inner = self.inner.write();
         let found = inner
             .workspaces
@@ -801,7 +806,10 @@ impl LayoutManager {
             return Err(LayoutError::NotASplit(pane));
         }
         drop(inner);
-        self.persist()
+        if commit {
+            self.persist()?;
+        }
+        Ok(())
     }
 
     pub fn session_disposed(&self, session: SessionId) -> Result<(), LayoutError> {
@@ -1303,7 +1311,7 @@ mod tests {
         mgr.split_pane(pane, SplitKind::V, sid()).unwrap();
         let split_id = mgr.state().workspaces[0].tabs[0].root.as_ref().unwrap().id();
 
-        mgr.set_split_ratio(split_id, 0.01).unwrap();
+        mgr.set_split_ratio(split_id, 0.01, true).unwrap();
         match &mgr.state().workspaces[0].tabs[0].root {
             Some(PaneNode::Split { ratio, .. }) => {
                 assert!((ratio - MIN_RATIO).abs() < f64::EPSILON)
@@ -1311,7 +1319,7 @@ mod tests {
             _ => panic!("esperava split"),
         }
         assert!(matches!(
-            mgr.set_split_ratio(pane, 0.5).unwrap_err(),
+            mgr.set_split_ratio(pane, 0.5, true).unwrap_err(),
             LayoutError::NotASplit(_)
         ));
     }

@@ -119,13 +119,21 @@ export function TerminalView({
     });
 
     const unlisteners: Array<() => void> = [];
-    void sessionScrollback(sessionId)
+    let attached = false;
+    void onPtyOutput(sessionId, (bytes) => {
+      if (attached) term.write(bytes);
+    })
+      .then((un) => {
+        unlisteners.push(un);
+        return sessionScrollback(sessionId);
+      })
       .then((snapshot) => {
         if (snapshot.length) term.write(snapshot);
       })
       .catch(() => {})
-      .then(() => onPtyOutput(sessionId, (bytes) => term.write(bytes)))
-      .then((un) => unlisteners.push(un));
+      .then(() => {
+        attached = true;
+      });
     void onPtyExit(sessionId, () => {
       term.write(`\r\n\x1b[2m${i18n.t("sessionEnded")}\x1b[0m\r\n`);
       onExit?.();

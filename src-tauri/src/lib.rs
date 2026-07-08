@@ -390,10 +390,11 @@ fn set_split_ratio(
     state: State<'_, AppState>,
     pane_id: layout::PaneId,
     ratio: f64,
+    commit: Option<bool>,
 ) -> Result<(), String> {
     state
         .layout
-        .set_split_ratio(pane_id, ratio)
+        .set_split_ratio(pane_id, ratio, commit.unwrap_or(true))
         .map_err(|e| e.to_string())?;
     emit_layout(&app, &state);
     Ok(())
