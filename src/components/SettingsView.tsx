@@ -352,7 +352,7 @@ export function SettingsView({
 
   return (
     <div className="flex min-h-0 flex-1">
-      <aside className="flex w-48 shrink-0 flex-col gap-px px-2 pt-3">
+      <aside className="tyba-glass flex w-48 shrink-0 flex-col gap-px px-2 pt-3">
         <button
           onClick={onClose}
           className="mb-2 flex h-8 items-center gap-2 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.03] hover:text-tyba-text"
