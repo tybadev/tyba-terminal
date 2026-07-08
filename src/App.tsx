@@ -138,7 +138,6 @@ export default function App() {
     void newShell();
   }, [newShell]);
 
-  // atalhos globais (capture: funcionam mesmo com o xterm focado)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.repeat || e.shiftKey || e.altKey || e.ctrlKey) return;
