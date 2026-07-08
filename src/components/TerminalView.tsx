@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { LigaturesAddon } from "@xterm/addon-ligatures";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
@@ -28,6 +29,24 @@ let defaultFontSize = 13;
 export function setDefaultFontSize(size: number) {
   if (size >= 10 && size <= 20) defaultFontSize = size;
 }
+
+// Local Font Access (navigator.fonts) não existe em WKWebView/WebKitGTK — o
+// addon cai nesta lista de fallback. Explicitá-la garante ligatures idênticas
+// nos três OS, já que a fonte (JetBrains Mono) é bundlada e conhecida.
+const JETBRAINS_MONO_LIGATURES = [
+  "-->", "->", "->>", "-<", "-<<", "<--", "<-", "<->", "<-->",
+  "==>", "=>", "=>>", "=<", "<==", "<=", "<=>", "<==>", ">=", ">=>",
+  "<=<", ">>=", "=<<", "<<=",
+  "==", "===", "!=", "!==", "=/=", "<>",
+  "::", ":::", ":=", "..", "...", "..<", "..=",
+  "!!", "??", "?.", "?:", "&&", "||", "|=", "|>", "<|", "<|>",
+  "++", "+++", "--", "---", "**", "***", "//", "///", "/*", "*/",
+  "</", "/>", "</>", "<!--", "<!---", "www",
+  "##", "###", "####", "#{", "#[", "#(", "#_", "#?", "#!", "#=",
+  "~~", "~~>", "~=", "~-", "~@", "=~",
+  "__", ".=", ".-", "=:=", ":>", "<:", "<:<",
+  "\\/", "/\\", "|||", "<<", ">>", "<<<", ">>>",
+];
 
 function loadWebgl(term: Terminal, onLost: () => void): WebglAddon | null {
   try {
@@ -103,6 +122,16 @@ export function TerminalView({
     term.loadAddon(fit);
     term.open(el);
     fit.fit();
+
+    // Ligatures antes do WebGL: o WebGL (carregado no foco) lê o
+    // font-feature-settings que o addon aplica ao montar o atlas.
+    try {
+      term.loadAddon(
+        new LigaturesAddon({ fallbackLigatures: JETBRAINS_MONO_LIGATURES }),
+      );
+    } catch {
+      // sem ligatures não é erro fatal — o terminal segue funcional
+    }
 
     el.style.backgroundColor = theme.background ?? "";
     const offTheme = onTerminalThemeChange((next) => {
