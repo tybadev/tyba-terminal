@@ -13,6 +13,8 @@ Convenção ANSI da casa (igual aos built-ins TYBA):
 """
 import pathlib
 import re
+import shutil
+import subprocess
 import sys
 
 DS = pathlib.Path('/Users/guilherme/swell-system/tyba-design-system/ds-bundle/tokens/themes.css')
@@ -145,6 +147,11 @@ fn scheme(id: &str, name: &str, base: ThemeBase, terminal: TerminalPalette) -> T
     }}
 }}
 ''')
+    rustfmt = shutil.which('rustfmt')
+    if rustfmt:
+        subprocess.run([rustfmt, '--edition', '2021', str(OUT)], check=True)
+    else:
+        print('aviso: rustfmt não encontrado — rode cargo fmt antes de commitar', file=sys.stderr)
     print(f'{OUT} gerado com {len(ids)} esquemas')
 
 

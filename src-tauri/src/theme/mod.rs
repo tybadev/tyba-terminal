@@ -614,7 +614,11 @@ mod tests {
                 theme.id
             );
             for (label, color) in theme.terminal.colors() {
-                assert!(is_hex_color(color), "{}: cor inválida em {label}: {color}", theme.id);
+                assert!(
+                    is_hex_color(color),
+                    "{}: cor inválida em {label}: {color}",
+                    theme.id
+                );
             }
         }
         let dark = all.iter().filter(|t| t.base == ThemeBase::Dark).count();
