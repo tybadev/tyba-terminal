@@ -13,11 +13,21 @@ import {
 } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { LANGUAGES, setLanguage, type LanguageCode } from "../i18n";
-import { getUiFont, onUiFontChange, setUiFont, type UiFont } from "../font";
+import {
+  getUiFont,
+  onUiFontChange,
+  setUiFont,
+  UI_FONT_LABELS,
+  UI_FONTS,
+  type UiFont,
+} from "../font";
 import {
   applyTheme,
+  getEffectiveBase,
   getThemeMode,
+  onEffectiveBaseChange,
   onThemeModeChange,
   setThemeMode,
   THEMES,
@@ -286,8 +296,13 @@ export function SettingsView({
   const [defaultDir, setDefaultDir] = useState("");
   const [fontSize, setFontSize] = useState(13);
   const [uiFont, setUiFontState] = useState<UiFont>(getUiFont);
+  const [effBase, setEffBase] = useState(getEffectiveBase);
 
   useEffect(() => onUiFontChange(setUiFontState), []);
+  useEffect(
+    () => onEffectiveBaseChange(() => setEffBase(getEffectiveBase())),
+    [],
+  );
 
   const refresh = useCallback(() => {
     void listThemes().then(setThemes).catch(() => {});
@@ -347,8 +362,7 @@ export function SettingsView({
     }
   };
 
-  const slotOf = (theme: Theme) =>
-    theme.base === "dark" ? themeState?.dark.id : themeState?.light.id;
+  const effectiveThemeId = themeState ? themeState[effBase].id : null;
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -463,7 +477,7 @@ export function SettingsView({
               title={t("settingsAppearance")}
               hint={t("appearanceHint")}
             />
-            <span className="tyba-label">{t("theme")}</span>
+            <span className="tyba-label">{t("colorMode")}</span>
             <div className="flex gap-2 pt-2 pb-6">
               {THEMES.map((m) => (
                 <Choice
@@ -475,30 +489,24 @@ export function SettingsView({
               ))}
             </div>
 
-            <span className="tyba-label">{t("uiFont")}</span>
-            <div className="flex gap-2 pt-2 pb-6">
-              <Choice
-                active={uiFont === "mono"}
-                label={t("fontMono")}
-                onClick={() => setUiFont("mono")}
+            <span className="tyba-label">{t("fontSection")}</span>
+            <div className="grid grid-cols-2 gap-2 pt-2 pb-6">
+              <Select
+                value={uiFont}
+                onChange={(v) => setUiFont(v as UiFont)}
+                options={UI_FONTS.map((f) => ({
+                  value: f,
+                  label: UI_FONT_LABELS[f],
+                }))}
               />
-              <Choice
-                active={uiFont === "grotesk"}
-                label={t("fontGrotesk")}
-                onClick={() => setUiFont("grotesk")}
+              <Select
+                value={String(fontSize)}
+                onChange={(v) => changeFontSize(Number(v))}
+                options={FONT_SIZES.map((s) => ({
+                  value: String(s),
+                  label: `${s}px`,
+                }))}
               />
-            </div>
-
-            <span className="tyba-label">{t("terminalFontSize")}</span>
-            <div className="flex gap-2 pt-2 pb-6">
-              {FONT_SIZES.map((size) => (
-                <Choice
-                  key={size}
-                  active={fontSize === size}
-                  label={`${size}px`}
-                  onClick={() => changeFontSize(size)}
-                />
-              ))}
             </div>
 
             <div className="flex items-center justify-between pb-1">
@@ -523,41 +531,49 @@ export function SettingsView({
                 </Button>
               </div>
             </div>
-            <p className="pb-2 text-[11px] text-tyba-text-faint">
+            <p className="pb-3 text-[11px] text-tyba-text-faint">
               {t("themeImportHint")}
             </p>
-            <div className="flex flex-col gap-px">
+            <div className="grid grid-cols-2 gap-2">
               {themes.map((theme) => {
-                const inUse = slotOf(theme) === theme.id;
+                const inUse = theme.id === effectiveThemeId;
+                const ansi = theme.terminal.ansi;
                 return (
-                  <div
+                  <button
                     key={theme.id}
-                    className="flex h-9 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] hover:bg-white/[.03]"
+                    onClick={() => void applyTheme(theme)}
+                    aria-pressed={inUse}
+                    className={`group relative flex flex-col gap-2 overflow-hidden rounded-[6px] border p-2 text-left transition-colors ${
+                      inUse
+                        ? "border-tyba-green [box-shadow:0_0_0_1px_var(--tyba-green)]"
+                        : "border-tyba-border hover:border-tyba-border-strong"
+                    }`}
                   >
-                    <span
-                      className="size-3 shrink-0 rounded-full border border-tyba-border-strong"
+                    <div
+                      className="flex h-11 items-end gap-1 rounded-[4px] p-2"
                       style={{ background: theme.terminal.background }}
-                    />
-                    <span className="min-w-0 flex-1 truncate">
-                      {theme.name}
-                    </span>
-                    <span className="font-mono text-[10px] text-tyba-text-faint">
-                      {theme.base}
-                    </span>
-                    {inUse ? (
-                      <span className="flex items-center gap-1 font-mono text-[10px] text-tyba-green">
-                        <Check size={11} weight="bold" />
-                        {t("themeInUse")}
+                    >
+                      {[1, 2, 3, 4, 5, 6].map((i) => (
+                        <span
+                          key={i}
+                          className="h-4 flex-1 rounded-[2px]"
+                          style={{ background: ansi[i] }}
+                        />
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="min-w-0 flex-1 truncate text-[12px] text-tyba-text">
+                        {theme.name}
                       </span>
-                    ) : (
-                      <button
-                        onClick={() => void applyTheme(theme)}
-                        className="rounded-[4px] px-2 py-0.5 text-[11px] text-tyba-text-muted transition-colors hover:bg-white/[.05] hover:text-tyba-text"
-                      >
-                        {t("useThemeShort")}
-                      </button>
-                    )}
-                  </div>
+                      {inUse && (
+                        <Check
+                          size={12}
+                          weight="bold"
+                          className="shrink-0 text-tyba-green"
+                        />
+                      )}
+                    </div>
+                  </button>
                 );
               })}
             </div>
