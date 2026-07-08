@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Plus, X } from "@phosphor-icons/react";
 
+import i18n from "../i18n";
 import {
   leafSessions,
   type Session,
@@ -20,6 +21,8 @@ interface Props {
 
 function tabLabel(tab: Tab, sessions: Map<SessionId, Session>): string {
   if (tab.title) return tab.title;
+  if (tab.view === "containers") return i18n.t("containers");
+  if (!tab.root) return tab.view ?? "shell";
   const bound = leafSessions(tab.root)
     .map((id) => sessions.get(id)?.title)
     .filter(Boolean);

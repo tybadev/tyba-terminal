@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     repo_root TEXT,
     color TEXT,
     group_name TEXT,
+    kind TEXT,
     position INTEGER NOT NULL,
     active_tab TEXT,
     created_at TEXT NOT NULL
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS tabs (
     id TEXT PRIMARY KEY,
     workspace_id TEXT,
     title TEXT,
+    view TEXT,
     position INTEGER NOT NULL,
     active_pane TEXT,
     created_at TEXT NOT NULL
@@ -84,8 +86,10 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
         let _ = conn.execute("ALTER TABLE tabs ADD COLUMN workspace_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE tabs ADD COLUMN view TEXT", []);
         let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN color TEXT", []);
         let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN group_name TEXT", []);
+        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN kind TEXT", []);
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -184,14 +188,15 @@ impl Store {
         for w in &rows.workspaces {
             tx.execute(
                 "INSERT INTO workspaces
-                     (id, name, repo_root, color, group_name, position, active_tab, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                     (id, name, repo_root, color, group_name, kind, position, active_tab, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     w.id,
                     w.name,
                     w.repo_root,
                     w.color,
                     w.group_name,
+                    w.kind,
                     w.position,
                     w.active_tab,
                     w.created_at
@@ -200,12 +205,13 @@ impl Store {
         }
         for t in &rows.tabs {
             tx.execute(
-                "INSERT INTO tabs (id, workspace_id, title, position, active_pane, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO tabs (id, workspace_id, title, view, position, active_pane, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     t.id,
                     t.workspace_id,
                     t.title,
+                    t.view,
                     t.position,
                     t.active_pane,
                     t.created_at
@@ -234,7 +240,7 @@ impl Store {
     pub fn load_layout(&self) -> Result<LayoutRows, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, name, repo_root, color, group_name, position, active_tab, created_at
+            "SELECT id, name, repo_root, color, group_name, kind, position, active_tab, created_at
              FROM workspaces ORDER BY position",
         )?;
         let workspaces = stmt
@@ -245,15 +251,16 @@ impl Store {
                     repo_root: row.get(2)?,
                     color: row.get(3)?,
                     group_name: row.get(4)?,
-                    position: row.get(5)?,
-                    active_tab: row.get(6)?,
-                    created_at: row.get(7)?,
+                    kind: row.get(5)?,
+                    position: row.get(6)?,
+                    active_tab: row.get(7)?,
+                    created_at: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, title, position, active_pane, created_at
+            "SELECT id, workspace_id, title, view, position, active_pane, created_at
              FROM tabs ORDER BY position",
         )?;
         let tabs = stmt
@@ -262,9 +269,10 @@ impl Store {
                     id: row.get(0)?,
                     workspace_id: row.get(1)?,
                     title: row.get(2)?,
-                    position: row.get(3)?,
-                    active_pane: row.get(4)?,
-                    created_at: row.get(5)?,
+                    view: row.get(3)?,
+                    position: row.get(4)?,
+                    active_pane: row.get(5)?,
+                    created_at: row.get(6)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

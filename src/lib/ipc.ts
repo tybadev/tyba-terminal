@@ -128,12 +128,14 @@ export type PaneNode =
 export interface Tab {
   id: TabId;
   title: string | null;
-  active_pane: PaneId;
-  root: PaneNode;
+  view: string | null;
+  active_pane: PaneId | null;
+  root: PaneNode | null;
   created_at: string;
 }
 
 export type WorkspaceId = string;
+export type WorkspaceKind = "user" | "docker";
 
 export interface Workspace {
   id: WorkspaceId;
@@ -141,6 +143,7 @@ export interface Workspace {
   repo_root: string | null;
   color: string | null;
   group: string | null;
+  kind: WorkspaceKind;
   active_tab: TabId | null;
   tabs: Tab[];
   created_at: string;
@@ -251,15 +254,14 @@ export const dockerAvailable = () => invoke<boolean>("docker_available");
 export const dockerListContainers = (repoRoot: string | null, all: boolean) =>
   invoke<ContainerInfo[]>("docker_list_containers", { repoRoot, all });
 
-export const dockerOpenLogs = (
-  containerId: string,
-  workspaceId: WorkspaceId | null,
-) => invoke<void>("docker_open_logs", { containerId, workspaceId });
+export const dockerOpenLogs = (containerId: string) =>
+  invoke<void>("docker_open_logs", { containerId });
 
-export const dockerOpenShell = (
-  containerId: string,
-  workspaceId: WorkspaceId | null,
-) => invoke<void>("docker_open_shell", { containerId, workspaceId });
+export const dockerOpenShell = (containerId: string) =>
+  invoke<void>("docker_open_shell", { containerId });
+
+export const dockerOpenDashboard = () =>
+  invoke<void>("docker_open_dashboard");
 
 export const dockerRemoveContainer = (containerId: string) =>
   invoke<void>("docker_remove_container", { containerId });
@@ -267,19 +269,14 @@ export const dockerRemoveContainer = (containerId: string) =>
 export const dockerOpenDesktop = () =>
   invoke<void>("docker_open_desktop");
 
-export const dockerComposeOp = (
-  project: string,
-  op: ComposeOp,
-  workspaceId: WorkspaceId | null,
-) => invoke<void>("docker_compose_op", { project, op, workspaceId });
+export const dockerComposeOp = (project: string, op: ComposeOp) =>
+  invoke<void>("docker_compose_op", { project, op });
 
 export const dockerOpenProject = (project: string) =>
   invoke<void>("docker_open_project", { project });
 
-export const dockerOpenComposeFile = (
-  project: string,
-  workspaceId: WorkspaceId | null,
-) => invoke<void>("docker_open_compose_file", { project, workspaceId });
+export const dockerOpenComposeFile = (project: string) =>
+  invoke<void>("docker_open_compose_file", { project });
 
 export type ThemeMode = "dark" | "light" | "system";
 export type ThemeBase = "dark" | "light";

@@ -413,7 +413,6 @@ fn open_container_tab(
     state: &State<'_, AppState>,
     container_id: &str,
     tab: docker::ContainerTab,
-    workspace_id: Option<layout::WorkspaceId>,
 ) -> Result<(), String> {
     let name = state
         .docker
@@ -430,6 +429,7 @@ fn open_container_tab(
             return Ok(());
         }
     }
+    let workspace_id = Some(state.layout.docker_workspace().map_err(|e| e.to_string())?);
 
     let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
     let (args, title) = match tab {
@@ -516,15 +516,8 @@ fn docker_open_logs(
     app: AppHandle,
     state: State<'_, AppState>,
     container_id: String,
-    workspace_id: Option<layout::WorkspaceId>,
 ) -> Result<(), String> {
-    open_container_tab(
-        &app,
-        &state,
-        &container_id,
-        docker::ContainerTab::Logs,
-        workspace_id,
-    )
+    open_container_tab(&app, &state, &container_id, docker::ContainerTab::Logs)
 }
 
 #[tauri::command]
@@ -532,15 +525,18 @@ fn docker_open_shell(
     app: AppHandle,
     state: State<'_, AppState>,
     container_id: String,
-    workspace_id: Option<layout::WorkspaceId>,
 ) -> Result<(), String> {
-    open_container_tab(
-        &app,
-        &state,
-        &container_id,
-        docker::ContainerTab::Shell,
-        workspace_id,
-    )
+    open_container_tab(&app, &state, &container_id, docker::ContainerTab::Shell)
+}
+
+#[tauri::command]
+fn docker_open_dashboard(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .layout
+        .open_docker_dashboard()
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -549,7 +545,6 @@ fn docker_compose_op(
     state: State<'_, AppState>,
     project: String,
     op: docker::ComposeOp,
-    workspace_id: Option<layout::WorkspaceId>,
 ) -> Result<(), String> {
     let info = state
         .docker
@@ -557,6 +552,7 @@ fn docker_compose_op(
         .map_err(|e| e.to_string())?;
     docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
     let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
+    let workspace_id = Some(state.layout.docker_workspace().map_err(|e| e.to_string())?);
 
     let script = format!(
         "'{}' {}; ec=$?; if [ $ec -ne 0 ]; then printf '\\n[falhou — enter para fechar]\\n'; read _; fi",
@@ -634,7 +630,6 @@ fn docker_open_compose_file(
     app: AppHandle,
     state: State<'_, AppState>,
     project: String,
-    workspace_id: Option<layout::WorkspaceId>,
 ) -> Result<(), String> {
     let info = state
         .docker
@@ -643,6 +638,7 @@ fn docker_open_compose_file(
     let file = info.config_file.ok_or("projeto sem arquivo compose")?;
     docker::validate_compose_file(&file).map_err(|e| e.to_string())?;
     docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
+    let workspace_id = Some(state.layout.docker_workspace().map_err(|e| e.to_string())?);
 
     let shell = session::default_shell();
     let script = format!("exec \"${{EDITOR:-vi}}\" '{file}'");
@@ -883,6 +879,7 @@ pub fn run() {
             docker_compose_op,
             docker_open_project,
             docker_open_compose_file,
+            docker_open_dashboard,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tyba")

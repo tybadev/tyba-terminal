@@ -239,13 +239,68 @@ impl PaneNode {
     }
 }
 
+pub const VIEW_CONTAINERS: &str = "containers";
+pub const DOCKER_WORKSPACE_NAME: &str = "Docker";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Tab {
     pub id: TabId,
     pub title: Option<String>,
-    pub active_pane: PaneId,
-    pub root: PaneNode,
+    pub view: Option<String>,
+    pub active_pane: Option<PaneId>,
+    pub root: Option<PaneNode>,
     pub created_at: DateTime<Utc>,
+}
+
+impl Tab {
+    fn from_session(session: SessionId) -> Self {
+        let leaf = PaneNode::Leaf {
+            id: Uuid::new_v4(),
+            session_id: session,
+        };
+        Tab {
+            id: Uuid::new_v4(),
+            title: None,
+            view: None,
+            active_pane: Some(leaf.id()),
+            root: Some(leaf),
+            created_at: Utc::now(),
+        }
+    }
+
+    fn from_view(view: &str) -> Self {
+        Tab {
+            id: Uuid::new_v4(),
+            title: None,
+            view: Some(view.to_string()),
+            active_pane: None,
+            root: None,
+            created_at: Utc::now(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceKind {
+    User,
+    Docker,
+}
+
+impl WorkspaceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            WorkspaceKind::User => "user",
+            WorkspaceKind::Docker => "docker",
+        }
+    }
+
+    fn parse(s: Option<&str>) -> Self {
+        match s {
+            Some("docker") => WorkspaceKind::Docker,
+            _ => WorkspaceKind::User,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -255,6 +310,7 @@ pub struct Workspace {
     pub repo_root: Option<String>,
     pub color: Option<String>,
     pub group: Option<String>,
+    pub kind: WorkspaceKind,
     pub active_tab: Option<TabId>,
     pub tabs: Vec<Tab>,
     pub created_at: DateTime<Utc>,
@@ -264,7 +320,9 @@ impl Workspace {
     fn bound_sessions(&self) -> Vec<SessionId> {
         let mut out = Vec::new();
         for tab in &self.tabs {
-            tab.root.leaf_sessions(&mut out);
+            if let Some(root) = &tab.root {
+                root.leaf_sessions(&mut out);
+            }
         }
         out
     }
@@ -283,6 +341,7 @@ pub struct WorkspaceRow {
     pub repo_root: Option<String>,
     pub color: Option<String>,
     pub group_name: Option<String>,
+    pub kind: Option<String>,
     pub position: i64,
     pub active_tab: Option<String>,
     pub created_at: String,
@@ -293,6 +352,7 @@ pub struct TabRow {
     pub id: String,
     pub workspace_id: Option<String>,
     pub title: Option<String>,
+    pub view: Option<String>,
     pub position: i64,
     pub active_pane: Option<String>,
     pub created_at: String,
@@ -378,23 +438,14 @@ impl LayoutManager {
         if find_session_pane(&inner.workspaces, session).is_some() {
             return Err(LayoutError::SessionAlreadyBound(session));
         }
-        let leaf = PaneNode::Leaf {
-            id: Uuid::new_v4(),
-            session_id: session,
-        };
-        let tab = Tab {
-            id: Uuid::new_v4(),
-            title: None,
-            active_pane: leaf.id(),
-            root: leaf,
-            created_at: Utc::now(),
-        };
+        let tab = Tab::from_session(session);
         let workspace = Workspace {
             id: Uuid::new_v4(),
             name: name.trim().to_string(),
             repo_root,
             color: None,
             group: None,
+            kind: WorkspaceKind::User,
             active_tab: Some(tab.id),
             tabs: vec![tab],
             created_at: Utc::now(),
@@ -405,6 +456,29 @@ impl LayoutManager {
         drop(inner);
         self.persist()?;
         Ok(id)
+    }
+
+    pub fn docker_workspace(&self) -> Result<WorkspaceId, LayoutError> {
+        let mut inner = self.inner.write();
+        let id = ensure_docker_workspace(&mut inner);
+        drop(inner);
+        self.persist()?;
+        Ok(id)
+    }
+
+    pub fn open_docker_dashboard(&self) -> Result<(), LayoutError> {
+        let mut inner = self.inner.write();
+        let ws_id = ensure_docker_workspace(&mut inner);
+        let idx = ws_index(&inner.workspaces, ws_id)?;
+        let view_tab = inner.workspaces[idx]
+            .tabs
+            .iter()
+            .find(|t| t.view.as_deref() == Some(VIEW_CONTAINERS))
+            .map(|t| t.id);
+        inner.workspaces[idx].active_tab = view_tab.or(inner.workspaces[idx].active_tab);
+        inner.active = Some(ws_id);
+        drop(inner);
+        self.persist()
     }
 
     pub fn close_workspace(&self, id: WorkspaceId) -> Result<Vec<SessionId>, LayoutError> {
@@ -482,17 +556,7 @@ impl LayoutManager {
             .or(inner.active)
             .ok_or(LayoutError::NoActiveWorkspace)?;
         let idx = ws_index(&inner.workspaces, target)?;
-        let leaf = PaneNode::Leaf {
-            id: Uuid::new_v4(),
-            session_id: session,
-        };
-        let tab = Tab {
-            id: Uuid::new_v4(),
-            title: None,
-            active_pane: leaf.id(),
-            root: leaf,
-            created_at: Utc::now(),
-        };
+        let tab = Tab::from_session(session);
         let tab_id = tab.id;
         inner.workspaces[idx].tabs.push(tab);
         inner.workspaces[idx].active_tab = Some(tab_id);
@@ -518,7 +582,9 @@ impl LayoutManager {
         drop(inner);
         self.persist()?;
         let mut bound = Vec::new();
-        removed.root.leaf_sessions(&mut bound);
+        if let Some(root) = &removed.root {
+            root.leaf_sessions(&mut bound);
+        }
         Ok(bound)
     }
 
@@ -559,7 +625,7 @@ impl LayoutManager {
                         .iter_mut()
                         .find(|t| t.id == tab_id)
                     {
-                        tab.active_pane = pane_id;
+                        tab.active_pane = Some(pane_id);
                     }
                 }
                 drop(inner);
@@ -585,12 +651,14 @@ impl LayoutManager {
         for ws in inner.workspaces.iter_mut() {
             let ws_id = ws.id;
             for tab in ws.tabs.iter_mut() {
-                if tab.root.contains(pane) {
-                    let new_pane = tab
-                        .root
+                let Some(root) = tab.root.as_mut() else {
+                    continue;
+                };
+                if root.contains(pane) {
+                    let new_pane = root
                         .split_leaf(pane, kind, session)
                         .ok_or(LayoutError::PaneNotFound(pane))?;
-                    tab.active_pane = new_pane;
+                    tab.active_pane = Some(new_pane);
                     let tab_id = tab.id;
                     ws.active_tab = Some(tab_id);
                     inner.active = Some(ws_id);
@@ -610,7 +678,7 @@ impl LayoutManager {
                 .workspaces
                 .iter()
                 .flat_map(|w| w.tabs.iter())
-                .find_map(|t| t.root.leaf_session(pane))
+                .find_map(|t| t.root.as_ref().and_then(|r| r.leaf_session(pane)))
         };
         let Some(session) = unbound else {
             return Err(LayoutError::PaneNotFound(pane));
@@ -620,7 +688,7 @@ impl LayoutManager {
         let mut target: Option<(usize, usize)> = None;
         'outer: for (wi, ws) in inner.workspaces.iter().enumerate() {
             for (ti, tab) in ws.tabs.iter().enumerate() {
-                if tab.root.contains(pane) {
+                if tab.root.as_ref().is_some_and(|r| r.contains(pane)) {
                     target = Some((wi, ti));
                     break 'outer;
                 }
@@ -628,15 +696,15 @@ impl LayoutManager {
         }
         let (wi, ti) = target.ok_or(LayoutError::PaneNotFound(pane))?;
         let tab = inner.workspaces[wi].tabs[ti].clone();
-        match tab.root.remove_leaf(pane) {
+        let tab_root = tab.root.clone().ok_or(LayoutError::PaneNotFound(pane))?;
+        match tab_root.remove_leaf(pane) {
             Some(root) => {
-                let active_pane = if root.contains(tab.active_pane) {
-                    tab.active_pane
-                } else {
-                    root.first_leaf()
+                let active_pane = match tab.active_pane {
+                    Some(current) if root.contains(current) => Some(current),
+                    _ => Some(root.first_leaf()),
                 };
                 inner.workspaces[wi].tabs[ti] = Tab {
-                    root,
+                    root: Some(root),
                     active_pane,
                     ..tab
                 };
@@ -664,8 +732,8 @@ impl LayoutManager {
         for ws in inner.workspaces.iter_mut() {
             let ws_id = ws.id;
             for tab in ws.tabs.iter_mut() {
-                if tab.root.contains(pane) {
-                    tab.active_pane = pane;
+                if tab.root.as_ref().is_some_and(|r| r.contains(pane)) {
+                    tab.active_pane = Some(pane);
                     let tab_id = tab.id;
                     ws.active_tab = Some(tab_id);
                     inner.active = Some(ws_id);
@@ -683,7 +751,7 @@ impl LayoutManager {
             .workspaces
             .iter_mut()
             .flat_map(|w| w.tabs.iter_mut())
-            .any(|t| t.root.set_ratio(pane, ratio));
+            .any(|t| t.root.as_mut().is_some_and(|r| r.set_ratio(pane, ratio)));
         if !found {
             return Err(LayoutError::NotASplit(pane));
         }
@@ -759,10 +827,49 @@ fn find_session_pane(
     workspaces.iter().find_map(|w| {
         w.tabs.iter().find_map(|t| {
             t.root
-                .find_leaf_by_session(session)
+                .as_ref()
+                .and_then(|r| r.find_leaf_by_session(session))
                 .map(|pane| (w.id, t.id, pane))
         })
     })
+}
+
+fn ensure_docker_workspace(inner: &mut Inner) -> WorkspaceId {
+    if let Some(idx) = inner
+        .workspaces
+        .iter()
+        .position(|w| w.kind == WorkspaceKind::Docker)
+    {
+        let ws = &mut inner.workspaces[idx];
+        if !ws
+            .tabs
+            .iter()
+            .any(|t| t.view.as_deref() == Some(VIEW_CONTAINERS))
+        {
+            let tab = Tab::from_view(VIEW_CONTAINERS);
+            let tab_id = tab.id;
+            ws.tabs.insert(0, tab);
+            if ws.active_tab.is_none() {
+                ws.active_tab = Some(tab_id);
+            }
+        }
+        return inner.workspaces[idx].id;
+    }
+    let tab = Tab::from_view(VIEW_CONTAINERS);
+    let workspace = Workspace {
+        id: Uuid::new_v4(),
+        name: DOCKER_WORKSPACE_NAME.to_string(),
+        repo_root: None,
+        color: None,
+        group: None,
+        kind: WorkspaceKind::Docker,
+        active_tab: Some(tab.id),
+        tabs: vec![tab],
+        created_at: Utc::now(),
+    };
+    let id = workspace.id;
+    inner.workspaces.push(workspace);
+    id
 }
 
 fn push_pane_rows(
@@ -815,6 +922,7 @@ pub fn workspaces_to_rows(workspaces: &[Workspace]) -> LayoutRows {
             repo_root: ws.repo_root.clone(),
             color: ws.color.clone(),
             group_name: ws.group.clone(),
+            kind: Some(ws.kind.as_str().to_string()),
             position: wi as i64,
             active_tab: ws.active_tab.map(|id| id.to_string()),
             created_at: ws.created_at.to_rfc3339(),
@@ -825,11 +933,14 @@ pub fn workspaces_to_rows(workspaces: &[Workspace]) -> LayoutRows {
                 id: tab_id.clone(),
                 workspace_id: Some(ws_id.clone()),
                 title: tab.title.clone(),
+                view: tab.view.clone(),
                 position: ti as i64,
-                active_pane: Some(tab.active_pane.to_string()),
+                active_pane: tab.active_pane.map(|id| id.to_string()),
                 created_at: tab.created_at.to_rfc3339(),
             });
-            push_pane_rows(&tab.root, &tab_id, None, None, &mut rows.panes);
+            if let Some(root) = &tab.root {
+                push_pane_rows(root, &tab_id, None, None, &mut rows.panes);
+            }
         }
     }
     rows
@@ -871,6 +982,19 @@ fn build_node(id: &str, panes: &[PaneRow]) -> Option<PaneNode> {
 
 fn build_tab(row: &TabRow, panes: &[PaneRow], valid: &HashSet<SessionId>) -> Option<Tab> {
     let tab_id = Uuid::parse_str(&row.id).ok()?;
+    let created_at = DateTime::parse_from_rfc3339(&row.created_at)
+        .ok()?
+        .with_timezone(&Utc);
+    if let Some(view) = &row.view {
+        return Some(Tab {
+            id: tab_id,
+            title: row.title.clone(),
+            view: Some(view.clone()),
+            active_pane: None,
+            root: None,
+            created_at,
+        });
+    }
     let root_row = panes
         .iter()
         .find(|p| p.tab_id == row.id && p.parent_id.is_none())?;
@@ -881,14 +1005,12 @@ fn build_tab(row: &TabRow, panes: &[PaneRow], valid: &HashSet<SessionId>) -> Opt
         .and_then(|s| Uuid::parse_str(s).ok())
         .filter(|id| root.contains(*id))
         .unwrap_or_else(|| root.first_leaf());
-    let created_at = DateTime::parse_from_rfc3339(&row.created_at)
-        .ok()?
-        .with_timezone(&Utc);
     Some(Tab {
         id: tab_id,
         title: row.title.clone(),
-        active_pane,
-        root,
+        view: None,
+        active_pane: Some(active_pane),
+        root: Some(root),
         created_at,
     })
 }
@@ -925,6 +1047,7 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
                 repo_root: w.repo_root.clone(),
                 color: w.color.clone(),
                 group: w.group_name.clone(),
+                kind: WorkspaceKind::parse(w.kind.as_deref()),
                 active_tab,
                 tabs,
                 created_at,
@@ -961,7 +1084,7 @@ mod tests {
         assert_eq!(state.workspaces[0].tabs.len(), 1);
         assert!(matches!(
             state.workspaces[0].tabs[0].root,
-            PaneNode::Leaf { session_id, .. } if session_id == s
+            Some(PaneNode::Leaf { session_id, .. }) if session_id == s
         ));
     }
 
@@ -999,7 +1122,8 @@ mod tests {
             .iter()
             .find(|t| t.id == tab)
             .unwrap()
-            .active_pane;
+            .active_pane
+            .unwrap();
         let s3 = sid();
         mgr.split_pane(pane, SplitKind::V, s3).unwrap();
 
@@ -1045,7 +1169,7 @@ mod tests {
     fn closing_last_pane_of_last_tab_closes_workspace() {
         let mgr = manager();
         ws(&mgr);
-        let pane = mgr.state().workspaces[0].tabs[0].active_pane;
+        let pane = mgr.state().workspaces[0].tabs[0].active_pane.unwrap();
         mgr.close_pane(pane).unwrap();
         let state = mgr.state();
         assert!(state.workspaces.is_empty());
@@ -1102,15 +1226,18 @@ mod tests {
     fn split_and_close_pane_promote_sibling() {
         let mgr = manager();
         ws(&mgr);
-        let first_pane = mgr.state().workspaces[0].tabs[0].active_pane;
+        let first_pane = mgr.state().workspaces[0].tabs[0].active_pane.unwrap();
         let s2 = sid();
         let second = mgr.split_pane(first_pane, SplitKind::H, s2).unwrap();
 
         let unbound = mgr.close_pane(second).unwrap();
         assert_eq!(unbound, vec![s2]);
         let state = mgr.state();
-        assert_eq!(state.workspaces[0].tabs[0].root.id(), first_pane);
-        assert_eq!(state.workspaces[0].tabs[0].active_pane, first_pane);
+        assert_eq!(
+            state.workspaces[0].tabs[0].root.as_ref().unwrap().id(),
+            first_pane
+        );
+        assert_eq!(state.workspaces[0].tabs[0].active_pane, Some(first_pane));
     }
 
     #[test]
@@ -1127,13 +1254,13 @@ mod tests {
     fn ratio_is_clamped_and_leaf_rejected() {
         let mgr = manager();
         ws(&mgr);
-        let pane = mgr.state().workspaces[0].tabs[0].active_pane;
+        let pane = mgr.state().workspaces[0].tabs[0].active_pane.unwrap();
         mgr.split_pane(pane, SplitKind::V, sid()).unwrap();
-        let split_id = mgr.state().workspaces[0].tabs[0].root.id();
+        let split_id = mgr.state().workspaces[0].tabs[0].root.as_ref().unwrap().id();
 
         mgr.set_split_ratio(split_id, 0.01).unwrap();
         match &mgr.state().workspaces[0].tabs[0].root {
-            PaneNode::Split { ratio, .. } => {
+            Some(PaneNode::Split { ratio, .. }) => {
                 assert!((ratio - MIN_RATIO).abs() < f64::EPSILON)
             }
             _ => panic!("esperava split"),
@@ -1165,7 +1292,7 @@ mod tests {
         {
             let mgr = LayoutManager::new(Arc::clone(&store));
             mgr.create_workspace("api", Some("/repo".into()), s1).unwrap();
-            let pane = mgr.state().workspaces[0].tabs[0].active_pane;
+            let pane = mgr.state().workspaces[0].tabs[0].active_pane.unwrap();
             mgr.split_pane(pane, SplitKind::H, s2).unwrap();
         }
 
@@ -1177,7 +1304,7 @@ mod tests {
         assert_eq!(state.workspaces[0].repo_root.as_deref(), Some("/repo"));
         assert!(matches!(
             state.workspaces[0].tabs[0].root,
-            PaneNode::Split { .. }
+            Some(PaneNode::Split { .. })
         ));
     }
 
@@ -1200,6 +1327,74 @@ mod tests {
     }
 
     #[test]
+    fn docker_workspace_is_created_once_with_view_tab() {
+        let mgr = manager();
+        let first = mgr.docker_workspace().unwrap();
+        let second = mgr.docker_workspace().unwrap();
+        assert_eq!(first, second);
+        let state = mgr.state();
+        let ws = state.workspaces.iter().find(|w| w.id == first).unwrap();
+        assert_eq!(ws.kind, WorkspaceKind::Docker);
+        assert_eq!(ws.name, DOCKER_WORKSPACE_NAME);
+        assert_eq!(ws.tabs.len(), 1);
+        assert_eq!(ws.tabs[0].view.as_deref(), Some(VIEW_CONTAINERS));
+        assert!(ws.tabs[0].root.is_none());
+    }
+
+    #[test]
+    fn open_dashboard_activates_docker_workspace_and_view_tab() {
+        let mgr = manager();
+        ws(&mgr);
+        let docker_id = mgr.docker_workspace().unwrap();
+        let session = sid();
+        let logs_tab = mgr.create_tab(session, Some(docker_id)).unwrap();
+        mgr.open_docker_dashboard().unwrap();
+        let state = mgr.state();
+        assert_eq!(state.active_workspace, Some(docker_id));
+        let ws = state.workspaces.iter().find(|w| w.id == docker_id).unwrap();
+        assert_ne!(ws.active_tab, Some(logs_tab));
+        let active = ws
+            .tabs
+            .iter()
+            .find(|t| Some(t.id) == ws.active_tab)
+            .unwrap();
+        assert_eq!(active.view.as_deref(), Some(VIEW_CONTAINERS));
+    }
+
+    #[test]
+    fn closing_view_tab_closes_docker_workspace_and_ensure_recreates_it() {
+        let mgr = manager();
+        let docker_id = mgr.docker_workspace().unwrap();
+        let tab = mgr.state().workspaces[0].tabs[0].id;
+        let bound = mgr.close_tab(tab).unwrap();
+        assert!(bound.is_empty());
+        assert!(mgr.state().workspaces.is_empty());
+        let recreated = mgr.docker_workspace().unwrap();
+        assert_ne!(recreated, docker_id);
+        assert_eq!(mgr.state().workspaces[0].tabs.len(), 1);
+    }
+
+    #[test]
+    fn view_tab_and_kind_round_trip_through_store() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.docker_workspace().unwrap();
+        }
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load(&HashSet::new());
+        let state = mgr.state();
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].kind, WorkspaceKind::Docker);
+        assert_eq!(state.workspaces[0].tabs.len(), 1);
+        assert_eq!(
+            state.workspaces[0].tabs[0].view.as_deref(),
+            Some(VIEW_CONTAINERS)
+        );
+        assert!(state.workspaces[0].tabs[0].root.is_none());
+    }
+
+    #[test]
     fn load_partial_gc_collapses_split_with_dead_leaf() {
         let store = Arc::new(Store::open_in_memory().unwrap());
         let alive = sid();
@@ -1207,7 +1402,7 @@ mod tests {
         {
             let mgr = LayoutManager::new(Arc::clone(&store));
             mgr.create_workspace("api", None, alive).unwrap();
-            let pane = mgr.state().workspaces[0].tabs[0].active_pane;
+            let pane = mgr.state().workspaces[0].tabs[0].active_pane.unwrap();
             mgr.split_pane(pane, SplitKind::V, dead).unwrap();
         }
 
@@ -1216,7 +1411,7 @@ mod tests {
         let state = mgr.state();
         assert_eq!(state.workspaces[0].tabs.len(), 1);
         match &state.workspaces[0].tabs[0].root {
-            PaneNode::Leaf { session_id, .. } => assert_eq!(*session_id, alive),
+            Some(PaneNode::Leaf { session_id, .. }) => assert_eq!(*session_id, alive),
             other => panic!("esperava leaf colapsado, veio {other:?}"),
         }
     }

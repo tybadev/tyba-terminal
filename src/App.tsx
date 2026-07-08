@@ -37,7 +37,7 @@ import {
 import { getThemeMode, onThemeModeChange, setThemeMode, type ThemeMode } from "./theme";
 import { ApprovalsInbox } from "./components/ApprovalsInbox";
 import { CommandPalette } from "./components/CommandPalette";
-import { ContainersPanel } from "./components/ContainersPanel";
+import { ContainersView } from "./components/ContainersView";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { PromptDialog } from "./components/PromptDialog";
@@ -62,6 +62,7 @@ import {
   createTab,
   createWorkspace,
   dockerAvailable,
+  dockerOpenDashboard,
   getPref,
   focusPane,
   layoutState,
@@ -202,7 +203,6 @@ export default function App() {
   } | null>(null);
   const [pendingGroup, setPendingGroup] = useState<string | null>(null);
   const [showContainers, setShowContainers] = useState(false);
-  const [dockerPanelOpen, setDockerPanelOpen] = useState(false);
   const [dockerUp, setDockerUp] = useState(true);
   const [dockerRunning, setDockerRunning] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
@@ -230,12 +230,14 @@ export default function App() {
 
   const activeId = useMemo(
     () =>
-      activeTab ? paneSession(activeTab.root, activeTab.active_pane) : null,
+      activeTab?.root && activeTab.active_pane
+        ? paneSession(activeTab.root, activeTab.active_pane)
+        : null,
     [activeTab],
   );
 
   const paneLayout = useMemo(
-    () => (activeTab ? computeRects(activeTab.root) : null),
+    () => (activeTab?.root ? computeRects(activeTab.root) : null),
     [activeTab],
   );
 
@@ -260,6 +262,7 @@ export default function App() {
   const workspaceAgent = useCallback(
     (w: Workspace): string | null => {
       for (const tab of w.tabs) {
+        if (!tab.root) continue;
         for (const sid of leafSessions(tab.root)) {
           const session = sessionById.get(sid);
           const label = session && runnerLabel(session.kind);
@@ -334,7 +337,7 @@ export default function App() {
 
   const splitActive = useCallback(
     async (kind: SplitKind) => {
-      if (!activeWorkspace || !activeTab) return;
+      if (!activeWorkspace || !activeTab?.active_pane) return;
       const session = await createSession({
         kind: { type: "shell" },
         cwd: activeWorkspace.repo_root ?? undefined,
@@ -342,7 +345,7 @@ export default function App() {
         rows: 24,
       });
       setSessions((prev) => [...prev, session]);
-      await splitPane(activeTab.active_pane, kind, session.id);
+      await splitPane(activeTab.active_pane as string, kind, session.id);
     },
     [activeWorkspace, activeTab],
   );
@@ -404,7 +407,7 @@ export default function App() {
 
   const resizeActivePane = useCallback(
     (kind: SplitKind, delta: number) => {
-      if (!activeTab) return;
+      if (!activeTab?.root || !activeTab.active_pane) return;
       const split = findAncestorSplit(
         activeTab.root,
         activeTab.active_pane,
@@ -500,7 +503,11 @@ export default function App() {
 
   const closeActivePane = useCallback(async () => {
     if (!activeTab) return;
-    await closePane(activeTab.active_pane);
+    if (activeTab.active_pane) {
+      await closePane(activeTab.active_pane);
+    } else {
+      await closeTab(activeTab.id);
+    }
     await refreshSessions();
   }, [activeTab, refreshSessions]);
 
@@ -560,7 +567,7 @@ export default function App() {
 
   useEffect(() => {
     requestTerminalRelayout();
-  }, [sidebar, settingsOpen, dockerPanelOpen]);
+  }, [sidebar, settingsOpen]);
 
   useEffect(() => {
     if (!showContainers) return;
@@ -792,15 +799,27 @@ export default function App() {
             }}
           />
         )}
-        <TerminalWindow
-          size={16}
-          style={w.color ? { color: `var(--tyba-${w.color})` } : undefined}
-          className={
-            isActive
-              ? `shrink-0 ${w.color ? "" : "text-tyba-green"} [filter:drop-shadow(0_0_6px_rgba(124,197,68,.35))]`
-              : "shrink-0"
-          }
-        />
+        {w.kind === "docker" ? (
+          <DockerIcon
+            size={16}
+            style={w.color ? { color: `var(--tyba-${w.color})` } : undefined}
+            className={
+              isActive
+                ? `shrink-0 ${w.color ? "" : "text-tyba-cyan"} [filter:drop-shadow(0_0_6px_rgba(45,212,191,.35))]`
+                : "shrink-0"
+            }
+          />
+        ) : (
+          <TerminalWindow
+            size={16}
+            style={w.color ? { color: `var(--tyba-${w.color})` } : undefined}
+            className={
+              isActive
+                ? `shrink-0 ${w.color ? "" : "text-tyba-green"} [filter:drop-shadow(0_0_6px_rgba(124,197,68,.35))]`
+                : "shrink-0"
+            }
+          />
+        )}
         {open && (
           <>
             <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
@@ -1049,12 +1068,16 @@ export default function App() {
                   variant="ghost"
                   size="icon"
                   aria-label={t("containers")}
-                  onClick={() => setDockerPanelOpen((v) => !v)}
+                  onClick={() => void dockerOpenDashboard().catch(() => {})}
                   className={`relative size-6 rounded-[4px] ${
                     dockerUp
                       ? "text-tyba-text-muted hover:text-tyba-text"
                       : "text-tyba-text-faint"
-                  } ${dockerPanelOpen ? "bg-white/[.06] text-tyba-text" : ""}`}
+                  } ${
+                    activeWorkspace?.kind === "docker"
+                      ? "bg-white/[.06] text-tyba-text"
+                      : ""
+                  }`}
                 >
                   <DockerIcon size={16} />
                   {!dockerUp ? (
@@ -1221,6 +1244,15 @@ export default function App() {
                   ref={paneAreaRef}
                   className="relative min-h-0 flex-1 overflow-hidden"
                 >
+                  {activeTab?.view === "containers" && (
+                    <div className="absolute inset-0 flex">
+                      <ContainersView
+                        repoRoot={null}
+                        onAvailableChange={setDockerUp}
+                        onRunningChange={setDockerRunning}
+                      />
+                    </div>
+                  )}
                   {sessions.map((s) => {
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ??
@@ -1341,15 +1373,6 @@ export default function App() {
                   )}
                 </div>
               </main>
-
-              {showContainers && dockerPanelOpen && (
-                <ContainersPanel
-                  repoRoot={activeWorkspace?.repo_root ?? null}
-                  workspaceId={activeWorkspace?.id ?? null}
-                  onAvailableChange={setDockerUp}
-                  onRunningChange={setDockerRunning}
-                />
-              )}
             </>
           )}
         </div>

@@ -31,7 +31,6 @@ import {
   dockerRemoveContainer,
   type ComposeOp,
   type ContainerInfo,
-  type WorkspaceId,
 } from "../lib/ipc";
 
 const REFRESH_MS = 3000;
@@ -40,7 +39,6 @@ const LOOSE_KEY = "__loose__";
 
 interface Props {
   repoRoot: string | null;
-  workspaceId: WorkspaceId | null;
   onRunningChange?: (running: boolean) => void;
   onAvailableChange?: (available: boolean) => void;
 }
@@ -92,9 +90,8 @@ function PanelAction({
   );
 }
 
-export function ContainersPanel({
+export function ContainersView({
   repoRoot,
-  workspaceId,
   onRunningChange,
   onAvailableChange,
 }: Props) {
@@ -157,13 +154,10 @@ export function ContainersPanel({
     return result;
   }, [containers, repoRoot]);
 
-  const openTab = useCallback(
-    (kind: "logs" | "shell", id: string) => {
-      const call = kind === "logs" ? dockerOpenLogs : dockerOpenShell;
-      void call(id, workspaceId).catch((e) => setError(String(e)));
-    },
-    [workspaceId],
-  );
+  const openTab = useCallback((kind: "logs" | "shell", id: string) => {
+    const call = kind === "logs" ? dockerOpenLogs : dockerOpenShell;
+    void call(id).catch((e) => setError(String(e)));
+  }, []);
 
   const removeContainer = useCallback(
     (id: string) => {
@@ -192,11 +186,9 @@ export function ContainersPanel({
         return;
       }
       setConfirmingDown(null);
-      void dockerComposeOp(project, op, workspaceId).catch((e) =>
-        setError(String(e)),
-      );
+      void dockerComposeOp(project, op).catch((e) => setError(String(e)));
     },
-    [confirmingDown, workspaceId],
+    [confirmingDown],
   );
 
   const renderContainer = (c: ContainerInfo) => {
@@ -263,7 +255,7 @@ export function ContainersPanel({
   };
 
   const renderGroup = (group: ProjectGroup) => {
-    const collapsed = collapsedOverrides[group.key] ?? !group.active;
+    const collapsed = collapsedOverrides[group.key] ?? false;
     const running = group.items.filter((c) => c.state === "running");
     const stopped = group.items.filter((c) => c.state !== "running");
     const showStopped = stoppedShown[group.key] ?? false;
@@ -349,10 +341,9 @@ export function ContainersPanel({
                   <PanelAction
                     label={t("viewCompose")}
                     onClick={() =>
-                      void dockerOpenComposeFile(
-                        group.project as string,
-                        workspaceId,
-                      ).catch((e) => setError(String(e)))
+                      void dockerOpenComposeFile(group.project as string).catch(
+                        (e) => setError(String(e)),
+                      )
                     }
                   >
                     <FileCode size={12} />
@@ -384,10 +375,20 @@ export function ContainersPanel({
   };
 
   return (
-    <aside className="tyba-glass flex w-64 shrink-0 flex-col border-l border-tyba-border">
-      <div className="tyba-label flex h-8 shrink-0 items-center border-b border-tyba-border px-3">
-        {t("containers")}
-      </div>
+    <div className="flex min-h-0 flex-1 justify-center overflow-y-auto">
+      <div className="flex w-full max-w-xl flex-col px-6 pt-5 pb-8">
+        <div className="flex items-center justify-between pb-3">
+          <span className="tyba-label">{t("containers")}</span>
+          {IS_MAC && error === null && (
+            <button
+              onClick={() => void dockerOpenDesktop().catch(() => {})}
+              className="flex items-center gap-1 text-[11px] text-tyba-text-faint transition-colors hover:text-tyba-text"
+            >
+              {t("openDockerDesktop")}
+              <ArrowSquareOut size={11} />
+            </button>
+          )}
+        </div>
 
       {error !== null ? (
         <div className="flex flex-col items-center gap-3 px-3 py-6 text-center">
@@ -423,22 +424,11 @@ export function ContainersPanel({
           {t("containersEmptyAll")}
         </p>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2">
+        <div className="flex flex-col gap-1.5">
           {groups.map(renderGroup)}
         </div>
       )}
-
-      {error === null && IS_MAC && (
-        <div className="flex shrink-0 items-center justify-end border-t border-tyba-border px-3 py-1.5">
-          <button
-            onClick={() => void dockerOpenDesktop().catch(() => {})}
-            className="flex items-center gap-1 text-[11px] text-tyba-text-faint transition-colors hover:text-tyba-text"
-          >
-            {t("openDockerDesktop")}
-            <ArrowSquareOut size={11} />
-          </button>
-        </div>
-      )}
-    </aside>
+      </div>
+    </div>
   );
 }
