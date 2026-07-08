@@ -20,13 +20,21 @@ function loadWebgl(term: Terminal, onLost: () => void): WebglAddon | null {
   try {
     const webgl = new WebglAddon();
     webgl.onContextLoss(() => {
-      webgl.dispose();
+      disposeWebgl(webgl);
       onLost();
     });
     term.loadAddon(webgl);
     return webgl;
   } catch {
     return null;
+  }
+}
+
+function disposeWebgl(webgl: WebglAddon | null) {
+  try {
+    webgl?.dispose();
+  } catch {
+    return;
   }
 }
 
@@ -73,7 +81,7 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
 
     // teclado -> PTY
     const dataSub = term.onData((data) => {
-      void writeToSession(sessionId, data);
+      void writeToSession(sessionId, data).catch(() => {});
     });
 
     const unlisteners: Array<() => void> = [];
@@ -92,17 +100,17 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
     // resize: observa o container e propaga cols/rows pro PTY
     const ro = new ResizeObserver(() => {
       fit.fit();
-      void resizeSession(sessionId, term.cols, term.rows);
+      void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
     });
     ro.observe(el);
-    void resizeSession(sessionId, term.cols, term.rows);
+    void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
 
     return () => {
       ro.disconnect();
       offTheme();
       dataSub.dispose();
       unlisteners.forEach((un) => un());
-      webglRef.current?.dispose();
+      disposeWebgl(webglRef.current);
       webglRef.current = null;
       term.dispose();
       termRef.current = null;
@@ -123,7 +131,7 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
         });
       }
     } else if (webglRef.current) {
-      webglRef.current.dispose();
+      disposeWebgl(webglRef.current);
       webglRef.current = null;
     }
   }, [active]);

@@ -195,6 +195,23 @@ export default function App() {
     if (activeTab) void closePane(activeTab.active_pane);
   }, [activeTab]);
 
+  const exitedCount = useMemo(
+    () =>
+      sessions.filter(
+        (s) => s.status.state === "exited" || s.status.state === "failed",
+      ).length,
+    [sessions],
+  );
+
+  const clearExitedSessions = useCallback(async () => {
+    const dead = sessions.filter(
+      (s) => s.status.state === "exited" || s.status.state === "failed",
+    );
+    await Promise.allSettled(dead.map((s) => disposeSession(s.id)));
+    const deadIds = new Set(dead.map((s) => s.id));
+    setSessions((prev) => prev.filter((s) => !deadIds.has(s.id)));
+  }, [sessions]);
+
   const toggleGroup = useCallback((key: string) => {
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -281,6 +298,8 @@ export default function App() {
         onKillActive={() => {
           if (activeId) void killSession(activeId);
         }}
+        exitedCount={exitedCount}
+        onClearExited={() => void clearExitedSessions()}
         onTogglePanel={() => setSidebar((m) => NEXT_MODE[m])}
         onGoToSession={goToSession}
       />
@@ -416,6 +435,9 @@ export default function App() {
                         group.sessions.map((s) => {
                           const isActive = s.id === activeId;
                           const isBound = boundSessions.has(s.id);
+                          const isDead =
+                            s.status.state === "exited" ||
+                            s.status.state === "failed";
                           return (
                             <button
                               key={s.id}
@@ -442,7 +464,7 @@ export default function App() {
                                 className={
                                   isActive
                                     ? "shrink-0 text-tyba-green [filter:drop-shadow(0_0_6px_rgba(124,197,68,.55))]"
-                                    : "shrink-0"
+                                    : `shrink-0 ${isDead ? "opacity-40" : ""}`
                                 }
                               />
                               {open && (

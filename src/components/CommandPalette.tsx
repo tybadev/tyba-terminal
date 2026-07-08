@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
+  Broom,
   Desktop,
   DownloadSimple,
   Globe,
@@ -58,6 +59,8 @@ interface Props {
   onNewSession: () => void;
   onCloseActive: () => void;
   onKillActive: () => void;
+  exitedCount: number;
+  onClearExited: () => void;
   onTogglePanel: () => void;
   onGoToSession: (id: SessionId) => void;
 }
@@ -72,6 +75,8 @@ export function CommandPalette({
   onNewSession,
   onCloseActive,
   onKillActive,
+  exitedCount,
+  onClearExited,
   onTogglePanel,
   onGoToSession,
 }: Props) {
@@ -139,6 +144,12 @@ export function CommandPalette({
             {t("togglePanel")}
             <CommandShortcut>⌘B</CommandShortcut>
           </CommandItem>
+          {exitedCount > 0 && (
+            <CommandItem onSelect={run(onClearExited)}>
+              <Broom size={15} />
+              {t("clearExitedSessions", { count: exitedCount })}
+            </CommandItem>
+          )}
         </CommandGroup>
 
         {sessions.length > 0 && (

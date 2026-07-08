@@ -146,7 +146,14 @@ impl SessionManager {
     pub fn restore(&self) -> Result<(), StoreError> {
         let persisted = self.store.load_sessions()?;
         let mut sessions = self.sessions.write();
-        for s in persisted {
+        for mut s in persisted {
+            if !matches!(
+                s.status,
+                SessionStatus::Exited { .. } | SessionStatus::Failed { .. }
+            ) {
+                s.status = SessionStatus::Exited { code: -1 };
+                let _ = self.store.upsert_session(&s);
+            }
             sessions.entry(s.id).or_insert(s);
         }
         Ok(())
@@ -199,5 +206,41 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, persisted.id);
         assert_eq!(listed[0].title, "restored");
+    }
+
+    #[test]
+    fn restore_downgrades_stale_live_status_to_exited() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let make = |status: SessionStatus| Session {
+            id: SessionId::new_v4(),
+            kind: SessionKind::Shell,
+            title: "s".into(),
+            repo_root: None,
+            worktree: None,
+            status,
+            created_at: Utc::now(),
+        };
+        let running = make(SessionStatus::Running);
+        let idle = make(SessionStatus::Idle);
+        let done = make(SessionStatus::Exited { code: 0 });
+        for s in [&running, &idle, &done] {
+            store.upsert_session(s).unwrap();
+        }
+
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+
+        for s in manager.list() {
+            if s.id == done.id {
+                assert!(matches!(s.status, SessionStatus::Exited { code: 0 }));
+            } else {
+                assert!(matches!(s.status, SessionStatus::Exited { code: -1 }));
+            }
+        }
+        let persisted_again = store.load_sessions().unwrap();
+        assert!(persisted_again
+            .iter()
+            .filter(|s| s.id != done.id)
+            .all(|s| matches!(s.status, SessionStatus::Exited { code: -1 })));
     }
 }
