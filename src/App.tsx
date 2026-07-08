@@ -7,7 +7,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Bell,
   FolderOpen,
   Plus,
   SidebarSimple,
@@ -35,6 +34,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ApprovalsInbox } from "./components/ApprovalsInbox";
 import { CommandPalette } from "./components/CommandPalette";
 import { TerminalView } from "./components/TerminalView";
 import {
@@ -204,29 +204,7 @@ export default function App() {
             <FolderOpen size={16} />
           </IconAction>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={t("notifications")}
-                className="size-6 rounded-[4px] text-tyba-text-muted hover:text-tyba-text"
-              >
-                <Bell size={16} />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              className="w-72 border-tyba-border-strong bg-tyba-overlay shadow-lg"
-            >
-              <DropdownMenuLabel className="tyba-label">
-                {t("notifications")}
-              </DropdownMenuLabel>
-              <div className="px-2 py-5 text-center text-xs text-tyba-text-faint">
-                {t("notificationsEmpty")}
-              </div>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <ApprovalsInbox sessions={sessions} />
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

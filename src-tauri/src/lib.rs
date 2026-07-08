@@ -1,6 +1,7 @@
 //! TYBA core — bootstrap Tauri e commands IPC.
 
 pub mod agent;
+pub mod approvals;
 pub mod pty;
 pub mod sandbox;
 pub mod session;
@@ -12,12 +13,14 @@ use std::sync::Arc;
 use base64::Engine;
 use tauri::{AppHandle, Manager, State};
 
+use approvals::{ApprovalRequest, Decision, SharedApprovals};
 use pty::SharedPtyPool;
 use session::{CreateSessionOpts, Session, SessionId, SharedSessionManager};
 
 struct AppState {
     pty_pool: SharedPtyPool,
     sessions: SharedSessionManager,
+    approvals: SharedApprovals,
 }
 
 #[tauri::command]
@@ -65,6 +68,38 @@ fn dispose_session(state: State<'_, AppState>, id: SessionId) {
     state.sessions.dispose(&state.pty_pool, id);
 }
 
+/// Registra um pedido de aprovação. Hoje chamado pelo runner de agente
+/// (futuro) e por ferramentas de dev; o core classifica o risco e pode
+/// recusar de cara (push para main/master).
+#[tauri::command]
+fn request_approval(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    command: String,
+    cwd: Option<String>,
+    context: Option<String>,
+) -> Result<ApprovalRequest, String> {
+    state
+        .approvals
+        .request(&app, session_id, command, cwd, context)
+}
+
+#[tauri::command]
+fn list_approvals(state: State<'_, AppState>) -> Vec<ApprovalRequest> {
+    state.approvals.list_pending()
+}
+
+#[tauri::command]
+fn resolve_approval(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: u64,
+    decision: Decision,
+) -> Result<(), String> {
+    state.approvals.resolve(&app, id, decision)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -72,6 +107,7 @@ pub fn run() {
             app.manage(AppState {
                 pty_pool: Arc::new(pty::PtyPool::new()),
                 sessions: Arc::new(session::SessionManager::new()),
+                approvals: Arc::new(approvals::ApprovalsManager::new()),
             });
             Ok(())
         })
@@ -81,6 +117,9 @@ pub fn run() {
             resize_session,
             list_sessions,
             dispose_session,
+            request_approval,
+            list_approvals,
+            resolve_approval,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tyba");
