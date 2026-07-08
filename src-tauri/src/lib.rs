@@ -193,11 +193,7 @@ fn create_tab(
 }
 
 #[tauri::command]
-fn close_tab(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: layout::TabId,
-) -> Result<(), String> {
+fn close_tab(app: AppHandle, state: State<'_, AppState>, id: layout::TabId) -> Result<(), String> {
     let bound = state.layout.close_tab(id).map_err(|e| e.to_string())?;
     dispose_shells(&state, &bound);
     emit_layout(&app, &state);
@@ -679,10 +675,7 @@ fn docker_open_compose_file(
 }
 
 #[tauri::command]
-fn docker_remove_container(
-    state: State<'_, AppState>,
-    container_id: String,
-) -> Result<(), String> {
+fn docker_remove_container(state: State<'_, AppState>, container_id: String) -> Result<(), String> {
     state
         .docker
         .remove(&container_id)
@@ -696,7 +689,10 @@ fn docker_open_desktop() -> Result<(), String> {
         let attempts: [&[&str]; 2] = [&["-a", "Docker"], &["-b", "com.docker.docker"]];
         let mut last_error = String::new();
         for args in attempts {
-            match std::process::Command::new("/usr/bin/open").args(args).output() {
+            match std::process::Command::new("/usr/bin/open")
+                .args(args)
+                .output()
+            {
                 Ok(out) if out.status.success() => return Ok(()),
                 Ok(out) => {
                     last_error = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -782,10 +778,7 @@ fn import_theme(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<theme::Theme, String> {
-    state
-        .themes
-        .import(&app, &path)
-        .map_err(|e| e.to_string())
+    state.themes.import(&app, &path).map_err(|e| e.to_string())
 }
 
 const SCROLLBACK_FLUSH_INTERVAL: Duration = Duration::from_secs(5);

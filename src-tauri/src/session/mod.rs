@@ -94,15 +94,7 @@ impl SessionManager {
 
         let title = opts.title.unwrap_or_else(|| shell_label(&shell));
         self.spawn_session(
-            app,
-            pty_pool,
-            id,
-            cmd,
-            opts.kind,
-            title,
-            opts.cols,
-            opts.rows,
-            on_exit,
+            app, pty_pool, id, cmd, opts.kind, title, opts.cols, opts.rows, on_exit,
         )
     }
 
@@ -317,10 +309,7 @@ mod tests {
             expand_home(Path::new("/abs/path")),
             PathBuf::from("/abs/path")
         );
-        assert_eq!(
-            expand_home(Path::new("~user/x")),
-            PathBuf::from("~user/x")
-        );
+        assert_eq!(expand_home(Path::new("~user/x")), PathBuf::from("~user/x"));
     }
 
     #[test]

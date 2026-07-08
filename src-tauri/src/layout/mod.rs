@@ -94,9 +94,9 @@ impl PaneNode {
     fn contains(&self, pane: PaneId) -> bool {
         match self {
             PaneNode::Leaf { id, .. } => *id == pane,
-            PaneNode::Split { id, first, second, .. } => {
-                *id == pane || first.contains(pane) || second.contains(pane)
-            }
+            PaneNode::Split {
+                id, first, second, ..
+            } => *id == pane || first.contains(pane) || second.contains(pane),
         }
     }
 
@@ -188,7 +188,11 @@ impl PaneNode {
         match self {
             PaneNode::Leaf { .. } => false,
             PaneNode::Split {
-                id, ratio, first, second, ..
+                id,
+                ratio,
+                first,
+                second,
+                ..
             } => {
                 if *id == target {
                     *ratio = value.clamp(MIN_RATIO, MAX_RATIO);
@@ -485,7 +489,10 @@ impl LayoutManager {
         }
         let tab = Tab::from_view(view);
         let tab_id = tab.id;
-        match inner.active.and_then(|id| ws_index(&inner.workspaces, id).ok()) {
+        match inner
+            .active
+            .and_then(|id| ws_index(&inner.workspaces, id).ok())
+        {
             Some(idx) => {
                 inner.workspaces[idx].tabs.push(tab);
                 inner.workspaces[idx].active_tab = Some(tab_id);
@@ -1129,7 +1136,9 @@ mod tests {
     fn create_workspace_starts_with_one_tab_and_activates() {
         let mgr = manager();
         let s = sid();
-        let id = mgr.create_workspace("api", Some("/repo".into()), s).unwrap();
+        let id = mgr
+            .create_workspace("api", Some("/repo".into()), s)
+            .unwrap();
         let state = mgr.state();
         assert_eq!(state.active_workspace, Some(id));
         assert_eq!(state.workspaces.len(), 1);
@@ -1309,7 +1318,11 @@ mod tests {
         ws(&mgr);
         let pane = mgr.state().workspaces[0].tabs[0].active_pane.unwrap();
         mgr.split_pane(pane, SplitKind::V, sid()).unwrap();
-        let split_id = mgr.state().workspaces[0].tabs[0].root.as_ref().unwrap().id();
+        let split_id = mgr.state().workspaces[0].tabs[0]
+            .root
+            .as_ref()
+            .unwrap()
+            .id();
 
         mgr.set_split_ratio(split_id, 0.01, true).unwrap();
         match &mgr.state().workspaces[0].tabs[0].root {
@@ -1333,7 +1346,11 @@ mod tests {
         let t3 = mgr.create_tab(sid(), Some(id)).unwrap();
 
         mgr.move_tab(t3, 0).unwrap();
-        let ids: Vec<TabId> = mgr.state().workspaces[0].tabs.iter().map(|t| t.id).collect();
+        let ids: Vec<TabId> = mgr.state().workspaces[0]
+            .tabs
+            .iter()
+            .map(|t| t.id)
+            .collect();
         assert_eq!(ids, vec![t3, t1, t2]);
     }
 
@@ -1344,7 +1361,8 @@ mod tests {
         let s2 = sid();
         {
             let mgr = LayoutManager::new(Arc::clone(&store));
-            mgr.create_workspace("api", Some("/repo".into()), s1).unwrap();
+            mgr.create_workspace("api", Some("/repo".into()), s1)
+                .unwrap();
             let pane = mgr.state().workspaces[0].tabs[0].active_pane.unwrap();
             mgr.split_pane(pane, SplitKind::H, s2).unwrap();
         }
@@ -1367,7 +1385,8 @@ mod tests {
         let dead = sid();
         {
             let mgr = LayoutManager::new(Arc::clone(&store));
-            mgr.create_workspace("api", Some("/repo".into()), dead).unwrap();
+            mgr.create_workspace("api", Some("/repo".into()), dead)
+                .unwrap();
         }
 
         let mgr = LayoutManager::new(Arc::clone(&store));

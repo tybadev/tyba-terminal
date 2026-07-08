@@ -244,9 +244,8 @@ fn dark_terminal() -> TerminalPalette {
         cursor_accent: Some("#070709".into()),
         selection_background: Some("#7cc5444d".into()),
         ansi: ansi([
-            "#1a1a20", "#f0503c", "#7cc544", "#f5a93b", "#4c7df0", "#ec4899", "#2dd4bf",
-            "#f2f2f5", "#6a6a76", "#f4715f", "#a8e05f", "#f5c93b", "#7da3f5", "#a78bfa",
-            "#5eead4", "#ffffff",
+            "#1a1a20", "#f0503c", "#7cc544", "#f5a93b", "#4c7df0", "#ec4899", "#2dd4bf", "#f2f2f5",
+            "#6a6a76", "#f4715f", "#a8e05f", "#f5c93b", "#7da3f5", "#a78bfa", "#5eead4", "#ffffff",
         ]),
     }
 }
@@ -259,9 +258,8 @@ fn light_terminal() -> TerminalPalette {
         cursor_accent: Some("#fbfbfd".into()),
         selection_background: Some("#4e96224d".into()),
         ansi: ansi([
-            "#2a2a31", "#d6402e", "#4e9622", "#c47c14", "#3b66d6", "#d33d84", "#0f9d8c",
-            "#e9e9ee", "#6d6d78", "#e05a48", "#6fae2e", "#d69a2b", "#5d84e0", "#7a4ce8",
-            "#16b3a0", "#ffffff",
+            "#2a2a31", "#d6402e", "#4e9622", "#c47c14", "#3b66d6", "#d33d84", "#0f9d8c", "#e9e9ee",
+            "#6d6d78", "#e05a48", "#6fae2e", "#d69a2b", "#5d84e0", "#7a4ce8", "#16b3a0", "#ffffff",
         ]),
     }
 }
@@ -389,12 +387,7 @@ impl ThemeManager {
         Ok(())
     }
 
-    pub fn set_slot(
-        &self,
-        app: &AppHandle,
-        base: ThemeBase,
-        id: &str,
-    ) -> Result<(), ThemeError> {
+    pub fn set_slot(&self, app: &AppHandle, base: ThemeBase, id: &str) -> Result<(), ThemeError> {
         let theme = self
             .find(id)
             .ok_or_else(|| ThemeError::NotFound(id.to_string()))?;
@@ -486,17 +479,15 @@ mod tests {
 
     #[test]
     fn rejects_invalid_hex_color() {
-        let err = parse_theme(r##"{ "name": "x", "base": "dark", "ui": { "bg": "red" } }"##)
-            .unwrap_err();
+        let err =
+            parse_theme(r##"{ "name": "x", "base": "dark", "ui": { "bg": "red" } }"##).unwrap_err();
         assert!(matches!(err, ThemeError::InvalidColor(key, _) if key == "ui.bg"));
     }
 
     #[test]
     fn rejects_unknown_ui_key() {
-        let err = parse_theme(
-            r##"{ "name": "x", "base": "dark", "ui": { "gradient": "#fff" } }"##,
-        )
-        .unwrap_err();
+        let err = parse_theme(r##"{ "name": "x", "base": "dark", "ui": { "gradient": "#fff" } }"##)
+            .unwrap_err();
         assert!(matches!(err, ThemeError::UnknownUiKey(key) if key == "gradient"));
     }
 
@@ -586,7 +577,9 @@ mod tests {
     #[test]
     fn state_falls_back_to_builtins_when_slot_is_stale() {
         let (mgr, dir) = manager();
-        mgr.store.set_setting("theme.slot.dark", "deleted-theme").unwrap();
+        mgr.store
+            .set_setting("theme.slot.dark", "deleted-theme")
+            .unwrap();
         let state = mgr.state();
         assert_eq!(state.mode, ThemeMode::Dark);
         assert_eq!(state.dark.id, BUILTIN_DARK);
@@ -598,14 +591,20 @@ mod tests {
     fn slot_ignores_theme_with_wrong_base() {
         let (mgr, dir) = manager();
         fs::write(dir.join("dracula.json"), VALID).unwrap();
-        mgr.store.set_setting("theme.slot.light", "dracula").unwrap();
+        mgr.store
+            .set_setting("theme.slot.light", "dracula")
+            .unwrap();
         let state = mgr.state();
         assert_eq!(state.light.id, BUILTIN_LIGHT);
         let _ = fs::remove_dir_all(dir);
     }
 
     fn temp_source(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("tyba-theme-import-src-{}-{}", name, uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!(
+            "tyba-theme-import-src-{}-{}",
+            name,
+            uuid::Uuid::new_v4()
+        ))
     }
 
     #[test]
@@ -660,7 +659,11 @@ mod tests {
     fn import_rejects_invalid_content() {
         let (mgr, dir) = manager();
         let src = temp_source("invalid");
-        fs::write(&src, r#"{ "name": "x", "base": "dark", "ui": { "bg": "red" } }"#).unwrap();
+        fs::write(
+            &src,
+            r#"{ "name": "x", "base": "dark", "ui": { "bg": "red" } }"#,
+        )
+        .unwrap();
 
         let err = mgr.import_validated(src.to_str().unwrap()).unwrap_err();
         assert!(matches!(err, ThemeError::InvalidColor(key, _) if key == "ui.bg"));
@@ -673,8 +676,11 @@ mod tests {
     fn import_writes_canonical_file_that_scan_picks_up() {
         let (mgr, dir) = manager();
         let src = temp_source("nord");
-        fs::write(&src, r##"{ "name": "Nord", "base": "dark", "ui": { "bg": "#2e3440" } }"##)
-            .unwrap();
+        fs::write(
+            &src,
+            r##"{ "name": "Nord", "base": "dark", "ui": { "bg": "#2e3440" } }"##,
+        )
+        .unwrap();
 
         let (id, file) = mgr.import_validated(src.to_str().unwrap()).unwrap();
         assert_eq!(id, "nord");

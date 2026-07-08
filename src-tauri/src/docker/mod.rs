@@ -251,7 +251,12 @@ pub fn docker_bin() -> Option<&'static PathBuf> {
     .as_ref()
 }
 
-fn drain(child: &mut Child) -> (std::thread::JoinHandle<Vec<u8>>, std::thread::JoinHandle<Vec<u8>>) {
+fn drain(
+    child: &mut Child,
+) -> (
+    std::thread::JoinHandle<Vec<u8>>,
+    std::thread::JoinHandle<Vec<u8>>,
+) {
     let mut stdout = child.stdout.take().expect("stdout piped");
     let mut stderr = child.stderr.take().expect("stderr piped");
     let out = std::thread::spawn(move || {
@@ -325,8 +330,11 @@ impl DockerManager {
                 }
             }
         }
-        let ok = run_docker(&["version", "--format", "{{.Server.Version}}"], VERSION_TIMEOUT)
-            .is_ok();
+        let ok = run_docker(
+            &["version", "--format", "{{.Server.Version}}"],
+            VERSION_TIMEOUT,
+        )
+        .is_ok();
         *self.availability.lock() = Some((ok, Instant::now()));
         ok
     }
@@ -336,8 +344,10 @@ impl DockerManager {
         repo_root: Option<&str>,
         all: bool,
     ) -> Result<Vec<ContainerInfo>, DockerError> {
-        let raw = match run_docker(&["ps", "-a", "--no-trunc", "--format", "{{json .}}"], PS_TIMEOUT)
-        {
+        let raw = match run_docker(
+            &["ps", "-a", "--no-trunc", "--format", "{{json .}}"],
+            PS_TIMEOUT,
+        ) {
             Ok(raw) => {
                 *self.availability.lock() = Some((true, Instant::now()));
                 raw
@@ -442,10 +452,7 @@ not-json-line
         assert_eq!(list[0].image, "postgres:16");
         assert_eq!(list[0].state, "running");
         assert_eq!(list[0].ports, "0.0.0.0:5432->5432/tcp");
-        assert_eq!(
-            list[0].compose_project.as_deref(),
-            Some("tyba-terminal")
-        );
+        assert_eq!(list[0].compose_project.as_deref(), Some("tyba-terminal"));
         assert_eq!(
             list[0].compose_working_dir.as_deref(),
             Some("/Users/dev/tyba-terminal")
