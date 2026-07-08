@@ -1,5 +1,3 @@
-//! TYBA core — bootstrap Tauri e commands IPC.
-
 pub mod agent;
 pub mod pty;
 pub mod sandbox;
@@ -34,12 +32,16 @@ fn create_session(
 
 #[tauri::command]
 fn write_to_session(state: State<'_, AppState>, id: SessionId, data: String) -> Result<(), String> {
-    // Teclado chega como base64 do frontend (simetria com o output;
-    // preserva bytes de sequências de controle).
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&data)
         .map_err(|e| e.to_string())?;
     state.pty_pool.write(id, &bytes).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn session_scrollback(state: State<'_, AppState>, id: SessionId) -> Result<String, String> {
+    let bytes = state.pty_pool.scrollback(id).map_err(|e| e.to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
 #[tauri::command]
@@ -78,6 +80,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_session,
             write_to_session,
+            session_scrollback,
             resize_session,
             list_sessions,
             dispose_session,

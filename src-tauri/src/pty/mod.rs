@@ -12,8 +12,11 @@ use uuid::Uuid;
 
 const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 const READ_BUF_SIZE: usize = 8 * 1024;
+const SCROLLBACK_LINES: usize = 1000;
 
 pub type PtyId = Uuid;
+
+type SharedScreen = Arc<Mutex<vt100::Parser>>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PtyError {
@@ -42,6 +45,7 @@ struct PtyHandle {
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     leader_pid: Option<u32>,
+    screen: SharedScreen,
 }
 
 #[derive(Default)]
@@ -97,6 +101,10 @@ impl PtyPool {
             .take_writer()
             .map_err(|e| PtyError::Open(e.to_string()))?;
 
+        let screen: SharedScreen =
+            Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK_LINES)));
+        let reader_screen = Arc::clone(&screen);
+
         self.ptys.lock().insert(
             session_id,
             PtyHandle {
@@ -104,6 +112,7 @@ impl PtyPool {
                 writer,
                 child,
                 leader_pid,
+                screen,
             },
         );
 
@@ -129,6 +138,7 @@ impl PtyPool {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
+                            reader_screen.lock().process(&buf[..n]);
                             pending.extend_from_slice(&buf[..n]);
                             if last_flush.elapsed() >= FLUSH_INTERVAL {
                                 flush(&mut pending, &app);
@@ -167,7 +177,15 @@ impl PtyPool {
                 pixel_height: 0,
             })
             .map_err(|e| PtyError::Open(e.to_string()))?;
+        handle.screen.lock().set_size(rows, cols);
         Ok(())
+    }
+
+    pub fn scrollback(&self, id: PtyId) -> Result<Vec<u8>, PtyError> {
+        let ptys = self.ptys.lock();
+        let handle = ptys.get(&id).ok_or(PtyError::NotFound(id))?;
+        let bytes = handle.screen.lock().screen().contents_formatted();
+        Ok(bytes)
     }
 
     pub fn kill(&self, id: PtyId) -> Result<(), PtyError> {
@@ -213,6 +231,20 @@ fn kill_process_group(_leader_pid: u32) -> std::io::Result<()> {
 }
 
 pub type SharedPtyPool = Arc<PtyPool>;
+
+#[cfg(test)]
+mod screen_tests {
+    #[test]
+    fn snapshot_preserves_visible_text() {
+        let mut parser = vt100::Parser::new(24, 80, super::SCROLLBACK_LINES);
+        parser.process(b"hello \x1b[31mred\x1b[0m world");
+        let dump = parser.screen().contents_formatted();
+        let text = String::from_utf8_lossy(&dump);
+        assert!(text.contains("hello"));
+        assert!(text.contains("red"));
+        assert!(text.contains("world"));
+    }
+}
 
 #[cfg(all(test, unix))]
 mod tests {

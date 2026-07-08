@@ -21,6 +21,7 @@ base64 = "0.22"
 thiserror = "2"
 regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
+vt100 = "0.15"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
