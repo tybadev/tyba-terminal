@@ -138,7 +138,7 @@ function NavItem({
       onClick={onClick}
       className={`relative flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] transition-colors ${
         active
-          ? "text-tyba-text"
+          ? "bg-white/[.05] text-tyba-text"
           : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
       }`}
     >
