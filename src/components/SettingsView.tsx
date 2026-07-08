@@ -14,6 +14,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { LANGUAGES, setLanguage, type LanguageCode } from "../i18n";
+import { getUiFont, onUiFontChange, setUiFont, type UiFont } from "../font";
 import {
   applyTheme,
   getThemeMode,
@@ -285,6 +286,9 @@ export function SettingsView({
   const [themeState, setThemeState] = useState<ThemeState | null>(null);
   const [defaultDir, setDefaultDir] = useState("");
   const [fontSize, setFontSize] = useState(13);
+  const [uiFont, setUiFontState] = useState<UiFont>(getUiFont);
+
+  useEffect(() => onUiFontChange(setUiFontState), []);
 
   const refresh = useCallback(() => {
     void listThemes().then(setThemes).catch(() => {});
@@ -612,6 +616,20 @@ export function SettingsView({
                 active={detailsPref === "off"}
                 label={t("detailsHide")}
                 onClick={() => onDetailsPrefChange("off")}
+              />
+            </div>
+
+            <span className="tyba-label">{t("uiFont")}</span>
+            <div className="flex gap-2 pt-2 pb-6">
+              <Choice
+                active={uiFont === "mono"}
+                label={t("fontMono")}
+                onClick={() => setUiFont("mono")}
+              />
+              <Choice
+                active={uiFont === "grotesk"}
+                label={t("fontGrotesk")}
+                onClick={() => setUiFont("grotesk")}
               />
             </div>
 

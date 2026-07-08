@@ -208,8 +208,12 @@
    Acentos escurecidos para contraste sobre claro; a luz fica
    mais contida (glows discretos), a aurora mais lavada.
    Tints/glows/seleção/vidro/aurora derivam sozinhos.
+   O seletor por sufixo cobre TODO tema claro (light,
+   solarized-light, monokai-light…): os blocos de esquema em
+   themes.css vêm depois e vencem no que definirem; o que não
+   definirem (aresta zerada, aurora lavada, alphas) herda daqui.
    ============================================================ */
-[data-theme='light'] {
+[data-theme$='light'] {
   color-scheme: light;
 
   --tyba-bg: #f5f5f7;

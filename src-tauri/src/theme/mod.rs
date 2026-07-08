@@ -1,12 +1,14 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
 use crate::session::store::Store;
+
+mod schemes;
 
 pub const EVENT_CHANGED: &str = "theme://changed";
 pub const BUILTIN_DARK: &str = "tyba-dark";
@@ -264,6 +266,23 @@ fn light_terminal() -> TerminalPalette {
     }
 }
 
+fn is_reserved(id: &str) -> bool {
+    id == BUILTIN_DARK || id == BUILTIN_LIGHT || schemes::IDS.contains(&id)
+}
+
+fn cached_schemes() -> &'static [Theme] {
+    static CACHE: OnceLock<Vec<Theme>> = OnceLock::new();
+    CACHE.get_or_init(schemes::all)
+}
+
+fn builtin_by_id(id: &str) -> Option<Theme> {
+    match id {
+        BUILTIN_DARK => Some(builtin(ThemeBase::Dark)),
+        BUILTIN_LIGHT => Some(builtin(ThemeBase::Light)),
+        _ => cached_schemes().iter().find(|t| t.id == id).cloned(),
+    }
+}
+
 fn builtin(base: ThemeBase) -> Theme {
     match base {
         ThemeBase::Dark => Theme {
@@ -319,6 +338,7 @@ impl ThemeManager {
 
     pub fn list(&self) -> Vec<Theme> {
         let mut themes = vec![builtin(ThemeBase::Dark), builtin(ThemeBase::Light)];
+        themes.extend(cached_schemes().iter().cloned());
         themes.extend(self.scan());
         themes
     }
@@ -335,7 +355,7 @@ impl ThemeManager {
                     return None;
                 }
                 let id = path.file_stem()?.to_str()?.to_string();
-                if id == BUILTIN_DARK || id == BUILTIN_LIGHT {
+                if is_reserved(&id) {
                     return None;
                 }
                 let json = fs::read_to_string(&path).ok()?;
@@ -353,7 +373,7 @@ impl ThemeManager {
     }
 
     fn find(&self, id: &str) -> Option<Theme> {
-        self.list().into_iter().find(|t| t.id == id)
+        builtin_by_id(id).or_else(|| self.scan().into_iter().find(|t| t.id == id))
     }
 
     fn slot(&self, key: &str, base: ThemeBase) -> Theme {
@@ -421,7 +441,7 @@ impl ThemeManager {
         if id.is_empty() {
             return Err(ThemeError::InvalidName);
         }
-        if id == BUILTIN_DARK || id == BUILTIN_LIGHT {
+        if is_reserved(&id) {
             return Err(ThemeError::ReservedName(id));
         }
         let canonical = serde_json::to_string_pretty(&file)?;
@@ -562,15 +582,72 @@ mod tests {
     }
 
     #[test]
-    fn list_includes_builtins_and_scanned_files() {
+    fn list_includes_builtins_schemes_and_scanned_files() {
         let (mgr, dir) = manager();
-        fs::write(dir.join("dracula.json"), VALID).unwrap();
+        fs::write(dir.join("nord.json"), VALID).unwrap();
         fs::write(dir.join("broken.json"), "{ nope").unwrap();
         fs::write(dir.join("notes.txt"), "ignore me").unwrap();
 
         let themes = mgr.list();
         let ids: Vec<_> = themes.iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, vec![BUILTIN_DARK, BUILTIN_LIGHT, "dracula"]);
+        let mut expected = vec![BUILTIN_DARK, BUILTIN_LIGHT];
+        expected.extend_from_slice(schemes::IDS);
+        expected.push("nord");
+        assert_eq!(ids, expected);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn classic_schemes_are_valid_builtins() {
+        let all = schemes::all();
+        assert_eq!(all.len(), schemes::IDS.len());
+        assert_eq!(all.len(), 15);
+        for (theme, id) in all.iter().zip(schemes::IDS) {
+            assert_eq!(theme.id, *id);
+            assert!(theme.builtin);
+            assert!(theme.ui.is_empty());
+            assert_eq!(theme.terminal.ansi.len(), 16);
+            assert_eq!(
+                theme.base == ThemeBase::Light,
+                theme.id.ends_with("light"),
+                "{}: convenção quebrada — todo tema claro termina em 'light'",
+                theme.id
+            );
+            for (label, color) in theme.terminal.colors() {
+                assert!(
+                    is_hex_color(color),
+                    "{}: cor inválida em {label}: {color}",
+                    theme.id
+                );
+            }
+        }
+        let dark = all.iter().filter(|t| t.base == ThemeBase::Dark).count();
+        let light = all.iter().filter(|t| t.base == ThemeBase::Light).count();
+        assert_eq!((dark, light), (10, 5));
+    }
+
+    #[test]
+    fn scan_skips_files_shadowing_scheme_ids() {
+        let (mgr, dir) = manager();
+        fs::write(dir.join("dracula.json"), VALID).unwrap();
+
+        let themes = mgr.list();
+        let draculas: Vec<_> = themes.iter().filter(|t| t.id == "dracula").collect();
+        assert_eq!(draculas.len(), 1);
+        assert!(draculas[0].builtin);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_rejects_classic_scheme_slug() {
+        let (mgr, dir) = manager();
+        let src = temp_source("scheme-slug");
+        fs::write(&src, r#"{ "name": "Dracula", "base": "dark" }"#).unwrap();
+
+        let err = mgr.import_validated(src.to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, ThemeError::ReservedName(id) if id == "dracula"));
+
+        let _ = fs::remove_file(&src);
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -697,19 +774,19 @@ mod tests {
     #[test]
     fn import_overwrites_existing_file_with_same_slug() {
         let (mgr, dir) = manager();
-        let src = temp_source("dracula-variant");
+        let src = temp_source("nord-variant");
         fs::write(
             &src,
-            r##"{ "name": "Dracula", "base": "dark", "ui": { "bg": "#000000" } }"##,
+            r##"{ "name": "Nord", "base": "dark", "ui": { "bg": "#000000" } }"##,
         )
         .unwrap();
 
         mgr.import_validated(src.to_str().unwrap()).unwrap();
-        let on_disk = fs::read_to_string(dir.join("dracula.json")).unwrap();
+        let on_disk = fs::read_to_string(dir.join("nord.json")).unwrap();
         assert!(on_disk.contains("#000000"));
 
         let ids: Vec<_> = mgr.list().into_iter().map(|t| t.id).collect();
-        assert_eq!(ids.iter().filter(|id| id.as_str() == "dracula").count(), 1);
+        assert_eq!(ids.iter().filter(|id| id.as_str() == "nord").count(), 1);
 
         let _ = fs::remove_file(&src);
         let _ = fs::remove_dir_all(dir);

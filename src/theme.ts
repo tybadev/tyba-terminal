@@ -15,6 +15,11 @@ export type { Theme, ThemeMode, ThemeState };
 
 const STORAGE_KEY = "tyba.theme";
 const MIGRATED_KEY = "tyba.theme.migrated";
+const SLOT_KEYS = { dark: "tyba.theme.dark", light: "tyba.theme.light" } as const;
+
+export const DEFAULT_DARK_ID = "tyba-dark";
+export const DEFAULT_LIGHT_ID = "tyba-light";
+export const DEFAULT_THEME_IDS: string[] = [DEFAULT_DARK_ID, DEFAULT_LIGHT_ID];
 
 export const THEMES: ThemeMode[] = ["dark", "light", "system"];
 
@@ -55,6 +60,11 @@ let mode: ThemeMode = (() => {
 })();
 
 let state: ThemeState | null = null;
+
+let slotCache: Record<"dark" | "light", string | null> = {
+  dark: localStorage.getItem(SLOT_KEYS.dark),
+  light: localStorage.getItem(SLOT_KEYS.light),
+};
 
 const terminalListeners = new Set<(theme: ITheme) => void>();
 const modeListeners = new Set<(mode: ThemeMode) => void>();
@@ -149,10 +159,26 @@ export function onThemeModeChange(cb: (mode: ThemeMode) => void): () => void {
   return () => modeListeners.delete(cb);
 }
 
+function attrFor(theme: Theme): string {
+  if (!theme.builtin) return theme.base === "light" ? "light" : "";
+  if (theme.id === DEFAULT_DARK_ID) return "";
+  if (theme.id === DEFAULT_LIGHT_ID) return "light";
+  return theme.id;
+}
+
+function themeAttr(): string | null {
+  const theme = activeTheme();
+  if (theme) return attrFor(theme) || null;
+  const cached = slotCache[effectiveBase()];
+  if (cached !== null) return cached || null;
+  return effectiveBase() === "light" ? "light" : null;
+}
+
 function apply() {
   const root = document.documentElement;
-  if (effectiveBase() === "light") {
-    root.setAttribute("data-theme", "light");
+  const attr = themeAttr();
+  if (attr) {
+    root.setAttribute("data-theme", attr);
   } else {
     root.removeAttribute("data-theme");
   }
@@ -198,6 +224,13 @@ export async function applyTheme(theme: Theme): Promise<void> {
 
 function absorb(next: ThemeState) {
   state = next;
+  for (const base of ["dark", "light"] as const) {
+    const attr = attrFor(next[base]);
+    if (slotCache[base] !== attr) {
+      slotCache[base] = attr;
+      localStorage.setItem(SLOT_KEYS[base], attr);
+    }
+  }
   if (next.mode !== mode) {
     mode = next.mode;
     localStorage.setItem(STORAGE_KEY, next.mode);
