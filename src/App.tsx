@@ -45,6 +45,7 @@ import {
   NotificationLink,
   NotificationTitle,
 } from "@/components/ui/notification";
+import { Clock } from "./components/Clock";
 import { CommandPalette } from "./components/CommandPalette";
 import { ContainersView } from "./components/ContainersView";
 import { DockerIcon } from "./components/icons/DockerIcon";
@@ -1144,6 +1145,8 @@ export default function App() {
           </IconAction>
 
           <div className="h-full flex-1" data-tauri-drag-region />
+
+          <Clock />
 
           <IconAction
             label={t("openProjectFolder")}
