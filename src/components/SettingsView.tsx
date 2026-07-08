@@ -75,6 +75,7 @@ const THEME_MODE_KEYS: Record<ThemeMode, string> = {
 const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   palette: "commandPalette",
   panel: "togglePanel",
+  settings: "settings",
   newSession: "newSession",
   newTab: "newTab",
   newWindow: "newWindow",
@@ -82,9 +83,38 @@ const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   openFolder: "openProjectFolder",
   prevSession: "prevSessionNav",
   nextSession: "nextSessionNav",
+  splitRight: "splitRight",
+  splitDown: "splitDown",
+  nextPane: "nextPane",
 };
 
 const FONT_SIZES = [11, 12, 13, 14, 15, 16];
+
+const THEME_EXAMPLE = `{
+  "name": "Meu Tema",
+  "base": "dark",
+  "ui": {
+    "bg": "#282a36",
+    "surface": "#313342",
+    "text": "#f8f8f2",
+    "primary": "#50fa7b",
+    "violet": "#bd93f9"
+  },
+  "terminal": {
+    "background": "#282a36",
+    "foreground": "#f8f8f2",
+    "cursor": "#f8f8f2",
+    "selectionBackground": "#44475a80",
+    "ansi": ["#21222c", "#ff5555", "#50fa7b", "#f1fa8c",
+             "#bd93f9", "#ff79c6", "#8be9fd", "#f8f8f2",
+             "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5",
+             "#d6acff", "#ff92df", "#a4ffff", "#ffffff"]
+  }
+}`;
+
+function copyThemeExample() {
+  void navigator.clipboard?.writeText(THEME_EXAMPLE).catch(() => {});
+}
 
 function NavItem({
   active,
@@ -453,18 +483,31 @@ export function SettingsView({
               ))}
             </div>
 
-            <div className="flex items-center justify-between pb-2">
+            <div className="flex items-center justify-between pb-1">
               <span className="tyba-label">{t("settingsThemes")}</span>
-              <Button
-                variant="ghost"
-                size="xs"
-                onClick={() => void importTheme()}
-                className="text-tyba-text-muted hover:text-tyba-text"
-              >
-                <DownloadSimple size={13} />
-                {t("importTheme")}
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => copyThemeExample()}
+                  className="text-tyba-text-muted hover:text-tyba-text"
+                >
+                  {t("copyThemeExample")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => void importTheme()}
+                  className="text-tyba-text-muted hover:text-tyba-text"
+                >
+                  <DownloadSimple size={13} />
+                  {t("importTheme")}
+                </Button>
+              </div>
             </div>
+            <p className="pb-2 text-[11px] text-tyba-text-faint">
+              {t("themeImportHint")}
+            </p>
             <div className="flex flex-col gap-px">
               {themes.map((theme) => {
                 const inUse = slotOf(theme) === theme.id;

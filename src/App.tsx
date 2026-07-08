@@ -56,6 +56,7 @@ import {
   createTab,
   createWorkspace,
   getPref,
+  focusPane,
   layoutState,
   leafSessions,
   listSessions,
@@ -65,13 +66,21 @@ import {
   renameWorkspace,
   repoBranch,
   setPref,
+  setSplitRatio,
   setWorkspaceColor,
   setWorkspaceGroup,
+  splitPane,
   type LayoutState,
   type Session,
   type SessionKind,
+  type SplitKind,
   type Workspace,
 } from "./lib/ipc";
+import {
+  computeRects,
+  findAncestorSplit,
+  type DividerRect,
+} from "./lib/panes";
 import {
   captureState,
   comboOf,
@@ -212,6 +221,11 @@ export default function App() {
     [activeTab],
   );
 
+  const paneLayout = useMemo(
+    () => (activeTab ? computeRects(activeTab.root) : null),
+    [activeTab],
+  );
+
   const workspaces = useMemo(() => {
     const query = sessionQuery.trim().toLowerCase();
     if (!query) return layout.workspaces;
@@ -295,6 +309,76 @@ export default function App() {
       if (next) void activateWorkspace(next.id);
     },
     [layout],
+  );
+
+  const splitActive = useCallback(
+    async (kind: SplitKind) => {
+      if (!activeWorkspace || !activeTab) return;
+      const session = await createSession({
+        kind: { type: "shell" },
+        cwd: activeWorkspace.repo_root ?? undefined,
+        cols: 80,
+        rows: 24,
+      });
+      setSessions((prev) => [...prev, session]);
+      await splitPane(activeTab.active_pane, kind, session.id);
+    },
+    [activeWorkspace, activeTab],
+  );
+
+  const cyclePane = useCallback(() => {
+    if (!activeTab || !paneLayout || paneLayout.panes.length < 2) return;
+    const idx = paneLayout.panes.findIndex(
+      (p) => p.pane === activeTab.active_pane,
+    );
+    const next = paneLayout.panes[(idx + 1) % paneLayout.panes.length];
+    if (next) void focusPane(next.pane);
+  }, [activeTab, paneLayout]);
+
+  const resizeActivePane = useCallback(
+    (kind: SplitKind, delta: number) => {
+      if (!activeTab) return;
+      const split = findAncestorSplit(
+        activeTab.root,
+        activeTab.active_pane,
+        kind,
+      );
+      if (split) void setSplitRatio(split.id, split.ratio + delta);
+    },
+    [activeTab],
+  );
+
+  const paneAreaRef = useRef<HTMLDivElement>(null);
+  const dragThrottle = useRef(0);
+
+  const startDividerDrag = useCallback(
+    (divider: DividerRect) => (e: React.PointerEvent) => {
+      e.preventDefault();
+      const area = paneAreaRef.current;
+      if (!area) return;
+      const bounds = area.getBoundingClientRect();
+      const compute = (ev: PointerEvent) => {
+        const pct =
+          divider.kind === "v"
+            ? ((ev.clientX - bounds.left) / bounds.width) * 100
+            : ((ev.clientY - bounds.top) / bounds.height) * 100;
+        return (pct - divider.start) / divider.length;
+      };
+      const move = (ev: PointerEvent) => {
+        const now = Date.now();
+        if (now - dragThrottle.current < 80) return;
+        dragThrottle.current = now;
+        void setSplitRatio(divider.split, compute(ev)).catch(() => {});
+      };
+      const up = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        void setSplitRatio(divider.split, compute(ev)).catch(() => {});
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    },
+    [],
   );
 
   const newSession = useCallback(
@@ -497,8 +581,29 @@ export default function App() {
           cycleWorkspace(-1);
         } else if (action === "nextSession") {
           cycleWorkspace(1);
+        } else if (action === "settings") {
+          setSettingsOpen((v) => !v);
+        } else if (action === "splitRight") {
+          if (!settingsOpen) void splitActive("v");
+        } else if (action === "splitDown") {
+          if (!settingsOpen) void splitActive("h");
+        } else if (action === "nextPane") {
+          cyclePane();
         }
         return;
+      }
+      if (e.metaKey && e.ctrlKey && !e.shiftKey && !e.altKey) {
+        const key = e.key.toLowerCase();
+        if (key === "arrowleft" || key === "arrowright") {
+          e.preventDefault();
+          resizeActivePane("v", key === "arrowright" ? 0.05 : -0.05);
+          return;
+        }
+        if (key === "arrowup" || key === "arrowdown") {
+          e.preventDefault();
+          resizeActivePane("h", key === "arrowdown" ? 0.05 : -0.05);
+          return;
+        }
       }
       if (
         e.metaKey &&
@@ -526,6 +631,9 @@ export default function App() {
     toggleSidebar,
     openProjectFolder,
     cycleWorkspace,
+    splitActive,
+    cyclePane,
+    resizeActivePane,
     activeWorkspace,
   ]);
 
@@ -541,6 +649,15 @@ export default function App() {
         key={w.id}
         onClick={() => void activateWorkspace(w.id)}
         title={open ? (w.repo_root ?? undefined) : w.name}
+        style={
+          w.color
+            ? {
+                background: `color-mix(in srgb, var(--tyba-${w.color}) ${
+                  isActive ? 14 : 8
+                }%, transparent)`,
+              }
+            : undefined
+        }
         className={`group relative flex shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
           showDetails ? "h-12" : "h-8"
         } ${open ? "px-2" : "justify-center px-0"} ${
@@ -624,6 +741,14 @@ export default function App() {
                 >
                   {t("groupSession")}
                 </DropdownMenuItem>
+                {w.group && (
+                  <DropdownMenuItem
+                    className="text-xs"
+                    onSelect={() => void setWorkspaceGroup(w.id, null)}
+                  >
+                    {t("removeFromGroup")}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator />
                 {branch && (
                   <DropdownMenuItem
@@ -844,9 +969,18 @@ export default function App() {
                     }`}
                   >
                     {groupedWorkspaces.groups.map(([name, list]) => (
-                      <div key={name} className="flex flex-col gap-px">
-                        <span className="tyba-label px-2.5 pt-2 pb-1">
-                          {name}
+                      <div
+                        key={name}
+                        className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-white/[.015] p-1"
+                      >
+                        <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
+                          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
+                            {name}
+                          </span>
+                          <span className="h-px min-w-0 flex-1 bg-tyba-border" />
+                          <span className="font-mono text-[9px] text-tyba-text-faint">
+                            {list.length}
+                          </span>
                         </span>
                         {list.map(renderWorkspace)}
                       </div>
@@ -888,14 +1022,69 @@ export default function App() {
                     onNew={() => void newTab()}
                   />
                 )}
-                <div className="relative min-h-0 flex-1">
-                  {sessions.map((s) => (
-                    <TerminalView
-                      key={s.id}
-                      sessionId={s.id}
-                      active={s.id === activeId}
-                      onExit={() => void refreshSessions()}
-                    />
+                <div
+                  ref={paneAreaRef}
+                  className="relative min-h-0 flex-1 overflow-hidden"
+                >
+                  {sessions.map((s) => {
+                    const paneRect =
+                      paneLayout?.panes.find((p) => p.session === s.id) ??
+                      null;
+                    return (
+                      <TerminalView
+                        key={s.id}
+                        sessionId={s.id}
+                        visible={paneRect !== null}
+                        focused={s.id === activeId}
+                        framed={(paneLayout?.panes.length ?? 0) > 1}
+                        rect={
+                          paneRect
+                            ? {
+                                left: paneRect.x,
+                                top: paneRect.y,
+                                width: paneRect.w,
+                                height: paneRect.h,
+                              }
+                            : null
+                        }
+                        onFocus={
+                          paneRect
+                            ? () => void focusPane(paneRect.pane)
+                            : undefined
+                        }
+                        onExit={() => void refreshSessions()}
+                      />
+                    );
+                  })}
+                  {paneLayout?.dividers.map((d) => (
+                    <div
+                      key={d.split}
+                      onPointerDown={startDividerDrag(d)}
+                      className={`absolute z-10 flex items-center justify-center ${
+                        d.kind === "v"
+                          ? "w-[7px] -translate-x-1/2 cursor-col-resize"
+                          : "h-[7px] -translate-y-1/2 cursor-row-resize"
+                      }`}
+                      style={
+                        d.kind === "v"
+                          ? {
+                              left: `${d.at}%`,
+                              top: `${d.crossStart}%`,
+                              height: `${d.crossLength}%`,
+                            }
+                          : {
+                              top: `${d.at}%`,
+                              left: `${d.crossStart}%`,
+                              width: `${d.crossLength}%`,
+                            }
+                      }
+                    >
+                      <span
+                        className={`rounded-full bg-tyba-border-strong transition-colors hover:bg-tyba-green/70 ${
+                          d.kind === "v" ? "h-full w-px" : "h-px w-full"
+                        }`}
+                      />
+                    </div>
                   ))}
                   {!activeTab && (
                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-5">

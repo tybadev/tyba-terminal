@@ -51,17 +51,38 @@ function disposeWebgl(webgl: WebglAddon | null) {
   }
 }
 
-interface Props {
-  sessionId: SessionId;
-  active: boolean;
-  onExit?: () => void;
+export interface PaneRectStyle {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
 }
 
-export function TerminalView({ sessionId, active, onExit }: Props) {
+interface Props {
+  sessionId: SessionId;
+  visible: boolean;
+  focused: boolean;
+  framed: boolean;
+  rect: PaneRectStyle | null;
+  onExit?: () => void;
+  onFocus?: () => void;
+}
+
+export function TerminalView({
+  sessionId,
+  visible,
+  focused,
+  framed,
+  rect,
+  onExit,
+  onFocus,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const webglRef = useRef<WebglAddon | null>(null);
+  const onFocusRef = useRef(onFocus);
+  onFocusRef.current = onFocus;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -110,30 +131,46 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
       onExit?.();
     }).then((un) => unlisteners.push(un));
 
-    // resize: observa o container e propaga cols/rows pro PTY
+    let lastCols = term.cols;
+    let lastRows = term.rows;
+    let timer: number | null = null;
     const refit = () => {
+      timer = null;
       if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
       fit.fit();
-      void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
+      if (term.cols !== lastCols || term.rows !== lastRows) {
+        lastCols = term.cols;
+        lastRows = term.rows;
+        term.scrollToBottom();
+        void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
+      }
     };
-    const ro = new ResizeObserver(refit);
+    const schedule = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(refit, 80);
+    };
+    const ro = new ResizeObserver(schedule);
     ro.observe(el);
-    const onRelayout = () => refit();
+    const onRelayout = () => schedule();
     const onFontSize = (e: Event) => {
       const size = (e as CustomEvent<number>).detail;
       if (typeof size === "number" && size >= 10 && size <= 20) {
         term.options.fontSize = size;
-        refit();
+        schedule();
       }
     };
+    const onMouseDown = () => onFocusRef.current?.();
     window.addEventListener(RELAYOUT_EVENT, onRelayout);
     window.addEventListener(FONT_SIZE_EVENT, onFontSize);
+    el.addEventListener("mousedown", onMouseDown);
     void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
 
     return () => {
+      if (timer !== null) window.clearTimeout(timer);
       ro.disconnect();
       window.removeEventListener(RELAYOUT_EVENT, onRelayout);
       window.removeEventListener(FONT_SIZE_EVENT, onFontSize);
+      el.removeEventListener("mousedown", onMouseDown);
       offTheme();
       dataSub.dispose();
       unlisteners.forEach((un) => un());
@@ -149,9 +186,8 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    if (active) {
+    if (focused && visible) {
       term.focus();
-      fitRef.current?.fit();
       if (!webglRef.current) {
         webglRef.current = loadWebgl(term, () => {
           webglRef.current = null;
@@ -161,13 +197,29 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
       disposeWebgl(webglRef.current);
       webglRef.current = null;
     }
-  }, [active]);
+  }, [focused, visible]);
+
+  const frameClass = framed
+    ? focused
+      ? "border border-tyba-border-strong"
+      : "border border-tyba-border"
+    : "";
 
   return (
     <div
       ref={containerRef}
-      className="h-full w-full overflow-hidden bg-tyba-sunken p-2"
-      style={{ display: active ? "block" : "none" }}
+      className={`overflow-hidden rounded-[4px] bg-tyba-sunken p-2 ${frameClass}`}
+      style={
+        visible && rect
+          ? {
+              position: "absolute",
+              left: `${rect.left}%`,
+              top: `${rect.top}%`,
+              width: `${rect.width}%`,
+              height: `${rect.height}%`,
+            }
+          : { display: "none" }
+      }
     />
   );
 }

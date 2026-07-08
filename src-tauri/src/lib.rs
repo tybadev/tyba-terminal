@@ -241,11 +241,14 @@ fn repo_branch(path: String) -> Option<String> {
 #[tauri::command]
 fn new_window(app: AppHandle) -> Result<(), String> {
     let label = format!("tyba-{}", uuid::Uuid::new_v4().simple());
-    tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
+    let builder = tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
         .title("TYBA")
-        .inner_size(1100.0, 720.0)
-        .build()
-        .map_err(|e| e.to_string())?;
+        .inner_size(1100.0, 720.0);
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+    builder.build().map_err(|e| e.to_string())?;
     Ok(())
 }
 

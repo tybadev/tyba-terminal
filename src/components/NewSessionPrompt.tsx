@@ -6,6 +6,7 @@ import { ClockCounterClockwise, FolderOpen, House } from "@phosphor-icons/react"
 import {
   CommandDialog,
   CommandGroup,
+  CommandInput,
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
@@ -57,8 +58,9 @@ export function NewSessionPrompt({ open, onOpenChange, onCreate }: Props) {
       showCloseButton={false}
       className="top-28 max-w-[480px] translate-y-0 rounded-[6px] border-tyba-border-strong bg-tyba-surface shadow-2xl"
     >
+      <CommandInput placeholder={t("newSessionWhere")} />
       <CommandList>
-        <CommandGroup heading={t("newSessionWhere")}>
+        <CommandGroup>
           {defaultDir && (
             <CommandItem
               onSelect={() => {
