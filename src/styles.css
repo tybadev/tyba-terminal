@@ -1,18 +1,233 @@
 @import "tailwindcss";
 
-/* Identidade TYBA: canvas quase-preto, Space Grotesk na marca.
-   O gradiente dos "rios" é a assinatura — usado com parcimônia
-   (marca e estados de destaque), nunca espalhado pela UI. */
+/* ============================================================
+   Identidade TYBA — tokens v2 do design system.
+   Fonte da verdade: repo tyba-design-system (ds-bundle/tokens/tyba.css),
+   espelhado no projeto "TYBA Design System" do claude.ai/design.
+   Os nomes --tyba-* são idênticos aos publicados lá.
+
+   Direção: "o gradiente é luz, não tinta" — o que está vivo emite
+   luz (glow, linha viva); elemento parado não brilha.
+   Temas: dark é o canônico (:root); light = [data-theme="light"].
+   ============================================================ */
 
 :root {
+  /* Superfícies */
+  --tyba-bg: #0a0a0c;
+  --tyba-surface: #121216;
+  --tyba-raised: #1a1a20;
+  --tyba-overlay: #22222a;
+  --tyba-border: #26262e;
+  --tyba-border-strong: #3a3a46;
+  --tyba-sunken: #070709;
+
+  /* Texto */
+  --tyba-text: #f2f2f5;
+  --tyba-text-muted: #a0a0ac;
+  --tyba-text-faint: #6a6a76;
+  --tyba-text-inverse: #0a0a0c;
+
+  /* Acentos da marca */
+  --tyba-green: #7cc544;
+  --tyba-lime: #a8e05f;
+  --tyba-amber: #f5a93b;
+  --tyba-magenta: #ec4899;
+  --tyba-violet: #8b5cf6;
+  --tyba-blue: #4c7df0;
+  --tyba-cyan: #2dd4bf;
+  --tyba-red: #f0503c;
+
+  /* Papéis semânticos */
+  --tyba-primary: var(--tyba-green);
+  --tyba-primary-hover: #8ed158;
+
+  /* Tints translúcidos (fundos de badge/status) */
+  --tyba-green-tint: rgba(124, 197, 68, 0.14);
+  --tyba-amber-tint: rgba(245, 169, 59, 0.14);
+  --tyba-magenta-tint: rgba(236, 72, 153, 0.14);
+  --tyba-violet-tint: rgba(139, 92, 246, 0.14);
+  --tyba-blue-tint: rgba(76, 125, 240, 0.14);
+  --tyba-cyan-tint: rgba(45, 212, 191, 0.14);
+  --tyba-red-tint: rgba(240, 80, 60, 0.14);
+  --tyba-neutral-tint: rgba(106, 106, 118, 0.14);
+
+  /* Luz: o que está vivo, brilha */
+  --tyba-glow-green: 0 0 12px rgba(124, 197, 68, 0.45);
+  --tyba-glow-amber: 0 0 12px rgba(245, 169, 59, 0.45);
+  --tyba-glow-violet: 0 0 12px rgba(139, 92, 246, 0.45);
+  --tyba-glow-cyan: 0 0 12px rgba(45, 212, 191, 0.45);
+  --tyba-glow-red: 0 0 12px rgba(240, 80, 60, 0.45);
+  --tyba-halo: 0 0 24px rgba(139, 92, 246, 0.12);
+
+  --tyba-glass-bg: rgba(18, 18, 22, 0.55);
+  --tyba-glass-blur: 24px;
+
+  --tyba-aurora:
+    radial-gradient(900px 420px at 75% -10%, rgba(45, 212, 191, 0.055), transparent 60%),
+    radial-gradient(700px 380px at 15% -10%, rgba(124, 197, 68, 0.05), transparent 60%);
+
+  /* Gradiente-assinatura (constante da marca, igual nos dois temas) */
   --tyba-gradient: linear-gradient(
-    115deg,
-    #a3e635 0%,
-    #fbbf24 30%,
-    #ec4899 55%,
-    #8b5cf6 78%,
-    #38bdf8 100%
+    120deg,
+    #7cc544 0%,
+    #f5c93b 20%,
+    #f5a93b 34%,
+    #ec4899 52%,
+    #8b5cf6 70%,
+    #4c7df0 86%,
+    #2dd4bf 100%
   );
+  --tyba-gradient-soft: linear-gradient(120deg, #7cc544, #2dd4bf 55%, #8b5cf6);
+  --tyba-flow-gradient: linear-gradient(
+    90deg,
+    transparent,
+    var(--tyba-green) 15%,
+    var(--tyba-cyan) 45%,
+    var(--tyba-violet) 75%,
+    transparent
+  );
+
+  --tyba-focus-ring: 0 0 0 2px var(--tyba-bg), 0 0 0 4px var(--tyba-green);
+
+  /* ---------- Ponte semântica shadcn/ui → tokens TYBA ----------
+     Os componentes de src/components/ui usam estes nomes; como
+     apontam para --tyba-*, trocam de tema junto. */
+  --background: var(--tyba-bg);
+  --foreground: var(--tyba-text);
+  --card: var(--tyba-raised);
+  --card-foreground: var(--tyba-text);
+  --popover: var(--tyba-overlay);
+  --popover-foreground: var(--tyba-text);
+  --primary: var(--tyba-primary);
+  --primary-foreground: var(--tyba-text-inverse);
+  --secondary: var(--tyba-raised);
+  --secondary-foreground: var(--tyba-text);
+  --muted: var(--tyba-raised);
+  --muted-foreground: var(--tyba-text-muted);
+  --accent: var(--tyba-raised);
+  --accent-foreground: var(--tyba-text);
+  --destructive: var(--tyba-red);
+  --destructive-foreground: #ffffff;
+  --border: var(--tyba-border);
+  --input: var(--tyba-border-strong);
+  --ring: var(--tyba-green);
+  /* raios contidos: é terminal, não site */
+  --radius: 6px;
+}
+
+/* Tema light — completo. Acentos escurecidos p/ contraste. */
+[data-theme="light"] {
+  --tyba-bg: #f5f5f7;
+  --tyba-surface: #fbfbfd;
+  --tyba-raised: #ffffff;
+  --tyba-overlay: #ffffff;
+  --tyba-border: #e3e3ea;
+  --tyba-border-strong: #cfcfd8;
+  --tyba-sunken: #ececf0;
+
+  --tyba-text: #17171c;
+  --tyba-text-muted: #55555f;
+  --tyba-text-faint: #8b8b96;
+  --tyba-text-inverse: #ffffff;
+
+  --tyba-green: #4e9622;
+  --tyba-lime: #6fae2e;
+  --tyba-amber: #c47c14;
+  --tyba-magenta: #d33d84;
+  --tyba-violet: #7a4ce8;
+  --tyba-blue: #3b66d6;
+  --tyba-cyan: #0f9d8c;
+  --tyba-red: #d6402e;
+
+  --tyba-primary-hover: #58a52a;
+
+  --tyba-green-tint: rgba(78, 150, 34, 0.12);
+  --tyba-amber-tint: rgba(196, 124, 20, 0.12);
+  --tyba-magenta-tint: rgba(211, 61, 132, 0.12);
+  --tyba-violet-tint: rgba(122, 76, 232, 0.12);
+  --tyba-blue-tint: rgba(59, 102, 214, 0.12);
+  --tyba-cyan-tint: rgba(15, 157, 140, 0.12);
+  --tyba-red-tint: rgba(214, 64, 46, 0.12);
+  --tyba-neutral-tint: rgba(139, 139, 150, 0.14);
+
+  --tyba-glow-green: 0 0 10px rgba(78, 150, 34, 0.28);
+  --tyba-glow-amber: 0 0 10px rgba(196, 124, 20, 0.28);
+  --tyba-glow-violet: 0 0 10px rgba(122, 76, 232, 0.28);
+  --tyba-glow-cyan: 0 0 10px rgba(15, 157, 140, 0.28);
+  --tyba-glow-red: 0 0 10px rgba(214, 64, 46, 0.28);
+  --tyba-halo: 0 0 24px rgba(122, 76, 232, 0.1);
+
+  --tyba-glass-bg: rgba(255, 255, 255, 0.6);
+
+  --tyba-aurora:
+    radial-gradient(900px 420px at 75% -10%, rgba(15, 157, 140, 0.06), transparent 60%),
+    radial-gradient(700px 380px at 15% -10%, rgba(78, 150, 34, 0.05), transparent 60%);
+}
+
+/* dark: do Tailwind segue o tema TYBA (dark é o default do :root) */
+@custom-variant dark (&:is(:root:not([data-theme="light"]) *, :root:not([data-theme="light"])));
+
+/* Vocabulário Tailwind: bg-tyba-raised, text-tyba-green, bg-background… */
+@theme inline {
+  --color-tyba-bg: var(--tyba-bg);
+  --color-tyba-surface: var(--tyba-surface);
+  --color-tyba-raised: var(--tyba-raised);
+  --color-tyba-overlay: var(--tyba-overlay);
+  --color-tyba-sunken: var(--tyba-sunken);
+  --color-tyba-border: var(--tyba-border);
+  --color-tyba-border-strong: var(--tyba-border-strong);
+
+  --color-tyba-text: var(--tyba-text);
+  --color-tyba-text-muted: var(--tyba-text-muted);
+  --color-tyba-text-faint: var(--tyba-text-faint);
+  --color-tyba-text-inverse: var(--tyba-text-inverse);
+
+  --color-tyba-green: var(--tyba-green);
+  --color-tyba-lime: var(--tyba-lime);
+  --color-tyba-amber: var(--tyba-amber);
+  --color-tyba-magenta: var(--tyba-magenta);
+  --color-tyba-violet: var(--tyba-violet);
+  --color-tyba-blue: var(--tyba-blue);
+  --color-tyba-cyan: var(--tyba-cyan);
+  --color-tyba-red: var(--tyba-red);
+
+  --color-tyba-green-tint: var(--tyba-green-tint);
+  --color-tyba-amber-tint: var(--tyba-amber-tint);
+  --color-tyba-magenta-tint: var(--tyba-magenta-tint);
+  --color-tyba-violet-tint: var(--tyba-violet-tint);
+  --color-tyba-blue-tint: var(--tyba-blue-tint);
+  --color-tyba-cyan-tint: var(--tyba-cyan-tint);
+  --color-tyba-red-tint: var(--tyba-red-tint);
+  --color-tyba-neutral-tint: var(--tyba-neutral-tint);
+
+  /* shadcn */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 html,
@@ -20,15 +235,94 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: #0a0a0c;
+  background: var(--tyba-bg);
+  color: var(--tyba-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
 }
 
-.brand {
-  font-family: "Space Grotesk", system-ui, sans-serif;
+::selection {
+  background: rgba(124, 197, 68, 0.3);
+}
+
+/* Scrollbar discreta, estilo app desktop (vale também pro xterm) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--tyba-border-strong);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--tyba-text-faint);
+}
+
+/* ---------- Utilitárias de marca ---------- */
+
+/* Texto com o gradiente-assinatura (momentos de marca apenas) */
+.tyba-gradient-text {
   background: var(--tyba-gradient);
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
+}
+
+/* Borda com gradiente (cards de destaque) — dois fundos, não ::before */
+.tyba-gradient-border {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background:
+    linear-gradient(var(--tyba-raised), var(--tyba-raised)) padding-box,
+    var(--tyba-gradient) border-box;
+}
+
+/* Label de seção em caixa alta (estilo do brand board) */
+.tyba-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tyba-text-faint);
+}
+
+/* ---------- Luz ---------- */
+
+/* Canvas com aurora: respiro de cor no topo do app */
+.tyba-aurora {
+  background-image: var(--tyba-aurora);
+  background-color: var(--tyba-bg);
+}
+
+/* Vidro sobre o void (sidebar, painéis flutuantes) */
+.tyba-glass {
+  background: var(--tyba-glass-bg);
+  backdrop-filter: blur(var(--tyba-glass-blur));
+  -webkit-backdrop-filter: blur(var(--tyba-glass-blur));
+}
+
+/* Linha viva: filete de luz que marca o que está ativo.
+   Estática = selecionado; --live (animada) = executando agora. */
+.tyba-flow-line {
+  height: 1px;
+  border-radius: 1px;
+  background: var(--tyba-flow-gradient);
+}
+.tyba-flow-line--live {
+  background-size: 200% 100%;
+  animation: tyba-flow 3s linear infinite;
+}
+@keyframes tyba-flow {
+  from { background-position: 0% 0; }
+  to { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tyba-flow-line--live { animation: none; }
 }
 
 /* xterm ocupa o container inteiro */

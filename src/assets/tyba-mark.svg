@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="tyba-bar" x1="13" y1="21" x2="53" y2="13" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7cc544"/>
+      <stop offset="0.3" stop-color="#f5c93b"/>
+      <stop offset="0.5" stop-color="#ec4899"/>
+      <stop offset="0.64" stop-color="#8b5cf6"/>
+      <stop offset="0.8" stop-color="#4c7df0"/>
+      <stop offset="1" stop-color="#2dd4bf"/>
+    </linearGradient>
+    <linearGradient id="tyba-stem" x1="30" y1="22" x2="24" y2="51" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f5a93b"/>
+      <stop offset="0.5" stop-color="#ec4899"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <g stroke-width="11" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M30 22 V44 C30 49 26 51 21 49" stroke="url(#tyba-stem)"/>
+    <path d="M13 21 H45 C50 21 53 18 53 13" stroke="url(#tyba-bar)"/>
+  </g>
+</svg>
