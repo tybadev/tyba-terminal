@@ -64,6 +64,8 @@ interface Props {
   onBindingsChange: (value: Bindings) => void;
   accountName: string;
   onAccountNameChange: (value: string) => void;
+  showContainers: boolean;
+  onShowContainersChange: (value: boolean) => void;
 }
 
 const THEME_MODE_KEYS: Record<ThemeMode, string> = {
@@ -276,6 +278,8 @@ export function SettingsView({
   onBindingsChange,
   accountName,
   onAccountNameChange,
+  showContainers,
+  onShowContainersChange,
 }: Props) {
   const { t, i18n } = useTranslation();
   const [section, setSection] = useState<Section>("general");
@@ -458,7 +462,7 @@ export function SettingsView({
           <section className="mx-auto w-full max-w-lg">
             <SectionHeader title={t("settingsCode")} hint={t("codeHint")} />
             <span className="tyba-label">{t("terminalFontSize")}</span>
-            <div className="flex gap-2 pt-2">
+            <div className="flex gap-2 pt-2 pb-6">
               {FONT_SIZES.map((size) => (
                 <Choice
                   key={size}
@@ -468,6 +472,23 @@ export function SettingsView({
                 />
               ))}
             </div>
+
+            <span className="tyba-label">{t("showContainersToggle")}</span>
+            <div className="flex gap-2 pt-2">
+              <Choice
+                active={showContainers}
+                label={t("detailsShow")}
+                onClick={() => onShowContainersChange(true)}
+              />
+              <Choice
+                active={!showContainers}
+                label={t("detailsHide")}
+                onClick={() => onShowContainersChange(false)}
+              />
+            </div>
+            <p className="pt-2 text-[11px] text-tyba-text-faint">
+              {t("showContainersHint")}
+            </p>
           </section>
         )}
 

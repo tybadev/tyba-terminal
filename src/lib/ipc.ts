@@ -231,6 +231,38 @@ export function leafSessions(node: PaneNode): SessionId[] {
   return [...leafSessions(node.first), ...leafSessions(node.second)];
 }
 
+export interface ContainerInfo {
+  id: string;
+  name: string;
+  image: string;
+  state: string;
+  status: string;
+  ports: string;
+  compose_project: string | null;
+  compose_working_dir: string | null;
+}
+
+export const dockerAvailable = () => invoke<boolean>("docker_available");
+
+export const dockerListContainers = (repoRoot: string | null, all: boolean) =>
+  invoke<ContainerInfo[]>("docker_list_containers", { repoRoot, all });
+
+export const dockerOpenLogs = (
+  containerId: string,
+  workspaceId: WorkspaceId | null,
+) => invoke<void>("docker_open_logs", { containerId, workspaceId });
+
+export const dockerOpenShell = (
+  containerId: string,
+  workspaceId: WorkspaceId | null,
+) => invoke<void>("docker_open_shell", { containerId, workspaceId });
+
+export const dockerRemoveContainer = (containerId: string) =>
+  invoke<void>("docker_remove_container", { containerId });
+
+export const dockerOpenDesktop = () =>
+  invoke<void>("docker_open_desktop");
+
 export type ThemeMode = "dark" | "light" | "system";
 export type ThemeBase = "dark" | "light";
 

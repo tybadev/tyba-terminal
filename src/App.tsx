@@ -37,6 +37,7 @@ import {
 import { getThemeMode, onThemeModeChange, setThemeMode, type ThemeMode } from "./theme";
 import { ApprovalsInbox } from "./components/ApprovalsInbox";
 import { CommandPalette } from "./components/CommandPalette";
+import { ContainersPopover } from "./components/ContainersPopover";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { PromptDialog } from "./components/PromptDialog";
 import {
@@ -102,6 +103,7 @@ const DETAILS_PREF_KEY = "pref.sidebar_details";
 const DETAILS_OVERRIDES_KEY = "pref.session_details";
 const ACCOUNT_NAME_KEY = "pref.account_name";
 const FONT_SIZE_KEY = "pref.code.font_size";
+const SHOW_CONTAINERS_KEY = "pref.code.show_containers";
 
 function runnerLabel(kind: SessionKind): string | null {
   if (kind.type !== "agent") return null;
@@ -197,6 +199,7 @@ export default function App() {
     ws: Workspace;
   } | null>(null);
   const [pendingGroup, setPendingGroup] = useState<string | null>(null);
+  const [showContainers, setShowContainers] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
   const booted = useRef(false);
 
@@ -541,6 +544,11 @@ export default function App() {
     void setPref(BINDINGS_PREF_KEY, JSON.stringify(value)).catch(() => {});
   }, []);
 
+  const changeShowContainers = useCallback((value: boolean) => {
+    setShowContainers(value);
+    void setPref(SHOW_CONTAINERS_KEY, value ? "on" : "off").catch(() => {});
+  }, []);
+
   const toggleSidebar = useCallback(() => {
     setSidebar((current) => (current === "open" ? togglePref : "open"));
   }, [togglePref]);
@@ -570,6 +578,7 @@ export default function App() {
         nameRaw,
         bindingsRaw,
         fontRaw,
+        containersRaw,
       ] = await Promise.all([
         listSessions().catch(() => [] as Session[]),
         layoutState().catch(() => EMPTY_LAYOUT),
@@ -579,6 +588,7 @@ export default function App() {
         getPref(ACCOUNT_NAME_KEY).catch(() => null),
         getPref(BINDINGS_PREF_KEY).catch(() => null),
         getPref(FONT_SIZE_KEY).catch(() => null),
+        getPref(SHOW_CONTAINERS_KEY).catch(() => null),
       ]);
       if (cancelled) return;
       setSessions(existing);
@@ -600,6 +610,7 @@ export default function App() {
       }
       if (nameRaw) setAccountName(nameRaw);
       setBindings(parseBindings(bindingsRaw));
+      setShowContainers(containersRaw === "on");
       const fontSize = Number(fontRaw);
       if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
       if (currentLayout.workspaces.length === 0 && !booted.current) {
@@ -1005,6 +1016,14 @@ export default function App() {
             <FolderOpen size={16} />
           </IconAction>
 
+          {showContainers && (
+            <ContainersPopover
+              repoRoot={activeWorkspace?.repo_root ?? null}
+              workspaceId={activeWorkspace?.id ?? null}
+              projectName={activeWorkspace?.name ?? null}
+            />
+          )}
+
           <ApprovalsInbox sessions={sessions} />
 
           <DropdownMenu>
@@ -1052,6 +1071,8 @@ export default function App() {
               onBindingsChange={changeBindings}
               accountName={accountName}
               onAccountNameChange={changeAccountName}
+              showContainers={showContainers}
+              onShowContainersChange={changeShowContainers}
             />
           ) : (
             <>

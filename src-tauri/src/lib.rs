@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod approvals;
+pub mod docker;
 pub mod layout;
 pub mod pty;
 pub mod sandbox;
@@ -28,6 +29,7 @@ struct AppState {
     approvals: SharedApprovals,
     themes: theme::SharedThemes,
     layout: layout::SharedLayout,
+    docker: docker::SharedDocker,
 }
 
 fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
@@ -390,6 +392,159 @@ fn set_split_ratio(
 }
 
 #[tauri::command]
+fn docker_available(state: State<'_, AppState>) -> bool {
+    state.docker.available()
+}
+
+#[tauri::command]
+fn docker_list_containers(
+    state: State<'_, AppState>,
+    repo_root: Option<String>,
+    all: bool,
+) -> Result<Vec<docker::ContainerInfo>, String> {
+    state
+        .docker
+        .list(repo_root.as_deref(), all)
+        .map_err(|e| e.to_string())
+}
+
+fn open_container_tab(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    container_id: &str,
+    tab: docker::ContainerTab,
+    workspace_id: Option<layout::WorkspaceId>,
+) -> Result<(), String> {
+    let name = state
+        .docker
+        .container_name(container_id)
+        .map_err(|e| e.to_string())?;
+
+    if let Some(existing) = state.docker.tab_session(container_id, tab) {
+        if state.sessions.get(existing).is_some() {
+            state
+                .layout
+                .open_session(existing)
+                .map_err(|e| e.to_string())?;
+            emit_layout(app, state);
+            return Ok(());
+        }
+    }
+
+    let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
+    let (args, title) = match tab {
+        docker::ContainerTab::Logs => (
+            vec![
+                "logs".to_string(),
+                "-f".to_string(),
+                "--tail".to_string(),
+                "200".to_string(),
+                container_id.to_string(),
+            ],
+            format!("logs: {name}"),
+        ),
+        docker::ContainerTab::Shell => (
+            vec![
+                "exec".to_string(),
+                "-it".to_string(),
+                container_id.to_string(),
+                "sh".to_string(),
+                "-c".to_string(),
+                "command -v bash >/dev/null && exec bash || exec sh".to_string(),
+            ],
+            format!("sh: {name}"),
+        ),
+    };
+
+    let handle = app.clone();
+    let session = state
+        .sessions
+        .create_command_session(app.clone(), &state.pty_pool, bin, &args, title, 100, 30, {
+            move |id| session_exited(&handle, id)
+        })
+        .map_err(|e| e.to_string())?;
+    state.docker.remember_tab(container_id, tab, session.id);
+
+    if let Err(e) = state.layout.create_tab(session.id, workspace_id) {
+        if matches!(e, layout::LayoutError::NoActiveWorkspace) {
+            state
+                .layout
+                .create_workspace(&name, None, session.id)
+                .map_err(|e| e.to_string())?;
+        } else {
+            return Err(e.to_string());
+        }
+    }
+    emit_layout(app, state);
+    Ok(())
+}
+
+#[tauri::command]
+fn docker_open_logs(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    container_id: String,
+    workspace_id: Option<layout::WorkspaceId>,
+) -> Result<(), String> {
+    open_container_tab(
+        &app,
+        &state,
+        &container_id,
+        docker::ContainerTab::Logs,
+        workspace_id,
+    )
+}
+
+#[tauri::command]
+fn docker_open_shell(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    container_id: String,
+    workspace_id: Option<layout::WorkspaceId>,
+) -> Result<(), String> {
+    open_container_tab(
+        &app,
+        &state,
+        &container_id,
+        docker::ContainerTab::Shell,
+        workspace_id,
+    )
+}
+
+#[tauri::command]
+fn docker_remove_container(
+    state: State<'_, AppState>,
+    container_id: String,
+) -> Result<(), String> {
+    state
+        .docker
+        .remove(&container_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn docker_open_desktop() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", "Docker"])
+            .status()
+            .map_err(|e| e.to_string())
+            .and_then(|s| {
+                if s.success() {
+                    Ok(())
+                } else {
+                    Err("não foi possível abrir o Docker Desktop".into())
+                }
+            })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("disponível apenas no macOS".into())
+    }
+}
+
+#[tauri::command]
 fn request_approval(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -512,6 +667,7 @@ pub fn run() {
                 approvals: Arc::new(approvals::ApprovalsManager::new()),
                 themes,
                 layout,
+                docker: Arc::new(docker::DockerManager::new()),
             });
 
             std::thread::Builder::new()
@@ -569,6 +725,12 @@ pub fn run() {
             set_split_ratio,
             get_pref,
             set_pref,
+            docker_available,
+            docker_list_containers,
+            docker_open_logs,
+            docker_open_shell,
+            docker_remove_container,
+            docker_open_desktop,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tyba")

@@ -93,6 +93,62 @@ impl SessionManager {
         if let Some(cwd) = &opts.cwd {
             cmd.cwd(cwd);
         }
+
+        let title = opts.title.unwrap_or_else(|| shell_label(&shell));
+        self.spawn_session(
+            app,
+            pty_pool,
+            id,
+            cmd,
+            opts.kind,
+            title,
+            opts.cols,
+            opts.rows,
+            on_exit,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_command_session(
+        &self,
+        app: AppHandle,
+        pty_pool: &SharedPtyPool,
+        program: &std::path::Path,
+        args: &[String],
+        title: String,
+        cols: u16,
+        rows: u16,
+        on_exit: impl FnOnce(SessionId) + Send + 'static,
+    ) -> Result<Session, PtyError> {
+        let id = Uuid::new_v4();
+        let mut cmd = CommandBuilder::new(program);
+        cmd.args(args);
+        self.spawn_session(
+            app,
+            pty_pool,
+            id,
+            cmd,
+            SessionKind::Shell,
+            title,
+            cols,
+            rows,
+            on_exit,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_session(
+        &self,
+        app: AppHandle,
+        pty_pool: &SharedPtyPool,
+        id: SessionId,
+        mut cmd: CommandBuilder,
+        kind: SessionKind,
+        title: String,
+        cols: u16,
+        rows: u16,
+        on_exit: impl FnOnce(SessionId) + Send + 'static,
+    ) -> Result<Session, PtyError> {
         cmd.env("TERM", "xterm-256color");
         cmd.env("TYBA", "1");
         cmd.env("TYBA_SESSION_ID", id.to_string());
@@ -102,15 +158,15 @@ impl SessionManager {
             id,
             cmd,
             None,
-            opts.cols,
-            opts.rows,
+            cols,
+            rows,
             Box::new(move || on_exit(id)),
         )?;
 
         let session = Session {
             id,
-            kind: opts.kind,
-            title: opts.title.unwrap_or_else(|| shell_label(&shell)),
+            kind,
+            title,
             repo_root: None,
             worktree: None,
             status: SessionStatus::Running,
