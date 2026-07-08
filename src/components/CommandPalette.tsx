@@ -115,6 +115,8 @@ export function CommandPalette({
       onOpenChange={onOpenChange}
       title={t("commandPalette")}
       description={t("searchCommand")}
+      showCloseButton={false}
+      className="top-28 max-w-[560px] translate-y-0 rounded-[6px] border-tyba-border-strong bg-tyba-surface shadow-2xl"
     >
       <CommandInput placeholder={t("searchCommand")} />
       <CommandList>
@@ -218,6 +220,11 @@ export function CommandPalette({
           ))}
         </CommandGroup>
       </CommandList>
+      <div className="flex items-center gap-4 border-t border-tyba-border px-3 py-1.5 font-mono text-[10px] text-tyba-text-faint">
+        <span>↑↓ {t("hintNavigate")}</span>
+        <span>↵ {t("hintRun")}</span>
+        <span className="ml-auto">esc {t("hintClose")}</span>
+      </div>
     </CommandDialog>
   );
 }

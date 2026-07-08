@@ -10,6 +10,7 @@ import {
   CaretDown,
   CaretRight,
   FolderOpen,
+  MagnifyingGlass,
   Plus,
   SidebarSimple,
   TerminalWindow,
@@ -62,7 +63,6 @@ import {
   type Session,
   type SessionId,
 } from "./lib/ipc";
-import tybaMark from "./assets/tyba-mark.svg";
 
 const EMPTY_LAYOUT: LayoutState = { tabs: [], active_tab: null };
 
@@ -144,6 +144,7 @@ export default function App() {
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [sessionQuery, setSessionQuery] = useState("");
   const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
   const booted = useRef(false);
 
@@ -170,7 +171,19 @@ export default function App() {
     [layout],
   );
 
-  const groups = useMemo(() => groupSessions(sessions), [sessions]);
+  const groups = useMemo(() => {
+    const query = sessionQuery.trim().toLowerCase();
+    const all = groupSessions(sessions);
+    if (!query) return all;
+    return all
+      .map((group) => ({
+        ...group,
+        sessions: group.sessions.filter((s) =>
+          `${s.title} ${group.label ?? ""}`.toLowerCase().includes(query),
+        ),
+      }))
+      .filter((group) => group.sessions.length > 0);
+  }, [sessions, sessionQuery]);
 
   const newShell = useCallback(async () => {
     const session = await createSession({
@@ -317,10 +330,13 @@ export default function App() {
             <SidebarSimple size={16} />
           </IconAction>
 
-          <span className="ml-1.5 flex select-none items-center gap-2">
-            <img src={tybaMark} alt="" className="h-4 w-4" />
-            <span className="text-xs font-bold tracking-[0.2em]">TYBA</span>
-          </span>
+          <IconAction
+            label={t("commandPalette")}
+            shortcut="⌘K"
+            onClick={() => setPaletteOpen(true)}
+          >
+            <MagnifyingGlass size={16} />
+          </IconAction>
 
           <div className="h-full flex-1" data-tauri-drag-region />
 
@@ -400,12 +416,28 @@ export default function App() {
         <div className="flex min-h-0 flex-1">
           {sidebar !== "hidden" && (
             <aside
-              className={`tyba-glass flex shrink-0 flex-col border-r border-tyba-border ${
+              className={`tyba-glass flex shrink-0 flex-col ${
                 open ? "w-56" : "w-11"
               }`}
             >
               {open && (
-                <span className="tyba-label px-3.5 pt-3.5">{t("sessions")}</span>
+                <>
+                  <span className="tyba-label px-3.5 pt-3.5">
+                    {t("sessions")}
+                  </span>
+                  <label className="mx-2 mt-2 flex h-7 items-center gap-1.5 rounded-[4px] bg-white/[.03] px-2 focus-within:bg-white/[.05]">
+                    <MagnifyingGlass
+                      size={12}
+                      className="shrink-0 text-tyba-text-faint"
+                    />
+                    <input
+                      value={sessionQuery}
+                      onChange={(e) => setSessionQuery(e.target.value)}
+                      placeholder={t("searchSessions")}
+                      className="w-full bg-transparent text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
+                    />
+                  </label>
+                </>
               )}
               <nav
                 className={`flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2 pb-2 ${
@@ -541,23 +573,44 @@ export default function App() {
                 />
               ))}
               {!activeTab && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-4">
-                  <img
-                    src={tybaMark}
-                    alt=""
-                    className="h-12 w-12 opacity-90"
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-5">
+                  <TerminalWindow
+                    size={36}
+                    className="text-tyba-text-faint"
                   />
                   <p className="text-sm text-tyba-text-faint">
                     {sessions.length === 0 ? t("noSessions") : t("noTabs")}
                   </p>
-                  <Button onClick={() => void newShell()}>
-                    <Plus size={16} weight="bold" />
-                    {sessions.length === 0 ? t("newSession") : t("newTab")}
-                  </Button>
-                  <p className="flex items-center gap-1.5 text-xs text-tyba-text-faint">
-                    <Kbd>⌘K</Kbd> {t("hintPalette")} · <Kbd>⌘T</Kbd>{" "}
-                    {t("hintNewSession")} · <Kbd>⌘B</Kbd> {t("hintPanel")}
-                  </p>
+                  <div className="flex w-64 flex-col gap-px">
+                    <button
+                      onClick={() => void newShell()}
+                      className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
+                    >
+                      <Plus size={14} className="text-tyba-green" />
+                      <span className="flex-1 text-left">{t("newTab")}</span>
+                      <Kbd>⌘T</Kbd>
+                    </button>
+                    <button
+                      onClick={() => setPaletteOpen(true)}
+                      className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
+                    >
+                      <MagnifyingGlass size={14} />
+                      <span className="flex-1 text-left">
+                        {t("commandPalette")}
+                      </span>
+                      <Kbd>⌘K</Kbd>
+                    </button>
+                    <button
+                      onClick={() => setSidebar((m) => NEXT_MODE[m])}
+                      className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
+                    >
+                      <SidebarSimple size={14} />
+                      <span className="flex-1 text-left">
+                        {t("togglePanel")}
+                      </span>
+                      <Kbd>⌘B</Kbd>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
