@@ -110,6 +110,79 @@ export const onApprovalResolved = (
     (e) => handler(e.payload),
   );
 
+export type TabId = string;
+export type PaneId = string;
+export type SplitKind = "h" | "v";
+
+export type PaneNode =
+  | { type: "leaf"; id: PaneId; session_id: SessionId }
+  | {
+      type: "split";
+      id: PaneId;
+      split: SplitKind;
+      ratio: number;
+      first: PaneNode;
+      second: PaneNode;
+    };
+
+export interface Tab {
+  id: TabId;
+  title: string | null;
+  active_pane: PaneId;
+  root: PaneNode;
+  created_at: string;
+}
+
+export interface LayoutState {
+  tabs: Tab[];
+  active_tab: TabId | null;
+}
+
+export const layoutState = () => invoke<LayoutState>("layout_state");
+
+export const createTab = (sessionId: SessionId) =>
+  invoke<TabId>("create_tab", { sessionId });
+
+export const closeTab = (id: TabId) => invoke<void>("close_tab", { id });
+
+export const activateTab = (id: TabId) => invoke<void>("activate_tab", { id });
+
+export const moveTab = (id: TabId, to: number) =>
+  invoke<void>("move_tab", { id, to });
+
+export const openSessionInTab = (sessionId: SessionId) =>
+  invoke<TabId>("open_session_in_tab", { sessionId });
+
+export const splitPane = (
+  paneId: PaneId,
+  kind: SplitKind,
+  sessionId: SessionId,
+) => invoke<PaneId>("split_pane", { paneId, kind, sessionId });
+
+export const closePane = (paneId: PaneId) =>
+  invoke<void>("close_pane", { paneId });
+
+export const focusPane = (paneId: PaneId) =>
+  invoke<void>("focus_pane", { paneId });
+
+export const setSplitRatio = (paneId: PaneId, ratio: number) =>
+  invoke<void>("set_split_ratio", { paneId, ratio });
+
+export const onLayoutChanged = (
+  handler: (state: LayoutState) => void,
+): Promise<UnlistenFn> =>
+  listen<LayoutState>("layout://changed", (e) => handler(e.payload));
+
+export function paneSession(node: PaneNode, pane: PaneId): SessionId | null {
+  if (node.type === "leaf") return node.id === pane ? node.session_id : null;
+  return paneSession(node.first, pane) ?? paneSession(node.second, pane);
+}
+
+export function leafSessions(node: PaneNode): SessionId[] {
+  if (node.type === "leaf") return [node.session_id];
+  return [...leafSessions(node.first), ...leafSessions(node.second)];
+}
+
 export type ThemeMode = "dark" | "light" | "system";
 export type ThemeBase = "dark" | "light";
 

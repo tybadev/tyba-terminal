@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod approvals;
+pub mod layout;
 pub mod pty;
 pub mod sandbox;
 pub mod session;
@@ -11,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use approvals::{ApprovalRequest, Decision, SharedApprovals};
 use pty::SharedPtyPool;
@@ -22,6 +23,11 @@ struct AppState {
     sessions: SharedSessionManager,
     approvals: SharedApprovals,
     themes: theme::SharedThemes,
+    layout: layout::SharedLayout,
+}
+
+fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
+    let _ = app.emit(layout::EVENT_CHANGED, state.layout.state());
 }
 
 #[tauri::command]
@@ -69,8 +75,136 @@ fn list_sessions(state: State<'_, AppState>) -> Vec<Session> {
 }
 
 #[tauri::command]
-fn dispose_session(state: State<'_, AppState>, id: SessionId) {
+fn dispose_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
     state.sessions.dispose(&state.pty_pool, id);
+    let _ = state.layout.session_disposed(id);
+    emit_layout(&app, &state);
+}
+
+#[tauri::command]
+fn layout_state(state: State<'_, AppState>) -> layout::LayoutState {
+    state.layout.state()
+}
+
+#[tauri::command]
+fn create_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+) -> Result<layout::TabId, String> {
+    let id = state
+        .layout
+        .create_tab(session_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(id)
+}
+
+#[tauri::command]
+fn close_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::TabId,
+) -> Result<(), String> {
+    state.layout.close_tab(id).map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn activate_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::TabId,
+) -> Result<(), String> {
+    state.layout.activate_tab(id).map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn move_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::TabId,
+    to: usize,
+) -> Result<(), String> {
+    state.layout.move_tab(id, to).map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn open_session_in_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+) -> Result<layout::TabId, String> {
+    let id = state
+        .layout
+        .open_session(session_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(id)
+}
+
+#[tauri::command]
+fn split_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: layout::PaneId,
+    kind: layout::SplitKind,
+    session_id: SessionId,
+) -> Result<layout::PaneId, String> {
+    let id = state
+        .layout
+        .split_pane(pane_id, kind, session_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(id)
+}
+
+#[tauri::command]
+fn close_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: layout::PaneId,
+) -> Result<(), String> {
+    state
+        .layout
+        .close_pane(pane_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn focus_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: layout::PaneId,
+) -> Result<(), String> {
+    state
+        .layout
+        .focus_pane(pane_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_split_ratio(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: layout::PaneId,
+    ratio: f64,
+) -> Result<(), String> {
+    state
+        .layout
+        .set_split_ratio(pane_id, ratio)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -175,6 +309,12 @@ pub fn run() {
                 Arc::new(session::SessionManager::new(Arc::clone(&store)));
             let _ = sessions.restore();
 
+            let layout: layout::SharedLayout =
+                Arc::new(layout::LayoutManager::new(Arc::clone(&store)));
+            let valid: std::collections::HashSet<SessionId> =
+                sessions.list().iter().map(|s| s.id).collect();
+            layout.load(&valid);
+
             let themes_dir = app
                 .path()
                 .app_config_dir()
@@ -188,6 +328,7 @@ pub fn run() {
                 sessions: Arc::clone(&sessions),
                 approvals: Arc::new(approvals::ApprovalsManager::new()),
                 themes,
+                layout,
             });
 
             std::thread::Builder::new()
@@ -225,6 +366,16 @@ pub fn run() {
             set_theme_mode,
             set_theme_slot,
             import_theme,
+            layout_state,
+            create_tab,
+            close_tab,
+            activate_tab,
+            move_tab,
+            open_session_in_tab,
+            split_pane,
+            close_pane,
+            focus_pane,
+            set_split_ratio,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tyba")

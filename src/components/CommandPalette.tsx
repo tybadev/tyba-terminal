@@ -57,6 +57,7 @@ interface Props {
   onChangeTheme: (mode: ThemeMode) => void;
   onNewSession: () => void;
   onCloseActive: () => void;
+  onKillActive: () => void;
   onTogglePanel: () => void;
   onGoToSession: (id: SessionId) => void;
 }
@@ -70,6 +71,7 @@ export function CommandPalette({
   onChangeTheme,
   onNewSession,
   onCloseActive,
+  onKillActive,
   onTogglePanel,
   onGoToSession,
 }: Props) {
@@ -122,8 +124,14 @@ export function CommandPalette({
           {activeId && (
             <CommandItem onSelect={run(onCloseActive)}>
               <X size={15} />
-              {t("closeSession")}
+              {t("closePane")}
               <CommandShortcut>⌘W</CommandShortcut>
+            </CommandItem>
+          )}
+          {activeId && (
+            <CommandItem onSelect={run(onKillActive)}>
+              <X size={15} weight="bold" />
+              {t("killSession")}
             </CommandItem>
           )}
           <CommandItem onSelect={run(onTogglePanel)}>

@@ -4,9 +4,11 @@
 // Atalhos: ⌘K paleta · ⌘B painel (aberto → ícones → oculto) ·
 // ⌘T nova sessão · ⌘W fechar.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  CaretDown,
+  CaretRight,
   FolderOpen,
   Plus,
   SidebarSimple,
@@ -41,14 +43,51 @@ import {
 } from "@/components/ui/tooltip";
 import { ApprovalsInbox } from "./components/ApprovalsInbox";
 import { CommandPalette } from "./components/CommandPalette";
+import { TabBar } from "./components/TabBar";
 import { TerminalView } from "./components/TerminalView";
 import {
+  activateTab,
+  closePane,
+  closeTab,
   createSession,
+  createTab,
   disposeSession,
+  layoutState,
+  leafSessions,
+  listSessions,
+  onLayoutChanged,
+  openSessionInTab,
+  paneSession,
+  type LayoutState,
   type Session,
   type SessionId,
 } from "./lib/ipc";
 import tybaMark from "./assets/tyba-mark.svg";
+
+const EMPTY_LAYOUT: LayoutState = { tabs: [], active_tab: null };
+
+interface SessionGroup {
+  key: string;
+  label: string | null;
+  sessions: Session[];
+}
+
+function groupSessions(sessions: Session[]): SessionGroup[] {
+  const map = new Map<string, Session[]>();
+  for (const s of sessions) {
+    const key = s.repo_root ?? "";
+    map.set(key, [...(map.get(key) ?? []), s]);
+  }
+  return [...map.entries()]
+    .sort(([a], [b]) =>
+      a === "" ? 1 : b === "" ? -1 : a.localeCompare(b),
+    )
+    .map(([key, list]) => ({
+      key: key || "loose",
+      label: key ? (key.split("/").pop() ?? key) : null,
+      sessions: list,
+    }));
+}
 
 type SidebarMode = "open" | "rail" | "hidden";
 
@@ -101,8 +140,9 @@ function IconAction({
 export default function App() {
   const { t, i18n } = useTranslation();
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [activeId, setActiveId] = useState<SessionId | null>(null);
+  const [layout, setLayout] = useState<LayoutState>(EMPTY_LAYOUT);
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
   const booted = useRef(false);
@@ -114,6 +154,24 @@ export default function App() {
 
   useEffect(() => onThemeModeChange(setTheme), []);
 
+  const activeTab = useMemo(
+    () => layout.tabs.find((tab) => tab.id === layout.active_tab) ?? null,
+    [layout],
+  );
+
+  const activeId = useMemo(
+    () =>
+      activeTab ? paneSession(activeTab.root, activeTab.active_pane) : null,
+    [activeTab],
+  );
+
+  const boundSessions = useMemo(
+    () => new Set(layout.tabs.flatMap((tab) => leafSessions(tab.root))),
+    [layout],
+  );
+
+  const groups = useMemo(() => groupSessions(sessions), [sessions]);
+
   const newShell = useCallback(async () => {
     const session = await createSession({
       kind: { type: "shell" },
@@ -121,28 +179,58 @@ export default function App() {
       rows: 30,
     });
     setSessions((prev) => [...prev, session]);
-    setActiveId(session.id);
+    await createTab(session.id);
   }, []);
 
-  const closeSession = useCallback(
-    async (id: SessionId) => {
-      await disposeSession(id);
-      setSessions((prev) => {
-        const next = prev.filter((s) => s.id !== id);
-        setActiveId((cur) =>
-          cur === id ? (next.at(-1)?.id ?? null) : cur,
-        );
-        return next;
-      });
-    },
-    [],
-  );
+  const goToSession = useCallback((id: SessionId) => {
+    void openSessionInTab(id);
+  }, []);
 
-  // primeira sessão ao abrir
+  const killSession = useCallback(async (id: SessionId) => {
+    await disposeSession(id);
+    setSessions((prev) => prev.filter((s) => s.id !== id));
+  }, []);
+
+  const closeActivePane = useCallback(() => {
+    if (activeTab) void closePane(activeTab.active_pane);
+  }, [activeTab]);
+
+  const toggleGroup = useCallback((key: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
-    if (booted.current) return;
-    booted.current = true;
-    void newShell();
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void (async () => {
+      unlisten = await onLayoutChanged((state) => {
+        if (!cancelled) setLayout(state);
+      });
+      if (booted.current) return;
+      booted.current = true;
+      const [existing, currentLayout] = await Promise.all([
+        listSessions(),
+        layoutState(),
+      ]);
+      if (cancelled) return;
+      setSessions(existing);
+      setLayout(currentLayout);
+      if (existing.length === 0) {
+        void newShell();
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, [newShell]);
 
   useEffect(() => {
@@ -160,12 +248,18 @@ export default function App() {
         void newShell();
       } else if (k === "w") {
         e.preventDefault();
-        if (activeId) void closeSession(activeId);
+        closeActivePane();
+      } else if (k >= "1" && k <= "9") {
+        const target = layout.tabs[Number(k) - 1];
+        if (target) {
+          e.preventDefault();
+          void activateTab(target.id);
+        }
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [newShell, closeSession, activeId]);
+  }, [newShell, closeActivePane, layout.tabs]);
 
   const open = sidebar === "open";
 
@@ -179,11 +273,12 @@ export default function App() {
         theme={theme}
         onChangeTheme={changeTheme}
         onNewSession={() => void newShell()}
-        onCloseActive={() => {
-          if (activeId) void closeSession(activeId);
+        onCloseActive={closeActivePane}
+        onKillActive={() => {
+          if (activeId) void killSession(activeId);
         }}
         onTogglePanel={() => setSidebar((m) => NEXT_MODE[m])}
-        onGoToSession={setActiveId}
+        onGoToSession={goToSession}
       />
       <div className="tyba-aurora flex h-screen flex-col text-tyba-text">
         {/* ---------- Header geral: delicado, 36px ---------- */}
@@ -294,55 +389,83 @@ export default function App() {
                   open ? "mt-1.5" : "mt-2"
                 }`}
               >
-                {sessions.map((s) => {
-                  const isActive = s.id === activeId;
+                {groups.map((group) => {
+                  const isCollapsed = collapsed.has(group.key);
                   return (
-                    <button
-                      key={s.id}
-                      onClick={() => setActiveId(s.id)}
-                      title={open ? undefined : s.title}
-                      className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
-                        open ? "px-2" : "justify-center px-0"
-                      } ${
-                        isActive
-                          ? "text-tyba-text"
-                          : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
-                      }`}
-                    >
-                      {/* linha viva: a sessão ativa está acesa — sem card */}
-                      {isActive && (
-                        <span
-                          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
-                          style={{ background: "var(--tyba-gradient-soft)" }}
-                        />
-                      )}
-                      <TerminalWindow
-                        size={16}
-                        className={
-                          isActive
-                            ? "shrink-0 text-tyba-green [filter:drop-shadow(0_0_6px_rgba(124,197,68,.55))]"
-                            : "shrink-0"
-                        }
-                      />
+                    <div key={group.key} className="flex flex-col gap-px">
                       {open && (
-                        <>
-                          <span className="min-w-0 flex-1 truncate text-left">
-                            {s.title}
+                        <button
+                          onClick={() => toggleGroup(group.key)}
+                          className="flex h-6 shrink-0 items-center gap-1 rounded-[4px] px-1.5 text-[11px] font-medium tracking-wide text-tyba-text-faint transition-colors hover:text-tyba-text-muted"
+                        >
+                          {isCollapsed ? (
+                            <CaretRight size={9} weight="bold" />
+                          ) : (
+                            <CaretDown size={9} weight="bold" />
+                          )}
+                          <span className="truncate">
+                            {group.label ?? t("looseSessions")}
                           </span>
-                          <span
-                            role="button"
-                            aria-label={t("closeSession")}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void closeSession(s.id);
-                            }}
-                            className="rounded-[3px] text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-text group-hover:opacity-100"
-                          >
-                            <X size={11} weight="bold" />
-                          </span>
-                        </>
+                        </button>
                       )}
-                    </button>
+                      {(!open || !isCollapsed) &&
+                        group.sessions.map((s) => {
+                          const isActive = s.id === activeId;
+                          const isBound = boundSessions.has(s.id);
+                          return (
+                            <button
+                              key={s.id}
+                              onClick={() => goToSession(s.id)}
+                              title={open ? undefined : s.title}
+                              className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
+                                open ? "px-2 pl-4" : "justify-center px-0"
+                              } ${
+                                isActive
+                                  ? "text-tyba-text"
+                                  : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
+                              }`}
+                            >
+                              {isActive && (
+                                <span
+                                  className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
+                                  style={{
+                                    background: "var(--tyba-gradient-soft)",
+                                  }}
+                                />
+                              )}
+                              <TerminalWindow
+                                size={16}
+                                className={
+                                  isActive
+                                    ? "shrink-0 text-tyba-green [filter:drop-shadow(0_0_6px_rgba(124,197,68,.55))]"
+                                    : "shrink-0"
+                                }
+                              />
+                              {open && (
+                                <>
+                                  <span className="min-w-0 flex-1 truncate text-left">
+                                    {s.title}
+                                  </span>
+                                  {isBound && !isActive && (
+                                    <span className="size-1 shrink-0 rounded-full bg-tyba-green/60" />
+                                  )}
+                                  <span
+                                    role="button"
+                                    aria-label={t("killSession")}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void killSession(s.id);
+                                    }}
+                                    className="rounded-[3px] text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-red group-hover:opacity-100"
+                                  >
+                                    <X size={11} weight="bold" />
+                                  </span>
+                                </>
+                              )}
+                            </button>
+                          );
+                        })}
+                    </div>
                   );
                 })}
                 <Tooltip>
@@ -371,32 +494,47 @@ export default function App() {
             </aside>
           )}
 
-          <main className="relative min-h-0 min-w-0 flex-1">
-            {sessions.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center gap-4">
-                <img src={tybaMark} alt="" className="h-12 w-12 opacity-90" />
-                <p className="text-sm text-tyba-text-faint">
-                  {t("noSessions")}
-                </p>
-                <Button onClick={() => void newShell()}>
-                  <Plus size={16} weight="bold" />
-                  {t("newSession")}
-                </Button>
-                <p className="flex items-center gap-1.5 text-xs text-tyba-text-faint">
-                  <Kbd>⌘K</Kbd> {t("hintPalette")} · <Kbd>⌘T</Kbd>{" "}
-                  {t("hintNewSession")} · <Kbd>⌘B</Kbd> {t("hintPanel")}
-                </p>
-              </div>
-            ) : (
-              sessions.map((s) => (
+          <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {layout.tabs.length > 0 && (
+              <TabBar
+                tabs={layout.tabs}
+                activeTab={layout.active_tab}
+                sessions={sessions}
+                onActivate={(id) => void activateTab(id)}
+                onClose={(id) => void closeTab(id)}
+                onNew={() => void newShell()}
+              />
+            )}
+            <div className="relative min-h-0 flex-1">
+              {sessions.map((s) => (
                 <TerminalView
                   key={s.id}
                   sessionId={s.id}
                   active={s.id === activeId}
-                  onExit={() => void closeSession(s.id)}
+                  onExit={() => void killSession(s.id)}
                 />
-              ))
-            )}
+              ))}
+              {!activeTab && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-4">
+                  <img
+                    src={tybaMark}
+                    alt=""
+                    className="h-12 w-12 opacity-90"
+                  />
+                  <p className="text-sm text-tyba-text-faint">
+                    {sessions.length === 0 ? t("noSessions") : t("noTabs")}
+                  </p>
+                  <Button onClick={() => void newShell()}>
+                    <Plus size={16} weight="bold" />
+                    {sessions.length === 0 ? t("newSession") : t("newTab")}
+                  </Button>
+                  <p className="flex items-center gap-1.5 text-xs text-tyba-text-faint">
+                    <Kbd>⌘K</Kbd> {t("hintPalette")} · <Kbd>⌘T</Kbd>{" "}
+                    {t("hintNewSession")} · <Kbd>⌘B</Kbd> {t("hintPanel")}
+                  </p>
+                </div>
+              )}
+            </div>
           </main>
         </div>
       </div>

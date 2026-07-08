@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 
+use crate::layout::{LayoutRows, PaneRow, TabRow};
 use crate::session::redact::redact;
 use crate::session::{Session, SessionId, SessionKind, SessionStatus};
 use crate::worktree::Worktree;
@@ -22,6 +23,22 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tabs (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    position INTEGER NOT NULL,
+    active_pane TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS panes (
+    id TEXT PRIMARY KEY,
+    tab_id TEXT NOT NULL,
+    parent_id TEXT,
+    split TEXT,
+    ratio REAL,
+    position INTEGER,
+    session_id TEXT
 );
 ";
 
@@ -142,6 +159,74 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
+    }
+
+    pub fn save_layout(&self, rows: &LayoutRows) -> Result<(), StoreError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM panes", [])?;
+        tx.execute("DELETE FROM tabs", [])?;
+        for t in &rows.tabs {
+            tx.execute(
+                "INSERT INTO tabs (id, title, position, active_pane, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![t.id, t.title, t.position, t.active_pane, t.created_at],
+            )?;
+        }
+        for p in &rows.panes {
+            tx.execute(
+                "INSERT INTO panes (id, tab_id, parent_id, split, ratio, position, session_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    p.id,
+                    p.tab_id,
+                    p.parent_id,
+                    p.split,
+                    p.ratio,
+                    p.position,
+                    p.session_id
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn load_layout(&self) -> Result<LayoutRows, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, title, position, active_pane, created_at FROM tabs ORDER BY position",
+        )?;
+        let tabs = stmt
+            .query_map([], |row| {
+                Ok(TabRow {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    position: row.get(2)?,
+                    active_pane: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, tab_id, parent_id, split, ratio, position, session_id FROM panes",
+        )?;
+        let panes = stmt
+            .query_map([], |row| {
+                Ok(PaneRow {
+                    id: row.get(0)?,
+                    tab_id: row.get(1)?,
+                    parent_id: row.get(2)?,
+                    split: row.get(3)?,
+                    ratio: row.get(4)?,
+                    position: row.get(5)?,
+                    session_id: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(LayoutRows { tabs, panes })
     }
 
     pub fn load_sessions(&self) -> Result<Vec<Session>, StoreError> {
