@@ -206,8 +206,8 @@ function absorb(next: ThemeState) {
 }
 
 async function init() {
-  void onThemeChanged(absorb);
   try {
+    await onThemeChanged(absorb);
     const remote = await getThemeState();
     const saved = localStorage.getItem(STORAGE_KEY) as ThemeMode | null;
     if (
@@ -216,8 +216,8 @@ async function init() {
       THEMES.includes(saved) &&
       saved !== remote.mode
     ) {
-      localStorage.setItem(MIGRATED_KEY, "1");
       await setThemeModeCmd(saved);
+      localStorage.setItem(MIGRATED_KEY, "1");
       absorb({ ...remote, mode: saved });
       return;
     }
