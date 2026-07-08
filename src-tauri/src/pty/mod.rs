@@ -58,6 +58,7 @@ impl PtyPool {
         Self::default()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         &self,
         app: AppHandle,
@@ -66,6 +67,7 @@ impl PtyPool {
         env: Option<&HashMap<String, String>>,
         cols: u16,
         rows: u16,
+        on_exit: Box<dyn FnOnce() + Send>,
     ) -> Result<(), PtyError> {
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
@@ -151,6 +153,7 @@ impl PtyPool {
                 }
                 flush(&mut pending, &app);
                 let _ = app.emit(&exit_event, PtyExitPayload { code: None });
+                on_exit();
             })
             .expect("failed to spawn pty reader thread");
 

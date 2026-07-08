@@ -514,6 +514,7 @@ impl LayoutManager {
                 .map(|t| t.id)
                 .filter(|_| !ws.tabs.is_empty());
         }
+        remove_workspace_if_empty(&mut inner, w_idx);
         drop(inner);
         self.persist()?;
         let mut bound = Vec::new();
@@ -650,6 +651,7 @@ impl LayoutManager {
                         .map(|t| t.id)
                         .filter(|_| !ws.tabs.is_empty());
                 }
+                remove_workspace_if_empty(&mut inner, wi);
             }
         }
         drop(inner);
@@ -716,6 +718,21 @@ impl LayoutManager {
                 .unwrap_or_default(),
         )?;
         Ok(())
+    }
+}
+
+fn remove_workspace_if_empty(inner: &mut Inner, w_idx: usize) {
+    if !inner.workspaces[w_idx].tabs.is_empty() {
+        return;
+    }
+    let id = inner.workspaces[w_idx].id;
+    inner.workspaces.remove(w_idx);
+    if inner.active == Some(id) {
+        inner.active = inner
+            .workspaces
+            .get(w_idx.min(inner.workspaces.len().saturating_sub(1)))
+            .map(|w| w.id)
+            .filter(|_| !inner.workspaces.is_empty());
     }
 }
 
@@ -995,16 +1012,44 @@ mod tests {
     }
 
     #[test]
-    fn closing_last_tab_leaves_workspace_empty_but_alive() {
+    fn closing_last_tab_closes_workspace() {
         let mgr = manager();
-        let id = ws(&mgr);
+        ws(&mgr);
         let tab = mgr.state().workspaces[0].tabs[0].id;
         mgr.close_tab(tab).unwrap();
         let state = mgr.state();
+        assert!(state.workspaces.is_empty());
+        assert_eq!(state.active_workspace, None);
+    }
+
+    #[test]
+    fn closing_last_tab_activates_neighbor_workspace() {
+        let mgr = manager();
+        let w1 = ws(&mgr);
+        let w2 = ws(&mgr);
+        let tab = mgr
+            .state()
+            .workspaces
+            .iter()
+            .find(|w| w.id == w2)
+            .unwrap()
+            .tabs[0]
+            .id;
+        mgr.close_tab(tab).unwrap();
+        let state = mgr.state();
         assert_eq!(state.workspaces.len(), 1);
-        assert!(state.workspaces[0].tabs.is_empty());
-        assert_eq!(state.workspaces[0].active_tab, None);
-        assert_eq!(state.active_workspace, Some(id));
+        assert_eq!(state.active_workspace, Some(w1));
+    }
+
+    #[test]
+    fn closing_last_pane_of_last_tab_closes_workspace() {
+        let mgr = manager();
+        ws(&mgr);
+        let pane = mgr.state().workspaces[0].tabs[0].active_pane;
+        mgr.close_pane(pane).unwrap();
+        let state = mgr.state();
+        assert!(state.workspaces.is_empty());
+        assert_eq!(state.active_workspace, None);
     }
 
     #[test]
@@ -1075,8 +1120,7 @@ mod tests {
         mgr.create_workspace("a", None, s).unwrap();
         mgr.session_disposed(s).unwrap();
         let state = mgr.state();
-        assert_eq!(state.workspaces.len(), 1);
-        assert!(state.workspaces[0].tabs.is_empty());
+        assert!(state.workspaces.is_empty());
     }
 
     #[test]

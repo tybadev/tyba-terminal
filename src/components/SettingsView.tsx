@@ -83,9 +83,15 @@ const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   openFolder: "openProjectFolder",
   prevSession: "prevSessionNav",
   nextSession: "nextSessionNav",
+  prevTab: "prevTabNav",
+  nextTab: "nextTabNav",
   splitRight: "splitRight",
   splitDown: "splitDown",
   nextPane: "nextPane",
+  paneLeft: "paneLeft",
+  paneRight: "paneRight",
+  paneUp: "paneUp",
+  paneDown: "paneDown",
 };
 
 const FONT_SIZES = [11, 12, 13, 14, 15, 16];
@@ -393,7 +399,7 @@ export function SettingsView({
 
       <div className="min-w-0 flex-1 overflow-y-auto px-8 pt-4 pb-8">
         {section === "general" && (
-          <section className="max-w-lg">
+          <section className="mx-auto w-full max-w-lg">
             <SectionHeader
               title={t("settingsGeneral")}
               hint={t("generalHint")}
@@ -422,7 +428,7 @@ export function SettingsView({
         )}
 
         {section === "account" && (
-          <section className="max-w-lg">
+          <section className="mx-auto w-full max-w-lg">
             <SectionHeader
               title={t("settingsAccount")}
               hint={t("accountHint")}
@@ -449,7 +455,7 @@ export function SettingsView({
         )}
 
         {section === "code" && (
-          <section className="max-w-lg">
+          <section className="mx-auto w-full max-w-lg">
             <SectionHeader title={t("settingsCode")} hint={t("codeHint")} />
             <span className="tyba-label">{t("terminalFontSize")}</span>
             <div className="flex gap-2 pt-2">
@@ -466,7 +472,7 @@ export function SettingsView({
         )}
 
         {section === "themes" && (
-          <section className="max-w-lg">
+          <section className="mx-auto w-full max-w-lg">
             <SectionHeader
               title={t("settingsThemes")}
               hint={t("themesHint")}
@@ -547,7 +553,7 @@ export function SettingsView({
         )}
 
         {section === "shortcuts" && (
-          <section className="max-w-lg">
+          <section className="mx-auto w-full max-w-lg">
             <SectionHeader
               title={t("settingsShortcuts")}
               hint={t("shortcutsHint")}
@@ -568,7 +574,7 @@ export function SettingsView({
         )}
 
         {section === "preferences" && (
-          <section className="max-w-lg">
+          <section className="mx-auto w-full max-w-lg">
             <SectionHeader
               title={t("settingsPreferences")}
               hint={t("preferencesHint")}

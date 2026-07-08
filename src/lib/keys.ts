@@ -9,9 +9,15 @@ export type KeyAction =
   | "openFolder"
   | "prevSession"
   | "nextSession"
+  | "prevTab"
+  | "nextTab"
   | "splitRight"
   | "splitDown"
-  | "nextPane";
+  | "nextPane"
+  | "paneLeft"
+  | "paneRight"
+  | "paneUp"
+  | "paneDown";
 
 export const KEY_ACTIONS: KeyAction[] = [
   "palette",
@@ -24,9 +30,15 @@ export const KEY_ACTIONS: KeyAction[] = [
   "openFolder",
   "prevSession",
   "nextSession",
+  "prevTab",
+  "nextTab",
   "splitRight",
   "splitDown",
   "nextPane",
+  "paneLeft",
+  "paneRight",
+  "paneUp",
+  "paneDown",
 ];
 
 export type Bindings = Record<KeyAction, string>;
@@ -40,11 +52,17 @@ export const DEFAULT_BINDINGS: Bindings = {
   newWindow: "meta+shift+n",
   closePane: "meta+w",
   openFolder: "meta+o",
-  prevSession: "meta+alt+arrowup",
-  nextSession: "meta+alt+arrowdown",
+  prevSession: "meta+shift+arrowup",
+  nextSession: "meta+shift+arrowdown",
+  prevTab: "meta+shift+arrowleft",
+  nextTab: "meta+shift+arrowright",
   splitRight: "meta+d",
   splitDown: "meta+shift+d",
   nextPane: "meta+]",
+  paneLeft: "meta+alt+arrowleft",
+  paneRight: "meta+alt+arrowright",
+  paneUp: "meta+alt+arrowup",
+  paneDown: "meta+alt+arrowdown",
 };
 
 export const BINDINGS_PREF_KEY = "pref.keybindings";

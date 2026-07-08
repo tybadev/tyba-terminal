@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Check,
   DotsThree,
   FolderOpen,
   GitBranch,
@@ -22,6 +23,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -192,6 +196,7 @@ export default function App() {
     kind: "rename" | "group";
     ws: Workspace;
   } | null>(null);
+  const [pendingGroup, setPendingGroup] = useState<string | null>(null);
   const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
   const booted = useRef(false);
 
@@ -262,6 +267,14 @@ export default function App() {
     (id: string): boolean => (detailOverrides[id] ?? detailsPref) === "on",
     [detailOverrides, detailsPref],
   );
+
+  const groupNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const w of layout.workspaces) {
+      if (w.group) names.add(w.group);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [layout.workspaces]);
 
   const groupedWorkspaces = useMemo(() => {
     const groups = new Map<string, Workspace[]>();
@@ -335,6 +348,52 @@ export default function App() {
     if (next) void focusPane(next.pane);
   }, [activeTab, paneLayout]);
 
+  const cycleTab = useCallback(
+    (dir: 1 | -1) => {
+      if (!activeWorkspace || activeWorkspace.tabs.length < 2) return;
+      const idx = activeWorkspace.tabs.findIndex(
+        (tab) => tab.id === activeWorkspace.active_tab,
+      );
+      const next =
+        activeWorkspace.tabs[
+          (idx + dir + activeWorkspace.tabs.length) %
+            activeWorkspace.tabs.length
+        ];
+      if (next) void activateTab(next.id);
+    },
+    [activeWorkspace],
+  );
+
+  const focusPaneInDirection = useCallback(
+    (dir: "left" | "right" | "up" | "down") => {
+      if (!activeTab || !paneLayout || paneLayout.panes.length < 2) return;
+      const current = paneLayout.panes.find(
+        (p) => p.pane === activeTab.active_pane,
+      );
+      if (!current) return;
+      const cx = current.x + current.w / 2;
+      const cy = current.y + current.h / 2;
+      let best: (typeof paneLayout.panes)[number] | null = null;
+      let bestScore = Infinity;
+      for (const p of paneLayout.panes) {
+        if (p.pane === current.pane) continue;
+        const dx = p.x + p.w / 2 - cx;
+        const dy = p.y + p.h / 2 - cy;
+        const forward =
+          dir === "left" ? -dx : dir === "right" ? dx : dir === "up" ? -dy : dy;
+        if (forward <= 0.5) continue;
+        const lateral = dir === "left" || dir === "right" ? dy : dx;
+        const score = forward + Math.abs(lateral) * 2;
+        if (score < bestScore) {
+          bestScore = score;
+          best = p;
+        }
+      }
+      if (best) void focusPane(best.pane);
+    },
+    [activeTab, paneLayout],
+  );
+
   const resizeActivePane = useCallback(
     (kind: SplitKind, delta: number) => {
       if (!activeTab) return;
@@ -382,7 +441,7 @@ export default function App() {
   );
 
   const newSession = useCallback(
-    async (cwd: string | null, name: string) => {
+    async (cwd: string | null, name: string, group?: string | null) => {
       const session = await createSession({
         kind: { type: "shell" },
         cwd: cwd ?? undefined,
@@ -390,10 +449,16 @@ export default function App() {
         rows: 30,
       });
       setSessions((prev) => [...prev, session]);
-      await createWorkspace(name, cwd, session.id);
+      const workspaceId = await createWorkspace(name, cwd, session.id);
+      if (group) await setWorkspaceGroup(workspaceId, group);
     },
     [],
   );
+
+  const newSessionInGroup = useCallback((group: string) => {
+    setPendingGroup(group);
+    setNewSessionOpen(true);
+  }, []);
 
   const newTab = useCallback(async () => {
     if (!activeWorkspace) {
@@ -581,6 +646,18 @@ export default function App() {
           cycleWorkspace(-1);
         } else if (action === "nextSession") {
           cycleWorkspace(1);
+        } else if (action === "prevTab") {
+          if (!settingsOpen) cycleTab(-1);
+        } else if (action === "nextTab") {
+          if (!settingsOpen) cycleTab(1);
+        } else if (action === "paneLeft") {
+          if (!settingsOpen) focusPaneInDirection("left");
+        } else if (action === "paneRight") {
+          if (!settingsOpen) focusPaneInDirection("right");
+        } else if (action === "paneUp") {
+          if (!settingsOpen) focusPaneInDirection("up");
+        } else if (action === "paneDown") {
+          if (!settingsOpen) focusPaneInDirection("down");
         } else if (action === "settings") {
           setSettingsOpen((v) => !v);
         } else if (action === "splitRight") {
@@ -631,6 +708,8 @@ export default function App() {
     toggleSidebar,
     openProjectFolder,
     cycleWorkspace,
+    cycleTab,
+    focusPaneInDirection,
     splitActive,
     cyclePane,
     resizeActivePane,
@@ -735,12 +814,42 @@ export default function App() {
                 >
                   {t("renameSession")}
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() => setPrompt({ kind: "group", ws: w })}
-                >
-                  {t("groupSession")}
-                </DropdownMenuItem>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger className="text-xs">
+                    {t("groupSession")}
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-44 border-tyba-border-strong bg-tyba-overlay shadow-lg">
+                    {groupNames.map((name) => (
+                      <DropdownMenuItem
+                        key={name}
+                        className="text-xs"
+                        onSelect={() =>
+                          void setWorkspaceGroup(
+                            w.id,
+                            w.group === name ? null : name,
+                          )
+                        }
+                      >
+                        <span className="min-w-0 flex-1 truncate">{name}</span>
+                        {w.group === name && (
+                          <Check
+                            size={11}
+                            weight="bold"
+                            className="text-tyba-green"
+                          />
+                        )}
+                      </DropdownMenuItem>
+                    ))}
+                    {groupNames.length > 0 && <DropdownMenuSeparator />}
+                    <DropdownMenuItem
+                      className="text-xs"
+                      onSelect={() => setPrompt({ kind: "group", ws: w })}
+                    >
+                      <Plus size={11} weight="bold" />
+                      {t("newGroup")}
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
                 {w.group && (
                   <DropdownMenuItem
                     className="text-xs"
@@ -835,8 +944,11 @@ export default function App() {
       />
       <NewSessionPrompt
         open={newSessionOpen}
-        onOpenChange={setNewSessionOpen}
-        onCreate={(cwd, name) => void newSession(cwd, name)}
+        onOpenChange={(open) => {
+          setNewSessionOpen(open);
+          if (!open) setPendingGroup(null);
+        }}
+        onCreate={(cwd, name) => void newSession(cwd, name, pendingGroup)}
       />
       <PromptDialog
         open={prompt !== null}
@@ -981,6 +1093,20 @@ export default function App() {
                           <span className="font-mono text-[9px] text-tyba-text-faint">
                             {list.length}
                           </span>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                aria-label={t("addToGroup")}
+                                onClick={() => newSessionInGroup(name)}
+                                className="rounded-[3px] text-tyba-text-faint transition-colors hover:text-tyba-text"
+                              >
+                                <Plus size={11} weight="bold" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom">
+                              {t("addToGroup")}
+                            </TooltipContent>
+                          </Tooltip>
                         </span>
                         {list.map(renderWorkspace)}
                       </div>

@@ -17,7 +17,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use approvals::{ApprovalRequest, Decision, SharedApprovals};
 use pty::SharedPtyPool;
 use session::store::Store;
-use session::{CreateSessionOpts, Session, SessionId, SessionKind, SharedSessionManager};
+use session::{
+    CreateSessionOpts, Session, SessionId, SessionKind, SessionStatus, SharedSessionManager,
+};
 
 struct AppState {
     store: Arc<Store>,
@@ -48,15 +50,34 @@ fn dispose_all(state: &State<'_, AppState>, ids: &[SessionId]) {
     }
 }
 
+fn session_exited(app: &AppHandle, id: SessionId) {
+    let state = app.state::<AppState>();
+    let Some(session) = state.sessions.get(id) else {
+        return;
+    };
+    if matches!(session.kind, SessionKind::Shell) {
+        state.sessions.dispose(&state.pty_pool, id);
+        let _ = state.layout.session_disposed(id);
+        emit_layout(app, &state);
+    } else {
+        state
+            .sessions
+            .set_status(app, id, SessionStatus::Exited { code: -1 });
+    }
+}
+
 #[tauri::command]
 fn create_session(
     app: AppHandle,
     state: State<'_, AppState>,
     opts: CreateSessionOpts,
 ) -> Result<Session, String> {
+    let handle = app.clone();
     state
         .sessions
-        .create_shell_session(app, &state.pty_pool, opts)
+        .create_shell_session(app, &state.pty_pool, opts, move |id| {
+            session_exited(&handle, id)
+        })
         .map_err(|e| e.to_string())
 }
 

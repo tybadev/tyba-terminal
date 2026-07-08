@@ -81,6 +81,7 @@ impl SessionManager {
         app: AppHandle,
         pty_pool: &SharedPtyPool,
         opts: CreateSessionOpts,
+        on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
 
@@ -96,7 +97,15 @@ impl SessionManager {
         cmd.env("TYBA", "1");
         cmd.env("TYBA_SESSION_ID", id.to_string());
 
-        pty_pool.spawn(app.clone(), id, cmd, None, opts.cols, opts.rows)?;
+        pty_pool.spawn(
+            app.clone(),
+            id,
+            cmd,
+            None,
+            opts.cols,
+            opts.rows,
+            Box::new(move || on_exit(id)),
+        )?;
 
         let session = Session {
             id,
