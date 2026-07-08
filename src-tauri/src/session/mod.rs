@@ -1,7 +1,5 @@
-//! Sessões: modelo de dados e gerenciamento de ciclo de vida.
-//!
-//! Princípio #1 do CLAUDE.md: todo estado vive aqui, no core.
-//! O webview só renderiza snapshots e emite intenções.
+pub mod redact;
+pub mod store;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,6 +13,7 @@ use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 use crate::pty::{PtyError, SharedPtyPool};
+use crate::session::store::{Store, StoreError};
 use crate::worktree::Worktree;
 
 pub type SessionId = Uuid;
@@ -59,24 +58,24 @@ pub struct Session {
 pub struct CreateSessionOpts {
     pub kind: SessionKind,
     pub title: Option<String>,
-    /// cwd inicial (shell) ou repo alvo (agente).
     pub cwd: Option<PathBuf>,
     pub cols: u16,
     pub rows: u16,
 }
 
-#[derive(Default)]
 pub struct SessionManager {
     sessions: RwLock<HashMap<SessionId, Session>>,
+    store: Arc<Store>,
 }
 
 impl SessionManager {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(store: Arc<Store>) -> Self {
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            store,
+        }
     }
 
-    /// Cria uma sessão de shell interativo (Fase 1/2).
-    /// Sessões de agente (Fase 4) passam pelo AgentRunner + Sandbox.
     pub fn create_shell_session(
         &self,
         app: AppHandle,
@@ -87,7 +86,6 @@ impl SessionManager {
 
         let shell = default_shell();
         let mut cmd = CommandBuilder::new(&shell);
-        // Login shell para carregar o profile do usuário (PATH, prompt, etc).
         if cfg!(unix) {
             cmd.arg("-l");
         }
@@ -95,12 +93,9 @@ impl SessionManager {
             cmd.cwd(cwd);
         }
         cmd.env("TERM", "xterm-256color");
-        // Identifica a TYBA para shell integration futura (OSC 133).
         cmd.env("TYBA", "1");
         cmd.env("TYBA_SESSION_ID", id.to_string());
 
-        // Shell manual herda o env do usuário (env: None).
-        // Agente NUNCA — receberá allowlist filtrada (princípio #6).
         pty_pool.spawn(app.clone(), id, cmd, None, opts.cols, opts.rows)?;
 
         let session = Session {
@@ -113,6 +108,7 @@ impl SessionManager {
             created_at: Utc::now(),
         };
         self.sessions.write().insert(id, session.clone());
+        let _ = self.store.upsert_session(&session);
         emit_status(&app, &session);
         Ok(session)
     }
@@ -127,6 +123,7 @@ impl SessionManager {
         let mut sessions = self.sessions.write();
         if let Some(s) = sessions.get_mut(&id) {
             s.status = status;
+            let _ = self.store.upsert_session(s);
             emit_status(app, s);
         }
     }
@@ -134,7 +131,25 @@ impl SessionManager {
     pub fn dispose(&self, pty_pool: &SharedPtyPool, id: SessionId) {
         let _ = pty_pool.kill(id);
         self.sessions.write().remove(&id);
-        // TODO(fase 3): remover worktree se `removeWorktree`.
+        let _ = self.store.remove_session(id);
+    }
+
+    pub fn flush_scrollback(&self, pty_pool: &SharedPtyPool) {
+        let ids: Vec<SessionId> = self.sessions.read().keys().copied().collect();
+        for id in ids {
+            if let Ok(text) = pty_pool.scrollback_text(id) {
+                let _ = self.store.save_scrollback(id, &text);
+            }
+        }
+    }
+
+    pub fn restore(&self) -> Result<(), StoreError> {
+        let persisted = self.store.load_sessions()?;
+        let mut sessions = self.sessions.write();
+        for s in persisted {
+            sessions.entry(s.id).or_insert(s);
+        }
+        Ok(())
     }
 }
 
@@ -158,3 +173,31 @@ fn shell_label(shell: &str) -> String {
 }
 
 pub type SharedSessionManager = Arc<SessionManager>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_loads_persisted_sessions_from_store() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let persisted = Session {
+            id: SessionId::new_v4(),
+            kind: SessionKind::Shell,
+            title: "restored".into(),
+            repo_root: None,
+            worktree: None,
+            status: SessionStatus::Running,
+            created_at: Utc::now(),
+        };
+        store.upsert_session(&persisted).unwrap();
+
+        let manager = SessionManager::new(store);
+        manager.restore().unwrap();
+
+        let listed = manager.list();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, persisted.id);
+        assert_eq!(listed[0].title, "restored");
+    }
+}

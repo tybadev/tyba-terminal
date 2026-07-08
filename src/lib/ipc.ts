@@ -48,13 +48,14 @@ const encodeBase64 = (data: string): string => {
   return btoa(bin);
 };
 
-// --- commands ---
-
 export const createSession = (opts: CreateSessionOpts) =>
   invoke<Session>("create_session", { opts });
 
 export const writeToSession = (id: SessionId, data: string) =>
   invoke<void>("write_to_session", { id, data: encodeBase64(data) });
+
+export const sessionScrollback = (id: SessionId): Promise<Uint8Array> =>
+  invoke<string>("session_scrollback", { id }).then(decodeBase64);
 
 export const resizeSession = (id: SessionId, cols: number, rows: number) =>
   invoke<void>("resize_session", { id, cols, rows });
@@ -63,8 +64,6 @@ export const listSessions = () => invoke<Session[]>("list_sessions");
 
 export const disposeSession = (id: SessionId) =>
   invoke<void>("dispose_session", { id });
-
-// --- aprovações ---
 
 export type RiskLevel = "green" | "yellow" | "red";
 export type ApprovalDecision = "approved" | "denied";
@@ -110,8 +109,6 @@ export const onApprovalResolved = (
     "approvals://resolved",
     (e) => handler(e.payload),
   );
-
-// --- events ---
 
 export const onPtyOutput = (
   id: SessionId,
