@@ -1,16 +1,24 @@
 export type KeyAction =
   | "palette"
   | "panel"
+  | "newSession"
   | "newTab"
+  | "newWindow"
   | "closePane"
-  | "openFolder";
+  | "openFolder"
+  | "prevSession"
+  | "nextSession";
 
 export const KEY_ACTIONS: KeyAction[] = [
   "palette",
   "panel",
+  "newSession",
   "newTab",
+  "newWindow",
   "closePane",
   "openFolder",
+  "prevSession",
+  "nextSession",
 ];
 
 export type Bindings = Record<KeyAction, string>;
@@ -18,9 +26,13 @@ export type Bindings = Record<KeyAction, string>;
 export const DEFAULT_BINDINGS: Bindings = {
   palette: "meta+k",
   panel: "meta+b",
+  newSession: "meta+n",
   newTab: "meta+t",
+  newWindow: "meta+shift+n",
   closePane: "meta+w",
   openFolder: "meta+o",
+  prevSession: "meta+alt+arrowup",
+  nextSession: "meta+alt+arrowdown",
 };
 
 export const BINDINGS_PREF_KEY = "pref.keybindings";
@@ -45,6 +57,13 @@ const SYMBOLS: Record<string, string> = {
   ctrl: "⌃",
   alt: "⌥",
   shift: "⇧",
+  arrowup: "↑",
+  arrowdown: "↓",
+  arrowleft: "←",
+  arrowright: "→",
+  enter: "↵",
+  escape: "⎋",
+  " ": "␣",
 };
 
 export function formatCombo(combo: string): string {

@@ -177,6 +177,79 @@ fn close_tab(
 }
 
 #[tauri::command]
+fn rename_workspace(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::WorkspaceId,
+    name: String,
+) -> Result<(), String> {
+    state
+        .layout
+        .rename_workspace(id, &name)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_workspace_color(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::WorkspaceId,
+    color: Option<String>,
+) -> Result<(), String> {
+    state
+        .layout
+        .set_workspace_color(id, color)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_workspace_group(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::WorkspaceId,
+    group: Option<String>,
+) -> Result<(), String> {
+    state
+        .layout
+        .set_workspace_group(id, group)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn repo_branch(path: String) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C", &path, "rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if branch.is_empty() {
+        None
+    } else {
+        Some(branch)
+    }
+}
+
+#[tauri::command]
+fn new_window(app: AppHandle) -> Result<(), String> {
+    let label = format!("tyba-{}", uuid::Uuid::new_v4().simple());
+    tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
+        .title("TYBA")
+        .inner_size(1100.0, 720.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn get_pref(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
     if !key.starts_with("pref.") {
         return Err("chave de preferência inválida".into());
@@ -456,6 +529,11 @@ pub fn run() {
             create_workspace,
             close_workspace,
             activate_workspace,
+            rename_workspace,
+            set_workspace_color,
+            set_workspace_group,
+            repo_branch,
+            new_window,
             create_tab,
             close_tab,
             activate_tab,

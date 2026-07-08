@@ -3,8 +3,10 @@ import { useTranslation } from "react-i18next";
 import {
   DotsThree,
   FolderOpen,
+  GitBranch,
   MagnifyingGlass,
   Plus,
+  Prohibit,
   Robot,
   SidebarSimple,
   TerminalWindow,
@@ -32,6 +34,7 @@ import { getThemeMode, onThemeModeChange, setThemeMode, type ThemeMode } from ".
 import { ApprovalsInbox } from "./components/ApprovalsInbox";
 import { CommandPalette } from "./components/CommandPalette";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
+import { PromptDialog } from "./components/PromptDialog";
 import {
   SettingsView,
   type DetailsPref,
@@ -56,9 +59,14 @@ import {
   layoutState,
   leafSessions,
   listSessions,
+  newWindow,
   onLayoutChanged,
   paneSession,
+  renameWorkspace,
+  repoBranch,
   setPref,
+  setWorkspaceColor,
+  setWorkspaceGroup,
   type LayoutState,
   type Session,
   type SessionKind,
@@ -95,6 +103,20 @@ function compactPath(dir: string): string {
   if (home.length <= 34 || parts.length <= 3) return home;
   return `…/${parts.slice(-2).join("/")}`;
 }
+
+const SESSION_COLORS = [
+  "green",
+  "amber",
+  "magenta",
+  "violet",
+  "blue",
+  "cyan",
+  "red",
+];
+
+const copyText = (text: string) => {
+  void navigator.clipboard?.writeText(text).catch(() => {});
+};
 
 type SidebarMode = "open" | "rail" | "hidden";
 
@@ -156,6 +178,11 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [branches, setBranches] = useState<Record<string, string>>({});
+  const [prompt, setPrompt] = useState<{
+    kind: "rename" | "group";
+    ws: Workspace;
+  } | null>(null);
   const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
   const booted = useRef(false);
 
@@ -220,6 +247,54 @@ export default function App() {
   const detailsFor = useCallback(
     (id: string): boolean => (detailOverrides[id] ?? detailsPref) === "on",
     [detailOverrides, detailsPref],
+  );
+
+  const groupedWorkspaces = useMemo(() => {
+    const groups = new Map<string, Workspace[]>();
+    const loose: Workspace[] = [];
+    for (const w of workspaces) {
+      if (w.group) {
+        groups.set(w.group, [...(groups.get(w.group) ?? []), w]);
+      } else {
+        loose.push(w);
+      }
+    }
+    return {
+      groups: [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)),
+      loose,
+    };
+  }, [workspaces]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const targets = layout.workspaces.filter((w) => w.repo_root);
+    void Promise.all(
+      targets.map(
+        async (w) =>
+          [w.id, await repoBranch(w.repo_root as string).catch(() => null)] as const,
+      ),
+    ).then((entries) => {
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      for (const [id, branch] of entries) {
+        if (branch) next[id] = branch;
+      }
+      setBranches(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [layout.workspaces]);
+
+  const cycleWorkspace = useCallback(
+    (dir: 1 | -1) => {
+      const list = layout.workspaces;
+      if (list.length === 0) return;
+      const idx = list.findIndex((w) => w.id === layout.active_workspace);
+      const next = list[(idx + dir + list.length) % list.length];
+      if (next) void activateWorkspace(next.id);
+    },
+    [layout],
   );
 
   const newSession = useCallback(
@@ -414,6 +489,14 @@ export default function App() {
           }
         } else if (action === "openFolder") {
           void openProjectFolder();
+        } else if (action === "newSession") {
+          if (!settingsOpen) setNewSessionOpen(true);
+        } else if (action === "newWindow") {
+          void newWindow().catch(() => {});
+        } else if (action === "prevSession") {
+          cycleWorkspace(-1);
+        } else if (action === "nextSession") {
+          cycleWorkspace(1);
         }
         return;
       }
@@ -442,10 +525,171 @@ export default function App() {
     closeActivePane,
     toggleSidebar,
     openProjectFolder,
+    cycleWorkspace,
     activeWorkspace,
   ]);
 
   const open = sidebar === "open";
+
+  const renderWorkspace = (w: Workspace) => {
+    const isActive = w.id === layout.active_workspace;
+    const showDetails = open && detailsFor(w.id);
+    const agent = showDetails ? workspaceAgent(w) : null;
+    const branch = branches[w.id];
+    return (
+      <button
+        key={w.id}
+        onClick={() => void activateWorkspace(w.id)}
+        title={open ? (w.repo_root ?? undefined) : w.name}
+        className={`group relative flex shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
+          showDetails ? "h-12" : "h-8"
+        } ${open ? "px-2" : "justify-center px-0"} ${
+          isActive
+            ? "text-tyba-text"
+            : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
+        }`}
+      >
+        {isActive && (
+          <span
+            className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
+            style={{
+              background: w.color
+                ? `var(--tyba-${w.color})`
+                : "var(--tyba-gradient-soft)",
+            }}
+          />
+        )}
+        <TerminalWindow
+          size={16}
+          style={w.color ? { color: `var(--tyba-${w.color})` } : undefined}
+          className={
+            isActive
+              ? `shrink-0 ${w.color ? "" : "text-tyba-green"} [filter:drop-shadow(0_0_6px_rgba(124,197,68,.35))]`
+              : "shrink-0"
+          }
+        />
+        {open && (
+          <>
+            <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
+              <span className="w-full truncate text-left leading-none">
+                {w.name}
+              </span>
+              {showDetails && (
+                <span className="flex w-full items-center gap-1.5">
+                  <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-faint">
+                    {w.repo_root ? compactPath(w.repo_root) : "~"}
+                  </span>
+                  {branch && (
+                    <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] leading-none text-tyba-text-faint">
+                      <GitBranch size={9} />
+                      {branch}
+                    </span>
+                  )}
+                  {agent && (
+                    <span className="flex shrink-0 items-center gap-1 rounded-[3px] bg-tyba-violet-tint px-1 py-px font-mono text-[9px] leading-none text-tyba-violet">
+                      <Robot size={9} weight="bold" />
+                      {agent}
+                    </span>
+                  )}
+                </span>
+              )}
+            </span>
+            <span className="font-mono text-[10px] text-tyba-text-faint">
+              {w.tabs.length > 0 ? w.tabs.length : ""}
+            </span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <span
+                  role="button"
+                  aria-label={t("sessionOptions")}
+                  onClick={(e) => e.stopPropagation()}
+                  className="rounded-[3px] text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-text group-hover:opacity-100"
+                >
+                  <DotsThree size={14} weight="bold" />
+                </span>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="w-52 border-tyba-border-strong bg-tyba-overlay shadow-lg"
+              >
+                <DropdownMenuItem
+                  className="text-xs"
+                  onSelect={() => setPrompt({ kind: "rename", ws: w })}
+                >
+                  {t("renameSession")}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-xs"
+                  onSelect={() => setPrompt({ kind: "group", ws: w })}
+                >
+                  {t("groupSession")}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {branch && (
+                  <DropdownMenuItem
+                    className="text-xs"
+                    onSelect={() => copyText(branch)}
+                  >
+                    {t("copyBranch")}
+                  </DropdownMenuItem>
+                )}
+                {w.repo_root && (
+                  <DropdownMenuItem
+                    className="text-xs"
+                    onSelect={() => copyText(w.repo_root as string)}
+                  >
+                    {t("copyDir")}
+                  </DropdownMenuItem>
+                )}
+                {(branch || w.repo_root) && <DropdownMenuSeparator />}
+                <div className="flex items-center gap-1.5 px-2 py-1.5">
+                  <button
+                    aria-label={t("noColor")}
+                    onClick={() => void setWorkspaceColor(w.id, null)}
+                    className={`flex size-4 items-center justify-center rounded-full border text-tyba-text-faint ${
+                      !w.color
+                        ? "border-tyba-text-muted"
+                        : "border-tyba-border-strong"
+                    }`}
+                  >
+                    <Prohibit size={10} />
+                  </button>
+                  {SESSION_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      aria-label={c}
+                      onClick={() => void setWorkspaceColor(w.id, c)}
+                      className={`size-4 rounded-full border ${
+                        w.color === c
+                          ? "border-tyba-text"
+                          : "border-transparent"
+                      }`}
+                      style={{ background: `var(--tyba-${c})` }}
+                    />
+                  ))}
+                </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-xs"
+                  onSelect={() => toggleWorkspaceDetails(w.id)}
+                >
+                  {detailsFor(w.id) ? t("detailsHide") : t("detailsShow")}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-xs text-tyba-red focus:text-tyba-red"
+                  onSelect={() => void killWorkspace(w.id)}
+                >
+                  <X size={12} weight="bold" />
+                  {t("killSession")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        )}
+      </button>
+    );
+  };
 
   return (
     <TooltipProvider delayDuration={400}>
@@ -468,6 +712,30 @@ export default function App() {
         open={newSessionOpen}
         onOpenChange={setNewSessionOpen}
         onCreate={(cwd, name) => void newSession(cwd, name)}
+      />
+      <PromptDialog
+        open={prompt !== null}
+        onOpenChange={(o) => {
+          if (!o) setPrompt(null);
+        }}
+        title={prompt?.kind === "group" ? t("groupSession") : t("renameSession")}
+        placeholder={
+          prompt?.kind === "group" ? t("groupPlaceholder") : undefined
+        }
+        initial={
+          prompt?.kind === "group"
+            ? (prompt.ws.group ?? "")
+            : (prompt?.ws.name ?? "")
+        }
+        onSubmit={(value) => {
+          if (!prompt) return;
+          if (prompt.kind === "rename") {
+            if (value) void renameWorkspace(prompt.ws.id, value);
+          } else {
+            void setWorkspaceGroup(prompt.ws.id, value || null);
+          }
+          setPrompt(null);
+        }}
       />
       <div className="tyba-aurora flex h-screen flex-col text-tyba-text">
         <header
@@ -575,106 +843,15 @@ export default function App() {
                       open ? "mt-2" : "mt-3"
                     }`}
                   >
-                    {workspaces.map((w) => {
-                      const isActive = w.id === layout.active_workspace;
-                      const showDetails = open && detailsFor(w.id);
-                      const agent = showDetails ? workspaceAgent(w) : null;
-                      return (
-                        <button
-                          key={w.id}
-                          onClick={() => void activateWorkspace(w.id)}
-                          title={open ? (w.repo_root ?? undefined) : w.name}
-                          className={`group relative flex shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
-                            showDetails ? "h-12" : "h-8"
-                          } ${
-                            open ? "px-2" : "justify-center px-0"
-                          } ${
-                            isActive
-                              ? "text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
-                          }`}
-                        >
-                          {isActive && (
-                            <span
-                              className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
-                              style={{
-                                background: "var(--tyba-gradient-soft)",
-                              }}
-                            />
-                          )}
-                          <TerminalWindow
-                            size={16}
-                            className={
-                              isActive
-                                ? "shrink-0 text-tyba-green [filter:drop-shadow(0_0_6px_rgba(124,197,68,.55))]"
-                                : "shrink-0"
-                            }
-                          />
-                          {open && (
-                            <>
-                              <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
-                                <span className="w-full truncate text-left leading-none">
-                                  {w.name}
-                                </span>
-                                {showDetails && (
-                                  <span className="flex w-full items-center gap-1.5">
-                                    <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-faint">
-                                      {w.repo_root
-                                        ? compactPath(w.repo_root)
-                                        : "~"}
-                                    </span>
-                                    {agent && (
-                                      <span className="flex shrink-0 items-center gap-1 rounded-[3px] bg-tyba-violet-tint px-1 py-px font-mono text-[9px] leading-none text-tyba-violet">
-                                        <Robot size={9} weight="bold" />
-                                        {agent}
-                                      </span>
-                                    )}
-                                  </span>
-                                )}
-                              </span>
-                              <span className="font-mono text-[10px] text-tyba-text-faint">
-                                {w.tabs.length > 0 ? w.tabs.length : ""}
-                              </span>
-                              <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
-                                  <span
-                                    role="button"
-                                    aria-label={t("sessionOptions")}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="rounded-[3px] text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-text group-hover:opacity-100"
-                                  >
-                                    <DotsThree size={14} weight="bold" />
-                                  </span>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent
-                                  align="start"
-                                  className="w-44 border-tyba-border-strong bg-tyba-overlay shadow-lg"
-                                >
-                                  <DropdownMenuItem
-                                    className="text-xs"
-                                    onSelect={() =>
-                                      toggleWorkspaceDetails(w.id)
-                                    }
-                                  >
-                                    {detailsFor(w.id)
-                                      ? t("detailsHide")
-                                      : t("detailsShow")}
-                                  </DropdownMenuItem>
-                                  <DropdownMenuSeparator />
-                                  <DropdownMenuItem
-                                    className="text-xs text-tyba-red focus:text-tyba-red"
-                                    onSelect={() => void killWorkspace(w.id)}
-                                  >
-                                    <X size={12} weight="bold" />
-                                    {t("killSession")}
-                                  </DropdownMenuItem>
-                                </DropdownMenuContent>
-                              </DropdownMenu>
-                            </>
-                          )}
-                        </button>
-                      );
-                    })}
+                    {groupedWorkspaces.groups.map(([name, list]) => (
+                      <div key={name} className="flex flex-col gap-px">
+                        <span className="tyba-label px-2.5 pt-2 pb-1">
+                          {name}
+                        </span>
+                        {list.map(renderWorkspace)}
+                      </div>
+                    ))}
+                    {groupedWorkspaces.loose.map(renderWorkspace)}
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button

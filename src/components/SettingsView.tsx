@@ -75,9 +75,13 @@ const THEME_MODE_KEYS: Record<ThemeMode, string> = {
 const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   palette: "commandPalette",
   panel: "togglePanel",
+  newSession: "newSession",
   newTab: "newTab",
+  newWindow: "newWindow",
   closePane: "closePane",
   openFolder: "openProjectFolder",
+  prevSession: "prevSessionNav",
+  nextSession: "nextSessionNav",
 };
 
 const FONT_SIZES = [11, 12, 13, 14, 15, 16];

@@ -253,6 +253,8 @@ pub struct Workspace {
     pub id: WorkspaceId,
     pub name: String,
     pub repo_root: Option<String>,
+    pub color: Option<String>,
+    pub group: Option<String>,
     pub active_tab: Option<TabId>,
     pub tabs: Vec<Tab>,
     pub created_at: DateTime<Utc>,
@@ -279,6 +281,8 @@ pub struct WorkspaceRow {
     pub id: String,
     pub name: String,
     pub repo_root: Option<String>,
+    pub color: Option<String>,
+    pub group_name: Option<String>,
     pub position: i64,
     pub active_tab: Option<String>,
     pub created_at: String,
@@ -389,6 +393,8 @@ impl LayoutManager {
             id: Uuid::new_v4(),
             name: name.trim().to_string(),
             repo_root,
+            color: None,
+            group: None,
             active_tab: Some(tab.id),
             tabs: vec![tab],
             created_at: Utc::now(),
@@ -421,6 +427,44 @@ impl LayoutManager {
         let mut inner = self.inner.write();
         ws_index(&inner.workspaces, id)?;
         inner.active = Some(id);
+        drop(inner);
+        self.persist()
+    }
+
+    pub fn rename_workspace(&self, id: WorkspaceId, name: &str) -> Result<(), LayoutError> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let mut inner = self.inner.write();
+        let idx = ws_index(&inner.workspaces, id)?;
+        inner.workspaces[idx].name = trimmed.to_string();
+        drop(inner);
+        self.persist()
+    }
+
+    pub fn set_workspace_color(
+        &self,
+        id: WorkspaceId,
+        color: Option<String>,
+    ) -> Result<(), LayoutError> {
+        let mut inner = self.inner.write();
+        let idx = ws_index(&inner.workspaces, id)?;
+        inner.workspaces[idx].color = color.filter(|c| !c.trim().is_empty());
+        drop(inner);
+        self.persist()
+    }
+
+    pub fn set_workspace_group(
+        &self,
+        id: WorkspaceId,
+        group: Option<String>,
+    ) -> Result<(), LayoutError> {
+        let mut inner = self.inner.write();
+        let idx = ws_index(&inner.workspaces, id)?;
+        inner.workspaces[idx].group = group
+            .map(|g| g.trim().to_string())
+            .filter(|g| !g.is_empty());
         drop(inner);
         self.persist()
     }
@@ -752,6 +796,8 @@ pub fn workspaces_to_rows(workspaces: &[Workspace]) -> LayoutRows {
             id: ws_id.clone(),
             name: ws.name.clone(),
             repo_root: ws.repo_root.clone(),
+            color: ws.color.clone(),
+            group_name: ws.group.clone(),
             position: wi as i64,
             active_tab: ws.active_tab.map(|id| id.to_string()),
             created_at: ws.created_at.to_rfc3339(),
@@ -860,6 +906,8 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
                 id: ws_id,
                 name: w.name.clone(),
                 repo_root: w.repo_root.clone(),
+                color: w.color.clone(),
+                group: w.group_name.clone(),
                 active_tab,
                 tabs,
                 created_at,

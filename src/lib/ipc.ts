@@ -139,6 +139,8 @@ export interface Workspace {
   id: WorkspaceId;
   name: string;
   repo_root: string | null;
+  color: string | null;
+  group: string | null;
   active_tab: TabId | null;
   tabs: Tab[];
   created_at: string;
@@ -162,6 +164,20 @@ export const closeWorkspace = (id: WorkspaceId) =>
 
 export const activateWorkspace = (id: WorkspaceId) =>
   invoke<void>("activate_workspace", { id });
+
+export const renameWorkspace = (id: WorkspaceId, name: string) =>
+  invoke<void>("rename_workspace", { id, name });
+
+export const setWorkspaceColor = (id: WorkspaceId, color: string | null) =>
+  invoke<void>("set_workspace_color", { id, color });
+
+export const setWorkspaceGroup = (id: WorkspaceId, group: string | null) =>
+  invoke<void>("set_workspace_group", { id, group });
+
+export const repoBranch = (path: string) =>
+  invoke<string | null>("repo_branch", { path });
+
+export const newWindow = () => invoke<void>("new_window");
 
 export const createTab = (sessionId: SessionId, workspaceId?: WorkspaceId) =>
   invoke<TabId>("create_tab", {
