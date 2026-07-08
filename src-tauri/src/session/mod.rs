@@ -2,7 +2,7 @@ pub mod redact;
 pub mod store;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -81,6 +81,7 @@ impl SessionManager {
         app: AppHandle,
         pty_pool: &SharedPtyPool,
         opts: CreateSessionOpts,
+        on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
 
@@ -89,19 +90,77 @@ impl SessionManager {
         if cfg!(unix) {
             cmd.arg("-l");
         }
-        if let Some(cwd) = &opts.cwd {
+        cmd.cwd(resolve_cwd(opts.cwd.as_deref()));
+
+        let title = opts.title.unwrap_or_else(|| shell_label(&shell));
+        self.spawn_session(
+            app, pty_pool, id, cmd, opts.kind, title, opts.cols, opts.rows, on_exit,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_command_session(
+        &self,
+        app: AppHandle,
+        pty_pool: &SharedPtyPool,
+        program: &std::path::Path,
+        args: &[String],
+        title: String,
+        cwd: Option<&std::path::Path>,
+        cols: u16,
+        rows: u16,
+        on_exit: impl FnOnce(SessionId) + Send + 'static,
+    ) -> Result<Session, PtyError> {
+        let id = Uuid::new_v4();
+        let mut cmd = CommandBuilder::new(program);
+        cmd.args(args);
+        if let Some(cwd) = cwd {
             cmd.cwd(cwd);
         }
+        self.spawn_session(
+            app,
+            pty_pool,
+            id,
+            cmd,
+            SessionKind::Shell,
+            title,
+            cols,
+            rows,
+            on_exit,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_session(
+        &self,
+        app: AppHandle,
+        pty_pool: &SharedPtyPool,
+        id: SessionId,
+        mut cmd: CommandBuilder,
+        kind: SessionKind,
+        title: String,
+        cols: u16,
+        rows: u16,
+        on_exit: impl FnOnce(SessionId) + Send + 'static,
+    ) -> Result<Session, PtyError> {
         cmd.env("TERM", "xterm-256color");
         cmd.env("TYBA", "1");
         cmd.env("TYBA_SESSION_ID", id.to_string());
 
-        pty_pool.spawn(app.clone(), id, cmd, None, opts.cols, opts.rows)?;
+        pty_pool.spawn(
+            app.clone(),
+            id,
+            cmd,
+            None,
+            cols,
+            rows,
+            Box::new(move || on_exit(id)),
+        )?;
 
         let session = Session {
             id,
-            kind: opts.kind,
-            title: opts.title.unwrap_or_else(|| shell_label(&shell)),
+            kind,
+            title,
             repo_root: None,
             worktree: None,
             status: SessionStatus::Running,
@@ -117,6 +176,10 @@ impl SessionManager {
         let mut v: Vec<_> = self.sessions.read().values().cloned().collect();
         v.sort_by_key(|s| s.created_at);
         v
+    }
+
+    pub fn get(&self, id: SessionId) -> Option<Session> {
+        self.sessions.read().get(&id).cloned()
     }
 
     pub fn set_status(&self, app: &AppHandle, id: SessionId, status: SessionStatus) {
@@ -146,7 +209,18 @@ impl SessionManager {
     pub fn restore(&self) -> Result<(), StoreError> {
         let persisted = self.store.load_sessions()?;
         let mut sessions = self.sessions.write();
-        for s in persisted {
+        for mut s in persisted {
+            if matches!(s.kind, SessionKind::Shell) {
+                let _ = self.store.remove_session(s.id);
+                continue;
+            }
+            if !matches!(
+                s.status,
+                SessionStatus::Exited { .. } | SessionStatus::Failed { .. }
+            ) {
+                s.status = SessionStatus::Exited { code: -1 };
+                let _ = self.store.upsert_session(&s);
+            }
             sessions.entry(s.id).or_insert(s);
         }
         Ok(())
@@ -157,7 +231,40 @@ fn emit_status(app: &AppHandle, session: &Session) {
     let _ = app.emit(&format!("session://status/{}", session.id), session.clone());
 }
 
-fn default_shell() -> String {
+pub fn expand_home(path: &Path) -> PathBuf {
+    let Ok(home) = std::env::var("HOME") else {
+        return path.to_path_buf();
+    };
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return PathBuf::from(home);
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return PathBuf::from(home).join(rest);
+    }
+    path.to_path_buf()
+}
+
+pub fn resolve_cwd(requested: Option<&Path>) -> PathBuf {
+    let home = || {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/"))
+    };
+    match requested {
+        Some(path) => {
+            let expanded = expand_home(path);
+            if expanded.is_dir() {
+                expanded
+            } else {
+                home()
+            }
+        }
+        None => home(),
+    }
+}
+
+pub fn default_shell() -> String {
     if cfg!(windows) {
         std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".into())
     } else {
@@ -178,26 +285,89 @@ pub type SharedSessionManager = Arc<SessionManager>;
 mod tests {
     use super::*;
 
-    #[test]
-    fn restore_loads_persisted_sessions_from_store() {
-        let store = Arc::new(Store::open_in_memory().unwrap());
-        let persisted = Session {
+    fn make(kind: SessionKind, status: SessionStatus) -> Session {
+        Session {
             id: SessionId::new_v4(),
-            kind: SessionKind::Shell,
-            title: "restored".into(),
+            kind,
+            title: "s".into(),
             repo_root: None,
             worktree: None,
-            status: SessionStatus::Running,
+            status,
             created_at: Utc::now(),
-        };
-        store.upsert_session(&persisted).unwrap();
+        }
+    }
 
-        let manager = SessionManager::new(store);
+    #[test]
+    fn expand_home_handles_tilde_variants() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_home(Path::new("~")), PathBuf::from(&home));
+        assert_eq!(
+            expand_home(Path::new("~/projects/x")),
+            PathBuf::from(&home).join("projects/x")
+        );
+        assert_eq!(
+            expand_home(Path::new("/abs/path")),
+            PathBuf::from("/abs/path")
+        );
+        assert_eq!(expand_home(Path::new("~user/x")), PathBuf::from("~user/x"));
+    }
+
+    #[test]
+    fn resolve_cwd_falls_back_to_home_when_missing_or_invalid() {
+        let home = PathBuf::from(std::env::var("HOME").unwrap());
+        assert_eq!(resolve_cwd(None), home);
+        assert_eq!(
+            resolve_cwd(Some(Path::new("~/definitely-not-a-real-dir-xyz"))),
+            home
+        );
+        let tmp = std::env::temp_dir();
+        assert_eq!(resolve_cwd(Some(&tmp)), tmp);
+        assert_eq!(resolve_cwd(Some(Path::new("~"))), home);
+    }
+
+    #[test]
+    fn restore_removes_dead_shell_rows() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let shell = make(SessionKind::Shell, SessionStatus::Running);
+        store.upsert_session(&shell).unwrap();
+
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+
+        assert!(manager.list().is_empty());
+        assert!(store.load_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn restore_keeps_agents_downgrading_stale_live_status() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let running = make(
+            SessionKind::Agent {
+                runner: AgentRunnerKind::ClaudeCode,
+            },
+            SessionStatus::Running,
+        );
+        let done = make(
+            SessionKind::Agent {
+                runner: AgentRunnerKind::ClaudeCode,
+            },
+            SessionStatus::Exited { code: 0 },
+        );
+        for s in [&running, &done] {
+            store.upsert_session(s).unwrap();
+        }
+
+        let manager = SessionManager::new(Arc::clone(&store));
         manager.restore().unwrap();
 
         let listed = manager.list();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, persisted.id);
-        assert_eq!(listed[0].title, "restored");
+        assert_eq!(listed.len(), 2);
+        for s in listed {
+            if s.id == done.id {
+                assert!(matches!(s.status, SessionStatus::Exited { code: 0 }));
+            } else {
+                assert!(matches!(s.status, SessionStatus::Exited { code: -1 }));
+            }
+        }
     }
 }

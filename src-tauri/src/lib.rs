@@ -1,5 +1,7 @@
 pub mod agent;
 pub mod approvals;
+pub mod docker;
+pub mod layout;
 pub mod pty;
 pub mod sandbox;
 pub mod session;
@@ -11,17 +13,59 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use approvals::{ApprovalRequest, Decision, SharedApprovals};
 use pty::SharedPtyPool;
-use session::{CreateSessionOpts, Session, SessionId, SharedSessionManager};
+use session::store::Store;
+use session::{
+    CreateSessionOpts, Session, SessionId, SessionKind, SessionStatus, SharedSessionManager,
+};
 
 struct AppState {
+    store: Arc<Store>,
     pty_pool: SharedPtyPool,
     sessions: SharedSessionManager,
     approvals: SharedApprovals,
     themes: theme::SharedThemes,
+    layout: layout::SharedLayout,
+    docker: docker::SharedDocker,
+}
+
+fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
+    let _ = app.emit(layout::EVENT_CHANGED, state.layout.state());
+}
+
+fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
+    for id in ids {
+        if let Some(s) = state.sessions.get(*id) {
+            if matches!(s.kind, SessionKind::Shell) {
+                state.sessions.dispose(&state.pty_pool, *id);
+            }
+        }
+    }
+}
+
+fn dispose_all(state: &State<'_, AppState>, ids: &[SessionId]) {
+    for id in ids {
+        state.sessions.dispose(&state.pty_pool, *id);
+    }
+}
+
+fn session_exited(app: &AppHandle, id: SessionId) {
+    let state = app.state::<AppState>();
+    let Some(session) = state.sessions.get(id) else {
+        return;
+    };
+    if matches!(session.kind, SessionKind::Shell) {
+        state.sessions.dispose(&state.pty_pool, id);
+        let _ = state.layout.session_disposed(id);
+        emit_layout(app, &state);
+    } else {
+        state
+            .sessions
+            .set_status(app, id, SessionStatus::Exited { code: -1 });
+    }
 }
 
 #[tauri::command]
@@ -30,9 +74,12 @@ fn create_session(
     state: State<'_, AppState>,
     opts: CreateSessionOpts,
 ) -> Result<Session, String> {
+    let handle = app.clone();
     state
         .sessions
-        .create_shell_session(app, &state.pty_pool, opts)
+        .create_shell_session(app, &state.pty_pool, opts, move |id| {
+            session_exited(&handle, id)
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -69,8 +116,599 @@ fn list_sessions(state: State<'_, AppState>) -> Vec<Session> {
 }
 
 #[tauri::command]
-fn dispose_session(state: State<'_, AppState>, id: SessionId) {
+fn dispose_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
     state.sessions.dispose(&state.pty_pool, id);
+    let _ = state.layout.session_disposed(id);
+    emit_layout(&app, &state);
+}
+
+#[tauri::command]
+fn layout_state(state: State<'_, AppState>) -> layout::LayoutState {
+    state.layout.state()
+}
+
+#[tauri::command]
+fn create_workspace(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+    repo_root: Option<String>,
+    session_id: SessionId,
+) -> Result<layout::WorkspaceId, String> {
+    let repo_root = repo_root.map(|r| {
+        session::expand_home(std::path::Path::new(&r))
+            .to_string_lossy()
+            .into_owned()
+    });
+    let id = state
+        .layout
+        .create_workspace(&name, repo_root, session_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(id)
+}
+
+#[tauri::command]
+fn close_workspace(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::WorkspaceId,
+) -> Result<(), String> {
+    let bound = state
+        .layout
+        .close_workspace(id)
+        .map_err(|e| e.to_string())?;
+    dispose_all(&state, &bound);
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn activate_workspace(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::WorkspaceId,
+) -> Result<(), String> {
+    state
+        .layout
+        .activate_workspace(id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn create_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    workspace_id: Option<layout::WorkspaceId>,
+) -> Result<layout::TabId, String> {
+    let id = state
+        .layout
+        .create_tab(session_id, workspace_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(id)
+}
+
+#[tauri::command]
+fn close_tab(app: AppHandle, state: State<'_, AppState>, id: layout::TabId) -> Result<(), String> {
+    let bound = state.layout.close_tab(id).map_err(|e| e.to_string())?;
+    dispose_shells(&state, &bound);
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn rename_workspace(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::WorkspaceId,
+    name: String,
+) -> Result<(), String> {
+    state
+        .layout
+        .rename_workspace(id, &name)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_workspace_color(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::WorkspaceId,
+    color: Option<String>,
+) -> Result<(), String> {
+    state
+        .layout
+        .set_workspace_color(id, color)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_workspace_group(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::WorkspaceId,
+    group: Option<String>,
+) -> Result<(), String> {
+    state
+        .layout
+        .set_workspace_group(id, group)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn repo_branch(path: String) -> Option<String> {
+    let path = session::expand_home(std::path::Path::new(&path));
+    let out = std::process::Command::new("git")
+        .args(["-C"])
+        .arg(&path)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if branch.is_empty() {
+        None
+    } else {
+        Some(branch)
+    }
+}
+
+#[tauri::command]
+fn new_window(app: AppHandle) -> Result<(), String> {
+    let label = format!("tyba-{}", uuid::Uuid::new_v4().simple());
+    let builder = tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
+        .title("TYBA")
+        .inner_size(1100.0, 720.0);
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+    builder.build().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_pref(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+    if !key.starts_with("pref.") {
+        return Err("chave de preferência inválida".into());
+    }
+    state.store.get_setting(&key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_pref(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+    if !key.starts_with("pref.") {
+        return Err("chave de preferência inválida".into());
+    }
+    state
+        .store
+        .set_setting(&key, &value)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn activate_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::TabId,
+) -> Result<(), String> {
+    state.layout.activate_tab(id).map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn move_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::TabId,
+    to: usize,
+) -> Result<(), String> {
+    state.layout.move_tab(id, to).map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn open_session_in_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+) -> Result<(), String> {
+    state
+        .layout
+        .open_session(session_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn split_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: layout::PaneId,
+    kind: layout::SplitKind,
+    session_id: SessionId,
+) -> Result<layout::PaneId, String> {
+    let id = state
+        .layout
+        .split_pane(pane_id, kind, session_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(id)
+}
+
+#[tauri::command]
+fn close_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: layout::PaneId,
+) -> Result<(), String> {
+    let unbound = state
+        .layout
+        .close_pane(pane_id)
+        .map_err(|e| e.to_string())?;
+    dispose_shells(&state, &unbound);
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn focus_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: layout::PaneId,
+) -> Result<(), String> {
+    state
+        .layout
+        .focus_pane(pane_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_split_ratio(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane_id: layout::PaneId,
+    ratio: f64,
+    commit: Option<bool>,
+) -> Result<(), String> {
+    state
+        .layout
+        .set_split_ratio(pane_id, ratio, commit.unwrap_or(true))
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn docker_available(state: State<'_, AppState>) -> bool {
+    state.docker.available()
+}
+
+#[tauri::command]
+fn docker_list_containers(
+    state: State<'_, AppState>,
+    repo_root: Option<String>,
+    all: bool,
+) -> Result<Vec<docker::ContainerInfo>, String> {
+    state
+        .docker
+        .list(repo_root.as_deref(), all)
+        .map_err(|e| e.to_string())
+}
+
+fn open_container_tab(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    container_id: &str,
+    tab: docker::ContainerTab,
+) -> Result<(), String> {
+    let name = state
+        .docker
+        .container_name(container_id)
+        .map_err(|e| e.to_string())?;
+
+    if let Some(existing) = state.docker.tab_session(container_id, tab) {
+        if state.sessions.get(existing).is_some() {
+            state
+                .layout
+                .open_session(existing)
+                .map_err(|e| e.to_string())?;
+            emit_layout(app, state);
+            return Ok(());
+        }
+    }
+    let workspace_id = Some(state.layout.docker_workspace().map_err(|e| e.to_string())?);
+
+    let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
+    let (args, title) = match tab {
+        docker::ContainerTab::Logs => (
+            vec![
+                "logs".to_string(),
+                "-f".to_string(),
+                "--tail".to_string(),
+                "200".to_string(),
+                container_id.to_string(),
+            ],
+            format!("logs: {name}"),
+        ),
+        docker::ContainerTab::Shell => (
+            vec![
+                "exec".to_string(),
+                "-it".to_string(),
+                container_id.to_string(),
+                "sh".to_string(),
+                "-c".to_string(),
+                "command -v bash >/dev/null && exec bash || exec sh".to_string(),
+            ],
+            format!("sh: {name}"),
+        ),
+    };
+
+    let session = spawn_tab_session(
+        app,
+        state,
+        bin.as_path(),
+        &args,
+        title,
+        None,
+        &name,
+        workspace_id,
+    )?;
+    state.docker.remember_tab(container_id, tab, session);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_tab_session(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    program: &std::path::Path,
+    args: &[String],
+    title: String,
+    cwd: Option<&std::path::Path>,
+    fallback_workspace: &str,
+    workspace_id: Option<layout::WorkspaceId>,
+) -> Result<SessionId, String> {
+    let handle = app.clone();
+    let session = state
+        .sessions
+        .create_command_session(
+            app.clone(),
+            &state.pty_pool,
+            program,
+            args,
+            title,
+            cwd,
+            100,
+            30,
+            move |id| session_exited(&handle, id),
+        )
+        .map_err(|e| e.to_string())?;
+
+    if let Err(e) = state.layout.create_tab(session.id, workspace_id) {
+        if matches!(e, layout::LayoutError::NoActiveWorkspace) {
+            state
+                .layout
+                .create_workspace(fallback_workspace, None, session.id)
+                .map_err(|e| e.to_string())?;
+        } else {
+            return Err(e.to_string());
+        }
+    }
+    emit_layout(app, state);
+    Ok(session.id)
+}
+
+#[tauri::command]
+fn docker_open_logs(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    container_id: String,
+) -> Result<(), String> {
+    open_container_tab(&app, &state, &container_id, docker::ContainerTab::Logs)
+}
+
+#[tauri::command]
+fn docker_open_shell(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    container_id: String,
+) -> Result<(), String> {
+    open_container_tab(&app, &state, &container_id, docker::ContainerTab::Shell)
+}
+
+#[tauri::command]
+fn open_view_tab(app: AppHandle, state: State<'_, AppState>, view: String) -> Result<(), String> {
+    if view != layout::VIEW_SETTINGS {
+        return Err(format!("view desconhecida: {view}"));
+    }
+    state
+        .layout
+        .open_view_tab(&view)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn docker_open_dashboard(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .layout
+        .open_docker_dashboard()
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn docker_compose_op(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project: String,
+    op: docker::ComposeOp,
+) -> Result<(), String> {
+    let info = state
+        .docker
+        .project_info(&project)
+        .map_err(|e| e.to_string())?;
+    docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
+    let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
+    let workspace_id = Some(state.layout.docker_workspace().map_err(|e| e.to_string())?);
+
+    let script = format!(
+        "'{}' {}; ec=$?; if [ $ec -ne 0 ]; then printf '\\n[falhou — enter para fechar]\\n'; read _; fi",
+        bin.display(),
+        op.compose_args(),
+    );
+    let title = format!("compose {}: {}", op.label(), project);
+    spawn_tab_session(
+        &app,
+        &state,
+        std::path::Path::new("/bin/sh"),
+        &["-c".to_string(), script],
+        title,
+        Some(std::path::Path::new(&info.working_dir)),
+        &project,
+        workspace_id,
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
+fn docker_open_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project: String,
+) -> Result<(), String> {
+    let info = state
+        .docker
+        .project_info(&project)
+        .map_err(|e| e.to_string())?;
+    docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
+
+    let existing = state
+        .layout
+        .state()
+        .workspaces
+        .iter()
+        .find(|w| w.repo_root.as_deref() == Some(info.working_dir.as_str()))
+        .map(|w| w.id);
+    if let Some(id) = existing {
+        state
+            .layout
+            .activate_workspace(id)
+            .map_err(|e| e.to_string())?;
+        emit_layout(&app, &state);
+        return Ok(());
+    }
+
+    let handle = app.clone();
+    let session = state
+        .sessions
+        .create_shell_session(
+            app.clone(),
+            &state.pty_pool,
+            CreateSessionOpts {
+                kind: SessionKind::Shell,
+                title: None,
+                cwd: Some(std::path::PathBuf::from(&info.working_dir)),
+                cols: 100,
+                rows: 30,
+            },
+            move |id| session_exited(&handle, id),
+        )
+        .map_err(|e| e.to_string())?;
+    state
+        .layout
+        .create_workspace(&project, Some(info.working_dir), session.id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn docker_open_compose_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project: String,
+) -> Result<(), String> {
+    let info = state
+        .docker
+        .project_info(&project)
+        .map_err(|e| e.to_string())?;
+    let file = info.config_file.ok_or("projeto sem arquivo compose")?;
+    docker::validate_compose_file(&file).map_err(|e| e.to_string())?;
+    docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
+    let workspace_id = Some(state.layout.docker_workspace().map_err(|e| e.to_string())?);
+
+    let shell = session::default_shell();
+    let script = format!("exec \"${{EDITOR:-vi}}\" '{file}'");
+    let title = format!("compose: {project}");
+    spawn_tab_session(
+        &app,
+        &state,
+        std::path::Path::new(&shell),
+        &["-lc".to_string(), script],
+        title,
+        Some(std::path::Path::new(&info.working_dir)),
+        &project,
+        workspace_id,
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
+fn docker_remove_container(state: State<'_, AppState>, container_id: String) -> Result<(), String> {
+    state
+        .docker
+        .remove(&container_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn docker_open_desktop() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let attempts: [&[&str]; 2] = [&["-a", "Docker"], &["-b", "com.docker.docker"]];
+        let mut last_error = String::new();
+        for args in attempts {
+            match std::process::Command::new("/usr/bin/open")
+                .args(args)
+                .output()
+            {
+                Ok(out) if out.status.success() => return Ok(()),
+                Ok(out) => {
+                    last_error = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                }
+                Err(e) => last_error = e.to_string(),
+            }
+        }
+        if last_error.is_empty() {
+            last_error = "não foi possível abrir o Docker Desktop".into();
+        }
+        Err(last_error)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("disponível apenas no macOS".into())
+    }
 }
 
 #[tauri::command]
@@ -140,10 +778,7 @@ fn import_theme(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<theme::Theme, String> {
-    state
-        .themes
-        .import(&app, &path)
-        .map_err(|e| e.to_string())
+    state.themes.import(&app, &path).map_err(|e| e.to_string())
 }
 
 const SCROLLBACK_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
@@ -175,6 +810,12 @@ pub fn run() {
                 Arc::new(session::SessionManager::new(Arc::clone(&store)));
             let _ = sessions.restore();
 
+            let layout: layout::SharedLayout =
+                Arc::new(layout::LayoutManager::new(Arc::clone(&store)));
+            let valid: std::collections::HashSet<SessionId> =
+                sessions.list().iter().map(|s| s.id).collect();
+            layout.load(&valid);
+
             let themes_dir = app
                 .path()
                 .app_config_dir()
@@ -184,10 +825,13 @@ pub fn run() {
                 Arc::new(theme::ThemeManager::new(Arc::clone(&store), themes_dir));
 
             app.manage(AppState {
+                store: Arc::clone(&store),
                 pty_pool: Arc::clone(&pty_pool),
                 sessions: Arc::clone(&sessions),
                 approvals: Arc::new(approvals::ApprovalsManager::new()),
                 themes,
+                layout,
+                docker: Arc::new(docker::DockerManager::new()),
             });
 
             std::thread::Builder::new()
@@ -225,6 +869,37 @@ pub fn run() {
             set_theme_mode,
             set_theme_slot,
             import_theme,
+            layout_state,
+            create_workspace,
+            close_workspace,
+            activate_workspace,
+            rename_workspace,
+            set_workspace_color,
+            set_workspace_group,
+            repo_branch,
+            new_window,
+            create_tab,
+            close_tab,
+            activate_tab,
+            move_tab,
+            open_session_in_tab,
+            split_pane,
+            close_pane,
+            focus_pane,
+            set_split_ratio,
+            get_pref,
+            set_pref,
+            docker_available,
+            docker_list_containers,
+            docker_open_logs,
+            docker_open_shell,
+            docker_remove_container,
+            docker_open_desktop,
+            docker_compose_op,
+            docker_open_project,
+            docker_open_compose_file,
+            docker_open_dashboard,
+            open_view_tab,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tyba")
