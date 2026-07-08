@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL,
     scrollback TEXT
 );
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 ";
 
 #[derive(Debug, thiserror::Error)]
@@ -116,6 +120,28 @@ impl Store {
             )
             .map_err(StoreError::from)?;
         Ok(value)
+    }
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(StoreError::from)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     pub fn load_sessions(&self) -> Result<Vec<Session>, StoreError> {
@@ -229,6 +255,24 @@ mod tests {
         store.upsert_session(&s).unwrap();
         store.remove_session(s.id).unwrap();
         assert!(store.load_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn settings_round_trip_and_overwrite() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_setting("theme.mode").unwrap(), None);
+
+        store.set_setting("theme.mode", "light").unwrap();
+        assert_eq!(
+            store.get_setting("theme.mode").unwrap().as_deref(),
+            Some("light")
+        );
+
+        store.set_setting("theme.mode", "system").unwrap();
+        assert_eq!(
+            store.get_setting("theme.mode").unwrap().as_deref(),
+            Some("system")
+        );
     }
 
     #[test]

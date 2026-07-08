@@ -1,9 +1,7 @@
-// TerminalView: xterm.js <-> PTY do core, com fit e resize.
-// O xterm é imperativo; o React só gerencia o ciclo de vida.
-
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import i18n from "../i18n";
@@ -16,33 +14,21 @@ import {
   writeToSession,
   type SessionId,
 } from "../lib/ipc";
+import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
-// Tema TYBA derivado dos tokens do design system (src/styles.css / --tyba-*):
-// canvas quase-preto, cursor no verde do terminal, ANSI na paleta da marca.
-// Hexes duplicados aqui porque o xterm não lê CSS custom properties.
-const TYBA_THEME = {
-  background: "#070709", // --tyba-sunken: terminal mais fundo que o canvas
-  foreground: "#f2f2f5", // --tyba-text
-  cursor: "#7cc544", // --tyba-green: terminal é verde na identidade
-  cursorAccent: "#070709",
-  selectionBackground: "#7cc5444d",
-  black: "#1a1a20", // --tyba-raised
-  red: "#f0503c", // --tyba-red
-  green: "#7cc544", // --tyba-green
-  yellow: "#f5a93b", // --tyba-amber
-  blue: "#4c7df0", // --tyba-blue
-  magenta: "#ec4899", // --tyba-magenta
-  cyan: "#2dd4bf", // --tyba-cyan
-  white: "#f2f2f5", // --tyba-text
-  brightBlack: "#6a6a76", // --tyba-text-faint
-  brightRed: "#f4715f",
-  brightGreen: "#a8e05f", // --tyba-lime
-  brightYellow: "#f5c93b",
-  brightBlue: "#7da3f5",
-  brightMagenta: "#a78bfa", // --tyba-violet clareado
-  brightCyan: "#5eead4",
-  brightWhite: "#ffffff",
-};
+function loadWebgl(term: Terminal, onLost: () => void): WebglAddon | null {
+  try {
+    const webgl = new WebglAddon();
+    webgl.onContextLoss(() => {
+      webgl.dispose();
+      onLost();
+    });
+    term.loadAddon(webgl);
+    return webgl;
+  } catch {
+    return null;
+  }
+}
 
 interface Props {
   sessionId: SessionId;
@@ -54,13 +40,15 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const webglRef = useRef<WebglAddon | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
+    const theme = getTerminalTheme();
     const term = new Terminal({
-      theme: TYBA_THEME,
+      theme,
       fontFamily:
         '"JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
       fontSize: 13,
@@ -73,6 +61,12 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
     term.loadAddon(fit);
     term.open(el);
     fit.fit();
+
+    el.style.backgroundColor = theme.background ?? "";
+    const offTheme = onTerminalThemeChange((next) => {
+      term.options.theme = next;
+      el.style.backgroundColor = next.background ?? "";
+    });
 
     termRef.current = term;
     fitRef.current = fit;
@@ -105,8 +99,11 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
 
     return () => {
       ro.disconnect();
+      offTheme();
       dataSub.dispose();
       unlisteners.forEach((un) => un());
+      webglRef.current?.dispose();
+      webglRef.current = null;
       term.dispose();
       termRef.current = null;
     };
@@ -114,11 +111,20 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // foco ao ativar a tab
   useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
     if (active) {
-      termRef.current?.focus();
+      term.focus();
       fitRef.current?.fit();
+      if (!webglRef.current) {
+        webglRef.current = loadWebgl(term, () => {
+          webglRef.current = null;
+        });
+      }
+    } else if (webglRef.current) {
+      webglRef.current.dispose();
+      webglRef.current = null;
     }
   }, [active]);
 

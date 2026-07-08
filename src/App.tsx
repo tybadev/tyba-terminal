@@ -27,7 +27,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { LANGUAGES, setLanguage, type LanguageCode } from "./i18n";
-import { getThemeMode, setThemeMode, type ThemeMode } from "./theme";
+import {
+  getThemeMode,
+  onThemeModeChange,
+  setThemeMode,
+  type ThemeMode,
+} from "./theme";
 import {
   Tooltip,
   TooltipContent,
@@ -106,6 +111,8 @@ export default function App() {
     setThemeMode(next);
     setTheme(next);
   }, []);
+
+  useEffect(() => onThemeModeChange(setTheme), []);
 
   const newShell = useCallback(async () => {
     const session = await createSession({

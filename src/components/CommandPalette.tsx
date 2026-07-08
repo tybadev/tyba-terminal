@@ -1,11 +1,15 @@
 // Paleta de comandos (⌘K): navegação por teclado como cidadã de
 // primeira classe. Ações do shell + salto direto pra qualquer sessão.
 
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   Desktop,
+  DownloadSimple,
   Globe,
   Moon,
+  Palette,
   Plus,
   SidebarSimple,
   Sun,
@@ -24,8 +28,13 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { LANGUAGES, setLanguage } from "../i18n";
-import { THEMES, type ThemeMode } from "../theme";
-import type { Session, SessionId } from "../lib/ipc";
+import { applyTheme, THEMES, type Theme, type ThemeMode } from "../theme";
+import {
+  importThemeCmd,
+  listThemes,
+  type Session,
+  type SessionId,
+} from "../lib/ipc";
 
 const THEME_ICONS: Record<ThemeMode, typeof Moon> = {
   dark: Moon,
@@ -65,10 +74,32 @@ export function CommandPalette({
   onGoToSession,
 }: Props) {
   const { t, i18n } = useTranslation();
+  const [customThemes, setCustomThemes] = useState<Theme[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    void listThemes()
+      .then((all) => setCustomThemes(all.filter((theme) => !theme.builtin)))
+      .catch(() => setCustomThemes([]));
+  }, [open]);
 
   const run = (fn: () => void) => () => {
     onOpenChange(false);
     fn();
+  };
+
+  const importTheme = async () => {
+    const path = await openFileDialog({
+      multiple: false,
+      filters: [{ name: "Tema TYBA (JSON)", extensions: ["json"] }],
+    });
+    if (typeof path !== "string") return;
+    try {
+      const imported = await importThemeCmd(path);
+      await applyTheme(imported);
+    } catch (error) {
+      window.alert(t("themeImportFailed", { error: String(error) }));
+    }
   };
 
   return (
@@ -139,6 +170,20 @@ export function CommandPalette({
               </CommandItem>
             );
           })}
+          {customThemes.map((custom) => (
+            <CommandItem
+              key={custom.id}
+              value={`theme ${custom.name}`}
+              onSelect={run(() => void applyTheme(custom))}
+            >
+              <Palette size={15} />
+              {t("useTheme", { name: custom.name })}
+            </CommandItem>
+          ))}
+          <CommandItem onSelect={run(() => void importTheme())}>
+            <DownloadSimple size={15} />
+            {t("importTheme")}
+          </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />
