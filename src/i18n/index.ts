@@ -153,6 +153,10 @@ const resources = {
       showContainersToggle: "Containers Docker no header",
       showContainersHint:
         "Mostra um ícone no header com os containers do projeto da sessão ativa. Remoção é ação vermelha: sempre pede confirmação.",
+      integrations: "Integrações",
+      dockerIntegration: "Integração com Docker",
+      dockerIntegrationHint:
+        "Adiciona um ícone no header com os containers do projeto da sessão ativa — logs, shell e compose (up/down/restart) na mão. Ações destrutivas (remover container, compose down) são vermelhas: sempre pedem confirmação. Requer o Docker rodando na máquina.",
       approvals: "Aprovações",
       pendingCount_one: "{{count}} pendente",
       pendingCount_other: "{{count}} pendentes",
@@ -302,6 +306,10 @@ const resources = {
       showContainersToggle: "Docker containers in the header",
       showContainersHint:
         "Shows a header icon with the active session's project containers. Removal is a red action: always asks for confirmation.",
+      integrations: "Integrations",
+      dockerIntegration: "Docker integration",
+      dockerIntegrationHint:
+        "Adds a header icon with the active session's project containers — logs, shell and compose (up/down/restart) at hand. Destructive actions (remove container, compose down) are red: they always ask for confirmation. Requires Docker running on the machine.",
       approvals: "Approvals",
       pendingCount_one: "{{count}} pending",
       pendingCount_other: "{{count}} pending",
