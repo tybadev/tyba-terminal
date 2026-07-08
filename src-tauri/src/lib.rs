@@ -456,27 +456,59 @@ fn open_container_tab(
         ),
     };
 
+    let session = spawn_tab_session(
+        app,
+        state,
+        bin.as_path(),
+        &args,
+        title,
+        None,
+        &name,
+        workspace_id,
+    )?;
+    state.docker.remember_tab(container_id, tab, session);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_tab_session(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    program: &std::path::Path,
+    args: &[String],
+    title: String,
+    cwd: Option<&std::path::Path>,
+    fallback_workspace: &str,
+    workspace_id: Option<layout::WorkspaceId>,
+) -> Result<SessionId, String> {
     let handle = app.clone();
     let session = state
         .sessions
-        .create_command_session(app.clone(), &state.pty_pool, bin, &args, title, 100, 30, {
-            move |id| session_exited(&handle, id)
-        })
+        .create_command_session(
+            app.clone(),
+            &state.pty_pool,
+            program,
+            args,
+            title,
+            cwd,
+            100,
+            30,
+            move |id| session_exited(&handle, id),
+        )
         .map_err(|e| e.to_string())?;
-    state.docker.remember_tab(container_id, tab, session.id);
 
     if let Err(e) = state.layout.create_tab(session.id, workspace_id) {
         if matches!(e, layout::LayoutError::NoActiveWorkspace) {
             state
                 .layout
-                .create_workspace(&name, None, session.id)
+                .create_workspace(fallback_workspace, None, session.id)
                 .map_err(|e| e.to_string())?;
         } else {
             return Err(e.to_string());
         }
     }
     emit_layout(app, state);
-    Ok(())
+    Ok(session.id)
 }
 
 #[tauri::command]
@@ -509,6 +541,123 @@ fn docker_open_shell(
         docker::ContainerTab::Shell,
         workspace_id,
     )
+}
+
+#[tauri::command]
+fn docker_compose_op(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project: String,
+    op: docker::ComposeOp,
+    workspace_id: Option<layout::WorkspaceId>,
+) -> Result<(), String> {
+    let info = state
+        .docker
+        .project_info(&project)
+        .map_err(|e| e.to_string())?;
+    docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
+    let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
+
+    let script = format!(
+        "'{}' {}; ec=$?; if [ $ec -ne 0 ]; then printf '\\n[falhou — enter para fechar]\\n'; read _; fi",
+        bin.display(),
+        op.compose_args(),
+    );
+    let title = format!("compose {}: {}", op.label(), project);
+    spawn_tab_session(
+        &app,
+        &state,
+        std::path::Path::new("/bin/sh"),
+        &["-c".to_string(), script],
+        title,
+        Some(std::path::Path::new(&info.working_dir)),
+        &project,
+        workspace_id,
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
+fn docker_open_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project: String,
+) -> Result<(), String> {
+    let info = state
+        .docker
+        .project_info(&project)
+        .map_err(|e| e.to_string())?;
+    docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
+
+    let existing = state
+        .layout
+        .state()
+        .workspaces
+        .iter()
+        .find(|w| w.repo_root.as_deref() == Some(info.working_dir.as_str()))
+        .map(|w| w.id);
+    if let Some(id) = existing {
+        state
+            .layout
+            .activate_workspace(id)
+            .map_err(|e| e.to_string())?;
+        emit_layout(&app, &state);
+        return Ok(());
+    }
+
+    let handle = app.clone();
+    let session = state
+        .sessions
+        .create_shell_session(
+            app.clone(),
+            &state.pty_pool,
+            CreateSessionOpts {
+                kind: SessionKind::Shell,
+                title: None,
+                cwd: Some(std::path::PathBuf::from(&info.working_dir)),
+                cols: 100,
+                rows: 30,
+            },
+            move |id| session_exited(&handle, id),
+        )
+        .map_err(|e| e.to_string())?;
+    state
+        .layout
+        .create_workspace(&project, Some(info.working_dir), session.id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn docker_open_compose_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project: String,
+    workspace_id: Option<layout::WorkspaceId>,
+) -> Result<(), String> {
+    let info = state
+        .docker
+        .project_info(&project)
+        .map_err(|e| e.to_string())?;
+    let file = info.config_file.ok_or("projeto sem arquivo compose")?;
+    docker::validate_compose_file(&file).map_err(|e| e.to_string())?;
+    docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
+
+    let shell = session::default_shell();
+    let script = format!("exec \"${{EDITOR:-vi}}\" '{file}'");
+    let title = format!("compose: {project}");
+    spawn_tab_session(
+        &app,
+        &state,
+        std::path::Path::new(&shell),
+        &["-lc".to_string(), script],
+        title,
+        Some(std::path::Path::new(&info.working_dir)),
+        &project,
+        workspace_id,
+    )?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -731,6 +880,9 @@ pub fn run() {
             docker_open_shell,
             docker_remove_container,
             docker_open_desktop,
+            docker_compose_op,
+            docker_open_project,
+            docker_open_compose_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tyba")

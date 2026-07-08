@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities da janela principal",
-  "windows": ["main"],
+  "description": "Capabilities das janelas do TYBA",
+  "windows": ["main", "tyba-*"],
   "permissions": [
     "core:default",
     "core:event:default",
     "core:window:default",
+    "core:window:allow-start-dragging",
     "dialog:allow-open"
   ]
 }

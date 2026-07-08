@@ -37,7 +37,8 @@ import {
 import { getThemeMode, onThemeModeChange, setThemeMode, type ThemeMode } from "./theme";
 import { ApprovalsInbox } from "./components/ApprovalsInbox";
 import { CommandPalette } from "./components/CommandPalette";
-import { ContainersPopover } from "./components/ContainersPopover";
+import { ContainersPanel } from "./components/ContainersPanel";
+import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { PromptDialog } from "./components/PromptDialog";
 import {
@@ -60,6 +61,7 @@ import {
   createSession,
   createTab,
   createWorkspace,
+  dockerAvailable,
   getPref,
   focusPane,
   layoutState,
@@ -200,6 +202,9 @@ export default function App() {
   } | null>(null);
   const [pendingGroup, setPendingGroup] = useState<string | null>(null);
   const [showContainers, setShowContainers] = useState(false);
+  const [dockerPanelOpen, setDockerPanelOpen] = useState(false);
+  const [dockerUp, setDockerUp] = useState(true);
+  const [dockerRunning, setDockerRunning] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
   const booted = useRef(false);
 
@@ -555,14 +560,35 @@ export default function App() {
 
   useEffect(() => {
     requestTerminalRelayout();
-  }, [sidebar, settingsOpen]);
+  }, [sidebar, settingsOpen, dockerPanelOpen]);
+
+  useEffect(() => {
+    if (!showContainers) return;
+    let cancelled = false;
+    const check = () =>
+      void dockerAvailable()
+        .then((ok) => {
+          if (!cancelled) setDockerUp(ok);
+        })
+        .catch(() => {
+          if (!cancelled) setDockerUp(false);
+        });
+    check();
+    const timer = window.setInterval(check, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [showContainers]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     void (async () => {
       const un = await onLayoutChanged((state) => {
-        if (!cancelled) setLayout(state);
+        if (cancelled) return;
+        setLayout(state);
+        void refreshSessions();
       });
       if (cancelled) {
         un();
@@ -622,7 +648,7 @@ export default function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [refreshSessions]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1017,11 +1043,33 @@ export default function App() {
           </IconAction>
 
           {showContainers && (
-            <ContainersPopover
-              repoRoot={activeWorkspace?.repo_root ?? null}
-              workspaceId={activeWorkspace?.id ?? null}
-              projectName={activeWorkspace?.name ?? null}
-            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={t("containers")}
+                  onClick={() => setDockerPanelOpen((v) => !v)}
+                  className={`relative size-6 rounded-[4px] ${
+                    dockerUp
+                      ? "text-tyba-text-muted hover:text-tyba-text"
+                      : "text-tyba-text-faint"
+                  } ${dockerPanelOpen ? "bg-white/[.06] text-tyba-text" : ""}`}
+                >
+                  <DockerIcon size={16} />
+                  {!dockerUp ? (
+                    <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-red [box-shadow:0_0_6px_rgba(239,68,68,.6)]" />
+                  ) : (
+                    dockerRunning && (
+                      <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-green [box-shadow:0_0_6px_rgba(124,197,68,.55)]" />
+                    )
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {dockerUp ? t("containers") : t("dockerUnavailable")}
+              </TooltipContent>
+            </Tooltip>
           )}
 
           <ApprovalsInbox sessions={sessions} />
@@ -1293,6 +1341,15 @@ export default function App() {
                   )}
                 </div>
               </main>
+
+              {showContainers && dockerPanelOpen && (
+                <ContainersPanel
+                  repoRoot={activeWorkspace?.repo_root ?? null}
+                  workspaceId={activeWorkspace?.id ?? null}
+                  onAvailableChange={setDockerUp}
+                  onRunningChange={setDockerRunning}
+                />
+              )}
             </>
           )}
         </div>

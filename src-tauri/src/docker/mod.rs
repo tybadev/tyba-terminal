@@ -17,6 +17,8 @@ const RM_TIMEOUT: Duration = Duration::from_secs(5);
 
 const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
 const COMPOSE_WORKING_DIR_LABEL: &str = "com.docker.compose.project.working_dir";
+const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
+const COMPOSE_CONFIG_FILES_LABEL: &str = "com.docker.compose.project.config_files";
 
 #[derive(Debug, thiserror::Error)]
 pub enum DockerError {
@@ -28,6 +30,10 @@ pub enum DockerError {
     Failed(String),
     #[error("container desconhecido: {0}")]
     UnknownContainer(String),
+    #[error("projeto compose desconhecido: {0}")]
+    UnknownProject(String),
+    #[error("caminho inválido: {0}")]
+    InvalidPath(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -42,6 +48,14 @@ pub struct ContainerInfo {
     pub ports: String,
     pub compose_project: Option<String>,
     pub compose_working_dir: Option<String>,
+    pub service: Option<String>,
+    pub config_files: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectInfo {
+    pub working_dir: String,
+    pub config_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +80,55 @@ struct PsRow {
 pub enum ContainerTab {
     Logs,
     Shell,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComposeOp {
+    Up,
+    Down,
+    Restart,
+}
+
+impl ComposeOp {
+    pub fn label(self) -> &'static str {
+        match self {
+            ComposeOp::Up => "up",
+            ComposeOp::Down => "down",
+            ComposeOp::Restart => "restart",
+        }
+    }
+
+    pub fn compose_args(self) -> &'static str {
+        match self {
+            ComposeOp::Up => "compose up -d",
+            ComposeOp::Down => "compose down",
+            ComposeOp::Restart => "compose restart",
+        }
+    }
+}
+
+pub fn validate_compose_file(path: &str) -> Result<(), DockerError> {
+    if path.contains('\'') {
+        return Err(DockerError::InvalidPath(path.to_string()));
+    }
+    if !(path.ends_with(".yml") || path.ends_with(".yaml")) {
+        return Err(DockerError::InvalidPath(path.to_string()));
+    }
+    if !Path::new(path).is_file() {
+        return Err(DockerError::InvalidPath(path.to_string()));
+    }
+    Ok(())
+}
+
+pub fn validate_working_dir(path: &str) -> Result<(), DockerError> {
+    if path.contains('\'') {
+        return Err(DockerError::InvalidPath(path.to_string()));
+    }
+    if !Path::new(path).is_dir() {
+        return Err(DockerError::InvalidPath(path.to_string()));
+    }
+    Ok(())
 }
 
 pub fn is_valid_container_id(id: &str) -> bool {
@@ -113,6 +176,8 @@ pub fn parse_ps_output(raw: &str) -> Vec<ContainerInfo> {
                 ports: row.ports,
                 compose_project: labels.get(COMPOSE_PROJECT_LABEL).cloned(),
                 compose_working_dir: labels.get(COMPOSE_WORKING_DIR_LABEL).cloned(),
+                service: labels.get(COMPOSE_SERVICE_LABEL).cloned(),
+                config_files: labels.get(COMPOSE_CONFIG_FILES_LABEL).cloned(),
             })
         })
         .collect()
@@ -240,6 +305,7 @@ fn run_docker(args: &[&str], timeout: Duration) -> Result<String, DockerError> {
 pub struct DockerManager {
     availability: Mutex<Option<(bool, Instant)>>,
     known: Mutex<HashMap<String, String>>,
+    projects: Mutex<HashMap<String, ProjectInfo>>,
     tabs: Mutex<HashMap<(String, ContainerTab), SessionId>>,
 }
 
@@ -289,6 +355,22 @@ impl DockerManager {
                 known.insert(c.id.clone(), c.name.clone());
             }
         }
+        {
+            let mut projects = self.projects.lock();
+            projects.clear();
+            for c in &containers {
+                if let (Some(project), Some(wd)) =
+                    (c.compose_project.as_ref(), c.compose_working_dir.as_ref())
+                {
+                    projects
+                        .entry(project.clone())
+                        .or_insert_with(|| ProjectInfo {
+                            working_dir: wd.clone(),
+                            config_file: c.config_files.clone(),
+                        });
+                }
+            }
+        }
         let mut result = match (all, repo_root) {
             (false, Some(root)) => filter_project(&containers, root),
             _ => containers,
@@ -315,6 +397,14 @@ impl DockerManager {
         Ok(())
     }
 
+    pub fn project_info(&self, name: &str) -> Result<ProjectInfo, DockerError> {
+        self.projects
+            .lock()
+            .get(name)
+            .cloned()
+            .ok_or_else(|| DockerError::UnknownProject(name.to_string()))
+    }
+
     pub fn tab_session(&self, id: &str, tab: ContainerTab) -> Option<SessionId> {
         self.tabs.lock().get(&(id.to_string(), tab)).copied()
     }
@@ -329,7 +419,7 @@ mod tests {
     use super::*;
 
     const FIXTURE: &str = r#"
-{"Command":"\"docker-entrypoint.s…\"","CreatedAt":"2026-07-08 10:00:00 -0300 -03","ID":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","Image":"postgres:16","Labels":"com.docker.compose.project=tyba-terminal,com.docker.compose.project.working_dir=/Users/dev/tyba-terminal,com.docker.compose.service=db","LocalVolumes":"1","Mounts":"pgdata","Names":"tyba-db-1","Networks":"tyba_default","Ports":"0.0.0.0:5432->5432/tcp","RunningFor":"2 hours ago","Size":"0B","State":"running","Status":"Up 2 hours"}
+{"Command":"\"docker-entrypoint.s…\"","CreatedAt":"2026-07-08 10:00:00 -0300 -03","ID":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","Image":"postgres:16","Labels":"com.docker.compose.project=tyba-terminal,com.docker.compose.project.working_dir=/Users/dev/tyba-terminal,com.docker.compose.project.config_files=/Users/dev/tyba-terminal/docker-compose.yml,com.docker.compose.service=db","LocalVolumes":"1","Mounts":"pgdata","Names":"tyba-db-1","Networks":"tyba_default","Ports":"0.0.0.0:5432->5432/tcp","RunningFor":"2 hours ago","Size":"0B","State":"running","Status":"Up 2 hours"}
 {"Command":"\"redis-server\"","CreatedAt":"2026-07-08 09:00:00 -0300 -03","ID":"ffffffffffff000000000000000000000000000000000000000000000000ffff","Image":"redis:7","Labels":"","Names":"loose-redis,alias","Ports":"","State":"exited","Status":"Exited (0) 3 hours ago"}
 not-json-line
 {"ID":"short","Image":"broken","Names":"x","State":"running","Status":"Up"}
@@ -351,8 +441,60 @@ not-json-line
             list[0].compose_working_dir.as_deref(),
             Some("/Users/dev/tyba-terminal")
         );
+        assert_eq!(list[0].service.as_deref(), Some("db"));
+        assert_eq!(
+            list[0].config_files.as_deref(),
+            Some("/Users/dev/tyba-terminal/docker-compose.yml")
+        );
         assert_eq!(list[1].name, "loose-redis");
         assert_eq!(list[1].compose_project, None);
+        assert_eq!(list[1].service, None);
+    }
+
+    #[test]
+    fn compose_op_maps_args_and_labels() {
+        assert_eq!(ComposeOp::Up.compose_args(), "compose up -d");
+        assert_eq!(ComposeOp::Down.compose_args(), "compose down");
+        assert_eq!(ComposeOp::Restart.compose_args(), "compose restart");
+        assert_eq!(ComposeOp::Down.label(), "down");
+        assert!(matches!(
+            serde_json::from_str::<ComposeOp>("\"down\"").unwrap(),
+            ComposeOp::Down
+        ));
+    }
+
+    #[test]
+    fn validate_compose_file_rejects_bad_paths() {
+        assert!(matches!(
+            validate_compose_file("/tmp/it's.yml"),
+            Err(DockerError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            validate_compose_file("/tmp/compose.json"),
+            Err(DockerError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            validate_compose_file("/nonexistent/compose.yml"),
+            Err(DockerError::InvalidPath(_))
+        ));
+    }
+
+    #[test]
+    fn project_info_requires_snapshot() {
+        let mgr = DockerManager::new();
+        assert!(matches!(
+            mgr.project_info("tyba-terminal"),
+            Err(DockerError::UnknownProject(_))
+        ));
+        mgr.projects.lock().insert(
+            "tyba-terminal".into(),
+            ProjectInfo {
+                working_dir: "/Users/dev/tyba-terminal".into(),
+                config_file: Some("/Users/dev/tyba-terminal/docker-compose.yml".into()),
+            },
+        );
+        let info = mgr.project_info("tyba-terminal").unwrap();
+        assert_eq!(info.working_dir, "/Users/dev/tyba-terminal");
     }
 
     #[test]
@@ -399,6 +541,8 @@ not-json-line
                 ports: String::new(),
                 compose_project: None,
                 compose_working_dir: None,
+                service: None,
+                config_files: None,
             },
             ContainerInfo {
                 id: "c".repeat(12),
@@ -409,6 +553,8 @@ not-json-line
                 ports: String::new(),
                 compose_project: None,
                 compose_working_dir: None,
+                service: None,
+                config_files: None,
             },
             ContainerInfo {
                 id: "d".repeat(12),
@@ -419,6 +565,8 @@ not-json-line
                 ports: String::new(),
                 compose_project: None,
                 compose_working_dir: None,
+                service: None,
+                config_files: None,
             },
         ];
         sort_containers(&mut list);

@@ -240,7 +240,11 @@ export interface ContainerInfo {
   ports: string;
   compose_project: string | null;
   compose_working_dir: string | null;
+  service: string | null;
+  config_files: string | null;
 }
+
+export type ComposeOp = "up" | "down" | "restart";
 
 export const dockerAvailable = () => invoke<boolean>("docker_available");
 
@@ -262,6 +266,20 @@ export const dockerRemoveContainer = (containerId: string) =>
 
 export const dockerOpenDesktop = () =>
   invoke<void>("docker_open_desktop");
+
+export const dockerComposeOp = (
+  project: string,
+  op: ComposeOp,
+  workspaceId: WorkspaceId | null,
+) => invoke<void>("docker_compose_op", { project, op, workspaceId });
+
+export const dockerOpenProject = (project: string) =>
+  invoke<void>("docker_open_project", { project });
+
+export const dockerOpenComposeFile = (
+  project: string,
+  workspaceId: WorkspaceId | null,
+) => invoke<void>("docker_open_compose_file", { project, workspaceId });
 
 export type ThemeMode = "dark" | "light" | "system";
 export type ThemeBase = "dark" | "light";

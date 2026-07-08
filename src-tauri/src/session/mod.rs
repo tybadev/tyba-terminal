@@ -116,6 +116,7 @@ impl SessionManager {
         program: &std::path::Path,
         args: &[String],
         title: String,
+        cwd: Option<&std::path::Path>,
         cols: u16,
         rows: u16,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
@@ -123,6 +124,9 @@ impl SessionManager {
         let id = Uuid::new_v4();
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
+        if let Some(cwd) = cwd {
+            cmd.cwd(cwd);
+        }
         self.spawn_session(
             app,
             pty_pool,
@@ -237,7 +241,7 @@ fn emit_status(app: &AppHandle, session: &Session) {
     let _ = app.emit(&format!("session://status/{}", session.id), session.clone());
 }
 
-fn default_shell() -> String {
+pub fn default_shell() -> String {
     if cfg!(windows) {
         std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".into())
     } else {
