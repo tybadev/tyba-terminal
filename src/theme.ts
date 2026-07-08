@@ -21,15 +21,16 @@ export const THEMES: ThemeMode[] = ["dark", "light", "system"];
 const media = window.matchMedia("(prefers-color-scheme: light)");
 
 const FALLBACK_DARK: TerminalPalette = {
-  background: "#070709",
-  foreground: "#f2f2f5",
+  // BLACKOUT: terminal em preto absoluto (--tyba-sunken #000)
+  background: "#000000",
+  foreground: "#f5f5f6",
   cursor: "#7cc544",
-  cursorAccent: "#070709",
+  cursorAccent: "#000000",
   selectionBackground: "#7cc5444d",
   ansi: [
-    "#1a1a20", "#f0503c", "#7cc544", "#f5a93b",
-    "#4c7df0", "#ec4899", "#2dd4bf", "#f2f2f5",
-    "#6a6a76", "#f4715f", "#a8e05f", "#f5c93b",
+    "#0f0f10", "#f0503c", "#7cc544", "#f5a93b",
+    "#4c7df0", "#ec4899", "#2dd4bf", "#f5f5f6",
+    "#5f6066", "#f4715f", "#a8e05f", "#f5c93b",
     "#7da3f5", "#a78bfa", "#5eead4", "#ffffff",
   ],
 };
@@ -101,7 +102,7 @@ function computeVars(theme: Theme): Record<string, string> {
   }
   for (const key of GLOW_KEYS) {
     const color = theme.ui[key];
-    const glow = color && hexToRgba(color, dark ? 0.45 : 0.28);
+    const glow = color && hexToRgba(color, dark ? 0.55 : 0.28);
     if (glow) vars[`--tyba-glow-${key}`] = dark ? `0 0 12px ${glow}` : `0 0 10px ${glow}`;
   }
   const faint = theme.ui.textFaint;
