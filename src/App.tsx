@@ -41,6 +41,8 @@ import {
 } from "@/components/ui/tooltip";
 import { getThemeMode, onThemeModeChange, setThemeMode, type ThemeMode } from "./theme";
 import { ApprovalsInbox } from "./components/ApprovalsInbox";
+import { ClaudeIcon } from "./components/icons/ClaudeIcon";
+import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import {
   Notification,
   NotificationLink,
@@ -140,6 +142,12 @@ function runnerLabel(kind: SessionKind): string | null {
 
 function isConfigWorkspace(w: Workspace): boolean {
   return w.tabs.length > 0 && w.tabs.every((t) => t.view === "settings");
+}
+
+function agentGlyph(label: string, size = 16): React.ReactNode {
+  if (label === "claude") return <ClaudeIcon size={size} className="shrink-0" />;
+  if (label === "codex") return <OpenAIIcon size={size} className="shrink-0" />;
+  return <Robot size={size} className="shrink-0" />;
 }
 
 function compactPath(dir: string): string {
@@ -903,6 +911,7 @@ export default function App() {
     const branch = w.repo_root ? branches[w.repo_root] : undefined;
     const gitStatus =
       showGitStatus && w.repo_root ? repoStatuses[w.repo_root] : undefined;
+    const runner = isConfig ? null : workspaceAgent(w);
     return (
       <button
         key={w.id}
@@ -954,6 +963,8 @@ export default function App() {
                 : "shrink-0"
             }
           />
+        ) : runner ? (
+          agentGlyph(runner)
         ) : (
           <TerminalWindow
             size={16}
