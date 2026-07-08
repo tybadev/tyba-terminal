@@ -6,6 +6,7 @@ import {
   DownloadSimple,
   GearSix,
   Globe,
+  MagnifyingGlass,
   Moon,
   Palette,
   Plus,
@@ -64,6 +65,8 @@ const THEME_LABEL_KEYS: Record<ThemeMode, string> = {
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  mode: "actions" | "sessions";
+  onModeChange: (mode: "actions" | "sessions") => void;
   workspaces: Workspace[];
   activeWorkspace: WorkspaceId | null;
   bindings: Bindings;
@@ -80,6 +83,8 @@ interface Props {
 export function CommandPalette({
   open,
   onOpenChange,
+  mode,
+  onModeChange,
   workspaces,
   activeWorkspace,
   bindings,
@@ -134,10 +139,41 @@ export function CommandPalette({
       showCloseButton={false}
       className="top-28 max-w-[560px] translate-y-0 rounded-[6px] border-tyba-border-strong bg-tyba-surface shadow-2xl"
     >
-      <CommandInput placeholder={t("searchCommand")} />
+      <div className="flex items-center gap-1 border-b border-tyba-border px-2 py-1.5">
+        {(["actions", "sessions"] as const).map((m) => (
+          <button
+            key={m}
+            onClick={() => onModeChange(m)}
+            className={`flex items-center gap-1.5 rounded-[4px] px-2 py-1 text-[11px] transition-colors ${
+              mode === m
+                ? "bg-white/[.06] text-tyba-text"
+                : "text-tyba-text-faint hover:text-tyba-text-muted"
+            }`}
+          >
+            {m === "actions" ? (
+              <MagnifyingGlass size={12} />
+            ) : (
+              <TerminalWindow size={12} />
+            )}
+            {m === "actions" ? t("actions") : t("sessions")}
+            <Shortcut
+              combo={
+                m === "actions"
+                  ? bindings.paletteActions
+                  : bindings.paletteSessions
+              }
+              className="ml-1"
+            />
+          </button>
+        ))}
+      </div>
+      <CommandInput
+        placeholder={mode === "sessions" ? t("searchSessions") : t("searchCommand")}
+      />
       <CommandList>
         <CommandEmpty>{t("noResults")}</CommandEmpty>
 
+        {mode === "actions" && (
         <CommandGroup heading={t("actions")}>
           <CommandItem onSelect={run(onNewSession)}>
             <Plus size={15} />
@@ -165,10 +201,10 @@ export function CommandPalette({
             {t("settings")}
           </CommandItem>
         </CommandGroup>
+        )}
 
-        {workspaces.length > 0 && (
+        {mode === "sessions" && workspaces.length > 0 && (
           <>
-            <CommandSeparator />
             <CommandGroup heading={t("sessions")}>
               {workspaces.map((w) => (
                 <CommandItem
@@ -194,14 +230,16 @@ export function CommandPalette({
           </>
         )}
 
+        {mode === "actions" && (
+        <>
         <CommandSeparator />
         <CommandGroup heading={t("theme")}>
-          {THEMES.filter((m) => m !== theme).map((mode) => {
-            const Icon = THEME_ICONS[mode];
+          {THEMES.filter((m) => m !== theme).map((tm) => {
+            const Icon = THEME_ICONS[tm];
             return (
-              <CommandItem key={mode} onSelect={run(() => onChangeTheme(mode))}>
+              <CommandItem key={tm} onSelect={run(() => onChangeTheme(tm))}>
                 <Icon size={15} />
-                {t("switchThemeTo", { theme: t(THEME_LABEL_KEYS[mode]) })}
+                {t("switchThemeTo", { theme: t(THEME_LABEL_KEYS[tm]) })}
               </CommandItem>
             );
           })}
@@ -243,6 +281,8 @@ export function CommandPalette({
             </CommandItem>
           ))}
         </CommandGroup>
+        </>
+        )}
       </CommandList>
       <div className="flex items-center gap-3 border-t border-tyba-border px-3 py-1.5 text-[10px] text-tyba-text-faint">
         <span className="flex items-center gap-1">
