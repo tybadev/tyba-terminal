@@ -857,7 +857,9 @@ export default function App() {
 
   const renderWorkspace = (w: Workspace) => {
     const isActive = w.id === layout.active_workspace;
-    const showDetails = open && detailsFor(w.id);
+    const isConfig =
+      w.tabs.length > 0 && w.tabs.every((tab) => tab.view !== null);
+    const showDetails = open && detailsFor(w.id) && !isConfig;
     const agent = showDetails ? workspaceAgent(w) : null;
     const branch = w.repo_root ? branches[w.repo_root] : undefined;
     return (
@@ -892,7 +894,16 @@ export default function App() {
             }}
           />
         )}
-        {w.kind === "docker" ? (
+        {isConfig ? (
+          <GearSix
+            size={16}
+            className={
+              isActive
+                ? "shrink-0 text-tyba-text [filter:drop-shadow(0_0_6px_rgba(255,255,255,.2))]"
+                : "shrink-0"
+            }
+          />
+        ) : w.kind === "docker" ? (
           <DockerIcon
             size={16}
             style={w.color ? { color: `var(--tyba-${w.color})` } : undefined}
@@ -1351,32 +1362,6 @@ export default function App() {
                       </TooltipContent>
                     </Tooltip>
                   </nav>
-
-                  <div className="shrink-0 border-t border-tyba-border/60 p-2">
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          onClick={() => void openViewTab("settings").catch(() => {})}
-                          aria-label={t("settings")}
-                          className={`h-8 w-full shrink-0 gap-2 rounded-[4px] text-[13px] font-normal transition-colors ${
-                            activeTab?.view === "settings"
-                              ? "bg-white/[.05] text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text"
-                          } ${open ? "justify-start px-2" : "justify-center px-0"}`}
-                        >
-                          <GearSix size={15} />
-                          {open && t("settings")}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent
-                        side={open ? "top" : "right"}
-                        className="flex items-center gap-2"
-                      >
-                        {t("settings")}
-                      </TooltipContent>
-                    </Tooltip>
-                  </div>
                 </aside>
               )}
 
