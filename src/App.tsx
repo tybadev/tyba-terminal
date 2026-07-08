@@ -1,7 +1,8 @@
 // TYBA — shell da aplicação: header geral + sidebar de sessões + terminal.
 // Direção visual: "o gradiente é luz" — linha viva marca a sessão ativa,
 // itens flat (terminal, não web), raios contidos. Tokens em src/styles.css.
-// Atalhos: ⌘B painel (aberto → ícones → oculto) · ⌘T nova sessão · ⌘W fechar.
+// Atalhos: ⌘K paleta · ⌘B painel (aberto → ícones → oculto) ·
+// ⌘T nova sessão · ⌘W fechar.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -33,6 +34,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { CommandPalette } from "./components/CommandPalette";
 import { TerminalView } from "./components/TerminalView";
 import {
   createSession,
@@ -95,6 +97,7 @@ export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeId, setActiveId] = useState<SessionId | null>(null);
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const booted = useRef(false);
 
   const newShell = useCallback(async () => {
@@ -133,7 +136,10 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.repeat || e.shiftKey || e.altKey || e.ctrlKey) return;
       const k = e.key.toLowerCase();
-      if (k === "b") {
+      if (k === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      } else if (k === "b") {
         e.preventDefault();
         setSidebar((m) => NEXT_MODE[m]);
       } else if (k === "t") {
@@ -152,6 +158,18 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={400}>
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        sessions={sessions}
+        activeId={activeId}
+        onNewSession={() => void newShell()}
+        onCloseActive={() => {
+          if (activeId) void closeSession(activeId);
+        }}
+        onTogglePanel={() => setSidebar((m) => NEXT_MODE[m])}
+        onGoToSession={setActiveId}
+      />
       <div className="tyba-aurora flex h-screen flex-col text-tyba-text">
         {/* ---------- Header geral: delicado, 36px ---------- */}
         <header
@@ -354,8 +372,8 @@ export default function App() {
                   {t("newSession")}
                 </Button>
                 <p className="flex items-center gap-1.5 text-xs text-tyba-text-faint">
-                  <Kbd>⌘T</Kbd> {t("hintNewSession")} · <Kbd>⌘B</Kbd>{" "}
-                  {t("hintPanel")}
+                  <Kbd>⌘K</Kbd> {t("hintPalette")} · <Kbd>⌘T</Kbd>{" "}
+                  {t("hintNewSession")} · <Kbd>⌘B</Kbd> {t("hintPanel")}
                 </p>
               </div>
             ) : (
