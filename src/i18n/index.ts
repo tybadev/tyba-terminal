@@ -66,6 +66,11 @@ const resources = {
       back: "Voltar",
       accountNamePlaceholder: "Como quer ser chamado?",
       sidebarDetails: "Detalhes da sessão na sidebar",
+      gitStatusToggle: "Status do git na sidebar",
+      gitStatusHint:
+        "Mostra um rótulo com o número de alterações não commitadas quando a pasta da sessão tem mudanças.",
+      gitChanges_one: "{{count}} alteração não commitada",
+      gitChanges_other: "{{count}} alterações não commitadas",
       detailsShow: "Mostrar detalhes",
       detailsHide: "Ocultar detalhes",
       sessionOptions: "Opções da sessão",
@@ -231,6 +236,11 @@ const resources = {
       back: "Back",
       accountNamePlaceholder: "What should we call you?",
       sidebarDetails: "Session details in the sidebar",
+      gitStatusToggle: "Git status in the sidebar",
+      gitStatusHint:
+        "Shows a badge with the number of uncommitted changes when the session folder has changes.",
+      gitChanges_one: "{{count}} uncommitted change",
+      gitChanges_other: "{{count}} uncommitted changes",
       detailsShow: "Show details",
       detailsHide: "Hide details",
       sessionOptions: "Session options",
