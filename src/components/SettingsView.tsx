@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
-  ArrowLeft,
   Check,
   Code,
   DownloadSimple,
@@ -55,7 +54,6 @@ type Section =
   | "preferences";
 
 interface Props {
-  onClose: () => void;
   togglePref: SidebarTogglePref;
   onTogglePrefChange: (value: SidebarTogglePref) => void;
   detailsPref: DetailsPref;
@@ -269,7 +267,6 @@ function ShortcutRow({
 }
 
 export function SettingsView({
-  onClose,
   togglePref,
   onTogglePrefChange,
   detailsPref,
@@ -353,16 +350,6 @@ export function SettingsView({
   return (
     <div className="flex min-h-0 flex-1">
       <aside className="tyba-glass flex w-48 shrink-0 flex-col gap-px px-2 pt-3">
-        <button
-          onClick={onClose}
-          className="mb-2 flex h-8 items-center gap-2 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.03] hover:text-tyba-text"
-        >
-          <ArrowLeft size={14} />
-          <span className="flex-1 text-left">{t("back")}</span>
-          <kbd className="rounded-[4px] border border-tyba-border-strong bg-tyba-raised px-1 py-px font-mono text-[10px] text-tyba-text-muted">
-            {formatCombo(bindings.closePane)}
-          </kbd>
-        </button>
         <NavItem
           active={section === "general"}
           icon={<SlidersHorizontal size={15} />}

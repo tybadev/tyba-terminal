@@ -19,10 +19,15 @@ interface Props {
   onNew: () => void;
 }
 
+const VIEW_LABEL_KEYS: Record<string, string> = {
+  containers: "containers",
+  settings: "settings",
+};
+
 function tabLabel(tab: Tab, sessions: Map<SessionId, Session>): string {
   if (tab.title) return tab.title;
-  if (tab.view === "containers") return i18n.t("containers");
-  if (!tab.root) return tab.view ?? "shell";
+  if (tab.view) return i18n.t(VIEW_LABEL_KEYS[tab.view] ?? tab.view);
+  if (!tab.root) return "shell";
   const bound = leafSessions(tab.root)
     .map((id) => sessions.get(id)?.title)
     .filter(Boolean);

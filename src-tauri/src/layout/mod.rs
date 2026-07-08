@@ -240,7 +240,9 @@ impl PaneNode {
 }
 
 pub const VIEW_CONTAINERS: &str = "containers";
+pub const VIEW_SETTINGS: &str = "settings";
 pub const DOCKER_WORKSPACE_NAME: &str = "Docker";
+pub const FALLBACK_WORKSPACE_NAME: &str = "TYBA";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Tab {
@@ -464,6 +466,49 @@ impl LayoutManager {
         drop(inner);
         self.persist()?;
         Ok(id)
+    }
+
+    pub fn open_view_tab(&self, view: &str) -> Result<(), LayoutError> {
+        let mut inner = self.inner.write();
+        let existing = inner.workspaces.iter().find_map(|w| {
+            w.tabs
+                .iter()
+                .find(|t| t.view.as_deref() == Some(view))
+                .map(|t| (w.id, t.id))
+        });
+        if let Some((ws_id, tab_id)) = existing {
+            let idx = ws_index(&inner.workspaces, ws_id)?;
+            inner.workspaces[idx].active_tab = Some(tab_id);
+            inner.active = Some(ws_id);
+            drop(inner);
+            return self.persist();
+        }
+        let tab = Tab::from_view(view);
+        let tab_id = tab.id;
+        match inner.active.and_then(|id| ws_index(&inner.workspaces, id).ok()) {
+            Some(idx) => {
+                inner.workspaces[idx].tabs.push(tab);
+                inner.workspaces[idx].active_tab = Some(tab_id);
+            }
+            None => {
+                let workspace = Workspace {
+                    id: Uuid::new_v4(),
+                    name: FALLBACK_WORKSPACE_NAME.to_string(),
+                    repo_root: None,
+                    color: None,
+                    group: None,
+                    kind: WorkspaceKind::User,
+                    active_tab: Some(tab_id),
+                    tabs: vec![tab],
+                    created_at: Utc::now(),
+                };
+                let ws_id = workspace.id;
+                inner.workspaces.push(workspace);
+                inner.active = Some(ws_id);
+            }
+        }
+        drop(inner);
+        self.persist()
     }
 
     pub fn open_docker_dashboard(&self) -> Result<(), LayoutError> {
@@ -1323,6 +1368,44 @@ mod tests {
         assert_eq!(state.workspaces.len(), 1);
         assert!(state.workspaces[0].tabs.is_empty());
         assert_eq!(state.workspaces[0].active_tab, None);
+        assert_eq!(state.active_workspace, Some(state.workspaces[0].id));
+    }
+
+    #[test]
+    fn open_view_tab_is_singleton_and_focuses_existing() {
+        let mgr = manager();
+        let w1 = ws(&mgr);
+        mgr.open_view_tab(VIEW_SETTINGS).unwrap();
+        let state = mgr.state();
+        let target = state.workspaces.iter().find(|w| w.id == w1).unwrap();
+        assert_eq!(target.tabs.len(), 2);
+        let settings_tab = target
+            .tabs
+            .iter()
+            .find(|t| t.view.as_deref() == Some(VIEW_SETTINGS))
+            .unwrap()
+            .id;
+
+        ws(&mgr);
+        mgr.open_view_tab(VIEW_SETTINGS).unwrap();
+        let state = mgr.state();
+        assert_eq!(state.active_workspace, Some(w1));
+        let target = state.workspaces.iter().find(|w| w.id == w1).unwrap();
+        assert_eq!(target.active_tab, Some(settings_tab));
+        assert_eq!(target.tabs.len(), 2);
+    }
+
+    #[test]
+    fn open_view_tab_without_workspace_creates_fallback() {
+        let mgr = manager();
+        mgr.open_view_tab(VIEW_SETTINGS).unwrap();
+        let state = mgr.state();
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].name, FALLBACK_WORKSPACE_NAME);
+        assert_eq!(
+            state.workspaces[0].tabs[0].view.as_deref(),
+            Some(VIEW_SETTINGS)
+        );
         assert_eq!(state.active_workspace, Some(state.workspaces[0].id));
     }
 

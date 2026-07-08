@@ -381,7 +381,9 @@ export function ContainersView({
           <span className="tyba-label">{t("containers")}</span>
           {IS_MAC && error === null && (
             <button
-              onClick={() => void dockerOpenDesktop().catch(() => {})}
+              onClick={() =>
+                void dockerOpenDesktop().catch((e) => setError(String(e)))
+              }
               className="flex items-center gap-1 text-[11px] text-tyba-text-faint transition-colors hover:text-tyba-text"
             >
               {t("openDockerDesktop")}
@@ -402,7 +404,9 @@ export function ContainersView({
             <Button
               size="sm"
               variant="outline"
-              onClick={() => void dockerOpenDesktop().catch(() => {})}
+              onClick={() =>
+                void dockerOpenDesktop().catch((e) => setError(String(e)))
+              }
               className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
             >
               <ArrowSquareOut size={12} />

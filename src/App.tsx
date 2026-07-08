@@ -70,6 +70,7 @@ import {
   listSessions,
   newWindow,
   onLayoutChanged,
+  openViewTab,
   paneSession,
   renameWorkspace,
   repoBranch,
@@ -195,7 +196,6 @@ export default function App() {
   const [sessionQuery, setSessionQuery] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [branches, setBranches] = useState<Record<string, string>>({});
   const [prompt, setPrompt] = useState<{
     kind: "rename" | "group";
@@ -519,6 +519,14 @@ export default function App() {
     [refreshSessions],
   );
 
+  const toggleSettings = useCallback(() => {
+    if (activeTab?.view === "settings") {
+      void closeTabAndRefresh(activeTab.id);
+    } else {
+      void openViewTab("settings").catch(() => {});
+    }
+  }, [activeTab, closeTabAndRefresh]);
+
   const changeTogglePref = useCallback((value: SidebarTogglePref) => {
     setTogglePref(value);
     setSidebar((current) => (current === "open" ? current : value));
@@ -567,7 +575,7 @@ export default function App() {
 
   useEffect(() => {
     requestTerminalRelayout();
-  }, [sidebar, settingsOpen]);
+  }, [sidebar]);
 
   useEffect(() => {
     if (!showContainers) return;
@@ -673,17 +681,13 @@ export default function App() {
         } else if (action === "panel") {
           toggleSidebar();
         } else if (action === "newTab") {
-          if (!settingsOpen) void newTab();
+          void newTab();
         } else if (action === "closePane") {
-          if (settingsOpen) {
-            setSettingsOpen(false);
-          } else {
-            void closeActivePane();
-          }
+          void closeActivePane();
         } else if (action === "openFolder") {
           void openProjectFolder();
         } else if (action === "newSession") {
-          if (!settingsOpen) setNewSessionOpen(true);
+          setNewSessionOpen(true);
         } else if (action === "newWindow") {
           void newWindow().catch(() => {});
         } else if (action === "prevSession") {
@@ -691,23 +695,23 @@ export default function App() {
         } else if (action === "nextSession") {
           cycleWorkspace(1);
         } else if (action === "prevTab") {
-          if (!settingsOpen) cycleTab(-1);
+          cycleTab(-1);
         } else if (action === "nextTab") {
-          if (!settingsOpen) cycleTab(1);
+          cycleTab(1);
         } else if (action === "paneLeft") {
-          if (!settingsOpen) focusPaneInDirection("left");
+          focusPaneInDirection("left");
         } else if (action === "paneRight") {
-          if (!settingsOpen) focusPaneInDirection("right");
+          focusPaneInDirection("right");
         } else if (action === "paneUp") {
-          if (!settingsOpen) focusPaneInDirection("up");
+          focusPaneInDirection("up");
         } else if (action === "paneDown") {
-          if (!settingsOpen) focusPaneInDirection("down");
+          focusPaneInDirection("down");
         } else if (action === "settings") {
-          setSettingsOpen((v) => !v);
+          toggleSettings();
         } else if (action === "splitRight") {
-          if (!settingsOpen) void splitActive("v");
+          void splitActive("v");
         } else if (action === "splitDown") {
-          if (!settingsOpen) void splitActive("h");
+          void splitActive("h");
         } else if (action === "nextPane") {
           cyclePane();
         }
@@ -746,7 +750,6 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [
     bindings,
-    settingsOpen,
     newTab,
     closeActivePane,
     toggleSidebar,
@@ -754,6 +757,7 @@ export default function App() {
     cycleWorkspace,
     cycleTab,
     focusPaneInDirection,
+    toggleSettings,
     splitActive,
     cyclePane,
     resizeActivePane,
@@ -994,7 +998,7 @@ export default function App() {
         onNewSession={() => setNewSessionOpen(true)}
         onNewTab={() => void newTab()}
         onCloseActive={() => void closeActivePane()}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => void openViewTab("settings").catch(() => {})}
         onTogglePanel={toggleSidebar}
         onGoToWorkspace={(id) => void activateWorkspace(id)}
       />
@@ -1119,7 +1123,7 @@ export default function App() {
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="text-xs"
-                onSelect={() => setSettingsOpen(true)}
+                onSelect={() => void openViewTab("settings").catch(() => {})}
               >
                 {t("settings")}
               </DropdownMenuItem>
@@ -1131,23 +1135,8 @@ export default function App() {
         </header>
 
         <div className="flex min-h-0 flex-1">
-          {settingsOpen ? (
-            <SettingsView
-              onClose={() => setSettingsOpen(false)}
-              togglePref={togglePref}
-              onTogglePrefChange={changeTogglePref}
-              detailsPref={detailsPref}
-              onDetailsPrefChange={changeDetailsPref}
-              bindings={bindings}
-              onBindingsChange={changeBindings}
-              accountName={accountName}
-              onAccountNameChange={changeAccountName}
-              showContainers={showContainers}
-              onShowContainersChange={changeShowContainers}
-            />
-          ) : (
-            <>
-              {sidebar !== "hidden" && (
+          <>
+            {sidebar !== "hidden" && (
                 <aside
                   className={`tyba-glass flex shrink-0 flex-col ${
                     open ? "w-56" : "w-11"
@@ -1250,6 +1239,22 @@ export default function App() {
                         repoRoot={null}
                         onAvailableChange={setDockerUp}
                         onRunningChange={setDockerRunning}
+                      />
+                    </div>
+                  )}
+                  {activeTab?.view === "settings" && (
+                    <div className="absolute inset-0 flex">
+                      <SettingsView
+                        togglePref={togglePref}
+                        onTogglePrefChange={changeTogglePref}
+                        detailsPref={detailsPref}
+                        onDetailsPrefChange={changeDetailsPref}
+                        bindings={bindings}
+                        onBindingsChange={changeBindings}
+                        accountName={accountName}
+                        onAccountNameChange={changeAccountName}
+                        showContainers={showContainers}
+                        onShowContainersChange={changeShowContainers}
                       />
                     </div>
                   )}
@@ -1373,8 +1378,7 @@ export default function App() {
                   )}
                 </div>
               </main>
-            </>
-          )}
+          </>
         </div>
       </div>
     </TooltipProvider>

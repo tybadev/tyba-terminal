@@ -263,6 +263,9 @@ export const dockerOpenShell = (containerId: string) =>
 export const dockerOpenDashboard = () =>
   invoke<void>("docker_open_dashboard");
 
+export const openViewTab = (view: string) =>
+  invoke<void>("open_view_tab", { view });
+
 export const dockerRemoveContainer = (containerId: string) =>
   invoke<void>("docker_remove_container", { containerId });
 

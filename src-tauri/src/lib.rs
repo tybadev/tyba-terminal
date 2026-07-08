@@ -538,6 +538,19 @@ fn docker_open_shell(
 }
 
 #[tauri::command]
+fn open_view_tab(app: AppHandle, state: State<'_, AppState>, view: String) -> Result<(), String> {
+    if view != layout::VIEW_SETTINGS {
+        return Err(format!("view desconhecida: {view}"));
+    }
+    state
+        .layout
+        .open_view_tab(&view)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
 fn docker_open_dashboard(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     state
         .layout
@@ -679,17 +692,21 @@ fn docker_remove_container(
 fn docker_open_desktop() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .args(["-a", "Docker"])
-            .status()
-            .map_err(|e| e.to_string())
-            .and_then(|s| {
-                if s.success() {
-                    Ok(())
-                } else {
-                    Err("não foi possível abrir o Docker Desktop".into())
+        let attempts: [&[&str]; 2] = [&["-a", "Docker"], &["-b", "com.docker.docker"]];
+        let mut last_error = String::new();
+        for args in attempts {
+            match std::process::Command::new("/usr/bin/open").args(args).output() {
+                Ok(out) if out.status.success() => return Ok(()),
+                Ok(out) => {
+                    last_error = String::from_utf8_lossy(&out.stderr).trim().to_string();
                 }
-            })
+                Err(e) => last_error = e.to_string(),
+            }
+        }
+        if last_error.is_empty() {
+            last_error = "não foi possível abrir o Docker Desktop".into();
+        }
+        Err(last_error)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -888,6 +905,7 @@ pub fn run() {
             docker_open_project,
             docker_open_compose_file,
             docker_open_dashboard,
+            open_view_tab,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tyba")
