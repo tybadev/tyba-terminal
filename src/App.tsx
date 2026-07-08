@@ -1219,6 +1219,40 @@ export default function App() {
 
           <Clock />
 
+          {showContainers && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={t("containers")}
+                  onClick={() => void dockerOpenDashboard().catch(() => {})}
+                  className={`relative size-6 rounded-[4px] ${
+                    dockerUp
+                      ? "text-tyba-text-muted hover:text-tyba-text"
+                      : "text-tyba-text-faint"
+                  } ${
+                    activeWorkspace?.kind === "docker"
+                      ? "bg-white/[.06] text-tyba-text"
+                      : ""
+                  }`}
+                >
+                  <DockerIcon size={16} />
+                  {!dockerUp ? (
+                    <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-red [box-shadow:var(--tyba-glow-red)]" />
+                  ) : (
+                    dockerRunning && (
+                      <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)]" />
+                    )
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {dockerUp ? t("containers") : t("dockerUnavailable")}
+              </TooltipContent>
+            </Tooltip>
+          )}
+
           <IconAction
             label={t("openProjectFolder")}
             shortcut={bindings.openFolder}
@@ -1286,40 +1320,6 @@ export default function App() {
               </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
-
-          {showContainers && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={t("containers")}
-                  onClick={() => void dockerOpenDashboard().catch(() => {})}
-                  className={`relative ml-1 size-6 rounded-[4px] ${
-                    dockerUp
-                      ? "text-tyba-text-muted hover:text-tyba-text"
-                      : "text-tyba-text-faint"
-                  } ${
-                    activeWorkspace?.kind === "docker"
-                      ? "bg-white/[.06] text-tyba-text"
-                      : ""
-                  }`}
-                >
-                  <DockerIcon size={16} />
-                  {!dockerUp ? (
-                    <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-red [box-shadow:var(--tyba-glow-red)]" />
-                  ) : (
-                    dockerRunning && (
-                      <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)]" />
-                    )
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                {dockerUp ? t("containers") : t("dockerUnavailable")}
-              </TooltipContent>
-            </Tooltip>
-          )}
         </header>
 
         {approvals.length > 0 && (
