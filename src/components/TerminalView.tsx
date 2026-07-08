@@ -12,6 +12,7 @@ import {
   onPtyExit,
   onPtyOutput,
   resizeSession,
+  sessionScrollback,
   writeToSession,
   type SessionId,
 } from "../lib/ipc";
@@ -81,11 +82,14 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
       void writeToSession(sessionId, data);
     });
 
-    // PTY -> tela (chunks já chegam batched do core)
     const unlisteners: Array<() => void> = [];
-    void onPtyOutput(sessionId, (bytes) => term.write(bytes)).then((un) =>
-      unlisteners.push(un),
-    );
+    void sessionScrollback(sessionId)
+      .then((snapshot) => {
+        if (snapshot.length) term.write(snapshot);
+      })
+      .catch(() => {})
+      .then(() => onPtyOutput(sessionId, (bytes) => term.write(bytes)))
+      .then((un) => unlisteners.push(un));
     void onPtyExit(sessionId, () => {
       term.write(`\r\n\x1b[2m${i18n.t("sessionEnded")}\x1b[0m\r\n`);
       onExit?.();
