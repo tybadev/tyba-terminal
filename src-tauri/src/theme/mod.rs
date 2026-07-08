@@ -68,6 +68,8 @@ pub enum ThemeError {
     },
     #[error("arquivo excede {MAX_THEME_FILE_BYTES} bytes")]
     TooLarge,
+    #[error("origem de importação inválida (não é um arquivo regular): {0}")]
+    InvalidSource(String),
     #[error("store: {0}")]
     Store(#[from] crate::session::store::StoreError),
 }
@@ -412,8 +414,11 @@ impl ThemeManager {
         Ok(())
     }
 
-    pub fn import(&self, app: &AppHandle, src: &str) -> Result<Theme, ThemeError> {
+    fn import_validated(&self, src: &str) -> Result<(String, ThemeFile), ThemeError> {
         let meta = fs::metadata(src)?;
+        if !meta.is_file() {
+            return Err(ThemeError::InvalidSource(src.to_string()));
+        }
         if meta.len() > MAX_THEME_FILE_BYTES {
             return Err(ThemeError::TooLarge);
         }
@@ -429,6 +434,11 @@ impl ThemeManager {
         let canonical = serde_json::to_string_pretty(&file)?;
         fs::create_dir_all(&self.themes_dir)?;
         fs::write(self.themes_dir.join(format!("{id}.json")), canonical)?;
+        Ok((id, file))
+    }
+
+    pub fn import(&self, app: &AppHandle, src: &str) -> Result<Theme, ThemeError> {
+        let (id, file) = self.import_validated(src)?;
         self.emit(app);
         Ok(resolve(id, file))
     }
@@ -591,6 +601,111 @@ mod tests {
         mgr.store.set_setting("theme.slot.light", "dracula").unwrap();
         let state = mgr.state();
         assert_eq!(state.light.id, BUILTIN_LIGHT);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    fn temp_source(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("tyba-theme-import-src-{}-{}", name, uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn import_rejects_reserved_name() {
+        let (mgr, dir) = manager();
+        let src = temp_source("reserved");
+        fs::write(&src, r#"{ "name": "TYBA Dark", "base": "dark" }"#).unwrap();
+
+        let err = mgr.import_validated(src.to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, ThemeError::ReservedName(id) if id == BUILTIN_DARK));
+
+        let _ = fs::remove_file(&src);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_rejects_oversized_file() {
+        let (mgr, dir) = manager();
+        let src = temp_source("oversized");
+        fs::write(&src, "x".repeat(MAX_THEME_FILE_BYTES as usize + 1)).unwrap();
+
+        let err = mgr.import_validated(src.to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, ThemeError::TooLarge));
+
+        let _ = fs::remove_file(&src);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_rejects_non_regular_file_source() {
+        let (mgr, dir) = manager();
+        // um diretório existe, mas não é um arquivo regular: metadata().len()
+        // reportaria 0 e passaria pelo gate de tamanho se não checássemos is_file().
+        let err = mgr.import_validated(dir.to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, ThemeError::InvalidSource(_)));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_rejects_missing_source() {
+        let (mgr, dir) = manager();
+        let src = temp_source("missing");
+
+        let err = mgr.import_validated(src.to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, ThemeError::Io(_)));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_rejects_invalid_content() {
+        let (mgr, dir) = manager();
+        let src = temp_source("invalid");
+        fs::write(&src, r#"{ "name": "x", "base": "dark", "ui": { "bg": "red" } }"#).unwrap();
+
+        let err = mgr.import_validated(src.to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, ThemeError::InvalidColor(key, _) if key == "ui.bg"));
+
+        let _ = fs::remove_file(&src);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_writes_canonical_file_that_scan_picks_up() {
+        let (mgr, dir) = manager();
+        let src = temp_source("nord");
+        fs::write(&src, r##"{ "name": "Nord", "base": "dark", "ui": { "bg": "#2e3440" } }"##)
+            .unwrap();
+
+        let (id, file) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, "nord");
+        assert_eq!(file.name, "Nord");
+        assert!(dir.join("nord.json").is_file());
+
+        let ids: Vec<_> = mgr.list().into_iter().map(|t| t.id).collect();
+        assert!(ids.contains(&"nord".to_string()));
+
+        let _ = fs::remove_file(&src);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_overwrites_existing_file_with_same_slug() {
+        let (mgr, dir) = manager();
+        let src = temp_source("dracula-variant");
+        fs::write(
+            &src,
+            r##"{ "name": "Dracula", "base": "dark", "ui": { "bg": "#000000" } }"##,
+        )
+        .unwrap();
+
+        mgr.import_validated(src.to_str().unwrap()).unwrap();
+        let on_disk = fs::read_to_string(dir.join("dracula.json")).unwrap();
+        assert!(on_disk.contains("#000000"));
+
+        let ids: Vec<_> = mgr.list().into_iter().map(|t| t.id).collect();
+        assert_eq!(ids.iter().filter(|id| id.as_str() == "dracula").count(), 1);
+
+        let _ = fs::remove_file(&src);
         let _ = fs::remove_dir_all(dir);
     }
 }
