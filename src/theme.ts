@@ -207,6 +207,21 @@ export function getThemeMode(): ThemeMode {
   return mode;
 }
 
+export function getEffectiveBase(): "dark" | "light" {
+  return effectiveBase();
+}
+
+export function onEffectiveBaseChange(cb: () => void): () => void {
+  const onMode = () => cb();
+  modeListeners.add(onMode);
+  const onMedia = () => cb();
+  media.addEventListener("change", onMedia);
+  return () => {
+    modeListeners.delete(onMode);
+    media.removeEventListener("change", onMedia);
+  };
+}
+
 export function setThemeMode(next: ThemeMode) {
   mode = next;
   localStorage.setItem(STORAGE_KEY, next);
