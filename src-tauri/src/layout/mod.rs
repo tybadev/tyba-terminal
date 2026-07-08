@@ -246,7 +246,7 @@ impl PaneNode {
 pub const VIEW_CONTAINERS: &str = "containers";
 pub const VIEW_SETTINGS: &str = "settings";
 pub const DOCKER_WORKSPACE_NAME: &str = "Docker";
-pub const FALLBACK_WORKSPACE_NAME: &str = "TYBA";
+pub const FALLBACK_WORKSPACE_NAME: &str = "tyba";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Tab {
