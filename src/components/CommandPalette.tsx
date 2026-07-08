@@ -3,9 +3,12 @@
 
 import { useTranslation } from "react-i18next";
 import {
+  Desktop,
   Globe,
+  Moon,
   Plus,
   SidebarSimple,
+  Sun,
   TerminalWindow,
   X,
 } from "@phosphor-icons/react";
@@ -21,13 +24,28 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { LANGUAGES, setLanguage } from "../i18n";
+import { THEMES, type ThemeMode } from "../theme";
 import type { Session, SessionId } from "../lib/ipc";
+
+const THEME_ICONS: Record<ThemeMode, typeof Moon> = {
+  dark: Moon,
+  light: Sun,
+  system: Desktop,
+};
+
+const THEME_LABEL_KEYS: Record<ThemeMode, string> = {
+  dark: "themeDark",
+  light: "themeLight",
+  system: "themeSystem",
+};
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   sessions: Session[];
   activeId: SessionId | null;
+  theme: ThemeMode;
+  onChangeTheme: (mode: ThemeMode) => void;
   onNewSession: () => void;
   onCloseActive: () => void;
   onTogglePanel: () => void;
@@ -39,6 +57,8 @@ export function CommandPalette({
   onOpenChange,
   sessions,
   activeId,
+  theme,
+  onChangeTheme,
   onNewSession,
   onCloseActive,
   onTogglePanel,
@@ -104,6 +124,22 @@ export function CommandPalette({
             </CommandGroup>
           </>
         )}
+
+        <CommandSeparator />
+        <CommandGroup heading={t("theme")}>
+          {THEMES.filter((m) => m !== theme).map((mode) => {
+            const Icon = THEME_ICONS[mode];
+            return (
+              <CommandItem
+                key={mode}
+                onSelect={run(() => onChangeTheme(mode))}
+              >
+                <Icon size={15} />
+                {t("switchThemeTo", { theme: t(THEME_LABEL_KEYS[mode]) })}
+              </CommandItem>
+            );
+          })}
+        </CommandGroup>
 
         <CommandSeparator />
         <CommandGroup heading={t("language")}>

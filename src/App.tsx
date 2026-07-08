@@ -28,6 +28,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { LANGUAGES, setLanguage, type LanguageCode } from "./i18n";
+import { getThemeMode, setThemeMode, type ThemeMode } from "./theme";
 import {
   Tooltip,
   TooltipContent,
@@ -98,7 +99,13 @@ export default function App() {
   const [activeId, setActiveId] = useState<SessionId | null>(null);
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
   const booted = useRef(false);
+
+  const changeTheme = useCallback((next: ThemeMode) => {
+    setThemeMode(next);
+    setTheme(next);
+  }, []);
 
   const newShell = useCallback(async () => {
     const session = await createSession({
@@ -163,6 +170,8 @@ export default function App() {
         onOpenChange={setPaletteOpen}
         sessions={sessions}
         activeId={activeId}
+        theme={theme}
+        onChangeTheme={changeTheme}
         onNewSession={() => void newShell()}
         onCloseActive={() => {
           if (activeId) void closeSession(activeId);
@@ -255,6 +264,24 @@ export default function App() {
                     {lang.label}
                   </DropdownMenuRadioItem>
                 ))}
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="tyba-label">
+                {t("theme")}
+              </DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={theme}
+                onValueChange={(v) => changeTheme(v as ThemeMode)}
+              >
+                <DropdownMenuRadioItem value="dark" className="text-xs">
+                  {t("themeDark")}
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="light" className="text-xs">
+                  {t("themeLight")}
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="system" className="text-xs">
+                  {t("themeSystem")}
+                </DropdownMenuRadioItem>
               </DropdownMenuRadioGroup>
               <DropdownMenuSeparator />
               <DropdownMenuItem disabled className="text-xs">
