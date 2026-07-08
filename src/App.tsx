@@ -858,7 +858,7 @@ export default function App() {
   const renderWorkspace = (w: Workspace) => {
     const isActive = w.id === layout.active_workspace;
     const isConfig =
-      w.tabs.length > 0 && w.tabs.every((tab) => tab.view !== null);
+      w.tabs.length > 0 && w.tabs.every((tab) => tab.view === "settings");
     const showDetails = open && detailsFor(w.id) && !isConfig;
     const agent = showDetails ? workspaceAgent(w) : null;
     const branch = w.repo_root ? branches[w.repo_root] : undefined;
@@ -928,7 +928,7 @@ export default function App() {
           <>
             <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
               <span className="w-full truncate text-left leading-none">
-                {w.name}
+                {isConfig ? t("settings") : w.name}
               </span>
               {showDetails && (
                 <span className="flex w-full items-center gap-1.5">
@@ -1366,7 +1366,9 @@ export default function App() {
               )}
 
               <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-                {activeWorkspace && activeWorkspace.tabs.length > 0 && (
+                {activeWorkspace &&
+                  activeWorkspace.tabs.length > 0 &&
+                  activeTab?.view !== "settings" && (
                   <TabBar
                     tabs={activeWorkspace.tabs}
                     activeTab={activeWorkspace.active_tab}
