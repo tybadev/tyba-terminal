@@ -5,7 +5,9 @@ import {
   Check,
   DotsThree,
   FolderOpen,
+  GearSix,
   GitBranch,
+  Info,
   MagnifyingGlass,
   Plus,
   Prohibit,
@@ -22,6 +24,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuGroup,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
@@ -1213,19 +1216,38 @@ export default function App() {
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
-              className="w-52 border-tyba-border-strong bg-tyba-overlay shadow-lg"
+              className="w-56 border-tyba-border-strong bg-tyba-overlay shadow-lg"
             >
-              <DropdownMenuLabel className="text-xs">
-                {accountName || t("localAccount")}
+              <DropdownMenuLabel className="flex min-w-0 flex-col">
+                <span className="truncate text-xs font-medium text-tyba-text">
+                  {accountName || t("localAccount")}
+                </span>
+                {accountName && (
+                  <span className="truncate text-[11px] font-normal text-tyba-text-faint">
+                    {t("localAccount")}
+                  </span>
+                )}
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="text-xs"
-                onSelect={() => void openViewTab("settings").catch(() => {})}
-              >
-                {t("settings")}
-              </DropdownMenuItem>
+              <DropdownMenuGroup>
+                <DropdownMenuItem
+                  className="text-xs"
+                  onSelect={() => void openViewTab("settings").catch(() => {})}
+                >
+                  <GearSix size={16} className="opacity-60" />
+                  {t("settings")}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-xs"
+                  onSelect={() => setPaletteOpen(true)}
+                >
+                  <MagnifyingGlass size={16} className="opacity-60" />
+                  {t("commandPalette")}
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
               <DropdownMenuItem disabled className="text-xs">
+                <Info size={16} className="opacity-60" />
                 {t("about")}
               </DropdownMenuItem>
             </DropdownMenuContent>
