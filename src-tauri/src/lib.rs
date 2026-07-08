@@ -108,6 +108,16 @@ pub fn run() {
                 })
                 .expect("failed to spawn scrollback flush thread");
 
+            if let Some(window) = app.get_webview_window("main") {
+                let hidden = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = hidden.hide();
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -118,6 +128,14 @@ pub fn run() {
             list_sessions,
             dispose_session,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tyba");
+        .build(tauri::generate_context!())
+        .expect("error while building tyba")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }
