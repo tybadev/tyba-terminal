@@ -5,7 +5,7 @@
    Fonte da verdade: repo tyba-design-system (ds-bundle/tokens/),
    espelhado no projeto "TYBA Design System" do claude.ai/design.
    Este arquivo é MONTADO a partir de tyba.css + themes.css pelo
-   script port_styles.py — ao mudar tokens lá, remontar aqui.
+   script scripts/port_styles.py — ao mudar tokens lá, remontar aqui.
    ============================================================ */
 
 :root {
