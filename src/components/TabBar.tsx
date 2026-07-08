@@ -1,5 +1,11 @@
 import { useTranslation } from "react-i18next";
-import { Plus, X } from "@phosphor-icons/react";
+import {
+  Plus,
+  ShippingContainer,
+  SlidersHorizontal,
+  TerminalWindow,
+  X,
+} from "@phosphor-icons/react";
 
 import i18n from "../i18n";
 import {
@@ -23,6 +29,12 @@ const VIEW_LABEL_KEYS: Record<string, string> = {
   containers: "containers",
   settings: "settings",
 };
+
+function tabIcon(tab: Tab): React.ReactNode {
+  if (tab.view === "containers") return <ShippingContainer size={12} />;
+  if (tab.view === "settings") return <SlidersHorizontal size={12} />;
+  return <TerminalWindow size={12} />;
+}
 
 function tabLabel(tab: Tab, sessions: Map<SessionId, Session>): string {
   if (tab.title) return tab.title;
@@ -66,6 +78,13 @@ export function TabBar({
                 style={{ background: "var(--tyba-gradient-soft)" }}
               />
             )}
+            <span
+              className={`shrink-0 ${
+                isActive ? "text-tyba-text-muted" : "text-tyba-text-faint"
+              }`}
+            >
+              {tabIcon(tab)}
+            </span>
             <span className="min-w-0 flex-1 truncate text-left">
               {tabLabel(tab, byId)}
             </span>

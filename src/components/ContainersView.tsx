@@ -9,6 +9,7 @@ import {
   FileText,
   FolderOpen,
   Play,
+  ShippingContainer,
   Stop,
   TerminalWindow,
   Trash,
@@ -208,6 +209,12 @@ export function ContainersView({
                 : "bg-tyba-text-faint"
             }`}
           />
+          <ShippingContainer
+            size={14}
+            className={`shrink-0 ${
+              isRunning ? "text-tyba-text-muted" : "text-tyba-text-faint"
+            }`}
+          />
           <span className="min-w-0 flex-1 truncate text-[12px] text-tyba-text">
             {c.service ?? c.name}
           </span>
@@ -215,7 +222,7 @@ export function ContainersView({
             {c.ports.split(",")[0]?.trim().replace("0.0.0.0:", ":") || c.image}
           </span>
         </div>
-        <div className="flex items-center gap-2 pl-3.5">
+        <div className="flex items-center gap-2 pl-9">
           <span className="min-w-0 flex-1 truncate font-mono text-[10px] leading-5 text-tyba-text-faint">
             {c.status}
           </span>
