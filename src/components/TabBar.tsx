@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import {
   Plus,
+  Robot,
   ShippingContainer,
   SlidersHorizontal,
   TerminalWindow,
@@ -8,6 +9,8 @@ import {
 } from "@phosphor-icons/react";
 
 import i18n from "../i18n";
+import { ClaudeIcon } from "./icons/ClaudeIcon";
+import { OpenAIIcon } from "./icons/OpenAIIcon";
 import {
   leafSessions,
   type Session,
@@ -25,9 +28,29 @@ interface Props {
   onNew: () => void;
 }
 
-function tabIcon(tab: Tab): React.ReactNode {
+function runnerLabel(kind: Session["kind"]): string | null {
+  if (kind.type !== "agent") return null;
+  if (kind.runner === "claude_code") return "claude";
+  if (kind.runner === "codex") return "codex";
+  return kind.runner.custom;
+}
+
+function agentGlyph(label: string): React.ReactNode {
+  if (label === "claude") return <ClaudeIcon size={12} />;
+  if (label === "codex") return <OpenAIIcon size={12} />;
+  return <Robot size={12} />;
+}
+
+function tabIcon(tab: Tab, sessions: Map<SessionId, Session>): React.ReactNode {
   if (tab.view === "containers") return <ShippingContainer size={12} />;
   if (tab.view === "settings") return <SlidersHorizontal size={12} />;
+  if (tab.root) {
+    for (const sid of leafSessions(tab.root)) {
+      const session = sessions.get(sid);
+      const label = session && runnerLabel(session.kind);
+      if (label) return agentGlyph(label);
+    }
+  }
   return <TerminalWindow size={12} />;
 }
 
@@ -78,7 +101,7 @@ export function TabBar({
                 isActive ? "text-tyba-text-muted" : "text-tyba-text-faint"
               }`}
             >
-              {tabIcon(tab)}
+              {tabIcon(tab, byId)}
             </span>
             <span className="min-w-0 flex-1 truncate text-left">
               {tabLabel(tab, byId)}
