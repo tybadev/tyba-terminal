@@ -2,7 +2,7 @@ pub mod redact;
 pub mod store;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -90,9 +90,7 @@ impl SessionManager {
         if cfg!(unix) {
             cmd.arg("-l");
         }
-        if let Some(cwd) = &opts.cwd {
-            cmd.cwd(cwd);
-        }
+        cmd.cwd(resolve_cwd(opts.cwd.as_deref()));
 
         let title = opts.title.unwrap_or_else(|| shell_label(&shell));
         self.spawn_session(
@@ -241,6 +239,39 @@ fn emit_status(app: &AppHandle, session: &Session) {
     let _ = app.emit(&format!("session://status/{}", session.id), session.clone());
 }
 
+pub fn expand_home(path: &Path) -> PathBuf {
+    let Ok(home) = std::env::var("HOME") else {
+        return path.to_path_buf();
+    };
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return PathBuf::from(home);
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return PathBuf::from(home).join(rest);
+    }
+    path.to_path_buf()
+}
+
+pub fn resolve_cwd(requested: Option<&Path>) -> PathBuf {
+    let home = || {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/"))
+    };
+    match requested {
+        Some(path) => {
+            let expanded = expand_home(path);
+            if expanded.is_dir() {
+                expanded
+            } else {
+                home()
+            }
+        }
+        None => home(),
+    }
+}
+
 pub fn default_shell() -> String {
     if cfg!(windows) {
         std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".into())
@@ -272,6 +303,37 @@ mod tests {
             status,
             created_at: Utc::now(),
         }
+    }
+
+    #[test]
+    fn expand_home_handles_tilde_variants() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_home(Path::new("~")), PathBuf::from(&home));
+        assert_eq!(
+            expand_home(Path::new("~/projects/x")),
+            PathBuf::from(&home).join("projects/x")
+        );
+        assert_eq!(
+            expand_home(Path::new("/abs/path")),
+            PathBuf::from("/abs/path")
+        );
+        assert_eq!(
+            expand_home(Path::new("~user/x")),
+            PathBuf::from("~user/x")
+        );
+    }
+
+    #[test]
+    fn resolve_cwd_falls_back_to_home_when_missing_or_invalid() {
+        let home = PathBuf::from(std::env::var("HOME").unwrap());
+        assert_eq!(resolve_cwd(None), home);
+        assert_eq!(
+            resolve_cwd(Some(Path::new("~/definitely-not-a-real-dir-xyz"))),
+            home
+        );
+        let tmp = std::env::temp_dir();
+        assert_eq!(resolve_cwd(Some(&tmp)), tmp);
+        assert_eq!(resolve_cwd(Some(Path::new("~"))), home);
     }
 
     #[test]

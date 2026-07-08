@@ -135,6 +135,11 @@ fn create_workspace(
     repo_root: Option<String>,
     session_id: SessionId,
 ) -> Result<layout::WorkspaceId, String> {
+    let repo_root = repo_root.map(|r| {
+        session::expand_home(std::path::Path::new(&r))
+            .to_string_lossy()
+            .into_owned()
+    });
     let id = state
         .layout
         .create_workspace(&name, repo_root, session_id)
@@ -246,8 +251,11 @@ fn set_workspace_group(
 
 #[tauri::command]
 fn repo_branch(path: String) -> Option<String> {
+    let path = session::expand_home(std::path::Path::new(&path));
     let out = std::process::Command::new("git")
-        .args(["-C", &path, "rev-parse", "--abbrev-ref", "HEAD"])
+        .args(["-C"])
+        .arg(&path)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
         .ok()?;
     if !out.status.success() {
