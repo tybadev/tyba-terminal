@@ -133,6 +133,10 @@ function runnerLabel(kind: SessionKind): string | null {
   return kind.runner.custom;
 }
 
+function isConfigWorkspace(w: Workspace): boolean {
+  return w.tabs.length > 0 && w.tabs.every((t) => t.view === "settings");
+}
+
 function compactPath(dir: string): string {
   const home = dir.replace(/^\/Users\/[^/]+/, "~");
   const parts = home.split("/").filter(Boolean);
@@ -857,8 +861,7 @@ export default function App() {
 
   const renderWorkspace = (w: Workspace) => {
     const isActive = w.id === layout.active_workspace;
-    const isConfig =
-      w.tabs.length > 0 && w.tabs.every((tab) => tab.view === "settings");
+    const isConfig = isConfigWorkspace(w);
     const showDetails = open && detailsFor(w.id) && !isConfig;
     const agent = showDetails ? workspaceAgent(w) : null;
     const branch = w.repo_root ? branches[w.repo_root] : undefined;
@@ -950,9 +953,12 @@ export default function App() {
                 </span>
               )}
             </span>
-            <span className="font-mono text-[10px] text-tyba-text-faint">
-              {w.tabs.length > 0 ? w.tabs.length : ""}
-            </span>
+            {!isConfig && (
+              <span className="font-mono text-[10px] text-tyba-text-faint">
+                {w.tabs.length > 0 ? w.tabs.length : ""}
+              </span>
+            )}
+            {!isConfig && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <span
@@ -1079,6 +1085,7 @@ export default function App() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            )}
           </>
         )}
       </button>
@@ -1308,6 +1315,40 @@ export default function App() {
                       open ? "mt-2" : "mt-3"
                     }`}
                   >
+                    <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-white/[.015] p-1">
+                      {open && (
+                        <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
+                          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
+                            {t("systemGroup")}
+                          </span>
+                          <span className="h-px min-w-0 flex-1 bg-tyba-border" />
+                        </span>
+                      )}
+                      <button
+                        onClick={() => void openViewTab("settings").catch(() => {})}
+                        title={open ? undefined : t("settings")}
+                        className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
+                          open ? "px-2" : "justify-center px-0"
+                        } ${
+                          activeTab?.view === "settings"
+                            ? "bg-white/[.05] text-tyba-text"
+                            : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
+                        }`}
+                      >
+                        {activeTab?.view === "settings" && (
+                          <span
+                            className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
+                            style={{ background: "var(--tyba-gradient-soft)" }}
+                          />
+                        )}
+                        <GearSix size={16} className="shrink-0" />
+                        {open && (
+                          <span className="min-w-0 flex-1 truncate text-left">
+                            {t("settings")}
+                          </span>
+                        )}
+                      </button>
+                    </div>
                     {groupedWorkspaces.groups.map(([name, list]) => (
                       <div
                         key={name}
@@ -1339,7 +1380,9 @@ export default function App() {
                         {list.map(renderWorkspace)}
                       </div>
                     ))}
-                    {groupedWorkspaces.loose.map(renderWorkspace)}
+                    {groupedWorkspaces.loose
+                      .filter((w) => !isConfigWorkspace(w))
+                      .map(renderWorkspace)}
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
