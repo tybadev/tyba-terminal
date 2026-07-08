@@ -1,8 +1,9 @@
 // Inbox de aprovações no sino: pedidos pendentes das sessões de agente.
-// Estado vive no core (princípio #1) — aqui só list inicial + eventos.
+// Estado vive no core (princípio #1); a lista chega por prop do App,
+// que mantém a assinatura única de list + eventos.
 // Ação vermelha nunca é 1-clique: Aprovar vira Confirmar (anti-fadiga).
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Bell, Warning } from "@phosphor-icons/react";
 
@@ -14,9 +15,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  listApprovals,
-  onApprovalRequested,
-  onApprovalResolved,
   resolveApproval,
   type ApprovalDecision,
   type ApprovalRequest,
@@ -24,32 +22,19 @@ import {
   type SessionId,
 } from "../lib/ipc";
 
-export function ApprovalsInbox({ sessions }: { sessions: Session[] }) {
+export function ApprovalsInbox({
+  sessions,
+  approvals,
+  open,
+  onOpenChange,
+}: {
+  sessions: Session[];
+  approvals: ApprovalRequest[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const { t } = useTranslation();
-  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [confirming, setConfirming] = useState<number | null>(null);
-
-  useEffect(() => {
-    let disposed = false;
-    const unlisteners: Array<() => void> = [];
-    listApprovals()
-      .then((pending) => {
-        if (!disposed) setApprovals(pending);
-      })
-      .catch(() => {});
-    void onApprovalRequested((request) =>
-      setApprovals((prev) =>
-        prev.some((p) => p.id === request.id) ? prev : [...prev, request],
-      ),
-    ).then((un) => unlisteners.push(un));
-    void onApprovalResolved(({ id }) =>
-      setApprovals((prev) => prev.filter((p) => p.id !== id)),
-    ).then((un) => unlisteners.push(un));
-    return () => {
-      disposed = true;
-      unlisteners.forEach((un) => un());
-    };
-  }, []);
 
   const decide = (request: ApprovalRequest, decision: ApprovalDecision) => {
     if (
@@ -70,7 +55,13 @@ export function ApprovalsInbox({ sessions }: { sessions: Session[] }) {
   const count = approvals.length;
 
   return (
-    <DropdownMenu onOpenChange={() => setConfirming(null)}>
+    <DropdownMenu
+      open={open}
+      onOpenChange={(next) => {
+        setConfirming(null);
+        onOpenChange(next);
+      }}
+    >
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ArrowRight,
   Check,
   DotsThree,
   FolderOpen,
@@ -36,6 +37,11 @@ import {
 } from "@/components/ui/tooltip";
 import { getThemeMode, onThemeModeChange, setThemeMode, type ThemeMode } from "./theme";
 import { ApprovalsInbox } from "./components/ApprovalsInbox";
+import {
+  Notification,
+  NotificationLink,
+  NotificationTitle,
+} from "@/components/ui/notification";
 import { CommandPalette } from "./components/CommandPalette";
 import { ContainersView } from "./components/ContainersView";
 import { DockerIcon } from "./components/icons/DockerIcon";
@@ -69,8 +75,11 @@ import {
   focusPane,
   layoutState,
   leafSessions,
+  listApprovals,
   listSessions,
   newWindow,
+  onApprovalRequested,
+  onApprovalResolved,
   onLayoutChanged,
   openViewTab,
   paneSession,
@@ -81,6 +90,7 @@ import {
   setWorkspaceColor,
   setWorkspaceGroup,
   splitPane,
+  type ApprovalRequest,
   type LayoutState,
   type Session,
   type SessionKind,
@@ -207,7 +217,45 @@ export default function App() {
   const [dockerUp, setDockerUp] = useState(true);
   const [dockerRunning, setDockerRunning] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [inboxOpen, setInboxOpen] = useState(false);
   const booted = useRef(false);
+
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    const track = (p: Promise<() => void>) => {
+      void p.then((un) => (disposed ? un() : unlisteners.push(un)));
+    };
+    // Listeners primeiro: eventos que chegam antes do snapshot viram deltas
+    // sobre ele (união por id no requested; filtro no resolved), em vez de
+    // serem sobrescritos por listApprovals().
+    track(
+      onApprovalRequested((request) =>
+        setApprovals((prev) =>
+          prev.some((p) => p.id === request.id) ? prev : [...prev, request],
+        ),
+      ),
+    );
+    track(
+      onApprovalResolved(({ id }) =>
+        setApprovals((prev) => prev.filter((p) => p.id !== id)),
+      ),
+    );
+    listApprovals()
+      .then((pending) => {
+        if (disposed) return;
+        setApprovals((prev) => {
+          const seen = new Set(prev.map((p) => p.id));
+          return [...prev, ...pending.filter((p) => !seen.has(p.id))];
+        });
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisteners.forEach((un) => un());
+    };
+  }, []);
 
   const changeTheme = useCallback((next: ThemeMode) => {
     setThemeMode(next);
@@ -1144,7 +1192,12 @@ export default function App() {
             </Tooltip>
           )}
 
-          <ApprovalsInbox sessions={sessions} />
+          <ApprovalsInbox
+            sessions={sessions}
+            approvals={approvals}
+            open={inboxOpen}
+            onOpenChange={setInboxOpen}
+          />
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1178,6 +1231,27 @@ export default function App() {
             </DropdownMenuContent>
           </DropdownMenu>
         </header>
+
+        {approvals.length > 0 && (
+          <Notification
+            variant="warning"
+            className="rounded-none border-x-0 border-t-0 px-3 py-1.5 text-xs"
+          >
+            <NotificationTitle>
+              {t("approvalsWaiting", { count: approvals.length })}
+            </NotificationTitle>
+            <NotificationLink asChild>
+              <button type="button" onClick={() => setInboxOpen(true)}>
+                {t("reviewApprovals")}
+                <ArrowRight
+                  aria-hidden="true"
+                  size={14}
+                  className="-mt-0.5 ms-1 inline-flex opacity-60 transition-transform motion-safe:group-hover:translate-x-0.5"
+                />
+              </button>
+            </NotificationLink>
+          </Notification>
+        )}
 
         <div className="flex min-h-0 flex-1">
           <>
