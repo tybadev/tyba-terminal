@@ -14,6 +14,8 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { DockerIcon } from "./icons/DockerIcon";
 import { LANGUAGES, setLanguage, type LanguageCode } from "../i18n";
 import {
   getUiFont,
@@ -452,22 +454,26 @@ export function SettingsView({
         {section === "code" && (
           <section className="mx-auto w-full max-w-lg">
             <SectionHeader title={t("settingsCode")} hint={t("codeHint")} />
-            <span className="tyba-label">{t("showContainersToggle")}</span>
-            <div className="flex gap-2 pt-2">
-              <Choice
-                active={showContainers}
-                label={t("optionShow")}
-                onClick={() => onShowContainersChange(true)}
-              />
-              <Choice
-                active={!showContainers}
-                label={t("optionHide")}
-                onClick={() => onShowContainersChange(false)}
+            <span className="tyba-label">{t("integrations")}</span>
+            <div className="mt-2 flex items-start gap-3 rounded-[6px] border border-tyba-border p-4">
+              <span className="mt-0.5 shrink-0 text-tyba-text-muted">
+                <DockerIcon size={18} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] text-tyba-text">
+                  {t("dockerIntegration")}
+                </p>
+                <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
+                  {t("dockerIntegrationHint")}
+                </p>
+              </div>
+              <Switch
+                checked={showContainers}
+                onCheckedChange={onShowContainersChange}
+                aria-label={t("dockerIntegration")}
+                className="mt-0.5"
               />
             </div>
-            <p className="pt-2 text-[11px] text-tyba-text-faint">
-              {t("showContainersHint")}
-            </p>
           </section>
         )}
 
