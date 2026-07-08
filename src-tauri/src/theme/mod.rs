@@ -240,10 +240,10 @@ fn ansi(colors: [&str; 16]) -> Vec<String> {
 
 fn dark_terminal() -> TerminalPalette {
     TerminalPalette {
-        background: "#070709".into(),
+        background: "#000000".into(),
         foreground: "#f2f2f5".into(),
         cursor: "#7cc544".into(),
-        cursor_accent: Some("#070709".into()),
+        cursor_accent: Some("#000000".into()),
         selection_background: Some("#7cc5444d".into()),
         ansi: ansi([
             "#1a1a20", "#f0503c", "#7cc544", "#f5a93b", "#4c7df0", "#ec4899", "#2dd4bf", "#f2f2f5",
