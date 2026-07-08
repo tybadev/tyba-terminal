@@ -120,10 +120,30 @@ impl PtyPool {
 
         let output_event = format!("pty://output/{session_id}");
         let exit_event = format!("pty://exit/{session_id}");
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+
         std::thread::Builder::new()
             .name(format!("pty-reader-{session_id}"))
             .spawn(move || {
                 let mut buf = [0u8; READ_BUF_SIZE];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if tx.send(buf[..n].to_vec()).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                }
+            })
+            .expect("failed to spawn pty reader thread");
+
+        std::thread::Builder::new()
+            .name(format!("pty-emitter-{session_id}"))
+            .spawn(move || {
                 let mut pending: Vec<u8> = Vec::with_capacity(READ_BUF_SIZE);
                 let mut last_flush = Instant::now();
 
@@ -137,25 +157,38 @@ impl PtyPool {
                 };
 
                 loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            reader_screen.lock().process(&buf[..n]);
-                            pending.extend_from_slice(&buf[..n]);
+                    let chunk = if pending.is_empty() {
+                        match rx.recv() {
+                            Ok(chunk) => Some(chunk),
+                            Err(_) => break,
+                        }
+                    } else {
+                        match rx.recv_timeout(FLUSH_INTERVAL) {
+                            Ok(chunk) => Some(chunk),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
+                    };
+                    match chunk {
+                        Some(chunk) => {
+                            reader_screen.lock().process(&chunk);
+                            pending.extend_from_slice(&chunk);
                             if last_flush.elapsed() >= FLUSH_INTERVAL {
                                 flush(&mut pending, &app);
                                 last_flush = Instant::now();
                             }
                         }
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(_) => break,
+                        None => {
+                            flush(&mut pending, &app);
+                            last_flush = Instant::now();
+                        }
                     }
                 }
                 flush(&mut pending, &app);
                 let _ = app.emit(&exit_event, PtyExitPayload { code: None });
                 on_exit();
             })
-            .expect("failed to spawn pty reader thread");
+            .expect("failed to spawn pty emitter thread");
 
         Ok(())
     }
