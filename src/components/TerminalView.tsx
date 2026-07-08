@@ -6,6 +6,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
+import i18n from "../i18n";
+
 import {
   onPtyExit,
   onPtyOutput,
@@ -85,7 +87,7 @@ export function TerminalView({ sessionId, active, onExit }: Props) {
       unlisteners.push(un),
     );
     void onPtyExit(sessionId, () => {
-      term.write("\r\n\x1b[2m[sessão encerrada]\x1b[0m\r\n");
+      term.write(`\r\n\x1b[2m${i18n.t("sessionEnded")}\x1b[0m\r\n`);
       onExit?.();
     }).then((un) => unlisteners.push(un));
 

@@ -4,6 +4,7 @@
 // Atalhos: ⌘B painel (aberto → ícones → oculto) · ⌘T nova sessão · ⌘W fechar.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Bell,
   FolderOpen,
@@ -20,9 +21,12 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { LANGUAGES, setLanguage, type LanguageCode } from "./i18n";
 import {
   Tooltip,
   TooltipContent,
@@ -87,6 +91,7 @@ function IconAction({
 }
 
 export default function App() {
+  const { t, i18n } = useTranslation();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeId, setActiveId] = useState<SessionId | null>(null);
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
@@ -154,7 +159,7 @@ export default function App() {
           className="tyba-glass flex h-9 shrink-0 items-center gap-1 border-b border-tyba-border pl-20 pr-2.5"
         >
           <IconAction
-            label="Painel: aberto → ícones → oculto"
+            label={t("panelToggle")}
             shortcut="⌘B"
             onClick={() => setSidebar((m) => NEXT_MODE[m])}
           >
@@ -168,7 +173,7 @@ export default function App() {
 
           <div className="h-full flex-1" data-tauri-drag-region />
 
-          <IconAction label="Abrir pasta do projeto" shortcut="⌘O">
+          <IconAction label={t("openProjectFolder")} shortcut="⌘O">
             <FolderOpen size={16} />
           </IconAction>
 
@@ -177,7 +182,7 @@ export default function App() {
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label="Notificações"
+                aria-label={t("notifications")}
                 className="size-6 rounded-[4px] text-tyba-text-muted hover:text-tyba-text"
               >
                 <Bell size={16} />
@@ -188,10 +193,10 @@ export default function App() {
               className="w-72 border-tyba-border-strong bg-tyba-overlay shadow-lg"
             >
               <DropdownMenuLabel className="tyba-label">
-                Notificações
+                {t("notifications")}
               </DropdownMenuLabel>
               <div className="px-2 py-5 text-center text-xs text-tyba-text-faint">
-                Tudo em dia. Aprovações de sessões de agente chegam aqui.
+                {t("notificationsEmpty")}
               </div>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -199,7 +204,7 @@ export default function App() {
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
-                aria-label="Conta"
+                aria-label={t("account")}
                 className="ml-1 rounded-full p-px"
                 style={{ background: "var(--tyba-gradient)" }}
               >
@@ -210,17 +215,35 @@ export default function App() {
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
-              className="w-44 border-tyba-border-strong bg-tyba-overlay shadow-lg"
+              className="w-52 border-tyba-border-strong bg-tyba-overlay shadow-lg"
             >
               <DropdownMenuLabel className="text-xs">
-                Conta local
+                {t("localAccount")}
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
+              <DropdownMenuLabel className="tyba-label">
+                {t("language")}
+              </DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={i18n.language}
+                onValueChange={(v) => setLanguage(v as LanguageCode)}
+              >
+                {LANGUAGES.map((lang) => (
+                  <DropdownMenuRadioItem
+                    key={lang.code}
+                    value={lang.code}
+                    className="text-xs"
+                  >
+                    {lang.label}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
               <DropdownMenuItem disabled className="text-xs">
-                Configurações
+                {t("settings")}
               </DropdownMenuItem>
               <DropdownMenuItem disabled className="text-xs">
-                Sobre o TYBA
+                {t("about")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -234,7 +257,9 @@ export default function App() {
                 open ? "w-56" : "w-11"
               }`}
             >
-              {open && <span className="tyba-label px-3.5 pt-3.5">Sessões</span>}
+              {open && (
+                <span className="tyba-label px-3.5 pt-3.5">{t("sessions")}</span>
+              )}
               <nav
                 className={`flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2 pb-2 ${
                   open ? "mt-1.5" : "mt-2"
@@ -277,7 +302,7 @@ export default function App() {
                           </span>
                           <span
                             role="button"
-                            aria-label="Fechar sessão"
+                            aria-label={t("closeSession")}
                             onClick={(e) => {
                               e.stopPropagation();
                               void closeSession(s.id);
@@ -296,20 +321,20 @@ export default function App() {
                     <Button
                       variant="ghost"
                       onClick={() => void newShell()}
-                      aria-label="Nova sessão"
+                      aria-label={t("newSession")}
                       className={`mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text ${
                         open ? "justify-start px-2" : "justify-center px-0"
                       }`}
                     >
                       <Plus size={14} />
-                      {open && "Nova sessão"}
+                      {open && t("newSession")}
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent
                     side={open ? "bottom" : "right"}
                     className="flex items-center gap-2"
                   >
-                    Nova sessão
+                    {t("newSession")}
                     <Kbd>⌘T</Kbd>
                   </TooltipContent>
                 </Tooltip>
@@ -322,14 +347,15 @@ export default function App() {
               <div className="flex h-full flex-col items-center justify-center gap-4">
                 <img src={tybaMark} alt="" className="h-12 w-12 opacity-90" />
                 <p className="text-sm text-tyba-text-faint">
-                  Nenhuma sessão aberta.
+                  {t("noSessions")}
                 </p>
                 <Button onClick={() => void newShell()}>
                   <Plus size={16} weight="bold" />
-                  Nova sessão
+                  {t("newSession")}
                 </Button>
                 <p className="flex items-center gap-1.5 text-xs text-tyba-text-faint">
-                  <Kbd>⌘T</Kbd> nova sessão · <Kbd>⌘B</Kbd> painel
+                  <Kbd>⌘T</Kbd> {t("hintNewSession")} · <Kbd>⌘B</Kbd>{" "}
+                  {t("hintPanel")}
                 </p>
               </div>
             ) : (
