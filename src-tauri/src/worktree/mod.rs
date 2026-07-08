@@ -6,8 +6,8 @@
 //! - three-dot semantics: diff contra `base_ref` salvo na criação
 //! - `git stash` NUNCA na automação (compartilhado entre worktrees)
 
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Worktree {
