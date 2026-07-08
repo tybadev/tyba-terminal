@@ -1,5 +1,6 @@
 export type KeyAction =
-  | "palette"
+  | "paletteActions"
+  | "paletteSessions"
   | "panel"
   | "settings"
   | "newSession"
@@ -20,7 +21,8 @@ export type KeyAction =
   | "paneDown";
 
 export const KEY_ACTIONS: KeyAction[] = [
-  "palette",
+  "paletteActions",
+  "paletteSessions",
   "panel",
   "settings",
   "newSession",
@@ -57,7 +59,8 @@ export const KEY_CATEGORY_ORDER: KeyCategory[] = [
 ];
 
 export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
-  palette: "general",
+  paletteActions: "general",
+  paletteSessions: "general",
   panel: "general",
   settings: "general",
   newSession: "sessions",
@@ -79,7 +82,8 @@ export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
 };
 
 export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
-  palette: "commandPalette",
+  paletteActions: "paletteActions",
+  paletteSessions: "paletteSessions",
   panel: "togglePanel",
   settings: "settings",
   newSession: "newSession",
@@ -118,7 +122,8 @@ export function actionsByCategory(): [KeyCategory, KeyAction[]][] {
 export type Bindings = Record<KeyAction, string>;
 
 export const DEFAULT_BINDINGS: Bindings = {
-  palette: "meta+k",
+  paletteActions: "meta+p",
+  paletteSessions: "meta+shift+p",
   panel: "meta+b",
   settings: "meta+,",
   newSession: "meta+n",

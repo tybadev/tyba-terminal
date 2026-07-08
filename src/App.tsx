@@ -207,6 +207,9 @@ export default function App() {
   const [accountName, setAccountName] = useState("");
   const [sessionQuery, setSessionQuery] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteMode, setPaletteMode] = useState<"actions" | "sessions">(
+    "actions",
+  );
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [branches, setBranches] = useState<Record<string, string>>({});
   const [prompt, setPrompt] = useState<{
@@ -257,6 +260,11 @@ export default function App() {
       disposed = true;
       unlisteners.forEach((un) => un());
     };
+  }, []);
+
+  const openPalette = useCallback((mode: "actions" | "sessions") => {
+    setPaletteMode(mode);
+    setPaletteOpen(true);
   }, []);
 
   const changeTheme = useCallback((next: ThemeMode) => {
@@ -771,8 +779,10 @@ export default function App() {
       if (action) {
         e.preventDefault();
         if (e.repeat) return;
-        if (action === "palette") {
-          setPaletteOpen((v) => !v);
+        if (action === "paletteActions") {
+          openPalette("actions");
+        } else if (action === "paletteSessions") {
+          openPalette("sessions");
         } else if (action === "panel") {
           toggleSidebar();
         } else if (action === "newTab") {
@@ -1104,6 +1114,8 @@ export default function App() {
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
+        mode={paletteMode}
+        onModeChange={setPaletteMode}
         workspaces={layout.workspaces}
         activeWorkspace={layout.active_workspace}
         bindings={bindings}
@@ -1163,8 +1175,8 @@ export default function App() {
 
           <IconAction
             label={t("commandPalette")}
-            shortcut={bindings.palette}
-            onClick={() => setPaletteOpen(true)}
+            shortcut={bindings.paletteActions}
+            onClick={() => openPalette("actions")}
           >
             <MagnifyingGlass size={16} />
           </IconAction>
@@ -1259,7 +1271,7 @@ export default function App() {
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   className="text-xs"
-                  onSelect={() => setPaletteOpen(true)}
+                  onSelect={() => openPalette("actions")}
                 >
                   <MagnifyingGlass size={16} className="opacity-60" />
                   {t("commandPalette")}
@@ -1558,14 +1570,14 @@ export default function App() {
                           </button>
                         )}
                         <button
-                          onClick={() => setPaletteOpen(true)}
+                          onClick={() => openPalette("actions")}
                           className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
                         >
                           <MagnifyingGlass size={14} />
                           <span className="flex-1 text-left">
                             {t("commandPalette")}
                           </span>
-                          <Shortcut combo={bindings.palette} />
+                          <Shortcut combo={bindings.paletteActions} />
                         </button>
                         <button
                           onClick={toggleSidebar}
