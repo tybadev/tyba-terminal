@@ -1315,40 +1315,44 @@ export default function App() {
                       open ? "mt-2" : "mt-3"
                     }`}
                   >
-                    <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-white/[.015] p-1">
-                      {open && (
-                        <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
-                          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
-                            {t("systemGroup")}
-                          </span>
-                          <span className="h-px min-w-0 flex-1 bg-tyba-border" />
-                        </span>
-                      )}
-                      <button
-                        onClick={() => void openViewTab("settings").catch(() => {})}
-                        title={open ? undefined : t("settings")}
-                        className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
-                          open ? "px-2" : "justify-center px-0"
-                        } ${
-                          activeTab?.view === "settings"
-                            ? "bg-white/[.05] text-tyba-text"
-                            : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
-                        }`}
-                      >
-                        {activeTab?.view === "settings" && (
-                          <span
-                            className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
-                            style={{ background: "var(--tyba-gradient-soft)" }}
-                          />
-                        )}
-                        <GearSix size={16} className="shrink-0" />
+                    {layout.workspaces.some(isConfigWorkspace) && (
+                      <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-white/[.015] p-1">
                         {open && (
-                          <span className="min-w-0 flex-1 truncate text-left">
-                            {t("settings")}
+                          <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
+                            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
+                              {t("systemGroup")}
+                            </span>
+                            <span className="h-px min-w-0 flex-1 bg-tyba-border" />
                           </span>
                         )}
-                      </button>
-                    </div>
+                        <button
+                          onClick={() =>
+                            void openViewTab("settings").catch(() => {})
+                          }
+                          title={open ? undefined : t("settings")}
+                          className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
+                            open ? "px-2" : "justify-center px-0"
+                          } ${
+                            activeTab?.view === "settings"
+                              ? "bg-white/[.05] text-tyba-text"
+                              : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
+                          }`}
+                        >
+                          {activeTab?.view === "settings" && (
+                            <span
+                              className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
+                              style={{ background: "var(--tyba-gradient-soft)" }}
+                            />
+                          )}
+                          <GearSix size={16} className="shrink-0" />
+                          {open && (
+                            <span className="min-w-0 flex-1 truncate text-left">
+                              {t("settings")}
+                            </span>
+                          )}
+                        </button>
+                      </div>
+                    )}
                     {groupedWorkspaces.groups.map(([name, list]) => (
                       <div
                         key={name}
