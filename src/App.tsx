@@ -309,6 +309,7 @@ export default function App() {
   );
   const [showGitStatus, setShowGitStatus] = useState(true);
   const [shellIntegration, setShellIntegration] = useState(true);
+  const [menuWorkspace, setMenuWorkspace] = useState<string | null>(null);
   const [prompt, setPrompt] = useState<{
     kind: "rename" | "group";
     ws: Workspace;
@@ -1403,7 +1404,9 @@ export default function App() {
               </span>
             )}
             {!isConfig && (
-            <DropdownMenu>
+            <DropdownMenu
+              onOpenChange={(o) => setMenuWorkspace(o ? w.id : null)}
+            >
               <DropdownMenuTrigger asChild>
                 <span
                   role="button"
@@ -1426,7 +1429,9 @@ export default function App() {
     if (isConfig) return workspaceButton;
     return (
       <HoverCard key={w.id}>
-        <ContextMenu>
+        <ContextMenu
+          onOpenChange={(o) => setMenuWorkspace(o ? w.id : null)}
+        >
           <ContextMenuTrigger asChild>
             <HoverCardTrigger asChild>{workspaceButton}</HoverCardTrigger>
           </ContextMenuTrigger>
@@ -1434,18 +1439,20 @@ export default function App() {
             {renderWorkspaceMenuItems(w, branch, CONTEXT_MENU_PARTS)}
           </ContextMenuContent>
         </ContextMenu>
-        <SessionHoverCard
-          name={w.name}
-          path={workspaceCwd(w) ?? w.repo_root}
-          branch={branch}
-          status={gitStatus}
-          runner={hoverAgent}
-          runnerIcon={hoverAgent ? agentGlyph(hoverAgent, 11) : null}
-          runningCommand={runningCmd}
-          tabs={w.tabs.length}
-          group={w.group}
-          color={w.color}
-        />
+        {menuWorkspace !== w.id && (
+          <SessionHoverCard
+            name={w.name}
+            path={workspaceCwd(w) ?? w.repo_root}
+            branch={branch}
+            status={gitStatus}
+            runner={hoverAgent}
+            runnerIcon={hoverAgent ? agentGlyph(hoverAgent, 11) : null}
+            runningCommand={runningCmd}
+            tabs={w.tabs.length}
+            group={w.group}
+            color={w.color}
+          />
+        )}
       </HoverCard>
     );
   };

@@ -16,3 +16,15 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <App />
   </React.StrictMode>,
 );
+
+const splash = document.getElementById("splash");
+if (splash) {
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      splash.dataset.hidden = "true";
+      const remove = () => splash.remove();
+      splash.addEventListener("transitionend", remove, { once: true });
+      window.setTimeout(remove, 600);
+    }),
+  );
+}
