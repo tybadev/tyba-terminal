@@ -1053,11 +1053,11 @@ export default function App() {
       showGitStatus && w.repo_root ? repoStatuses[w.repo_root] : undefined;
     const runner = isConfig ? null : workspaceAgent(w);
     const runningCmd = isConfig ? null : workspaceCommand(w);
-    return (
+    const hint = open ? w.repo_root : w.name;
+    const workspaceButton = (
       <button
         key={w.id}
         onClick={() => void activateWorkspace(w.id)}
-        title={open ? (w.repo_root ?? undefined) : w.name}
         style={
           w.color
             ? {
@@ -1296,6 +1296,13 @@ export default function App() {
           </>
         )}
       </button>
+    );
+    if (!hint) return workspaceButton;
+    return (
+      <Tooltip key={w.id}>
+        <TooltipTrigger asChild>{workspaceButton}</TooltipTrigger>
+        <TooltipContent side={open ? "bottom" : "right"}>{hint}</TooltipContent>
+      </Tooltip>
     );
   };
 
@@ -1579,11 +1586,13 @@ export default function App() {
                             <span className="h-px min-w-0 flex-1 bg-tyba-border" />
                           </span>
                         )}
+                        <Tooltip>
+                        <TooltipTrigger asChild>
                         <button
                           onClick={() =>
                             void openViewTab("settings").catch(() => {})
                           }
-                          title={open ? undefined : t("settings")}
+                          aria-label={t("settings")}
                           className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
                             open ? "px-2" : "justify-center px-0"
                           } ${
@@ -1605,6 +1614,13 @@ export default function App() {
                             </span>
                           )}
                         </button>
+                        </TooltipTrigger>
+                        {!open && (
+                          <TooltipContent side="right">
+                            {t("settings")}
+                          </TooltipContent>
+                        )}
+                        </Tooltip>
                       </div>
                     )}
                     {groupedWorkspaces.groups.map(([name, list]) => (
