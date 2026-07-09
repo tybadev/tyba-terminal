@@ -472,6 +472,19 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [anyCommandRunning]);
 
+  useEffect(() => {
+    const bump = () => setGitRefresh((n) => n + 1);
+    const onVisibility = () => {
+      if (!document.hidden) bump();
+    };
+    window.addEventListener("focus", bump);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", bump);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
   const workspaceAgent = useCallback(
     (w: Workspace): string | null => {
       for (const tab of w.tabs) {
@@ -1358,9 +1371,12 @@ export default function App() {
                     {gitDir ? compactPath(gitDir) : "~"}
                   </span>
                   {branch && (
-                    <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] leading-none text-tyba-text-faint">
-                      <GitBranch size={9} />
-                      {branch}
+                    <span
+                      title={branch}
+                      className="flex min-w-0 items-center gap-0.5 font-mono text-[10px] leading-none text-tyba-text-faint"
+                    >
+                      <GitBranch size={9} className="shrink-0" />
+                      <span className="truncate">{branch}</span>
                     </span>
                   )}
                   {gitStatus?.dirty && (
