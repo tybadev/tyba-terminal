@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -57,17 +58,41 @@ pub struct SessionCwdPayload {
     pub cwd: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct GateDecision {
+    reset: bool,
+    attached: bool,
+}
+
+#[derive(Default)]
+struct EmitterGate {
+    generation: u64,
+}
+
+impl EmitterGate {
+    fn observe(&mut self, generation: u64) -> GateDecision {
+        let reset = generation != self.generation;
+        self.generation = generation;
+        GateDecision {
+            reset,
+            attached: generation != 0,
+        }
+    }
+}
+
 struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     leader_pid: Option<u32>,
     screen: SharedScreen,
+    generation: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
 pub struct PtyPool {
     ptys: Mutex<HashMap<PtyId, PtyHandle>>,
+    next_generation: AtomicU64,
 }
 
 impl PtyPool {
@@ -123,6 +148,8 @@ impl PtyPool {
         let screen: SharedScreen =
             Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK_LINES)));
         let reader_screen = Arc::clone(&screen);
+        let generation = Arc::new(AtomicU64::new(0));
+        let emitter_generation = Arc::clone(&generation);
 
         self.ptys.lock().insert(
             session_id,
@@ -132,6 +159,7 @@ impl PtyPool {
                 child,
                 leader_pid,
                 screen,
+                generation,
             },
         );
 
@@ -158,7 +186,10 @@ impl PtyPool {
                     }
                 }
             })
-            .expect("failed to spawn pty reader thread");
+            .map_err(|e| {
+                let _ = self.kill(session_id);
+                PtyError::Spawn(format!("pty reader thread: {e}"))
+            })?;
 
         std::thread::Builder::new()
             .name(format!("pty-emitter-{session_id}"))
@@ -168,6 +199,7 @@ impl PtyPool {
                 let mut osc = crate::status::OscParser::new();
                 let mut last_cmd: Option<String> = None;
                 let mut last_cwd: Option<std::path::PathBuf> = None;
+                let mut gate = EmitterGate::default();
 
                 let flush = |pending: &mut Vec<u8>, app: &AppHandle| {
                     if pending.is_empty() {
@@ -193,7 +225,14 @@ impl PtyPool {
                     };
                     match chunk {
                         Some(chunk) => {
-                            reader_screen.lock().process(&chunk);
+                            let decision = {
+                                let mut screen = reader_screen.lock();
+                                screen.process(&chunk);
+                                gate.observe(emitter_generation.load(Ordering::Relaxed))
+                            };
+                            if decision.reset {
+                                pending.clear();
+                            }
                             for ev in osc.feed(&chunk) {
                                 use crate::status::ShellEvent;
                                 match ev {
@@ -231,23 +270,40 @@ impl PtyPool {
                                     }
                                 }
                             }
-                            pending.extend_from_slice(&chunk);
-                            if last_flush.elapsed() >= FLUSH_INTERVAL {
-                                flush(&mut pending, &app);
-                                last_flush = Instant::now();
+                            if decision.attached {
+                                pending.extend_from_slice(&chunk);
+                                if last_flush.elapsed() >= FLUSH_INTERVAL {
+                                    flush(&mut pending, &app);
+                                    last_flush = Instant::now();
+                                }
                             }
                         }
                         None => {
-                            flush(&mut pending, &app);
+                            let decision = gate.observe(emitter_generation.load(Ordering::Relaxed));
+                            if decision.reset {
+                                pending.clear();
+                            }
+                            if decision.attached {
+                                flush(&mut pending, &app);
+                            }
                             last_flush = Instant::now();
                         }
                     }
                 }
-                flush(&mut pending, &app);
+                let decision = gate.observe(emitter_generation.load(Ordering::Relaxed));
+                if decision.reset {
+                    pending.clear();
+                }
+                if decision.attached {
+                    flush(&mut pending, &app);
+                }
                 let _ = app.emit(&exit_event, PtyExitPayload { code: None });
                 on_exit();
             })
-            .expect("failed to spawn pty emitter thread");
+            .map_err(|e| {
+                let _ = self.kill(session_id);
+                PtyError::Spawn(format!("pty emitter thread: {e}"))
+            })?;
 
         Ok(())
     }
@@ -276,11 +332,24 @@ impl PtyPool {
         Ok(())
     }
 
-    pub fn scrollback(&self, id: PtyId) -> Result<Vec<u8>, PtyError> {
+    pub fn attach(&self, app: &AppHandle, id: PtyId) -> Result<(), PtyError> {
         let ptys = self.ptys.lock();
         let handle = ptys.get(&id).ok_or(PtyError::NotFound(id))?;
-        let bytes = handle.screen.lock().screen().contents_formatted();
-        Ok(bytes)
+        let screen = handle.screen.lock();
+        let snapshot = screen.screen().contents_formatted();
+        if !snapshot.is_empty() {
+            let data = base64::engine::general_purpose::STANDARD.encode(&snapshot);
+            let _ = app.emit(&format!("pty://output/{id}"), PtyOutputPayload { data });
+        }
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        handle.generation.store(generation, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn detach(&self, id: PtyId) {
+        if let Some(handle) = self.ptys.lock().get(&id) {
+            handle.generation.store(0, Ordering::Relaxed);
+        }
     }
 
     pub fn scrollback_text(&self, id: PtyId) -> Result<String, PtyError> {
@@ -333,6 +402,64 @@ fn kill_process_group(_leader_pid: u32) -> std::io::Result<()> {
 }
 
 pub type SharedPtyPool = Arc<PtyPool>;
+
+#[cfg(test)]
+mod gate_tests {
+    use super::EmitterGate;
+
+    #[test]
+    fn detached_pty_never_enqueues_output() {
+        let mut gate = EmitterGate::default();
+        let d = gate.observe(0);
+        assert!(!d.attached);
+        assert!(!d.reset);
+    }
+
+    #[test]
+    fn attach_resets_pending_and_starts_emitting() {
+        let mut gate = EmitterGate::default();
+        let d = gate.observe(1);
+        assert!(d.attached);
+        assert!(d.reset);
+    }
+
+    #[test]
+    fn steady_attachment_does_not_reset() {
+        let mut gate = EmitterGate::default();
+        gate.observe(1);
+        let d = gate.observe(1);
+        assert!(d.attached);
+        assert!(!d.reset);
+    }
+
+    #[test]
+    fn detach_discards_pending_and_stops_emitting() {
+        let mut gate = EmitterGate::default();
+        gate.observe(1);
+        let d = gate.observe(0);
+        assert!(!d.attached);
+        assert!(d.reset);
+    }
+
+    #[test]
+    fn reattach_with_new_generation_discards_bytes_covered_by_the_new_snapshot() {
+        let mut gate = EmitterGate::default();
+        gate.observe(1);
+        gate.observe(0);
+        let d = gate.observe(2);
+        assert!(d.attached);
+        assert!(d.reset);
+    }
+
+    #[test]
+    fn reattach_without_an_intervening_detach_still_resets() {
+        let mut gate = EmitterGate::default();
+        gate.observe(1);
+        let d = gate.observe(2);
+        assert!(d.attached);
+        assert!(d.reset);
+    }
+}
 
 #[cfg(test)]
 mod screen_tests {

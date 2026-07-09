@@ -54,8 +54,11 @@ export const createSession = (opts: CreateSessionOpts) =>
 export const writeToSession = (id: SessionId, data: string) =>
   invoke<void>("write_to_session", { id, data: encodeBase64(data) });
 
-export const sessionScrollback = (id: SessionId): Promise<Uint8Array> =>
-  invoke<string>("session_scrollback", { id }).then(decodeBase64);
+export const attachSession = (id: SessionId) =>
+  invoke<void>("attach_session", { id });
+
+export const detachSession = (id: SessionId) =>
+  invoke<void>("detach_session", { id });
 
 export const resizeSession = (id: SessionId, cols: number, rows: number) =>
   invoke<void>("resize_session", { id, cols, rows });

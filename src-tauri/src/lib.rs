@@ -92,9 +92,13 @@ fn write_to_session(state: State<'_, AppState>, id: SessionId, data: String) -> 
 }
 
 #[tauri::command]
-fn session_scrollback(state: State<'_, AppState>, id: SessionId) -> Result<String, String> {
-    let bytes = state.pty_pool.scrollback(id).map_err(|e| e.to_string())?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+fn attach_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
+    state.pty_pool.attach(&app, id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn detach_session(state: State<'_, AppState>, id: SessionId) {
+    state.pty_pool.detach(id);
 }
 
 #[tauri::command]
@@ -973,7 +977,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_session,
             write_to_session,
-            session_scrollback,
+            attach_session,
+            detach_session,
             resize_session,
             list_sessions,
             dispose_session,
