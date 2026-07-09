@@ -168,6 +168,13 @@ function isConfigWorkspace(w: Workspace): boolean {
   return w.tabs.length > 0 && w.tabs.every((t) => t.view === "settings");
 }
 
+const AGENT_COMMAND = /^\s*(?:\S*\/)?(claude|codex|gemini)\b/;
+
+function agentFromCommand(command: string | null): string | null {
+  if (!command) return null;
+  return AGENT_COMMAND.exec(command)?.[1] ?? null;
+}
+
 function agentGlyph(label: string, size = 16): React.ReactNode {
   if (label === "claude") return <ClaudeIcon size={size} className="shrink-0" />;
   if (label === "codex") return <OpenAIIcon size={size} className="shrink-0" />;
@@ -1056,6 +1063,7 @@ export default function App() {
       showGitStatus && w.repo_root ? repoStatuses[w.repo_root] : undefined;
     const runner = isConfig ? null : workspaceAgent(w);
     const runningCmd = isConfig ? null : workspaceCommand(w);
+    const hoverAgent = runner ?? agentFromCommand(runningCmd);
     const workspaceButton = (
       <button
         key={w.id}
@@ -1308,8 +1316,8 @@ export default function App() {
           path={w.repo_root}
           branch={branch}
           status={gitStatus}
-          runner={runner}
-          runnerIcon={runner ? agentGlyph(runner, 11) : null}
+          runner={hoverAgent}
+          runnerIcon={hoverAgent ? agentGlyph(hoverAgent, 11) : null}
           runningCommand={runningCmd}
           tabs={w.tabs.length}
           group={w.group}
