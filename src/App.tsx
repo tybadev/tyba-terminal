@@ -1,3 +1,4 @@
+import type { ElementType } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -33,6 +34,16 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   Tooltip,
   TooltipContent,
@@ -149,6 +160,30 @@ import { HoverCard, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Shortcut } from "@/components/ui/kbd";
 
 const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
+type MenuParts = {
+  Item: ElementType;
+  Separator: ElementType;
+  Sub: ElementType;
+  SubTrigger: ElementType;
+  SubContent: ElementType;
+};
+
+const DROPDOWN_MENU_PARTS: MenuParts = {
+  Item: DropdownMenuItem,
+  Separator: DropdownMenuSeparator,
+  Sub: DropdownMenuSub,
+  SubTrigger: DropdownMenuSubTrigger,
+  SubContent: DropdownMenuSubContent,
+};
+
+const CONTEXT_MENU_PARTS: MenuParts = {
+  Item: ContextMenuItem,
+  Separator: ContextMenuSeparator,
+  Sub: ContextMenuSub,
+  SubTrigger: ContextMenuSubTrigger,
+  SubContent: ContextMenuSubContent,
+};
+
 const GIT_POLL_WHILE_RUNNING_MS = 2000;
 const TOGGLE_PREF_KEY = "pref.sidebar_toggle";
 const DETAILS_PREF_KEY = "pref.sidebar_details";
@@ -1127,6 +1162,108 @@ export default function App() {
 
   const open = sidebar === "open";
 
+  const renderWorkspaceMenuItems = (
+    w: Workspace,
+    branch: string | undefined,
+    M: MenuParts,
+  ) => (
+    <>
+      <M.Item
+        className="text-xs"
+        onSelect={() => setPrompt({ kind: "rename", ws: w })}
+      >
+        {t("renameSession")}
+      </M.Item>
+      <M.Sub>
+        <M.SubTrigger className="text-xs">{t("groupSession")}</M.SubTrigger>
+        <M.SubContent className="w-44">
+          {groupNames.map((name) => (
+            <M.Item
+              key={name}
+              className="text-xs"
+              onSelect={() =>
+                void setWorkspaceGroup(w.id, w.group === name ? null : name)
+              }
+            >
+              <span className="min-w-0 flex-1 truncate">{name}</span>
+              {w.group === name && (
+                <Check size={11} weight="bold" className="text-tyba-green" />
+              )}
+            </M.Item>
+          ))}
+          {groupNames.length > 0 && <M.Separator />}
+          <M.Item
+            className="text-xs"
+            onSelect={() => setPrompt({ kind: "group", ws: w })}
+          >
+            <Plus size={11} weight="bold" />
+            {t("newGroup")}
+          </M.Item>
+        </M.SubContent>
+      </M.Sub>
+      {w.group && (
+        <M.Item
+          className="text-xs"
+          onSelect={() => void setWorkspaceGroup(w.id, null)}
+        >
+          {t("removeFromGroup")}
+        </M.Item>
+      )}
+      <M.Separator />
+      {branch && (
+        <M.Item className="text-xs" onSelect={() => copyText(branch)}>
+          {t("copyBranch")}
+        </M.Item>
+      )}
+      {w.repo_root && (
+        <M.Item
+          className="text-xs"
+          onSelect={() => copyText(w.repo_root as string)}
+        >
+          {t("copyDir")}
+        </M.Item>
+      )}
+      {(branch || w.repo_root) && <M.Separator />}
+      <div className="flex items-center gap-1.5 px-2 py-1.5">
+        <button
+          aria-label={t("noColor")}
+          onClick={() => void setWorkspaceColor(w.id, null)}
+          className={`flex size-4 items-center justify-center rounded-full border text-tyba-text-faint ${
+            !w.color ? "border-tyba-text-muted" : "border-tyba-border-strong"
+          }`}
+        >
+          <Prohibit size={10} />
+        </button>
+        {SESSION_COLORS.map((c) => (
+          <button
+            key={c}
+            aria-label={c}
+            onClick={() => void setWorkspaceColor(w.id, c)}
+            className={`size-4 rounded-full border ${
+              w.color === c ? "border-tyba-text" : "border-transparent"
+            }`}
+            style={{ background: `var(--tyba-${c})` }}
+          />
+        ))}
+      </div>
+      <M.Separator />
+      <M.Item
+        className="text-xs"
+        onSelect={() => toggleWorkspaceDetails(w.id)}
+      >
+        {detailsFor(w.id) ? t("detailsHide") : t("detailsShow")}
+      </M.Item>
+      <M.Separator />
+      <M.Item
+        className="text-xs text-tyba-red focus:text-tyba-red"
+        onSelect={() => void killWorkspace(w.id)}
+      >
+        <X size={12} weight="bold" />
+        {t("killSession")}
+      </M.Item>
+    </>
+  );
+
   const renderWorkspace = (w: Workspace) => {
     const isActive = w.id === layout.active_workspace;
     const isConfig = isConfigWorkspace(w);
@@ -1261,119 +1398,8 @@ export default function App() {
                   <DotsThree size={14} weight="bold" />
                 </span>
               </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="start"
-                className="w-52"
-              >
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() => setPrompt({ kind: "rename", ws: w })}
-                >
-                  {t("renameSession")}
-                </DropdownMenuItem>
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger className="text-xs">
-                    {t("groupSession")}
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-44">
-                    {groupNames.map((name) => (
-                      <DropdownMenuItem
-                        key={name}
-                        className="text-xs"
-                        onSelect={() =>
-                          void setWorkspaceGroup(
-                            w.id,
-                            w.group === name ? null : name,
-                          )
-                        }
-                      >
-                        <span className="min-w-0 flex-1 truncate">{name}</span>
-                        {w.group === name && (
-                          <Check
-                            size={11}
-                            weight="bold"
-                            className="text-tyba-green"
-                          />
-                        )}
-                      </DropdownMenuItem>
-                    ))}
-                    {groupNames.length > 0 && <DropdownMenuSeparator />}
-                    <DropdownMenuItem
-                      className="text-xs"
-                      onSelect={() => setPrompt({ kind: "group", ws: w })}
-                    >
-                      <Plus size={11} weight="bold" />
-                      {t("newGroup")}
-                    </DropdownMenuItem>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                {w.group && (
-                  <DropdownMenuItem
-                    className="text-xs"
-                    onSelect={() => void setWorkspaceGroup(w.id, null)}
-                  >
-                    {t("removeFromGroup")}
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuSeparator />
-                {branch && (
-                  <DropdownMenuItem
-                    className="text-xs"
-                    onSelect={() => copyText(branch)}
-                  >
-                    {t("copyBranch")}
-                  </DropdownMenuItem>
-                )}
-                {w.repo_root && (
-                  <DropdownMenuItem
-                    className="text-xs"
-                    onSelect={() => copyText(w.repo_root as string)}
-                  >
-                    {t("copyDir")}
-                  </DropdownMenuItem>
-                )}
-                {(branch || w.repo_root) && <DropdownMenuSeparator />}
-                <div className="flex items-center gap-1.5 px-2 py-1.5">
-                  <button
-                    aria-label={t("noColor")}
-                    onClick={() => void setWorkspaceColor(w.id, null)}
-                    className={`flex size-4 items-center justify-center rounded-full border text-tyba-text-faint ${
-                      !w.color
-                        ? "border-tyba-text-muted"
-                        : "border-tyba-border-strong"
-                    }`}
-                  >
-                    <Prohibit size={10} />
-                  </button>
-                  {SESSION_COLORS.map((c) => (
-                    <button
-                      key={c}
-                      aria-label={c}
-                      onClick={() => void setWorkspaceColor(w.id, c)}
-                      className={`size-4 rounded-full border ${
-                        w.color === c
-                          ? "border-tyba-text"
-                          : "border-transparent"
-                      }`}
-                      style={{ background: `var(--tyba-${c})` }}
-                    />
-                  ))}
-                </div>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() => toggleWorkspaceDetails(w.id)}
-                >
-                  {detailsFor(w.id) ? t("detailsHide") : t("detailsShow")}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="text-xs text-tyba-red focus:text-tyba-red"
-                  onSelect={() => void killWorkspace(w.id)}
-                >
-                  <X size={12} weight="bold" />
-                  {t("killSession")}
-                </DropdownMenuItem>
+              <DropdownMenuContent align="start" className="w-52">
+                {renderWorkspaceMenuItems(w, branch, DROPDOWN_MENU_PARTS)}
               </DropdownMenuContent>
             </DropdownMenu>
             )}
@@ -1384,7 +1410,14 @@ export default function App() {
     if (isConfig) return workspaceButton;
     return (
       <HoverCard key={w.id}>
-        <HoverCardTrigger asChild>{workspaceButton}</HoverCardTrigger>
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <HoverCardTrigger asChild>{workspaceButton}</HoverCardTrigger>
+          </ContextMenuTrigger>
+          <ContextMenuContent className="w-52">
+            {renderWorkspaceMenuItems(w, branch, CONTEXT_MENU_PARTS)}
+          </ContextMenuContent>
+        </ContextMenu>
         <SessionHoverCard
           name={w.name}
           path={workspaceCwd(w) ?? w.repo_root}
