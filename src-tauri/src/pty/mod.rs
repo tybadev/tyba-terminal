@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,7 +17,41 @@ const CHANNEL_CAPACITY: usize = 128;
 
 pub type PtyId = Uuid;
 
-type SharedScreen = Arc<Mutex<vt100::Parser>>;
+struct ScreenState {
+    parser: vt100::Parser,
+    pending: Vec<u8>,
+    attachers: usize,
+}
+
+impl ScreenState {
+    fn new(rows: u16, cols: u16) -> Self {
+        Self {
+            parser: vt100::Parser::new(rows, cols, SCROLLBACK_LINES),
+            pending: Vec::with_capacity(READ_BUF_SIZE),
+            attachers: 0,
+        }
+    }
+
+    fn take_pending(&mut self) -> Option<Vec<u8>> {
+        if self.attachers == 0 || self.pending.is_empty() {
+            self.pending.clear();
+            return None;
+        }
+        Some(std::mem::replace(
+            &mut self.pending,
+            Vec::with_capacity(READ_BUF_SIZE),
+        ))
+    }
+}
+
+type SharedScreen = Arc<Mutex<ScreenState>>;
+
+fn emit_pending(state: &mut ScreenState, app: &AppHandle, event: &str) {
+    if let Some(bytes) = state.take_pending() {
+        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let _ = app.emit(event, PtyOutputPayload { data });
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PtyError {
@@ -58,41 +91,17 @@ pub struct SessionCwdPayload {
     pub cwd: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct GateDecision {
-    reset: bool,
-    attached: bool,
-}
-
-#[derive(Default)]
-struct EmitterGate {
-    generation: u64,
-}
-
-impl EmitterGate {
-    fn observe(&mut self, generation: u64) -> GateDecision {
-        let reset = generation != self.generation;
-        self.generation = generation;
-        GateDecision {
-            reset,
-            attached: generation != 0,
-        }
-    }
-}
-
 struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     leader_pid: Option<u32>,
     screen: SharedScreen,
-    generation: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
 pub struct PtyPool {
     ptys: Mutex<HashMap<PtyId, PtyHandle>>,
-    next_generation: AtomicU64,
 }
 
 impl PtyPool {
@@ -145,11 +154,8 @@ impl PtyPool {
             .take_writer()
             .map_err(|e| PtyError::Open(e.to_string()))?;
 
-        let screen: SharedScreen =
-            Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK_LINES)));
+        let screen: SharedScreen = Arc::new(Mutex::new(ScreenState::new(rows, cols)));
         let reader_screen = Arc::clone(&screen);
-        let generation = Arc::new(AtomicU64::new(0));
-        let emitter_generation = Arc::clone(&generation);
 
         self.ptys.lock().insert(
             session_id,
@@ -159,7 +165,6 @@ impl PtyPool {
                 child,
                 leader_pid,
                 screen,
-                generation,
             },
         );
 
@@ -194,24 +199,14 @@ impl PtyPool {
         std::thread::Builder::new()
             .name(format!("pty-emitter-{session_id}"))
             .spawn(move || {
-                let mut pending: Vec<u8> = Vec::with_capacity(READ_BUF_SIZE);
+                let mut queued = false;
                 let mut last_flush = Instant::now();
                 let mut osc = crate::status::OscParser::new();
                 let mut last_cmd: Option<String> = None;
                 let mut last_cwd: Option<std::path::PathBuf> = None;
-                let mut gate = EmitterGate::default();
-
-                let flush = |pending: &mut Vec<u8>, app: &AppHandle| {
-                    if pending.is_empty() {
-                        return;
-                    }
-                    let data = base64::engine::general_purpose::STANDARD.encode(&pending);
-                    let _ = app.emit(&output_event, PtyOutputPayload { data });
-                    pending.clear();
-                };
 
                 loop {
-                    let chunk = if pending.is_empty() {
+                    let chunk = if !queued {
                         match rx.recv() {
                             Ok(chunk) => Some(chunk),
                             Err(_) => break,
@@ -225,13 +220,20 @@ impl PtyPool {
                     };
                     match chunk {
                         Some(chunk) => {
-                            let decision = {
+                            let due = last_flush.elapsed() >= FLUSH_INTERVAL;
+                            {
                                 let mut screen = reader_screen.lock();
-                                screen.process(&chunk);
-                                gate.observe(emitter_generation.load(Ordering::Relaxed))
-                            };
-                            if decision.reset {
-                                pending.clear();
+                                screen.parser.process(&chunk);
+                                if screen.attachers > 0 {
+                                    screen.pending.extend_from_slice(&chunk);
+                                }
+                                if due {
+                                    emit_pending(&mut screen, &app, &output_event);
+                                }
+                                queued = !screen.pending.is_empty();
+                            }
+                            if due {
+                                last_flush = Instant::now();
                             }
                             for ev in osc.feed(&chunk) {
                                 use crate::status::ShellEvent;
@@ -270,32 +272,20 @@ impl PtyPool {
                                     }
                                 }
                             }
-                            if decision.attached {
-                                pending.extend_from_slice(&chunk);
-                                if last_flush.elapsed() >= FLUSH_INTERVAL {
-                                    flush(&mut pending, &app);
-                                    last_flush = Instant::now();
-                                }
-                            }
                         }
                         None => {
-                            let decision = gate.observe(emitter_generation.load(Ordering::Relaxed));
-                            if decision.reset {
-                                pending.clear();
-                            }
-                            if decision.attached {
-                                flush(&mut pending, &app);
+                            {
+                                let mut screen = reader_screen.lock();
+                                emit_pending(&mut screen, &app, &output_event);
+                                queued = false;
                             }
                             last_flush = Instant::now();
                         }
                     }
                 }
-                let decision = gate.observe(emitter_generation.load(Ordering::Relaxed));
-                if decision.reset {
-                    pending.clear();
-                }
-                if decision.attached {
-                    flush(&mut pending, &app);
+                {
+                    let mut screen = reader_screen.lock();
+                    emit_pending(&mut screen, &app, &output_event);
                 }
                 let _ = app.emit(&exit_event, PtyExitPayload { code: None });
                 on_exit();
@@ -328,34 +318,45 @@ impl PtyPool {
                 pixel_height: 0,
             })
             .map_err(|e| PtyError::Open(e.to_string()))?;
-        handle.screen.lock().set_size(rows, cols);
+        handle.screen.lock().parser.set_size(rows, cols);
         Ok(())
     }
 
-    pub fn attach(&self, app: &AppHandle, id: PtyId) -> Result<(), PtyError> {
-        let ptys = self.ptys.lock();
-        let handle = ptys.get(&id).ok_or(PtyError::NotFound(id))?;
-        let screen = handle.screen.lock();
-        let snapshot = screen.screen().contents_formatted();
+    fn screen_of(&self, id: PtyId) -> Option<SharedScreen> {
+        Some(Arc::clone(&self.ptys.lock().get(&id)?.screen))
+    }
+
+    pub fn attach(&self, app: &AppHandle, window: &str, id: PtyId) -> Result<(), PtyError> {
+        let screen = self.screen_of(id).ok_or(PtyError::NotFound(id))?;
+        let event = format!("pty://output/{id}");
+        let mut state = screen.lock();
+
+        emit_pending(&mut state, app, &event);
+
+        let snapshot = state.parser.screen().contents_formatted();
         if !snapshot.is_empty() {
             let data = base64::engine::general_purpose::STANDARD.encode(&snapshot);
-            let _ = app.emit(&format!("pty://output/{id}"), PtyOutputPayload { data });
+            let _ = app.emit_to(window, &event, PtyOutputPayload { data });
         }
-        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
-        handle.generation.store(generation, Ordering::Relaxed);
+        state.attachers += 1;
         Ok(())
     }
 
     pub fn detach(&self, id: PtyId) {
-        if let Some(handle) = self.ptys.lock().get(&id) {
-            handle.generation.store(0, Ordering::Relaxed);
+        let Some(screen) = self.screen_of(id) else {
+            return;
+        };
+        let mut state = screen.lock();
+        state.attachers = state.attachers.saturating_sub(1);
+        if state.attachers == 0 {
+            state.pending.clear();
         }
     }
 
     pub fn scrollback_text(&self, id: PtyId) -> Result<String, PtyError> {
         let ptys = self.ptys.lock();
         let handle = ptys.get(&id).ok_or(PtyError::NotFound(id))?;
-        let text = handle.screen.lock().screen().contents();
+        let text = handle.screen.lock().parser.screen().contents();
         Ok(text)
     }
 
@@ -404,60 +405,57 @@ fn kill_process_group(_leader_pid: u32) -> std::io::Result<()> {
 pub type SharedPtyPool = Arc<PtyPool>;
 
 #[cfg(test)]
-mod gate_tests {
-    use super::EmitterGate;
+mod screen_state_tests {
+    use super::ScreenState;
 
     #[test]
-    fn detached_pty_never_enqueues_output() {
-        let mut gate = EmitterGate::default();
-        let d = gate.observe(0);
-        assert!(!d.attached);
-        assert!(!d.reset);
+    fn detached_screen_never_queues_bytes() {
+        let mut state = ScreenState::new(24, 80);
+        state.parser.process(b"hello");
+        assert!(state.take_pending().is_none());
     }
 
     #[test]
-    fn attach_resets_pending_and_starts_emitting() {
-        let mut gate = EmitterGate::default();
-        let d = gate.observe(1);
-        assert!(d.attached);
-        assert!(d.reset);
+    fn bytes_queued_while_detached_are_discarded() {
+        let mut state = ScreenState::new(24, 80);
+        state.pending.extend_from_slice(b"stale");
+        assert!(state.take_pending().is_none());
+        assert!(state.pending.is_empty());
     }
 
     #[test]
-    fn steady_attachment_does_not_reset() {
-        let mut gate = EmitterGate::default();
-        gate.observe(1);
-        let d = gate.observe(1);
-        assert!(d.attached);
-        assert!(!d.reset);
+    fn attached_screen_hands_over_queued_bytes_once() {
+        let mut state = ScreenState::new(24, 80);
+        state.attachers = 1;
+        state.pending.extend_from_slice(b"live");
+        assert_eq!(state.take_pending().as_deref(), Some(&b"live"[..]));
+        assert!(state.take_pending().is_none());
     }
 
     #[test]
-    fn detach_discards_pending_and_stops_emitting() {
-        let mut gate = EmitterGate::default();
-        gate.observe(1);
-        let d = gate.observe(0);
-        assert!(!d.attached);
-        assert!(d.reset);
+    fn taking_pending_keeps_the_buffer_reusable() {
+        let mut state = ScreenState::new(24, 80);
+        state.attachers = 1;
+        state.pending.extend_from_slice(b"a");
+        state.take_pending();
+        state.pending.extend_from_slice(b"b");
+        assert_eq!(state.take_pending().as_deref(), Some(&b"b"[..]));
     }
 
     #[test]
-    fn reattach_with_new_generation_discards_bytes_covered_by_the_new_snapshot() {
-        let mut gate = EmitterGate::default();
-        gate.observe(1);
-        gate.observe(0);
-        let d = gate.observe(2);
-        assert!(d.attached);
-        assert!(d.reset);
+    fn a_second_attacher_keeps_the_stream_alive_after_the_first_detaches() {
+        let mut state = ScreenState::new(24, 80);
+        state.attachers = 2;
+        state.attachers = state.attachers.saturating_sub(1);
+        state.pending.extend_from_slice(b"still live");
+        assert_eq!(state.take_pending().as_deref(), Some(&b"still live"[..]));
     }
 
     #[test]
-    fn reattach_without_an_intervening_detach_still_resets() {
-        let mut gate = EmitterGate::default();
-        gate.observe(1);
-        let d = gate.observe(2);
-        assert!(d.attached);
-        assert!(d.reset);
+    fn detaching_below_zero_saturates() {
+        let mut state = ScreenState::new(24, 80);
+        state.attachers = state.attachers.saturating_sub(1);
+        assert_eq!(state.attachers, 0);
     }
 }
 

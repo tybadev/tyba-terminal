@@ -173,10 +173,16 @@ export function TerminalView({
     });
 
     let disposed = false;
+    let holdsAttachment = false;
     const unlisteners: Array<() => void> = [];
     const addUnlistener = (un: () => void) => {
       if (disposed) un();
       else unlisteners.push(un);
+    };
+    const releaseAttachment = () => {
+      if (!holdsAttachment) return;
+      holdsAttachment = false;
+      void detachSession(sessionId).catch(() => {});
     };
 
     const attached = (async () => {
@@ -185,7 +191,10 @@ export function TerminalView({
           if (!disposed) term.write(bytes);
         }),
       );
-      if (!disposed) await attachSession(sessionId);
+      if (disposed) return;
+      await attachSession(sessionId);
+      holdsAttachment = true;
+      if (disposed) releaseAttachment();
     })().catch(() => {});
 
     void onPtyExit(sessionId, () => {
@@ -243,7 +252,7 @@ export function TerminalView({
 
     return () => {
       disposed = true;
-      void detachSession(sessionId).catch(() => {});
+      releaseAttachment();
       if (timer !== null) window.clearTimeout(timer);
       ro.disconnect();
       window.removeEventListener(RELAYOUT_EVENT, onRelayout);

@@ -92,8 +92,16 @@ fn write_to_session(state: State<'_, AppState>, id: SessionId, data: String) -> 
 }
 
 #[tauri::command]
-fn attach_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
-    state.pty_pool.attach(&app, id).map_err(|e| e.to_string())
+fn attach_session(
+    app: AppHandle,
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), String> {
+    state
+        .pty_pool
+        .attach(&app, window.label(), id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
