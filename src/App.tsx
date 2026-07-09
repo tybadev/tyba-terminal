@@ -110,6 +110,7 @@ import {
   paneSession,
   renameWorkspace,
   repoBranch,
+  onRepoChanged,
   repoStatus,
   setPref,
   setSplitRatio,
@@ -184,7 +185,6 @@ const CONTEXT_MENU_PARTS: MenuParts = {
   SubContent: ContextMenuSubContent,
 };
 
-const GIT_POLL_WHILE_RUNNING_MS = 2000;
 const TOGGLE_PREF_KEY = "pref.sidebar_toggle";
 const DETAILS_PREF_KEY = "pref.sidebar_details";
 const DETAILS_OVERRIDES_KEY = "pref.session_details";
@@ -459,19 +459,19 @@ export default function App() {
     setSessionCwds(prune);
   }, [sessions]);
 
-  const anyCommandRunning = useMemo(
-    () => Object.values(sessionCommands).some((c) => c.running),
-    [sessionCommands],
-  );
 
   useEffect(() => {
-    if (!anyCommandRunning) return;
-    const timer = window.setInterval(() => {
-      if (document.hidden) return;
-      setGitRefresh((n) => n + 1);
-    }, GIT_POLL_WHILE_RUNNING_MS);
-    return () => window.clearInterval(timer);
-  }, [anyCommandRunning]);
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void onRepoChanged(() => setGitRefresh((n) => n + 1)).then((un) => {
+      if (cancelled) un();
+      else unlisten = un;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     const bump = () => setGitRefresh((n) => n + 1);
@@ -593,14 +593,22 @@ export default function App() {
         ),
       ).then((entries) => {
         if (cancelled) return;
-        const nextBranches: Record<string, string> = {};
-        const nextStatus: Record<string, RepoStatus> = {};
-        for (const [dir, branch, status] of entries) {
-          if (branch) nextBranches[dir] = branch;
-          if (status) nextStatus[dir] = status;
-        }
-        setBranches(nextBranches);
-        setRepoStatuses(nextStatus);
+        setBranches((prev) => {
+          const next = { ...prev };
+          for (const [dir, branch] of entries) {
+            if (branch) next[dir] = branch;
+            else delete next[dir];
+          }
+          return next;
+        });
+        setRepoStatuses((prev) => {
+          const next = { ...prev };
+          for (const [dir, , status] of entries) {
+            if (status) next[dir] = status;
+            else delete next[dir];
+          }
+          return next;
+        });
       });
     }, 200);
     return () => {

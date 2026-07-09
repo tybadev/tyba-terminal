@@ -10,6 +10,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
+pub const EVENT_CWD_CHANGED: &str = "session://cwd-changed";
+
 const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 const READ_BUF_SIZE: usize = 8 * 1024;
 const SCROLLBACK_LINES: usize = 1000;
@@ -268,6 +270,7 @@ impl PtyPool {
                                                     cwd: path.to_string_lossy().into_owned(),
                                                 },
                                             );
+                                            let _ = app.emit(EVENT_CWD_CHANGED, session_id);
                                         }
                                     }
                                 }
@@ -370,6 +373,10 @@ impl PtyPool {
         }
         let _ = handle.child.kill();
         Ok(())
+    }
+
+    pub fn leader_pid(&self, id: PtyId) -> Option<u32> {
+        self.ptys.lock().get(&id)?.leader_pid
     }
 
     pub fn is_alive(&self, id: PtyId) -> bool {
