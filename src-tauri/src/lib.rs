@@ -32,6 +32,7 @@ struct AppState {
     layout: layout::SharedLayout,
     docker: docker::SharedDocker,
     repos: repo::SharedRepoWatcher,
+    repo_reconcile: std::sync::mpsc::Sender<()>,
 }
 
 fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::PathBuf> {
@@ -67,8 +68,7 @@ fn reconcile_repo_watchers(app: &AppHandle) {
 
 fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
     let _ = app.emit(layout::EVENT_CHANGED, state.layout.state());
-    let handle = app.clone();
-    std::thread::spawn(move || reconcile_repo_watchers(&handle));
+    let _ = state.repo_reconcile.send(());
 }
 
 fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
@@ -867,6 +867,7 @@ pub fn run() {
                 Arc::new(theme::ThemeManager::new(Arc::clone(&store), themes_dir));
 
             let repos: repo::SharedRepoWatcher = Arc::new(repo::RepoWatcher::new());
+            let (reconcile_tx, reconcile_rx) = std::sync::mpsc::channel::<()>();
 
             app.manage(AppState {
                 store: Arc::clone(&store),
@@ -877,6 +878,7 @@ pub fn run() {
                 layout,
                 docker: Arc::new(docker::DockerManager::new()),
                 repos,
+                repo_reconcile: reconcile_tx.clone(),
             });
 
             std::thread::Builder::new()
@@ -887,14 +889,24 @@ pub fn run() {
                 })
                 .expect("failed to spawn scrollback flush thread");
 
-            let cwd_handle = app.handle().clone();
+            let cwd_tx = reconcile_tx.clone();
             app.listen_any(pty::EVENT_CWD_CHANGED, move |_| {
-                let handle = cwd_handle.clone();
-                std::thread::spawn(move || reconcile_repo_watchers(&handle));
+                let _ = cwd_tx.send(());
             });
 
-            let boot_handle = app.handle().clone();
-            std::thread::spawn(move || reconcile_repo_watchers(&boot_handle));
+            let reconcile_handle = app.handle().clone();
+            std::thread::Builder::new()
+                .name("repo-reconcile".into())
+                .spawn(move || {
+                    while reconcile_rx.recv().is_ok() {
+                        std::thread::sleep(Duration::from_millis(300));
+                        while reconcile_rx.try_recv().is_ok() {}
+                        reconcile_repo_watchers(&reconcile_handle);
+                    }
+                })
+                .expect("failed to spawn repo reconcile thread");
+
+            let _ = reconcile_tx.send(());
 
             if let Some(window) = app.get_webview_window("main") {
                 let hidden = window.clone();
