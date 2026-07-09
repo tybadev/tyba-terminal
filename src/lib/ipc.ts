@@ -180,18 +180,12 @@ export const setWorkspaceColor = (id: WorkspaceId, color: string | null) =>
 export const setWorkspaceGroup = (id: WorkspaceId, group: string | null) =>
   invoke<void>("set_workspace_group", { id, group });
 
-export const repoBranch = (path: string) =>
-  invoke<string | null>("repo_branch", { path });
-
 export interface RepoStatus {
   dirty: boolean;
   changed: number;
   insertions: number;
   deletions: number;
 }
-
-export const repoStatus = (path: string) =>
-  invoke<RepoStatus | null>("repo_status", { path });
 
 export const newWindow = () => invoke<void>("new_window");
 
@@ -238,10 +232,18 @@ export const onLayoutChanged = (
   listen<LayoutState>("layout://changed", (e) => handler(e.payload));
 
 export interface RepoSnapshot {
+  ahead: number | null;
+  behind: number | null;
   root: string;
   branch: string | null;
   status: RepoStatus | null;
 }
+
+export const repoSnapshots = () =>
+  invoke<RepoSnapshot[]>("repo_snapshots");
+
+export const sessionCwd = (id: SessionId) =>
+  invoke<string | null>("session_cwd", { id });
 
 export const onRepoChanged = (
   handler: (snapshot: RepoSnapshot) => void,

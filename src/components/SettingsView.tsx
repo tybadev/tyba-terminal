@@ -80,6 +80,8 @@ interface Props {
   showContainers: boolean;
   onShowContainersChange: (value: boolean) => void;
   showGitStatus: boolean;
+  toolbarEnabled: boolean;
+  onToolbarEnabledChange: (value: boolean) => void;
   onShowGitStatusChange: (value: boolean) => void;
   shellIntegration: boolean;
   onShellIntegrationChange: (value: boolean) => void;
@@ -299,6 +301,8 @@ export function SettingsView({
   showContainers,
   onShowContainersChange,
   showGitStatus,
+  toolbarEnabled,
+  onToolbarEnabledChange,
   onShowGitStatusChange,
   shellIntegration,
   onShellIntegrationChange,
@@ -680,6 +684,15 @@ export function SettingsView({
                 <Switch
                   checked={showGitStatus}
                   onCheckedChange={onShowGitStatusChange}
+                />
+              </SettingRow>
+              <SettingRow
+                label={t("toolbarToggle")}
+                hint={t("toolbarHint")}
+              >
+                <Switch
+                  checked={toolbarEnabled}
+                  onCheckedChange={onToolbarEnabledChange}
                 />
               </SettingRow>
               <SettingRow label={t("language")}>

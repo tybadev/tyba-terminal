@@ -68,6 +68,13 @@ const resources = {
       accountNamePlaceholder: "Como quer ser chamado?",
       sidebarDetails: "Detalhes da sessão na sidebar",
       gitStatusToggle: "Status do git na sidebar",
+      toolbarToggle: "Barra de chips",
+      toolbarHint:
+        "Barra fina no rodapé do terminal com pasta, branch, diff e relógio da sessão ativa.",
+      toolbarCwd: "Pasta atual",
+      toolbarBranch: "Branch do git",
+      toolbarDiff: "Alterações não commitadas",
+      toolbarAheadBehind: "Commits à frente e atrás do upstream",
       gitStatusHint:
         "Mostra um rótulo com o número de alterações não commitadas quando a pasta da sessão tem mudanças.",
       gitChanges_one: "{{count}} alteração não commitada",
@@ -267,6 +274,13 @@ const resources = {
       accountNamePlaceholder: "What should we call you?",
       sidebarDetails: "Session details in the sidebar",
       gitStatusToggle: "Git status in the sidebar",
+      toolbarToggle: "Chip bar",
+      toolbarHint:
+        "Thin bar at the terminal footer with folder, branch, diff and clock for the active session.",
+      toolbarCwd: "Current folder",
+      toolbarBranch: "Git branch",
+      toolbarDiff: "Uncommitted changes",
+      toolbarAheadBehind: "Commits ahead and behind upstream",
       gitStatusHint:
         "Shows a badge with the number of uncommitted changes when the session folder has changes.",
       gitChanges_one: "{{count}} uncommitted change",

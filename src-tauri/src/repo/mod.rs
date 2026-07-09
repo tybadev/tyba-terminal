@@ -31,6 +31,8 @@ pub struct RepoSnapshot {
     pub root: String,
     pub branch: Option<String>,
     pub status: Option<RepoStatus>,
+    pub ahead: Option<u32>,
+    pub behind: Option<u32>,
 }
 
 pub fn count_status_entries(stdout: &[u8]) -> u32 {
@@ -245,16 +247,38 @@ pub fn status(root: &Path) -> Option<RepoStatus> {
     })
 }
 
+fn ahead_behind(root: &Path) -> Option<(u32, u32)> {
+    let out = git_in(root)
+        .args(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parts = text.split_whitespace();
+    let behind = parts.next()?.parse().ok()?;
+    let ahead = parts.next()?.parse().ok()?;
+    Some((ahead, behind))
+}
+
 pub fn snapshot(root: &Path) -> RepoSnapshot {
+    let (ahead, behind) = match ahead_behind(root) {
+        Some((ahead, behind)) => (Some(ahead), Some(behind)),
+        None => (None, None),
+    };
     RepoSnapshot {
         root: root.to_string_lossy().into_owned(),
         branch: branch(root),
         status: status(root),
+        ahead,
+        behind,
     }
 }
 
 struct Watched {
     _debouncer: Debouncer<notify::RecommendedWatcher, RecommendedCache>,
+    last: Arc<Mutex<Option<RepoSnapshot>>>,
 }
 
 #[derive(Default)]
@@ -267,6 +291,14 @@ pub type SharedRepoWatcher = Arc<RepoWatcher>;
 impl RepoWatcher {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn snapshots(&self) -> Vec<RepoSnapshot> {
+        self.watched
+            .lock()
+            .values()
+            .filter_map(|w| w.last.lock().clone())
+            .collect()
     }
 
     pub fn set_roots<R: Runtime>(&self, app: &AppHandle<R>, roots: HashSet<PathBuf>) {
@@ -337,6 +369,7 @@ fn spawn_watcher<R: Runtime>(
 
     Some(Watched {
         _debouncer: debouncer,
+        last: seed,
     })
 }
 
@@ -475,6 +508,45 @@ mod tests {
         let spurious = rx.try_recv().is_ok();
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
         assert!(!spurious, "watcher emitiu sem o snapshot ter mudado");
+    }
+
+    #[test]
+    fn ahead_behind_tracks_the_upstream() {
+        let repo = temp_repo();
+        let no_upstream = super::snapshot(&repo);
+        assert_eq!((no_upstream.ahead, no_upstream.behind), (None, None));
+
+        let base = repo.parent().unwrap();
+        let clone = base.join("clone");
+        git(
+            base,
+            &[
+                "clone",
+                "-q",
+                repo.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        git(&clone, &["config", "user.email", "t@t.com"]);
+        git(&clone, &["config", "user.name", "t"]);
+
+        let synced = super::snapshot(&clone);
+        assert_eq!((synced.ahead, synced.behind), (Some(0), Some(0)));
+
+        std::fs::write(clone.join("c.txt"), "c\n").unwrap();
+        git(&clone, &["add", "-A"]);
+        git(&clone, &["commit", "-qm", "ahead"]);
+        let ahead = super::snapshot(&clone);
+        assert_eq!((ahead.ahead, ahead.behind), (Some(1), Some(0)));
+
+        std::fs::write(repo.join("d.txt"), "d\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-qm", "upstream-moves"]);
+        git(&clone, &["fetch", "-q"]);
+        let diverged = super::snapshot(&clone);
+        assert_eq!((diverged.ahead, diverged.behind), (Some(1), Some(1)));
+
+        std::fs::remove_dir_all(base).ok();
     }
 
     #[test]

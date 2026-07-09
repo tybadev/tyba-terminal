@@ -149,6 +149,17 @@ fn detach_session(state: State<'_, AppState>, id: SessionId) {
 }
 
 #[tauri::command]
+fn repo_snapshots(state: State<'_, AppState>) -> Vec<repo::RepoSnapshot> {
+    state.repos.snapshots()
+}
+
+#[tauri::command]
+fn session_cwd(state: State<'_, AppState>, id: SessionId) -> Option<String> {
+    let pid = state.pty_pool.leader_pid(id)?;
+    repo::process_cwd(pid).map(|p| p.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 fn resize_session(
     state: State<'_, AppState>,
     id: SessionId,
@@ -294,18 +305,6 @@ fn set_workspace_group(
         .map_err(|e| e.to_string())?;
     emit_layout(&app, &state);
     Ok(())
-}
-
-#[tauri::command]
-fn repo_branch(path: String) -> Option<String> {
-    let path = session::expand_home(std::path::Path::new(&path));
-    repo::branch(&path)
-}
-
-#[tauri::command]
-fn repo_status(path: String) -> Option<repo::RepoStatus> {
-    let path = session::expand_home(std::path::Path::new(&path));
-    repo::status(&path)
 }
 
 #[tauri::command]
@@ -929,6 +928,8 @@ pub fn run() {
             write_to_session,
             attach_session,
             detach_session,
+            repo_snapshots,
+            session_cwd,
             resize_session,
             list_sessions,
             dispose_session,
@@ -947,8 +948,6 @@ pub fn run() {
             rename_workspace,
             set_workspace_color,
             set_workspace_group,
-            repo_branch,
-            repo_status,
             new_window,
             create_tab,
             close_tab,
