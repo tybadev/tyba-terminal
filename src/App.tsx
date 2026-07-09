@@ -54,7 +54,9 @@ import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ContainersView } from "./components/ContainersView";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
+import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
 import { PromptDialog } from "./components/PromptDialog";
+import { TerminalSearch } from "./components/TerminalSearch";
 import {
   SettingsView,
   type DetailsPref,
@@ -105,6 +107,7 @@ import {
   type RepoStatus,
   type Session,
   type SessionCommand,
+  type SessionId,
   type SessionKind,
   type SplitKind,
   type Workspace,
@@ -121,9 +124,21 @@ import {
   DEFAULT_BINDINGS,
   parseBindings,
   BINDINGS_PREF_KEY,
+  TERMINAL_ACTIONS,
   type Bindings,
   type KeyAction,
 } from "./lib/keys";
+import {
+  flattenPaste,
+  isMultilinePaste,
+  readClipboardText,
+  writeClipboardText,
+} from "./lib/clipboard";
+import {
+  getTerm,
+  TERMINAL_PASTE_EVENT,
+  type TerminalPasteDetail,
+} from "./lib/termRegistry";
 import { Shortcut } from "@/components/ui/kbd";
 
 const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
@@ -226,6 +241,10 @@ export default function App() {
     "actions",
   );
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [pastePrompt, setPastePrompt] = useState<TerminalPasteDetail | null>(
+    null,
+  );
   const [branches, setBranches] = useState<Record<string, string>>({});
   const [repoStatuses, setRepoStatuses] = useState<Record<string, RepoStatus>>(
     {},
@@ -843,6 +862,49 @@ export default function App() {
     };
   }, [refreshSessions]);
 
+  const deliverPaste = useCallback((sessionId: SessionId, text: string) => {
+    const entry = getTerm(sessionId);
+    if (!entry || !text) return;
+    if (!isMultilinePaste(text) || entry.term.modes.bracketedPasteMode) {
+      entry.term.paste(text);
+      return;
+    }
+    setPastePrompt({ sessionId, text });
+  }, []);
+
+  const pasteFromClipboard = useCallback(async () => {
+    if (!activeId) return;
+    let text = "";
+    try {
+      text = await readClipboardText();
+    } catch {
+      return;
+    }
+    deliverPaste(activeId, text);
+  }, [activeId, deliverPaste]);
+
+  useEffect(() => {
+    const onTerminalPaste = (e: Event) => {
+      const { sessionId, text } = (e as CustomEvent<TerminalPasteDetail>).detail;
+      deliverPaste(sessionId, text);
+    };
+    window.addEventListener(TERMINAL_PASTE_EVENT, onTerminalPaste);
+    return () => window.removeEventListener(TERMINAL_PASTE_EVENT, onTerminalPaste);
+  }, [deliverPaste]);
+
+  const confirmPaste = useCallback(
+    (mode: "raw" | "single") => {
+      if (!pastePrompt) return;
+      const entry = getTerm(pastePrompt.sessionId);
+      const text =
+        mode === "single" ? flattenPaste(pastePrompt.text) : pastePrompt.text;
+      entry?.term.paste(text);
+      entry?.term.focus();
+      setPastePrompt(null);
+    },
+    [pastePrompt],
+  );
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (captureState.active) return;
@@ -851,6 +913,26 @@ export default function App() {
       const action = (Object.keys(bindings) as KeyAction[]).find(
         (a) => bindings[a] === combo,
       );
+      if (action && TERMINAL_ACTIONS.includes(action)) {
+        const entry = getTerm(activeId);
+        if (!entry) return;
+        if (action === "copy") {
+          if (!entry.term.hasSelection()) return;
+          e.preventDefault();
+          e.stopPropagation();
+          void writeClipboardText(entry.term.getSelection()).catch(() => {});
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;
+        if (action === "paste") {
+          void pasteFromClipboard();
+        } else if (action === "search") {
+          setSearchOpen((v) => !v);
+        }
+        return;
+      }
       if (action) {
         e.preventDefault();
         if (e.repeat) return;
@@ -929,6 +1011,8 @@ export default function App() {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [
+    activeId,
+    pasteFromClipboard,
     bindings,
     newTab,
     closeActivePane,
@@ -1220,6 +1304,11 @@ export default function App() {
         onOpenSettings={() => void openViewTab("settings").catch(() => {})}
         onTogglePanel={toggleSidebar}
         onGoToWorkspace={(id) => void activateWorkspace(id)}
+      />
+      <PasteConfirmDialog
+        text={pastePrompt?.text ?? null}
+        onCancel={() => setPastePrompt(null)}
+        onConfirm={confirmPaste}
       />
       <NewSessionPrompt
         open={newSessionOpen}
@@ -1581,6 +1670,12 @@ export default function App() {
                   ref={paneAreaRef}
                   className="relative min-h-0 flex-1 overflow-hidden"
                 >
+                  {searchOpen && activeId && (
+                    <TerminalSearch
+                      sessionId={activeId}
+                      onClose={() => setSearchOpen(false)}
+                    />
+                  )}
                   {activeTab?.view === "containers" && (
                     <div className="absolute inset-0 flex">
                       <ContainersView

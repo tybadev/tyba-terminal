@@ -1,11 +1,15 @@
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import i18n from "../i18n";
 
+import { openExternalUrl } from "../lib/clipboard";
 import {
   onPtyExit,
   onPtyOutput,
@@ -14,6 +18,11 @@ import {
   writeToSession,
   type SessionId,
 } from "../lib/ipc";
+import {
+  registerTerm,
+  requestTerminalPaste,
+  unregisterTerm,
+} from "../lib/termRegistry";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
 export const RELAYOUT_EVENT = "tyba:relayout";
@@ -98,11 +107,34 @@ export function TerminalView({
       cursorBlink: true,
       allowProposedApi: true,
       scrollback: 10_000,
+      rightClickSelectsWord: true,
+      macOptionClickForcesSelection: true,
+      macOptionIsMeta: false,
+      linkHandler: {
+        activate: (_event, uri) => {
+          void openExternalUrl(uri);
+        },
+      },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+
+    const unicode11 = new Unicode11Addon();
+    term.loadAddon(unicode11);
+    term.unicode.activeVersion = "11";
+
+    const search = new SearchAddon();
+    term.loadAddon(search);
+
+    const webLinks = new WebLinksAddon((_event, uri) => {
+      void openExternalUrl(uri);
+    });
+    term.loadAddon(webLinks);
+
     term.open(el);
     fit.fit();
+
+    registerTerm(sessionId, { term, search });
 
     el.style.backgroundColor = theme.background ?? "";
     const offTheme = onTerminalThemeChange((next) => {
@@ -113,7 +145,6 @@ export function TerminalView({
     termRef.current = term;
     fitRef.current = fit;
 
-    // teclado -> PTY
     const dataSub = term.onData((data) => {
       void writeToSession(sessionId, data).catch(() => {});
     });
@@ -168,9 +199,16 @@ export function TerminalView({
       }
     };
     const onMouseDown = () => onFocusRef.current?.();
+    const onNativePaste = (e: ClipboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const text = e.clipboardData?.getData("text") ?? "";
+      if (text) requestTerminalPaste({ sessionId, text });
+    };
     window.addEventListener(RELAYOUT_EVENT, onRelayout);
     window.addEventListener(FONT_SIZE_EVENT, onFontSize);
     el.addEventListener("mousedown", onMouseDown);
+    el.addEventListener("paste", onNativePaste, true);
     void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
 
     return () => {
@@ -179,15 +217,16 @@ export function TerminalView({
       window.removeEventListener(RELAYOUT_EVENT, onRelayout);
       window.removeEventListener(FONT_SIZE_EVENT, onFontSize);
       el.removeEventListener("mousedown", onMouseDown);
+      el.removeEventListener("paste", onNativePaste, true);
       offTheme();
       dataSub.dispose();
       unlisteners.forEach((un) => un());
+      unregisterTerm(sessionId);
       disposeWebgl(webglRef.current);
       webglRef.current = null;
       term.dispose();
       termRef.current = null;
     };
-    // sessionId é estável por instância do componente (key no pai)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 

@@ -1,3 +1,5 @@
+import { IS_MAC } from "./platform";
+
 export type KeyAction =
   | "paletteActions"
   | "paletteSessions"
@@ -18,7 +20,10 @@ export type KeyAction =
   | "paneLeft"
   | "paneRight"
   | "paneUp"
-  | "paneDown";
+  | "paneDown"
+  | "copy"
+  | "paste"
+  | "search";
 
 export const KEY_ACTIONS: KeyAction[] = [
   "paletteActions",
@@ -41,6 +46,15 @@ export const KEY_ACTIONS: KeyAction[] = [
   "paneRight",
   "paneUp",
   "paneDown",
+  "copy",
+  "paste",
+  "search",
+];
+
+export const TERMINAL_ACTIONS: readonly KeyAction[] = [
+  "copy",
+  "paste",
+  "search",
 ];
 
 export type KeyCategory =
@@ -48,7 +62,8 @@ export type KeyCategory =
   | "sessions"
   | "tabs"
   | "panes"
-  | "navigation";
+  | "navigation"
+  | "terminal";
 
 export const KEY_CATEGORY_ORDER: KeyCategory[] = [
   "general",
@@ -56,6 +71,7 @@ export const KEY_CATEGORY_ORDER: KeyCategory[] = [
   "tabs",
   "panes",
   "navigation",
+  "terminal",
 ];
 
 export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
@@ -79,6 +95,9 @@ export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
   paneRight: "navigation",
   paneUp: "navigation",
   paneDown: "navigation",
+  copy: "terminal",
+  paste: "terminal",
+  search: "terminal",
 };
 
 export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
@@ -102,6 +121,9 @@ export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   paneRight: "paneRight",
   paneUp: "paneUp",
   paneDown: "paneDown",
+  copy: "copySelection",
+  paste: "pasteClipboard",
+  search: "searchTerminal",
 };
 
 export const KEY_CATEGORY_LABEL_KEYS: Record<KeyCategory, string> = {
@@ -110,6 +132,7 @@ export const KEY_CATEGORY_LABEL_KEYS: Record<KeyCategory, string> = {
   tabs: "catTabs",
   panes: "catPanes",
   navigation: "catNavigation",
+  terminal: "catTerminal",
 };
 
 export function actionsByCategory(): [KeyCategory, KeyAction[]][] {
@@ -142,6 +165,9 @@ export const DEFAULT_BINDINGS: Bindings = {
   paneRight: "meta+alt+arrowright",
   paneUp: "meta+alt+arrowup",
   paneDown: "meta+alt+arrowdown",
+  copy: IS_MAC ? "meta+c" : "ctrl+shift+c",
+  paste: IS_MAC ? "meta+v" : "ctrl+shift+v",
+  search: IS_MAC ? "meta+f" : "ctrl+shift+f",
 };
 
 export const BINDINGS_PREF_KEY = "pref.keybindings";
