@@ -34,6 +34,7 @@ import {
   registerTerm,
   unregisterTerm,
 } from "../lib/termRegistry";
+import { IS_MAC } from "../lib/platform";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
 export const RELAYOUT_EVENT = "tyba:relayout";
@@ -112,6 +113,7 @@ export function TerminalView({
   const onPasteRef = useRef(onPaste);
   onPasteRef.current = onPaste;
   const [menuHasSelection, setMenuHasSelection] = useState(false);
+  const [menuMouseMode, setMenuMouseMode] = useState(false);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -300,7 +302,12 @@ export function TerminalView({
   return (
     <ContextMenu
       onOpenChange={(o) => {
-        if (o) setMenuHasSelection(termRef.current?.hasSelection() ?? false);
+        if (!o) return;
+        const term = termRef.current;
+        setMenuHasSelection(term?.hasSelection() ?? false);
+        setMenuMouseMode(
+          (term?.modes.mouseTrackingMode ?? "none") !== "none",
+        );
       }}
     >
       <ContextMenuTrigger asChild disabled={!visible}>
@@ -322,18 +329,26 @@ export function TerminalView({
         />
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem
-          disabled={!menuHasSelection}
-          onSelect={() => copySelection(false)}
-        >
-          {i18n.t("copySelection")}
-        </ContextMenuItem>
-        <ContextMenuItem
-          disabled={!menuHasSelection}
-          onSelect={() => copySelection(true)}
-        >
-          {i18n.t("copyAsMarkdown")}
-        </ContextMenuItem>
+        {menuMouseMode && !menuHasSelection ? (
+          <ContextMenuItem disabled>
+            {i18n.t(IS_MAC ? "selectionHintMac" : "selectionHintOther")}
+          </ContextMenuItem>
+        ) : (
+          <>
+            <ContextMenuItem
+              disabled={!menuHasSelection}
+              onSelect={() => copySelection(false)}
+            >
+              {i18n.t("copySelection")}
+            </ContextMenuItem>
+            <ContextMenuItem
+              disabled={!menuHasSelection}
+              onSelect={() => copySelection(true)}
+            >
+              {i18n.t("copyAsMarkdown")}
+            </ContextMenuItem>
+          </>
+        )}
         <ContextMenuItem onSelect={pasteFromMenu}>
           {i18n.t("pasteClipboard")}
         </ContextMenuItem>
