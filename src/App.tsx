@@ -946,6 +946,7 @@ export default function App() {
       }
       if (action) {
         e.preventDefault();
+        e.stopPropagation();
         if (e.repeat) return;
         if (action === "paletteActions") {
           openPalette("actions");
@@ -1725,6 +1726,8 @@ export default function App() {
                         key={s.id}
                         sessionId={s.id}
                         onPaste={deliverPaste}
+                        onSearch={() => setSearchOpen(true)}
+                        onSplit={(kind) => void splitActive(kind)}
                         visible={paneRect !== null}
                         focused={s.id === activeId}
                         framed={(paneLayout?.panes.length ?? 0) > 1}

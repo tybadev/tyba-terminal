@@ -9,7 +9,18 @@ import "@xterm/xterm/css/xterm.css";
 
 import i18n from "../i18n";
 
-import { openExternalUrl } from "../lib/clipboard";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
+  openExternalUrl,
+  readClipboardText,
+  writeClipboardText,
+} from "../lib/clipboard";
 import {
   onPtyExit,
   onPtyOutput,
@@ -76,6 +87,8 @@ interface Props {
   onExit?: () => void;
   onFocus?: () => void;
   onPaste?: (sessionId: SessionId, text: string) => void;
+  onSearch?: () => void;
+  onSplit?: (kind: "v" | "h") => void;
 }
 
 export function TerminalView({
@@ -87,6 +100,8 @@ export function TerminalView({
   onExit,
   onFocus,
   onPaste,
+  onSearch,
+  onSplit,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -257,21 +272,72 @@ export function TerminalView({
       : "border border-tyba-border"
     : "";
 
+  const selection = () => termRef.current?.getSelection() ?? "";
+
+  const copySelection = (asMarkdown: boolean) => {
+    const text = selection();
+    if (!text) return;
+    const payload = asMarkdown ? `\`\`\`\n${text}\n\`\`\`` : text;
+    void writeClipboardText(payload).catch(() => {});
+  };
+
+  const pasteFromMenu = () => {
+    void readClipboardText()
+      .then((text) => {
+        if (text) onPasteRef.current?.(sessionId, text);
+      })
+      .catch(() => {});
+  };
+
+  const hasSelection = termRef.current?.hasSelection() ?? false;
+
   return (
-    <div
-      ref={containerRef}
-      className={`overflow-hidden rounded-[4px] bg-tyba-sunken px-2 pb-3 pt-2 ${frameClass}`}
-      style={
-        visible && rect
-          ? {
-              position: "absolute",
-              left: `${rect.left}%`,
-              top: `${rect.top}%`,
-              width: `${rect.width}%`,
-              height: `${rect.height}%`,
-            }
-          : { display: "none" }
-      }
-    />
+    <ContextMenu>
+      <ContextMenuTrigger asChild disabled={!visible}>
+        <div
+          ref={containerRef}
+          className={`overflow-hidden rounded-[4px] bg-tyba-sunken px-2 pb-3 pt-2 ${frameClass}`}
+          style={
+            visible && rect
+              ? {
+                  position: "absolute",
+                  left: `${rect.left}%`,
+                  top: `${rect.top}%`,
+                  width: `${rect.width}%`,
+                  height: `${rect.height}%`,
+                }
+              : { display: "none" }
+          }
+        />
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem
+          disabled={!hasSelection}
+          onSelect={() => copySelection(false)}
+        >
+          {i18n.t("copySelection")}
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!hasSelection}
+          onSelect={() => copySelection(true)}
+        >
+          {i18n.t("copyAsMarkdown")}
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={pasteFromMenu}>
+          {i18n.t("pasteClipboard")}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => onSearch?.()}>
+          {i18n.t("searchTerminal")}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => onSplit?.("v")}>
+          {i18n.t("splitRight")}
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => onSplit?.("h")}>
+          {i18n.t("splitDown")}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
