@@ -89,6 +89,7 @@ import {
   onApprovalRequested,
   onApprovalResolved,
   onLayoutChanged,
+  onSessionCommand,
   openViewTab,
   paneSession,
   renameWorkspace,
@@ -103,6 +104,7 @@ import {
   type LayoutState,
   type RepoStatus,
   type Session,
+  type SessionCommand,
   type SessionKind,
   type SplitKind,
   type Workspace,
@@ -339,6 +341,23 @@ export default function App() {
     sessionIdsRef.current = new Set(sessions.map((s) => s.id));
   }, [sessions]);
 
+  const [sessionCommands, setSessionCommands] = useState<
+    Record<string, SessionCommand>
+  >({});
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    for (const s of sessions) {
+      void onSessionCommand(s.id, (payload) =>
+        setSessionCommands((prev) => ({ ...prev, [s.id]: payload })),
+      ).then((un) => (disposed ? un() : unlisteners.push(un)));
+    }
+    return () => {
+      disposed = true;
+      unlisteners.forEach((un) => un());
+    };
+  }, [sessions]);
+
   const workspaceAgent = useCallback(
     (w: Workspace): string | null => {
       for (const tab of w.tabs) {
@@ -352,6 +371,20 @@ export default function App() {
       return null;
     },
     [sessionById],
+  );
+
+  const workspaceCommand = useCallback(
+    (w: Workspace): string | null => {
+      for (const tab of w.tabs) {
+        if (!tab.root) continue;
+        for (const sid of leafSessions(tab.root)) {
+          const c = sessionCommands[sid];
+          if (c?.running && c.command) return c.command;
+        }
+      }
+      return null;
+    },
+    [sessionCommands],
   );
 
   const detailsFor = useCallback(
@@ -912,6 +945,7 @@ export default function App() {
     const gitStatus =
       showGitStatus && w.repo_root ? repoStatuses[w.repo_root] : undefined;
     const runner = isConfig ? null : workspaceAgent(w);
+    const runningCmd = isConfig ? null : workspaceCommand(w);
     return (
       <button
         key={w.id}
@@ -982,7 +1016,15 @@ export default function App() {
               <span className="w-full truncate text-left leading-none">
                 {isConfig ? t("settings") : w.name}
               </span>
-              {showDetails && (
+              {showDetails && runningCmd && (
+                <span className="flex w-full items-center gap-1.5">
+                  <span className="size-1 shrink-0 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse" />
+                  <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-muted">
+                    {runningCmd}
+                  </span>
+                </span>
+              )}
+              {showDetails && !runningCmd && (
                 <span className="flex w-full items-center gap-1.5">
                   <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-faint">
                     {w.repo_root ? compactPath(w.repo_root) : "~"}
