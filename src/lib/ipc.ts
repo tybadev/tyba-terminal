@@ -237,6 +237,17 @@ export const onLayoutChanged = (
 ): Promise<UnlistenFn> =>
   listen<LayoutState>("layout://changed", (e) => handler(e.payload));
 
+export interface RepoSnapshot {
+  root: string;
+  branch: string | null;
+  status: RepoStatus | null;
+}
+
+export const onRepoChanged = (
+  handler: (snapshot: RepoSnapshot) => void,
+): Promise<UnlistenFn> =>
+  listen<RepoSnapshot>("repo://changed", (e) => handler(e.payload));
+
 export function paneSession(node: PaneNode, pane: PaneId): SessionId | null {
   if (node.type === "leaf") return node.id === pane ? node.session_id : null;
   return paneSession(node.first, pane) ?? paneSession(node.second, pane);

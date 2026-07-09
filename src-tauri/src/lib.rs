@@ -3,6 +3,7 @@ pub mod approvals;
 pub mod docker;
 pub mod layout;
 pub mod pty;
+pub mod repo;
 pub mod sandbox;
 pub mod session;
 pub mod status;
@@ -30,10 +31,25 @@ struct AppState {
     themes: theme::SharedThemes,
     layout: layout::SharedLayout,
     docker: docker::SharedDocker,
+    repos: repo::SharedRepoWatcher,
+}
+
+fn watched_repo_roots(
+    layout: &layout::LayoutState,
+) -> std::collections::HashSet<std::path::PathBuf> {
+    layout
+        .workspaces
+        .iter()
+        .filter_map(|w| w.repo_root.as_deref())
+        .map(|root| session::expand_home(std::path::Path::new(root)))
+        .filter(|root| root.is_dir())
+        .collect()
 }
 
 fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
-    let _ = app.emit(layout::EVENT_CHANGED, state.layout.state());
+    let snapshot = state.layout.state();
+    state.repos.set_roots(app, watched_repo_roots(&snapshot));
+    let _ = app.emit(layout::EVENT_CHANGED, snapshot);
 }
 
 fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
@@ -260,134 +276,13 @@ fn set_workspace_group(
 #[tauri::command]
 fn repo_branch(path: String) -> Option<String> {
     let path = session::expand_home(std::path::Path::new(&path));
-    let out = worktree::git_in(&path)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if branch.is_empty() {
-        None
-    } else {
-        Some(branch)
-    }
-}
-
-#[derive(serde::Serialize)]
-struct RepoStatus {
-    dirty: bool,
-    changed: u32,
-    insertions: u32,
-    deletions: u32,
-}
-
-fn diff_numstat(path: &std::path::Path) -> (u32, u32) {
-    let out = worktree::git_in(path)
-        .args(["diff", "--no-ext-diff", "--numstat", "--no-color", "HEAD"])
-        .output();
-    let Ok(out) = out else {
-        return (0, 0);
-    };
-    if !out.status.success() {
-        return (0, 0);
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut insertions = 0;
-    let mut deletions = 0;
-    for line in text.lines() {
-        let mut fields = line.split('\t');
-        let added = fields.next().and_then(|v| v.parse::<u32>().ok());
-        let removed = fields.next().and_then(|v| v.parse::<u32>().ok());
-        insertions += added.unwrap_or(0);
-        deletions += removed.unwrap_or(0);
-    }
-    (insertions, deletions)
-}
-
-const UNTRACKED_MAX_BYTES: u64 = 512 * 1024;
-const UNTRACKED_MAX_FILES: usize = 500;
-
-fn untracked_insertions(path: &std::path::Path) -> u32 {
-    #[cfg(unix)]
-    use std::os::unix::ffi::OsStrExt;
-
-    let list = worktree::git_in(path)
-        .args(["ls-files", "--others", "--exclude-standard", "-z"])
-        .output();
-    let Ok(list) = list else {
-        return 0;
-    };
-    let mut lines = 0u32;
-    for file in list
-        .stdout
-        .split(|b| *b == 0)
-        .filter(|f| !f.is_empty())
-        .take(UNTRACKED_MAX_FILES)
-    {
-        #[cfg(unix)]
-        let full = path.join(std::ffi::OsStr::from_bytes(file));
-        #[cfg(not(unix))]
-        let full = path.join(String::from_utf8_lossy(file).as_ref());
-
-        let Ok(meta) = std::fs::metadata(&full) else {
-            continue;
-        };
-        if !meta.is_file() || meta.len() > UNTRACKED_MAX_BYTES {
-            continue;
-        }
-        if let Ok(content) = std::fs::read(&full) {
-            if content.contains(&0) {
-                continue;
-            }
-            let mut count = content.iter().filter(|b| **b == b'\n').count();
-            if !content.is_empty() && content.last() != Some(&b'\n') {
-                count += 1;
-            }
-            lines += count as u32;
-        }
-    }
-    lines
-}
-
-fn count_status_entries(stdout: &[u8]) -> u32 {
-    let mut fields = stdout.split(|b| *b == 0).filter(|entry| !entry.is_empty());
-    let mut changed = 0u32;
-    while let Some(entry) = fields.next() {
-        changed += 1;
-        if matches!(entry.first(), Some(b'R') | Some(b'C')) {
-            fields.next();
-        }
-    }
-    changed
+    repo::branch(&path)
 }
 
 #[tauri::command]
-fn repo_status(path: String) -> Option<RepoStatus> {
+fn repo_status(path: String) -> Option<repo::RepoStatus> {
     let path = session::expand_home(std::path::Path::new(&path));
-    let out = worktree::git_in(&path)
-        .args(["status", "--porcelain", "-z"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let changed = count_status_entries(&out.stdout);
-    let (mut insertions, deletions) = if changed > 0 {
-        diff_numstat(&path)
-    } else {
-        (0, 0)
-    };
-    if changed > 0 {
-        insertions += untracked_insertions(&path);
-    }
-    Some(RepoStatus {
-        dirty: changed > 0,
-        changed,
-        insertions,
-        deletions,
-    })
+    repo::status(&path)
 }
 
 #[tauri::command]
@@ -952,6 +847,9 @@ pub fn run() {
             let themes: theme::SharedThemes =
                 Arc::new(theme::ThemeManager::new(Arc::clone(&store), themes_dir));
 
+            let repos: repo::SharedRepoWatcher = Arc::new(repo::RepoWatcher::new());
+            repos.set_roots(app.handle(), watched_repo_roots(&layout.state()));
+
             app.manage(AppState {
                 store: Arc::clone(&store),
                 pty_pool: Arc::clone(&pty_pool),
@@ -960,6 +858,7 @@ pub fn run() {
                 themes,
                 layout,
                 docker: Arc::new(docker::DockerManager::new()),
+                repos,
             });
 
             std::thread::Builder::new()
@@ -1042,56 +941,4 @@ pub fn run() {
                 }
             }
         });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::count_status_entries;
-
-    #[test]
-    fn counts_empty_output_as_zero() {
-        assert_eq!(count_status_entries(b""), 0);
-    }
-
-    #[test]
-    fn counts_plain_entries() {
-        assert_eq!(count_status_entries(b" M keep.txt\0?? new.txt\0"), 2);
-    }
-
-    #[test]
-    fn rename_counts_once_despite_two_paths() {
-        assert_eq!(count_status_entries(b"R  new.txt\0old.txt\0"), 1);
-    }
-
-    #[test]
-    fn copy_counts_once_despite_two_paths() {
-        assert_eq!(count_status_entries(b"C  copy.txt\0src.txt\0"), 1);
-    }
-
-    #[test]
-    fn rename_with_worktree_modification_counts_once() {
-        assert_eq!(count_status_entries(b"RM new.txt\0old.txt\0"), 1);
-    }
-
-    #[test]
-    fn mixed_entries_match_file_count() {
-        let out = b" M keep.txt\0R  new.txt\0old.txt\0?? untracked.txt\0";
-        assert_eq!(count_status_entries(out), 3);
-    }
-
-    #[test]
-    fn orig_path_starting_with_r_is_not_treated_as_entry() {
-        let out = b"R  new.txt\0Renamed.txt\0 M keep.txt\0";
-        assert_eq!(count_status_entries(out), 2);
-    }
-
-    #[test]
-    fn untracked_path_starting_with_r_counts_normally() {
-        assert_eq!(count_status_entries(b"?? Rakefile\0?? README.md\0"), 2);
-    }
-
-    #[test]
-    fn truncated_rename_record_does_not_panic() {
-        assert_eq!(count_status_entries(b"R  new.txt\0"), 1);
-    }
 }
