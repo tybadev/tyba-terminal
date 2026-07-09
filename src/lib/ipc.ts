@@ -183,6 +183,8 @@ export const repoBranch = (path: string) =>
 export interface RepoStatus {
   dirty: boolean;
   changed: number;
+  insertions: number;
+  deletions: number;
 }
 
 export const repoStatus = (path: string) =>

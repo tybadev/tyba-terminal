@@ -1,38 +1,41 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Folder, GitBranch, SquaresFour } from "@phosphor-icons/react";
 
+import { DiffStat } from "@/components/DiffStat";
 import { HoverCardContent } from "@/components/ui/hover-card";
+import type { RepoStatus } from "@/lib/ipc";
 
 export interface SessionHoverCardProps {
   name: string;
   path?: string | null;
   branch?: string | null;
-  changed?: number;
+  status?: RepoStatus;
   runner?: string | null;
+  runnerIcon?: ReactNode;
   runningCommand?: string | null;
   tabs: number;
   group?: string | null;
   color?: string | null;
-  side: "right" | "bottom";
 }
 
 export function SessionHoverCard({
   name,
   path,
   branch,
-  changed,
+  status,
   runner,
+  runnerIcon,
   runningCommand,
   tabs,
   group,
   color,
-  side,
 }: SessionHoverCardProps) {
   const { t } = useTranslation();
   const running = Boolean(runningCommand);
 
   return (
-    <HoverCardContent side={side} className="p-0">
+    <HoverCardContent side="right" align="start" className="p-0">
       <div className="flex items-center gap-2 border-b border-tyba-border px-3 py-2">
         <span
           className={
@@ -45,7 +48,8 @@ export function SessionHoverCard({
           {running ? t("sessionRunning") : t("sessionIdle")}
         </span>
         {runner && (
-          <span className="ml-auto rounded-[3px] bg-tyba-violet-tint px-1.5 py-0.5 font-mono text-[10px] leading-none text-tyba-violet">
+          <span className="ml-auto flex items-center gap-1.5 rounded-[3px] bg-tyba-violet-tint px-1.5 py-0.5 font-mono text-[10px] leading-none text-tyba-violet">
+            {runnerIcon}
             {runner}
           </span>
         )}
@@ -85,25 +89,19 @@ export function SessionHoverCard({
         )}
       </div>
 
-      {(branch || changed || tabs > 0) && (
-        <div className="flex items-center gap-3 border-t border-tyba-border px-3 py-1.5 text-[10px] text-tyba-text-faint">
-          {branch && (
-            <span className="flex min-w-0 items-center gap-1">
-              <GitBranch size={11} className="shrink-0" />
-              <span className="truncate font-mono">{branch}</span>
-            </span>
-          )}
-          {changed ? (
-            <span className="shrink-0 font-mono text-tyba-amber">
-              ±{changed}
-            </span>
-          ) : null}
-          <span className="ml-auto flex shrink-0 items-center gap-1">
-            <SquaresFour size={11} />
-            {t("tabsCount", { count: tabs })}
+      <div className="flex items-center gap-3 border-t border-tyba-border px-3 py-1.5 text-[10px] text-tyba-text-faint">
+        {branch && (
+          <span className="flex min-w-0 items-center gap-1">
+            <GitBranch size={11} className="shrink-0" />
+            <span className="truncate font-mono">{branch}</span>
           </span>
-        </div>
-      )}
+        )}
+        {status?.dirty && <DiffStat status={status} size="md" />}
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          <SquaresFour size={11} />
+          {t("tabsCount", { count: tabs })}
+        </span>
+      </div>
     </HoverCardContent>
   );
 }

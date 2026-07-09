@@ -55,6 +55,7 @@ import { ContainersView } from "./components/ContainersView";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
+import { DiffStat } from "./components/DiffStat";
 import { SessionHoverCard } from "./components/SessionHoverCard";
 import { PromptDialog } from "./components/PromptDialog";
 import { TerminalSearch } from "./components/TerminalSearch";
@@ -1146,10 +1147,10 @@ export default function App() {
                   {gitStatus?.dirty && (
                     <span
                       title={t("gitChanges", { count: gitStatus.changed })}
-                      className="flex shrink-0 items-center gap-0.5 rounded-[3px] bg-tyba-amber-tint px-1 py-px font-mono text-[9px] leading-none text-tyba-amber"
+                      className="flex shrink-0 items-center gap-1 rounded-[3px] bg-tyba-amber-tint px-1 py-px"
                     >
-                      <span className="size-1 rounded-full bg-tyba-amber" />
-                      {gitStatus.changed}
+                      <span className="size-1 shrink-0 rounded-full bg-tyba-amber" />
+                      <DiffStat status={gitStatus} />
                     </span>
                   )}
                   {agent && (
@@ -1303,12 +1304,12 @@ export default function App() {
       <HoverCard key={w.id}>
         <HoverCardTrigger asChild>{workspaceButton}</HoverCardTrigger>
         <SessionHoverCard
-          side={open ? "bottom" : "right"}
           name={w.name}
           path={w.repo_root}
           branch={branch}
-          changed={gitStatus?.changed}
+          status={gitStatus}
           runner={runner}
+          runnerIcon={runner ? agentGlyph(runner, 11) : null}
           runningCommand={runningCmd}
           tabs={w.tabs.length}
           group={w.group}
