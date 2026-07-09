@@ -41,6 +41,13 @@ pub struct PtyExitPayload {
     pub code: Option<u32>,
 }
 
+#[derive(Clone, Serialize)]
+pub struct SessionCommandPayload {
+    /// Linha de comando em execução (shell integration), ou `None` quando ocioso.
+    pub command: Option<String>,
+    pub running: bool,
+}
+
 struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -121,6 +128,7 @@ impl PtyPool {
 
         let output_event = format!("pty://output/{session_id}");
         let exit_event = format!("pty://exit/{session_id}");
+        let command_event = format!("session://command/{session_id}");
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(CHANNEL_CAPACITY);
 
         std::thread::Builder::new()
@@ -147,6 +155,8 @@ impl PtyPool {
             .spawn(move || {
                 let mut pending: Vec<u8> = Vec::with_capacity(READ_BUF_SIZE);
                 let mut last_flush = Instant::now();
+                let mut osc = crate::status::OscParser::new();
+                let mut last_cmd: Option<String> = None;
 
                 let flush = |pending: &mut Vec<u8>, app: &AppHandle| {
                     if pending.is_empty() {
@@ -173,6 +183,31 @@ impl PtyPool {
                     match chunk {
                         Some(chunk) => {
                             reader_screen.lock().process(&chunk);
+                            for ev in osc.feed(&chunk) {
+                                use crate::status::ShellEvent;
+                                match ev {
+                                    ShellEvent::CommandLine(cmd) => last_cmd = Some(cmd),
+                                    ShellEvent::CommandStart => {
+                                        let _ = app.emit(
+                                            &command_event,
+                                            SessionCommandPayload {
+                                                command: last_cmd.clone(),
+                                                running: true,
+                                            },
+                                        );
+                                    }
+                                    ShellEvent::CommandEnd(_) | ShellEvent::PromptStart => {
+                                        last_cmd = None;
+                                        let _ = app.emit(
+                                            &command_event,
+                                            SessionCommandPayload {
+                                                command: None,
+                                                running: false,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
                             pending.extend_from_slice(&chunk);
                             if last_flush.elapsed() >= FLUSH_INTERVAL {
                                 flush(&mut pending, &app);

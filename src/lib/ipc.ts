@@ -352,3 +352,14 @@ export const onSessionStatus = (
   handler: (session: Session) => void,
 ): Promise<UnlistenFn> =>
   listen<Session>(`session://status/${id}`, (e) => handler(e.payload));
+
+export interface SessionCommand {
+  command: string | null;
+  running: boolean;
+}
+
+export const onSessionCommand = (
+  id: SessionId,
+  handler: (payload: SessionCommand) => void,
+): Promise<UnlistenFn> =>
+  listen<SessionCommand>(`session://command/${id}`, (e) => handler(e.payload));
