@@ -149,6 +149,7 @@ import { HoverCard, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Shortcut } from "@/components/ui/kbd";
 
 const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
+const GIT_POLL_WHILE_RUNNING_MS = 2000;
 const TOGGLE_PREF_KEY = "pref.sidebar_toggle";
 const DETAILS_PREF_KEY = "pref.sidebar_details";
 const DETAILS_OVERRIDES_KEY = "pref.session_details";
@@ -409,6 +410,33 @@ export default function App() {
     };
   }, [sessions]);
 
+  useEffect(() => {
+    const live = new Set(sessions.map((s) => s.id));
+    const prune = <T,>(prev: Record<string, T>): Record<string, T> => {
+      const stale = Object.keys(prev).filter((id) => !live.has(id));
+      if (stale.length === 0) return prev;
+      const next = { ...prev };
+      for (const id of stale) delete next[id];
+      return next;
+    };
+    setSessionCommands(prune);
+    setSessionCwds(prune);
+  }, [sessions]);
+
+  const anyCommandRunning = useMemo(
+    () => Object.values(sessionCommands).some((c) => c.running),
+    [sessionCommands],
+  );
+
+  useEffect(() => {
+    if (!anyCommandRunning) return;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      setGitRefresh((n) => n + 1);
+    }, GIT_POLL_WHILE_RUNNING_MS);
+    return () => window.clearInterval(timer);
+  }, [anyCommandRunning]);
+
   const workspaceAgent = useCallback(
     (w: Workspace): string | null => {
       for (const tab of w.tabs) {
@@ -444,6 +472,10 @@ export default function App() {
       const tab =
         w.tabs.find((tb) => tb.id === activeTabId) ?? w.tabs[0] ?? null;
       if (!tab?.root) return null;
+      const focused = tab.active_pane
+        ? paneSession(tab.root, tab.active_pane)
+        : null;
+      if (focused && sessionCwds[focused]) return sessionCwds[focused];
       for (const sid of leafSessions(tab.root)) {
         const cwd = sessionCwds[sid];
         if (cwd) return cwd;

@@ -248,9 +248,7 @@ fn set_workspace_group(
 #[tauri::command]
 fn repo_branch(path: String) -> Option<String> {
     let path = session::expand_home(std::path::Path::new(&path));
-    let out = std::process::Command::new("git")
-        .args(["-C"])
-        .arg(&path)
+    let out = worktree::git_in(&path)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
         .ok()?;
@@ -274,16 +272,8 @@ struct RepoStatus {
 }
 
 fn diff_numstat(path: &std::path::Path) -> (u32, u32) {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args([
-            "--no-optional-locks",
-            "diff",
-            "--numstat",
-            "--no-color",
-            "HEAD",
-        ])
+    let out = worktree::git_in(path)
+        .args(["diff", "--no-ext-diff", "--numstat", "--no-color", "HEAD"])
         .output();
     let Ok(out) = out else {
         return (0, 0);
@@ -311,16 +301,8 @@ fn untracked_insertions(path: &std::path::Path) -> u32 {
     #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt;
 
-    let list = std::process::Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args([
-            "--no-optional-locks",
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ])
+    let list = worktree::git_in(path)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
         .output();
     let Ok(list) = list else {
         return 0;
@@ -360,17 +342,8 @@ fn untracked_insertions(path: &std::path::Path) -> u32 {
 #[tauri::command]
 fn repo_status(path: String) -> Option<RepoStatus> {
     let path = session::expand_home(std::path::Path::new(&path));
-    let out = std::process::Command::new("git")
-        .args(["-C"])
-        .arg(&path)
-        .args([
-            "-c",
-            "core.quotePath=false",
-            "--no-optional-locks",
-            "status",
-            "--porcelain",
-            "-z",
-        ])
+    let out = worktree::git_in(&path)
+        .args(["status", "--porcelain", "-z"])
         .output()
         .ok()?;
     if !out.status.success() {

@@ -46,6 +46,29 @@ O maior risco de um produto de aprovações é o usuário virar autômato de "y"
 - **Trait `Sandbox` desde o dia 1** no spawn de agentes, mesmo com implementação passthrough no MVP. Implementações futuras: Seatbelt/`sandbox-exec` (macOS), Landlock/bubblewrap (Linux) — write só em worktree + temp, read no repo.
 - **Kill switch real**: parar sessão = `killpg` no process group inteiro. SIGTERM só no pai deixa subprocessos órfãos.
 
+## Shell integration em diretório temporário
+
+Os arquivos de hook (ZDOTDIR do zsh, `--rcfile` do bash) são escritos em temp e sourceados pelo shell do usuário. Um diretório de nome previsível em `/tmp` compartilhado permitiria a outro usuário plantar o `.zshrc` que o Tyba manda o shell carregar — execução de código, não só TOCTOU.
+
+Regras (`session::integration_dir`, `session::write_private`):
+
+- Diretório por-uid, criado com modo `0700` de origem (`DirBuilder::mode`, sem janela em `0755`).
+- **Falha fechado**: se o caminho já existe, recusa se for symlink, se pertencer a outro uid, ou se ficar acessível a terceiros após `chmod`.
+- Escrita atômica: `create_new` (nunca segue symlink) + `rename`. Arquivos `0600`.
+- O caminho do próprio diretório **não é interpolado** dentro do script (`$TMPDIR` é do usuário, mas `"$..."` ainda expandiria `$` e crase).
+- Falha transitória **não é memoizada**: a integração é retentada na próxima sessão, com log.
+
+## Limitação conhecida: `git` roda fora do sandbox
+
+> [!warning] Pré-requisito da fase de sandbox
+> O core faz shell-out de `git` num diretório que vem do **OSC 7** — atacante-controlável. Um repositório cujo `.git/config` define um filtro de conteúdo (`filter.<n>.clean`) associado por atributo faz o `git` **executar esse comando no processo do core**, fora de qualquer sandbox, com o env completo do usuário. `git status` executa 1×; `git diff --numstat` 3×.
+
+- A definição do filtro **só pode vir de config**: `git clone` transporta a árvore, nunca o `.git/config`. Logo o atacante precisa de escrita em `.git/`. **Não existe vetor via repositório clonado.**
+- **Latente hoje**: a trait `Sandbox` é passthrough, então um agente que escreve `.git/config` já executa comando arbitrário por conta própria. Isto não é escalação atual — é um **primitivo de escape que arma no instante em que o sandbox virar real**.
+- `worktree::git_in()` aplica higiene de custo zero (`core.fsmonitor=false`, `diff.external=`, `core.hooksPath`, `core.pager`, `--no-ext-diff`, `env_remove` dos `GIT_*` que redirecionam I/O, stdin nulo). Isso **estreita** quais chaves funcionam; **não fecha a classe**.
+- `GIT_ATTR_SOURCE` foi avaliado e **rejeitado**: não cobre `$GIT_DIR/info/attributes`, e exige git ≥ 2.40 (Ubuntu 22.04 traz 2.34).
+- **Defesa real**: rotear o processo `git` pela trait `Sandbox`. Os três testes `#[ignore]` em `worktree/mod.rs` (`git_in_neutralizes_*_attributes`) são o gatilho — quando a defesa existir, eles passam.
+
 ## Conteúdo externo é input não-confiável
 
 Quando existir "agente, resolve a issue #42": o corpo da issue entra no prompt com framing de dado (não instrução), e ações vermelhas continuam atrás de aprovação. A aprovação humana de ações vermelhas é a mitigação real contra prompt injection — não confiar em sanitização de prompt.

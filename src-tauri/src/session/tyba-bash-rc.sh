@@ -4,17 +4,39 @@
 # derruba a sessao; hooks terminam com `return 0` (nao morrem sob `set -e`).
 
 # --- 1. Reproduz a cadeia de init do usuario (uma unica vez) ---
+# Roda a cadeia de login (paridade com o `-l` antigo) e depois ~/.bashrc, que e
+# onde a maioria poe alias/prompt. Se o profile ja sourceia o bashrc (padrao das
+# distros), nao sourceia de novo: PATH duplicado e nvm/rbenv reinicializados.
 if [ -z "${TYBA_BASH_INTEGRATION:-}" ]; then
   export TYBA_BASH_INTEGRATION=1
+
+  __tyba_sources_bashrc() {
+    local f="$1" line trimmed
+    [ -n "$f" ] && [ -r "$f" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+      trimmed="${line#"${line%%[![:space:]]*}"}"
+      case "$trimmed" in \#*|'') continue ;; esac
+      if [[ "$trimmed" =~ (^|[[:space:]])(\.|source)[[:space:]]+[^[:space:]]*bashrc ]]; then
+        return 0
+      fi
+    done < "$f"
+    return 1
+  }
+
+  __tyba_profile=""
   if [ -n "${TYBA_LOGIN_SHELL:-}" ]; then
     [ -r /etc/profile ] && . /etc/profile
     for __tyba_rc in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
-      if [ -r "$__tyba_rc" ]; then . "$__tyba_rc"; break; fi
+      if [ -r "$__tyba_rc" ]; then __tyba_profile="$__tyba_rc"; . "$__tyba_rc"; break; fi
     done
     unset __tyba_rc
-  else
-    [ -r "$HOME/.bashrc" ] && . "$HOME/.bashrc"
   fi
+
+  if [ -r "$HOME/.bashrc" ] && ! __tyba_sources_bashrc "$__tyba_profile"; then
+    . "$HOME/.bashrc"
+  fi
+  unset __tyba_profile
+  unset -f __tyba_sources_bashrc
 fi
 
 # --- 2. Hooks (instala uma unica vez, depois da config do usuario) ---

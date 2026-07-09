@@ -307,27 +307,133 @@ pub fn resolve_cwd(requested: Option<&Path>) -> PathBuf {
 /// consolidado (VS Code/iTerm2): mexe só no ambiente da sessão, nunca
 /// nos dotfiles do usuário; se algo falhar, o shell do usuário segue.
 fn zsh_integration_dir() -> Option<&'static Path> {
-    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    DIR.get_or_init(|| write_zsh_integration().ok()).as_deref()
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    cached_integration_path(&DIR, write_zsh_integration, "zsh")
+}
+
+fn cached_integration_path(
+    cell: &'static OnceLock<PathBuf>,
+    build: fn() -> std::io::Result<PathBuf>,
+    shell: &str,
+) -> Option<&'static Path> {
+    if let Some(path) = cell.get() {
+        return Some(path.as_path());
+    }
+    match build() {
+        Ok(path) => {
+            let _ = cell.set(path);
+            cell.get().map(PathBuf::as_path)
+        }
+        Err(err) => {
+            eprintln!("tyba: shell integration ({shell}) indisponível: {err}");
+            None
+        }
+    }
+}
+
+fn integration_dir(name: &str) -> std::io::Result<PathBuf> {
+    let dir = std::env::temp_dir().join(format!("tyba-{name}-{}", current_uid()));
+    create_private_dir(&dir)?;
+    verify_private_dir(&dir)?;
+    Ok(dir)
+}
+
+fn integration_denied(reason: &str) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        format!("diretório de shell integration {reason}"),
+    )
+}
+
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let result = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().mode(0o700).create(dir)
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir(dir)
+        }
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(unix)]
+fn verify_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.is_dir() {
+        return Err(integration_denied("não é um diretório"));
+    }
+    if meta.uid() != unsafe { libc::getuid() } {
+        return Err(integration_denied("pertence a outro usuário"));
+    }
+    if meta.mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        if std::fs::symlink_metadata(dir)?.permissions().mode() & 0o077 != 0 {
+            return Err(integration_denied("acessível a outros usuários"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn verify_private_dir(dir: &Path) -> std::io::Result<()> {
+    if !std::fs::symlink_metadata(dir)?.is_dir() {
+        return Err(integration_denied("não é um diretório"));
+    }
+    Ok(())
+}
+
+fn write_private(dir: &Path, name: &str, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+
+    let mut file = opts.open(&tmp)?;
+    let written = file
+        .write_all(contents.as_bytes())
+        .and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
+    }
+    std::fs::rename(&tmp, dir.join(name))
+}
+
+fn zsh_chain(file: &str) -> String {
+    format!(
+        "__tyba_self_zdotdir=\"$ZDOTDIR\"\n\
+         if [[ -f \"$TYBA_USER_ZDOTDIR/{file}\" ]]; then\n  \
+         ZDOTDIR=\"$TYBA_USER_ZDOTDIR\"\n  \
+         source \"$TYBA_USER_ZDOTDIR/{file}\"\n  \
+         ZDOTDIR=\"$__tyba_self_zdotdir\"\nfi\n"
+    )
 }
 
 fn write_zsh_integration() -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join("tyba-zsh-integration");
-    std::fs::create_dir_all(&dir)?;
-    let self_dir = dir.to_string_lossy().replace('"', "");
+    let dir = integration_dir("zsh")?;
 
-    let chain = |file: &str| {
-        format!(
-            "if [[ -f \"$TYBA_USER_ZDOTDIR/{file}\" ]]; then\n  \
-             ZDOTDIR=\"$TYBA_USER_ZDOTDIR\"\n  \
-             source \"$TYBA_USER_ZDOTDIR/{file}\"\n  \
-             ZDOTDIR=\"{self_dir}\"\nfi\n"
-        )
-    };
-
-    std::fs::write(dir.join(".zshenv"), chain(".zshenv"))?;
-    std::fs::write(dir.join(".zprofile"), chain(".zprofile"))?;
-    std::fs::write(dir.join(".zlogin"), chain(".zlogin"))?;
+    write_private(&dir, ".zshenv", &zsh_chain(".zshenv"))?;
+    write_private(&dir, ".zprofile", &zsh_chain(".zprofile"))?;
+    write_private(&dir, ".zlogin", &zsh_chain(".zlogin"))?;
 
     let hooks = "\n# TYBA shell integration (OSC 133/633/7)\n\
         if [[ -o interactive ]] && autoload -Uz add-zsh-hook 2>/dev/null; then\n  \
@@ -343,7 +449,7 @@ fn write_zsh_integration() -> std::io::Result<PathBuf> {
         __tyba_osc7\n\
         fi\n\
         ZDOTDIR=\"$TYBA_USER_ZDOTDIR\"\n";
-    std::fs::write(dir.join(".zshrc"), format!("{}{}", chain(".zshrc"), hooks))?;
+    write_private(&dir, ".zshrc", &format!("{}{}", zsh_chain(".zshrc"), hooks))?;
 
     Ok(dir)
 }
@@ -353,22 +459,17 @@ fn write_zsh_integration() -> std::io::Result<PathBuf> {
 /// usuário e instala os hooks OSC 133/633/7. Verificado em bash 3.2.57 (macOS)
 /// e 5.2 (Linux). Ver [[shell-integration]] no cofre.
 fn bash_integration_file() -> Option<&'static Path> {
-    static FILE: OnceLock<Option<PathBuf>> = OnceLock::new();
-    FILE.get_or_init(|| write_bash_integration().ok())
-        .as_deref()
+    static FILE: OnceLock<PathBuf> = OnceLock::new();
+    cached_integration_path(&FILE, write_bash_integration, "bash")
 }
 
 const TYBA_BASH_RC: &str = include_str!("tyba-bash-rc.sh");
+const TYBA_BASH_RC_NAME: &str = "tyba-bash-rc.sh";
 
 fn write_bash_integration() -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("tyba-bash-integration-{}", current_uid()));
-    std::fs::create_dir_all(&dir)?;
-    restrict_dir(&dir)?;
-    let rc = dir.join("tyba-bash-rc.sh");
-    let tmp = dir.join(format!("tyba-bash-rc.sh.{}", std::process::id()));
-    std::fs::write(&tmp, TYBA_BASH_RC)?;
-    std::fs::rename(&tmp, &rc)?;
-    Ok(rc)
+    let dir = integration_dir("bash")?;
+    write_private(&dir, TYBA_BASH_RC_NAME, TYBA_BASH_RC)?;
+    Ok(dir.join(TYBA_BASH_RC_NAME))
 }
 
 fn current_uid() -> String {
@@ -380,19 +481,6 @@ fn current_uid() -> String {
     {
         "user".to_string()
     }
-}
-
-fn restrict_dir(dir: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = dir;
-    }
-    Ok(())
 }
 
 pub fn default_shell() -> String {
@@ -426,6 +514,94 @@ mod tests {
             status,
             created_at: Utc::now(),
         }
+    }
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tyba-test-{tag}-{}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn verify_private_dir_rejects_symlink() {
+        let real = scratch_dir("real");
+        let link = scratch_dir("link");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let err = verify_private_dir(&link).expect_err("symlink deve falhar fechado");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+
+        std::fs::remove_file(&link).unwrap();
+        std::fs::remove_dir_all(&real).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn verify_private_dir_tightens_world_writable_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("loose");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+        verify_private_dir(&dir).expect("dir nosso deve ser endurecido, não recusado");
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_private_publishes_atomically_without_leftovers() {
+        let dir = scratch_dir("atomic");
+        create_private_dir(&dir).unwrap();
+
+        write_private(&dir, "f", "primeiro").unwrap();
+        write_private(&dir, "f", "segundo").unwrap();
+
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "segundo");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file vazou: {leftovers:?}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join("f")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn zsh_integration_dir_is_private_and_does_not_interpolate_its_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = write_zsh_integration().expect("write zsh integration");
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+
+        let zshenv = std::fs::read_to_string(dir.join(".zshenv")).unwrap();
+        assert!(zshenv.contains("__tyba_self_zdotdir"));
+        assert!(!zshenv.contains(dir.to_str().unwrap()));
+
+        let zshrc = std::fs::read_to_string(dir.join(".zshrc")).unwrap();
+        assert!(zshrc.contains("133;B"));
+        assert!(zshrc.contains("add-zsh-hook chpwd __tyba_osc7"));
+        assert!(!zshrc.contains(dir.to_str().unwrap()));
     }
 
     #[test]
