@@ -42,11 +42,9 @@ export const DEFAULT_TOOLBAR: ToolbarPref = {
   hidden: [],
 };
 
-function chipList(value: unknown): ChipId[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((id): id is ChipId =>
-    CHIP_IDS.includes(id as ChipId),
-  );
+function chipList(value: unknown, fallback: ChipId[]): ChipId[] {
+  if (!Array.isArray(value)) return fallback;
+  return value.filter((id): id is ChipId => CHIP_IDS.includes(id as ChipId));
 }
 
 export function parseToolbarPref(raw: string | null): ToolbarPref {
@@ -64,8 +62,8 @@ export function parseToolbarPref(raw: string | null): ToolbarPref {
   return {
     version: DEFAULT_TOOLBAR.version,
     enabled: typeof pref.enabled === "boolean" ? pref.enabled : true,
-    left: chipList(pref.left),
-    right: chipList(pref.right),
-    hidden: chipList(pref.hidden),
+    left: chipList(pref.left, DEFAULT_TOOLBAR.left),
+    right: chipList(pref.right, DEFAULT_TOOLBAR.right),
+    hidden: chipList(pref.hidden, DEFAULT_TOOLBAR.hidden),
   };
 }

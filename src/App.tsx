@@ -110,6 +110,7 @@ import {
   paneSession,
   renameWorkspace,
   onRepoChanged,
+  onRepoReconciled,
   repoSnapshots as fetchRepoSnapshots,
   sessionCwd,
   setPref,
@@ -482,7 +483,9 @@ export default function App() {
         if (cancelled) return;
         setRepoSnapshots((prev) => {
           const next = { ...prev };
-          for (const snap of all) next[snap.root] = snap;
+          for (const snap of all) {
+            if (!next[snap.root]) next[snap.root] = snap;
+          }
           return next;
         });
       })
@@ -493,9 +496,17 @@ export default function App() {
       if (cancelled) un();
       else unlisten = un;
     });
+    let unlistenReconciled: (() => void) | null = null;
+    void onRepoReconciled((all) => {
+      setRepoSnapshots(Object.fromEntries(all.map((snap) => [snap.root, snap])));
+    }).then((un) => {
+      if (cancelled) un();
+      else unlistenReconciled = un;
+    });
     return () => {
       cancelled = true;
       unlisten?.();
+      unlistenReconciled?.();
     };
   }, []);
 

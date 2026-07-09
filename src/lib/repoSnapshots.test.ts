@@ -70,6 +70,20 @@ describe("parseToolbarPref", () => {
     expect(pref.right).toEqual(["clock"]);
   });
 
+  test("missing chip arrays fall back to the default sides", () => {
+    const pref = parseToolbarPref('{"version":1,"enabled":true}');
+    expect(pref.left).toEqual(DEFAULT_TOOLBAR.left);
+    expect(pref.right).toEqual(DEFAULT_TOOLBAR.right);
+  });
+
+  test("an explicit empty array is respected", () => {
+    const pref = parseToolbarPref(
+      '{"version":1,"enabled":true,"left":[],"right":["clock"],"hidden":[]}',
+    );
+    expect(pref.left).toEqual([]);
+    expect(pref.right).toEqual(["clock"]);
+  });
+
   test("enabled false is preserved", () => {
     const pref = parseToolbarPref(
       '{"version":1,"enabled":false,"left":[],"right":[],"hidden":[]}',

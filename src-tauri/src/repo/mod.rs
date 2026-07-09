@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 use crate::worktree::git_in;
 
 pub const EVENT_CHANGED: &str = "repo://changed";
+pub const EVENT_RECONCILED: &str = "repo://reconciled";
 
 const DEBOUNCE: Duration = Duration::from_millis(300);
 const UNTRACKED_MAX_BYTES: u64 = 512 * 1024;

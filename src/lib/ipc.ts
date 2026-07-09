@@ -245,6 +245,11 @@ export const repoSnapshots = () =>
 export const sessionCwd = (id: SessionId) =>
   invoke<string | null>("session_cwd", { id });
 
+export const onRepoReconciled = (
+  handler: (snapshots: RepoSnapshot[]) => void,
+): Promise<UnlistenFn> =>
+  listen<RepoSnapshot[]>("repo://reconciled", (e) => handler(e.payload));
+
 export const onRepoChanged = (
   handler: (snapshot: RepoSnapshot) => void,
 ): Promise<UnlistenFn> =>

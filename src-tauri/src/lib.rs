@@ -67,6 +67,7 @@ fn reconcile_repo_watchers(app: &AppHandle) {
     let state = app.state::<AppState>();
     let roots = watched_repo_roots(&state);
     state.repos.set_roots(app, roots);
+    let _ = app.emit(repo::EVENT_RECONCILED, state.repos.snapshots());
 }
 
 fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
