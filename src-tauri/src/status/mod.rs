@@ -303,7 +303,7 @@ mod tests {
     fn caps_runaway_sequence() {
         let mut p = OscParser::new();
         let mut huge = b"\x1b]133;".to_vec();
-        huge.extend(std::iter::repeat(b'x').take(MAX_OSC_LEN + 100));
+        huge.extend(std::iter::repeat_n(b'x', MAX_OSC_LEN + 100));
         huge.extend_from_slice(b"\x07");
         // Não deve entrar em pânico nem crescer sem limite; nenhum evento válido.
         assert!(p.feed(&huge).is_empty());

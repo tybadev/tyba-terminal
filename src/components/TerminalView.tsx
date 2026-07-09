@@ -25,7 +25,8 @@ import {
   onPtyExit,
   onPtyOutput,
   resizeSession,
-  sessionScrollback,
+  attachSession,
+  detachSession,
   writeToSession,
   type SessionId,
 } from "../lib/ipc";
@@ -171,26 +172,38 @@ export function TerminalView({
       void writeToSession(sessionId, data).catch(() => {});
     });
 
+    let disposed = false;
+    let holdsAttachment = false;
     const unlisteners: Array<() => void> = [];
-    let attached = false;
-    void onPtyOutput(sessionId, (bytes) => {
-      if (attached) term.write(bytes);
-    })
-      .then((un) => {
-        unlisteners.push(un);
-        return sessionScrollback(sessionId);
-      })
-      .then((snapshot) => {
-        if (snapshot.length) term.write(snapshot);
-      })
-      .catch(() => {})
-      .then(() => {
-        attached = true;
-      });
+    const addUnlistener = (un: () => void) => {
+      if (disposed) un();
+      else unlisteners.push(un);
+    };
+    const releaseAttachment = () => {
+      if (!holdsAttachment) return;
+      holdsAttachment = false;
+      void detachSession(sessionId).catch(() => {});
+    };
+
+    const attached = (async () => {
+      addUnlistener(
+        await onPtyOutput(sessionId, (bytes) => {
+          if (!disposed) term.write(bytes);
+        }),
+      );
+      if (disposed) return;
+      await attachSession(sessionId);
+      holdsAttachment = true;
+      if (disposed) releaseAttachment();
+    })().catch(() => {});
+
     void onPtyExit(sessionId, () => {
-      term.write(`\r\n\x1b[2m${i18n.t("sessionEnded")}\x1b[0m\r\n`);
-      onExit?.();
-    }).then((un) => unlisteners.push(un));
+      void attached.then(() => {
+        if (disposed) return;
+        term.write(`\r\n\x1b[2m${i18n.t("sessionEnded")}\x1b[0m\r\n`);
+        onExit?.();
+      });
+    }).then(addUnlistener);
 
     let lastCols = term.cols;
     let lastRows = term.rows;
@@ -238,6 +251,8 @@ export function TerminalView({
     void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
 
     return () => {
+      disposed = true;
+      releaseAttachment();
       if (timer !== null) window.clearTimeout(timer);
       ro.disconnect();
       window.removeEventListener(RELAYOUT_EVENT, onRelayout);

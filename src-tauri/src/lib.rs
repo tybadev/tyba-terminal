@@ -92,9 +92,21 @@ fn write_to_session(state: State<'_, AppState>, id: SessionId, data: String) -> 
 }
 
 #[tauri::command]
-fn session_scrollback(state: State<'_, AppState>, id: SessionId) -> Result<String, String> {
-    let bytes = state.pty_pool.scrollback(id).map_err(|e| e.to_string())?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+fn attach_session(
+    app: AppHandle,
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), String> {
+    state
+        .pty_pool
+        .attach(&app, window.label(), id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn detach_session(state: State<'_, AppState>, id: SessionId) {
+    state.pty_pool.detach(id);
 }
 
 #[tauri::command]
@@ -339,6 +351,18 @@ fn untracked_insertions(path: &std::path::Path) -> u32 {
     lines
 }
 
+fn count_status_entries(stdout: &[u8]) -> u32 {
+    let mut fields = stdout.split(|b| *b == 0).filter(|entry| !entry.is_empty());
+    let mut changed = 0u32;
+    while let Some(entry) = fields.next() {
+        changed += 1;
+        if matches!(entry.first(), Some(b'R') | Some(b'C')) {
+            fields.next();
+        }
+    }
+    changed
+}
+
 #[tauri::command]
 fn repo_status(path: String) -> Option<RepoStatus> {
     let path = session::expand_home(std::path::Path::new(&path));
@@ -349,11 +373,7 @@ fn repo_status(path: String) -> Option<RepoStatus> {
     if !out.status.success() {
         return None;
     }
-    let changed = out
-        .stdout
-        .split(|b| *b == 0)
-        .filter(|entry| !entry.is_empty())
-        .count() as u32;
+    let changed = count_status_entries(&out.stdout);
     let (mut insertions, deletions) = if changed > 0 {
         diff_numstat(&path)
     } else {
@@ -965,7 +985,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_session,
             write_to_session,
-            session_scrollback,
+            attach_session,
+            detach_session,
             resize_session,
             list_sessions,
             dispose_session,
@@ -1021,4 +1042,56 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_status_entries;
+
+    #[test]
+    fn counts_empty_output_as_zero() {
+        assert_eq!(count_status_entries(b""), 0);
+    }
+
+    #[test]
+    fn counts_plain_entries() {
+        assert_eq!(count_status_entries(b" M keep.txt\0?? new.txt\0"), 2);
+    }
+
+    #[test]
+    fn rename_counts_once_despite_two_paths() {
+        assert_eq!(count_status_entries(b"R  new.txt\0old.txt\0"), 1);
+    }
+
+    #[test]
+    fn copy_counts_once_despite_two_paths() {
+        assert_eq!(count_status_entries(b"C  copy.txt\0src.txt\0"), 1);
+    }
+
+    #[test]
+    fn rename_with_worktree_modification_counts_once() {
+        assert_eq!(count_status_entries(b"RM new.txt\0old.txt\0"), 1);
+    }
+
+    #[test]
+    fn mixed_entries_match_file_count() {
+        let out = b" M keep.txt\0R  new.txt\0old.txt\0?? untracked.txt\0";
+        assert_eq!(count_status_entries(out), 3);
+    }
+
+    #[test]
+    fn orig_path_starting_with_r_is_not_treated_as_entry() {
+        let out = b"R  new.txt\0Renamed.txt\0 M keep.txt\0";
+        assert_eq!(count_status_entries(out), 2);
+    }
+
+    #[test]
+    fn untracked_path_starting_with_r_counts_normally() {
+        assert_eq!(count_status_entries(b"?? Rakefile\0?? README.md\0"), 2);
+    }
+
+    #[test]
+    fn truncated_rename_record_does_not_panic() {
+        assert_eq!(count_status_entries(b"R  new.txt\0"), 1);
+    }
 }
