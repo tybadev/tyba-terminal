@@ -9,18 +9,30 @@ import { Tray, Warning } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   resolveApproval,
   type ApprovalDecision,
   type ApprovalRequest,
+  type RiskLevel,
   type Session,
   type SessionId,
 } from "../lib/ipc";
+
+const RISK_DOT: Record<RiskLevel, string> = {
+  green: "bg-tyba-green",
+  yellow: "bg-tyba-amber",
+  red: "bg-tyba-red",
+};
+
+const RISK_LABEL: Record<RiskLevel, string> = {
+  green: "riskGreen",
+  yellow: "riskYellow",
+  red: "riskRed",
+};
 
 export function ApprovalsInbox({
   sessions,
@@ -55,14 +67,14 @@ export function ApprovalsInbox({
   const count = approvals.length;
 
   return (
-    <DropdownMenu
+    <Popover
       open={open}
       onOpenChange={(next) => {
         setConfirming(null);
         onOpenChange(next);
       }}
     >
-      <DropdownMenuTrigger asChild>
+      <PopoverTrigger asChild>
         <Button
           variant="ghost"
           size="icon"
@@ -76,19 +88,21 @@ export function ApprovalsInbox({
             </span>
           )}
         </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        className="w-96"
-      >
-        <DropdownMenuLabel className="tyba-label flex items-center justify-between">
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-96">
+        <div className="tyba-label flex items-center justify-between px-2 py-1.5">
           {t("approvals")}
           {count > 0 && (
             <span className="rounded-full bg-tyba-violet-tint px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal text-tyba-violet">
               {t("pendingCount", { count })}
             </span>
           )}
-        </DropdownMenuLabel>
+        </div>
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          className="-mx-1 my-1 h-px bg-tyba-border"
+        />
         {count === 0 ? (
           <div className="px-2 py-5 text-center text-xs text-tyba-text-faint">
             {t("notificationsEmpty")}
@@ -105,6 +119,11 @@ export function ApprovalsInbox({
                 }`}
               >
                 <div className="flex items-center gap-2">
+                  <span
+                    role="img"
+                    aria-label={t(RISK_LABEL[request.risk])}
+                    className={`size-1.5 shrink-0 rounded-full ${RISK_DOT[request.risk]}`}
+                  />
                   <code className="min-w-0 flex-1 truncate font-mono text-xs">
                     {request.command}
                   </code>
@@ -151,7 +170,7 @@ export function ApprovalsInbox({
             ))}
           </div>
         )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+      </PopoverContent>
+    </Popover>
   );
 }
