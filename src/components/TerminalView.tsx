@@ -19,8 +19,8 @@ import {
   type SessionId,
 } from "../lib/ipc";
 import {
+  nativePasteSuppressed,
   registerTerm,
-  requestTerminalPaste,
   unregisterTerm,
 } from "../lib/termRegistry";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
@@ -75,6 +75,7 @@ interface Props {
   rect: PaneRectStyle | null;
   onExit?: () => void;
   onFocus?: () => void;
+  onPaste?: (sessionId: SessionId, text: string) => void;
 }
 
 export function TerminalView({
@@ -85,6 +86,7 @@ export function TerminalView({
   rect,
   onExit,
   onFocus,
+  onPaste,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -92,6 +94,8 @@ export function TerminalView({
   const webglRef = useRef<WebglAddon | null>(null);
   const onFocusRef = useRef(onFocus);
   onFocusRef.current = onFocus;
+  const onPasteRef = useRef(onPaste);
+  onPasteRef.current = onPaste;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -202,8 +206,9 @@ export function TerminalView({
     const onNativePaste = (e: ClipboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      if (nativePasteSuppressed()) return;
       const text = e.clipboardData?.getData("text") ?? "";
-      if (text) requestTerminalPaste({ sessionId, text });
+      if (text) onPasteRef.current?.(sessionId, text);
     };
     window.addEventListener(RELAYOUT_EVENT, onRelayout);
     window.addEventListener(FONT_SIZE_EVENT, onFontSize);

@@ -23,15 +23,23 @@ export function getTerm(id: SessionId | null): TermEntry | undefined {
   return registry.get(id);
 }
 
-export const TERMINAL_PASTE_EVENT = "tyba:terminal-paste";
-
 export interface TerminalPasteDetail {
   sessionId: SessionId;
   text: string;
 }
 
-export function requestTerminalPaste(detail: TerminalPasteDetail): void {
-  window.dispatchEvent(
-    new CustomEvent<TerminalPasteDetail>(TERMINAL_PASTE_EVENT, { detail }),
-  );
+export function isTermFocused(entry: TermEntry | undefined): boolean {
+  if (!entry?.term.textarea) return false;
+  return document.activeElement === entry.term.textarea;
+}
+
+const NATIVE_PASTE_SUPPRESS_MS = 200;
+let suppressNativePasteUntil = 0;
+
+export function suppressNativePaste(): void {
+  suppressNativePasteUntil = performance.now() + NATIVE_PASTE_SUPPRESS_MS;
+}
+
+export function nativePasteSuppressed(): boolean {
+  return performance.now() < suppressNativePasteUntil;
 }

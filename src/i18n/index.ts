@@ -108,6 +108,8 @@ const resources = {
       pasteConfirm: "Colar",
       pasteAsSingleLine: "Colar como uma linha",
       cancel: "Cancelar",
+      pasteControlChars:
+        "O conteúdo contém caracteres de controle. Eles serão removidos ao colar como uma linha.",
       searchPlaceholder: "Buscar",
       searchNoResults: "Sem resultados",
       copyThemeExample: "Copiar exemplo",
@@ -295,6 +297,8 @@ const resources = {
       pasteConfirm: "Paste",
       pasteAsSingleLine: "Paste as a single line",
       cancel: "Cancel",
+      pasteControlChars:
+        "The content has control characters. They are removed when pasting as a single line.",
       searchPlaceholder: "Search",
       searchNoResults: "No results",
       copyThemeExample: "Copy example",

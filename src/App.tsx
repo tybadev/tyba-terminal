@@ -124,19 +124,22 @@ import {
   DEFAULT_BINDINGS,
   parseBindings,
   BINDINGS_PREF_KEY,
-  TERMINAL_ACTIONS,
+  isTerminalAction,
   type Bindings,
   type KeyAction,
 } from "./lib/keys";
 import {
   flattenPaste,
+  hasUnsafeControlChars,
   isMultilinePaste,
   readClipboardText,
+  sanitizePaste,
   writeClipboardText,
 } from "./lib/clipboard";
 import {
   getTerm,
-  TERMINAL_PASTE_EVENT,
+  isTermFocused,
+  suppressNativePaste,
   type TerminalPasteDetail,
 } from "./lib/termRegistry";
 import { Shortcut } from "@/components/ui/kbd";
@@ -862,10 +865,14 @@ export default function App() {
     };
   }, [refreshSessions]);
 
-  const deliverPaste = useCallback((sessionId: SessionId, text: string) => {
+  const deliverPaste = useCallback((sessionId: SessionId, raw: string) => {
     const entry = getTerm(sessionId);
-    if (!entry || !text) return;
-    if (!isMultilinePaste(text) || entry.term.modes.bracketedPasteMode) {
+    if (!entry || !raw) return;
+    const text = sanitizePaste(raw);
+    const bracketed = entry.term.modes.bracketedPasteMode;
+    const risky =
+      hasUnsafeControlChars(text) || (isMultilinePaste(text) && !bracketed);
+    if (!risky) {
       entry.term.paste(text);
       return;
     }
@@ -883,21 +890,14 @@ export default function App() {
     deliverPaste(activeId, text);
   }, [activeId, deliverPaste]);
 
-  useEffect(() => {
-    const onTerminalPaste = (e: Event) => {
-      const { sessionId, text } = (e as CustomEvent<TerminalPasteDetail>).detail;
-      deliverPaste(sessionId, text);
-    };
-    window.addEventListener(TERMINAL_PASTE_EVENT, onTerminalPaste);
-    return () => window.removeEventListener(TERMINAL_PASTE_EVENT, onTerminalPaste);
-  }, [deliverPaste]);
-
   const confirmPaste = useCallback(
     (mode: "raw" | "single") => {
       if (!pastePrompt) return;
       const entry = getTerm(pastePrompt.sessionId);
       const text =
-        mode === "single" ? flattenPaste(pastePrompt.text) : pastePrompt.text;
+        mode === "single"
+          ? flattenPaste(pastePrompt.text)
+          : sanitizePaste(pastePrompt.text);
       entry?.term.paste(text);
       entry?.term.focus();
       setPastePrompt(null);
@@ -913,24 +913,31 @@ export default function App() {
       const action = (Object.keys(bindings) as KeyAction[]).find(
         (a) => bindings[a] === combo,
       );
-      if (action && TERMINAL_ACTIONS.includes(action)) {
+      if (action && isTerminalAction(action)) {
         const entry = getTerm(activeId);
-        if (!entry) return;
+        const focused = isTermFocused(entry);
+        if (action === "search") {
+          if (!entry || (!focused && !searchOpen)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.repeat) return;
+          setSearchOpen((v) => !v);
+          return;
+        }
+        if (!entry || !focused) return;
         if (action === "copy") {
           if (!entry.term.hasSelection()) return;
           e.preventDefault();
           e.stopPropagation();
+          if (e.repeat) return;
           void writeClipboardText(entry.term.getSelection()).catch(() => {});
           return;
         }
         e.preventDefault();
         e.stopPropagation();
         if (e.repeat) return;
-        if (action === "paste") {
-          void pasteFromClipboard();
-        } else if (action === "search") {
-          setSearchOpen((v) => !v);
-        }
+        suppressNativePaste();
+        void pasteFromClipboard();
         return;
       }
       if (action) {
@@ -1012,6 +1019,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [
     activeId,
+    searchOpen,
     pasteFromClipboard,
     bindings,
     newTab,
@@ -1712,6 +1720,7 @@ export default function App() {
                       <TerminalView
                         key={s.id}
                         sessionId={s.id}
+                        onPaste={deliverPaste}
                         visible={paneRect !== null}
                         focused={s.id === activeId}
                         framed={(paneLayout?.panes.length ?? 0) > 1}

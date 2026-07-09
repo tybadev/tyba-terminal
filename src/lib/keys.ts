@@ -51,12 +51,6 @@ export const KEY_ACTIONS: KeyAction[] = [
   "search",
 ];
 
-export const TERMINAL_ACTIONS: readonly KeyAction[] = [
-  "copy",
-  "paste",
-  "search",
-];
-
 export type KeyCategory =
   | "general"
   | "sessions"
@@ -134,6 +128,10 @@ export const KEY_CATEGORY_LABEL_KEYS: Record<KeyCategory, string> = {
   navigation: "catNavigation",
   terminal: "catTerminal",
 };
+
+export function isTerminalAction(action: KeyAction): boolean {
+  return KEY_ACTION_CATEGORY[action] === "terminal";
+}
 
 export function actionsByCategory(): [KeyCategory, KeyAction[]][] {
   return KEY_CATEGORY_ORDER.map((cat) => [

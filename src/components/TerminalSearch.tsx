@@ -1,19 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CaretDown, CaretUp, X } from "@phosphor-icons/react";
 
-import { captureState } from "@/lib/keys";
 import { getTerm } from "@/lib/termRegistry";
+import { getTerminalTheme } from "@/theme";
 import type { SessionId } from "@/lib/ipc";
 
-const DECORATIONS = {
-  matchBackground: "#7cc5444d",
-  matchBorder: "#7cc54480",
-  matchOverviewRuler: "#7cc544",
-  activeMatchBackground: "#f5a93b66",
-  activeMatchBorder: "#f5a93b",
-  activeMatchColorOverviewRuler: "#f5a93b",
-};
+const NO_RESULT = { index: -1, count: 0 };
 
 interface Props {
   sessionId: SessionId | null;
@@ -23,17 +16,30 @@ interface Props {
 export function TerminalSearch({ sessionId, onClose }: Props) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
-  const [result, setResult] = useState({ index: -1, count: 0 });
+  const [result, setResult] = useState(NO_RESULT);
   const inputRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<number | null>(null);
+
+  const decorations = useMemo(() => {
+    const theme = getTerminalTheme();
+    return {
+      matchBackground: theme.selectionBackground,
+      matchBorder: theme.green,
+      matchOverviewRuler: theme.green ?? "#7cc544",
+      activeMatchBackground: theme.yellow,
+      activeMatchBorder: theme.yellow,
+      activeMatchColorOverviewRuler: theme.yellow ?? "#f5a93b",
+    };
+  }, []);
 
   useEffect(() => {
-    captureState.active = true;
+    setQuery("");
+    setResult(NO_RESULT);
     const entry = getTerm(sessionId);
     const selection = entry?.term.getSelection() ?? "";
     if (selection && !selection.includes("\n")) setQuery(selection);
     requestAnimationFrame(() => inputRef.current?.select());
     return () => {
-      captureState.active = false;
       getTerm(sessionId)?.search.clearDecorations();
     };
   }, [sessionId]);
@@ -52,25 +58,34 @@ export function TerminalSearch({ sessionId, onClose }: Props) {
     if (!entry) return;
     if (!query) {
       entry.search.clearDecorations();
-      setResult({ index: -1, count: 0 });
+      setResult(NO_RESULT);
       return;
     }
-    const timer = window.setTimeout(() => {
-      entry.search.findNext(query, {
-        incremental: true,
-        decorations: DECORATIONS,
-      });
+    debounceRef.current = window.setTimeout(() => {
+      debounceRef.current = null;
+      entry.search.findNext(query, { incremental: true, decorations });
     }, 90);
-    return () => window.clearTimeout(timer);
-  }, [query, sessionId]);
+    return () => {
+      if (debounceRef.current !== null) {
+        window.clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+    };
+  }, [query, sessionId, decorations]);
 
-  const step = (back: boolean) => {
-    const entry = getTerm(sessionId);
-    if (!entry || !query) return;
-    const options = { decorations: DECORATIONS };
-    if (back) entry.search.findPrevious(query, options);
-    else entry.search.findNext(query, options);
-  };
+  const step = useCallback(
+    (back: boolean) => {
+      const entry = getTerm(sessionId);
+      if (!entry || !query) return;
+      if (debounceRef.current !== null) {
+        window.clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+      if (back) entry.search.findPrevious(query, { decorations });
+      else entry.search.findNext(query, { decorations });
+    },
+    [sessionId, query, decorations],
+  );
 
   const close = () => {
     getTerm(sessionId)?.term.focus();
