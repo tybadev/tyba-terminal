@@ -9,6 +9,7 @@ import {
   Keyboard,
   Palette,
   SlidersHorizontal,
+  TerminalWindow,
   User,
 } from "@phosphor-icons/react";
 
@@ -80,6 +81,8 @@ interface Props {
   onShowContainersChange: (value: boolean) => void;
   showGitStatus: boolean;
   onShowGitStatusChange: (value: boolean) => void;
+  shellIntegration: boolean;
+  onShellIntegrationChange: (value: boolean) => void;
 }
 
 const THEME_MODE_KEYS: Record<ThemeMode, string> = {
@@ -273,6 +276,8 @@ export function SettingsView({
   onShowContainersChange,
   showGitStatus,
   onShowGitStatusChange,
+  shellIntegration,
+  onShellIntegrationChange,
 }: Props) {
   const { t, i18n } = useTranslation();
   const [section, setSection] = useState<Section>("general");
@@ -455,6 +460,26 @@ export function SettingsView({
                 checked={showContainers}
                 onCheckedChange={onShowContainersChange}
                 aria-label={t("dockerIntegration")}
+                className="mt-0.5"
+              />
+            </div>
+
+            <div className="mt-2 flex items-start gap-3 rounded-[6px] border border-tyba-border p-4">
+              <span className="mt-0.5 shrink-0 text-tyba-text-muted">
+                <TerminalWindow size={18} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] text-tyba-text">
+                  {t("shellIntegration")}
+                </p>
+                <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
+                  {t("shellIntegrationHint")}
+                </p>
+              </div>
+              <Switch
+                checked={shellIntegration}
+                onCheckedChange={onShellIntegrationChange}
+                aria-label={t("shellIntegration")}
                 className="mt-0.5"
               />
             </div>
