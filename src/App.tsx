@@ -109,9 +109,10 @@ import {
   openViewTab,
   paneSession,
   renameWorkspace,
-  repoBranch,
   onRepoChanged,
-  repoStatus,
+  onRepoReconciled,
+  repoSnapshots as fetchRepoSnapshots,
+  sessionCwd,
   setPref,
   setSplitRatio,
   setWorkspaceColor,
@@ -119,7 +120,7 @@ import {
   splitPane,
   type ApprovalRequest,
   type LayoutState,
-  type RepoStatus,
+  type RepoSnapshot,
   type Session,
   type SessionCommand,
   type SessionId,
@@ -133,6 +134,13 @@ import {
   findAncestorSplit,
   type DividerRect,
 } from "./lib/panes";
+import {
+  DEFAULT_TOOLBAR,
+  parseToolbarPref,
+  snapshotForDir,
+  type ToolbarPref,
+} from "./lib/repoSnapshots";
+import { Toolbar } from "./components/Toolbar";
 import {
   captureState,
   comboOf,
@@ -188,6 +196,7 @@ const CONTEXT_MENU_PARTS: MenuParts = {
 const TOGGLE_PREF_KEY = "pref.sidebar_toggle";
 const DETAILS_PREF_KEY = "pref.sidebar_details";
 const DETAILS_OVERRIDES_KEY = "pref.session_details";
+const TOOLBAR_PREF_KEY = "pref.toolbar";
 const ACCOUNT_NAME_KEY = "pref.account_name";
 const FONT_SIZE_KEY = "pref.code.font_size";
 const SHOW_CONTAINERS_KEY = "pref.code.show_containers";
@@ -303,10 +312,10 @@ export default function App() {
   const [pastePrompt, setPastePrompt] = useState<TerminalPasteDetail | null>(
     null,
   );
-  const [branches, setBranches] = useState<Record<string, string>>({});
-  const [repoStatuses, setRepoStatuses] = useState<Record<string, RepoStatus>>(
-    {},
-  );
+  const [repoSnapshots, setRepoSnapshots] = useState<
+    Record<string, RepoSnapshot>
+  >({});
+  const [toolbarPref, setToolbarPref] = useState<ToolbarPref>(DEFAULT_TOOLBAR);
   const [showGitStatus, setShowGitStatus] = useState(true);
   const [shellIntegration, setShellIntegration] = useState(true);
   const [menuWorkspace, setMenuWorkspace] = useState<string | null>(null);
@@ -425,20 +434,26 @@ export default function App() {
     Record<string, SessionCommand>
   >({});
   const [sessionCwds, setSessionCwds] = useState<Record<string, string>>({});
-  const [gitRefresh, setGitRefresh] = useState(0);
   useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     for (const s of sessions) {
       void onSessionCommand(s.id, (payload) => {
         setSessionCommands((prev) => ({ ...prev, [s.id]: payload }));
-        if (!payload.running) setGitRefresh((n) => n + 1);
       }).then((un) => (disposed ? un() : unlisteners.push(un)));
       void onSessionCwd(s.id, (payload) =>
         setSessionCwds((prev) =>
           prev[s.id] === payload.cwd ? prev : { ...prev, [s.id]: payload.cwd },
         ),
       ).then((un) => (disposed ? un() : unlisteners.push(un)));
+      void sessionCwd(s.id)
+        .then((cwd) => {
+          if (disposed || !cwd) return;
+          setSessionCwds((prev) =>
+            prev[s.id] ? prev : { ...prev, [s.id]: cwd },
+          );
+        })
+        .catch(() => {});
     }
     return () => {
       disposed = true;
@@ -463,26 +478,35 @@ export default function App() {
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
-    void onRepoChanged(() => setGitRefresh((n) => n + 1)).then((un) => {
+    void fetchRepoSnapshots()
+      .then((all) => {
+        if (cancelled) return;
+        setRepoSnapshots((prev) => {
+          const next = { ...prev };
+          for (const snap of all) {
+            if (!next[snap.root]) next[snap.root] = snap;
+          }
+          return next;
+        });
+      })
+      .catch(() => {});
+    void onRepoChanged((snapshot) => {
+      setRepoSnapshots((prev) => ({ ...prev, [snapshot.root]: snapshot }));
+    }).then((un) => {
       if (cancelled) un();
       else unlisten = un;
+    });
+    let unlistenReconciled: (() => void) | null = null;
+    void onRepoReconciled((all) => {
+      setRepoSnapshots(Object.fromEntries(all.map((snap) => [snap.root, snap])));
+    }).then((un) => {
+      if (cancelled) un();
+      else unlistenReconciled = un;
     });
     return () => {
       cancelled = true;
       unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    const bump = () => setGitRefresh((n) => n + 1);
-    const onVisibility = () => {
-      if (!document.hidden) bump();
-    };
-    window.addEventListener("focus", bump);
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.removeEventListener("focus", bump);
-      document.removeEventListener("visibilitychange", onVisibility);
+      unlistenReconciled?.();
     };
   }, []);
 
@@ -567,55 +591,6 @@ export default function App() {
       loose,
     };
   }, [workspaces]);
-
-  const gitDirsKey = useMemo(() => {
-    const dirs = new Set<string>();
-    for (const w of layout.workspaces) {
-      const dir = workspaceGitDir(w);
-      if (dir) dirs.add(dir);
-    }
-    return [...dirs].sort().join("\n");
-  }, [layout.workspaces, workspaceGitDir]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const dirs = gitDirsKey ? gitDirsKey.split("\n") : [];
-    if (dirs.length === 0) return;
-    const timer = window.setTimeout(() => {
-      void Promise.all(
-        dirs.map(
-          async (dir) =>
-            [
-              dir,
-              await repoBranch(dir).catch(() => null),
-              await repoStatus(dir).catch(() => null),
-            ] as const,
-        ),
-      ).then((entries) => {
-        if (cancelled) return;
-        setBranches((prev) => {
-          const next = { ...prev };
-          for (const [dir, branch] of entries) {
-            if (branch) next[dir] = branch;
-            else delete next[dir];
-          }
-          return next;
-        });
-        setRepoStatuses((prev) => {
-          const next = { ...prev };
-          for (const [dir, , status] of entries) {
-            if (status) next[dir] = status;
-            else delete next[dir];
-          }
-          return next;
-        });
-      });
-    }, 200);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [gitDirsKey, gitRefresh]);
 
   const cycleWorkspace = useCallback(
     (dir: 1 | -1) => {
@@ -879,6 +854,14 @@ export default function App() {
     void setPref(GIT_STATUS_KEY, value ? "on" : "off").catch(() => {});
   }, []);
 
+  const changeToolbarEnabled = useCallback((value: boolean) => {
+    setToolbarPref((prev) => {
+      const next = { ...prev, enabled: value };
+      void setPref(TOOLBAR_PREF_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, []);
+
   const changeShellIntegration = useCallback((value: boolean) => {
     setShellIntegration(value);
     void setPref(SHELL_INTEGRATION_KEY, value ? "on" : "off").catch(() => {});
@@ -957,6 +940,7 @@ export default function App() {
         containersRaw,
         gitStatusRaw,
         shellIntegrationRaw,
+        toolbarRaw,
       ] = await Promise.all([
         listSessions().catch(() => [] as Session[]),
         layoutState().catch(() => EMPTY_LAYOUT),
@@ -969,6 +953,7 @@ export default function App() {
         getPref(SHOW_CONTAINERS_KEY).catch(() => null),
         getPref(GIT_STATUS_KEY).catch(() => null),
         getPref(SHELL_INTEGRATION_KEY).catch(() => null),
+        getPref(TOOLBAR_PREF_KEY).catch(() => null),
       ]);
       if (cancelled) return;
       setSessions(existing);
@@ -993,6 +978,7 @@ export default function App() {
       setShowContainers(containersRaw === "on");
       setShowGitStatus(gitStatusRaw !== "off");
       setShellIntegration(shellIntegrationRaw !== "off");
+      setToolbarPref(parseToolbarPref(toolbarRaw));
       const fontSize = Number(fontRaw);
       if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
       if (currentLayout.workspaces.length === 0 && !booted.current) {
@@ -1291,9 +1277,11 @@ export default function App() {
     const isConfig = isConfigWorkspace(w);
     const showDetails = open && detailsFor(w.id) && !isConfig;
     const gitDir = workspaceGitDir(w);
-    const branch = gitDir ? branches[gitDir] : undefined;
-    const gitStatus =
-      showGitStatus && gitDir ? repoStatuses[gitDir] : undefined;
+    const snapshot = gitDir ? snapshotForDir(repoSnapshots, gitDir) : undefined;
+    const branch = snapshot?.branch ?? undefined;
+    const gitStatus = showGitStatus
+      ? (snapshot?.status ?? undefined)
+      : undefined;
     const runner = isConfig ? null : workspaceAgent(w);
     const runningCmd = isConfig ? null : workspaceCommand(w);
     const hoverAgent = runner ?? agentFromCommand(runningCmd);
@@ -1891,6 +1879,8 @@ export default function App() {
                         onShowGitStatusChange={changeShowGitStatus}
                         shellIntegration={shellIntegration}
                         onShellIntegrationChange={changeShellIntegration}
+                        toolbarEnabled={toolbarPref.enabled}
+                        onToolbarEnabledChange={changeToolbarEnabled}
                       />
                     </div>
                   )}
@@ -2016,6 +2006,18 @@ export default function App() {
                     </div>
                   )}
                 </div>
+                {activeTab && activeWorkspace && (
+                  <Toolbar
+                    pref={toolbarPref}
+                    cwd={workspaceCwd(activeWorkspace)}
+                    snapshot={(() => {
+                      const dir = workspaceGitDir(activeWorkspace);
+                      return dir
+                        ? snapshotForDir(repoSnapshots, dir)
+                        : undefined;
+                    })()}
+                  />
+                )}
               </main>
 
               <ShortcutsPanel

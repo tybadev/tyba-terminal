@@ -67,6 +67,7 @@ fn reconcile_repo_watchers(app: &AppHandle) {
     let state = app.state::<AppState>();
     let roots = watched_repo_roots(&state);
     state.repos.set_roots(app, roots);
+    let _ = app.emit(repo::EVENT_RECONCILED, state.repos.snapshots());
 }
 
 fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
@@ -146,6 +147,17 @@ fn attach_session(
 #[tauri::command]
 fn detach_session(state: State<'_, AppState>, id: SessionId) {
     state.pty_pool.detach(id);
+}
+
+#[tauri::command]
+fn repo_snapshots(state: State<'_, AppState>) -> Vec<repo::RepoSnapshot> {
+    state.repos.snapshots()
+}
+
+#[tauri::command]
+fn session_cwd(state: State<'_, AppState>, id: SessionId) -> Option<String> {
+    let pid = state.pty_pool.leader_pid(id)?;
+    repo::process_cwd(pid).map(|p| p.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -294,18 +306,6 @@ fn set_workspace_group(
         .map_err(|e| e.to_string())?;
     emit_layout(&app, &state);
     Ok(())
-}
-
-#[tauri::command]
-fn repo_branch(path: String) -> Option<String> {
-    let path = session::expand_home(std::path::Path::new(&path));
-    repo::branch(&path)
-}
-
-#[tauri::command]
-fn repo_status(path: String) -> Option<repo::RepoStatus> {
-    let path = session::expand_home(std::path::Path::new(&path));
-    repo::status(&path)
 }
 
 #[tauri::command]
@@ -929,6 +929,8 @@ pub fn run() {
             write_to_session,
             attach_session,
             detach_session,
+            repo_snapshots,
+            session_cwd,
             resize_session,
             list_sessions,
             dispose_session,
@@ -947,8 +949,6 @@ pub fn run() {
             rename_workspace,
             set_workspace_color,
             set_workspace_group,
-            repo_branch,
-            repo_status,
             new_window,
             create_tab,
             close_tab,
