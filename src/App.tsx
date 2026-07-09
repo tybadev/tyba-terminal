@@ -936,8 +936,12 @@ export default function App() {
         e.preventDefault();
         e.stopPropagation();
         if (e.repeat) return;
-        suppressNativePaste();
-        void pasteFromClipboard();
+        if (action === "selectAll") {
+          entry.term.selectAll();
+        } else {
+          suppressNativePaste();
+          void pasteFromClipboard();
+        }
         return;
       }
       if (action) {

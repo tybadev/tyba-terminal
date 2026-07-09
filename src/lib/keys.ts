@@ -23,7 +23,8 @@ export type KeyAction =
   | "paneDown"
   | "copy"
   | "paste"
-  | "search";
+  | "search"
+  | "selectAll";
 
 export const KEY_ACTIONS: KeyAction[] = [
   "paletteActions",
@@ -49,6 +50,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   "copy",
   "paste",
   "search",
+  "selectAll",
 ];
 
 export type KeyCategory =
@@ -92,6 +94,7 @@ export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
   copy: "terminal",
   paste: "terminal",
   search: "terminal",
+  selectAll: "terminal",
 };
 
 export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
@@ -118,6 +121,7 @@ export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   copy: "copySelection",
   paste: "pasteClipboard",
   search: "searchTerminal",
+  selectAll: "selectAllTerminal",
 };
 
 export const KEY_CATEGORY_LABEL_KEYS: Record<KeyCategory, string> = {
@@ -166,6 +170,7 @@ export const DEFAULT_BINDINGS: Bindings = {
   copy: IS_MAC ? "meta+c" : "ctrl+shift+c",
   paste: IS_MAC ? "meta+v" : "ctrl+shift+v",
   search: IS_MAC ? "meta+f" : "ctrl+shift+f",
+  selectAll: IS_MAC ? "meta+a" : "ctrl+shift+a",
 };
 
 export const BINDINGS_PREF_KEY = "pref.keybindings";

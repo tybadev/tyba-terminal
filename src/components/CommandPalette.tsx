@@ -168,6 +168,7 @@ export function CommandPalette({
         ))}
       </div>
       <CommandInput
+        autoFocus
         placeholder={mode === "sessions" ? t("searchSessions") : t("searchCommand")}
       />
       <CommandList>

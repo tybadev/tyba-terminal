@@ -260,7 +260,7 @@ export function TerminalView({
   return (
     <div
       ref={containerRef}
-      className={`overflow-hidden rounded-[4px] bg-tyba-sunken p-2 ${frameClass}`}
+      className={`overflow-hidden rounded-[4px] bg-tyba-sunken px-2 pb-3 pt-2 ${frameClass}`}
       style={
         visible && rect
           ? {
