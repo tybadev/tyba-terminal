@@ -134,6 +134,7 @@ const ACCOUNT_NAME_KEY = "pref.account_name";
 const FONT_SIZE_KEY = "pref.code.font_size";
 const SHOW_CONTAINERS_KEY = "pref.code.show_containers";
 const GIT_STATUS_KEY = "pref.git_status";
+const SHELL_INTEGRATION_KEY = "pref.shell_integration";
 
 function runnerLabel(kind: SessionKind): string | null {
   if (kind.type !== "agent") return null;
@@ -230,6 +231,7 @@ export default function App() {
     {},
   );
   const [showGitStatus, setShowGitStatus] = useState(true);
+  const [shellIntegration, setShellIntegration] = useState(true);
   const [prompt, setPrompt] = useState<{
     kind: "rename" | "group";
     ws: Workspace;
@@ -714,6 +716,11 @@ export default function App() {
     void setPref(GIT_STATUS_KEY, value ? "on" : "off").catch(() => {});
   }, []);
 
+  const changeShellIntegration = useCallback((value: boolean) => {
+    setShellIntegration(value);
+    void setPref(SHELL_INTEGRATION_KEY, value ? "on" : "off").catch(() => {});
+  }, []);
+
   const toggleSidebar = useCallback(() => {
     setSidebar((current) => (current === "open" ? togglePref : "open"));
   }, [togglePref]);
@@ -786,6 +793,7 @@ export default function App() {
         fontRaw,
         containersRaw,
         gitStatusRaw,
+        shellIntegrationRaw,
       ] = await Promise.all([
         listSessions().catch(() => [] as Session[]),
         layoutState().catch(() => EMPTY_LAYOUT),
@@ -797,6 +805,7 @@ export default function App() {
         getPref(FONT_SIZE_KEY).catch(() => null),
         getPref(SHOW_CONTAINERS_KEY).catch(() => null),
         getPref(GIT_STATUS_KEY).catch(() => null),
+        getPref(SHELL_INTEGRATION_KEY).catch(() => null),
       ]);
       if (cancelled) return;
       setSessions(existing);
@@ -820,6 +829,7 @@ export default function App() {
       setBindings(parseBindings(bindingsRaw));
       setShowContainers(containersRaw === "on");
       setShowGitStatus(gitStatusRaw !== "off");
+      setShellIntegration(shellIntegrationRaw !== "off");
       const fontSize = Number(fontRaw);
       if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
       if (currentLayout.workspaces.length === 0 && !booted.current) {
@@ -1594,6 +1604,8 @@ export default function App() {
                         onShowContainersChange={changeShowContainers}
                         showGitStatus={showGitStatus}
                         onShowGitStatusChange={changeShowGitStatus}
+                        shellIntegration={shellIntegration}
+                        onShellIntegrationChange={changeShellIntegration}
                       />
                     </div>
                   )}

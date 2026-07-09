@@ -3,7 +3,7 @@ pub mod store;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
@@ -76,6 +76,15 @@ impl SessionManager {
         }
     }
 
+    fn shell_integration_enabled(&self) -> bool {
+        self.store
+            .get_setting("pref.shell_integration")
+            .ok()
+            .flatten()
+            .map(|v| v != "off")
+            .unwrap_or(true)
+    }
+
     pub fn create_shell_session(
         &self,
         app: AppHandle,
@@ -91,6 +100,18 @@ impl SessionManager {
             cmd.arg("-l");
         }
         cmd.cwd(resolve_cwd(opts.cwd.as_deref()));
+
+        if shell_label(&shell) == "zsh" && self.shell_integration_enabled() {
+            if let Some(dir) = zsh_integration_dir() {
+                let user_zdotdir = std::env::var("ZDOTDIR")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| std::env::var("HOME").ok())
+                    .unwrap_or_default();
+                cmd.env("ZDOTDIR", dir);
+                cmd.env("TYBA_USER_ZDOTDIR", user_zdotdir);
+            }
+        }
 
         let title = opts.title.unwrap_or_else(|| shell_label(&shell));
         self.spawn_session(
@@ -262,6 +283,48 @@ pub fn resolve_cwd(requested: Option<&Path>) -> PathBuf {
         }
         None => home(),
     }
+}
+
+/// Diretório com os arquivos de shell integration do zsh (ZDOTDIR).
+/// Escrito uma vez em temp. Os arquivos sourceiam a config do usuário
+/// (via TYBA_USER_ZDOTDIR) e adicionam os hooks OSC 133/633 — padrão
+/// consolidado (VS Code/iTerm2): mexe só no ambiente da sessão, nunca
+/// nos dotfiles do usuário; se algo falhar, o shell do usuário segue.
+fn zsh_integration_dir() -> Option<&'static Path> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| write_zsh_integration().ok()).as_deref()
+}
+
+fn write_zsh_integration() -> std::io::Result<PathBuf> {
+    let dir = std::env::temp_dir().join("tyba-zsh-integration");
+    std::fs::create_dir_all(&dir)?;
+    let self_dir = dir.to_string_lossy().replace('"', "");
+
+    let chain = |file: &str| {
+        format!(
+            "if [[ -f \"$TYBA_USER_ZDOTDIR/{file}\" ]]; then\n  \
+             ZDOTDIR=\"$TYBA_USER_ZDOTDIR\"\n  \
+             source \"$TYBA_USER_ZDOTDIR/{file}\"\n  \
+             ZDOTDIR=\"{self_dir}\"\nfi\n"
+        )
+    };
+
+    std::fs::write(dir.join(".zshenv"), chain(".zshenv"))?;
+    std::fs::write(dir.join(".zprofile"), chain(".zprofile"))?;
+    std::fs::write(dir.join(".zlogin"), chain(".zlogin"))?;
+
+    let hooks = "\n# TYBA shell integration (OSC 133/633)\n\
+        if [[ -o interactive ]] && autoload -Uz add-zsh-hook 2>/dev/null; then\n  \
+        __tyba_esc() { printf '\\033]%s\\007' \"$1\"; }\n  \
+        __tyba_preexec() { __tyba_esc \"633;E;$(print -rn -- \"$1\" | base64 | tr -d '\\n')\"; __tyba_esc \"133;C\"; }\n  \
+        __tyba_precmd() { local __c=$?; __tyba_esc \"133;D;$__c\"; __tyba_esc \"133;A\"; }\n  \
+        add-zsh-hook preexec __tyba_preexec\n  \
+        add-zsh-hook precmd __tyba_precmd\n\
+        fi\n\
+        ZDOTDIR=\"$TYBA_USER_ZDOTDIR\"\n";
+    std::fs::write(dir.join(".zshrc"), format!("{}{}", chain(".zshrc"), hooks))?;
+
+    Ok(dir)
 }
 
 pub fn default_shell() -> String {

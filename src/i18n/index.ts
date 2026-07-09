@@ -174,6 +174,9 @@ const resources = {
       dockerIntegration: "Integração com Docker",
       dockerIntegrationHint:
         "Adiciona um ícone no header com os containers do projeto da sessão ativa — logs, shell e compose (up/down/restart) na mão. Ações destrutivas (remover container, compose down) são vermelhas: sempre pedem confirmação. Requer o Docker rodando na máquina.",
+      shellIntegration: "Shell integration (zsh)",
+      shellIntegrationHint:
+        "Injeta hooks no zsh da sessão pra saber o comando em execução e o status — mostra a descrição da sessão no sidebar, estilo Warp. Mexe só no ambiente da sessão (via ZDOTDIR), nunca nos seus dotfiles. Desligue se o shell se comportar estranho.",
       approvals: "Aprovações",
       pendingCount_one: "{{count}} pendente",
       pendingCount_other: "{{count}} pendentes",
@@ -344,6 +347,9 @@ const resources = {
       dockerIntegration: "Docker integration",
       dockerIntegrationHint:
         "Adds a header icon with the active session's project containers — logs, shell and compose (up/down/restart) at hand. Destructive actions (remove container, compose down) are red: they always ask for confirmation. Requires Docker running on the machine.",
+      shellIntegration: "Shell integration (zsh)",
+      shellIntegrationHint:
+        "Injects hooks into the session's zsh to know the running command and status — shows the session description in the sidebar, Warp-style. Only touches the session environment (via ZDOTDIR), never your dotfiles. Turn off if the shell misbehaves.",
       approvals: "Approvals",
       pendingCount_one: "{{count}} pending",
       pendingCount_other: "{{count}} pending",
