@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Listener, Manager, State};
 
 use approvals::{ApprovalRequest, Decision, SharedApprovals};
 use pty::SharedPtyPool;
@@ -34,22 +34,41 @@ struct AppState {
     repos: repo::SharedRepoWatcher,
 }
 
-fn watched_repo_roots(
-    layout: &layout::LayoutState,
-) -> std::collections::HashSet<std::path::PathBuf> {
-    layout
+fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::PathBuf> {
+    let mut roots: std::collections::HashSet<std::path::PathBuf> = state
+        .layout
+        .state()
         .workspaces
         .iter()
         .filter_map(|w| w.repo_root.as_deref())
         .map(|root| session::expand_home(std::path::Path::new(root)))
-        .filter(|root| root.is_dir())
-        .collect()
+        .filter_map(|root| repo::toplevel(&root))
+        .collect();
+
+    for session in state.sessions.list() {
+        let Some(pid) = state.pty_pool.leader_pid(session.id) else {
+            continue;
+        };
+        let Some(cwd) = repo::process_cwd(pid) else {
+            continue;
+        };
+        if let Some(root) = repo::toplevel(&cwd) {
+            roots.insert(root);
+        }
+    }
+    roots
+}
+
+fn reconcile_repo_watchers(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let roots = watched_repo_roots(&state);
+    state.repos.set_roots(app, roots);
 }
 
 fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
-    let snapshot = state.layout.state();
-    state.repos.set_roots(app, watched_repo_roots(&snapshot));
-    let _ = app.emit(layout::EVENT_CHANGED, snapshot);
+    let _ = app.emit(layout::EVENT_CHANGED, state.layout.state());
+    let handle = app.clone();
+    std::thread::spawn(move || reconcile_repo_watchers(&handle));
 }
 
 fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
@@ -848,7 +867,6 @@ pub fn run() {
                 Arc::new(theme::ThemeManager::new(Arc::clone(&store), themes_dir));
 
             let repos: repo::SharedRepoWatcher = Arc::new(repo::RepoWatcher::new());
-            repos.set_roots(app.handle(), watched_repo_roots(&layout.state()));
 
             app.manage(AppState {
                 store: Arc::clone(&store),
@@ -868,6 +886,15 @@ pub fn run() {
                     sessions.flush_scrollback(&pty_pool);
                 })
                 .expect("failed to spawn scrollback flush thread");
+
+            let cwd_handle = app.handle().clone();
+            app.listen_any(pty::EVENT_CWD_CHANGED, move |_| {
+                let handle = cwd_handle.clone();
+                std::thread::spawn(move || reconcile_repo_watchers(&handle));
+            });
+
+            let boot_handle = app.handle().clone();
+            std::thread::spawn(move || reconcile_repo_watchers(&boot_handle));
 
             if let Some(window) = app.get_webview_window("main") {
                 let hidden = window.clone();

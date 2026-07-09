@@ -463,17 +463,7 @@ export default function App() {
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
-    void onRepoChanged((snapshot) => {
-      if (snapshot.branch) {
-        setBranches((prev) => ({ ...prev, [snapshot.root]: snapshot.branch! }));
-      }
-      if (snapshot.status) {
-        setRepoStatuses((prev) => ({
-          ...prev,
-          [snapshot.root]: snapshot.status!,
-        }));
-      }
-    }).then((un) => {
+    void onRepoChanged(() => setGitRefresh((n) => n + 1)).then((un) => {
       if (cancelled) un();
       else unlisten = un;
     });

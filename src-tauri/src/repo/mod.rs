@@ -6,7 +6,7 @@ use std::time::Duration;
 use notify::RecursiveMode;
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
 use parking_lot::Mutex;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::worktree::git_in;
 
@@ -58,6 +58,48 @@ pub fn is_watched_event_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
         .is_some_and(|n| WATCHED_NAMES.contains(&n))
+}
+
+#[cfg(target_os = "linux")]
+pub fn process_cwd(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
+#[cfg(target_os = "macos")]
+pub fn process_cwd(pid: u32) -> Option<PathBuf> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if written != size {
+        return None;
+    }
+    let raw = &info.pvi_cdir.vip_path;
+    let bytes = unsafe { std::slice::from_raw_parts(raw.as_ptr() as *const u8, raw.len() * 32) };
+    let end = bytes.iter().position(|b| *b == 0)?;
+    if end == 0 {
+        return None;
+    }
+    Some(PathBuf::from(OsStr::from_bytes(&bytes[..end])))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn process_cwd(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
+pub fn toplevel(cwd: &Path) -> Option<PathBuf> {
+    git_path(cwd, "--show-toplevel")
 }
 
 fn git_path(root: &Path, arg: &str) -> Option<PathBuf> {
@@ -224,7 +266,7 @@ impl RepoWatcher {
         Self::default()
     }
 
-    pub fn set_roots(&self, app: &AppHandle, roots: HashSet<PathBuf>) {
+    pub fn set_roots<R: Runtime>(&self, app: &AppHandle<R>, roots: HashSet<PathBuf>) {
         let mut watched = self.watched.lock();
         watched.retain(|root, _| roots.contains(root));
 
@@ -239,14 +281,19 @@ impl RepoWatcher {
             let Some(entry) = spawn_watcher(app.clone(), root.clone(), &dirs) else {
                 continue;
             };
-            let _ = app.emit(EVENT_CHANGED, snapshot(&root));
             watched.insert(root, entry);
         }
     }
 }
 
-fn spawn_watcher(app: AppHandle, root: PathBuf, dirs: &[PathBuf]) -> Option<Watched> {
-    let last: Arc<Mutex<Option<RepoSnapshot>>> = Arc::new(Mutex::new(None));
+fn spawn_watcher<R: Runtime>(
+    app: AppHandle<R>,
+    root: PathBuf,
+    dirs: &[PathBuf],
+) -> Option<Watched> {
+    let initial = snapshot(&root);
+    let _ = app.emit(EVENT_CHANGED, initial.clone());
+    let last: Arc<Mutex<Option<RepoSnapshot>>> = Arc::new(Mutex::new(Some(initial)));
     let callback_root = root.clone();
 
     let mut debouncer = new_debouncer(DEBOUNCE, None, move |result: DebounceEventResult| {
@@ -309,6 +356,112 @@ mod tests {
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-qm", "init"]);
         repo
+    }
+
+    #[test]
+    fn process_cwd_reads_the_real_working_directory_of_a_live_process() {
+        use std::process::{Command, Stdio};
+
+        let repo = temp_repo();
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("read _ || sleep 5")
+            .current_dir(&repo)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("spawn");
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let seen = super::process_cwd(child.id());
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let seen = seen.expect("process_cwd devolveu None");
+        let want = std::fs::canonicalize(&repo).unwrap();
+        let got = std::fs::canonicalize(&seen).unwrap();
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+        assert_eq!(got, want, "cwd real divergiu");
+    }
+
+    #[test]
+    fn toplevel_of_a_subdirectory_is_the_repo_root() {
+        let repo = temp_repo();
+        let sub = repo.join("a").join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+        let top = super::toplevel(&sub).expect("toplevel");
+        let want = std::fs::canonicalize(&repo).unwrap();
+        let got = std::fs::canonicalize(&top).unwrap();
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn toplevel_outside_a_repo_is_none() {
+        let dir = std::env::temp_dir().join(format!("tyba-norepo-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let top = super::toplevel(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(top.is_none());
+    }
+
+    #[test]
+    fn watcher_emits_when_the_repo_changes_under_it() {
+        use std::collections::HashSet;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        use tauri::Listener;
+
+        let repo = temp_repo();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        let (tx, rx) = mpsc::channel();
+        handle.listen_any(super::EVENT_CHANGED, move |_| {
+            let _ = tx.send(());
+        });
+
+        let watcher = super::RepoWatcher::new();
+        watcher.set_roots(&handle, HashSet::from([repo.clone()]));
+
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("snapshot inicial nao foi emitido no registro");
+
+        git(&repo, &["switch", "-c", "probe", "-q"]);
+
+        let fired = rx.recv_timeout(Duration::from_secs(10)).is_ok();
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+        assert!(fired, "watcher nao emitiu apos troca de branch externa");
+    }
+
+    #[test]
+    fn watcher_stays_quiet_when_nothing_changes() {
+        use std::collections::HashSet;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        use tauri::Listener;
+
+        let repo = temp_repo();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        let (tx, rx) = mpsc::channel();
+        handle.listen_any(super::EVENT_CHANGED, move |_| {
+            let _ = tx.send(());
+        });
+
+        let watcher = super::RepoWatcher::new();
+        watcher.set_roots(&handle, HashSet::from([repo.clone()]));
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("snapshot inicial");
+
+        git(&repo, &["status", "--porcelain"]);
+        std::thread::sleep(Duration::from_millis(900));
+
+        let spurious = rx.try_recv().is_ok();
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+        assert!(!spurious, "watcher emitiu sem o snapshot ter mudado");
     }
 
     #[test]
