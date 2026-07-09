@@ -184,6 +184,30 @@ function SectionHeader({ title, hint }: { title: string; hint: string }) {
   );
 }
 
+function SettingRow({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-4 py-3">
+      <div className="min-w-0">
+        <p className="text-[13px] text-tyba-text">{label}</p>
+        {hint && (
+          <p className="pt-0.5 text-[11px] leading-relaxed text-tyba-text-faint">
+            {hint}
+          </p>
+        )}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
 function TextField({
   value,
   placeholder,
@@ -631,56 +655,44 @@ export function SettingsView({
               title={t("settingsPreferences")}
               hint={t("preferencesHint")}
             />
-            <span className="tyba-label">{t("sidebarToggleBehavior")}</span>
-            <div className="pt-2 pb-6">
-              <Select
-                value={togglePref}
-                onChange={(v) => onTogglePrefChange(v as SidebarTogglePref)}
-                className="w-56"
-                options={[
-                  { value: "hidden", label: t("collapseAll") },
-                  { value: "rail", label: t("collapseRail") },
-                ]}
-              />
-            </div>
-
-            <label className="flex items-center justify-between gap-4 pb-6">
-              <span className="text-[13px] text-tyba-text">
-                {t("sidebarDetails")}
-              </span>
-              <Switch
-                checked={detailsPref === "on"}
-                onCheckedChange={(c) => onDetailsPrefChange(c ? "on" : "off")}
-              />
-            </label>
-
-            <label className="flex items-start justify-between gap-4 pb-6">
-              <span className="min-w-0">
-                <span className="text-[13px] text-tyba-text">
-                  {t("gitStatusToggle")}
-                </span>
-                <span className="block pt-0.5 text-[11px] text-tyba-text-faint">
-                  {t("gitStatusHint")}
-                </span>
-              </span>
-              <Switch
-                checked={showGitStatus}
-                onCheckedChange={onShowGitStatusChange}
-                className="mt-0.5"
-              />
-            </label>
-
-            <span className="tyba-label">{t("language")}</span>
-            <div className="pt-2">
-              <Select
-                value={i18n.language}
-                onChange={(v) => setLanguage(v as LanguageCode)}
-                className="w-56"
-                options={LANGUAGES.map((l) => ({
-                  value: l.code,
-                  label: l.label,
-                }))}
-              />
+            <div className="divide-y divide-tyba-border overflow-hidden rounded-[8px] border border-tyba-border">
+              <SettingRow label={t("sidebarToggleBehavior")}>
+                <Select
+                  value={togglePref}
+                  onChange={(v) => onTogglePrefChange(v as SidebarTogglePref)}
+                  className="w-48"
+                  options={[
+                    { value: "hidden", label: t("collapseAll") },
+                    { value: "rail", label: t("collapseRail") },
+                  ]}
+                />
+              </SettingRow>
+              <SettingRow label={t("sidebarDetails")}>
+                <Switch
+                  checked={detailsPref === "on"}
+                  onCheckedChange={(c) => onDetailsPrefChange(c ? "on" : "off")}
+                />
+              </SettingRow>
+              <SettingRow
+                label={t("gitStatusToggle")}
+                hint={t("gitStatusHint")}
+              >
+                <Switch
+                  checked={showGitStatus}
+                  onCheckedChange={onShowGitStatusChange}
+                />
+              </SettingRow>
+              <SettingRow label={t("language")}>
+                <Select
+                  value={i18n.language}
+                  onChange={(v) => setLanguage(v as LanguageCode)}
+                  className="w-48"
+                  options={LANGUAGES.map((l) => ({
+                    value: l.code,
+                    label: l.label,
+                  }))}
+                />
+              </SettingRow>
             </div>
           </section>
         )}
