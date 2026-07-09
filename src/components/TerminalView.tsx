@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -111,6 +111,7 @@ export function TerminalView({
   onFocusRef.current = onFocus;
   const onPasteRef = useRef(onPaste);
   onPasteRef.current = onPaste;
+  const [menuHasSelection, setMenuHasSelection] = useState(false);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -296,10 +297,12 @@ export function TerminalView({
       .catch(() => {});
   };
 
-  const hasSelection = termRef.current?.hasSelection() ?? false;
-
   return (
-    <ContextMenu>
+    <ContextMenu
+      onOpenChange={(o) => {
+        if (o) setMenuHasSelection(termRef.current?.hasSelection() ?? false);
+      }}
+    >
       <ContextMenuTrigger asChild disabled={!visible}>
         <div
           ref={containerRef}
@@ -320,13 +323,13 @@ export function TerminalView({
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem
-          disabled={!hasSelection}
+          disabled={!menuHasSelection}
           onSelect={() => copySelection(false)}
         >
           {i18n.t("copySelection")}
         </ContextMenuItem>
         <ContextMenuItem
-          disabled={!hasSelection}
+          disabled={!menuHasSelection}
           onSelect={() => copySelection(true)}
         >
           {i18n.t("copyAsMarkdown")}

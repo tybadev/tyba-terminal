@@ -304,7 +304,13 @@ fn diff_numstat(path: &std::path::Path) -> (u32, u32) {
     (insertions, deletions)
 }
 
+const UNTRACKED_MAX_BYTES: u64 = 512 * 1024;
+const UNTRACKED_MAX_FILES: usize = 500;
+
 fn untracked_insertions(path: &std::path::Path) -> u32 {
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt;
+
     let list = std::process::Command::new("git")
         .arg("-C")
         .arg(path)
@@ -319,14 +325,33 @@ fn untracked_insertions(path: &std::path::Path) -> u32 {
     let Ok(list) = list else {
         return 0;
     };
-    let mut lines = 0;
-    for file in list.stdout.split(|b| *b == 0).filter(|f| !f.is_empty()) {
-        let full = path.join(std::path::Path::new(&String::from_utf8_lossy(file).into_owned()));
+    let mut lines = 0u32;
+    for file in list
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|f| !f.is_empty())
+        .take(UNTRACKED_MAX_FILES)
+    {
+        #[cfg(unix)]
+        let full = path.join(std::ffi::OsStr::from_bytes(file));
+        #[cfg(not(unix))]
+        let full = path.join(String::from_utf8_lossy(file).as_ref());
+
+        let Ok(meta) = std::fs::metadata(&full) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > UNTRACKED_MAX_BYTES {
+            continue;
+        }
         if let Ok(content) = std::fs::read(&full) {
             if content.contains(&0) {
                 continue;
             }
-            lines += content.iter().filter(|b| **b == b'\n').count() as u32;
+            let mut count = content.iter().filter(|b| **b == b'\n').count();
+            if !content.is_empty() && content.last() != Some(&b'\n') {
+                count += 1;
+            }
+            lines += count as u32;
         }
     }
     lines

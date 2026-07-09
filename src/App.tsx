@@ -499,28 +499,32 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     const dirs = gitDirsKey ? gitDirsKey.split("\n") : [];
-    void Promise.all(
-      dirs.map(
-        async (dir) =>
-          [
-            dir,
-            await repoBranch(dir).catch(() => null),
-            await repoStatus(dir).catch(() => null),
-          ] as const,
-      ),
-    ).then((entries) => {
-      if (cancelled) return;
-      const nextBranches: Record<string, string> = {};
-      const nextStatus: Record<string, RepoStatus> = {};
-      for (const [dir, branch, status] of entries) {
-        if (branch) nextBranches[dir] = branch;
-        if (status) nextStatus[dir] = status;
-      }
-      setBranches(nextBranches);
-      setRepoStatuses(nextStatus);
-    });
+    if (dirs.length === 0) return;
+    const timer = window.setTimeout(() => {
+      void Promise.all(
+        dirs.map(
+          async (dir) =>
+            [
+              dir,
+              await repoBranch(dir).catch(() => null),
+              await repoStatus(dir).catch(() => null),
+            ] as const,
+        ),
+      ).then((entries) => {
+        if (cancelled) return;
+        const nextBranches: Record<string, string> = {};
+        const nextStatus: Record<string, RepoStatus> = {};
+        for (const [dir, branch, status] of entries) {
+          if (branch) nextBranches[dir] = branch;
+          if (status) nextStatus[dir] = status;
+        }
+        setBranches(nextBranches);
+        setRepoStatuses(nextStatus);
+      });
+    }, 200);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [gitDirsKey, gitRefresh]);
 

@@ -361,11 +361,38 @@ fn bash_integration_file() -> Option<&'static Path> {
 const TYBA_BASH_RC: &str = include_str!("tyba-bash-rc.sh");
 
 fn write_bash_integration() -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join("tyba-bash-integration");
+    let dir = std::env::temp_dir().join(format!("tyba-bash-integration-{}", current_uid()));
     std::fs::create_dir_all(&dir)?;
+    restrict_dir(&dir)?;
     let rc = dir.join("tyba-bash-rc.sh");
-    std::fs::write(&rc, TYBA_BASH_RC)?;
+    let tmp = dir.join(format!("tyba-bash-rc.sh.{}", std::process::id()));
+    std::fs::write(&tmp, TYBA_BASH_RC)?;
+    std::fs::rename(&tmp, &rc)?;
     Ok(rc)
+}
+
+fn current_uid() -> String {
+    #[cfg(unix)]
+    {
+        unsafe { libc::getuid() }.to_string()
+    }
+    #[cfg(not(unix))]
+    {
+        "user".to_string()
+    }
+}
+
+fn restrict_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+    Ok(())
 }
 
 pub fn default_shell() -> String {

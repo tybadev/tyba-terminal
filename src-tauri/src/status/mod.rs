@@ -128,6 +128,9 @@ fn parse_cwd(rest: &str) -> Option<ShellEvent> {
     let decoded = percent_encoding::percent_decode_str(&after[slash..])
         .decode_utf8()
         .ok()?;
+    if decoded.chars().any(|c| c.is_control()) {
+        return None;
+    }
     let path = std::path::PathBuf::from(decoded.as_ref());
     if path.as_os_str().is_empty() {
         None
@@ -281,7 +284,13 @@ mod tests {
     #[test]
     fn osc7_invalid_percent_encoding_is_ignored() {
         let mut p = OscParser::new();
-        assert!(p.feed(b"\x1b]7;file://mac/\xff\xfe\x07").is_empty());
+        assert!(p.feed(b"\x1b]7;file://mac/%ff%fe\x07").is_empty());
+    }
+
+    #[test]
+    fn osc7_control_chars_are_rejected() {
+        let mut p = OscParser::new();
+        assert!(p.feed(b"\x1b]7;file://mac/tmp/%1b%0a%00\x07").is_empty());
     }
 
     #[test]
