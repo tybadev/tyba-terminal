@@ -520,10 +520,7 @@ mod tests {
         use std::sync::atomic::{AtomicU32, Ordering};
         static SEQ: AtomicU32 = AtomicU32::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "tyba-test-{tag}-{}-{n}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("tyba-test-{tag}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -578,7 +575,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.join("f")).unwrap().permissions().mode();
+            let mode = std::fs::metadata(dir.join("f"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
 
