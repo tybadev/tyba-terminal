@@ -55,6 +55,7 @@ import { ContainersView } from "./components/ContainersView";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
+import { SessionHoverCard } from "./components/SessionHoverCard";
 import { PromptDialog } from "./components/PromptDialog";
 import { TerminalSearch } from "./components/TerminalSearch";
 import {
@@ -142,6 +143,7 @@ import {
   suppressNativePaste,
   type TerminalPasteDetail,
 } from "./lib/termRegistry";
+import { HoverCard, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Shortcut } from "@/components/ui/kbd";
 
 const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
@@ -1053,7 +1055,6 @@ export default function App() {
       showGitStatus && w.repo_root ? repoStatuses[w.repo_root] : undefined;
     const runner = isConfig ? null : workspaceAgent(w);
     const runningCmd = isConfig ? null : workspaceCommand(w);
-    const hint = open ? w.repo_root : w.name;
     const workspaceButton = (
       <button
         key={w.id}
@@ -1297,12 +1298,23 @@ export default function App() {
         )}
       </button>
     );
-    if (!hint) return workspaceButton;
+    if (isConfig) return workspaceButton;
     return (
-      <Tooltip key={w.id}>
-        <TooltipTrigger asChild>{workspaceButton}</TooltipTrigger>
-        <TooltipContent side={open ? "bottom" : "right"}>{hint}</TooltipContent>
-      </Tooltip>
+      <HoverCard key={w.id}>
+        <HoverCardTrigger asChild>{workspaceButton}</HoverCardTrigger>
+        <SessionHoverCard
+          side={open ? "bottom" : "right"}
+          name={w.name}
+          path={w.repo_root}
+          branch={branch}
+          changed={gitStatus?.changed}
+          runner={runner}
+          runningCommand={runningCmd}
+          tabs={w.tabs.length}
+          group={w.group}
+          color={w.color}
+        />
+      </HoverCard>
     );
   };
 
