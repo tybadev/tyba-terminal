@@ -195,11 +195,14 @@ export function TerminalView({
     const refit = () => {
       timer = null;
       if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
+      const buffer = term.buffer.active;
+      const wasAtBottom = buffer.viewportY === buffer.baseY;
       fit.fit();
       if (term.cols !== lastCols || term.rows !== lastRows) {
+        const rowsChanged = term.rows !== lastRows;
         lastCols = term.cols;
         lastRows = term.rows;
-        term.scrollToBottom();
+        if (wasAtBottom && rowsChanged) term.scrollToBottom();
         void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
       }
     };

@@ -95,13 +95,29 @@ impl SessionManager {
         let id = Uuid::new_v4();
 
         let shell = default_shell();
+        let label = shell_label(&shell);
+        let integration = self.shell_integration_enabled();
         let mut cmd = CommandBuilder::new(&shell);
+
+        let bash_rc = if cfg!(unix) && label == "bash" && integration {
+            bash_integration_file()
+        } else {
+            None
+        };
+
         if cfg!(unix) {
-            cmd.arg("-l");
+            if let Some(rc) = bash_rc {
+                cmd.arg("--rcfile");
+                cmd.arg(rc);
+                cmd.arg("-i");
+                cmd.env("TYBA_LOGIN_SHELL", "1");
+            } else {
+                cmd.arg("-l");
+            }
         }
         cmd.cwd(resolve_cwd(opts.cwd.as_deref()));
 
-        if shell_label(&shell) == "zsh" && self.shell_integration_enabled() {
+        if label == "zsh" && integration {
             if let Some(dir) = zsh_integration_dir() {
                 let user_zdotdir = std::env::var("ZDOTDIR")
                     .ok()
@@ -113,7 +129,7 @@ impl SessionManager {
             }
         }
 
-        let title = opts.title.unwrap_or_else(|| shell_label(&shell));
+        let title = opts.title.unwrap_or_else(|| label.clone());
         self.spawn_session(
             app, pty_pool, id, cmd, opts.kind, title, opts.cols, opts.rows, on_exit,
         )
@@ -332,6 +348,26 @@ fn write_zsh_integration() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// Arquivo rc de shell integration do bash. Lançado via `bash --rcfile <arquivo>`
+/// (sem `-l`, que ignora `--rcfile`). O script reproduz a cadeia de init do
+/// usuário e instala os hooks OSC 133/633/7. Verificado em bash 3.2.57 (macOS)
+/// e 5.2 (Linux). Ver [[shell-integration]] no cofre.
+fn bash_integration_file() -> Option<&'static Path> {
+    static FILE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    FILE.get_or_init(|| write_bash_integration().ok())
+        .as_deref()
+}
+
+const TYBA_BASH_RC: &str = include_str!("tyba-bash-rc.sh");
+
+fn write_bash_integration() -> std::io::Result<PathBuf> {
+    let dir = std::env::temp_dir().join("tyba-bash-integration");
+    std::fs::create_dir_all(&dir)?;
+    let rc = dir.join("tyba-bash-rc.sh");
+    std::fs::write(&rc, TYBA_BASH_RC)?;
+    Ok(rc)
+}
+
 pub fn default_shell() -> String {
     if cfg!(windows) {
         std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".into())
@@ -363,6 +399,18 @@ mod tests {
             status,
             created_at: Utc::now(),
         }
+    }
+
+    #[test]
+    fn bash_integration_writes_rcfile_with_hooks() {
+        let rc = write_bash_integration().expect("write bash rc");
+        assert!(rc.is_file());
+        let body = std::fs::read_to_string(&rc).unwrap();
+        assert!(body.contains("__tyba_preexec"));
+        assert!(body.contains("__tyba_precmd"));
+        assert!(body.contains("trap '__tyba_preexec' DEBUG"));
+        assert!(body.contains("133;C"));
+        assert!(body.contains("TYBA_LOGIN_SHELL"));
     }
 
     #[test]
