@@ -839,6 +839,7 @@ fn open_store(app: &AppHandle) -> session::store::Store {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             let store = Arc::new(open_store(app.handle()));
             let pty_pool: SharedPtyPool = Arc::new(pty::PtyPool::new());
