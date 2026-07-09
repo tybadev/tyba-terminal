@@ -48,6 +48,15 @@ pub struct SessionCommandPayload {
     pub running: bool,
 }
 
+/// Diretório de trabalho reportado via `OSC 7`.
+///
+/// Atacante-controlável: qualquer processo que escreva no tty pode forjar.
+/// Uso exclusivo de exibição — nunca embasa decisão de segurança.
+#[derive(Clone, serde::Serialize)]
+pub struct SessionCwdPayload {
+    pub cwd: String,
+}
+
 struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -129,6 +138,7 @@ impl PtyPool {
         let output_event = format!("pty://output/{session_id}");
         let exit_event = format!("pty://exit/{session_id}");
         let command_event = format!("session://command/{session_id}");
+        let cwd_event = format!("session://cwd/{session_id}");
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(CHANNEL_CAPACITY);
 
         std::thread::Builder::new()
@@ -157,6 +167,7 @@ impl PtyPool {
                 let mut last_flush = Instant::now();
                 let mut osc = crate::status::OscParser::new();
                 let mut last_cmd: Option<String> = None;
+                let mut last_cwd: Option<std::path::PathBuf> = None;
 
                 let flush = |pending: &mut Vec<u8>, app: &AppHandle| {
                     if pending.is_empty() {
@@ -205,6 +216,18 @@ impl PtyPool {
                                                 running: false,
                                             },
                                         );
+                                    }
+                                    ShellEvent::InputStart => {}
+                                    ShellEvent::Cwd(path) => {
+                                        if last_cwd.as_deref() != Some(path.as_path()) {
+                                            last_cwd = Some(path.clone());
+                                            let _ = app.emit(
+                                                &cwd_event,
+                                                SessionCwdPayload {
+                                                    cwd: path.to_string_lossy().into_owned(),
+                                                },
+                                            );
+                                        }
                                     }
                                 }
                             }

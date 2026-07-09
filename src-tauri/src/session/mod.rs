@@ -313,13 +313,18 @@ fn write_zsh_integration() -> std::io::Result<PathBuf> {
     std::fs::write(dir.join(".zprofile"), chain(".zprofile"))?;
     std::fs::write(dir.join(".zlogin"), chain(".zlogin"))?;
 
-    let hooks = "\n# TYBA shell integration (OSC 133/633)\n\
+    let hooks = "\n# TYBA shell integration (OSC 133/633/7)\n\
         if [[ -o interactive ]] && autoload -Uz add-zsh-hook 2>/dev/null; then\n  \
         __tyba_esc() { printf '\\033]%s\\007' \"$1\"; }\n  \
+        __tyba_urlencode() { emulate -L zsh; local s=$1 out= i c; for (( i=1; i<=${#s}; i++ )); do c=$s[i]; if [[ $c == [A-Za-z0-9/._~-] ]]; then out+=$c; else out+=$(printf '%%%02X' ${(s: :)$(printf '%s' $c | od -An -tu1)}); fi; done; printf '%s' $out; }\n  \
+        __tyba_osc7() { __tyba_esc \"7;file://${HOST}$(__tyba_urlencode \"$PWD\")\"; }\n  \
+        __tyba_ps1b() { [[ \"$PS1\" == *$'\\033]133;B'* ]] || PS1=\"$PS1%{$(__tyba_esc '133;B')%}\"; }\n  \
         __tyba_preexec() { __tyba_esc \"633;E;$(print -rn -- \"$1\" | base64 | tr -d '\\n')\"; __tyba_esc \"133;C\"; }\n  \
-        __tyba_precmd() { local __c=$?; __tyba_esc \"133;D;$__c\"; __tyba_esc \"133;A\"; }\n  \
+        __tyba_precmd() { local __c=$?; __tyba_esc \"133;D;$__c\"; __tyba_esc \"133;A\"; __tyba_ps1b; __tyba_osc7; }\n  \
         add-zsh-hook preexec __tyba_preexec\n  \
-        add-zsh-hook precmd __tyba_precmd\n\
+        add-zsh-hook precmd __tyba_precmd\n  \
+        add-zsh-hook chpwd __tyba_osc7\n  \
+        __tyba_osc7\n\
         fi\n\
         ZDOTDIR=\"$TYBA_USER_ZDOTDIR\"\n";
     std::fs::write(dir.join(".zshrc"), format!("{}{}", chain(".zshrc"), hooks))?;

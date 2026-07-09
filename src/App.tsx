@@ -94,6 +94,7 @@ import {
   onApprovalResolved,
   onLayoutChanged,
   onSessionCommand,
+  onSessionCwd,
   openViewTab,
   paneSession,
   renameWorkspace,
@@ -378,12 +379,18 @@ export default function App() {
   const [sessionCommands, setSessionCommands] = useState<
     Record<string, SessionCommand>
   >({});
+  const [sessionCwds, setSessionCwds] = useState<Record<string, string>>({});
   useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     for (const s of sessions) {
       void onSessionCommand(s.id, (payload) =>
         setSessionCommands((prev) => ({ ...prev, [s.id]: payload })),
+      ).then((un) => (disposed ? un() : unlisteners.push(un)));
+      void onSessionCwd(s.id, (payload) =>
+        setSessionCwds((prev) =>
+          prev[s.id] === payload.cwd ? prev : { ...prev, [s.id]: payload.cwd },
+        ),
       ).then((un) => (disposed ? un() : unlisteners.push(un)));
     }
     return () => {
@@ -419,6 +426,21 @@ export default function App() {
       return null;
     },
     [sessionCommands],
+  );
+
+  const workspaceCwd = useCallback(
+    (w: Workspace): string | null => {
+      const activeTabId = w.active_tab;
+      const tab =
+        w.tabs.find((tb) => tb.id === activeTabId) ?? w.tabs[0] ?? null;
+      if (!tab?.root) return null;
+      for (const sid of leafSessions(tab.root)) {
+        const cwd = sessionCwds[sid];
+        if (cwd) return cwd;
+      }
+      return null;
+    },
+    [sessionCwds],
   );
 
   const detailsFor = useCallback(
@@ -1313,7 +1335,7 @@ export default function App() {
         <HoverCardTrigger asChild>{workspaceButton}</HoverCardTrigger>
         <SessionHoverCard
           name={w.name}
-          path={w.repo_root}
+          path={workspaceCwd(w) ?? w.repo_root}
           branch={branch}
           status={gitStatus}
           runner={hoverAgent}
