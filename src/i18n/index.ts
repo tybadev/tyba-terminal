@@ -210,6 +210,9 @@ const resources = {
       deny: "Recusar",
       confirmApprove: "Confirmar",
       redAction: "ação vermelha",
+      riskGreen: "risco baixo",
+      riskYellow: "risco médio",
+      riskRed: "risco alto",
     },
   },
   en: {
@@ -406,6 +409,9 @@ const resources = {
       deny: "Deny",
       confirmApprove: "Confirm",
       redAction: "red action",
+      riskGreen: "low risk",
+      riskYellow: "medium risk",
+      riskRed: "high risk",
     },
   },
 } as const;

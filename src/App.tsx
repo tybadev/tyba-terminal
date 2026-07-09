@@ -1681,7 +1681,9 @@ export default function App() {
 
         {approvals.length > 0 && (
           <Notification
-            variant="warning"
+            variant={
+              approvals.some((a) => a.risk === "red") ? "danger" : "warning"
+            }
             className="rounded-none border-x-0 border-t-0 px-3 py-1.5 text-xs"
           >
             <NotificationTitle>
