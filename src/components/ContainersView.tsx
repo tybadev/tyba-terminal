@@ -16,6 +16,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { IS_MAC } from "@/lib/platform";
 import {
   Tooltip,
   TooltipContent,
@@ -35,7 +36,6 @@ import {
 } from "../lib/ipc";
 
 const REFRESH_MS = 3000;
-const IS_MAC = navigator.platform.toUpperCase().includes("MAC");
 const LOOSE_KEY = "__loose__";
 
 interface Props {

@@ -248,9 +248,7 @@ fn set_workspace_group(
 #[tauri::command]
 fn repo_branch(path: String) -> Option<String> {
     let path = session::expand_home(std::path::Path::new(&path));
-    let out = std::process::Command::new("git")
-        .args(["-C"])
-        .arg(&path)
+    let out = worktree::git_in(&path)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
         .ok()?;
@@ -269,22 +267,83 @@ fn repo_branch(path: String) -> Option<String> {
 struct RepoStatus {
     dirty: bool,
     changed: u32,
+    insertions: u32,
+    deletions: u32,
+}
+
+fn diff_numstat(path: &std::path::Path) -> (u32, u32) {
+    let out = worktree::git_in(path)
+        .args(["diff", "--no-ext-diff", "--numstat", "--no-color", "HEAD"])
+        .output();
+    let Ok(out) = out else {
+        return (0, 0);
+    };
+    if !out.status.success() {
+        return (0, 0);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut insertions = 0;
+    let mut deletions = 0;
+    for line in text.lines() {
+        let mut fields = line.split('\t');
+        let added = fields.next().and_then(|v| v.parse::<u32>().ok());
+        let removed = fields.next().and_then(|v| v.parse::<u32>().ok());
+        insertions += added.unwrap_or(0);
+        deletions += removed.unwrap_or(0);
+    }
+    (insertions, deletions)
+}
+
+const UNTRACKED_MAX_BYTES: u64 = 512 * 1024;
+const UNTRACKED_MAX_FILES: usize = 500;
+
+fn untracked_insertions(path: &std::path::Path) -> u32 {
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt;
+
+    let list = worktree::git_in(path)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output();
+    let Ok(list) = list else {
+        return 0;
+    };
+    let mut lines = 0u32;
+    for file in list
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|f| !f.is_empty())
+        .take(UNTRACKED_MAX_FILES)
+    {
+        #[cfg(unix)]
+        let full = path.join(std::ffi::OsStr::from_bytes(file));
+        #[cfg(not(unix))]
+        let full = path.join(String::from_utf8_lossy(file).as_ref());
+
+        let Ok(meta) = std::fs::metadata(&full) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > UNTRACKED_MAX_BYTES {
+            continue;
+        }
+        if let Ok(content) = std::fs::read(&full) {
+            if content.contains(&0) {
+                continue;
+            }
+            let mut count = content.iter().filter(|b| **b == b'\n').count();
+            if !content.is_empty() && content.last() != Some(&b'\n') {
+                count += 1;
+            }
+            lines += count as u32;
+        }
+    }
+    lines
 }
 
 #[tauri::command]
 fn repo_status(path: String) -> Option<RepoStatus> {
     let path = session::expand_home(std::path::Path::new(&path));
-    let out = std::process::Command::new("git")
-        .args(["-C"])
-        .arg(&path)
-        .args([
-            "-c",
-            "core.quotePath=false",
-            "--no-optional-locks",
-            "status",
-            "--porcelain",
-            "-z",
-        ])
+    let out = worktree::git_in(&path)
+        .args(["status", "--porcelain", "-z"])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -295,9 +354,19 @@ fn repo_status(path: String) -> Option<RepoStatus> {
         .split(|b| *b == 0)
         .filter(|entry| !entry.is_empty())
         .count() as u32;
+    let (mut insertions, deletions) = if changed > 0 {
+        diff_numstat(&path)
+    } else {
+        (0, 0)
+    };
+    if changed > 0 {
+        insertions += untracked_insertions(&path);
+    }
     Some(RepoStatus {
         dirty: changed > 0,
         changed,
+        insertions,
+        deletions,
     })
 }
 
@@ -840,6 +909,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let store = Arc::new(open_store(app.handle()));
             let pty_pool: SharedPtyPool = Arc::new(pty::PtyPool::new());

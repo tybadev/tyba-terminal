@@ -9,6 +9,12 @@
     "core:window:default",
     "core:window:allow-start-dragging",
     "dialog:allow-open",
-    "window-state:default"
+    "window-state:default",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "http://*" }, { "url": "https://*" }]
+    }
   ]
 }

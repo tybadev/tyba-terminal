@@ -183,6 +183,8 @@ export const repoBranch = (path: string) =>
 export interface RepoStatus {
   dirty: boolean;
   changed: number;
+  insertions: number;
+  deletions: number;
 }
 
 export const repoStatus = (path: string) =>
@@ -363,3 +365,13 @@ export const onSessionCommand = (
   handler: (payload: SessionCommand) => void,
 ): Promise<UnlistenFn> =>
   listen<SessionCommand>(`session://command/${id}`, (e) => handler(e.payload));
+
+export interface SessionCwd {
+  cwd: string;
+}
+
+export const onSessionCwd = (
+  id: SessionId,
+  handler: (payload: SessionCwd) => void,
+): Promise<UnlistenFn> =>
+  listen<SessionCwd>(`session://cwd/${id}`, (e) => handler(e.payload));

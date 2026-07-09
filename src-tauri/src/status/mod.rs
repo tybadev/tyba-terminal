@@ -19,12 +19,18 @@ use base64::Engine;
 pub enum ShellEvent {
     /// `OSC 133 ; A` — prompt começou (shell ocioso, aguardando input).
     PromptStart,
+    /// `OSC 133 ; B` — fim do prompt, começo da zona de input do usuário.
+    InputStart,
     /// `OSC 133 ; C` — comando começou a executar.
     CommandStart,
     /// `OSC 633 ; E ; <base64>` — texto da linha de comando.
     CommandLine(String),
     /// `OSC 133 ; D [ ; <code> ]` — comando terminou (exit code).
     CommandEnd(i32),
+    /// `OSC 7 ; file://<host><path>` — diretório de trabalho.
+    ///
+    /// Atacante-controlável: qualquer processo emite. Display-only.
+    Cwd(std::path::PathBuf),
 }
 
 const MAX_OSC_LEN: usize = 8 * 1024;
@@ -116,13 +122,34 @@ impl OscParser {
     }
 }
 
+fn parse_cwd(rest: &str) -> Option<ShellEvent> {
+    let after = rest.strip_prefix("file://")?;
+    let slash = after.find('/')?;
+    let decoded = percent_encoding::percent_decode_str(&after[slash..])
+        .decode_utf8()
+        .ok()?;
+    if decoded.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let path = std::path::PathBuf::from(decoded.as_ref());
+    if path.as_os_str().is_empty() {
+        None
+    } else {
+        Some(ShellEvent::Cwd(path))
+    }
+}
+
 fn parse_osc(payload: &[u8]) -> Option<ShellEvent> {
     let text = std::str::from_utf8(payload).ok()?;
-    let mut parts = text.split(';');
-    let code = parts.next()?;
+    let (code, rest) = text.split_once(';')?;
+    if code == "7" {
+        return parse_cwd(rest);
+    }
+    let mut parts = rest.split(';');
     match code {
         "133" => match parts.next()? {
-            "A" | "B" => Some(ShellEvent::PromptStart),
+            "A" => Some(ShellEvent::PromptStart),
+            "B" => Some(ShellEvent::InputStart),
             "C" => Some(ShellEvent::CommandStart),
             "D" => {
                 let exit = parts
@@ -217,9 +244,53 @@ mod tests {
     #[test]
     fn ignores_unrelated_osc_and_plain_text() {
         let mut p = OscParser::new();
-        // OSC 0 (title), OSC 7 (cwd) e texto puro são ignorados.
-        let events = p.feed(b"\x1b]0;my title\x07plain text\x1b]7;file:///tmp\x07");
+        let events = p.feed(b"\x1b]0;my title\x07plain text\x1b]11;?\x07");
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn distinguishes_prompt_start_from_input_start() {
+        let mut p = OscParser::new();
+        assert_eq!(p.feed(b"\x1b]133;A\x07"), vec![ShellEvent::PromptStart]);
+        assert_eq!(p.feed(b"\x1b]133;B\x07"), vec![ShellEvent::InputStart]);
+    }
+
+    #[test]
+    fn parses_osc7_cwd() {
+        use std::path::PathBuf;
+        let mut p = OscParser::new();
+        assert_eq!(
+            p.feed(b"\x1b]7;file://mac/tmp/proj\x07"),
+            vec![ShellEvent::Cwd(PathBuf::from("/tmp/proj"))]
+        );
+    }
+
+    #[test]
+    fn decodes_percent_encoded_cwd() {
+        use std::path::PathBuf;
+        let mut p = OscParser::new();
+        assert_eq!(
+            p.feed("\x1b]7;file://mac/tmp/some%20dir/caf%C3%A9\x07".as_bytes()),
+            vec![ShellEvent::Cwd(PathBuf::from("/tmp/some dir/café"))]
+        );
+    }
+
+    #[test]
+    fn osc7_empty_path_is_ignored() {
+        let mut p = OscParser::new();
+        assert!(p.feed(b"\x1b]7;file://mac\x07").is_empty());
+    }
+
+    #[test]
+    fn osc7_invalid_percent_encoding_is_ignored() {
+        let mut p = OscParser::new();
+        assert!(p.feed(b"\x1b]7;file://mac/%ff%fe\x07").is_empty());
+    }
+
+    #[test]
+    fn osc7_control_chars_are_rejected() {
+        let mut p = OscParser::new();
+        assert!(p.feed(b"\x1b]7;file://mac/tmp/%1b%0a%00\x07").is_empty());
     }
 
     #[test]

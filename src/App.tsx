@@ -54,7 +54,11 @@ import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ContainersView } from "./components/ContainersView";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
+import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
+import { DiffStat } from "./components/DiffStat";
+import { SessionHoverCard } from "./components/SessionHoverCard";
 import { PromptDialog } from "./components/PromptDialog";
+import { TerminalSearch } from "./components/TerminalSearch";
 import {
   SettingsView,
   type DetailsPref,
@@ -90,6 +94,7 @@ import {
   onApprovalResolved,
   onLayoutChanged,
   onSessionCommand,
+  onSessionCwd,
   openViewTab,
   paneSession,
   renameWorkspace,
@@ -105,6 +110,7 @@ import {
   type RepoStatus,
   type Session,
   type SessionCommand,
+  type SessionId,
   type SessionKind,
   type SplitKind,
   type Workspace,
@@ -121,12 +127,29 @@ import {
   DEFAULT_BINDINGS,
   parseBindings,
   BINDINGS_PREF_KEY,
+  isTerminalAction,
   type Bindings,
   type KeyAction,
 } from "./lib/keys";
+import {
+  flattenPaste,
+  hasUnsafeControlChars,
+  isMultilinePaste,
+  readClipboardText,
+  sanitizePaste,
+  writeClipboardText,
+} from "./lib/clipboard";
+import {
+  getTerm,
+  isTermFocused,
+  suppressNativePaste,
+  type TerminalPasteDetail,
+} from "./lib/termRegistry";
+import { HoverCard, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Shortcut } from "@/components/ui/kbd";
 
 const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
+const GIT_POLL_WHILE_RUNNING_MS = 2000;
 const TOGGLE_PREF_KEY = "pref.sidebar_toggle";
 const DETAILS_PREF_KEY = "pref.sidebar_details";
 const DETAILS_OVERRIDES_KEY = "pref.session_details";
@@ -147,9 +170,24 @@ function isConfigWorkspace(w: Workspace): boolean {
   return w.tabs.length > 0 && w.tabs.every((t) => t.view === "settings");
 }
 
+const AGENT_COMMAND = /^\s*(?:\S*\/)?(claude|codex|gemini)\b/;
+
+function agentFromCommand(command: string | null): string | null {
+  if (!command) return null;
+  return AGENT_COMMAND.exec(command)?.[1] ?? null;
+}
+
 function agentGlyph(label: string, size = 16): React.ReactNode {
-  if (label === "claude") return <ClaudeIcon size={size} className="shrink-0" />;
-  if (label === "codex") return <OpenAIIcon size={size} className="shrink-0" />;
+  if (label === "claude")
+    return (
+      <ClaudeIcon
+        size={size}
+        className="shrink-0"
+        style={{ color: "#d97757" }}
+      />
+    );
+  if (label === "codex")
+    return <OpenAIIcon size={size} className="shrink-0 text-tyba-text" />;
   return <Robot size={size} className="shrink-0" />;
 }
 
@@ -226,6 +264,10 @@ export default function App() {
     "actions",
   );
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [pastePrompt, setPastePrompt] = useState<TerminalPasteDetail | null>(
+    null,
+  );
   const [branches, setBranches] = useState<Record<string, string>>({});
   const [repoStatuses, setRepoStatuses] = useState<Record<string, RepoStatus>>(
     {},
@@ -346,12 +388,20 @@ export default function App() {
   const [sessionCommands, setSessionCommands] = useState<
     Record<string, SessionCommand>
   >({});
+  const [sessionCwds, setSessionCwds] = useState<Record<string, string>>({});
+  const [gitRefresh, setGitRefresh] = useState(0);
   useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     for (const s of sessions) {
-      void onSessionCommand(s.id, (payload) =>
-        setSessionCommands((prev) => ({ ...prev, [s.id]: payload })),
+      void onSessionCommand(s.id, (payload) => {
+        setSessionCommands((prev) => ({ ...prev, [s.id]: payload }));
+        if (!payload.running) setGitRefresh((n) => n + 1);
+      }).then((un) => (disposed ? un() : unlisteners.push(un)));
+      void onSessionCwd(s.id, (payload) =>
+        setSessionCwds((prev) =>
+          prev[s.id] === payload.cwd ? prev : { ...prev, [s.id]: payload.cwd },
+        ),
       ).then((un) => (disposed ? un() : unlisteners.push(un)));
     }
     return () => {
@@ -359,6 +409,33 @@ export default function App() {
       unlisteners.forEach((un) => un());
     };
   }, [sessions]);
+
+  useEffect(() => {
+    const live = new Set(sessions.map((s) => s.id));
+    const prune = <T,>(prev: Record<string, T>): Record<string, T> => {
+      const stale = Object.keys(prev).filter((id) => !live.has(id));
+      if (stale.length === 0) return prev;
+      const next = { ...prev };
+      for (const id of stale) delete next[id];
+      return next;
+    };
+    setSessionCommands(prune);
+    setSessionCwds(prune);
+  }, [sessions]);
+
+  const anyCommandRunning = useMemo(
+    () => Object.values(sessionCommands).some((c) => c.running),
+    [sessionCommands],
+  );
+
+  useEffect(() => {
+    if (!anyCommandRunning) return;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      setGitRefresh((n) => n + 1);
+    }, GIT_POLL_WHILE_RUNNING_MS);
+    return () => window.clearInterval(timer);
+  }, [anyCommandRunning]);
 
   const workspaceAgent = useCallback(
     (w: Workspace): string | null => {
@@ -387,6 +464,30 @@ export default function App() {
       return null;
     },
     [sessionCommands],
+  );
+
+  const workspaceCwd = useCallback(
+    (w: Workspace): string | null => {
+      const activeTabId = w.active_tab;
+      const tab =
+        w.tabs.find((tb) => tb.id === activeTabId) ?? w.tabs[0] ?? null;
+      if (!tab?.root) return null;
+      const focused = tab.active_pane
+        ? paneSession(tab.root, tab.active_pane)
+        : null;
+      if (focused && sessionCwds[focused]) return sessionCwds[focused];
+      for (const sid of leafSessions(tab.root)) {
+        const cwd = sessionCwds[sid];
+        if (cwd) return cwd;
+      }
+      return null;
+    },
+    [sessionCwds],
+  );
+
+  const workspaceGitDir = useCallback(
+    (w: Workspace): string | null => workspaceCwd(w) ?? w.repo_root ?? null,
+    [workspaceCwd],
   );
 
   const detailsFor = useCallback(
@@ -418,41 +519,46 @@ export default function App() {
     };
   }, [workspaces]);
 
-  const repoRootsKey = useMemo(() => {
-    const roots = new Set<string>();
+  const gitDirsKey = useMemo(() => {
+    const dirs = new Set<string>();
     for (const w of layout.workspaces) {
-      if (w.repo_root) roots.add(w.repo_root);
+      const dir = workspaceGitDir(w);
+      if (dir) dirs.add(dir);
     }
-    return [...roots].sort().join("\n");
-  }, [layout.workspaces]);
+    return [...dirs].sort().join("\n");
+  }, [layout.workspaces, workspaceGitDir]);
 
   useEffect(() => {
     let cancelled = false;
-    const roots = repoRootsKey ? repoRootsKey.split("\n") : [];
-    void Promise.all(
-      roots.map(
-        async (root) =>
-          [
-            root,
-            await repoBranch(root).catch(() => null),
-            await repoStatus(root).catch(() => null),
-          ] as const,
-      ),
-    ).then((entries) => {
-      if (cancelled) return;
-      const nextBranches: Record<string, string> = {};
-      const nextStatus: Record<string, RepoStatus> = {};
-      for (const [root, branch, status] of entries) {
-        if (branch) nextBranches[root] = branch;
-        if (status) nextStatus[root] = status;
-      }
-      setBranches(nextBranches);
-      setRepoStatuses(nextStatus);
-    });
+    const dirs = gitDirsKey ? gitDirsKey.split("\n") : [];
+    if (dirs.length === 0) return;
+    const timer = window.setTimeout(() => {
+      void Promise.all(
+        dirs.map(
+          async (dir) =>
+            [
+              dir,
+              await repoBranch(dir).catch(() => null),
+              await repoStatus(dir).catch(() => null),
+            ] as const,
+        ),
+      ).then((entries) => {
+        if (cancelled) return;
+        const nextBranches: Record<string, string> = {};
+        const nextStatus: Record<string, RepoStatus> = {};
+        for (const [dir, branch, status] of entries) {
+          if (branch) nextBranches[dir] = branch;
+          if (status) nextStatus[dir] = status;
+        }
+        setBranches(nextBranches);
+        setRepoStatuses(nextStatus);
+      });
+    }, 200);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [repoRootsKey]);
+  }, [gitDirsKey, gitRefresh]);
 
   const cycleWorkspace = useCallback(
     (dir: 1 | -1) => {
@@ -843,6 +949,46 @@ export default function App() {
     };
   }, [refreshSessions]);
 
+  const deliverPaste = useCallback((sessionId: SessionId, raw: string) => {
+    const entry = getTerm(sessionId);
+    if (!entry || !raw) return;
+    const text = sanitizePaste(raw);
+    const bracketed = entry.term.modes.bracketedPasteMode;
+    const risky =
+      hasUnsafeControlChars(text) || (isMultilinePaste(text) && !bracketed);
+    if (!risky) {
+      entry.term.paste(text);
+      return;
+    }
+    setPastePrompt({ sessionId, text });
+  }, []);
+
+  const pasteFromClipboard = useCallback(async () => {
+    if (!activeId) return;
+    let text = "";
+    try {
+      text = await readClipboardText();
+    } catch {
+      return;
+    }
+    deliverPaste(activeId, text);
+  }, [activeId, deliverPaste]);
+
+  const confirmPaste = useCallback(
+    (mode: "raw" | "single") => {
+      if (!pastePrompt) return;
+      const entry = getTerm(pastePrompt.sessionId);
+      const text =
+        mode === "single"
+          ? flattenPaste(pastePrompt.text)
+          : sanitizePaste(pastePrompt.text);
+      entry?.term.paste(text);
+      entry?.term.focus();
+      setPastePrompt(null);
+    },
+    [pastePrompt],
+  );
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (captureState.active) return;
@@ -851,8 +997,40 @@ export default function App() {
       const action = (Object.keys(bindings) as KeyAction[]).find(
         (a) => bindings[a] === combo,
       );
+      if (action && isTerminalAction(action)) {
+        const entry = getTerm(activeId);
+        const focused = isTermFocused(entry);
+        if (action === "search") {
+          if (!entry || (!focused && !searchOpen)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.repeat) return;
+          setSearchOpen((v) => !v);
+          return;
+        }
+        if (!entry || !focused) return;
+        if (action === "copy") {
+          if (!entry.term.hasSelection()) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.repeat) return;
+          void writeClipboardText(entry.term.getSelection()).catch(() => {});
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;
+        if (action === "selectAll") {
+          entry.term.selectAll();
+        } else {
+          suppressNativePaste();
+          void pasteFromClipboard();
+        }
+        return;
+      }
       if (action) {
         e.preventDefault();
+        e.stopPropagation();
         if (e.repeat) return;
         if (action === "paletteActions") {
           openPalette("actions");
@@ -929,6 +1107,9 @@ export default function App() {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [
+    activeId,
+    searchOpen,
+    pasteFromClipboard,
     bindings,
     newTab,
     closeActivePane,
@@ -950,17 +1131,17 @@ export default function App() {
     const isActive = w.id === layout.active_workspace;
     const isConfig = isConfigWorkspace(w);
     const showDetails = open && detailsFor(w.id) && !isConfig;
-    const agent = showDetails ? workspaceAgent(w) : null;
-    const branch = w.repo_root ? branches[w.repo_root] : undefined;
+    const gitDir = workspaceGitDir(w);
+    const branch = gitDir ? branches[gitDir] : undefined;
     const gitStatus =
-      showGitStatus && w.repo_root ? repoStatuses[w.repo_root] : undefined;
+      showGitStatus && gitDir ? repoStatuses[gitDir] : undefined;
     const runner = isConfig ? null : workspaceAgent(w);
     const runningCmd = isConfig ? null : workspaceCommand(w);
-    return (
+    const hoverAgent = runner ?? agentFromCommand(runningCmd);
+    const workspaceButton = (
       <button
         key={w.id}
         onClick={() => void activateWorkspace(w.id)}
-        title={open ? (w.repo_root ?? undefined) : w.name}
         style={
           w.color
             ? {
@@ -1007,8 +1188,8 @@ export default function App() {
                 : "shrink-0"
             }
           />
-        ) : runner ? (
-          agentGlyph(runner)
+        ) : hoverAgent ? (
+          agentGlyph(hoverAgent)
         ) : (
           <TerminalWindow
             size={16}
@@ -1037,7 +1218,7 @@ export default function App() {
               {showDetails && !runningCmd && (
                 <span className="flex w-full items-center gap-1.5">
                   <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-faint">
-                    {w.repo_root ? compactPath(w.repo_root) : "~"}
+                    {gitDir ? compactPath(gitDir) : "~"}
                   </span>
                   {branch && (
                     <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] leading-none text-tyba-text-faint">
@@ -1048,16 +1229,16 @@ export default function App() {
                   {gitStatus?.dirty && (
                     <span
                       title={t("gitChanges", { count: gitStatus.changed })}
-                      className="flex shrink-0 items-center gap-0.5 rounded-[3px] bg-tyba-amber-tint px-1 py-px font-mono text-[9px] leading-none text-tyba-amber"
+                      className="flex shrink-0 items-center gap-1 rounded-[3px] bg-tyba-amber-tint px-1 py-px"
                     >
-                      <span className="size-1 rounded-full bg-tyba-amber" />
-                      {gitStatus.changed}
+                      <span className="size-1 shrink-0 rounded-full bg-tyba-amber" />
+                      <DiffStat status={gitStatus} />
                     </span>
                   )}
-                  {agent && (
+                  {hoverAgent && (
                     <span className="flex shrink-0 items-center gap-1 rounded-[3px] bg-tyba-violet-tint px-1 py-px font-mono text-[9px] leading-none text-tyba-violet">
-                      <Robot size={9} weight="bold" />
-                      {agent}
+                      {agentGlyph(hoverAgent, 9)}
+                      {hoverAgent}
                     </span>
                   )}
                 </span>
@@ -1200,6 +1381,24 @@ export default function App() {
         )}
       </button>
     );
+    if (isConfig) return workspaceButton;
+    return (
+      <HoverCard key={w.id}>
+        <HoverCardTrigger asChild>{workspaceButton}</HoverCardTrigger>
+        <SessionHoverCard
+          name={w.name}
+          path={workspaceCwd(w) ?? w.repo_root}
+          branch={branch}
+          status={gitStatus}
+          runner={hoverAgent}
+          runnerIcon={hoverAgent ? agentGlyph(hoverAgent, 11) : null}
+          runningCommand={runningCmd}
+          tabs={w.tabs.length}
+          group={w.group}
+          color={w.color}
+        />
+      </HoverCard>
+    );
   };
 
   return (
@@ -1220,6 +1419,11 @@ export default function App() {
         onOpenSettings={() => void openViewTab("settings").catch(() => {})}
         onTogglePanel={toggleSidebar}
         onGoToWorkspace={(id) => void activateWorkspace(id)}
+      />
+      <PasteConfirmDialog
+        text={pastePrompt?.text ?? null}
+        onCancel={() => setPastePrompt(null)}
+        onConfirm={confirmPaste}
       />
       <NewSessionPrompt
         open={newSessionOpen}
@@ -1477,11 +1681,13 @@ export default function App() {
                             <span className="h-px min-w-0 flex-1 bg-tyba-border" />
                           </span>
                         )}
+                        <Tooltip>
+                        <TooltipTrigger asChild>
                         <button
                           onClick={() =>
                             void openViewTab("settings").catch(() => {})
                           }
-                          title={open ? undefined : t("settings")}
+                          aria-label={t("settings")}
                           className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
                             open ? "px-2" : "justify-center px-0"
                           } ${
@@ -1503,6 +1709,13 @@ export default function App() {
                             </span>
                           )}
                         </button>
+                        </TooltipTrigger>
+                        {!open && (
+                          <TooltipContent side="right">
+                            {t("settings")}
+                          </TooltipContent>
+                        )}
+                        </Tooltip>
                       </div>
                     )}
                     {groupedWorkspaces.groups.map(([name, list]) => (
@@ -1581,6 +1794,12 @@ export default function App() {
                   ref={paneAreaRef}
                   className="relative min-h-0 flex-1 overflow-hidden"
                 >
+                  {searchOpen && activeId && (
+                    <TerminalSearch
+                      sessionId={activeId}
+                      onClose={() => setSearchOpen(false)}
+                    />
+                  )}
                   {activeTab?.view === "containers" && (
                     <div className="absolute inset-0 flex">
                       <ContainersView
@@ -1617,6 +1836,9 @@ export default function App() {
                       <TerminalView
                         key={s.id}
                         sessionId={s.id}
+                        onPaste={deliverPaste}
+                        onSearch={() => setSearchOpen(true)}
+                        onSplit={(kind) => void splitActive(kind)}
                         visible={paneRect !== null}
                         focused={s.id === activeId}
                         framed={(paneLayout?.panes.length ?? 0) > 1}

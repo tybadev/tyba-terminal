@@ -1,0 +1,107 @@
+import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
+import { Folder, GitBranch, SquaresFour } from "@phosphor-icons/react";
+
+import { DiffStat } from "@/components/DiffStat";
+import { HoverCardContent } from "@/components/ui/hover-card";
+import type { RepoStatus } from "@/lib/ipc";
+
+export interface SessionHoverCardProps {
+  name: string;
+  path?: string | null;
+  branch?: string | null;
+  status?: RepoStatus;
+  runner?: string | null;
+  runnerIcon?: ReactNode;
+  runningCommand?: string | null;
+  tabs: number;
+  group?: string | null;
+  color?: string | null;
+}
+
+export function SessionHoverCard({
+  name,
+  path,
+  branch,
+  status,
+  runner,
+  runnerIcon,
+  runningCommand,
+  tabs,
+  group,
+  color,
+}: SessionHoverCardProps) {
+  const { t } = useTranslation();
+  const running = Boolean(runningCommand);
+
+  return (
+    <HoverCardContent side="right" align="start" className="p-0">
+      <div className="flex items-center gap-2 border-b border-tyba-border px-3 py-2">
+        <span
+          className={
+            running
+              ? "size-1.5 shrink-0 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse"
+              : "size-1.5 shrink-0 rounded-full bg-tyba-text-faint"
+          }
+        />
+        <span className="text-[11px] uppercase tracking-[var(--tyba-tracking-wide)] text-tyba-text-muted">
+          {running ? t("sessionRunning") : t("sessionIdle")}
+        </span>
+        {runner && (
+          <span className="ml-auto flex items-center gap-1.5 rounded-[3px] bg-tyba-violet-tint px-1.5 py-0.5 font-mono text-[10px] leading-none text-tyba-violet">
+            {runnerIcon}
+            {runner}
+          </span>
+        )}
+      </div>
+
+      <div className="space-y-1.5 px-3 py-2.5">
+        <div className="flex items-center gap-2">
+          {color && (
+            <span
+              className="size-2 shrink-0 rounded-full"
+              style={{ background: `var(--tyba-${color})` }}
+            />
+          )}
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium leading-tight text-tyba-text">
+            {name}
+          </span>
+          {group && (
+            <span className="max-w-24 shrink-0 truncate rounded-[3px] bg-tyba-neutral-tint px-1.5 py-0.5 text-[10px] leading-none text-tyba-text-muted">
+              {group}
+            </span>
+          )}
+        </div>
+
+        {runningCommand && (
+          <p className="truncate font-mono text-[11px] leading-relaxed text-tyba-text-muted">
+            {runningCommand}
+          </p>
+        )}
+
+        {path && (
+          <p className="flex items-center gap-1.5 text-tyba-text-faint">
+            <Folder size={12} className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none">
+              {path}
+            </span>
+          </p>
+        )}
+      </div>
+
+      <div className="flex items-center gap-3 border-t border-tyba-border px-3 py-1.5 text-[10px] text-tyba-text-faint">
+        {branch && (
+          <span className="flex min-w-0 items-center gap-1">
+            <GitBranch size={11} className="shrink-0" />
+            <span className="truncate font-mono">{branch}</span>
+          </span>
+        )}
+        {status?.dirty && <DiffStat status={status} size="md" />}
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          <SquaresFour size={11} />
+          {t("tabsCount", { count: tabs })}
+        </span>
+      </div>
+    </HoverCardContent>
+  );
+}
