@@ -63,11 +63,11 @@ export function SessionHoverCard({
               style={{ background: `var(--tyba-${color})` }}
             />
           )}
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium leading-none text-tyba-text">
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium leading-tight text-tyba-text">
             {name}
           </span>
           {group && (
-            <span className="shrink-0 truncate rounded-[3px] bg-tyba-neutral-tint px-1.5 py-0.5 text-[10px] leading-none text-tyba-text-muted">
+            <span className="max-w-24 shrink-0 truncate rounded-[3px] bg-tyba-neutral-tint px-1.5 py-0.5 text-[10px] leading-none text-tyba-text-muted">
               {group}
             </span>
           )}
@@ -82,7 +82,7 @@ export function SessionHoverCard({
         {path && (
           <p className="flex items-center gap-1.5 text-tyba-text-faint">
             <Folder size={12} className="shrink-0" />
-            <span className="min-w-0 truncate font-mono text-[11px] leading-none">
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none">
               {path}
             </span>
           </p>

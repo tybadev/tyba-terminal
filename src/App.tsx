@@ -177,8 +177,16 @@ function agentFromCommand(command: string | null): string | null {
 }
 
 function agentGlyph(label: string, size = 16): React.ReactNode {
-  if (label === "claude") return <ClaudeIcon size={size} className="shrink-0" />;
-  if (label === "codex") return <OpenAIIcon size={size} className="shrink-0" />;
+  if (label === "claude")
+    return (
+      <ClaudeIcon
+        size={size}
+        className="shrink-0"
+        style={{ color: "#d97757" }}
+      />
+    );
+  if (label === "codex")
+    return <OpenAIIcon size={size} className="shrink-0 text-tyba-text" />;
   return <Robot size={size} className="shrink-0" />;
 }
 
@@ -380,13 +388,15 @@ export default function App() {
     Record<string, SessionCommand>
   >({});
   const [sessionCwds, setSessionCwds] = useState<Record<string, string>>({});
+  const [gitRefresh, setGitRefresh] = useState(0);
   useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     for (const s of sessions) {
-      void onSessionCommand(s.id, (payload) =>
-        setSessionCommands((prev) => ({ ...prev, [s.id]: payload })),
-      ).then((un) => (disposed ? un() : unlisteners.push(un)));
+      void onSessionCommand(s.id, (payload) => {
+        setSessionCommands((prev) => ({ ...prev, [s.id]: payload }));
+        if (!payload.running) setGitRefresh((n) => n + 1);
+      }).then((un) => (disposed ? un() : unlisteners.push(un)));
       void onSessionCwd(s.id, (payload) =>
         setSessionCwds((prev) =>
           prev[s.id] === payload.cwd ? prev : { ...prev, [s.id]: payload.cwd },
@@ -443,6 +453,11 @@ export default function App() {
     [sessionCwds],
   );
 
+  const workspaceGitDir = useCallback(
+    (w: Workspace): string | null => workspaceCwd(w) ?? w.repo_root ?? null,
+    [workspaceCwd],
+  );
+
   const detailsFor = useCallback(
     (id: string): boolean => (detailOverrides[id] ?? detailsPref) === "on",
     [detailOverrides, detailsPref],
@@ -472,33 +487,34 @@ export default function App() {
     };
   }, [workspaces]);
 
-  const repoRootsKey = useMemo(() => {
-    const roots = new Set<string>();
+  const gitDirsKey = useMemo(() => {
+    const dirs = new Set<string>();
     for (const w of layout.workspaces) {
-      if (w.repo_root) roots.add(w.repo_root);
+      const dir = workspaceGitDir(w);
+      if (dir) dirs.add(dir);
     }
-    return [...roots].sort().join("\n");
-  }, [layout.workspaces]);
+    return [...dirs].sort().join("\n");
+  }, [layout.workspaces, workspaceGitDir]);
 
   useEffect(() => {
     let cancelled = false;
-    const roots = repoRootsKey ? repoRootsKey.split("\n") : [];
+    const dirs = gitDirsKey ? gitDirsKey.split("\n") : [];
     void Promise.all(
-      roots.map(
-        async (root) =>
+      dirs.map(
+        async (dir) =>
           [
-            root,
-            await repoBranch(root).catch(() => null),
-            await repoStatus(root).catch(() => null),
+            dir,
+            await repoBranch(dir).catch(() => null),
+            await repoStatus(dir).catch(() => null),
           ] as const,
       ),
     ).then((entries) => {
       if (cancelled) return;
       const nextBranches: Record<string, string> = {};
       const nextStatus: Record<string, RepoStatus> = {};
-      for (const [root, branch, status] of entries) {
-        if (branch) nextBranches[root] = branch;
-        if (status) nextStatus[root] = status;
+      for (const [dir, branch, status] of entries) {
+        if (branch) nextBranches[dir] = branch;
+        if (status) nextStatus[dir] = status;
       }
       setBranches(nextBranches);
       setRepoStatuses(nextStatus);
@@ -506,7 +522,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [repoRootsKey]);
+  }, [gitDirsKey, gitRefresh]);
 
   const cycleWorkspace = useCallback(
     (dir: 1 | -1) => {
@@ -1079,10 +1095,10 @@ export default function App() {
     const isActive = w.id === layout.active_workspace;
     const isConfig = isConfigWorkspace(w);
     const showDetails = open && detailsFor(w.id) && !isConfig;
-    const agent = showDetails ? workspaceAgent(w) : null;
-    const branch = w.repo_root ? branches[w.repo_root] : undefined;
+    const gitDir = workspaceGitDir(w);
+    const branch = gitDir ? branches[gitDir] : undefined;
     const gitStatus =
-      showGitStatus && w.repo_root ? repoStatuses[w.repo_root] : undefined;
+      showGitStatus && gitDir ? repoStatuses[gitDir] : undefined;
     const runner = isConfig ? null : workspaceAgent(w);
     const runningCmd = isConfig ? null : workspaceCommand(w);
     const hoverAgent = runner ?? agentFromCommand(runningCmd);
@@ -1136,8 +1152,8 @@ export default function App() {
                 : "shrink-0"
             }
           />
-        ) : runner ? (
-          agentGlyph(runner)
+        ) : hoverAgent ? (
+          agentGlyph(hoverAgent)
         ) : (
           <TerminalWindow
             size={16}
@@ -1166,7 +1182,7 @@ export default function App() {
               {showDetails && !runningCmd && (
                 <span className="flex w-full items-center gap-1.5">
                   <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-faint">
-                    {w.repo_root ? compactPath(w.repo_root) : "~"}
+                    {gitDir ? compactPath(gitDir) : "~"}
                   </span>
                   {branch && (
                     <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] leading-none text-tyba-text-faint">
@@ -1183,10 +1199,10 @@ export default function App() {
                       <DiffStat status={gitStatus} />
                     </span>
                   )}
-                  {agent && (
+                  {hoverAgent && (
                     <span className="flex shrink-0 items-center gap-1 rounded-[3px] bg-tyba-violet-tint px-1 py-px font-mono text-[9px] leading-none text-tyba-violet">
-                      <Robot size={9} weight="bold" />
-                      {agent}
+                      {agentGlyph(hoverAgent, 9)}
+                      {hoverAgent}
                     </span>
                   )}
                 </span>

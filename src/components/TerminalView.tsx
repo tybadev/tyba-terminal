@@ -266,11 +266,15 @@ export function TerminalView({
     }
   }, [focused, visible]);
 
-  const frameClass = framed
-    ? focused
-      ? "border border-tyba-border-strong"
-      : "border border-tyba-border"
-    : "";
+  const frameClass = framed ? "border border-tyba-border" : "";
+  const frameStyle: React.CSSProperties =
+    framed && focused
+      ? {
+          borderColor: "color-mix(in srgb, var(--tyba-green) 45%, transparent)",
+          boxShadow:
+            "0 0 0 1px color-mix(in srgb, var(--tyba-green) 25%, transparent), 0 0 14px -2px var(--tyba-glow-green, rgba(124,197,68,.4))",
+        }
+      : {};
 
   const selection = () => termRef.current?.getSelection() ?? "";
 
@@ -305,6 +309,7 @@ export function TerminalView({
                   top: `${rect.top}%`,
                   width: `${rect.width}%`,
                   height: `${rect.height}%`,
+                  ...frameStyle,
                 }
               : { display: "none" }
           }

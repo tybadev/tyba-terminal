@@ -304,6 +304,34 @@ fn diff_numstat(path: &std::path::Path) -> (u32, u32) {
     (insertions, deletions)
 }
 
+fn untracked_insertions(path: &std::path::Path) -> u32 {
+    let list = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args([
+            "--no-optional-locks",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
+        .output();
+    let Ok(list) = list else {
+        return 0;
+    };
+    let mut lines = 0;
+    for file in list.stdout.split(|b| *b == 0).filter(|f| !f.is_empty()) {
+        let full = path.join(std::path::Path::new(&String::from_utf8_lossy(file).into_owned()));
+        if let Ok(content) = std::fs::read(&full) {
+            if content.contains(&0) {
+                continue;
+            }
+            lines += content.iter().filter(|b| **b == b'\n').count() as u32;
+        }
+    }
+    lines
+}
+
 #[tauri::command]
 fn repo_status(path: String) -> Option<RepoStatus> {
     let path = session::expand_home(std::path::Path::new(&path));
@@ -328,11 +356,14 @@ fn repo_status(path: String) -> Option<RepoStatus> {
         .split(|b| *b == 0)
         .filter(|entry| !entry.is_empty())
         .count() as u32;
-    let (insertions, deletions) = if changed > 0 {
+    let (mut insertions, deletions) = if changed > 0 {
         diff_numstat(&path)
     } else {
         (0, 0)
     };
+    if changed > 0 {
+        insertions += untracked_insertions(&path);
+    }
     Some(RepoStatus {
         dirty: changed > 0,
         changed,
