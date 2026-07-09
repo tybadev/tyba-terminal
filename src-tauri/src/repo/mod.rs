@@ -49,11 +49,12 @@ pub fn is_watched_event_path(path: &Path) -> bool {
     if path.extension().is_some_and(|ext| ext == "lock") {
         return false;
     }
-    if path
-        .components()
-        .any(|c| c.as_os_str() == "refs" || c.as_os_str() == "logs")
+    let components: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
+    if components
+        .windows(2)
+        .any(|pair| pair[0] == "refs" && pair[1] == "heads")
     {
-        return path.components().any(|c| c.as_os_str() == "heads");
+        return true;
     }
     path.file_name()
         .and_then(|n| n.to_str())
@@ -85,7 +86,9 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
         return None;
     }
     let raw = &info.pvi_cdir.vip_path;
-    let bytes = unsafe { std::slice::from_raw_parts(raw.as_ptr() as *const u8, raw.len() * 32) };
+    let bytes = unsafe {
+        std::slice::from_raw_parts(raw.as_ptr() as *const u8, std::mem::size_of_val(raw))
+    };
     let end = bytes.iter().position(|b| *b == 0)?;
     if end == 0 {
         return None;
@@ -291,10 +294,10 @@ fn spawn_watcher<R: Runtime>(
     root: PathBuf,
     dirs: &[PathBuf],
 ) -> Option<Watched> {
-    let initial = snapshot(&root);
-    let _ = app.emit(EVENT_CHANGED, initial.clone());
-    let last: Arc<Mutex<Option<RepoSnapshot>>> = Arc::new(Mutex::new(Some(initial)));
+    let last: Arc<Mutex<Option<RepoSnapshot>>> = Arc::new(Mutex::new(None));
+    let seed = Arc::clone(&last);
     let callback_root = root.clone();
+    let emit_app = app.clone();
 
     let mut debouncer = new_debouncer(DEBOUNCE, None, move |result: DebounceEventResult| {
         let Ok(events) = result else {
@@ -318,10 +321,20 @@ fn spawn_watcher<R: Runtime>(
     .ok()?;
 
     for dir in dirs {
-        if debouncer.watch(dir, RecursiveMode::NonRecursive).is_err() {
+        let mode = if dir.ends_with("refs/heads") {
+            RecursiveMode::Recursive
+        } else {
+            RecursiveMode::NonRecursive
+        };
+        if debouncer.watch(dir, mode).is_err() {
             return None;
         }
     }
+
+    let initial = snapshot(&root);
+    let _ = emit_app.emit(EVENT_CHANGED, initial.clone());
+    *seed.lock() = Some(initial);
+
     Some(Watched {
         _debouncer: debouncer,
     })
@@ -488,6 +501,23 @@ mod tests {
         assert!(!is_watched_event_path(Path::new("/r/.git/HEAD.lock")));
         assert!(!is_watched_event_path(Path::new("/r/.git/objects/ab/cdef")));
         assert!(!is_watched_event_path(Path::new("/r/.git/refs/tags/v1")));
+    }
+
+    #[test]
+    fn repo_whose_path_contains_logs_or_refs_still_matches() {
+        assert!(is_watched_event_path(Path::new(
+            "/home/u/dev/logs/svc/.git/index"
+        )));
+        assert!(is_watched_event_path(Path::new(
+            "/home/u/refs/proj/.git/HEAD"
+        )));
+    }
+
+    #[test]
+    fn slash_named_branch_ref_matches() {
+        assert!(is_watched_event_path(Path::new(
+            "/r/.git/refs/heads/feat/git-watcher"
+        )));
     }
 
     #[test]

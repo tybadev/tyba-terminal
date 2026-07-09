@@ -47,6 +47,9 @@ fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::
         .collect();
 
     for session in state.sessions.list() {
+        if !matches!(session.status, SessionStatus::Running) {
+            continue;
+        }
         let Some(pid) = state.pty_pool.leader_pid(session.id) else {
             continue;
         };
@@ -100,6 +103,7 @@ fn session_exited(app: &AppHandle, id: SessionId) {
         state
             .sessions
             .set_status(app, id, SessionStatus::Exited { code: -1 });
+        let _ = state.repo_reconcile.send(());
     }
 }
 

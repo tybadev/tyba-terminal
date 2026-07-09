@@ -593,14 +593,22 @@ export default function App() {
         ),
       ).then((entries) => {
         if (cancelled) return;
-        const nextBranches: Record<string, string> = {};
-        const nextStatus: Record<string, RepoStatus> = {};
-        for (const [dir, branch, status] of entries) {
-          if (branch) nextBranches[dir] = branch;
-          if (status) nextStatus[dir] = status;
-        }
-        setBranches((prev) => ({ ...prev, ...nextBranches }));
-        setRepoStatuses((prev) => ({ ...prev, ...nextStatus }));
+        setBranches((prev) => {
+          const next = { ...prev };
+          for (const [dir, branch] of entries) {
+            if (branch) next[dir] = branch;
+            else delete next[dir];
+          }
+          return next;
+        });
+        setRepoStatuses((prev) => {
+          const next = { ...prev };
+          for (const [dir, , status] of entries) {
+            if (status) next[dir] = status;
+            else delete next[dir];
+          }
+          return next;
+        });
       });
     }, 200);
     return () => {
