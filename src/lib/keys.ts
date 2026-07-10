@@ -160,7 +160,7 @@ export const DEFAULT_BINDINGS: Bindings = {
   panel: "meta+b",
   settings: "meta+,",
   newSession: "meta+n",
-  newWorktreeSession: "meta+alt+n",
+  newWorktreeSession: "meta+shift+t",
   newTab: "meta+t",
   newWindow: "meta+shift+n",
   closePane: "meta+w",
