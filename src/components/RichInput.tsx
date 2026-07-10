@@ -58,14 +58,18 @@ export function RichInput({
   const active = useMemo(() => atQuery(text, caret), [text, caret]);
   const popoverOpen = active !== null && files.length > 0;
 
-  useEffect(() => {
-    setText("");
-    setWarnArmed(false);
-    setError(null);
+  const refreshMultiline = useCallback(() => {
     void sessionBracketedPaste(sessionId)
       .then(setMultiline)
       .catch(() => setMultiline(false));
   }, [sessionId]);
+
+  useEffect(() => {
+    setText("");
+    setWarnArmed(false);
+    setError(null);
+    refreshMultiline();
+  }, [sessionId, refreshMultiline]);
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -262,6 +266,7 @@ export function RichInput({
           onKeyDown={onKeyDown}
           onKeyUp={syncCaret}
           onClick={syncCaret}
+          onFocus={refreshMultiline}
           className="max-h-[168px] min-h-[28px] flex-1 resize-none rounded-[4px] border border-tyba-border bg-transparent px-2 py-1 font-mono text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-green/50"
         />
         <button
