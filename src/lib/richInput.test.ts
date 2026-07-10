@@ -99,6 +99,28 @@ describe("insertToken", () => {
 describe("richInputVisibility", () => {
   const agent = { type: "agent", runner: "claude_code" } as const;
   const shell = { type: "shell" } as const;
+  const autoShow = { ...DEFAULT_RICH_INPUT, autoShow: true };
+
+  test("default não abre sozinho em sessão de agente — só no atalho", () => {
+    expect(
+      richInputVisibility({
+        kind: agent,
+        command: cmd(),
+        pref: DEFAULT_RICH_INPUT,
+        opened: false,
+        dismissed: false,
+      }),
+    ).toBe(false);
+    expect(
+      richInputVisibility({
+        kind: agent,
+        command: cmd(),
+        pref: DEFAULT_RICH_INPUT,
+        opened: true,
+        dismissed: false,
+      }),
+    ).toBe(true);
+  });
 
   test("aberto explicitamente ignora autoShow e dismissed", () => {
     expect(
@@ -117,17 +139,17 @@ describe("richInputVisibility", () => {
       richInputVisibility({
         kind: agent,
         command: cmd(),
-        pref: DEFAULT_RICH_INPUT,
+        pref: autoShow,
         opened: false,
         dismissed: true,
       }),
     ).toBe(false);
   });
 
-  test("agente rodando não abre sozinho; ocioso abre", () => {
+  test("com autoShow, agente rodando não abre; ocioso abre", () => {
     const base = {
       kind: agent,
-      pref: DEFAULT_RICH_INPUT,
+      pref: autoShow,
       opened: false,
       dismissed: false,
     };
@@ -139,41 +161,43 @@ describe("richInputVisibility", () => {
     ).toBe(true);
   });
 
-  test("shell só aparece com agent_match e pref ligada", () => {
+  test("com autoShow, shell só aparece com agent_match e pref ligada", () => {
     const base = { kind: shell, opened: false, dismissed: false };
     expect(
       richInputVisibility({
         ...base,
         command: cmd({ agent_match: true }),
-        pref: DEFAULT_RICH_INPUT,
+        pref: autoShow,
       }),
     ).toBe(true);
     expect(
       richInputVisibility({
         ...base,
         command: cmd({ agent_match: false }),
-        pref: DEFAULT_RICH_INPUT,
+        pref: autoShow,
       }),
     ).toBe(false);
     expect(
       richInputVisibility({
         ...base,
         command: cmd({ agent_match: true }),
-        pref: { ...DEFAULT_RICH_INPUT, showOnMatch: false },
+        pref: { ...autoShow, showOnMatch: false },
       }),
     ).toBe(false);
   });
+});
 
-  test("autoShow desligado só mostra com abertura explícita", () => {
-    expect(
-      richInputVisibility({
-        kind: agent,
-        command: cmd(),
-        pref: { ...DEFAULT_RICH_INPUT, autoShow: false },
-        opened: false,
-        dismissed: false,
-      }),
-    ).toBe(false);
+describe("defaults — a caixa é opt-in e o Enter não envia", () => {
+  test("autoShow desligado: só abre pelo atalho", () => {
+    expect(DEFAULT_RICH_INPUT.autoShow).toBe(false);
+  });
+
+  test("Enter quebra linha e Ctrl/Cmd+Enter envia", () => {
+    const pref = DEFAULT_RICH_INPUT.submitWithCtrlEnter;
+    expect(enterAction({ shift: false, ctrlOrMeta: false }, pref)).toBe(
+      "newline",
+    );
+    expect(enterAction({ shift: false, ctrlOrMeta: true }, pref)).toBe("submit");
   });
 });
 

@@ -15,10 +15,10 @@ export interface RichInputPref {
 
 export const DEFAULT_RICH_INPUT: RichInputPref = {
   version: 1,
-  autoShow: true,
+  autoShow: false,
   autoOpenOnStart: false,
   autoDismiss: true,
-  submitWithCtrlEnter: false,
+  submitWithCtrlEnter: true,
   warnOnSensitivePrompt: true,
   showOnMatch: true,
   agentRegex: "",
