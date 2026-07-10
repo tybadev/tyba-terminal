@@ -2174,6 +2174,11 @@ export default function App() {
                         ? snapshotForDir(repoSnapshots, dir)
                         : undefined;
                     })()}
+                    showRichInput={richInputEligible && !richInputVisible}
+                    richInputCombo={bindings.richInput}
+                    onOpenRichInput={() => {
+                      if (activeId) openRichInput(activeId);
+                    }}
                   />
                 )}
               </main>
