@@ -182,7 +182,6 @@ export function WorktreesView({
   const repos = Object.values(listings).sort((a, b) =>
     a.root.localeCompare(b.root),
   );
-  const total = repos.reduce((n, r) => n + r.worktrees.length, 0);
 
   return (
     <div className="flex-1 overflow-y-auto bg-tyba-bg">
@@ -203,7 +202,7 @@ export function WorktreesView({
           {t("worktreesHint")}
         </p>
 
-        {!loading && total === 0 && (
+        {!loading && repos.length === 0 && (
           <div className="rounded-[8px] border border-dashed border-tyba-border p-8 text-center text-[12px] text-tyba-text-faint">
             {t("worktreesEmpty")}
           </div>
@@ -213,7 +212,7 @@ export function WorktreesView({
           {repos.map((repo) => (
             <section key={repo.root}>
               <div className="flex items-baseline gap-2 pb-2">
-                <span className="text-[13px] text-tyba-text">
+                <span className="shrink-0 whitespace-nowrap text-[13px] text-tyba-text">
                   {basename(repo.root)}
                 </span>
                 <span className="truncate font-mono text-[10px] text-tyba-text-faint">
