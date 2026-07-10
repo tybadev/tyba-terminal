@@ -285,6 +285,36 @@ async fn worktree_gc(state: State<'_, AppState>) -> Result<worktree::GcReport, S
     Ok(worktree::gc_orphans(&known_worktree_paths(&state.sessions)))
 }
 
+fn session_worktree(state: &AppState, id: SessionId) -> Result<worktree::Worktree, String> {
+    state
+        .sessions
+        .get(id)
+        .ok_or_else(|| format!("sessão não encontrada: {id}"))?
+        .worktree
+        .ok_or_else(|| "sessão não está em worktree".to_string())
+}
+
+#[tauri::command]
+async fn session_diff(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<worktree::diff::SessionDiff, String> {
+    let wt = session_worktree(&state, id)?;
+    worktree::diff::session_diff(&wt.path, &wt.base_ref)
+}
+
+#[tauri::command]
+async fn session_diff_hunks(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    scope: worktree::diff::DiffScope,
+    old_path: Option<String>,
+) -> Result<worktree::diff::FileHunks, String> {
+    let wt = session_worktree(&state, id)?;
+    worktree::diff::file_hunks(&wt.path, &wt.base_ref, scope, &path, old_path.as_deref())
+}
+
 fn known_worktree_paths(
     sessions: &SharedSessionManager,
 ) -> std::collections::HashSet<std::path::PathBuf> {
@@ -1219,6 +1249,8 @@ pub fn run() {
             worktree_set_setup_consent,
             worktree_remove,
             worktree_gc,
+            session_diff,
+            session_diff_hunks,
             repo_snapshots,
             session_cwd,
             resize_session,

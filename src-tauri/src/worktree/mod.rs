@@ -6,6 +6,8 @@
 //! - three-dot semantics: diff contra `base_ref` salvo na criação
 //! - `git stash` NUNCA na automação (compartilhado entre worktrees)
 
+pub mod diff;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
