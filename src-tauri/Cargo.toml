@@ -30,6 +30,7 @@ vt100 = "0.15"
 percent-encoding = "2"
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
+sha2 = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

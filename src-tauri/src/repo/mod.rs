@@ -146,7 +146,7 @@ pub fn toplevel(cwd: &Path) -> Option<PathBuf> {
     git_path(cwd, "--show-toplevel")
 }
 
-fn git_path(root: &Path, arg: &str) -> Option<PathBuf> {
+pub(crate) fn git_path(root: &Path, arg: &str) -> Option<PathBuf> {
     let out = git_in(root)
         .args(["rev-parse", "--path-format=absolute", arg])
         .output()
@@ -556,6 +556,8 @@ mod tests {
         git(&repo, &["init", "-q"]);
         git(&repo, &["config", "user.email", "t@t.com"]);
         git(&repo, &["config", "user.name", "t"]);
+        git(&repo, &["config", "commit.gpgsign", "false"]);
+        git(&repo, &["config", "tag.gpgsign", "false"]);
         std::fs::write(repo.join("a.txt"), "a\n").unwrap();
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-qm", "init"]);

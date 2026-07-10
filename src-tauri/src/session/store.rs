@@ -24,6 +24,13 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS setup_consents (
+    repo_root TEXT NOT NULL,
+    script_hash TEXT NOT NULL,
+    allowed INTEGER NOT NULL,
+    decided_at TEXT NOT NULL,
+    PRIMARY KEY (repo_root, script_hash)
+);
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -175,6 +182,38 @@ impl Store {
             "INSERT INTO settings (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = ?2",
             params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn setup_consent(
+        &self,
+        repo_root: &str,
+        script_hash: &str,
+    ) -> Result<Option<bool>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT allowed FROM setup_consents WHERE repo_root = ?1 AND script_hash = ?2",
+            params![repo_root, script_hash],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()
+        .map_err(StoreError::from)
+    }
+
+    pub fn set_setup_consent(
+        &self,
+        repo_root: &str,
+        script_hash: &str,
+        allowed: bool,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO setup_consents (repo_root, script_hash, allowed, decided_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(repo_root, script_hash) DO UPDATE SET allowed = ?3, decided_at = ?4",
+            params![repo_root, script_hash, allowed, Utc::now().to_rfc3339()],
         )?;
         Ok(())
     }
@@ -445,5 +484,23 @@ mod tests {
         let scrollback = store.load_scrollback(s.id).unwrap().unwrap();
         assert!(!scrollback.contains("AKIAIOSFODNN7EXAMPLE"));
         assert!(scrollback.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn setup_consent_is_scoped_to_repo_and_hash() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.setup_consent("/repo", "abc").unwrap(), None);
+
+        store.set_setup_consent("/repo", "abc", true).unwrap();
+        assert_eq!(store.setup_consent("/repo", "abc").unwrap(), Some(true));
+        assert_eq!(
+            store.setup_consent("/repo", "novo-hash").unwrap(),
+            None,
+            "script mudou: consent antigo não vale"
+        );
+        assert_eq!(store.setup_consent("/outro", "abc").unwrap(), None);
+
+        store.set_setup_consent("/repo", "abc", false).unwrap();
+        assert_eq!(store.setup_consent("/repo", "abc").unwrap(), Some(false));
     }
 }

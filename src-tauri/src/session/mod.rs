@@ -63,6 +63,8 @@ pub struct CreateSessionOpts {
     pub cwd: Option<PathBuf>,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default)]
+    pub worktree_task: Option<String>,
 }
 
 pub struct SessionManager {
@@ -101,6 +103,19 @@ impl SessionManager {
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
 
+        let (worktree, repo_root) = match opts.worktree_task.as_deref() {
+            Some(task) => {
+                let base = resolve_cwd(opts.cwd.as_deref());
+                let root = crate::repo::toplevel(&base).ok_or_else(|| {
+                    PtyError::Spawn("a pasta da sessão não é um repositório git".into())
+                })?;
+                let root = crate::repo::canonicalize_or(&root);
+                let wt = crate::worktree::create(&root, task).map_err(PtyError::Spawn)?;
+                (Some(wt), Some(root))
+            }
+            None => (None, None),
+        };
+
         let shell = default_shell();
         let label = shell_label(&shell);
         let integration = self.shell_integration_enabled();
@@ -122,7 +137,10 @@ impl SessionManager {
                 cmd.arg("-l");
             }
         }
-        cmd.cwd(resolve_cwd(opts.cwd.as_deref()));
+        match &worktree {
+            Some(wt) => cmd.cwd(&wt.path),
+            None => cmd.cwd(resolve_cwd(opts.cwd.as_deref())),
+        }
 
         if label == "zsh" && integration {
             if let Some(dir) = zsh_integration_dir() {
@@ -136,10 +154,29 @@ impl SessionManager {
             }
         }
 
-        let title = opts.title.unwrap_or_else(|| label.clone());
-        self.spawn_session(
-            app, pty_pool, id, cmd, opts.kind, title, opts.cols, opts.rows, on_exit,
-        )
+        let title = opts
+            .title
+            .or_else(|| opts.worktree_task.clone())
+            .unwrap_or_else(|| label.clone());
+        let result = self.spawn_session(
+            app,
+            pty_pool,
+            id,
+            cmd,
+            opts.kind,
+            title,
+            repo_root,
+            worktree.clone(),
+            opts.cols,
+            opts.rows,
+            on_exit,
+        );
+        if result.is_err() {
+            if let Some(wt) = &worktree {
+                let _ = crate::worktree::remove(&wt.path, true, true);
+            }
+        }
+        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -168,6 +205,8 @@ impl SessionManager {
             cmd,
             SessionKind::Shell,
             title,
+            None,
+            None,
             cols,
             rows,
             on_exit,
@@ -183,6 +222,8 @@ impl SessionManager {
         mut cmd: CommandBuilder,
         kind: SessionKind,
         title: String,
+        repo_root: Option<PathBuf>,
+        worktree: Option<crate::worktree::Worktree>,
         cols: u16,
         rows: u16,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
@@ -210,8 +251,8 @@ impl SessionManager {
             id,
             kind,
             title,
-            repo_root: None,
-            worktree: None,
+            repo_root,
+            worktree,
             status: SessionStatus::Running,
             created_at: Utc::now(),
         };

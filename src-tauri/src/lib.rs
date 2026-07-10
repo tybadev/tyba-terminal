@@ -112,6 +112,54 @@ fn session_exited(app: &AppHandle, id: SessionId) {
     }
 }
 
+#[derive(Clone, serde::Serialize)]
+struct SetupResultPayload {
+    session_id: SessionId,
+    ok: bool,
+    log: String,
+}
+
+/// Roda o `.tyba/setup.sh` do worktree em background quando (e só quando)
+/// o usuário consentiu com o hash atual do script. Nunca bloqueia a criação.
+fn run_setup_if_consented(app: &AppHandle, state: &AppState, session: &Session) {
+    let Some(wt) = &session.worktree else { return };
+    let Some(script) = worktree::setup_script(&wt.path) else {
+        return;
+    };
+    let repo_key = repo::canonicalize_or(session.repo_root.as_deref().unwrap_or(&wt.path))
+        .to_string_lossy()
+        .into_owned();
+    let allowed = state
+        .store
+        .setup_consent(&repo_key, &script.hash)
+        .ok()
+        .flatten();
+    if allowed != Some(true) {
+        return;
+    }
+    let app = app.clone();
+    let path = wt.path.clone();
+    let env = worktree::setup_env(&path);
+    let session_id = session.id;
+    std::thread::Builder::new()
+        .name("worktree-setup".into())
+        .spawn(move || {
+            let (ok, log) = match worktree::run_setup(&path, &script, &env) {
+                Ok(log) => (true, log),
+                Err(e) => (false, e),
+            };
+            let _ = app.emit(
+                &format!("worktree://setup/{session_id}"),
+                SetupResultPayload {
+                    session_id,
+                    ok,
+                    log,
+                },
+            );
+        })
+        .ok();
+}
+
 #[tauri::command]
 fn create_session(
     app: AppHandle,
@@ -119,12 +167,132 @@ fn create_session(
     opts: CreateSessionOpts,
 ) -> Result<Session, String> {
     let handle = app.clone();
-    state
+    let session = state
         .sessions
-        .create_shell_session(app, &state.pty_pool, opts, move |id| {
+        .create_shell_session(app.clone(), &state.pty_pool, opts, move |id| {
             session_exited(&handle, id)
         })
+        .map_err(|e| e.to_string())?;
+    run_setup_if_consented(&app, &state, &session);
+    Ok(session)
+}
+
+#[derive(serde::Serialize)]
+struct WorktreeStatus {
+    path: std::path::PathBuf,
+    branch: Option<String>,
+    dirty: bool,
+    ahead_of_head: u32,
+    managed: bool,
+    session_id: Option<SessionId>,
+}
+
+#[tauri::command]
+async fn worktree_list(
+    state: State<'_, AppState>,
+    repo_root: String,
+) -> Result<Vec<WorktreeStatus>, String> {
+    let root = repo::canonicalize_or(std::path::Path::new(&repo_root));
+    let head = worktree::head_sha(&root)?;
+    let by_path: std::collections::HashMap<std::path::PathBuf, SessionId> = state
+        .sessions
+        .list()
+        .into_iter()
+        .filter_map(|s| s.worktree.map(|wt| (repo::canonicalize_or(&wt.path), s.id)))
+        .collect();
+
+    Ok(worktree::list(&root)?
+        .into_iter()
+        .filter_map(|e| {
+            let canonical = repo::canonicalize_or(&e.path);
+            if canonical == root {
+                return None;
+            }
+            Some(WorktreeStatus {
+                dirty: worktree::is_dirty(&e.path).unwrap_or(false),
+                ahead_of_head: worktree::ahead_count(&e.path, &head).unwrap_or(0),
+                managed: worktree::is_managed(&e.path),
+                session_id: by_path.get(&canonical).copied(),
+                path: e.path,
+                branch: e.branch,
+            })
+        })
+        .collect())
+}
+
+#[derive(serde::Serialize)]
+struct SetupScriptInfo {
+    path: std::path::PathBuf,
+    content: String,
+    hash: String,
+    consent: Option<bool>,
+}
+
+#[tauri::command]
+fn worktree_setup_script(state: State<'_, AppState>, repo_root: String) -> Option<SetupScriptInfo> {
+    let root = repo::canonicalize_or(std::path::Path::new(&repo_root));
+    let script = worktree::setup_script(&root)?;
+    let consent = state
+        .store
+        .setup_consent(&root.to_string_lossy(), &script.hash)
+        .ok()
+        .flatten();
+    Some(SetupScriptInfo {
+        path: script.path,
+        content: script.content,
+        hash: script.hash,
+        consent,
+    })
+}
+
+#[tauri::command]
+fn worktree_set_setup_consent(
+    state: State<'_, AppState>,
+    repo_root: String,
+    hash: String,
+    allow: bool,
+) -> Result<(), String> {
+    let root = repo::canonicalize_or(std::path::Path::new(&repo_root));
+    state
+        .store
+        .set_setup_consent(&root.to_string_lossy(), &hash, allow)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn worktree_remove(
+    state: State<'_, AppState>,
+    path: String,
+    delete_branch: bool,
+    force: bool,
+) -> Result<(), String> {
+    let path = std::path::PathBuf::from(&path);
+    let canonical = repo::canonicalize_or(&path);
+    let busy = state.sessions.list().into_iter().any(|s| {
+        matches!(s.status, SessionStatus::Running)
+            && s.worktree
+                .map(|wt| repo::canonicalize_or(&wt.path) == canonical)
+                .unwrap_or(false)
+    });
+    if busy {
+        return Err("worktree tem sessão ativa — encerre a sessão antes de remover".into());
+    }
+    worktree::remove(&path, delete_branch, force)
+}
+
+#[tauri::command]
+async fn worktree_gc(state: State<'_, AppState>) -> Result<worktree::GcReport, String> {
+    Ok(worktree::gc_orphans(&known_worktree_paths(&state.sessions)))
+}
+
+fn known_worktree_paths(
+    sessions: &SharedSessionManager,
+) -> std::collections::HashSet<std::path::PathBuf> {
+    sessions
+        .list()
+        .into_iter()
+        .filter_map(|s| s.worktree.map(|wt| wt.path))
+        .collect()
 }
 
 #[tauri::command]
@@ -757,6 +925,7 @@ fn docker_open_project(
                 cwd: Some(std::path::PathBuf::from(&info.working_dir)),
                 cols: 100,
                 rows: 30,
+                worktree_task: None,
             },
             move |id| session_exited(&handle, id),
         )
@@ -992,6 +1161,17 @@ pub fn run() {
                 })
                 .expect("failed to spawn scrollback flush thread");
 
+            let gc_sessions = Arc::clone(&app.state::<AppState>().sessions);
+            std::thread::Builder::new()
+                .name("worktree-gc".into())
+                .spawn(move || {
+                    let report = worktree::gc_orphans(&known_worktree_paths(&gc_sessions));
+                    for removed in &report.removed {
+                        eprintln!("[tyba] worktree órfão removido: {}", removed.display());
+                    }
+                })
+                .expect("failed to spawn worktree gc thread");
+
             let cwd_tx = reconcile_tx.clone();
             app.listen_any(pty::EVENT_CWD_CHANGED, move |_| {
                 let _ = cwd_tx.send(());
@@ -1034,6 +1214,11 @@ pub fn run() {
             list_worktree_files,
             attach_session,
             detach_session,
+            worktree_list,
+            worktree_setup_script,
+            worktree_set_setup_consent,
+            worktree_remove,
+            worktree_gc,
             repo_snapshots,
             session_cwd,
             resize_session,
