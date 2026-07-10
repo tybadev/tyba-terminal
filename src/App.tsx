@@ -1416,6 +1416,7 @@ export default function App() {
     const isConfig = isConfigWorkspace(w);
     const showDetails = open && detailsFor(w.id) && !isConfig;
     const gitDir = workspaceGitDir(w);
+    const displayDir = workspaceCwd(w) ?? w.repo_root;
     const snapshot = gitDir ? snapshotForDir(repoSnapshots, gitDir) : undefined;
     const branch = snapshot?.branch ?? undefined;
     const gitStatus = showGitStatus
@@ -1504,7 +1505,7 @@ export default function App() {
               {showDetails && !runningCmd && (
                 <span className="flex w-full items-center gap-1.5">
                   <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-faint">
-                    {gitDir ? compactPath(gitDir) : "~"}
+                    {displayDir ? compactPath(displayDir) : "~"}
                   </span>
                   {branch && (
                     <span
