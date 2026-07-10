@@ -4,6 +4,7 @@ pub mod docker;
 pub mod layout;
 pub mod pty;
 pub mod repo;
+pub mod rich_input;
 pub mod sandbox;
 pub mod session;
 pub mod status;
@@ -129,6 +130,65 @@ fn write_to_session(state: State<'_, AppState>, id: SessionId, data: String) -> 
         .decode(&data)
         .map_err(|e| e.to_string())?;
     state.pty_pool.write(id, &bytes).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn submit_rich_input(
+    state: State<'_, AppState>,
+    id: SessionId,
+    text: String,
+    submit: bool,
+) -> Result<rich_input::RichInputResult, String> {
+    let bracketed = state
+        .pty_pool
+        .bracketed_paste(id)
+        .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+    let (normalized, stripped_control) = rich_input::normalize(&text);
+    let payload = rich_input::plan_injection(&normalized, bracketed)?;
+    if !payload.is_empty() {
+        state
+            .pty_pool
+            .write(id, &payload)
+            .map_err(|e| e.to_string())?;
+    }
+    if submit {
+        let pool = Arc::clone(&state.pty_pool);
+        std::thread::spawn(move || {
+            std::thread::sleep(rich_input::SUBMIT_DELAY);
+            let _ = pool.write(id, b"\r");
+        });
+    }
+    Ok(rich_input::RichInputResult {
+        injected_bytes: payload.len(),
+        stripped_control,
+        mentions_sensitive: rich_input::mentions_sensitive(&normalized),
+    })
+}
+
+#[tauri::command]
+fn set_agent_match_pattern(pattern: String) -> bool {
+    rich_input::agent_matcher().set_pattern(&pattern)
+}
+
+#[tauri::command]
+fn session_bracketed_paste(state: State<'_, AppState>, id: SessionId) -> bool {
+    state.pty_pool.bracketed_paste(id).unwrap_or(false)
+}
+
+#[tauri::command]
+fn list_worktree_files(
+    state: State<'_, AppState>,
+    id: SessionId,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<String>, String> {
+    let pid = state
+        .pty_pool
+        .leader_pid(id)
+        .ok_or_else(|| format!("sessão sem processo vivo: {id}"))?;
+    let cwd = repo::process_cwd(pid).ok_or("cwd da sessão indisponível")?;
+    let root = repo::toplevel(&cwd).ok_or("sessão fora de repositório git")?;
+    rich_input::worktree_files(&root, &query, limit.unwrap_or(50).min(500))
 }
 
 #[tauri::command]
@@ -927,6 +987,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_session,
             write_to_session,
+            submit_rich_input,
+            set_agent_match_pattern,
+            session_bracketed_paste,
+            list_worktree_files,
             attach_session,
             detach_session,
             repo_snapshots,

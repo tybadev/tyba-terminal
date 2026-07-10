@@ -82,6 +82,9 @@ pub struct SessionCommandPayload {
     /// Linha de comando em execução (shell integration), ou `None` quando ocioso.
     pub command: Option<String>,
     pub running: bool,
+    /// Hint de UI vindo de regex sobre a cmdline (OSC 633;E, forjável).
+    /// Nunca embasa autorização — só decide mostrar a toolbar.
+    pub agent_match: bool,
 }
 
 /// Diretório de trabalho reportado via `OSC 7`.
@@ -205,6 +208,7 @@ impl PtyPool {
                 let mut last_flush = Instant::now();
                 let mut osc = crate::status::OscParser::new();
                 let mut last_cmd: Option<String> = None;
+                let mut last_match = false;
                 let mut last_cwd: Option<std::path::PathBuf> = None;
 
                 loop {
@@ -240,23 +244,30 @@ impl PtyPool {
                             for ev in osc.feed(&chunk) {
                                 use crate::status::ShellEvent;
                                 match ev {
-                                    ShellEvent::CommandLine(cmd) => last_cmd = Some(cmd),
+                                    ShellEvent::CommandLine(cmd) => {
+                                        last_match =
+                                            crate::rich_input::agent_matcher().matches(&cmd);
+                                        last_cmd = Some(cmd);
+                                    }
                                     ShellEvent::CommandStart => {
                                         let _ = app.emit(
                                             &command_event,
                                             SessionCommandPayload {
                                                 command: last_cmd.clone(),
                                                 running: true,
+                                                agent_match: last_match,
                                             },
                                         );
                                     }
                                     ShellEvent::CommandEnd(_) | ShellEvent::PromptStart => {
                                         last_cmd = None;
+                                        last_match = false;
                                         let _ = app.emit(
                                             &command_event,
                                             SessionCommandPayload {
                                                 command: None,
                                                 running: false,
+                                                agent_match: false,
                                             },
                                         );
                                     }
@@ -354,6 +365,12 @@ impl PtyPool {
         if state.attachers == 0 {
             state.pending.clear();
         }
+    }
+
+    pub fn bracketed_paste(&self, id: PtyId) -> Option<bool> {
+        let screen = self.screen_of(id)?;
+        let enabled = screen.lock().parser.screen().bracketed_paste();
+        Some(enabled)
     }
 
     pub fn scrollback_text(&self, id: PtyId) -> Result<String, PtyError> {
@@ -468,6 +485,16 @@ mod screen_state_tests {
 
 #[cfg(test)]
 mod screen_tests {
+    #[test]
+    fn parser_rastreia_o_estado_de_bracketed_paste_do_programa() {
+        let mut parser = vt100::Parser::new(24, 80, super::SCROLLBACK_LINES);
+        assert!(!parser.screen().bracketed_paste());
+        parser.process(b"\x1b[?2004h");
+        assert!(parser.screen().bracketed_paste());
+        parser.process(b"\x1b[?2004l");
+        assert!(!parser.screen().bracketed_paste());
+    }
+
     #[test]
     fn snapshot_preserves_visible_text() {
         let mut parser = vt100::Parser::new(24, 80, super::SCROLLBACK_LINES);
