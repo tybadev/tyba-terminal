@@ -65,6 +65,7 @@ import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ContainersView } from "./components/ContainersView";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
+import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
 import { DiffStat } from "./components/DiffStat";
 import { SessionHoverCard } from "./components/SessionHoverCard";
@@ -211,6 +212,7 @@ const TOGGLE_PREF_KEY = "pref.sidebar_toggle";
 const DETAILS_PREF_KEY = "pref.sidebar_details";
 const DETAILS_OVERRIDES_KEY = "pref.session_details";
 const TOOLBAR_PREF_KEY = "pref.toolbar";
+const WORKTREE_DEFAULT_KEY = "pref.worktree_default";
 const EDITOR_PREF_KEY = "pref.editor";
 const ACCOUNT_NAME_KEY = "pref.account_name";
 const FONT_SIZE_KEY = "pref.code.font_size";
@@ -329,6 +331,17 @@ export default function App() {
     "actions",
   );
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [newSessionIsolate, setNewSessionIsolate] = useState(false);
+  const [worktreeDir, setWorktreeDir] = useState<string | null>(null);
+  const [worktreeDefault, setWorktreeDefault] = useState(false);
+
+  const openNewSession = useCallback(
+    (isolate?: boolean) => {
+      setNewSessionIsolate(isolate ?? worktreeDefault);
+      setNewSessionOpen(true);
+    },
+    [worktreeDefault],
+  );
   const [searchOpen, setSearchOpen] = useState(false);
   const [pastePrompt, setPastePrompt] = useState<TerminalPasteDetail | null>(
     null,
@@ -867,16 +880,26 @@ export default function App() {
   );
 
   const newSession = useCallback(
-    async (cwd: string | null, name: string, group?: string | null) => {
+    async (
+      cwd: string | null,
+      name: string,
+      group?: string | null,
+      worktreeTask?: string,
+    ) => {
       const session = await createSession({
         kind: { type: "shell" },
         cwd: cwd ?? undefined,
         cols: 100,
         rows: 30,
+        worktree_task: worktreeTask,
       });
       setSessions((prev) => [...prev, session]);
       try {
-        const workspaceId = await createWorkspace(name, cwd, session.id);
+        const workspaceId = await createWorkspace(
+          name,
+          session.worktree?.path ?? cwd,
+          session.id,
+        );
         if (group) await setWorkspaceGroup(workspaceId, group);
       } catch {
         void disposeSession(session.id).catch(() => {});
@@ -885,14 +908,17 @@ export default function App() {
     [],
   );
 
-  const newSessionInGroup = useCallback((group: string) => {
-    setPendingGroup(group);
-    setNewSessionOpen(true);
-  }, []);
+  const newSessionInGroup = useCallback(
+    (group: string) => {
+      setPendingGroup(group);
+      openNewSession();
+    },
+    [openNewSession],
+  );
 
   const newTab = useCallback(async () => {
     if (!activeWorkspace) {
-      setNewSessionOpen(true);
+      openNewSession();
       return;
     }
     const session = await createSession({
@@ -907,7 +933,7 @@ export default function App() {
     } catch {
       void disposeSession(session.id).catch(() => {});
     }
-  }, [activeWorkspace]);
+  }, [activeWorkspace, openNewSession]);
 
   const openProjectFolder = useCallback(async () => {
     const dir = await openFileDialog({ directory: true, multiple: false });
@@ -995,6 +1021,11 @@ export default function App() {
   const changeShowGitStatus = useCallback((value: boolean) => {
     setShowGitStatus(value);
     void setPref(GIT_STATUS_KEY, value ? "on" : "off").catch(() => {});
+  }, []);
+
+  const changeWorktreeDefault = useCallback((value: boolean) => {
+    setWorktreeDefault(value);
+    void setPref(WORKTREE_DEFAULT_KEY, value ? "on" : "off").catch(() => {});
   }, []);
 
   const changeToolbarPref = useCallback((next: ToolbarPref) => {
@@ -1106,6 +1137,7 @@ export default function App() {
         toolbarRaw,
         richInputRaw,
         editorRaw,
+        worktreeDefaultRaw,
       ] = await Promise.all([
         listSessions().catch(() => [] as Session[]),
         layoutState().catch(() => EMPTY_LAYOUT),
@@ -1121,6 +1153,7 @@ export default function App() {
         getPref(TOOLBAR_PREF_KEY).catch(() => null),
         getPref(RICH_INPUT_PREF_KEY).catch(() => null),
         getPref(EDITOR_PREF_KEY).catch(() => null),
+        getPref(WORKTREE_DEFAULT_KEY).catch(() => null),
       ]);
       if (cancelled) return;
       setSessions(existing);
@@ -1147,6 +1180,7 @@ export default function App() {
       setShellIntegration(shellIntegrationRaw !== "off");
       setToolbarPref(parseToolbarPref(toolbarRaw));
       if (editorRaw) setEditorPref(editorRaw);
+      setWorktreeDefault(worktreeDefaultRaw === "on");
       const richInput = parseRichInputPref(richInputRaw);
       setRichInputPref(richInput);
       if (richInput.agentRegex) {
@@ -1263,7 +1297,9 @@ export default function App() {
         } else if (action === "openFolder") {
           void openProjectFolder();
         } else if (action === "newSession") {
-          setNewSessionOpen(true);
+          openNewSession();
+        } else if (action === "newWorktreeSession") {
+          openNewSession(true);
         } else if (action === "newWindow") {
           void newWindow().catch(() => {});
         } else if (action === "prevSession") {
@@ -1648,7 +1684,8 @@ export default function App() {
         bindings={bindings}
         theme={theme}
         onChangeTheme={changeTheme}
-        onNewSession={() => setNewSessionOpen(true)}
+        onNewSession={() => openNewSession()}
+        onNewWorktreeSession={() => openNewSession(true)}
         onNewTab={() => void newTab()}
         onCloseActive={() => void closeActivePane()}
         onOpenSettings={() => void openViewTab("settings").catch(() => {})}
@@ -1664,9 +1701,31 @@ export default function App() {
         open={newSessionOpen}
         onOpenChange={(open) => {
           setNewSessionOpen(open);
+          if (open) setNewSessionIsolate(worktreeDefault);
           if (!open) setPendingGroup(null);
         }}
-        onCreate={(cwd, name) => void newSession(cwd, name, pendingGroup)}
+        isolate={newSessionIsolate}
+        onIsolateChange={setNewSessionIsolate}
+        onCreate={(cwd, name, isolate) => {
+          if (isolate && cwd) {
+            setWorktreeDir(cwd);
+            return;
+          }
+          void newSession(cwd, name, pendingGroup);
+        }}
+      />
+      <WorktreeCreateDialog
+        dir={worktreeDir}
+        onClose={() => {
+          setWorktreeDir(null);
+          setPendingGroup(null);
+        }}
+        onCreate={async (task) => {
+          const dir = worktreeDir;
+          setWorktreeDir(null);
+          if (dir) await newSession(dir, task, pendingGroup, task);
+          setPendingGroup(null);
+        }}
       />
       <PromptDialog
         open={prompt !== null}
@@ -1992,7 +2051,7 @@ export default function App() {
                       <TooltipTrigger asChild>
                         <Button
                           variant="ghost"
-                          onClick={() => setNewSessionOpen(true)}
+                          onClick={() => openNewSession()}
                           aria-label={t("newSession")}
                           className={`mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text ${
                             open ? "justify-start px-2" : "justify-center px-0"
@@ -2063,6 +2122,8 @@ export default function App() {
                         onShellIntegrationChange={changeShellIntegration}
                         toolbarPref={toolbarPref}
                         onToolbarPrefChange={changeToolbarPref}
+                        worktreeDefault={worktreeDefault}
+                        onWorktreeDefaultChange={changeWorktreeDefault}
                         richInputPref={richInputPref}
                         onRichInputPrefChange={(next) => {
                           void changeRichInputPref(next);
@@ -2156,7 +2217,7 @@ export default function App() {
                       <div className="flex w-64 flex-col gap-px">
                         {layout.workspaces.length === 0 ? (
                           <button
-                            onClick={() => setNewSessionOpen(true)}
+                            onClick={() => openNewSession()}
                             className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
                           >
                             <Plus size={14} className="text-tyba-green" />

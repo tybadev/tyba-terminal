@@ -230,7 +230,8 @@ struct SetupScriptInfo {
 
 #[tauri::command]
 fn worktree_setup_script(state: State<'_, AppState>, repo_root: String) -> Option<SetupScriptInfo> {
-    let root = repo::canonicalize_or(std::path::Path::new(&repo_root));
+    let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
+    let root = repo::toplevel(&param).map(|t| repo::canonicalize_or(&t))?;
     let script = worktree::setup_script(&root)?;
     let consent = state
         .store
@@ -252,7 +253,10 @@ fn worktree_set_setup_consent(
     hash: String,
     allow: bool,
 ) -> Result<(), String> {
-    let root = repo::canonicalize_or(std::path::Path::new(&repo_root));
+    let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
+    let root = repo::toplevel(&param)
+        .map(|t| repo::canonicalize_or(&t))
+        .ok_or("fora de repositório git")?;
     state
         .store
         .set_setup_consent(&root.to_string_lossy(), &hash, allow)

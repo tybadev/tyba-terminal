@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ClockCounterClockwise, FolderOpen, House } from "@phosphor-icons/react";
+import {
+  Check,
+  ClockCounterClockwise,
+  FolderOpen,
+  GitBranch,
+  House,
+} from "@phosphor-icons/react";
 
 import {
   CommandDialog,
@@ -19,10 +25,18 @@ const DEFAULT_DIR_KEY = "pref.default_session_dir";
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreate: (cwd: string | null, name: string) => void;
+  onCreate: (cwd: string | null, name: string, isolate: boolean) => void;
+  isolate: boolean;
+  onIsolateChange: (value: boolean) => void;
 }
 
-export function NewSessionPrompt({ open, onOpenChange, onCreate }: Props) {
+export function NewSessionPrompt({
+  open,
+  onOpenChange,
+  onCreate,
+  isolate,
+  onIsolateChange,
+}: Props) {
   const { t } = useTranslation();
   const [lastDir, setLastDir] = useState<string | null>(null);
   const [defaultDir, setDefaultDir] = useState<string | null>(null);
@@ -39,7 +53,7 @@ export function NewSessionPrompt({ open, onOpenChange, onCreate }: Props) {
 
   const create = (dir: string | null) => {
     if (dir) void setPref(LAST_DIR_KEY, dir).catch(() => {});
-    onCreate(dir, dir ? basename(dir) : "shell");
+    onCreate(dir, dir ? basename(dir) : "shell", isolate);
   };
 
   const chooseFolder = async () => {
@@ -91,6 +105,14 @@ export function NewSessionPrompt({ open, onOpenChange, onCreate }: Props) {
           <CommandItem onSelect={() => void chooseFolder()}>
             <FolderOpen size={15} />
             {t("chooseFolder")}
+          </CommandItem>
+          <CommandItem onSelect={() => onIsolateChange(!isolate)}>
+            <GitBranch
+              size={15}
+              className={isolate ? "text-tyba-green" : undefined}
+            />
+            <span className="min-w-0 flex-1">{t("worktreeIsolate")}</span>
+            {isolate && <Check size={14} className="ml-auto text-tyba-green" />}
           </CommandItem>
           <CommandItem
             onSelect={() => {

@@ -76,6 +76,20 @@ const resources = {
       toolbarDiff: "Alterações não commitadas",
       toolbarAheadBehind: "Commits à frente e atrás do upstream",
       toolbarClock: "Relógio",
+      worktreeIsolate: "Isolar em git worktree",
+      worktreeNewSession: "Nova sessão isolada em worktree",
+      worktreeTaskTitle: "Título da task",
+      worktreeTaskPlaceholder: "ex: fix do watcher",
+      worktreeCreate: "Criar sessão isolada",
+      worktreeCreating: "Criando worktree…",
+      worktreeSetupFound: "Este repo tem um .tyba/setup.sh",
+      worktreeSetupHint:
+        "Revise antes de permitir. Roda uma vez na criação do worktree, com env mínimo. Se o script mudar, o TYBA pergunta de novo.",
+      worktreeSetupAllow: "Permitir e rodar no worktree",
+      worktreeSetupConsented: "setup.sh já permitido para este repo.",
+      worktreeDefaultPref: "Novas sessões isoladas por padrão",
+      worktreeDefaultHint:
+        "O toggle de worktree do diálogo de Nova Sessão já abre ligado.",
       chipsEditorTitle: "Chips da barra",
       chipsEditorHint:
         "Arraste para reordenar ou mover entre as zonas. Ocultos não aparecem na barra.",
@@ -327,6 +341,20 @@ const resources = {
       toolbarDiff: "Uncommitted changes",
       toolbarAheadBehind: "Commits ahead and behind upstream",
       toolbarClock: "Clock",
+      worktreeIsolate: "Isolate in a git worktree",
+      worktreeNewSession: "New isolated worktree session",
+      worktreeTaskTitle: "Task title",
+      worktreeTaskPlaceholder: "e.g. watcher fix",
+      worktreeCreate: "Create isolated session",
+      worktreeCreating: "Creating worktree…",
+      worktreeSetupFound: "This repo has a .tyba/setup.sh",
+      worktreeSetupHint:
+        "Review before allowing. Runs once when the worktree is created, with a minimal env. If the script changes, TYBA asks again.",
+      worktreeSetupAllow: "Allow and run in the worktree",
+      worktreeSetupConsented: "setup.sh already allowed for this repo.",
+      worktreeDefaultPref: "Isolate new sessions by default",
+      worktreeDefaultHint:
+        "The worktree toggle in the New Session dialog starts on.",
       chipsEditorTitle: "Bar chips",
       chipsEditorHint:
         "Drag to reorder or move between zones. Hidden chips don't show in the bar.",

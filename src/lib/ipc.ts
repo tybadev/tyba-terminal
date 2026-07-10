@@ -18,12 +18,18 @@ export type SessionStatus =
   | { state: "exited"; code: number }
   | { state: "failed"; reason: string };
 
+export interface Worktree {
+  path: string;
+  branch: string;
+  base_ref: string;
+}
+
 export interface Session {
   id: SessionId;
   kind: SessionKind;
   title: string;
   repo_root: string | null;
-  worktree: unknown | null;
+  worktree: Worktree | null;
   status: SessionStatus;
   created_at: string;
 }
@@ -34,7 +40,24 @@ export interface CreateSessionOpts {
   cwd?: string;
   cols: number;
   rows: number;
+  worktree_task?: string;
 }
+
+export interface SetupScriptInfo {
+  path: string;
+  content: string;
+  hash: string;
+  consent: boolean | null;
+}
+
+export const worktreeSetupScript = (repoRoot: string) =>
+  invoke<SetupScriptInfo | null>("worktree_setup_script", { repoRoot });
+
+export const worktreeSetSetupConsent = (
+  repoRoot: string,
+  hash: string,
+  allow: boolean,
+) => invoke<void>("worktree_set_setup_consent", { repoRoot, hash, allow });
 
 // --- base64 <-> bytes (chunks de PTY podem quebrar UTF-8 no meio) ---
 

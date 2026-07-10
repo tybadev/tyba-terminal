@@ -15,6 +15,7 @@ import {
   TerminalWindow,
   TextAa,
   X,
+  GitBranch,
 } from "@phosphor-icons/react";
 
 import {
@@ -73,6 +74,7 @@ interface Props {
   theme: ThemeMode;
   onChangeTheme: (mode: ThemeMode) => void;
   onNewSession: () => void;
+  onNewWorktreeSession: () => void;
   onNewTab: () => void;
   onCloseActive: () => void;
   onOpenSettings: () => void;
@@ -91,6 +93,7 @@ export function CommandPalette({
   theme,
   onChangeTheme,
   onNewSession,
+  onNewWorktreeSession,
   onNewTab,
   onCloseActive,
   onOpenSettings,
@@ -179,6 +182,11 @@ export function CommandPalette({
           <CommandItem onSelect={run(onNewSession)}>
             <Plus size={15} />
             {t("newSession")}
+          </CommandItem>
+          <CommandItem onSelect={run(onNewWorktreeSession)}>
+            <GitBranch size={15} />
+            {t("worktreeNewSession")}
+            <Shortcut combo={bindings.newWorktreeSession} className="ml-auto" />
           </CommandItem>
           <CommandItem onSelect={run(onNewTab)}>
             <Plus size={15} />
