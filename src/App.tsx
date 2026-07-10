@@ -67,6 +67,7 @@ import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
 import { WorktreesView } from "./components/WorktreesView";
+import { DiffView } from "./components/DiffView";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
 import { DiffStat } from "./components/DiffStat";
 import { SessionHoverCard } from "./components/SessionHoverCard";
@@ -338,6 +339,7 @@ export default function App() {
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [newSessionIsolate, setNewSessionIsolate] = useState(false);
   const [worktreeDir, setWorktreeDir] = useState<string | null>(null);
+  const [diffSessionId, setDiffSessionId] = useState<SessionId | null>(null);
   const [worktreeDefault, setWorktreeDefault] = useState(false);
 
   const openNewSession = useCallback(
@@ -1747,6 +1749,16 @@ export default function App() {
         onCancel={() => setPastePrompt(null)}
         onConfirm={confirmPaste}
       />
+      {diffSessionId &&
+        (() => {
+          const target = sessionById.get(diffSessionId);
+          return target ? (
+            <DiffView
+              session={target}
+              onClose={() => setDiffSessionId(null)}
+            />
+          ) : null;
+        })()}
       <NewSessionPrompt
         open={newSessionOpen}
         onOpenChange={(open) => {
@@ -2163,6 +2175,7 @@ export default function App() {
                           void newSession(path, name)
                         }
                         onFocusSession={goToSession}
+                        onReviewSession={setDiffSessionId}
                       />
                     </div>
                   )}

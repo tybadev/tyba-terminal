@@ -73,6 +73,72 @@ export const worktreeRemove = (
   force: boolean,
 ) => invoke<void>("worktree_remove", { path, deleteBranch, force });
 
+export type FileStatus =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "copied"
+  | "type_changed"
+  | "other";
+
+export interface FileDiff {
+  path: string;
+  old_path: string | null;
+  status: FileStatus;
+  insertions: number | null;
+  deletions: number | null;
+}
+
+export interface CommitInfo {
+  sha: string;
+  subject: string;
+  authored_at: string;
+}
+
+export interface SessionDiff {
+  base_ref: string;
+  commits: CommitInfo[];
+  files: FileDiff[];
+  uncommitted_files: FileDiff[];
+  uncommitted: boolean;
+}
+
+export interface DiffLine {
+  kind: "context" | "add" | "del";
+  text: string;
+}
+
+export interface Hunk {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  header: string;
+  lines: DiffLine[];
+}
+
+export interface FileHunks {
+  binary: boolean;
+  hunks: Hunk[];
+}
+
+export const sessionDiff = (id: SessionId) =>
+  invoke<SessionDiff>("session_diff", { id });
+
+export const sessionDiffHunks = (
+  id: SessionId,
+  path: string,
+  scope: "committed" | "uncommitted",
+  oldPath?: string | null,
+) =>
+  invoke<FileHunks>("session_diff_hunks", {
+    id,
+    path,
+    scope,
+    oldPath: oldPath ?? null,
+  });
+
 export const worktreeSetupScript = (repoRoot: string) =>
   invoke<SetupScriptInfo | null>("worktree_setup_script", { repoRoot });
 

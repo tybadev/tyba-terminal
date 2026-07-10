@@ -1,0 +1,570 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import {
+  CaretDown,
+  CaretRight,
+  GitBranch,
+  GitCommit,
+  Rows,
+  SquareSplitHorizontal,
+  X,
+} from "@phosphor-icons/react";
+
+import { Button } from "@/components/ui/button";
+import {
+  sessionDiff,
+  sessionDiffHunks,
+  type FileDiff,
+  type FileHunks,
+  type Session,
+  type SessionDiff,
+} from "../lib/ipc";
+import {
+  buildRows,
+  defaultCollapsed,
+  fileKeyOf,
+  langOfPath,
+  type DiffMode,
+  type DiffScopeKey,
+  type Row,
+} from "../lib/diff";
+import { highlightBlock, type TokenSpan } from "../lib/highlight";
+
+const STATUS_LETTER: Record<FileDiff["status"], string> = {
+  added: "A",
+  modified: "M",
+  deleted: "D",
+  renamed: "R",
+  copied: "C",
+  type_changed: "T",
+  other: "?",
+};
+
+const STATUS_COLOR: Record<FileDiff["status"], string> = {
+  added: "text-tyba-green",
+  modified: "text-tyba-yellow",
+  deleted: "text-tyba-red",
+  renamed: "text-tyba-violet",
+  copied: "text-tyba-violet",
+  type_changed: "text-tyba-text-muted",
+  other: "text-tyba-text-muted",
+};
+
+function Numstat({ file }: { file: FileDiff }) {
+  return (
+    <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] tabular-nums">
+      {file.insertions === null ? (
+        <span className="text-tyba-text-faint">bin</span>
+      ) : (
+        <>
+          <span className="text-tyba-green">+{file.insertions}</span>
+          <span className="text-tyba-red">−{file.deletions ?? 0}</span>
+        </>
+      )}
+    </span>
+  );
+}
+
+function LineText({
+  text,
+  spans,
+}: {
+  text: string;
+  spans: TokenSpan[] | undefined;
+}) {
+  if (!spans) return <>{text}</>;
+  return (
+    <>
+      {spans.map((span, i) => (
+        <span key={i} style={span.color ? { color: span.color } : undefined}>
+          {span.text}
+        </span>
+      ))}
+    </>
+  );
+}
+
+const LINE_BG: Record<string, string> = {
+  add: "bg-tyba-green/[.07]",
+  del: "bg-tyba-red/[.07]",
+  context: "",
+};
+
+const GUTTER_SIGN: Record<string, { sign: string; cls: string }> = {
+  add: { sign: "+", cls: "text-tyba-green" },
+  del: { sign: "−", cls: "text-tyba-red" },
+  context: { sign: " ", cls: "" },
+};
+
+interface Props {
+  session: Session;
+  onClose: () => void;
+}
+
+export function DiffView({ session, onClose }: Props) {
+  const { t } = useTranslation();
+  const [diff, setDiff] = useState<SessionDiff | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [hunksByKey, setHunksByKey] = useState<
+    Record<string, FileHunks | undefined>
+  >({});
+  const [collapsedByKey, setCollapsedByKey] = useState<
+    Record<string, boolean | undefined>
+  >({});
+  const [mode, setMode] = useState<DiffMode>("unified");
+  const [tokens, setTokens] = useState<Record<string, TokenSpan[][]>>({});
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const requestedRef = useRef(new Set<string>());
+  const highlightedRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    let cancelled = false;
+    sessionDiff(session.id)
+      .then((d) => {
+        if (!cancelled) setDiff(d);
+      })
+      .catch((e) => {
+        if (!cancelled) setLoadError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session.id]);
+
+  const fetchHunks = useCallback(
+    (scope: DiffScopeKey, file: FileDiff) => {
+      const key = fileKeyOf(scope, file.path);
+      if (requestedRef.current.has(key)) return;
+      requestedRef.current.add(key);
+      void sessionDiffHunks(session.id, file.path, scope, file.old_path)
+        .then((hunks) => {
+          setHunksByKey((prev) => ({ ...prev, [key]: hunks }));
+        })
+        .catch(() => {
+          requestedRef.current.delete(key);
+        });
+    },
+    [session.id],
+  );
+
+  useEffect(() => {
+    if (!diff) return;
+    for (const [scope, files] of [
+      ["committed", diff.files],
+      ["uncommitted", diff.uncommitted_files],
+    ] as const) {
+      for (const file of files) {
+        const key = fileKeyOf(scope, file.path);
+        const collapsed =
+          collapsedByKey[key] ?? defaultCollapsed(file, hunksByKey[key]);
+        if (!collapsed) fetchHunks(scope, file);
+      }
+    }
+  }, [diff, collapsedByKey, hunksByKey, fetchHunks]);
+
+  useEffect(() => {
+    for (const [key, hunks] of Object.entries(hunksByKey)) {
+      if (!hunks || hunks.binary) continue;
+      const path = key.slice(key.indexOf(" ") + 1);
+      const lang = langOfPath(path);
+      if (!lang) continue;
+      for (const [hi, hunk] of hunks.hunks.entries()) {
+        const hunkKey = `${key}:h${hi}`;
+        if (highlightedRef.current.has(hunkKey)) continue;
+        if (hunk.lines.length > 2000) continue;
+        highlightedRef.current.add(hunkKey);
+        void highlightBlock(
+          hunk.lines.map((l) => l.text),
+          lang,
+        ).then((spans) => {
+          if (spans) setTokens((prev) => ({ ...prev, [hunkKey]: spans }));
+        });
+      }
+    }
+  }, [hunksByKey]);
+
+  const rows = useMemo<Row[]>(
+    () =>
+      diff
+        ? buildRows({
+            committed: diff.files,
+            uncommitted: diff.uncommitted_files,
+            hunksByKey,
+            collapsedByKey,
+            mode,
+          })
+        : [],
+    [diff, hunksByKey, collapsedByKey, mode],
+  );
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) => {
+      const kind = rows[index]?.kind;
+      if (kind === "line" || kind === "split") return 20;
+      if (kind === "hunk") return 24;
+      if (kind === "file") return 40;
+      if (kind === "section") return 40;
+      return 36;
+    },
+    getItemKey: (index) => {
+      const row = rows[index];
+      return row.kind === "section" ? `section:${row.scope}` : row.key;
+    },
+    overscan: 30,
+  });
+
+  const virtualItems = virtualizer.getVirtualItems();
+
+  const stickyFile = useMemo(() => {
+    const first = virtualItems[0];
+    if (!first) return null;
+    for (let i = first.index; i >= 0; i -= 1) {
+      const row = rows[i];
+      if (row?.kind === "file") return row;
+      if (row?.kind === "section") return null;
+    }
+    return null;
+  }, [virtualItems, rows]);
+
+  const toggleFile = useCallback((key: string, next: boolean) => {
+    setCollapsedByKey((prev) => ({ ...prev, [key]: next }));
+  }, []);
+
+  const jumpTo = useCallback(
+    (key: string) => {
+      const index = rows.findIndex((r) => r.kind === "file" && r.key === key);
+      if (index >= 0) virtualizer.scrollToIndex(index, { align: "start" });
+    },
+    [rows, virtualizer],
+  );
+
+  const branch = session.worktree?.branch ?? "";
+  const baseShort = diff?.base_ref.slice(0, 7) ?? "";
+
+  const sidebarSection = (
+    scope: DiffScopeKey,
+    label: string,
+    files: FileDiff[],
+  ) =>
+    files.length > 0 && (
+      <div className="flex flex-col gap-px">
+        <span className="tyba-label px-2 pb-1 pt-3">
+          {label} · {files.length}
+        </span>
+        {files.map((file) => {
+          const key = fileKeyOf(scope, file.path);
+          const active = stickyFile?.key === key;
+          return (
+            <button
+              key={key}
+              onClick={() => jumpTo(key)}
+              className={`flex items-center gap-2 rounded-[4px] px-2 py-1 text-left transition-colors ${
+                active
+                  ? "bg-white/[.06] text-tyba-text"
+                  : "text-tyba-text-muted hover:bg-white/[.03] hover:text-tyba-text"
+              }`}
+            >
+              <span
+                className={`w-3 shrink-0 text-center font-mono text-[10px] ${STATUS_COLOR[file.status]}`}
+              >
+                {STATUS_LETTER[file.status]}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+                {file.path}
+              </span>
+              <Numstat file={file} />
+            </button>
+          );
+        })}
+      </div>
+    );
+
+  const renderRow = (row: Row) => {
+    switch (row.kind) {
+      case "section":
+        return (
+          <div className="flex items-baseline gap-2 px-4 pb-2 pt-5">
+            <span className="text-[12px] font-medium uppercase tracking-wide text-tyba-text-muted">
+              {row.scope === "committed" ? t("diffCommitted") : t("diffUncommitted")}
+            </span>
+            <span className="font-mono text-[10px] text-tyba-text-faint">
+              {row.count}
+            </span>
+          </div>
+        );
+      case "file": {
+        const { file } = row;
+        return (
+          <button
+            onClick={() => toggleFile(row.key, !row.collapsed)}
+            className="flex w-full items-center gap-2 border-t border-tyba-border bg-tyba-surface/60 px-4 py-2 text-left hover:bg-white/[.03]"
+          >
+            {row.collapsed ? (
+              <CaretRight size={11} className="shrink-0 text-tyba-text-faint" />
+            ) : (
+              <CaretDown size={11} className="shrink-0 text-tyba-text-faint" />
+            )}
+            <span
+              className={`w-3 shrink-0 text-center font-mono text-[11px] ${STATUS_COLOR[file.status]}`}
+            >
+              {STATUS_LETTER[file.status]}
+            </span>
+            <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-tyba-text">
+              {file.old_path ? `${file.old_path} → ${file.path}` : file.path}
+            </span>
+            {row.generated && (
+              <span className="shrink-0 rounded-full bg-white/[.06] px-1.5 text-[9px] text-tyba-text-faint">
+                {t("diffGenerated")}
+              </span>
+            )}
+            <Numstat file={file} />
+          </button>
+        );
+      }
+      case "hunk":
+        return (
+          <div className="truncate px-4 py-1 font-mono text-[11px] text-tyba-violet/80">
+            {row.header}
+          </div>
+        );
+      case "line": {
+        const gutter = GUTTER_SIGN[row.line.kind];
+        const spans = tokens[row.hunkKey]?.[row.idx];
+        return (
+          <div
+            className={`flex items-stretch font-mono text-[12px] leading-[20px] ${LINE_BG[row.line.kind]}`}
+          >
+            <span className="w-12 shrink-0 select-none pr-2 text-right text-[10px] leading-[20px] text-tyba-text-faint">
+              {row.oldNo ?? ""}
+            </span>
+            <span className="w-12 shrink-0 select-none pr-2 text-right text-[10px] leading-[20px] text-tyba-text-faint">
+              {row.newNo ?? ""}
+            </span>
+            <span
+              className={`w-5 shrink-0 select-none text-center ${gutter.cls}`}
+            >
+              {gutter.sign}
+            </span>
+            <span className="min-w-0 flex-1 whitespace-pre pr-4 text-tyba-text/90">
+              <LineText text={row.line.text} spans={spans} />
+            </span>
+          </div>
+        );
+      }
+      case "split": {
+        const side = (
+          entry: typeof row.left,
+          signKind: "left" | "right",
+        ) => {
+          if (!entry)
+            return <div className="min-w-0 flex-1 bg-white/[.015]" />;
+          const gutter = GUTTER_SIGN[entry.kind];
+          const spans = tokens[row.hunkKey]?.[entry.idx];
+          return (
+            <div
+              className={`flex min-w-0 flex-1 items-stretch ${LINE_BG[entry.kind]}`}
+            >
+              <span className="w-10 shrink-0 select-none pr-2 text-right text-[10px] leading-[20px] text-tyba-text-faint">
+                {entry.no}
+              </span>
+              <span
+                className={`w-4 shrink-0 select-none text-center ${gutter.cls}`}
+              >
+                {gutter.sign}
+              </span>
+              <span className="min-w-0 flex-1 truncate whitespace-pre pr-3 text-tyba-text/90">
+                <LineText text={entry.text} spans={spans} />
+              </span>
+              {signKind === "left" && (
+                <span className="w-px shrink-0 bg-tyba-border" />
+              )}
+            </div>
+          );
+        };
+        return (
+          <div className="flex font-mono text-[12px] leading-[20px]">
+            {side(row.left, "left")}
+            {side(row.right, "right")}
+          </div>
+        );
+      }
+      case "empty":
+        return (
+          <div className="px-16 py-2 font-mono text-[11px] text-tyba-text-faint">
+            {row.label === "binary"
+              ? t("diffBinary")
+              : row.label === "loading"
+                ? t("diffLoading")
+                : t("diffNoChanges")}
+          </div>
+        );
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex flex-col bg-tyba-bg">
+      <header className="flex h-11 shrink-0 items-center gap-3 border-b border-tyba-border px-4">
+        <GitBranch size={14} className="shrink-0 text-tyba-green" />
+        <span className="min-w-0 truncate text-[13px] text-tyba-text">
+          {session.title}
+        </span>
+        <span className="truncate font-mono text-[11px] text-tyba-text-muted">
+          {branch}
+        </span>
+        <span className="flex shrink-0 items-center gap-1 rounded-full border border-tyba-border px-2 py-0.5 font-mono text-[10px] text-tyba-text-faint">
+          {t("diffBase")} {baseShort}
+          <span className="text-tyba-text-faint">‥</span>
+          HEAD
+        </span>
+        <div className="flex-1" />
+        <div className="flex items-center gap-0.5 rounded-[5px] border border-tyba-border p-0.5">
+          <button
+            aria-pressed={mode === "unified"}
+            onClick={() => setMode("unified")}
+            className={`flex h-6 items-center gap-1.5 rounded-[3px] px-2 text-[11px] ${
+              mode === "unified"
+                ? "bg-white/[.06] text-tyba-text"
+                : "text-tyba-text-faint hover:text-tyba-text"
+            }`}
+          >
+            <Rows size={12} />
+            {t("diffUnified")}
+          </button>
+          <button
+            aria-pressed={mode === "split"}
+            onClick={() => setMode("split")}
+            className={`flex h-6 items-center gap-1.5 rounded-[3px] px-2 text-[11px] ${
+              mode === "split"
+                ? "bg-white/[.06] text-tyba-text"
+                : "text-tyba-text-faint hover:text-tyba-text"
+            }`}
+          >
+            <SquareSplitHorizontal size={12} />
+            {t("diffSplit")}
+          </button>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={t("diffClose")}
+          onClick={onClose}
+          className="size-7"
+        >
+          <X size={14} />
+        </Button>
+      </header>
+
+      <div className="flex min-h-0 flex-1">
+        <aside className="flex w-72 shrink-0 flex-col overflow-y-auto border-r border-tyba-border px-2 py-2">
+          {diff && diff.commits.length > 0 && (
+            <div className="flex flex-col gap-px">
+              <span className="tyba-label px-2 pb-1 pt-1">
+                {t("diffCommits")} · {diff.commits.length}
+              </span>
+              {diff.commits.map((c) => (
+                <div key={c.sha} className="flex items-center gap-2 px-2 py-1">
+                  <GitCommit
+                    size={12}
+                    className="shrink-0 text-tyba-text-faint"
+                  />
+                  <span className="shrink-0 font-mono text-[10px] text-tyba-text-faint">
+                    {c.sha.slice(0, 7)}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-tyba-text-muted">
+                    {c.subject}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {diff &&
+            sidebarSection("committed", t("diffCommitted"), diff.files)}
+          {diff &&
+            sidebarSection(
+              "uncommitted",
+              t("diffUncommitted"),
+              diff.uncommitted_files,
+            )}
+        </aside>
+
+        <main className="relative min-w-0 flex-1">
+          {stickyFile && (
+            <button
+              onClick={() => jumpTo(stickyFile.key)}
+              className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-tyba-border bg-tyba-bg/95 px-4 py-1.5 text-left backdrop-blur"
+            >
+              <span
+                className={`w-3 shrink-0 text-center font-mono text-[10px] ${STATUS_COLOR[stickyFile.file.status]}`}
+              >
+                {STATUS_LETTER[stickyFile.file.status]}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-tyba-text-muted">
+                {stickyFile.file.path}
+              </span>
+            </button>
+          )}
+          <div ref={scrollRef} className="h-full overflow-y-auto">
+            {loadError && (
+              <div className="p-6 text-[12px] text-tyba-red">{loadError}</div>
+            )}
+            {!diff && !loadError && (
+              <div className="p-6 font-mono text-[12px] text-tyba-text-faint">
+                {t("diffLoading")}
+              </div>
+            )}
+            {diff &&
+              diff.files.length === 0 &&
+              diff.uncommitted_files.length === 0 && (
+                <div className="flex h-full items-center justify-center text-[12px] text-tyba-text-faint">
+                  {t("diffEmpty")}
+                </div>
+              )}
+            <div
+              style={{
+                height: virtualizer.getTotalSize(),
+                position: "relative",
+              }}
+            >
+              {virtualItems.map((item) => (
+                <div
+                  key={item.key}
+                  data-index={item.index}
+                  ref={virtualizer.measureElement}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    transform: `translateY(${item.start}px)`,
+                  }}
+                >
+                  {renderRow(rows[item.index])}
+                </div>
+              ))}
+            </div>
+          </div>
+        </main>
+      </div>
+
+      <footer className="flex h-8 shrink-0 items-center gap-3 border-t border-tyba-border px-4 font-mono text-[11px] text-tyba-text-muted">
+        <GitBranch size={12} className="shrink-0" />
+        <span>{t("diffAhead", { count: diff?.commits.length ?? 0 })}</span>
+        <span className="text-tyba-text-faint">·</span>
+        <span className={diff?.uncommitted ? "text-tyba-yellow" : ""}>
+          {diff?.uncommitted ? t("diffDirty") : t("diffClean")}
+        </span>
+      </footer>
+    </div>
+  );
+}
