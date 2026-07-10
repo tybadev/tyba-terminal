@@ -63,6 +63,8 @@ pub struct CreateSessionOpts {
     pub cwd: Option<PathBuf>,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default)]
+    pub worktree_task: Option<String>,
 }
 
 pub struct SessionManager {
@@ -101,6 +103,14 @@ impl SessionManager {
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
 
+        let worktree = match opts.worktree_task.as_deref() {
+            Some(task) => {
+                let base = resolve_cwd(opts.cwd.as_deref());
+                Some(crate::worktree::create(&base, task).map_err(crate::pty::PtyError::Spawn)?)
+            }
+            None => None,
+        };
+
         let shell = default_shell();
         let label = shell_label(&shell);
         let integration = self.shell_integration_enabled();
@@ -122,7 +132,10 @@ impl SessionManager {
                 cmd.arg("-l");
             }
         }
-        cmd.cwd(resolve_cwd(opts.cwd.as_deref()));
+        match &worktree {
+            Some(wt) => cmd.cwd(&wt.path),
+            None => cmd.cwd(resolve_cwd(opts.cwd.as_deref())),
+        }
 
         if label == "zsh" && integration {
             if let Some(dir) = zsh_integration_dir() {
@@ -136,9 +149,18 @@ impl SessionManager {
             }
         }
 
-        let title = opts.title.unwrap_or_else(|| label.clone());
+        let title = opts
+            .title
+            .or_else(|| opts.worktree_task.clone())
+            .unwrap_or_else(|| label.clone());
+        let repo_root = worktree
+            .as_ref()
+            .map(|wt| crate::worktree::main_repo_of(&wt.path))
+            .transpose()
+            .map_err(crate::pty::PtyError::Spawn)?;
         self.spawn_session(
-            app, pty_pool, id, cmd, opts.kind, title, opts.cols, opts.rows, on_exit,
+            app, pty_pool, id, cmd, opts.kind, title, repo_root, worktree, opts.cols, opts.rows,
+            on_exit,
         )
     }
 
@@ -168,6 +190,8 @@ impl SessionManager {
             cmd,
             SessionKind::Shell,
             title,
+            None,
+            None,
             cols,
             rows,
             on_exit,
@@ -183,6 +207,8 @@ impl SessionManager {
         mut cmd: CommandBuilder,
         kind: SessionKind,
         title: String,
+        repo_root: Option<PathBuf>,
+        worktree: Option<crate::worktree::Worktree>,
         cols: u16,
         rows: u16,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
@@ -210,8 +236,8 @@ impl SessionManager {
             id,
             kind,
             title,
-            repo_root: None,
-            worktree: None,
+            repo_root,
+            worktree,
             status: SessionStatus::Running,
             created_at: Utc::now(),
         };
