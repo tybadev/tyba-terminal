@@ -6,6 +6,7 @@ export type KeyAction =
   | "panel"
   | "settings"
   | "newSession"
+  | "newWorktreeSession"
   | "newTab"
   | "newWindow"
   | "closePane"
@@ -33,6 +34,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   "panel",
   "settings",
   "newSession",
+  "newWorktreeSession",
   "newTab",
   "newWindow",
   "closePane",
@@ -78,6 +80,7 @@ export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
   panel: "general",
   settings: "general",
   newSession: "sessions",
+  newWorktreeSession: "sessions",
   newWindow: "sessions",
   openFolder: "sessions",
   newTab: "tabs",
@@ -106,6 +109,7 @@ export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   panel: "togglePanel",
   settings: "settings",
   newSession: "newSession",
+  newWorktreeSession: "worktreeNewSession",
   newTab: "newTab",
   newWindow: "newWindow",
   closePane: "closePane",
@@ -156,6 +160,7 @@ export const DEFAULT_BINDINGS: Bindings = {
   panel: "meta+b",
   settings: "meta+,",
   newSession: "meta+n",
+  newWorktreeSession: "meta+alt+n",
   newTab: "meta+t",
   newWindow: "meta+shift+n",
   closePane: "meta+w",

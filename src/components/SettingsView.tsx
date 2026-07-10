@@ -87,6 +87,8 @@ interface Props {
   showGitStatus: boolean;
   toolbarPref: ToolbarPref;
   onToolbarPrefChange: (value: ToolbarPref) => void;
+  worktreeDefault: boolean;
+  onWorktreeDefaultChange: (value: boolean) => void;
   onShowGitStatusChange: (value: boolean) => void;
   shellIntegration: boolean;
   onShellIntegrationChange: (value: boolean) => void;
@@ -336,6 +338,8 @@ export function SettingsView({
   showGitStatus,
   toolbarPref,
   onToolbarPrefChange,
+  worktreeDefault,
+  onWorktreeDefaultChange,
   onShowGitStatusChange,
   shellIntegration,
   onShellIntegrationChange,
@@ -751,6 +755,15 @@ export function SettingsView({
                 <Switch
                   checked={showGitStatus}
                   onCheckedChange={onShowGitStatusChange}
+                />
+              </SettingRow>
+              <SettingRow
+                label={t("worktreeDefaultPref")}
+                hint={t("worktreeDefaultHint")}
+              >
+                <Switch
+                  checked={worktreeDefault}
+                  onCheckedChange={onWorktreeDefaultChange}
                 />
               </SettingRow>
               <SettingRow
