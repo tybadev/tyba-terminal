@@ -57,6 +57,7 @@ import {
 } from "../lib/keys";
 import { Shortcut } from "@/components/ui/kbd";
 import { FONT_SIZE_EVENT, setDefaultFontSize } from "./TerminalView";
+import type { RichInputPref } from "../lib/richInput";
 
 export type SidebarTogglePref = "hidden" | "rail";
 export type DetailsPref = "on" | "off";
@@ -85,7 +86,33 @@ interface Props {
   onShowGitStatusChange: (value: boolean) => void;
   shellIntegration: boolean;
   onShellIntegrationChange: (value: boolean) => void;
+  richInputPref: RichInputPref;
+  onRichInputPrefChange: (value: RichInputPref) => void;
+  richInputRegexInvalid: boolean;
 }
+
+type RichInputToggle = {
+  field: keyof Omit<RichInputPref, "version" | "agentRegex">;
+  label: string;
+  hint?: string;
+};
+
+const RICH_INPUT_TOGGLES: RichInputToggle[] = [
+  { field: "autoShow", label: "richInputAutoShow", hint: "richInputHint" },
+  { field: "autoOpenOnStart", label: "richInputAutoOpen" },
+  { field: "autoDismiss", label: "richInputAutoDismiss" },
+  {
+    field: "submitWithCtrlEnter",
+    label: "richInputCtrlEnter",
+    hint: "richInputCtrlEnterHint",
+  },
+  { field: "warnOnSensitivePrompt", label: "richInputWarnSensitive" },
+  {
+    field: "showOnMatch",
+    label: "richInputShowOnMatch",
+    hint: "richInputShowOnMatchHint",
+  },
+];
 
 const THEME_MODE_KEYS: Record<ThemeMode, string> = {
   dark: "themeDark",
@@ -306,6 +333,9 @@ export function SettingsView({
   onShowGitStatusChange,
   shellIntegration,
   onShellIntegrationChange,
+  richInputPref,
+  onRichInputPrefChange,
+  richInputRegexInvalid,
 }: Props) {
   const { t, i18n } = useTranslation();
   const [section, setSection] = useState<Section>("general");
@@ -694,6 +724,41 @@ export function SettingsView({
                   checked={toolbarEnabled}
                   onCheckedChange={onToolbarEnabledChange}
                 />
+              </SettingRow>
+              {RICH_INPUT_TOGGLES.map(({ field, label, hint }) => (
+                <SettingRow
+                  key={field}
+                  label={t(label)}
+                  hint={hint ? t(hint) : undefined}
+                >
+                  <Switch
+                    checked={richInputPref[field]}
+                    onCheckedChange={(c) =>
+                      onRichInputPrefChange({ ...richInputPref, [field]: c })
+                    }
+                  />
+                </SettingRow>
+              ))}
+              <SettingRow
+                label={t("richInputRegex")}
+                hint={
+                  richInputRegexInvalid
+                    ? t("richInputRegexInvalid")
+                    : t("richInputRegexHint")
+                }
+              >
+                <div className="w-64">
+                  <TextField
+                    value={richInputPref.agentRegex}
+                    placeholder="^(claude|codex|gemini)\b"
+                    onCommit={(v) =>
+                      onRichInputPrefChange({
+                        ...richInputPref,
+                        agentRegex: v,
+                      })
+                    }
+                  />
+                </div>
               </SettingRow>
               <SettingRow label={t("language")}>
                 <Select

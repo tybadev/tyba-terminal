@@ -379,7 +379,42 @@ export const onSessionStatus = (
 export interface SessionCommand {
   command: string | null;
   running: boolean;
+  agent_match: boolean;
 }
+
+export const submitRichInput = (id: SessionId, text: string, submit: boolean) =>
+  invoke<void>("submit_rich_input", { id, text, submit });
+
+export const sessionBracketedPaste = (id: SessionId) =>
+  invoke<boolean>("session_bracketed_paste", { id });
+
+export const sessionRelPath = (id: SessionId, path: string) =>
+  invoke<string>("session_rel_path", { id, path });
+
+export const onSessionBracketedPaste = (
+  id: SessionId,
+  handler: (enabled: boolean) => void,
+): Promise<UnlistenFn> =>
+  listen<{ bracketed_paste: boolean }>(`session://bracketed/${id}`, (e) =>
+    handler(e.payload.bracketed_paste),
+  );
+
+export const setAgentMatchPattern = (pattern: string) =>
+  invoke<boolean>("set_agent_match_pattern", { pattern });
+
+export const listWorktreeFiles = (
+  id: SessionId,
+  query: string,
+  limit?: number,
+) =>
+  invoke<string[]>("list_worktree_files", {
+    id,
+    query,
+    limit: limit ?? null,
+  });
+
+export const promptMentionsSensitive = (text: string) =>
+  invoke<boolean>("prompt_mentions_sensitive", { text });
 
 export const onSessionCommand = (
   id: SessionId,

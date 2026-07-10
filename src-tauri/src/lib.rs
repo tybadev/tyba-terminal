@@ -4,6 +4,7 @@ pub mod docker;
 pub mod layout;
 pub mod pty;
 pub mod repo;
+pub mod rich_input;
 pub mod sandbox;
 pub mod session;
 pub mod status;
@@ -33,6 +34,7 @@ struct AppState {
     docker: docker::SharedDocker,
     repos: repo::SharedRepoWatcher,
     repo_reconcile: std::sync::mpsc::Sender<()>,
+    rich_input_submit: parking_lot::Mutex<()>,
 }
 
 fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::PathBuf> {
@@ -129,6 +131,78 @@ fn write_to_session(state: State<'_, AppState>, id: SessionId, data: String) -> 
         .decode(&data)
         .map_err(|e| e.to_string())?;
     state.pty_pool.write(id, &bytes).map_err(|e| e.to_string())
+}
+
+fn session_cwd_of(state: &AppState, id: SessionId) -> Result<std::path::PathBuf, String> {
+    let pid = state
+        .pty_pool
+        .leader_pid(id)
+        .ok_or_else(|| format!("sessão sem processo vivo: {id}"))?;
+    repo::process_cwd(pid).ok_or_else(|| "cwd da sessão indisponível".to_string())
+}
+
+#[tauri::command]
+fn submit_rich_input(
+    state: State<'_, AppState>,
+    id: SessionId,
+    text: String,
+    submit: bool,
+) -> Result<(), String> {
+    let bracketed = state
+        .pty_pool
+        .bracketed_paste(id)
+        .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+    let (normalized, _) = rich_input::normalize(&text);
+    let payload = rich_input::plan_injection(&normalized, bracketed)?;
+    if payload.is_empty() {
+        return Ok(());
+    }
+
+    let _submitting = state.rich_input_submit.lock();
+    state
+        .pty_pool
+        .write(id, &payload)
+        .map_err(|e| e.to_string())?;
+    if submit {
+        std::thread::sleep(rich_input::SUBMIT_DELAY);
+        state.pty_pool.write(id, b"\r").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_agent_match_pattern(pattern: String) -> bool {
+    rich_input::agent_matcher().set_pattern(&pattern)
+}
+
+#[tauri::command]
+fn prompt_mentions_sensitive(text: String) -> bool {
+    rich_input::mentions_sensitive(&text)
+}
+
+#[tauri::command]
+fn session_bracketed_paste(state: State<'_, AppState>, id: SessionId) -> bool {
+    state.pty_pool.bracketed_paste(id).unwrap_or(false)
+}
+
+#[tauri::command]
+fn session_rel_path(state: State<'_, AppState>, id: SessionId, path: String) -> String {
+    match session_cwd_of(&state, id) {
+        Ok(cwd) => rich_input::rel_path(std::path::Path::new(&path), &cwd),
+        Err(_) => path,
+    }
+}
+
+#[tauri::command]
+fn list_worktree_files(
+    state: State<'_, AppState>,
+    id: SessionId,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<String>, String> {
+    let cwd = session_cwd_of(&state, id)?;
+    let root = repo::toplevel(&cwd).ok_or("sessão fora de repositório git")?;
+    rich_input::worktree_files(&root, &cwd, &query, limit.unwrap_or(50).min(500))
 }
 
 #[tauri::command]
@@ -883,6 +957,7 @@ pub fn run() {
                 docker: Arc::new(docker::DockerManager::new()),
                 repos,
                 repo_reconcile: reconcile_tx.clone(),
+                rich_input_submit: parking_lot::Mutex::new(()),
             });
 
             std::thread::Builder::new()
@@ -927,6 +1002,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_session,
             write_to_session,
+            submit_rich_input,
+            set_agent_match_pattern,
+            prompt_mentions_sensitive,
+            session_bracketed_paste,
+            session_rel_path,
+            list_worktree_files,
             attach_session,
             detach_session,
             repo_snapshots,

@@ -75,6 +75,30 @@ const resources = {
       toolbarBranch: "Branch do git",
       toolbarDiff: "Alterações não commitadas",
       toolbarAheadBehind: "Commits à frente e atrás do upstream",
+      richInputToggle: "Rich Input",
+      richInputHint:
+        "Por padrão a caixa só abre no atalho ⌘⇧G (Ctrl+Shift+G). Ligue para ela aparecer sozinha em sessões de agente.",
+      richInputPlaceholder: "Escreva o prompt… Enter quebra linha, ⌘/Ctrl+Enter envia. @ para arquivos.",
+      richInputSend: "Enviar",
+      richInputAttach: "Anexar arquivo",
+      richInputSensitiveWarn:
+        "Pode conter dado sensível — clique de novo para enviar.",
+      richInputSingleLine: "Sessão sem bracketed paste: apenas uma linha.",
+      richInputAutoShow: "Abrir sozinho quando o agente estiver ocioso",
+      richInputAutoOpen: "Abrir ao iniciar sessão de agente",
+      richInputAutoDismiss: "Fechar após enviar",
+      richInputCtrlEnter: "Enviar com Ctrl+Enter",
+      richInputCtrlEnterHint:
+        "Ligado: Enter quebra linha e Ctrl+Enter envia. Desligado: Enter envia e Shift+Enter quebra linha.",
+      richInputWarnSensitive: "Avisar sobre prompt sensível",
+      richInputShowOnMatch: "Mostrar em shell quando detectar agente",
+      richInputShowOnMatchHint:
+        "Usa a linha de comando reportada pelo shell — dica de exibição, nunca autorização.",
+      richInputRegex: "Regex de detecção de agente",
+      richInputRegexHint:
+        "Vazio usa o padrão ^(claude|codex|gemini). Avaliado no core; inválido mantém o atual.",
+      richInputRegexInvalid:
+        "Regex inválida — não foi salva. O core mantém a anterior.",
       gitStatusHint:
         "Mostra um rótulo com o número de alterações não commitadas quando a pasta da sessão tem mudanças.",
       gitChanges_one: "{{count}} alteração não commitada",
@@ -281,6 +305,30 @@ const resources = {
       toolbarBranch: "Git branch",
       toolbarDiff: "Uncommitted changes",
       toolbarAheadBehind: "Commits ahead and behind upstream",
+      richInputToggle: "Rich Input",
+      richInputHint:
+        "By default the box only opens with ⌘⇧G (Ctrl+Shift+G). Turn this on to have it appear by itself in agent sessions.",
+      richInputPlaceholder: "Write the prompt… Enter adds a line, ⌘/Ctrl+Enter sends. @ for files.",
+      richInputSend: "Send",
+      richInputAttach: "Attach file",
+      richInputSensitiveWarn:
+        "May contain sensitive data — click again to send.",
+      richInputSingleLine: "Session without bracketed paste: single line only.",
+      richInputAutoShow: "Open by itself when the agent is idle",
+      richInputAutoOpen: "Open when an agent session starts",
+      richInputAutoDismiss: "Close after sending",
+      richInputCtrlEnter: "Send with Ctrl+Enter",
+      richInputCtrlEnterHint:
+        "On: Enter inserts a newline and Ctrl+Enter sends. Off: Enter sends and Shift+Enter inserts a newline.",
+      richInputWarnSensitive: "Warn about sensitive prompts",
+      richInputShowOnMatch: "Show in shells when an agent is detected",
+      richInputShowOnMatchHint:
+        "Uses the command line reported by the shell — a display hint, never authorization.",
+      richInputRegex: "Agent detection regex",
+      richInputRegexHint:
+        "Empty uses the default ^(claude|codex|gemini). Evaluated in the core; invalid keeps the current one.",
+      richInputRegexInvalid:
+        "Invalid regex — not saved. The core keeps the previous one.",
       gitStatusHint:
         "Shows a badge with the number of uncommitted changes when the session folder has changes.",
       gitChanges_one: "{{count}} uncommitted change",

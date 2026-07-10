@@ -5,8 +5,10 @@ import {
   ArrowUp,
   FolderSimple,
   GitBranch,
+  TextAlignLeft,
 } from "@phosphor-icons/react";
 
+import { Shortcut } from "@/components/ui/kbd";
 import type { RepoSnapshot } from "../lib/ipc";
 import type { ChipId, ToolbarPref } from "../lib/repoSnapshots";
 
@@ -14,6 +16,9 @@ interface Props {
   pref: ToolbarPref;
   cwd: string | null;
   snapshot: RepoSnapshot | undefined;
+  showRichInput: boolean;
+  richInputCombo: string;
+  onOpenRichInput: () => void;
 }
 
 function ClockChip() {
@@ -36,7 +41,14 @@ function basename(path: string): string {
   return last || trimmed;
 }
 
-export function Toolbar({ pref, cwd, snapshot }: Props) {
+export function Toolbar({
+  pref,
+  cwd,
+  snapshot,
+  showRichInput,
+  richInputCombo,
+  onOpenRichInput,
+}: Props) {
   const { t } = useTranslation();
   if (!pref.enabled) return null;
 
@@ -111,11 +123,24 @@ export function Toolbar({ pref, cwd, snapshot }: Props) {
 
   const left = pref.left.map(chip).filter(Boolean);
   const right = pref.right.map(chip).filter(Boolean);
-  if (left.length === 0 && right.length === 0) return null;
+  if (!showRichInput && left.length === 0 && right.length === 0) return null;
 
   return (
     <div className="flex h-6 shrink-0 items-center justify-between border-t border-tyba-border px-3 text-[11px] text-tyba-text-muted">
-      <div className="flex items-center gap-3">{left}</div>
+      <div className="flex items-center gap-3">
+        {showRichInput && (
+          <button
+            onClick={onOpenRichInput}
+            title={t("richInputHint")}
+            className="flex items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-tyba-text-muted transition-colors hover:bg-white/[.06] hover:text-tyba-text"
+          >
+            <TextAlignLeft size={12} />
+            <span>{t("richInputToggle")}</span>
+            <Shortcut combo={richInputCombo} />
+          </button>
+        )}
+        {left}
+      </div>
       <div className="flex items-center gap-3">{right}</div>
     </div>
   );

@@ -24,6 +24,7 @@ parking_lot = "0.12"
 base64 = "0.22"
 thiserror = "2"
 regex = "1"
+fuzzy-matcher = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 vt100 = "0.15"
 percent-encoding = "2"

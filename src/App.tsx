@@ -113,6 +113,7 @@ import {
   onRepoReconciled,
   repoSnapshots as fetchRepoSnapshots,
   sessionCwd,
+  setAgentMatchPattern,
   setPref,
   setSplitRatio,
   setWorkspaceColor,
@@ -141,6 +142,15 @@ import {
   type ToolbarPref,
 } from "./lib/repoSnapshots";
 import { Toolbar } from "./components/Toolbar";
+import { RichInput } from "./components/RichInput";
+import {
+  DEFAULT_RICH_INPUT,
+  RICH_INPUT_PREF_KEY,
+  parseRichInputPref,
+  richInputVisibility,
+  shouldShowRichInput,
+  type RichInputPref,
+} from "./lib/richInput";
 import {
   captureState,
   comboOf,
@@ -316,6 +326,19 @@ export default function App() {
     Record<string, RepoSnapshot>
   >({});
   const [toolbarPref, setToolbarPref] = useState<ToolbarPref>(DEFAULT_TOOLBAR);
+  const [richInputPref, setRichInputPref] =
+    useState<RichInputPref>(DEFAULT_RICH_INPUT);
+  const [richInputOpened, setRichInputOpened] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [richInputDismissed, setRichInputDismissed] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [richInputFocusNonce, setRichInputFocusNonce] = useState(0);
+  const [richInputRegexInvalid, setRichInputRegexInvalid] = useState(false);
+  const richInputFocused = useRef(false);
+  const richInputAutoOpened = useRef<Set<string>>(new Set());
+  const dismissedCommand = useRef<Record<string, string | null>>({});
   const [showGitStatus, setShowGitStatus] = useState(true);
   const [shellIntegration, setShellIntegration] = useState(true);
   const [menuWorkspace, setMenuWorkspace] = useState<string | null>(null);
@@ -473,6 +496,89 @@ export default function App() {
     setSessionCommands(prune);
     setSessionCwds(prune);
   }, [sessions]);
+
+  const activeSession = activeId ? sessionById.get(activeId) : undefined;
+  const activeCommand = activeId ? sessionCommands[activeId] : undefined;
+  const richInputEligible =
+    activeSession != null &&
+    shouldShowRichInput(
+      activeSession.kind,
+      activeCommand?.agent_match ?? false,
+      richInputPref,
+    );
+  const richInputVisible =
+    activeSession != null &&
+    activeId != null &&
+    richInputVisibility({
+      kind: activeSession.kind,
+      command: activeCommand,
+      pref: richInputPref,
+      opened: richInputOpened.has(activeId),
+      dismissed: richInputDismissed.has(activeId),
+    });
+
+  const openRichInput = useCallback((id: SessionId) => {
+    setRichInputDismissed((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    setRichInputOpened((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+    setRichInputFocusNonce((n) => n + 1);
+  }, []);
+
+  const closeRichInput = useCallback(
+    (id: SessionId) => {
+      setRichInputOpened((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      dismissedCommand.current[id] = sessionCommands[id]?.command ?? null;
+      setRichInputDismissed((prev) =>
+        prev.has(id) ? prev : new Set(prev).add(id),
+      );
+      richInputFocused.current = false;
+      getTerm(id)?.term.focus();
+    },
+    [sessionCommands],
+  );
+
+  useEffect(() => {
+    const live = new Set(sessions.map((s) => s.id));
+    const prune = (prev: Set<string>) => {
+      if ([...prev].every((id) => live.has(id))) return prev;
+      return new Set([...prev].filter((id) => live.has(id)));
+    };
+    setRichInputOpened(prune);
+    setRichInputDismissed(prune);
+  }, [sessions]);
+
+  useEffect(() => {
+    if (!activeId) return;
+    const current = activeCommand?.command ?? null;
+    if (
+      richInputDismissed.has(activeId) &&
+      dismissedCommand.current[activeId] !== current
+    ) {
+      setRichInputDismissed((prev) => {
+        const next = new Set(prev);
+        next.delete(activeId);
+        return next;
+      });
+    }
+  }, [activeId, activeCommand?.command, richInputDismissed]);
+
+  useEffect(() => {
+    if (!richInputPref.autoOpenOnStart || !activeId || !richInputEligible) {
+      return;
+    }
+    if (richInputAutoOpened.current.has(activeId)) return;
+    richInputAutoOpened.current.add(activeId);
+    openRichInput(activeId);
+  }, [activeId, richInputEligible, richInputPref.autoOpenOnStart, openRichInput]);
 
 
   useEffect(() => {
@@ -862,6 +968,24 @@ export default function App() {
     });
   }, []);
 
+  const changeRichInputPref = useCallback(
+    async (next: RichInputPref) => {
+      if (next.agentRegex !== richInputPref.agentRegex) {
+        const accepted = await setAgentMatchPattern(next.agentRegex).catch(
+          () => false,
+        );
+        if (!accepted) {
+          setRichInputRegexInvalid(true);
+          return;
+        }
+      }
+      setRichInputRegexInvalid(false);
+      setRichInputPref(next);
+      void setPref(RICH_INPUT_PREF_KEY, JSON.stringify(next)).catch(() => {});
+    },
+    [richInputPref.agentRegex],
+  );
+
   const changeShellIntegration = useCallback((value: boolean) => {
     setShellIntegration(value);
     void setPref(SHELL_INTEGRATION_KEY, value ? "on" : "off").catch(() => {});
@@ -941,6 +1065,7 @@ export default function App() {
         gitStatusRaw,
         shellIntegrationRaw,
         toolbarRaw,
+        richInputRaw,
       ] = await Promise.all([
         listSessions().catch(() => [] as Session[]),
         layoutState().catch(() => EMPTY_LAYOUT),
@@ -954,6 +1079,7 @@ export default function App() {
         getPref(GIT_STATUS_KEY).catch(() => null),
         getPref(SHELL_INTEGRATION_KEY).catch(() => null),
         getPref(TOOLBAR_PREF_KEY).catch(() => null),
+        getPref(RICH_INPUT_PREF_KEY).catch(() => null),
       ]);
       if (cancelled) return;
       setSessions(existing);
@@ -979,6 +1105,13 @@ export default function App() {
       setShowGitStatus(gitStatusRaw !== "off");
       setShellIntegration(shellIntegrationRaw !== "off");
       setToolbarPref(parseToolbarPref(toolbarRaw));
+      const richInput = parseRichInputPref(richInputRaw);
+      setRichInputPref(richInput);
+      if (richInput.agentRegex) {
+        void setAgentMatchPattern(richInput.agentRegex)
+          .then((accepted) => setRichInputRegexInvalid(!accepted))
+          .catch(() => setRichInputRegexInvalid(true));
+      }
       const fontSize = Number(fontRaw);
       if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
       if (currentLayout.workspaces.length === 0 && !booted.current) {
@@ -1115,6 +1248,13 @@ export default function App() {
           void splitActive("h");
         } else if (action === "nextPane") {
           cyclePane();
+        } else if (action === "richInput" && activeId) {
+          if (richInputFocused.current) {
+            richInputFocused.current = false;
+            getTerm(activeId)?.term.focus();
+          } else {
+            openRichInput(activeId);
+          }
         }
         return;
       }
@@ -1881,6 +2021,11 @@ export default function App() {
                         onShellIntegrationChange={changeShellIntegration}
                         toolbarEnabled={toolbarPref.enabled}
                         onToolbarEnabledChange={changeToolbarEnabled}
+                        richInputPref={richInputPref}
+                        onRichInputPrefChange={(next) => {
+                          void changeRichInputPref(next);
+                        }}
+                        richInputRegexInvalid={richInputRegexInvalid}
                       />
                     </div>
                   )}
@@ -2006,6 +2151,19 @@ export default function App() {
                     </div>
                   )}
                 </div>
+                {activeSession && richInputVisible && (
+                  <RichInput
+                    key={activeSession.id}
+                    sessionId={activeSession.id}
+                    pref={richInputPref}
+                    focusNonce={richInputFocusNonce}
+                    openedExplicitly={richInputOpened.has(activeSession.id)}
+                    onFocusChange={(focused) => {
+                      richInputFocused.current = focused;
+                    }}
+                    onClose={() => closeRichInput(activeSession.id)}
+                  />
+                )}
                 {activeTab && activeWorkspace && (
                   <Toolbar
                     pref={toolbarPref}
@@ -2016,6 +2174,11 @@ export default function App() {
                         ? snapshotForDir(repoSnapshots, dir)
                         : undefined;
                     })()}
+                    showRichInput={richInputEligible && !richInputVisible}
+                    richInputCombo={bindings.richInput}
+                    onOpenRichInput={() => {
+                      if (activeId) openRichInput(activeId);
+                    }}
                   />
                 )}
               </main>
