@@ -229,9 +229,9 @@ fn repo_snapshots(state: State<'_, AppState>) -> Vec<repo::RepoSnapshot> {
 }
 
 #[tauri::command]
-fn session_cwd(state: State<'_, AppState>, id: SessionId) -> Option<String> {
+fn session_cwd(state: State<'_, AppState>, id: SessionId) -> Option<pty::SessionCwdPayload> {
     let pid = state.pty_pool.leader_pid(id)?;
-    repo::process_cwd(pid).map(|p| p.to_string_lossy().into_owned())
+    repo::process_cwd(pid).map(|p| pty::SessionCwdPayload::of(&p))
 }
 
 #[tauri::command]
@@ -273,7 +273,8 @@ fn create_workspace(
     session_id: SessionId,
 ) -> Result<layout::WorkspaceId, String> {
     let repo_root = repo_root.map(|r| {
-        session::expand_home(std::path::Path::new(&r))
+        let expanded = session::expand_home(std::path::Path::new(&r));
+        repo::canonicalize_or(&expanded)
             .to_string_lossy()
             .into_owned()
     });
