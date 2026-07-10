@@ -932,14 +932,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
-                let state = window.state::<AppState>();
-                state.pty_pool.drop_window_attachers(window.label());
+                if let Some(state) = window.try_state::<AppState>() {
+                    state.pty_pool.drop_window_attachers(window.label());
+                }
             }
         })
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                let state = webview.state::<AppState>();
-                state.pty_pool.drop_window_attachers(webview.label());
+                if let Some(state) = webview.try_state::<AppState>() {
+                    state.pty_pool.drop_window_attachers(webview.label());
+                }
             }
         })
         .setup(|app| {

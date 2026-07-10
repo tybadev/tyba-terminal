@@ -41,6 +41,8 @@ import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 export const RELAYOUT_EVENT = "tyba:relayout";
 export const FONT_SIZE_EVENT = "tyba:font-size";
 
+const EXIT_BANNER_SETTLE_MS = 120;
+
 export function requestTerminalRelayout() {
   requestAnimationFrame(() => window.dispatchEvent(new Event(RELAYOUT_EVENT)));
 }
@@ -115,8 +117,7 @@ export function TerminalView({
   onFocusRef.current = onFocus;
   const onPasteRef = useRef(onPaste);
   onPasteRef.current = onPaste;
-  const exitedRef = useRef(exited);
-  exitedRef.current = exited;
+  const showExitBannerRef = useRef<(() => void) | null>(null);
   const [menuHasSelection, setMenuHasSelection] = useState(false);
   const [menuMouseMode, setMenuMouseMode] = useState(false);
 
@@ -203,10 +204,13 @@ export function TerminalView({
 
     let exitBannerShown = false;
     const showExitBanner = () => {
-      if (disposed || exitBannerShown) return;
-      exitBannerShown = true;
-      term.write(`\r\n\x1b[2m${i18n.t("sessionEnded")}\x1b[0m\r\n`);
+      void attached.then(() => {
+        if (disposed || exitBannerShown) return;
+        exitBannerShown = true;
+        term.write(`\r\n\x1b[2m${i18n.t("sessionEnded")}\x1b[0m\r\n`);
+      });
     };
+    showExitBannerRef.current = showExitBanner;
 
     void onPtyExit(sessionId, () => {
       void attached.then(() => {
@@ -215,8 +219,6 @@ export function TerminalView({
         onExit?.();
       });
     }).then(addUnlistener);
-
-    if (exitedRef.current) void attached.then(showExitBanner);
 
     let lastCols = -1;
     let lastRows = -1;
@@ -275,6 +277,7 @@ export function TerminalView({
       dataSub.dispose();
       unlisteners.forEach((un) => un());
       unregisterTerm(sessionId);
+      showExitBannerRef.current = null;
       disposeWebgl(webglRef.current);
       webglRef.current = null;
       term.dispose();
@@ -282,6 +285,15 @@ export function TerminalView({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!exited) return;
+    const timer = window.setTimeout(
+      () => showExitBannerRef.current?.(),
+      EXIT_BANNER_SETTLE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [exited, sessionId]);
 
   useEffect(() => {
     const term = termRef.current;

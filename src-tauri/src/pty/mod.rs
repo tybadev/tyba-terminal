@@ -43,14 +43,13 @@ impl ScreenState {
     }
 
     fn detach(&mut self, window: &str) {
-        if let Some(count) = self.attachers.get_mut(window) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                self.attachers.remove(window);
-            }
-        }
-        if !self.attached() {
-            self.pending.clear();
+        let Some(count) = self.attachers.get_mut(window) else {
+            return;
+        };
+        if *count > 1 {
+            *count -= 1;
+        } else {
+            self.drop_window(window);
         }
     }
 
@@ -420,14 +419,8 @@ impl PtyPool {
     }
 
     pub fn drop_window_attachers(&self, window: &str) {
-        let screens: Vec<SharedScreen> = self
-            .ptys
-            .lock()
-            .values()
-            .map(|handle| Arc::clone(&handle.screen))
-            .collect();
-        for screen in screens {
-            screen.lock().drop_window(window);
+        for handle in self.ptys.lock().values() {
+            handle.screen.lock().drop_window(window);
         }
     }
 

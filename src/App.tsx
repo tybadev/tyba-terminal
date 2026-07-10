@@ -132,6 +132,7 @@ import {
   type Workspace,
 } from "./lib/ipc";
 import { basename } from "@/lib/utils";
+import { isFinishedStatus, sameSessionStatus } from "./lib/sessionStatus";
 import { resolveWorkspaceCwd, workspaceMatchDir } from "./lib/workspaceCwd";
 import {
   computeRects,
@@ -464,6 +465,42 @@ export default function App() {
     sessionIdsRef.current = new Set(sessions.map((s) => s.id));
   }, [sessions]);
 
+  const sessionIds = useMemo(
+    () =>
+      sessions
+        .map((s) => s.id)
+        .sort()
+        .join("\n"),
+    [sessions],
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    for (const id of sessionIds.split("\n").filter(Boolean)) {
+      void onSessionStatus(id, (session) => {
+        setSessions((prev) => {
+          const current = prev.find((c) => c.id === id);
+          if (
+            !current ||
+            sameSessionStatus(current.status, session.status) ||
+            (isFinishedStatus(current.status) &&
+              !isFinishedStatus(session.status))
+          ) {
+            return prev;
+          }
+          return prev.map((c) =>
+            c.id === id ? { ...c, status: session.status } : c,
+          );
+        });
+      }).then((un) => (disposed ? un() : unlisteners.push(un)));
+    }
+    return () => {
+      disposed = true;
+      unlisteners.forEach((un) => un());
+    };
+  }, [sessionIds]);
+
   const [sessionCommands, setSessionCommands] = useState<
     Record<string, SessionCommand>
   >({});
@@ -473,36 +510,22 @@ export default function App() {
   useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
-    for (const s of sessions) {
-      void onSessionStatus(s.id, (session) => {
-        setSessions((prev) => {
-          const current = prev.find((c) => c.id === session.id);
-          if (
-            !current ||
-            JSON.stringify(current.status) === JSON.stringify(session.status)
-          ) {
-            return prev;
-          }
-          return prev.map((c) => (c.id === session.id ? session : c));
-        });
+    for (const id of sessionIds.split("\n").filter(Boolean)) {
+      void onSessionCommand(id, (payload) => {
+        setSessionCommands((prev) => ({ ...prev, [id]: payload }));
       }).then((un) => (disposed ? un() : unlisteners.push(un)));
-      void onSessionCommand(s.id, (payload) => {
-        setSessionCommands((prev) => ({ ...prev, [s.id]: payload }));
-      }).then((un) => (disposed ? un() : unlisteners.push(un)));
-      void onSessionCwd(s.id, (payload) =>
+      void onSessionCwd(id, (payload) =>
         setSessionCwds((prev) =>
-          prev[s.id]?.cwd === payload.cwd &&
-          prev[s.id]?.canonical === payload.canonical
+          prev[id]?.cwd === payload.cwd &&
+          prev[id]?.canonical === payload.canonical
             ? prev
-            : { ...prev, [s.id]: payload },
+            : { ...prev, [id]: payload },
         ),
       ).then((un) => (disposed ? un() : unlisteners.push(un)));
-      void sessionCwd(s.id)
+      void sessionCwd(id)
         .then((cwd) => {
           if (disposed || !cwd) return;
-          setSessionCwds((prev) =>
-            prev[s.id] ? prev : { ...prev, [s.id]: cwd },
-          );
+          setSessionCwds((prev) => (prev[id] ? prev : { ...prev, [id]: cwd }));
         })
         .catch(() => {});
     }
@@ -510,7 +533,7 @@ export default function App() {
       disposed = true;
       unlisteners.forEach((un) => un());
     };
-  }, [sessions]);
+  }, [sessionIds]);
 
   useEffect(() => {
     const live = new Set(sessions.map((s) => s.id));
@@ -2067,7 +2090,7 @@ export default function App() {
                         visible={paneRect !== null}
                         focused={s.id === activeId}
                         framed={(paneLayout?.panes.length ?? 0) > 1}
-                        exited={s.status.state === "exited"}
+                        exited={isFinishedStatus(s.status)}
                         rect={
                           paneRect
                             ? {
