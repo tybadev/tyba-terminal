@@ -75,6 +75,28 @@ const resources = {
       toolbarBranch: "Branch do git",
       toolbarDiff: "Alterações não commitadas",
       toolbarAheadBehind: "Commits à frente e atrás do upstream",
+      richInputToggle: "Rich Input",
+      richInputHint:
+        "Caixa de prompt multiline para agentes CLI (Claude Code, Codex). Abre com Ctrl+G.",
+      richInputPlaceholder: "Prompt para o agente… (@ para arquivos)",
+      richInputSend: "Enviar",
+      richInputAttach: "Anexar arquivo",
+      richInputSensitiveWarn:
+        "Pode conter dado sensível — clique de novo para enviar.",
+      richInputSingleLine: "Sessão sem bracketed paste: apenas uma linha.",
+      richInputAutoShow: "Mostrar quando o agente estiver ocioso",
+      richInputAutoOpen: "Abrir ao iniciar sessão de agente",
+      richInputAutoDismiss: "Fechar após enviar",
+      richInputCtrlEnter: "Enviar com Ctrl+Enter",
+      richInputCtrlEnterHint:
+        "Ligado: Enter quebra linha e Ctrl+Enter envia. Desligado: Enter envia e Shift+Enter quebra linha.",
+      richInputWarnSensitive: "Avisar sobre prompt sensível",
+      richInputShowOnMatch: "Mostrar em shell quando detectar agente",
+      richInputShowOnMatchHint:
+        "Usa a linha de comando reportada pelo shell — dica de exibição, nunca autorização.",
+      richInputRegex: "Regex de detecção de agente",
+      richInputRegexHint:
+        "Vazio usa o padrão ^(claude|codex|gemini). Avaliado no core; inválido mantém o atual.",
       gitStatusHint:
         "Mostra um rótulo com o número de alterações não commitadas quando a pasta da sessão tem mudanças.",
       gitChanges_one: "{{count}} alteração não commitada",
@@ -281,6 +303,28 @@ const resources = {
       toolbarBranch: "Git branch",
       toolbarDiff: "Uncommitted changes",
       toolbarAheadBehind: "Commits ahead and behind upstream",
+      richInputToggle: "Rich Input",
+      richInputHint:
+        "Multiline prompt box for CLI agents (Claude Code, Codex). Opens with Ctrl+G.",
+      richInputPlaceholder: "Prompt for the agent… (@ for files)",
+      richInputSend: "Send",
+      richInputAttach: "Attach file",
+      richInputSensitiveWarn:
+        "May contain sensitive data — click again to send.",
+      richInputSingleLine: "Session without bracketed paste: single line only.",
+      richInputAutoShow: "Show when the agent is idle",
+      richInputAutoOpen: "Open when an agent session starts",
+      richInputAutoDismiss: "Close after sending",
+      richInputCtrlEnter: "Send with Ctrl+Enter",
+      richInputCtrlEnterHint:
+        "On: Enter inserts a newline and Ctrl+Enter sends. Off: Enter sends and Shift+Enter inserts a newline.",
+      richInputWarnSensitive: "Warn about sensitive prompts",
+      richInputShowOnMatch: "Show in shells when an agent is detected",
+      richInputShowOnMatchHint:
+        "Uses the command line reported by the shell — a display hint, never authorization.",
+      richInputRegex: "Agent detection regex",
+      richInputRegexHint:
+        "Empty uses the default ^(claude|codex|gemini). Evaluated in the core; invalid keeps the current one.",
       gitStatusHint:
         "Shows a badge with the number of uncommitted changes when the session folder has changes.",
       gitChanges_one: "{{count}} uncommitted change",

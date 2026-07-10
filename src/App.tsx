@@ -113,6 +113,7 @@ import {
   onRepoReconciled,
   repoSnapshots as fetchRepoSnapshots,
   sessionCwd,
+  setAgentMatchPattern,
   setPref,
   setSplitRatio,
   setWorkspaceColor,
@@ -141,6 +142,14 @@ import {
   type ToolbarPref,
 } from "./lib/repoSnapshots";
 import { Toolbar } from "./components/Toolbar";
+import { RichInput } from "./components/RichInput";
+import {
+  DEFAULT_RICH_INPUT,
+  RICH_INPUT_PREF_KEY,
+  parseRichInputPref,
+  shouldShowRichInput,
+  type RichInputPref,
+} from "./lib/richInput";
 import {
   captureState,
   comboOf,
@@ -316,6 +325,11 @@ export default function App() {
     Record<string, RepoSnapshot>
   >({});
   const [toolbarPref, setToolbarPref] = useState<ToolbarPref>(DEFAULT_TOOLBAR);
+  const [richInputPref, setRichInputPref] =
+    useState<RichInputPref>(DEFAULT_RICH_INPUT);
+  const [richInputOpen, setRichInputOpen] = useState(false);
+  const [richInputFocusNonce, setRichInputFocusNonce] = useState(0);
+  const richInputAutoOpened = useRef<Set<string>>(new Set());
   const [showGitStatus, setShowGitStatus] = useState(true);
   const [shellIntegration, setShellIntegration] = useState(true);
   const [menuWorkspace, setMenuWorkspace] = useState<string | null>(null);
@@ -473,6 +487,34 @@ export default function App() {
     setSessionCommands(prune);
     setSessionCwds(prune);
   }, [sessions]);
+
+  const activeSession = activeId ? sessionById.get(activeId) : undefined;
+  const activeCommand = activeId ? sessionCommands[activeId] : undefined;
+  const richInputEligible = activeSession
+    ? shouldShowRichInput(
+        activeSession.kind,
+        activeCommand?.agent_match ?? false,
+        richInputPref,
+      )
+    : false;
+  const richInputIdleAgent =
+    activeSession?.kind.type === "agent"
+      ? activeCommand?.running !== true
+      : true;
+  const richInputVisible =
+    Boolean(activeSession) &&
+    (richInputOpen ||
+      (richInputPref.autoShow && richInputEligible && richInputIdleAgent));
+
+  useEffect(() => {
+    if (!richInputPref.autoOpenOnStart || !activeId || !richInputEligible) {
+      return;
+    }
+    if (richInputAutoOpened.current.has(activeId)) return;
+    richInputAutoOpened.current.add(activeId);
+    setRichInputOpen(true);
+    setRichInputFocusNonce((n) => n + 1);
+  }, [activeId, richInputEligible, richInputPref.autoOpenOnStart]);
 
 
   useEffect(() => {
@@ -862,6 +904,16 @@ export default function App() {
     });
   }, []);
 
+  const changeRichInputPref = useCallback((next: RichInputPref) => {
+    setRichInputPref((prev) => {
+      void setPref(RICH_INPUT_PREF_KEY, JSON.stringify(next)).catch(() => {});
+      if (next.agentRegex !== prev.agentRegex) {
+        void setAgentMatchPattern(next.agentRegex).catch(() => {});
+      }
+      return next;
+    });
+  }, []);
+
   const changeShellIntegration = useCallback((value: boolean) => {
     setShellIntegration(value);
     void setPref(SHELL_INTEGRATION_KEY, value ? "on" : "off").catch(() => {});
@@ -941,6 +993,7 @@ export default function App() {
         gitStatusRaw,
         shellIntegrationRaw,
         toolbarRaw,
+        richInputRaw,
       ] = await Promise.all([
         listSessions().catch(() => [] as Session[]),
         layoutState().catch(() => EMPTY_LAYOUT),
@@ -954,6 +1007,7 @@ export default function App() {
         getPref(GIT_STATUS_KEY).catch(() => null),
         getPref(SHELL_INTEGRATION_KEY).catch(() => null),
         getPref(TOOLBAR_PREF_KEY).catch(() => null),
+        getPref(RICH_INPUT_PREF_KEY).catch(() => null),
       ]);
       if (cancelled) return;
       setSessions(existing);
@@ -979,6 +1033,11 @@ export default function App() {
       setShowGitStatus(gitStatusRaw !== "off");
       setShellIntegration(shellIntegrationRaw !== "off");
       setToolbarPref(parseToolbarPref(toolbarRaw));
+      const richInput = parseRichInputPref(richInputRaw);
+      setRichInputPref(richInput);
+      if (richInput.agentRegex) {
+        void setAgentMatchPattern(richInput.agentRegex).catch(() => {});
+      }
       const fontSize = Number(fontRaw);
       if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
       if (currentLayout.workspaces.length === 0 && !booted.current) {
@@ -1115,6 +1174,16 @@ export default function App() {
           void splitActive("h");
         } else if (action === "nextPane") {
           cyclePane();
+        } else if (action === "richInput") {
+          const box = document.querySelector<HTMLTextAreaElement>(
+            "[data-rich-input]",
+          );
+          if (box && document.activeElement === box) {
+            if (activeId) getTerm(activeId)?.term.focus();
+          } else {
+            setRichInputOpen(true);
+            setRichInputFocusNonce((n) => n + 1);
+          }
         }
         return;
       }
@@ -1881,6 +1950,8 @@ export default function App() {
                         onShellIntegrationChange={changeShellIntegration}
                         toolbarEnabled={toolbarPref.enabled}
                         onToolbarEnabledChange={changeToolbarEnabled}
+                        richInputPref={richInputPref}
+                        onRichInputPrefChange={changeRichInputPref}
                       />
                     </div>
                   )}
@@ -2006,6 +2077,18 @@ export default function App() {
                     </div>
                   )}
                 </div>
+                {activeSession && richInputVisible && (
+                  <RichInput
+                    sessionId={activeSession.id}
+                    cwd={sessionCwds[activeSession.id] ?? null}
+                    pref={richInputPref}
+                    focusNonce={richInputFocusNonce}
+                    onClose={() => {
+                      setRichInputOpen(false);
+                      getTerm(activeSession.id)?.term.focus();
+                    }}
+                  />
+                )}
                 {activeTab && activeWorkspace && (
                   <Toolbar
                     pref={toolbarPref}

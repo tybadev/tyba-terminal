@@ -171,6 +171,11 @@ fn set_agent_match_pattern(pattern: String) -> bool {
 }
 
 #[tauri::command]
+fn prompt_mentions_sensitive(text: String) -> bool {
+    rich_input::mentions_sensitive(&text)
+}
+
+#[tauri::command]
 fn session_bracketed_paste(state: State<'_, AppState>, id: SessionId) -> bool {
     state.pty_pool.bracketed_paste(id).unwrap_or(false)
 }
@@ -989,6 +994,7 @@ pub fn run() {
             write_to_session,
             submit_rich_input,
             set_agent_match_pattern,
+            prompt_mentions_sensitive,
             session_bracketed_paste,
             list_worktree_files,
             attach_session,

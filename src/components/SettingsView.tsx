@@ -57,6 +57,7 @@ import {
 } from "../lib/keys";
 import { Shortcut } from "@/components/ui/kbd";
 import { FONT_SIZE_EVENT, setDefaultFontSize } from "./TerminalView";
+import type { RichInputPref } from "../lib/richInput";
 
 export type SidebarTogglePref = "hidden" | "rail";
 export type DetailsPref = "on" | "off";
@@ -85,6 +86,8 @@ interface Props {
   onShowGitStatusChange: (value: boolean) => void;
   shellIntegration: boolean;
   onShellIntegrationChange: (value: boolean) => void;
+  richInputPref: RichInputPref;
+  onRichInputPrefChange: (value: RichInputPref) => void;
 }
 
 const THEME_MODE_KEYS: Record<ThemeMode, string> = {
@@ -306,6 +309,8 @@ export function SettingsView({
   onShowGitStatusChange,
   shellIntegration,
   onShellIntegrationChange,
+  richInputPref,
+  onRichInputPrefChange,
 }: Props) {
   const { t, i18n } = useTranslation();
   const [section, setSection] = useState<Section>("general");
@@ -694,6 +699,89 @@ export function SettingsView({
                   checked={toolbarEnabled}
                   onCheckedChange={onToolbarEnabledChange}
                 />
+              </SettingRow>
+              <SettingRow
+                label={t("richInputAutoShow")}
+                hint={t("richInputHint")}
+              >
+                <Switch
+                  checked={richInputPref.autoShow}
+                  onCheckedChange={(c) =>
+                    onRichInputPrefChange({ ...richInputPref, autoShow: c })
+                  }
+                />
+              </SettingRow>
+              <SettingRow label={t("richInputAutoOpen")}>
+                <Switch
+                  checked={richInputPref.autoOpenOnStart}
+                  onCheckedChange={(c) =>
+                    onRichInputPrefChange({
+                      ...richInputPref,
+                      autoOpenOnStart: c,
+                    })
+                  }
+                />
+              </SettingRow>
+              <SettingRow label={t("richInputAutoDismiss")}>
+                <Switch
+                  checked={richInputPref.autoDismiss}
+                  onCheckedChange={(c) =>
+                    onRichInputPrefChange({ ...richInputPref, autoDismiss: c })
+                  }
+                />
+              </SettingRow>
+              <SettingRow
+                label={t("richInputCtrlEnter")}
+                hint={t("richInputCtrlEnterHint")}
+              >
+                <Switch
+                  checked={richInputPref.submitWithCtrlEnter}
+                  onCheckedChange={(c) =>
+                    onRichInputPrefChange({
+                      ...richInputPref,
+                      submitWithCtrlEnter: c,
+                    })
+                  }
+                />
+              </SettingRow>
+              <SettingRow label={t("richInputWarnSensitive")}>
+                <Switch
+                  checked={richInputPref.warnOnSensitivePrompt}
+                  onCheckedChange={(c) =>
+                    onRichInputPrefChange({
+                      ...richInputPref,
+                      warnOnSensitivePrompt: c,
+                    })
+                  }
+                />
+              </SettingRow>
+              <SettingRow
+                label={t("richInputShowOnMatch")}
+                hint={t("richInputShowOnMatchHint")}
+              >
+                <Switch
+                  checked={richInputPref.showOnMatch}
+                  onCheckedChange={(c) =>
+                    onRichInputPrefChange({ ...richInputPref, showOnMatch: c })
+                  }
+                />
+              </SettingRow>
+              <SettingRow
+                label={t("richInputRegex")}
+                hint={t("richInputRegexHint")}
+              >
+                <div className="w-64">
+                  <TextField
+                    value={richInputPref.agentRegex}
+                    placeholder="^(claude|codex|gemini)\b"
+                    onCommit={(v) =>
+                      onRichInputPrefChange({
+                        ...richInputPref,
+                        agentRegex: v,
+                      })
+                    }
+                  />
+                </div>
               </SettingRow>
               <SettingRow label={t("language")}>
                 <Select

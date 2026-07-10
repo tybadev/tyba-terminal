@@ -84,6 +84,11 @@ impl AgentMatcher {
     }
 
     pub fn set_pattern(&self, pattern: &str) -> bool {
+        let pattern = if pattern.trim().is_empty() {
+            DEFAULT_AGENT_PATTERN
+        } else {
+            pattern
+        };
         match Regex::new(pattern) {
             Ok(regex) => {
                 *self.regex.write() = regex;
@@ -283,6 +288,15 @@ mod agent_matcher_tests {
         assert!(m.set_pattern(r"^(aider)\b"));
         assert!(m.matches("aider --model x"));
         assert!(!m.matches("codex"));
+    }
+
+    #[test]
+    fn pattern_vazio_reseta_para_o_default_em_vez_de_casar_tudo() {
+        let m = AgentMatcher::new();
+        assert!(m.set_pattern(r"^(aider)\b"));
+        assert!(m.set_pattern("  "));
+        assert!(m.matches("codex"));
+        assert!(!m.matches("vim"));
     }
 }
 
