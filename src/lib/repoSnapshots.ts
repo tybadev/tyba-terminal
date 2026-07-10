@@ -59,11 +59,14 @@ export function parseToolbarPref(raw: string | null): ToolbarPref {
   const pref = parsed as Record<string, unknown>;
   const version = typeof pref.version === "number" ? pref.version : 0;
   if (version > DEFAULT_TOOLBAR.version) return DEFAULT_TOOLBAR;
+  const seen = new Set<ChipId>();
+  const dedup = (list: ChipId[]): ChipId[] =>
+    list.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
   return {
     version: DEFAULT_TOOLBAR.version,
     enabled: typeof pref.enabled === "boolean" ? pref.enabled : true,
-    left: chipList(pref.left, DEFAULT_TOOLBAR.left),
-    right: chipList(pref.right, DEFAULT_TOOLBAR.right),
-    hidden: chipList(pref.hidden, DEFAULT_TOOLBAR.hidden),
+    left: dedup(chipList(pref.left, DEFAULT_TOOLBAR.left)),
+    right: dedup(chipList(pref.right, DEFAULT_TOOLBAR.right)),
+    hidden: dedup(chipList(pref.hidden, DEFAULT_TOOLBAR.hidden)),
   };
 }

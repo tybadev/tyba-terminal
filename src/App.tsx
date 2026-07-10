@@ -997,12 +997,9 @@ export default function App() {
     void setPref(GIT_STATUS_KEY, value ? "on" : "off").catch(() => {});
   }, []);
 
-  const changeToolbarEnabled = useCallback((value: boolean) => {
-    setToolbarPref((prev) => {
-      const next = { ...prev, enabled: value };
-      void setPref(TOOLBAR_PREF_KEY, JSON.stringify(next)).catch(() => {});
-      return next;
-    });
+  const changeToolbarPref = useCallback((next: ToolbarPref) => {
+    setToolbarPref(next);
+    void setPref(TOOLBAR_PREF_KEY, JSON.stringify(next)).catch(() => {});
   }, []);
 
   const changeRichInputPref = useCallback(
@@ -2064,8 +2061,8 @@ export default function App() {
                         onShowGitStatusChange={changeShowGitStatus}
                         shellIntegration={shellIntegration}
                         onShellIntegrationChange={changeShellIntegration}
-                        toolbarEnabled={toolbarPref.enabled}
-                        onToolbarEnabledChange={changeToolbarEnabled}
+                        toolbarPref={toolbarPref}
+                        onToolbarPrefChange={changeToolbarPref}
                         richInputPref={richInputPref}
                         onRichInputPrefChange={(next) => {
                           void changeRichInputPref(next);

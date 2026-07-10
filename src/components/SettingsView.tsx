@@ -59,7 +59,9 @@ import {
 } from "../lib/keys";
 import { Shortcut } from "@/components/ui/kbd";
 import { FONT_SIZE_EVENT, setDefaultFontSize } from "./TerminalView";
+import { ToolbarChipsEditor } from "./ToolbarChipsEditor";
 import type { RichInputPref } from "../lib/richInput";
+import type { ToolbarPref } from "../lib/repoSnapshots";
 
 export type SidebarTogglePref = "hidden" | "rail";
 export type DetailsPref = "on" | "off";
@@ -83,8 +85,8 @@ interface Props {
   showContainers: boolean;
   onShowContainersChange: (value: boolean) => void;
   showGitStatus: boolean;
-  toolbarEnabled: boolean;
-  onToolbarEnabledChange: (value: boolean) => void;
+  toolbarPref: ToolbarPref;
+  onToolbarPrefChange: (value: ToolbarPref) => void;
   onShowGitStatusChange: (value: boolean) => void;
   shellIntegration: boolean;
   onShellIntegrationChange: (value: boolean) => void;
@@ -332,8 +334,8 @@ export function SettingsView({
   showContainers,
   onShowContainersChange,
   showGitStatus,
-  toolbarEnabled,
-  onToolbarEnabledChange,
+  toolbarPref,
+  onToolbarPrefChange,
   onShowGitStatusChange,
   shellIntegration,
   onShellIntegrationChange,
@@ -756,8 +758,10 @@ export function SettingsView({
                 hint={t("toolbarHint")}
               >
                 <Switch
-                  checked={toolbarEnabled}
-                  onCheckedChange={onToolbarEnabledChange}
+                  checked={toolbarPref.enabled}
+                  onCheckedChange={(c) =>
+                    onToolbarPrefChange({ ...toolbarPref, enabled: c })
+                  }
                 />
               </SettingRow>
               {RICH_INPUT_TOGGLES.map(({ field, label, hint }) => (
@@ -807,6 +811,9 @@ export function SettingsView({
                 />
               </SettingRow>
             </div>
+            {toolbarPref.enabled && (
+              <ToolbarChipsEditor pref={toolbarPref} onChange={onToolbarPrefChange} />
+            )}
           </section>
         )}
       </div>
