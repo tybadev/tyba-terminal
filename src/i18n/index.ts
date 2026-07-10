@@ -75,6 +75,15 @@ const resources = {
       toolbarBranch: "Branch do git",
       toolbarDiff: "Alterações não commitadas",
       toolbarAheadBehind: "Commits à frente e atrás do upstream",
+      toolbarClock: "Relógio",
+      chipsEditorTitle: "Chips da barra",
+      chipsEditorHint:
+        "Arraste para reordenar ou mover entre as zonas. Ocultos não aparecem na barra.",
+      chipsEditorReset: "Restaurar padrão",
+      chipsZoneLeft: "Esquerda",
+      chipsZoneRight: "Direita",
+      chipsZoneHidden: "Ocultos",
+      chipsZoneEmpty: "Solte aqui",
       richInputToggle: "Rich Input",
       richInputHint:
         "Por padrão a caixa só abre no atalho ⌘⇧G (Ctrl+Shift+G). Ligue para ela aparecer sozinha em sessões de agente.",
@@ -311,6 +320,15 @@ const resources = {
       toolbarBranch: "Git branch",
       toolbarDiff: "Uncommitted changes",
       toolbarAheadBehind: "Commits ahead and behind upstream",
+      toolbarClock: "Clock",
+      chipsEditorTitle: "Bar chips",
+      chipsEditorHint:
+        "Drag to reorder or move between zones. Hidden chips don't show in the bar.",
+      chipsEditorReset: "Restore defaults",
+      chipsZoneLeft: "Left",
+      chipsZoneRight: "Right",
+      chipsZoneHidden: "Hidden",
+      chipsZoneEmpty: "Drop here",
       richInputToggle: "Rich Input",
       richInputHint:
         "By default the box only opens with ⌘⇧G (Ctrl+Shift+G). Turn this on to have it appear by itself in agent sessions.",
