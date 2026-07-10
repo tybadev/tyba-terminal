@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use regex::Regex;
 
 pub const DEFAULT_AGENT_PATTERN: &str = r"^(claude|codex|gemini)\b";
@@ -124,12 +125,9 @@ pub fn rel_path(path: &Path, base: &Path) -> String {
         .into_owned()
 }
 
-pub fn worktree_files(
-    root: &Path,
-    base: &Path,
-    query: &str,
-    limit: usize,
-) -> Result<Vec<String>, String> {
+const FILES_CACHE_TTL: Duration = Duration::from_secs(5);
+
+fn load_worktree_files(root: &Path, base: &Path) -> Result<Vec<String>, String> {
     let out = crate::worktree::git_in(root)
         .args([
             "ls-files",
@@ -146,7 +144,7 @@ pub fn worktree_files(
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let files = out
+    let mut files: Vec<String> = out
         .stdout
         .split(|b| *b == 0)
         .filter(|s| !s.is_empty())
@@ -155,23 +153,106 @@ pub fn worktree_files(
             rel_path(&absolute, base)
         })
         .collect();
-    Ok(rank_files(files, query, limit))
+    files.sort_unstable();
+    Ok(files)
 }
 
-fn rank_files(mut files: Vec<String>, query: &str, limit: usize) -> Vec<String> {
+struct CachedRoot {
+    root: Option<PathBuf>,
+    at: Instant,
+}
+
+struct CachedFiles {
+    files: Arc<Vec<String>>,
+    at: Instant,
+}
+
+#[derive(Default)]
+struct FilesCacheInner {
+    roots: HashMap<PathBuf, CachedRoot>,
+    lists: HashMap<(PathBuf, PathBuf), CachedFiles>,
+}
+
+/// Cache do popover `@arquivo`: o comando chega a cada keystroke (debounce
+/// de 80ms no webview) e sem cache dispara dois subprocessos git por tecla.
+/// TTL curto em vez de invalidação pelo watcher: arquivo untracked novo não
+/// toca `HEAD`/`index`/refs, então `repo://changed` nunca dispararia.
+#[derive(Default)]
+pub struct FilesCache {
+    inner: Mutex<FilesCacheInner>,
+}
+
+impl FilesCache {
+    pub fn toplevel(&self, cwd: &Path) -> Option<PathBuf> {
+        {
+            let inner = self.inner.lock();
+            if let Some(hit) = inner.roots.get(cwd) {
+                if hit.at.elapsed() < FILES_CACHE_TTL {
+                    return hit.root.clone();
+                }
+            }
+        }
+        let root = crate::repo::toplevel(cwd);
+        let mut inner = self.inner.lock();
+        inner.roots.retain(|_, v| v.at.elapsed() < FILES_CACHE_TTL);
+        inner.roots.insert(
+            cwd.to_path_buf(),
+            CachedRoot {
+                root: root.clone(),
+                at: Instant::now(),
+            },
+        );
+        root
+    }
+
+    pub fn files(
+        &self,
+        root: &Path,
+        base: &Path,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, String> {
+        let key = (root.to_path_buf(), base.to_path_buf());
+        let cached = {
+            let inner = self.inner.lock();
+            inner
+                .lists
+                .get(&key)
+                .filter(|hit| hit.at.elapsed() < FILES_CACHE_TTL)
+                .map(|hit| Arc::clone(&hit.files))
+        };
+        let files = match cached {
+            Some(files) => files,
+            None => {
+                let files = Arc::new(load_worktree_files(root, base)?);
+                let mut inner = self.inner.lock();
+                inner.lists.retain(|_, v| v.at.elapsed() < FILES_CACHE_TTL);
+                inner.lists.insert(
+                    key,
+                    CachedFiles {
+                        files: Arc::clone(&files),
+                        at: Instant::now(),
+                    },
+                );
+                files
+            }
+        };
+        Ok(rank_files(&files, query, limit))
+    }
+}
+
+fn rank_files(files: &[String], query: &str, limit: usize) -> Vec<String> {
     if query.is_empty() {
-        files.sort_unstable();
-        files.truncate(limit);
-        return files;
+        return files.iter().take(limit).cloned().collect();
     }
     let matcher = SkimMatcherV2::default().smart_case();
-    let mut scored: Vec<(i64, String)> = files
-        .into_iter()
-        .filter_map(|f| matcher.fuzzy_match(&f, query).map(|score| (score, f)))
+    let mut scored: Vec<(i64, &String)> = files
+        .iter()
+        .filter_map(|f| matcher.fuzzy_match(f, query).map(|score| (score, f)))
         .collect();
-    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
     scored.truncate(limit);
-    scored.into_iter().map(|(_, f)| f).collect()
+    scored.into_iter().map(|(_, f)| f.clone()).collect()
 }
 
 #[cfg(test)]
@@ -367,8 +448,17 @@ mod rel_path_tests {
 
 #[cfg(test)]
 mod worktree_files_tests {
-    use super::worktree_files;
+    use super::FilesCache;
     use std::process::Command;
+
+    fn worktree_files(
+        root: &std::path::Path,
+        base: &std::path::Path,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, String> {
+        FilesCache::default().files(root, base, query, limit)
+    }
 
     fn temp_repo() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("tyba-richinput-{}", uuid::Uuid::new_v4()));
@@ -439,5 +529,55 @@ mod worktree_files_tests {
 
         assert!(result.is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn within_the_ttl_the_list_is_served_from_cache_without_git() {
+        let repo = temp_repo();
+        let cache = FilesCache::default();
+
+        let before = cache.files(&repo, &repo, "", 50).unwrap();
+        assert!(!before.contains(&"nascido-depois.txt".to_string()));
+
+        std::fs::write(repo.join("nascido-depois.txt"), "x").unwrap();
+        let cached = cache.files(&repo, &repo, "", 50).unwrap();
+        assert_eq!(
+            before, cached,
+            "dentro do TTL a lista devia vir do cache, sem novo ls-files"
+        );
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn an_expired_entry_reloads_and_sees_new_files() {
+        let repo = temp_repo();
+        let cache = FilesCache::default();
+
+        cache.files(&repo, &repo, "", 50).unwrap();
+        std::fs::write(repo.join("nascido-depois.txt"), "x").unwrap();
+
+        let expired = std::time::Instant::now() - super::FILES_CACHE_TTL * 2;
+        for entry in cache.inner.lock().lists.values_mut() {
+            entry.at = expired;
+        }
+
+        let reloaded = cache.files(&repo, &repo, "", 50).unwrap();
+        assert!(
+            reloaded.contains(&"nascido-depois.txt".to_string()),
+            "entrada expirada devia recarregar do git"
+        );
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn toplevel_resolution_is_cached_per_cwd() {
+        let repo = temp_repo();
+        let cache = FilesCache::default();
+
+        let first = cache.toplevel(&repo);
+        assert!(first.is_some());
+        assert_eq!(cache.toplevel(&repo), first);
+        assert_eq!(cache.inner.lock().roots.len(), 1);
+        std::fs::remove_dir_all(&repo).ok();
     }
 }
