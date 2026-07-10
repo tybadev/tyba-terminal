@@ -268,6 +268,12 @@ const copyText = (text: string) => {
 
 type SidebarMode = "open" | "rail" | "hidden";
 
+const SIDEBAR_WIDTH: Record<SidebarMode, number> = {
+  open: 224,
+  rail: 44,
+  hidden: 0,
+};
+
 function IconAction({
   label,
   shortcut,
@@ -1842,9 +1848,8 @@ export default function App() {
           <>
             {sidebar !== "hidden" && (
                 <aside
-                  className={`tyba-glass flex shrink-0 flex-col ${
-                    open ? "w-56" : "w-11"
-                  }`}
+                  className="tyba-glass flex shrink-0 flex-col"
+                  style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {open && (
                     <label className="mx-2 mt-3 flex h-7 items-center gap-1.5 rounded-[4px] bg-white/[.03] px-2 focus-within:bg-white/[.05]">
@@ -2093,7 +2098,12 @@ export default function App() {
                     </div>
                   ))}
                   {!activeTab && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-5">
+                    <div
+                      className="absolute inset-0 flex flex-col items-center justify-center gap-5"
+                      style={{
+                        transform: `translateX(${-SIDEBAR_WIDTH[sidebar] / 2}px)`,
+                      }}
+                    >
                       <TerminalWindow
                         size={36}
                         className="text-tyba-text-faint"
