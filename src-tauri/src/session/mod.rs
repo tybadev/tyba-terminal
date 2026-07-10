@@ -103,12 +103,17 @@ impl SessionManager {
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
 
-        let worktree = match opts.worktree_task.as_deref() {
+        let (worktree, repo_root) = match opts.worktree_task.as_deref() {
             Some(task) => {
                 let base = resolve_cwd(opts.cwd.as_deref());
-                Some(crate::worktree::create(&base, task).map_err(crate::pty::PtyError::Spawn)?)
+                let root = crate::repo::toplevel(&base).ok_or_else(|| {
+                    PtyError::Spawn("a pasta da sessão não é um repositório git".into())
+                })?;
+                let root = crate::repo::canonicalize_or(&root);
+                let wt = crate::worktree::create(&root, task).map_err(PtyError::Spawn)?;
+                (Some(wt), Some(root))
             }
-            None => None,
+            None => (None, None),
         };
 
         let shell = default_shell();
@@ -153,15 +158,25 @@ impl SessionManager {
             .title
             .or_else(|| opts.worktree_task.clone())
             .unwrap_or_else(|| label.clone());
-        let repo_root = worktree
-            .as_ref()
-            .map(|wt| crate::worktree::main_repo_of(&wt.path))
-            .transpose()
-            .map_err(crate::pty::PtyError::Spawn)?;
-        self.spawn_session(
-            app, pty_pool, id, cmd, opts.kind, title, repo_root, worktree, opts.cols, opts.rows,
+        let result = self.spawn_session(
+            app,
+            pty_pool,
+            id,
+            cmd,
+            opts.kind,
+            title,
+            repo_root,
+            worktree.clone(),
+            opts.cols,
+            opts.rows,
             on_exit,
-        )
+        );
+        if result.is_err() {
+            if let Some(wt) = &worktree {
+                let _ = crate::worktree::remove(&wt.path, true, true);
+            }
+        }
+        result
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -111,7 +111,7 @@ pub fn slugify(title: &str) -> String {
 }
 
 fn short_suffix() -> String {
-    uuid::Uuid::new_v4().simple().to_string()[..4].to_string()
+    uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
 }
 
 pub fn head_sha(repo: &Path) -> Result<String, String> {
@@ -230,18 +230,12 @@ pub fn list(repo: &Path) -> Result<Vec<WorktreeEntry>, String> {
 
 /// Repo principal de um worktree: parent do `--git-common-dir`.
 pub fn main_repo_of(worktree: &Path) -> Result<PathBuf, String> {
-    let common = git_text(
-        {
-            let mut c = git_in(worktree);
-            c.args(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-            c
-        },
-        "git rev-parse --git-common-dir",
-    )?;
-    PathBuf::from(&common)
+    let common =
+        crate::repo::git_path(worktree, "--git-common-dir").ok_or("git-common-dir indisponível")?;
+    common
         .parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| format!("git-common-dir sem parent: {common}"))
+        .ok_or_else(|| format!("git-common-dir sem parent: {}", common.display()))
 }
 
 pub fn is_managed(path: &Path) -> bool {
@@ -277,6 +271,14 @@ fn remove_managed_by(
         "git rev-parse --abbrev-ref",
     )?;
     let main = main_repo_of(worktree)?;
+    if !force {
+        let unmerged = ahead_count(worktree, &head_sha(&main)?)?;
+        if unmerged > 0 {
+            return Err(format!(
+                "worktree tem {unmerged} commit(s) não mergeado(s) (use force para descartar)"
+            ));
+        }
+    }
 
     let mut cmd = git_in(&main);
     cmd.arg("worktree").arg("remove");
@@ -318,8 +320,26 @@ pub fn gc_orphans(known: &HashSet<PathBuf>) -> GcReport {
     }
 }
 
+const GC_RECENT_GRACE: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+fn recently_touched(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|age| age < GC_RECENT_GRACE)
+        .unwrap_or(true)
+}
+
 fn gc_orphans_in(managed: &Path, known: &HashSet<PathBuf>) -> GcReport {
     let mut report = GcReport::default();
+    let managed_canon = crate::repo::canonicalize_or(managed);
     let known: HashSet<PathBuf> = known
         .iter()
         .map(|p| crate::repo::canonicalize_or(p))
@@ -335,8 +355,11 @@ fn gc_orphans_in(managed: &Path, known: &HashSet<PathBuf>) -> GcReport {
             Err(_) => continue,
         };
         for wt in worktrees.flatten().filter(|e| e.path().is_dir()) {
+            if is_symlink(&wt.path()) || is_symlink(&repo_dir.path()) {
+                continue;
+            }
             let path = crate::repo::canonicalize_or(&wt.path());
-            if known.contains(&path) {
+            if !path.starts_with(&managed_canon) || known.contains(&path) {
                 continue;
             }
             gc_one(&path, &mut report);
@@ -356,6 +379,10 @@ fn gc_one(path: &Path, report: &mut GcReport) {
         });
     };
 
+    if recently_touched(path) {
+        keep(report, None, false, 0, "recém-criado (aguardando dono)");
+        return;
+    }
     let main = match main_repo_of(path) {
         Ok(main) => main,
         Err(_) => {
@@ -427,13 +454,17 @@ pub fn setup_script(root: &Path) -> Option<SetupScript> {
     })
 }
 
+const SETUP_ENV_ALLOWLIST: [&str; 6] = ["PATH", "HOME", "USER", "LANG", "TMPDIR", "SHELL"];
+
 /// Env mínimo do setup: o script é código do repo, não do usuário —
 /// nunca recebe o env completo do shell (princípio #6). A allowlist
 /// configurável por repo (`.tyba/config`) chega na Fase 4.
-fn setup_env(worktree: &Path) -> Vec<(String, String)> {
-    let mut env: Vec<(String, String)> = ["PATH", "HOME", "USER", "LANG", "TMPDIR", "SHELL"]
-        .iter()
-        .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+fn filter_setup_env(
+    vars: impl Iterator<Item = (String, String)>,
+    worktree: &Path,
+) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = vars
+        .filter(|(k, _)| SETUP_ENV_ALLOWLIST.contains(&k.as_str()))
         .collect();
     env.push((
         "TYBA_WORKTREE".into(),
@@ -442,20 +473,36 @@ fn setup_env(worktree: &Path) -> Vec<(String, String)> {
     env
 }
 
-pub fn run_setup(worktree: &Path) -> Result<String, String> {
-    let script = worktree.join(SETUP_SCRIPT_REL);
-    if !script.is_file() {
-        return Err("setup.sh não existe no worktree".into());
-    }
+pub fn setup_env(worktree: &Path) -> Vec<(String, String)> {
+    filter_setup_env(std::env::vars(), worktree)
+}
+
+/// Executa o conteúdo CONSENTIDO via stdin do `sh` — o que roda é
+/// byte a byte o que foi hasheado no consent; trocar o arquivo em
+/// disco entre o check e a execução não muda o que executa.
+pub fn run_setup(
+    worktree: &Path,
+    script: &SetupScript,
+    env: &[(String, String)],
+) -> Result<String, String> {
+    use std::io::Write;
+
     let mut cmd = Command::new("sh");
-    cmd.arg(&script)
-        .current_dir(worktree)
-        .stdin(Stdio::null())
-        .env_clear();
-    for (k, v) in setup_env(worktree) {
+    cmd.current_dir(worktree).stdin(Stdio::piped()).env_clear();
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.output().map_err(|e| format!("setup.sh: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("setup.sh: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("stdin do setup indisponível")?
+        .write_all(script.content.as_bytes())
+        .map_err(|e| format!("setup.sh stdin: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("setup.sh: {e}"))?;
     let log = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -601,6 +648,16 @@ mod lifecycle_tests {
         base
     }
 
+    fn backdate(path: &Path) {
+        let ok = Command::new("touch")
+            .args(["-m", "-t", "202601010000"])
+            .arg(path)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "touch -m falhou");
+    }
+
     fn temp_repo(base: &Path) -> PathBuf {
         let repo = base.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -693,11 +750,19 @@ mod lifecycle_tests {
         git(&ahead.path, &["add", "-A"]);
         git(&ahead.path, &["commit", "-qm", "trabalho"]);
         let known = create_in(&managed, &repo, "conhecido").unwrap();
+        for wt in [&disposable.path, &dirty.path, &ahead.path] {
+            backdate(wt);
+        }
         let disposable_canon = crate::repo::canonicalize_or(&disposable.path);
 
         let report = gc_orphans_in(&managed, &HashSet::from([known.path.clone()]));
 
-        assert_eq!(report.removed, vec![disposable_canon]);
+        assert_eq!(
+            report.removed,
+            vec![disposable_canon],
+            "kept: {:?}",
+            report.kept
+        );
         assert!(!disposable.path.exists());
         assert!(dirty.path.exists());
         assert!(ahead.path.exists());
@@ -729,28 +794,97 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn setup_env_filter_drops_everything_outside_the_allowlist() {
+        let vars = vec![
+            ("HOME".to_string(), "/home/t".to_string()),
+            ("AWS_SECRET_ACCESS_KEY".to_string(), "vazou".to_string()),
+            ("PATH".to_string(), "/bin".to_string()),
+        ];
+        let env = filter_setup_env(vars.into_iter(), Path::new("/wt"));
+        let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"HOME"));
+        assert!(keys.contains(&"PATH"));
+        assert!(keys.contains(&"TYBA_WORKTREE"));
+        assert!(!keys.contains(&"AWS_SECRET_ACCESS_KEY"));
+    }
+
+    #[test]
     #[cfg(unix)]
-    fn run_setup_uses_filtered_env_only() {
+    fn run_setup_executes_the_consented_bytes_not_the_file_on_disk() {
         let base = temp_base("setupenv");
         let repo = temp_repo(&base);
         std::fs::create_dir_all(repo.join(".tyba")).unwrap();
         std::fs::write(
             repo.join(SETUP_SCRIPT_REL),
-            "printf '%s|%s|%s' \"$TYBA_WORKTREE\" \"$TYBA_LEAKED_SECRET\" \"$HOME\"\n",
+            "printf '%s' \"$TYBA_WORKTREE\"\n",
         )
         .unwrap();
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-qm", "setup"]);
         let wt = create_in(&base.join("managed"), &repo, "env").unwrap();
 
-        std::env::set_var("TYBA_LEAKED_SECRET", "vazou");
-        let log = run_setup(&wt.path).expect("setup");
-        std::env::remove_var("TYBA_LEAKED_SECRET");
+        let script = setup_script(&wt.path).expect("script");
+        std::fs::write(
+            wt.path.join(SETUP_SCRIPT_REL),
+            "echo TROCADO-DEPOIS-DO-CONSENT\n",
+        )
+        .unwrap();
+        let env = vec![(
+            "TYBA_WORKTREE".to_string(),
+            wt.path.to_string_lossy().into_owned(),
+        )];
 
-        let parts: Vec<&str> = log.split('|').collect();
-        assert_eq!(parts[0], wt.path.to_string_lossy());
-        assert_eq!(parts[1], "", "env fora da allowlist vazou pro setup");
-        assert!(!parts[2].is_empty(), "HOME da allowlist devia passar");
+        let log = run_setup(&wt.path, &script, &env).expect("setup");
+
+        assert!(
+            !log.contains("TROCADO"),
+            "executou o arquivo trocado em vez do conteúdo consentido: {log}"
+        );
+        assert_eq!(log.trim(), wt.path.to_string_lossy());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn gc_skips_symlinked_entries_and_fresh_worktrees() {
+        let base = temp_base("gcsym");
+        let repo = temp_repo(&base);
+        let managed = base.join("managed");
+
+        let fresh = create_in(&managed, &repo, "fresquinho").unwrap();
+        let outside = create_in(&base.join("fora"), &repo, "de-fora").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside.path, managed.join("repo").join("link")).unwrap();
+
+        let report = gc_orphans_in(&managed, &HashSet::new());
+
+        assert!(report.removed.is_empty(), "{:?}", report.removed);
+        assert!(
+            outside.path.exists(),
+            "symlink não podia alcançar fora do managed"
+        );
+        assert!(fresh.path.exists());
+        assert!(report
+            .kept
+            .iter()
+            .any(|k| k.reason.contains("recém-criado")));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn clean_worktree_with_unmerged_commits_refuses_removal_without_force() {
+        let base = temp_base("unmerged");
+        let repo = temp_repo(&base);
+        let wt = create_in(&base.join("managed"), &repo, "t").unwrap();
+        std::fs::write(wt.path.join("b.txt"), "b\n").unwrap();
+        git(&wt.path, &["add", "-A"]);
+        git(&wt.path, &["commit", "-qm", "trabalho"]);
+
+        let err = remove_managed_by(&wt.path, true, false, true).unwrap_err();
+        assert!(err.contains("não mergeado"), "{err}");
+        assert!(wt.path.exists());
+
+        remove_managed_by(&wt.path, true, true, true).expect("force");
+        assert!(!wt.path.exists());
         std::fs::remove_dir_all(&base).ok();
     }
 
@@ -763,8 +897,9 @@ mod lifecycle_tests {
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-qm", "setup"]);
         let wt = create_in(&base.join("managed"), &repo, "fail").unwrap();
+        let script = setup_script(&wt.path).expect("script");
 
-        let err = run_setup(&wt.path).unwrap_err();
+        let err = run_setup(&wt.path, &script, &[]).unwrap_err();
         assert!(err.contains("quebrou"), "{err}");
         std::fs::remove_dir_all(&base).ok();
     }

@@ -126,10 +126,7 @@ fn run_setup_if_consented(app: &AppHandle, state: &AppState, session: &Session) 
     let Some(script) = worktree::setup_script(&wt.path) else {
         return;
     };
-    let repo_key = session
-        .repo_root
-        .as_deref()
-        .unwrap_or(&wt.path)
+    let repo_key = repo::canonicalize_or(session.repo_root.as_deref().unwrap_or(&wt.path))
         .to_string_lossy()
         .into_owned();
     let allowed = state
@@ -142,11 +139,12 @@ fn run_setup_if_consented(app: &AppHandle, state: &AppState, session: &Session) 
     }
     let app = app.clone();
     let path = wt.path.clone();
+    let env = worktree::setup_env(&path);
     let session_id = session.id;
     std::thread::Builder::new()
         .name("worktree-setup".into())
         .spawn(move || {
-            let (ok, log) = match worktree::run_setup(&path) {
+            let (ok, log) = match worktree::run_setup(&path, &script, &env) {
                 Ok(log) => (true, log),
                 Err(e) => (false, e),
             };
@@ -190,7 +188,7 @@ struct WorktreeStatus {
 }
 
 #[tauri::command]
-fn worktree_list(
+async fn worktree_list(
     state: State<'_, AppState>,
     repo_root: String,
 ) -> Result<Vec<WorktreeStatus>, String> {
@@ -205,17 +203,19 @@ fn worktree_list(
 
     Ok(worktree::list(&root)?
         .into_iter()
-        .filter(|e| repo::canonicalize_or(&e.path) != root)
-        .map(|e| {
+        .filter_map(|e| {
             let canonical = repo::canonicalize_or(&e.path);
-            WorktreeStatus {
+            if canonical == root {
+                return None;
+            }
+            Some(WorktreeStatus {
                 dirty: worktree::is_dirty(&e.path).unwrap_or(false),
                 ahead_of_head: worktree::ahead_count(&e.path, &head).unwrap_or(0),
                 managed: worktree::is_managed(&e.path),
                 session_id: by_path.get(&canonical).copied(),
                 path: e.path,
                 branch: e.branch,
-            }
+            })
         })
         .collect())
 }
@@ -260,7 +260,7 @@ fn worktree_set_setup_consent(
 }
 
 #[tauri::command]
-fn worktree_remove(
+async fn worktree_remove(
     state: State<'_, AppState>,
     path: String,
     delete_branch: bool,
@@ -281,8 +281,8 @@ fn worktree_remove(
 }
 
 #[tauri::command]
-fn worktree_gc(state: State<'_, AppState>) -> worktree::GcReport {
-    worktree::gc_orphans(&known_worktree_paths(&state.sessions))
+async fn worktree_gc(state: State<'_, AppState>) -> Result<worktree::GcReport, String> {
+    Ok(worktree::gc_orphans(&known_worktree_paths(&state.sessions)))
 }
 
 fn known_worktree_paths(

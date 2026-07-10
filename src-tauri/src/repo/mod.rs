@@ -146,7 +146,7 @@ pub fn toplevel(cwd: &Path) -> Option<PathBuf> {
     git_path(cwd, "--show-toplevel")
 }
 
-fn git_path(root: &Path, arg: &str) -> Option<PathBuf> {
+pub(crate) fn git_path(root: &Path, arg: &str) -> Option<PathBuf> {
     let out = git_in(root)
         .args(["rev-parse", "--path-format=absolute", arg])
         .output()
