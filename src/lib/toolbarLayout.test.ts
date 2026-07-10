@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { DEFAULT_TOOLBAR, type ToolbarPref } from "./repoSnapshots";
-import { moveChip, zoneOf } from "./toolbarLayout";
+import {
+  DEFAULT_TOOLBAR,
+  parseToolbarPref,
+  type ToolbarPref,
+} from "./repoSnapshots";
+import { dropTarget, moveChip, zoneOf } from "./toolbarLayout";
 
 const pref: ToolbarPref = {
   version: 1,
@@ -52,5 +56,36 @@ describe("moveChip", () => {
     const next = moveChip(DEFAULT_TOOLBAR, "clock", "hidden", 0);
     expect(next.version).toBe(DEFAULT_TOOLBAR.version);
     expect(next.enabled).toBe(DEFAULT_TOOLBAR.enabled);
+  });
+});
+
+describe("dropTarget", () => {
+  test("soltar sobre uma zona aponta pro fim dela", () => {
+    expect(dropTarget(pref, "right")).toEqual({ zone: "right", index: 3 });
+  });
+
+  test("soltar sobre um chip aponta pra posição dele", () => {
+    expect(dropTarget(pref, "branch")).toEqual({ zone: "right", index: 1 });
+  });
+
+  test("id desconhecido não tem alvo", () => {
+    expect(dropTarget(pref, "ghost")).toBeNull();
+  });
+});
+
+describe("parseToolbarPref", () => {
+  test("chip duplicado entre zonas fica só na primeira", () => {
+    const parsed = parseToolbarPref(
+      JSON.stringify({
+        version: 1,
+        enabled: true,
+        left: ["clock"],
+        right: ["branch"],
+        hidden: ["clock", "branch"],
+      }),
+    );
+    expect(parsed.left).toEqual(["clock"]);
+    expect(parsed.right).toEqual(["branch"]);
+    expect(parsed.hidden).toEqual([]);
   });
 });

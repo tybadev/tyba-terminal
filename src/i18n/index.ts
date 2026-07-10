@@ -84,6 +84,12 @@ const resources = {
       chipsZoneRight: "Direita",
       chipsZoneHidden: "Ocultos",
       chipsZoneEmpty: "Solte aqui",
+      chipsDragInstructions:
+        "Para mover um chip, pressione espaço, use as setas e pressione espaço de novo para soltar. Esc cancela.",
+      chipsDragStart: "{{chip}} levantado.",
+      chipsDragOver: "{{chip}} sobre {{target}}.",
+      chipsDragEnd: "{{chip}} solto em {{target}}.",
+      chipsDragCancel: "Movimento de {{chip}} cancelado.",
       richInputToggle: "Rich Input",
       richInputHint:
         "Por padrão a caixa só abre no atalho ⌘⇧G (Ctrl+Shift+G). Ligue para ela aparecer sozinha em sessões de agente.",
@@ -329,6 +335,12 @@ const resources = {
       chipsZoneRight: "Right",
       chipsZoneHidden: "Hidden",
       chipsZoneEmpty: "Drop here",
+      chipsDragInstructions:
+        "To move a chip, press space, use the arrow keys, and press space again to drop. Esc cancels.",
+      chipsDragStart: "{{chip}} picked up.",
+      chipsDragOver: "{{chip}} over {{target}}.",
+      chipsDragEnd: "{{chip}} dropped on {{target}}.",
+      chipsDragCancel: "{{chip}} move cancelled.",
       richInputToggle: "Rich Input",
       richInputHint:
         "By default the box only opens with ⌘⇧G (Ctrl+Shift+G). Turn this on to have it appear by itself in agent sessions.",

@@ -15,6 +15,18 @@ export function zoneOf(pref: ToolbarPref, id: ChipId): ToolbarZone | null {
   return null;
 }
 
+export function dropTarget(
+  pref: ToolbarPref,
+  overId: unknown,
+): { zone: ToolbarZone; index: number } | null {
+  if (isToolbarZone(overId)) {
+    return { zone: overId, index: pref[overId].length };
+  }
+  const zone = zoneOf(pref, overId as ChipId);
+  if (!zone) return null;
+  return { zone, index: pref[zone].indexOf(overId as ChipId) };
+}
+
 export function moveChip(
   pref: ToolbarPref,
   id: ChipId,

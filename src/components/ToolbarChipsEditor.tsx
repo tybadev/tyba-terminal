@@ -4,6 +4,7 @@ import {
   DndContext,
   DragOverlay,
   KeyboardSensor,
+  MeasuringStrategy,
   PointerSensor,
   closestCorners,
   useDroppable,
@@ -11,6 +12,7 @@ import {
   useSensors,
   type DragEndEvent,
   type DragOverEvent,
+  type UniqueIdentifier,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -21,8 +23,13 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { DotsSixVertical } from "@phosphor-icons/react";
 
-import { DEFAULT_TOOLBAR, type ChipId, type ToolbarPref } from "../lib/repoSnapshots";
 import {
+  DEFAULT_TOOLBAR,
+  type ChipId,
+  type ToolbarPref,
+} from "../lib/repoSnapshots";
+import {
+  dropTarget,
   isToolbarZone,
   moveChip,
   zoneOf,
@@ -63,7 +70,7 @@ function ChipPill({ id, overlay }: { id: ChipId; overlay?: boolean }) {
   );
 }
 
-function SortableChip({ id, dragging }: { id: ChipId; dragging: boolean }) {
+function SortableChip({ id }: { id: ChipId }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id });
   return (
@@ -71,7 +78,7 @@ function SortableChip({ id, dragging }: { id: ChipId; dragging: boolean }) {
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
       className={`cursor-grab touch-none focus-visible:outline-1 focus-visible:outline-tyba-green ${
-        isDragging && dragging ? "opacity-40" : ""
+        isDragging ? "opacity-40" : ""
       }`}
       {...attributes}
       {...listeners}
@@ -81,15 +88,7 @@ function SortableChip({ id, dragging }: { id: ChipId; dragging: boolean }) {
   );
 }
 
-function Zone({
-  zone,
-  chips,
-  dragging,
-}: {
-  zone: ToolbarZone;
-  chips: ChipId[];
-  dragging: boolean;
-}) {
+function Zone({ zone, chips }: { zone: ToolbarZone; chips: ChipId[] }) {
   const { t } = useTranslation();
   const { setNodeRef } = useDroppable({ id: zone });
   return (
@@ -98,13 +97,17 @@ function Zone({
       <SortableContext items={chips} strategy={verticalListSortingStrategy}>
         <ul
           ref={setNodeRef}
-          className="flex min-h-[72px] flex-col gap-1 rounded-[6px] border border-dashed border-tyba-border p-1.5"
+          className={`flex min-h-[72px] flex-col gap-1 rounded-[6px] border p-1.5 ${
+            chips.length === 0
+              ? "border-dashed border-tyba-border"
+              : "border-tyba-border/60"
+          }`}
         >
           {chips.map((id) => (
-            <SortableChip key={id} id={id} dragging={dragging} />
+            <SortableChip key={id} id={id} />
           ))}
           {chips.length === 0 && (
-            <li className="flex flex-1 items-center justify-center text-[11px] text-tyba-text-muted">
+            <li className="flex flex-1 items-center justify-center text-[11px] text-tyba-text-faint">
               {t("chipsZoneEmpty")}
             </li>
           )}
@@ -125,39 +128,37 @@ export function ToolbarChipsEditor({ pref, onChange }: Props) {
 
   const shown = draft ?? pref;
 
-  const targetOf = (
-    current: ToolbarPref,
-    overId: unknown,
-  ): { zone: ToolbarZone; index: number } | null => {
-    if (isToolbarZone(overId)) {
-      return { zone: overId, index: current[overId].length };
-    }
-    const zone = zoneOf(current, overId as ChipId);
-    if (!zone) return null;
-    return { zone, index: current[zone].indexOf(overId as ChipId) };
-  };
+  const labelOf = (id: UniqueIdentifier): string =>
+    isToolbarZone(id)
+      ? t(ZONE_LABEL_KEYS[id])
+      : t(CHIP_LABEL_KEYS[id as ChipId]);
 
   const handleOver = (event: DragOverEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
     setDraft((prev) => {
       const current = prev ?? pref;
-      const target = targetOf(current, over.id);
-      if (!target) return prev;
+      const target = dropTarget(current, over.id);
+      if (!target || target.zone === zoneOf(current, active.id as ChipId)) {
+        return prev;
+      }
       return moveChip(current, active.id as ChipId, target.zone, target.index);
     });
   };
 
   const handleEnd = (event: DragEndEvent) => {
     const { active, over } = event;
-    let final = draft ?? pref;
-    if (over && active.id !== over.id) {
-      const target = targetOf(final, over.id);
-      if (target) {
-        final = moveChip(final, active.id as ChipId, target.zone, target.index);
+    if (over) {
+      const current = draft ?? pref;
+      let final = current;
+      if (active.id !== over.id) {
+        const target = dropTarget(current, over.id);
+        if (target) {
+          final = moveChip(current, active.id as ChipId, target.zone, target.index);
+        }
       }
+      if (final !== pref) onChange(final);
     }
-    if (final !== pref) onChange(final);
     setDraft(null);
     setActiveId(null);
   };
@@ -167,7 +168,7 @@ export function ToolbarChipsEditor({ pref, onChange }: Props) {
       <div className="flex items-baseline justify-between pb-2">
         <div>
           <div className="text-[13px] text-tyba-text">{t("chipsEditorTitle")}</div>
-          <div className="text-[11px] text-tyba-text-muted">
+          <div className="text-[11px] text-tyba-text-faint">
             {t("chipsEditorHint")}
           </div>
         </div>
@@ -181,6 +182,30 @@ export function ToolbarChipsEditor({ pref, onChange }: Props) {
       <DndContext
         sensors={sensors}
         collisionDetection={closestCorners}
+        measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+        accessibility={{
+          screenReaderInstructions: { draggable: t("chipsDragInstructions") },
+          announcements: {
+            onDragStart: ({ active }) =>
+              t("chipsDragStart", { chip: labelOf(active.id) }),
+            onDragOver: ({ active, over }) =>
+              over
+                ? t("chipsDragOver", {
+                    chip: labelOf(active.id),
+                    target: labelOf(over.id),
+                  })
+                : t("chipsDragStart", { chip: labelOf(active.id) }),
+            onDragEnd: ({ active, over }) =>
+              over
+                ? t("chipsDragEnd", {
+                    chip: labelOf(active.id),
+                    target: labelOf(over.id),
+                  })
+                : t("chipsDragCancel", { chip: labelOf(active.id) }),
+            onDragCancel: ({ active }) =>
+              t("chipsDragCancel", { chip: labelOf(active.id) }),
+          },
+        }}
         onDragStart={(event) => {
           setActiveId(event.active.id as ChipId);
           setDraft(pref);
@@ -194,15 +219,12 @@ export function ToolbarChipsEditor({ pref, onChange }: Props) {
       >
         <div className="grid grid-cols-3 gap-2">
           {TOOLBAR_ZONES.map((zone) => (
-            <Zone
-              key={zone}
-              zone={zone}
-              chips={shown[zone]}
-              dragging={activeId !== null}
-            />
+            <Zone key={zone} zone={zone} chips={shown[zone]} />
           ))}
         </div>
-        <DragOverlay>{activeId ? <ChipPill id={activeId} overlay /> : null}</DragOverlay>
+        <DragOverlay>
+          {activeId ? <ChipPill id={activeId} overlay /> : null}
+        </DragOverlay>
       </DndContext>
     </div>
   );
