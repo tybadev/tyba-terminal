@@ -88,7 +88,31 @@ interface Props {
   onShellIntegrationChange: (value: boolean) => void;
   richInputPref: RichInputPref;
   onRichInputPrefChange: (value: RichInputPref) => void;
+  richInputRegexInvalid: boolean;
 }
+
+type RichInputToggle = {
+  field: keyof Omit<RichInputPref, "version" | "agentRegex">;
+  label: string;
+  hint?: string;
+};
+
+const RICH_INPUT_TOGGLES: RichInputToggle[] = [
+  { field: "autoShow", label: "richInputAutoShow", hint: "richInputHint" },
+  { field: "autoOpenOnStart", label: "richInputAutoOpen" },
+  { field: "autoDismiss", label: "richInputAutoDismiss" },
+  {
+    field: "submitWithCtrlEnter",
+    label: "richInputCtrlEnter",
+    hint: "richInputCtrlEnterHint",
+  },
+  { field: "warnOnSensitivePrompt", label: "richInputWarnSensitive" },
+  {
+    field: "showOnMatch",
+    label: "richInputShowOnMatch",
+    hint: "richInputShowOnMatchHint",
+  },
+];
 
 const THEME_MODE_KEYS: Record<ThemeMode, string> = {
   dark: "themeDark",
@@ -311,6 +335,7 @@ export function SettingsView({
   onShellIntegrationChange,
   richInputPref,
   onRichInputPrefChange,
+  richInputRegexInvalid,
 }: Props) {
   const { t, i18n } = useTranslation();
   const [section, setSection] = useState<Section>("general");
@@ -700,75 +725,27 @@ export function SettingsView({
                   onCheckedChange={onToolbarEnabledChange}
                 />
               </SettingRow>
-              <SettingRow
-                label={t("richInputAutoShow")}
-                hint={t("richInputHint")}
-              >
-                <Switch
-                  checked={richInputPref.autoShow}
-                  onCheckedChange={(c) =>
-                    onRichInputPrefChange({ ...richInputPref, autoShow: c })
-                  }
-                />
-              </SettingRow>
-              <SettingRow label={t("richInputAutoOpen")}>
-                <Switch
-                  checked={richInputPref.autoOpenOnStart}
-                  onCheckedChange={(c) =>
-                    onRichInputPrefChange({
-                      ...richInputPref,
-                      autoOpenOnStart: c,
-                    })
-                  }
-                />
-              </SettingRow>
-              <SettingRow label={t("richInputAutoDismiss")}>
-                <Switch
-                  checked={richInputPref.autoDismiss}
-                  onCheckedChange={(c) =>
-                    onRichInputPrefChange({ ...richInputPref, autoDismiss: c })
-                  }
-                />
-              </SettingRow>
-              <SettingRow
-                label={t("richInputCtrlEnter")}
-                hint={t("richInputCtrlEnterHint")}
-              >
-                <Switch
-                  checked={richInputPref.submitWithCtrlEnter}
-                  onCheckedChange={(c) =>
-                    onRichInputPrefChange({
-                      ...richInputPref,
-                      submitWithCtrlEnter: c,
-                    })
-                  }
-                />
-              </SettingRow>
-              <SettingRow label={t("richInputWarnSensitive")}>
-                <Switch
-                  checked={richInputPref.warnOnSensitivePrompt}
-                  onCheckedChange={(c) =>
-                    onRichInputPrefChange({
-                      ...richInputPref,
-                      warnOnSensitivePrompt: c,
-                    })
-                  }
-                />
-              </SettingRow>
-              <SettingRow
-                label={t("richInputShowOnMatch")}
-                hint={t("richInputShowOnMatchHint")}
-              >
-                <Switch
-                  checked={richInputPref.showOnMatch}
-                  onCheckedChange={(c) =>
-                    onRichInputPrefChange({ ...richInputPref, showOnMatch: c })
-                  }
-                />
-              </SettingRow>
+              {RICH_INPUT_TOGGLES.map(({ field, label, hint }) => (
+                <SettingRow
+                  key={field}
+                  label={t(label)}
+                  hint={hint ? t(hint) : undefined}
+                >
+                  <Switch
+                    checked={richInputPref[field]}
+                    onCheckedChange={(c) =>
+                      onRichInputPrefChange({ ...richInputPref, [field]: c })
+                    }
+                  />
+                </SettingRow>
+              ))}
               <SettingRow
                 label={t("richInputRegex")}
-                hint={t("richInputRegexHint")}
+                hint={
+                  richInputRegexInvalid
+                    ? t("richInputRegexInvalid")
+                    : t("richInputRegexHint")
+                }
               >
                 <div className="w-64">
                   <TextField

@@ -1,14 +1,22 @@
 import { describe, expect, test } from "bun:test";
 
+import type { SessionCommand } from "./ipc";
 import {
   DEFAULT_RICH_INPUT,
   atQuery,
   enterAction,
   insertToken,
   parseRichInputPref,
+  richInputVisibility,
   shouldShowRichInput,
-  toRelPath,
 } from "./richInput";
+
+const cmd = (over: Partial<SessionCommand> = {}): SessionCommand => ({
+  command: null,
+  running: false,
+  agent_match: false,
+  ...over,
+});
 
 describe("parseRichInputPref", () => {
   test("null e JSON inválido caem no default", () => {
@@ -88,14 +96,84 @@ describe("insertToken", () => {
   });
 });
 
-describe("toRelPath", () => {
-  test("caminho dentro do cwd vira relativo", () => {
-    expect(toRelPath("/repo/src/lib.rs", "/repo")).toBe("src/lib.rs");
+describe("richInputVisibility", () => {
+  const agent = { type: "agent", runner: "claude_code" } as const;
+  const shell = { type: "shell" } as const;
+
+  test("aberto explicitamente ignora autoShow e dismissed", () => {
+    expect(
+      richInputVisibility({
+        kind: shell,
+        command: cmd(),
+        pref: { ...DEFAULT_RICH_INPUT, autoShow: false },
+        opened: true,
+        dismissed: true,
+      }),
+    ).toBe(true);
   });
 
-  test("fora do cwd ou sem cwd fica absoluto", () => {
-    expect(toRelPath("/outro/x.rs", "/repo")).toBe("/outro/x.rs");
-    expect(toRelPath("/outro/x.rs", null)).toBe("/outro/x.rs");
+  test("dismissed esconde mesmo com agente elegível e ocioso", () => {
+    expect(
+      richInputVisibility({
+        kind: agent,
+        command: cmd(),
+        pref: DEFAULT_RICH_INPUT,
+        opened: false,
+        dismissed: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("agente rodando não abre sozinho; ocioso abre", () => {
+    const base = {
+      kind: agent,
+      pref: DEFAULT_RICH_INPUT,
+      opened: false,
+      dismissed: false,
+    };
+    expect(
+      richInputVisibility({ ...base, command: cmd({ running: true }) }),
+    ).toBe(false);
+    expect(
+      richInputVisibility({ ...base, command: cmd({ running: false }) }),
+    ).toBe(true);
+  });
+
+  test("shell só aparece com agent_match e pref ligada", () => {
+    const base = { kind: shell, opened: false, dismissed: false };
+    expect(
+      richInputVisibility({
+        ...base,
+        command: cmd({ agent_match: true }),
+        pref: DEFAULT_RICH_INPUT,
+      }),
+    ).toBe(true);
+    expect(
+      richInputVisibility({
+        ...base,
+        command: cmd({ agent_match: false }),
+        pref: DEFAULT_RICH_INPUT,
+      }),
+    ).toBe(false);
+    expect(
+      richInputVisibility({
+        ...base,
+        command: cmd({ agent_match: true }),
+        pref: { ...DEFAULT_RICH_INPUT, showOnMatch: false },
+      }),
+    ).toBe(false);
+  });
+
+  test("autoShow desligado só mostra com abertura explícita", () => {
+    expect(
+      richInputVisibility({
+        kind: agent,
+        command: cmd(),
+        pref: { ...DEFAULT_RICH_INPUT, autoShow: false },
+        opened: false,
+        dismissed: false,
+      }),
+    ).toBe(false);
   });
 });
 

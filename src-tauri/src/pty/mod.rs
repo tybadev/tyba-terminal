@@ -82,8 +82,6 @@ pub struct SessionCommandPayload {
     /// Linha de comando em execução (shell integration), ou `None` quando ocioso.
     pub command: Option<String>,
     pub running: bool,
-    /// Hint de UI vindo de regex sobre a cmdline (OSC 633;E, forjável).
-    /// Nunca embasa autorização — só decide mostrar a toolbar.
     pub agent_match: bool,
 }
 

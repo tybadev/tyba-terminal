@@ -382,17 +382,14 @@ export interface SessionCommand {
   agent_match: boolean;
 }
 
-export interface RichInputResult {
-  injected_bytes: number;
-  stripped_control: boolean;
-  mentions_sensitive: boolean;
-}
-
 export const submitRichInput = (id: SessionId, text: string, submit: boolean) =>
-  invoke<RichInputResult>("submit_rich_input", { id, text, submit });
+  invoke<void>("submit_rich_input", { id, text, submit });
 
 export const sessionBracketedPaste = (id: SessionId) =>
   invoke<boolean>("session_bracketed_paste", { id });
+
+export const sessionRelPath = (id: SessionId, path: string) =>
+  invoke<string>("session_rel_path", { id, path });
 
 export const setAgentMatchPattern = (pattern: string) =>
   invoke<boolean>("set_agent_match_pattern", { pattern });

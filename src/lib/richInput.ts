@@ -1,4 +1,4 @@
-import type { SessionKind } from "./ipc";
+import type { SessionCommand, SessionKind } from "./ipc";
 
 export const RICH_INPUT_PREF_KEY = "pref.richInput";
 
@@ -100,12 +100,6 @@ export function insertToken(
   return { text: next, caret: at.start + token.length };
 }
 
-export function toRelPath(path: string, cwd: string | null): string {
-  if (!cwd) return path;
-  const prefix = cwd.endsWith("/") ? cwd : `${cwd}/`;
-  return path.startsWith(prefix) ? path.slice(prefix.length) : path;
-}
-
 export function shouldShowRichInput(
   kind: SessionKind,
   agentMatch: boolean,
@@ -113,4 +107,27 @@ export function shouldShowRichInput(
 ): boolean {
   if (kind.type === "agent") return true;
   return agentMatch && pref.showOnMatch;
+}
+
+export interface VisibilityInput {
+  kind: SessionKind;
+  command: SessionCommand | undefined;
+  pref: RichInputPref;
+  opened: boolean;
+  dismissed: boolean;
+}
+
+export function richInputVisibility({
+  kind,
+  command,
+  pref,
+  opened,
+  dismissed,
+}: VisibilityInput): boolean {
+  if (opened) return true;
+  if (dismissed || !pref.autoShow) return false;
+  if (!shouldShowRichInput(kind, command?.agent_match ?? false, pref)) {
+    return false;
+  }
+  return kind.type !== "agent" || command?.running !== true;
 }

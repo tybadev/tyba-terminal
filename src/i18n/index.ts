@@ -77,7 +77,7 @@ const resources = {
       toolbarAheadBehind: "Commits à frente e atrás do upstream",
       richInputToggle: "Rich Input",
       richInputHint:
-        "Caixa de prompt multiline para agentes CLI (Claude Code, Codex). Abre com Ctrl+G.",
+        "Caixa de prompt multiline para agentes CLI (Claude Code, Codex). Abre com ⌘⇧G (Ctrl+Shift+G).",
       richInputPlaceholder: "Prompt para o agente… (@ para arquivos)",
       richInputSend: "Enviar",
       richInputAttach: "Anexar arquivo",
@@ -97,6 +97,8 @@ const resources = {
       richInputRegex: "Regex de detecção de agente",
       richInputRegexHint:
         "Vazio usa o padrão ^(claude|codex|gemini). Avaliado no core; inválido mantém o atual.",
+      richInputRegexInvalid:
+        "Regex inválida — não foi salva. O core mantém a anterior.",
       gitStatusHint:
         "Mostra um rótulo com o número de alterações não commitadas quando a pasta da sessão tem mudanças.",
       gitChanges_one: "{{count}} alteração não commitada",
@@ -305,7 +307,7 @@ const resources = {
       toolbarAheadBehind: "Commits ahead and behind upstream",
       richInputToggle: "Rich Input",
       richInputHint:
-        "Multiline prompt box for CLI agents (Claude Code, Codex). Opens with Ctrl+G.",
+        "Multiline prompt box for CLI agents (Claude Code, Codex). Opens with ⌘⇧G (Ctrl+Shift+G).",
       richInputPlaceholder: "Prompt for the agent… (@ for files)",
       richInputSend: "Send",
       richInputAttach: "Attach file",
@@ -325,6 +327,8 @@ const resources = {
       richInputRegex: "Agent detection regex",
       richInputRegexHint:
         "Empty uses the default ^(claude|codex|gemini). Evaluated in the core; invalid keeps the current one.",
+      richInputRegexInvalid:
+        "Invalid regex — not saved. The core keeps the previous one.",
       gitStatusHint:
         "Shows a badge with the number of uncommitted changes when the session folder has changes.",
       gitChanges_one: "{{count}} uncommitted change",

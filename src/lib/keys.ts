@@ -175,7 +175,7 @@ export const DEFAULT_BINDINGS: Bindings = {
   paste: IS_MAC ? "meta+v" : "ctrl+shift+v",
   search: IS_MAC ? "meta+f" : "ctrl+shift+f",
   selectAll: IS_MAC ? "meta+a" : "ctrl+shift+a",
-  richInput: "ctrl+g",
+  richInput: IS_MAC ? "meta+shift+g" : "ctrl+shift+g",
 };
 
 export const BINDINGS_PREF_KEY = "pref.keybindings";

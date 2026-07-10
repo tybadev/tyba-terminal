@@ -147,6 +147,7 @@ import {
   DEFAULT_RICH_INPUT,
   RICH_INPUT_PREF_KEY,
   parseRichInputPref,
+  richInputVisibility,
   shouldShowRichInput,
   type RichInputPref,
 } from "./lib/richInput";
@@ -327,8 +328,15 @@ export default function App() {
   const [toolbarPref, setToolbarPref] = useState<ToolbarPref>(DEFAULT_TOOLBAR);
   const [richInputPref, setRichInputPref] =
     useState<RichInputPref>(DEFAULT_RICH_INPUT);
-  const [richInputOpen, setRichInputOpen] = useState(false);
+  const [richInputOpened, setRichInputOpened] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [richInputDismissed, setRichInputDismissed] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [richInputFocusNonce, setRichInputFocusNonce] = useState(0);
+  const [richInputRegexInvalid, setRichInputRegexInvalid] = useState(false);
+  const richInputFocused = useRef(false);
   const richInputAutoOpened = useRef<Set<string>>(new Set());
   const [showGitStatus, setShowGitStatus] = useState(true);
   const [shellIntegration, setShellIntegration] = useState(true);
@@ -490,21 +498,58 @@ export default function App() {
 
   const activeSession = activeId ? sessionById.get(activeId) : undefined;
   const activeCommand = activeId ? sessionCommands[activeId] : undefined;
-  const richInputEligible = activeSession
-    ? shouldShowRichInput(
-        activeSession.kind,
-        activeCommand?.agent_match ?? false,
-        richInputPref,
-      )
-    : false;
-  const richInputIdleAgent =
-    activeSession?.kind.type === "agent"
-      ? activeCommand?.running !== true
-      : true;
+  const richInputEligible =
+    activeSession != null &&
+    shouldShowRichInput(
+      activeSession.kind,
+      activeCommand?.agent_match ?? false,
+      richInputPref,
+    );
   const richInputVisible =
-    Boolean(activeSession) &&
-    (richInputOpen ||
-      (richInputPref.autoShow && richInputEligible && richInputIdleAgent));
+    activeSession != null &&
+    activeId != null &&
+    richInputVisibility({
+      kind: activeSession.kind,
+      command: activeCommand,
+      pref: richInputPref,
+      opened: richInputOpened.has(activeId),
+      dismissed: richInputDismissed.has(activeId),
+    });
+
+  const openRichInput = useCallback((id: SessionId) => {
+    setRichInputDismissed((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    setRichInputOpened((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+    setRichInputFocusNonce((n) => n + 1);
+  }, []);
+
+  const closeRichInput = useCallback((id: SessionId) => {
+    setRichInputOpened((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    setRichInputDismissed((prev) =>
+      prev.has(id) ? prev : new Set(prev).add(id),
+    );
+    richInputFocused.current = false;
+    getTerm(id)?.term.focus();
+  }, []);
+
+  useEffect(() => {
+    const live = new Set(sessions.map((s) => s.id));
+    const prune = (prev: Set<string>) => {
+      if ([...prev].every((id) => live.has(id))) return prev;
+      return new Set([...prev].filter((id) => live.has(id)));
+    };
+    setRichInputOpened(prune);
+    setRichInputDismissed(prune);
+  }, [sessions]);
 
   useEffect(() => {
     if (!richInputPref.autoOpenOnStart || !activeId || !richInputEligible) {
@@ -512,9 +557,8 @@ export default function App() {
     }
     if (richInputAutoOpened.current.has(activeId)) return;
     richInputAutoOpened.current.add(activeId);
-    setRichInputOpen(true);
-    setRichInputFocusNonce((n) => n + 1);
-  }, [activeId, richInputEligible, richInputPref.autoOpenOnStart]);
+    openRichInput(activeId);
+  }, [activeId, richInputEligible, richInputPref.autoOpenOnStart, openRichInput]);
 
 
   useEffect(() => {
@@ -904,15 +948,23 @@ export default function App() {
     });
   }, []);
 
-  const changeRichInputPref = useCallback((next: RichInputPref) => {
-    setRichInputPref((prev) => {
-      void setPref(RICH_INPUT_PREF_KEY, JSON.stringify(next)).catch(() => {});
-      if (next.agentRegex !== prev.agentRegex) {
-        void setAgentMatchPattern(next.agentRegex).catch(() => {});
+  const changeRichInputPref = useCallback(
+    async (next: RichInputPref) => {
+      if (next.agentRegex !== richInputPref.agentRegex) {
+        const accepted = await setAgentMatchPattern(next.agentRegex).catch(
+          () => false,
+        );
+        if (!accepted) {
+          setRichInputRegexInvalid(true);
+          return;
+        }
       }
-      return next;
-    });
-  }, []);
+      setRichInputRegexInvalid(false);
+      setRichInputPref(next);
+      void setPref(RICH_INPUT_PREF_KEY, JSON.stringify(next)).catch(() => {});
+    },
+    [richInputPref.agentRegex],
+  );
 
   const changeShellIntegration = useCallback((value: boolean) => {
     setShellIntegration(value);
@@ -1036,7 +1088,9 @@ export default function App() {
       const richInput = parseRichInputPref(richInputRaw);
       setRichInputPref(richInput);
       if (richInput.agentRegex) {
-        void setAgentMatchPattern(richInput.agentRegex).catch(() => {});
+        void setAgentMatchPattern(richInput.agentRegex)
+          .then((accepted) => setRichInputRegexInvalid(!accepted))
+          .catch(() => setRichInputRegexInvalid(true));
       }
       const fontSize = Number(fontRaw);
       if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
@@ -1174,15 +1228,12 @@ export default function App() {
           void splitActive("h");
         } else if (action === "nextPane") {
           cyclePane();
-        } else if (action === "richInput") {
-          const box = document.querySelector<HTMLTextAreaElement>(
-            "[data-rich-input]",
-          );
-          if (box && document.activeElement === box) {
-            if (activeId) getTerm(activeId)?.term.focus();
+        } else if (action === "richInput" && activeId) {
+          if (richInputFocused.current) {
+            richInputFocused.current = false;
+            getTerm(activeId)?.term.focus();
           } else {
-            setRichInputOpen(true);
-            setRichInputFocusNonce((n) => n + 1);
+            openRichInput(activeId);
           }
         }
         return;
@@ -1951,7 +2002,10 @@ export default function App() {
                         toolbarEnabled={toolbarPref.enabled}
                         onToolbarEnabledChange={changeToolbarEnabled}
                         richInputPref={richInputPref}
-                        onRichInputPrefChange={changeRichInputPref}
+                        onRichInputPrefChange={(next) => {
+                          void changeRichInputPref(next);
+                        }}
+                        richInputRegexInvalid={richInputRegexInvalid}
                       />
                     </div>
                   )}
@@ -2079,14 +2133,14 @@ export default function App() {
                 </div>
                 {activeSession && richInputVisible && (
                   <RichInput
+                    key={activeSession.id}
                     sessionId={activeSession.id}
-                    cwd={sessionCwds[activeSession.id] ?? null}
                     pref={richInputPref}
                     focusNonce={richInputFocusNonce}
-                    onClose={() => {
-                      setRichInputOpen(false);
-                      getTerm(activeSession.id)?.term.focus();
+                    onFocusChange={(focused) => {
+                      richInputFocused.current = focused;
                     }}
+                    onClose={() => closeRichInput(activeSession.id)}
                   />
                 )}
                 {activeTab && activeWorkspace && (

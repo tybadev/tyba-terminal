@@ -13,6 +13,7 @@ import {
   listWorktreeFiles,
   promptMentionsSensitive,
   sessionBracketedPaste,
+  sessionRelPath,
   submitRichInput,
   type SessionId,
 } from "../lib/ipc";
@@ -20,7 +21,6 @@ import {
   atQuery,
   enterAction,
   insertToken,
-  toRelPath,
   type RichInputPref,
 } from "../lib/richInput";
 
@@ -30,17 +30,17 @@ const SUGGESTION_LIMIT = 20;
 
 interface Props {
   sessionId: SessionId;
-  cwd: string | null;
   pref: RichInputPref;
   focusNonce: number;
+  onFocusChange: (focused: boolean) => void;
   onClose: () => void;
 }
 
 export function RichInput({
   sessionId,
-  cwd,
   pref,
   focusNonce,
+  onFocusChange,
   onClose,
 }: Props) {
   const { t } = useTranslation();
@@ -65,15 +65,12 @@ export function RichInput({
   }, [sessionId]);
 
   useEffect(() => {
-    setText("");
-    setWarnArmed(false);
-    setError(null);
     refreshMultiline();
-  }, [sessionId, refreshMultiline]);
+  }, [refreshMultiline]);
 
   useEffect(() => {
-    textareaRef.current?.focus();
-  }, [sessionId, focusNonce]);
+    if (focusNonce > 0) textareaRef.current?.focus();
+  }, [focusNonce]);
 
   useEffect(() => {
     if (!active) {
@@ -136,7 +133,7 @@ export function RichInput({
   const attach = async () => {
     const picked = await openDialog({ multiple: false }).catch(() => null);
     if (typeof picked !== "string") return;
-    const rel = toRelPath(picked, cwd);
+    const rel = await sessionRelPath(sessionId, picked).catch(() => picked);
     const next = insertToken(text, caret, { start: caret, query: "" }, rel);
     applyText(next.text, next.caret);
     textareaRef.current?.focus();
@@ -195,6 +192,9 @@ export function RichInput({
       }
       if (action === "none" || !multiline) {
         e.preventDefault();
+        if (!multiline && action === "newline") {
+          setError(t("richInputSingleLine"));
+        }
         return;
       }
       if (e.ctrlKey || e.metaKey) {
@@ -211,10 +211,10 @@ export function RichInput({
   };
 
   const onChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const raw = e.target.value;
-    setText(multiline ? raw : raw.replace(/\n/g, " "));
+    setText(e.target.value);
     setCaret(e.target.selectionStart ?? 0);
     setWarnArmed(false);
+    setError(null);
     resize();
   };
 
@@ -258,7 +258,6 @@ export function RichInput({
         </button>
         <textarea
           ref={textareaRef}
-          data-rich-input
           value={text}
           rows={1}
           placeholder={t("richInputPlaceholder")}
@@ -266,7 +265,11 @@ export function RichInput({
           onKeyDown={onKeyDown}
           onKeyUp={syncCaret}
           onClick={syncCaret}
-          onFocus={refreshMultiline}
+          onFocus={() => {
+            onFocusChange(true);
+            refreshMultiline();
+          }}
+          onBlur={() => onFocusChange(false)}
           className="max-h-[168px] min-h-[28px] flex-1 resize-none rounded-[4px] border border-tyba-border bg-transparent px-2 py-1 font-mono text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-green/50"
         />
         <button

@@ -1,12 +1,4 @@
-//! Rich Input: injeção de prompt multiline em agentes CLI via bracketed paste.
-//!
-//! Regras da spec (swell-docs/tyba/features/rich-input/rules.md):
-//! - payload sempre normalizado antes de tocar o PTY (anti terminal-injection)
-//! - wrapper `ESC[200~ … ESC[201~` só com payload não-vazio e DECSET 2004 ativo
-//! - o `\r` de submit vai num write SEPARADO, nunca concatenado ao payload
-//! - `agent_match` é conveniência de UI, nunca autorização
-
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -14,7 +6,6 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use parking_lot::RwLock;
 use regex::Regex;
-use serde::Serialize;
 
 pub const DEFAULT_AGENT_PATTERN: &str = r"^(claude|codex|gemini)\b";
 pub const SUBMIT_DELAY: Duration = Duration::from_millis(50);
@@ -23,18 +14,19 @@ const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 const PASTE_END_STR: &str = "\x1b[201~";
 
-#[derive(Clone, Serialize)]
-pub struct RichInputResult {
-    pub injected_bytes: usize,
-    pub stripped_control: bool,
-    pub mentions_sensitive: bool,
+fn is_allowed(c: char) -> bool {
+    match c {
+        '\n' | '\t' => true,
+        c if c.is_control() => false,
+        _ => true,
+    }
 }
 
 pub fn normalize(text: &str) -> (String, bool) {
-    let without_paste_end = text.replace(PASTE_END_STR, "");
-    let without_esc = without_paste_end.replace('\x1b', "");
-    let stripped = without_esc.len() != text.len();
-    let normalized = without_esc.replace("\r\n", "\n").replace('\r', "\n");
+    let unwrapped = text.replace(PASTE_END_STR, "");
+    let newlines = unwrapped.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized: String = newlines.chars().filter(|c| is_allowed(*c)).collect();
+    let stripped = newlines.chars().any(|c| !is_allowed(c)) || unwrapped.len() != text.len();
     (normalized, stripped)
 }
 
@@ -49,7 +41,6 @@ pub fn wrap(normalized: &str) -> Vec<u8> {
     bytes
 }
 
-/// Heurística fraca de UX (badge amarelo + segundo clique). Nunca autoriza nem bloqueia.
 const SENSITIVE_NEEDLES: &[&str] = &[
     "password",
     "senha",
@@ -94,10 +85,7 @@ impl AgentMatcher {
                 *self.regex.write() = regex;
                 true
             }
-            Err(e) => {
-                eprintln!("rich_input: pattern de agente inválido, mantendo o atual: {e}");
-                false
-            }
+            Err(_) => false,
         }
     }
 
@@ -129,7 +117,19 @@ pub fn plan_injection(normalized: &str, bracketed_paste: bool) -> Result<Vec<u8>
     Ok(normalized.as_bytes().to_vec())
 }
 
-pub fn worktree_files(root: &Path, query: &str, limit: usize) -> Result<Vec<String>, String> {
+pub fn rel_path(path: &Path, base: &Path) -> String {
+    path.strip_prefix(base)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+pub fn worktree_files(
+    root: &Path,
+    base: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<String>, String> {
     let out = crate::worktree::git_in(root)
         .args([
             "ls-files",
@@ -150,7 +150,10 @@ pub fn worktree_files(root: &Path, query: &str, limit: usize) -> Result<Vec<Stri
         .stdout
         .split(|b| *b == 0)
         .filter(|s| !s.is_empty())
-        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .map(|s| {
+            let absolute: PathBuf = root.join(String::from_utf8_lossy(s).as_ref());
+            rel_path(&absolute, base)
+        })
         .collect();
     Ok(rank_files(files, query, limit))
 }
@@ -176,12 +179,12 @@ mod normalize_tests {
     use super::normalize;
 
     #[test]
-    fn texto_limpo_passa_intacto_e_nao_marca_strip() {
+    fn clean_text_passes_through_without_marking_strip() {
         assert_eq!(normalize("hello world"), ("hello world".into(), false));
     }
 
     #[test]
-    fn remove_paste_end_embutido_no_payload() {
+    fn strips_paste_end_embedded_in_the_payload() {
         let (out, stripped) = normalize("evil\x1b[201~\rrm -rf /");
         assert!(!out.contains('\x1b'));
         assert_eq!(out, "evil\nrm -rf /");
@@ -189,26 +192,48 @@ mod normalize_tests {
     }
 
     #[test]
-    fn remove_todo_esc_restante() {
+    fn strips_every_remaining_esc() {
         let (out, stripped) = normalize("a\x1b[31mred");
         assert_eq!(out, "a[31mred");
         assert!(stripped);
     }
 
     #[test]
-    fn paste_end_remontado_pela_remocao_nao_sobrevive_aos_dois_passos() {
+    fn paste_end_reassembled_by_stripping_does_not_survive_both_passes() {
         let (out, _) = normalize("\x1b\x1b[201~[201~x");
         assert!(!out.contains("\x1b[201~"));
         assert!(!out.contains('\x1b'));
     }
 
     #[test]
-    fn normaliza_crlf_e_cr_para_lf_sem_marcar_strip() {
+    fn eight_bit_csi_cannot_reassemble_the_paste_end() {
+        let (out, stripped) = normalize("x\u{9b}201~rm -rf /");
+        assert_eq!(out, "x201~rm -rf /");
+        assert!(!out.contains('\u{9b}'));
+        assert!(stripped);
+    }
+
+    #[test]
+    fn c0_controls_and_del_never_reach_the_pty() {
+        let (out, stripped) = normalize("ls\u{4}\u{3}\u{7f}x\u{7}");
+        assert_eq!(out, "lsx");
+        assert!(stripped);
+    }
+
+    #[test]
+    fn newline_and_tab_survive_as_content() {
+        let (out, stripped) = normalize("a\n\tb");
+        assert_eq!(out, "a\n\tb");
+        assert!(!stripped);
+    }
+
+    #[test]
+    fn normalizes_crlf_and_cr_to_lf_without_marking_strip() {
         assert_eq!(normalize("a\r\nb\rc"), ("a\nb\nc".into(), false));
     }
 
     #[test]
-    fn cr_nunca_sobrevive_dentro_do_payload() {
+    fn cr_never_survives_inside_the_payload() {
         let (out, _) = normalize("linha1\rlinha2\r\n\r");
         assert!(!out.contains('\r'));
     }
@@ -219,12 +244,12 @@ mod wrap_tests {
     use super::wrap;
 
     #[test]
-    fn payload_vazio_nao_emite_wrapper() {
+    fn empty_payload_emits_no_wrapper() {
         assert!(wrap("").is_empty());
     }
 
     #[test]
-    fn payload_e_embrulhado_em_bracketed_paste() {
+    fn payload_is_wrapped_in_bracketed_paste() {
         assert_eq!(wrap("hi\nthere"), b"\x1b[200~hi\nthere\x1b[201~".to_vec());
     }
 }
@@ -234,7 +259,7 @@ mod plan_injection_tests {
     use super::plan_injection;
 
     #[test]
-    fn com_bracketed_paste_o_payload_vai_embrulhado() {
+    fn with_bracketed_paste_the_payload_is_wrapped() {
         assert_eq!(
             plan_injection("a\nb", true).unwrap(),
             b"\x1b[200~a\nb\x1b[201~".to_vec()
@@ -242,18 +267,18 @@ mod plan_injection_tests {
     }
 
     #[test]
-    fn sem_bracketed_paste_single_line_vai_como_texto_puro() {
+    fn without_bracketed_paste_single_line_goes_as_plain_text() {
         assert_eq!(plan_injection("ls -la", false).unwrap(), b"ls -la".to_vec());
     }
 
     #[test]
-    fn sem_bracketed_paste_multiline_e_recusado() {
+    fn without_bracketed_paste_multiline_is_refused() {
         let err = plan_injection("a\nb", false).unwrap_err();
         assert!(err.contains("multiline"));
     }
 
     #[test]
-    fn payload_vazio_nao_gera_bytes_em_nenhum_modo() {
+    fn empty_payload_yields_no_bytes_in_either_mode() {
         assert!(plan_injection("", true).unwrap().is_empty());
         assert!(plan_injection("", false).unwrap().is_empty());
     }
@@ -264,7 +289,7 @@ mod agent_matcher_tests {
     use super::{AgentMatcher, DEFAULT_AGENT_PATTERN};
 
     #[test]
-    fn default_casa_agentes_conhecidos_por_fronteira_de_palavra() {
+    fn default_matches_known_agents_on_word_boundary() {
         let m = AgentMatcher::new();
         assert!(m.matches("claude"));
         assert!(m.matches("codex --resume abc"));
@@ -275,7 +300,7 @@ mod agent_matcher_tests {
     }
 
     #[test]
-    fn pattern_invalido_e_rejeitado_e_matcher_anterior_continua_valendo() {
+    fn invalid_pattern_is_rejected_and_the_previous_one_stays() {
         let m = AgentMatcher::new();
         assert!(!m.set_pattern("(("));
         assert!(m.matches("codex"));
@@ -283,7 +308,7 @@ mod agent_matcher_tests {
     }
 
     #[test]
-    fn pattern_valido_substitui_o_default() {
+    fn valid_pattern_replaces_the_default() {
         let m = AgentMatcher::new();
         assert!(m.set_pattern(r"^(aider)\b"));
         assert!(m.matches("aider --model x"));
@@ -291,7 +316,7 @@ mod agent_matcher_tests {
     }
 
     #[test]
-    fn pattern_vazio_reseta_para_o_default_em_vez_de_casar_tudo() {
+    fn empty_pattern_resets_to_the_default_instead_of_matching_everything() {
         let m = AgentMatcher::new();
         assert!(m.set_pattern(r"^(aider)\b"));
         assert!(m.set_pattern("  "));
@@ -305,7 +330,7 @@ mod mentions_sensitive_tests {
     use super::mentions_sensitive;
 
     #[test]
-    fn detecta_termos_sensiveis_sem_case() {
+    fn detects_sensitive_terms_case_insensitively() {
         assert!(mentions_sensitive("my PassWord is hunter2"));
         assert!(mentions_sensitive("cole o API key aqui"));
         assert!(mentions_sensitive("leia o .env e me diga"));
@@ -313,8 +338,30 @@ mod mentions_sensitive_tests {
     }
 
     #[test]
-    fn texto_comum_nao_dispara() {
+    fn ordinary_text_does_not_trigger() {
         assert!(!mentions_sensitive("refatora o parser de diff"));
+    }
+}
+
+#[cfg(test)]
+mod rel_path_tests {
+    use super::rel_path;
+    use std::path::Path;
+
+    #[test]
+    fn path_inside_the_base_becomes_relative() {
+        assert_eq!(
+            rel_path(Path::new("/repo/src/lib.rs"), Path::new("/repo")),
+            "src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn path_outside_the_base_stays_absolute() {
+        assert_eq!(
+            rel_path(Path::new("/other/x.rs"), Path::new("/repo")),
+            "/other/x.rs"
+        );
     }
 }
 
@@ -350,10 +397,10 @@ mod worktree_files_tests {
     }
 
     #[test]
-    fn lista_rastreados_e_untracked_mas_nunca_ignorados() {
+    fn lists_tracked_and_untracked_but_never_ignored() {
         let repo = temp_repo();
 
-        let files = worktree_files(&repo, "", 50).unwrap();
+        let files = worktree_files(&repo, &repo, "", 50).unwrap();
 
         assert!(files.contains(&"main.rs".to_string()));
         assert!(files.contains(&"src/lib.rs".to_string()));
@@ -363,21 +410,32 @@ mod worktree_files_tests {
     }
 
     #[test]
-    fn query_fuzzy_prioriza_o_match_e_respeita_o_limite() {
+    fn paths_are_relative_to_the_session_cwd_not_the_repo_root() {
+        let repo = temp_repo();
+        let base = repo.join("src");
+
+        let files = worktree_files(&repo, &base, "lib", 10).unwrap();
+
+        assert_eq!(files.first().map(String::as_str), Some("lib.rs"));
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn fuzzy_query_ranks_the_match_first_and_respects_the_limit() {
         let repo = temp_repo();
 
-        let files = worktree_files(&repo, "mainrs", 1).unwrap();
+        let files = worktree_files(&repo, &repo, "mainrs", 1).unwrap();
 
         assert_eq!(files, vec!["main.rs".to_string()]);
         std::fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
-    fn fora_de_repo_git_retorna_erro() {
+    fn outside_a_git_repo_returns_an_error() {
         let dir = std::env::temp_dir().join(format!("tyba-notrepo-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let result = worktree_files(&dir, "", 10);
+        let result = worktree_files(&dir, &dir, "", 10);
 
         assert!(result.is_err());
         std::fs::remove_dir_all(&dir).ok();
