@@ -86,6 +86,7 @@ interface Props {
   focused: boolean;
   framed: boolean;
   rect: PaneRectStyle | null;
+  exited?: boolean;
   onExit?: () => void;
   onFocus?: () => void;
   onPaste?: (sessionId: SessionId, text: string) => void;
@@ -99,6 +100,7 @@ export function TerminalView({
   focused,
   framed,
   rect,
+  exited,
   onExit,
   onFocus,
   onPaste,
@@ -113,6 +115,8 @@ export function TerminalView({
   onFocusRef.current = onFocus;
   const onPasteRef = useRef(onPaste);
   onPasteRef.current = onPaste;
+  const exitedRef = useRef(exited);
+  exitedRef.current = exited;
   const [menuHasSelection, setMenuHasSelection] = useState(false);
   const [menuMouseMode, setMenuMouseMode] = useState(false);
 
@@ -197,13 +201,22 @@ export function TerminalView({
       if (disposed) releaseAttachment();
     })().catch(() => {});
 
+    let exitBannerShown = false;
+    const showExitBanner = () => {
+      if (disposed || exitBannerShown) return;
+      exitBannerShown = true;
+      term.write(`\r\n\x1b[2m${i18n.t("sessionEnded")}\x1b[0m\r\n`);
+    };
+
     void onPtyExit(sessionId, () => {
       void attached.then(() => {
         if (disposed) return;
-        term.write(`\r\n\x1b[2m${i18n.t("sessionEnded")}\x1b[0m\r\n`);
+        showExitBanner();
         onExit?.();
       });
     }).then(addUnlistener);
+
+    if (exitedRef.current) void attached.then(showExitBanner);
 
     let lastCols = -1;
     let lastRows = -1;

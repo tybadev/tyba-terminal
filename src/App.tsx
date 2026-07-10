@@ -106,6 +106,7 @@ import {
   onLayoutChanged,
   onSessionCommand,
   onSessionCwd,
+  onSessionStatus,
   openViewTab,
   paneSession,
   renameWorkspace,
@@ -473,6 +474,18 @@ export default function App() {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     for (const s of sessions) {
+      void onSessionStatus(s.id, (session) => {
+        setSessions((prev) => {
+          const current = prev.find((c) => c.id === session.id);
+          if (
+            !current ||
+            JSON.stringify(current.status) === JSON.stringify(session.status)
+          ) {
+            return prev;
+          }
+          return prev.map((c) => (c.id === session.id ? session : c));
+        });
+      }).then((un) => (disposed ? un() : unlisteners.push(un)));
       void onSessionCommand(s.id, (payload) => {
         setSessionCommands((prev) => ({ ...prev, [s.id]: payload }));
       }).then((un) => (disposed ? un() : unlisteners.push(un)));
@@ -2054,6 +2067,7 @@ export default function App() {
                         visible={paneRect !== null}
                         focused={s.id === activeId}
                         framed={(paneLayout?.panes.length ?? 0) > 1}
+                        exited={s.status.state === "exited"}
                         rect={
                           paneRect
                             ? {
