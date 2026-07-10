@@ -36,6 +36,7 @@ struct AppState {
     repos: repo::SharedRepoWatcher,
     repo_reconcile: std::sync::mpsc::Sender<()>,
     rich_input_submit: parking_lot::Mutex<()>,
+    worktree_files: rich_input::FilesCache,
 }
 
 fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::PathBuf> {
@@ -202,8 +203,9 @@ fn list_worktree_files(
     limit: Option<usize>,
 ) -> Result<Vec<String>, String> {
     let cwd = session_cwd_of(&state, id)?;
-    let root = repo::toplevel(&cwd).ok_or("sessão fora de repositório git")?;
-    rich_input::worktree_files(&root, &cwd, &query, limit.unwrap_or(50).min(500))
+    state
+        .worktree_files
+        .files_for(&cwd, &query, limit.unwrap_or(50).min(500))
 }
 
 #[tauri::command]
@@ -979,6 +981,7 @@ pub fn run() {
                 repos,
                 repo_reconcile: reconcile_tx.clone(),
                 rich_input_submit: parking_lot::Mutex::new(()),
+                worktree_files: rich_input::FilesCache::default(),
             });
 
             std::thread::Builder::new()

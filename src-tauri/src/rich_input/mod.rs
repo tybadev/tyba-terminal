@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use regex::Regex;
 
 pub const DEFAULT_AGENT_PATTERN: &str = r"^(claude|codex|gemini)\b";
@@ -124,12 +125,9 @@ pub fn rel_path(path: &Path, base: &Path) -> String {
         .into_owned()
 }
 
-pub fn worktree_files(
-    root: &Path,
-    base: &Path,
-    query: &str,
-    limit: usize,
-) -> Result<Vec<String>, String> {
+const FILES_CACHE_TTL: Duration = Duration::from_secs(5);
+
+fn load_worktree_files(root: &Path, base: &Path) -> Result<Vec<String>, String> {
     let out = crate::worktree::git_in(root)
         .args([
             "ls-files",
@@ -146,7 +144,7 @@ pub fn worktree_files(
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let files = out
+    let mut files: Vec<String> = out
         .stdout
         .split(|b| *b == 0)
         .filter(|s| !s.is_empty())
@@ -155,23 +153,60 @@ pub fn worktree_files(
             rel_path(&absolute, base)
         })
         .collect();
-    Ok(rank_files(files, query, limit))
+    files.sort_unstable();
+    Ok(files)
 }
 
-fn rank_files(mut files: Vec<String>, query: &str, limit: usize) -> Vec<String> {
+struct CachedFiles {
+    files: Arc<Vec<String>>,
+    at: Instant,
+}
+
+#[derive(Default)]
+pub struct FilesCache {
+    lists: Mutex<HashMap<PathBuf, CachedFiles>>,
+}
+
+impl FilesCache {
+    pub fn files_for(&self, cwd: &Path, query: &str, limit: usize) -> Result<Vec<String>, String> {
+        let cwd = crate::repo::canonicalize_or(cwd);
+        let cached = {
+            let mut lists = self.lists.lock();
+            lists.retain(|_, entry| entry.at.elapsed() < FILES_CACHE_TTL);
+            lists.get(&cwd).map(|hit| Arc::clone(&hit.files))
+        };
+        let files = match cached {
+            Some(files) => files,
+            None => {
+                let root = crate::repo::toplevel(&cwd)
+                    .ok_or_else(|| "sessão fora de repositório git".to_string())?;
+                let files = Arc::new(load_worktree_files(&root, &cwd)?);
+                self.lists.lock().insert(
+                    cwd,
+                    CachedFiles {
+                        files: Arc::clone(&files),
+                        at: Instant::now(),
+                    },
+                );
+                files
+            }
+        };
+        Ok(rank_files(&files, query, limit))
+    }
+}
+
+fn rank_files(files: &[String], query: &str, limit: usize) -> Vec<String> {
     if query.is_empty() {
-        files.sort_unstable();
-        files.truncate(limit);
-        return files;
+        return files.iter().take(limit).cloned().collect();
     }
     let matcher = SkimMatcherV2::default().smart_case();
-    let mut scored: Vec<(i64, String)> = files
-        .into_iter()
-        .filter_map(|f| matcher.fuzzy_match(&f, query).map(|score| (score, f)))
+    let mut scored: Vec<(i64, &String)> = files
+        .iter()
+        .filter_map(|f| matcher.fuzzy_match(f, query).map(|score| (score, f)))
         .collect();
-    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
     scored.truncate(limit);
-    scored.into_iter().map(|(_, f)| f).collect()
+    scored.into_iter().map(|(_, f)| f.clone()).collect()
 }
 
 #[cfg(test)]
@@ -367,8 +402,16 @@ mod rel_path_tests {
 
 #[cfg(test)]
 mod worktree_files_tests {
-    use super::worktree_files;
+    use super::FilesCache;
     use std::process::Command;
+
+    fn worktree_files(
+        base: &std::path::Path,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, String> {
+        FilesCache::default().files_for(base, query, limit)
+    }
 
     fn temp_repo() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("tyba-richinput-{}", uuid::Uuid::new_v4()));
@@ -400,7 +443,7 @@ mod worktree_files_tests {
     fn lists_tracked_and_untracked_but_never_ignored() {
         let repo = temp_repo();
 
-        let files = worktree_files(&repo, &repo, "", 50).unwrap();
+        let files = worktree_files(&repo, "", 50).unwrap();
 
         assert!(files.contains(&"main.rs".to_string()));
         assert!(files.contains(&"src/lib.rs".to_string()));
@@ -414,7 +457,7 @@ mod worktree_files_tests {
         let repo = temp_repo();
         let base = repo.join("src");
 
-        let files = worktree_files(&repo, &base, "lib", 10).unwrap();
+        let files = worktree_files(&base, "lib", 10).unwrap();
 
         assert_eq!(files.first().map(String::as_str), Some("lib.rs"));
         std::fs::remove_dir_all(&repo).ok();
@@ -424,7 +467,7 @@ mod worktree_files_tests {
     fn fuzzy_query_ranks_the_match_first_and_respects_the_limit() {
         let repo = temp_repo();
 
-        let files = worktree_files(&repo, &repo, "mainrs", 1).unwrap();
+        let files = worktree_files(&repo, "mainrs", 1).unwrap();
 
         assert_eq!(files, vec!["main.rs".to_string()]);
         std::fs::remove_dir_all(&repo).ok();
@@ -435,9 +478,50 @@ mod worktree_files_tests {
         let dir = std::env::temp_dir().join(format!("tyba-notrepo-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let result = worktree_files(&dir, &dir, "", 10);
+        let result = worktree_files(&dir, "", 10);
 
         assert!(result.is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn within_the_ttl_the_list_is_served_from_cache_without_git() {
+        let repo = temp_repo();
+        let cache = FilesCache::default();
+
+        let before = cache.files_for(&repo, "", 50).unwrap();
+        assert!(!before.contains(&"nascido-depois.txt".to_string()));
+
+        std::fs::write(repo.join("nascido-depois.txt"), "x").unwrap();
+        let cached = cache.files_for(&repo, "", 50).unwrap();
+        assert_eq!(
+            before, cached,
+            "dentro do TTL a lista devia vir do cache, sem novo ls-files"
+        );
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn an_expired_entry_reloads_and_sees_new_files() {
+        let repo = temp_repo();
+        let cache = FilesCache::default();
+
+        cache.files_for(&repo, "", 50).unwrap();
+        std::fs::write(repo.join("nascido-depois.txt"), "x").unwrap();
+
+        let Some(expired) = std::time::Instant::now().checked_sub(super::FILES_CACHE_TTL * 2)
+        else {
+            return;
+        };
+        for entry in cache.lists.lock().values_mut() {
+            entry.at = expired;
+        }
+
+        let reloaded = cache.files_for(&repo, "", 50).unwrap();
+        assert!(
+            reloaded.contains(&"nascido-depois.txt".to_string()),
+            "entrada expirada devia recarregar do git"
+        );
+        std::fs::remove_dir_all(&repo).ok();
     }
 }
