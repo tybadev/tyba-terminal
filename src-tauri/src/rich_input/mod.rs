@@ -157,78 +157,32 @@ fn load_worktree_files(root: &Path, base: &Path) -> Result<Vec<String>, String> 
     Ok(files)
 }
 
-struct CachedRoot {
-    root: Option<PathBuf>,
-    at: Instant,
-}
-
 struct CachedFiles {
     files: Arc<Vec<String>>,
     at: Instant,
 }
 
 #[derive(Default)]
-struct FilesCacheInner {
-    roots: HashMap<PathBuf, CachedRoot>,
-    lists: HashMap<(PathBuf, PathBuf), CachedFiles>,
-}
-
-/// Cache do popover `@arquivo`: o comando chega a cada keystroke (debounce
-/// de 80ms no webview) e sem cache dispara dois subprocessos git por tecla.
-/// TTL curto em vez de invalidação pelo watcher: arquivo untracked novo não
-/// toca `HEAD`/`index`/refs, então `repo://changed` nunca dispararia.
-#[derive(Default)]
 pub struct FilesCache {
-    inner: Mutex<FilesCacheInner>,
+    lists: Mutex<HashMap<PathBuf, CachedFiles>>,
 }
 
 impl FilesCache {
-    pub fn toplevel(&self, cwd: &Path) -> Option<PathBuf> {
-        {
-            let inner = self.inner.lock();
-            if let Some(hit) = inner.roots.get(cwd) {
-                if hit.at.elapsed() < FILES_CACHE_TTL {
-                    return hit.root.clone();
-                }
-            }
-        }
-        let root = crate::repo::toplevel(cwd);
-        let mut inner = self.inner.lock();
-        inner.roots.retain(|_, v| v.at.elapsed() < FILES_CACHE_TTL);
-        inner.roots.insert(
-            cwd.to_path_buf(),
-            CachedRoot {
-                root: root.clone(),
-                at: Instant::now(),
-            },
-        );
-        root
-    }
-
-    pub fn files(
-        &self,
-        root: &Path,
-        base: &Path,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<String>, String> {
-        let key = (root.to_path_buf(), base.to_path_buf());
+    pub fn files_for(&self, cwd: &Path, query: &str, limit: usize) -> Result<Vec<String>, String> {
+        let cwd = crate::repo::canonicalize_or(cwd);
         let cached = {
-            let inner = self.inner.lock();
-            inner
-                .lists
-                .get(&key)
-                .filter(|hit| hit.at.elapsed() < FILES_CACHE_TTL)
-                .map(|hit| Arc::clone(&hit.files))
+            let mut lists = self.lists.lock();
+            lists.retain(|_, entry| entry.at.elapsed() < FILES_CACHE_TTL);
+            lists.get(&cwd).map(|hit| Arc::clone(&hit.files))
         };
         let files = match cached {
             Some(files) => files,
             None => {
-                let files = Arc::new(load_worktree_files(root, base)?);
-                let mut inner = self.inner.lock();
-                inner.lists.retain(|_, v| v.at.elapsed() < FILES_CACHE_TTL);
-                inner.lists.insert(
-                    key,
+                let root = crate::repo::toplevel(&cwd)
+                    .ok_or_else(|| "sessão fora de repositório git".to_string())?;
+                let files = Arc::new(load_worktree_files(&root, &cwd)?);
+                self.lists.lock().insert(
+                    cwd,
                     CachedFiles {
                         files: Arc::clone(&files),
                         at: Instant::now(),
@@ -452,12 +406,11 @@ mod worktree_files_tests {
     use std::process::Command;
 
     fn worktree_files(
-        root: &std::path::Path,
         base: &std::path::Path,
         query: &str,
         limit: usize,
     ) -> Result<Vec<String>, String> {
-        FilesCache::default().files(root, base, query, limit)
+        FilesCache::default().files_for(base, query, limit)
     }
 
     fn temp_repo() -> std::path::PathBuf {
@@ -490,7 +443,7 @@ mod worktree_files_tests {
     fn lists_tracked_and_untracked_but_never_ignored() {
         let repo = temp_repo();
 
-        let files = worktree_files(&repo, &repo, "", 50).unwrap();
+        let files = worktree_files(&repo, "", 50).unwrap();
 
         assert!(files.contains(&"main.rs".to_string()));
         assert!(files.contains(&"src/lib.rs".to_string()));
@@ -504,7 +457,7 @@ mod worktree_files_tests {
         let repo = temp_repo();
         let base = repo.join("src");
 
-        let files = worktree_files(&repo, &base, "lib", 10).unwrap();
+        let files = worktree_files(&base, "lib", 10).unwrap();
 
         assert_eq!(files.first().map(String::as_str), Some("lib.rs"));
         std::fs::remove_dir_all(&repo).ok();
@@ -514,7 +467,7 @@ mod worktree_files_tests {
     fn fuzzy_query_ranks_the_match_first_and_respects_the_limit() {
         let repo = temp_repo();
 
-        let files = worktree_files(&repo, &repo, "mainrs", 1).unwrap();
+        let files = worktree_files(&repo, "mainrs", 1).unwrap();
 
         assert_eq!(files, vec!["main.rs".to_string()]);
         std::fs::remove_dir_all(&repo).ok();
@@ -525,7 +478,7 @@ mod worktree_files_tests {
         let dir = std::env::temp_dir().join(format!("tyba-notrepo-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let result = worktree_files(&dir, &dir, "", 10);
+        let result = worktree_files(&dir, "", 10);
 
         assert!(result.is_err());
         std::fs::remove_dir_all(&dir).ok();
@@ -536,11 +489,11 @@ mod worktree_files_tests {
         let repo = temp_repo();
         let cache = FilesCache::default();
 
-        let before = cache.files(&repo, &repo, "", 50).unwrap();
+        let before = cache.files_for(&repo, "", 50).unwrap();
         assert!(!before.contains(&"nascido-depois.txt".to_string()));
 
         std::fs::write(repo.join("nascido-depois.txt"), "x").unwrap();
-        let cached = cache.files(&repo, &repo, "", 50).unwrap();
+        let cached = cache.files_for(&repo, "", 50).unwrap();
         assert_eq!(
             before, cached,
             "dentro do TTL a lista devia vir do cache, sem novo ls-files"
@@ -553,31 +506,22 @@ mod worktree_files_tests {
         let repo = temp_repo();
         let cache = FilesCache::default();
 
-        cache.files(&repo, &repo, "", 50).unwrap();
+        cache.files_for(&repo, "", 50).unwrap();
         std::fs::write(repo.join("nascido-depois.txt"), "x").unwrap();
 
-        let expired = std::time::Instant::now() - super::FILES_CACHE_TTL * 2;
-        for entry in cache.inner.lock().lists.values_mut() {
+        let Some(expired) = std::time::Instant::now().checked_sub(super::FILES_CACHE_TTL * 2)
+        else {
+            return;
+        };
+        for entry in cache.lists.lock().values_mut() {
             entry.at = expired;
         }
 
-        let reloaded = cache.files(&repo, &repo, "", 50).unwrap();
+        let reloaded = cache.files_for(&repo, "", 50).unwrap();
         assert!(
             reloaded.contains(&"nascido-depois.txt".to_string()),
             "entrada expirada devia recarregar do git"
         );
-        std::fs::remove_dir_all(&repo).ok();
-    }
-
-    #[test]
-    fn toplevel_resolution_is_cached_per_cwd() {
-        let repo = temp_repo();
-        let cache = FilesCache::default();
-
-        let first = cache.toplevel(&repo);
-        assert!(first.is_some());
-        assert_eq!(cache.toplevel(&repo), first);
-        assert_eq!(cache.inner.lock().roots.len(), 1);
         std::fs::remove_dir_all(&repo).ok();
     }
 }

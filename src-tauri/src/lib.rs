@@ -203,13 +203,9 @@ fn list_worktree_files(
     limit: Option<usize>,
 ) -> Result<Vec<String>, String> {
     let cwd = session_cwd_of(&state, id)?;
-    let root = state
-        .worktree_files
-        .toplevel(&cwd)
-        .ok_or("sessão fora de repositório git")?;
     state
         .worktree_files
-        .files(&root, &cwd, &query, limit.unwrap_or(50).min(500))
+        .files_for(&cwd, &query, limit.unwrap_or(50).min(500))
 }
 
 #[tauri::command]
