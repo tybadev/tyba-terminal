@@ -11,6 +11,7 @@ import { Paperclip, PaperPlaneRight, Warning } from "@phosphor-icons/react";
 
 import {
   listWorktreeFiles,
+  onSessionBracketedPaste,
   promptMentionsSensitive,
   sessionBracketedPaste,
   sessionRelPath,
@@ -66,10 +67,23 @@ export function RichInput({
 
   useEffect(() => {
     refreshMultiline();
-  }, [refreshMultiline]);
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    void onSessionBracketedPaste(sessionId, setMultiline).then((un) => {
+      if (disposed) un();
+      else unlisten = un;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [sessionId, refreshMultiline]);
 
+  const seenNonce = useRef(focusNonce);
   useEffect(() => {
-    if (focusNonce > 0) textareaRef.current?.focus();
+    if (focusNonce === seenNonce.current) return;
+    seenNonce.current = focusNonce;
+    textareaRef.current?.focus();
   }, [focusNonce]);
 
   useEffect(() => {

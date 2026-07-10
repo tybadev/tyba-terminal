@@ -94,6 +94,11 @@ pub struct SessionCwdPayload {
     pub cwd: String,
 }
 
+#[derive(Clone, Serialize)]
+pub struct SessionBracketedPayload {
+    pub bracketed_paste: bool,
+}
+
 struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -175,6 +180,7 @@ impl PtyPool {
         let exit_event = format!("pty://exit/{session_id}");
         let command_event = format!("session://command/{session_id}");
         let cwd_event = format!("session://cwd/{session_id}");
+        let bracketed_event = format!("session://bracketed/{session_id}");
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(CHANNEL_CAPACITY);
 
         std::thread::Builder::new()
@@ -208,6 +214,7 @@ impl PtyPool {
                 let mut last_cmd: Option<String> = None;
                 let mut last_match = false;
                 let mut last_cwd: Option<std::path::PathBuf> = None;
+                let mut last_bracketed = false;
 
                 loop {
                     let chunk = if !queued {
@@ -225,7 +232,7 @@ impl PtyPool {
                     match chunk {
                         Some(chunk) => {
                             let due = last_flush.elapsed() >= FLUSH_INTERVAL;
-                            {
+                            let bracketed = {
                                 let mut screen = reader_screen.lock();
                                 screen.parser.process(&chunk);
                                 if screen.attachers > 0 {
@@ -235,9 +242,19 @@ impl PtyPool {
                                     emit_pending(&mut screen, &app, &output_event);
                                 }
                                 queued = !screen.pending.is_empty();
-                            }
+                                screen.parser.screen().bracketed_paste()
+                            };
                             if due {
                                 last_flush = Instant::now();
+                            }
+                            if bracketed != last_bracketed {
+                                last_bracketed = bracketed;
+                                let _ = app.emit(
+                                    &bracketed_event,
+                                    SessionBracketedPayload {
+                                        bracketed_paste: bracketed,
+                                    },
+                                );
                             }
                             for ev in osc.feed(&chunk) {
                                 use crate::status::ShellEvent;

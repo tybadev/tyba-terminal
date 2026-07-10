@@ -391,6 +391,14 @@ export const sessionBracketedPaste = (id: SessionId) =>
 export const sessionRelPath = (id: SessionId, path: string) =>
   invoke<string>("session_rel_path", { id, path });
 
+export const onSessionBracketedPaste = (
+  id: SessionId,
+  handler: (enabled: boolean) => void,
+): Promise<UnlistenFn> =>
+  listen<{ bracketed_paste: boolean }>(`session://bracketed/${id}`, (e) =>
+    handler(e.payload.bracketed_paste),
+  );
+
 export const setAgentMatchPattern = (pattern: string) =>
   invoke<boolean>("set_agent_match_pattern", { pattern });
 

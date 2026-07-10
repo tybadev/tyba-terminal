@@ -338,6 +338,7 @@ export default function App() {
   const [richInputRegexInvalid, setRichInputRegexInvalid] = useState(false);
   const richInputFocused = useRef(false);
   const richInputAutoOpened = useRef<Set<string>>(new Set());
+  const dismissedCommand = useRef<Record<string, string | null>>({});
   const [showGitStatus, setShowGitStatus] = useState(true);
   const [shellIntegration, setShellIntegration] = useState(true);
   const [menuWorkspace, setMenuWorkspace] = useState<string | null>(null);
@@ -527,19 +528,23 @@ export default function App() {
     setRichInputFocusNonce((n) => n + 1);
   }, []);
 
-  const closeRichInput = useCallback((id: SessionId) => {
-    setRichInputOpened((prev) => {
-      if (!prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
-    setRichInputDismissed((prev) =>
-      prev.has(id) ? prev : new Set(prev).add(id),
-    );
-    richInputFocused.current = false;
-    getTerm(id)?.term.focus();
-  }, []);
+  const closeRichInput = useCallback(
+    (id: SessionId) => {
+      setRichInputOpened((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      dismissedCommand.current[id] = sessionCommands[id]?.command ?? null;
+      setRichInputDismissed((prev) =>
+        prev.has(id) ? prev : new Set(prev).add(id),
+      );
+      richInputFocused.current = false;
+      getTerm(id)?.term.focus();
+    },
+    [sessionCommands],
+  );
 
   useEffect(() => {
     const live = new Set(sessions.map((s) => s.id));
@@ -550,6 +555,21 @@ export default function App() {
     setRichInputOpened(prune);
     setRichInputDismissed(prune);
   }, [sessions]);
+
+  useEffect(() => {
+    if (!activeId) return;
+    const current = activeCommand?.command ?? null;
+    if (
+      richInputDismissed.has(activeId) &&
+      dismissedCommand.current[activeId] !== current
+    ) {
+      setRichInputDismissed((prev) => {
+        const next = new Set(prev);
+        next.delete(activeId);
+        return next;
+      });
+    }
+  }, [activeId, activeCommand?.command, richInputDismissed]);
 
   useEffect(() => {
     if (!richInputPref.autoOpenOnStart || !activeId || !richInputEligible) {
