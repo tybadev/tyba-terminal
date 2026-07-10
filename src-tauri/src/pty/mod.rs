@@ -428,12 +428,14 @@ impl PtyPool {
     /// original: pid morto ou reusado pelo SO devolve `None`, nunca um pid
     /// que aponta para um processo alheio.
     pub fn leader_pid(&self, id: PtyId) -> Option<u32> {
-        let (pid, recorded_start) = {
-            let ptys = self.ptys.lock();
-            let handle = ptys.get(&id)?;
-            (handle.leader_pid?, handle.leader_start)
-        };
-        (crate::repo::process_start_time(pid) == recorded_start).then_some(pid)
+        let mut ptys = self.ptys.lock();
+        let handle = ptys.get_mut(&id)?;
+        let pid = handle.leader_pid?;
+        let current = crate::repo::process_start_time(pid);
+        if handle.leader_start.is_none() && current.is_some() {
+            handle.leader_start = current;
+        }
+        (current == handle.leader_start).then_some(pid)
     }
 
     pub fn is_alive(&self, id: PtyId) -> bool {

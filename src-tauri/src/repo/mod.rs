@@ -71,24 +71,27 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn process_cwd(pid: u32) -> Option<PathBuf> {
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt;
-
-    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+fn proc_pidinfo_struct<T>(pid: u32, flavor: libc::c_int) -> Option<T> {
+    let mut info: T = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<T>() as libc::c_int;
     let written = unsafe {
         libc::proc_pidinfo(
             pid as libc::c_int,
-            libc::PROC_PIDVNODEPATHINFO,
+            flavor,
             0,
             &mut info as *mut _ as *mut libc::c_void,
             size,
         )
     };
-    if written != size {
-        return None;
-    }
+    (written == size).then_some(info)
+}
+
+#[cfg(target_os = "macos")]
+pub fn process_cwd(pid: u32) -> Option<PathBuf> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let info: libc::proc_vnodepathinfo = proc_pidinfo_struct(pid, libc::PROC_PIDVNODEPATHINFO)?;
     let raw = &info.pvi_cdir.vip_path;
     let bytes = unsafe {
         std::slice::from_raw_parts(raw.as_ptr() as *const u8, std::mem::size_of_val(raw))
@@ -106,33 +109,27 @@ pub fn process_cwd(_pid: u32) -> Option<PathBuf> {
 }
 
 /// Instante de nascimento do processo, em unidade opaca da plataforma.
-///
-/// Igualdade entre dois valores do mesmo pid é a única operação suportada:
-/// pid vivo devolve o mesmo valor de quando foi capturado; pid morto devolve
-/// `None`; pid reusado devolve outro valor.
+/// Igualdade entre dois valores do mesmo pid é a única operação suportada;
+/// pid morto, zumbi ou reusado nunca devolve o valor original.
 #[cfg(target_os = "linux")]
 pub fn process_start_time(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_proc_stat_start_time(&stat)
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_proc_stat_start_time(stat: &str) -> Option<u64> {
     let after_comm = stat.rsplit_once(')')?.1;
-    after_comm.split_whitespace().nth(19)?.parse().ok()
+    let mut fields = after_comm.split_whitespace();
+    if fields.next()? == "Z" {
+        return None;
+    }
+    fields.nth(18)?.parse().ok()
 }
 
 #[cfg(target_os = "macos")]
 pub fn process_start_time(pid: u32) -> Option<u64> {
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-    let written = unsafe {
-        libc::proc_pidinfo(
-            pid as libc::c_int,
-            libc::PROC_PIDTBSDINFO,
-            0,
-            &mut info as *mut _ as *mut libc::c_void,
-            size,
-        )
-    };
-    if written != size {
-        return None;
-    }
+    let info: libc::proc_bsdinfo = proc_pidinfo_struct(pid, libc::PROC_PIDTBSDINFO)?;
     Some(info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
 }
 
@@ -222,27 +219,52 @@ fn diff_numstat(root: &Path) -> (u32, u32) {
     (insertions, deletions)
 }
 
-struct UntrackedEntry {
+#[derive(PartialEq, Eq)]
+struct UntrackedKey {
     mtime: SystemTime,
     len: u64,
+    ctime: Option<(i64, i64)>,
+}
+
+impl UntrackedKey {
+    fn of(meta: &std::fs::Metadata) -> Option<Self> {
+        Some(Self {
+            mtime: meta.modified().ok()?,
+            len: meta.len(),
+            ctime: inode_ctime(meta),
+        })
+    }
+}
+
+#[cfg(unix)]
+fn inode_ctime(meta: &std::fs::Metadata) -> Option<(i64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.ctime(), meta.ctime_nsec()))
+}
+
+#[cfg(not(unix))]
+fn inode_ctime(_meta: &std::fs::Metadata) -> Option<(i64, i64)> {
+    None
+}
+
+struct UntrackedEntry {
+    key: UntrackedKey,
     lines: u32,
 }
 
 #[derive(Default)]
 pub struct UntrackedCache(HashMap<PathBuf, UntrackedEntry>);
 
-fn count_text_lines(path: &Path) -> u32 {
-    let Ok(content) = std::fs::read(path) else {
-        return 0;
-    };
+fn count_text_lines(path: &Path) -> Option<u32> {
+    let content = std::fs::read(path).ok()?;
     if content.contains(&0) {
-        return 0;
+        return Some(0);
     }
     let mut count = content.iter().filter(|b| **b == b'\n').count();
     if !content.is_empty() && content.last() != Some(&b'\n') {
         count += 1;
     }
-    count as u32
+    Some(count as u32)
 }
 
 fn untracked_insertions(root: &Path, cache: &mut UntrackedCache) -> u32 {
@@ -274,23 +296,18 @@ fn untracked_insertions(root: &Path, cache: &mut UntrackedCache) -> u32 {
         if !meta.is_file() || meta.len() > UNTRACKED_MAX_BYTES {
             continue;
         }
-        let Ok(mtime) = meta.modified() else {
+        let Some(key) = UntrackedKey::of(&meta) else {
             continue;
         };
-        let len = meta.len();
         let count = match cache.0.get(&full) {
-            Some(entry) if entry.mtime == mtime && entry.len == len => entry.lines,
+            Some(entry) if entry.key == key => Some(entry.lines),
             _ => count_text_lines(&full),
         };
+        let Some(count) = count else {
+            continue;
+        };
         lines += count;
-        fresh.insert(
-            full,
-            UntrackedEntry {
-                mtime,
-                len,
-                lines: count,
-            },
-        );
+        fresh.insert(full, UntrackedEntry { key, lines: count });
     }
     cache.0 = fresh;
     lines
@@ -355,6 +372,13 @@ pub fn snapshot(root: &Path, cache: &mut UntrackedCache) -> RepoSnapshot {
 struct Watched {
     _debouncer: Debouncer<notify::RecommendedWatcher, RecommendedCache>,
     last: Arc<Mutex<Option<RepoSnapshot>>>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for Watched {
+    fn drop(&mut self) {
+        self.alive.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 #[derive(Default)]
@@ -406,11 +430,12 @@ fn spawn_watcher<R: Runtime>(
     let seed = Arc::clone(&last);
     let callback_root = root.clone();
     let emit_app = app.clone();
+    let cache = Arc::new(Mutex::new(UntrackedCache::default()));
+    let callback_cache = Arc::clone(&cache);
+    let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let callback_alive = Arc::clone(&alive);
 
-    let mut cache = UntrackedCache::default();
-    let initial = snapshot(&root, &mut cache);
-
-    let mut last_run = Instant::now();
+    let mut last_run: Option<Instant> = None;
     let mut debouncer = new_debouncer(DEBOUNCE, None, move |result: DebounceEventResult| {
         let Ok(events) = result else {
             return;
@@ -421,18 +446,24 @@ fn spawn_watcher<R: Runtime>(
         {
             return;
         }
-        if let Some(wait) = MIN_SNAPSHOT_INTERVAL.checked_sub(last_run.elapsed()) {
+        if let Some(wait) = last_run.and_then(|at| MIN_SNAPSHOT_INTERVAL.checked_sub(at.elapsed()))
+        {
             std::thread::sleep(wait);
         }
-        let next = snapshot(&callback_root, &mut cache);
-        last_run = Instant::now();
+        if !callback_alive.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let next = snapshot(&callback_root, &mut callback_cache.lock());
+        last_run = Some(Instant::now());
         let mut guard = last.lock();
         if guard.as_ref() == Some(&next) {
             return;
         }
         *guard = Some(next.clone());
         drop(guard);
-        let _ = app.emit(EVENT_CHANGED, next);
+        if callback_alive.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = app.emit(EVENT_CHANGED, next);
+        }
     })
     .ok()?;
 
@@ -447,12 +478,14 @@ fn spawn_watcher<R: Runtime>(
         }
     }
 
+    let initial = snapshot(&root, &mut cache.lock());
     let _ = emit_app.emit(EVENT_CHANGED, initial.clone());
     *seed.lock() = Some(initial);
 
     Some(Watched {
         _debouncer: debouncer,
         last: seed,
+        alive,
     })
 }
 
@@ -664,7 +697,30 @@ mod tests {
     }
 
     #[test]
-    fn untracked_cache_reuses_counts_and_invalidates_on_mtime_change() {
+    fn untracked_cache_is_consulted_when_the_key_matches() {
+        let repo = temp_repo();
+        let file = repo.join("novo.txt");
+        std::fs::write(&file, "a\nb").unwrap();
+
+        let mut cache = super::UntrackedCache::default();
+        let real = super::status(&repo, &mut cache).expect("status");
+        assert_eq!(real.insertions, 2);
+
+        let key = super::UntrackedKey::of(&std::fs::metadata(&file).unwrap()).unwrap();
+        cache
+            .0
+            .insert(file.clone(), super::UntrackedEntry { key, lines: 40 });
+        let forged = super::status(&repo, &mut cache).expect("status");
+        assert_eq!(
+            forged.insertions, 40,
+            "chave igual devia responder do cache sem reler o arquivo"
+        );
+
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn content_change_with_restored_mtime_is_still_recounted() {
         let repo = temp_repo();
         let file = repo.join("novo.txt");
         std::fs::write(&file, "a\nb").unwrap();
@@ -682,19 +738,50 @@ mod tests {
 
         let second = super::status(&repo, &mut cache).expect("status");
         assert_eq!(
-            second.insertions, 2,
-            "mesmo (mtime, len) devia responder do cache sem reler o arquivo"
+            second.insertions, 1,
+            "conteúdo novo com mtime restaurado devia furar o cache (ctime muda)"
         );
 
-        handle
-            .set_times(
-                std::fs::FileTimes::new().set_modified(mtime + std::time::Duration::from_secs(5)),
-            )
-            .unwrap();
-        let third = super::status(&repo, &mut cache).expect("status");
-        assert_eq!(third.insertions, 1, "mtime novo devia invalidar o cache");
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_file_is_recounted_once_it_becomes_readable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = temp_repo();
+        let file = repo.join("segredo.txt");
+        std::fs::write(&file, "a\nb\nc").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut cache = super::UntrackedCache::default();
+        let blind = super::status(&repo, &mut cache).expect("status");
+        assert_eq!(blind.insertions, 0, "arquivo ilegível não conta linhas");
+
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let healed = super::status(&repo, &mut cache).expect("status");
+        assert_eq!(
+            healed.insertions, 3,
+            "falha de leitura não pode ficar congelada no cache"
+        );
 
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn proc_stat_parser_survives_parentheses_and_spaces_in_comm() {
+        let stat = "1234 (meu) proc (x)) S 1 1234 1234 0 -1 4194560 100 0 0 0 5 3 0 0 20 0 1 0 987654 1000000 200 18446744073709551615";
+        assert_eq!(super::parse_proc_stat_start_time(stat), Some(987654));
+    }
+
+    #[test]
+    fn proc_stat_parser_refuses_zombies_and_garbage() {
+        let zombie =
+            "1234 (proc) Z 1 1234 1234 0 -1 4194560 100 0 0 0 5 3 0 0 20 0 1 0 987654 0 0 1";
+        assert_eq!(super::parse_proc_stat_start_time(zombie), None);
+        assert_eq!(super::parse_proc_stat_start_time("1234 (proc) S 1 2"), None);
+        assert_eq!(super::parse_proc_stat_start_time(""), None);
     }
 
     #[test]
