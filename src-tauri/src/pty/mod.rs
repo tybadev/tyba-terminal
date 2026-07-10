@@ -142,6 +142,7 @@ struct PtyHandle {
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     leader_pid: Option<u32>,
+    leader_start: Option<u64>,
     screen: SharedScreen,
     size: (u16, u16),
 }
@@ -191,6 +192,7 @@ impl PtyPool {
         drop(pair.slave);
 
         let leader_pid = child.process_id();
+        let leader_start = leader_pid.and_then(crate::repo::process_start_time);
 
         let mut reader = pair
             .master
@@ -211,6 +213,7 @@ impl PtyPool {
                 writer,
                 child,
                 leader_pid,
+                leader_start,
                 screen,
                 size: (cols, rows),
             },
@@ -449,8 +452,18 @@ impl PtyPool {
         Ok(())
     }
 
+    /// Pid do líder da sessão, só se o processo por trás dele ainda é o
+    /// original: pid morto ou reusado pelo SO devolve `None`, nunca um pid
+    /// que aponta para um processo alheio.
     pub fn leader_pid(&self, id: PtyId) -> Option<u32> {
-        self.ptys.lock().get(&id)?.leader_pid
+        let mut ptys = self.ptys.lock();
+        let handle = ptys.get_mut(&id)?;
+        let pid = handle.leader_pid?;
+        let current = crate::repo::process_start_time(pid);
+        if handle.leader_start.is_none() && current.is_some() {
+            handle.leader_start = current;
+        }
+        (current == handle.leader_start).then_some(pid)
     }
 
     pub fn is_alive(&self, id: PtyId) -> bool {
