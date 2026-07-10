@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 use crate::pty::{PtyError, SharedPtyPool};
 use crate::session::store::{Store, StoreError};
+
+pub const EDITOR_PREF_KEY: &str = "pref.editor";
 use crate::worktree::Worktree;
 
 pub type SessionId = Uuid;
@@ -69,6 +71,11 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    fn preferred_editor_command(&self) -> Option<String> {
+        let id = self.store.get_setting(EDITOR_PREF_KEY).ok().flatten()?;
+        crate::editor::env_command(&id)
+    }
+
     pub fn new(store: Arc<Store>) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
@@ -183,6 +190,11 @@ impl SessionManager {
         cmd.env("TERM", "xterm-256color");
         cmd.env("TYBA", "1");
         cmd.env("TYBA_SESSION_ID", id.to_string());
+
+        if let Some(command) = self.preferred_editor_command() {
+            cmd.env("EDITOR", &command);
+            cmd.env("VISUAL", &command);
+        }
 
         pty_pool.spawn(
             app.clone(),

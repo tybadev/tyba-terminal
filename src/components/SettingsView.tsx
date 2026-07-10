@@ -41,9 +41,11 @@ import {
   getPref,
   getThemeState,
   importThemeCmd,
+  listEditors,
   listThemes,
   onThemeChanged,
   setPref,
+  type EditorInfo,
   type ThemeState,
 } from "../lib/ipc";
 import {
@@ -89,6 +91,8 @@ interface Props {
   richInputPref: RichInputPref;
   onRichInputPrefChange: (value: RichInputPref) => void;
   richInputRegexInvalid: boolean;
+  editor: string;
+  onEditorChange: (value: string) => void;
 }
 
 type RichInputToggle = {
@@ -336,11 +340,21 @@ export function SettingsView({
   richInputPref,
   onRichInputPrefChange,
   richInputRegexInvalid,
+  editor,
+  onEditorChange,
 }: Props) {
   const { t, i18n } = useTranslation();
   const [section, setSection] = useState<Section>("general");
   const [mode, setMode] = useState<ThemeMode>(getThemeMode);
   const [themes, setThemes] = useState<Theme[]>([]);
+  const [editors, setEditors] = useState<EditorInfo[]>([]);
+  useEffect(() => {
+    void listEditors()
+      .then(setEditors)
+      .catch(() => setEditors([]));
+  }, []);
+  const editorPath = editors.find((e) => e.id === editor)?.path ?? null;
+
   const [themeState, setThemeState] = useState<ThemeState | null>(null);
   const [defaultDir, setDefaultDir] = useState("");
   const [fontSize, setFontSize] = useState(13);
@@ -540,6 +554,27 @@ export function SettingsView({
                 aria-label={t("shellIntegration")}
                 className="mt-0.5"
               />
+            </div>
+
+            <span className="tyba-label mt-6 block">{t("defaultEditor")}</span>
+            <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
+              {t("defaultEditorHint")}
+            </p>
+            <div className="mt-2 divide-y divide-tyba-border overflow-hidden rounded-[6px] border border-tyba-border">
+              <SettingRow
+                label={t("defaultEditor")}
+                hint={editorPath ?? t("defaultEditorSystemHint")}
+              >
+                <Select
+                  value={editor}
+                  onChange={onEditorChange}
+                  className="w-56"
+                  options={[
+                    { value: "", label: t("defaultEditorSystem") },
+                    ...editors.map((e) => ({ value: e.id, label: e.name })),
+                  ]}
+                />
+              </SettingRow>
             </div>
           </section>
         )}

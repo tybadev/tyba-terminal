@@ -195,6 +195,15 @@ export const createTab = (sessionId: SessionId, workspaceId?: WorkspaceId) =>
     workspaceId: workspaceId ?? null,
   });
 
+export interface EditorInfo {
+  id: string;
+  name: string;
+  path: string;
+  terminal: boolean;
+}
+
+export const listEditors = () => invoke<EditorInfo[]>("list_editors");
+
 export const getPref = (key: string) =>
   invoke<string | null>("get_pref", { key });
 

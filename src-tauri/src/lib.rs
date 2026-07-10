@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod approvals;
 pub mod docker;
+pub mod editor;
 pub mod layout;
 pub mod pty;
 pub mod repo;
@@ -395,6 +396,11 @@ fn new_window(app: AppHandle) -> Result<(), String> {
         .hidden_title(true);
     builder.build().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+fn list_editors() -> Vec<editor::Editor> {
+    editor::detect()
 }
 
 #[tauri::command]
@@ -1043,6 +1049,7 @@ pub fn run() {
             set_split_ratio,
             get_pref,
             set_pref,
+            list_editors,
             docker_available,
             docker_list_containers,
             docker_open_logs,

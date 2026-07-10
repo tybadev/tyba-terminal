@@ -209,6 +209,7 @@ const TOGGLE_PREF_KEY = "pref.sidebar_toggle";
 const DETAILS_PREF_KEY = "pref.sidebar_details";
 const DETAILS_OVERRIDES_KEY = "pref.session_details";
 const TOOLBAR_PREF_KEY = "pref.toolbar";
+const EDITOR_PREF_KEY = "pref.editor";
 const ACCOUNT_NAME_KEY = "pref.account_name";
 const FONT_SIZE_KEY = "pref.code.font_size";
 const SHOW_CONTAINERS_KEY = "pref.code.show_containers";
@@ -344,6 +345,7 @@ export default function App() {
   );
   const [richInputFocusNonce, setRichInputFocusNonce] = useState(0);
   const [richInputRegexInvalid, setRichInputRegexInvalid] = useState(false);
+  const [editorPref, setEditorPref] = useState("");
   const richInputFocused = useRef(false);
   const richInputAutoOpened = useRef<Set<string>>(new Set());
   const dismissedCommand = useRef<Record<string, string | null>>({});
@@ -985,6 +987,11 @@ export default function App() {
     [richInputPref.agentRegex],
   );
 
+  const changeEditor = useCallback((value: string) => {
+    setEditorPref(value);
+    void setPref(EDITOR_PREF_KEY, value).catch(() => {});
+  }, []);
+
   const changeShellIntegration = useCallback((value: boolean) => {
     setShellIntegration(value);
     void setPref(SHELL_INTEGRATION_KEY, value ? "on" : "off").catch(() => {});
@@ -1065,6 +1072,7 @@ export default function App() {
         shellIntegrationRaw,
         toolbarRaw,
         richInputRaw,
+        editorRaw,
       ] = await Promise.all([
         listSessions().catch(() => [] as Session[]),
         layoutState().catch(() => EMPTY_LAYOUT),
@@ -1079,6 +1087,7 @@ export default function App() {
         getPref(SHELL_INTEGRATION_KEY).catch(() => null),
         getPref(TOOLBAR_PREF_KEY).catch(() => null),
         getPref(RICH_INPUT_PREF_KEY).catch(() => null),
+        getPref(EDITOR_PREF_KEY).catch(() => null),
       ]);
       if (cancelled) return;
       setSessions(existing);
@@ -1104,6 +1113,7 @@ export default function App() {
       setShowGitStatus(gitStatusRaw !== "off");
       setShellIntegration(shellIntegrationRaw !== "off");
       setToolbarPref(parseToolbarPref(toolbarRaw));
+      if (editorRaw) setEditorPref(editorRaw);
       const richInput = parseRichInputPref(richInputRaw);
       setRichInputPref(richInput);
       if (richInput.agentRegex) {
@@ -2025,6 +2035,8 @@ export default function App() {
                           void changeRichInputPref(next);
                         }}
                         richInputRegexInvalid={richInputRegexInvalid}
+                        editor={editorPref}
+                        onEditorChange={changeEditor}
                       />
                     </div>
                   )}
