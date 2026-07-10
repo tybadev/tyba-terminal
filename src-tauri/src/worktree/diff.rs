@@ -93,10 +93,10 @@ pub struct FileHunks {
     pub hunks: Vec<Hunk>,
 }
 
-fn nul_fields(raw: &[u8]) -> impl Iterator<Item = &str> {
+fn nul_fields(raw: &[u8]) -> impl Iterator<Item = String> + '_ {
     raw.split(|b| *b == 0)
         .filter(|f| !f.is_empty())
-        .map(|f| std::str::from_utf8(f).unwrap_or(""))
+        .map(|f| String::from_utf8_lossy(f).into_owned())
 }
 
 fn parse_count(field: &str) -> Option<u32> {
@@ -171,11 +171,11 @@ pub fn parse_name_status_z(raw: &[u8]) -> Vec<(FileStatus, Option<String>, Strin
                 let (Some(old), Some(new)) = (fields.next(), fields.next()) else {
                     break;
                 };
-                out.push((status, Some(old.to_string()), new.to_string()));
+                out.push((status, Some(old), new));
             }
             _ => {
                 let Some(path) = fields.next() else { break };
-                out.push((status, None, path.to_string()));
+                out.push((status, None, path));
             }
         }
     }
@@ -209,7 +209,15 @@ pub fn parse_unified_hunks(text: &str) -> FileHunks {
     let mut hunks: Vec<Hunk> = Vec::new();
     let mut binary = false;
 
+    let mut past_first_file = false;
     for line in text.lines() {
+        if line.starts_with("diff --git ") {
+            if past_first_file {
+                break;
+            }
+            past_first_file = true;
+            continue;
+        }
         if line.starts_with("Binary files ") && line.ends_with(" differ") {
             binary = true;
             continue;
@@ -325,7 +333,8 @@ pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, Stri
         "git log",
     )?;
     let files = diff_files(worktree, &[&range])?;
-    let uncommitted_files = diff_files(worktree, &["HEAD"])?;
+    let mut uncommitted_files = diff_files(worktree, &["HEAD"])?;
+    uncommitted_files.extend(untracked_files(worktree)?);
     let uncommitted = !uncommitted_files.is_empty();
 
     Ok(SessionDiff {
@@ -349,6 +358,7 @@ pub fn file_hunks(
     base_ref: &str,
     scope: DiffScope,
     path: &str,
+    old_path: Option<&str>,
 ) -> Result<FileHunks, String> {
     let range = format!("{base_ref}..HEAD");
     let out = run_git(
@@ -359,12 +369,84 @@ pub fn file_hunks(
                 DiffScope::Committed => c.arg(&range),
                 DiffScope::Uncommitted => c.arg("HEAD"),
             };
-            c.arg("--").arg(path);
+            c.arg("--").arg(format!(":(literal){path}"));
+            if let Some(old) = old_path {
+                c.arg(format!(":(literal){old}"));
+            }
             c
         },
         "git diff",
     )?;
+    if out.is_empty() && scope == DiffScope::Uncommitted {
+        return untracked_hunks(worktree, path);
+    }
     Ok(parse_unified_hunks(&String::from_utf8_lossy(&out)))
+}
+
+/// `git diff HEAD` não enxerga arquivo untracked; o conteúdo dele é
+/// exatamente o artefato mais arriscado de um agente. `--no-index` contra
+/// /dev/null devolve o arquivo inteiro como hunk de adição (exit 1 =
+/// "tem diferença", não erro).
+fn untracked_hunks(worktree: &Path, path: &str) -> Result<FileHunks, String> {
+    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let out = {
+        let mut c = git_in(worktree);
+        c.args([
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--no-index",
+            "--",
+            null,
+        ]);
+        c.arg(path);
+        c.output()
+            .map_err(|e| format!("git diff --no-index: {e}"))?
+    };
+    if !out.status.success() && out.status.code() != Some(1) {
+        return Err(format!(
+            "git diff --no-index: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(parse_unified_hunks(&String::from_utf8_lossy(&out.stdout)))
+}
+
+const UNTRACKED_COUNT_MAX_BYTES: u64 = 1024 * 1024;
+
+fn untracked_files(worktree: &Path) -> Result<Vec<FileDiff>, String> {
+    let raw = run_git(
+        {
+            let mut c = git_in(worktree);
+            c.args(["ls-files", "--others", "--exclude-standard", "-z"]);
+            c
+        },
+        "git ls-files",
+    )?;
+    Ok(nul_fields(&raw)
+        .map(|path| {
+            let full = worktree.join(&path);
+            let insertions = std::fs::metadata(&full)
+                .ok()
+                .filter(|m| m.is_file() && m.len() <= UNTRACKED_COUNT_MAX_BYTES)
+                .and_then(|_| std::fs::read(&full).ok())
+                .filter(|content| !content.contains(&0))
+                .map(|content| {
+                    let mut count = content.iter().filter(|b| **b == b'\n').count() as u32;
+                    if !content.is_empty() && content.last() != Some(&b'\n') {
+                        count += 1;
+                    }
+                    count
+                });
+            FileDiff {
+                path,
+                old_path: None,
+                status: FileStatus::Added,
+                insertions,
+                deletions: insertions.map(|_| 0),
+            }
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -441,6 +523,19 @@ mod parser_tests {
         assert_eq!(hunk.lines.len(), 4);
         assert_eq!(hunk.lines[1].kind, LineKind::Del);
         assert_eq!(hunk.lines[2].text, "adicionada");
+    }
+
+    #[test]
+    fn second_file_headers_never_leak_into_the_previous_hunk() {
+        let text = "diff --git a/um.txt b/um.txt\n--- a/um.txt\n+++ b/um.txt\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/dois.txt b/dois.txt\n--- a/dois.txt\n+++ b/dois.txt\n@@ -1 +1 @@\n-c\n+d\n";
+        let parsed = parse_unified_hunks(text);
+        assert_eq!(parsed.hunks.len(), 1, "só o primeiro arquivo entra");
+        let texts: Vec<&str> = parsed.hunks[0]
+            .lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(texts, vec!["a", "b"]);
     }
 
     #[test]
@@ -529,6 +624,94 @@ mod integration_tests {
     }
 
     #[test]
+    fn untracked_file_appears_in_uncommitted_and_has_reviewable_hunks() {
+        let repo = temp_repo();
+        let base = super::super::head_sha(&repo).unwrap();
+        std::fs::write(repo.join("nunca-addado.sh"), "linha um\nlinha dois\n").unwrap();
+
+        let diff = session_diff(&repo, &base).expect("session_diff");
+        assert!(diff.uncommitted);
+        let untracked = diff
+            .uncommitted_files
+            .iter()
+            .find(|f| f.path == "nunca-addado.sh")
+            .expect("untracked na lista");
+        assert_eq!(untracked.status, FileStatus::Added);
+        assert_eq!(untracked.insertions, Some(2));
+
+        let hunks = file_hunks(
+            &repo,
+            &base,
+            DiffScope::Uncommitted,
+            "nunca-addado.sh",
+            None,
+        )
+        .unwrap();
+        assert_eq!(hunks.hunks.len(), 1);
+        assert!(hunks.hunks[0].lines.iter().all(|l| l.kind == LineKind::Add));
+        assert_eq!(hunks.hunks[0].lines.len(), 2);
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn glob_named_file_does_not_leak_sibling_hunks() {
+        let repo = temp_repo();
+        let base = super::super::head_sha(&repo).unwrap();
+        std::fs::write(repo.join("a0.txt"), "sib\n").unwrap();
+        std::fs::write(repo.join("a[0].txt"), "glob\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-qm", "dois arquivos"]);
+
+        let hunks = file_hunks(&repo, &base, DiffScope::Committed, "a[0].txt", None).unwrap();
+        let added: Vec<&str> = hunks
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| l.kind == LineKind::Add)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(
+            added,
+            vec!["glob"],
+            "pathspec com glob vazou arquivo vizinho"
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn renamed_file_hunks_show_the_edit_not_the_whole_file() {
+        let repo = temp_repo();
+        let base = super::super::head_sha(&repo).unwrap();
+        git(&repo, &["mv", "renomeia.txt", "novo-nome.txt"]);
+        std::fs::write(repo.join("novo-nome.txt"), "conteudo estavel\neditado\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-qm", "rename com edit"]);
+
+        let hunks = file_hunks(
+            &repo,
+            &base,
+            DiffScope::Committed,
+            "novo-nome.txt",
+            Some("renomeia.txt"),
+        )
+        .unwrap();
+        let adds = hunks
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| l.kind == LineKind::Add)
+            .count();
+        assert_eq!(
+            adds, 1,
+            "rename devia mostrar só o edit, não o arquivo inteiro"
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
     fn file_hunks_are_lazy_per_file_and_scope() {
         let repo = temp_repo();
         let base = super::super::head_sha(&repo).unwrap();
@@ -538,7 +721,7 @@ mod integration_tests {
         git(&repo, &["commit", "-qm", "muda a"]);
         std::fs::write(repo.join("a.txt"), "um\ndois alterado\ntres\nsujo\n").unwrap();
 
-        let committed = file_hunks(&repo, &base, DiffScope::Committed, "a.txt").unwrap();
+        let committed = file_hunks(&repo, &base, DiffScope::Committed, "a.txt", None).unwrap();
         assert_eq!(committed.hunks.len(), 1);
         assert!(committed.hunks[0]
             .lines
@@ -546,7 +729,7 @@ mod integration_tests {
             .any(|l| l.kind == LineKind::Add && l.text == "dois alterado"));
         assert!(!committed.hunks[0].lines.iter().any(|l| l.text == "sujo"));
 
-        let uncommitted = file_hunks(&repo, &base, DiffScope::Uncommitted, "a.txt").unwrap();
+        let uncommitted = file_hunks(&repo, &base, DiffScope::Uncommitted, "a.txt", None).unwrap();
         assert!(uncommitted.hunks[0]
             .lines
             .iter()

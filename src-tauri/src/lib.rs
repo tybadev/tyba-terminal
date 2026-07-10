@@ -309,9 +309,10 @@ async fn session_diff_hunks(
     id: SessionId,
     path: String,
     scope: worktree::diff::DiffScope,
+    old_path: Option<String>,
 ) -> Result<worktree::diff::FileHunks, String> {
     let wt = session_worktree(&state, id)?;
-    worktree::diff::file_hunks(&wt.path, &wt.base_ref, scope, &path)
+    worktree::diff::file_hunks(&wt.path, &wt.base_ref, scope, &path, old_path.as_deref())
 }
 
 fn known_worktree_paths(
