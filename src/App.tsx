@@ -66,6 +66,7 @@ import { ContainersView } from "./components/ContainersView";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
+import { WorktreesView } from "./components/WorktreesView";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
 import { DiffStat } from "./components/DiffStat";
 import { SessionHoverCard } from "./components/SessionHoverCard";
@@ -229,6 +230,10 @@ function runnerLabel(kind: SessionKind): string | null {
 
 function isConfigWorkspace(w: Workspace): boolean {
   return w.tabs.length > 0 && w.tabs.every((t) => t.view === "settings");
+}
+
+function isWorktreesWorkspace(w: Workspace): boolean {
+  return w.tabs.length > 0 && w.tabs.every((t) => t.view === "workspace");
 }
 
 const AGENT_COMMAND = /^\s*(?:\S*\/)?(claude|codex|gemini)\b/;
@@ -477,6 +482,29 @@ export default function App() {
   useEffect(() => {
     sessionIdsRef.current = new Set(sessions.map((s) => s.id));
   }, [sessions]);
+
+  const worktreeRepoRoots = useMemo(() => {
+    const roots = new Set<string>();
+    for (const w of layout.workspaces) {
+      if (w.repo_root) roots.add(w.repo_root);
+    }
+    return [...roots];
+  }, [layout.workspaces]);
+
+  const goToSession = useCallback(
+    (sessionId: SessionId) => {
+      for (const w of layout.workspaces) {
+        for (const tab of w.tabs) {
+          if (tab.root && leafSessions(tab.root).includes(sessionId)) {
+            void activateWorkspace(w.id);
+            void activateTab(tab.id);
+            return;
+          }
+        }
+      }
+    },
+    [layout.workspaces],
+  );
 
   const sessionIds = useMemo(
     () =>
@@ -973,6 +1001,14 @@ export default function App() {
       void closeTabAndRefresh(activeTab.id);
     } else {
       void openViewTab("settings").catch(() => {});
+    }
+  }, [activeTab, closeTabAndRefresh]);
+
+  const toggleWorktreesView = useCallback(() => {
+    if (activeTab?.view === "workspace") {
+      void closeTabAndRefresh(activeTab.id);
+    } else {
+      void openViewTab("workspace").catch(() => {});
     }
   }, [activeTab, closeTabAndRefresh]);
 
@@ -1493,7 +1529,8 @@ export default function App() {
   const renderWorkspace = (w: Workspace) => {
     const isActive = w.id === layout.active_workspace;
     const isConfig = isConfigWorkspace(w);
-    const showDetails = open && detailsFor(w.id) && !isConfig;
+    const isWtView = isWorktreesWorkspace(w);
+    const showDetails = open && detailsFor(w.id) && !isConfig && !isWtView;
     const gitDir = workspaceGitDir(w);
     const displayDir = workspaceCwd(w) ?? w.repo_root;
     const snapshot = gitDir ? snapshotForDir(repoSnapshots, gitDir) : undefined;
@@ -1501,8 +1538,8 @@ export default function App() {
     const gitStatus = showGitStatus
       ? (snapshot?.status ?? undefined)
       : undefined;
-    const runner = isConfig ? null : workspaceAgent(w);
-    const runningCmd = isConfig ? null : workspaceCommand(w);
+    const runner = isConfig || isWtView ? null : workspaceAgent(w);
+    const runningCmd = isConfig || isWtView ? null : workspaceCommand(w);
     const hoverAgent = runner ?? agentFromCommand(runningCmd);
     const workspaceButton = (
       <button
@@ -1535,7 +1572,16 @@ export default function App() {
             }}
           />
         )}
-        {isConfig ? (
+        {isWtView ? (
+          <SquaresFour
+            size={16}
+            className={
+              isActive
+                ? "shrink-0 text-tyba-text [filter:drop-shadow(0_0_6px_rgba(255,255,255,.2))]"
+                : "shrink-0"
+            }
+          />
+        ) : isConfig ? (
           <GearSix
             size={16}
             className={
@@ -1571,7 +1617,11 @@ export default function App() {
           <>
             <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
               <span className="w-full truncate text-left leading-none">
-                {isConfig ? t("settings") : w.name}
+                {isConfig
+                  ? t("settings")
+                  : isWtView
+                    ? t("workspaceView")
+                    : w.name}
               </span>
               {showDetails && runningCmd && (
                 <span className="flex w-full items-center gap-1.5">
@@ -1792,19 +1842,21 @@ export default function App() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
-                    disabled
                     aria-label={t("workspaceView")}
-                    className="flex h-6 items-center gap-1.5 rounded-[3px] px-2 text-[11px] text-tyba-text-faint disabled:cursor-not-allowed"
+                    aria-pressed={activeTab?.view === "workspace"}
+                    onClick={toggleWorktreesView}
+                    className={`flex h-6 items-center gap-1.5 rounded-[3px] px-2 text-[11px] ${
+                      activeTab?.view === "workspace"
+                        ? "bg-white/[.06] text-tyba-text"
+                        : "text-tyba-text-faint hover:text-tyba-text"
+                    }`}
                   >
                     <SquaresFour size={14} />
                     {t("workspaceView")}
                   </button>
                 </TooltipTrigger>
-                <TooltipContent side="bottom" className="flex items-center gap-2">
+                <TooltipContent side="bottom">
                   {t("workspaceView")}
-                  <span className="rounded-full bg-tyba-violet-tint px-1.5 py-px text-[9px] font-medium text-tyba-violet">
-                    {t("comingSoon")}
-                  </span>
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -2100,6 +2152,17 @@ export default function App() {
                       <ContainersView
                         onAvailableChange={setDockerUp}
                         onRunningChange={setDockerRunning}
+                      />
+                    </div>
+                  )}
+                  {activeTab?.view === "workspace" && (
+                    <div className="absolute inset-0 flex">
+                      <WorktreesView
+                        repoRoots={worktreeRepoRoots}
+                        onOpenSession={(path, name) =>
+                          void newSession(path, name)
+                        }
+                        onFocusSession={goToSession}
                       />
                     </div>
                   )}

@@ -50,6 +50,29 @@ export interface SetupScriptInfo {
   consent: boolean | null;
 }
 
+export interface WorktreeStatus {
+  path: string;
+  branch: string | null;
+  dirty: boolean;
+  ahead_of_head: number;
+  managed: boolean;
+  session_id: SessionId | null;
+}
+
+export interface WorktreeListing {
+  root: string;
+  worktrees: WorktreeStatus[];
+}
+
+export const worktreeList = (repoRoot: string) =>
+  invoke<WorktreeListing>("worktree_list", { repoRoot });
+
+export const worktreeRemove = (
+  path: string,
+  deleteBranch: boolean,
+  force: boolean,
+) => invoke<void>("worktree_remove", { path, deleteBranch, force });
+
 export const worktreeSetupScript = (repoRoot: string) =>
   invoke<SetupScriptInfo | null>("worktree_setup_script", { repoRoot });
 
