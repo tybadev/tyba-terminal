@@ -99,6 +99,12 @@ const resources = {
         "Vazio usa o padrão ^(claude|codex|gemini). Avaliado no core; inválido mantém o atual.",
       richInputRegexInvalid:
         "Regex inválida — não foi salva. O core mantém a anterior.",
+      defaultEditor: "Editor padrão",
+      defaultEditorHint:
+        "Usado por tudo que abre editor no terminal: o Ctrl+G do Claude Code, git commit, git rebase -i, crontab -e.",
+      defaultEditorSystem: "Padrão do sistema",
+      defaultEditorSystemHint:
+        "Mantém o $EDITOR que o seu shell já define. O TYBA não interfere.",
       gitStatusHint:
         "Mostra um rótulo com o número de alterações não commitadas quando a pasta da sessão tem mudanças.",
       gitChanges_one: "{{count}} alteração não commitada",
@@ -329,6 +335,12 @@ const resources = {
         "Empty uses the default ^(claude|codex|gemini). Evaluated in the core; invalid keeps the current one.",
       richInputRegexInvalid:
         "Invalid regex — not saved. The core keeps the previous one.",
+      defaultEditor: "Default editor",
+      defaultEditorHint:
+        "Used by everything that opens an editor from the terminal: Claude Code's Ctrl+G, git commit, git rebase -i, crontab -e.",
+      defaultEditorSystem: "System default",
+      defaultEditorSystemHint:
+        "Keeps whatever $EDITOR your shell already sets. TYBA stays out of the way.",
       gitStatusHint:
         "Shows a badge with the number of uncommitted changes when the session folder has changes.",
       gitChanges_one: "{{count}} uncommitted change",
