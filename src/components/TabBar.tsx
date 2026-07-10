@@ -6,7 +6,6 @@ import {
   SlidersHorizontal,
   TerminalWindow,
   X,
-  GitDiff,
 } from "@phosphor-icons/react";
 
 import i18n from "../i18n";
@@ -45,7 +44,6 @@ function agentGlyph(label: string): React.ReactNode {
 function tabIcon(tab: Tab, sessions: Map<SessionId, Session>): React.ReactNode {
   if (tab.view === "containers") return <ShippingContainer size={12} />;
   if (tab.view === "settings") return <SlidersHorizontal size={12} />;
-  if (tab.view?.startsWith("diff:")) return <GitDiff size={12} />;
   if (tab.root) {
     for (const sid of leafSessions(tab.root)) {
       const session = sessions.get(sid);
@@ -58,10 +56,6 @@ function tabIcon(tab: Tab, sessions: Map<SessionId, Session>): React.ReactNode {
 
 function tabLabel(tab: Tab, sessions: Map<SessionId, Session>): string {
   if (tab.title) return tab.title;
-  if (tab.view?.startsWith("diff:")) {
-    const session = sessions.get(tab.view.slice(5));
-    return `diff · ${session?.title ?? "?"}`;
-  }
   if (tab.view) return i18n.t(tab.view);
   if (!tab.root) return "shell";
   const bound = leafSessions(tab.root)

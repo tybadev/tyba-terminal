@@ -97,6 +97,8 @@ interface Props {
   richInputRegexInvalid: boolean;
   editor: string;
   onEditorChange: (value: string) => void;
+  reviewAgent: string;
+  onReviewAgentChange: (value: string) => void;
 }
 
 type RichInputToggle = {
@@ -348,6 +350,8 @@ export function SettingsView({
   richInputRegexInvalid,
   editor,
   onEditorChange,
+  reviewAgent,
+  onReviewAgentChange,
 }: Props) {
   const { t, i18n } = useTranslation();
   const [section, setSection] = useState<Section>("general");
@@ -581,6 +585,43 @@ export function SettingsView({
                   ]}
                 />
               </SettingRow>
+            </div>
+
+            <span className="tyba-label mt-6 block">{t("reviewAgent")}</span>
+            <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
+              {t("reviewAgentHint")}
+            </p>
+            <div className="mt-2 divide-y divide-tyba-border overflow-hidden rounded-[6px] border border-tyba-border">
+              <SettingRow label={t("reviewAgent")}>
+                <Select
+                  value={
+                    reviewAgent === "claude" || reviewAgent === "codex"
+                      ? reviewAgent
+                      : "custom"
+                  }
+                  onChange={(v) =>
+                    onReviewAgentChange(v === "custom" ? "" : v)
+                  }
+                  className="w-56"
+                  options={[
+                    { value: "claude", label: "Claude Code" },
+                    { value: "codex", label: "Codex" },
+                    { value: "custom", label: t("reviewAgentCustom") },
+                  ]}
+                />
+              </SettingRow>
+              {reviewAgent !== "claude" && reviewAgent !== "codex" && (
+                <SettingRow
+                  label={t("reviewAgentCustomCommand")}
+                  hint={t("reviewAgentCustomHint")}
+                >
+                  <TextField
+                    value={reviewAgent}
+                    placeholder="claude --model opus"
+                    onCommit={onReviewAgentChange}
+                  />
+                </SettingRow>
+              )}
             </div>
           </section>
         )}

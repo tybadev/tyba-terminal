@@ -100,9 +100,11 @@ export interface SessionDiff {
   base_ref: string;
   commits: CommitInfo[];
   files: FileDiff[];
-  uncommitted_files: FileDiff[];
-  uncommitted: boolean;
+  staged_files: FileDiff[];
+  unstaged_files: FileDiff[];
 }
+
+export type DiffScope = "committed" | "staged" | "unstaged";
 
 export interface DiffLine {
   kind: "context" | "add" | "del";
@@ -126,13 +128,34 @@ export interface FileHunks {
 export const openDiffTab = (id: SessionId) =>
   invoke<void>("open_diff_tab", { id });
 
+export const worktreeStage = (id: SessionId, paths: string[]) =>
+  invoke<void>("worktree_stage", { id, paths });
+
+export const worktreeUnstage = (id: SessionId, paths: string[]) =>
+  invoke<void>("worktree_unstage", { id, paths });
+
+export const worktreeDiscard = (id: SessionId, paths: string[]) =>
+  invoke<void>("worktree_discard", { id, paths });
+
+export const worktreeCommit = (id: SessionId, message: string) =>
+  invoke<void>("worktree_commit", { id, message });
+
+export const worktreePush = (id: SessionId) =>
+  invoke<string>("worktree_push", { id });
+
+export const openWorktreeFile = (
+  id: SessionId,
+  path: string,
+  editor?: string,
+) => invoke<void>("open_worktree_file", { id, path, editor: editor ?? null });
+
 export const sessionDiff = (id: SessionId) =>
   invoke<SessionDiff>("session_diff", { id });
 
 export const sessionDiffHunks = (
   id: SessionId,
   path: string,
-  scope: "committed" | "uncommitted",
+  scope: DiffScope,
   oldPath?: string | null,
 ) =>
   invoke<FileHunks>("session_diff_hunks", {
@@ -264,6 +287,9 @@ export interface Workspace {
   kind: WorkspaceKind;
   active_tab: TabId | null;
   tabs: Tab[];
+  side_view: string | null;
+  side_ratio: number;
+  side_expanded: boolean;
   created_at: string;
 }
 
@@ -349,6 +375,18 @@ export const focusPane = (paneId: PaneId) =>
 
 export const setSplitRatio = (paneId: PaneId, ratio: number, commit = true) =>
   invoke<void>("set_split_ratio", { paneId, ratio, commit });
+
+export const closeSideView = (workspaceId: WorkspaceId) =>
+  invoke<void>("close_side_view", { workspaceId });
+
+export const setSideViewExpanded = (workspaceId: WorkspaceId, expanded: boolean) =>
+  invoke<void>("set_side_view_expanded", { workspaceId, expanded });
+
+export const setSideViewRatio = (
+  workspaceId: WorkspaceId,
+  ratio: number,
+  commit = true,
+) => invoke<void>("set_side_view_ratio", { workspaceId, ratio, commit });
 
 export const onLayoutChanged = (
   handler: (state: LayoutState) => void,

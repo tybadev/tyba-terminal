@@ -95,7 +95,8 @@ describe("buildRows", () => {
     const hunks: FileHunks = { binary: false, hunks: [hunk] };
     const rows = buildRows({
       committed: [file("src/a.rs"), file("bun.lockb")],
-      uncommitted: [file("wip.txt")],
+      staged: [file("pronto.txt")],
+      unstaged: [file("wip.txt")],
       hunksByKey: { [fileKeyOf("committed", "src/a.rs")]: hunks },
       collapsedByKey: {},
       mode: "unified",
@@ -109,14 +110,19 @@ describe("buildRows", () => {
     );
     expect(lock).toMatchObject({ collapsed: true, generated: true });
     const sections = rows.filter((r) => r.kind === "section");
-    expect(sections).toHaveLength(2);
+    expect(sections.map((s) => s.scope)).toEqual([
+      "committed",
+      "staged",
+      "unstaged",
+    ]);
   });
 
   test("modo split gera pares", () => {
     const hunks: FileHunks = { binary: false, hunks: [hunk] };
     const rows = buildRows({
       committed: [file("src/a.rs")],
-      uncommitted: [],
+      staged: [],
+      unstaged: [],
       hunksByKey: { [fileKeyOf("committed", "src/a.rs")]: hunks },
       collapsedByKey: {},
       mode: "split",
@@ -128,7 +134,8 @@ describe("buildRows", () => {
   test("expandido sem hunks carregados marca loading", () => {
     const rows = buildRows({
       committed: [file("src/a.rs")],
-      uncommitted: [],
+      staged: [],
+      unstaged: [],
       hunksByKey: {},
       collapsedByKey: { [fileKeyOf("committed", "src/a.rs")]: false },
       mode: "unified",

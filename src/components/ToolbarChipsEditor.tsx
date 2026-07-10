@@ -41,6 +41,7 @@ const CHIP_LABEL_KEYS: Record<ChipId, string> = {
   cwd: "toolbarCwd",
   branch: "toolbarBranch",
   diffCount: "toolbarDiff",
+  reviewDiff: "toolbarReviewDiff",
   aheadBehind: "toolbarAheadBehind",
   clock: "toolbarClock",
 };

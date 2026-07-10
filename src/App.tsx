@@ -8,6 +8,7 @@ import {
   FolderOpen,
   GearSix,
   GitBranch,
+  GitDiff,
   Keyboard,
   MagnifyingGlass,
   Plus,
@@ -88,6 +89,7 @@ import {
   activateTab,
   activateWorkspace,
   closePane,
+  closeSideView,
   closeTab,
   closeWorkspace,
   createSession,
@@ -121,6 +123,8 @@ import {
   setAgentMatchPattern,
   submitRichInput,
   setPref,
+  setSideViewExpanded,
+  setSideViewRatio,
   setSplitRatio,
   setWorkspaceColor,
   setWorkspaceGroup,
@@ -218,6 +222,8 @@ const DETAILS_OVERRIDES_KEY = "pref.session_details";
 const TOOLBAR_PREF_KEY = "pref.toolbar";
 const WORKTREE_DEFAULT_KEY = "pref.worktree_default";
 const EDITOR_PREF_KEY = "pref.editor";
+const REVIEW_AGENT_KEY = "pref.review_agent";
+const DEFAULT_REVIEW_AGENT = "claude";
 const ACCOUNT_NAME_KEY = "pref.account_name";
 const FONT_SIZE_KEY = "pref.code.font_size";
 const SHOW_CONTAINERS_KEY = "pref.code.show_containers";
@@ -369,6 +375,7 @@ export default function App() {
   const [richInputFocusNonce, setRichInputFocusNonce] = useState(0);
   const [richInputRegexInvalid, setRichInputRegexInvalid] = useState(false);
   const [editorPref, setEditorPref] = useState("");
+  const [reviewAgent, setReviewAgent] = useState(DEFAULT_REVIEW_AGENT);
   const richInputFocused = useRef(false);
   const richInputAutoOpened = useRef<Set<string>>(new Set());
   const dismissedCommand = useRef<Record<string, string | null>>({});
@@ -481,6 +488,53 @@ export default function App() {
     [sessions],
   );
 
+  const sideView = activeWorkspace?.side_view ?? null;
+  const sideTarget = useMemo(
+    () =>
+      sideView?.startsWith("diff:")
+        ? (sessionById.get(sideView.slice(5)) ?? null)
+        : null,
+    [sideView, sessionById],
+  );
+  const sideExpanded = Boolean(sideView && activeWorkspace?.side_expanded);
+  const sideRatio = activeWorkspace?.side_ratio ?? 0.5;
+
+  useEffect(() => {
+    requestTerminalRelayout();
+  }, [sideView, sideRatio, sideExpanded]);
+
+  const mainAreaRef = useRef<HTMLDivElement>(null);
+  const sideDragThrottle = useRef(0);
+  const startSideDrag = useCallback(
+    (e: React.PointerEvent) => {
+      const wsId: string = activeWorkspace?.id ?? "";
+      if (!wsId) return;
+      e.preventDefault();
+      const bounds = mainAreaRef.current?.getBoundingClientRect();
+      if (!bounds || bounds.width === 0) return;
+      const compute = (ev: PointerEvent) =>
+        Math.min(0.9, Math.max(0.1, (bounds.right - ev.clientX) / bounds.width));
+      const up = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        void setSideViewRatio(wsId, compute(ev), true).catch(() => {});
+      };
+      function move(ev: PointerEvent) {
+        if (ev.buttons === 0) {
+          up(ev);
+          return;
+        }
+        const now = Date.now();
+        if (now - sideDragThrottle.current < 80) return;
+        sideDragThrottle.current = now;
+        void setSideViewRatio(wsId, compute(ev), false).catch(() => {});
+      }
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    },
+    [activeWorkspace],
+  );
+
   const sessionIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     sessionIdsRef.current = new Set(sessions.map((s) => s.id));
@@ -509,6 +563,23 @@ export default function App() {
     [layout.workspaces],
   );
 
+  const typeIntoSession = useCallback(
+    async (sid: SessionId, text: string, submit: boolean) => {
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          await submitRichInput(sid, text, submit);
+          return;
+        } catch (e) {
+          lastError = e;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+      throw lastError;
+    },
+    [],
+  );
+
   const sendReviewToAgent = useCallback(
     async (target: Session, prompt: string) => {
       const wtPath = target.worktree?.path;
@@ -526,32 +597,29 @@ export default function App() {
         });
         setSessions((prev) => [...prev, fresh]);
         try {
-          const workspaceId = await createWorkspace(
-            target.title,
-            wtPath,
-            fresh.id,
-          );
-          void workspaceId;
+          await createWorkspace(target.title, wtPath, fresh.id);
         } catch {
           void disposeSession(fresh.id).catch(() => {});
           throw new Error("não deu pra abrir a sessão no worktree");
         }
         sid = fresh.id;
-      }
-      let lastError: unknown = null;
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        try {
-          await submitRichInput(sid, prompt, false);
-          goToSession(sid);
-          return;
-        } catch (e) {
-          lastError = e;
+        // Sem sessão viva não tem composer: sobe o agente que o usuário
+        // configurou e espera o detector de comando confirmar que o TUI
+        // assumiu o PTY (agent_match) antes de colar — com teto de 15s
+        // pra não travar se o comando não for reconhecido como agente.
+        const agentCommand = reviewAgent.trim() || DEFAULT_REVIEW_AGENT;
+        await typeIntoSession(sid, agentCommand, true);
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+          const cmd = sessionCommandsRef.current[sid];
+          if (cmd?.running && cmd.agent_match) break;
           await new Promise((r) => setTimeout(r, 500));
         }
+        await new Promise((r) => setTimeout(r, 700));
       }
-      throw lastError;
+      await typeIntoSession(sid, prompt, false);
+      goToSession(sid);
     },
-    [sessions, goToSession],
+    [sessions, goToSession, reviewAgent, typeIntoSession],
   );
 
   const sessionIds = useMemo(
@@ -593,6 +661,10 @@ export default function App() {
   const [sessionCommands, setSessionCommands] = useState<
     Record<string, SessionCommand>
   >({});
+  const sessionCommandsRef = useRef<Record<string, SessionCommand>>({});
+  useEffect(() => {
+    sessionCommandsRef.current = sessionCommands;
+  }, [sessionCommands]);
   const [sessionCwds, setSessionCwds] = useState<Record<string, SessionCwd>>(
     {},
   );
@@ -1140,6 +1212,11 @@ export default function App() {
     void setPref(EDITOR_PREF_KEY, value).catch(() => {});
   }, []);
 
+  const changeReviewAgent = useCallback((value: string) => {
+    setReviewAgent(value);
+    void setPref(REVIEW_AGENT_KEY, value).catch(() => {});
+  }, []);
+
   const changeShellIntegration = useCallback((value: boolean) => {
     setShellIntegration(value);
     void setPref(SHELL_INTEGRATION_KEY, value ? "on" : "off").catch(() => {});
@@ -1222,6 +1299,7 @@ export default function App() {
         richInputRaw,
         editorRaw,
         worktreeDefaultRaw,
+        reviewAgentRaw,
       ] = await Promise.all([
         listSessions().catch(() => [] as Session[]),
         layoutState().catch(() => EMPTY_LAYOUT),
@@ -1238,6 +1316,7 @@ export default function App() {
         getPref(RICH_INPUT_PREF_KEY).catch(() => null),
         getPref(EDITOR_PREF_KEY).catch(() => null),
         getPref(WORKTREE_DEFAULT_KEY).catch(() => null),
+        getPref(REVIEW_AGENT_KEY).catch(() => null),
       ]);
       if (cancelled) return;
       setSessions(existing);
@@ -1265,6 +1344,7 @@ export default function App() {
       setToolbarPref(parseToolbarPref(toolbarRaw));
       if (editorRaw) setEditorPref(editorRaw);
       setWorktreeDefault(worktreeDefaultRaw === "on");
+      if (reviewAgentRaw) setReviewAgent(reviewAgentRaw);
       const richInput = parseRichInputPref(richInputRaw);
       setRichInputPref(richInput);
       if (richInput.agentRegex) {
@@ -1762,33 +1842,60 @@ export default function App() {
       </button>
     );
     if (isConfig) return workspaceButton;
+    const sideDiff =
+      open && w.side_view?.startsWith("diff:") ? w.side_view : null;
     return (
-      <HoverCard key={w.id}>
-        <ContextMenu
-          onOpenChange={(o) => setMenuWorkspace(o ? w.id : null)}
-        >
-          <ContextMenuTrigger asChild>
-            <HoverCardTrigger asChild>{workspaceButton}</HoverCardTrigger>
-          </ContextMenuTrigger>
-          <ContextMenuContent className="w-52">
-            {renderWorkspaceMenuItems(w, branch, CONTEXT_MENU_PARTS)}
-          </ContextMenuContent>
-        </ContextMenu>
-        {menuWorkspace !== w.id && (
-          <SessionHoverCard
-            name={w.name}
-            path={workspaceCwd(w) ?? w.repo_root}
-            branch={branch}
-            status={gitStatus}
-            runner={hoverAgent}
-            runnerIcon={hoverAgent ? agentGlyph(hoverAgent, 11) : null}
-            runningCommand={runningCmd}
-            tabs={w.tabs.length}
-            group={w.group}
-            color={w.color}
-          />
+      <div key={w.id} className="flex shrink-0 flex-col">
+        <HoverCard>
+          <ContextMenu
+            onOpenChange={(o) => setMenuWorkspace(o ? w.id : null)}
+          >
+            <ContextMenuTrigger asChild>
+              <HoverCardTrigger asChild>{workspaceButton}</HoverCardTrigger>
+            </ContextMenuTrigger>
+            <ContextMenuContent className="w-52">
+              {renderWorkspaceMenuItems(w, branch, CONTEXT_MENU_PARTS)}
+            </ContextMenuContent>
+          </ContextMenu>
+          {menuWorkspace !== w.id && (
+            <SessionHoverCard
+              name={w.name}
+              path={workspaceCwd(w) ?? w.repo_root}
+              branch={branch}
+              status={gitStatus}
+              runner={hoverAgent}
+              runnerIcon={hoverAgent ? agentGlyph(hoverAgent, 11) : null}
+              runningCommand={runningCmd}
+              tabs={w.tabs.length}
+              group={w.group}
+              color={w.color}
+            />
+          )}
+        </HoverCard>
+        {sideDiff && (
+          <div className="group/diff flex h-7 shrink-0 items-center gap-2 rounded-[4px] pl-8 pr-2 text-[12px] text-tyba-text-faint transition-colors hover:bg-white/[.03] hover:text-tyba-text-muted">
+            <button
+              onClick={() => void activateWorkspace(w.id)}
+              className="flex h-full min-w-0 flex-1 items-center gap-1.5"
+            >
+              <GitDiff size={13} className="shrink-0" />
+              <span className="min-w-0 flex-1 truncate text-left">
+                {t("diffPaneLabel", {
+                  title: sessionById.get(sideDiff.slice(5))?.title ?? "?",
+                })}
+              </span>
+            </button>
+            <span
+              role="button"
+              aria-label={t("diffPaneClose")}
+              onClick={() => void closeSideView(w.id).catch(() => {})}
+              className="rounded-[3px] opacity-0 transition-opacity hover:text-tyba-text group-hover/diff:opacity-100"
+            >
+              <X size={11} weight="bold" />
+            </span>
+          </div>
         )}
-      </HoverCard>
+      </div>
     );
   };
 
@@ -2229,7 +2336,17 @@ export default function App() {
                 </aside>
               )}
 
-              <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+              <main ref={mainAreaRef} className="flex min-h-0 min-w-0 flex-1">
+                <div
+                  className={`min-h-0 min-w-0 flex-col ${
+                    sideView ? (sideExpanded ? "hidden" : "flex") : "flex flex-1"
+                  }`}
+                  style={
+                    sideView && !sideExpanded
+                      ? { width: `${(1 - sideRatio) * 100}%` }
+                      : undefined
+                  }
+                >
                 {activeWorkspace &&
                   activeWorkspace.tabs.length > 0 &&
                   activeTab?.view !== "settings" && (
@@ -2274,30 +2391,6 @@ export default function App() {
                       />
                     </div>
                   )}
-                  {activeTab?.view?.startsWith("diff:") &&
-                    (() => {
-                      const target = sessionById.get(
-                        (activeTab.view ?? "").slice(5),
-                      );
-                      const tabId = activeTab.id;
-                      return (
-                        <div className="absolute inset-0 flex">
-                          {target ? (
-                            <DiffView
-                              session={target}
-                              onClose={() => void closeTabAndRefresh(tabId)}
-                              onSendToAgent={(prompt) =>
-                                sendReviewToAgent(target, prompt)
-                              }
-                            />
-                          ) : (
-                            <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
-                              {t("diffSessionGone")}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
                   {activeTab?.view === "settings" && (
                     <div className="absolute inset-0 flex">
                       <SettingsView
@@ -2326,6 +2419,8 @@ export default function App() {
                         richInputRegexInvalid={richInputRegexInvalid}
                         editor={editorPref}
                         onEditorChange={changeEditor}
+                        reviewAgent={reviewAgent}
+                        onReviewAgentChange={changeReviewAgent}
                       />
                     </div>
                   )}
@@ -2480,12 +2575,63 @@ export default function App() {
                         ? snapshotForDir(repoSnapshots, dir)
                         : undefined;
                     })()}
+                    hasWorktree={Boolean(
+                      activeSession?.worktree ??
+                        worktreeSessionOf(activeWorkspace)?.worktree,
+                    )}
+                    onOpenDiff={() => {
+                      const target = activeSession?.worktree
+                        ? activeSession
+                        : worktreeSessionOf(activeWorkspace);
+                      if (target) void openDiffTab(target.id).catch(() => {});
+                    }}
                     showRichInput={richInputEligible && !richInputVisible}
                     richInputCombo={bindings.richInput}
                     onOpenRichInput={() => {
                       if (activeId) openRichInput(activeId);
                     }}
                   />
+                )}
+                </div>
+                {sideView && activeWorkspace && (
+                  <>
+                    {!sideExpanded && (
+                      <div
+                        onPointerDown={startSideDrag}
+                        className="z-10 flex w-[7px] shrink-0 cursor-col-resize items-stretch justify-center"
+                      >
+                        <span className="w-px bg-tyba-border-strong transition-colors hover:bg-tyba-green/70" />
+                      </div>
+                    )}
+                    <div className="flex min-h-0 min-w-0 flex-1">
+                      {sideTarget ? (
+                        <DiffView
+                          key={sideTarget.id}
+                          session={sideTarget}
+                          editor={editorPref}
+                          expanded={sideExpanded}
+                          onToggleExpand={() =>
+                            void setSideViewExpanded(
+                              activeWorkspace.id,
+                              !sideExpanded,
+                            ).catch(() => {})
+                          }
+                          onClose={() =>
+                            void closeSideView(activeWorkspace.id).catch(
+                              () => {},
+                            )
+                          }
+                          onSendToAgent={(prompt) =>
+                            sendReviewToAgent(sideTarget, prompt)
+                          }
+                        />
+                      ) : (
+                        <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
+                          {t("diffSessionGone")}
+                        </div>
+                      )}
+                    </div>
+                  </>
                 )}
               </main>
 

@@ -246,8 +246,20 @@ impl PaneNode {
 pub const VIEW_CONTAINERS: &str = "containers";
 pub const VIEW_SETTINGS: &str = "settings";
 pub const VIEW_WORKSPACE: &str = "workspace";
+pub const VIEW_DIFF_PREFIX: &str = "diff:";
 pub const DOCKER_WORKSPACE_NAME: &str = "Docker";
 pub const FALLBACK_WORKSPACE_NAME: &str = "tyba";
+
+const DEFAULT_SIDE_RATIO: f64 = 0.5;
+
+pub fn diff_view(session: SessionId) -> String {
+    format!("{VIEW_DIFF_PREFIX}{session}")
+}
+
+fn diff_view_session(view: &str) -> Option<SessionId> {
+    view.strip_prefix(VIEW_DIFF_PREFIX)
+        .and_then(|s| Uuid::parse_str(s).ok())
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Tab {
@@ -320,6 +332,11 @@ pub struct Workspace {
     pub kind: WorkspaceKind,
     pub active_tab: Option<TabId>,
     pub tabs: Vec<Tab>,
+    /// Painel lateral do workspace (ex.: "diff:<session>") — vive AO LADO
+    /// da coluna de tabs, não dentro de um tab.
+    pub side_view: Option<String>,
+    pub side_ratio: f64,
+    pub side_expanded: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -351,6 +368,9 @@ pub struct WorkspaceRow {
     pub kind: Option<String>,
     pub position: i64,
     pub active_tab: Option<String>,
+    pub side_view: Option<String>,
+    pub side_ratio: Option<f64>,
+    pub side_expanded: Option<i64>,
     pub created_at: String,
 }
 
@@ -455,6 +475,9 @@ impl LayoutManager {
             kind: WorkspaceKind::User,
             active_tab: Some(tab.id),
             tabs: vec![tab],
+            side_view: None,
+            side_ratio: DEFAULT_SIDE_RATIO,
+            side_expanded: false,
             created_at: Utc::now(),
         };
         let id = workspace.id;
@@ -502,6 +525,9 @@ impl LayoutManager {
             kind: WorkspaceKind::User,
             active_tab: Some(tab_id),
             tabs: vec![tab],
+            side_view: None,
+            side_ratio: DEFAULT_SIDE_RATIO,
+            side_expanded: false,
             created_at: Utc::now(),
         };
         let ws_id = workspace.id;
@@ -812,36 +838,62 @@ impl LayoutManager {
         Ok(())
     }
 
-    /// Abre (ou foca) uma tab de view DENTRO do workspace que contém a
-    /// sessão — diferente de `open_view_tab`, que usa workspace dedicado.
-    pub fn open_session_view_tab(
+    /// Abre (ou foca) o painel lateral do workspace que contém a sessão.
+    /// O painel vive AO LADO da coluna de tabs (altura total), nunca dentro
+    /// de um tab — fechar o painel não toca nas sessões.
+    pub fn open_workspace_side_view(
         &self,
         session: SessionId,
         view: &str,
-    ) -> Result<(), LayoutError> {
+    ) -> Result<WorkspaceId, LayoutError> {
         let mut inner = self.inner.write();
-        let Some((ws_id, _, _)) = find_session_pane(&inner.workspaces, session) else {
+        let Some((ws_id, tab_id, _)) = find_session_pane(&inner.workspaces, session) else {
             return Err(LayoutError::NoActiveWorkspace);
         };
         let idx = ws_index(&inner.workspaces, ws_id)?;
-        let existing = inner.workspaces[idx]
-            .tabs
-            .iter()
-            .find(|t| t.view.as_deref() == Some(view))
-            .map(|t| t.id);
-        let tab_id = match existing {
-            Some(id) => id,
-            None => {
-                let tab = Tab::from_view(view);
-                let id = tab.id;
-                inner.workspaces[idx].tabs.push(tab);
-                id
-            }
-        };
+        inner.workspaces[idx].side_view = Some(view.to_string());
         inner.workspaces[idx].active_tab = Some(tab_id);
         inner.active = Some(ws_id);
         drop(inner);
+        self.persist()?;
+        Ok(ws_id)
+    }
+
+    pub fn close_side_view(&self, workspace: WorkspaceId) -> Result<(), LayoutError> {
+        let mut inner = self.inner.write();
+        let idx = ws_index(&inner.workspaces, workspace)?;
+        inner.workspaces[idx].side_view = None;
+        inner.workspaces[idx].side_expanded = false;
+        drop(inner);
         self.persist()
+    }
+
+    pub fn set_side_view_expanded(
+        &self,
+        workspace: WorkspaceId,
+        expanded: bool,
+    ) -> Result<(), LayoutError> {
+        let mut inner = self.inner.write();
+        let idx = ws_index(&inner.workspaces, workspace)?;
+        inner.workspaces[idx].side_expanded = expanded;
+        drop(inner);
+        self.persist()
+    }
+
+    pub fn set_side_view_ratio(
+        &self,
+        workspace: WorkspaceId,
+        ratio: f64,
+        commit: bool,
+    ) -> Result<(), LayoutError> {
+        let mut inner = self.inner.write();
+        let idx = ws_index(&inner.workspaces, workspace)?;
+        inner.workspaces[idx].side_ratio = ratio.clamp(MIN_RATIO, MAX_RATIO);
+        drop(inner);
+        if commit {
+            self.persist()?;
+        }
+        Ok(())
     }
 
     pub fn session_disposed(&self, session: SessionId) -> Result<(), LayoutError> {
@@ -854,9 +906,25 @@ impl LayoutManager {
                 Some(pane) => {
                     self.close_pane(pane)?;
                 }
-                None => return Ok(()),
+                None => break,
             }
         }
+        // O painel de diff referencia a sessão; sem ela vira casca órfã.
+        let view = diff_view(session);
+        let mut inner = self.inner.write();
+        let mut changed = false;
+        for ws in inner.workspaces.iter_mut() {
+            if ws.side_view.as_deref() == Some(view.as_str()) {
+                ws.side_view = None;
+                ws.side_expanded = false;
+                changed = true;
+            }
+        }
+        drop(inner);
+        if changed {
+            self.persist()?;
+        }
+        Ok(())
     }
 
     fn persist(&self) -> Result<(), LayoutError> {
@@ -950,6 +1018,9 @@ fn ensure_docker_workspace(inner: &mut Inner) -> WorkspaceId {
         kind: WorkspaceKind::Docker,
         active_tab: Some(tab.id),
         tabs: vec![tab],
+        side_view: None,
+        side_ratio: DEFAULT_SIDE_RATIO,
+        side_expanded: false,
         created_at: Utc::now(),
     };
     let id = workspace.id;
@@ -1010,6 +1081,9 @@ pub fn workspaces_to_rows(workspaces: &[Workspace]) -> LayoutRows {
             kind: Some(ws.kind.as_str().to_string()),
             position: wi as i64,
             active_tab: ws.active_tab.map(|id| id.to_string()),
+            side_view: ws.side_view.clone(),
+            side_ratio: Some(ws.side_ratio),
+            side_expanded: Some(ws.side_expanded as i64),
             created_at: ws.created_at.to_rfc3339(),
         });
         for (ti, tab) in ws.tabs.iter().enumerate() {
@@ -1071,6 +1145,11 @@ fn build_tab(row: &TabRow, panes: &[PaneRow], valid: &HashSet<SessionId>) -> Opt
         .ok()?
         .with_timezone(&Utc);
     if let Some(view) = &row.view {
+        // Tabs de diff eram a forma antiga (pré-painel lateral); ao carregar,
+        // somem — o diff hoje é side_view do workspace.
+        if view.starts_with(VIEW_DIFF_PREFIX) {
+            return None;
+        }
         return Some(Tab {
             id: tab_id,
             title: row.title.clone(),
@@ -1126,6 +1205,10 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
             let created_at = DateTime::parse_from_rfc3339(&w.created_at)
                 .ok()?
                 .with_timezone(&Utc);
+            let side_view = w
+                .side_view
+                .clone()
+                .filter(|view| diff_view_session(view).is_none_or(|s| valid.contains(&s)));
             Some(Workspace {
                 id: ws_id,
                 name: w.name.clone(),
@@ -1135,6 +1218,12 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
                 kind: WorkspaceKind::parse(w.kind.as_deref()),
                 active_tab,
                 tabs,
+                side_view,
+                side_ratio: w
+                    .side_ratio
+                    .unwrap_or(DEFAULT_SIDE_RATIO)
+                    .clamp(MIN_RATIO, MAX_RATIO),
+                side_expanded: w.side_expanded.unwrap_or(0) != 0,
                 created_at,
             })
         })
@@ -1546,6 +1635,114 @@ mod tests {
             Some(VIEW_CONTAINERS)
         );
         assert!(state.workspaces[0].tabs[0].root.is_none());
+    }
+
+    #[test]
+    fn side_view_opens_in_session_workspace_and_closes_clean() {
+        let mgr = manager();
+        let s = sid();
+        let ws_id = mgr.create_workspace("api", None, s).unwrap();
+        ws(&mgr); // outro workspace ativo
+
+        let opened = mgr.open_workspace_side_view(s, &diff_view(s)).unwrap();
+        assert_eq!(opened, ws_id);
+        let state = mgr.state();
+        assert_eq!(state.active_workspace, Some(ws_id));
+        let target = state.workspaces.iter().find(|w| w.id == ws_id).unwrap();
+        assert_eq!(target.side_view.as_deref(), Some(diff_view(s).as_str()));
+
+        mgr.set_side_view_expanded(ws_id, true).unwrap();
+        assert!(mgr.state().workspaces[0].side_expanded);
+
+        mgr.close_side_view(ws_id).unwrap();
+        let target = &mgr.state().workspaces[0];
+        assert_eq!(target.side_view, None);
+        assert!(!target.side_expanded);
+        // Fechar o painel nunca toca nas sessões/tabs.
+        assert_eq!(target.tabs.len(), 1);
+    }
+
+    #[test]
+    fn side_view_ratio_is_clamped() {
+        let mgr = manager();
+        let s = sid();
+        let ws_id = mgr.create_workspace("api", None, s).unwrap();
+        mgr.set_side_view_ratio(ws_id, 0.01, true).unwrap();
+        assert!((mgr.state().workspaces[0].side_ratio - MIN_RATIO).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn session_disposed_clears_its_side_view() {
+        let mgr = manager();
+        let s = sid();
+        let other = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        mgr.create_tab(other, None).unwrap();
+        mgr.open_workspace_side_view(s, &diff_view(s)).unwrap();
+
+        mgr.session_disposed(s).unwrap();
+        let state = mgr.state();
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].side_view, None);
+    }
+
+    #[test]
+    fn side_view_round_trips_through_store_and_drops_dead_session() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let alive = sid();
+        let dead = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            let ws1 = mgr.create_workspace("a", None, alive).unwrap();
+            mgr.create_workspace("b", None, dead).unwrap();
+            mgr.open_workspace_side_view(alive, &diff_view(alive))
+                .unwrap();
+            mgr.open_workspace_side_view(dead, &diff_view(dead))
+                .unwrap();
+            mgr.set_side_view_ratio(ws1, 0.7, true).unwrap();
+            mgr.set_side_view_expanded(ws1, true).unwrap();
+        }
+
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load(&HashSet::from([alive]));
+        let state = mgr.state();
+        let a = state.workspaces.iter().find(|w| w.name == "a").unwrap();
+        assert_eq!(a.side_view.as_deref(), Some(diff_view(alive).as_str()));
+        assert!((a.side_ratio - 0.7).abs() < 1e-9);
+        assert!(a.side_expanded);
+        // Workspace do dead perde tabs (GC) e o side_view do morto some.
+        for w in &state.workspaces {
+            if w.name == "b" {
+                assert_eq!(w.side_view, None);
+            }
+        }
+    }
+
+    #[test]
+    fn load_drops_legacy_diff_view_tab() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let s = sid();
+        let mut rows = {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("api", None, s).unwrap();
+            workspaces_to_rows(&mgr.state().workspaces)
+        };
+        rows.tabs.push(TabRow {
+            id: Uuid::new_v4().to_string(),
+            workspace_id: Some(rows.workspaces[0].id.clone()),
+            title: None,
+            view: Some(diff_view(s)),
+            position: 1,
+            active_pane: None,
+            created_at: Utc::now().to_rfc3339(),
+        });
+        store.save_layout(&rows).unwrap();
+
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load(&HashSet::from([s]));
+        let state = mgr.state();
+        assert_eq!(state.workspaces[0].tabs.len(), 1);
+        assert!(state.workspaces[0].tabs[0].view.is_none());
     }
 
     #[test]

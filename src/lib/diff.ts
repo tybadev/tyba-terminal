@@ -2,7 +2,7 @@ import type { DiffLine, FileDiff, FileHunks, Hunk } from "./ipc";
 
 export type DiffMode = "unified" | "split";
 
-export type DiffScopeKey = "committed" | "uncommitted";
+export type DiffScopeKey = "committed" | "staged" | "unstaged";
 
 export interface FileKey {
   scope: DiffScopeKey;
@@ -11,6 +11,12 @@ export interface FileKey {
 
 export const fileKeyOf = (scope: DiffScopeKey, path: string): string =>
   `${scope}\u0000${path}`;
+
+export const keyScope = (key: string): string =>
+  key.slice(0, key.indexOf("\u0000"));
+
+export const keyPath = (key: string): string =>
+  key.slice(key.indexOf("\u0000") + 1);
 
 const GENERATED_PATTERNS: RegExp[] = [
   /(^|\/)bun\.lockb?$/,
@@ -169,7 +175,8 @@ export function hunkLineCount(hunks: FileHunks): number {
 
 export interface BuildRowsInput {
   committed: FileDiff[];
-  uncommitted: FileDiff[];
+  staged: FileDiff[];
+  unstaged: FileDiff[];
   hunksByKey: Record<string, FileHunks | undefined>;
   collapsedByKey: Record<string, boolean | undefined>;
   mode: DiffMode;
@@ -188,7 +195,8 @@ export function buildRows(input: BuildRowsInput): Row[] {
   const rows: Row[] = [];
   const sections: Array<{ scope: DiffScopeKey; files: FileDiff[] }> = [
     { scope: "committed", files: input.committed },
-    { scope: "uncommitted", files: input.uncommitted },
+    { scope: "staged", files: input.staged },
+    { scope: "unstaged", files: input.unstaged },
   ];
 
   for (const section of sections) {

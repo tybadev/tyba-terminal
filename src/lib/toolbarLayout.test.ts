@@ -84,8 +84,8 @@ describe("parseToolbarPref", () => {
         hidden: ["clock", "branch"],
       }),
     );
-    expect(parsed.left).toEqual(["clock"]);
-    expect(parsed.right).toEqual(["branch"]);
+    expect(parsed.left).toEqual(["clock", "diffCount", "reviewDiff"]);
+    expect(parsed.right).toEqual(["branch", "cwd", "aheadBehind"]);
     expect(parsed.hidden).toEqual([]);
   });
 });
