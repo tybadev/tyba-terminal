@@ -268,6 +268,12 @@ const copyText = (text: string) => {
 
 type SidebarMode = "open" | "rail" | "hidden";
 
+const SIDEBAR_WIDTH: Record<SidebarMode, number> = {
+  open: 224,
+  rail: 44,
+  hidden: 0,
+};
+
 function IconAction({
   label,
   shortcut,
@@ -1670,7 +1676,10 @@ export default function App() {
             <MagnifyingGlass size={16} />
           </IconAction>
 
-          <div className="pointer-events-none absolute inset-x-0 top-0 flex h-9 items-center justify-center">
+          <div
+            className="pointer-events-none absolute right-0 top-0 flex h-9 items-center justify-center"
+            style={{ left: SIDEBAR_WIDTH[sidebar] }}
+          >
             <div className="pointer-events-auto flex items-center gap-0.5 rounded-[5px] border border-tyba-border bg-white/[.02] p-0.5">
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -1842,9 +1851,8 @@ export default function App() {
           <>
             {sidebar !== "hidden" && (
                 <aside
-                  className={`tyba-glass flex shrink-0 flex-col ${
-                    open ? "w-56" : "w-11"
-                  }`}
+                  className="tyba-glass flex shrink-0 flex-col"
+                  style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {open && (
                     <label className="mx-2 mt-3 flex h-7 items-center gap-1.5 rounded-[4px] bg-white/[.03] px-2 focus-within:bg-white/[.05]">
