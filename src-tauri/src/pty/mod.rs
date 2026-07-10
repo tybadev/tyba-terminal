@@ -22,7 +22,7 @@ pub type PtyId = Uuid;
 struct ScreenState {
     parser: vt100::Parser,
     pending: Vec<u8>,
-    attachers: usize,
+    attachers: HashMap<String, usize>,
 }
 
 impl ScreenState {
@@ -30,12 +30,38 @@ impl ScreenState {
         Self {
             parser: vt100::Parser::new(rows, cols, SCROLLBACK_LINES),
             pending: Vec::with_capacity(READ_BUF_SIZE),
-            attachers: 0,
+            attachers: HashMap::new(),
+        }
+    }
+
+    fn attached(&self) -> bool {
+        !self.attachers.is_empty()
+    }
+
+    fn attach(&mut self, window: &str) {
+        *self.attachers.entry(window.to_string()).or_insert(0) += 1;
+    }
+
+    fn detach(&mut self, window: &str) {
+        let Some(count) = self.attachers.get_mut(window) else {
+            return;
+        };
+        if *count > 1 {
+            *count -= 1;
+        } else {
+            self.drop_window(window);
+        }
+    }
+
+    fn drop_window(&mut self, window: &str) {
+        self.attachers.remove(window);
+        if !self.attached() {
+            self.pending.clear();
         }
     }
 
     fn take_pending(&mut self) -> Option<Vec<u8>> {
-        if self.attachers == 0 || self.pending.is_empty() {
+        if !self.attached() || self.pending.is_empty() {
             self.pending.clear();
             return None;
         }
@@ -249,7 +275,7 @@ impl PtyPool {
                             let bracketed = {
                                 let mut screen = reader_screen.lock();
                                 screen.parser.process(&chunk);
-                                if screen.attachers > 0 {
+                                if screen.attached() {
                                     screen.pending.extend_from_slice(&chunk);
                                 }
                                 if due {
@@ -381,18 +407,20 @@ impl PtyPool {
             let data = base64::engine::general_purpose::STANDARD.encode(&snapshot);
             let _ = app.emit_to(window, &event, PtyOutputPayload { data });
         }
-        state.attachers += 1;
+        state.attach(window);
         Ok(())
     }
 
-    pub fn detach(&self, id: PtyId) {
+    pub fn detach(&self, window: &str, id: PtyId) {
         let Some(screen) = self.screen_of(id) else {
             return;
         };
-        let mut state = screen.lock();
-        state.attachers = state.attachers.saturating_sub(1);
-        if state.attachers == 0 {
-            state.pending.clear();
+        screen.lock().detach(window);
+    }
+
+    pub fn drop_window_attachers(&self, window: &str) {
+        for handle in self.ptys.lock().values() {
+            handle.screen.lock().drop_window(window);
         }
     }
 
@@ -479,7 +507,7 @@ mod screen_state_tests {
     #[test]
     fn attached_screen_hands_over_queued_bytes_once() {
         let mut state = ScreenState::new(24, 80);
-        state.attachers = 1;
+        state.attach("main");
         state.pending.extend_from_slice(b"live");
         assert_eq!(state.take_pending().as_deref(), Some(&b"live"[..]));
         assert!(state.take_pending().is_none());
@@ -488,7 +516,7 @@ mod screen_state_tests {
     #[test]
     fn taking_pending_keeps_the_buffer_reusable() {
         let mut state = ScreenState::new(24, 80);
-        state.attachers = 1;
+        state.attach("main");
         state.pending.extend_from_slice(b"a");
         state.take_pending();
         state.pending.extend_from_slice(b"b");
@@ -496,19 +524,51 @@ mod screen_state_tests {
     }
 
     #[test]
-    fn a_second_attacher_keeps_the_stream_alive_after_the_first_detaches() {
+    fn a_second_window_keeps_the_stream_alive_after_the_first_detaches() {
         let mut state = ScreenState::new(24, 80);
-        state.attachers = 2;
-        state.attachers = state.attachers.saturating_sub(1);
+        state.attach("main");
+        state.attach("tyba-2");
+        state.detach("main");
         state.pending.extend_from_slice(b"still live");
         assert_eq!(state.take_pending().as_deref(), Some(&b"still live"[..]));
     }
 
     #[test]
-    fn detaching_below_zero_saturates() {
+    fn detaching_an_unknown_window_is_a_noop() {
         let mut state = ScreenState::new(24, 80);
-        state.attachers = state.attachers.saturating_sub(1);
-        assert_eq!(state.attachers, 0);
+        state.detach("ghost");
+        assert!(!state.attached());
+    }
+
+    #[test]
+    fn last_detach_of_a_window_discards_pending_bytes() {
+        let mut state = ScreenState::new(24, 80);
+        state.attach("main");
+        state.pending.extend_from_slice(b"stale");
+        state.detach("main");
+        assert!(!state.attached());
+        assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn dropping_a_window_clears_every_attachment_it_held() {
+        let mut state = ScreenState::new(24, 80);
+        state.attach("main");
+        state.attach("main");
+        state.pending.extend_from_slice(b"orphaned");
+        state.drop_window("main");
+        assert!(!state.attached());
+        assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn dropping_one_window_keeps_the_other_attached() {
+        let mut state = ScreenState::new(24, 80);
+        state.attach("main");
+        state.attach("tyba-2");
+        state.drop_window("tyba-2");
+        state.pending.extend_from_slice(b"live");
+        assert_eq!(state.take_pending().as_deref(), Some(&b"live"[..]));
     }
 }
 

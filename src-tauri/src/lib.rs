@@ -220,8 +220,8 @@ fn attach_session(
 }
 
 #[tauri::command]
-fn detach_session(state: State<'_, AppState>, id: SessionId) {
-    state.pty_pool.detach(id);
+fn detach_session(window: tauri::Window, state: State<'_, AppState>, id: SessionId) {
+    state.pty_pool.detach(window.label(), id);
 }
 
 #[tauri::command]
@@ -930,6 +930,20 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(state) = window.try_state::<AppState>() {
+                    state.pty_pool.drop_window_attachers(window.label());
+                }
+            }
+        })
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                if let Some(state) = webview.try_state::<AppState>() {
+                    state.pty_pool.drop_window_attachers(webview.label());
+                }
+            }
+        })
         .setup(|app| {
             let store = Arc::new(open_store(app.handle()));
             let pty_pool: SharedPtyPool = Arc::new(pty::PtyPool::new());

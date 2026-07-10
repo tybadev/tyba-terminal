@@ -41,6 +41,8 @@ import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 export const RELAYOUT_EVENT = "tyba:relayout";
 export const FONT_SIZE_EVENT = "tyba:font-size";
 
+const EXIT_BANNER_SETTLE_MS = 120;
+
 export function requestTerminalRelayout() {
   requestAnimationFrame(() => window.dispatchEvent(new Event(RELAYOUT_EVENT)));
 }
@@ -86,6 +88,7 @@ interface Props {
   focused: boolean;
   framed: boolean;
   rect: PaneRectStyle | null;
+  exited?: boolean;
   onExit?: () => void;
   onFocus?: () => void;
   onPaste?: (sessionId: SessionId, text: string) => void;
@@ -99,6 +102,7 @@ export function TerminalView({
   focused,
   framed,
   rect,
+  exited,
   onExit,
   onFocus,
   onPaste,
@@ -113,6 +117,7 @@ export function TerminalView({
   onFocusRef.current = onFocus;
   const onPasteRef = useRef(onPaste);
   onPasteRef.current = onPaste;
+  const showExitBannerRef = useRef<(() => void) | null>(null);
   const [menuHasSelection, setMenuHasSelection] = useState(false);
   const [menuMouseMode, setMenuMouseMode] = useState(false);
 
@@ -197,10 +202,20 @@ export function TerminalView({
       if (disposed) releaseAttachment();
     })().catch(() => {});
 
+    let exitBannerShown = false;
+    const showExitBanner = () => {
+      void attached.then(() => {
+        if (disposed || exitBannerShown) return;
+        exitBannerShown = true;
+        term.write(`\r\n\x1b[2m${i18n.t("sessionEnded")}\x1b[0m\r\n`);
+      });
+    };
+    showExitBannerRef.current = showExitBanner;
+
     void onPtyExit(sessionId, () => {
       void attached.then(() => {
         if (disposed) return;
-        term.write(`\r\n\x1b[2m${i18n.t("sessionEnded")}\x1b[0m\r\n`);
+        showExitBanner();
         onExit?.();
       });
     }).then(addUnlistener);
@@ -262,6 +277,7 @@ export function TerminalView({
       dataSub.dispose();
       unlisteners.forEach((un) => un());
       unregisterTerm(sessionId);
+      showExitBannerRef.current = null;
       disposeWebgl(webglRef.current);
       webglRef.current = null;
       term.dispose();
@@ -269,6 +285,15 @@ export function TerminalView({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!exited) return;
+    const timer = window.setTimeout(
+      () => showExitBannerRef.current?.(),
+      EXIT_BANNER_SETTLE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [exited, sessionId]);
 
   useEffect(() => {
     const term = termRef.current;
