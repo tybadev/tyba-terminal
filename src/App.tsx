@@ -2157,6 +2157,7 @@ export default function App() {
                     sessionId={activeSession.id}
                     pref={richInputPref}
                     focusNonce={richInputFocusNonce}
+                    openedExplicitly={richInputOpened.has(activeSession.id)}
                     onFocusChange={(focused) => {
                       richInputFocused.current = focused;
                     }}

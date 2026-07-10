@@ -33,6 +33,7 @@ interface Props {
   sessionId: SessionId;
   pref: RichInputPref;
   focusNonce: number;
+  openedExplicitly: boolean;
   onFocusChange: (focused: boolean) => void;
   onClose: () => void;
 }
@@ -41,6 +42,7 @@ export function RichInput({
   sessionId,
   pref,
   focusNonce,
+  openedExplicitly,
   onFocusChange,
   onClose,
 }: Props) {
@@ -80,6 +82,11 @@ export function RichInput({
   }, [sessionId, refreshMultiline]);
 
   const seenNonce = useRef(focusNonce);
+  useEffect(() => {
+    if (openedExplicitly) textareaRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (focusNonce === seenNonce.current) return;
     seenNonce.current = focusNonce;
