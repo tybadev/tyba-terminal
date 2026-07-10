@@ -243,7 +243,7 @@ export const repoSnapshots = () =>
   invoke<RepoSnapshot[]>("repo_snapshots");
 
 export const sessionCwd = (id: SessionId) =>
-  invoke<string | null>("session_cwd", { id });
+  invoke<SessionCwd | null>("session_cwd", { id });
 
 export const onRepoReconciled = (
   handler: (snapshots: RepoSnapshot[]) => void,
@@ -424,6 +424,7 @@ export const onSessionCommand = (
 
 export interface SessionCwd {
   cwd: string;
+  canonical: string;
 }
 
 export const onSessionCwd = (

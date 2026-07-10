@@ -124,12 +124,14 @@ import {
   type RepoSnapshot,
   type Session,
   type SessionCommand,
+  type SessionCwd,
   type SessionId,
   type SessionKind,
   type SplitKind,
   type Workspace,
 } from "./lib/ipc";
 import { basename } from "@/lib/utils";
+import { resolveWorkspaceCwd, workspaceMatchDir } from "./lib/workspaceCwd";
 import {
   computeRects,
   findAncestorSplit,
@@ -462,7 +464,9 @@ export default function App() {
   const [sessionCommands, setSessionCommands] = useState<
     Record<string, SessionCommand>
   >({});
-  const [sessionCwds, setSessionCwds] = useState<Record<string, string>>({});
+  const [sessionCwds, setSessionCwds] = useState<Record<string, SessionCwd>>(
+    {},
+  );
   useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
@@ -472,7 +476,10 @@ export default function App() {
       }).then((un) => (disposed ? un() : unlisteners.push(un)));
       void onSessionCwd(s.id, (payload) =>
         setSessionCwds((prev) =>
-          prev[s.id] === payload.cwd ? prev : { ...prev, [s.id]: payload.cwd },
+          prev[s.id]?.cwd === payload.cwd &&
+          prev[s.id]?.canonical === payload.canonical
+            ? prev
+            : { ...prev, [s.id]: payload },
         ),
       ).then((un) => (disposed ? un() : unlisteners.push(un)));
       void sessionCwd(s.id)
@@ -652,27 +659,13 @@ export default function App() {
   );
 
   const workspaceCwd = useCallback(
-    (w: Workspace): string | null => {
-      const activeTabId = w.active_tab;
-      const tab =
-        w.tabs.find((tb) => tb.id === activeTabId) ?? w.tabs[0] ?? null;
-      if (!tab?.root) return null;
-      const focused = tab.active_pane
-        ? paneSession(tab.root, tab.active_pane)
-        : null;
-      if (focused && sessionCwds[focused]) return sessionCwds[focused];
-      for (const sid of leafSessions(tab.root)) {
-        const cwd = sessionCwds[sid];
-        if (cwd) return cwd;
-      }
-      return null;
-    },
+    (w: Workspace): string | null => resolveWorkspaceCwd(w, sessionCwds)?.cwd ?? null,
     [sessionCwds],
   );
 
   const workspaceGitDir = useCallback(
-    (w: Workspace): string | null => workspaceCwd(w) ?? w.repo_root ?? null,
-    [workspaceCwd],
+    (w: Workspace): string | null => workspaceMatchDir(w, sessionCwds),
+    [sessionCwds],
   );
 
   const detailsFor = useCallback(
@@ -1423,6 +1416,7 @@ export default function App() {
     const isConfig = isConfigWorkspace(w);
     const showDetails = open && detailsFor(w.id) && !isConfig;
     const gitDir = workspaceGitDir(w);
+    const displayDir = workspaceCwd(w) ?? w.repo_root;
     const snapshot = gitDir ? snapshotForDir(repoSnapshots, gitDir) : undefined;
     const branch = snapshot?.branch ?? undefined;
     const gitStatus = showGitStatus
@@ -1511,7 +1505,7 @@ export default function App() {
               {showDetails && !runningCmd && (
                 <span className="flex w-full items-center gap-1.5">
                   <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-faint">
-                    {gitDir ? compactPath(gitDir) : "~"}
+                    {displayDir ? compactPath(displayDir) : "~"}
                   </span>
                   {branch && (
                     <span

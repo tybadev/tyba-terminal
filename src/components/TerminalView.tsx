@@ -205,8 +205,8 @@ export function TerminalView({
       });
     }).then(addUnlistener);
 
-    let lastCols = term.cols;
-    let lastRows = term.rows;
+    let lastCols = -1;
+    let lastRows = -1;
     let timer: number | null = null;
     const refit = () => {
       timer = null;
@@ -248,7 +248,6 @@ export function TerminalView({
     window.addEventListener(FONT_SIZE_EVENT, onFontSize);
     el.addEventListener("mousedown", onMouseDown);
     el.addEventListener("paste", onNativePaste, true);
-    void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
 
     return () => {
       disposed = true;

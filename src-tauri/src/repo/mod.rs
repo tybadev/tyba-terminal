@@ -104,6 +104,10 @@ pub fn process_cwd(_pid: u32) -> Option<PathBuf> {
     None
 }
 
+pub fn canonicalize_or(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 pub fn toplevel(cwd: &Path) -> Option<PathBuf> {
     git_path(cwd, "--show-toplevel")
 }
@@ -372,6 +376,48 @@ fn spawn_watcher<R: Runtime>(
         _debouncer: debouncer,
         last: seed,
     })
+}
+
+#[cfg(all(test, unix))]
+mod canonicalize_tests {
+    use super::canonicalize_or;
+    use std::path::Path;
+
+    #[test]
+    fn resolves_a_symlinked_path_to_the_physical_one() {
+        let real = std::env::temp_dir().join(format!("tyba-real-{}", uuid::Uuid::new_v4()));
+        let link = std::env::temp_dir().join(format!("tyba-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert_eq!(canonicalize_or(&link), canonicalize_or(&real));
+        assert_ne!(canonicalize_or(&link), link);
+
+        std::fs::remove_file(&link).ok();
+        std::fs::remove_dir_all(&real).ok();
+    }
+
+    #[test]
+    fn a_path_that_does_not_exist_falls_back_to_itself() {
+        let ghost = Path::new("/definitivamente/nao/existe/aqui");
+        assert_eq!(canonicalize_or(ghost), ghost.to_path_buf());
+    }
+
+    #[test]
+    fn the_kernel_cwd_and_the_logical_path_converge_after_canonicalize() {
+        let real = std::env::temp_dir().join(format!("tyba-conv-{}", uuid::Uuid::new_v4()));
+        let link = std::env::temp_dir().join(format!("tyba-conv-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let logical = link.join(".");
+        let physical = canonicalize_or(&real);
+
+        assert_eq!(canonicalize_or(&logical), physical);
+
+        std::fs::remove_file(&link).ok();
+        std::fs::remove_dir_all(&real).ok();
+    }
 }
 
 #[cfg(test)]

@@ -92,6 +92,18 @@ pub struct SessionCommandPayload {
 #[derive(Clone, serde::Serialize)]
 pub struct SessionCwdPayload {
     pub cwd: String,
+    pub canonical: String,
+}
+
+impl SessionCwdPayload {
+    pub fn of(path: &std::path::Path) -> Self {
+        Self {
+            cwd: path.to_string_lossy().into_owned(),
+            canonical: crate::repo::canonicalize_or(path)
+                .to_string_lossy()
+                .into_owned(),
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -105,6 +117,7 @@ struct PtyHandle {
     child: Box<dyn Child + Send + Sync>,
     leader_pid: Option<u32>,
     screen: SharedScreen,
+    size: (u16, u16),
 }
 
 #[derive(Default)]
@@ -173,6 +186,7 @@ impl PtyPool {
                 child,
                 leader_pid,
                 screen,
+                size: (cols, rows),
             },
         );
 
@@ -290,12 +304,8 @@ impl PtyPool {
                                     ShellEvent::Cwd(path) => {
                                         if last_cwd.as_deref() != Some(path.as_path()) {
                                             last_cwd = Some(path.clone());
-                                            let _ = app.emit(
-                                                &cwd_event,
-                                                SessionCwdPayload {
-                                                    cwd: path.to_string_lossy().into_owned(),
-                                                },
-                                            );
+                                            let _ =
+                                                app.emit(&cwd_event, SessionCwdPayload::of(&path));
                                             let _ = app.emit(EVENT_CWD_CHANGED, session_id);
                                         }
                                     }
@@ -336,8 +346,11 @@ impl PtyPool {
     }
 
     pub fn resize(&self, id: PtyId, cols: u16, rows: u16) -> Result<(), PtyError> {
-        let ptys = self.ptys.lock();
-        let handle = ptys.get(&id).ok_or(PtyError::NotFound(id))?;
+        let mut ptys = self.ptys.lock();
+        let handle = ptys.get_mut(&id).ok_or(PtyError::NotFound(id))?;
+        if handle.size == (cols, rows) {
+            return Ok(());
+        }
         handle
             .master
             .resize(PtySize {
@@ -347,6 +360,7 @@ impl PtyPool {
                 pixel_height: 0,
             })
             .map_err(|e| PtyError::Open(e.to_string()))?;
+        handle.size = (cols, rows);
         handle.screen.lock().parser.set_size(rows, cols);
         Ok(())
     }
