@@ -1676,10 +1676,7 @@ export default function App() {
             <MagnifyingGlass size={16} />
           </IconAction>
 
-          <div
-            className="pointer-events-none absolute right-0 top-0 flex h-9 items-center justify-center"
-            style={{ left: SIDEBAR_WIDTH[sidebar] }}
-          >
+          <div className="pointer-events-none absolute inset-x-0 top-0 flex h-9 items-center justify-center">
             <div className="pointer-events-auto flex items-center gap-0.5 rounded-[5px] border border-tyba-border bg-white/[.02] p-0.5">
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -2101,7 +2098,12 @@ export default function App() {
                     </div>
                   ))}
                   {!activeTab && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-5">
+                    <div
+                      className="absolute inset-0 flex flex-col items-center justify-center gap-5"
+                      style={{
+                        transform: `translateX(${-SIDEBAR_WIDTH[sidebar] / 2}px)`,
+                      }}
+                    >
                       <TerminalWindow
                         size={36}
                         className="text-tyba-text-faint"
