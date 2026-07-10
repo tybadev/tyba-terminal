@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { FileDiff, FileHunks, Hunk } from "./ipc";
 import {
+  buildReviewPrompt,
   buildRows,
   defaultCollapsed,
   fileKeyOf,
@@ -143,5 +144,31 @@ describe("langOfPath", () => {
     expect(langOfPath("src/main.rs")).toBe("rust");
     expect(langOfPath("App.tsx")).toBe("tsx");
     expect(langOfPath("LICENSE")).toBeNull();
+  });
+});
+
+describe("buildReviewPrompt", () => {
+  test("formata arquivo:linha com trecho e instrução final", () => {
+    const prompt = buildReviewPrompt("abc1234", [
+      {
+        path: "src/main.rs",
+        oldNo: null,
+        newNo: 12,
+        excerpt: "let total = soma(1, 2) * 2;",
+        text: "extrai esse 2 pra uma constante",
+      },
+      {
+        path: "src/velho.rs",
+        oldNo: 40,
+        newNo: null,
+        excerpt: "fn antiga()",
+        text: "essa função não podia ter sumido",
+      },
+    ]);
+    expect(prompt).toContain("base abc1234..HEAD");
+    expect(prompt).toContain("src/main.rs:12");
+    expect(prompt).toContain("> let total = soma(1, 2) * 2;");
+    expect(prompt).toContain("linha removida 40");
+    expect(prompt).toContain("2 comentário(s)");
   });
 });

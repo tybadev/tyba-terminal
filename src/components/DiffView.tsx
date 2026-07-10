@@ -4,10 +4,14 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   CaretDown,
   CaretRight,
+  ChatCircleText,
   GitBranch,
   GitCommit,
+  PaperPlaneTilt,
+  Plus,
   Rows,
   SquareSplitHorizontal,
+  Trash,
   X,
 } from "@phosphor-icons/react";
 
@@ -22,11 +26,13 @@ import {
 } from "../lib/ipc";
 import {
   buildRows,
+  buildReviewPrompt,
   defaultCollapsed,
   fileKeyOf,
   langOfPath,
   type DiffMode,
   type DiffScopeKey,
+  type ReviewComment,
   type Row,
 } from "../lib/diff";
 import { highlightBlock, type TokenSpan } from "../lib/highlight";
@@ -100,9 +106,15 @@ const GUTTER_SIGN: Record<string, { sign: string; cls: string }> = {
 interface Props {
   session: Session;
   onClose: () => void;
+  onSendToAgent: (prompt: string) => Promise<void>;
 }
 
-export function DiffView({ session, onClose }: Props) {
+type DisplayRow =
+  | Row
+  | { kind: "comment"; key: string; comment: ReviewComment; anchor: string }
+  | { kind: "commentEditor"; key: string; anchor: string };
+
+export function DiffView({ session, onClose, onSendToAgent }: Props) {
   const { t } = useTranslation();
   const [diff, setDiff] = useState<SessionDiff | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -114,6 +126,13 @@ export function DiffView({ session, onClose }: Props) {
   >({});
   const [mode, setMode] = useState<DiffMode>("unified");
   const [tokens, setTokens] = useState<Record<string, TokenSpan[][]>>({});
+  const [comments, setComments] = useState<Record<string, ReviewComment>>({});
+  const [draftAnchor, setDraftAnchor] = useState<string | null>(null);
+  const [draftText, setDraftText] = useState("");
+  const [sendState, setSendState] = useState<
+    "idle" | "sending" | "sent" | "error"
+  >("idle");
+  const [sendError, setSendError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestedRef = useRef(new Set<string>());
   const highlightedRef = useRef(new Set<string>());
@@ -122,6 +141,7 @@ export function DiffView({ session, onClose }: Props) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
+
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
@@ -206,19 +226,42 @@ export function DiffView({ session, onClose }: Props) {
     [diff, hunksByKey, collapsedByKey, mode],
   );
 
+  const displayRows = useMemo<DisplayRow[]>(() => {
+    const out: DisplayRow[] = [];
+    for (const row of rows) {
+      out.push(row);
+      if (row.kind !== "line") continue;
+      const saved = comments[row.key];
+      if (saved) {
+        out.push({
+          kind: "comment",
+          key: `${row.key}:c`,
+          comment: saved,
+          anchor: row.key,
+        });
+      }
+      if (draftAnchor === row.key && !saved) {
+        out.push({ kind: "commentEditor", key: `${row.key}:e`, anchor: row.key });
+      }
+    }
+    return out;
+  }, [rows, comments, draftAnchor]);
+
   const virtualizer = useVirtualizer({
-    count: rows.length,
+    count: displayRows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: (index) => {
-      const kind = rows[index]?.kind;
+      const kind = displayRows[index]?.kind;
       if (kind === "line" || kind === "split") return 20;
       if (kind === "hunk") return 24;
       if (kind === "file") return 40;
       if (kind === "section") return 40;
+      if (kind === "commentEditor") return 96;
+      if (kind === "comment") return 56;
       return 36;
     },
     getItemKey: (index) => {
-      const row = rows[index];
+      const row = displayRows[index];
       return row.kind === "section" ? `section:${row.scope}` : row.key;
     },
     overscan: 30,
@@ -230,12 +273,12 @@ export function DiffView({ session, onClose }: Props) {
     const first = virtualItems[0];
     if (!first) return null;
     for (let i = first.index; i >= 0; i -= 1) {
-      const row = rows[i];
+      const row = displayRows[i];
       if (row?.kind === "file") return row;
       if (row?.kind === "section") return null;
     }
     return null;
-  }, [virtualItems, rows]);
+  }, [virtualItems, displayRows]);
 
   const toggleFile = useCallback((key: string, next: boolean) => {
     setCollapsedByKey((prev) => ({ ...prev, [key]: next }));
@@ -243,11 +286,52 @@ export function DiffView({ session, onClose }: Props) {
 
   const jumpTo = useCallback(
     (key: string) => {
-      const index = rows.findIndex((r) => r.kind === "file" && r.key === key);
+      const index = displayRows.findIndex(
+        (r) => r.kind === "file" && r.key === key,
+      );
       if (index >= 0) virtualizer.scrollToIndex(index, { align: "start" });
     },
-    [rows, virtualizer],
+    [displayRows, virtualizer],
   );
+
+  const saveDraft = useCallback(
+    (anchor: string) => {
+      const text = draftText.trim();
+      const row = rows.find((r) => r.kind === "line" && r.key === anchor);
+      if (!text || !row || row.kind !== "line") return;
+      setComments((prev) => ({
+        ...prev,
+        [anchor]: {
+          path: row.path,
+          oldNo: row.oldNo,
+          newNo: row.newNo,
+          excerpt: row.line.text.trim().slice(0, 120),
+          text,
+        },
+      }));
+      setDraftAnchor(null);
+      setDraftText("");
+    },
+    [draftText, rows],
+  );
+
+  const commentList = useMemo(() => Object.values(comments), [comments]);
+
+  const sendToAgent = useCallback(async () => {
+    if (commentList.length === 0 || sendState === "sending") return;
+    setSendState("sending");
+    setSendError(null);
+    try {
+      await onSendToAgent(
+        buildReviewPrompt(diff?.base_ref.slice(0, 7) ?? "", commentList),
+      );
+      setSendState("sent");
+      setComments({});
+    } catch (e) {
+      setSendState("error");
+      setSendError(String(e));
+    }
+  }, [commentList, sendState, onSendToAgent, diff]);
 
   const branch = session.worktree?.branch ?? "";
   const baseShort = diff?.base_ref.slice(0, 7) ?? "";
@@ -290,8 +374,72 @@ export function DiffView({ session, onClose }: Props) {
       </div>
     );
 
-  const renderRow = (row: Row) => {
+  const renderRow = (row: DisplayRow) => {
     switch (row.kind) {
+      case "comment":
+        return (
+          <div className="flex items-start gap-2 border-l-2 border-tyba-green/50 bg-tyba-green/[.04] py-1.5 pl-[104px] pr-4">
+            <ChatCircleText
+              size={13}
+              className="mt-0.5 shrink-0 text-tyba-green"
+            />
+            <span className="min-w-0 flex-1 whitespace-pre-wrap text-[12px] leading-snug text-tyba-text">
+              {row.comment.text}
+            </span>
+            <button
+              aria-label={t("diffCommentRemove")}
+              onClick={() =>
+                setComments((prev) => {
+                  const next = { ...prev };
+                  delete next[row.anchor];
+                  return next;
+                })
+              }
+              className="shrink-0 text-tyba-text-faint hover:text-tyba-red"
+            >
+              <Trash size={12} />
+            </button>
+          </div>
+        );
+      case "commentEditor":
+        return (
+          <div className="flex flex-col gap-1.5 border-l-2 border-tyba-green/50 bg-tyba-green/[.04] py-2 pl-[104px] pr-4">
+            <textarea
+              autoFocus
+              value={draftText}
+              onChange={(e) => setDraftText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  saveDraft(row.anchor);
+                }
+                if (e.key === "Escape") {
+                  e.stopPropagation();
+                  setDraftAnchor(null);
+                  setDraftText("");
+                }
+              }}
+              placeholder={t("diffCommentPlaceholder")}
+              className="min-h-[52px] w-full max-w-xl resize-y rounded-[4px] border border-tyba-border bg-black/30 p-2 font-sans text-[12px] text-tyba-text outline-none focus:border-tyba-green/50"
+            />
+            <div className="flex gap-2">
+              <Button size="sm" className="h-6 px-2 text-[11px]" onClick={() => saveDraft(row.anchor)}>
+                {t("diffCommentSave")}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[11px]"
+                onClick={() => {
+                  setDraftAnchor(null);
+                  setDraftText("");
+                }}
+              >
+                {t("cancel")}
+              </Button>
+            </div>
+          </div>
+        );
       case "section":
         return (
           <div className="flex items-baseline gap-2 px-4 pb-2 pt-5">
@@ -343,9 +491,19 @@ export function DiffView({ session, onClose }: Props) {
         const spans = tokens[row.hunkKey]?.[row.idx];
         return (
           <div
-            className={`flex items-stretch font-mono text-[12px] leading-[20px] ${LINE_BG[row.line.kind]}`}
+            className={`group/line flex items-stretch font-mono text-[12px] leading-[20px] ${LINE_BG[row.line.kind]}`}
           >
-            <span className="w-12 shrink-0 select-none pr-2 text-right text-[10px] leading-[20px] text-tyba-text-faint">
+            <span className="relative w-12 shrink-0 select-none pr-2 text-right text-[10px] leading-[20px] text-tyba-text-faint">
+              <button
+                aria-label={t("diffCommentAdd")}
+                onClick={() => {
+                  setDraftAnchor(row.key);
+                  setDraftText("");
+                }}
+                className="absolute left-0.5 top-0.5 hidden size-4 items-center justify-center rounded-[3px] bg-tyba-green text-black group-hover/line:flex"
+              >
+                <Plus size={11} weight="bold" />
+              </button>
               {row.oldNo ?? ""}
             </span>
             <span className="w-12 shrink-0 select-none pr-2 text-right text-[10px] leading-[20px] text-tyba-text-faint">
@@ -413,11 +571,8 @@ export function DiffView({ session, onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-tyba-bg">
-      <header
-        data-tauri-drag-region
-        className="flex h-11 shrink-0 items-center gap-3 border-b border-tyba-border py-2 pl-20 pr-4"
-      >
+    <div className="flex min-w-0 flex-1 flex-col bg-tyba-bg">
+      <header className="flex h-11 shrink-0 items-center gap-3 border-b border-tyba-border px-4">
         <GitBranch size={14} className="shrink-0 text-tyba-green" />
         <span className="min-w-0 truncate text-[13px] text-tyba-text">
           {session.title}
@@ -552,7 +707,7 @@ export function DiffView({ session, onClose }: Props) {
                     transform: `translateY(${item.start}px)`,
                   }}
                 >
-                  {renderRow(rows[item.index])}
+                  {renderRow(displayRows[item.index])}
                 </div>
               ))}
             </div>
@@ -560,13 +715,31 @@ export function DiffView({ session, onClose }: Props) {
         </main>
       </div>
 
-      <footer className="flex h-8 shrink-0 items-center gap-3 border-t border-tyba-border px-4 font-mono text-[11px] text-tyba-text-muted">
+      <footer className="flex h-9 shrink-0 items-center gap-3 border-t border-tyba-border px-4 font-mono text-[11px] text-tyba-text-muted">
         <GitBranch size={12} className="shrink-0" />
         <span>{t("diffAhead", { count: diff?.commits.length ?? 0 })}</span>
         <span className="text-tyba-text-faint">·</span>
         <span className={diff?.uncommitted ? "text-tyba-yellow" : ""}>
           {diff?.uncommitted ? t("diffDirty") : t("diffClean")}
         </span>
+        <div className="flex-1" />
+        {sendState === "sent" && commentList.length === 0 && (
+          <span className="text-tyba-green">{t("diffCommentsSent")}</span>
+        )}
+        {sendError && <span className="max-w-md truncate text-tyba-red">{sendError}</span>}
+        {commentList.length > 0 && (
+          <Button
+            size="sm"
+            className="h-6 gap-1.5 px-2.5 text-[11px]"
+            disabled={sendState === "sending"}
+            onClick={() => void sendToAgent()}
+          >
+            <PaperPlaneTilt size={12} />
+            {sendState === "sending"
+              ? t("diffCommentsSending")
+              : t("diffCommentsSend", { count: commentList.length })}
+          </Button>
+        )}
       </footer>
     </div>
   );

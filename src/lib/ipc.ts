@@ -123,6 +123,9 @@ export interface FileHunks {
   hunks: Hunk[];
 }
 
+export const openDiffTab = (id: SessionId) =>
+  invoke<void>("open_diff_tab", { id });
+
 export const sessionDiff = (id: SessionId) =>
   invoke<SessionDiff>("session_diff", { id });
 

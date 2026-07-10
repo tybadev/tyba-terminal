@@ -309,6 +309,17 @@ fn session_worktree(state: &AppState, id: SessionId) -> Result<worktree::Worktre
 }
 
 #[tauri::command]
+fn open_diff_tab(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
+    session_worktree(&state, id)?;
+    state
+        .layout
+        .open_session_view_tab(id, &format!("diff:{id}"))
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
 async fn session_diff(
     state: State<'_, AppState>,
     id: SessionId,
@@ -1265,6 +1276,7 @@ pub fn run() {
             worktree_gc,
             session_diff,
             session_diff_hunks,
+            open_diff_tab,
             repo_snapshots,
             session_cwd,
             resize_session,

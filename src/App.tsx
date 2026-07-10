@@ -110,6 +110,7 @@ import {
   onSessionCommand,
   onSessionCwd,
   onSessionStatus,
+  openDiffTab,
   openViewTab,
   paneSession,
   renameWorkspace,
@@ -118,6 +119,7 @@ import {
   repoSnapshots as fetchRepoSnapshots,
   sessionCwd,
   setAgentMatchPattern,
+  submitRichInput,
   setPref,
   setSplitRatio,
   setWorkspaceColor,
@@ -339,7 +341,6 @@ export default function App() {
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [newSessionIsolate, setNewSessionIsolate] = useState(false);
   const [worktreeDir, setWorktreeDir] = useState<string | null>(null);
-  const [diffSessionId, setDiffSessionId] = useState<SessionId | null>(null);
   const [worktreeDefault, setWorktreeDefault] = useState(false);
 
   const openNewSession = useCallback(
@@ -506,6 +507,51 @@ export default function App() {
       }
     },
     [layout.workspaces],
+  );
+
+  const sendReviewToAgent = useCallback(
+    async (target: Session, prompt: string) => {
+      const wtPath = target.worktree?.path;
+      let sid = target.id;
+      const running = sessions.find(
+        (s) =>
+          s.id === target.id && s.status.state !== "exited" && s.status.state !== "failed",
+      );
+      if (!running && wtPath) {
+        const fresh = await createSession({
+          kind: { type: "shell" },
+          cwd: wtPath,
+          cols: 100,
+          rows: 30,
+        });
+        setSessions((prev) => [...prev, fresh]);
+        try {
+          const workspaceId = await createWorkspace(
+            target.title,
+            wtPath,
+            fresh.id,
+          );
+          void workspaceId;
+        } catch {
+          void disposeSession(fresh.id).catch(() => {});
+          throw new Error("não deu pra abrir a sessão no worktree");
+        }
+        sid = fresh.id;
+      }
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          await submitRichInput(sid, prompt, false);
+          goToSession(sid);
+          return;
+        } catch (e) {
+          lastError = e;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+      throw lastError;
+    },
+    [sessions, goToSession],
   );
 
   const sessionIds = useMemo(
@@ -1426,6 +1472,17 @@ export default function App() {
 
   const open = sidebar === "open";
 
+  const worktreeSessionOf = (w: Workspace): Session | null => {
+    for (const tab of w.tabs) {
+      if (!tab.root) continue;
+      for (const sid of leafSessions(tab.root)) {
+        const session = sessionById.get(sid);
+        if (session?.worktree) return session;
+      }
+    }
+    return null;
+  };
+
   const renderWorkspaceMenuItems = (
     w: Workspace,
     branch: string | undefined,
@@ -1438,6 +1495,17 @@ export default function App() {
       >
         {t("renameSession")}
       </M.Item>
+      {worktreeSessionOf(w) && (
+        <M.Item
+          className="text-xs"
+          onSelect={() => {
+            const target = worktreeSessionOf(w);
+            if (target) void openDiffTab(target.id).catch(() => {});
+          }}
+        >
+          {t("diffReviewAction")}
+        </M.Item>
+      )}
       <M.Sub>
         <M.SubTrigger className="text-xs">{t("groupSession")}</M.SubTrigger>
         <M.SubContent className="w-44">
@@ -1749,16 +1817,6 @@ export default function App() {
         onCancel={() => setPastePrompt(null)}
         onConfirm={confirmPaste}
       />
-      {diffSessionId &&
-        (() => {
-          const target = sessionById.get(diffSessionId);
-          return target ? (
-            <DiffView
-              session={target}
-              onClose={() => setDiffSessionId(null)}
-            />
-          ) : null;
-        })()}
       <NewSessionPrompt
         open={newSessionOpen}
         onOpenChange={(open) => {
@@ -2077,6 +2135,39 @@ export default function App() {
                         </Tooltip>
                       </div>
                     )}
+                    {layout.workspaces.some(isWorktreesWorkspace) && (
+                      <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-white/[.015] p-1">
+                        {open && (
+                          <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
+                            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
+                              {t("codeGroup")}
+                            </span>
+                            <span className="h-px min-w-0 flex-1 bg-tyba-border" />
+                          </span>
+                        )}
+                        <button
+                          onClick={toggleWorktreesView}
+                          aria-label={t("worktreesTitle")}
+                          className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
+                            open ? "px-2" : "justify-center px-0"
+                          } ${
+                            activeTab?.view === "workspace"
+                              ? "bg-white/[.05] text-tyba-text"
+                              : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
+                          }`}
+                        >
+                          {activeTab?.view === "workspace" && (
+                            <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-tyba-green" />
+                          )}
+                          <SquaresFour size={16} className="shrink-0" />
+                          {open && (
+                            <span className="min-w-0 flex-1 truncate text-left">
+                              {t("worktreesTitle")}
+                            </span>
+                          )}
+                        </button>
+                      </div>
+                    )}
                     {groupedWorkspaces.groups.map(([name, list]) => (
                       <div
                         key={name}
@@ -2109,7 +2200,9 @@ export default function App() {
                       </div>
                     ))}
                     {groupedWorkspaces.loose
-                      .filter((w) => !isConfigWorkspace(w))
+                      .filter(
+                        (w) => !isConfigWorkspace(w) && !isWorktreesWorkspace(w),
+                      )
                       .map(renderWorkspace)}
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -2175,10 +2268,36 @@ export default function App() {
                           void newSession(path, name)
                         }
                         onFocusSession={goToSession}
-                        onReviewSession={setDiffSessionId}
+                        onReviewSession={(id) =>
+                          void openDiffTab(id).catch(() => {})
+                        }
                       />
                     </div>
                   )}
+                  {activeTab?.view?.startsWith("diff:") &&
+                    (() => {
+                      const target = sessionById.get(
+                        (activeTab.view ?? "").slice(5),
+                      );
+                      const tabId = activeTab.id;
+                      return (
+                        <div className="absolute inset-0 flex">
+                          {target ? (
+                            <DiffView
+                              session={target}
+                              onClose={() => void closeTabAndRefresh(tabId)}
+                              onSendToAgent={(prompt) =>
+                                sendReviewToAgent(target, prompt)
+                              }
+                            />
+                          ) : (
+                            <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
+                              {t("diffSessionGone")}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   {activeTab?.view === "settings" && (
                     <div className="absolute inset-0 flex">
                       <SettingsView

@@ -812,6 +812,38 @@ impl LayoutManager {
         Ok(())
     }
 
+    /// Abre (ou foca) uma tab de view DENTRO do workspace que contém a
+    /// sessão — diferente de `open_view_tab`, que usa workspace dedicado.
+    pub fn open_session_view_tab(
+        &self,
+        session: SessionId,
+        view: &str,
+    ) -> Result<(), LayoutError> {
+        let mut inner = self.inner.write();
+        let Some((ws_id, _, _)) = find_session_pane(&inner.workspaces, session) else {
+            return Err(LayoutError::NoActiveWorkspace);
+        };
+        let idx = ws_index(&inner.workspaces, ws_id)?;
+        let existing = inner.workspaces[idx]
+            .tabs
+            .iter()
+            .find(|t| t.view.as_deref() == Some(view))
+            .map(|t| t.id);
+        let tab_id = match existing {
+            Some(id) => id,
+            None => {
+                let tab = Tab::from_view(view);
+                let id = tab.id;
+                inner.workspaces[idx].tabs.push(tab);
+                id
+            }
+        };
+        inner.workspaces[idx].active_tab = Some(tab_id);
+        inner.active = Some(ws_id);
+        drop(inner);
+        self.persist()
+    }
+
     pub fn session_disposed(&self, session: SessionId) -> Result<(), LayoutError> {
         loop {
             let target = {
