@@ -1,31 +1,39 @@
 # TYBA
 
-> Seu ambiente. Tudo conectado.
+> Your environment. Everything connected.
 
-Terminal opensource orientado a agentes de IA: orquestra múltiplas sessões (Claude Code, Codex) em git worktrees isolados, com inbox de aprovações, review de diff local e segurança como diferencial.
+Open-source, AI-agent-oriented terminal: orchestrates multiple agent sessions (Claude Code, Codex) in isolated git worktrees, with an approvals inbox, local diff review, and security as a product differentiator.
 
-**Status**: pré-alpha — Fase 1 do [roadmap](docs/ROADMAP.md) em construção.
+**Status**: pre-alpha — Phase 1 of the [roadmap](docs/ROADMAP.md) under construction.
+
+![TYBA](docs/assets/tyba-home.png)
 
 ## Stack
 
 Tauri 2 (Rust) · React + TypeScript · Tailwind v4 · xterm.js · **Bun**
 
-## Desenvolvimento
+## Development
 
-Pré-requisitos: [Bun](https://bun.sh), [Rust](https://rustup.rs) e os [pré-requisitos do Tauri 2](https://v2.tauri.app/start/prerequisites/) para o seu OS.
+Prerequisites: [Bun](https://bun.sh), [Rust](https://rustup.rs), and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
 
 ```bash
 bun install
 bun tauri dev
 ```
 
-## Documentação
+## Screenshots
 
-- [Arquitetura](docs/ARCHITECTURE.md) — modelo de dados, IPC, ciclo de vida de sessão
-- [Segurança](docs/SECURITY.md) — modelo de ameaça e regras não negociáveis
-- [Roadmap](docs/ROADMAP.md) — fases e critérios de saída
-- [CLAUDE.md](CLAUDE.md) — contexto para desenvolvimento com Claude Code
+Chip bar layout editor (Settings → Preferences):
 
-## Licença
+![Settings — chip bar editor](docs/assets/tyba-settings-chips.png)
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md) — data model, IPC, session lifecycle
+- [Security](docs/SECURITY.md) — threat model and non-negotiable rules
+- [Roadmap](docs/ROADMAP.md) — phases and exit criteria
+- [CLAUDE.md](CLAUDE.md) — context for development with Claude Code
+
+## License
 
 [Apache-2.0](LICENSE)
