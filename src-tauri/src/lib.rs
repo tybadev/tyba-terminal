@@ -199,9 +199,9 @@ async fn worktree_list(
     repo_root: String,
 ) -> Result<WorktreeListing, String> {
     let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
-    let root = repo::toplevel(&param)
+    let root = worktree::main_repo_of(&param)
         .map(|t| repo::canonicalize_or(&t))
-        .ok_or("fora de repositório git")?;
+        .map_err(|_| "fora de repositório git".to_string())?;
     let head = worktree::head_sha(&root)?;
     let by_path: std::collections::HashMap<std::path::PathBuf, SessionId> = state
         .sessions

@@ -414,7 +414,10 @@ export function DiffView({ session, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-tyba-bg">
-      <header className="flex h-11 shrink-0 items-center gap-3 border-b border-tyba-border px-4">
+      <header
+        data-tauri-drag-region
+        className="flex h-11 shrink-0 items-center gap-3 border-b border-tyba-border py-2 pl-20 pr-4"
+      >
         <GitBranch size={14} className="shrink-0 text-tyba-green" />
         <span className="min-w-0 truncate text-[13px] text-tyba-text">
           {session.title}
