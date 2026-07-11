@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS workspaces (
     kind TEXT,
     position INTEGER NOT NULL,
     active_tab TEXT,
+    side_view TEXT,
+    side_ratio REAL,
+    side_expanded INTEGER,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tabs (
@@ -97,6 +100,12 @@ impl Store {
         let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN color TEXT", []);
         let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN group_name TEXT", []);
         let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN kind TEXT", []);
+        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN side_view TEXT", []);
+        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN side_ratio REAL", []);
+        let _ = conn.execute(
+            "ALTER TABLE workspaces ADD COLUMN side_expanded INTEGER",
+            [],
+        );
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -227,8 +236,9 @@ impl Store {
         for w in &rows.workspaces {
             tx.execute(
                 "INSERT INTO workspaces
-                     (id, name, repo_root, color, group_name, kind, position, active_tab, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                     (id, name, repo_root, color, group_name, kind, position, active_tab,
+                      side_view, side_ratio, side_expanded, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     w.id,
                     w.name,
@@ -238,6 +248,9 @@ impl Store {
                     w.kind,
                     w.position,
                     w.active_tab,
+                    w.side_view,
+                    w.side_ratio,
+                    w.side_expanded,
                     w.created_at
                 ],
             )?;
@@ -279,7 +292,8 @@ impl Store {
     pub fn load_layout(&self) -> Result<LayoutRows, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, name, repo_root, color, group_name, kind, position, active_tab, created_at
+            "SELECT id, name, repo_root, color, group_name, kind, position, active_tab,
+                    side_view, side_ratio, side_expanded, created_at
              FROM workspaces ORDER BY position",
         )?;
         let workspaces = stmt
@@ -293,7 +307,10 @@ impl Store {
                     kind: row.get(5)?,
                     position: row.get(6)?,
                     active_tab: row.get(7)?,
-                    created_at: row.get(8)?,
+                    side_view: row.get(8)?,
+                    side_ratio: row.get(9)?,
+                    side_expanded: row.get(10)?,
+                    created_at: row.get(11)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

@@ -62,12 +62,13 @@ describe("parseToolbarPref", () => {
     );
   });
 
-  test("unknown chip ids are dropped", () => {
+  test("unknown chip ids are dropped and missing ones heal into default zones", () => {
     const pref = parseToolbarPref(
       '{"version":1,"enabled":true,"left":["diffCount","voiceInput","hack"],"right":["clock"],"hidden":[]}',
     );
-    expect(pref.left).toEqual(["diffCount"]);
-    expect(pref.right).toEqual(["clock"]);
+    expect(pref.left).toEqual(["diffCount", "reviewDiff"]);
+    expect(pref.right).toEqual(["clock", "cwd", "branch", "aheadBehind"]);
+    expect(pref.hidden).toEqual([]);
   });
 
   test("missing chip arrays fall back to the default sides", () => {
@@ -76,12 +77,24 @@ describe("parseToolbarPref", () => {
     expect(pref.right).toEqual(DEFAULT_TOOLBAR.right);
   });
 
-  test("an explicit empty array is respected", () => {
+  test("chip escondido pelo usuário continua escondido; ausente é re-adicionado", () => {
     const pref = parseToolbarPref(
-      '{"version":1,"enabled":true,"left":[],"right":["clock"],"hidden":[]}',
+      '{"version":1,"enabled":true,"left":[],"right":["clock"],"hidden":["diffCount","cwd","branch","aheadBehind","reviewDiff"]}',
     );
     expect(pref.left).toEqual([]);
     expect(pref.right).toEqual(["clock"]);
+    expect(pref.hidden).toEqual([
+      "diffCount",
+      "cwd",
+      "branch",
+      "aheadBehind",
+      "reviewDiff",
+    ]);
+    const healed = parseToolbarPref(
+      '{"version":1,"enabled":true,"left":[],"right":["clock"],"hidden":[]}',
+    );
+    expect(healed.left).toEqual(["diffCount", "reviewDiff"]);
+    expect(healed.right).toEqual(["clock", "cwd", "branch", "aheadBehind"]);
   });
 
   test("enabled false is preserved", () => {

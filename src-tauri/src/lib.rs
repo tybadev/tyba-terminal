@@ -199,9 +199,9 @@ async fn worktree_list(
     repo_root: String,
 ) -> Result<WorktreeListing, String> {
     let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
-    let root = repo::toplevel(&param)
+    let root = worktree::main_repo_of(&param)
         .map(|t| repo::canonicalize_or(&t))
-        .ok_or("fora de repositório git")?;
+        .map_err(|_| "fora de repositório git".to_string())?;
     let head = worktree::head_sha(&root)?;
     let by_path: std::collections::HashMap<std::path::PathBuf, SessionId> = state
         .sessions
@@ -306,6 +306,172 @@ fn session_worktree(state: &AppState, id: SessionId) -> Result<worktree::Worktre
         .ok_or_else(|| format!("sessão não encontrada: {id}"))?
         .worktree
         .ok_or_else(|| "sessão não está em worktree".to_string())
+}
+
+#[tauri::command]
+fn open_diff_tab(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
+    session_worktree(&state, id)?;
+    state
+        .layout
+        .open_workspace_side_view(id, &layout::diff_view(id))
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn close_side_view(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace_id: layout::WorkspaceId,
+) -> Result<(), String> {
+    state
+        .layout
+        .close_side_view(workspace_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_side_view_expanded(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace_id: layout::WorkspaceId,
+    expanded: bool,
+) -> Result<(), String> {
+    state
+        .layout
+        .set_side_view_expanded(workspace_id, expanded)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_side_view_ratio(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace_id: layout::WorkspaceId,
+    ratio: f64,
+    commit: bool,
+) -> Result<(), String> {
+    state
+        .layout
+        .set_side_view_ratio(workspace_id, ratio, commit)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+async fn worktree_stage(
+    state: State<'_, AppState>,
+    id: SessionId,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    let wt = session_worktree(&state, id)?;
+    worktree::ops::stage(&wt.path, &paths)
+}
+
+#[tauri::command]
+async fn worktree_unstage(
+    state: State<'_, AppState>,
+    id: SessionId,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    let wt = session_worktree(&state, id)?;
+    worktree::ops::unstage(&wt.path, &paths)
+}
+
+#[tauri::command]
+async fn worktree_discard(
+    state: State<'_, AppState>,
+    id: SessionId,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    let wt = session_worktree(&state, id)?;
+    worktree::ops::discard(&wt.path, &paths)
+}
+
+#[tauri::command]
+async fn worktree_commit(
+    state: State<'_, AppState>,
+    id: SessionId,
+    message: String,
+) -> Result<(), String> {
+    let wt = session_worktree(&state, id)?;
+    worktree::ops::commit(&wt.path, &message)
+}
+
+#[tauri::command]
+async fn worktree_push(state: State<'_, AppState>, id: SessionId) -> Result<String, String> {
+    let wt = session_worktree(&state, id)?;
+    worktree::ops::push(&wt.path)
+}
+
+/// Abre um arquivo do worktree como TEXTO — nunca "executa" o arquivo.
+/// `open <arquivo>`/`xdg-open` rodariam um script/app deixado por um
+/// agente no worktree com um clique; aqui só editor configurado ou
+/// visualizador de texto. Path do webview: resolve dentro do worktree
+/// e recusa qualquer coisa fora.
+#[tauri::command]
+async fn open_worktree_file(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    editor: Option<String>,
+) -> Result<(), String> {
+    let wt = session_worktree(&state, id)?;
+    let root = wt
+        .path
+        .canonicalize()
+        .map_err(|e| format!("worktree inacessível: {e}"))?;
+    let full = root
+        .join(&path)
+        .canonicalize()
+        .map_err(|e| format!("arquivo inacessível: {e}"))?;
+    if !full.starts_with(&root) {
+        return Err("arquivo fora do worktree".into());
+    }
+
+    let gui_editor = editor
+        .filter(|id| !id.is_empty())
+        .and_then(|id| editor::detect().into_iter().find(|e| e.id == id))
+        .filter(|e| !e.terminal);
+    let mut cmd = match gui_editor {
+        Some(e) => {
+            let mut c = std::process::Command::new(e.path);
+            c.arg(&full);
+            c
+        }
+        None => {
+            #[cfg(target_os = "macos")]
+            {
+                let mut c = std::process::Command::new("open");
+                c.arg("-t").arg(&full);
+                c
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                return Err(
+                    "configure um editor em Settings → Geral pra abrir arquivos".to_string()
+                );
+            }
+        }
+    };
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("não deu pra abrir o arquivo: {e}"))?;
+    // Reap fora do caminho do comando: opener sai rápido, mas Child
+    // largado vira zumbi no Unix.
+    std::thread::Builder::new()
+        .name("open-file-reap".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })
+        .ok();
+    Ok(())
 }
 
 #[tauri::command]
@@ -1265,6 +1431,16 @@ pub fn run() {
             worktree_gc,
             session_diff,
             session_diff_hunks,
+            open_diff_tab,
+            close_side_view,
+            set_side_view_expanded,
+            set_side_view_ratio,
+            worktree_stage,
+            worktree_unstage,
+            worktree_discard,
+            worktree_commit,
+            worktree_push,
+            open_worktree_file,
             repo_snapshots,
             session_cwd,
             resize_session,

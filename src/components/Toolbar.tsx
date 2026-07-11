@@ -5,6 +5,7 @@ import {
   ArrowUp,
   FolderSimple,
   GitBranch,
+  GitDiff,
   TextAlignLeft,
 } from "@phosphor-icons/react";
 
@@ -16,6 +17,8 @@ interface Props {
   pref: ToolbarPref;
   cwd: string | null;
   snapshot: RepoSnapshot | undefined;
+  hasWorktree: boolean;
+  onOpenDiff: () => void;
   showRichInput: boolean;
   richInputCombo: string;
   onOpenRichInput: () => void;
@@ -45,6 +48,8 @@ export function Toolbar({
   pref,
   cwd,
   snapshot,
+  hasWorktree,
+  onOpenDiff,
   showRichInput,
   richInputCombo,
   onOpenRichInput,
@@ -89,6 +94,19 @@ export function Toolbar({
           </span>
         );
       }
+      case "reviewDiff":
+        return hasWorktree ? (
+          <button
+            key={id}
+            onClick={onOpenDiff}
+            title={t("toolbarReviewDiff")}
+            aria-label={t("toolbarReviewDiff")}
+            className="flex items-center gap-1 rounded-[4px] px-1 py-0.5 text-tyba-text-muted transition-colors hover:bg-white/[.06] hover:text-tyba-text"
+          >
+            <GitDiff size={12} />
+            <span>diff</span>
+          </button>
+        ) : null;
       case "aheadBehind": {
         const ahead = snapshot?.ahead ?? 0;
         const behind = snapshot?.behind ?? 0;

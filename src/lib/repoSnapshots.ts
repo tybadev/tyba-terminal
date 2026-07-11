@@ -20,6 +20,7 @@ const CHIP_IDS = [
   "cwd",
   "branch",
   "diffCount",
+  "reviewDiff",
   "aheadBehind",
   "clock",
 ] as const;
@@ -37,7 +38,7 @@ export interface ToolbarPref {
 export const DEFAULT_TOOLBAR: ToolbarPref = {
   version: 1,
   enabled: true,
-  left: ["diffCount"],
+  left: ["diffCount", "reviewDiff"],
   right: ["aheadBehind", "branch", "cwd", "clock"],
   hidden: [],
 };
@@ -62,11 +63,26 @@ export function parseToolbarPref(raw: string | null): ToolbarPref {
   const seen = new Set<ChipId>();
   const dedup = (list: ChipId[]): ChipId[] =>
     list.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
+  const left = dedup(chipList(pref.left, DEFAULT_TOOLBAR.left));
+  const right = dedup(chipList(pref.right, DEFAULT_TOOLBAR.right));
+  const hidden = dedup(chipList(pref.hidden, DEFAULT_TOOLBAR.hidden));
+  // Chip novo que a pref salva ainda não conhece entra na zona onde ele
+  // mora por default (pref antiga não pode esconder feature nova).
+  for (const id of CHIP_IDS) {
+    if (seen.has(id)) continue;
+    const zone = DEFAULT_TOOLBAR.left.includes(id)
+      ? left
+      : DEFAULT_TOOLBAR.hidden.includes(id)
+        ? hidden
+        : right;
+    zone.push(id);
+    seen.add(id);
+  }
   return {
     version: DEFAULT_TOOLBAR.version,
     enabled: typeof pref.enabled === "boolean" ? pref.enabled : true,
-    left: dedup(chipList(pref.left, DEFAULT_TOOLBAR.left)),
-    right: dedup(chipList(pref.right, DEFAULT_TOOLBAR.right)),
-    hidden: dedup(chipList(pref.hidden, DEFAULT_TOOLBAR.hidden)),
+    left,
+    right,
+    hidden,
   };
 }

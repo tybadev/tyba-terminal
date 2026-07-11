@@ -59,8 +59,10 @@ pub struct SessionDiff {
     pub base_ref: String,
     pub commits: Vec<CommitInfo>,
     pub files: Vec<FileDiff>,
-    pub uncommitted_files: Vec<FileDiff>,
-    pub uncommitted: bool,
+    /// Index vs HEAD (`git diff --cached`).
+    pub staged_files: Vec<FileDiff>,
+    /// Worktree vs index (`git diff`) + untracked.
+    pub unstaged_files: Vec<FileDiff>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -333,16 +335,16 @@ pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, Stri
         "git log",
     )?;
     let files = diff_files(worktree, &[&range])?;
-    let mut uncommitted_files = diff_files(worktree, &["HEAD"])?;
-    uncommitted_files.extend(untracked_files(worktree)?);
-    let uncommitted = !uncommitted_files.is_empty();
+    let staged_files = diff_files(worktree, &["--cached"])?;
+    let mut unstaged_files = diff_files(worktree, &[])?;
+    unstaged_files.extend(untracked_files(worktree)?);
 
     Ok(SessionDiff {
         base_ref: base_ref.to_string(),
         commits: parse_log_z(&log),
         files,
-        uncommitted_files,
-        uncommitted,
+        staged_files,
+        unstaged_files,
     })
 }
 
@@ -350,7 +352,8 @@ pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, Stri
 #[serde(rename_all = "snake_case")]
 pub enum DiffScope {
     Committed,
-    Uncommitted,
+    Staged,
+    Unstaged,
 }
 
 pub fn file_hunks(
@@ -366,8 +369,13 @@ pub fn file_hunks(
             let mut c = git_in(worktree);
             c.args(["diff", "--no-ext-diff", "--no-color", "-M"]);
             match scope {
-                DiffScope::Committed => c.arg(&range),
-                DiffScope::Uncommitted => c.arg("HEAD"),
+                DiffScope::Committed => {
+                    c.arg(&range);
+                }
+                DiffScope::Staged => {
+                    c.arg("--cached");
+                }
+                DiffScope::Unstaged => {}
             };
             c.arg("--").arg(format!(":(literal){path}"));
             if let Some(old) = old_path {
@@ -377,10 +385,26 @@ pub fn file_hunks(
         },
         "git diff",
     )?;
-    if out.is_empty() && scope == DiffScope::Uncommitted {
+    // Diff vazio no escopo unstaged pode ser untracked (git diff não
+    // enxerga) — mas só cai no --no-index se o arquivo é untracked mesmo,
+    // senão um tracked limpo voltaria inteiro como adição.
+    if out.is_empty() && scope == DiffScope::Unstaged && is_untracked(worktree, path)? {
         return untracked_hunks(worktree, path);
     }
     Ok(parse_unified_hunks(&String::from_utf8_lossy(&out)))
+}
+
+fn is_untracked(worktree: &Path, path: &str) -> Result<bool, String> {
+    let out = run_git(
+        {
+            let mut c = git_in(worktree);
+            c.args(["ls-files", "--others", "--exclude-standard", "-z", "--"]);
+            c.arg(format!(":(literal){path}"));
+            c
+        },
+        "git ls-files",
+    )?;
+    Ok(!out.is_empty())
 }
 
 /// `git diff HEAD` não enxerga arquivo untracked; o conteúdo dele é
@@ -607,9 +631,10 @@ mod integration_tests {
 
         assert_eq!(diff.commits.len(), 1);
         assert_eq!(diff.commits[0].subject, "feat: mudancas");
-        assert!(diff.uncommitted);
-        assert_eq!(diff.uncommitted_files.len(), 1);
-        assert_eq!(diff.uncommitted_files[0].path, "sujo.txt");
+        // sujo.txt foi addado (staged), nada unstaged sobrou.
+        assert_eq!(diff.staged_files.len(), 1);
+        assert_eq!(diff.staged_files[0].path, "sujo.txt");
+        assert!(diff.unstaged_files.is_empty());
 
         let by_path: std::collections::HashMap<&str, &FileDiff> =
             diff.files.iter().map(|f| (f.path.as_str(), f)).collect();
@@ -630,23 +655,16 @@ mod integration_tests {
         std::fs::write(repo.join("nunca-addado.sh"), "linha um\nlinha dois\n").unwrap();
 
         let diff = session_diff(&repo, &base).expect("session_diff");
-        assert!(diff.uncommitted);
+        assert!(diff.staged_files.is_empty());
         let untracked = diff
-            .uncommitted_files
+            .unstaged_files
             .iter()
             .find(|f| f.path == "nunca-addado.sh")
             .expect("untracked na lista");
         assert_eq!(untracked.status, FileStatus::Added);
         assert_eq!(untracked.insertions, Some(2));
 
-        let hunks = file_hunks(
-            &repo,
-            &base,
-            DiffScope::Uncommitted,
-            "nunca-addado.sh",
-            None,
-        )
-        .unwrap();
+        let hunks = file_hunks(&repo, &base, DiffScope::Unstaged, "nunca-addado.sh", None).unwrap();
         assert_eq!(hunks.hunks.len(), 1);
         assert!(hunks.hunks[0].lines.iter().all(|l| l.kind == LineKind::Add));
         assert_eq!(hunks.hunks[0].lines.len(), 2);
@@ -729,11 +747,20 @@ mod integration_tests {
             .any(|l| l.kind == LineKind::Add && l.text == "dois alterado"));
         assert!(!committed.hunks[0].lines.iter().any(|l| l.text == "sujo"));
 
-        let uncommitted = file_hunks(&repo, &base, DiffScope::Uncommitted, "a.txt", None).unwrap();
-        assert!(uncommitted.hunks[0]
+        let unstaged = file_hunks(&repo, &base, DiffScope::Unstaged, "a.txt", None).unwrap();
+        assert!(unstaged.hunks[0]
             .lines
             .iter()
             .any(|l| l.kind == LineKind::Add && l.text == "sujo"));
+
+        git(&repo, &["add", "a.txt"]);
+        let staged = file_hunks(&repo, &base, DiffScope::Staged, "a.txt", None).unwrap();
+        assert!(staged.hunks[0]
+            .lines
+            .iter()
+            .any(|l| l.kind == LineKind::Add && l.text == "sujo"));
+        let unstaged = file_hunks(&repo, &base, DiffScope::Unstaged, "a.txt", None).unwrap();
+        assert!(unstaged.hunks.is_empty());
 
         std::fs::remove_dir_all(&repo).ok();
     }

@@ -7,6 +7,7 @@
 //! - `git stash` NUNCA na automação (compartilhado entre worktrees)
 
 pub mod diff;
+pub mod ops;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

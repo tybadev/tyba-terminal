@@ -4,6 +4,7 @@ import {
   ArrowClockwise,
   ArrowUp,
   Circle,
+  FileMagnifyingGlass,
   GitBranch,
   Play,
   Trash,
@@ -24,17 +25,20 @@ interface Props {
   repoRoots: string[];
   onOpenSession: (path: string, name: string) => void;
   onFocusSession: (sessionId: SessionId) => void;
+  onReviewSession: (sessionId: SessionId) => void;
 }
 
 function WorktreeRow({
   wt,
   onOpenSession,
   onFocusSession,
+  onReviewSession,
   onRemoved,
 }: {
   wt: WorktreeStatus;
   onOpenSession: Props["onOpenSession"];
   onFocusSession: Props["onFocusSession"];
+  onReviewSession: Props["onReviewSession"];
   onRemoved: () => void;
 }) {
   const { t } = useTranslation();
@@ -82,6 +86,17 @@ function WorktreeRow({
             <ArrowUp size={11} />
             {wt.ahead_of_head}
           </span>
+        )}
+        {wt.session_id && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 gap-1.5 px-2 text-[11px]"
+            onClick={() => onReviewSession(wt.session_id as SessionId)}
+          >
+            <FileMagnifyingGlass size={12} />
+            {t("worktreeReview")}
+          </Button>
         )}
         {wt.session_id ? (
           <button
@@ -141,6 +156,7 @@ export function WorktreesView({
   repoRoots,
   onOpenSession,
   onFocusSession,
+  onReviewSession,
 }: Props) {
   const { t } = useTranslation();
   const [listings, setListings] = useState<Record<string, WorktreeListing>>({});
@@ -231,6 +247,7 @@ export function WorktreesView({
                       wt={wt}
                       onOpenSession={onOpenSession}
                       onFocusSession={onFocusSession}
+                      onReviewSession={onReviewSession}
                       onRemoved={() => void reload()}
                     />
                   ))}
