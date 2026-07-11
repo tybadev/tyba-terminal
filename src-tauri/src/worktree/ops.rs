@@ -9,7 +9,9 @@
 //! - push recusa main/master SEMPRE, independente de quem pede
 //!   (princípio #5); o resto é decisão explícita do humano no clique.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 use super::{git_in, git_text, run_git};
 
@@ -194,6 +196,460 @@ pub fn push(worktree: &Path) -> Result<String, String> {
         return Err(format!("git push: {stderr}"));
     }
     Ok(stderr)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeStrategy {
+    Squash,
+    MergeCommit,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MergePreview {
+    pub base_branch: String,
+    pub source_branch: String,
+    pub commits: usize,
+    pub files_changed: usize,
+    pub conflicts: Vec<String>,
+    pub base_dirty: bool,
+}
+
+fn current_branch(repo: &Path, what: &str) -> Result<String, String> {
+    let out = {
+        let mut c = git_in(repo);
+        c.args(["symbolic-ref", "--short", "-q", "HEAD"]);
+        c.output().map_err(|e| format!("git symbolic-ref: {e}"))?
+    };
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || branch.is_empty() {
+        return Err(format!("{what} está com HEAD destacado — sem branch"));
+    }
+    Ok(branch)
+}
+
+fn nul_fields(raw: &[u8]) -> Vec<String> {
+    raw.split(|b| *b == 0)
+        .filter(|f| !f.is_empty())
+        .map(|f| String::from_utf8_lossy(f).into_owned())
+        .collect()
+}
+
+fn merge_tree(main: &Path, base: &str, source: &str) -> Result<(String, Vec<String>), String> {
+    let out = {
+        let mut c = git_in(main);
+        c.args([
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "-z",
+            base,
+            source,
+        ]);
+        c.output().map_err(|e| format!("git merge-tree: {e}"))?
+    };
+    if !matches!(out.status.code(), Some(0) | Some(1)) {
+        return Err(format!(
+            "git merge-tree: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let mut fields = out.stdout.split(|b| *b == 0);
+    let tree = fields
+        .next()
+        .map(|f| String::from_utf8_lossy(f).trim().to_string())
+        .unwrap_or_default();
+    if tree.is_empty() {
+        return Err("git merge-tree não produziu árvore".into());
+    }
+    let mut conflicts: Vec<String> = Vec::new();
+    for field in fields {
+        if field.is_empty() {
+            break;
+        }
+        let path = String::from_utf8_lossy(field).into_owned();
+        if !conflicts.contains(&path) {
+            conflicts.push(path);
+        }
+    }
+    Ok((tree, conflicts))
+}
+
+struct MergePlan {
+    main: PathBuf,
+    preview: MergePreview,
+}
+
+fn plan(worktree: &Path) -> Result<MergePlan, String> {
+    let main = super::main_repo_of(worktree)?;
+    let base_branch = current_branch(&main, "o repo principal")?;
+    let source_branch = current_branch(worktree, "a sessão")?;
+    if base_branch == source_branch {
+        return Err(format!(
+            "a sessão está na própria branch base ({base_branch}) — nada a mergear"
+        ));
+    }
+    let raw = run_git(
+        {
+            let mut c = git_in(worktree);
+            c.args([
+                "diff",
+                "--no-ext-diff",
+                "--no-color",
+                "--name-only",
+                "-z",
+                &format!("{base_branch}...HEAD"),
+            ]);
+            c
+        },
+        "git diff --name-only",
+    )?;
+    let (_, conflicts) = merge_tree(&main, &base_branch, &source_branch)?;
+    Ok(MergePlan {
+        preview: MergePreview {
+            commits: super::ahead_count(worktree, &base_branch)? as usize,
+            files_changed: nul_fields(&raw).len(),
+            conflicts,
+            base_dirty: super::is_dirty(&main)?,
+            base_branch,
+            source_branch,
+        },
+        main,
+    })
+}
+
+pub fn merge_preview(worktree: &Path) -> Result<MergePreview, String> {
+    Ok(plan(worktree)?.preview)
+}
+
+pub fn merge_into_base(
+    worktree: &Path,
+    strategy: MergeStrategy,
+    message: Option<&str>,
+) -> Result<String, String> {
+    let MergePlan { main, preview } = plan(worktree)?;
+
+    if preview.base_dirty {
+        return Err(format!(
+            "a branch base ({}) tem trabalho não-commitado — commite ou descarte antes de mergear",
+            preview.base_branch
+        ));
+    }
+    if !preview.conflicts.is_empty() {
+        return Err(format!(
+            "merge recusado: conflito com {} em {} — resolva na sessão antes",
+            preview.base_branch,
+            preview.conflicts.join(", ")
+        ));
+    }
+    if preview.commits == 0 {
+        return Err(format!(
+            "nada para mergear: {} não tem commits além de {}",
+            preview.source_branch, preview.base_branch
+        ));
+    }
+
+    let base_head = super::head_sha(&main)?;
+    let source_head = super::head_sha(worktree)?;
+
+    let (tree, conflicts) = merge_tree(&main, &base_head, &source_head)?;
+    if !conflicts.is_empty() {
+        return Err(format!(
+            "merge recusado: conflito em {}",
+            conflicts.join(", ")
+        ));
+    }
+
+    let message = message
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| match strategy {
+            MergeStrategy::Squash => format!("squash: {}", preview.source_branch),
+            MergeStrategy::MergeCommit => {
+                format!(
+                    "merge: {} em {}",
+                    preview.source_branch, preview.base_branch
+                )
+            }
+        });
+
+    let mut c = git_in(&main);
+    c.args(["commit-tree", &tree, "-p", &base_head]);
+    if matches!(strategy, MergeStrategy::MergeCommit) {
+        c.args(["-p", &source_head]);
+    }
+    c.args(["-m", &message]);
+    let merged = git_text(c, "git commit-tree")?;
+    if merged.is_empty() {
+        return Err("git commit-tree não produziu commit".into());
+    }
+
+    let now_head = super::head_sha(&main)?;
+    if now_head != base_head {
+        return Err(format!(
+            "a branch base ({}) avançou durante o merge — revise e tente de novo",
+            preview.base_branch
+        ));
+    }
+    run_git(
+        {
+            let mut c = git_in(&main);
+            c.args(["merge", "--ff-only", &merged]);
+            c
+        },
+        "git merge --ff-only",
+    )
+    .map_err(|_| {
+        format!(
+            "a branch base ({}) mudou durante o merge — nada foi alterado, tente de novo",
+            preview.base_branch
+        )
+    })?;
+    Ok(merged)
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    struct Fixture {
+        base: PathBuf,
+        repo: PathBuf,
+        worktree: PathBuf,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.base).ok();
+        }
+    }
+
+    fn fixture(tag: &str) -> Fixture {
+        let base = std::env::temp_dir().join(format!("tyba-merge-{tag}-{}", uuid::Uuid::new_v4()));
+        let repo = base.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@t"]);
+        git(&repo, &["config", "user.name", "t"]);
+        git(&repo, &["config", "commit.gpgsign", "false"]);
+        fs::write(repo.join("f.txt"), "a\nb\nc\n").unwrap();
+        fs::write(repo.join("outro.txt"), "intacto\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-qm", "init"]);
+        let wt = super::super::create_in(&base.join("managed"), &repo, "tarefa").unwrap();
+        Fixture {
+            base,
+            repo,
+            worktree: wt.path,
+        }
+    }
+
+    fn work(fx: &Fixture, content: &str, message: &str) {
+        fs::write(fx.worktree.join("f.txt"), content).unwrap();
+        git(&fx.worktree, &["add", "-A"]);
+        git(&fx.worktree, &["commit", "-qm", message]);
+    }
+
+    fn head(dir: &Path) -> String {
+        super::super::head_sha(dir).unwrap()
+    }
+
+    fn parents(repo: &Path, sha: &str) -> Vec<String> {
+        let raw = git_text(
+            {
+                let mut c = git_in(repo);
+                c.args(["rev-list", "--parents", "-n", "1", sha]);
+                c
+            },
+            "rev-list --parents",
+        )
+        .unwrap();
+        raw.split_whitespace().skip(1).map(String::from).collect()
+    }
+
+    #[test]
+    fn preview_counts_commits_and_files_of_the_session() {
+        let fx = fixture("preview");
+        work(&fx, "a\nX\nc\n", "um");
+        fs::write(fx.worktree.join("novo.txt"), "n\n").unwrap();
+        git(&fx.worktree, &["add", "-A"]);
+        git(&fx.worktree, &["commit", "-qm", "dois"]);
+
+        let p = merge_preview(&fx.worktree).unwrap();
+
+        assert_eq!(p.base_branch, "main");
+        assert!(p.source_branch.starts_with("tyba/tarefa-"), "{p:?}");
+        assert_eq!(p.commits, 2);
+        assert_eq!(p.files_changed, 2);
+        assert!(p.conflicts.is_empty(), "{p:?}");
+        assert!(!p.base_dirty);
+    }
+
+    #[test]
+    fn clean_squash_merge_fast_forwards_the_base() {
+        let fx = fixture("squash");
+        work(&fx, "a\nX\nc\n", "um");
+        work(&fx, "a\nX\nZ\n", "dois");
+        let before = head(&fx.repo);
+
+        let sha = merge_into_base(&fx.worktree, MergeStrategy::Squash, Some("feat: tudo")).unwrap();
+
+        assert_eq!(head(&fx.repo), sha);
+        assert_eq!(parents(&fx.repo, &sha), vec![before.clone()]);
+        assert_eq!(
+            fs::read_to_string(fx.repo.join("f.txt")).unwrap(),
+            "a\nX\nZ\n"
+        );
+        assert!(!super::super::is_dirty(&fx.repo).unwrap());
+        assert_eq!(
+            super::super::ahead_count(&fx.repo, &before).unwrap(),
+            1,
+            "squash colapsa os 2 commits em 1"
+        );
+    }
+
+    #[test]
+    fn clean_merge_commit_keeps_both_parents() {
+        let fx = fixture("mergecommit");
+        work(&fx, "a\nX\nc\n", "um");
+        let base_before = head(&fx.repo);
+        let source = head(&fx.worktree);
+
+        let sha = merge_into_base(&fx.worktree, MergeStrategy::MergeCommit, None).unwrap();
+
+        assert_eq!(head(&fx.repo), sha);
+        assert_eq!(parents(&fx.repo, &sha), vec![base_before, source]);
+        assert_eq!(
+            fs::read_to_string(fx.repo.join("f.txt")).unwrap(),
+            "a\nX\nc\n"
+        );
+    }
+
+    #[test]
+    fn conflict_is_detected_in_preview_and_merge_is_refused_without_touching_the_repo() {
+        let fx = fixture("conflito");
+        work(&fx, "a\nSESSAO\nc\n", "sessao");
+        fs::write(fx.repo.join("f.txt"), "a\nBASE\nc\n").unwrap();
+        git(&fx.repo, &["commit", "-qam", "base andou"]);
+        let before = head(&fx.repo);
+
+        let p = merge_preview(&fx.worktree).unwrap();
+        assert_eq!(p.conflicts, vec!["f.txt".to_string()]);
+
+        let err = merge_into_base(&fx.worktree, MergeStrategy::Squash, None).unwrap_err();
+        assert!(err.contains("conflito"), "{err}");
+        assert!(err.contains("f.txt"), "{err}");
+
+        assert_eq!(head(&fx.repo), before);
+        assert_eq!(
+            fs::read_to_string(fx.repo.join("f.txt")).unwrap(),
+            "a\nBASE\nc\n"
+        );
+        assert!(!super::super::is_dirty(&fx.repo).unwrap());
+        assert!(!fx.repo.join(".git/MERGE_HEAD").exists());
+    }
+
+    #[test]
+    fn merge_preserves_base_commits_made_after_the_worktree_forked() {
+        let fx = fixture("toctou");
+        work(&fx, "a\nb\nc\nd\n", "adiciona d");
+
+        fs::write(fx.repo.join("novo.txt"), "commit da base\n").unwrap();
+        git(&fx.repo, &["add", "-A"]);
+        git(&fx.repo, &["commit", "-qm", "base avancou"]);
+
+        merge_into_base(&fx.worktree, MergeStrategy::Squash, None)
+            .expect("merge de source que não conflita com o commit novo da base");
+
+        assert!(
+            fx.repo.join("novo.txt").exists(),
+            "o commit da base foi perdido no merge"
+        );
+        let head = super::super::head_sha(&fx.repo).unwrap();
+        let parents = {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&fx.repo)
+                .args(["rev-list", "--parents", "-n", "1", &head])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        assert!(!parents.is_empty());
+    }
+
+    #[test]
+    fn dirty_base_refuses_merge_and_keeps_the_uncommitted_work() {
+        let fx = fixture("suja");
+        work(&fx, "a\nX\nc\n", "um");
+        fs::write(fx.repo.join("outro.txt"), "trabalho do usuario\n").unwrap();
+        let before = head(&fx.repo);
+
+        let p = merge_preview(&fx.worktree).unwrap();
+        assert!(p.base_dirty);
+
+        let err = merge_into_base(&fx.worktree, MergeStrategy::MergeCommit, None).unwrap_err();
+        assert!(err.contains("não-commitado"), "{err}");
+
+        assert_eq!(head(&fx.repo), before);
+        assert_eq!(
+            fs::read_to_string(fx.repo.join("outro.txt")).unwrap(),
+            "trabalho do usuario\n"
+        );
+        assert_eq!(
+            fs::read_to_string(fx.repo.join("f.txt")).unwrap(),
+            "a\nb\nc\n"
+        );
+    }
+
+    #[test]
+    fn nothing_to_merge_is_refused() {
+        let fx = fixture("vazio");
+        let before = head(&fx.repo);
+
+        let p = merge_preview(&fx.worktree).unwrap();
+        assert_eq!(p.commits, 0);
+        assert_eq!(p.files_changed, 0);
+
+        let err = merge_into_base(&fx.worktree, MergeStrategy::Squash, None).unwrap_err();
+        assert!(err.contains("nada para mergear"), "{err}");
+        assert_eq!(head(&fx.repo), before);
+    }
+
+    #[test]
+    fn merging_the_main_repo_into_itself_is_refused() {
+        let fx = fixture("selfmerge");
+        let err = merge_preview(&fx.repo).unwrap_err();
+        assert!(err.contains("própria branch base"), "{err}");
+    }
+
+    #[test]
+    fn detached_session_head_is_refused() {
+        let fx = fixture("detached");
+        work(&fx, "a\nX\nc\n", "um");
+        git(&fx.worktree, &["checkout", "-q", "--detach"]);
+
+        let err = merge_preview(&fx.worktree).unwrap_err();
+        assert!(err.contains("destacado"), "{err}");
+    }
 }
 
 #[cfg(test)]

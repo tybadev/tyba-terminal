@@ -50,6 +50,7 @@ import {
   type Row,
 } from "../lib/diff";
 import { highlightBlock, type TokenSpan } from "../lib/highlight";
+import { DeliverySection } from "./DeliverySection";
 
 const STATUS_LETTER: Record<FileDiff["status"], string> = {
   added: "A",
@@ -1048,6 +1049,16 @@ export function DiffView({
           </Button>
         </div>
       )}
+
+      <DeliverySection
+        session={session}
+        hasUncommittedWork={
+          (diff?.staged_files.length ?? 0) > 0 ||
+          (diff?.unstaged_files.length ?? 0) > 0
+        }
+        onSendToAgent={onSendToAgent}
+        onClose={onClose}
+      />
 
       <footer className="flex h-9 shrink-0 items-center gap-3 border-t border-tyba-border px-4 font-mono text-[11px] text-tyba-text-muted">
         <GitBranch size={12} className="shrink-0" />
