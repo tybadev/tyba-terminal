@@ -57,6 +57,7 @@ import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import {
   Notification,
+  NotificationDescription,
   NotificationLink,
   NotificationTitle,
 } from "@/components/ui/notification";
@@ -106,6 +107,7 @@ import {
   listApprovals,
   listSessions,
   newWindow,
+  onAgentReady,
   onApprovalRequested,
   onApprovalResolved,
   onLayoutChanged,
@@ -142,6 +144,8 @@ import {
 } from "./lib/ipc";
 import { basename } from "@/lib/utils";
 import { isFinishedStatus, sameSessionStatus } from "./lib/sessionStatus";
+import { buildAgentSessionOpts } from "./lib/agentSession";
+import { scheduleAgentReadyPrompt } from "./lib/agentReady";
 import { resolveWorkspaceCwd, workspaceMatchDir } from "./lib/workspaceCwd";
 import {
   computeRects,
@@ -348,6 +352,9 @@ export default function App() {
   const [newSessionIsolate, setNewSessionIsolate] = useState(false);
   const [worktreeDir, setWorktreeDir] = useState<string | null>(null);
   const [worktreeDefault, setWorktreeDefault] = useState(false);
+  const [agentReadyWarnings, setAgentReadyWarnings] = useState<
+    Record<SessionId, boolean>
+  >({});
 
   const openNewSession = useCallback(
     (isolate?: boolean) => {
@@ -857,6 +864,22 @@ export default function App() {
     [sessionCommands],
   );
 
+  const workspaceAwaitingInput = useCallback(
+    (w: Workspace): { hint: string | null } | null => {
+      for (const tab of w.tabs) {
+        if (!tab.root) continue;
+        for (const sid of leafSessions(tab.root)) {
+          const session = sessionById.get(sid);
+          if (session?.status.state === "awaiting_input") {
+            return { hint: session.status.hint };
+          }
+        }
+      }
+      return null;
+    },
+    [sessionById],
+  );
+
   const workspaceCwd = useCallback(
     (w: Workspace): string | null => resolveWorkspaceCwd(w, sessionCwds)?.cwd ?? null,
     [sessionCwds],
@@ -1054,6 +1077,57 @@ export default function App() {
       }
     },
     [],
+  );
+
+  const newAgentSession = useCallback(
+    async (
+      cwd: string,
+      name: string,
+      group: string | null | undefined,
+      prompt: string,
+    ) => {
+      const session = await createSession(
+        buildAgentSessionOpts({ cwd, task: name }),
+      );
+      setSessions((prev) => [...prev, session]);
+      try {
+        const workspaceId = await createWorkspace(
+          name,
+          session.worktree?.path ?? cwd,
+          session.id,
+        );
+        if (group) await setWorkspaceGroup(workspaceId, group);
+      } catch {
+        void disposeSession(session.id).catch(() => {});
+        return;
+      }
+      const trimmedPrompt = prompt.trim();
+      if (!trimmedPrompt) return;
+      scheduleAgentReadyPrompt({
+        onReady: (handler) => {
+          let unlisten: (() => void) | null = null;
+          let cancelled = false;
+          void onAgentReady(session.id, handler).then((un) => {
+            if (cancelled) un();
+            else unlisten = un;
+          });
+          return () => {
+            cancelled = true;
+            unlisten?.();
+          };
+        },
+        paste: (submit) => {
+          void typeIntoSession(session.id, trimmedPrompt, submit).catch(
+            () => {},
+          );
+        },
+        onTimeout: () =>
+          setAgentReadyWarnings((prev) => ({ ...prev, [session.id]: true })),
+        setTimeout: (cb, ms) => window.setTimeout(cb, ms),
+        clearTimeout: (h) => window.clearTimeout(h),
+      });
+    },
+    [typeIntoSession],
   );
 
   const newSessionInGroup = useCallback(
@@ -1691,6 +1765,7 @@ export default function App() {
     const runner = isConfig || isWtView ? null : workspaceAgent(w);
     const runningCmd = isConfig || isWtView ? null : workspaceCommand(w);
     const hoverAgent = runner ?? agentFromCommand(runningCmd);
+    const awaitingInput = isConfig || isWtView ? null : workspaceAwaitingInput(w);
     const workspaceButton = (
       <button
         key={w.id}
@@ -1722,47 +1797,56 @@ export default function App() {
             }}
           />
         )}
-        {isWtView ? (
-          <SquaresFour
-            size={16}
-            className={
-              isActive
-                ? "shrink-0 text-tyba-text [filter:drop-shadow(0_0_6px_rgba(255,255,255,.2))]"
-                : "shrink-0"
-            }
-          />
-        ) : isConfig ? (
-          <GearSix
-            size={16}
-            className={
-              isActive
-                ? "shrink-0 text-tyba-text [filter:drop-shadow(0_0_6px_rgba(255,255,255,.2))]"
-                : "shrink-0"
-            }
-          />
-        ) : w.kind === "docker" ? (
-          <DockerIcon
-            size={16}
-            style={w.color ? { color: `var(--tyba-${w.color})` } : undefined}
-            className={
-              isActive
-                ? `shrink-0 ${w.color ? "" : "text-tyba-cyan"} [filter:drop-shadow(0_0_6px_rgba(45,212,191,.35))]`
-                : "shrink-0"
-            }
-          />
-        ) : hoverAgent ? (
-          agentGlyph(hoverAgent)
-        ) : (
-          <TerminalWindow
-            size={16}
-            style={w.color ? { color: `var(--tyba-${w.color})` } : undefined}
-            className={
-              isActive
-                ? `shrink-0 ${w.color ? "" : "text-tyba-green"} [filter:drop-shadow(0_0_6px_rgba(124,197,68,.35))]`
-                : "shrink-0"
-            }
-          />
-        )}
+        <span className="relative shrink-0">
+          {isWtView ? (
+            <SquaresFour
+              size={16}
+              className={
+                isActive
+                  ? "shrink-0 text-tyba-text [filter:drop-shadow(0_0_6px_rgba(255,255,255,.2))]"
+                  : "shrink-0"
+              }
+            />
+          ) : isConfig ? (
+            <GearSix
+              size={16}
+              className={
+                isActive
+                  ? "shrink-0 text-tyba-text [filter:drop-shadow(0_0_6px_rgba(255,255,255,.2))]"
+                  : "shrink-0"
+              }
+            />
+          ) : w.kind === "docker" ? (
+            <DockerIcon
+              size={16}
+              style={w.color ? { color: `var(--tyba-${w.color})` } : undefined}
+              className={
+                isActive
+                  ? `shrink-0 ${w.color ? "" : "text-tyba-cyan"} [filter:drop-shadow(0_0_6px_rgba(45,212,191,.35))]`
+                  : "shrink-0"
+              }
+            />
+          ) : hoverAgent ? (
+            agentGlyph(hoverAgent)
+          ) : (
+            <TerminalWindow
+              size={16}
+              style={w.color ? { color: `var(--tyba-${w.color})` } : undefined}
+              className={
+                isActive
+                  ? `shrink-0 ${w.color ? "" : "text-tyba-green"} [filter:drop-shadow(0_0_6px_rgba(124,197,68,.35))]`
+                  : "shrink-0"
+              }
+            />
+          )}
+          {awaitingInput && (
+            <span
+              aria-hidden
+              title={t("sessionAwaitingInput")}
+              className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-tyba-amber [box-shadow:var(--tyba-glow-amber)] motion-safe:animate-pulse"
+            />
+          )}
+        </span>
         {open && (
           <>
             <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
@@ -1773,7 +1857,15 @@ export default function App() {
                     ? t("workspaceView")
                     : w.name}
               </span>
-              {showDetails && runningCmd && (
+              {showDetails && awaitingInput && (
+                <span className="flex w-full items-center gap-1.5">
+                  <span className="size-1 shrink-0 rounded-full bg-tyba-amber [box-shadow:var(--tyba-glow-amber)] motion-safe:animate-pulse" />
+                  <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-amber">
+                    {awaitingInput.hint || t("sessionAwaitingInput")}
+                  </span>
+                </span>
+              )}
+              {showDetails && !awaitingInput && runningCmd && (
                 <span className="flex w-full items-center gap-1.5">
                   <span className="size-1 shrink-0 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse" />
                   <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-muted">
@@ -1781,7 +1873,7 @@ export default function App() {
                   </span>
                 </span>
               )}
-              {showDetails && !runningCmd && (
+              {showDetails && !awaitingInput && !runningCmd && (
                 <span className="flex w-full items-center gap-1.5">
                   <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-faint">
                     {displayDir ? compactPath(displayDir) : "~"}
@@ -1947,10 +2039,16 @@ export default function App() {
           setWorktreeDir(null);
           setPendingGroup(null);
         }}
-        onCreate={async (task) => {
+        onCreate={async (task, agent) => {
           const dir = worktreeDir;
           setWorktreeDir(null);
-          if (dir) await newSession(dir, task, pendingGroup, task);
+          if (dir) {
+            if (agent) {
+              await newAgentSession(dir, task, pendingGroup, agent.prompt);
+            } else {
+              await newSession(dir, task, pendingGroup, task);
+            }
+          }
           setPendingGroup(null);
         }}
       />
@@ -2164,6 +2262,32 @@ export default function App() {
                   size={14}
                   className="-mt-0.5 ms-1 inline-flex opacity-60 transition-transform motion-safe:group-hover:translate-x-0.5"
                 />
+              </button>
+            </NotificationLink>
+          </Notification>
+        )}
+
+        {activeId && agentReadyWarnings[activeId] && (
+          <Notification
+            variant="warning"
+            className="rounded-none border-x-0 border-t-0 px-3 py-1.5 text-xs"
+          >
+            <NotificationTitle>{t("agentReadyTimeoutTitle")}</NotificationTitle>
+            <NotificationDescription>
+              {t("agentReadyTimeoutBody")}
+            </NotificationDescription>
+            <NotificationLink asChild>
+              <button
+                type="button"
+                onClick={() =>
+                  setAgentReadyWarnings((prev) => {
+                    const next = { ...prev };
+                    delete next[activeId];
+                    return next;
+                  })
+                }
+              >
+                {t("dismiss")}
               </button>
             </NotificationLink>
           </Notification>
