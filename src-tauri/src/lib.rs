@@ -802,7 +802,7 @@ fn set_workspace_group(
 fn new_window(app: AppHandle) -> Result<(), String> {
     let label = format!("tyba-{}", uuid::Uuid::new_v4().simple());
     let builder = tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
-        .title("TYBA")
+        .title("Tyba")
         .inner_size(1100.0, 720.0);
     #[cfg(target_os = "macos")]
     let builder = builder
@@ -1275,8 +1275,9 @@ fn resolve_approval(
     state: State<'_, AppState>,
     id: u64,
     decision: Decision,
+    feedback: Option<String>,
 ) -> Result<(), String> {
-    let request = state.approvals.resolve(&app, id, decision)?;
+    let request = state.approvals.resolve(&app, id, decision, feedback)?;
     agent::session::record_history(
         &state.store,
         request.session_id,

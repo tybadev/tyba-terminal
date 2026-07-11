@@ -129,7 +129,7 @@ fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
         .app
         .notification()
         .builder()
-        .title(format!("TYBA — {title}"))
+        .title(format!("Tyba — {title}"))
         .body(body.as_ref())
         .show();
 }
@@ -186,12 +186,14 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
             ctx.sessions
                 .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
             match outcome {
-                Ok((_request, decision)) => {
-                    if decision.is_approval() {
+                Ok((_request, resolution)) => {
+                    if resolution.decision.is_approval() {
                         HookAction::Allow { reason: None }
                     } else {
                         HookAction::Deny {
-                            reason: "negado no TYBA".into(),
+                            reason: resolution
+                                .feedback
+                                .unwrap_or_else(|| "negado no Tyba".into()),
                         }
                     }
                 }
@@ -310,7 +312,7 @@ fn spawn_prepared(
         return Err("path do socket de hooks excede o limite do sistema".into());
     }
 
-    let exe = std::env::current_exe().map_err(|e| format!("exe do TYBA: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
     let settings = hooks_settings_json(&hook_command(&exe));
     let settings_body =
         serde_json::to_string_pretty(&settings).map_err(|e| format!("settings de hooks: {e}"))?;
