@@ -9,6 +9,8 @@
 //! É a parte frágil (bytes podem chegar partidos entre chunks), então tem
 //! testes obrigatórios (convenção do repo).
 
+pub mod agent_events;
+
 use base64::Engine;
 
 /// Eventos de shell integration extraídos do stream do PTY.
