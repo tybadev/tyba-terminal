@@ -2,6 +2,7 @@ pub mod agent;
 pub mod approvals;
 pub mod docker;
 pub mod editor;
+pub mod hook_ipc;
 pub mod layout;
 pub mod pty;
 pub mod repo;

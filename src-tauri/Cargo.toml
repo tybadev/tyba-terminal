@@ -45,3 +45,4 @@ codegen-units = 1
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
+tempfile = "3"
