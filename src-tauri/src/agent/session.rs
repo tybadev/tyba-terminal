@@ -66,6 +66,7 @@ pub(crate) fn decision_label(decision: Decision) -> &'static str {
     match decision {
         Decision::Approved => "approved",
         Decision::Denied => "denied",
+        Decision::ApprovedAlways => "approved_always",
     }
 }
 
@@ -153,6 +154,19 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
             HookAction::Allow { reason: None }
         }
         risk => {
+            if risk != RiskLevel::Red && ctx.approvals.is_session_allowed(ctx.session_id, &command)
+            {
+                record_history(
+                    &ctx.store,
+                    ctx.session_id,
+                    command,
+                    cwd,
+                    risk,
+                    "session_allowed",
+                    now_ms(),
+                );
+                return HookAction::Allow { reason: None };
+            }
             ctx.sessions.set_status(
                 &ctx.app,
                 ctx.session_id,
@@ -172,12 +186,15 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
             ctx.sessions
                 .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
             match outcome {
-                Ok((_request, decision)) => match decision {
-                    Decision::Approved => HookAction::Allow { reason: None },
-                    Decision::Denied => HookAction::Deny {
-                        reason: "negado no TYBA".into(),
-                    },
-                },
+                Ok((_request, decision)) => {
+                    if decision.is_approval() {
+                        HookAction::Allow { reason: None }
+                    } else {
+                        HookAction::Deny {
+                            reason: "negado no TYBA".into(),
+                        }
+                    }
+                }
                 Err(reason) => {
                     record_history(
                         &ctx.store,

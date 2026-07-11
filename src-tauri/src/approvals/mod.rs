@@ -14,7 +14,7 @@
 
 pub mod tool_risk;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,10 +35,17 @@ pub enum RiskLevel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Decision {
     Approved,
     Denied,
+    ApprovedAlways,
+}
+
+impl Decision {
+    pub fn is_approval(self) -> bool {
+        matches!(self, Decision::Approved | Decision::ApprovedAlways)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -160,6 +167,7 @@ pub(crate) fn now_ms() -> u64 {
 pub struct ApprovalsManager {
     pending: Mutex<Vec<ApprovalRequest>>,
     waiters: Mutex<HashMap<u64, mpsc::Sender<Decision>>>,
+    session_allowlist: Mutex<HashMap<SessionId, HashSet<String>>>,
     next_id: AtomicU64,
 }
 
@@ -235,6 +243,26 @@ impl ApprovalsManager {
         self.pending.lock().expect("approvals lock").clone()
     }
 
+    pub fn is_session_allowed(&self, session_id: SessionId, command: &str) -> bool {
+        self.session_allowlist
+            .lock()
+            .expect("session allowlist lock")
+            .get(&session_id)
+            .is_some_and(|allowed| allowed.contains(command))
+    }
+
+    fn remember_session_allow(&self, request: &ApprovalRequest) {
+        if request.risk == RiskLevel::Red {
+            return;
+        }
+        self.session_allowlist
+            .lock()
+            .expect("session allowlist lock")
+            .entry(request.session_id)
+            .or_default()
+            .insert(request.command.clone());
+    }
+
     fn resolve_inner(&self, id: u64, decision: Decision) -> Result<ApprovalRequest, String> {
         let mut pending = self.pending.lock().expect("approvals lock");
         let pos = pending
@@ -242,10 +270,13 @@ impl ApprovalsManager {
             .position(|r| r.id == id)
             .ok_or_else(|| format!("pedido de aprovação {id} não existe"))?;
         let request = pending.remove(pos);
+        drop(pending);
+        if decision == Decision::ApprovedAlways {
+            self.remember_session_allow(&request);
+        }
         if let Some(tx) = self.waiters.lock().expect("waiters lock").remove(&id) {
             let _ = tx.send(decision);
         }
-        drop(pending);
         Ok(request)
     }
 
@@ -261,6 +292,10 @@ impl ApprovalsManager {
     }
 
     fn expire_session_inner(&self, session_id: SessionId) -> Vec<ApprovalRequest> {
+        self.session_allowlist
+            .lock()
+            .expect("session allowlist lock")
+            .remove(&session_id);
         let mut pending = self.pending.lock().expect("approvals lock");
         let mut waiters = self.waiters.lock().expect("waiters lock");
         let (expired, kept): (Vec<_>, Vec<_>) =
@@ -418,6 +453,67 @@ mod tests {
         assert!(rx_alive.try_recv().is_err());
         assert_eq!(manager.list_pending().len(), 1);
         assert_eq!(manager.list_pending()[0].session_id, alive);
+    }
+
+    #[test]
+    fn sempre_permitir_memoriza_o_comando_exato_da_sessao() {
+        let manager = ApprovalsManager::new();
+        let session = SessionId::new_v4();
+        let (request, rx) = pending_request(&manager, session, "cargo test");
+
+        manager
+            .resolve_inner(request.id, Decision::ApprovedAlways)
+            .unwrap();
+
+        assert_eq!(rx.recv().unwrap(), Decision::ApprovedAlways);
+        assert!(manager.is_session_allowed(session, "cargo test"));
+        assert!(!manager.is_session_allowed(session, "cargo test --release"));
+        assert!(!manager.is_session_allowed(SessionId::new_v4(), "cargo test"));
+    }
+
+    #[test]
+    fn sempre_permitir_nunca_memoriza_vermelho() {
+        let manager = ApprovalsManager::new();
+        let session = SessionId::new_v4();
+        let (tx, _rx) = mpsc::channel();
+        let request = manager
+            .request_inner(
+                session,
+                "rm -rf build".to_string(),
+                None,
+                None,
+                RiskLevel::Red,
+                Some(tx),
+            )
+            .unwrap();
+
+        manager
+            .resolve_inner(request.id, Decision::ApprovedAlways)
+            .unwrap();
+
+        assert!(!manager.is_session_allowed(session, "rm -rf build"));
+    }
+
+    #[test]
+    fn allowlist_morre_com_a_sessao() {
+        let manager = ApprovalsManager::new();
+        let session = SessionId::new_v4();
+        let (request, _rx) = pending_request(&manager, session, "cargo test");
+        manager
+            .resolve_inner(request.id, Decision::ApprovedAlways)
+            .unwrap();
+        assert!(manager.is_session_allowed(session, "cargo test"));
+
+        manager.expire_session_inner(session);
+
+        assert!(!manager.is_session_allowed(session, "cargo test"));
+    }
+
+    #[test]
+    fn approved_always_conta_como_aprovacao() {
+        assert!(Decision::ApprovedAlways.is_approval());
+        assert!(Decision::Approved.is_approval());
+        assert!(!Decision::Denied.is_approval());
     }
 
     #[test]
