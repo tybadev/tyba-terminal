@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 
 use crate::agent::hooks_settings::{hook_command, hooks_settings_json};
 use crate::agent::{AgentRunner, ClaudeCodeRunner};
@@ -107,6 +108,31 @@ struct HandlerCtx {
     worktree_root: PathBuf,
 }
 
+fn main_window_focused(app: &AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false)
+}
+
+fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
+    if main_window_focused(&ctx.app) {
+        return;
+    }
+    let title = ctx
+        .sessions
+        .get(ctx.session_id)
+        .map(|s| s.title)
+        .unwrap_or_else(|| "sessão de agente".into());
+    let body = crate::session::redact::redact(body);
+    let _ = ctx
+        .app
+        .notification()
+        .builder()
+        .title(format!("TYBA — {title}"))
+        .body(body.as_ref())
+        .show();
+}
+
 fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     let tool = event.tool_name.as_deref().unwrap_or("");
     let input = event.tool_input.as_ref();
@@ -134,6 +160,7 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
                     hint: Some(command.clone()),
                 },
             );
+            notify_awaiting_input(ctx, &format!("Aprovação pendente: {command}"));
             let outcome = ctx.approvals.request_blocking(
                 &ctx.app,
                 ctx.session_id,
@@ -180,7 +207,11 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
         }
         Some(signal) => {
             if let Some(status) = status_for(&signal) {
+                let awaiting = matches!(status, SessionStatus::AwaitingInput { .. });
                 ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
+                if awaiting {
+                    notify_awaiting_input(ctx, "Agente aguardando sua resposta");
+                }
             }
         }
         None => {}
