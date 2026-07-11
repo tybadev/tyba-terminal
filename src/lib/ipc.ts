@@ -230,7 +230,7 @@ export const disposeSession = (id: SessionId) =>
   invoke<void>("dispose_session", { id });
 
 export type RiskLevel = "green" | "yellow" | "red";
-export type ApprovalDecision = "approved" | "denied";
+export type ApprovalDecision = "approved" | "denied" | "approved_always";
 
 export interface ApprovalRequest {
   id: number;
@@ -258,8 +258,16 @@ export const requestApproval = (
 export const listApprovals = () =>
   invoke<ApprovalRequest[]>("list_approvals");
 
-export const resolveApproval = (id: number, decision: ApprovalDecision) =>
-  invoke<void>("resolve_approval", { id, decision });
+export const resolveApproval = (
+  id: number,
+  decision: ApprovalDecision,
+  feedback?: string,
+) =>
+  invoke<void>("resolve_approval", {
+    id,
+    decision,
+    feedback: feedback?.trim() ? feedback.trim() : null,
+  });
 
 export const onApprovalRequested = (
   handler: (request: ApprovalRequest) => void,

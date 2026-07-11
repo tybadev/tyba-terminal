@@ -91,6 +91,38 @@ fn classify_write(path: &str, worktree_root: &Path) -> RiskLevel {
     RiskLevel::Green
 }
 
+const SYSTEM_READ_PREFIXES: &[&str] = &["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/dev/null"];
+
+fn path_candidates(command: &str) -> Vec<PathBuf> {
+    command
+        .split_whitespace()
+        .map(|raw| {
+            raw.trim_matches(|c| matches!(c, '"' | '\'' | '(' | ')' | ';' | '|' | '&'))
+                .trim_start_matches(['>', '<'])
+        })
+        .filter(|token| token.starts_with('/') || token.starts_with("~/"))
+        .map(|token| crate::session::expand_home(Path::new(token)))
+        .collect()
+}
+
+fn bash_touches_outside(command: &str, worktree_root: &Path) -> bool {
+    let Some(root) = normalize_lexical(worktree_root) else {
+        return true;
+    };
+    path_candidates(command).into_iter().any(|candidate| {
+        if SYSTEM_READ_PREFIXES
+            .iter()
+            .any(|p| candidate.starts_with(p))
+        {
+            return false;
+        }
+        match normalize_lexical(&candidate) {
+            Some(resolved) => !resolved.starts_with(&root),
+            None => true,
+        }
+    })
+}
+
 pub fn classify_tool_use(
     tool_name: &str,
     tool_input: Option<&Value>,
@@ -98,7 +130,16 @@ pub fn classify_tool_use(
 ) -> RiskLevel {
     if tool_name == "Bash" {
         return match str_field(tool_input, "command") {
-            Some(command) => classify_risk(command),
+            Some(command) => match classify_risk(command) {
+                RiskLevel::Red => RiskLevel::Red,
+                risk => {
+                    if bash_touches_outside(command, worktree_root) {
+                        RiskLevel::Red
+                    } else {
+                        risk
+                    }
+                }
+            },
             None => RiskLevel::Yellow,
         };
     }
@@ -197,6 +238,108 @@ mod tests {
             RiskLevel::Yellow
         );
         assert_eq!(classify_tool_use("Bash", None, &root()), RiskLevel::Yellow);
+    }
+
+    #[test]
+    fn bash_escrita_fora_do_worktree_e_red() {
+        let wt = real_root();
+        assert_eq!(
+            classify_tool_use(
+                "Bash",
+                Some(&json!({ "command": "touch /tmp/e2e-negado.txt" })),
+                wt.path()
+            ),
+            RiskLevel::Red
+        );
+        assert_eq!(
+            classify_tool_use(
+                "Bash",
+                Some(&json!({ "command": "echo oi > /etc/hosts" })),
+                wt.path()
+            ),
+            RiskLevel::Red
+        );
+    }
+
+    #[test]
+    fn bash_leitura_de_segredo_fora_do_worktree_nao_e_green() {
+        let wt = real_root();
+        assert_eq!(
+            classify_tool_use(
+                "Bash",
+                Some(&json!({ "command": "cat ~/.ssh/id_rsa" })),
+                wt.path()
+            ),
+            RiskLevel::Red
+        );
+        assert_eq!(
+            classify_tool_use(
+                "Bash",
+                Some(&json!({ "command": "cat /Users/outro/.aws/credentials" })),
+                wt.path()
+            ),
+            RiskLevel::Red
+        );
+    }
+
+    #[test]
+    fn bash_sem_path_absoluto_mantem_classificacao_de_comando() {
+        let wt = real_root();
+        assert_eq!(
+            classify_tool_use("Bash", Some(&json!({ "command": "git status" })), wt.path()),
+            RiskLevel::Green
+        );
+        assert_eq!(
+            classify_tool_use(
+                "Bash",
+                Some(&json!({ "command": "cargo build" })),
+                wt.path()
+            ),
+            RiskLevel::Yellow
+        );
+        assert_eq!(
+            classify_tool_use(
+                "Bash",
+                Some(&json!({ "command": "cat src/main.rs" })),
+                wt.path()
+            ),
+            RiskLevel::Green
+        );
+    }
+
+    #[test]
+    fn bash_com_path_absoluto_dentro_do_worktree_mantem_verde() {
+        let wt = real_root();
+        let inside = wt.path().join("src/main.rs");
+        assert_eq!(
+            classify_tool_use(
+                "Bash",
+                Some(&json!({ "command": format!("cat {}", inside.display()) })),
+                wt.path()
+            ),
+            RiskLevel::Green
+        );
+    }
+
+    #[test]
+    fn bash_binario_de_sistema_nao_escala_para_red() {
+        let wt = real_root();
+        assert_eq!(
+            classify_tool_use(
+                "Bash",
+                Some(&json!({ "command": "/usr/bin/env cargo build" })),
+                wt.path()
+            ),
+            RiskLevel::Yellow
+        );
+        assert_eq!(
+            classify_tool_use(
+                "Bash",
+                Some(&json!({ "command": "cargo build 2> /dev/null" })),
+                wt.path()
+            ),
+            RiskLevel::Yellow
+        );
     }
 
     #[test]

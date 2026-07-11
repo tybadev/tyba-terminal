@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 
 use crate::agent::hooks_settings::{hook_command, hooks_settings_json};
 use crate::agent::{AgentRunner, ClaudeCodeRunner};
@@ -65,6 +66,7 @@ pub(crate) fn decision_label(decision: Decision) -> &'static str {
     match decision {
         Decision::Approved => "approved",
         Decision::Denied => "denied",
+        Decision::ApprovedAlways => "approved_always",
     }
 }
 
@@ -107,6 +109,31 @@ struct HandlerCtx {
     worktree_root: PathBuf,
 }
 
+fn main_window_focused(app: &AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false)
+}
+
+fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
+    if main_window_focused(&ctx.app) {
+        return;
+    }
+    let title = ctx
+        .sessions
+        .get(ctx.session_id)
+        .map(|s| s.title)
+        .unwrap_or_else(|| "sessão de agente".into());
+    let body = crate::session::redact::redact(body);
+    let _ = ctx
+        .app
+        .notification()
+        .builder()
+        .title(format!("Tyba — {title}"))
+        .body(body.as_ref())
+        .show();
+}
+
 fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     let tool = event.tool_name.as_deref().unwrap_or("");
     let input = event.tool_input.as_ref();
@@ -127,6 +154,19 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
             HookAction::Allow { reason: None }
         }
         risk => {
+            if risk != RiskLevel::Red && ctx.approvals.is_session_allowed(ctx.session_id, &command)
+            {
+                record_history(
+                    &ctx.store,
+                    ctx.session_id,
+                    command,
+                    cwd,
+                    risk,
+                    "session_allowed",
+                    now_ms(),
+                );
+                return HookAction::Allow { reason: None };
+            }
             ctx.sessions.set_status(
                 &ctx.app,
                 ctx.session_id,
@@ -134,6 +174,7 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
                     hint: Some(command.clone()),
                 },
             );
+            notify_awaiting_input(ctx, &format!("Aprovação pendente: {command}"));
             let outcome = ctx.approvals.request_blocking(
                 &ctx.app,
                 ctx.session_id,
@@ -145,12 +186,17 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
             ctx.sessions
                 .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
             match outcome {
-                Ok((_request, decision)) => match decision {
-                    Decision::Approved => HookAction::Allow { reason: None },
-                    Decision::Denied => HookAction::Deny {
-                        reason: "negado no TYBA".into(),
-                    },
-                },
+                Ok((_request, resolution)) => {
+                    if resolution.decision.is_approval() {
+                        HookAction::Allow { reason: None }
+                    } else {
+                        HookAction::Deny {
+                            reason: resolution
+                                .feedback
+                                .unwrap_or_else(|| "negado no Tyba".into()),
+                        }
+                    }
+                }
                 Err(reason) => {
                     record_history(
                         &ctx.store,
@@ -180,7 +226,11 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
         }
         Some(signal) => {
             if let Some(status) = status_for(&signal) {
+                let awaiting = matches!(status, SessionStatus::AwaitingInput { .. });
                 ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
+                if awaiting {
+                    notify_awaiting_input(ctx, "Agente aguardando sua resposta");
+                }
             }
         }
         None => {}
@@ -262,7 +312,7 @@ fn spawn_prepared(
         return Err("path do socket de hooks excede o limite do sistema".into());
     }
 
-    let exe = std::env::current_exe().map_err(|e| format!("exe do TYBA: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
     let settings = hooks_settings_json(&hook_command(&exe));
     let settings_body =
         serde_json::to_string_pretty(&settings).map_err(|e| format!("settings de hooks: {e}"))?;

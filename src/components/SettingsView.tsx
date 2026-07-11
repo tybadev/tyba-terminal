@@ -424,7 +424,7 @@ export function SettingsView({
   const importTheme = async () => {
     const path = await openFileDialog({
       multiple: false,
-      filters: [{ name: "Tema TYBA (JSON)", extensions: ["json"] }],
+      filters: [{ name: "Tema Tyba (JSON)", extensions: ["json"] }],
     });
     if (typeof path !== "string") return;
     try {

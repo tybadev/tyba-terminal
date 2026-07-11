@@ -14,7 +14,7 @@
 
 pub mod tool_risk;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,10 +35,17 @@ pub enum RiskLevel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Decision {
     Approved,
     Denied,
+    ApprovedAlways,
+}
+
+impl Decision {
+    pub fn is_approval(self) -> bool {
+        matches!(self, Decision::Approved | Decision::ApprovedAlways)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,6 +64,21 @@ pub struct ApprovalRequest {
 pub struct ApprovalResolved {
     pub id: u64,
     pub decision: Decision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolution {
+    pub decision: Decision,
+    pub feedback: Option<String>,
+}
+
+impl Resolution {
+    pub fn denied() -> Self {
+        Self {
+            decision: Decision::Denied,
+            feedback: None,
+        }
+    }
 }
 
 fn word_tokens(command: &str) -> Vec<&str> {
@@ -159,7 +181,8 @@ pub(crate) fn now_ms() -> u64 {
 #[derive(Default)]
 pub struct ApprovalsManager {
     pending: Mutex<Vec<ApprovalRequest>>,
-    waiters: Mutex<HashMap<u64, mpsc::Sender<Decision>>>,
+    waiters: Mutex<HashMap<u64, mpsc::Sender<Resolution>>>,
+    session_allowlist: Mutex<HashMap<SessionId, HashSet<String>>>,
     next_id: AtomicU64,
 }
 
@@ -175,7 +198,7 @@ impl ApprovalsManager {
         cwd: Option<String>,
         context: Option<String>,
         risk: RiskLevel,
-        waiter: Option<mpsc::Sender<Decision>>,
+        waiter: Option<mpsc::Sender<Resolution>>,
     ) -> Result<ApprovalRequest, String> {
         if is_refused_by_core(&command) {
             return Err("recusado pelo core: push para main/master nunca é permitido".into());
@@ -223,29 +246,52 @@ impl ApprovalsManager {
         cwd: Option<String>,
         context: Option<String>,
         risk: RiskLevel,
-    ) -> Result<(ApprovalRequest, Decision), String> {
+    ) -> Result<(ApprovalRequest, Resolution), String> {
         let (tx, rx) = mpsc::channel();
         let request = self.request_inner(session_id, command, cwd, context, risk, Some(tx))?;
         let _ = app.emit("approvals://requested", request.clone());
-        let decision = rx.recv().unwrap_or(Decision::Denied);
-        Ok((request, decision))
+        let resolution = rx.recv().unwrap_or_else(|_| Resolution::denied());
+        Ok((request, resolution))
     }
 
     pub fn list_pending(&self) -> Vec<ApprovalRequest> {
         self.pending.lock().expect("approvals lock").clone()
     }
 
-    fn resolve_inner(&self, id: u64, decision: Decision) -> Result<ApprovalRequest, String> {
+    pub fn is_session_allowed(&self, session_id: SessionId, command: &str) -> bool {
+        self.session_allowlist
+            .lock()
+            .expect("session allowlist lock")
+            .get(&session_id)
+            .is_some_and(|allowed| allowed.contains(command))
+    }
+
+    fn remember_session_allow(&self, request: &ApprovalRequest) {
+        if request.risk == RiskLevel::Red {
+            return;
+        }
+        self.session_allowlist
+            .lock()
+            .expect("session allowlist lock")
+            .entry(request.session_id)
+            .or_default()
+            .insert(request.command.clone());
+    }
+
+    fn resolve_inner(&self, id: u64, resolution: Resolution) -> Result<ApprovalRequest, String> {
         let mut pending = self.pending.lock().expect("approvals lock");
         let pos = pending
             .iter()
             .position(|r| r.id == id)
             .ok_or_else(|| format!("pedido de aprovação {id} não existe"))?;
         let request = pending.remove(pos);
-        if let Some(tx) = self.waiters.lock().expect("waiters lock").remove(&id) {
-            let _ = tx.send(decision);
-        }
         drop(pending);
+        if resolution.decision == Decision::ApprovedAlways {
+            self.remember_session_allow(&request);
+        }
+        if let Some(tx) = self.waiters.lock().expect("waiters lock").remove(&id) {
+            let _ = tx.send(resolution);
+        }
         Ok(request)
     }
 
@@ -254,13 +300,19 @@ impl ApprovalsManager {
         app: &AppHandle,
         id: u64,
         decision: Decision,
+        feedback: Option<String>,
     ) -> Result<ApprovalRequest, String> {
-        let request = self.resolve_inner(id, decision)?;
+        let feedback = feedback.filter(|f| !f.trim().is_empty());
+        let request = self.resolve_inner(id, Resolution { decision, feedback })?;
         let _ = app.emit("approvals://resolved", ApprovalResolved { id, decision });
         Ok(request)
     }
 
     fn expire_session_inner(&self, session_id: SessionId) -> Vec<ApprovalRequest> {
+        self.session_allowlist
+            .lock()
+            .expect("session allowlist lock")
+            .remove(&session_id);
         let mut pending = self.pending.lock().expect("approvals lock");
         let mut waiters = self.waiters.lock().expect("waiters lock");
         let (expired, kept): (Vec<_>, Vec<_>) =
@@ -268,7 +320,7 @@ impl ApprovalsManager {
         *pending = kept;
         for request in &expired {
             if let Some(tx) = waiters.remove(&request.id) {
-                let _ = tx.send(Decision::Denied);
+                let _ = tx.send(Resolution::denied());
             }
         }
         expired
@@ -351,11 +403,18 @@ mod tests {
         assert!(!is_refused_by_core("git status"));
     }
 
+    fn approval(decision: Decision) -> Resolution {
+        Resolution {
+            decision,
+            feedback: None,
+        }
+    }
+
     fn pending_request(
         manager: &ApprovalsManager,
         session_id: SessionId,
         command: &str,
-    ) -> (ApprovalRequest, mpsc::Receiver<Decision>) {
+    ) -> (ApprovalRequest, mpsc::Receiver<Resolution>) {
         let (tx, rx) = mpsc::channel();
         let request = manager
             .request_inner(
@@ -377,11 +436,11 @@ mod tests {
         let (request, rx) = pending_request(&manager, session, "cargo build");
 
         let resolved = manager
-            .resolve_inner(request.id, Decision::Approved)
+            .resolve_inner(request.id, approval(Decision::Approved))
             .expect("resolve deve achar o pedido");
 
         assert_eq!(resolved.command, "cargo build");
-        assert_eq!(rx.recv().unwrap(), Decision::Approved);
+        assert_eq!(rx.recv().unwrap().decision, Decision::Approved);
         assert!(manager.list_pending().is_empty());
     }
 
@@ -393,13 +452,19 @@ mod tests {
         let (second, rx_second) = pending_request(&manager, session, "b");
         let (third, rx_third) = pending_request(&manager, session, "c");
 
-        manager.resolve_inner(third.id, Decision::Denied).unwrap();
-        manager.resolve_inner(first.id, Decision::Approved).unwrap();
-        manager.resolve_inner(second.id, Decision::Denied).unwrap();
+        manager
+            .resolve_inner(third.id, Resolution::denied())
+            .unwrap();
+        manager
+            .resolve_inner(first.id, approval(Decision::Approved))
+            .unwrap();
+        manager
+            .resolve_inner(second.id, Resolution::denied())
+            .unwrap();
 
-        assert_eq!(rx_first.recv().unwrap(), Decision::Approved);
-        assert_eq!(rx_second.recv().unwrap(), Decision::Denied);
-        assert_eq!(rx_third.recv().unwrap(), Decision::Denied);
+        assert_eq!(rx_first.recv().unwrap().decision, Decision::Approved);
+        assert_eq!(rx_second.recv().unwrap().decision, Decision::Denied);
+        assert_eq!(rx_third.recv().unwrap().decision, Decision::Denied);
     }
 
     #[test]
@@ -414,10 +479,95 @@ mod tests {
 
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].session_id, dying);
-        assert_eq!(rx_dying.recv().unwrap(), Decision::Denied);
+        assert_eq!(rx_dying.recv().unwrap().decision, Decision::Denied);
         assert!(rx_alive.try_recv().is_err());
         assert_eq!(manager.list_pending().len(), 1);
         assert_eq!(manager.list_pending()[0].session_id, alive);
+    }
+
+    #[test]
+    fn sempre_permitir_memoriza_o_comando_exato_da_sessao() {
+        let manager = ApprovalsManager::new();
+        let session = SessionId::new_v4();
+        let (request, rx) = pending_request(&manager, session, "cargo test");
+
+        manager
+            .resolve_inner(request.id, approval(Decision::ApprovedAlways))
+            .unwrap();
+
+        assert_eq!(rx.recv().unwrap().decision, Decision::ApprovedAlways);
+        assert!(manager.is_session_allowed(session, "cargo test"));
+        assert!(!manager.is_session_allowed(session, "cargo test --release"));
+        assert!(!manager.is_session_allowed(SessionId::new_v4(), "cargo test"));
+    }
+
+    #[test]
+    fn sempre_permitir_nunca_memoriza_vermelho() {
+        let manager = ApprovalsManager::new();
+        let session = SessionId::new_v4();
+        let (tx, _rx) = mpsc::channel();
+        let request = manager
+            .request_inner(
+                session,
+                "rm -rf build".to_string(),
+                None,
+                None,
+                RiskLevel::Red,
+                Some(tx),
+            )
+            .unwrap();
+
+        manager
+            .resolve_inner(request.id, approval(Decision::ApprovedAlways))
+            .unwrap();
+
+        assert!(!manager.is_session_allowed(session, "rm -rf build"));
+    }
+
+    #[test]
+    fn allowlist_morre_com_a_sessao() {
+        let manager = ApprovalsManager::new();
+        let session = SessionId::new_v4();
+        let (request, _rx) = pending_request(&manager, session, "cargo test");
+        manager
+            .resolve_inner(request.id, approval(Decision::ApprovedAlways))
+            .unwrap();
+        assert!(manager.is_session_allowed(session, "cargo test"));
+
+        manager.expire_session_inner(session);
+
+        assert!(!manager.is_session_allowed(session, "cargo test"));
+    }
+
+    #[test]
+    fn negar_com_feedback_entrega_o_texto_ao_waiter() {
+        let manager = ApprovalsManager::new();
+        let session = SessionId::new_v4();
+        let (request, rx) = pending_request(&manager, session, "rm build");
+
+        manager
+            .resolve_inner(
+                request.id,
+                Resolution {
+                    decision: Decision::Denied,
+                    feedback: Some("nao apague o build, rode cargo check".into()),
+                },
+            )
+            .unwrap();
+
+        let resolution = rx.recv().unwrap();
+        assert_eq!(resolution.decision, Decision::Denied);
+        assert_eq!(
+            resolution.feedback.as_deref(),
+            Some("nao apague o build, rode cargo check")
+        );
+    }
+
+    #[test]
+    fn approved_always_conta_como_aprovacao() {
+        assert!(Decision::ApprovedAlways.is_approval());
+        assert!(Decision::Approved.is_approval());
+        assert!(!Decision::Denied.is_approval());
     }
 
     #[test]
@@ -426,7 +576,9 @@ mod tests {
         let session = SessionId::new_v4();
         let (_req, _rx) = pending_request(&manager, session, "a");
 
-        assert!(manager.resolve_inner(999, Decision::Approved).is_err());
+        assert!(manager
+            .resolve_inner(999, approval(Decision::Approved))
+            .is_err());
         assert_eq!(manager.list_pending().len(), 1);
     }
 }

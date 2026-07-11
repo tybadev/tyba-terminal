@@ -125,14 +125,17 @@ function NotificationLink({
       )}
       {...props}
     >
-      {children}
-      {/* com asChild o caller compõe o conteúdo inteiro (Slot exige filho único) */}
-      {!asChild && (
-        <ArrowRight
-          aria-hidden="true"
-          size={16}
-          className="-mt-0.5 ms-1 inline-flex opacity-60 transition-transform motion-safe:group-hover:translate-x-0.5"
-        />
+      {asChild ? (
+        children
+      ) : (
+        <>
+          {children}
+          <ArrowRight
+            aria-hidden="true"
+            size={16}
+            className="-mt-0.5 ms-1 inline-flex opacity-60 transition-transform motion-safe:group-hover:translate-x-0.5"
+          />
+        </>
       )}
     </Comp>
   )

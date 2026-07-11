@@ -1,4 +1,4 @@
-// i18n do TYBA: pt-BR e en no MVP.
+// i18n do Tyba: pt-BR e en no MVP.
 // Idioma: escolha do usuário (localStorage) > idioma do sistema > en.
 // Termos de domínio (branch, diff, worktree, merge) ficam em inglês
 // em qualquer idioma — são vocabulário técnico, não texto de UI.
@@ -38,7 +38,7 @@ const resources = {
       accountHint: "Contas e sincronização chegam depois.",
       themesHint: "O terminal acompanha o tema do app.",
       appearanceHint: "Tema, fonte e tamanho do texto. O terminal acompanha.",
-      preferencesHint: "Comportamentos do TYBA nesta máquina.",
+      preferencesHint: "Comportamentos do Tyba nesta máquina.",
       sidebarToggleBehavior: "Recolher painel (⌘B)",
       collapseAll: "Recolher tudo",
       collapseRail: "Modo ícones",
@@ -55,7 +55,7 @@ const resources = {
       catPanes: "Panes",
       catNavigation: "Navegação",
       catTerminal: "Terminal",
-      generalHint: "Sua conta e os padrões do TYBA para novas sessões.",
+      generalHint: "Sua conta e os padrões do Tyba para novas sessões.",
       codeHint: "Integrações do ambiente de código.",
       shortcutsHint: "Clique num atalho e pressione a combinação nova.",
       defaultSessionDir: "Pasta padrão para novas sessões",
@@ -83,7 +83,7 @@ const resources = {
       diffPaneClose: "Fechar diff",
       reviewAgent: "Agente de review",
       reviewAgentHint:
-        "Quem recebe os comentários do diff quando não há sessão aberta no worktree: o TYBA abre uma sessão, sobe esse agente e cola o prompt no composer.",
+        "Quem recebe os comentários do diff quando não há sessão aberta no worktree: o Tyba abre uma sessão, sobe esse agente e cola o prompt no composer.",
       reviewAgentCustom: "Comando custom…",
       reviewAgentCustomCommand: "Comando do agente",
       reviewAgentCustomHint: "Executado dentro do worktree antes de colar o prompt.",
@@ -134,7 +134,7 @@ const resources = {
       worktreeReview: "Revisar",
       worktreesTitle: "Worktrees",
       worktreesHint:
-        "Worktrees gerenciados pelo TYBA, por repositório. Órfãos com trabalho não mergeado aparecem aqui — nada é apagado sem você mandar.",
+        "Worktrees gerenciados pelo Tyba, por repositório. Órfãos com trabalho não mergeado aparecem aqui — nada é apagado sem você mandar.",
       worktreesRefresh: "Atualizar",
       worktreesEmpty: "Nenhum worktree ainda. Crie uma sessão isolada com o toggle na Nova Sessão ou ⌘⇧T.",
       worktreesNoneForRepo: "Nenhum worktree neste repo.",
@@ -153,7 +153,7 @@ const resources = {
       worktreeCreating: "Criando worktree…",
       worktreeSetupFound: "Este repo tem um .tyba/setup.sh",
       worktreeSetupHint:
-        "Revise antes de permitir. Roda uma vez na criação do worktree, com env mínimo. Se o script mudar, o TYBA pergunta de novo.",
+        "Revise antes de permitir. Roda uma vez na criação do worktree, com env mínimo. Se o script mudar, o Tyba pergunta de novo.",
       worktreeSetupAllow: "Permitir e rodar no worktree",
       worktreeSetupConsented: "setup.sh já permitido para este repo.",
       worktreeDefaultPref: "Novas sessões isoladas por padrão",
@@ -218,7 +218,7 @@ const resources = {
         "Usado por tudo que abre editor no terminal: o Ctrl+G do Claude Code, git commit, git rebase -i, crontab -e.",
       defaultEditorSystem: "Padrão do sistema",
       defaultEditorSystemHint:
-        "Mantém o $EDITOR que o seu shell já define. O TYBA não interfere.",
+        "Mantém o $EDITOR que o seu shell já define. O Tyba não interfere.",
       gitStatusHint:
         "Mostra um rótulo com o número de alterações não commitadas quando a pasta da sessão tem mudanças.",
       gitChanges_one: "{{count}} alteração não commitada",
@@ -283,11 +283,11 @@ const resources = {
       openProjectFolder: "Abrir pasta do projeto",
       notifications: "Notificações",
       notificationsEmpty:
-        "Tudo em dia. Aprovações de sessões de agente chegam aqui.",
+        "Tudo em dia. Notificações de sessões de agente chegam aqui.",
       account: "Conta",
       localAccount: "Conta local",
       settings: "Configurações",
-      about: "Sobre o TYBA",
+      about: "Sobre o Tyba",
       language: "Idioma",
       commandPalette: "Paleta de comandos",
       paletteActions: "Paleta de ações",
@@ -352,7 +352,6 @@ const resources = {
       shellIntegration: "Shell integration (zsh)",
       shellIntegrationHint:
         "Injeta hooks no zsh da sessão pra saber o comando em execução e o status — mostra a descrição da sessão no sidebar, estilo Warp. Mexe só no ambiente da sessão (via ZDOTDIR), nunca nos seus dotfiles. Desligue se o shell se comportar estranho.",
-      approvals: "Aprovações",
       pendingCount_one: "{{count}} pendente",
       pendingCount_other: "{{count}} pendentes",
       approvalsWaiting_one: "{{count}} comando aguardando aprovação",
@@ -360,11 +359,22 @@ const resources = {
       reviewApprovals: "Revisar",
       approve: "Aprovar",
       deny: "Recusar",
+      approvalChoiceYes: "Sim",
+      approvalChoiceAlways: "Sim, e não perguntar de novo",
+      approvalChoiceNo: "Não, e dizer o que fazer",
+      denyAndTell: "Recusar e enviar",
+      denyFeedbackPlaceholder:
+        "O que o agente deve fazer no lugar? (opcional — vai como resposta pra ele)",
       confirmApprove: "Confirmar",
       redAction: "ação vermelha",
       riskGreen: "risco baixo",
       riskYellow: "risco médio",
       riskRed: "risco alto",
+      approvalRequested: "Pedido de aprovação",
+      alwaysAllow: "Sempre permitir",
+      alwaysAllowSession: "Sempre permitir nesta sessão",
+      alwaysAllowHint:
+        "Aprova automaticamente comandos idênticos nesta sessão de agente. Vale só enquanto ela estiver aberta.",
     },
   },
   en: {
@@ -389,7 +399,7 @@ const resources = {
       accountHint: "Accounts and sync come later.",
       themesHint: "The terminal follows the app theme.",
       appearanceHint: "Theme, font and text size. The terminal follows.",
-      preferencesHint: "TYBA behaviors on this machine.",
+      preferencesHint: "Tyba behaviors on this machine.",
       sidebarToggleBehavior: "Collapse panel (⌘B)",
       collapseAll: "Collapse fully",
       collapseRail: "Icon rail",
@@ -406,7 +416,7 @@ const resources = {
       catPanes: "Panes",
       catNavigation: "Navigation",
       catTerminal: "Terminal",
-      generalHint: "Your account and TYBA defaults for new sessions.",
+      generalHint: "Your account and Tyba defaults for new sessions.",
       codeHint: "Code environment integrations.",
       shortcutsHint: "Click a shortcut and press the new combination.",
       defaultSessionDir: "Default folder for new sessions",
@@ -434,7 +444,7 @@ const resources = {
       diffPaneClose: "Close diff",
       reviewAgent: "Review agent",
       reviewAgentHint:
-        "Who receives the diff comments when no session is open in the worktree: TYBA opens a session, starts this agent and pastes the prompt into its composer.",
+        "Who receives the diff comments when no session is open in the worktree: Tyba opens a session, starts this agent and pastes the prompt into its composer.",
       reviewAgentCustom: "Custom command…",
       reviewAgentCustomCommand: "Agent command",
       reviewAgentCustomHint: "Runs inside the worktree before the prompt is pasted.",
@@ -485,7 +495,7 @@ const resources = {
       worktreeReview: "Review",
       worktreesTitle: "Worktrees",
       worktreesHint:
-        "TYBA-managed worktrees, per repository. Orphans with unmerged work show up here — nothing is deleted unless you say so.",
+        "Tyba-managed worktrees, per repository. Orphans with unmerged work show up here — nothing is deleted unless you say so.",
       worktreesRefresh: "Refresh",
       worktreesEmpty: "No worktrees yet. Create an isolated session with the New Session toggle or ⌘⇧T.",
       worktreesNoneForRepo: "No worktrees in this repo.",
@@ -504,7 +514,7 @@ const resources = {
       worktreeCreating: "Creating worktree…",
       worktreeSetupFound: "This repo has a .tyba/setup.sh",
       worktreeSetupHint:
-        "Review before allowing. Runs once when the worktree is created, with a minimal env. If the script changes, TYBA asks again.",
+        "Review before allowing. Runs once when the worktree is created, with a minimal env. If the script changes, Tyba asks again.",
       worktreeSetupAllow: "Allow and run in the worktree",
       worktreeSetupConsented: "setup.sh already allowed for this repo.",
       worktreeDefaultPref: "Isolate new sessions by default",
@@ -569,7 +579,7 @@ const resources = {
         "Used by everything that opens an editor from the terminal: Claude Code's Ctrl+G, git commit, git rebase -i, crontab -e.",
       defaultEditorSystem: "System default",
       defaultEditorSystemHint:
-        "Keeps whatever $EDITOR your shell already sets. TYBA stays out of the way.",
+        "Keeps whatever $EDITOR your shell already sets. Tyba stays out of the way.",
       gitStatusHint:
         "Shows a badge with the number of uncommitted changes when the session folder has changes.",
       gitChanges_one: "{{count}} uncommitted change",
@@ -634,11 +644,11 @@ const resources = {
       openProjectFolder: "Open project folder",
       notifications: "Notifications",
       notificationsEmpty:
-        "All caught up. Agent session approvals arrive here.",
+        "All caught up. Agent session notifications arrive here.",
       account: "Account",
       localAccount: "Local account",
       settings: "Settings",
-      about: "About TYBA",
+      about: "About Tyba",
       language: "Language",
       commandPalette: "Command palette",
       paletteActions: "Actions palette",
@@ -703,7 +713,6 @@ const resources = {
       shellIntegration: "Shell integration (zsh)",
       shellIntegrationHint:
         "Injects hooks into the session's zsh to know the running command and status — shows the session description in the sidebar, Warp-style. Only touches the session environment (via ZDOTDIR), never your dotfiles. Turn off if the shell misbehaves.",
-      approvals: "Approvals",
       pendingCount_one: "{{count}} pending",
       pendingCount_other: "{{count}} pending",
       approvalsWaiting_one: "{{count}} command awaiting approval",
@@ -711,11 +720,22 @@ const resources = {
       reviewApprovals: "Review",
       approve: "Approve",
       deny: "Deny",
+      approvalChoiceYes: "Yes",
+      approvalChoiceAlways: "Yes, and don't ask again",
+      approvalChoiceNo: "No, and tell it what to do",
+      denyAndTell: "Deny and send",
+      denyFeedbackPlaceholder:
+        "What should the agent do instead? (optional — sent back to it)",
       confirmApprove: "Confirm",
       redAction: "red action",
       riskGreen: "low risk",
       riskYellow: "medium risk",
       riskRed: "high risk",
+      approvalRequested: "Approval request",
+      alwaysAllow: "Always allow",
+      alwaysAllowSession: "Always allow for this session",
+      alwaysAllowHint:
+        "Automatically approves identical commands in this agent session. Only applies while it stays open.",
     },
   },
 } as const;

@@ -802,7 +802,7 @@ fn set_workspace_group(
 fn new_window(app: AppHandle) -> Result<(), String> {
     let label = format!("tyba-{}", uuid::Uuid::new_v4().simple());
     let builder = tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
-        .title("TYBA")
+        .title("Tyba")
         .inner_size(1100.0, 720.0);
     #[cfg(target_os = "macos")]
     let builder = builder
@@ -1275,8 +1275,9 @@ fn resolve_approval(
     state: State<'_, AppState>,
     id: u64,
     decision: Decision,
+    feedback: Option<String>,
 ) -> Result<(), String> {
-    let request = state.approvals.resolve(&app, id, decision)?;
+    let request = state.approvals.resolve(&app, id, decision, feedback)?;
     agent::session::record_history(
         &state.store,
         request.session_id,
@@ -1383,14 +1384,13 @@ fn import_theme(
 const SCROLLBACK_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
 fn open_store(app: &AppHandle) -> session::store::Store {
-    let db_path = app
-        .path()
-        .app_data_dir()
+    let db_path = std::env::var_os("TYBA_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| app.path().app_data_dir().ok())
         .map(|dir| {
             let _ = std::fs::create_dir_all(&dir);
             dir.join("tyba.db")
-        })
-        .ok();
+        });
 
     db_path
         .and_then(|path| session::store::Store::open(&path).ok())
@@ -1405,6 +1405,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 if let Some(state) = window.try_state::<AppState>() {
