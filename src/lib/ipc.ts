@@ -230,7 +230,7 @@ export const disposeSession = (id: SessionId) =>
   invoke<void>("dispose_session", { id });
 
 export type RiskLevel = "green" | "yellow" | "red";
-export type ApprovalDecision = "approved" | "denied";
+export type ApprovalDecision = "approved" | "denied" | "approved_always";
 
 export interface ApprovalRequest {
   id: number;
