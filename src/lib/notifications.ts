@@ -44,6 +44,48 @@ export function canAlwaysAllow(risk: RiskLevel): boolean {
   return availableApprovalActions(risk).includes("approved_always");
 }
 
+export interface ApprovalChoice {
+  index: number;
+  decision: ApprovalDecision;
+  labelKey: string;
+  wantsFeedback: boolean;
+}
+
+export function approvalChoices(risk: RiskLevel): ApprovalChoice[] {
+  const choices: ApprovalChoice[] = [
+    {
+      index: 1,
+      decision: "approved",
+      labelKey: "approvalChoiceYes",
+      wantsFeedback: false,
+    },
+  ];
+  if (canAlwaysAllow(risk)) {
+    choices.push({
+      index: choices.length + 1,
+      decision: "approved_always",
+      labelKey: "approvalChoiceAlways",
+      wantsFeedback: false,
+    });
+  }
+  choices.push({
+    index: choices.length + 1,
+    decision: "denied",
+    labelKey: "approvalChoiceNo",
+    wantsFeedback: true,
+  });
+  return choices;
+}
+
+export function choiceForKey(
+  risk: RiskLevel,
+  key: string,
+): ApprovalChoice | null {
+  const index = Number.parseInt(key, 10);
+  if (Number.isNaN(index)) return null;
+  return approvalChoices(risk).find((c) => c.index === index) ?? null;
+}
+
 export function shouldAutoClosePopover(params: {
   open: boolean;
   previousCount: number;

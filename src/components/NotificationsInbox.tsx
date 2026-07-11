@@ -16,10 +16,13 @@ import {
 import {
   RISK_DOT,
   RISK_LABEL,
-  canAlwaysAllow,
+  approvalChoices,
+  choiceForKey,
   shouldAutoClosePopover,
   toNotificationItems,
 } from "@/lib/notifications";
+import { Textarea } from "@/components/ui/textarea";
+import { Kbd } from "@/components/ui/kbd";
 import {
   resolveApproval,
   type ApprovalDecision,
@@ -41,8 +44,14 @@ export function NotificationsInbox({
 }) {
   const { t } = useTranslation();
   const [confirming, setConfirming] = useState<number | null>(null);
+  const [feedbackFor, setFeedbackFor] = useState<number | null>(null);
+  const [feedback, setFeedback] = useState("");
 
-  const decide = (request: ApprovalRequest, decision: ApprovalDecision) => {
+  const decide = (
+    request: ApprovalRequest,
+    decision: ApprovalDecision,
+    withFeedback?: string,
+  ) => {
     if (
       decision === "approved" &&
       request.risk === "red" &&
@@ -52,7 +61,19 @@ export function NotificationsInbox({
       return;
     }
     setConfirming(null);
-    resolveApproval(request.id, decision).catch(() => {});
+    setFeedbackFor(null);
+    setFeedback("");
+    resolveApproval(request.id, decision, withFeedback).catch(() => {});
+  };
+
+  const pickByKey = (request: ApprovalRequest, key: string) => {
+    const choice = choiceForKey(request.risk, key);
+    if (!choice) return;
+    if (choice.wantsFeedback) {
+      setFeedbackFor(request.id);
+      return;
+    }
+    decide(request, choice.decision);
   };
 
   const sessionTitle = (id: SessionId) =>
@@ -75,6 +96,22 @@ export function NotificationsInbox({
   }, [count, open, onOpenChange]);
 
   const items = toNotificationItems(approvals);
+  const first = items[0]?.approval;
+
+  useEffect(() => {
+    if (!open || !first || feedbackFor !== null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target && ["INPUT", "TEXTAREA"].includes(target.tagName)) return;
+      const choice = choiceForKey(first.risk, e.key);
+      if (!choice) return;
+      e.preventDefault();
+      pickByKey(first, e.key);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   return (
     <Popover
@@ -158,46 +195,96 @@ export function NotificationsInbox({
                         </div>
                       )}
                       <div className="mt-2 flex flex-wrap gap-2">
-                        <Button
-                          size="sm"
-                          onClick={() => decide(request, "approved")}
-                          className={`h-6 rounded-[4px] px-2.5 text-[11px] ${
+                        {approvalChoices(request.risk).map((choice) => {
+                          const isRedConfirm =
+                            choice.decision === "approved" &&
                             request.risk === "red" &&
-                            confirming === request.id
-                              ? "bg-tyba-red text-white hover:bg-tyba-red/90"
-                              : ""
-                          }`}
-                        >
-                          {request.risk === "red" && confirming === request.id
-                            ? t("confirmApprove")
-                            : t("approve")}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => decide(request, "denied")}
-                          className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
-                        >
-                          {t("deny")}
-                        </Button>
-                        {canAlwaysAllow(request.risk) && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => decide(request, "approved_always")}
-                                className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
-                              >
-                                {t("alwaysAllowSession")}
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent side="bottom">
-                              {t("alwaysAllowHint")}
-                            </TooltipContent>
-                          </Tooltip>
-                        )}
+                            confirming === request.id;
+                          const button = (
+                            <Button
+                              key={choice.index}
+                              size="sm"
+                              variant={
+                                choice.decision === "approved"
+                                  ? "default"
+                                  : "outline"
+                              }
+                              onClick={() =>
+                                choice.wantsFeedback
+                                  ? setFeedbackFor(request.id)
+                                  : decide(request, choice.decision)
+                              }
+                              className={`h-6 gap-1.5 rounded-[4px] px-2.5 text-[11px] ${
+                                choice.decision === "approved"
+                                  ? ""
+                                  : "text-tyba-text-muted"
+                              } ${
+                                isRedConfirm
+                                  ? "bg-tyba-red text-white hover:bg-tyba-red/90"
+                                  : ""
+                              }`}
+                            >
+                              <Kbd>{choice.index}</Kbd>
+                              {isRedConfirm
+                                ? t("confirmApprove")
+                                : t(choice.labelKey)}
+                            </Button>
+                          );
+                          return choice.decision === "approved_always" ? (
+                            <Tooltip key={choice.index}>
+                              <TooltipTrigger asChild>{button}</TooltipTrigger>
+                              <TooltipContent side="bottom">
+                                {t("alwaysAllowHint")}
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            button
+                          );
+                        })}
                       </div>
+                      {feedbackFor === request.id && (
+                        <div className="motion-safe:animate-tyba-pop-in mt-2 space-y-1.5">
+                          <Textarea
+                            autoFocus
+                            rows={2}
+                            value={feedback}
+                            onChange={(e) => setFeedback(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                                e.preventDefault();
+                                decide(request, "denied", feedback);
+                              }
+                              if (e.key === "Escape") {
+                                e.preventDefault();
+                                setFeedbackFor(null);
+                                setFeedback("");
+                              }
+                            }}
+                            placeholder={t("denyFeedbackPlaceholder")}
+                            className="min-h-0 resize-none text-[11px]"
+                          />
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => decide(request, "denied", feedback)}
+                              className="h-6 rounded-[4px] px-2.5 text-[11px]"
+                            >
+                              {t("denyAndTell")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => {
+                                setFeedbackFor(null);
+                                setFeedback("");
+                              }}
+                              className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
+                            >
+                              {t("cancel")}
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 }

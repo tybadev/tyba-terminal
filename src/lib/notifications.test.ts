@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  approvalChoices,
   availableApprovalActions,
   canAlwaysAllow,
+  choiceForKey,
   shouldAutoClosePopover,
   toNotificationItems,
 } from "./notifications";
@@ -83,5 +85,33 @@ describe("toNotificationItems", () => {
     expect(toNotificationItems([approval])).toEqual([
       { kind: "approval", id: 42, approval },
     ]);
+  });
+});
+
+describe("approvalChoices", () => {
+  test("amarelo numera 1 sim, 2 sempre, 3 nao-com-feedback", () => {
+    const choices = approvalChoices("yellow");
+    expect(choices.map((c) => [c.index, c.decision])).toEqual([
+      [1, "approved"],
+      [2, "approved_always"],
+      [3, "denied"],
+    ]);
+    expect(choices[2].wantsFeedback).toBe(true);
+  });
+
+  test("vermelho pula sempre-permitir e o nao vira 2", () => {
+    const choices = approvalChoices("red");
+    expect(choices.map((c) => [c.index, c.decision])).toEqual([
+      [1, "approved"],
+      [2, "denied"],
+    ]);
+    expect(choices.some((c) => c.decision === "approved_always")).toBe(false);
+  });
+
+  test("choiceForKey mapeia a tecla para a decisao do risco", () => {
+    expect(choiceForKey("yellow", "2")?.decision).toBe("approved_always");
+    expect(choiceForKey("red", "2")?.decision).toBe("denied");
+    expect(choiceForKey("red", "3")).toBeNull();
+    expect(choiceForKey("yellow", "x")).toBeNull();
   });
 });
