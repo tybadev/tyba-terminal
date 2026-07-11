@@ -10,7 +10,7 @@ use serde_json::json;
 use tempfile::TempDir;
 
 use super::client::{run_client, run_client_inner, RetryPlan};
-use super::server::HookServer;
+use super::server::{HookServer, MAX_INFLIGHT};
 use super::{HookAction, HookEvent};
 
 fn socket_in(dir: &TempDir, name: &str) -> PathBuf {
@@ -398,6 +398,50 @@ fn concurrent_connections_are_not_serialized() {
             v["hookSpecificOutput"]["permissionDecisionReason"],
             id.to_string()
         );
+    }
+
+    server.shutdown();
+}
+
+#[test]
+fn excesso_de_conexoes_simultaneas_e_negado_sem_travar_o_servidor() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "s.sock");
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let handler_gate = gate.clone();
+    let server = HookServer::bind(
+        &path,
+        Arc::new(move |_e: HookEvent| {
+            let (lock, cvar) = &*handler_gate;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = cvar.wait(released).unwrap();
+            }
+            HookAction::Allow { reason: None }
+        }),
+    )
+    .unwrap();
+
+    let mut blocked = Vec::new();
+    for _ in 0..MAX_INFLIGHT {
+        let p = path.clone();
+        blocked.push(thread::spawn(move || {
+            run(pretooluse_event("Bash"), Some(&p))
+        }));
+    }
+    thread::sleep(Duration::from_millis(200));
+
+    let overflow = run(pretooluse_event("Bash"), Some(&path));
+    let v: serde_json::Value = serde_json::from_str(&overflow).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+
+    let (lock, cvar) = &*gate;
+    *lock.lock().unwrap() = true;
+    cvar.notify_all();
+    for h in blocked {
+        let out = h.join().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "allow");
     }
 
     server.shutdown();

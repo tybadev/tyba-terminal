@@ -54,6 +54,7 @@ import {
 import { getThemeMode, onThemeModeChange, setThemeMode, type ThemeMode } from "./theme";
 import { NotificationsInbox } from "./components/NotificationsInbox";
 import { NotificationToaster } from "./components/NotificationToaster";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import {
@@ -2036,7 +2037,9 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={400}>
-      <NotificationToaster sessions={sessions} />
+      <ErrorBoundary region="notificações">
+        <NotificationToaster sessions={sessions} />
+      </ErrorBoundary>
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -2227,12 +2230,14 @@ export default function App() {
             <FolderOpen size={16} />
           </IconAction>
 
-          <NotificationsInbox
-            sessions={sessions}
-            approvals={approvals}
-            open={inboxOpen}
-            onOpenChange={setInboxOpen}
-          />
+          <ErrorBoundary region="notificações">
+            <NotificationsInbox
+              sessions={sessions}
+              approvals={approvals}
+              open={inboxOpen}
+              onOpenChange={setInboxOpen}
+            />
+          </ErrorBoundary>
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -2288,6 +2293,7 @@ export default function App() {
           </DropdownMenu>
         </header>
 
+        <ErrorBoundary region="avisos">
         {approvals.length > 0 && (
           <Notification
             variant={
@@ -2336,6 +2342,7 @@ export default function App() {
             </NotificationLink>
           </Notification>
         )}
+        </ErrorBoundary>
 
         <div className="flex min-h-0 flex-1">
           <>
