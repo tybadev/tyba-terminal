@@ -1383,14 +1383,13 @@ fn import_theme(
 const SCROLLBACK_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
 fn open_store(app: &AppHandle) -> session::store::Store {
-    let db_path = app
-        .path()
-        .app_data_dir()
+    let db_path = std::env::var_os("TYBA_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| app.path().app_data_dir().ok())
         .map(|dir| {
             let _ = std::fs::create_dir_all(&dir);
             dir.join("tyba.db")
-        })
-        .ok();
+        });
 
     db_path
         .and_then(|path| session::store::Store::open(&path).ok())
