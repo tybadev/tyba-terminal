@@ -12,6 +12,8 @@
 //! Análise estática de string tem limites (ex.: `git push` sem args com
 //! main em checkout) — o runner complementa com contexto de branch.
 
+pub mod tool_risk;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
