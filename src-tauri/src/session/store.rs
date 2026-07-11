@@ -31,6 +31,23 @@ CREATE TABLE IF NOT EXISTS setup_consents (
     decided_at TEXT NOT NULL,
     PRIMARY KEY (repo_root, script_hash)
 );
+CREATE TABLE IF NOT EXISTS config_consents (
+    repo_root TEXT NOT NULL,
+    config_hash TEXT NOT NULL,
+    allowed INTEGER NOT NULL,
+    decided_at TEXT NOT NULL,
+    PRIMARY KEY (repo_root, config_hash)
+);
+CREATE TABLE IF NOT EXISTS approval_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    command TEXT NOT NULL,
+    cwd TEXT,
+    risk TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    requested_at_ms INTEGER NOT NULL,
+    resolved_at_ms INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -227,6 +244,103 @@ impl Store {
         Ok(())
     }
 
+    pub fn config_consent(
+        &self,
+        repo_root: &str,
+        config_hash: &str,
+    ) -> Result<Option<bool>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT allowed FROM config_consents WHERE repo_root = ?1 AND config_hash = ?2",
+            params![repo_root, config_hash],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()
+        .map_err(StoreError::from)
+    }
+
+    pub fn set_config_consent(
+        &self,
+        repo_root: &str,
+        config_hash: &str,
+        allowed: bool,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO config_consents (repo_root, config_hash, allowed, decided_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(repo_root, config_hash) DO UPDATE SET allowed = ?3, decided_at = ?4",
+            params![repo_root, config_hash, allowed, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_approval_history(&self, entry: &ApprovalHistoryEntry) -> Result<(), StoreError> {
+        let command = redact(&entry.command);
+        let cwd = entry.cwd.as_ref().map(|c| redact(c).into_owned());
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO approval_history
+                 (session_id, command, cwd, risk, decision, requested_at_ms, resolved_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                entry.session_id,
+                command.as_ref(),
+                cwd,
+                entry.risk,
+                entry.decision,
+                entry.requested_at_ms,
+                entry.resolved_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_approval_history(
+        &self,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ApprovalHistoryEntry>, StoreError> {
+        let conn = self.conn.lock();
+        let map_row = |row: &rusqlite::Row| {
+            Ok(ApprovalHistoryEntry {
+                session_id: row.get(0)?,
+                command: row.get(1)?,
+                cwd: row.get(2)?,
+                risk: row.get(3)?,
+                decision: row.get(4)?,
+                requested_at_ms: row.get(5)?,
+                resolved_at_ms: row.get(6)?,
+            })
+        };
+        let entries = match session_id {
+            Some(sid) => {
+                let mut stmt = conn.prepare(
+                    "SELECT session_id, command, cwd, risk, decision, requested_at_ms, resolved_at_ms
+                     FROM approval_history WHERE session_id = ?1
+                     ORDER BY id DESC LIMIT ?2",
+                )?;
+                let rows = stmt
+                    .query_map(params![sid, limit as i64], map_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            }
+            None => {
+                let mut stmt = conn.prepare(
+                    "SELECT session_id, command, cwd, risk, decision, requested_at_ms, resolved_at_ms
+                     FROM approval_history
+                     ORDER BY id DESC LIMIT ?1",
+                )?;
+                let rows = stmt
+                    .query_map(params![limit as i64], map_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            }
+        };
+        Ok(entries)
+    }
+
     pub fn save_layout(&self, rows: &LayoutRows) -> Result<(), StoreError> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
@@ -381,6 +495,16 @@ impl Store {
     }
 }
 
+pub struct ApprovalHistoryEntry {
+    pub session_id: String,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub risk: String,
+    pub decision: String,
+    pub requested_at_ms: u64,
+    pub resolved_at_ms: u64,
+}
+
 struct RawSession {
     id: String,
     kind: String,
@@ -519,5 +643,113 @@ mod tests {
 
         store.set_setup_consent("/repo", "abc", false).unwrap();
         assert_eq!(store.setup_consent("/repo", "abc").unwrap(), Some(false));
+    }
+
+    #[test]
+    fn config_consent_is_scoped_to_repo_and_hash() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.config_consent("/repo", "abc").unwrap(), None);
+
+        store.set_config_consent("/repo", "abc", true).unwrap();
+        assert_eq!(store.config_consent("/repo", "abc").unwrap(), Some(true));
+        assert_eq!(
+            store.config_consent("/repo", "novo-hash").unwrap(),
+            None,
+            "config mudou: consent antigo não vale"
+        );
+        assert_eq!(store.config_consent("/outro", "abc").unwrap(), None);
+
+        store.set_config_consent("/repo", "abc", false).unwrap();
+        assert_eq!(store.config_consent("/repo", "abc").unwrap(), Some(false));
+    }
+
+    fn approval(session_id: &str, command: &str, requested_at_ms: u64) -> ApprovalHistoryEntry {
+        ApprovalHistoryEntry {
+            session_id: session_id.to_string(),
+            command: command.to_string(),
+            cwd: Some("/repo".to_string()),
+            risk: "red".to_string(),
+            decision: "approved".to_string(),
+            requested_at_ms,
+            resolved_at_ms: requested_at_ms + 10,
+        }
+    }
+
+    #[test]
+    fn approval_history_round_trips() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_approval_history(&approval("s1", "git push", 100))
+            .unwrap();
+
+        let list = store.list_approval_history(None, 10).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].session_id, "s1");
+        assert_eq!(list[0].command, "git push");
+        assert_eq!(list[0].cwd, Some("/repo".to_string()));
+        assert_eq!(list[0].risk, "red");
+        assert_eq!(list[0].decision, "approved");
+        assert_eq!(list[0].requested_at_ms, 100);
+        assert_eq!(list[0].resolved_at_ms, 110);
+    }
+
+    #[test]
+    fn approval_history_is_filtered_by_session() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_approval_history(&approval("s1", "cmd a", 100))
+            .unwrap();
+        store
+            .insert_approval_history(&approval("s2", "cmd b", 101))
+            .unwrap();
+
+        let only_s1 = store.list_approval_history(Some("s1"), 10).unwrap();
+        assert_eq!(only_s1.len(), 1);
+        assert_eq!(only_s1[0].session_id, "s1");
+        assert_eq!(only_s1[0].command, "cmd a");
+    }
+
+    #[test]
+    fn approval_history_respects_limit_and_most_recent_first() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_approval_history(&approval("s1", "first", 100))
+            .unwrap();
+        store
+            .insert_approval_history(&approval("s1", "second", 200))
+            .unwrap();
+        store
+            .insert_approval_history(&approval("s1", "third", 300))
+            .unwrap();
+
+        let list = store.list_approval_history(None, 2).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].command, "third");
+        assert_eq!(list[1].command, "second");
+    }
+
+    #[test]
+    fn approval_history_redacts_secrets_before_persisting() {
+        let store = Store::open_in_memory().unwrap();
+        let mut entry = approval(
+            "s1",
+            "deploy --key sk-abcdef1234567890ABCDEFghijkl now",
+            100,
+        );
+        entry.cwd = Some("/repo AKIAIOSFODNN7EXAMPLE dir".to_string());
+        store.insert_approval_history(&entry).unwrap();
+
+        let conn = store.conn.lock();
+        let (command, cwd): (String, Option<String>) = conn
+            .query_row(
+                "SELECT command, cwd FROM approval_history WHERE session_id = ?1",
+                params!["s1"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(!command.contains("sk-abcdef1234567890ABCDEFghijkl"));
+        assert!(command.contains("[REDACTED]"));
+        assert!(!cwd.as_deref().unwrap().contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(cwd.as_deref().unwrap().contains("[REDACTED]"));
     }
 }

@@ -2,9 +2,11 @@ pub mod agent;
 pub mod approvals;
 pub mod docker;
 pub mod editor;
+pub mod hook_ipc;
 pub mod layout;
 pub mod pty;
 pub mod repo;
+pub mod repo_config;
 pub mod rich_input;
 pub mod sandbox;
 pub mod session;
@@ -37,6 +39,7 @@ struct AppState {
     repo_reconcile: std::sync::mpsc::Sender<()>,
     rich_input_submit: parking_lot::Mutex<()>,
     worktree_files: rich_input::FilesCache,
+    hook_servers: Arc<agent::session::HookServerRegistry>,
 }
 
 fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::PathBuf> {
@@ -89,8 +92,9 @@ fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
     }
 }
 
-fn dispose_all(state: &State<'_, AppState>, ids: &[SessionId]) {
+fn dispose_all(app: &AppHandle, state: &State<'_, AppState>, ids: &[SessionId]) {
     for id in ids {
+        teardown_agent_session(app, state, *id);
         state.sessions.dispose(&state.pty_pool, *id);
     }
 }
@@ -100,6 +104,7 @@ fn session_exited(app: &AppHandle, id: SessionId) {
     let Some(session) = state.sessions.get(id) else {
         return;
     };
+    teardown_agent_session(app, &state, id);
     if matches!(session.kind, SessionKind::Shell) {
         state.sessions.dispose(&state.pty_pool, id);
         let _ = state.layout.session_disposed(id);
@@ -160,6 +165,21 @@ fn run_setup_if_consented(app: &AppHandle, state: &AppState, session: &Session) 
         .ok();
 }
 
+fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
+    state.hook_servers.shutdown(id);
+    for request in state.approvals.expire_session(app, id) {
+        agent::session::record_history(
+            &state.store,
+            request.session_id,
+            request.command,
+            request.cwd,
+            request.risk,
+            "expired",
+            request.requested_at_ms,
+        );
+    }
+}
+
 #[tauri::command]
 fn create_session(
     app: AppHandle,
@@ -167,12 +187,25 @@ fn create_session(
     opts: CreateSessionOpts,
 ) -> Result<Session, String> {
     let handle = app.clone();
-    let session = state
-        .sessions
-        .create_shell_session(app.clone(), &state.pty_pool, opts, move |id| {
-            session_exited(&handle, id)
-        })
-        .map_err(|e| e.to_string())?;
+    let session = match &opts.kind {
+        SessionKind::Agent { .. } => {
+            let ctx = agent::session::AgentSessionCtx {
+                app: app.clone(),
+                sessions: Arc::clone(&state.sessions),
+                pty_pool: Arc::clone(&state.pty_pool),
+                approvals: Arc::clone(&state.approvals),
+                store: Arc::clone(&state.store),
+                servers: Arc::clone(&state.hook_servers),
+            };
+            agent::session::create_agent_session(&ctx, opts, move |id| session_exited(&handle, id))?
+        }
+        SessionKind::Shell => state
+            .sessions
+            .create_shell_session(app.clone(), &state.pty_pool, opts, move |id| {
+                session_exited(&handle, id)
+            })
+            .map_err(|e| e.to_string())?,
+    };
     run_setup_if_consented(&app, &state, &session);
     Ok(session)
 }
@@ -635,6 +668,7 @@ fn list_sessions(state: State<'_, AppState>) -> Vec<Session> {
 
 #[tauri::command]
 fn dispose_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
+    teardown_agent_session(&app, &state, id);
     state.sessions.dispose(&state.pty_pool, id);
     let _ = state.layout.session_disposed(id);
     emit_layout(&app, &state);
@@ -677,7 +711,7 @@ fn close_workspace(
         .layout
         .close_workspace(id)
         .map_err(|e| e.to_string())?;
-    dispose_all(&state, &bound);
+    dispose_all(&app, &state, &bound);
     emit_layout(&app, &state);
     Ok(())
 }
@@ -1242,7 +1276,67 @@ fn resolve_approval(
     id: u64,
     decision: Decision,
 ) -> Result<(), String> {
-    state.approvals.resolve(&app, id, decision)
+    let request = state.approvals.resolve(&app, id, decision)?;
+    agent::session::record_history(
+        &state.store,
+        request.session_id,
+        request.command,
+        request.cwd,
+        request.risk,
+        agent::session::decision_label(decision),
+        request.requested_at_ms,
+    );
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct AgentConfigInfo {
+    hash: String,
+    default_agent: Option<String>,
+    env_allow: Vec<String>,
+    consent: Option<bool>,
+}
+
+#[tauri::command]
+fn agent_repo_config(
+    state: State<'_, AppState>,
+    repo_root: String,
+) -> Result<Option<AgentConfigInfo>, String> {
+    let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
+    let root = repo::toplevel(&param)
+        .map(|t| repo::canonicalize_or(&t))
+        .ok_or("fora de repositório git")?;
+    let Some((config, hash)) = repo_config::load(&root).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let consent = state
+        .store
+        .config_consent(&root.to_string_lossy(), &hash)
+        .ok()
+        .flatten();
+    Ok(Some(AgentConfigInfo {
+        hash,
+        default_agent: config.default_agent,
+        env_allow: config.env_allow,
+        consent,
+    }))
+}
+
+#[tauri::command]
+fn set_agent_config_consent(
+    state: State<'_, AppState>,
+    repo_root: String,
+    hash: String,
+    allowed: bool,
+) -> Result<(), String> {
+    let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
+    let root = repo::toplevel(&param)
+        .map(|t| repo::canonicalize_or(&t))
+        .ok_or("fora de repositório git")?;
+    state
+        .store
+        .set_config_consent(&root.to_string_lossy(), &hash, allowed)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1361,6 +1455,7 @@ pub fn run() {
                 repo_reconcile: reconcile_tx.clone(),
                 rich_input_submit: parking_lot::Mutex::new(()),
                 worktree_files: rich_input::FilesCache::default(),
+                hook_servers: Arc::new(agent::session::HookServerRegistry::default()),
             });
 
             std::thread::Builder::new()
@@ -1449,6 +1544,8 @@ pub fn run() {
             request_approval,
             list_approvals,
             resolve_approval,
+            agent_repo_config,
+            set_agent_config_consent,
             list_themes,
             get_theme_state,
             set_theme_mode,

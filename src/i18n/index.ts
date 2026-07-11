@@ -159,6 +159,22 @@ const resources = {
       worktreeDefaultPref: "Novas sessões isoladas por padrão",
       worktreeDefaultHint:
         "O toggle de worktree do diálogo de Nova Sessão já abre ligado.",
+      worktreeAgentMode: "Subir um agente neste worktree",
+      worktreeAgentRunner: "Agente",
+      worktreeAgentCustom: "Custom",
+      worktreeAgentPhase5: "Disponível na Fase 5",
+      worktreeAgentPrompt: "Prompt inicial (opcional)",
+      worktreeAgentPromptPlaceholder: "O que o agente deve fazer primeiro?",
+      agentConsentTitle: "Este repo pede variáveis do seu ambiente",
+      agentConsentBody:
+        "O .tyba/config.toml deste repo pede que o agente receba estas variáveis do SEU ambiente. Sem permitir, a sessão sobe só com o baseline padrão.",
+      agentConsentAllow: "Permitir",
+      agentConsentSkip: "Agora não",
+      agentReadyTimeoutTitle: "O agente não confirmou os hooks",
+      agentReadyTimeoutBody:
+        "O prompt inicial ficou no composer desta sessão — revise e envie manualmente.",
+      sessionAwaitingInput: "aguardando input",
+      dismiss: "Dispensar",
       chipsEditorTitle: "Chips da barra",
       chipsEditorHint:
         "Arraste para reordenar ou mover entre as zonas. Ocultos não aparecem na barra.",
@@ -494,6 +510,22 @@ const resources = {
       worktreeDefaultPref: "Isolate new sessions by default",
       worktreeDefaultHint:
         "The worktree toggle in the New Session dialog starts on.",
+      worktreeAgentMode: "Start an agent in this worktree",
+      worktreeAgentRunner: "Agent",
+      worktreeAgentCustom: "Custom",
+      worktreeAgentPhase5: "Available in Phase 5",
+      worktreeAgentPrompt: "Initial prompt (optional)",
+      worktreeAgentPromptPlaceholder: "What should the agent do first?",
+      agentConsentTitle: "This repo asks for variables from your environment",
+      agentConsentBody:
+        "This repo's .tyba/config.toml asks for the agent to receive these variables from YOUR environment. Without allowing, the session starts with the default baseline only.",
+      agentConsentAllow: "Allow",
+      agentConsentSkip: "Not now",
+      agentReadyTimeoutTitle: "The agent didn't confirm the hooks",
+      agentReadyTimeoutBody:
+        "The initial prompt was left in this session's composer — review and send it manually.",
+      sessionAwaitingInput: "awaiting input",
+      dismiss: "Dismiss",
       chipsEditorTitle: "Bar chips",
       chipsEditorHint:
         "Drag to reorder or move between zones. Hidden chips don't show in the bar.",
