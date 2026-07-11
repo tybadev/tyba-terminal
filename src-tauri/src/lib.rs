@@ -464,6 +464,16 @@ async fn worktree_merge_into_base(
     worktree::ops::merge_into_base(&wt.path, strategy, message.as_deref())
 }
 
+async fn forge_blocking<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("tarefa de forja falhou: {e}"))?
+}
+
 #[tauri::command]
 async fn forge_status(
     state: State<'_, AppState>,
@@ -472,7 +482,8 @@ async fn forge_status(
     let session = state.sessions.get(id).ok_or("sessão não existe")?;
     let wt = session_worktree(&state, id)?;
     let root = session.repo_root.unwrap_or_else(|| wt.path.clone());
-    Ok(forge::status(&root, Some(&wt.branch)))
+    let branch = wt.branch.clone();
+    forge_blocking(move || Ok(forge::status(&root, Some(&branch)))).await
 }
 
 #[tauri::command]
@@ -481,7 +492,9 @@ async fn forge_pr_for_session(
     id: SessionId,
 ) -> Result<Option<forge::PullRequest>, String> {
     let wt = session_worktree(&state, id)?;
-    forge::pr_for_branch(&wt.path, &wt.branch)
+    let path = wt.path.clone();
+    let branch = wt.branch.clone();
+    forge_blocking(move || forge::pr_for_branch(&path, &branch)).await
 }
 
 #[tauri::command]
@@ -491,7 +504,8 @@ async fn forge_pr_comments(
     number: u64,
 ) -> Result<Vec<forge::ReviewComment>, String> {
     let wt = session_worktree(&state, id)?;
-    forge::pr_comments(&wt.path, number)
+    let path = wt.path.clone();
+    forge_blocking(move || forge::pr_comments(&path, number)).await
 }
 
 #[tauri::command]
@@ -502,7 +516,8 @@ async fn forge_create_pr(
     body: String,
 ) -> Result<forge::PullRequest, String> {
     let wt = session_worktree(&state, id)?;
-    forge::create_pr(&wt.path, &title, &body)
+    let path = wt.path.clone();
+    forge_blocking(move || forge::create_pr(&path, &title, &body)).await
 }
 
 /// Abre um arquivo do worktree como TEXTO — nunca "executa" o arquivo.

@@ -10,6 +10,8 @@ static SECRETS: LazyLock<Regex> = LazyLock::new(|| {
         r"(?x)
         (AKIA|ASIA)[0-9A-Z]{16}
         | sk-[A-Za-z0-9_-]{20,}
+        | gh[pousr]_[A-Za-z0-9]{20,}
+        | glpat-[A-Za-z0-9_-]{20,}
         | eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+
         ",
     )
@@ -23,6 +25,19 @@ pub fn redact(input: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacts_forge_tokens() {
+        for token in [
+            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            "glpat-abcdefghij1234567890xy",
+        ] {
+            let line = format!("remote https://x:{token}@host/r");
+            let out = redact(&line);
+            assert!(!out.contains(token), "{out}");
+        }
+    }
 
     #[test]
     fn passes_clean_text_through_without_allocating() {

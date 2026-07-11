@@ -15,6 +15,7 @@ import { disposeSession, worktreeRemove, type Session } from "../lib/ipc";
 interface Props {
   session: Session;
   kind: "pr" | "merge";
+  hasUncommittedWork: boolean;
   open: boolean;
   onClose: () => void;
   onRemoved: () => void;
@@ -23,6 +24,7 @@ interface Props {
 export function PostDeliveryDialog({
   session,
   kind,
+  hasUncommittedWork,
   open,
   onClose,
   onRemoved,
@@ -44,8 +46,8 @@ export function PostDeliveryDialog({
     setBusy(true);
     setError(null);
     try {
-      await disposeSession(session.id);
       await worktreeRemove(path, true, true);
+      await disposeSession(session.id);
       onRemoved();
     } catch (e) {
       setError(String(e));
@@ -76,6 +78,12 @@ export function PostDeliveryDialog({
               : t("postDeliveryBodyMerge")}
           </DialogDescription>
         </DialogHeader>
+
+        {armed && hasUncommittedWork && (
+          <div className="rounded-[4px] border border-tyba-amber/40 bg-tyba-amber/10 p-2 text-[12px] text-tyba-amber">
+            {t("postDeliveryUncommittedWarning")}
+          </div>
+        )}
 
         {error && (
           <div className="rounded-[4px] border border-tyba-red/40 bg-tyba-red/10 p-2 text-[12px] text-tyba-red">
@@ -108,7 +116,9 @@ export function PostDeliveryDialog({
             {busy
               ? t("postDeliveryRemoving")
               : armed
-                ? t("worktreeRemoveConfirm")
+                ? hasUncommittedWork
+                  ? t("worktreeRemoveConfirmRisky")
+                  : t("worktreeRemoveConfirm")
                 : t("postDeliveryRemove")}
           </Button>
         </div>

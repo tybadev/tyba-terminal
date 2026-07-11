@@ -349,7 +349,10 @@ pub fn merge_into_base(
         ));
     }
 
-    let (tree, conflicts) = merge_tree(&main, &preview.base_branch, &preview.source_branch)?;
+    let base_head = super::head_sha(&main)?;
+    let source_head = super::head_sha(worktree)?;
+
+    let (tree, conflicts) = merge_tree(&main, &base_head, &source_head)?;
     if !conflicts.is_empty() {
         return Err(format!(
             "merge recusado: conflito em {}",
@@ -357,8 +360,6 @@ pub fn merge_into_base(
         ));
     }
 
-    let base_head = super::head_sha(&main)?;
-    let source_head = super::head_sha(worktree)?;
     let message = message
         .map(str::trim)
         .filter(|m| !m.is_empty())
@@ -384,6 +385,13 @@ pub fn merge_into_base(
         return Err("git commit-tree não produziu commit".into());
     }
 
+    let now_head = super::head_sha(&main)?;
+    if now_head != base_head {
+        return Err(format!(
+            "a branch base ({}) avançou durante o merge — revise e tente de novo",
+            preview.base_branch
+        ));
+    }
     run_git(
         {
             let mut c = git_in(&main);
@@ -391,7 +399,13 @@ pub fn merge_into_base(
             c
         },
         "git merge --ff-only",
-    )?;
+    )
+    .map_err(|_| {
+        format!(
+            "a branch base ({}) mudou durante o merge — nada foi alterado, tente de novo",
+            preview.base_branch
+        )
+    })?;
     Ok(merged)
 }
 
@@ -551,6 +565,35 @@ mod merge_tests {
         );
         assert!(!super::super::is_dirty(&fx.repo).unwrap());
         assert!(!fx.repo.join(".git/MERGE_HEAD").exists());
+    }
+
+    #[test]
+    fn merge_preserves_base_commits_made_after_the_worktree_forked() {
+        let fx = fixture("toctou");
+        work(&fx, "a\nb\nc\nd\n", "adiciona d");
+
+        fs::write(fx.repo.join("novo.txt"), "commit da base\n").unwrap();
+        git(&fx.repo, &["add", "-A"]);
+        git(&fx.repo, &["commit", "-qm", "base avancou"]);
+
+        merge_into_base(&fx.worktree, MergeStrategy::Squash, None)
+            .expect("merge de source que não conflita com o commit novo da base");
+
+        assert!(
+            fx.repo.join("novo.txt").exists(),
+            "o commit da base foi perdido no merge"
+        );
+        let head = super::super::head_sha(&fx.repo).unwrap();
+        let parents = {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&fx.repo)
+                .args(["rev-list", "--parents", "-n", "1", &head])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        assert!(!parents.is_empty());
     }
 
     #[test]

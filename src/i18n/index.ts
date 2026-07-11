@@ -378,6 +378,7 @@ const resources = {
       alwaysAllowHint:
         "Aprova automaticamente comandos idênticos nesta sessão de agente. Vale só enquanto ela estiver aberta.",
       deliveryTitle: "Entregar",
+      deliveryStatusError: "Erro ao consultar a forja — tentar de novo",
       deliveryHintNoForge:
         "Nenhuma forja detectada (o remote não é GitHub nem GitLab) — só merge local disponível.",
       deliveryOpenPr: "Abrir PR",
@@ -446,6 +447,8 @@ const resources = {
       postDeliveryKeep: "Manter",
       postDeliveryRemove: "Remover worktree e encerrar sessão",
       postDeliveryRemoving: "Removendo…",
+      postDeliveryUncommittedWarning:
+        "Há trabalho não-commitado no worktree que NÃO foi pro PR/merge — remover vai descartá-lo permanentemente.",
     },
   },
   en: {
@@ -810,6 +813,7 @@ const resources = {
       alwaysAllowHint:
         "Automatically approves identical commands in this agent session. Only applies while it stays open.",
       deliveryTitle: "Deliver",
+      deliveryStatusError: "Failed to query the forge — retry",
       deliveryHintNoForge:
         "No forge detected (origin isn't GitHub or GitLab) — only local merge is available.",
       deliveryOpenPr: "Open PR",
@@ -878,6 +882,8 @@ const resources = {
       postDeliveryKeep: "Keep",
       postDeliveryRemove: "Remove worktree and close session",
       postDeliveryRemoving: "Removing…",
+      postDeliveryUncommittedWarning:
+        "There is uncommitted work in the worktree that did NOT go into the PR/merge — removing will discard it permanently.",
     },
   },
 } as const;

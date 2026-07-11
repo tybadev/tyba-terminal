@@ -46,8 +46,27 @@ fn allowed(key: &str) -> bool {
         || FORGE_ENV_PROXY.contains(&key)
 }
 
+fn absolute_path_only(path: &str) -> String {
+    std::env::split_paths(path)
+        .filter(|p| p.is_absolute())
+        .collect::<Vec<_>>()
+        .iter()
+        .filter_map(|p| p.to_str())
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 pub fn filter_env(vars: impl Iterator<Item = (String, String)>) -> Vec<(String, String)> {
-    let mut env: Vec<(String, String)> = vars.filter(|(k, _)| allowed(k)).collect();
+    let mut env: Vec<(String, String)> = vars
+        .filter(|(k, _)| allowed(k))
+        .map(|(k, v)| {
+            if k == "PATH" {
+                (k, absolute_path_only(&v))
+            } else {
+                (k, v)
+            }
+        })
+        .collect();
     for (k, v) in FORGE_ENV_FORCED {
         env.retain(|(key, _)| key != k);
         env.push((k.into(), v.into()));
@@ -68,7 +87,8 @@ impl Output {
         if text.is_empty() {
             "sem detalhes na saída de erro".into()
         } else {
-            text.lines().take(6).collect::<Vec<_>>().join(" / ")
+            let joined = text.lines().take(6).collect::<Vec<_>>().join(" / ");
+            crate::session::redact::redact(&joined).into_owned()
         }
     }
 }
@@ -147,6 +167,10 @@ pub fn run(
         std::thread::sleep(POLL);
     };
 
+    if status.is_some() {
+        reap_group(&child);
+    }
+
     if let Some(handle) = stdin_handle {
         let _ = handle.join();
     }
@@ -165,6 +189,20 @@ pub fn run(
         stdout,
         stderr,
     })
+}
+
+fn reap_group(child: &std::process::Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as i32;
+        unsafe {
+            libc::killpg(pid, libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child;
+    }
 }
 
 fn kill_group(child: &mut std::process::Child) {
@@ -218,6 +256,33 @@ mod tests {
         assert!(env
             .iter()
             .any(|(k, v)| k == "GIT_TERMINAL_PROMPT" && v == "0"));
+    }
+
+    #[test]
+    fn env_filter_strips_relative_path_components() {
+        let vars = [("PATH", "/usr/bin:.:node_modules/.bin:/opt/bin")];
+        let env = filter_env(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        let path = env
+            .iter()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        assert_eq!(path, "/usr/bin:/opt/bin");
+        assert!(!path.contains('.') || path.starts_with('/'));
+    }
+
+    #[test]
+    fn stderr_message_redacts_secrets() {
+        let out = Output {
+            ok: false,
+            stdout: Vec::new(),
+            stderr: "fatal: https://x-access-token:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x/y".into(),
+        };
+        let msg = out.stderr_message();
+        assert!(
+            !msg.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+            "{msg}"
+        );
     }
 
     #[test]

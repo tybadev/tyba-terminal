@@ -147,6 +147,12 @@ pub fn create_pr(worktree: &Path, title: &str, body: &str) -> Result<PullRequest
     if title.trim().is_empty() {
         return Err("o título do PR não pode ser vazio".into());
     }
+    let branch = current_branch(worktree)?;
+    if matches!(branch.as_str(), "main" | "master") {
+        return Err(format!(
+            "recusado pelo core: abrir PR daria push da branch {branch} — nunca a partir de main/master"
+        ));
+    }
     match kind_of(worktree)? {
         ForgeKind::GitHub => github::create_pr(worktree, title, body),
         ForgeKind::GitLab => gitlab::create_pr(worktree, title, body),

@@ -26,6 +26,7 @@ import { PostDeliveryDialog } from "./PostDeliveryDialog";
 
 interface Props {
   session: Session;
+  hasUncommittedWork: boolean;
   onSendToAgent: (prompt: string) => Promise<void>;
   onClose: () => void;
 }
@@ -36,7 +37,12 @@ const CHECK_ICON = {
   pending: <CircleNotch size={13} className="animate-spin text-tyba-yellow" />,
 };
 
-export function DeliverySection({ session, onSendToAgent, onClose }: Props) {
+export function DeliverySection({
+  session,
+  hasUncommittedWork,
+  onSendToAgent,
+  onClose,
+}: Props) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<ForgeStatus | null | undefined>(
     undefined,
@@ -47,11 +53,16 @@ export function DeliverySection({ session, onSendToAgent, onClose }: Props) {
   const [postDelivery, setPostDelivery] = useState<"pr" | "merge" | null>(
     null,
   );
+  const [statusError, setStatusError] = useState(false);
 
   const refresh = useCallback(() => {
+    setStatusError(false);
     void fetchForgeStatus(session.id)
       .then(setStatus)
-      .catch(() => setStatus(null));
+      .catch(() => {
+        setStatus(null);
+        setStatusError(true);
+      });
     void forgePrForSession(session.id)
       .then(setPr)
       .catch(() => setPr(null));
@@ -71,10 +82,19 @@ export function DeliverySection({ session, onSendToAgent, onClose }: Props) {
       <div className="flex h-10 shrink-0 items-center gap-2 px-4">
         <span className="tyba-label">{t("deliveryTitle")}</span>
         <div className="flex-1" />
-        {status === null && (
+        {status === null && !statusError && (
           <span className="text-[11px] text-tyba-text-faint">
             {t("deliveryHintNoForge")}
           </span>
+        )}
+        {status === null && statusError && (
+          <button
+            type="button"
+            onClick={refresh}
+            className="text-[11px] text-tyba-amber hover:underline"
+          >
+            {t("deliveryStatusError")}
+          </button>
         )}
         {status && (
           <Button
@@ -158,6 +178,7 @@ export function DeliverySection({ session, onSendToAgent, onClose }: Props) {
       <PostDeliveryDialog
         session={session}
         kind={postDelivery ?? "pr"}
+        hasUncommittedWork={hasUncommittedWork}
         open={postDelivery !== null}
         onClose={() => setPostDelivery(null)}
         onRemoved={() => {

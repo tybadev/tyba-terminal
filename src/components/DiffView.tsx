@@ -1052,6 +1052,10 @@ export function DiffView({
 
       <DeliverySection
         session={session}
+        hasUncommittedWork={
+          (diff?.staged_files.length ?? 0) > 0 ||
+          (diff?.unstaged_files.length ?? 0) > 0
+        }
         onSendToAgent={onSendToAgent}
         onClose={onClose}
       />
