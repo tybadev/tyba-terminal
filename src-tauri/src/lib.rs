@@ -443,6 +443,26 @@ async fn worktree_push(state: State<'_, AppState>, id: SessionId) -> Result<Stri
     worktree::ops::push(&wt.path)
 }
 
+#[tauri::command]
+async fn worktree_merge_preview(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<worktree::ops::MergePreview, String> {
+    let wt = session_worktree(&state, id)?;
+    worktree::ops::merge_preview(&wt.path)
+}
+
+#[tauri::command]
+async fn worktree_merge_into_base(
+    state: State<'_, AppState>,
+    id: SessionId,
+    strategy: worktree::ops::MergeStrategy,
+    message: Option<String>,
+) -> Result<String, String> {
+    let wt = session_worktree(&state, id)?;
+    worktree::ops::merge_into_base(&wt.path, strategy, message.as_deref())
+}
+
 /// Abre um arquivo do worktree como TEXTO — nunca "executa" o arquivo.
 /// `open <arquivo>`/`xdg-open` rodariam um script/app deixado por um
 /// agente no worktree com um clique; aqui só editor configurado ou
@@ -1536,6 +1556,8 @@ pub fn run() {
             worktree_discard,
             worktree_commit,
             worktree_push,
+            worktree_merge_preview,
+            worktree_merge_into_base,
             open_worktree_file,
             repo_snapshots,
             session_cwd,
