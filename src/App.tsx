@@ -107,7 +107,7 @@ import {
   listApprovals,
   listSessions,
   newWindow,
-  onAgentReady,
+  onAnyAgentReady,
   onApprovalRequested,
   onApprovalResolved,
   onLayoutChanged,
@@ -352,6 +352,7 @@ export default function App() {
   const [newSessionIsolate, setNewSessionIsolate] = useState(false);
   const [worktreeDir, setWorktreeDir] = useState<string | null>(null);
   const [worktreeDefault, setWorktreeDefault] = useState(false);
+  const agentReadyCancels = useRef<Map<string, () => void>>(new Map());
   const [agentReadyWarnings, setAgentReadyWarnings] = useState<
     Record<SessionId, boolean>
   >({});
@@ -1086,9 +1087,32 @@ export default function App() {
       group: string | null | undefined,
       prompt: string,
     ) => {
-      const session = await createSession(
-        buildAgentSessionOpts({ cwd, task: name }),
-      );
+      const readyEarly = new Set<string>();
+      let onEarlyReady: ((id: string) => void) | null = null;
+      let unlistenEarly: (() => void) | null = null;
+      let earlyDisposed = false;
+      void onAnyAgentReady((id) => {
+        readyEarly.add(id);
+        onEarlyReady?.(id);
+      }).then((un) => {
+        if (earlyDisposed) un();
+        else unlistenEarly = un;
+      });
+      const disposeEarly = () => {
+        earlyDisposed = true;
+        unlistenEarly?.();
+        unlistenEarly = null;
+      };
+
+      let session: Session;
+      try {
+        session = await createSession(
+          buildAgentSessionOpts({ cwd, task: name }),
+        );
+      } catch (e) {
+        disposeEarly();
+        throw e;
+      }
       setSessions((prev) => [...prev, session]);
       try {
         const workspaceId = await createWorkspace(
@@ -1098,37 +1122,55 @@ export default function App() {
         );
         if (group) await setWorkspaceGroup(workspaceId, group);
       } catch {
+        disposeEarly();
         void disposeSession(session.id).catch(() => {});
         return;
       }
       const trimmedPrompt = prompt.trim();
-      if (!trimmedPrompt) return;
-      scheduleAgentReadyPrompt({
+      if (!trimmedPrompt) {
+        disposeEarly();
+        return;
+      }
+      const cancel = scheduleAgentReadyPrompt({
         onReady: (handler) => {
-          let unlisten: (() => void) | null = null;
-          let cancelled = false;
-          void onAgentReady(session.id, handler).then((un) => {
-            if (cancelled) un();
-            else unlisten = un;
-          });
-          return () => {
-            cancelled = true;
-            unlisten?.();
-          };
+          if (readyEarly.has(session.id)) handler();
+          else
+            onEarlyReady = (id) => {
+              if (id === session.id) handler();
+            };
+          return disposeEarly;
         },
         paste: (submit) => {
+          agentReadyCancels.current.delete(session.id);
           void typeIntoSession(session.id, trimmedPrompt, submit).catch(
             () => {},
           );
         },
-        onTimeout: () =>
-          setAgentReadyWarnings((prev) => ({ ...prev, [session.id]: true })),
+        onTimeout: () => {
+          agentReadyCancels.current.delete(session.id);
+          setAgentReadyWarnings((prev) => ({ ...prev, [session.id]: true }));
+        },
         setTimeout: (cb, ms) => window.setTimeout(cb, ms),
         clearTimeout: (h) => window.clearTimeout(h),
+      });
+      agentReadyCancels.current.set(session.id, () => {
+        cancel();
+        disposeEarly();
       });
     },
     [typeIntoSession],
   );
+
+  useEffect(() => {
+    for (const s of sessions) {
+      if (!isFinishedStatus(s.status)) continue;
+      const cancel = agentReadyCancels.current.get(s.id);
+      if (cancel) {
+        cancel();
+        agentReadyCancels.current.delete(s.id);
+      }
+    }
+  }, [sessions]);
 
   const newSessionInGroup = useCallback(
     (group: string) => {

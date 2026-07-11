@@ -26,6 +26,10 @@ pub trait AgentRunner: Send + Sync {
     fn supports_hooks(&self) -> bool {
         false
     }
+
+    fn needs_network(&self) -> bool {
+        false
+    }
 }
 
 pub struct ClaudeCodeRunner;
@@ -55,6 +59,10 @@ impl AgentRunner for ClaudeCodeRunner {
     fn supports_hooks(&self) -> bool {
         true
     }
+
+    fn needs_network(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -80,6 +88,11 @@ mod tests {
     #[test]
     fn claude_supports_hooks() {
         assert!(ClaudeCodeRunner.supports_hooks());
+    }
+
+    #[test]
+    fn claude_needs_network() {
+        assert!(ClaudeCodeRunner.needs_network());
     }
 
     #[test]

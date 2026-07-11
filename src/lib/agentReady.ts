@@ -14,28 +14,31 @@ export function scheduleAgentReadyPrompt(
 ): () => void {
   const timeoutMs = deps.timeoutMs ?? AGENT_READY_TIMEOUT_MS;
   let settled = false;
+  let handle: number | null = null;
   let unsubscribe: () => void = () => {};
 
   unsubscribe = deps.onReady(() => {
     if (settled) return;
     settled = true;
-    deps.clearTimeout(handle);
+    if (handle !== null) deps.clearTimeout(handle);
     unsubscribe();
     deps.paste(true);
   });
 
-  const handle = deps.setTimeout(() => {
-    if (settled) return;
-    settled = true;
-    unsubscribe();
-    deps.paste(false);
-    deps.onTimeout();
-  }, timeoutMs);
+  if (!settled) {
+    handle = deps.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      unsubscribe();
+      deps.paste(false);
+      deps.onTimeout();
+    }, timeoutMs);
+  }
 
   return () => {
     if (settled) return;
     settled = true;
-    deps.clearTimeout(handle);
+    if (handle !== null) deps.clearTimeout(handle);
     unsubscribe();
   };
 }

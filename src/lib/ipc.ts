@@ -190,13 +190,12 @@ export const setAgentConfigConsent = (
   allowed: boolean,
 ) => invoke<void>("set_agent_config_consent", { repoRoot, hash, allowed });
 
-export const onAgentReady = (
-  id: SessionId,
-  handler: () => void,
+export const onAnyAgentReady = (
+  handler: (id: SessionId) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ session_id: SessionId }>("agent://ready", (e) => {
-    if (e.payload.session_id === id) handler();
-  });
+  listen<{ session_id: SessionId }>("agent://ready", (e) =>
+    handler(e.payload.session_id),
+  );
 
 // --- base64 <-> bytes (chunks de PTY podem quebrar UTF-8 no meio) ---
 

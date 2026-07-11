@@ -149,7 +149,7 @@ pub fn classify_risk(command: &str) -> RiskLevel {
     RiskLevel::Yellow
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)

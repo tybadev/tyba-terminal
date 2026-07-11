@@ -50,6 +50,26 @@ fn normalize_lexical(path: &Path) -> Option<PathBuf> {
     Some(result)
 }
 
+fn existing_prefix_canonical(path: &Path) -> Option<PathBuf> {
+    let mut current = path;
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(current) {
+            return Some(canonical);
+        }
+        current = current.parent()?;
+    }
+}
+
+fn escapes_via_symlink(resolved: &Path, worktree_root: &Path) -> bool {
+    let Ok(canonical_root) = std::fs::canonicalize(worktree_root) else {
+        return true;
+    };
+    match existing_prefix_canonical(resolved) {
+        Some(prefix) => !prefix.starts_with(&canonical_root),
+        None => true,
+    }
+}
+
 fn classify_write(path: &str, worktree_root: &Path) -> RiskLevel {
     let candidate = if Path::new(path).is_absolute() {
         PathBuf::from(path)
@@ -62,11 +82,13 @@ fn classify_write(path: &str, worktree_root: &Path) -> RiskLevel {
     let Some(resolved) = normalize_lexical(&candidate) else {
         return RiskLevel::Red;
     };
-    if resolved.starts_with(&root) {
-        RiskLevel::Green
-    } else {
-        RiskLevel::Red
+    if !resolved.starts_with(&root) {
+        return RiskLevel::Red;
     }
+    if escapes_via_symlink(&resolved, worktree_root) {
+        return RiskLevel::Red;
+    }
+    RiskLevel::Green
 }
 
 pub fn classify_tool_use(
@@ -134,9 +156,14 @@ pub fn describe_tool_use(tool_name: &str, tool_input: Option<&Value>) -> String 
 mod tests {
     use super::*;
     use serde_json::json;
+    use tempfile::TempDir;
 
     fn root() -> PathBuf {
         PathBuf::from("/home/user/wt")
+    }
+
+    fn real_root() -> TempDir {
+        TempDir::new().unwrap()
     }
 
     #[test]
@@ -174,21 +201,35 @@ mod tests {
 
     #[test]
     fn write_dentro_do_worktree_green() {
+        let wt = real_root();
+        assert_eq!(
+            classify_tool_use(
+                "Write",
+                Some(&json!({ "file_path": "src/main.rs" })),
+                wt.path()
+            ),
+            RiskLevel::Green
+        );
+        let absolute = wt.path().join("src/main.rs");
+        assert_eq!(
+            classify_tool_use(
+                "Write",
+                Some(&json!({ "file_path": absolute.to_str().unwrap() })),
+                wt.path()
+            ),
+            RiskLevel::Green
+        );
+    }
+
+    #[test]
+    fn write_com_root_inexistente_red() {
         assert_eq!(
             classify_tool_use(
                 "Write",
                 Some(&json!({ "file_path": "src/main.rs" })),
                 &root()
             ),
-            RiskLevel::Green
-        );
-        assert_eq!(
-            classify_tool_use(
-                "Write",
-                Some(&json!({ "file_path": "/home/user/wt/src/main.rs" })),
-                &root()
-            ),
-            RiskLevel::Green
+            RiskLevel::Red
         );
     }
 
@@ -218,11 +259,12 @@ mod tests {
 
     #[test]
     fn parent_que_permanece_dentro_green() {
+        let wt = real_root();
         assert_eq!(
             classify_tool_use(
                 "Edit",
                 Some(&json!({ "file_path": "src/../lib/x.rs" })),
-                &root()
+                wt.path()
             ),
             RiskLevel::Green
         );
@@ -230,11 +272,12 @@ mod tests {
 
     #[test]
     fn notebook_edit_usa_notebook_path() {
+        let wt = real_root();
         assert_eq!(
             classify_tool_use(
                 "NotebookEdit",
                 Some(&json!({ "notebook_path": "nb/a.ipynb" })),
-                &root()
+                wt.path()
             ),
             RiskLevel::Green
         );
@@ -257,13 +300,33 @@ mod tests {
         assert_eq!(classify_tool_use("Edit", None, &root()), RiskLevel::Yellow);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn symlink_dentro_do_worktree_e_green_limitacao_lexica_conhecida_da_f5() {
+    fn symlink_no_worktree_apontando_para_fora_red() {
+        let wt = real_root();
+        let outside = TempDir::new().unwrap();
+        std::os::unix::fs::symlink(outside.path(), wt.path().join("evil")).unwrap();
         assert_eq!(
             classify_tool_use(
                 "Write",
-                Some(&json!({ "file_path": "src/link-para-fora.rs" })),
-                &root()
+                Some(&json!({ "file_path": "evil/passwd" })),
+                wt.path()
+            ),
+            RiskLevel::Red
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_interno_ao_worktree_green() {
+        let wt = real_root();
+        std::fs::create_dir(wt.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(wt.path().join("real"), wt.path().join("alias")).unwrap();
+        assert_eq!(
+            classify_tool_use(
+                "Write",
+                Some(&json!({ "file_path": "alias/x.rs" })),
+                wt.path()
             ),
             RiskLevel::Green
         );

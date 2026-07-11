@@ -457,17 +457,15 @@ pub fn setup_script(root: &Path) -> Option<SetupScript> {
     })
 }
 
-const SETUP_ENV_ALLOWLIST: [&str; 6] = ["PATH", "HOME", "USER", "LANG", "TMPDIR", "SHELL"];
-
 /// Env mínimo do setup: o script é código do repo, não do usuário —
-/// nunca recebe o env completo do shell (princípio #6). A allowlist
-/// configurável por repo (`.tyba/config`) chega na Fase 4.
+/// nunca recebe o env completo do shell (princípio #6). Compartilha o
+/// baseline das sessões de agente (`repo_config::AGENT_ENV_BASELINE`).
 fn filter_setup_env(
     vars: impl Iterator<Item = (String, String)>,
     worktree: &Path,
 ) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = vars
-        .filter(|(k, _)| SETUP_ENV_ALLOWLIST.contains(&k.as_str()))
+        .filter(|(k, _)| crate::repo_config::AGENT_ENV_BASELINE.contains(&k.as_str()))
         .collect();
     env.push((
         "TYBA_WORKTREE".into(),

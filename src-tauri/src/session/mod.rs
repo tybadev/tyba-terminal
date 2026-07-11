@@ -35,7 +35,7 @@ pub enum AgentRunnerKind {
     Custom(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SessionStatus {
     Running,
@@ -275,6 +275,9 @@ impl SessionManager {
     pub fn set_status(&self, app: &AppHandle, id: SessionId, status: SessionStatus) {
         let mut sessions = self.sessions.write();
         if let Some(s) = sessions.get_mut(&id) {
+            if s.status == status {
+                return;
+            }
             s.status = status;
             let _ = self.store.upsert_session(s);
             emit_status(app, s);

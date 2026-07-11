@@ -133,4 +133,29 @@ describe("scheduleAgentReadyPrompt", () => {
     expect(unsubscribed).toBe(true);
     expect(timers.cleared.size).toBe(1);
   });
+
+  test("ready sincrono durante o subscribe cola sem agendar timeout", () => {
+    const timers = fakeTimers();
+    const pasted: boolean[] = [];
+    let scheduledCount = 0;
+
+    scheduleAgentReadyPrompt({
+      onReady: (handler) => {
+        handler();
+        return () => {};
+      },
+      paste: (submit) => pasted.push(submit),
+      onTimeout: () => {
+        throw new Error("timeout nao deveria disparar");
+      },
+      setTimeout: (cb, ms) => {
+        scheduledCount++;
+        return timers.setTimeout(cb, ms);
+      },
+      clearTimeout: timers.clearTimeout,
+    });
+
+    expect(pasted).toEqual([true]);
+    expect(scheduledCount).toBe(0);
+  });
 });

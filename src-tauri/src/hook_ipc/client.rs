@@ -147,7 +147,9 @@ fn emit_pre_tool_use<W: Write>(stdout: &mut W, decision: &'static str, reason: &
             permission_decision_reason: reason.to_string(),
         },
     };
-    if let Ok(bytes) = serde_json::to_vec(&output) {
+    if let Ok(mut bytes) = serde_json::to_vec(&output) {
+        bytes.push(b'\n');
         let _ = stdout.write_all(&bytes);
+        let _ = stdout.flush();
     }
 }

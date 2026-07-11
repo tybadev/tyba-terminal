@@ -1,20 +1,20 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter};
 
 use crate::agent::hooks_settings::{hook_command, hooks_settings_json};
 use crate::agent::{AgentRunner, ClaudeCodeRunner};
 use crate::approvals::tool_risk::{classify_tool_use, describe_tool_use};
-use crate::approvals::{is_refused_by_core, Decision, RiskLevel, SharedApprovals};
+use crate::approvals::{now_ms, Decision, RiskLevel, SharedApprovals};
 use crate::hook_ipc::{HookAction, HookEvent, HookServer};
 use crate::pty::SharedPtyPool;
 use crate::sandbox::{PassthroughSandbox, Sandbox, SandboxSpec};
 use crate::session::store::{ApprovalHistoryEntry, Store};
 use crate::session::{
-    AgentRunnerKind, CreateSessionOpts, Session, SessionId, SessionKind, SharedSessionManager,
+    AgentRunnerKind, CreateSessionOpts, Session, SessionId, SessionKind, SessionStatus,
+    SharedSessionManager,
 };
 use crate::status::agent_events::{signal_for, status_for, AgentSignal};
 
@@ -59,13 +59,6 @@ pub struct AgentSessionCtx {
     pub approvals: SharedApprovals,
     pub store: Arc<Store>,
     pub servers: Arc<HookServerRegistry>,
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 pub(crate) fn decision_label(decision: Decision) -> &'static str {
@@ -120,27 +113,6 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     let command = describe_tool_use(tool, input);
     let cwd = event.cwd.clone();
 
-    if tool == "Bash" {
-        let bash_command = input
-            .and_then(|v| v.get("command"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if is_refused_by_core(bash_command) {
-            record_history(
-                &ctx.store,
-                ctx.session_id,
-                command,
-                cwd,
-                RiskLevel::Red,
-                "refused",
-                now_ms(),
-            );
-            return HookAction::Deny {
-                reason: "recusado pelo core: push para main/master nunca é permitido".into(),
-            };
-        }
-    }
-
     match classify_tool_use(tool, input, &ctx.worktree_root) {
         RiskLevel::Green => {
             record_history(
@@ -154,44 +126,45 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
             );
             HookAction::Allow { reason: None }
         }
-        risk => match ctx.approvals.request_blocking(
-            &ctx.app,
-            ctx.session_id,
-            command.clone(),
-            cwd.clone(),
-            None,
-            risk,
-        ) {
-            Ok((request, decision)) => {
-                record_history(
-                    &ctx.store,
-                    ctx.session_id,
-                    request.command,
-                    request.cwd,
-                    request.risk,
-                    decision_label(decision),
-                    request.requested_at_ms,
-                );
-                match decision {
+        risk => {
+            ctx.sessions.set_status(
+                &ctx.app,
+                ctx.session_id,
+                SessionStatus::AwaitingInput {
+                    hint: Some(command.clone()),
+                },
+            );
+            let outcome = ctx.approvals.request_blocking(
+                &ctx.app,
+                ctx.session_id,
+                command.clone(),
+                cwd.clone(),
+                None,
+                risk,
+            );
+            ctx.sessions
+                .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
+            match outcome {
+                Ok((_request, decision)) => match decision {
                     Decision::Approved => HookAction::Allow { reason: None },
                     Decision::Denied => HookAction::Deny {
                         reason: "negado no TYBA".into(),
                     },
+                },
+                Err(reason) => {
+                    record_history(
+                        &ctx.store,
+                        ctx.session_id,
+                        command,
+                        cwd,
+                        risk,
+                        "refused",
+                        now_ms(),
+                    );
+                    HookAction::Deny { reason }
                 }
             }
-            Err(reason) => {
-                record_history(
-                    &ctx.store,
-                    ctx.session_id,
-                    command,
-                    cwd,
-                    risk,
-                    "refused",
-                    now_ms(),
-                );
-                HookAction::Deny { reason }
-            }
-        },
+        }
     }
 }
 
@@ -308,7 +281,7 @@ fn spawn_prepared(
         &SandboxSpec {
             writable_root: worktree.path.clone(),
             readable_root: root.clone(),
-            allow_network: true,
+            allow_network: runner.needs_network(),
         },
     );
 

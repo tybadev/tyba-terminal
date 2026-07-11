@@ -83,6 +83,12 @@ fn round_trip_deny_pretooluse() {
 }
 
 #[test]
+fn decision_output_ends_with_newline_so_line_buffered_stdout_flushes() {
+    let out = run(pretooluse_event("Bash"), None);
+    assert!(out.ends_with('\n'));
+}
+
+#[test]
 fn ack_non_pretooluse_prints_nothing() {
     let dir = TempDir::new().unwrap();
     let path = socket_in(&dir, "s.sock");
