@@ -27,22 +27,22 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 - [ ] Reconexão no reopen do app — [#50](https://github.com/tybadev/tyba-terminal/issues/50), spec pendente; blocos persistidos (ADR 2026-07-10) já nascem como fonte de dado
 - [x] Kill com killpg
 
-## Fase 3 — Worktree lifecycle ← **próxima obrigatória** (pré-requisito da Fase 4)
+## Fase 3 — Worktree lifecycle ✅ **concluída** (PRs #71, #72)
 
-- [ ] WorktreeManager: create (branch slug + sufixo), remove, GC de órfãos no startup — _hoje só existe o plumbing `git_in`_
-- [ ] Hooks de setup por repo (`.tyba/setup.sh`)
-- [ ] Diff local: numstat/name-status com -z, hunks lazy por arquivo, dirty state
-- [ ] DiffView React (sidebar de arquivos, Shiki, unified/split, colapso de gerados)
+- [x] WorktreeManager: create (branch slug + sufixo), remove, GC de órfãos no startup
+- [x] Hooks de setup por repo (`.tyba/setup.sh`) com consent por hash
+- [x] Diff local: numstat/name-status com -z, hunks lazy por arquivo, dirty state
+- [x] DiffView React (sidebar de arquivos, Shiki, unified/split, colapso de gerados) — evoluiu para painel de git do workspace (staging, commit, push, comentários pro agente)
 
-## Fase 4 — Agentes + inbox (o produto) — _decisões de escopo fechadas em grill 2026-07-10: TUI interativo no PTY + hooks pro inbox (não headless); 3 levas: sessão de agente → inbox de aprovações → merge flow_
+## Fase 4 — Agentes + inbox (o produto) — _levas 1 e 2 entregues (PRs #73, #74); spec e decisões no cofre: `tyba/features/agents/rules`_
 
-- [ ] Trait AgentRunner + runner ClaudeCode — _trait e esqueleto existem; `build_command` muda de headless pra TUI com hooks injetados_
-- [ ] StatusDetector: eventos estruturados + fallback OSC 133/heurística
-- [ ] Inbox: sidebar de sessões com status, notificação nativa em AwaitingInput
-- [ ] approveAction com classificação de risco (verde/amarelo/vermelho)
-- [ ] Env filtrado por allowlist (.tyba/config)
-- [ ] Merge flow: review no DiffView → merge local | squash | gh pr create
-- [ ] Regras hard: recusa de push para main, push sempre com aprovação humana
+- [x] Trait AgentRunner + runner ClaudeCode — TUI interativo com hooks injetados via `--settings`; bypass de permissões proibido (teste trava)
+- [x] StatusDetector: eventos de hook (SessionStart/Stop/Notification/SessionEnd) → SessionStatus; fallback OSC/heurística fica pra F5 (só runners sem hooks)
+- [x] Inbox: sidebar com status, notificação nativa em AwaitingInput, toast acionável, opções numeradas 1/2/3 como no TUI
+- [x] approveAction com classificação de risco — hook `PreToolUse` bloqueia até a decisão humana (unix socket + `tyba _hook`, deny fail-closed); verde auto-aprovado; "sempre permitir" por comando+sessão (nunca vermelho); recusar com feedback volta pro agente
+- [x] Env filtrado por allowlist (`.tyba/config.toml`) com consent por hash e baseline inviolável
+- [ ] **Leva 3 — merge flow**: review no painel de diff → merge local | squash | PR via `gh` OU `glab` (detectado pelo remote)
+- [x] Regras hard: recusa de push para main (core), push sempre com aprovação humana, spawn atrás da trait Sandbox
 
 **Critério de saída**: rodar 3+ sessões de Claude Code em paralelo construindo o próprio tyba.
 
