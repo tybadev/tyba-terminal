@@ -187,12 +187,21 @@ struct WorktreeStatus {
     session_id: Option<SessionId>,
 }
 
+#[derive(serde::Serialize)]
+struct WorktreeListing {
+    root: std::path::PathBuf,
+    worktrees: Vec<WorktreeStatus>,
+}
+
 #[tauri::command]
 async fn worktree_list(
     state: State<'_, AppState>,
     repo_root: String,
-) -> Result<Vec<WorktreeStatus>, String> {
-    let root = repo::canonicalize_or(std::path::Path::new(&repo_root));
+) -> Result<WorktreeListing, String> {
+    let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
+    let root = repo::toplevel(&param)
+        .map(|t| repo::canonicalize_or(&t))
+        .ok_or("fora de repositório git")?;
     let head = worktree::head_sha(&root)?;
     let by_path: std::collections::HashMap<std::path::PathBuf, SessionId> = state
         .sessions
@@ -201,7 +210,7 @@ async fn worktree_list(
         .filter_map(|s| s.worktree.map(|wt| (repo::canonicalize_or(&wt.path), s.id)))
         .collect();
 
-    Ok(worktree::list(&root)?
+    let worktrees = worktree::list(&root)?
         .into_iter()
         .filter_map(|e| {
             let canonical = repo::canonicalize_or(&e.path);
@@ -217,7 +226,8 @@ async fn worktree_list(
                 branch: e.branch,
             })
         })
-        .collect())
+        .collect();
+    Ok(WorktreeListing { root, worktrees })
 }
 
 #[derive(serde::Serialize)]
@@ -864,7 +874,7 @@ fn docker_open_shell(
 
 #[tauri::command]
 fn open_view_tab(app: AppHandle, state: State<'_, AppState>, view: String) -> Result<(), String> {
-    if view != layout::VIEW_SETTINGS {
+    if view != layout::VIEW_SETTINGS && view != layout::VIEW_WORKSPACE {
         return Err(format!("view desconhecida: {view}"));
     }
     state
