@@ -51,7 +51,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { getThemeMode, onThemeModeChange, setThemeMode, type ThemeMode } from "./theme";
-import { ApprovalsInbox } from "./components/ApprovalsInbox";
+import { NotificationsInbox } from "./components/NotificationsInbox";
+import { NotificationToaster } from "./components/NotificationToaster";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import {
@@ -1674,6 +1675,7 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={400}>
+      <NotificationToaster sessions={sessions} />
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -1856,7 +1858,7 @@ export default function App() {
             <FolderOpen size={16} />
           </IconAction>
 
-          <ApprovalsInbox
+          <NotificationsInbox
             sessions={sessions}
             approvals={approvals}
             open={inboxOpen}

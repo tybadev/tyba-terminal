@@ -197,7 +197,7 @@ const resources = {
       openProjectFolder: "Abrir pasta do projeto",
       notifications: "Notificações",
       notificationsEmpty:
-        "Tudo em dia. Aprovações de sessões de agente chegam aqui.",
+        "Tudo em dia. Notificações de sessões de agente chegam aqui.",
       account: "Conta",
       localAccount: "Conta local",
       settings: "Configurações",
@@ -266,7 +266,6 @@ const resources = {
       shellIntegration: "Shell integration (zsh)",
       shellIntegrationHint:
         "Injeta hooks no zsh da sessão pra saber o comando em execução e o status — mostra a descrição da sessão no sidebar, estilo Warp. Mexe só no ambiente da sessão (via ZDOTDIR), nunca nos seus dotfiles. Desligue se o shell se comportar estranho.",
-      approvals: "Aprovações",
       pendingCount_one: "{{count}} pendente",
       pendingCount_other: "{{count}} pendentes",
       approvalsWaiting_one: "{{count}} comando aguardando aprovação",
@@ -279,6 +278,11 @@ const resources = {
       riskGreen: "risco baixo",
       riskYellow: "risco médio",
       riskRed: "risco alto",
+      approvalRequested: "Pedido de aprovação",
+      alwaysAllow: "Sempre permitir",
+      alwaysAllowSession: "Sempre permitir nesta sessão",
+      alwaysAllowHint:
+        "Aprova automaticamente comandos idênticos nesta sessão de agente. Vale só enquanto ela estiver aberta.",
     },
   },
   en: {
@@ -462,7 +466,7 @@ const resources = {
       openProjectFolder: "Open project folder",
       notifications: "Notifications",
       notificationsEmpty:
-        "All caught up. Agent session approvals arrive here.",
+        "All caught up. Agent session notifications arrive here.",
       account: "Account",
       localAccount: "Local account",
       settings: "Settings",
@@ -531,7 +535,6 @@ const resources = {
       shellIntegration: "Shell integration (zsh)",
       shellIntegrationHint:
         "Injects hooks into the session's zsh to know the running command and status — shows the session description in the sidebar, Warp-style. Only touches the session environment (via ZDOTDIR), never your dotfiles. Turn off if the shell misbehaves.",
-      approvals: "Approvals",
       pendingCount_one: "{{count}} pending",
       pendingCount_other: "{{count}} pending",
       approvalsWaiting_one: "{{count}} command awaiting approval",
@@ -544,6 +547,11 @@ const resources = {
       riskGreen: "low risk",
       riskYellow: "medium risk",
       riskRed: "high risk",
+      approvalRequested: "Approval request",
+      alwaysAllow: "Always allow",
+      alwaysAllowSession: "Always allow for this session",
+      alwaysAllowHint:
+        "Automatically approves identical commands in this agent session. Only applies while it stays open.",
     },
   },
 } as const;
