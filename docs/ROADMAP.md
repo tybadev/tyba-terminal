@@ -34,7 +34,7 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 - [x] Diff local: numstat/name-status com -z, hunks lazy por arquivo, dirty state
 - [x] DiffView React (sidebar de arquivos, Shiki, unified/split, colapso de gerados) — evoluiu para painel de git do workspace (staging, commit, push, comentários pro agente)
 
-## Fase 4 — Agentes + inbox (o produto) — _levas 1 e 2 entregues (PRs #73, #74); spec e decisões no cofre: `tyba/features/agents/rules`_
+## Fase 4 — Agentes + inbox (o produto) ✅ **concluída** (PRs #73, #74, #75, #76) — _spec e decisões no cofre: `tyba/features/agents/`_
 
 - [x] Trait AgentRunner + runner ClaudeCode — TUI interativo com hooks injetados via `--settings`; bypass de permissões proibido (teste trava)
 - [x] StatusDetector: eventos de hook (SessionStart/Stop/Notification/SessionEnd) → SessionStatus; fallback OSC/heurística fica pra F5 (só runners sem hooks)
