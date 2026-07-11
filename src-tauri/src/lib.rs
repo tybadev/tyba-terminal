@@ -464,6 +464,47 @@ async fn worktree_merge_into_base(
     worktree::ops::merge_into_base(&wt.path, strategy, message.as_deref())
 }
 
+#[tauri::command]
+async fn forge_status(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<Option<forge::ForgeStatus>, String> {
+    let session = state.sessions.get(id).ok_or("sessão não existe")?;
+    let wt = session_worktree(&state, id)?;
+    let root = session.repo_root.unwrap_or_else(|| wt.path.clone());
+    Ok(forge::status(&root, Some(&wt.branch)))
+}
+
+#[tauri::command]
+async fn forge_pr_for_session(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<Option<forge::PullRequest>, String> {
+    let wt = session_worktree(&state, id)?;
+    forge::pr_for_branch(&wt.path, &wt.branch)
+}
+
+#[tauri::command]
+async fn forge_pr_comments(
+    state: State<'_, AppState>,
+    id: SessionId,
+    number: u64,
+) -> Result<Vec<forge::ReviewComment>, String> {
+    let wt = session_worktree(&state, id)?;
+    forge::pr_comments(&wt.path, number)
+}
+
+#[tauri::command]
+async fn forge_create_pr(
+    state: State<'_, AppState>,
+    id: SessionId,
+    title: String,
+    body: String,
+) -> Result<forge::PullRequest, String> {
+    let wt = session_worktree(&state, id)?;
+    forge::create_pr(&wt.path, &title, &body)
+}
+
 /// Abre um arquivo do worktree como TEXTO — nunca "executa" o arquivo.
 /// `open <arquivo>`/`xdg-open` rodariam um script/app deixado por um
 /// agente no worktree com um clique; aqui só editor configurado ou
@@ -1559,6 +1600,10 @@ pub fn run() {
             worktree_push,
             worktree_merge_preview,
             worktree_merge_into_base,
+            forge_status,
+            forge_pr_for_session,
+            forge_pr_comments,
+            forge_create_pr,
             open_worktree_file,
             repo_snapshots,
             session_cwd,
