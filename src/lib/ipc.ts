@@ -165,6 +165,76 @@ export const sessionDiffHunks = (
     oldPath: oldPath ?? null,
   });
 
+export type MergeStrategy = "squash" | "merge_commit";
+
+export interface MergePreview {
+  base_branch: string;
+  source_branch: string;
+  commits: number;
+  files_changed: number;
+  conflicts: string[];
+  base_dirty: boolean;
+}
+
+export const worktreeMergePreview = (id: SessionId) =>
+  invoke<MergePreview>("worktree_merge_preview", { id });
+
+export const worktreeMergeIntoBase = (
+  id: SessionId,
+  strategy: MergeStrategy,
+  message?: string,
+) =>
+  invoke<string>("worktree_merge_into_base", {
+    id,
+    strategy,
+    message: message?.trim() ? message.trim() : null,
+  });
+
+export type ForgeKind = "github" | "gitlab";
+
+export interface ForgeStatus {
+  kind: ForgeKind;
+  cli: string;
+  installed: boolean;
+  authenticated: boolean;
+  web_create_url: string | null;
+}
+
+export interface CheckRun {
+  name: string;
+  status: string;
+  conclusion: string | null;
+}
+
+export interface PullRequest {
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  checks: CheckRun[];
+}
+
+export interface ForgeReviewComment {
+  id: string;
+  author: string;
+  body: string;
+  path: string | null;
+  line: number | null;
+  url: string | null;
+}
+
+export const forgeStatus = (id: SessionId) =>
+  invoke<ForgeStatus | null>("forge_status", { id });
+
+export const forgePrForSession = (id: SessionId) =>
+  invoke<PullRequest | null>("forge_pr_for_session", { id });
+
+export const forgePrComments = (id: SessionId, number: number) =>
+  invoke<ForgeReviewComment[]>("forge_pr_comments", { id, number });
+
+export const forgeCreatePr = (id: SessionId, title: string, body: string) =>
+  invoke<PullRequest>("forge_create_pr", { id, title, body });
+
 export const worktreeSetupScript = (repoRoot: string) =>
   invoke<SetupScriptInfo | null>("worktree_setup_script", { repoRoot });
 
