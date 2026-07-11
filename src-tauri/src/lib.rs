@@ -1237,6 +1237,38 @@ fn list_approvals(state: State<'_, AppState>) -> Vec<ApprovalRequest> {
     state.approvals.list_pending()
 }
 
+fn approval_decision_label(decision: Decision) -> &'static str {
+    match decision {
+        Decision::Approved => "approved",
+        Decision::Denied => "denied",
+    }
+}
+
+fn approval_risk_label(risk: approvals::RiskLevel) -> &'static str {
+    match risk {
+        approvals::RiskLevel::Green => "green",
+        approvals::RiskLevel::Yellow => "yellow",
+        approvals::RiskLevel::Red => "red",
+    }
+}
+
+fn record_approval_history(store: &Store, request: &ApprovalRequest, decision_label: &str) {
+    let resolved_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let entry = session::store::ApprovalHistoryEntry {
+        session_id: request.session_id.to_string(),
+        command: request.command.clone(),
+        cwd: request.cwd.clone(),
+        risk: approval_risk_label(request.risk).to_string(),
+        decision: decision_label.to_string(),
+        requested_at_ms: request.requested_at_ms,
+        resolved_at_ms,
+    };
+    let _ = store.insert_approval_history(&entry);
+}
+
 #[tauri::command]
 fn resolve_approval(
     app: AppHandle,
@@ -1244,7 +1276,9 @@ fn resolve_approval(
     id: u64,
     decision: Decision,
 ) -> Result<(), String> {
-    state.approvals.resolve(&app, id, decision)
+    let request = state.approvals.resolve(&app, id, decision)?;
+    record_approval_history(&state.store, &request, approval_decision_label(decision));
+    Ok(())
 }
 
 #[tauri::command]

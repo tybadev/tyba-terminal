@@ -14,8 +14,9 @@
 
 pub mod tool_risk;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -158,6 +159,7 @@ fn now_ms() -> u64 {
 #[derive(Default)]
 pub struct ApprovalsManager {
     pending: Mutex<Vec<ApprovalRequest>>,
+    waiters: Mutex<HashMap<u64, mpsc::Sender<Decision>>>,
     next_id: AtomicU64,
 }
 
@@ -166,8 +168,39 @@ impl ApprovalsManager {
         Self::default()
     }
 
-    /// Registra um pedido e notifica o webview. Erro se o core recusa
-    /// o comando de saída (push para main/master).
+    fn request_inner(
+        &self,
+        session_id: SessionId,
+        command: String,
+        cwd: Option<String>,
+        context: Option<String>,
+        risk: RiskLevel,
+        waiter: Option<mpsc::Sender<Decision>>,
+    ) -> Result<ApprovalRequest, String> {
+        if is_refused_by_core(&command) {
+            return Err("recusado pelo core: push para main/master nunca é permitido".into());
+        }
+        let request = ApprovalRequest {
+            id: self.next_id.fetch_add(1, Ordering::Relaxed) + 1,
+            session_id,
+            risk,
+            command,
+            cwd,
+            context,
+            requested_at_ms: now_ms(),
+        };
+        let mut pending = self.pending.lock().expect("approvals lock");
+        pending.push(request.clone());
+        if let Some(tx) = waiter {
+            self.waiters
+                .lock()
+                .expect("waiters lock")
+                .insert(request.id, tx);
+        }
+        drop(pending);
+        Ok(request)
+    }
+
     pub fn request(
         &self,
         app: &AppHandle,
@@ -176,40 +209,83 @@ impl ApprovalsManager {
         cwd: Option<String>,
         context: Option<String>,
     ) -> Result<ApprovalRequest, String> {
-        if is_refused_by_core(&command) {
-            return Err("recusado pelo core: push para main/master nunca é permitido".into());
-        }
-        let request = ApprovalRequest {
-            id: self.next_id.fetch_add(1, Ordering::Relaxed) + 1,
-            session_id,
-            risk: classify_risk(&command),
-            command,
-            cwd,
-            context,
-            requested_at_ms: now_ms(),
-        };
-        self.pending
-            .lock()
-            .expect("approvals lock")
-            .push(request.clone());
+        let risk = classify_risk(&command);
+        let request = self.request_inner(session_id, command, cwd, context, risk, None)?;
         let _ = app.emit("approvals://requested", request.clone());
         Ok(request)
+    }
+
+    pub fn request_blocking(
+        &self,
+        app: &AppHandle,
+        session_id: SessionId,
+        command: String,
+        cwd: Option<String>,
+        context: Option<String>,
+        risk: RiskLevel,
+    ) -> Result<(ApprovalRequest, Decision), String> {
+        let (tx, rx) = mpsc::channel();
+        let request = self.request_inner(session_id, command, cwd, context, risk, Some(tx))?;
+        let _ = app.emit("approvals://requested", request.clone());
+        let decision = rx.recv().unwrap_or(Decision::Denied);
+        Ok((request, decision))
     }
 
     pub fn list_pending(&self) -> Vec<ApprovalRequest> {
         self.pending.lock().expect("approvals lock").clone()
     }
 
-    pub fn resolve(&self, app: &AppHandle, id: u64, decision: Decision) -> Result<(), String> {
+    fn resolve_inner(&self, id: u64, decision: Decision) -> Result<ApprovalRequest, String> {
         let mut pending = self.pending.lock().expect("approvals lock");
-        let before = pending.len();
-        pending.retain(|r| r.id != id);
-        if pending.len() == before {
-            return Err(format!("pedido de aprovação {id} não existe"));
+        let pos = pending
+            .iter()
+            .position(|r| r.id == id)
+            .ok_or_else(|| format!("pedido de aprovação {id} não existe"))?;
+        let request = pending.remove(pos);
+        if let Some(tx) = self.waiters.lock().expect("waiters lock").remove(&id) {
+            let _ = tx.send(decision);
         }
         drop(pending);
+        Ok(request)
+    }
+
+    pub fn resolve(
+        &self,
+        app: &AppHandle,
+        id: u64,
+        decision: Decision,
+    ) -> Result<ApprovalRequest, String> {
+        let request = self.resolve_inner(id, decision)?;
         let _ = app.emit("approvals://resolved", ApprovalResolved { id, decision });
-        Ok(())
+        Ok(request)
+    }
+
+    fn expire_session_inner(&self, session_id: SessionId) -> Vec<ApprovalRequest> {
+        let mut pending = self.pending.lock().expect("approvals lock");
+        let mut waiters = self.waiters.lock().expect("waiters lock");
+        let (expired, kept): (Vec<_>, Vec<_>) =
+            pending.drain(..).partition(|r| r.session_id == session_id);
+        *pending = kept;
+        for request in &expired {
+            if let Some(tx) = waiters.remove(&request.id) {
+                let _ = tx.send(Decision::Denied);
+            }
+        }
+        expired
+    }
+
+    pub fn expire_session(&self, app: &AppHandle, session_id: SessionId) -> Vec<ApprovalRequest> {
+        let expired = self.expire_session_inner(session_id);
+        for request in &expired {
+            let _ = app.emit(
+                "approvals://resolved",
+                ApprovalResolved {
+                    id: request.id,
+                    decision: Decision::Denied,
+                },
+            );
+        }
+        expired
     }
 }
 
@@ -273,5 +349,84 @@ mod tests {
         assert!(!is_refused_by_core("git push origin fix/main-menu"));
         assert!(!is_refused_by_core("echo main"));
         assert!(!is_refused_by_core("git status"));
+    }
+
+    fn pending_request(
+        manager: &ApprovalsManager,
+        session_id: SessionId,
+        command: &str,
+    ) -> (ApprovalRequest, mpsc::Receiver<Decision>) {
+        let (tx, rx) = mpsc::channel();
+        let request = manager
+            .request_inner(
+                session_id,
+                command.to_string(),
+                None,
+                None,
+                RiskLevel::Yellow,
+                Some(tx),
+            )
+            .expect("request deve entrar");
+        (request, rx)
+    }
+
+    #[test]
+    fn resolve_entrega_decisao_ao_waiter_e_devolve_o_pedido() {
+        let manager = ApprovalsManager::new();
+        let session = SessionId::new_v4();
+        let (request, rx) = pending_request(&manager, session, "cargo build");
+
+        let resolved = manager
+            .resolve_inner(request.id, Decision::Approved)
+            .expect("resolve deve achar o pedido");
+
+        assert_eq!(resolved.command, "cargo build");
+        assert_eq!(rx.recv().unwrap(), Decision::Approved);
+        assert!(manager.list_pending().is_empty());
+    }
+
+    #[test]
+    fn waiters_concorrentes_resolvem_fora_de_ordem() {
+        let manager = ApprovalsManager::new();
+        let session = SessionId::new_v4();
+        let (first, rx_first) = pending_request(&manager, session, "a");
+        let (second, rx_second) = pending_request(&manager, session, "b");
+        let (third, rx_third) = pending_request(&manager, session, "c");
+
+        manager.resolve_inner(third.id, Decision::Denied).unwrap();
+        manager.resolve_inner(first.id, Decision::Approved).unwrap();
+        manager.resolve_inner(second.id, Decision::Denied).unwrap();
+
+        assert_eq!(rx_first.recv().unwrap(), Decision::Approved);
+        assert_eq!(rx_second.recv().unwrap(), Decision::Denied);
+        assert_eq!(rx_third.recv().unwrap(), Decision::Denied);
+    }
+
+    #[test]
+    fn expire_nega_so_os_pendentes_da_sessao() {
+        let manager = ApprovalsManager::new();
+        let dying = SessionId::new_v4();
+        let alive = SessionId::new_v4();
+        let (_dying_req, rx_dying) = pending_request(&manager, dying, "a");
+        let (_alive_req, rx_alive) = pending_request(&manager, alive, "b");
+
+        let expired = manager.expire_session_inner(dying);
+
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].session_id, dying);
+        assert_eq!(rx_dying.recv().unwrap(), Decision::Denied);
+        assert!(rx_alive.try_recv().is_err());
+        assert_eq!(manager.list_pending().len(), 1);
+        assert_eq!(manager.list_pending()[0].session_id, alive);
+    }
+
+    #[test]
+    fn resolve_de_id_inexistente_erra_sem_tocar_pendentes() {
+        let manager = ApprovalsManager::new();
+        let session = SessionId::new_v4();
+        let (_req, _rx) = pending_request(&manager, session, "a");
+
+        assert!(manager.resolve_inner(999, Decision::Approved).is_err());
+        assert_eq!(manager.list_pending().len(), 1);
     }
 }
