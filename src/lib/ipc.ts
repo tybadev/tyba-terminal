@@ -174,6 +174,30 @@ export const worktreeSetSetupConsent = (
   allow: boolean,
 ) => invoke<void>("worktree_set_setup_consent", { repoRoot, hash, allow });
 
+export interface AgentRepoConfig {
+  hash: string;
+  default_agent: string | null;
+  env_allow: string[];
+  consent: boolean | null;
+}
+
+export const agentRepoConfig = (repoRoot: string) =>
+  invoke<AgentRepoConfig | null>("agent_repo_config", { repoRoot });
+
+export const setAgentConfigConsent = (
+  repoRoot: string,
+  hash: string,
+  allowed: boolean,
+) => invoke<void>("set_agent_config_consent", { repoRoot, hash, allowed });
+
+export const onAgentReady = (
+  id: SessionId,
+  handler: () => void,
+): Promise<UnlistenFn> =>
+  listen<{ session_id: SessionId }>("agent://ready", (e) => {
+    if (e.payload.session_id === id) handler();
+  });
+
 // --- base64 <-> bytes (chunks de PTY podem quebrar UTF-8 no meio) ---
 
 const decodeBase64 = (data: string): Uint8Array =>
