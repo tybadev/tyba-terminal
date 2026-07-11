@@ -214,7 +214,7 @@ impl SessionManager {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn spawn_session(
+    pub(crate) fn spawn_session(
         &self,
         app: AppHandle,
         pty_pool: &SharedPtyPool,
@@ -398,7 +398,7 @@ fn integration_denied(reason: &str) -> std::io::Error {
     )
 }
 
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     let result = {
         #[cfg(unix)]
         {
@@ -418,7 +418,7 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn verify_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn verify_private_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     let meta = std::fs::symlink_metadata(dir)?;
@@ -438,14 +438,14 @@ fn verify_private_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn verify_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn verify_private_dir(dir: &Path) -> std::io::Result<()> {
     if !std::fs::symlink_metadata(dir)?.is_dir() {
         return Err(integration_denied("não é um diretório"));
     }
     Ok(())
 }
 
-fn write_private(dir: &Path, name: &str, contents: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(dir: &Path, name: &str, contents: &str) -> std::io::Result<()> {
     use std::io::Write;
 
     let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));

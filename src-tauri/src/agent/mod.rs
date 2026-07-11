@@ -1,4 +1,5 @@
 pub mod hooks_settings;
+pub mod session;
 
 use std::collections::HashMap;
 use std::path::Path;
