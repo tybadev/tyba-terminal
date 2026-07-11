@@ -1,0 +1,46 @@
+[
+  {
+    "id": 332430752,
+    "path": "command/pr.go",
+    "commit_id": "996619ea3cf9d0534e98e6a65c64688efd629d1d",
+    "user": {
+      "login": "mislav",
+      "id": 887,
+      "type": "User"
+    },
+    "body": "Should the branch name also include the `OWNER:` portion if the pull request is coming from a different repo? This would match how head branches are shown on GitHub web.",
+    "html_url": "https://github.com/cli/cli/pull/3#discussion_r332430752",
+    "pull_request_url": "https://api.github.com/repos/cli/cli/pulls/3",
+    "line": 297,
+    "original_line": 297,
+    "side": "RIGHT",
+    "subject_type": "line"
+  },
+  {
+    "id": 333030758,
+    "path": "command/pr.go",
+    "commit_id": "6a3907e7121874d378612b251ff06a6918684f56",
+    "user": {
+      "login": "mislav",
+      "id": 887,
+      "type": "User"
+    },
+    "body": "It's fine to return nil in place of pointers when an error occurs:\r\n```suggestion\r\n\t\treturn nil, err\r\n```",
+    "html_url": "https://github.com/cli/cli/pull/7#discussion_r333030758",
+    "pull_request_url": "https://api.github.com/repos/cli/cli/pulls/7",
+    "line": null,
+    "original_line": 347,
+    "side": "RIGHT",
+    "subject_type": "line"
+  },
+  {
+    "html_url": "https://github.com/cli/cli/issues/4#issuecomment-539473254",
+    "id": 539473254,
+    "user": {
+      "login": "mislav",
+      "id": 887,
+      "type": "User"
+    },
+    "body": "Re: \"Reimagine how the app determines its context\": my intent was not to suggest that all the goals I've outlined in #2 are reachable within the course of a week. Rather, I had imagined this as something to keep in mind _over the long term_ as we develop prototype and stable features and perform mini-refactoring of underlying mechanisms as we go along."
+  }
+]

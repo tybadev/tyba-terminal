@@ -1,0 +1,124 @@
+[
+  {
+    "id": "6a9c1750b37d513a43987b574953fceb50b03ce7",
+    "individual_note": false,
+    "notes": [
+      {
+        "id": 1126,
+        "type": "DiscussionNote",
+        "body": "discussion text",
+        "attachment": null,
+        "author": {
+          "id": 1,
+          "name": "Venkatesh Thalluri",
+          "username": "venkatesh.thalluri",
+          "state": "active",
+          "web_url": "https://gitlab.example.com/venkatesh.thalluri"
+        },
+        "created_at": "2018-03-03T21:54:39.668Z",
+        "updated_at": "2018-03-03T21:54:39.668Z",
+        "system": false,
+        "noteable_id": 3,
+        "noteable_type": "Merge request",
+        "noteable_iid": 3,
+        "resolved": false,
+        "resolvable": true,
+        "resolved_by": null,
+        "position": null
+      },
+      {
+        "id": 1129,
+        "type": "DiffNote",
+        "body": "a comment on a diff",
+        "attachment": null,
+        "author": {
+          "id": 12,
+          "name": "Ada Lovelace",
+          "username": "ada",
+          "state": "active",
+          "web_url": "https://gitlab.example.com/ada"
+        },
+        "created_at": "2018-03-04T09:17:22.520Z",
+        "updated_at": "2018-03-04T09:17:22.520Z",
+        "system": false,
+        "noteable_id": 3,
+        "noteable_type": "Merge request",
+        "noteable_iid": 3,
+        "resolved": false,
+        "resolvable": true,
+        "resolved_by": null,
+        "position": {
+          "base_sha": "b5d6e7f2a3b1c4d5e6f7a8b9c0d1e2f3a4b5c6d7",
+          "start_sha": "7c9c2ed8ceefd53a86b4d9d3d3a0b73b6a3e8c4b",
+          "head_sha": "45a869e418587708499f94dfe94f22846a862872",
+          "old_path": "internal/glrepo/remote.go",
+          "new_path": "internal/glrepo/remote.go",
+          "position_type": "text",
+          "old_line": null,
+          "new_line": 118,
+          "line_range": null
+        }
+      },
+      {
+        "id": 1131,
+        "type": "DiffNote",
+        "body": "changed this line in version 2 of the diff",
+        "attachment": null,
+        "author": {
+          "id": 12,
+          "name": "Ada Lovelace",
+          "username": "ada",
+          "state": "active",
+          "web_url": "https://gitlab.example.com/ada"
+        },
+        "created_at": "2018-03-04T09:19:02.100Z",
+        "updated_at": "2018-03-04T09:19:02.100Z",
+        "system": true,
+        "noteable_id": 3,
+        "noteable_type": "Merge request",
+        "noteable_iid": 3,
+        "resolved": true,
+        "resolvable": true,
+        "resolved_by": null,
+        "position": {
+          "base_sha": "b5d6e7f2a3b1c4d5e6f7a8b9c0d1e2f3a4b5c6d7",
+          "start_sha": "7c9c2ed8ceefd53a86b4d9d3d3a0b73b6a3e8c4b",
+          "head_sha": "45a869e418587708499f94dfe94f22846a862872",
+          "old_path": "commands/mr/view/mr_view.go",
+          "new_path": "commands/mr/view/mr_view.go",
+          "position_type": "text",
+          "old_line": 41,
+          "new_line": null,
+          "line_range": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "87805b7c09016a7058e91bdbe7b29d1f284a39e6",
+    "individual_note": true,
+    "notes": [
+      {
+        "id": 1140,
+        "type": null,
+        "body": "LGTM, apenas ajuste o changelog antes de mergear.",
+        "attachment": null,
+        "author": {
+          "id": 29076834,
+          "name": "Ashutosh Das",
+          "username": "ashu07das",
+          "state": "active",
+          "web_url": "https://gitlab.com/ashu07das"
+        },
+        "created_at": "2025-09-15T10:20:11.312Z",
+        "updated_at": "2025-09-15T10:20:11.312Z",
+        "system": false,
+        "noteable_id": 402565939,
+        "noteable_type": "Merge request",
+        "noteable_iid": 2260,
+        "resolvable": false,
+        "position": null
+      }
+    ]
+  }
+]
