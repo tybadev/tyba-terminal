@@ -267,6 +267,8 @@ const resources = {
       pasteConfirm: "Colar",
       pasteAsSingleLine: "Colar como uma linha",
       cancel: "Cancelar",
+      retry: "Tentar de novo",
+      regionCrashed: "Erro ao renderizar {{region}}. O resto do Tyba segue funcionando.",
       pasteControlChars:
         "O conteúdo contém caracteres de controle. Eles serão removidos ao colar como uma linha.",
       searchPlaceholder: "Buscar",
@@ -628,6 +630,8 @@ const resources = {
       pasteConfirm: "Paste",
       pasteAsSingleLine: "Paste as a single line",
       cancel: "Cancel",
+      retry: "Try again",
+      regionCrashed: "Failed to render {{region}}. The rest of Tyba keeps working.",
       pasteControlChars:
         "The content has control characters. They are removed when pasting as a single line.",
       searchPlaceholder: "Search",
