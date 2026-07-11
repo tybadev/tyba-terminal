@@ -5,6 +5,7 @@ pub mod editor;
 pub mod layout;
 pub mod pty;
 pub mod repo;
+pub mod repo_config;
 pub mod rich_input;
 pub mod sandbox;
 pub mod session;
