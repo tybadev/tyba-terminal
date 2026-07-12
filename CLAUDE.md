@@ -53,4 +53,4 @@ Leia o doc relevante antes de implementar qualquer módulo.
 - Código e identificadores em inglês; docs e mensagens de UI em pt-BR (i18n depois).
 - Commits: conventional commits (`feat:`, `fix:`, `refactor:`).
 - Testes: unit para parsers (diff, OSC 133, stream-json) são obrigatórios — são a parte mais frágil.
-- Nunca commitar exemplos com secrets reais. Repo é público.
+- Nunca commitar exemplos com secrets reais. O repo é privado hoje, mas nasceu para ser opensource — quando abrir, o histórico inteiro vai junto: secret commitado agora é secret vazado no dia do lançamento.
