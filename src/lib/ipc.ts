@@ -128,6 +128,15 @@ export interface FileHunks {
 export const openDiffTab = (id: SessionId) =>
   invoke<void>("open_diff_tab", { id });
 
+export interface SessionGitStatus {
+  root: string;
+  branch: string | null;
+  dirty: boolean;
+}
+
+export const sessionGitStatus = (id: SessionId) =>
+  invoke<SessionGitStatus | null>("session_git_status", { id });
+
 export const worktreeStage = (id: SessionId, paths: string[]) =>
   invoke<void>("worktree_stage", { id, paths });
 
@@ -228,6 +237,9 @@ export const forgeStatus = (id: SessionId) =>
 
 export const forgePrForSession = (id: SessionId) =>
   invoke<PullRequest | null>("forge_pr_for_session", { id });
+
+export const forgePrList = (id: SessionId) =>
+  invoke<PullRequest[]>("forge_pr_list", { id });
 
 export const forgePrComments = (id: SessionId, number: number) =>
   invoke<ForgeReviewComment[]>("forge_pr_comments", { id, number });
