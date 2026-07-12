@@ -232,8 +232,8 @@ samp {
 .tyba-divide-t {
   box-shadow: var(--tyba-divider-t);
 }
-.tyba-divide-x {
-  box-shadow: var(--tyba-divider-x);
+.tyba-divide-r {
+  box-shadow: var(--tyba-divider-r);
 }
 
 /* ---------- Luz ---------- */

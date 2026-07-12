@@ -171,7 +171,7 @@
   --tyba-divider-line: color-mix(in srgb, var(--tyba-text) 7%, transparent);
   --tyba-divider-b: 0 1px 0 0 var(--tyba-divider-line), 0 5px 8px -7px rgba(0, 0, 0, 0.6);
   --tyba-divider-t: 0 -1px 0 0 var(--tyba-divider-line), 0 -5px 8px -7px rgba(0, 0, 0, 0.6);
-  --tyba-divider-x: 1px 0 0 0 var(--tyba-divider-line), -1px 0 0 0 var(--tyba-divider-line);
+  --tyba-divider-r: 1px 0 0 0 var(--tyba-divider-line);
   --tyba-focus-ring: 0 0 0 2px var(--tyba-bg), 0 0 0 4px var(--tyba-green);
 
   /* ---------- Movimento ---------- */
@@ -265,7 +265,7 @@
   --tyba-divider-line: color-mix(in srgb, var(--tyba-text) 12%, transparent);
   --tyba-divider-b: 0 1px 0 0 var(--tyba-divider-line), 0 5px 8px -7px rgba(23, 23, 28, 0.18);
   --tyba-divider-t: 0 -1px 0 0 var(--tyba-divider-line), 0 -5px 8px -7px rgba(23, 23, 28, 0.18);
-  --tyba-divider-x: 1px 0 0 0 var(--tyba-divider-line), -1px 0 0 0 var(--tyba-divider-line);
+  --tyba-divider-r: 1px 0 0 0 var(--tyba-divider-line);
 }
 
 /* ============================================================
@@ -962,8 +962,8 @@ samp {
 .tyba-divide-t {
   box-shadow: var(--tyba-divider-t);
 }
-.tyba-divide-x {
-  box-shadow: var(--tyba-divider-x);
+.tyba-divide-r {
+  box-shadow: var(--tyba-divider-r);
 }
 
 /* ---------- Luz ---------- */
