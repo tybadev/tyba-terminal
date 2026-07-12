@@ -1,5 +1,12 @@
 import { leafSessions, paneSession, type SessionCwd, type Workspace } from "./ipc";
 
+export function compactPath(dir: string): string {
+  const home = dir.replace(/^\/Users\/[^/]+/, "~");
+  const parts = home.split("/").filter(Boolean);
+  if (home.length <= 34 || parts.length <= 3) return home;
+  return `…/${parts.slice(-2).join("/")}`;
+}
+
 export function resolveWorkspaceCwd(
   w: Workspace,
   sessionCwds: Record<string, SessionCwd>,

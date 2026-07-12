@@ -157,7 +157,11 @@ import {
 import { shouldShowGitIcon } from "./lib/headerGit";
 import { buildAgentSessionOpts } from "./lib/agentSession";
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
-import { resolveWorkspaceCwd, workspaceMatchDir } from "./lib/workspaceCwd";
+import {
+  compactPath,
+  resolveWorkspaceCwd,
+  workspaceMatchDir,
+} from "./lib/workspaceCwd";
 import { findSessionLocation } from "./lib/sessionLocation";
 import {
   computeRects,
@@ -280,13 +284,6 @@ function agentGlyph(label: string, size = 16): React.ReactNode {
   if (label === "codex")
     return <OpenAIIcon size={size} className="shrink-0 text-tyba-text" />;
   return <Robot size={size} className="shrink-0" />;
-}
-
-function compactPath(dir: string): string {
-  const home = dir.replace(/^\/Users\/[^/]+/, "~");
-  const parts = home.split("/").filter(Boolean);
-  if (home.length <= 34 || parts.length <= 3) return home;
-  return `…/${parts.slice(-2).join("/")}`;
 }
 
 const SESSION_COLORS = [
@@ -2062,12 +2059,6 @@ export default function App() {
                       <DiffStat status={gitStatus} />
                     </span>
                   )}
-                  {hoverAgent && (
-                    <span className="flex shrink-0 items-center gap-1 rounded-[3px] bg-tyba-violet-tint px-1 py-px font-mono text-[9px] leading-none text-tyba-violet">
-                      {agentGlyph(hoverAgent, 9)}
-                      {hoverAgent}
-                    </span>
-                  )}
                 </span>
               )}
             </span>
@@ -2644,6 +2635,7 @@ export default function App() {
                     tabs={activeWorkspace.tabs}
                     activeTab={activeWorkspace.active_tab}
                     sessions={sessions}
+                    cwds={sessionCwds}
                     onActivate={(id) => void activateTab(id)}
                     onClose={(id) => void closeTabAndRefresh(id)}
                     onNew={() => void newTab()}

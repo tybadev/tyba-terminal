@@ -14,15 +14,18 @@ import { OpenAIIcon } from "./icons/OpenAIIcon";
 import {
   leafSessions,
   type Session,
+  type SessionCwd,
   type SessionId,
   type Tab,
   type TabId,
 } from "../lib/ipc";
+import { compactPath } from "../lib/workspaceCwd";
 
 interface Props {
   tabs: Tab[];
   activeTab: TabId | null;
   sessions: Session[];
+  cwds: Record<string, SessionCwd>;
   onActivate: (id: TabId) => void;
   onClose: (id: TabId) => void;
   onNew: () => void;
@@ -54,9 +57,19 @@ function tabIcon(tab: Tab, sessions: Map<SessionId, Session>): React.ReactNode {
   return <TerminalWindow size={12} />;
 }
 
-function tabLabel(tab: Tab, sessions: Map<SessionId, Session>): string {
-  if (tab.title) return tab.title;
+function tabLabel(
+  tab: Tab,
+  sessions: Map<SessionId, Session>,
+  cwds: Record<string, SessionCwd>,
+): string {
   if (tab.view) return i18n.t(tab.view);
+  if (tab.root) {
+    for (const sid of leafSessions(tab.root)) {
+      const cwd = cwds[sid]?.cwd;
+      if (cwd) return compactPath(cwd);
+    }
+  }
+  if (tab.title) return tab.title;
   if (!tab.root) return "shell";
   const bound = leafSessions(tab.root)
     .map((id) => sessions.get(id)?.title)
@@ -68,6 +81,7 @@ export function TabBar({
   tabs,
   activeTab,
   sessions,
+  cwds,
   onActivate,
   onClose,
   onNew,
@@ -103,8 +117,8 @@ export function TabBar({
             >
               {tabIcon(tab, byId)}
             </span>
-            <span className="min-w-0 flex-1 truncate text-left">
-              {tabLabel(tab, byId)}
+            <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px]">
+              {tabLabel(tab, byId, cwds)}
             </span>
             <span
               role="button"
