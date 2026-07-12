@@ -7,7 +7,7 @@ use tauri_plugin_notification::NotificationExt;
 
 use crate::agent::hooks_settings::{hook_command, hooks_settings_json};
 use crate::agent::{AgentRunner, ClaudeCodeRunner};
-use crate::approvals::tool_risk::{classify_tool_use, describe_tool_use};
+use crate::approvals::tool_action::normalize_tool_use;
 use crate::approvals::{now_ms, Decision, RiskLevel, SharedApprovals};
 use crate::hook_ipc::{HookAction, HookEvent, HookServer};
 use crate::pty::SharedPtyPool;
@@ -106,6 +106,7 @@ struct HandlerCtx {
     approvals: SharedApprovals,
     store: Arc<Store>,
     session_id: SessionId,
+    runner_kind: AgentRunnerKind,
     worktree_root: PathBuf,
     turn_settle: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -195,10 +196,11 @@ fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>) {
 fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     let tool = event.tool_name.as_deref().unwrap_or("");
     let input = event.tool_input.as_ref();
-    let command = describe_tool_use(tool, input);
+    let normalized = normalize_tool_use(&ctx.runner_kind, tool, input);
+    let command = normalized.description;
     let cwd = event.cwd.clone();
 
-    match classify_tool_use(tool, input, &ctx.worktree_root) {
+    match normalized.action.classify(&ctx.worktree_root) {
         RiskLevel::Green => {
             record_history(
                 &ctx.store,
@@ -416,6 +418,7 @@ fn spawn_prepared(
         approvals: ctx.approvals.clone(),
         store: ctx.store.clone(),
         session_id: id,
+        runner_kind: runner.kind(),
         worktree_root: worktree.path.clone(),
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
