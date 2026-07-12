@@ -53,4 +53,6 @@ Leia o doc relevante antes de implementar qualquer módulo.
 - Código e identificadores em inglês; docs e mensagens de UI em pt-BR (i18n depois).
 - Commits: conventional commits (`feat:`, `fix:`, `refactor:`).
 - Testes: unit para parsers (diff, OSC 133, stream-json) são obrigatórios — são a parte mais frágil.
-- Nunca commitar exemplos com secrets reais. O repo é privado hoje, mas nasceu para ser opensource — quando abrir, o histórico inteiro vai junto: secret commitado agora é secret vazado no dia do lançamento.
+- **Nunca commitar secrets.** O repo é privado hoje, mas nasceu para ser opensource — quando abrir, o histórico inteiro vai junto: secret commitado agora é secret vazado no dia do lançamento. O projeto em si não tem segredo (é um app desktop, sem backend); os riscos concretos são dois:
+  - **Fixtures de teste são sempre sintéticas.** Scrollback, transcript de agente e output de terminal se escrevem à mão — nunca se copia uma sessão real de `~/.claude/projects` ou `~/.codex/sessions` para reproduzir um bug. Um terminal grava tudo que o dono digitou; a fixture "só pra testar" carrega o token junto.
+  - **Chaves de assinatura vivem em GitHub Secrets** (Fase 6): certificado Developer ID + senha, credenciais de notarização, e a chave privada do auto-update. Essa última é a mais perigosa — quem a tiver publica um "update" que a máquina do usuário instala sozinha.
