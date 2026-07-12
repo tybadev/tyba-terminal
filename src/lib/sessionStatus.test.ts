@@ -101,23 +101,23 @@ describe("statusVisual", () => {
       { state: "awaiting_input", hint: null, reason: "reply" },
       true,
     );
-    expect(approval?.labelKey).toBe("sessionAwaitingApproval");
-    expect(reply?.labelKey).toBe("sessionAwaitingReply");
+    expect(approval?.labelKey).toBe("sessionBlocked");
+    expect(reply?.labelKey).toBe("sessionAwaiting");
     expect(approval?.dotClass).toContain("bg-tyba-amber");
     expect(approval?.dotClass).toContain("animate-pulse");
   });
 
-  test("idle só sinaliza com attention, azul e sem pulso", () => {
+  test("idle só sinaliza com attention, verde e sem pulso", () => {
     expect(statusVisual({ state: "idle", summary: null }, false)).toBeNull();
     const v = statusVisual({ state: "idle", summary: null }, true);
-    expect(v?.labelKey).toBe("sessionTurnEnded");
-    expect(v?.dotClass).toContain("bg-tyba-blue");
+    expect(v?.labelKey).toBe("sessionFinished");
+    expect(v?.dotClass).toContain("bg-tyba-green");
     expect(v?.dotClass).not.toContain("animate-pulse");
   });
 
-  test("running pulsa verde; exited não sinaliza", () => {
+  test("running pulsa azul; exited não sinaliza", () => {
     const running = statusVisual({ state: "running" }, false);
-    expect(running?.dotClass).toContain("bg-tyba-green");
+    expect(running?.dotClass).toContain("bg-tyba-blue");
     expect(running?.dotClass).toContain("animate-pulse");
     expect(statusVisual({ state: "exited", code: 0 }, true)).toBeNull();
   });

@@ -1932,7 +1932,7 @@ export default function App() {
             : undefined
         }
         className={`group relative flex shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
-          showDetails ? "h-12" : "h-8"
+          showDetails ? "h-[3.75rem]" : "h-8"
         } ${open ? "px-2" : "justify-center px-0"} ${
           isActive
             ? `text-tyba-text ${w.color ? "" : "bg-white/[.05]"}`
@@ -2001,7 +2001,7 @@ export default function App() {
         </span>
         {open && (
           <>
-            <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
+            <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
               <span className="flex w-full items-center gap-1.5">
                 <span className="min-w-0 flex-1 truncate text-left leading-none">
                   {isConfig
@@ -2013,36 +2013,37 @@ export default function App() {
                 {turnEndedUnseen && (
                   <span
                     aria-hidden
-                    title={t("sessionTurnEnded")}
-                    className="size-1.5 shrink-0 rounded-full bg-tyba-blue"
+                    title={t("sessionFinished")}
+                    className="size-1.5 shrink-0 rounded-full bg-tyba-green"
                   />
                 )}
               </span>
-              {showDetails && agentStatus && agentDetail && (
-                <span className="flex w-full items-center gap-1.5">
-                  <span
-                    className={`size-1 shrink-0 rounded-full ${agentStatus.visual.dotClass}`}
-                  />
-                  <span
-                    className={`min-w-0 truncate font-mono text-[10px] leading-none ${agentStatus.visual.textClass}`}
-                  >
-                    {agentDetail}
-                  </span>
+              {showDetails && (
+                <span className="w-full truncate text-left font-mono text-[10px] leading-none text-tyba-text-faint">
+                  {displayDir ? compactPath(displayDir) : "~"}
                 </span>
               )}
-              {showDetails && !agentStatus && runningCmd && (
+              {showDetails && (
                 <span className="flex w-full items-center gap-1.5">
-                  <span className="size-1 shrink-0 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse" />
-                  <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-muted">
-                    {runningCmd}
-                  </span>
-                </span>
-              )}
-              {showDetails && !agentStatus && !runningCmd && (
-                <span className="flex w-full items-center gap-1.5">
-                  <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-faint">
-                    {displayDir ? compactPath(displayDir) : "~"}
-                  </span>
+                  {agentStatus && agentDetail ? (
+                    <span className="flex min-w-0 items-center gap-1">
+                      <span
+                        className={`size-1 shrink-0 rounded-full ${agentStatus.visual.dotClass}`}
+                      />
+                      <span
+                        className={`min-w-0 truncate font-mono text-[10px] leading-none ${agentStatus.visual.textClass}`}
+                      >
+                        {agentDetail}
+                      </span>
+                    </span>
+                  ) : runningCmd ? (
+                    <span className="flex min-w-0 items-center gap-1">
+                      <span className="size-1 shrink-0 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse" />
+                      <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-muted">
+                        {runningCmd}
+                      </span>
+                    </span>
+                  ) : null}
                   {branch && (
                     <span
                       title={branch}

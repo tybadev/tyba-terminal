@@ -189,6 +189,23 @@ export function NotificationToaster({
     };
   }, []);
 
+  useEffect(() => {
+    if (outcomes.length === 0) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!event.metaKey || !event.shiftKey || event.key.toLowerCase() !== "o") {
+        return;
+      }
+      event.preventDefault();
+      const latest = outcomes[outcomes.length - 1];
+      dismissOutcome(latest.key);
+      void sessionMarkSeen(latest.sessionId).catch(() => {});
+      onGoToSession(latest.sessionId);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outcomes, onGoToSession]);
+
   const dismiss = (id: number) => {
     const timer = timers.current.get(id);
     if (timer) {
@@ -431,14 +448,29 @@ export function NotificationToaster({
                     </span>
                   )}
                 </ToastDescription>
-                <SessionDeepLink
-                  label={sessionTitle(outcome.sessionId)}
-                  onClick={() => {
-                    dismissOutcome(outcome.key);
-                    void sessionMarkSeen(outcome.sessionId).catch(() => {});
-                    onGoToSession(outcome.sessionId);
-                  }}
-                />
+                <div className="flex items-center gap-2">
+                  <SessionDeepLink
+                    label={sessionTitle(outcome.sessionId)}
+                    onClick={() => {
+                      dismissOutcome(outcome.key);
+                      void sessionMarkSeen(outcome.sessionId).catch(() => {});
+                      onGoToSession(outcome.sessionId);
+                    }}
+                  />
+                  <span
+                    aria-label={t("openSessionShortcut")}
+                    className="ml-auto flex shrink-0 items-center gap-0.5"
+                  >
+                    {["⌘", "⇧", "O"].map((key) => (
+                      <kbd
+                        key={key}
+                        className="rounded-[3px] border border-tyba-border bg-tyba-sunken px-1 py-0.5 font-mono text-[10px] leading-none text-tyba-text-faint"
+                      >
+                        {key}
+                      </kbd>
+                    ))}
+                  </span>
+                </div>
               </div>
             </div>
           </Toast>

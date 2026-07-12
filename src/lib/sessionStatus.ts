@@ -50,24 +50,24 @@ export const statusVisual = (
         textClass: "text-tyba-amber",
         labelKey:
           status.reason === "approval"
-            ? "sessionAwaitingApproval"
-            : "sessionAwaitingReply",
+            ? "sessionBlocked"
+            : "sessionAwaiting",
         rank: 3,
       };
     case "idle":
       if (!attention) return null;
       return {
-        dotClass: "bg-tyba-blue",
-        textClass: "text-tyba-blue",
-        labelKey: "sessionTurnEnded",
+        dotClass: "bg-tyba-green",
+        textClass: "text-tyba-green",
+        labelKey: "sessionFinished",
         rank: 2,
       };
     case "running":
       return {
         dotClass:
-          "bg-tyba-green [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse",
-        textClass: "text-tyba-text-muted",
-        labelKey: "sessionRunning",
+          "bg-tyba-blue [box-shadow:var(--tyba-glow-blue)] motion-safe:animate-pulse",
+        textClass: "text-tyba-blue",
+        labelKey: "sessionInProgress",
         rank: 1,
       };
     case "exited":
