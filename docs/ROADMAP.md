@@ -52,6 +52,8 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 - [x] Códigos de erro bilíngues pt/en (`AppError {code,params}` + `translateError`) (#79)
 - [x] Polish do painel de diff (accordion, rolagem contida, "Ver PR"), notificações via toast, error boundary por região (#79, #80)
 - [x] **Painel de git pra TODO repo** (não só worktree) + ícones contextuais de git/PR no header (#81) — _spec: `tyba/features/git-panel/rules`_
+- [x] **Status de sessão visível** (#83) — cores por estado no sidebar (azul in progress / âmbar aguardando-bloqueado / verde concluído / vermelho falhou), motivo estruturado da pausa (`AwaitingInput.reason`), atenção não-vista no core (`session_mark_seen`), toast no topo com resumo do turno (transcript) + atalho ⌘⇧O, notificação nativa com settle cancelável, spinner braille no título da janela, tab com path + glifo do agente — _spec: `tyba/features/session-status`_
+- [x] Ícone do app em squircle macOS com margens transparentes (Dock sem quadrado full-bleed) (#83)
 - [ ] Seletor de base/branch no painel de diff (three-dot/merge-base) — _grill pendente; comparar a branch contra o alvo de merge_
 
 ## Fase 5 — Profundidade
