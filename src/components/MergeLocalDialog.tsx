@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { translateError } from "../lib/errors";
 import { GitMerge, WarningCircle } from "@phosphor-icons/react";
 
 import {
@@ -44,7 +45,7 @@ export function MergeLocalDialog({ session, open, onClose, onMerged }: Props) {
     setError(null);
     void worktreeMergePreview(session.id)
       .then(setPreview)
-      .catch((e) => setLoadError(String(e)));
+      .catch((e) => setLoadError(translateError(e, t)));
   }, [open, session.id]);
 
   if (!open) return null;
@@ -73,7 +74,7 @@ export function MergeLocalDialog({ session, open, onClose, onMerged }: Props) {
       await worktreeMergeIntoBase(session.id, strategy);
       onMerged();
     } catch (e) {
-      setError(String(e));
+      setError(translateError(e, t));
       setBusy(false);
       setArmed(false);
     }

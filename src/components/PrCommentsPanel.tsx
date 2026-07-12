@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { translateError } from "../lib/errors";
 import {
   CaretDown,
   CaretRight,
@@ -44,7 +45,7 @@ export function PrCommentsPanel({ sessionId, pr, onSendToAgent }: Props) {
     setSendState("idle");
     void forgePrComments(sessionId, pr.number)
       .then(setComments)
-      .catch((e) => setLoadError(String(e)));
+      .catch((e) => setLoadError(translateError(e, t)));
   }, [sessionId, pr.number]);
 
   const selectedComments = useMemo(
@@ -86,7 +87,7 @@ export function PrCommentsPanel({ sessionId, pr, onSendToAgent }: Props) {
       setSelected(new Set());
     } catch (e) {
       setSendState("error");
-      setSendError(String(e));
+      setSendError(translateError(e, t));
     }
   };
 

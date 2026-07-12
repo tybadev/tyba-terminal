@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { translateError } from "../lib/errors";
 import { ArrowSquareOut, GitPullRequest } from "@phosphor-icons/react";
 
 import {
@@ -68,7 +69,7 @@ export function OpenPrDialog({
       const pr = await forgeCreatePr(session.id, trimmed, body);
       onCreated(pr);
     } catch (e) {
-      setError(String(e));
+      setError(translateError(e, t));
     } finally {
       setBusy(false);
     }
@@ -85,7 +86,7 @@ export function OpenPrDialog({
       }
       onClose();
     } catch (e) {
-      setError(String(e));
+      setError(translateError(e, t));
     } finally {
       setPushing(false);
     }
