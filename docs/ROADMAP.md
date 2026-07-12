@@ -34,17 +34,25 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 - [x] Diff local: numstat/name-status com -z, hunks lazy por arquivo, dirty state
 - [x] DiffView React (sidebar de arquivos, Shiki, unified/split, colapso de gerados) — evoluiu para painel de git do workspace (staging, commit, push, comentários pro agente)
 
-## Fase 4 — Agentes + inbox (o produto) ✅ **concluída** (PRs #73, #74, #75, #76) — _spec e decisões no cofre: `tyba/features/agents/`_
+## Fase 4 — Agentes + inbox (o produto) ✅ **concluída** (PRs #73–#77) — _spec e decisões no cofre: `tyba/features/agents/`_
 
 - [x] Trait AgentRunner + runner ClaudeCode — TUI interativo com hooks injetados via `--settings`; bypass de permissões proibido (teste trava)
 - [x] StatusDetector: eventos de hook (SessionStart/Stop/Notification/SessionEnd) → SessionStatus; fallback OSC/heurística fica pra F5 (só runners sem hooks)
 - [x] Inbox: sidebar com status, notificação nativa em AwaitingInput, toast acionável, opções numeradas 1/2/3 como no TUI
 - [x] approveAction com classificação de risco — hook `PreToolUse` bloqueia até a decisão humana (unix socket + `tyba _hook`, deny fail-closed); verde auto-aprovado; "sempre permitir" por comando+sessão (nunca vermelho); recusar com feedback volta pro agente
 - [x] Env filtrado por allowlist (`.tyba/config.toml`) com consent por hash e baseline inviolável
-- [ ] **Leva 3 — merge flow**: review no painel de diff → merge local | squash | PR via `gh` OU `glab` (detectado pelo remote)
+- [x] **Leva 3 — merge flow** (#76, #77): review no painel → Abrir PR via `gh`/`glab` (push automático da branch antes) | merge local (ação vermelha, `merge-tree`+ff-only) | PR view com checks e comentários encaminhados pro agente
 - [x] Regras hard: recusa de push para main (core), push sempre com aprovação humana, spawn atrás da trait Sandbox
 
-**Critério de saída**: rodar 3+ sessões de Claude Code em paralelo construindo o próprio tyba.
+**Critério de saída**: rodar 3+ sessões de Claude Code em paralelo construindo o próprio tyba. ✅ — a leva 3 foi construída assim.
+
+### Pós-Fase 4 (profundidade/polish já entregue)
+
+- [x] Logo/marca Tyba + set de ícones (#78)
+- [x] Códigos de erro bilíngues pt/en (`AppError {code,params}` + `translateError`) (#79)
+- [x] Polish do painel de diff (accordion, rolagem contida, "Ver PR"), notificações via toast, error boundary por região (#79, #80)
+- [x] **Painel de git pra TODO repo** (não só worktree) + ícones contextuais de git/PR no header (#81) — _spec: `tyba/features/git-panel/rules`_
+- [ ] Seletor de base/branch no painel de diff (three-dot/merge-base) — _grill pendente; comparar a branch contra o alvo de merge_
 
 ## Fase 5 — Profundidade
 
