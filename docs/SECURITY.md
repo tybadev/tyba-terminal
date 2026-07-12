@@ -43,7 +43,7 @@ O maior risco de um produto de aprovações é o usuário virar autômato de "y"
 ## Isolamento
 
 - **Worktree é o boundary de escrita** de cada sessão — isola agentes entre si.
-- **Trait `Sandbox` desde o dia 1** no spawn de agentes, mesmo com implementação passthrough no MVP. Implementações futuras: Seatbelt/`sandbox-exec` (macOS), Landlock/bubblewrap (Linux) — write só em worktree + temp, read no repo.
+- **Sandbox real no macOS** (Seatbelt/`sandbox-exec`): o processo do agente inteiro roda dentro da política — filhos herdam, sem escape via `bash -c`. Escrita só em worktree + temp + dirs do agente (granular); **leitura deny-por-default com allowlist** (`~/.ssh`, `~/.aws`, `~/.git-credentials`, `tyba.db`, docker.sock e worktrees vizinhos ficam invisíveis); rede aberta (agente é cliente de API — a defesa é a leitura fechada). **Fail-closed**: sandbox que não aplica → agente não sobe. Só `~/.tyba/config.toml` (config do usuário, nunca a do repo) afrouxa via `[sandbox] read_allow`. Linux (bubblewrap/seccomp) pendente — spawn de agente recusado na plataforma até existir.
 - **Kill switch real**: parar sessão = `killpg` no process group inteiro. SIGTERM só no pai deixa subprocessos órfãos.
 
 ## Shell integration em diretório temporário
