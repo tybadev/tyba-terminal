@@ -537,14 +537,10 @@ async fn forge_status(
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<Option<forge::ForgeStatus>, AppError> {
-    let session = state
-        .sessions
-        .get(id)
-        .ok_or_else(|| session_setup_error("sessão não existe".into()))?;
-    let wt = session_worktree(&state, id).map_err(session_setup_error)?;
-    let root = session.repo_root.unwrap_or_else(|| wt.path.clone());
-    let branch = wt.branch.clone();
-    forge_blocking(move || Ok(forge::status(&root, Some(&branch)))).await
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let root = ctx.path.clone();
+    let branch = repo::branch(&ctx.path);
+    forge_blocking(move || Ok(forge::status(&root, branch.as_deref()))).await
 }
 
 #[tauri::command]
@@ -552,9 +548,11 @@ async fn forge_pr_for_session(
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<Option<forge::PullRequest>, AppError> {
-    let wt = session_worktree(&state, id).map_err(session_setup_error)?;
-    let path = wt.path.clone();
-    let branch = wt.branch.clone();
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let Some(branch) = repo::branch(&ctx.path) else {
+        return Ok(None);
+    };
+    let path = ctx.path;
     forge_blocking(move || forge::pr_for_branch(&path, &branch)).await
 }
 
@@ -564,8 +562,8 @@ async fn forge_pr_comments(
     id: SessionId,
     number: u64,
 ) -> Result<Vec<forge::ReviewComment>, AppError> {
-    let wt = session_worktree(&state, id).map_err(session_setup_error)?;
-    let path = wt.path.clone();
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
     forge_blocking(move || forge::pr_comments(&path, number)).await
 }
 
