@@ -449,6 +449,37 @@ const resources = {
       postDeliveryRemoving: "Removendo…",
       postDeliveryUncommittedWarning:
         "Há trabalho não-commitado no worktree que NÃO foi pro PR/merge — remover vai descartá-lo permanentemente.",
+      "error.pr.title_empty": "O título do PR não pode ser vazio.",
+      "error.pr.branch_empty":
+        "A sessão não tem uma branch para buscar o PR.",
+      "error.push.protected_branch":
+        "Push para {{branch}} é recusado pelo TYBA — nunca a partir de main/master.",
+      "error.push.detached_head":
+        "A sessão está com HEAD destacado — não há branch para push.",
+      "error.push.failed": "O push falhou: {{detail}}",
+      "error.merge.base_dirty":
+        "A branch base ({{branch}}) tem trabalho não-commitado — commite ou descarte antes de mergear.",
+      "error.merge.conflict":
+        "Merge recusado por conflito em: {{files}} — resolva na sessão antes.",
+      "error.merge.nothing":
+        "Nada para mergear: {{source}} não tem commits além de {{base}}.",
+      "error.merge.detached_head":
+        "{{what}} está com HEAD destacado — não há branch.",
+      "error.merge.same_branch":
+        "A sessão está na própria branch base ({{branch}}) — nada a mergear.",
+      "error.merge.base_moved":
+        "A branch base ({{branch}}) mudou durante o merge — nada foi alterado, tente de novo.",
+      "error.merge.failed": "O merge falhou: {{detail}}",
+      "error.forge.cli_failed": "O comando {{cli}} falhou: {{detail}}",
+      "error.forge.not_authenticated":
+        "{{cli}} não está autenticado — rode o login da CLI e tente de novo.",
+      "error.forge.no_forge":
+        "O remote origin não aponta para GitHub nem GitLab — nada a fazer aqui.",
+      "error.forge.create_failed": "Não foi possível abrir o PR/MR: {{detail}}",
+      "error.forge.task_failed":
+        "A tarefa da forja não pôde ser executada: {{detail}}",
+      "error.session.unavailable": "A sessão não está disponível: {{detail}}",
+      "error.unknown": "Algo deu errado: {{detail}}",
     },
   },
   en: {
@@ -884,6 +915,35 @@ const resources = {
       postDeliveryRemoving: "Removing…",
       postDeliveryUncommittedWarning:
         "There is uncommitted work in the worktree that did NOT go into the PR/merge — removing will discard it permanently.",
+      "error.pr.title_empty": "The PR title cannot be empty.",
+      "error.pr.branch_empty": "The session has no branch to look up the PR.",
+      "error.push.protected_branch":
+        "Pushing to {{branch}} is refused by TYBA — never from main/master.",
+      "error.push.detached_head":
+        "The session is on a detached HEAD — there is no branch to push.",
+      "error.push.failed": "Push failed: {{detail}}",
+      "error.merge.base_dirty":
+        "The base branch ({{branch}}) has uncommitted work — commit or discard before merging.",
+      "error.merge.conflict":
+        "Merge refused due to a conflict in: {{files}} — resolve it in the session first.",
+      "error.merge.nothing":
+        "Nothing to merge: {{source}} has no commits beyond {{base}}.",
+      "error.merge.detached_head":
+        "{{what}} is on a detached HEAD — there is no branch.",
+      "error.merge.same_branch":
+        "The session is on its own base branch ({{branch}}) — nothing to merge.",
+      "error.merge.base_moved":
+        "The base branch ({{branch}}) moved during the merge — nothing changed, try again.",
+      "error.merge.failed": "Merge failed: {{detail}}",
+      "error.forge.cli_failed": "The {{cli}} command failed: {{detail}}",
+      "error.forge.not_authenticated":
+        "{{cli}} is not authenticated — run the CLI login and try again.",
+      "error.forge.no_forge":
+        "The origin remote points to neither GitHub nor GitLab — nothing to do here.",
+      "error.forge.create_failed": "Could not open the PR/MR: {{detail}}",
+      "error.forge.task_failed": "The forge task could not run: {{detail}}",
+      "error.session.unavailable": "The session is unavailable: {{detail}}",
+      "error.unknown": "Something went wrong: {{detail}}",
     },
   },
 } as const;
@@ -905,6 +965,7 @@ void i18n.use(initReactI18next).init({
   resources,
   lng: detectLanguage(),
   fallbackLng: "en",
+  keySeparator: false,
   interpolation: { escapeValue: false },
 });
 
