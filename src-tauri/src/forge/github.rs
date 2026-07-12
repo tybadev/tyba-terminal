@@ -4,9 +4,30 @@ use serde::Deserialize;
 
 use super::exec::{self, LOCAL_TIMEOUT, NETWORK_TIMEOUT};
 use super::remote::Remote;
-use super::{CheckRun, PullRequest, ReviewComment};
+use super::{is_auth_error, CheckRun, PullRequest, ReviewComment};
+use crate::error::AppError;
 
 pub const CLI: &str = "gh";
+
+fn cli_failed(detail: impl Into<String>) -> AppError {
+    let detail = detail.into();
+    if is_auth_error(&detail) {
+        AppError::new("forge.not_authenticated").with("cli", CLI)
+    } else {
+        AppError::new("forge.cli_failed")
+            .with("cli", CLI)
+            .with("detail", detail)
+    }
+}
+
+fn create_failed(detail: impl Into<String>) -> AppError {
+    let detail = detail.into();
+    if is_auth_error(&detail) {
+        AppError::new("forge.not_authenticated").with("cli", CLI)
+    } else {
+        AppError::new("forge.create_failed").with("detail", detail)
+    }
+}
 
 const PR_FIELDS: &str = "number,title,url,state,statusCheckRollup";
 
@@ -177,27 +198,24 @@ pub fn web_create_url(remote: &Remote, branch: &str) -> String {
     )
 }
 
-pub fn create_pr(worktree: &Path, title: &str, body: &str) -> Result<PullRequest, String> {
+pub fn create_pr(worktree: &Path, title: &str, body: &str) -> Result<PullRequest, AppError> {
     let out = exec::run(
         CLI,
         &["pr", "create", "--title", title, "--body-file", "-"],
         worktree,
         Some(body.as_bytes()),
         NETWORK_TIMEOUT,
-    )?;
+    )
+    .map_err(create_failed)?;
     if !out.ok {
-        return Err(format!("`gh pr create` falhou: {}", out.stderr_message()));
+        return Err(create_failed(out.stderr_message()));
     }
-    let number = pr_number_from_output(&out.stdout).ok_or_else(|| {
-        format!(
-            "`gh pr create` não devolveu a URL do PR: {}",
-            out.stderr_message()
-        )
-    })?;
+    let number =
+        pr_number_from_output(&out.stdout).ok_or_else(|| create_failed(out.stderr_message()))?;
     pr_by_number(worktree, number)
 }
 
-pub fn pr_by_number(worktree: &Path, number: u64) -> Result<PullRequest, String> {
+pub fn pr_by_number(worktree: &Path, number: u64) -> Result<PullRequest, AppError> {
     let number = number.to_string();
     let out = exec::run(
         CLI,
@@ -205,14 +223,15 @@ pub fn pr_by_number(worktree: &Path, number: u64) -> Result<PullRequest, String>
         worktree,
         None,
         NETWORK_TIMEOUT,
-    )?;
+    )
+    .map_err(cli_failed)?;
     if !out.ok {
-        return Err(format!("`gh pr view` falhou: {}", out.stderr_message()));
+        return Err(cli_failed(out.stderr_message()));
     }
-    parse_pr(&out.stdout)
+    parse_pr(&out.stdout).map_err(cli_failed)
 }
 
-pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest>, String> {
+pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest>, AppError> {
     let out = exec::run(
         CLI,
         &[
@@ -221,14 +240,18 @@ pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest
         worktree,
         None,
         NETWORK_TIMEOUT,
-    )?;
+    )
+    .map_err(cli_failed)?;
     if !out.ok {
-        return Err(format!("`gh pr list` falhou: {}", out.stderr_message()));
+        return Err(cli_failed(out.stderr_message()));
     }
-    Ok(parse_pr_list(&out.stdout)?.into_iter().next())
+    Ok(parse_pr_list(&out.stdout)
+        .map_err(cli_failed)?
+        .into_iter()
+        .next())
 }
 
-pub fn pr_comments(worktree: &Path, number: u64) -> Result<Vec<ReviewComment>, String> {
+pub fn pr_comments(worktree: &Path, number: u64) -> Result<Vec<ReviewComment>, AppError> {
     let inline = format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments?per_page=100");
     let issue = format!("repos/{{owner}}/{{repo}}/issues/{number}/comments?per_page=100");
 
@@ -237,12 +260,13 @@ pub fn pr_comments(worktree: &Path, number: u64) -> Result<Vec<ReviewComment>, S
     Ok(comments)
 }
 
-fn api_comments(worktree: &Path, endpoint: &str) -> Result<Vec<ReviewComment>, String> {
-    let out = exec::run(CLI, &["api", endpoint], worktree, None, NETWORK_TIMEOUT)?;
+fn api_comments(worktree: &Path, endpoint: &str) -> Result<Vec<ReviewComment>, AppError> {
+    let out =
+        exec::run(CLI, &["api", endpoint], worktree, None, NETWORK_TIMEOUT).map_err(cli_failed)?;
     if !out.ok {
-        return Err(format!("`gh api` falhou: {}", out.stderr_message()));
+        return Err(cli_failed(out.stderr_message()));
     }
-    parse_comments(&out.stdout)
+    parse_comments(&out.stdout).map_err(cli_failed)
 }
 
 #[cfg(test)]

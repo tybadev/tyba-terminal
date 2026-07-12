@@ -79,7 +79,7 @@ const resources = {
       toolbarClock: "Relógio",
       diffReviewAction: "Revisar diff",
       diffSessionGone: "A sessão desta revisão não existe mais.",
-      diffPaneLabel: "diff · {{title}}",
+      diffPaneLabel: "{{title}}",
       diffPaneClose: "Fechar diff",
       reviewAgent: "Agente de review",
       reviewAgentHint:
@@ -170,9 +170,9 @@ const resources = {
         "O .tyba/config.toml deste repo pede que o agente receba estas variáveis do SEU ambiente. Sem permitir, a sessão sobe só com o baseline padrão.",
       agentConsentAllow: "Permitir",
       agentConsentSkip: "Agora não",
-      agentReadyTimeoutTitle: "O agente não confirmou os hooks",
+      agentReadyTimeoutTitle: "O prompt inicial não foi enviado",
       agentReadyTimeoutBody:
-        "O prompt inicial ficou no composer desta sessão — revise e envie manualmente.",
+        "O prompt inicial ficou no composer — revise e envie.",
       sessionAwaitingInput: "aguardando input",
       dismiss: "Dispensar",
       chipsEditorTitle: "Chips da barra",
@@ -373,6 +373,7 @@ const resources = {
       riskYellow: "risco médio",
       riskRed: "risco alto",
       approvalRequested: "Pedido de aprovação",
+      notificationGoToSession: "Ir para a sessão",
       alwaysAllow: "Sempre permitir",
       alwaysAllowSession: "Sempre permitir nesta sessão",
       alwaysAllowHint:
@@ -383,6 +384,8 @@ const resources = {
         "Nenhuma forja detectada (o remote não é GitHub nem GitLab) — só merge local disponível.",
       deliveryOpenPr: "Abrir PR",
       deliveryOpenMr: "Abrir MR",
+      deliveryViewPr: "Ver PR",
+      deliveryViewMr: "Ver MR",
       deliveryMergeLocal: "Merge local",
       prDialogTitlePr: "Abrir Pull Request",
       prDialogTitleMr: "Abrir Merge Request",
@@ -438,7 +441,7 @@ const resources = {
       prCommentsSend_other: "Encaminhar {{count}} comentários pro agente",
       prCommentsSending: "Encaminhando…",
       prCommentsSent: "Encaminhado pro agente ✓",
-      prCommentsPreviewTitle: "Isto vai pro agente:",
+      prCommentsPreviewTitle: "Isto vai pro agente",
       postDeliveryTitle: "Entrega feita — e o worktree?",
       postDeliveryBodyPr:
         "PR aberto. Quer remover este worktree e encerrar a sessão, ou manter pra continuar trabalhando?",
@@ -449,6 +452,37 @@ const resources = {
       postDeliveryRemoving: "Removendo…",
       postDeliveryUncommittedWarning:
         "Há trabalho não-commitado no worktree que NÃO foi pro PR/merge — remover vai descartá-lo permanentemente.",
+      "error.pr.title_empty": "O título do PR não pode ser vazio.",
+      "error.pr.branch_empty":
+        "A sessão não tem uma branch para buscar o PR.",
+      "error.push.protected_branch":
+        "Push para {{branch}} é recusado pelo TYBA — nunca a partir de main/master.",
+      "error.push.detached_head":
+        "A sessão está com HEAD destacado — não há branch para push.",
+      "error.push.failed": "O push falhou: {{detail}}",
+      "error.merge.base_dirty":
+        "A branch base ({{branch}}) tem trabalho não-commitado — commite ou descarte antes de mergear.",
+      "error.merge.conflict":
+        "Merge recusado por conflito em: {{files}} — resolva na sessão antes.",
+      "error.merge.nothing":
+        "Nada para mergear: {{source}} não tem commits além de {{base}}.",
+      "error.merge.detached_head":
+        "{{what}} está com HEAD destacado — não há branch.",
+      "error.merge.same_branch":
+        "A sessão está na própria branch base ({{branch}}) — nada a mergear.",
+      "error.merge.base_moved":
+        "A branch base ({{branch}}) mudou durante o merge — nada foi alterado, tente de novo.",
+      "error.merge.failed": "O merge falhou: {{detail}}",
+      "error.forge.cli_failed": "O comando {{cli}} falhou: {{detail}}",
+      "error.forge.not_authenticated":
+        "{{cli}} não está autenticado — rode o login da CLI e tente de novo.",
+      "error.forge.no_forge":
+        "O remote origin não aponta para GitHub nem GitLab — nada a fazer aqui.",
+      "error.forge.create_failed": "Não foi possível abrir o PR/MR: {{detail}}",
+      "error.forge.task_failed":
+        "A tarefa da forja não pôde ser executada: {{detail}}",
+      "error.session.unavailable": "A sessão não está disponível: {{detail}}",
+      "error.unknown": "Algo deu errado: {{detail}}",
     },
   },
   en: {
@@ -514,7 +548,7 @@ const resources = {
       toolbarClock: "Clock",
       diffReviewAction: "Review diff",
       diffSessionGone: "This review's session no longer exists.",
-      diffPaneLabel: "diff · {{title}}",
+      diffPaneLabel: "{{title}}",
       diffPaneClose: "Close diff",
       reviewAgent: "Review agent",
       reviewAgentHint:
@@ -605,9 +639,9 @@ const resources = {
         "This repo's .tyba/config.toml asks for the agent to receive these variables from YOUR environment. Without allowing, the session starts with the default baseline only.",
       agentConsentAllow: "Allow",
       agentConsentSkip: "Not now",
-      agentReadyTimeoutTitle: "The agent didn't confirm the hooks",
+      agentReadyTimeoutTitle: "The initial prompt wasn't sent",
       agentReadyTimeoutBody:
-        "The initial prompt was left in this session's composer — review and send it manually.",
+        "The initial prompt stayed in the composer — review and send it.",
       sessionAwaitingInput: "awaiting input",
       dismiss: "Dismiss",
       chipsEditorTitle: "Bar chips",
@@ -808,6 +842,7 @@ const resources = {
       riskYellow: "medium risk",
       riskRed: "high risk",
       approvalRequested: "Approval request",
+      notificationGoToSession: "Go to session",
       alwaysAllow: "Always allow",
       alwaysAllowSession: "Always allow for this session",
       alwaysAllowHint:
@@ -818,6 +853,8 @@ const resources = {
         "No forge detected (origin isn't GitHub or GitLab) — only local merge is available.",
       deliveryOpenPr: "Open PR",
       deliveryOpenMr: "Open MR",
+      deliveryViewPr: "View PR",
+      deliveryViewMr: "View MR",
       deliveryMergeLocal: "Merge locally",
       prDialogTitlePr: "Open Pull Request",
       prDialogTitleMr: "Open Merge Request",
@@ -873,7 +910,7 @@ const resources = {
       prCommentsSend_other: "Forward {{count}} comments to the agent",
       prCommentsSending: "Forwarding…",
       prCommentsSent: "Forwarded to the agent ✓",
-      prCommentsPreviewTitle: "This is what gets sent to the agent:",
+      prCommentsPreviewTitle: "This is what gets sent to the agent",
       postDeliveryTitle: "Delivered — what about the worktree?",
       postDeliveryBodyPr:
         "PR opened. Remove this worktree and close the session, or keep it to keep working?",
@@ -884,6 +921,35 @@ const resources = {
       postDeliveryRemoving: "Removing…",
       postDeliveryUncommittedWarning:
         "There is uncommitted work in the worktree that did NOT go into the PR/merge — removing will discard it permanently.",
+      "error.pr.title_empty": "The PR title cannot be empty.",
+      "error.pr.branch_empty": "The session has no branch to look up the PR.",
+      "error.push.protected_branch":
+        "Pushing to {{branch}} is refused by TYBA — never from main/master.",
+      "error.push.detached_head":
+        "The session is on a detached HEAD — there is no branch to push.",
+      "error.push.failed": "Push failed: {{detail}}",
+      "error.merge.base_dirty":
+        "The base branch ({{branch}}) has uncommitted work — commit or discard before merging.",
+      "error.merge.conflict":
+        "Merge refused due to a conflict in: {{files}} — resolve it in the session first.",
+      "error.merge.nothing":
+        "Nothing to merge: {{source}} has no commits beyond {{base}}.",
+      "error.merge.detached_head":
+        "{{what}} is on a detached HEAD — there is no branch.",
+      "error.merge.same_branch":
+        "The session is on its own base branch ({{branch}}) — nothing to merge.",
+      "error.merge.base_moved":
+        "The base branch ({{branch}}) moved during the merge — nothing changed, try again.",
+      "error.merge.failed": "Merge failed: {{detail}}",
+      "error.forge.cli_failed": "The {{cli}} command failed: {{detail}}",
+      "error.forge.not_authenticated":
+        "{{cli}} is not authenticated — run the CLI login and try again.",
+      "error.forge.no_forge":
+        "The origin remote points to neither GitHub nor GitLab — nothing to do here.",
+      "error.forge.create_failed": "Could not open the PR/MR: {{detail}}",
+      "error.forge.task_failed": "The forge task could not run: {{detail}}",
+      "error.session.unavailable": "The session is unavailable: {{detail}}",
+      "error.unknown": "Something went wrong: {{detail}}",
     },
   },
 } as const;
@@ -905,6 +971,7 @@ void i18n.use(initReactI18next).init({
   resources,
   lng: detectLanguage(),
   fallbackLng: "en",
+  keySeparator: false,
   interpolation: { escapeValue: false },
 });
 

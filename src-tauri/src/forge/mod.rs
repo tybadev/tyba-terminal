@@ -8,6 +8,7 @@ use std::path::Path;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
 
+use crate::error::AppError;
 use remote::Remote;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,23 +77,21 @@ fn remote_of(repo_root: &Path) -> Option<Remote> {
     remote::parse(String::from_utf8_lossy(&out.stdout).trim())
 }
 
-fn current_branch(repo_root: &Path) -> Result<String, String> {
+fn current_branch(repo_root: &Path) -> Result<String, AppError> {
     let out = exec::run(
         "git",
         &["rev-parse", "--abbrev-ref", "HEAD"],
         repo_root,
         None,
         exec::LOCAL_TIMEOUT,
-    )?;
+    )
+    .map_err(|detail| AppError::new("push.failed").with("detail", detail))?;
     if !out.ok {
-        return Err(format!(
-            "não foi possível ler a branch atual: {}",
-            out.stderr_message()
-        ));
+        return Err(AppError::new("push.failed").with("detail", out.stderr_message()));
     }
     let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if branch.is_empty() || branch == "HEAD" {
-        return Err("a sessão não está em uma branch (HEAD desanexado)".into());
+        return Err(AppError::new("push.detached_head"));
     }
     Ok(branch)
 }
@@ -137,21 +136,32 @@ pub fn status(repo_root: &Path, branch: Option<&str>) -> Option<ForgeStatus> {
     })
 }
 
-fn kind_of(worktree: &Path) -> Result<ForgeKind, String> {
-    detect(worktree).ok_or_else(|| {
-        "remote `origin` não aponta para GitHub nem GitLab — nada a fazer aqui".to_string()
-    })
+fn kind_of(worktree: &Path) -> Result<ForgeKind, AppError> {
+    detect(worktree).ok_or_else(|| AppError::new("forge.no_forge"))
 }
 
-pub fn create_pr(worktree: &Path, title: &str, body: &str) -> Result<PullRequest, String> {
+fn is_auth_error(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "not logged in",
+        "authentication",
+        "auth login",
+        "unauthorized",
+        "http 401",
+        "401 unauthorized",
+        "requires authentication",
+    ]
+    .iter()
+    .any(|marker| detail.contains(marker))
+}
+
+pub fn create_pr(worktree: &Path, title: &str, body: &str) -> Result<PullRequest, AppError> {
     if title.trim().is_empty() {
-        return Err("o título do PR não pode ser vazio".into());
+        return Err(AppError::new("pr.title_empty"));
     }
     let branch = current_branch(worktree)?;
     if matches!(branch.as_str(), "main" | "master") {
-        return Err(format!(
-            "recusado pelo core: abrir PR daria push da branch {branch} — nunca a partir de main/master"
-        ));
+        return Err(AppError::new("push.protected_branch").with("branch", branch));
     }
     crate::worktree::ops::push(worktree)?;
     match kind_of(worktree)? {
@@ -160,9 +170,9 @@ pub fn create_pr(worktree: &Path, title: &str, body: &str) -> Result<PullRequest
     }
 }
 
-pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest>, String> {
+pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest>, AppError> {
     if branch.trim().is_empty() {
-        return Err("branch vazia".into());
+        return Err(AppError::new("pr.branch_empty"));
     }
     match kind_of(worktree)? {
         ForgeKind::GitHub => github::pr_for_branch(worktree, branch),
@@ -170,7 +180,7 @@ pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest
     }
 }
 
-pub fn pr_comments(worktree: &Path, number: u64) -> Result<Vec<ReviewComment>, String> {
+pub fn pr_comments(worktree: &Path, number: u64) -> Result<Vec<ReviewComment>, AppError> {
     match kind_of(worktree)? {
         ForgeKind::GitHub => github::pr_comments(worktree, number),
         ForgeKind::GitLab => gitlab::pr_comments(worktree, number),

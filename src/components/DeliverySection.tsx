@@ -17,7 +17,12 @@ import {
   type PullRequest,
   type Session,
 } from "../lib/ipc";
-import { overallChecksTone, primaryDeliveryAction } from "../lib/forge";
+import {
+  deliveryButtonKind,
+  overallChecksTone,
+  primaryDeliveryAction,
+  type DeliveryButtonKind,
+} from "../lib/forge";
 import { openExternalUrl } from "../lib/clipboard";
 import { OpenPrDialog } from "./OpenPrDialog";
 import { MergeLocalDialog } from "./MergeLocalDialog";
@@ -76,6 +81,13 @@ export function DeliverySection({
 
   const action = primaryDeliveryAction(status ?? null);
   const checksTone = pr ? overallChecksTone(pr.checks) : null;
+  const buttonKind = deliveryButtonKind(action, pr ?? null);
+  const buttonLabelKey: Record<DeliveryButtonKind, string> = {
+    view_pr: "deliveryViewPr",
+    view_mr: "deliveryViewMr",
+    open_pr: "deliveryOpenPr",
+    open_mr: "deliveryOpenMr",
+  };
 
   return (
     <div className="flex flex-col border-t border-tyba-border">
@@ -100,10 +112,12 @@ export function DeliverySection({
           <Button
             size="sm"
             className="h-6 gap-1.5 px-2.5 text-[11px]"
-            onClick={() => setOpenPr(true)}
+            onClick={() =>
+              pr ? void openExternalUrl(pr.url) : setOpenPr(true)
+            }
           >
             <GitPullRequest size={12} />
-            {action === "open_mr" ? t("deliveryOpenMr") : t("deliveryOpenPr")}
+            {t(buttonLabelKey[buttonKind])}
           </Button>
         )}
         <Button
