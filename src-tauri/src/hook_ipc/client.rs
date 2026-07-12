@@ -43,6 +43,12 @@ struct HookSpecificOutput {
     permission_decision: &'static str,
     #[serde(rename = "permissionDecisionReason")]
     permission_decision_reason: String,
+    /// O Codex trata `permissionDecision: allow` sem `updatedInput` como
+    /// unsupported: o hook vira Failed e a chamada cai no fluxo de permissão
+    /// nativo (prompt do TUI). Ecoar o input original torna o allow válido e
+    /// mantém a inbox do Tyba como única superfície de decisão.
+    #[serde(rename = "updatedInput", skip_serializing_if = "Option::is_none")]
+    updated_input: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -106,7 +112,7 @@ pub fn run_client_inner<R: Read, W: Write>(
     };
 
     match exchange(stream, &event) {
-        Some(response) => emit_response(&mut stdout, &response, kind),
+        Some(response) => emit_response(&mut stdout, &response, kind, event.get("tool_input")),
         None => emit_transport_failure(&mut stdout, kind),
     }
     0
@@ -148,11 +154,16 @@ fn exchange(mut stream: UnixStream, event: &serde_json::Value) -> Option<Respons
     serde_json::from_str::<ResponseEnvelope>(line.trim_end()).ok()
 }
 
-fn emit_response<W: Write>(stdout: &mut W, response: &ResponseEnvelope, kind: EventKind) {
+fn emit_response<W: Write>(
+    stdout: &mut W,
+    response: &ResponseEnvelope,
+    kind: EventKind,
+    tool_input: Option<&serde_json::Value>,
+) {
     let reason = response.reason.as_deref().filter(|r| !r.trim().is_empty());
     match (response.action.as_str(), kind) {
         ("allow", EventKind::PreToolUse) => {
-            emit_pre_tool_use(stdout, "allow", reason.unwrap_or(""))
+            emit_pre_tool_use_allow(stdout, reason.unwrap_or(""), tool_input.cloned())
         }
         ("deny", EventKind::PreToolUse) => {
             emit_pre_tool_use(stdout, "deny", reason.unwrap_or(DENY_FALLBACK_REASON))
@@ -189,11 +200,29 @@ fn emit_permission_request<W: Write>(
 }
 
 fn emit_pre_tool_use<W: Write>(stdout: &mut W, decision: &'static str, reason: &str) {
+    write_pre_tool_use(stdout, decision, reason, None);
+}
+
+fn emit_pre_tool_use_allow<W: Write>(
+    stdout: &mut W,
+    reason: &str,
+    tool_input: Option<serde_json::Value>,
+) {
+    write_pre_tool_use(stdout, "allow", reason, tool_input);
+}
+
+fn write_pre_tool_use<W: Write>(
+    stdout: &mut W,
+    decision: &'static str,
+    reason: &str,
+    updated_input: Option<serde_json::Value>,
+) {
     let output = PreToolUseOutput {
         hook_specific_output: HookSpecificOutput {
             hook_event_name: PRE_TOOL_USE,
             permission_decision: decision,
             permission_decision_reason: reason.to_string(),
+            updated_input,
         },
     };
     if let Ok(mut bytes) = serde_json::to_vec(&output) {

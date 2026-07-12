@@ -141,25 +141,48 @@ fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
 const TURN_END_SETTLE_MS: u64 = 2000;
 const TURN_SUMMARY_MAX_CHARS: usize = 140;
 
-fn turn_summary(event: &HookEvent) -> Option<String> {
+/// A fala final do turno, e se ela é autoritativa.
+///
+/// `last_assistant_message` vem do payload do hook (Codex) e é a fala definitiva
+/// do turno — não precisa de settle. O tail do transcript é melhor-esforço: o
+/// agente pode não ter flushado a última mensagem quando o `Stop` dispara.
+struct TurnSummary {
+    text: Option<String>,
+    settled: bool,
+}
+
+fn turn_summary(event: &HookEvent) -> TurnSummary {
     let inline = event
         .raw
         .get("last_assistant_message")
         .and_then(|m| m.as_str())
         .and_then(|m| crate::status::transcript::clean_summary(m, TURN_SUMMARY_MAX_CHARS));
     if inline.is_some() {
-        return inline;
+        return TurnSummary {
+            text: inline,
+            settled: true,
+        };
     }
-    let path = event.raw.get("transcript_path")?.as_str()?;
-    crate::status::transcript::last_assistant_text(
-        std::path::Path::new(path),
-        TURN_SUMMARY_MAX_CHARS,
-    )
+    let text = event
+        .raw
+        .get("transcript_path")
+        .and_then(|p| p.as_str())
+        .and_then(|path| {
+            crate::status::transcript::last_assistant_text(
+                std::path::Path::new(path),
+                TURN_SUMMARY_MAX_CHARS,
+            )
+        });
+    TurnSummary {
+        text,
+        settled: false,
+    }
 }
 
-fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>) {
+fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_settle: bool) {
     use std::sync::atomic::Ordering;
 
+    let transcript_path = needs_settle.then_some(transcript_path).flatten();
     let generation = ctx.turn_settle.fetch_add(1, Ordering::SeqCst) + 1;
     let app = ctx.app.clone();
     let sessions = ctx.sessions.clone();
@@ -295,8 +318,11 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
         }
         Some(signal) => {
             if let Some(mut status) = status_for(&signal) {
+                let mut needs_settle = false;
                 if let SessionStatus::Idle { summary } = &mut status {
-                    *summary = turn_summary(&event);
+                    let turn = turn_summary(&event);
+                    *summary = turn.text;
+                    needs_settle = !turn.settled;
                 }
                 let awaiting = matches!(status, SessionStatus::AwaitingInput { .. });
                 let turn_ended = matches!(status, SessionStatus::Idle { .. });
@@ -314,7 +340,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                         .get("transcript_path")
                         .and_then(|p| p.as_str())
                         .map(str::to_string);
-                    notify_turn_ended(ctx, transcript_path);
+                    notify_turn_ended(ctx, transcript_path, needs_settle);
                 }
             }
         }

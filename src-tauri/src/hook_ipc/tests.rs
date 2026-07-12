@@ -92,6 +92,47 @@ fn permission_request_event() -> serde_json::Value {
 }
 
 #[test]
+fn allow_pretooluse_echoes_tool_input_so_codex_aceita_o_allow() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "s.sock");
+    let server = HookServer::bind(
+        &path,
+        Arc::new(|_e: HookEvent| HookAction::Allow { reason: None }),
+    )
+    .unwrap();
+
+    let out = run(pretooluse_event("Bash"), Some(&path));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "allow");
+    assert_eq!(
+        v["hookSpecificOutput"]["updatedInput"],
+        json!({"command": "ls"}),
+        "sem updatedInput o Codex trata o allow como unsupported e cai no prompt nativo"
+    );
+
+    server.shutdown();
+}
+
+#[test]
+fn deny_pretooluse_nao_manda_updated_input() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "s.sock");
+    let server = HookServer::bind(
+        &path,
+        Arc::new(|_e: HookEvent| HookAction::Deny {
+            reason: "nope".into(),
+        }),
+    )
+    .unwrap();
+
+    let out = run(pretooluse_event("Bash"), Some(&path));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v["hookSpecificOutput"].get("updatedInput").is_none());
+
+    server.shutdown();
+}
+
+#[test]
 fn round_trip_allow_permission_request() {
     let dir = TempDir::new().unwrap();
     let path = socket_in(&dir, "s.sock");

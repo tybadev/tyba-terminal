@@ -184,11 +184,19 @@ fn normalize_codex(tool_name: &str, tool_input: Option<&Value>) -> NormalizedToo
             description,
         };
     }
+    if CODEX_READ_ONLY_TOOLS.contains(&tool_name) {
+        return NormalizedToolUse {
+            action: ToolAction::ReadOnly,
+            description: tool_name.to_string(),
+        };
+    }
     NormalizedToolUse {
         action: ToolAction::Unknown,
         description: tool_name.to_string(),
     }
 }
+
+const CODEX_READ_ONLY_TOOLS: &[&str] = &["update_plan", "view_image"];
 
 const APPLY_PATCH_PATH_PREFIXES: &[&str] = &[
     "*** Add File: ",
@@ -381,6 +389,16 @@ mod tests {
         let n = codex("web_search", Some(json!({"query": "rust"})));
         assert_eq!(n.action, ToolAction::Network);
         assert_eq!(n.description, "web_search rust");
+    }
+
+    #[test]
+    fn codex_plan_and_image_tools_are_read_only() {
+        let root = PathBuf::from("/wt");
+        for tool in CODEX_READ_ONLY_TOOLS {
+            let n = codex(tool, Some(json!({"plan": []})));
+            assert_eq!(n.action, ToolAction::ReadOnly, "{tool}");
+            assert_eq!(n.action.classify(&root), RiskLevel::Green, "{tool}");
+        }
     }
 
     #[test]
