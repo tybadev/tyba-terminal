@@ -15,6 +15,17 @@ export function primaryDeliveryAction(
   return status.kind === "gitlab" ? "open_mr" : "open_pr";
 }
 
+export type DeliveryButtonKind = "view_pr" | "view_mr" | "open_pr" | "open_mr";
+
+export function deliveryButtonKind(
+  action: DeliveryAction,
+  pr: PullRequest | null,
+): DeliveryButtonKind {
+  const isMr = action === "open_mr";
+  if (pr) return isMr ? "view_mr" : "view_pr";
+  return isMr ? "open_mr" : "open_pr";
+}
+
 export function forgeCliReady(status: ForgeStatus): boolean {
   return status.installed && status.authenticated;
 }

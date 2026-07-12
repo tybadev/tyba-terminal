@@ -65,22 +65,23 @@ export function Toolbar({
           <span
             key={id}
             title={cwd}
-            className="flex items-center gap-1"
+            className="flex min-w-0 shrink items-center gap-1"
             aria-label={t("toolbarCwd")}
           >
-            <FolderSimple size={12} />
-            {basename(cwd)}
+            <FolderSimple size={12} className="shrink-0" />
+            <span className="truncate">{basename(cwd)}</span>
           </span>
         ) : null;
       case "branch":
         return snapshot?.branch ? (
           <span
             key={id}
-            className="flex items-center gap-1"
+            title={snapshot.branch}
+            className="flex min-w-0 shrink items-center gap-1"
             aria-label={t("toolbarBranch")}
           >
-            <GitBranch size={12} />
-            {snapshot.branch}
+            <GitBranch size={12} className="shrink-0" />
+            <span className="truncate">{snapshot.branch}</span>
           </span>
         ) : null;
       case "diffCount": {
@@ -144,13 +145,13 @@ export function Toolbar({
   if (!showRichInput && left.length === 0 && right.length === 0) return null;
 
   return (
-    <div className="flex h-6 shrink-0 items-center justify-between border-t border-tyba-border px-3 text-[11px] text-tyba-text-muted">
-      <div className="flex items-center gap-3">
+    <div className="flex h-6 min-w-0 shrink-0 items-center justify-between gap-3 border-t border-tyba-border px-3 text-[11px] text-tyba-text-muted">
+      <div className="flex min-w-0 items-center gap-3 overflow-hidden">
         {showRichInput && (
           <button
             onClick={onOpenRichInput}
             title={t("richInputHint")}
-            className="flex items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-tyba-text-muted transition-colors hover:bg-white/[.06] hover:text-tyba-text"
+            className="flex shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-tyba-text-muted transition-colors hover:bg-white/[.06] hover:text-tyba-text"
           >
             <TextAlignLeft size={12} />
             <span>{t("richInputToggle")}</span>
@@ -159,7 +160,7 @@ export function Toolbar({
         )}
         {left}
       </div>
-      <div className="flex items-center gap-3">{right}</div>
+      <div className="flex shrink-0 items-center gap-3">{right}</div>
     </div>
   );
 }

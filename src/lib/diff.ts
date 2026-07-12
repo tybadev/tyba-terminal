@@ -38,6 +38,22 @@ export function isGeneratedPath(path: string): boolean {
   return GENERATED_PATTERNS.some((re) => re.test(path));
 }
 
+export type SectionOpenState = Partial<Record<DiffScopeKey, boolean>>;
+
+export function isSectionOpen(
+  state: SectionOpenState,
+  scope: DiffScopeKey,
+): boolean {
+  return state[scope] !== false;
+}
+
+export function toggleSection(
+  state: SectionOpenState,
+  scope: DiffScopeKey,
+): SectionOpenState {
+  return { ...state, [scope]: !isSectionOpen(state, scope) };
+}
+
 export const BIG_DIFF_LINES = 800;
 
 export type Row =
