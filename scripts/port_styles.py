@@ -3,7 +3,7 @@
 import pathlib, re, sys
 
 DS = pathlib.Path('/Users/guilherme/swell-system/tyba-design-system/ds-bundle')
-APP = pathlib.Path('/Users/guilherme/swell-system/tyba-terminal/src/styles.css')
+APP = pathlib.Path(__file__).resolve().parent.parent / 'src' / 'styles.css'
 
 tyba = (DS / 'tokens' / 'tyba.css').read_text()
 themes = (DS / 'tokens' / 'themes.css').read_text()
@@ -94,6 +94,8 @@ tail = '''
   --color-tyba-cyan-tint: var(--tyba-cyan-tint);
   --color-tyba-red-tint: var(--tyba-red-tint);
   --color-tyba-neutral-tint: var(--tyba-neutral-tint);
+
+  --animate-tyba-pop-in: tyba-pop-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
 
   /* shadcn */
   --color-background: var(--background);
@@ -253,6 +255,17 @@ samp {
 }
 @media (prefers-reduced-motion: reduce) {
   .tyba-flow-line--live { animation: none; }
+}
+
+@keyframes tyba-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 /* xterm ocupa o container inteiro */

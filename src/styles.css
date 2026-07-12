@@ -747,6 +747,37 @@
   --tyba-shadow-lg: 0 12px 40px rgba(41, 36, 42, 0.14);
 }
 
+/* ---------- Mono Dark (TYBA) ---------- */
+[data-theme='mono-dark'] {
+  color-scheme: dark;
+
+  --tyba-bg: #151313;
+  --tyba-surface: #1a1616;
+  --tyba-raised: #252526;
+  --tyba-overlay: #2d2d30;
+  --tyba-border: #3c3c3c;
+  --tyba-border-strong: #4d4d4d;
+  --tyba-sunken: #0f0d0d;
+
+  --tyba-text: #eeffff;
+  --tyba-text-muted: #8b888f;
+  --tyba-text-faint: #5c595f;   /* der. */
+  --tyba-text-inverse: #252526;
+
+  /* identidade do tema: acento amarelo, não o green da casa */
+  --tyba-primary: #ffd867;
+  --tyba-primary-hover: #fec004;
+
+  --tyba-green: #c3e88d;
+  --tyba-lime: #d7f2ab;         /* der. */
+  --tyba-amber: #ffcb6b;
+  --tyba-magenta: #f07178;
+  --tyba-violet: #c792ea;
+  --tyba-blue: #82aaff;
+  --tyba-cyan: #89ddff;
+  --tyba-red: #ff5370;
+}
+
 /* dark: do Tailwind segue o esquema do tema — todo tema claro
    termina em "light" (light, solarized-light, monokai-light...) */
 @custom-variant dark (&:is(:root:not([data-theme$="light"]) *, :root:not([data-theme$="light"])));

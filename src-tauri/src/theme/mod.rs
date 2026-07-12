@@ -601,7 +601,7 @@ mod tests {
     fn classic_schemes_are_valid_builtins() {
         let all = schemes::all();
         assert_eq!(all.len(), schemes::IDS.len());
-        assert_eq!(all.len(), 15);
+        assert_eq!(all.len(), 16);
         for (theme, id) in all.iter().zip(schemes::IDS) {
             assert_eq!(theme.id, *id);
             assert!(theme.builtin);
@@ -623,7 +623,7 @@ mod tests {
         }
         let dark = all.iter().filter(|t| t.base == ThemeBase::Dark).count();
         let light = all.iter().filter(|t| t.base == ThemeBase::Light).count();
-        assert_eq!((dark, light), (10, 5));
+        assert_eq!((dark, light), (11, 5));
     }
 
     #[test]
