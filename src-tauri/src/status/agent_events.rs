@@ -1,4 +1,4 @@
-use crate::session::SessionStatus;
+use crate::session::{AwaitingReason, SessionStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentSignal {
@@ -27,7 +27,10 @@ pub fn status_for(signal: &AgentSignal) -> Option<SessionStatus> {
     match signal {
         AgentSignal::Working => Some(SessionStatus::Running),
         AgentSignal::TurnEnded => Some(SessionStatus::Idle),
-        AgentSignal::AwaitingInput => Some(SessionStatus::AwaitingInput { hint: None }),
+        AgentSignal::AwaitingInput => Some(SessionStatus::AwaitingInput {
+            hint: None,
+            reason: AwaitingReason::Reply,
+        }),
         AgentSignal::Ready => None,
         AgentSignal::Ended => None,
     }
@@ -104,10 +107,13 @@ mod tests {
     }
 
     #[test]
-    fn status_awaiting_input_has_no_hint() {
+    fn status_awaiting_input_is_reply_without_hint() {
         assert!(matches!(
             status_for(&AgentSignal::AwaitingInput),
-            Some(SessionStatus::AwaitingInput { hint: None })
+            Some(SessionStatus::AwaitingInput {
+                hint: None,
+                reason: AwaitingReason::Reply
+            })
         ));
     }
 

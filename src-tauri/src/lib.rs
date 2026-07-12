@@ -813,6 +813,11 @@ fn list_sessions(state: State<'_, AppState>) -> Vec<Session> {
 }
 
 #[tauri::command]
+fn session_mark_seen(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
+    state.sessions.mark_seen(&app, id);
+}
+
+#[tauri::command]
 fn dispose_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
     teardown_agent_session(&app, &state, id);
     state.sessions.dispose(&state.pty_pool, id);
@@ -1695,6 +1700,7 @@ pub fn run() {
             session_cwd,
             resize_session,
             list_sessions,
+            session_mark_seen,
             dispose_session,
             request_approval,
             list_approvals,

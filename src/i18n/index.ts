@@ -174,6 +174,12 @@ const resources = {
       agentReadyTimeoutBody:
         "O prompt inicial ficou no composer — revise e envie.",
       sessionAwaitingInput: "aguardando input",
+      sessionAwaitingApproval: "aprovação pendente",
+      sessionAwaitingReply: "aguardando sua resposta",
+      sessionTurnEnded: "terminou o que tinha pra rodar",
+      sessionFailed: "falhou",
+      sessionTurnEndedTitle: "Terminou o que tinha pra rodar",
+      sessionFailedTitle: "A sessão falhou",
       dismiss: "Dispensar",
       chipsEditorTitle: "Chips da barra",
       chipsEditorHint:
@@ -650,6 +656,12 @@ const resources = {
       agentReadyTimeoutBody:
         "The initial prompt stayed in the composer — review and send it.",
       sessionAwaitingInput: "awaiting input",
+      sessionAwaitingApproval: "approval pending",
+      sessionAwaitingReply: "waiting for your reply",
+      sessionTurnEnded: "finished what it had to run",
+      sessionFailed: "failed",
+      sessionTurnEndedTitle: "Finished what it had to run",
+      sessionFailedTitle: "The session failed",
       dismiss: "Dismiss",
       chipsEditorTitle: "Bar chips",
       chipsEditorHint:

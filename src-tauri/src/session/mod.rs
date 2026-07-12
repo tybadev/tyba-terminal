@@ -35,14 +35,48 @@ pub enum AgentRunnerKind {
     Custom(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AwaitingReason {
+    Approval,
+    #[default]
+    Reply,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SessionStatus {
     Running,
-    AwaitingInput { hint: Option<String> },
+    AwaitingInput {
+        hint: Option<String>,
+        #[serde(default)]
+        reason: AwaitingReason,
+    },
     Idle,
     Exited { code: i32 },
     Failed { reason: String },
+}
+
+impl SessionStatus {
+    fn redacted(self) -> Self {
+        match self {
+            SessionStatus::AwaitingInput { hint, reason } => SessionStatus::AwaitingInput {
+                hint: hint.map(|h| redact::redact(&h).into_owned()),
+                reason,
+            },
+            SessionStatus::Failed { reason } => SessionStatus::Failed {
+                reason: redact::redact(&reason).into_owned(),
+            },
+            other => other,
+        }
+    }
+
+    fn wants_attention(&self) -> bool {
+        matches!(
+            self,
+            SessionStatus::AwaitingInput { .. } | SessionStatus::Idle | SessionStatus::Failed { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -53,6 +87,7 @@ pub struct Session {
     pub repo_root: Option<PathBuf>,
     pub worktree: Option<Worktree>,
     pub status: SessionStatus,
+    pub attention: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -254,6 +289,7 @@ impl SessionManager {
             repo_root,
             worktree,
             status: SessionStatus::Running,
+            attention: false,
             created_at: Utc::now(),
         };
         self.sessions.write().insert(id, session.clone());
@@ -273,13 +309,26 @@ impl SessionManager {
     }
 
     pub fn set_status(&self, app: &AppHandle, id: SessionId, status: SessionStatus) {
+        let status = status.redacted();
         let mut sessions = self.sessions.write();
         if let Some(s) = sessions.get_mut(&id) {
             if s.status == status {
                 return;
             }
+            s.attention = status.wants_attention() && matches!(s.kind, SessionKind::Agent { .. });
             s.status = status;
             let _ = self.store.upsert_session(s);
+            emit_status(app, s);
+        }
+    }
+
+    pub fn mark_seen(&self, app: &AppHandle, id: SessionId) {
+        let mut sessions = self.sessions.write();
+        if let Some(s) = sessions.get_mut(&id) {
+            if !s.attention {
+                return;
+            }
+            s.attention = false;
             emit_status(app, s);
         }
     }
@@ -568,6 +617,7 @@ mod tests {
             repo_root: None,
             worktree: None,
             status,
+            attention: false,
             created_at: Utc::now(),
         }
     }
@@ -698,6 +748,70 @@ mod tests {
         let tmp = std::env::temp_dir();
         assert_eq!(resolve_cwd(Some(&tmp)), tmp);
         assert_eq!(resolve_cwd(Some(Path::new("~"))), home);
+    }
+
+    #[test]
+    fn legacy_awaiting_input_json_defaults_to_reply() {
+        let status: SessionStatus =
+            serde_json::from_str(r#"{"state":"awaiting_input","hint":"npm test"}"#).unwrap();
+        assert!(matches!(
+            status,
+            SessionStatus::AwaitingInput {
+                hint: Some(_),
+                reason: AwaitingReason::Reply
+            }
+        ));
+    }
+
+    #[test]
+    fn awaiting_reason_round_trips() {
+        let status = SessionStatus::AwaitingInput {
+            hint: Some("git push".into()),
+            reason: AwaitingReason::Approval,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains(r#""reason":"approval""#));
+        let back: SessionStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, status);
+    }
+
+    #[test]
+    fn redacted_scrubs_hint_and_failure_reason() {
+        let hint = SessionStatus::AwaitingInput {
+            hint: Some("export KEY=sk-abcdef1234567890ABCDEFghijkl".into()),
+            reason: AwaitingReason::Approval,
+        }
+        .redacted();
+        let SessionStatus::AwaitingInput {
+            hint: Some(hint), ..
+        } = hint
+        else {
+            panic!("variante preservada");
+        };
+        assert!(!hint.contains("sk-abcdef"));
+        assert!(hint.contains(redact::REDACTION_MARK));
+
+        let failed = SessionStatus::Failed {
+            reason: "token AKIAIOSFODNN7EXAMPLE vazou".into(),
+        }
+        .redacted();
+        let SessionStatus::Failed { reason } = failed else {
+            panic!("variante preservada");
+        };
+        assert!(!reason.contains("AKIAIOSFODNN7EXAMPLE"));
+    }
+
+    #[test]
+    fn attention_follows_state_semantics() {
+        assert!(SessionStatus::Idle.wants_attention());
+        assert!(SessionStatus::AwaitingInput {
+            hint: None,
+            reason: AwaitingReason::Reply
+        }
+        .wants_attention());
+        assert!(SessionStatus::Failed { reason: "x".into() }.wants_attention());
+        assert!(!SessionStatus::Running.wants_attention());
+        assert!(!SessionStatus::Exited { code: 0 }.wants_attention());
     }
 
     #[test]

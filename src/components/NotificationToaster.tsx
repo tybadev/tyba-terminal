@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowRight, Warning } from "@phosphor-icons/react";
+import { ArrowRight, CheckCircle, Warning, XCircle } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -16,6 +16,7 @@ import {
   onApprovalRequested,
   onApprovalResolved,
   resolveApproval,
+  sessionMarkSeen,
   type ApprovalDecision,
   type ApprovalRequest,
   type Session,
@@ -28,6 +29,14 @@ import {
 } from "@/lib/toastQueue";
 
 const AUTO_DISMISS_MS = 8000;
+const TURN_END_SETTLE_MS = 2000;
+
+interface OutcomeToast {
+  key: string;
+  sessionId: SessionId;
+  kind: "turn_ended" | "failed";
+  reason: string | null;
+}
 
 function SessionDeepLink({
   label,
@@ -55,6 +64,7 @@ function SessionDeepLink({
 
 interface Props {
   sessions: Session[];
+  activeSessionId: SessionId | null;
   agentReadyWarnings: Record<SessionId, boolean>;
   onDismissAgentReady: (sessionId: SessionId) => void;
   onGoToSession: (sessionId: SessionId) => void;
@@ -62,6 +72,7 @@ interface Props {
 
 export function NotificationToaster({
   sessions,
+  activeSessionId,
   agentReadyWarnings,
   onDismissAgentReady,
   onGoToSession,
@@ -71,6 +82,100 @@ export function NotificationToaster({
   const [confirmingId, setConfirmingId] = useState<number | null>(null);
   const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
   const agentReadyTimers = useRef(new Map<SessionId, ReturnType<typeof setTimeout>>());
+
+  const [outcomes, setOutcomes] = useState<OutcomeToast[]>([]);
+  const outcomeTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const settleTimers = useRef(new Map<SessionId, ReturnType<typeof setTimeout>>());
+  const prevStates = useRef(new Map<SessionId, Session["status"]["state"]>());
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const activeSessionRef = useRef(activeSessionId);
+  activeSessionRef.current = activeSessionId;
+
+  const dismissOutcome = (key: string) => {
+    const timer = outcomeTimers.current.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      outcomeTimers.current.delete(key);
+    }
+    setOutcomes((prev) => prev.filter((o) => o.key !== key));
+  };
+
+  const pushOutcome = (outcome: OutcomeToast) => {
+    setOutcomes((prev) => [
+      ...prev.filter((o) => o.sessionId !== outcome.sessionId),
+      outcome,
+    ]);
+    outcomeTimers.current.set(
+      outcome.key,
+      setTimeout(() => dismissOutcome(outcome.key), AUTO_DISMISS_MS),
+    );
+  };
+
+  useEffect(() => {
+    for (const session of sessions) {
+      if (session.kind.type !== "agent") continue;
+      const prev = prevStates.current.get(session.id);
+      const next = session.status.state;
+      if (prev === next) continue;
+      prevStates.current.set(session.id, next);
+      const settle = settleTimers.current.get(session.id);
+      if (settle) {
+        clearTimeout(settle);
+        settleTimers.current.delete(session.id);
+      }
+      if (prev === undefined) continue;
+      if (next === "failed") {
+        pushOutcome({
+          key: `${session.id}:${Date.now()}`,
+          sessionId: session.id,
+          kind: "failed",
+          reason: session.status.state === "failed" ? session.status.reason : null,
+        });
+        continue;
+      }
+      if (next !== "idle" || prev !== "running") continue;
+      settleTimers.current.set(
+        session.id,
+        setTimeout(() => {
+          settleTimers.current.delete(session.id);
+          const latest = sessionsRef.current.find((s) => s.id === session.id);
+          if (latest?.status.state !== "idle" || !latest.attention) return;
+          const inFront =
+            activeSessionRef.current === session.id && document.hasFocus();
+          if (inFront) return;
+          pushOutcome({
+            key: `${session.id}:${Date.now()}`,
+            sessionId: session.id,
+            kind: "turn_ended",
+            reason: null,
+          });
+        }, TURN_END_SETTLE_MS),
+      );
+    }
+    for (const id of [...prevStates.current.keys()]) {
+      if (!sessions.some((s) => s.id === id)) {
+        prevStates.current.delete(id);
+        const settle = settleTimers.current.get(id);
+        if (settle) {
+          clearTimeout(settle);
+          settleTimers.current.delete(id);
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions]);
+
+  useEffect(() => {
+    const pending = settleTimers.current;
+    const shown = outcomeTimers.current;
+    return () => {
+      pending.forEach((timer) => clearTimeout(timer));
+      pending.clear();
+      shown.forEach((timer) => clearTimeout(timer));
+      shown.clear();
+    };
+  }, []);
 
   const dismiss = (id: number) => {
     const timer = timers.current.get(id);
@@ -262,6 +367,62 @@ export function NotificationToaster({
           </div>
         </Toast>
       ))}
+      {outcomes.map((outcome) => {
+        const session = sessions.find((s) => s.id === outcome.sessionId);
+        const branch = session?.worktree?.branch ?? null;
+        return (
+          <Toast
+            key={outcome.key}
+            onOpenChange={(nextOpen) => {
+              if (!nextOpen) dismissOutcome(outcome.key);
+            }}
+          >
+            <div className="flex items-start gap-2">
+              {outcome.kind === "failed" ? (
+                <XCircle
+                  aria-hidden="true"
+                  size={16}
+                  weight="fill"
+                  className="mt-0.5 shrink-0 text-tyba-red"
+                />
+              ) : (
+                <CheckCircle
+                  aria-hidden="true"
+                  size={16}
+                  weight="fill"
+                  className="mt-0.5 shrink-0 text-tyba-green"
+                />
+              )}
+              <div className="min-w-0 flex-1">
+                <ToastTitle>
+                  {outcome.kind === "failed"
+                    ? t("sessionFailedTitle")
+                    : t("sessionTurnEndedTitle")}
+                </ToastTitle>
+                <ToastDescription>
+                  {outcome.kind === "failed" && outcome.reason ? (
+                    <code className="block truncate font-mono text-xs">
+                      {outcome.reason}
+                    </code>
+                  ) : branch ? (
+                    <span className="flex min-w-0 items-center gap-1 font-mono text-xs">
+                      <span className="truncate">{branch}</span>
+                    </span>
+                  ) : null}
+                </ToastDescription>
+                <SessionDeepLink
+                  label={sessionTitle(outcome.sessionId)}
+                  onClick={() => {
+                    dismissOutcome(outcome.key);
+                    void sessionMarkSeen(outcome.sessionId).catch(() => {});
+                    onGoToSession(outcome.sessionId);
+                  }}
+                />
+              </div>
+            </div>
+          </Toast>
+        );
+      })}
       <ToastViewport />
     </ToastProvider>
   );

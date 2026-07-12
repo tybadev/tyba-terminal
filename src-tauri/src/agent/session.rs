@@ -14,8 +14,8 @@ use crate::pty::SharedPtyPool;
 use crate::sandbox::{PassthroughSandbox, Sandbox, SandboxSpec};
 use crate::session::store::{ApprovalHistoryEntry, Store};
 use crate::session::{
-    AgentRunnerKind, CreateSessionOpts, Session, SessionId, SessionKind, SessionStatus,
-    SharedSessionManager,
+    AgentRunnerKind, AwaitingReason, CreateSessionOpts, Session, SessionId, SessionKind,
+    SessionStatus, SharedSessionManager,
 };
 use crate::status::agent_events::{signal_for, status_for, AgentSignal};
 
@@ -134,6 +134,29 @@ fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
         .show();
 }
 
+const TURN_END_SETTLE_MS: u64 = 2000;
+
+fn notify_turn_ended(ctx: &HandlerCtx) {
+    let app = ctx.app.clone();
+    let sessions = ctx.sessions.clone();
+    let id = ctx.session_id;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(TURN_END_SETTLE_MS));
+        let Some(session) = sessions.get(id) else {
+            return;
+        };
+        if !matches!(session.status, SessionStatus::Idle) || main_window_focused(&app) {
+            return;
+        }
+        let _ = app
+            .notification()
+            .builder()
+            .title(format!("Tyba — {}", session.title))
+            .body("Terminou o que tinha pra rodar")
+            .show();
+    });
+}
+
 fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     let tool = event.tool_name.as_deref().unwrap_or("");
     let input = event.tool_input.as_ref();
@@ -172,6 +195,7 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
                 ctx.session_id,
                 SessionStatus::AwaitingInput {
                     hint: Some(command.clone()),
+                    reason: AwaitingReason::Approval,
                 },
             );
             notify_awaiting_input(ctx, &format!("Aprovação pendente: {command}"));
@@ -227,9 +251,13 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
         Some(signal) => {
             if let Some(status) = status_for(&signal) {
                 let awaiting = matches!(status, SessionStatus::AwaitingInput { .. });
+                let turn_ended = matches!(status, SessionStatus::Idle);
                 ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
                 if awaiting {
                     notify_awaiting_input(ctx, "Agente aguardando sua resposta");
+                }
+                if turn_ended {
+                    notify_turn_ended(ctx);
                 }
             }
         }

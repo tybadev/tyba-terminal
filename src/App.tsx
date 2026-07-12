@@ -118,6 +118,7 @@ import {
   onRepoReconciled,
   repoSnapshots as fetchRepoSnapshots,
   sessionCwd,
+  sessionMarkSeen,
   sessionGitStatus,
   setAgentMatchPattern,
   submitRichInput,
@@ -141,7 +142,12 @@ import {
   type Workspace,
 } from "./lib/ipc";
 import { basename } from "@/lib/utils";
-import { isFinishedStatus, sameSessionStatus } from "./lib/sessionStatus";
+import {
+  isFinishedStatus,
+  sameSessionStatus,
+  statusVisual,
+  type StatusVisual,
+} from "./lib/sessionStatus";
 import { shouldShowGitIcon } from "./lib/headerGit";
 import { buildAgentSessionOpts } from "./lib/agentSession";
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
@@ -643,14 +649,17 @@ export default function App() {
           const current = prev.find((c) => c.id === id);
           if (
             !current ||
-            sameSessionStatus(current.status, session.status) ||
+            (sameSessionStatus(current.status, session.status) &&
+              current.attention === session.attention) ||
             (isFinishedStatus(current.status) &&
               !isFinishedStatus(session.status))
           ) {
             return prev;
           }
           return prev.map((c) =>
-            c.id === id ? { ...c, status: session.status } : c,
+            c.id === id
+              ? { ...c, status: session.status, attention: session.attention }
+              : c,
           );
         });
       }).then((un) => (disposed ? un() : unlisteners.push(un)));
@@ -743,6 +752,18 @@ export default function App() {
 
   const activeSession = activeId ? sessionById.get(activeId) : undefined;
   const activeCommand = activeId ? sessionCommands[activeId] : undefined;
+
+  useEffect(() => {
+    const markSeen = () => {
+      if (!document.hasFocus() || !activeId) return;
+      if (sessionById.get(activeId)?.attention) {
+        void sessionMarkSeen(activeId).catch(() => {});
+      }
+    };
+    markSeen();
+    window.addEventListener("focus", markSeen);
+    return () => window.removeEventListener("focus", markSeen);
+  }, [activeId, sessionById]);
   const richInputEligible =
     activeSession != null &&
     shouldShowRichInput(
@@ -889,18 +910,21 @@ export default function App() {
     [sessionCommands],
   );
 
-  const workspaceAwaitingInput = useCallback(
-    (w: Workspace): { hint: string | null } | null => {
+  const workspaceAgentStatus = useCallback(
+    (w: Workspace): { session: Session; visual: StatusVisual } | null => {
+      let best: { session: Session; visual: StatusVisual } | null = null;
       for (const tab of w.tabs) {
         if (!tab.root) continue;
         for (const sid of leafSessions(tab.root)) {
           const session = sessionById.get(sid);
-          if (session?.status.state === "awaiting_input") {
-            return { hint: session.status.hint };
+          if (!session || session.kind.type !== "agent") continue;
+          const visual = statusVisual(session.status, session.attention);
+          if (visual && (!best || visual.rank > best.visual.rank)) {
+            best = { session, visual };
           }
         }
       }
-      return null;
+      return best;
     },
     [sessionById],
   );
@@ -1831,7 +1855,21 @@ export default function App() {
     const runner = isConfig || isWtView ? null : workspaceAgent(w);
     const runningCmd = isConfig || isWtView ? null : workspaceCommand(w);
     const hoverAgent = runner ?? agentFromCommand(runningCmd);
-    const awaitingInput = isConfig || isWtView ? null : workspaceAwaitingInput(w);
+    const agentStatus = isConfig || isWtView ? null : workspaceAgentStatus(w);
+    const agentDetail = (() => {
+      if (!agentStatus) return null;
+      const status = agentStatus.session.status;
+      const label = t(agentStatus.visual.labelKey);
+      if (status.state === "awaiting_input" && status.hint) {
+        return `${label}: ${status.hint}`;
+      }
+      if (status.state === "failed") return `${label}: ${status.reason}`;
+      if (status.state === "running") return runningCmd ?? label;
+      return label;
+    })();
+    const turnEndedUnseen =
+      agentStatus?.session.attention === true &&
+      agentStatus.session.status.state === "idle";
     const workspaceButton = (
       <button
         key={w.id}
@@ -1905,33 +1943,46 @@ export default function App() {
               }
             />
           )}
-          {awaitingInput && (
+          {agentStatus && (
             <span
               aria-hidden
-              title={t("sessionAwaitingInput")}
-              className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-tyba-amber [box-shadow:var(--tyba-glow-amber)] motion-safe:animate-pulse"
+              title={t(agentStatus.visual.labelKey)}
+              className={`absolute -right-0.5 -top-0.5 size-1.5 rounded-full ${agentStatus.visual.dotClass}`}
             />
           )}
         </span>
         {open && (
           <>
             <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
-              <span className="w-full truncate text-left leading-none">
-                {isConfig
-                  ? t("settings")
-                  : isWtView
-                    ? t("workspaceView")
-                    : w.name}
+              <span className="flex w-full items-center gap-1.5">
+                <span className="min-w-0 flex-1 truncate text-left leading-none">
+                  {isConfig
+                    ? t("settings")
+                    : isWtView
+                      ? t("workspaceView")
+                      : w.name}
+                </span>
+                {turnEndedUnseen && (
+                  <span
+                    aria-hidden
+                    title={t("sessionTurnEnded")}
+                    className="size-1.5 shrink-0 rounded-full bg-tyba-blue"
+                  />
+                )}
               </span>
-              {showDetails && awaitingInput && (
+              {showDetails && agentStatus && agentDetail && (
                 <span className="flex w-full items-center gap-1.5">
-                  <span className="size-1 shrink-0 rounded-full bg-tyba-amber [box-shadow:var(--tyba-glow-amber)] motion-safe:animate-pulse" />
-                  <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-amber">
-                    {awaitingInput.hint || t("sessionAwaitingInput")}
+                  <span
+                    className={`size-1 shrink-0 rounded-full ${agentStatus.visual.dotClass}`}
+                  />
+                  <span
+                    className={`min-w-0 truncate font-mono text-[10px] leading-none ${agentStatus.visual.textClass}`}
+                  >
+                    {agentDetail}
                   </span>
                 </span>
               )}
-              {showDetails && !awaitingInput && runningCmd && (
+              {showDetails && !agentStatus && runningCmd && (
                 <span className="flex w-full items-center gap-1.5">
                   <span className="size-1 shrink-0 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse" />
                   <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-muted">
@@ -1939,7 +1990,7 @@ export default function App() {
                   </span>
                 </span>
               )}
-              {showDetails && !awaitingInput && !runningCmd && (
+              {showDetails && !agentStatus && !runningCmd && (
                 <span className="flex w-full items-center gap-1.5">
                   <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-faint">
                     {displayDir ? compactPath(displayDir) : "~"}
@@ -2024,6 +2075,7 @@ export default function App() {
               runner={hoverAgent}
               runnerIcon={hoverAgent ? agentGlyph(hoverAgent, 11) : null}
               runningCommand={runningCmd}
+              agentVisual={agentStatus?.visual ?? null}
               tabs={w.tabs.length}
               group={w.group}
               color={w.color}
@@ -2062,6 +2114,7 @@ export default function App() {
       <ErrorBoundary region="notificações">
         <NotificationToaster
           sessions={sessions}
+          activeSessionId={activeId}
           agentReadyWarnings={agentReadyWarnings}
           onDismissAgentReady={(sessionId) =>
             setAgentReadyWarnings((prev) => {
