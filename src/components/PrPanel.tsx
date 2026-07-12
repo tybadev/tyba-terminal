@@ -39,7 +39,13 @@ const TONE_DOT_CLASS: Record<CheckTone, string> = {
   pending: "bg-tyba-yellow",
 };
 
-export function PrPanel({ sessionId }: { sessionId: SessionId | null }) {
+export function PrPanel({
+  sessionId,
+  repoRoot,
+}: {
+  sessionId: SessionId | null;
+  repoRoot: string | null;
+}) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<ForgeStatus | null | undefined>(
     undefined,
@@ -51,7 +57,7 @@ export function PrPanel({ sessionId }: { sessionId: SessionId | null }) {
 
   useEffect(() => {
     setStatus(undefined);
-    if (!sessionId) {
+    if (!sessionId || !repoRoot) {
       setStatus(null);
       return;
     }
@@ -66,7 +72,7 @@ export function PrPanel({ sessionId }: { sessionId: SessionId | null }) {
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [sessionId, repoRoot]);
 
   const loadPrs = useCallback(() => {
     if (!sessionId) return;
@@ -89,9 +95,9 @@ export function PrPanel({ sessionId }: { sessionId: SessionId | null }) {
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Tooltip>
-          <TooltipTrigger asChild>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
             <Button
               variant="ghost"
               size="icon"
@@ -100,10 +106,10 @@ export function PrPanel({ sessionId }: { sessionId: SessionId | null }) {
             >
               <GitPullRequest size={16} />
             </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">{t("headerPrPanelTitle")}</TooltipContent>
-        </Tooltip>
-      </PopoverTrigger>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{t("headerPrPanelTitle")}</TooltipContent>
+      </Tooltip>
       <PopoverContent align="end" className="w-80">
         <div className="tyba-label flex items-center justify-between px-2 py-1.5">
           {t("headerPrPanelTitle")}

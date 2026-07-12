@@ -2275,7 +2275,10 @@ export default function App() {
           )}
 
           <ErrorBoundary region="pull requests">
-            <PrPanel sessionId={activeId} />
+            <PrPanel
+              sessionId={activeId}
+              repoRoot={activeGitStatus?.root ?? null}
+            />
           </ErrorBoundary>
 
           <IconAction
