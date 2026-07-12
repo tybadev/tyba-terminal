@@ -5,6 +5,7 @@ import {
   applyConsentDecision,
   buildAgentSessionOpts,
   needsConsentPrompt,
+  runnerFromDefault,
 } from "./agentSession";
 
 const config = (over: Partial<AgentRepoConfig> = {}): AgentRepoConfig => ({
@@ -69,5 +70,28 @@ describe("buildAgentSessionOpts", () => {
     });
     expect(opts.cols).toBe(80);
     expect(opts.rows).toBe(24);
+  });
+
+  test("runner codex vai no kind", () => {
+    const opts = buildAgentSessionOpts({
+      cwd: "/tmp/foo",
+      task: "x",
+      runner: "codex",
+    });
+    expect(opts.kind).toEqual({ type: "agent", runner: "codex" });
+  });
+});
+
+describe("runnerFromDefault", () => {
+  test("mapeia codex e claude", () => {
+    expect(runnerFromDefault("codex")).toBe("codex");
+    expect(runnerFromDefault("claude")).toBe("claude_code");
+    expect(runnerFromDefault("claude_code")).toBe("claude_code");
+  });
+
+  test("desconhecido ou ausente vira null", () => {
+    expect(runnerFromDefault("cursor")).toBe(null);
+    expect(runnerFromDefault(null)).toBe(null);
+    expect(runnerFromDefault(undefined)).toBe(null);
   });
 });

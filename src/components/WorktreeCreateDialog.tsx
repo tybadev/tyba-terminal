@@ -18,6 +18,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  agentBinaryAvailable,
   agentRepoConfig,
   setAgentConfigConsent,
   worktreeSetupScript,
@@ -25,13 +26,19 @@ import {
   type AgentRepoConfig,
   type SetupScriptInfo,
 } from "../lib/ipc";
-import { needsConsentPrompt, applyConsentDecision } from "../lib/agentSession";
+import {
+  needsConsentPrompt,
+  applyConsentDecision,
+  runnerFromDefault,
+  type AgentRunnerId,
+} from "../lib/agentSession";
 import { AgentConsentDialog } from "./AgentConsentDialog";
 import { ClaudeIcon } from "./icons/ClaudeIcon";
+import { OpenAIIcon } from "./icons/OpenAIIcon";
 import { basename } from "@/lib/utils";
 
 export interface AgentCreateOptions {
-  runner: "claude_code";
+  runner: AgentRunnerId;
   prompt: string;
 }
 
@@ -41,6 +48,14 @@ interface Props {
   onCreate: (task: string, agent: AgentCreateOptions | null) => Promise<void>;
 }
 
+function runnerButtonClass(selected: boolean): string {
+  const base =
+    "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-3 text-sm font-medium";
+  return selected
+    ? `${base} border-tyba-green/50 bg-tyba-green/10 text-tyba-text`
+    : `${base} border-tyba-border text-tyba-text-muted hover:border-tyba-border-strong hover:text-tyba-text`;
+}
+
 export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
   const { t } = useTranslation();
   const [task, setTask] = useState("");
@@ -48,6 +63,8 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
   const [allowSetup, setAllowSetup] = useState(false);
   const [agentMode, setAgentMode] = useState(false);
   const [agentPrompt, setAgentPrompt] = useState("");
+  const [runner, setRunner] = useState<AgentRunnerId>("claude_code");
+  const [codexAvailable, setCodexAvailable] = useState(false);
   const [agentConfig, setAgentConfig] = useState<AgentRepoConfig | null>(null);
   const [consentOpen, setConsentOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -62,6 +79,8 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
     setAllowSetup(false);
     setAgentMode(false);
     setAgentPrompt("");
+    setRunner("claude_code");
+    setCodexAvailable(false);
     setAgentConfig(null);
     setConsentOpen(false);
     void worktreeSetupScript(dir)
@@ -70,8 +89,14 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
         setAllowSetup(info?.consent === true);
       })
       .catch(() => setScript(null));
+    const codexReady = agentBinaryAvailable("codex").catch(() => false);
+    void codexReady.then(setCodexAvailable);
     void agentRepoConfig(dir)
-      .then(setAgentConfig)
+      .then(async (config) => {
+        setAgentConfig(config);
+        const preferred = runnerFromDefault(config?.default_agent);
+        if (preferred === "codex" && (await codexReady)) setRunner("codex");
+      })
       .catch(() => setAgentConfig(null));
   }, [dir]);
 
@@ -88,7 +113,7 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
       }
       await onCreate(
         title,
-        agentMode ? { runner: "claude_code", prompt: agentPrompt.trim() } : null,
+        agentMode ? { runner, prompt: agentPrompt.trim() } : null,
       );
     } catch (e) {
       setError(String(e));
@@ -162,43 +187,45 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
             <div className="flex flex-col gap-1.5">
               <span className="tyba-label">{t("worktreeAgentRunner")}</span>
               <div className="flex gap-2">
-                <span
-                  aria-pressed="true"
-                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-tyba-green/50 bg-tyba-green/10 px-3 text-sm font-medium text-tyba-text"
+                <button
+                  type="button"
+                  aria-pressed={runner === "claude_code"}
+                  onClick={() => setRunner("claude_code")}
+                  className={runnerButtonClass(runner === "claude_code")}
                 >
                   <ClaudeIcon size={14} style={{ color: "#d97757" }} />
                   Claude Code
-                </span>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled
-                      >
-                        Codex
-                      </Button>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>{t("worktreeAgentPhase5")}</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled
-                      >
-                        {t("worktreeAgentCustom")}
-                      </Button>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>{t("worktreeAgentPhase5")}</TooltipContent>
-                </Tooltip>
+                </button>
+                {codexAvailable ? (
+                  <button
+                    type="button"
+                    aria-pressed={runner === "codex"}
+                    onClick={() => setRunner("codex")}
+                    className={runnerButtonClass(runner === "codex")}
+                  >
+                    <OpenAIIcon size={14} className="text-tyba-text" />
+                    Codex
+                  </button>
+                ) : (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled
+                        >
+                          <OpenAIIcon size={14} className="text-tyba-text" />
+                          Codex
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {t("worktreeAgentCodexMissing")}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
               </div>
             </div>
 

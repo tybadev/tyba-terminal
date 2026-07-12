@@ -269,6 +269,9 @@ export interface AgentRepoConfig {
 export const agentRepoConfig = (repoRoot: string) =>
   invoke<AgentRepoConfig | null>("agent_repo_config", { repoRoot });
 
+export const agentBinaryAvailable = (runner: "claude_code" | "codex") =>
+  invoke<boolean>("agent_binary_available", { runner });
+
 export const setAgentConfigConsent = (
   repoRoot: string,
   hash: string,

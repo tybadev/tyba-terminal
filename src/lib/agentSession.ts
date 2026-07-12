@@ -21,9 +21,20 @@ export function applyConsentDecision(
   return { persist: false, config: { ...config, consent: false } };
 }
 
+export type AgentRunnerId = "claude_code" | "codex";
+
+export function runnerFromDefault(
+  value: string | null | undefined,
+): AgentRunnerId | null {
+  if (value === "codex") return "codex";
+  if (value === "claude" || value === "claude_code") return "claude_code";
+  return null;
+}
+
 export interface AgentSessionParams {
   cwd: string;
   task: string;
+  runner?: AgentRunnerId;
   cols?: number;
   rows?: number;
 }
@@ -32,7 +43,7 @@ export function buildAgentSessionOpts(
   params: AgentSessionParams,
 ): CreateSessionOpts {
   return {
-    kind: { type: "agent", runner: "claude_code" },
+    kind: { type: "agent", runner: params.runner ?? "claude_code" },
     title: params.task,
     cwd: params.cwd,
     cols: params.cols ?? 100,

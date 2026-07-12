@@ -12,6 +12,7 @@ pub mod repo_config;
 pub mod rich_input;
 pub mod sandbox;
 pub mod session;
+pub mod shell_path;
 pub mod status;
 pub mod theme;
 pub mod worktree;
@@ -1450,6 +1451,11 @@ struct AgentConfigInfo {
 }
 
 #[tauri::command]
+fn agent_binary_available(runner: crate::session::AgentRunnerKind) -> bool {
+    agent::binary_available(&runner)
+}
+
+#[tauri::command]
 fn agent_repo_config(
     state: State<'_, AppState>,
     repo_root: String,
@@ -1661,6 +1667,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            agent_binary_available,
             create_session,
             write_to_session,
             submit_rich_input,

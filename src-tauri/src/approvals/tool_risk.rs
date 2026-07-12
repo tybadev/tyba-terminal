@@ -4,31 +4,6 @@ use serde_json::Value;
 
 use super::{classify_risk, RiskLevel};
 
-const WRITE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit"];
-const READ_ONLY_TOOLS: &[&str] = &[
-    "Read",
-    "Glob",
-    "Grep",
-    "LS",
-    "NotebookRead",
-    "TodoRead",
-    "TodoWrite",
-    "AskUserQuestion",
-];
-const NETWORK_TOOLS: &[&str] = &["WebFetch", "WebSearch"];
-
-fn write_path_key(tool_name: &str) -> &'static str {
-    if tool_name == "NotebookEdit" {
-        "notebook_path"
-    } else {
-        "file_path"
-    }
-}
-
-fn str_field<'a>(input: Option<&'a Value>, key: &str) -> Option<&'a str> {
-    input?.get(key)?.as_str()
-}
-
 fn normalize_lexical(path: &Path) -> Option<PathBuf> {
     let mut stack: Vec<Component> = Vec::new();
     for comp in path.components() {
@@ -70,7 +45,7 @@ fn escapes_via_symlink(resolved: &Path, worktree_root: &Path) -> bool {
     }
 }
 
-fn classify_write(path: &str, worktree_root: &Path) -> RiskLevel {
+pub(super) fn classify_write(path: &str, worktree_root: &Path) -> RiskLevel {
     let candidate = if Path::new(path).is_absolute() {
         PathBuf::from(path)
     } else {
@@ -123,74 +98,40 @@ fn bash_touches_outside(command: &str, worktree_root: &Path) -> bool {
     })
 }
 
+pub(super) fn classify_command(command: &str, worktree_root: &Path) -> RiskLevel {
+    match classify_risk(command) {
+        RiskLevel::Red => RiskLevel::Red,
+        risk => {
+            if bash_touches_outside(command, worktree_root) {
+                RiskLevel::Red
+            } else {
+                risk
+            }
+        }
+    }
+}
+
 pub fn classify_tool_use(
     tool_name: &str,
     tool_input: Option<&Value>,
     worktree_root: &Path,
 ) -> RiskLevel {
-    if tool_name == "Bash" {
-        return match str_field(tool_input, "command") {
-            Some(command) => match classify_risk(command) {
-                RiskLevel::Red => RiskLevel::Red,
-                risk => {
-                    if bash_touches_outside(command, worktree_root) {
-                        RiskLevel::Red
-                    } else {
-                        risk
-                    }
-                }
-            },
-            None => RiskLevel::Yellow,
-        };
-    }
-    if WRITE_TOOLS.contains(&tool_name) {
-        return match str_field(tool_input, write_path_key(tool_name)) {
-            Some(path) => classify_write(path, worktree_root),
-            None => RiskLevel::Yellow,
-        };
-    }
-    if READ_ONLY_TOOLS.contains(&tool_name) {
-        return RiskLevel::Green;
-    }
-    if NETWORK_TOOLS.contains(&tool_name) {
-        return RiskLevel::Red;
-    }
-    RiskLevel::Yellow
-}
-
-fn truncate_500(text: String) -> String {
-    if text.chars().count() > 500 {
-        text.chars().take(500).collect()
-    } else {
-        text
-    }
+    super::tool_action::normalize_tool_use(
+        &crate::session::AgentRunnerKind::ClaudeCode,
+        tool_name,
+        tool_input,
+    )
+    .action
+    .classify(worktree_root)
 }
 
 pub fn describe_tool_use(tool_name: &str, tool_input: Option<&Value>) -> String {
-    let raw = if tool_name == "Bash" {
-        match str_field(tool_input, "command") {
-            Some(command) => command.to_string(),
-            None => "Bash (sem comando)".to_string(),
-        }
-    } else if WRITE_TOOLS.contains(&tool_name) {
-        match str_field(tool_input, write_path_key(tool_name)) {
-            Some(path) => format!("{tool_name} {path}"),
-            None => format!("{tool_name} (sem caminho)"),
-        }
-    } else if tool_name == "WebFetch" {
-        match str_field(tool_input, "url") {
-            Some(url) => format!("WebFetch {url}"),
-            None => "WebFetch".to_string(),
-        }
-    } else if tool_name == "WebSearch" {
-        match str_field(tool_input, "query") {
-            Some(query) => format!("WebSearch {query}"),
-            None => "WebSearch".to_string(),
-        }
-    } else {
-        tool_name.to_string()
-    };
-    truncate_500(raw)
+    super::tool_action::normalize_tool_use(
+        &crate::session::AgentRunnerKind::ClaudeCode,
+        tool_name,
+        tool_input,
+    )
+    .description
 }
 
 #[cfg(test)]

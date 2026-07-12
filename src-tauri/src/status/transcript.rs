@@ -18,9 +18,28 @@ pub fn last_assistant_text(path: &Path, max_chars: usize) -> Option<String> {
     tail.lines()
         .rev()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .find_map(|entry| assistant_text(&entry))
+        .find_map(|entry| assistant_text(&entry).or_else(|| codex_agent_text(&entry)))
         .map(|text| truncate_chars(&collapse_whitespace(&text), max_chars))
         .filter(|text| !text.is_empty())
+}
+
+pub fn clean_summary(text: &str, max_chars: usize) -> Option<String> {
+    let collapsed = collapse_whitespace(text);
+    (!collapsed.is_empty()).then(|| truncate_chars(&collapsed, max_chars))
+}
+
+fn codex_agent_text(entry: &serde_json::Value) -> Option<String> {
+    if entry.get("type").and_then(|t| t.as_str()) != Some("event_msg") {
+        return None;
+    }
+    let payload = entry.get("payload")?;
+    match payload.get("type").and_then(|t| t.as_str()) {
+        Some("agent_message") => non_empty(payload.get("message")?.as_str()?.to_string()),
+        Some("task_complete") => {
+            non_empty(payload.get("last_agent_message")?.as_str()?.to_string())
+        }
+        _ => None,
+    }
 }
 
 fn assistant_text(entry: &serde_json::Value) -> Option<String> {
@@ -126,6 +145,45 @@ mod tests {
         assert!(last_assistant_text(Path::new("/nope/x.jsonl"), 140).is_none());
         let path = write_transcript(&[
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
+        ]);
+        assert!(last_assistant_text(&path, 140).is_none());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn picks_last_codex_agent_message_from_rollout() {
+        let path = write_transcript(&[
+            r#"{"timestamp":"2026-06-22T20:54:27.254Z","type":"session_meta","payload":{"id":"019ef11c","cwd":"/wt"}}"#,
+            r#"{"timestamp":"2026-06-22T20:55:01.000Z","type":"event_msg","payload":{"type":"agent_message","message":"primeira fala","phase":null}}"#,
+            r#"{"timestamp":"2026-06-22T20:55:02.000Z","type":"response_item","payload":{"type":"message"}}"#,
+            r#"{"timestamp":"2026-06-22T20:56:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"resumo  do turno","phase":null,"memory_citation":null}}"#,
+            r#"{"timestamp":"2026-06-22T20:56:00.100Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"019eafd2","last_agent_message":null,"duration_ms":68320}}"#,
+        ]);
+        assert_eq!(
+            last_assistant_text(&path, 140).as_deref(),
+            Some("resumo do turno")
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn prefers_task_complete_last_agent_message_when_present() {
+        let path = write_transcript(&[
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"parcial"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"x","last_agent_message":"consolidado","duration_ms":10}}"#,
+        ]);
+        assert_eq!(
+            last_assistant_text(&path, 140).as_deref(),
+            Some("consolidado")
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn ignores_codex_events_without_agent_text() {
+        let path = write_transcript(&[
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"x"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"x","last_agent_message":null}}"#,
         ]);
         assert!(last_assistant_text(&path, 140).is_none());
         std::fs::remove_file(&path).unwrap();

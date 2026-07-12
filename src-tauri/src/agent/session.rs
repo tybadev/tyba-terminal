@@ -6,8 +6,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
 use crate::agent::hooks_settings::{hook_command, hooks_settings_json};
-use crate::agent::{AgentRunner, ClaudeCodeRunner};
-use crate::approvals::tool_risk::{classify_tool_use, describe_tool_use};
+use crate::agent::{AgentRunner, ClaudeCodeRunner, CodexRunner, HookSetup};
+use crate::approvals::tool_action::normalize_tool_use;
 use crate::approvals::{now_ms, Decision, RiskLevel, SharedApprovals};
 use crate::hook_ipc::{HookAction, HookEvent, HookServer};
 use crate::pty::SharedPtyPool;
@@ -106,6 +106,7 @@ struct HandlerCtx {
     approvals: SharedApprovals,
     store: Arc<Store>,
     session_id: SessionId,
+    runner_kind: AgentRunnerKind,
     worktree_root: PathBuf,
     turn_settle: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -140,17 +141,48 @@ fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
 const TURN_END_SETTLE_MS: u64 = 2000;
 const TURN_SUMMARY_MAX_CHARS: usize = 140;
 
-fn turn_summary(event: &HookEvent) -> Option<String> {
-    let path = event.raw.get("transcript_path")?.as_str()?;
-    crate::status::transcript::last_assistant_text(
-        std::path::Path::new(path),
-        TURN_SUMMARY_MAX_CHARS,
-    )
+/// A fala final do turno, e se ela é autoritativa.
+///
+/// `last_assistant_message` vem do payload do hook (Codex) e é a fala definitiva
+/// do turno — não precisa de settle. O tail do transcript é melhor-esforço: o
+/// agente pode não ter flushado a última mensagem quando o `Stop` dispara.
+struct TurnSummary {
+    text: Option<String>,
+    settled: bool,
 }
 
-fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>) {
+fn turn_summary(event: &HookEvent) -> TurnSummary {
+    let inline = event
+        .raw
+        .get("last_assistant_message")
+        .and_then(|m| m.as_str())
+        .and_then(|m| crate::status::transcript::clean_summary(m, TURN_SUMMARY_MAX_CHARS));
+    if inline.is_some() {
+        return TurnSummary {
+            text: inline,
+            settled: true,
+        };
+    }
+    let text = event
+        .raw
+        .get("transcript_path")
+        .and_then(|p| p.as_str())
+        .and_then(|path| {
+            crate::status::transcript::last_assistant_text(
+                std::path::Path::new(path),
+                TURN_SUMMARY_MAX_CHARS,
+            )
+        });
+    TurnSummary {
+        text,
+        settled: false,
+    }
+}
+
+fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_settle: bool) {
     use std::sync::atomic::Ordering;
 
+    let transcript_path = needs_settle.then_some(transcript_path).flatten();
     let generation = ctx.turn_settle.fetch_add(1, Ordering::SeqCst) + 1;
     let app = ctx.app.clone();
     let sessions = ctx.sessions.clone();
@@ -195,10 +227,11 @@ fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>) {
 fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     let tool = event.tool_name.as_deref().unwrap_or("");
     let input = event.tool_input.as_ref();
-    let command = describe_tool_use(tool, input);
+    let normalized = normalize_tool_use(&ctx.runner_kind, tool, input);
+    let command = normalized.description;
     let cwd = event.cwd.clone();
 
-    match classify_tool_use(tool, input, &ctx.worktree_root) {
+    match normalized.action.classify(&ctx.worktree_root) {
         RiskLevel::Green => {
             record_history(
                 &ctx.store,
@@ -285,8 +318,11 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
         }
         Some(signal) => {
             if let Some(mut status) = status_for(&signal) {
+                let mut needs_settle = false;
                 if let SessionStatus::Idle { summary } = &mut status {
-                    *summary = turn_summary(&event);
+                    let turn = turn_summary(&event);
+                    *summary = turn.text;
+                    needs_settle = !turn.settled;
                 }
                 let awaiting = matches!(status, SessionStatus::AwaitingInput { .. });
                 let turn_ended = matches!(status, SessionStatus::Idle { .. });
@@ -304,14 +340,17 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                         .get("transcript_path")
                         .and_then(|p| p.as_str())
                         .map(str::to_string);
-                    notify_turn_ended(ctx, transcript_path);
+                    notify_turn_ended(ctx, transcript_path, needs_settle);
                 }
             }
         }
         None => {}
     }
 
-    if event.hook_event_name == "PreToolUse" {
+    if matches!(
+        event.hook_event_name.as_str(),
+        "PreToolUse" | "PermissionRequest"
+    ) {
         return on_pre_tool_use(ctx, &event);
     }
     HookAction::Ack
@@ -350,10 +389,15 @@ pub fn create_agent_session(
     };
     let runner: Box<dyn AgentRunner> = match &runner_kind {
         AgentRunnerKind::ClaudeCode => Box::new(ClaudeCodeRunner),
-        AgentRunnerKind::Codex | AgentRunnerKind::Custom(_) => {
-            return Err("runner disponível na Fase 5".into());
+        AgentRunnerKind::Codex => Box::new(CodexRunner),
+        AgentRunnerKind::Custom(_) => {
+            return Err("runner custom disponível em fase futura".into());
         }
     };
+    if !crate::agent::binary_available(&runner_kind) {
+        let binary = crate::agent::runner_binary(&runner_kind).unwrap_or("?");
+        return Err(format!("binário `{binary}` não encontrado no PATH"));
+    }
     let task = opts
         .worktree_task
         .clone()
@@ -388,18 +432,24 @@ fn spawn_prepared(
     }
 
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
-    let settings = hooks_settings_json(&hook_command(&exe));
-    let settings_body =
-        serde_json::to_string_pretty(&settings).map_err(|e| format!("settings de hooks: {e}"))?;
-    crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
-        .map_err(|e| format!("escrita dos settings de hooks: {e}"))?;
-    let settings_path = runtime.join(HOOK_SETTINGS_FILE);
+    let hook_cmd = hook_command(&exe);
+    if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+        let settings = hooks_settings_json(&hook_cmd);
+        let settings_body = serde_json::to_string_pretty(&settings)
+            .map_err(|e| format!("settings de hooks: {e}"))?;
+        crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
+            .map_err(|e| format!("escrita dos settings de hooks: {e}"))?;
+    }
+    let hook_setup = HookSetup {
+        settings_path: runtime.join(HOOK_SETTINGS_FILE),
+        hook_command: hook_cmd,
+    };
 
     let user_env: HashMap<String, String> = std::env::vars().collect();
     let config = consented_config(&ctx.store, &root);
     let env = crate::repo_config::agent_env(config.as_ref(), &user_env);
 
-    let mut cmd = runner.build_command(&worktree.path, &env, &settings_path);
+    let mut cmd = runner.build_command(&worktree.path, &env, &hook_setup);
     cmd.env("TYBA_HOOK_SOCKET", &socket_path);
     let cmd = PassthroughSandbox.wrap(
         cmd,
@@ -416,6 +466,7 @@ fn spawn_prepared(
         approvals: ctx.approvals.clone(),
         store: ctx.store.clone(),
         session_id: id,
+        runner_kind: runner.kind(),
         worktree_root: worktree.path.clone(),
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };

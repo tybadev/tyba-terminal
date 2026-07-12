@@ -161,8 +161,8 @@ const resources = {
         "O toggle de worktree do diálogo de Nova Sessão já abre ligado.",
       worktreeAgentMode: "Subir um agente neste worktree",
       worktreeAgentRunner: "Agente",
-      worktreeAgentCustom: "Custom",
-      worktreeAgentPhase5: "Disponível na Fase 5",
+      worktreeAgentCodexMissing:
+        "Binário `codex` não encontrado no PATH — instale o Codex CLI",
       worktreeAgentPrompt: "Prompt inicial (opcional)",
       worktreeAgentPromptPlaceholder: "O que o agente deve fazer primeiro?",
       agentConsentTitle: "Este repo pede variáveis do seu ambiente",
@@ -644,8 +644,8 @@ const resources = {
         "The worktree toggle in the New Session dialog starts on.",
       worktreeAgentMode: "Start an agent in this worktree",
       worktreeAgentRunner: "Agent",
-      worktreeAgentCustom: "Custom",
-      worktreeAgentPhase5: "Available in Phase 5",
+      worktreeAgentCodexMissing:
+        "`codex` binary not found in PATH — install the Codex CLI",
       worktreeAgentPrompt: "Initial prompt (optional)",
       worktreeAgentPromptPlaceholder: "What should the agent do first?",
       agentConsentTitle: "This repo asks for variables from your environment",
