@@ -153,6 +153,7 @@ pub fn create_pr(worktree: &Path, title: &str, body: &str) -> Result<PullRequest
             "recusado pelo core: abrir PR daria push da branch {branch} — nunca a partir de main/master"
         ));
     }
+    crate::worktree::ops::push(worktree)?;
     match kind_of(worktree)? {
         ForgeKind::GitHub => github::create_pr(worktree, title, body),
         ForgeKind::GitLab => gitlab::create_pr(worktree, title, body),
