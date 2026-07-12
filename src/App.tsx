@@ -65,6 +65,7 @@ import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
 import { WorktreesView } from "./components/WorktreesView";
 import { DiffView } from "./components/DiffView";
+import { PrPanel } from "./components/PrPanel";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
 import { DiffStat } from "./components/DiffStat";
 import { SessionHoverCard } from "./components/SessionHoverCard";
@@ -117,6 +118,7 @@ import {
   onRepoReconciled,
   repoSnapshots as fetchRepoSnapshots,
   sessionCwd,
+  sessionGitStatus,
   setAgentMatchPattern,
   submitRichInput,
   setPref,
@@ -132,6 +134,7 @@ import {
   type Session,
   type SessionCommand,
   type SessionCwd,
+  type SessionGitStatus,
   type SessionId,
   type SessionKind,
   type SplitKind,
@@ -139,6 +142,7 @@ import {
 } from "./lib/ipc";
 import { basename } from "@/lib/utils";
 import { isFinishedStatus, sameSessionStatus } from "./lib/sessionStatus";
+import { shouldShowGitIcon } from "./lib/headerGit";
 import { buildAgentSessionOpts } from "./lib/agentSession";
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
 import { resolveWorkspaceCwd, workspaceMatchDir } from "./lib/workspaceCwd";
@@ -707,6 +711,35 @@ export default function App() {
     setSessionCommands(prune);
     setSessionCwds(prune);
   }, [sessions]);
+
+  const [activeGitStatus, setActiveGitStatus] = useState<
+    SessionGitStatus | null | undefined
+  >(undefined);
+  useEffect(() => {
+    if (!activeId) {
+      setActiveGitStatus(null);
+      return;
+    }
+    setActiveGitStatus(undefined);
+    let cancelled = false;
+    const id = activeId;
+    const check = () => {
+      void sessionGitStatus(id)
+        .then((status) => {
+          if (!cancelled) setActiveGitStatus(status);
+        })
+        .catch(() => {
+          if (!cancelled) setActiveGitStatus(null);
+        });
+    };
+    check();
+    const timer = window.setInterval(check, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeId]);
+  const showGitIcon = shouldShowGitIcon(activeGitStatus);
 
   const activeSession = activeId ? sessionById.get(activeId) : undefined;
   const activeCommand = activeId ? sessionCommands[activeId] : undefined;
@@ -2221,6 +2254,29 @@ export default function App() {
               </TooltipContent>
             </Tooltip>
           )}
+
+          {showGitIcon && activeId && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={t("gitStatusIconLabel")}
+                  onClick={() => void openDiffTab(activeId).catch(() => {})}
+                  className="size-6 rounded-[4px] text-tyba-amber hover:text-tyba-amber/80"
+                >
+                  <GitBranch size={16} weight="fill" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {t("gitStatusIconLabel")}
+              </TooltipContent>
+            </Tooltip>
+          )}
+
+          <ErrorBoundary region="pull requests">
+            <PrPanel sessionId={activeId} />
+          </ErrorBoundary>
 
           <IconAction
             label={t("openProjectFolder")}
