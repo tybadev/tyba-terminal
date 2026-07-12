@@ -41,7 +41,7 @@ export function ShortcutsPanel({
         <button
           aria-label={t("close")}
           onClick={onClose}
-          className="rounded-[4px] p-1 text-tyba-text-faint transition-colors hover:bg-white/[.05] hover:text-tyba-text"
+          className="rounded-[4px] p-1 text-tyba-text-faint transition-colors hover:bg-tyba-text/[.05] hover:text-tyba-text"
         >
           <X size={14} />
         </button>
@@ -57,7 +57,7 @@ export function ShortcutsPanel({
                 {actions.map((action) => (
                   <div
                     key={action}
-                    className="flex h-8 items-center justify-between gap-3 rounded-[4px] px-2 text-[13px] text-tyba-text-muted hover:bg-white/[.03]"
+                    className="flex h-8 items-center justify-between gap-3 rounded-[4px] px-2 text-[13px] text-tyba-text-muted hover:bg-tyba-text/[.03]"
                   >
                     <span className="min-w-0 truncate">
                       {t(ACTION_LABEL_KEYS[action])}

@@ -101,7 +101,7 @@ function WorktreeRow({
         {wt.session_id ? (
           <button
             onClick={() => onFocusSession(wt.session_id as SessionId)}
-            className="flex items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-[11px] text-tyba-green transition-colors hover:bg-white/[.06]"
+            className="flex items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-[11px] text-tyba-green transition-colors hover:bg-tyba-text/[.06]"
           >
             <span className="size-1.5 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)]" />
             {t("worktreeSessionActive")}
@@ -142,7 +142,7 @@ function WorktreeRow({
           {wt.path}
         </span>
         {!wt.managed && (
-          <span className="shrink-0 rounded-full bg-white/[.06] px-1.5 text-[9px] text-tyba-text-faint">
+          <span className="shrink-0 rounded-full bg-tyba-text/[.06] px-1.5 text-[9px] text-tyba-text-faint">
             {t("worktreeExternal")}
           </span>
         )}

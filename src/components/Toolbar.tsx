@@ -102,7 +102,7 @@ export function Toolbar({
             onClick={onOpenDiff}
             title={t("toolbarReviewDiff")}
             aria-label={t("toolbarReviewDiff")}
-            className="flex items-center gap-1 rounded-[4px] px-1 py-0.5 text-tyba-text-muted transition-colors hover:bg-white/[.06] hover:text-tyba-text"
+            className="flex items-center gap-1 rounded-[4px] px-1 py-0.5 text-tyba-text-muted transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
           >
             <GitDiff size={12} />
             <span>diff</span>
@@ -151,7 +151,7 @@ export function Toolbar({
           <button
             onClick={onOpenRichInput}
             title={t("richInputHint")}
-            className="flex shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-tyba-text-muted transition-colors hover:bg-white/[.06] hover:text-tyba-text"
+            className="flex shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-tyba-text-muted transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
           >
             <TextAlignLeft size={12} />
             <span>{t("richInputToggle")}</span>

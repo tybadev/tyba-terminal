@@ -126,7 +126,7 @@ export function PrCommentsPanel({ sessionId, pr, onSendToAgent }: Props) {
           {comments.map((c) => (
             <label
               key={c.id}
-              className="flex items-start gap-2 px-1 py-1.5 text-[12px] hover:bg-white/[.02]"
+              className="flex items-start gap-2 px-1 py-1.5 text-[12px] hover:bg-tyba-text/[.02]"
             >
               <input
                 type="checkbox"

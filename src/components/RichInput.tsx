@@ -256,7 +256,7 @@ export function RichInput({
               className={`block w-full truncate px-2.5 py-1 text-left font-mono text-[12px] ${
                 i === selected
                   ? "bg-tyba-green/15 text-tyba-text"
-                  : "text-tyba-text-muted hover:bg-white/[.04]"
+                  : "text-tyba-text-muted hover:bg-tyba-text/[.04]"
               }`}
             >
               {file}
@@ -273,7 +273,7 @@ export function RichInput({
         <button
           onClick={() => void attach()}
           title={t("richInputAttach")}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[4px] text-tyba-text-muted transition-colors hover:bg-white/[.06] hover:text-tyba-text"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[4px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
         >
           <Paperclip size={15} />
         </button>
@@ -299,7 +299,7 @@ export function RichInput({
           className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-[4px] transition-colors ${
             warnArmed
               ? "bg-tyba-yellow/20 text-tyba-yellow hover:bg-tyba-yellow/30"
-              : "text-tyba-text-muted hover:bg-white/[.06] hover:text-tyba-text"
+              : "text-tyba-text-muted hover:bg-tyba-text/[.06] hover:text-tyba-text"
           }`}
         >
           {warnArmed ? <Warning size={15} /> : <PaperPlaneRight size={15} />}

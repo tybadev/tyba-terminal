@@ -101,7 +101,7 @@ export function TabBar({
             className={`group relative flex max-w-44 min-w-24 shrink-0 items-center gap-1.5 rounded-t-[4px] px-2.5 text-[12px] transition-colors ${
               isActive
                 ? "bg-tyba-bg text-tyba-text"
-                : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
+                : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
             }`}
           >
             {isActive && (
@@ -138,7 +138,7 @@ export function TabBar({
         onClick={onNew}
         aria-label={t("newTab")}
         
-        className="flex w-8 shrink-0 items-center justify-center rounded-[4px] text-tyba-text-faint transition-colors hover:bg-white/[.03] hover:text-tyba-text"
+        className="flex w-8 shrink-0 items-center justify-center rounded-[4px] text-tyba-text-faint transition-colors hover:bg-tyba-text/[.03] hover:text-tyba-text"
       >
         <Plus size={13} weight="bold" />
       </button>

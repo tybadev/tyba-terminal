@@ -1936,8 +1936,8 @@ export default function App() {
           showDetails ? "h-[3.75rem]" : "h-8"
         } ${open ? "px-2" : "justify-center px-0"} ${
           isActive
-            ? `text-tyba-text ${w.color ? "" : "bg-white/[.05]"}`
-            : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
+            ? `text-tyba-text ${w.color ? "" : "bg-tyba-text/[.05]"}`
+            : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
         }`}
       >
         {isActive && (
@@ -2127,7 +2127,7 @@ export default function App() {
           )}
         </HoverCard>
         {sideDiff && (
-          <div className="group/diff flex h-7 shrink-0 items-center gap-2 rounded-[4px] pl-8 pr-2 text-[12px] text-tyba-text-faint transition-colors hover:bg-white/[.03] hover:text-tyba-text-muted">
+          <div className="group/diff flex h-7 shrink-0 items-center gap-2 rounded-[4px] pl-8 pr-2 text-[12px] text-tyba-text-faint transition-colors hover:bg-tyba-text/[.03] hover:text-tyba-text-muted">
             <button
               onClick={() => void activateWorkspace(w.id)}
               className="flex h-full min-w-0 flex-1 items-center gap-1.5"
@@ -2281,13 +2281,13 @@ export default function App() {
           </IconAction>
 
           <div className="pointer-events-none absolute inset-x-0 top-0 flex h-9 items-center justify-center">
-            <div className="pointer-events-auto flex items-center gap-0.5 rounded-[5px] border border-tyba-border bg-white/[.02] p-0.5">
+            <div className="pointer-events-auto flex items-center gap-0.5 rounded-[5px] border border-tyba-border bg-tyba-text/[.02] p-0.5">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     aria-label={t("terminalView")}
                     aria-pressed
-                    className="flex h-6 items-center gap-1.5 rounded-[3px] bg-white/[.06] px-2 text-[11px] text-tyba-text"
+                    className="flex h-6 items-center gap-1.5 rounded-[3px] bg-tyba-text/[.06] px-2 text-[11px] text-tyba-text"
                   >
                     <TerminalWindow size={14} />
                     {t("terminalView")}
@@ -2305,7 +2305,7 @@ export default function App() {
                     onClick={toggleWorktreesView}
                     className={`flex h-6 items-center gap-1.5 rounded-[3px] px-2 text-[11px] ${
                       activeTab?.view === "workspace"
-                        ? "bg-white/[.06] text-tyba-text"
+                        ? "bg-tyba-text/[.06] text-tyba-text"
                         : "text-tyba-text-faint hover:text-tyba-text"
                     }`}
                   >
@@ -2338,7 +2338,7 @@ export default function App() {
                       : "text-tyba-text-faint"
                   } ${
                     activeWorkspace?.kind === "docker"
-                      ? "bg-white/[.06] text-tyba-text"
+                      ? "bg-tyba-text/[.06] text-tyba-text"
                       : ""
                   }`}
                 >
@@ -2464,7 +2464,7 @@ export default function App() {
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {open && (
-                    <label className="mx-2 mt-3 flex h-7 items-center gap-1.5 rounded-[4px] bg-white/[.03] px-2 focus-within:bg-white/[.05]">
+                    <label className="mx-2 mt-3 flex h-7 items-center gap-1.5 rounded-[4px] bg-tyba-text/[.03] px-2 focus-within:bg-tyba-text/[.05]">
                       <MagnifyingGlass
                         size={12}
                         className="shrink-0 text-tyba-text-faint"
@@ -2483,7 +2483,7 @@ export default function App() {
                     }`}
                   >
                     {layout.workspaces.some(isConfigWorkspace) && (
-                      <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-white/[.015] p-1">
+                      <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-tyba-text/[.015] p-1">
                         {open && (
                           <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
                             <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
@@ -2503,8 +2503,8 @@ export default function App() {
                             open ? "px-2" : "justify-center px-0"
                           } ${
                             activeTab?.view === "settings"
-                              ? "bg-white/[.05] text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
+                              ? "bg-tyba-text/[.05] text-tyba-text"
+                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
                           }`}
                         >
                           {activeTab?.view === "settings" && (
@@ -2530,7 +2530,7 @@ export default function App() {
                       </div>
                     )}
                     {layout.workspaces.some(isWorktreesWorkspace) && (
-                      <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-white/[.015] p-1">
+                      <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-tyba-text/[.015] p-1">
                         {open && (
                           <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
                             <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
@@ -2546,8 +2546,8 @@ export default function App() {
                             open ? "px-2" : "justify-center px-0"
                           } ${
                             activeTab?.view === "workspace"
-                              ? "bg-white/[.05] text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
+                              ? "bg-tyba-text/[.05] text-tyba-text"
+                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
                           }`}
                         >
                           {activeTab?.view === "workspace" && (
@@ -2565,7 +2565,7 @@ export default function App() {
                     {groupedWorkspaces.groups.map(([name, list]) => (
                       <div
                         key={name}
-                        className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-white/[.015] p-1"
+                        className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-tyba-text/[.015] p-1"
                       >
                         <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
                           <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
@@ -2604,7 +2604,7 @@ export default function App() {
                           variant="ghost"
                           onClick={() => openNewSession()}
                           aria-label={t("newSession")}
-                          className={`mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text ${
+                          className={`mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text ${
                             open ? "justify-start px-2" : "justify-center px-0"
                           }`}
                         >
@@ -2800,7 +2800,7 @@ export default function App() {
                         {layout.workspaces.length === 0 ? (
                           <button
                             onClick={() => openNewSession()}
-                            className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
+                            className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
                           >
                             <Plus size={14} className="text-tyba-green" />
                             <span className="flex-1 text-left">
@@ -2811,7 +2811,7 @@ export default function App() {
                         ) : (
                           <button
                             onClick={() => void newTab()}
-                            className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
+                            className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
                           >
                             <Plus size={14} className="text-tyba-green" />
                             <span className="flex-1 text-left">
@@ -2822,7 +2822,7 @@ export default function App() {
                         )}
                         <button
                           onClick={() => openPalette("actions")}
-                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
+                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
                         >
                           <MagnifyingGlass size={14} />
                           <span className="flex-1 text-left">
@@ -2832,7 +2832,7 @@ export default function App() {
                         </button>
                         <button
                           onClick={toggleSidebar}
-                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-white/[.04] hover:text-tyba-text"
+                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
                         >
                           <SidebarSimple size={14} />
                           <span className="flex-1 text-left">

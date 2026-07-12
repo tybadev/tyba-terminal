@@ -30,7 +30,7 @@ export function Select({
       <DropdownMenuTrigger asChild>
         <button
           className={cn(
-            "flex h-8 items-center justify-between gap-2 rounded-[4px] border border-tyba-border bg-white/[.02] px-2.5 text-[13px] text-tyba-text transition-colors outline-none hover:border-tyba-border-strong focus-visible:[box-shadow:var(--tyba-focus-ring)]",
+            "flex h-8 items-center justify-between gap-2 rounded-[4px] border border-tyba-border bg-tyba-text/[.02] px-2.5 text-[13px] text-tyba-text transition-colors outline-none hover:border-tyba-border-strong focus-visible:[box-shadow:var(--tyba-focus-ring)]",
             className,
           )}
         >
