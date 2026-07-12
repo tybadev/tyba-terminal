@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use portable_pty::CommandBuilder;
 
+use crate::sandbox::policy::{AgentAccess, Rule, RuleSet};
 use crate::session::AgentRunnerKind;
 
 pub struct HookSetup {
@@ -39,6 +40,18 @@ pub trait AgentRunner: Send + Sync {
     fn needs_network(&self) -> bool {
         false
     }
+
+    fn sandbox_access(&self, _home: &Path, _worktree: &Path) -> AgentAccess {
+        AgentAccess::default()
+    }
+}
+
+pub fn claude_project_dir_name(worktree: &Path) -> String {
+    worktree
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 pub fn runner_binary(kind: &AgentRunnerKind) -> Option<&'static str> {
@@ -101,6 +114,40 @@ impl AgentRunner for ClaudeCodeRunner {
     fn needs_network(&self) -> bool {
         true
     }
+
+    fn sandbox_access(&self, home: &Path, worktree: &Path) -> AgentAccess {
+        let claude = home.join(".claude");
+        let project = claude
+            .join("projects")
+            .join(claude_project_dir_name(worktree));
+        AgentAccess {
+            read: vec![
+                RuleSet {
+                    allow: vec![Rule::Subpath(claude.clone())],
+                    except: vec![
+                        Rule::Subpath(claude.join("projects")),
+                        Rule::Subpath(claude.join("file-history")),
+                        Rule::Literal(claude.join("history.jsonl")),
+                    ],
+                },
+                RuleSet::allow(vec![
+                    Rule::Node(project.clone()),
+                    Rule::Prefix(home.join(".claude.json")),
+                ]),
+            ],
+            write: vec![RuleSet::allow(vec![
+                Rule::Node(project),
+                Rule::Node(claude.join("todos")),
+                Rule::Node(claude.join("shell-snapshots")),
+                Rule::Node(claude.join("statsig")),
+                Rule::Node(claude.join("debug")),
+                Rule::Node(claude.join("ide")),
+                Rule::Node(claude.join("logs")),
+                Rule::Prefix(claude.join(".credentials.json")),
+                Rule::Prefix(home.join(".claude.json")),
+            ])],
+        }
+    }
 }
 
 pub struct CodexRunner;
@@ -140,6 +187,29 @@ impl AgentRunner for CodexRunner {
     fn needs_network(&self) -> bool {
         true
     }
+
+    fn sandbox_access(&self, home: &Path, _worktree: &Path) -> AgentAccess {
+        let codex = home.join(".codex");
+        AgentAccess {
+            read: vec![RuleSet::allow(vec![Rule::Subpath(codex.clone())])],
+            write: vec![RuleSet::allow(vec![
+                Rule::Node(codex.join("sessions")),
+                Rule::Node(codex.join("archived_sessions")),
+                Rule::Node(codex.join("log")),
+                Rule::Node(codex.join("tmp")),
+                Rule::Literal(codex.join("history.jsonl")),
+                Rule::Prefix(codex.join("auth.json")),
+            ])],
+        }
+    }
+}
+
+pub fn resolved_binary(kind: &AgentRunnerKind) -> Option<PathBuf> {
+    let name = runner_binary(kind)?;
+    std::env::split_paths(&crate::shell_path::agent_path())
+        .map(|dir| dir.join(name))
+        .find(|p| is_executable(p))
+        .and_then(|p| std::fs::canonicalize(p).ok())
 }
 
 #[cfg(test)]
@@ -279,6 +349,69 @@ mod tests {
         assert!(overrides
             .iter()
             .all(|o| !o.starts_with("hooks.state=") || o.contains("trusted_hash")));
+    }
+
+    #[test]
+    fn claude_project_dir_name_replaces_non_alphanumerics() {
+        assert_eq!(
+            claude_project_dir_name(Path::new("/Users/g/.tyba/worktrees/repo/task-1")),
+            "-Users-g--tyba-worktrees-repo-task-1"
+        );
+    }
+
+    #[test]
+    fn claude_sandbox_access_scopes_projects_to_current_worktree() {
+        let access =
+            ClaudeCodeRunner.sandbox_access(Path::new("/Users/x"), Path::new("/private/wt/a"));
+        let broad = &access.read[0];
+        assert!(broad
+            .except
+            .contains(&Rule::Subpath(PathBuf::from("/Users/x/.claude/projects"))));
+        assert!(access.read[1].allow.contains(&Rule::Node(PathBuf::from(
+            "/Users/x/.claude/projects/-private-wt-a"
+        ))));
+    }
+
+    #[test]
+    fn claude_sandbox_access_never_writes_settings_or_plugins() {
+        let access =
+            ClaudeCodeRunner.sandbox_access(Path::new("/Users/x"), Path::new("/private/wt/a"));
+        for set in &access.write {
+            for rule in &set.allow {
+                let p = match rule {
+                    Rule::Literal(p) | Rule::Subpath(p) | Rule::Node(p) | Rule::Prefix(p) => p,
+                };
+                let s = p.to_string_lossy();
+                assert!(!s.contains("settings"), "{s}");
+                assert!(!s.ends_with("plugins"), "{s}");
+                assert!(!s.ends_with(".claude"), "{s}");
+            }
+        }
+    }
+
+    #[test]
+    fn codex_sandbox_access_never_writes_config_or_hooks() {
+        let access = CodexRunner.sandbox_access(Path::new("/Users/x"), Path::new("/private/wt/a"));
+        for set in &access.write {
+            for rule in &set.allow {
+                let p = match rule {
+                    Rule::Literal(p) | Rule::Subpath(p) | Rule::Node(p) | Rule::Prefix(p) => p,
+                };
+                let s = p.to_string_lossy();
+                assert!(!s.ends_with("config.toml"), "{s}");
+                assert!(!s.ends_with("hooks.json"), "{s}");
+                assert!(!s.ends_with(".codex"), "{s}");
+            }
+        }
+    }
+
+    #[test]
+    fn codex_sandbox_access_reads_own_home_only() {
+        let access = CodexRunner.sandbox_access(Path::new("/Users/x"), Path::new("/private/wt/a"));
+        assert_eq!(
+            access.read[0].allow,
+            vec![Rule::Subpath(PathBuf::from("/Users/x/.codex"))]
+        );
     }
 
     #[test]

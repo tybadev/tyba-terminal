@@ -82,6 +82,54 @@ fn git_text(cmd: Command, what: &str) -> Result<String, String> {
         .to_string())
 }
 
+pub struct WorktreeGitDirs {
+    pub git_dir: PathBuf,
+    pub common_dir: PathBuf,
+}
+
+pub fn resolved_git_dirs(worktree_path: &Path) -> Result<WorktreeGitDirs, String> {
+    let pointer = worktree_path.join(".git");
+    if pointer.is_dir() {
+        let canon = crate::repo::canonicalize_or(&pointer);
+        return Ok(WorktreeGitDirs {
+            git_dir: canon.clone(),
+            common_dir: canon,
+        });
+    }
+    let content =
+        std::fs::read_to_string(&pointer).map_err(|e| format!("ponteiro .git do worktree: {e}"))?;
+    let git_dir = content
+        .lines()
+        .find_map(|l| l.strip_prefix("gitdir:"))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or("ponteiro .git do worktree sem gitdir")?;
+    let git_dir = PathBuf::from(git_dir);
+    let git_dir = if git_dir.is_absolute() {
+        git_dir
+    } else {
+        worktree_path.join(git_dir)
+    };
+    let git_dir = crate::repo::canonicalize_or(&git_dir);
+    let common_dir = match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(rel) => {
+            let rel = rel.trim();
+            let common = PathBuf::from(rel);
+            let common = if common.is_absolute() {
+                common
+            } else {
+                git_dir.join(common)
+            };
+            crate::repo::canonicalize_or(&common)
+        }
+        Err(_) => git_dir.clone(),
+    };
+    Ok(WorktreeGitDirs {
+        git_dir,
+        common_dir,
+    })
+}
+
 pub fn managed_root() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -671,6 +719,40 @@ mod lifecycle_tests {
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-qm", "init"]);
         repo
+    }
+
+    #[test]
+    fn resolved_git_dirs_follow_worktree_pointer_and_commondir() {
+        let base = temp_base("gitdirs");
+        let repo = temp_repo(&base);
+        let managed = base.join("managed");
+        let wt = create_in(&managed, &repo, "gitdirs").expect("create");
+
+        let dirs = resolved_git_dirs(&wt.path).unwrap();
+        let repo_canon = crate::repo::canonicalize_or(&repo);
+        assert!(dirs.git_dir.starts_with(repo_canon.join(".git/worktrees")));
+        assert_eq!(dirs.common_dir, repo_canon.join(".git"));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn resolved_git_dirs_on_main_repo_returns_git_dir_itself() {
+        let base = temp_base("gitdirs-main");
+        let repo = temp_repo(&base);
+        let dirs = resolved_git_dirs(&repo).unwrap();
+        let repo_canon = crate::repo::canonicalize_or(&repo);
+        assert_eq!(dirs.git_dir, repo_canon.join(".git"));
+        assert_eq!(dirs.common_dir, repo_canon.join(".git"));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn resolved_git_dirs_fails_without_pointer() {
+        let base = temp_base("gitdirs-none");
+        std::fs::create_dir_all(&base).unwrap();
+        assert!(resolved_git_dirs(&base).is_err());
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

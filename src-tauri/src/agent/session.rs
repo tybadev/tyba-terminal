@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -11,7 +11,7 @@ use crate::approvals::tool_action::normalize_tool_use;
 use crate::approvals::{now_ms, Decision, RiskLevel, SharedApprovals};
 use crate::hook_ipc::{HookAction, HookEvent, HookServer};
 use crate::pty::SharedPtyPool;
-use crate::sandbox::{PassthroughSandbox, Sandbox, SandboxSpec};
+use crate::sandbox::SandboxSpec;
 use crate::session::store::{ApprovalHistoryEntry, Store};
 use crate::session::{
     AgentRunnerKind, AwaitingReason, CreateSessionOpts, Session, SessionId, SessionKind,
@@ -415,6 +415,48 @@ pub fn create_agent_session(
     result
 }
 
+pub(crate) fn sandbox_spec(
+    runner: &dyn AgentRunner,
+    env: &HashMap<String, String>,
+    root: &Path,
+    worktree: &Path,
+    runtime: &Path,
+    socket_path: &Path,
+    exe: &Path,
+) -> Result<SandboxSpec, String> {
+    let home = env
+        .get("HOME")
+        .map(PathBuf::from)
+        .filter(|h| h.is_absolute())
+        .ok_or("HOME indisponível — sandbox exige a home do usuário")?;
+    let git_dirs = crate::worktree::resolved_git_dirs(worktree)?;
+    let mut exec_path_dirs: Vec<PathBuf> =
+        std::env::split_paths(&crate::shell_path::agent_path()).collect();
+    if let Some(parent) = crate::agent::resolved_binary(&runner.kind())
+        .as_deref()
+        .and_then(Path::parent)
+    {
+        exec_path_dirs.push(parent.to_path_buf());
+    }
+    let agent = runner.sandbox_access(&home, worktree);
+    let read_allow_extra = crate::user_config::load(&home)?.sandbox_read_allow;
+    Ok(SandboxSpec {
+        writable_root: worktree.to_path_buf(),
+        readable_root: root.to_path_buf(),
+        allow_network: runner.needs_network(),
+        repo_git_dir: git_dirs.common_dir,
+        worktree_git_dir: git_dirs.git_dir,
+        runtime_dir: runtime.to_path_buf(),
+        hook_socket: socket_path.to_path_buf(),
+        tyba_exe: crate::repo::canonicalize_or(exe),
+        home,
+        tmpdir: env.get("TMPDIR").map(PathBuf::from),
+        exec_path_dirs,
+        agent,
+        read_allow_extra,
+    })
+}
+
 fn spawn_prepared(
     ctx: &AgentSessionCtx,
     opts: CreateSessionOpts,
@@ -449,16 +491,20 @@ fn spawn_prepared(
     let config = consented_config(&ctx.store, &root);
     let env = crate::repo_config::agent_env(config.as_ref(), &user_env);
 
+    let sandbox = crate::sandbox::platform_sandbox()?;
+    let spec = sandbox_spec(
+        runner.as_ref(),
+        &env,
+        &root,
+        &worktree.path,
+        &runtime,
+        &socket_path,
+        &exe,
+    )?;
+
     let mut cmd = runner.build_command(&worktree.path, &env, &hook_setup);
     cmd.env("TYBA_HOOK_SOCKET", &socket_path);
-    let cmd = PassthroughSandbox.wrap(
-        cmd,
-        &SandboxSpec {
-            writable_root: worktree.path.clone(),
-            readable_root: root.clone(),
-            allow_network: runner.needs_network(),
-        },
-    );
+    let cmd = sandbox.wrap(cmd, &spec)?;
 
     let handler_ctx = HandlerCtx {
         app: ctx.app.clone(),
