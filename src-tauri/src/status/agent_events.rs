@@ -26,7 +26,7 @@ pub fn signal_for(hook_event_name: &str, notification_type: Option<&str>) -> Opt
 pub fn status_for(signal: &AgentSignal) -> Option<SessionStatus> {
     match signal {
         AgentSignal::Working => Some(SessionStatus::Running),
-        AgentSignal::TurnEnded => Some(SessionStatus::Idle),
+        AgentSignal::TurnEnded => Some(SessionStatus::Idle { summary: None }),
         AgentSignal::AwaitingInput => Some(SessionStatus::AwaitingInput {
             hint: None,
             reason: AwaitingReason::Reply,
@@ -99,10 +99,10 @@ mod tests {
     }
 
     #[test]
-    fn status_turn_ended_is_idle() {
+    fn status_turn_ended_is_idle_without_summary() {
         assert!(matches!(
             status_for(&AgentSignal::TurnEnded),
-            Some(SessionStatus::Idle)
+            Some(SessionStatus::Idle { summary: None })
         ));
     }
 

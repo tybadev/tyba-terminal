@@ -138,8 +138,14 @@ fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
 }
 
 const TURN_END_SETTLE_MS: u64 = 2000;
+const TURN_SUMMARY_MAX_CHARS: usize = 140;
 
-fn notify_turn_ended(ctx: &HandlerCtx) {
+fn turn_summary(event: &HookEvent) -> Option<String> {
+    let path = event.raw.get("transcript_path")?.as_str()?;
+    crate::status::transcript::last_assistant_text(std::path::Path::new(path), TURN_SUMMARY_MAX_CHARS)
+}
+
+fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>) {
     use std::sync::atomic::Ordering;
 
     let generation = ctx.turn_settle.fetch_add(1, Ordering::SeqCst) + 1;
@@ -155,10 +161,31 @@ fn notify_turn_ended(ctx: &HandlerCtx) {
         let Some(session) = sessions.get(id) else {
             return;
         };
-        if !matches!(session.status, SessionStatus::Idle) {
+        let SessionStatus::Idle { summary } = &session.status else {
             return;
-        }
-        notify_native(&app, &sessions, id, "Terminou o que tinha pra rodar");
+        };
+        let settled = transcript_path.as_deref().and_then(|path| {
+            crate::status::transcript::last_assistant_text(
+                std::path::Path::new(path),
+                TURN_SUMMARY_MAX_CHARS,
+            )
+        });
+        let summary = match settled {
+            Some(fresh) if summary.as_deref() != Some(fresh.as_str()) => {
+                sessions.set_status(
+                    &app,
+                    id,
+                    SessionStatus::Idle {
+                        summary: Some(fresh.clone()),
+                    },
+                );
+                Some(fresh)
+            }
+            Some(fresh) => Some(fresh),
+            None => summary.clone(),
+        };
+        let body = summary.unwrap_or_else(|| "Terminou o que tinha pra rodar".into());
+        notify_native(&app, &sessions, id, &body);
     });
 }
 
@@ -254,9 +281,12 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
             );
         }
         Some(signal) => {
-            if let Some(status) = status_for(&signal) {
+            if let Some(mut status) = status_for(&signal) {
+                if let SessionStatus::Idle { summary } = &mut status {
+                    *summary = turn_summary(&event);
+                }
                 let awaiting = matches!(status, SessionStatus::AwaitingInput { .. });
-                let turn_ended = matches!(status, SessionStatus::Idle);
+                let turn_ended = matches!(status, SessionStatus::Idle { .. });
                 if matches!(status, SessionStatus::Running) {
                     ctx.turn_settle
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -266,7 +296,12 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     notify_awaiting_input(ctx, "Agente aguardando sua resposta");
                 }
                 if turn_ended {
-                    notify_turn_ended(ctx);
+                    let transcript_path = event
+                        .raw
+                        .get("transcript_path")
+                        .and_then(|p| p.as_str())
+                        .map(str::to_string);
+                    notify_turn_ended(ctx, transcript_path);
                 }
             }
         }

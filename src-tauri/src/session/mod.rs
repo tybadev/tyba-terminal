@@ -52,7 +52,10 @@ pub enum SessionStatus {
         #[serde(default)]
         reason: AwaitingReason,
     },
-    Idle,
+    Idle {
+        #[serde(default)]
+        summary: Option<String>,
+    },
     Exited { code: i32 },
     Failed { reason: String },
 }
@@ -64,6 +67,9 @@ impl SessionStatus {
                 hint: hint.map(|h| redact::redact(&h).into_owned()),
                 reason,
             },
+            SessionStatus::Idle { summary } => SessionStatus::Idle {
+                summary: summary.map(|s| redact::redact(&s).into_owned()),
+            },
             SessionStatus::Failed { reason } => SessionStatus::Failed {
                 reason: redact::redact(&reason).into_owned(),
             },
@@ -74,7 +80,9 @@ impl SessionStatus {
     fn wants_attention(&self) -> bool {
         matches!(
             self,
-            SessionStatus::AwaitingInput { .. } | SessionStatus::Idle | SessionStatus::Failed { .. }
+            SessionStatus::AwaitingInput { .. }
+                | SessionStatus::Idle { .. }
+                | SessionStatus::Failed { .. }
         )
     }
 }
@@ -766,6 +774,12 @@ mod tests {
     }
 
     #[test]
+    fn legacy_idle_json_defaults_to_no_summary() {
+        let status: SessionStatus = serde_json::from_str(r#"{"state":"idle"}"#).unwrap();
+        assert_eq!(status, SessionStatus::Idle { summary: None });
+    }
+
+    #[test]
     fn awaiting_reason_round_trips() {
         let status = SessionStatus::AwaitingInput {
             hint: Some("git push".into()),
@@ -805,7 +819,7 @@ mod tests {
 
     #[test]
     fn attention_follows_state_semantics() {
-        assert!(SessionStatus::Idle.wants_attention());
+        assert!(SessionStatus::Idle { summary: None }.wants_attention());
         assert!(SessionStatus::AwaitingInput {
             hint: None,
             reason: AwaitingReason::Reply

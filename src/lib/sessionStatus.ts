@@ -13,6 +13,8 @@ export const sameSessionStatus = (
       const other = b as typeof a;
       return a.hint === other.hint && a.reason === other.reason;
     }
+    case "idle":
+      return a.summary === (b as typeof a).summary;
     case "exited":
       return a.code === (b as typeof a).code;
     case "failed":

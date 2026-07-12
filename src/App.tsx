@@ -20,6 +20,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -148,6 +149,11 @@ import {
   statusVisual,
   type StatusVisual,
 } from "./lib/sessionStatus";
+import {
+  SPINNER_FRAMES,
+  SPINNER_INTERVAL_MS,
+  windowTitle,
+} from "./lib/windowTitle";
 import { shouldShowGitIcon } from "./lib/headerGit";
 import { buildAgentSessionOpts } from "./lib/agentSession";
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
@@ -928,6 +934,48 @@ export default function App() {
     },
     [sessionById],
   );
+
+  const titleBase =
+    activeWorkspace &&
+    !isConfigWorkspace(activeWorkspace) &&
+    !isWorktreesWorkspace(activeWorkspace)
+      ? activeWorkspace.name
+      : "Tyba";
+  const activeAgentRunning = activeWorkspace
+    ? workspaceAgentStatus(activeWorkspace)?.session.status.state === "running"
+    : false;
+  const unseenAttention = useMemo(
+    () => sessions.some((s) => s.attention),
+    [sessions],
+  );
+
+  useEffect(() => {
+    const win = getCurrentWindow();
+    const reducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    const apply = (frame: number) => {
+      void win
+        .setTitle(
+          windowTitle({
+            base: titleBase,
+            running: activeAgentRunning,
+            attention: unseenAttention,
+            frame,
+            reducedMotion,
+          }),
+        )
+        .catch(() => {});
+    };
+    apply(0);
+    if (!activeAgentRunning || reducedMotion) return;
+    let frame = 0;
+    const timer = window.setInterval(() => {
+      frame = (frame + 1) % SPINNER_FRAMES.length;
+      apply(frame);
+    }, SPINNER_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [titleBase, activeAgentRunning, unseenAttention]);
 
   const workspaceCwd = useCallback(
     (w: Workspace): string | null => resolveWorkspaceCwd(w, sessionCwds)?.cwd ?? null,

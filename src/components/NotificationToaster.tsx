@@ -29,13 +29,14 @@ import {
 } from "@/lib/toastQueue";
 
 const AUTO_DISMISS_MS = 8000;
-const TURN_END_SETTLE_MS = 2000;
+const TURN_END_SETTLE_MS = 2500;
 
 interface OutcomeToast {
   key: string;
   sessionId: SessionId;
   kind: "turn_ended" | "failed";
   reason: string | null;
+  summary: string | null;
 }
 
 function SessionDeepLink({
@@ -137,6 +138,7 @@ export function NotificationToaster({
           sessionId: session.id,
           kind: "failed",
           reason: status.state === "failed" ? status.reason : null,
+          summary: null,
         });
         continue;
       }
@@ -158,6 +160,7 @@ export function NotificationToaster({
             sessionId: session.id,
             kind: "turn_ended",
             reason: null,
+            summary: latest.status.state === "idle" ? latest.status.summary : null,
           });
         }, TURN_END_SETTLE_MS),
       );
@@ -413,11 +416,20 @@ export function NotificationToaster({
                     <code className="block truncate font-mono text-xs">
                       {outcome.reason}
                     </code>
-                  ) : branch ? (
-                    <span className="flex min-w-0 items-center gap-1 font-mono text-xs">
-                      <span className="truncate">{branch}</span>
+                  ) : (
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      {outcome.summary && (
+                        <span className="line-clamp-2 text-xs text-tyba-text-muted">
+                          {outcome.summary}
+                        </span>
+                      )}
+                      {branch && (
+                        <span className="truncate font-mono text-[11px] text-tyba-text-faint">
+                          {branch}
+                        </span>
+                      )}
                     </span>
-                  ) : null}
+                  )}
                 </ToastDescription>
                 <SessionDeepLink
                   label={sessionTitle(outcome.sessionId)}

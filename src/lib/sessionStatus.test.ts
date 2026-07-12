@@ -15,7 +15,7 @@ describe("isFinishedStatus", () => {
 
   test("estados vivos não são terminais", () => {
     expect(isFinishedStatus({ state: "running" })).toBe(false);
-    expect(isFinishedStatus({ state: "idle" })).toBe(false);
+    expect(isFinishedStatus({ state: "idle", summary: null })).toBe(false);
     expect(
       isFinishedStatus({ state: "awaiting_input", hint: null, reason: "reply" }),
     ).toBe(false);
@@ -30,7 +30,7 @@ describe("sameSessionStatus", () => {
   });
 
   test("estados diferentes nunca são iguais", () => {
-    expect(sameSessionStatus({ state: "running" }, { state: "idle" })).toBe(
+    expect(sameSessionStatus({ state: "running" }, { state: "idle", summary: null })).toBe(
       false,
     );
   });
@@ -67,6 +67,16 @@ describe("sameSessionStatus", () => {
         { state: "failed", reason: "b" },
         false,
       ],
+      [
+        { state: "idle", summary: "fiz X" },
+        { state: "idle", summary: "fiz X" },
+        true,
+      ],
+      [
+        { state: "idle", summary: "fiz X" },
+        { state: "idle", summary: null },
+        false,
+      ],
     ];
     for (const [a, b, want] of cases) {
       expect(sameSessionStatus(a, b)).toBe(want);
@@ -98,8 +108,8 @@ describe("statusVisual", () => {
   });
 
   test("idle só sinaliza com attention, azul e sem pulso", () => {
-    expect(statusVisual({ state: "idle" }, false)).toBeNull();
-    const v = statusVisual({ state: "idle" }, true);
+    expect(statusVisual({ state: "idle", summary: null }, false)).toBeNull();
+    const v = statusVisual({ state: "idle", summary: null }, true);
     expect(v?.labelKey).toBe("sessionTurnEnded");
     expect(v?.dotClass).toContain("bg-tyba-blue");
     expect(v?.dotClass).not.toContain("animate-pulse");
@@ -119,7 +129,7 @@ describe("statusVisual", () => {
         { state: "awaiting_input", hint: null, reason: "reply" },
         false,
       )?.rank ?? 0,
-      statusVisual({ state: "idle" }, true)?.rank ?? 0,
+      statusVisual({ state: "idle", summary: null }, true)?.rank ?? 0,
       statusVisual({ state: "running" }, false)?.rank ?? 0,
     ];
     expect(ranks).toEqual([...ranks].sort((a, b) => b - a));

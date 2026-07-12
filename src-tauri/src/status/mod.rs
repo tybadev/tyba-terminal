@@ -10,6 +10,7 @@
 //! testes obrigatórios (convenção do repo).
 
 pub mod agent_events;
+pub mod transcript;
 
 use base64::Engine;
 

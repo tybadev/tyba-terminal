@@ -16,7 +16,7 @@ export type AwaitingReason = "approval" | "reply";
 export type SessionStatus =
   | { state: "running" }
   | { state: "awaiting_input"; hint: string | null; reason: AwaitingReason }
-  | { state: "idle" }
+  | { state: "idle"; summary: string | null }
   | { state: "exited"; code: number }
   | { state: "failed"; reason: string };
 
