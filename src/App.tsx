@@ -155,7 +155,10 @@ import {
   windowTitle,
 } from "./lib/windowTitle";
 import { shouldShowGitIcon } from "./lib/headerGit";
-import { buildAgentSessionOpts } from "./lib/agentSession";
+import {
+  buildAgentSessionOpts,
+  type AgentRunnerId,
+} from "./lib/agentSession";
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
 import {
   compactPath,
@@ -1179,6 +1182,7 @@ export default function App() {
       name: string,
       group: string | null | undefined,
       prompt: string,
+      runner: AgentRunnerId = "claude_code",
     ) => {
       const readyEarly = new Set<string>();
       let onEarlyReady: ((id: string) => void) | null = null;
@@ -1200,7 +1204,7 @@ export default function App() {
       let session: Session;
       try {
         session = await createSession(
-          buildAgentSessionOpts({ cwd, task: name }),
+          buildAgentSessionOpts({ cwd, task: name, runner }),
         );
       } catch (e) {
         disposeEarly();
@@ -2217,7 +2221,13 @@ export default function App() {
           setWorktreeDir(null);
           if (dir) {
             if (agent) {
-              await newAgentSession(dir, task, pendingGroup, agent.prompt);
+              await newAgentSession(
+                dir,
+                task,
+                pendingGroup,
+                agent.prompt,
+                agent.runner,
+              );
             } else {
               await newSession(dir, task, pendingGroup, task);
             }

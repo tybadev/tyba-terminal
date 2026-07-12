@@ -32,6 +32,37 @@ pub trait AgentRunner: Send + Sync {
     }
 }
 
+pub fn runner_binary(kind: &AgentRunnerKind) -> Option<&'static str> {
+    match kind {
+        AgentRunnerKind::ClaudeCode => Some("claude"),
+        AgentRunnerKind::Codex => Some("codex"),
+        AgentRunnerKind::Custom(_) => None,
+    }
+}
+
+pub fn binary_available(kind: &AgentRunnerKind) -> bool {
+    let Some(name) = runner_binary(kind) else {
+        return false;
+    };
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| is_executable(&dir.join(name)))
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
 pub struct ClaudeCodeRunner;
 
 impl AgentRunner for ClaudeCodeRunner {
@@ -75,6 +106,18 @@ mod tests {
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn runner_binary_maps_kinds() {
+        assert_eq!(runner_binary(&AgentRunnerKind::ClaudeCode), Some("claude"));
+        assert_eq!(runner_binary(&AgentRunnerKind::Codex), Some("codex"));
+        assert_eq!(runner_binary(&AgentRunnerKind::Custom("x".into())), None);
+    }
+
+    #[test]
+    fn custom_runner_binary_is_never_available() {
+        assert!(!binary_available(&AgentRunnerKind::Custom("x".into())));
     }
 
     #[test]

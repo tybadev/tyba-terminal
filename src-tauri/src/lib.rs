@@ -1450,6 +1450,11 @@ struct AgentConfigInfo {
 }
 
 #[tauri::command]
+fn agent_binary_available(runner: crate::session::AgentRunnerKind) -> bool {
+    agent::binary_available(&runner)
+}
+
+#[tauri::command]
 fn agent_repo_config(
     state: State<'_, AppState>,
     repo_root: String,
@@ -1661,6 +1666,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            agent_binary_available,
             create_session,
             write_to_session,
             submit_rich_input,
