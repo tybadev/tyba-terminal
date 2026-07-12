@@ -2,6 +2,9 @@ pub mod codex_hooks;
 pub mod hooks_settings;
 pub mod session;
 
+#[cfg(test)]
+mod codex_e2e_tests;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
