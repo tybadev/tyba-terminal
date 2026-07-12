@@ -59,7 +59,7 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 ## Fase 5 — Profundidade
 
 - [x] **Runner Codex** — o Codex CLI tem hooks no formato do Claude Code, então o gate de aprovação, o StatusDetector e o resumo do turno reaproveitam o pipeline inteiro: hooks injetados por `-c` com **trust computado** (o Tyba replica o fingerprint sha256 que o Codex exige, sem `--dangerously-bypass-hook-trust`), sandbox nativo `workspace-write` ligado como segunda camada, `-a on-request` mantendo o prompt do TUI como backstop do fail-open do Codex, classificação de risco por `ToolAction` canônico (Bash/apply_patch/web_search), resumo do turno lendo o rollout JSONL — _spec: `tyba/features/codex-runner`; ADR: autoridade única com sandbox nativo ligado_
-- [ ] Runner Custom (sem hooks) — aí sim entra o fallback OSC/heurística de status
+- [ ] Runner Custom — **bloqueado por design, não por esforço**: um binário arbitrário não tem hooks, logo não tem `PreToolUse`, logo **não tem gate de aprovação** — o agente rodaria o que quisesse sem o inbox ver, e a trait `Sandbox` ainda é passthrough. Só faz sentido depois do sandbox real (Seatbelt/Landlock), quando a contenção vem do SO e o inbox aprova escaladas. O botão foi removido do dialog: UI morta é dívida. Aí sim entra o fallback OSC/heurística de status.
 - [ ] Sandbox real (Seatbelt macOS, Landlock Linux)
 - [ ] LSP para contexto de agente (tsserver/rust-analyzer)
 - [ ] Shell integration própria (OSC 133) com blocos de comando — _spec e ADR aceitos (linhas lógicas + persistência final, cofre 2026-07-10)_

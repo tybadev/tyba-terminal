@@ -226,21 +226,6 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
                     </TooltipContent>
                   </Tooltip>
                 )}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled
-                      >
-                        {t("worktreeAgentCustom")}
-                      </Button>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>{t("worktreeAgentCustomSoon")}</TooltipContent>
-                </Tooltip>
               </div>
             </div>
 
