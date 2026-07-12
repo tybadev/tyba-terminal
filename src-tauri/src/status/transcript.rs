@@ -65,10 +65,8 @@ mod tests {
         use std::sync::atomic::{AtomicU32, Ordering};
         static SEQ: AtomicU32 = AtomicU32::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "tyba-transcript-{}-{n}.jsonl",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("tyba-transcript-{}-{n}.jsonl", std::process::id()));
         std::fs::write(&path, lines.join("\n")).unwrap();
         path
     }
@@ -90,9 +88,8 @@ mod tests {
 
     #[test]
     fn accepts_plain_string_content() {
-        let path = write_transcript(&[
-            r#"{"type":"assistant","message":{"content":"texto plano"}}"#,
-        ]);
+        let path =
+            write_transcript(&[r#"{"type":"assistant","message":{"content":"texto plano"}}"#]);
         assert_eq!(
             last_assistant_text(&path, 140).as_deref(),
             Some("texto plano")

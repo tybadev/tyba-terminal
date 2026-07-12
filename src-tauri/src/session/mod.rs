@@ -56,8 +56,12 @@ pub enum SessionStatus {
         #[serde(default)]
         summary: Option<String>,
     },
-    Exited { code: i32 },
-    Failed { reason: String },
+    Exited {
+        code: i32,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 impl SessionStatus {
@@ -320,8 +324,7 @@ impl SessionManager {
         let status = status.redacted();
         let mut sessions = self.sessions.write();
         if let Some(s) = sessions.get_mut(&id) {
-            let attention =
-                status.wants_attention() && matches!(s.kind, SessionKind::Agent { .. });
+            let attention = status.wants_attention() && matches!(s.kind, SessionKind::Agent { .. });
             if s.status == status && s.attention == attention {
                 return;
             }

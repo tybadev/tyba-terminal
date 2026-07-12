@@ -142,7 +142,10 @@ const TURN_SUMMARY_MAX_CHARS: usize = 140;
 
 fn turn_summary(event: &HookEvent) -> Option<String> {
     let path = event.raw.get("transcript_path")?.as_str()?;
-    crate::status::transcript::last_assistant_text(std::path::Path::new(path), TURN_SUMMARY_MAX_CHARS)
+    crate::status::transcript::last_assistant_text(
+        std::path::Path::new(path),
+        TURN_SUMMARY_MAX_CHARS,
+    )
 }
 
 fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>) {
