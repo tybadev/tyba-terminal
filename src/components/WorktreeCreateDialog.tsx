@@ -203,7 +203,7 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
                     onClick={() => setRunner("codex")}
                     className={runnerButtonClass(runner === "codex")}
                   >
-                    <OpenAIIcon size={14} />
+                    <OpenAIIcon size={14} className="text-tyba-text" />
                     Codex
                   </button>
                 ) : (
@@ -216,7 +216,7 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
                           size="sm"
                           disabled
                         >
-                          <OpenAIIcon size={14} />
+                          <OpenAIIcon size={14} className="text-tyba-text" />
                           Codex
                         </Button>
                       </span>

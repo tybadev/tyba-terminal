@@ -53,10 +53,8 @@ pub fn binary_available(kind: &AgentRunnerKind) -> bool {
     let Some(name) = runner_binary(kind) else {
         return false;
     };
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| is_executable(&dir.join(name)))
+    std::env::split_paths(&crate::shell_path::agent_path())
+        .any(|dir| is_executable(&dir.join(name)))
 }
 
 #[cfg(unix)]

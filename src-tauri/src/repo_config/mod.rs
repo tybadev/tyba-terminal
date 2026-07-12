@@ -100,6 +100,10 @@ pub fn agent_env(
             }
         }
     }
+    // Lançado pelo Dock, o processo herda o PATH do launchd, onde nenhum
+    // binário de agente existe. O PATH do shell de login é o que o usuário
+    // realmente tem (ver shell_path).
+    env.insert("PATH".to_string(), crate::shell_path::agent_path());
     env
 }
 
@@ -182,9 +186,23 @@ mod tests {
     fn agent_env_baseline_always_present() {
         let user = env(&[("PATH", "/bin"), ("HOME", "/home/x"), ("IGNORED", "y")]);
         let out = agent_env(None, &user);
-        assert_eq!(out.get("PATH").map(String::as_str), Some("/bin"));
+        assert!(out.contains_key("PATH"));
         assert_eq!(out.get("HOME").map(String::as_str), Some("/home/x"));
         assert!(!out.contains_key("IGNORED"));
+    }
+
+    /// Lançado pelo Dock, o processo herda o PATH do launchd — onde nenhum
+    /// binário de agente existe. O env do agente tem que carregar o PATH do
+    /// shell do usuário, não o do processo.
+    #[test]
+    fn agent_env_usa_o_path_do_shell_e_nao_o_do_launchd() {
+        let launchd = "/usr/bin:/bin:/usr/sbin:/sbin";
+        let user = env(&[("PATH", launchd)]);
+        let out = agent_env(None, &user);
+        assert_eq!(
+            out.get("PATH").map(String::as_str),
+            Some(crate::shell_path::agent_path().as_str())
+        );
     }
 
     #[test]
@@ -210,15 +228,20 @@ mod tests {
         assert!(out.contains_key("PATH"));
     }
 
+    /// Um repo hostil que liste `PATH` no `env_allow` não pode sequestrar o
+    /// PATH do agente — ele vem sempre do shell do usuário.
     #[test]
-    fn agent_env_allowlist_does_not_override_baseline() {
-        let user = env(&[("PATH", "/real/path")]);
+    fn agent_env_allowlist_nunca_sequestra_o_path() {
+        let user = env(&[("PATH", "/repo/injetado")]);
         let config = RepoConfig {
             default_agent: None,
             env_allow: vec!["PATH".into()],
         };
         let out = agent_env(Some(&config), &user);
-        assert_eq!(out.get("PATH").map(String::as_str), Some("/real/path"));
+        assert_eq!(
+            out.get("PATH").map(String::as_str),
+            Some(crate::shell_path::agent_path().as_str())
+        );
         assert_eq!(out.len(), 1);
     }
 

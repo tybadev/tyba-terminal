@@ -12,6 +12,7 @@ pub mod repo_config;
 pub mod rich_input;
 pub mod sandbox;
 pub mod session;
+pub mod shell_path;
 pub mod status;
 pub mod theme;
 pub mod worktree;
