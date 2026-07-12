@@ -187,6 +187,13 @@ pub fn pr_comments(worktree: &Path, number: u64) -> Result<Vec<ReviewComment>, A
     }
 }
 
+pub fn pr_list(repo_root: &Path) -> Result<Vec<PullRequest>, AppError> {
+    match kind_of(repo_root)? {
+        ForgeKind::GitHub => github::pr_list(repo_root),
+        ForgeKind::GitLab => gitlab::pr_list(repo_root),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
