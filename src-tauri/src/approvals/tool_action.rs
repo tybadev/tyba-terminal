@@ -25,6 +25,7 @@ const CLAUDE_NETWORK_TOOLS: &[&str] = &["WebFetch", "WebSearch"];
 pub enum ToolAction {
     RunCommand { command: String },
     WriteFile { path: String },
+    WriteFiles { paths: Vec<String> },
     ReadOnly,
     Network,
     Unknown,
@@ -35,6 +36,20 @@ impl ToolAction {
         match self {
             ToolAction::RunCommand { command } => classify_command(command, worktree_root),
             ToolAction::WriteFile { path } => classify_write(path, worktree_root),
+            ToolAction::WriteFiles { paths } => {
+                if paths.is_empty() {
+                    return RiskLevel::Yellow;
+                }
+                paths
+                    .iter()
+                    .map(|path| classify_write(path, worktree_root))
+                    .max_by_key(|risk| match risk {
+                        RiskLevel::Green => 0,
+                        RiskLevel::Yellow => 1,
+                        RiskLevel::Red => 2,
+                    })
+                    .unwrap_or(RiskLevel::Yellow)
+            }
             ToolAction::ReadOnly => RiskLevel::Green,
             ToolAction::Network => RiskLevel::Red,
             ToolAction::Unknown => RiskLevel::Yellow,
@@ -55,7 +70,8 @@ pub fn normalize_tool_use(
 ) -> NormalizedToolUse {
     let normalized = match runner {
         AgentRunnerKind::ClaudeCode => normalize_claude(tool_name, tool_input),
-        AgentRunnerKind::Codex | AgentRunnerKind::Custom(_) => NormalizedToolUse {
+        AgentRunnerKind::Codex => normalize_codex(tool_name, tool_input),
+        AgentRunnerKind::Custom(_) => NormalizedToolUse {
             action: ToolAction::Unknown,
             description: tool_name.to_string(),
         },
@@ -121,6 +137,78 @@ fn normalize_claude(tool_name: &str, tool_input: Option<&Value>) -> NormalizedTo
         action: ToolAction::Unknown,
         description: tool_name.to_string(),
     }
+}
+
+fn normalize_codex(tool_name: &str, tool_input: Option<&Value>) -> NormalizedToolUse {
+    if tool_name == "Bash" {
+        return match str_field(tool_input, "command") {
+            Some(command) => NormalizedToolUse {
+                action: ToolAction::RunCommand {
+                    command: command.to_string(),
+                },
+                description: command.to_string(),
+            },
+            None => NormalizedToolUse {
+                action: ToolAction::Unknown,
+                description: "Bash (sem comando)".to_string(),
+            },
+        };
+    }
+    if tool_name == "apply_patch" {
+        return match str_field(tool_input, "command") {
+            Some(patch) => {
+                let paths = apply_patch_paths(patch);
+                let description = if paths.is_empty() {
+                    "apply_patch (sem arquivos)".to_string()
+                } else {
+                    format!("apply_patch {}", paths.join(", "))
+                };
+                NormalizedToolUse {
+                    action: ToolAction::WriteFiles { paths },
+                    description,
+                }
+            }
+            None => NormalizedToolUse {
+                action: ToolAction::Unknown,
+                description: "apply_patch (sem patch)".to_string(),
+            },
+        };
+    }
+    if tool_name == "web_search" {
+        let description = match str_field(tool_input, "query") {
+            Some(query) => format!("web_search {query}"),
+            None => "web_search".to_string(),
+        };
+        return NormalizedToolUse {
+            action: ToolAction::Network,
+            description,
+        };
+    }
+    NormalizedToolUse {
+        action: ToolAction::Unknown,
+        description: tool_name.to_string(),
+    }
+}
+
+const APPLY_PATCH_PATH_PREFIXES: &[&str] = &[
+    "*** Add File: ",
+    "*** Update File: ",
+    "*** Delete File: ",
+    "*** Move to: ",
+];
+
+fn apply_patch_paths(patch: &str) -> Vec<String> {
+    patch
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            APPLY_PATCH_PATH_PREFIXES
+                .iter()
+                .find_map(|prefix| trimmed.strip_prefix(prefix))
+        })
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .collect()
 }
 
 fn claude_write_path_key(tool_name: &str) -> &'static str {
@@ -229,12 +317,92 @@ mod tests {
         assert_eq!(n.description, "SomethingNew");
     }
 
+    fn codex(tool: &str, input: Option<Value>) -> NormalizedToolUse {
+        normalize_tool_use(&AgentRunnerKind::Codex, tool, input.as_ref())
+    }
+
     #[test]
-    fn codex_and_custom_fall_back_to_unknown() {
-        let n = normalize_tool_use(&AgentRunnerKind::Codex, "shell", None);
-        assert_eq!(n.action, ToolAction::Unknown);
+    fn custom_runner_falls_back_to_unknown() {
         let n = normalize_tool_use(&AgentRunnerKind::Custom("x".into()), "tool", None);
         assert_eq!(n.action, ToolAction::Unknown);
+    }
+
+    #[test]
+    fn codex_bash_becomes_run_command_like_claude() {
+        let n = codex("Bash", Some(json!({"command": "git status"})));
+        assert_eq!(
+            n.action,
+            ToolAction::RunCommand {
+                command: "git status".into()
+            }
+        );
+        assert_eq!(n.description, "git status");
+    }
+
+    #[test]
+    fn codex_apply_patch_extracts_paths_from_patch_envelope() {
+        let patch = "*** Begin Patch\n*** Update File: src/a.rs\n@@\n-x\n+y\n*** Add File: docs/b.md\n+hello\n*** Delete File: old.txt\n*** End Patch";
+        let n = codex("apply_patch", Some(json!({ "command": patch })));
+        assert_eq!(
+            n.action,
+            ToolAction::WriteFiles {
+                paths: vec!["src/a.rs".into(), "docs/b.md".into(), "old.txt".into()]
+            }
+        );
+        assert_eq!(n.description, "apply_patch src/a.rs, docs/b.md, old.txt");
+    }
+
+    #[test]
+    fn codex_apply_patch_move_to_counts_as_write_target() {
+        let patch =
+            "*** Begin Patch\n*** Update File: a.rs\n*** Move to: ../fora/b.rs\n*** End Patch";
+        let n = codex("apply_patch", Some(json!({ "command": patch })));
+        assert_eq!(
+            n.action,
+            ToolAction::WriteFiles {
+                paths: vec!["a.rs".into(), "../fora/b.rs".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn codex_apply_patch_without_paths_is_yellow() {
+        let n = codex(
+            "apply_patch",
+            Some(json!({"command": "*** Begin Patch\n*** End Patch"})),
+        );
+        assert_eq!(n.action, ToolAction::WriteFiles { paths: vec![] });
+        let root = PathBuf::from("/wt");
+        assert_eq!(n.action.classify(&root), RiskLevel::Yellow);
+    }
+
+    #[test]
+    fn codex_web_search_is_network() {
+        let n = codex("web_search", Some(json!({"query": "rust"})));
+        assert_eq!(n.action, ToolAction::Network);
+        assert_eq!(n.description, "web_search rust");
+    }
+
+    #[test]
+    fn codex_mcp_and_unknown_tools_are_yellow() {
+        let n = codex("mcp__server__tool", Some(json!({"x": 1})));
+        assert_eq!(n.action, ToolAction::Unknown);
+        assert_eq!(n.description, "mcp__server__tool");
+        assert_eq!(codex("spawn_agent", None).action, ToolAction::Unknown);
+    }
+
+    #[test]
+    fn write_files_classifies_worst_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        let inside = ToolAction::WriteFiles {
+            paths: vec!["a.rs".into(), "b/c.rs".into()],
+        };
+        assert_eq!(inside.classify(&root), RiskLevel::Green);
+        let escaping = ToolAction::WriteFiles {
+            paths: vec!["a.rs".into(), "../fora.rs".into()],
+        };
+        assert_eq!(escaping.classify(&root), RiskLevel::Red);
     }
 
     #[test]
