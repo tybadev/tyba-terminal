@@ -276,6 +276,21 @@ pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest
         .next())
 }
 
+pub fn pr_list(repo: &Path) -> Result<Vec<PullRequest>, AppError> {
+    let out = exec::run(
+        CLI,
+        &["mr", "list", "--per-page", "30", "--output", "json"],
+        repo,
+        None,
+        NETWORK_TIMEOUT,
+    )
+    .map_err(cli_failed)?;
+    if !out.ok {
+        return Err(cli_failed(out.stderr_message()));
+    }
+    parse_mr_list(&out.stdout).map_err(cli_failed)
+}
+
 pub fn pr_comments(worktree: &Path, number: u64) -> Result<Vec<ReviewComment>, AppError> {
     let endpoint = format!("projects/:fullpath/merge_requests/{number}/discussions?per_page=100");
     let out =

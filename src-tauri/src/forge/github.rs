@@ -251,6 +251,23 @@ pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest
         .next())
 }
 
+pub fn pr_list(repo: &Path) -> Result<Vec<PullRequest>, AppError> {
+    let out = exec::run(
+        CLI,
+        &[
+            "pr", "list", "--state", "open", "--limit", "30", "--json", PR_FIELDS,
+        ],
+        repo,
+        None,
+        NETWORK_TIMEOUT,
+    )
+    .map_err(cli_failed)?;
+    if !out.ok {
+        return Err(cli_failed(out.stderr_message()));
+    }
+    parse_pr_list(&out.stdout).map_err(cli_failed)
+}
+
 pub fn pr_comments(worktree: &Path, number: u64) -> Result<Vec<ReviewComment>, AppError> {
     let inline = format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments?per_page=100");
     let issue = format!("repos/{{owner}}/{{repo}}/issues/{number}/comments?per_page=100");

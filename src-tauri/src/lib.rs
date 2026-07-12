@@ -344,9 +344,61 @@ fn session_worktree(state: &AppState, id: SessionId) -> Result<worktree::Worktre
         .ok_or_else(|| "sessão não está em worktree".to_string())
 }
 
+struct RepoContext {
+    path: std::path::PathBuf,
+    base_ref: String,
+}
+
+fn session_repo_context(state: &AppState, id: SessionId) -> Result<RepoContext, String> {
+    let session = state
+        .sessions
+        .get(id)
+        .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+    if let Some(wt) = session.worktree {
+        return Ok(RepoContext {
+            path: wt.path,
+            base_ref: wt.base_ref,
+        });
+    }
+    let pid = state
+        .pty_pool
+        .leader_pid(id)
+        .ok_or("a sessão não tem um processo ativo")?;
+    let cwd = repo::process_cwd(pid).ok_or("não foi possível ler o diretório da sessão")?;
+    let root = repo::toplevel(&cwd).ok_or("o diretório da sessão não é um repositório git")?;
+    Ok(RepoContext {
+        path: repo::canonicalize_or(&root),
+        base_ref: "HEAD".to_string(),
+    })
+}
+
+#[derive(serde::Serialize)]
+struct SessionGitStatus {
+    root: String,
+    branch: Option<String>,
+    dirty: bool,
+}
+
+#[tauri::command]
+async fn session_git_status(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<Option<SessionGitStatus>, String> {
+    let Ok(ctx) = session_repo_context(&state, id) else {
+        return Ok(None);
+    };
+    let dirty = worktree::is_dirty(&ctx.path).unwrap_or(false);
+    let branch = repo::branch(&ctx.path);
+    Ok(Some(SessionGitStatus {
+        root: ctx.path.to_string_lossy().into_owned(),
+        branch,
+        dirty,
+    }))
+}
+
 #[tauri::command]
 fn open_diff_tab(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
-    session_worktree(&state, id)?;
+    session_repo_context(&state, id)?;
     state
         .layout
         .open_workspace_side_view(id, &layout::diff_view(id))
@@ -406,8 +458,8 @@ async fn worktree_stage(
     id: SessionId,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    let wt = session_worktree(&state, id)?;
-    worktree::ops::stage(&wt.path, &paths)
+    let ctx = session_repo_context(&state, id)?;
+    worktree::ops::stage(&ctx.path, &paths)
 }
 
 #[tauri::command]
@@ -416,8 +468,8 @@ async fn worktree_unstage(
     id: SessionId,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    let wt = session_worktree(&state, id)?;
-    worktree::ops::unstage(&wt.path, &paths)
+    let ctx = session_repo_context(&state, id)?;
+    worktree::ops::unstage(&ctx.path, &paths)
 }
 
 #[tauri::command]
@@ -426,8 +478,8 @@ async fn worktree_discard(
     id: SessionId,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    let wt = session_worktree(&state, id)?;
-    worktree::ops::discard(&wt.path, &paths)
+    let ctx = session_repo_context(&state, id)?;
+    worktree::ops::discard(&ctx.path, &paths)
 }
 
 #[tauri::command]
@@ -436,14 +488,14 @@ async fn worktree_commit(
     id: SessionId,
     message: String,
 ) -> Result<(), String> {
-    let wt = session_worktree(&state, id)?;
-    worktree::ops::commit(&wt.path, &message)
+    let ctx = session_repo_context(&state, id)?;
+    worktree::ops::commit(&ctx.path, &message)
 }
 
 #[tauri::command]
 async fn worktree_push(state: State<'_, AppState>, id: SessionId) -> Result<String, AppError> {
-    let wt = session_worktree(&state, id).map_err(session_setup_error)?;
-    worktree::ops::push(&wt.path)
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    worktree::ops::push(&ctx.path)
 }
 
 #[tauri::command]
@@ -529,6 +581,16 @@ async fn forge_create_pr(
     forge_blocking(move || forge::create_pr(&path, &title, &body)).await
 }
 
+#[tauri::command]
+async fn forge_pr_list(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<Vec<forge::PullRequest>, AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    forge_blocking(move || forge::pr_list(&path)).await
+}
+
 /// Abre um arquivo do worktree como TEXTO — nunca "executa" o arquivo.
 /// `open <arquivo>`/`xdg-open` rodariam um script/app deixado por um
 /// agente no worktree com um clique; aqui só editor configurado ou
@@ -598,8 +660,8 @@ async fn session_diff(
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<worktree::diff::SessionDiff, String> {
-    let wt = session_worktree(&state, id)?;
-    worktree::diff::session_diff(&wt.path, &wt.base_ref)
+    let ctx = session_repo_context(&state, id)?;
+    worktree::diff::session_diff(&ctx.path, &ctx.base_ref)
 }
 
 #[tauri::command]
@@ -610,8 +672,8 @@ async fn session_diff_hunks(
     scope: worktree::diff::DiffScope,
     old_path: Option<String>,
 ) -> Result<worktree::diff::FileHunks, String> {
-    let wt = session_worktree(&state, id)?;
-    worktree::diff::file_hunks(&wt.path, &wt.base_ref, scope, &path, old_path.as_deref())
+    let ctx = session_repo_context(&state, id)?;
+    worktree::diff::file_hunks(&ctx.path, &ctx.base_ref, scope, &path, old_path.as_deref())
 }
 
 fn known_worktree_paths(
@@ -1628,6 +1690,8 @@ pub fn run() {
             forge_pr_for_session,
             forge_pr_comments,
             forge_create_pr,
+            forge_pr_list,
+            session_git_status,
             open_worktree_file,
             repo_snapshots,
             session_cwd,
