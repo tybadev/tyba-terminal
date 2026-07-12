@@ -82,6 +82,84 @@ fn round_trip_deny_pretooluse() {
     server.shutdown();
 }
 
+fn permission_request_event() -> serde_json::Value {
+    json!({
+        "hook_event_name": "PermissionRequest",
+        "tool_name": "shell",
+        "tool_input": {"command": "curl https://x.dev"},
+        "cwd": "/work"
+    })
+}
+
+#[test]
+fn round_trip_allow_permission_request() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "s.sock");
+    let server = HookServer::bind(
+        &path,
+        Arc::new(|_e: HookEvent| HookAction::Allow { reason: None }),
+    )
+    .unwrap();
+
+    let out = run(permission_request_event(), Some(&path));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        v["hookSpecificOutput"]["hookEventName"],
+        "PermissionRequest"
+    );
+    assert_eq!(v["hookSpecificOutput"]["decision"]["behavior"], "allow");
+    assert!(v["hookSpecificOutput"]["decision"].get("message").is_none());
+
+    server.shutdown();
+}
+
+#[test]
+fn round_trip_deny_permission_request_carries_message() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "s.sock");
+    let server = HookServer::bind(
+        &path,
+        Arc::new(|_e: HookEvent| HookAction::Deny {
+            reason: "sem rede".into(),
+        }),
+    )
+    .unwrap();
+
+    let out = run(permission_request_event(), Some(&path));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["decision"]["behavior"], "deny");
+    assert_eq!(v["hookSpecificOutput"]["decision"]["message"], "sem rede");
+
+    server.shutdown();
+}
+
+#[test]
+fn deny_pretooluse_with_empty_reason_gets_fallback_text() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "s.sock");
+    let server = HookServer::bind(
+        &path,
+        Arc::new(|_e: HookEvent| HookAction::Deny { reason: "".into() }),
+    )
+    .unwrap();
+
+    let out = run(pretooluse_event("Bash"), Some(&path));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(
+        v["hookSpecificOutput"]["permissionDecisionReason"],
+        "negado no TYBA"
+    );
+
+    server.shutdown();
+}
+
+#[test]
+fn transport_failure_is_silent_for_permission_request() {
+    let out = run(permission_request_event(), None);
+    assert_eq!(out, "");
+}
+
 #[test]
 fn decision_output_ends_with_newline_so_line_buffered_stdout_flushes() {
     let out = run(pretooluse_event("Bash"), None);

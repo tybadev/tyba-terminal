@@ -1,13 +1,19 @@
+pub mod codex_hooks;
 pub mod hooks_settings;
 pub mod session;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use portable_pty::CommandBuilder;
 
 use crate::session::AgentRunnerKind;
+
+pub struct HookSetup {
+    pub settings_path: PathBuf,
+    pub hook_command: String,
+}
 
 pub trait AgentRunner: Send + Sync {
     fn kind(&self) -> AgentRunnerKind;
@@ -16,7 +22,7 @@ pub trait AgentRunner: Send + Sync {
         &self,
         worktree_path: &Path,
         env: &HashMap<String, String>,
-        hook_settings_path: &Path,
+        hooks: &HookSetup,
     ) -> CommandBuilder;
 
     fn submit_delay(&self) -> Duration {
@@ -74,11 +80,50 @@ impl AgentRunner for ClaudeCodeRunner {
         &self,
         worktree_path: &Path,
         env: &HashMap<String, String>,
-        hook_settings_path: &Path,
+        hooks: &HookSetup,
     ) -> CommandBuilder {
         let mut cmd = CommandBuilder::new("claude");
         cmd.arg("--settings");
-        cmd.arg(hook_settings_path);
+        cmd.arg(&hooks.settings_path);
+        cmd.cwd(worktree_path);
+        cmd.env_clear();
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        cmd
+    }
+
+    fn supports_hooks(&self) -> bool {
+        true
+    }
+
+    fn needs_network(&self) -> bool {
+        true
+    }
+}
+
+pub struct CodexRunner;
+
+impl AgentRunner for CodexRunner {
+    fn kind(&self) -> AgentRunnerKind {
+        AgentRunnerKind::Codex
+    }
+
+    fn build_command(
+        &self,
+        worktree_path: &Path,
+        env: &HashMap<String, String>,
+        hooks: &HookSetup,
+    ) -> CommandBuilder {
+        let mut cmd = CommandBuilder::new("codex");
+        cmd.arg("--sandbox");
+        cmd.arg("workspace-write");
+        cmd.arg("--ask-for-approval");
+        cmd.arg("on-request");
+        for over in codex_hooks::codex_config_overrides(&hooks.hook_command) {
+            cmd.arg("--config");
+            cmd.arg(over);
+        }
         cmd.cwd(worktree_path);
         cmd.env_clear();
         for (k, v) in env {
@@ -106,6 +151,13 @@ mod tests {
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    fn hooks() -> HookSetup {
+        HookSetup {
+            settings_path: PathBuf::from("/tmp/hooks.json"),
+            hook_command: "'/usr/bin/tyba' _hook".to_string(),
+        }
     }
 
     #[test]
@@ -146,8 +198,7 @@ mod tests {
     #[test]
     fn build_command_uses_settings_flag_with_hook_path() {
         let env = HashMap::new();
-        let cmd =
-            ClaudeCodeRunner.build_command(Path::new("/wt"), &env, Path::new("/tmp/hooks.json"));
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks());
         let argv = argv_strings(&cmd);
         assert_eq!(argv, vec!["claude", "--settings", "/tmp/hooks.json"]);
     }
@@ -155,8 +206,7 @@ mod tests {
     #[test]
     fn build_command_sets_cwd_to_worktree() {
         let env = HashMap::new();
-        let cmd =
-            ClaudeCodeRunner.build_command(Path::new("/wt"), &env, Path::new("/tmp/hooks.json"));
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks());
         assert_eq!(cmd.get_cwd().map(OsStr::new), Some(OsStr::new("/wt")));
     }
 
@@ -164,8 +214,7 @@ mod tests {
     fn build_command_applies_env_allowlist() {
         let mut env = HashMap::new();
         env.insert("PATH".to_string(), "/usr/bin".to_string());
-        let cmd =
-            ClaudeCodeRunner.build_command(Path::new("/wt"), &env, Path::new("/tmp/hooks.json"));
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks());
         assert_eq!(cmd.get_env("PATH"), Some(OsStr::new("/usr/bin")));
     }
 
@@ -173,13 +222,72 @@ mod tests {
     fn build_command_never_bypasses_permissions() {
         let mut env = HashMap::new();
         env.insert("PATH".to_string(), "/usr/bin".to_string());
-        let cmd =
-            ClaudeCodeRunner.build_command(Path::new("/wt"), &env, Path::new("/tmp/hooks.json"));
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks());
         let argv = argv_strings(&cmd);
         for arg in &argv {
             assert_ne!(arg, "--dangerously-skip-permissions");
             assert_ne!(arg, "--permission-mode");
             assert_ne!(arg, "-p");
+        }
+    }
+
+    #[test]
+    fn codex_kind_supports_hooks_and_network() {
+        assert!(matches!(CodexRunner.kind(), AgentRunnerKind::Codex));
+        assert!(CodexRunner.supports_hooks());
+        assert!(CodexRunner.needs_network());
+    }
+
+    #[test]
+    fn codex_command_keeps_sandbox_on_and_tui_silent() {
+        let env = HashMap::new();
+        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks());
+        let argv = argv_strings(&cmd);
+        assert_eq!(argv[0], "codex");
+        let sandbox = argv.iter().position(|a| a == "--sandbox").unwrap();
+        assert_eq!(argv[sandbox + 1], "workspace-write");
+        let approval = argv.iter().position(|a| a == "--ask-for-approval").unwrap();
+        assert_eq!(argv[approval + 1], "on-request");
+        assert_eq!(cmd.get_cwd().map(OsStr::new), Some(OsStr::new("/wt")));
+    }
+
+    #[test]
+    fn codex_command_injects_hooks_and_trust_via_config_overrides() {
+        let env = HashMap::new();
+        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks());
+        let argv = argv_strings(&cmd);
+        let overrides: Vec<&String> = argv
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i > 0 && argv[i - 1] == "--config")
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(overrides.len(), 5);
+        for key in [
+            "hooks.PreToolUse=",
+            "hooks.PermissionRequest=",
+            "hooks.SessionStart=",
+            "hooks.Stop=",
+            "hooks.state=",
+        ] {
+            assert!(
+                overrides.iter().any(|o| o.starts_with(key)),
+                "faltou override {key}"
+            );
+        }
+        assert!(overrides
+            .iter()
+            .all(|o| !o.starts_with("hooks.state=") || o.contains("trusted_hash")));
+    }
+
+    #[test]
+    fn codex_command_never_bypasses_sandbox_or_hook_trust() {
+        let env = HashMap::new();
+        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks());
+        for arg in argv_strings(&cmd) {
+            assert_ne!(arg, "--dangerously-bypass-approvals-and-sandbox");
+            assert_ne!(arg, "--dangerously-bypass-hook-trust");
+            assert_ne!(arg, "danger-full-access");
         }
     }
 }

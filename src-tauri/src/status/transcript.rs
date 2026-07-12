@@ -23,6 +23,11 @@ pub fn last_assistant_text(path: &Path, max_chars: usize) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
+pub fn clean_summary(text: &str, max_chars: usize) -> Option<String> {
+    let collapsed = collapse_whitespace(text);
+    (!collapsed.is_empty()).then(|| truncate_chars(&collapsed, max_chars))
+}
+
 fn codex_agent_text(entry: &serde_json::Value) -> Option<String> {
     if entry.get("type").and_then(|t| t.as_str()) != Some("event_msg") {
         return None;

@@ -9,7 +9,16 @@ use serde::Serialize;
 use super::protocol::{RequestEnvelope, ResponseEnvelope, PROTOCOL_VERSION};
 
 const PRE_TOOL_USE: &str = "PreToolUse";
+const PERMISSION_REQUEST: &str = "PermissionRequest";
 const FAIL_CLOSED_REASON: &str = "TYBA: transporte de hook indisponível — negado (fail-closed).";
+const DENY_FALLBACK_REASON: &str = "negado no TYBA";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EventKind {
+    PreToolUse,
+    PermissionRequest,
+    Other,
+}
 
 #[derive(Clone, Copy)]
 pub struct RetryPlan {
@@ -42,6 +51,26 @@ struct PreToolUseOutput {
     hook_specific_output: HookSpecificOutput,
 }
 
+#[derive(Serialize)]
+struct PermissionDecision {
+    behavior: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PermissionRequestSpecificOutput {
+    #[serde(rename = "hookEventName")]
+    hook_event_name: &'static str,
+    decision: PermissionDecision,
+}
+
+#[derive(Serialize)]
+struct PermissionRequestOutput {
+    #[serde(rename = "hookSpecificOutput")]
+    hook_specific_output: PermissionRequestSpecificOutput,
+}
+
 pub fn run_client<R: Read, W: Write>(stdin: R, stdout: W, socket_path: Option<&Path>) -> i32 {
     run_client_inner(stdin, stdout, socket_path, RetryPlan::default())
 }
@@ -60,35 +89,33 @@ pub fn run_client_inner<R: Read, W: Write>(
         Ok(value) if value.is_object() => value,
         _ => return 0,
     };
-    let is_pre_tool_use = event
-        .get("hook_event_name")
-        .and_then(|v| v.as_str())
-        .map(|name| name == PRE_TOOL_USE)
-        .unwrap_or(false);
+    let kind = match event.get("hook_event_name").and_then(|v| v.as_str()) {
+        Some(PRE_TOOL_USE) => EventKind::PreToolUse,
+        Some(PERMISSION_REQUEST) => EventKind::PermissionRequest,
+        _ => EventKind::Other,
+    };
 
     let Some(socket_path) = socket_path else {
-        if is_pre_tool_use {
-            emit_pre_tool_use(&mut stdout, "deny", FAIL_CLOSED_REASON);
-        }
+        emit_transport_failure(&mut stdout, kind);
         return 0;
     };
 
     let Some(stream) = connect_with_retry(socket_path, retry) else {
-        if is_pre_tool_use {
-            emit_pre_tool_use(&mut stdout, "deny", FAIL_CLOSED_REASON);
-        }
+        emit_transport_failure(&mut stdout, kind);
         return 0;
     };
 
     match exchange(stream, &event) {
-        Some(response) => emit_response(&mut stdout, &response, is_pre_tool_use),
-        None => {
-            if is_pre_tool_use {
-                emit_pre_tool_use(&mut stdout, "deny", FAIL_CLOSED_REASON);
-            }
-        }
+        Some(response) => emit_response(&mut stdout, &response, kind),
+        None => emit_transport_failure(&mut stdout, kind),
     }
     0
+}
+
+fn emit_transport_failure<W: Write>(stdout: &mut W, kind: EventKind) {
+    if kind == EventKind::PreToolUse {
+        emit_pre_tool_use(stdout, "deny", FAIL_CLOSED_REASON);
+    }
 }
 
 fn connect_with_retry(socket_path: &Path, retry: RetryPlan) -> Option<UnixStream> {
@@ -121,21 +148,43 @@ fn exchange(mut stream: UnixStream, event: &serde_json::Value) -> Option<Respons
     serde_json::from_str::<ResponseEnvelope>(line.trim_end()).ok()
 }
 
-fn emit_response<W: Write>(stdout: &mut W, response: &ResponseEnvelope, is_pre_tool_use: bool) {
-    match response.action.as_str() {
-        "allow" if is_pre_tool_use => {
-            emit_pre_tool_use(stdout, "allow", response.reason.as_deref().unwrap_or(""))
+fn emit_response<W: Write>(stdout: &mut W, response: &ResponseEnvelope, kind: EventKind) {
+    let reason = response.reason.as_deref().filter(|r| !r.trim().is_empty());
+    match (response.action.as_str(), kind) {
+        ("allow", EventKind::PreToolUse) => {
+            emit_pre_tool_use(stdout, "allow", reason.unwrap_or(""))
         }
-        "deny" if is_pre_tool_use => {
-            emit_pre_tool_use(stdout, "deny", response.reason.as_deref().unwrap_or(""))
+        ("deny", EventKind::PreToolUse) => {
+            emit_pre_tool_use(stdout, "deny", reason.unwrap_or(DENY_FALLBACK_REASON))
         }
-        "ack" => {}
-        "allow" | "deny" => {}
-        _ => {
-            if is_pre_tool_use {
-                emit_pre_tool_use(stdout, "deny", FAIL_CLOSED_REASON);
-            }
+        ("allow", EventKind::PermissionRequest) => {
+            emit_permission_request(stdout, "allow", reason.map(str::to_string))
         }
+        ("deny", EventKind::PermissionRequest) => emit_permission_request(
+            stdout,
+            "deny",
+            Some(reason.unwrap_or(DENY_FALLBACK_REASON).to_string()),
+        ),
+        ("ack", _) | ("allow", EventKind::Other) | ("deny", EventKind::Other) => {}
+        (_, kind) => emit_transport_failure(stdout, kind),
+    }
+}
+
+fn emit_permission_request<W: Write>(
+    stdout: &mut W,
+    behavior: &'static str,
+    message: Option<String>,
+) {
+    let output = PermissionRequestOutput {
+        hook_specific_output: PermissionRequestSpecificOutput {
+            hook_event_name: PERMISSION_REQUEST,
+            decision: PermissionDecision { behavior, message },
+        },
+    };
+    if let Ok(mut bytes) = serde_json::to_vec(&output) {
+        bytes.push(b'\n');
+        let _ = stdout.write_all(&bytes);
+        let _ = stdout.flush();
     }
 }
 

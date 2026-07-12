@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
 use crate::agent::hooks_settings::{hook_command, hooks_settings_json};
-use crate::agent::{AgentRunner, ClaudeCodeRunner};
+use crate::agent::{AgentRunner, ClaudeCodeRunner, CodexRunner, HookSetup};
 use crate::approvals::tool_action::normalize_tool_use;
 use crate::approvals::{now_ms, Decision, RiskLevel, SharedApprovals};
 use crate::hook_ipc::{HookAction, HookEvent, HookServer};
@@ -142,6 +142,14 @@ const TURN_END_SETTLE_MS: u64 = 2000;
 const TURN_SUMMARY_MAX_CHARS: usize = 140;
 
 fn turn_summary(event: &HookEvent) -> Option<String> {
+    let inline = event
+        .raw
+        .get("last_assistant_message")
+        .and_then(|m| m.as_str())
+        .and_then(|m| crate::status::transcript::clean_summary(m, TURN_SUMMARY_MAX_CHARS));
+    if inline.is_some() {
+        return inline;
+    }
     let path = event.raw.get("transcript_path")?.as_str()?;
     crate::status::transcript::last_assistant_text(
         std::path::Path::new(path),
@@ -313,7 +321,10 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
         None => {}
     }
 
-    if event.hook_event_name == "PreToolUse" {
+    if matches!(
+        event.hook_event_name.as_str(),
+        "PreToolUse" | "PermissionRequest"
+    ) {
         return on_pre_tool_use(ctx, &event);
     }
     HookAction::Ack
@@ -352,10 +363,15 @@ pub fn create_agent_session(
     };
     let runner: Box<dyn AgentRunner> = match &runner_kind {
         AgentRunnerKind::ClaudeCode => Box::new(ClaudeCodeRunner),
-        AgentRunnerKind::Codex | AgentRunnerKind::Custom(_) => {
-            return Err("runner disponível na Fase 5".into());
+        AgentRunnerKind::Codex => Box::new(CodexRunner),
+        AgentRunnerKind::Custom(_) => {
+            return Err("runner custom disponível em fase futura".into());
         }
     };
+    if !crate::agent::binary_available(&runner_kind) {
+        let binary = crate::agent::runner_binary(&runner_kind).unwrap_or("?");
+        return Err(format!("binário `{binary}` não encontrado no PATH"));
+    }
     let task = opts
         .worktree_task
         .clone()
@@ -390,18 +406,24 @@ fn spawn_prepared(
     }
 
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
-    let settings = hooks_settings_json(&hook_command(&exe));
-    let settings_body =
-        serde_json::to_string_pretty(&settings).map_err(|e| format!("settings de hooks: {e}"))?;
-    crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
-        .map_err(|e| format!("escrita dos settings de hooks: {e}"))?;
-    let settings_path = runtime.join(HOOK_SETTINGS_FILE);
+    let hook_cmd = hook_command(&exe);
+    if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+        let settings = hooks_settings_json(&hook_cmd);
+        let settings_body = serde_json::to_string_pretty(&settings)
+            .map_err(|e| format!("settings de hooks: {e}"))?;
+        crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
+            .map_err(|e| format!("escrita dos settings de hooks: {e}"))?;
+    }
+    let hook_setup = HookSetup {
+        settings_path: runtime.join(HOOK_SETTINGS_FILE),
+        hook_command: hook_cmd,
+    };
 
     let user_env: HashMap<String, String> = std::env::vars().collect();
     let config = consented_config(&ctx.store, &root);
     let env = crate::repo_config::agent_env(config.as_ref(), &user_env);
 
-    let mut cmd = runner.build_command(&worktree.path, &env, &settings_path);
+    let mut cmd = runner.build_command(&worktree.path, &env, &hook_setup);
     cmd.env("TYBA_HOOK_SOCKET", &socket_path);
     let cmd = PassthroughSandbox.wrap(
         cmd,
