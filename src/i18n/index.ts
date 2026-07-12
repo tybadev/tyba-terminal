@@ -173,7 +173,6 @@ const resources = {
       agentReadyTimeoutTitle: "O prompt inicial não foi enviado",
       agentReadyTimeoutBody:
         "O prompt inicial ficou no composer — revise e envie.",
-      sessionAwaitingInput: "aguardando input",
       sessionAwaitingApproval: "aprovação pendente",
       sessionAwaitingReply: "aguardando sua resposta",
       sessionTurnEnded: "terminou o que tinha pra rodar",
@@ -655,7 +654,6 @@ const resources = {
       agentReadyTimeoutTitle: "The initial prompt wasn't sent",
       agentReadyTimeoutBody:
         "The initial prompt stayed in the composer — review and send it.",
-      sessionAwaitingInput: "awaiting input",
       sessionAwaitingApproval: "approval pending",
       sessionAwaitingReply: "waiting for your reply",
       sessionTurnEnded: "finished what it had to run",

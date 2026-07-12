@@ -86,7 +86,9 @@ export function NotificationToaster({
   const [outcomes, setOutcomes] = useState<OutcomeToast[]>([]);
   const outcomeTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const settleTimers = useRef(new Map<SessionId, ReturnType<typeof setTimeout>>());
-  const prevStates = useRef(new Map<SessionId, Session["status"]["state"]>());
+  const prevStates = useRef(
+    new Map<SessionId, { state: Session["status"]["state"]; attention: boolean }>(),
+  );
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const activeSessionRef = useRef(activeSessionId);
@@ -115,35 +117,42 @@ export function NotificationToaster({
   useEffect(() => {
     for (const session of sessions) {
       if (session.kind.type !== "agent") continue;
+      const status = session.status;
       const prev = prevStates.current.get(session.id);
-      const next = session.status.state;
-      if (prev === next) continue;
-      prevStates.current.set(session.id, next);
+      const next = status.state;
+      if (prev?.state === next && prev.attention === session.attention) continue;
+      prevStates.current.set(session.id, {
+        state: next,
+        attention: session.attention,
+      });
       const settle = settleTimers.current.get(session.id);
       if (settle) {
         clearTimeout(settle);
         settleTimers.current.delete(session.id);
       }
       if (prev === undefined) continue;
-      if (next === "failed") {
+      if (next === "failed" && prev.state !== "failed") {
         pushOutcome({
           key: `${session.id}:${Date.now()}`,
           sessionId: session.id,
           kind: "failed",
-          reason: session.status.state === "failed" ? session.status.reason : null,
+          reason: status.state === "failed" ? status.reason : null,
         });
         continue;
       }
-      if (next !== "idle" || prev !== "running") continue;
+      const enteredIdle = next === "idle" && prev.state !== "idle";
+      const attentionRaised =
+        next === "idle" && prev.state === "idle" && !prev.attention && session.attention;
+      if (!enteredIdle && !attentionRaised) continue;
       settleTimers.current.set(
         session.id,
         setTimeout(() => {
           settleTimers.current.delete(session.id);
           const latest = sessionsRef.current.find((s) => s.id === session.id);
           if (latest?.status.state !== "idle" || !latest.attention) return;
-          const inFront =
-            activeSessionRef.current === session.id && document.hasFocus();
-          if (inFront) return;
+          if (!document.hasFocus() || activeSessionRef.current === session.id) {
+            return;
+          }
           pushOutcome({
             key: `${session.id}:${Date.now()}`,
             sessionId: session.id,

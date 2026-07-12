@@ -107,6 +107,7 @@ struct HandlerCtx {
     store: Arc<Store>,
     session_id: SessionId,
     worktree_root: PathBuf,
+    turn_settle: Arc<std::sync::atomic::AtomicU64>,
 }
 
 fn main_window_focused(app: &AppHandle) -> bool {
@@ -115,18 +116,16 @@ fn main_window_focused(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
-    if main_window_focused(&ctx.app) {
+fn notify_native(app: &AppHandle, sessions: &SharedSessionManager, id: SessionId, body: &str) {
+    if main_window_focused(app) {
         return;
     }
-    let title = ctx
-        .sessions
-        .get(ctx.session_id)
+    let title = sessions
+        .get(id)
         .map(|s| s.title)
         .unwrap_or_else(|| "sessão de agente".into());
     let body = crate::session::redact::redact(body);
-    let _ = ctx
-        .app
+    let _ = app
         .notification()
         .builder()
         .title(format!("Tyba — {title}"))
@@ -134,26 +133,32 @@ fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
         .show();
 }
 
+fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
+    notify_native(&ctx.app, &ctx.sessions, ctx.session_id, body);
+}
+
 const TURN_END_SETTLE_MS: u64 = 2000;
 
 fn notify_turn_ended(ctx: &HandlerCtx) {
+    use std::sync::atomic::Ordering;
+
+    let generation = ctx.turn_settle.fetch_add(1, Ordering::SeqCst) + 1;
     let app = ctx.app.clone();
     let sessions = ctx.sessions.clone();
+    let turn_settle = ctx.turn_settle.clone();
     let id = ctx.session_id;
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(TURN_END_SETTLE_MS));
+        if turn_settle.load(Ordering::SeqCst) != generation {
+            return;
+        }
         let Some(session) = sessions.get(id) else {
             return;
         };
-        if !matches!(session.status, SessionStatus::Idle) || main_window_focused(&app) {
+        if !matches!(session.status, SessionStatus::Idle) {
             return;
         }
-        let _ = app
-            .notification()
-            .builder()
-            .title(format!("Tyba — {}", session.title))
-            .body("Terminou o que tinha pra rodar")
-            .show();
+        notify_native(&app, &sessions, id, "Terminou o que tinha pra rodar");
     });
 }
 
@@ -252,6 +257,10 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
             if let Some(status) = status_for(&signal) {
                 let awaiting = matches!(status, SessionStatus::AwaitingInput { .. });
                 let turn_ended = matches!(status, SessionStatus::Idle);
+                if matches!(status, SessionStatus::Running) {
+                    ctx.turn_settle
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
                 ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
                 if awaiting {
                     notify_awaiting_input(ctx, "Agente aguardando sua resposta");
@@ -370,6 +379,7 @@ fn spawn_prepared(
         store: ctx.store.clone(),
         session_id: id,
         worktree_root: worktree.path.clone(),
+        turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
     let server = HookServer::bind(
         &socket_path,

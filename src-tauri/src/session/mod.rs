@@ -312,10 +312,12 @@ impl SessionManager {
         let status = status.redacted();
         let mut sessions = self.sessions.write();
         if let Some(s) = sessions.get_mut(&id) {
-            if s.status == status {
+            let attention =
+                status.wants_attention() && matches!(s.kind, SessionKind::Agent { .. });
+            if s.status == status && s.attention == attention {
                 return;
             }
-            s.attention = status.wants_attention() && matches!(s.kind, SessionKind::Agent { .. });
+            s.attention = attention;
             s.status = status;
             let _ = self.store.upsert_session(s);
             emit_status(app, s);
