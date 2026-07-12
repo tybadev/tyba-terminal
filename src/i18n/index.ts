@@ -173,7 +173,14 @@ const resources = {
       agentReadyTimeoutTitle: "O prompt inicial não foi enviado",
       agentReadyTimeoutBody:
         "O prompt inicial ficou no composer — revise e envie.",
-      sessionAwaitingInput: "aguardando input",
+      sessionInProgress: "em andamento",
+      sessionBlocked: "bloqueado",
+      sessionAwaiting: "aguardando",
+      sessionFinished: "concluído",
+      sessionFailed: "falhou",
+      sessionTurnEndedTitle: "Concluído",
+      sessionFailedTitle: "Falhou",
+      openSessionShortcut: "abrir sessão",
       dismiss: "Dispensar",
       chipsEditorTitle: "Chips da barra",
       chipsEditorHint:
@@ -649,7 +656,14 @@ const resources = {
       agentReadyTimeoutTitle: "The initial prompt wasn't sent",
       agentReadyTimeoutBody:
         "The initial prompt stayed in the composer — review and send it.",
-      sessionAwaitingInput: "awaiting input",
+      sessionInProgress: "in progress",
+      sessionBlocked: "blocked",
+      sessionAwaiting: "awaiting",
+      sessionFinished: "finished",
+      sessionFailed: "failed",
+      sessionTurnEndedTitle: "Finished",
+      sessionFailedTitle: "Failed",
+      openSessionShortcut: "open session",
       dismiss: "Dismiss",
       chipsEditorTitle: "Bar chips",
       chipsEditorHint:

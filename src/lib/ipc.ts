@@ -11,10 +11,12 @@ export type SessionKind =
   | { type: "shell" }
   | { type: "agent"; runner: "claude_code" | "codex" | { custom: string } };
 
+export type AwaitingReason = "approval" | "reply";
+
 export type SessionStatus =
   | { state: "running" }
-  | { state: "awaiting_input"; hint: string | null }
-  | { state: "idle" }
+  | { state: "awaiting_input"; hint: string | null; reason: AwaitingReason }
+  | { state: "idle"; summary: string | null }
   | { state: "exited"; code: number }
   | { state: "failed"; reason: string };
 
@@ -31,6 +33,7 @@ export interface Session {
   repo_root: string | null;
   worktree: Worktree | null;
   status: SessionStatus;
+  attention: boolean;
   created_at: string;
 }
 
@@ -307,6 +310,9 @@ export const resizeSession = (id: SessionId, cols: number, rows: number) =>
   invoke<void>("resize_session", { id, cols, rows });
 
 export const listSessions = () => invoke<Session[]>("list_sessions");
+
+export const sessionMarkSeen = (id: SessionId) =>
+  invoke<void>("session_mark_seen", { id });
 
 export const disposeSession = (id: SessionId) =>
   invoke<void>("dispose_session", { id });

@@ -73,6 +73,7 @@
   --tyba-glow-amber: 0 0 var(--tyba-glow-size) color-mix(in srgb, var(--tyba-amber) var(--tyba-glow-alpha), transparent);
   --tyba-glow-violet: 0 0 var(--tyba-glow-size) color-mix(in srgb, var(--tyba-violet) var(--tyba-glow-alpha), transparent);
   --tyba-glow-cyan: 0 0 var(--tyba-glow-size) color-mix(in srgb, var(--tyba-cyan) var(--tyba-glow-alpha), transparent);
+  --tyba-glow-blue: 0 0 var(--tyba-glow-size) color-mix(in srgb, var(--tyba-blue) var(--tyba-glow-alpha), transparent);
   --tyba-glow-red: 0 0 var(--tyba-glow-size) color-mix(in srgb, var(--tyba-red) var(--tyba-glow-alpha), transparent);
   /* halo suave para cards de destaque (ex.: agente ativo) */
   --tyba-halo: 0 0 24px color-mix(in srgb, var(--tyba-violet) var(--tyba-halo-alpha), transparent);

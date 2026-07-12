@@ -1,4 +1,4 @@
-use crate::session::SessionStatus;
+use crate::session::{AwaitingReason, SessionStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentSignal {
@@ -26,8 +26,11 @@ pub fn signal_for(hook_event_name: &str, notification_type: Option<&str>) -> Opt
 pub fn status_for(signal: &AgentSignal) -> Option<SessionStatus> {
     match signal {
         AgentSignal::Working => Some(SessionStatus::Running),
-        AgentSignal::TurnEnded => Some(SessionStatus::Idle),
-        AgentSignal::AwaitingInput => Some(SessionStatus::AwaitingInput { hint: None }),
+        AgentSignal::TurnEnded => Some(SessionStatus::Idle { summary: None }),
+        AgentSignal::AwaitingInput => Some(SessionStatus::AwaitingInput {
+            hint: None,
+            reason: AwaitingReason::Reply,
+        }),
         AgentSignal::Ready => None,
         AgentSignal::Ended => None,
     }
@@ -96,18 +99,21 @@ mod tests {
     }
 
     #[test]
-    fn status_turn_ended_is_idle() {
+    fn status_turn_ended_is_idle_without_summary() {
         assert!(matches!(
             status_for(&AgentSignal::TurnEnded),
-            Some(SessionStatus::Idle)
+            Some(SessionStatus::Idle { summary: None })
         ));
     }
 
     #[test]
-    fn status_awaiting_input_has_no_hint() {
+    fn status_awaiting_input_is_reply_without_hint() {
         assert!(matches!(
             status_for(&AgentSignal::AwaitingInput),
-            Some(SessionStatus::AwaitingInput { hint: None })
+            Some(SessionStatus::AwaitingInput {
+                hint: None,
+                reason: AwaitingReason::Reply
+            })
         ));
     }
 

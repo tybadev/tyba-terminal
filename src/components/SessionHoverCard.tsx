@@ -5,6 +5,7 @@ import { Folder, GitBranch, SquaresFour } from "@phosphor-icons/react";
 import { DiffStat } from "@/components/DiffStat";
 import { HoverCardContent } from "@/components/ui/hover-card";
 import type { RepoStatus } from "@/lib/ipc";
+import type { StatusVisual } from "@/lib/sessionStatus";
 
 export interface SessionHoverCardProps {
   name: string;
@@ -14,6 +15,7 @@ export interface SessionHoverCardProps {
   runner?: string | null;
   runnerIcon?: ReactNode;
   runningCommand?: string | null;
+  agentVisual?: StatusVisual | null;
   tabs: number;
   group?: string | null;
   color?: string | null;
@@ -27,6 +29,7 @@ export function SessionHoverCard({
   runner,
   runnerIcon,
   runningCommand,
+  agentVisual,
   tabs,
   group,
   color,
@@ -38,14 +41,20 @@ export function SessionHoverCard({
     <HoverCardContent side="right" align="start" className="p-0">
       <div className="flex items-center gap-2 border-b border-tyba-border px-3 py-2">
         <span
-          className={
-            running
-              ? "size-1.5 shrink-0 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse"
-              : "size-1.5 shrink-0 rounded-full bg-tyba-text-faint"
-          }
+          className={`size-1.5 shrink-0 rounded-full ${
+            agentVisual
+              ? agentVisual.dotClass
+              : running
+                ? "bg-tyba-green [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse"
+                : "bg-tyba-text-faint"
+          }`}
         />
         <span className="text-[11px] uppercase tracking-[var(--tyba-tracking-wide)] text-tyba-text-muted">
-          {running ? t("sessionRunning") : t("sessionIdle")}
+          {agentVisual
+            ? t(agentVisual.labelKey)
+            : running
+              ? t("sessionRunning")
+              : t("sessionIdle")}
         </span>
         {runner && (
           <span className="ml-auto flex items-center gap-1.5 rounded-[3px] bg-tyba-violet-tint px-1.5 py-0.5 font-mono text-[10px] leading-none text-tyba-violet">

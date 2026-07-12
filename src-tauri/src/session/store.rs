@@ -533,6 +533,7 @@ impl RawSession {
             repo_root: self.repo_root.map(PathBuf::from),
             worktree,
             status,
+            attention: false,
             created_at,
         })
     }
@@ -550,6 +551,7 @@ mod tests {
             repo_root: Some(PathBuf::from("/repo")),
             worktree: None,
             status: SessionStatus::Running,
+            attention: false,
             created_at: Utc::now(),
         }
     }
