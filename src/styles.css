@@ -166,6 +166,12 @@
   --tyba-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
   --tyba-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.5);
   --tyba-shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.7);
+  /* divisórias estruturais: hairline de luz (alpha do texto — se adapta
+     a qualquer tema) + sombra curta de profundidade; nunca um cinza fixo */
+  --tyba-divider-line: color-mix(in srgb, var(--tyba-text) 7%, transparent);
+  --tyba-divider-b: 0 1px 0 0 var(--tyba-divider-line), 0 5px 8px -7px rgba(0, 0, 0, 0.6);
+  --tyba-divider-t: 0 -1px 0 0 var(--tyba-divider-line), 0 -5px 8px -7px rgba(0, 0, 0, 0.6);
+  --tyba-divider-x: 1px 0 0 0 var(--tyba-divider-line), -1px 0 0 0 var(--tyba-divider-line);
   --tyba-focus-ring: 0 0 0 2px var(--tyba-bg), 0 0 0 4px var(--tyba-green);
 
   /* ---------- Movimento ---------- */
@@ -256,6 +262,10 @@
   --tyba-shadow-sm: 0 1px 2px rgba(23, 23, 28, 0.08);
   --tyba-shadow-md: 0 4px 16px rgba(23, 23, 28, 0.1);
   --tyba-shadow-lg: 0 12px 40px rgba(23, 23, 28, 0.14);
+  --tyba-divider-line: color-mix(in srgb, var(--tyba-text) 12%, transparent);
+  --tyba-divider-b: 0 1px 0 0 var(--tyba-divider-line), 0 5px 8px -7px rgba(23, 23, 28, 0.18);
+  --tyba-divider-t: 0 -1px 0 0 var(--tyba-divider-line), 0 -5px 8px -7px rgba(23, 23, 28, 0.18);
+  --tyba-divider-x: 1px 0 0 0 var(--tyba-divider-line), -1px 0 0 0 var(--tyba-divider-line);
 }
 
 /* ============================================================
@@ -755,8 +765,8 @@
   --tyba-surface: #1a1616;
   --tyba-raised: #252526;
   --tyba-overlay: #2d2d30;
-  --tyba-border: #3c3c3c;
-  --tyba-border-strong: #4d4d4d;
+  --tyba-border: #2b2828;
+  --tyba-border-strong: #3c3c3c;
   --tyba-sunken: #0f0d0d;
 
   --tyba-text: #eeffff;
@@ -941,6 +951,19 @@ samp {
 .tyba-focusable:focus-visible {
   outline: none;
   box-shadow: var(--tyba-focus-ring);
+}
+
+/* Divisórias estruturais por luz: o painel projeta sombra sobre o
+   vizinho em vez de desenhar uma linha (funciona igual em BLACKOUT,
+   temas com border claro e temas light) */
+.tyba-divide-b {
+  box-shadow: var(--tyba-divider-b);
+}
+.tyba-divide-t {
+  box-shadow: var(--tyba-divider-t);
+}
+.tyba-divide-x {
+  box-shadow: var(--tyba-divider-x);
 }
 
 /* ---------- Luz ---------- */

@@ -223,6 +223,19 @@ samp {
   box-shadow: var(--tyba-focus-ring);
 }
 
+/* Divisórias estruturais por luz: o painel projeta sombra sobre o
+   vizinho em vez de desenhar uma linha (funciona igual em BLACKOUT,
+   temas com border claro e temas light) */
+.tyba-divide-b {
+  box-shadow: var(--tyba-divider-b);
+}
+.tyba-divide-t {
+  box-shadow: var(--tyba-divider-t);
+}
+.tyba-divide-x {
+  box-shadow: var(--tyba-divider-x);
+}
+
 /* ---------- Luz ---------- */
 
 /* Canvas com aurora: respiro de cor no topo do app */
