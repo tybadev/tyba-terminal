@@ -4,9 +4,30 @@ use serde::Deserialize;
 
 use super::exec::{self, LOCAL_TIMEOUT, NETWORK_TIMEOUT};
 use super::remote::Remote;
-use super::{CheckRun, PullRequest, ReviewComment};
+use super::{is_auth_error, CheckRun, PullRequest, ReviewComment};
+use crate::error::AppError;
 
 pub const CLI: &str = "glab";
+
+fn cli_failed(detail: impl Into<String>) -> AppError {
+    let detail = detail.into();
+    if is_auth_error(&detail) {
+        AppError::new("forge.not_authenticated").with("cli", CLI)
+    } else {
+        AppError::new("forge.cli_failed")
+            .with("cli", CLI)
+            .with("detail", detail)
+    }
+}
+
+fn create_failed(detail: impl Into<String>) -> AppError {
+    let detail = detail.into();
+    if is_auth_error(&detail) {
+        AppError::new("forge.not_authenticated").with("cli", CLI)
+    } else {
+        AppError::new("forge.create_failed").with("detail", detail)
+    }
+}
 
 const TERMINAL_PIPELINE_STATUS: [&str; 6] = [
     "success",
@@ -187,7 +208,7 @@ pub fn web_create_url(remote: &Remote, branch: &str) -> String {
     )
 }
 
-pub fn create_pr(worktree: &Path, title: &str, body: &str) -> Result<PullRequest, String> {
+pub fn create_pr(worktree: &Path, title: &str, body: &str) -> Result<PullRequest, AppError> {
     let out = exec::run(
         CLI,
         &[
@@ -203,29 +224,31 @@ pub fn create_pr(worktree: &Path, title: &str, body: &str) -> Result<PullRequest
         worktree,
         None,
         NETWORK_TIMEOUT,
-    )?;
+    )
+    .map_err(create_failed)?;
     if !out.ok {
-        return Err(format!("`glab mr create` falhou: {}", out.stderr_message()));
+        return Err(create_failed(out.stderr_message()));
     }
     let branch = super::current_branch(worktree)?;
     mr_by_ref(worktree, &branch)
 }
 
-pub fn mr_by_ref(worktree: &Path, reference: &str) -> Result<PullRequest, String> {
+pub fn mr_by_ref(worktree: &Path, reference: &str) -> Result<PullRequest, AppError> {
     let out = exec::run(
         CLI,
         &["mr", "view", reference, "--output", "json"],
         worktree,
         None,
         NETWORK_TIMEOUT,
-    )?;
+    )
+    .map_err(cli_failed)?;
     if !out.ok {
-        return Err(format!("`glab mr view` falhou: {}", out.stderr_message()));
+        return Err(cli_failed(out.stderr_message()));
     }
-    parse_mr(&out.stdout)
+    parse_mr(&out.stdout).map_err(cli_failed)
 }
 
-pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest>, String> {
+pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest>, AppError> {
     let out = exec::run(
         CLI,
         &[
@@ -242,23 +265,28 @@ pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest
         worktree,
         None,
         NETWORK_TIMEOUT,
-    )?;
+    )
+    .map_err(cli_failed)?;
     if !out.ok {
-        return Err(format!("`glab mr list` falhou: {}", out.stderr_message()));
+        return Err(cli_failed(out.stderr_message()));
     }
-    Ok(parse_mr_list(&out.stdout)?.into_iter().next())
+    Ok(parse_mr_list(&out.stdout)
+        .map_err(cli_failed)?
+        .into_iter()
+        .next())
 }
 
-pub fn pr_comments(worktree: &Path, number: u64) -> Result<Vec<ReviewComment>, String> {
+pub fn pr_comments(worktree: &Path, number: u64) -> Result<Vec<ReviewComment>, AppError> {
     let endpoint = format!("projects/:fullpath/merge_requests/{number}/discussions?per_page=100");
-    let out = exec::run(CLI, &["api", &endpoint], worktree, None, NETWORK_TIMEOUT)?;
+    let out =
+        exec::run(CLI, &["api", &endpoint], worktree, None, NETWORK_TIMEOUT).map_err(cli_failed)?;
     if !out.ok {
-        return Err(format!("`glab api` falhou: {}", out.stderr_message()));
+        return Err(cli_failed(out.stderr_message()));
     }
     let mr_url = super::remote_of(worktree)
         .map(|r| format!("{}/-/merge_requests/{number}", r.base_url()))
         .unwrap_or_default();
-    parse_discussions(&out.stdout, &mr_url)
+    parse_discussions(&out.stdout, &mr_url).map_err(cli_failed)
 }
 
 #[cfg(test)]

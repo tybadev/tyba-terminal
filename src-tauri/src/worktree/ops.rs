@@ -14,6 +14,15 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::{git_in, git_text, run_git};
+use crate::error::AppError;
+
+fn merge_failed(detail: impl Into<String>) -> AppError {
+    AppError::new("merge.failed").with("detail", detail.into())
+}
+
+fn push_failed(detail: impl Into<String>) -> AppError {
+    AppError::new("push.failed").with("detail", detail.into())
+}
 
 fn ensure_relative(path: &str) -> Result<(), String> {
     let p = Path::new(path);
@@ -171,29 +180,29 @@ pub fn commit(worktree: &Path, message: &str) -> Result<(), String> {
 const PROTECTED_BRANCHES: [&str; 2] = ["main", "master"];
 
 /// `git push -u origin <branch>` — recusa main/master sempre.
-pub fn push(worktree: &Path) -> Result<String, String> {
-    let branch = git_text(
-        {
-            let mut c = git_in(worktree);
-            c.args(["symbolic-ref", "--short", "-q", "HEAD"]);
-            c
-        },
-        "git symbolic-ref",
-    )?;
-    if branch.is_empty() {
-        return Err("HEAD destacado — sem branch pra push".into());
+pub fn push(worktree: &Path) -> Result<String, AppError> {
+    let out = {
+        let mut c = git_in(worktree);
+        c.args(["symbolic-ref", "--short", "-q", "HEAD"]);
+        c.output()
+            .map_err(|e| push_failed(format!("git symbolic-ref: {e}")))?
+    };
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || branch.is_empty() {
+        return Err(AppError::new("push.detached_head"));
     }
     if PROTECTED_BRANCHES.contains(&branch.as_str()) {
-        return Err(format!("push para {branch} é recusado pelo TYBA"));
+        return Err(AppError::new("push.protected_branch").with("branch", branch));
     }
     let out = {
         let mut c = git_in(worktree);
         c.args(["push", "-u", "origin", &branch]);
-        c.output().map_err(|e| format!("git push: {e}"))?
+        c.output()
+            .map_err(|e| push_failed(format!("git push: {e}")))?
     };
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
     if !out.status.success() {
-        return Err(format!("git push: {stderr}"));
+        return Err(push_failed(format!("git push: {stderr}")));
     }
     Ok(stderr)
 }
@@ -215,15 +224,16 @@ pub struct MergePreview {
     pub base_dirty: bool,
 }
 
-fn current_branch(repo: &Path, what: &str) -> Result<String, String> {
+fn current_branch(repo: &Path, what: &str) -> Result<String, AppError> {
     let out = {
         let mut c = git_in(repo);
         c.args(["symbolic-ref", "--short", "-q", "HEAD"]);
-        c.output().map_err(|e| format!("git symbolic-ref: {e}"))?
+        c.output()
+            .map_err(|e| merge_failed(format!("git symbolic-ref: {e}")))?
     };
     let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if !out.status.success() || branch.is_empty() {
-        return Err(format!("{what} está com HEAD destacado — sem branch"));
+        return Err(AppError::new("merge.detached_head").with("what", what));
     }
     Ok(branch)
 }
@@ -235,7 +245,7 @@ fn nul_fields(raw: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn merge_tree(main: &Path, base: &str, source: &str) -> Result<(String, Vec<String>), String> {
+fn merge_tree(main: &Path, base: &str, source: &str) -> Result<(String, Vec<String>), AppError> {
     let out = {
         let mut c = git_in(main);
         c.args([
@@ -246,13 +256,14 @@ fn merge_tree(main: &Path, base: &str, source: &str) -> Result<(String, Vec<Stri
             base,
             source,
         ]);
-        c.output().map_err(|e| format!("git merge-tree: {e}"))?
+        c.output()
+            .map_err(|e| merge_failed(format!("git merge-tree: {e}")))?
     };
     if !matches!(out.status.code(), Some(0) | Some(1)) {
-        return Err(format!(
+        return Err(merge_failed(format!(
             "git merge-tree: {}",
             String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        )));
     }
     let mut fields = out.stdout.split(|b| *b == 0);
     let tree = fields
@@ -260,7 +271,7 @@ fn merge_tree(main: &Path, base: &str, source: &str) -> Result<(String, Vec<Stri
         .map(|f| String::from_utf8_lossy(f).trim().to_string())
         .unwrap_or_default();
     if tree.is_empty() {
-        return Err("git merge-tree não produziu árvore".into());
+        return Err(merge_failed("git merge-tree não produziu árvore"));
     }
     let mut conflicts: Vec<String> = Vec::new();
     for field in fields {
@@ -280,14 +291,12 @@ struct MergePlan {
     preview: MergePreview,
 }
 
-fn plan(worktree: &Path) -> Result<MergePlan, String> {
-    let main = super::main_repo_of(worktree)?;
+fn plan(worktree: &Path) -> Result<MergePlan, AppError> {
+    let main = super::main_repo_of(worktree).map_err(merge_failed)?;
     let base_branch = current_branch(&main, "o repo principal")?;
     let source_branch = current_branch(worktree, "a sessão")?;
     if base_branch == source_branch {
-        return Err(format!(
-            "a sessão está na própria branch base ({base_branch}) — nada a mergear"
-        ));
+        return Err(AppError::new("merge.same_branch").with("branch", base_branch));
     }
     let raw = run_git(
         {
@@ -303,14 +312,15 @@ fn plan(worktree: &Path) -> Result<MergePlan, String> {
             c
         },
         "git diff --name-only",
-    )?;
+    )
+    .map_err(merge_failed)?;
     let (_, conflicts) = merge_tree(&main, &base_branch, &source_branch)?;
     Ok(MergePlan {
         preview: MergePreview {
-            commits: super::ahead_count(worktree, &base_branch)? as usize,
+            commits: super::ahead_count(worktree, &base_branch).map_err(merge_failed)? as usize,
             files_changed: nul_fields(&raw).len(),
             conflicts,
-            base_dirty: super::is_dirty(&main)?,
+            base_dirty: super::is_dirty(&main).map_err(merge_failed)?,
             base_branch,
             source_branch,
         },
@@ -318,7 +328,7 @@ fn plan(worktree: &Path) -> Result<MergePlan, String> {
     })
 }
 
-pub fn merge_preview(worktree: &Path) -> Result<MergePreview, String> {
+pub fn merge_preview(worktree: &Path) -> Result<MergePreview, AppError> {
     Ok(plan(worktree)?.preview)
 }
 
@@ -326,38 +336,27 @@ pub fn merge_into_base(
     worktree: &Path,
     strategy: MergeStrategy,
     message: Option<&str>,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     let MergePlan { main, preview } = plan(worktree)?;
 
     if preview.base_dirty {
-        return Err(format!(
-            "a branch base ({}) tem trabalho não-commitado — commite ou descarte antes de mergear",
-            preview.base_branch
-        ));
+        return Err(AppError::new("merge.base_dirty").with("branch", preview.base_branch));
     }
     if !preview.conflicts.is_empty() {
-        return Err(format!(
-            "merge recusado: conflito com {} em {} — resolva na sessão antes",
-            preview.base_branch,
-            preview.conflicts.join(", ")
-        ));
+        return Err(AppError::new("merge.conflict").with("files", preview.conflicts.join(", ")));
     }
     if preview.commits == 0 {
-        return Err(format!(
-            "nada para mergear: {} não tem commits além de {}",
-            preview.source_branch, preview.base_branch
-        ));
+        return Err(AppError::new("merge.nothing")
+            .with("source", preview.source_branch)
+            .with("base", preview.base_branch));
     }
 
-    let base_head = super::head_sha(&main)?;
-    let source_head = super::head_sha(worktree)?;
+    let base_head = super::head_sha(&main).map_err(merge_failed)?;
+    let source_head = super::head_sha(worktree).map_err(merge_failed)?;
 
     let (tree, conflicts) = merge_tree(&main, &base_head, &source_head)?;
     if !conflicts.is_empty() {
-        return Err(format!(
-            "merge recusado: conflito em {}",
-            conflicts.join(", ")
-        ));
+        return Err(AppError::new("merge.conflict").with("files", conflicts.join(", ")));
     }
 
     let message = message
@@ -380,17 +379,14 @@ pub fn merge_into_base(
         c.args(["-p", &source_head]);
     }
     c.args(["-m", &message]);
-    let merged = git_text(c, "git commit-tree")?;
+    let merged = git_text(c, "git commit-tree").map_err(merge_failed)?;
     if merged.is_empty() {
-        return Err("git commit-tree não produziu commit".into());
+        return Err(merge_failed("git commit-tree não produziu commit"));
     }
 
-    let now_head = super::head_sha(&main)?;
+    let now_head = super::head_sha(&main).map_err(merge_failed)?;
     if now_head != base_head {
-        return Err(format!(
-            "a branch base ({}) avançou durante o merge — revise e tente de novo",
-            preview.base_branch
-        ));
+        return Err(AppError::new("merge.base_moved").with("branch", preview.base_branch));
     }
     run_git(
         {
@@ -400,12 +396,7 @@ pub fn merge_into_base(
         },
         "git merge --ff-only",
     )
-    .map_err(|_| {
-        format!(
-            "a branch base ({}) mudou durante o merge — nada foi alterado, tente de novo",
-            preview.base_branch
-        )
-    })?;
+    .map_err(|_| AppError::new("merge.base_moved").with("branch", preview.base_branch.clone()))?;
     Ok(merged)
 }
 
@@ -555,8 +546,8 @@ mod merge_tests {
         assert_eq!(p.conflicts, vec!["f.txt".to_string()]);
 
         let err = merge_into_base(&fx.worktree, MergeStrategy::Squash, None).unwrap_err();
-        assert!(err.contains("conflito"), "{err}");
-        assert!(err.contains("f.txt"), "{err}");
+        assert_eq!(err.code, "merge.conflict", "{err}");
+        assert!(err.params["files"].contains("f.txt"), "{err}");
 
         assert_eq!(head(&fx.repo), before);
         assert_eq!(
@@ -607,7 +598,7 @@ mod merge_tests {
         assert!(p.base_dirty);
 
         let err = merge_into_base(&fx.worktree, MergeStrategy::MergeCommit, None).unwrap_err();
-        assert!(err.contains("não-commitado"), "{err}");
+        assert_eq!(err.code, "merge.base_dirty", "{err}");
 
         assert_eq!(head(&fx.repo), before);
         assert_eq!(
@@ -630,7 +621,7 @@ mod merge_tests {
         assert_eq!(p.files_changed, 0);
 
         let err = merge_into_base(&fx.worktree, MergeStrategy::Squash, None).unwrap_err();
-        assert!(err.contains("nada para mergear"), "{err}");
+        assert_eq!(err.code, "merge.nothing", "{err}");
         assert_eq!(head(&fx.repo), before);
     }
 
@@ -638,7 +629,7 @@ mod merge_tests {
     fn merging_the_main_repo_into_itself_is_refused() {
         let fx = fixture("selfmerge");
         let err = merge_preview(&fx.repo).unwrap_err();
-        assert!(err.contains("própria branch base"), "{err}");
+        assert_eq!(err.code, "merge.same_branch", "{err}");
     }
 
     #[test]
@@ -648,7 +639,7 @@ mod merge_tests {
         git(&fx.worktree, &["checkout", "-q", "--detach"]);
 
         let err = merge_preview(&fx.worktree).unwrap_err();
-        assert!(err.contains("destacado"), "{err}");
+        assert_eq!(err.code, "merge.detached_head", "{err}");
     }
 }
 
@@ -787,7 +778,7 @@ mod tests {
     fn push_refuses_protected_branch_before_touching_network() {
         let repo = temp_repo();
         let err = push(&repo).unwrap_err();
-        assert!(err.contains("recusado"), "{err}");
+        assert_eq!(err.code, "push.protected_branch", "{err}");
         fs::remove_dir_all(&repo).ok();
     }
 
