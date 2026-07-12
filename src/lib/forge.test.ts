@@ -10,6 +10,7 @@ import type {
 import {
   buildForgeCommentPrompt,
   checkTone,
+  deliveryButtonKind,
   forgeCliReady,
   mergeGate,
   overallChecksTone,
@@ -77,6 +78,32 @@ describe("primaryDeliveryAction", () => {
 
   test("no forge detected falls back to merge only", () => {
     expect(primaryDeliveryAction(null)).toBe("merge_only");
+  });
+});
+
+describe("deliveryButtonKind", () => {
+  const pr: PullRequest = {
+    number: 1,
+    title: "t",
+    url: "https://github.com/tybadev/tyba-terminal/pull/1",
+    state: "open",
+    checks: [],
+  };
+
+  test("sem PR ainda: ação primária abre um novo PR", () => {
+    expect(deliveryButtonKind("open_pr", null)).toBe("open_pr");
+  });
+
+  test("sem PR ainda no gitlab: ação primária abre um novo MR", () => {
+    expect(deliveryButtonKind("open_mr", null)).toBe("open_mr");
+  });
+
+  test("PR já existe: ação primária vira ver PR, não abrir outro", () => {
+    expect(deliveryButtonKind("open_pr", pr)).toBe("view_pr");
+  });
+
+  test("MR já existe: ação primária vira ver MR", () => {
+    expect(deliveryButtonKind("open_mr", pr)).toBe("view_mr");
   });
 });
 

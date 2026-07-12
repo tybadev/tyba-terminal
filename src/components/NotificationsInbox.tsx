@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Tray, Warning } from "@phosphor-icons/react";
+import { ArrowRight, Tray, Warning } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -36,11 +36,13 @@ export function NotificationsInbox({
   approvals,
   open,
   onOpenChange,
+  onGoToSession,
 }: {
   sessions: Session[];
   approvals: ApprovalRequest[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onGoToSession: (sessionId: SessionId) => void;
 }) {
   const { t } = useTranslation();
   const [confirming, setConfirming] = useState<number | null>(null);
@@ -185,10 +187,22 @@ export function NotificationsInbox({
                           </span>
                         )}
                       </div>
-                      <div className="mt-0.5 truncate font-mono text-[10px] text-tyba-text-faint">
-                        {sessionTitle(request.session_id)}
-                        {request.cwd ? ` · ${request.cwd}` : ""}
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onGoToSession(request.session_id)}
+                        className="group mt-0.5 flex min-w-0 items-center gap-1 truncate text-left font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text hover:underline"
+                      >
+                        <span className="min-w-0 truncate">
+                          {sessionTitle(request.session_id)}
+                          {request.cwd ? ` · ${request.cwd}` : ""}
+                        </span>
+                        <ArrowRight
+                          aria-hidden="true"
+                          size={11}
+                          weight="bold"
+                          className="shrink-0 opacity-60 transition-transform motion-safe:group-hover:translate-x-0.5"
+                        />
+                      </button>
                       {request.context && (
                         <div className="mt-1 text-[11px] text-tyba-text-muted">
                           {request.context}

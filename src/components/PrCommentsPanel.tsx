@@ -1,8 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { PaperPlaneTilt, WarningCircle } from "@phosphor-icons/react";
+import {
+  CaretDown,
+  CaretRight,
+  PaperPlaneTilt,
+  WarningCircle,
+} from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   forgePrComments,
   type ForgeReviewComment,
@@ -25,6 +35,7 @@ export function PrCommentsPanel({ sessionId, pr, onSendToAgent }: Props) {
     "idle" | "sending" | "sent" | "error"
   >("idle");
   const [sendError, setSendError] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(true);
 
   useEffect(() => {
     setComments(null);
@@ -110,11 +121,11 @@ export function PrCommentsPanel({ sessionId, pr, onSendToAgent }: Props) {
       )}
 
       {comments && comments.length > 0 && (
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col divide-y divide-tyba-border/60">
           {comments.map((c) => (
             <label
               key={c.id}
-              className="flex items-start gap-2 rounded-[6px] border border-tyba-border p-2 text-[12px]"
+              className="flex items-start gap-2 px-1 py-1.5 text-[12px] hover:bg-white/[.02]"
             >
               <input
                 type="checkbox"
@@ -144,15 +155,26 @@ export function PrCommentsPanel({ sessionId, pr, onSendToAgent }: Props) {
       )}
 
       {selectedComments.length > 0 && (
-        <div className="flex flex-col gap-1.5 rounded-[6px] border border-tyba-yellow/30 bg-tyba-yellow/[.05] p-2">
-          <div className="flex items-center gap-1.5 text-[11px] text-tyba-yellow">
-            <WarningCircle size={12} />
+        <div className="flex flex-col gap-1 pt-1">
+          <div className="flex items-center gap-1.5 text-[10px] text-tyba-text-faint">
+            <WarningCircle size={11} />
             {t("prCommentsUntrustedHint")}
           </div>
-          <div className="tyba-label">{t("prCommentsPreviewTitle")}</div>
-          <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-tyba-text-muted">
-            {preview}
-          </pre>
+          <Collapsible open={previewOpen} onOpenChange={setPreviewOpen}>
+            <CollapsibleTrigger className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-tyba-text-faint hover:text-tyba-text-muted">
+              {previewOpen ? (
+                <CaretDown size={9} className="shrink-0" />
+              ) : (
+                <CaretRight size={9} className="shrink-0" />
+              )}
+              {t("prCommentsPreviewTitle")}
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-[4px] bg-black/10 p-2 font-mono text-[11px] text-tyba-text-muted">
+                {preview}
+              </pre>
+            </CollapsibleContent>
+          </Collapsible>
         </div>
       )}
 

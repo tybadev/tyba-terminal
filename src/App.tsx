@@ -59,7 +59,6 @@ import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import {
   Notification,
-  NotificationDescription,
   NotificationLink,
   NotificationTitle,
 } from "@/components/ui/notification";
@@ -149,6 +148,7 @@ import { isFinishedStatus, sameSessionStatus } from "./lib/sessionStatus";
 import { buildAgentSessionOpts } from "./lib/agentSession";
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
 import { resolveWorkspaceCwd, workspaceMatchDir } from "./lib/workspaceCwd";
+import { findSessionLocation } from "./lib/sessionLocation";
 import {
   computeRects,
   findAncestorSplit,
@@ -560,15 +560,10 @@ export default function App() {
 
   const goToSession = useCallback(
     (sessionId: SessionId) => {
-      for (const w of layout.workspaces) {
-        for (const tab of w.tabs) {
-          if (tab.root && leafSessions(tab.root).includes(sessionId)) {
-            void activateWorkspace(w.id);
-            void activateTab(tab.id);
-            return;
-          }
-        }
-      }
+      const location = findSessionLocation(layout.workspaces, sessionId);
+      if (!location) return;
+      void activateWorkspace(location.workspaceId);
+      void activateTab(location.tabId);
     },
     [layout.workspaces],
   );
@@ -2038,7 +2033,18 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={400}>
       <ErrorBoundary region="notificações">
-        <NotificationToaster sessions={sessions} />
+        <NotificationToaster
+          sessions={sessions}
+          agentReadyWarnings={agentReadyWarnings}
+          onDismissAgentReady={(sessionId) =>
+            setAgentReadyWarnings((prev) => {
+              const next = { ...prev };
+              delete next[sessionId];
+              return next;
+            })
+          }
+          onGoToSession={goToSession}
+        />
       </ErrorBoundary>
       <CommandPalette
         open={paletteOpen}
@@ -2236,6 +2242,7 @@ export default function App() {
               approvals={approvals}
               open={inboxOpen}
               onOpenChange={setInboxOpen}
+              onGoToSession={goToSession}
             />
           </ErrorBoundary>
 
@@ -2312,32 +2319,6 @@ export default function App() {
                   size={14}
                   className="-mt-0.5 ms-1 inline-flex opacity-60 transition-transform motion-safe:group-hover:translate-x-0.5"
                 />
-              </button>
-            </NotificationLink>
-          </Notification>
-        )}
-
-        {activeId && agentReadyWarnings[activeId] && (
-          <Notification
-            variant="warning"
-            className="rounded-none border-x-0 border-t-0 px-3 py-1.5 text-xs"
-          >
-            <NotificationTitle>{t("agentReadyTimeoutTitle")}</NotificationTitle>
-            <NotificationDescription>
-              {t("agentReadyTimeoutBody")}
-            </NotificationDescription>
-            <NotificationLink asChild>
-              <button
-                type="button"
-                onClick={() =>
-                  setAgentReadyWarnings((prev) => {
-                    const next = { ...prev };
-                    delete next[activeId];
-                    return next;
-                  })
-                }
-              >
-                {t("dismiss")}
               </button>
             </NotificationLink>
           </Notification>
@@ -2514,7 +2495,11 @@ export default function App() {
               <main ref={mainAreaRef} className="flex min-h-0 min-w-0 flex-1">
                 <div
                   className={`min-h-0 min-w-0 flex-col ${
-                    sideView ? (sideExpanded ? "hidden" : "flex") : "flex flex-1"
+                    sideView
+                      ? sideExpanded
+                        ? "hidden"
+                        : "flex shrink-0"
+                      : "flex flex-1"
                   }`}
                   style={
                     sideView && !sideExpanded

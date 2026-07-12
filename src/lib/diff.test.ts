@@ -7,9 +7,11 @@ import {
   defaultCollapsed,
   fileKeyOf,
   isGeneratedPath,
+  isSectionOpen,
   langOfPath,
   numberHunk,
   splitPairs,
+  toggleSection,
 } from "./diff";
 
 const hunk: Hunk = {
@@ -143,6 +145,29 @@ describe("buildRows", () => {
     expect(rows.some((r) => r.kind === "empty" && r.label === "loading")).toBe(
       true,
     );
+  });
+});
+
+describe("isSectionOpen / toggleSection", () => {
+  test("seção sem entrada no estado começa aberta", () => {
+    expect(isSectionOpen({}, "staged")).toBe(true);
+  });
+
+  test("toggle fecha uma seção aberta por padrão", () => {
+    const next = toggleSection({}, "staged");
+    expect(isSectionOpen(next, "staged")).toBe(false);
+  });
+
+  test("toggle reabre uma seção fechada", () => {
+    const closed = toggleSection({}, "unstaged");
+    const reopened = toggleSection(closed, "unstaged");
+    expect(isSectionOpen(reopened, "unstaged")).toBe(true);
+  });
+
+  test("toggle de uma seção não mexe nas outras", () => {
+    const next = toggleSection({}, "committed");
+    expect(isSectionOpen(next, "committed")).toBe(false);
+    expect(isSectionOpen(next, "staged")).toBe(true);
   });
 });
 

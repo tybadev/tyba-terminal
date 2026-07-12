@@ -79,7 +79,7 @@ const resources = {
       toolbarClock: "Relógio",
       diffReviewAction: "Revisar diff",
       diffSessionGone: "A sessão desta revisão não existe mais.",
-      diffPaneLabel: "diff · {{title}}",
+      diffPaneLabel: "{{title}}",
       diffPaneClose: "Fechar diff",
       reviewAgent: "Agente de review",
       reviewAgentHint:
@@ -170,9 +170,9 @@ const resources = {
         "O .tyba/config.toml deste repo pede que o agente receba estas variáveis do SEU ambiente. Sem permitir, a sessão sobe só com o baseline padrão.",
       agentConsentAllow: "Permitir",
       agentConsentSkip: "Agora não",
-      agentReadyTimeoutTitle: "O agente não confirmou os hooks",
+      agentReadyTimeoutTitle: "O prompt inicial não foi enviado",
       agentReadyTimeoutBody:
-        "O prompt inicial ficou no composer desta sessão — revise e envie manualmente.",
+        "O prompt inicial ficou no composer — revise e envie.",
       sessionAwaitingInput: "aguardando input",
       dismiss: "Dispensar",
       chipsEditorTitle: "Chips da barra",
@@ -373,6 +373,7 @@ const resources = {
       riskYellow: "risco médio",
       riskRed: "risco alto",
       approvalRequested: "Pedido de aprovação",
+      notificationGoToSession: "Ir para a sessão",
       alwaysAllow: "Sempre permitir",
       alwaysAllowSession: "Sempre permitir nesta sessão",
       alwaysAllowHint:
@@ -383,6 +384,8 @@ const resources = {
         "Nenhuma forja detectada (o remote não é GitHub nem GitLab) — só merge local disponível.",
       deliveryOpenPr: "Abrir PR",
       deliveryOpenMr: "Abrir MR",
+      deliveryViewPr: "Ver PR",
+      deliveryViewMr: "Ver MR",
       deliveryMergeLocal: "Merge local",
       prDialogTitlePr: "Abrir Pull Request",
       prDialogTitleMr: "Abrir Merge Request",
@@ -438,7 +441,7 @@ const resources = {
       prCommentsSend_other: "Encaminhar {{count}} comentários pro agente",
       prCommentsSending: "Encaminhando…",
       prCommentsSent: "Encaminhado pro agente ✓",
-      prCommentsPreviewTitle: "Isto vai pro agente:",
+      prCommentsPreviewTitle: "Isto vai pro agente",
       postDeliveryTitle: "Entrega feita — e o worktree?",
       postDeliveryBodyPr:
         "PR aberto. Quer remover este worktree e encerrar a sessão, ou manter pra continuar trabalhando?",
@@ -545,7 +548,7 @@ const resources = {
       toolbarClock: "Clock",
       diffReviewAction: "Review diff",
       diffSessionGone: "This review's session no longer exists.",
-      diffPaneLabel: "diff · {{title}}",
+      diffPaneLabel: "{{title}}",
       diffPaneClose: "Close diff",
       reviewAgent: "Review agent",
       reviewAgentHint:
@@ -636,9 +639,9 @@ const resources = {
         "This repo's .tyba/config.toml asks for the agent to receive these variables from YOUR environment. Without allowing, the session starts with the default baseline only.",
       agentConsentAllow: "Allow",
       agentConsentSkip: "Not now",
-      agentReadyTimeoutTitle: "The agent didn't confirm the hooks",
+      agentReadyTimeoutTitle: "The initial prompt wasn't sent",
       agentReadyTimeoutBody:
-        "The initial prompt was left in this session's composer — review and send it manually.",
+        "The initial prompt stayed in the composer — review and send it.",
       sessionAwaitingInput: "awaiting input",
       dismiss: "Dismiss",
       chipsEditorTitle: "Bar chips",
@@ -839,6 +842,7 @@ const resources = {
       riskYellow: "medium risk",
       riskRed: "high risk",
       approvalRequested: "Approval request",
+      notificationGoToSession: "Go to session",
       alwaysAllow: "Always allow",
       alwaysAllowSession: "Always allow for this session",
       alwaysAllowHint:
@@ -849,6 +853,8 @@ const resources = {
         "No forge detected (origin isn't GitHub or GitLab) — only local merge is available.",
       deliveryOpenPr: "Open PR",
       deliveryOpenMr: "Open MR",
+      deliveryViewPr: "View PR",
+      deliveryViewMr: "View MR",
       deliveryMergeLocal: "Merge locally",
       prDialogTitlePr: "Open Pull Request",
       prDialogTitleMr: "Open Merge Request",
@@ -904,7 +910,7 @@ const resources = {
       prCommentsSend_other: "Forward {{count}} comments to the agent",
       prCommentsSending: "Forwarding…",
       prCommentsSent: "Forwarded to the agent ✓",
-      prCommentsPreviewTitle: "This is what gets sent to the agent:",
+      prCommentsPreviewTitle: "This is what gets sent to the agent",
       postDeliveryTitle: "Delivered — what about the worktree?",
       postDeliveryBodyPr:
         "PR opened. Remove this worktree and close the session, or keep it to keep working?",

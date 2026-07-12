@@ -41,13 +41,16 @@ import {
   buildReviewPrompt,
   defaultCollapsed,
   fileKeyOf,
+  isSectionOpen,
   keyPath,
   keyScope,
   langOfPath,
+  toggleSection,
   type DiffMode,
   type DiffScopeKey,
   type ReviewComment,
   type Row,
+  type SectionOpenState,
 } from "../lib/diff";
 import { highlightBlock, type TokenSpan } from "../lib/highlight";
 import { DeliverySection } from "./DeliverySection";
@@ -157,6 +160,7 @@ export function DiffView({
   const [collapsedByKey, setCollapsedByKey] = useState<
     Record<string, boolean | undefined>
   >({});
+  const [openSections, setOpenSections] = useState<SectionOpenState>({});
   const [mode, setMode] = useState<DiffMode>("unified");
   const [tokens, setTokens] = useState<Record<string, TokenSpan[][]>>({});
   const [comments, setComments] = useState<Record<string, ReviewComment>>({});
@@ -611,39 +615,52 @@ export function DiffView({
   const sidebarSection = (
     scope: DiffScopeKey,
     files: FileDiff[],
-  ) =>
-    files.length > 0 && (
+  ) => {
+    if (files.length === 0) return null;
+    const open = isSectionOpen(openSections, scope);
+    return (
       <div className="flex flex-col gap-px">
-        <span className="tyba-label px-2 pb-1 pt-3">
+        <button
+          onClick={() => setOpenSections((prev) => toggleSection(prev, scope))}
+          aria-expanded={open}
+          className="tyba-label flex items-center gap-1 px-2 pb-1 pt-3 hover:text-tyba-text-muted"
+        >
+          {open ? (
+            <CaretDown size={9} className="shrink-0" />
+          ) : (
+            <CaretRight size={9} className="shrink-0" />
+          )}
           {t(SECTION_LABEL_KEY[scope])} · {files.length}
-        </span>
-        {files.map((file) => {
-          const key = fileKeyOf(scope, file.path);
-          const active = stickyFile?.key === key;
-          return (
-            <button
-              key={key}
-              onClick={() => jumpTo(key)}
-              className={`flex items-center gap-2 rounded-[4px] px-2 py-1 text-left transition-colors ${
-                active
-                  ? "bg-white/[.06] text-tyba-text"
-                  : "text-tyba-text-muted hover:bg-white/[.03] hover:text-tyba-text"
-              }`}
-            >
-              <span
-                className={`w-3 shrink-0 text-center font-mono text-[10px] ${STATUS_COLOR[file.status]}`}
+        </button>
+        {open &&
+          files.map((file) => {
+            const key = fileKeyOf(scope, file.path);
+            const active = stickyFile?.key === key;
+            return (
+              <button
+                key={key}
+                onClick={() => jumpTo(key)}
+                className={`flex items-center gap-2 rounded-[4px] px-2 py-1 text-left transition-colors ${
+                  active
+                    ? "bg-white/[.06] text-tyba-text"
+                    : "text-tyba-text-muted hover:bg-white/[.03] hover:text-tyba-text"
+                }`}
               >
-                {STATUS_LETTER[file.status]}
-              </span>
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
-                {file.path}
-              </span>
-              <Numstat file={file} />
-            </button>
-          );
-        })}
+                <span
+                  className={`w-3 shrink-0 text-center font-mono text-[10px] ${STATUS_COLOR[file.status]}`}
+                >
+                  {STATUS_LETTER[file.status]}
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+                  {file.path}
+                </span>
+                <Numstat file={file} />
+              </button>
+            );
+          })}
       </div>
     );
+  };
 
   const renderRow = (row: DisplayRow) => {
     switch (row.kind) {
@@ -853,7 +870,10 @@ export function DiffView({
   };
 
   return (
-    <div ref={containerRef} className="flex min-w-0 flex-1 flex-col bg-tyba-bg">
+    <div
+      ref={containerRef}
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-tyba-bg"
+    >
       <header className="flex h-11 shrink-0 items-center gap-3 border-b border-tyba-border px-4">
         <GitBranch size={14} className="shrink-0 text-tyba-green" />
         <span className="min-w-0 truncate text-[13px] text-tyba-text">
@@ -1050,15 +1070,17 @@ export function DiffView({
         </div>
       )}
 
-      <DeliverySection
-        session={session}
-        hasUncommittedWork={
-          (diff?.staged_files.length ?? 0) > 0 ||
-          (diff?.unstaged_files.length ?? 0) > 0
-        }
-        onSendToAgent={onSendToAgent}
-        onClose={onClose}
-      />
+      <div className="max-h-[45%] shrink-0 overflow-y-auto">
+        <DeliverySection
+          session={session}
+          hasUncommittedWork={
+            (diff?.staged_files.length ?? 0) > 0 ||
+            (diff?.unstaged_files.length ?? 0) > 0
+          }
+          onSendToAgent={onSendToAgent}
+          onClose={onClose}
+        />
+      </div>
 
       <footer className="flex h-9 shrink-0 items-center gap-3 border-t border-tyba-border px-4 font-mono text-[11px] text-tyba-text-muted">
         <GitBranch size={12} className="shrink-0" />
