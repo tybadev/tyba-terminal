@@ -874,9 +874,9 @@ export function DiffView({
       ref={containerRef}
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-tyba-bg"
     >
-      <header className="flex h-11 shrink-0 items-center gap-3 border-b border-tyba-border px-4">
-        <GitBranch size={14} className="shrink-0 text-tyba-green" />
-        <span className="min-w-0 truncate text-[13px] text-tyba-text">
+      <header className="flex h-8 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
+        <GitBranch size={13} className="shrink-0 text-tyba-green" />
+        <span className="min-w-0 truncate text-[12px] text-tyba-text">
           {session.title}
         </span>
         <span className="truncate font-mono text-[11px] text-tyba-text-muted">
@@ -919,18 +919,18 @@ export function DiffView({
           size="icon"
           aria-label={expanded ? t("diffCollapse") : t("diffExpand")}
           onClick={onToggleExpand}
-          className="size-7"
+          className="size-6"
         >
-          {expanded ? <ArrowsInSimple size={14} /> : <ArrowsOutSimple size={14} />}
+          {expanded ? <ArrowsInSimple size={13} /> : <ArrowsOutSimple size={13} />}
         </Button>
         <Button
           variant="ghost"
           size="icon"
           aria-label={t("diffClose")}
           onClick={onClose}
-          className="size-7"
+          className="size-6"
         >
-          <X size={14} />
+          <X size={13} />
         </Button>
       </header>
 
