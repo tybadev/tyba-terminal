@@ -162,7 +162,7 @@ export function MergeLocalDialog({ session, open, onClose, onMerged }: Props) {
             </div>
 
             {!gate.enabled && (
-              <div className="flex items-start gap-2 rounded-[6px] border border-tyba-yellow/30 bg-tyba-yellow/[.06] p-2.5 text-[12px] text-tyba-yellow">
+              <div className="flex items-start gap-2 rounded-[6px] border border-tyba-amber/30 bg-tyba-amber/[.06] p-2.5 text-[12px] text-tyba-amber">
                 <WarningCircle size={14} className="mt-0.5 shrink-0" />
                 <span>{blockedMessage()}</span>
               </div>

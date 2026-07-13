@@ -39,7 +39,7 @@ interface Props {
 const CHECK_ICON = {
   success: <CheckCircle size={13} className="text-tyba-green" />,
   failure: <XCircle size={13} className="text-tyba-red" />,
-  pending: <CircleNotch size={13} className="animate-spin text-tyba-yellow" />,
+  pending: <CircleNotch size={13} className="animate-spin text-tyba-amber" />,
 };
 
 export function DeliverySection({

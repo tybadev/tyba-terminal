@@ -223,9 +223,12 @@ samp {
   box-shadow: var(--tyba-focus-ring);
 }
 
-/* Divisórias estruturais por luz: o painel projeta sombra sobre o
-   vizinho em vez de desenhar uma linha (funciona igual em BLACKOUT,
-   temas com border claro e temas light) */
+.tyba-divide-b,
+.tyba-divide-t,
+.tyba-divide-r {
+  position: relative;
+  z-index: 10;
+}
 .tyba-divide-b {
   box-shadow: var(--tyba-divider-b);
 }

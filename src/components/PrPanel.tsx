@@ -36,7 +36,7 @@ import { openExternalUrl } from "../lib/clipboard";
 const TONE_DOT_CLASS: Record<CheckTone, string> = {
   success: "bg-tyba-green",
   failure: "bg-tyba-red",
-  pending: "bg-tyba-yellow",
+  pending: "bg-tyba-amber",
 };
 
 export function PrPanel({

@@ -75,7 +75,7 @@ function WorktreeRow({
         {wt.dirty && (
           <span
             title={t("worktreeDirty")}
-            className="flex items-center gap-1 text-[11px] text-tyba-yellow"
+            className="flex items-center gap-1 text-[11px] text-tyba-amber"
           >
             <Circle size={7} weight="fill" />
             {t("worktreeDirty")}

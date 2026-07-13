@@ -117,6 +117,8 @@ def main() -> None:
                    'amber', 'magenta', 'violet', 'blue', 'cyan', 'red'} - tokens.keys()
         if missing:
             sys.exit(f'{scheme_id}: tokens ausentes {sorted(missing)}')
+        if '--tyba-primary:' in body and 'primary' not in tokens:
+            sys.exit(f'{scheme_id}: --tyba-primary precisa ser hex literal para o gerador derivar cursor/seleção')
         ids.append(scheme_id)
         entries.append(rust_scheme(scheme_id, base, palette(tokens, base)))
 

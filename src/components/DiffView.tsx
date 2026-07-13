@@ -67,7 +67,7 @@ const STATUS_LETTER: Record<FileDiff["status"], string> = {
 
 const STATUS_COLOR: Record<FileDiff["status"], string> = {
   added: "text-tyba-green",
-  modified: "text-tyba-yellow",
+  modified: "text-tyba-amber",
   deleted: "text-tyba-red",
   renamed: "text-tyba-violet",
   copied: "text-tyba-violet",
@@ -510,7 +510,7 @@ export function DiffView({
             onClick={() =>
               void gitAction(() => worktreeUnstage(session.id, [file.path]))
             }
-            className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-yellow"
+            className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-amber"
           >
             <Minus size={12} weight="bold" />
           </button>
@@ -799,7 +799,7 @@ export function DiffView({
                   setDraftAnchor(row.key);
                   setDraftText("");
                 }}
-                className="absolute left-0.5 top-0.5 hidden size-4 items-center justify-center rounded-[3px] bg-tyba-green text-tyba-text-inverse group-hover/line:flex"
+                className="absolute left-0.5 top-0.5 hidden size-4 items-center justify-center rounded-[3px] bg-tyba-green text-black group-hover/line:flex"
               >
                 <Plus size={11} weight="bold" />
               </button>
@@ -1086,7 +1086,7 @@ export function DiffView({
         <GitBranch size={12} className="shrink-0" />
         <span>{t("diffAhead", { count: diff?.commits.length ?? 0 })}</span>
         <span className="text-tyba-text-faint">·</span>
-        <span className={stagedCount + unstagedCount > 0 ? "text-tyba-yellow" : ""}>
+        <span className={stagedCount + unstagedCount > 0 ? "text-tyba-amber" : ""}>
           {stagedCount + unstagedCount > 0 ? t("diffDirty") : t("diffClean")}
         </span>
         <div className="flex-1" />

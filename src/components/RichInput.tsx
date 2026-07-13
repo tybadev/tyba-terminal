@@ -298,7 +298,7 @@ export function RichInput({
           title={warnArmed ? t("richInputSensitiveWarn") : t("richInputSend")}
           className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-[4px] transition-colors ${
             warnArmed
-              ? "bg-tyba-yellow/20 text-tyba-yellow hover:bg-tyba-yellow/30"
+              ? "bg-tyba-amber/20 text-tyba-amber hover:bg-tyba-amber/30"
               : "text-tyba-text-muted hover:bg-tyba-text/[.06] hover:text-tyba-text"
           }`}
         >
@@ -308,7 +308,7 @@ export function RichInput({
       {(warnArmed || error || !multiline) && (
         <div className="mt-1 flex items-center gap-2 px-9 text-[11px]">
           {warnArmed && (
-            <span className="text-tyba-yellow">
+            <span className="text-tyba-amber">
               {t("richInputSensitiveWarn")}
             </span>
           )}

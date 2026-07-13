@@ -2262,7 +2262,7 @@ export default function App() {
       <div className="tyba-aurora flex h-screen flex-col text-tyba-text">
         <header
           data-tauri-drag-region
-          className="tyba-glass tyba-divide-b relative z-10 flex h-9 shrink-0 items-center gap-1 pl-20 pr-2.5"
+          className="tyba-glass tyba-divide-b flex h-9 shrink-0 items-center gap-1 pl-20 pr-2.5"
         >
           <IconAction
             label={t("panelToggle")}

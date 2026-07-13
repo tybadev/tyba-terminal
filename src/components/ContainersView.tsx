@@ -304,7 +304,7 @@ export function ContainersView({
                 {confirmingDown === group.project ? (
                   <button
                     onClick={() => composeOp(group.project as string, "down")}
-                    className="rounded-[3px] bg-tyba-amber px-1.5 py-0.5 text-[10px] font-medium text-tyba-text-inverse hover:bg-tyba-amber/90"
+                    className="rounded-[3px] bg-tyba-amber px-1.5 py-0.5 text-[10px] font-medium text-black hover:bg-tyba-amber/90"
                   >
                     {t("composeDownConfirm")}
                   </button>

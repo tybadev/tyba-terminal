@@ -90,7 +90,7 @@ export function TabBar({
   const byId = new Map(sessions.map((s) => [s.id, s]));
 
   return (
-    <div className="tyba-divide-b relative z-10 flex h-8 shrink-0 items-stretch gap-px overflow-x-auto bg-tyba-surface px-1">
+    <div className="tyba-divide-b flex h-8 shrink-0 items-stretch gap-px overflow-x-auto bg-tyba-surface px-1">
       {tabs.map((tab, i) => {
         const isActive = tab.id === activeTab;
         return (
