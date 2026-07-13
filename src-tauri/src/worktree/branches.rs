@@ -1,12 +1,15 @@
 //! Branch explorer: listar branches e analisar o que uma branch tem sobre a
-//! default — read-only, sem checkout (spec: git-panel/branch-explorer).
-//! Fetch é a única op de rede e só roda por clique explícito (princípio #4).
+//! default (spec: git-panel/branch-explorer). Fetch é a única op de rede e
+//! só roda por clique explícito (princípio #4). Checkout (fase 2) escreve no
+//! working tree — recusa árvore suja e exige confirmação na UI.
 
 use std::path::Path;
 
 use serde::Serialize;
 
-use super::{git_in, git_in_net, git_text, run_git};
+use crate::error::AppError;
+
+use super::{git_in, git_in_net, git_in_rw, git_text, run_git};
 
 pub const MAX_BRANCHES: usize = 200;
 
@@ -185,6 +188,36 @@ pub fn fetch(repo: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Troca a branch do working tree. Recusa árvore suja (nada de stash na
+/// automação); branch remota (`origin/x`) vira local com tracking.
+pub fn checkout(repo: &Path, branch: &str, is_remote: bool) -> Result<(), AppError> {
+    let branch = branch.trim();
+    validate_ref_name(branch)
+        .map_err(|detail| AppError::new("checkout.failed").with("detail", detail))?;
+    if super::is_dirty(repo)
+        .map_err(|detail| AppError::new("checkout.failed").with("detail", detail))?
+    {
+        return Err(AppError::new("checkout.dirty"));
+    }
+    let out = {
+        let mut c = git_in_rw(repo);
+        if is_remote {
+            c.args(["checkout", "--track", branch]);
+        } else {
+            c.args(["checkout", branch]);
+        }
+        c.output()
+            .map_err(|e| AppError::new("checkout.failed").with("detail", format!("git checkout: {e}")))?
+    };
+    if !out.status.success() {
+        return Err(AppError::new("checkout.failed").with(
+            "detail",
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +323,76 @@ mod tests {
         assert!(validate_ref_name("a..b").is_err());
         assert!(validate_ref_name("a b").is_err());
         assert!(validate_ref_name("").is_err());
+    }
+
+    fn checkout_repo() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("tyba-checkout-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.email", "t@t.com"]);
+        git(&dir, &["config", "user.name", "t"]);
+        git(&dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.txt"), "base\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "base"]);
+        git(&dir, &["branch", "feat/x"]);
+        dir
+    }
+
+    fn current(dir: &Path) -> String {
+        git_text(
+            {
+                let mut c = git_in(dir);
+                c.args(["symbolic-ref", "--short", "HEAD"]);
+                c
+            },
+            "symbolic-ref",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn checkout_switches_to_a_local_branch() {
+        let repo = checkout_repo();
+        checkout(&repo, "feat/x", false).unwrap();
+        assert_eq!(current(&repo), "feat/x");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn checkout_refuses_a_dirty_tree() {
+        let repo = checkout_repo();
+        std::fs::write(repo.join("a.txt"), "sujo\n").unwrap();
+        let err = checkout(&repo, "feat/x", false).unwrap_err();
+        assert_eq!(err.code, "checkout.dirty", "{err}");
+        assert_eq!(current(&repo), "main");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn checkout_of_a_remote_branch_creates_the_tracking_local() {
+        let repo = checkout_repo();
+        let bare = std::env::temp_dir().join(format!("tyba-checkout-{}.git", uuid::Uuid::new_v4()));
+        git(
+            &repo,
+            &["clone", "--bare", "-q", ".", bare.to_str().unwrap()],
+        );
+        git(&repo, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        git(&repo, &["fetch", "-q", "origin"]);
+        git(&repo, &["branch", "-D", "feat/x"]);
+
+        checkout(&repo, "origin/feat/x", true).unwrap();
+
+        assert_eq!(current(&repo), "feat/x");
+        std::fs::remove_dir_all(&repo).ok();
+        std::fs::remove_dir_all(&bare).ok();
+    }
+
+    #[test]
+    fn checkout_rejects_flag_looking_names() {
+        let repo = checkout_repo();
+        let err = checkout(&repo, "-rf", false).unwrap_err();
+        assert_eq!(err.code, "checkout.failed", "{err}");
+        std::fs::remove_dir_all(&repo).ok();
     }
 }

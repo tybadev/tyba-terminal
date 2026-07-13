@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ArrowSquareIn,
   ArrowsClockwise,
   Check,
   CloudArrowDown,
@@ -14,10 +15,12 @@ import {
 } from "@/components/ui/popover";
 import {
   sessionBranches,
+  sessionCheckout,
   sessionFetch,
   type BranchList,
   type SessionId,
 } from "../lib/ipc";
+import { translateError } from "../lib/errors";
 
 interface Props {
   sessionId: SessionId;
@@ -34,6 +37,9 @@ export function BranchPicker({ sessionId, browsing, label, onBrowse }: Props) {
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [armedCheckout, setArmedCheckout] = useState<string | null>(null);
+  const [checkingOut, setCheckingOut] = useState(false);
+  const armTimerRef = useRef<number | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -47,8 +53,34 @@ export function BranchPicker({ sessionId, browsing, label, onBrowse }: Props) {
   useEffect(() => {
     if (!open) return;
     setQuery("");
+    setArmedCheckout(null);
     load();
   }, [open, load]);
+
+  const armCheckout = useCallback((name: string) => {
+    setArmedCheckout(name);
+    if (armTimerRef.current) window.clearTimeout(armTimerRef.current);
+    armTimerRef.current = window.setTimeout(() => setArmedCheckout(null), 3000);
+  }, []);
+
+  const doCheckout = useCallback(
+    (name: string, isRemote: boolean) => {
+      if (checkingOut) return;
+      setCheckingOut(true);
+      setError(null);
+      sessionCheckout(sessionId, name, isRemote)
+        .then(() => {
+          onBrowse(null);
+          setOpen(false);
+        })
+        .catch((e) => setError(translateError(e, t)))
+        .finally(() => {
+          setCheckingOut(false);
+          setArmedCheckout(null);
+        });
+    },
+    [sessionId, checkingOut, onBrowse, t],
+  );
 
   const remoteFetch = useCallback(() => {
     if (fetching) return;
@@ -164,6 +196,35 @@ export function BranchPicker({ sessionId, browsing, label, onBrowse }: Props) {
                   <span className="max-w-40 shrink-0 truncate text-tyba-text-faint">
                     {b.subject}
                   </span>
+                  {!b.is_current && (
+                    <span
+                      role="button"
+                      title={
+                        armedCheckout === b.name
+                          ? t("branchCheckoutConfirm")
+                          : t("branchCheckout")
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (armedCheckout === b.name) {
+                          doCheckout(b.name, b.is_remote);
+                        } else {
+                          armCheckout(b.name);
+                        }
+                      }}
+                      className={`flex size-5 shrink-0 items-center justify-center rounded-[3px] ${
+                        armedCheckout === b.name
+                          ? "bg-tyba-amber/20 text-tyba-amber"
+                          : "text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-text"
+                      } ${checkingOut ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      {checkingOut && armedCheckout === b.name ? (
+                        <ArrowsClockwise size={11} className="animate-spin" />
+                      ) : (
+                        <ArrowSquareIn size={11} />
+                      )}
+                    </span>
+                  )}
                 </button>
               );
             })}

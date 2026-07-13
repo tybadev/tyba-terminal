@@ -143,6 +143,11 @@ const resources = {
         "Conflitos resolvidos — falta concluir a operação (commit / --continue).",
       conflictResolve: "Resolver com agente",
       conflictResolveSending: "Enviando…",
+      branchCheckout: "Fazer checkout",
+      branchCheckoutConfirm: "Clique de novo pra confirmar o checkout",
+      "error.checkout.dirty":
+        "O working tree tem mudanças não commitadas — commite ou descarte antes de trocar de branch.",
+      "error.checkout.failed": "O checkout falhou: {{detail}}",
       diffUnified: "Unificado",
       diffSplit: "Lado a lado",
       diffBase: "base",
@@ -652,6 +657,11 @@ const resources = {
         "Conflicts resolved — finish the operation (commit / --continue).",
       conflictResolve: "Resolve with agent",
       conflictResolveSending: "Sending…",
+      branchCheckout: "Check out",
+      branchCheckoutConfirm: "Click again to confirm the checkout",
+      "error.checkout.dirty":
+        "The working tree has uncommitted changes — commit or discard them before switching branches.",
+      "error.checkout.failed": "Checkout failed: {{detail}}",
       diffUnified: "Unified",
       diffSplit: "Side by side",
       diffBase: "base",
