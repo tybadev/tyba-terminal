@@ -16,6 +16,9 @@ impl Remote {
         if host == "gitlab.com" || host.starts_with("gitlab.") || host.contains("gitlab") {
             return Some(ForgeKind::GitLab);
         }
+        if self.owner.contains('/') {
+            return Some(ForgeKind::GitLab);
+        }
         None
     }
 
@@ -136,6 +139,14 @@ mod tests {
     fn parses_remote_without_git_suffix() {
         let r = parse("https://github.com/owner/repo").unwrap();
         assert_eq!(r.repo, "repo");
+    }
+
+    #[test]
+    fn subgroups_mark_a_custom_host_as_gitlab() {
+        let r = parse("git@git.acme.com:group/sub/infra/app.git").unwrap();
+        assert_eq!(r.host, "git.acme.com");
+        assert_eq!(r.owner, "group/sub/infra");
+        assert_eq!(r.kind(), Some(ForgeKind::GitLab));
     }
 
     #[test]
