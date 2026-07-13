@@ -659,7 +659,25 @@ mod tests {
         (dir, marker)
     }
 
+    /// Um repo com filtro **só** roda dentro da jaula. Onde o kernel não permite
+    /// user namespace sem privilégio (Ubuntu 24.04 com AppArmor restritivo,
+    /// container sem `--security-opt`), o Tyba **recusa** a operação — é o
+    /// comportamento certo, e é o que este teste não teria como exercitar. A CI
+    /// liga o userns por sysctl justamente pra não pular a jaula em silêncio.
+    #[cfg(target_os = "linux")]
+    fn cage_available() -> bool {
+        crate::sandbox::bwrap::userns_usable()
+    }
+    #[cfg(not(target_os = "linux"))]
+    fn cage_available() -> bool {
+        true
+    }
+
     fn assert_filter_never_ran(tag: &str, source: AttrSource) {
+        if !cage_available() {
+            eprintln!("SKIP {tag}: kernel sem user namespace — a op é recusada por desenho");
+            return;
+        }
         let (dir, marker) = hostile_repo(tag, source);
 
         let status = git_in(&dir)

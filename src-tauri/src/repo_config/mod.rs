@@ -104,7 +104,34 @@ pub fn agent_env(
     // binário de agente existe. O PATH do shell de login é o que o usuário
     // realmente tem (ver shell_path).
     env.insert("PATH".to_string(), crate::shell_path::agent_path());
+    if let Some(dir) = developer_dir(user_env) {
+        env.insert("DEVELOPER_DIR".to_string(), dir);
+    }
     env
+}
+
+/// No macOS `/usr/bin/git` é um **shim**: sem `DEVELOPER_DIR` ele chama
+/// `xcodebuild` pra descobrir onde mora o git de verdade. Dentro do sandbox esse
+/// caminho morre (o shim não alcança os serviços do Xcode) e o agente fica sem
+/// git — só numa máquina com Xcode completo, o que faz o bug passar batido em
+/// quem só tem as Command Line Tools. Resolvemos o dir **fora** da jaula e
+/// entregamos pronto, então o shim nunca precisa perguntar.
+fn developer_dir(user_env: &HashMap<String, String>) -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    if let Some(dir) = user_env.get("DEVELOPER_DIR") {
+        return Some(dir.clone());
+    }
+    let out = std::process::Command::new("/usr/bin/xcode-select")
+        .arg("-p")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!dir.is_empty() && std::path::Path::new(&dir).is_dir()).then_some(dir)
 }
 
 #[cfg(test)]
@@ -209,8 +236,16 @@ mod tests {
     fn agent_env_none_config_only_baseline() {
         let user = env(&[("PATH", "/bin"), ("DATABASE_URL", "postgres://")]);
         let out = agent_env(None, &user);
-        assert_eq!(out.len(), 1);
         assert!(out.contains_key("PATH"));
+        // O que importa é que NADA do env do usuário vaze fora da baseline —
+        // contar chaves era um atalho que quebra sempre que a baseline cresce.
+        assert!(!out.contains_key("DATABASE_URL"));
+        for key in out.keys() {
+            assert!(
+                AGENT_ENV_BASELINE.contains(&key.as_str()) || key == "DEVELOPER_DIR",
+                "chave fora da baseline vazou: {key}"
+            );
+        }
     }
 
     #[test]
@@ -240,9 +275,10 @@ mod tests {
         let out = agent_env(Some(&config), &user);
         assert_eq!(
             out.get("PATH").map(String::as_str),
-            Some(crate::shell_path::agent_path().as_str())
+            Some(crate::shell_path::agent_path().as_str()),
+            "o PATH do core sempre vence o do repo — senão o repo escolhe o binário do agente"
         );
-        assert_eq!(out.len(), 1);
+        assert!(!out.values().any(|v| v == "/repo/injetado"));
     }
 
     #[test]

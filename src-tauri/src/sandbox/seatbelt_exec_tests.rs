@@ -136,6 +136,14 @@ fn run_in_sandbox(spec: &SandboxSpec, cwd: &Path, script: &str) -> Output {
         .env_clear()
         .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
         .env("HOME", &spec.home);
+    // Mesmo env que o agente recebe: sem DEVELOPER_DIR o shim do git em
+    // /usr/bin chama xcodebuild e morre dentro da jaula (numa máquina com Xcode
+    // completo). O core resolve isso fora do sandbox — o teste precisa espelhar.
+    if let Some(dir) =
+        crate::repo_config::agent_env(None, &std::env::vars().collect()).get("DEVELOPER_DIR")
+    {
+        cmd.env("DEVELOPER_DIR", dir);
+    }
     if let Some(tmpdir) = &spec.tmpdir {
         cmd.env("TMPDIR", tmpdir);
     }

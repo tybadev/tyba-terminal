@@ -15,9 +15,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      # A gitleaks-action exige licença paga em repo de ORGANIZAÇÃO (é grátis só
+      # em repo pessoal) — o gate morria antes de varrer qualquer coisa. O binário
+      # é o mesmo e não pede licença.
+      - name: gitleaks (histórico completo)
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest \
+            detect --source=/repo --no-banner --redact --exit-code 1
 
   frontend:
     runs-on: ubuntu-latest
@@ -44,6 +49,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
             librsvg2-dev patchelf libgtk-3-dev bubblewrap python3
+      # ubuntu-latest é 24.04, que bloqueia user namespace sem privilégio via
+      # AppArmor. Sem isto o bwrap não sobe e os testes do sandbox Linux passariam
+      # SKIPADOS — CI verde sem ter exercitado a jaula é pior que CI vermelha.
+      - name: Habilitar user namespaces sem privilégio (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
