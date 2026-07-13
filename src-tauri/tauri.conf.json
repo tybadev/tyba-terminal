@@ -35,6 +35,21 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Seu ambiente, tudo conectado.",
+    "longDescription": "Terminal opensource orientado a agentes de IA: orquestra múltiplas sessões de agentes em git worktrees isolados, com inbox de aprovações, review de diff local e sandbox real do sistema operacional.",
+    "licenseFile": "../LICENSE",
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "linux": {
+      "deb": {
+        "depends": ["bubblewrap", "libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      },
+      "rpm": {
+        "depends": ["bubblewrap", "webkit2gtk4.1", "gtk3"]
+      }
+    }
   }
 }

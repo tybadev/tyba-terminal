@@ -6,6 +6,19 @@ on:
   pull_request:
 
 jobs:
+  # O repo nasceu para ser opensource: quando abrir, o histórico inteiro vai
+  # junto. Secret commitado hoje é secret vazado no dia do lançamento — o gate
+  # varre o histórico completo, não só o diff.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
   frontend:
     runs-on: ubuntu-latest
     steps:

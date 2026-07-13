@@ -1,0 +1,22 @@
+[extend]
+useDefault = true
+
+# Os testes de redação precisam de tokens com a forma real pra provar que o
+# redator os pega — e o gitleaks, corretamente, os encontra. São valores
+# sintéticos (sequências de abcdef/0123456789; AKIAIOSFODNN7EXAMPLE é o exemplo
+# da própria doc da AWS). Allowlist por VALOR, não por arquivo: um segredo de
+# verdade colado nesses mesmos arquivos continua sendo pego.
+[[rules]]
+id = "gitleaks-allowlist-placeholder"
+description = "placeholder — as regras vêm do default"
+regex = '''$a'''
+
+[allowlist]
+description = "fixtures sintéticas dos testes de redação"
+regexes = [
+  '''gh[pous]_(abcdefghijklmnopqrstuvwxyz|ABCDEFGHIJKLMNOPQRSTUVWXYZ)0123456789''',
+  '''glpat-abcdefghij1234567890xy''',
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''sk-abcdef1234567890ABCDEFghijkl''',
+  '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0''',
+]
