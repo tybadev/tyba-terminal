@@ -1,7 +1,10 @@
 import type { SessionGitStatus } from "./ipc";
 
-export function shouldShowGitIcon(
+export type GitIconTone = "dirty" | "clean";
+
+export function gitIconTone(
   status: SessionGitStatus | null | undefined,
-): boolean {
-  return status != null && status.dirty === true;
+): GitIconTone | null {
+  if (status == null) return null;
+  return status.dirty ? "dirty" : "clean";
 }

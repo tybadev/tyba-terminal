@@ -154,7 +154,7 @@ import {
   SPINNER_INTERVAL_MS,
   windowTitle,
 } from "./lib/windowTitle";
-import { shouldShowGitIcon } from "./lib/headerGit";
+import { gitIconTone } from "./lib/headerGit";
 import {
   buildAgentSessionOpts,
   type AgentRunnerId,
@@ -754,7 +754,7 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [activeId]);
-  const showGitIcon = shouldShowGitIcon(activeGitStatus);
+  const gitTone = gitIconTone(activeGitStatus);
 
   const activeSession = activeId ? sessionById.get(activeId) : undefined;
   const activeCommand = activeId ? sessionCommands[activeId] : undefined;
@@ -2363,7 +2363,7 @@ export default function App() {
             </Tooltip>
           )}
 
-          {showGitIcon && activeId && (
+          {gitTone && activeId && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -2371,9 +2371,16 @@ export default function App() {
                   size="icon"
                   aria-label={t("gitStatusIconLabel")}
                   onClick={() => void openDiffTab(activeId).catch(() => {})}
-                  className="size-6 rounded-[4px] text-tyba-amber hover:text-tyba-amber/80"
+                  className={`size-6 rounded-[4px] ${
+                    gitTone === "dirty"
+                      ? "text-tyba-amber hover:text-tyba-amber/80"
+                      : "text-tyba-text-faint hover:text-tyba-text"
+                  }`}
                 >
-                  <GitBranch size={16} weight="fill" />
+                  <GitBranch
+                    size={16}
+                    weight={gitTone === "dirty" ? "fill" : "regular"}
+                  />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">
