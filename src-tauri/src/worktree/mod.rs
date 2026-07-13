@@ -6,6 +6,7 @@
 //! - three-dot semantics: diff contra `base_ref` salvo na criação
 //! - `git stash` NUNCA na automação (compartilhado entre worktrees)
 
+pub mod branches;
 pub mod diff;
 pub mod ops;
 
