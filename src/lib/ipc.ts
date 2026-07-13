@@ -83,6 +83,7 @@ export type FileStatus =
   | "renamed"
   | "copied"
   | "type_changed"
+  | "unmerged"
   | "other";
 
 export interface FileDiff {
