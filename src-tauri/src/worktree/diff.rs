@@ -327,9 +327,7 @@ fn diff_files(worktree: &Path, range_args: &[&str]) -> Result<Vec<FileDiff>, Str
 
     Ok(rows
         .into_iter()
-        .filter(|(status, _, path)| {
-            !unmerged.contains(path) || *status == FileStatus::Unmerged
-        })
+        .filter(|(status, _, path)| !unmerged.contains(path) || *status == FileStatus::Unmerged)
         .map(|(status, old_path, path)| {
             let (insertions, deletions) = counts.get(&path).copied().unwrap_or((Some(0), Some(0)));
             FileDiff {

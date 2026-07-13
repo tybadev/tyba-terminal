@@ -206,8 +206,9 @@ pub fn checkout(repo: &Path, branch: &str, is_remote: bool) -> Result<(), AppErr
         } else {
             c.args(["checkout", branch]);
         }
-        c.output()
-            .map_err(|e| AppError::new("checkout.failed").with("detail", format!("git checkout: {e}")))?
+        c.output().map_err(|e| {
+            AppError::new("checkout.failed").with("detail", format!("git checkout: {e}"))
+        })?
     };
     if !out.status.success() {
         return Err(AppError::new("checkout.failed").with(
