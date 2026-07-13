@@ -143,6 +143,13 @@ const resources = {
         "Conflitos resolvidos — falta concluir a operação (commit / --continue).",
       conflictResolve: "Resolver com agente",
       conflictResolveSending: "Enviando…",
+      conflictKeepOurs: "manter {{branch}}",
+      conflictTakeTheirs: "aceitar {{branch}}",
+      conflictOpenEditor: "Abrir no editor",
+      conflictMarkResolved: "Marcar resolvido (git add)",
+      "error.conflict.not_unmerged":
+        "{{path}} não está em conflito — a lista deve ter atualizado.",
+      "error.conflict.failed": "A ação no conflito falhou: {{detail}}",
       commitSuggest: "Sugerir mensagem com o agente",
       "error.suggest.no_staged":
         "Nada staged — stage o que entra no commit antes de pedir a sugestão.",
@@ -663,6 +670,13 @@ const resources = {
         "Conflicts resolved — finish the operation (commit / --continue).",
       conflictResolve: "Resolve with agent",
       conflictResolveSending: "Sending…",
+      conflictKeepOurs: "keep {{branch}}",
+      conflictTakeTheirs: "take {{branch}}",
+      conflictOpenEditor: "Open in editor",
+      conflictMarkResolved: "Mark resolved (git add)",
+      "error.conflict.not_unmerged":
+        "{{path}} is not in conflict — the list may have refreshed.",
+      "error.conflict.failed": "The conflict action failed: {{detail}}",
       commitSuggest: "Suggest a message with the agent",
       "error.suggest.no_staged":
         "Nothing staged — stage what goes into the commit before asking for a suggestion.",

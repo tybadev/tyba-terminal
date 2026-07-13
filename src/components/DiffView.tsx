@@ -8,6 +8,7 @@ import {
   CaretDown,
   CaretRight,
   ChatCircleText,
+  Check,
   CircleNotch,
   GitBranch,
   GitCommit,
@@ -29,6 +30,8 @@ import {
   openWorktreeFile,
   sessionBranchDiff,
   sessionBranchHunks,
+  sessionConflictChoose,
+  sessionConflictMarkResolved,
   sessionConflicts,
   sessionDiff,
   sessionDiffHunks,
@@ -219,6 +222,7 @@ export function DiffView({
   const [browseBranch, setBrowseBranch] = useState<string | null>(null);
   const [conflicts, setConflicts] = useState<ConflictState | null>(null);
   const [resolvingConflicts, setResolvingConflicts] = useState(false);
+  const [conflictBusy, setConflictBusy] = useState<string | null>(null);
   const [suggesting, setSuggesting] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1138,9 +1142,95 @@ export function DiffView({
               )}
             </p>
             {conflicts.files.length > 0 ? (
-              <p className="break-words pt-0.5 font-mono text-[11px] text-tyba-red/90">
-                {conflicts.files.map((f) => f.path).join("  ")}
-              </p>
+              conflicts.files.map((f) => {
+                const busyRow = conflictBusy === f.path;
+                const act = (run: () => Promise<void>) => {
+                  if (conflictBusy) return;
+                  setConflictBusy(f.path);
+                  setActionError(null);
+                  run()
+                    .then(() => refresh())
+                    .catch((e) => setActionError(translateError(e, t)))
+                    .finally(() => setConflictBusy(null));
+                };
+                const chip =
+                  "shrink-0 rounded-[3px] border border-tyba-border px-1.5 py-0.5 text-[10px] text-tyba-text-muted hover:bg-tyba-text/[.06] hover:text-tyba-text disabled:opacity-50";
+                return (
+                  <div key={f.path} className="flex items-center gap-1.5 pt-1">
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-tyba-red/90">
+                      {f.path}
+                      <span className="pl-1.5 text-[9px] text-tyba-text-faint">
+                        {f.kind}
+                      </span>
+                    </span>
+                    {busyRow ? (
+                      <CircleNotch
+                        size={12}
+                        className="shrink-0 animate-spin text-tyba-text-faint"
+                      />
+                    ) : (
+                      <>
+                        <button
+                          disabled={conflictBusy !== null}
+                          onClick={() =>
+                            act(() =>
+                              sessionConflictChoose(session.id, f.path, "ours"),
+                            )
+                          }
+                          className={chip}
+                        >
+                          {t("conflictKeepOurs", {
+                            branch: conflicts.ours ?? "ours",
+                          })}
+                        </button>
+                        <button
+                          disabled={conflictBusy !== null}
+                          onClick={() =>
+                            act(() =>
+                              sessionConflictChoose(
+                                session.id,
+                                f.path,
+                                "theirs",
+                              ),
+                            )
+                          }
+                          className={chip}
+                        >
+                          {t("conflictTakeTheirs", {
+                            branch: conflicts.theirs ?? "theirs",
+                          })}
+                        </button>
+                        <button
+                          title={t("conflictOpenEditor")}
+                          disabled={conflictBusy !== null}
+                          onClick={() =>
+                            void openWorktreeFile(
+                              session.id,
+                              f.path,
+                              editor || undefined,
+                            ).catch((e) => setActionError(String(e)))
+                          }
+                          className={chip}
+                        >
+                          <ArrowSquareOut size={11} />
+                        </button>
+                        <button
+                          title={t("conflictMarkResolved")}
+                          disabled={conflictBusy !== null}
+                          onClick={() =>
+                            act(() =>
+                              sessionConflictMarkResolved(session.id, f.path),
+                            )
+                          }
+                          className={chip}
+                        >
+                          <Check size={11} />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                );
+              })
             ) : (
               <p className="pt-0.5 text-[11px] text-tyba-text-faint">
                 {t("conflictAllResolved")}

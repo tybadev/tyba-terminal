@@ -695,6 +695,27 @@ async fn session_conflicts(
 }
 
 #[tauri::command]
+async fn session_conflict_choose(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    side: String,
+) -> Result<(), AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    worktree::conflicts::choose_side(&ctx.path, &path, &side)
+}
+
+#[tauri::command]
+async fn session_conflict_mark_resolved(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<(), AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    worktree::conflicts::mark_resolved(&ctx.path, &path)
+}
+
+#[tauri::command]
 async fn session_branches(
     state: State<'_, AppState>,
     id: SessionId,
@@ -1774,6 +1795,8 @@ pub fn run() {
             session_diff,
             session_diff_hunks,
             session_conflicts,
+            session_conflict_choose,
+            session_conflict_mark_resolved,
             session_branches,
             session_fetch,
             session_checkout,
