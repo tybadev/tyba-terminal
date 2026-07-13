@@ -375,6 +375,61 @@ pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, Stri
     })
 }
 
+/// Diff read-only de uma branch contra a base (modo explorar do painel):
+/// só o committed do range — staged/unstaged são do working tree, não da
+/// branch olhada.
+pub fn branch_diff(worktree: &Path, base_ref: &str, branch: &str) -> Result<SessionDiff, String> {
+    let range = format!("{base_ref}..{branch}");
+    let (log, files) = std::thread::scope(|s| {
+        let log = s.spawn(|| {
+            run_git(
+                {
+                    let mut c = git_in(worktree);
+                    c.args(["log", "-z", "--format=%H%x1f%s%x1f%aI", &range]);
+                    c
+                },
+                "git log",
+            )
+        });
+        let files = s.spawn(|| diff_files(worktree, &[&range]));
+        (
+            log.join().expect("log thread"),
+            files.join().expect("files thread"),
+        )
+    });
+
+    Ok(SessionDiff {
+        root: worktree.to_string_lossy().into_owned(),
+        base_ref: base_ref.to_string(),
+        commits: parse_log_z(&log?),
+        files: files?,
+        staged_files: Vec::new(),
+        unstaged_files: Vec::new(),
+    })
+}
+
+pub fn range_file_hunks(
+    worktree: &Path,
+    range: &str,
+    path: &str,
+    old_path: Option<&str>,
+) -> Result<FileHunks, String> {
+    let out = run_git(
+        {
+            let mut c = git_in(worktree);
+            c.args(["diff", "--no-ext-diff", "--no-color", "-M"]);
+            c.arg(range);
+            c.arg("--").arg(format!(":(literal){path}"));
+            if let Some(old) = old_path {
+                c.arg(format!(":(literal){old}"));
+            }
+            c
+        },
+        "git diff",
+    )?;
+    Ok(parse_unified_hunks(&String::from_utf8_lossy(&out)))
+}
+
 fn head_is_unborn(worktree: &Path) -> bool {
     run_git(
         {

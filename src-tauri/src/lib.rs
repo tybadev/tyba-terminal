@@ -676,6 +676,54 @@ async fn session_diff_hunks(
     worktree::diff::file_hunks(&ctx.path, &ctx.base_ref, scope, &path, old_path.as_deref())
 }
 
+#[tauri::command]
+async fn session_branches(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<worktree::branches::BranchList, String> {
+    let ctx = session_repo_context(&state, id)?;
+    worktree::branches::list(&ctx.path)
+}
+
+#[tauri::command]
+async fn session_fetch(state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
+    let ctx = session_repo_context(&state, id)?;
+    worktree::branches::fetch(&ctx.path)
+}
+
+#[tauri::command]
+async fn session_branch_diff(
+    state: State<'_, AppState>,
+    id: SessionId,
+    branch: String,
+) -> Result<worktree::diff::SessionDiff, String> {
+    worktree::branches::validate_ref_name(&branch)?;
+    let ctx = session_repo_context(&state, id)?;
+    let base = worktree::branches::default_base(&ctx.path);
+    let merge_base = worktree::branches::merge_base(&ctx.path, &base, &branch)?;
+    worktree::diff::branch_diff(&ctx.path, &merge_base, &branch)
+}
+
+#[tauri::command]
+async fn session_branch_hunks(
+    state: State<'_, AppState>,
+    id: SessionId,
+    branch: String,
+    path: String,
+    old_path: Option<String>,
+) -> Result<worktree::diff::FileHunks, String> {
+    worktree::branches::validate_ref_name(&branch)?;
+    let ctx = session_repo_context(&state, id)?;
+    let base = worktree::branches::default_base(&ctx.path);
+    let merge_base = worktree::branches::merge_base(&ctx.path, &base, &branch)?;
+    worktree::diff::range_file_hunks(
+        &ctx.path,
+        &format!("{merge_base}..{branch}"),
+        &path,
+        old_path.as_deref(),
+    )
+}
+
 fn known_worktree_paths(
     sessions: &SharedSessionManager,
 ) -> std::collections::HashSet<std::path::PathBuf> {
@@ -1686,6 +1734,10 @@ pub fn run() {
             worktree_gc,
             session_diff,
             session_diff_hunks,
+            session_branches,
+            session_fetch,
+            session_branch_diff,
+            session_branch_hunks,
             open_diff_tab,
             close_side_view,
             set_side_view_expanded,

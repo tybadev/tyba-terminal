@@ -24,6 +24,8 @@ import { Button } from "@/components/ui/button";
 import {
   onRepoChanged,
   openWorktreeFile,
+  sessionBranchDiff,
+  sessionBranchHunks,
   sessionDiff,
   sessionDiffHunks,
   worktreeCommit,
@@ -54,6 +56,7 @@ import {
   type SectionOpenState,
 } from "../lib/diff";
 import { highlightBlock, type TokenSpan } from "../lib/highlight";
+import { BranchPicker } from "./BranchPicker";
 import { DeliverySection } from "./DeliverySection";
 
 const STATUS_LETTER: Record<FileDiff["status"], string> = {
@@ -196,6 +199,7 @@ export function DiffView({
   const [actionError, setActionError] = useState<string | null>(null);
   const [pushedInfo, setPushedInfo] = useState<string | null>(null);
   const [discardArm, setDiscardArm] = useState<string | null>(null);
+  const [browseBranch, setBrowseBranch] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestedRef = useRef(new Set<string>());
@@ -250,7 +254,10 @@ export function DiffView({
     work: string;
   } | null>(null);
   const refresh = useCallback(() => {
-    sessionDiff(session.id)
+    const load = browseBranch
+      ? sessionBranchDiff(session.id, browseBranch)
+      : sessionDiff(session.id);
+    load
       .then((d) => {
         const head = d.commits[0]?.sha ?? "";
         const work = JSON.stringify([d.staged_files, d.unstaged_files]);
@@ -267,12 +274,27 @@ export function DiffView({
           clearCaches((key) => keyScope(key) === "committed");
         }
         lastSnapRef.current = { root: d.root, head, work };
-        cacheDiff(session.id, d);
+        if (!browseBranch) cacheDiff(session.id, d);
         setDiff(d);
         setLoadError(null);
       })
       .catch((e) => setLoadError(String(e)));
-  }, [session.id, clearCaches]);
+  }, [session.id, browseBranch, clearCaches]);
+
+  // Entrar/sair do modo explorar troca a fonte do diff inteira — nada do
+  // estado acumulado sobrevive à troca.
+  const browseTo = useCallback(
+    (branch: string | null) => {
+      setBrowseBranch(branch);
+      clearCaches(() => false);
+      setCollapsedByKey({});
+      setOpenSections({});
+      lastSnapRef.current = null;
+      setDiff(branch === null ? (diffCache.get(session.id) ?? null) : null);
+      setLoadError(null);
+    },
+    [clearCaches, session.id],
+  );
 
   useEffect(() => {
     refresh();
@@ -349,7 +371,10 @@ export function DiffView({
       const key = fileKeyOf(scope, file.path);
       if (requestedRef.current.has(key)) return;
       requestedRef.current.add(key);
-      void sessionDiffHunks(session.id, file.path, scope, file.old_path)
+      const load = browseBranch
+        ? sessionBranchHunks(session.id, browseBranch, file.path, file.old_path)
+        : sessionDiffHunks(session.id, file.path, scope, file.old_path);
+      void load
         .then((hunks) => {
           setHunksByKey((prev) => ({ ...prev, [key]: hunks }));
           setHunkErrors((prev) => {
@@ -362,7 +387,7 @@ export function DiffView({
           setHunkErrors((prev) => ({ ...prev, [key]: String(e) }));
         });
     },
-    [session.id],
+    [session.id, browseBranch],
   );
 
   const retryHunks = useCallback(
@@ -1019,11 +1044,14 @@ export function DiffView({
         <span className="truncate font-mono text-[11px] text-tyba-text-muted">
           {branch}
         </span>
-        <span className="flex shrink-0 items-center gap-1 rounded-full border border-tyba-border px-2 py-0.5 font-mono text-[10px] text-tyba-text-faint">
-          {t("diffBase")} {baseShort}
-          <span className="text-tyba-text-faint">‥</span>
-          HEAD
-        </span>
+        <BranchPicker
+          sessionId={session.id}
+          browsing={browseBranch}
+          label={
+            browseBranch ?? `${t("diffBase")} ${baseShort} ‥ HEAD`
+          }
+          onBrowse={browseTo}
+        />
         <div className="flex-1" />
         <div className="flex items-center gap-0.5 rounded-[5px] border border-tyba-border p-0.5">
           <button
@@ -1217,6 +1245,7 @@ export function DiffView({
         </div>
       )}
 
+      {browseBranch === null && (
       <div className="max-h-[45%] shrink-0 overflow-y-auto">
         <DeliverySection
           session={session}
@@ -1230,13 +1259,22 @@ export function DiffView({
           onClose={onClose}
         />
       </div>
+      )}
 
       <footer className="flex h-9 shrink-0 items-center gap-3 border-t border-tyba-border px-4 font-mono text-[11px] text-tyba-text-muted">
         <GitBranch size={12} className="shrink-0" />
-        <span>{t("diffAhead", { count: diff?.commits.length ?? 0 })}</span>
+        <span>
+          {browseBranch
+            ? t("branchExploring", { branch: browseBranch })
+            : t("diffAhead", { count: diff?.commits.length ?? 0 })}
+        </span>
         <span className="text-tyba-text-faint">·</span>
         <span className={stagedCount + unstagedCount > 0 ? "text-tyba-amber" : ""}>
-          {stagedCount + unstagedCount > 0 ? t("diffDirty") : t("diffClean")}
+          {browseBranch
+            ? t("diffAhead", { count: diff?.commits.length ?? 0 })
+            : stagedCount + unstagedCount > 0
+              ? t("diffDirty")
+              : t("diffClean")}
         </span>
         <div className="flex-1" />
         {actionError && (
@@ -1266,7 +1304,7 @@ export function DiffView({
               : t("diffCommentsSend", { count: commentList.length })}
           </Button>
         )}
-        {(diff?.commits.length ?? 0) > 0 && (
+        {browseBranch === null && (diff?.commits.length ?? 0) > 0 && (
           <Button
             variant="outline"
             size="sm"

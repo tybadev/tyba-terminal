@@ -178,6 +178,41 @@ export const sessionDiffHunks = (
     oldPath: oldPath ?? null,
   });
 
+export interface BranchInfo {
+  name: string;
+  is_current: boolean;
+  is_remote: boolean;
+  subject: string;
+  committed_at: string;
+}
+
+export interface BranchList {
+  branches: BranchInfo[];
+  truncated: number;
+}
+
+export const sessionBranches = (id: SessionId) =>
+  invoke<BranchList>("session_branches", { id });
+
+export const sessionFetch = (id: SessionId) =>
+  invoke<void>("session_fetch", { id });
+
+export const sessionBranchDiff = (id: SessionId, branch: string) =>
+  invoke<SessionDiff>("session_branch_diff", { id, branch });
+
+export const sessionBranchHunks = (
+  id: SessionId,
+  branch: string,
+  path: string,
+  oldPath?: string | null,
+) =>
+  invoke<FileHunks>("session_branch_hunks", {
+    id,
+    branch,
+    path,
+    oldPath: oldPath ?? null,
+  });
+
 export type MergeStrategy = "squash" | "merge_commit";
 
 export interface MergePreview {
