@@ -2954,6 +2954,9 @@ export default function App() {
                           key={sideTarget.id}
                           session={sideTarget}
                           editor={editorPref}
+                          suggestAgent={
+                            reviewAgent.trim() === "codex" ? "codex" : "claude"
+                          }
                           expanded={sideExpanded}
                           onToggleExpand={() =>
                             void setSideViewExpanded(

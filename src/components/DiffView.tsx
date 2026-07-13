@@ -8,9 +8,11 @@ import {
   CaretDown,
   CaretRight,
   ChatCircleText,
+  CircleNotch,
   GitBranch,
   GitCommit,
   Minus,
+  Sparkle,
   Warning,
   PaperPlaneTilt,
   Plus,
@@ -30,6 +32,7 @@ import {
   sessionConflicts,
   sessionDiff,
   sessionDiffHunks,
+  suggestCommitMessage,
   worktreeCommit,
   worktreeDiscard,
   worktreePush,
@@ -58,6 +61,7 @@ import {
   type Row,
   type SectionOpenState,
 } from "../lib/diff";
+import { translateError } from "../lib/errors";
 import { highlightBlock, type TokenSpan } from "../lib/highlight";
 import { BranchPicker } from "./BranchPicker";
 import { DeliverySection } from "./DeliverySection";
@@ -143,6 +147,7 @@ const GUTTER_SIGN: Record<string, { sign: string; cls: string }> = {
 interface Props {
   session: Session;
   editor: string;
+  suggestAgent: string;
   expanded: boolean;
   onToggleExpand: () => void;
   onClose: () => void;
@@ -177,6 +182,7 @@ function cacheDiff(id: string, d: SessionDiff) {
 export function DiffView({
   session,
   editor,
+  suggestAgent,
   expanded,
   onToggleExpand,
   onClose,
@@ -213,6 +219,7 @@ export function DiffView({
   const [browseBranch, setBrowseBranch] = useState<string | null>(null);
   const [conflicts, setConflicts] = useState<ConflictState | null>(null);
   const [resolvingConflicts, setResolvingConflicts] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestedRef = useRef(new Set<string>());
@@ -1289,6 +1296,28 @@ export function DiffView({
             }
             className="h-7 min-w-0 flex-1 rounded-[4px] border border-tyba-border bg-black/20 px-2 font-mono text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-green/50"
           />
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={t("commitSuggest")}
+            title={t("commitSuggest")}
+            disabled={stagedCount === 0 || suggesting || busy !== null}
+            onClick={() => {
+              setSuggesting(true);
+              setActionError(null);
+              suggestCommitMessage(session.id, suggestAgent)
+                .then(setCommitMsg)
+                .catch((e) => setActionError(translateError(e, t)))
+                .finally(() => setSuggesting(false));
+            }}
+            className="size-7 shrink-0"
+          >
+            {suggesting ? (
+              <CircleNotch size={13} className="animate-spin" />
+            ) : (
+              <Sparkle size={13} />
+            )}
+          </Button>
           <Button
             size="sm"
             className="h-7 gap-1.5 px-2.5 text-[11px]"
