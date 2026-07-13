@@ -21,7 +21,7 @@ const HOOKS_PATH: &str = "core.hooksPath=NUL";
 #[cfg(not(windows))]
 const HOOKS_PATH: &str = "core.hooksPath=/dev/null";
 
-pub fn git_in(path: &Path) -> Command {
+fn git_base(path: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(path);
     cmd.args([
@@ -37,6 +37,11 @@ pub fn git_in(path: &Path) -> Command {
         HOOKS_PATH,
         "--no-optional-locks",
     ]);
+    cmd
+}
+
+fn caged(path: &Path, profile: crate::sandbox::git::GitProfile, extra: &[PathBuf]) -> Command {
+    let mut cmd = crate::sandbox::git::wrap(git_base(path), profile, path, extra);
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env_remove("GIT_DIR")
@@ -51,6 +56,32 @@ pub fn git_in(path: &Path) -> Command {
         .env_remove("GIT_CONFIG_COUNT")
         .stdin(Stdio::null());
     cmd
+}
+
+/// Ops read-only. Jaula deny-all-write: um filtro de conteúdo hostil roda mas
+/// não escreve nada — a RCE do #42 fica inofensiva. Default: um writer que
+/// esquecer de usar `git_in_rw` cai aqui e quebra alto no teste, nunca vira furo.
+pub fn git_in(path: &Path) -> Command {
+    caged(path, crate::sandbox::git::GitProfile::ReadOnly, &[])
+}
+
+/// Ops que escrevem no repo (`add`, `commit`, `merge`, `checkout`, `branch`,
+/// `worktree`, `reset`). A jaula libera escrita só no repo + worktrees geridos;
+/// o `clean`/`smudge` do filtro fica preso ali, sem rede nem escrita fora.
+pub fn git_in_rw(path: &Path) -> Command {
+    caged(path, crate::sandbox::git::GitProfile::Write, &[])
+}
+
+/// Como `git_in_rw`, mas libera escrita também em `extra` — usado pelo
+/// `worktree add`/`remove`, que escrevem no diretório gerido, fora do repo.
+pub fn git_in_rw_within(path: &Path, extra: &[PathBuf]) -> Command {
+    caged(path, crate::sandbox::git::GitProfile::Write, extra)
+}
+
+/// Ops de rede (`push`, `fetch`, `ls-remote`). Não rodam filtro de conteúdo do
+/// worktree — não são o vetor — e precisam de rede + credencial.
+pub fn git_in_net(path: &Path) -> Command {
+    caged(path, crate::sandbox::git::GitProfile::Network, &[])
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,7 +219,7 @@ fn create_in(managed: &Path, repo_root: &Path, title: &str) -> Result<Worktree, 
     std::fs::create_dir_all(path.parent().unwrap_or(managed))
         .map_err(|e| format!("mkdir worktrees: {e}"))?;
 
-    let mut cmd = git_in(&repo_root);
+    let mut cmd = git_in_rw_within(&repo_root, &[managed.to_path_buf()]);
     cmd.arg("worktree")
         .arg("add")
         .arg(&path)
@@ -299,7 +330,11 @@ fn remove_managed_by(
         }
     }
 
-    let mut cmd = git_in(&main);
+    let mut removable = vec![worktree.to_path_buf()];
+    if let Some(parent) = worktree.parent() {
+        removable.push(parent.to_path_buf());
+    }
+    let mut cmd = git_in_rw_within(&main, &removable);
     cmd.arg("worktree").arg("remove");
     if force {
         cmd.arg("--force");
@@ -308,7 +343,7 @@ fn remove_managed_by(
     run_git(cmd, "git worktree remove")?;
 
     if delete_branch && branch != "HEAD" {
-        let mut cmd = git_in(&main);
+        let mut cmd = git_in_rw(&main);
         cmd.arg("branch")
             .arg(if force { "-D" } else { "-d" })
             .arg(&branch);
@@ -616,29 +651,26 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    #[ignore = "git_in nao impede filtro definido na config do repo; exige sandbox do processo git (ver SECURITY.md)"]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn git_in_neutralizes_worktree_root_attributes() {
         assert_filter_never_ran("root", AttrSource::WorktreeRoot);
     }
 
     #[test]
-    #[cfg(unix)]
-    #[ignore = "git_in nao impede filtro definido na config do repo; exige sandbox do processo git (ver SECURITY.md)"]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn git_in_neutralizes_worktree_subdir_attributes() {
         assert_filter_never_ran("subdir", AttrSource::WorktreeSubdir);
     }
 
     #[test]
-    #[cfg(unix)]
-    #[ignore = "git_in nao impede filtro definido na config do repo; exige sandbox do processo git (ver SECURITY.md)"]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn git_in_neutralizes_git_dir_info_attributes() {
         assert_filter_never_ran("info", AttrSource::GitDirInfo);
     }
 }
 
 // TODO(leva B): diff module: SessionDiff { commits, files, uncommitted } com hunks lazy
-// TODO(fase 5): rotear `sh setup.sh` e o processo git pela trait Sandbox (#42)
+// TODO(fase 5): rotear `sh .tyba/setup.sh` pela trait Sandbox (o git já vai — #42)
 
 #[cfg(test)]
 mod lifecycle_tests {

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{git_in, git_text, run_git};
+use super::{git_in, git_in_net, git_in_rw, git_text, run_git};
 use crate::error::AppError;
 
 fn merge_failed(detail: impl Into<String>) -> AppError {
@@ -50,7 +50,7 @@ fn literal_specs(paths: &[String]) -> Result<Vec<String>, String> {
 
 /// `git add` dos paths (vazio = tudo, `-A`).
 pub fn stage(worktree: &Path, paths: &[String]) -> Result<(), String> {
-    let mut c = git_in(worktree);
+    let mut c = git_in_rw(worktree);
     c.arg("add");
     if paths.is_empty() {
         c.arg("-A");
@@ -94,7 +94,7 @@ fn expand_staged_renames(worktree: &Path, paths: &[String]) -> Result<Vec<String
 
 /// `git restore --staged` dos paths (vazio = tudo).
 pub fn unstage(worktree: &Path, paths: &[String]) -> Result<(), String> {
-    let mut c = git_in(worktree);
+    let mut c = git_in_rw(worktree);
     c.args(["restore", "--staged", "--"]);
     if paths.is_empty() {
         c.arg(".");
@@ -127,7 +127,7 @@ pub fn discard(worktree: &Path, paths: &[String]) -> Result<(), String> {
     if paths.is_empty() {
         run_git(
             {
-                let mut c = git_in(worktree);
+                let mut c = git_in_rw(worktree);
                 c.args(["restore", "--worktree", "--", "."]);
                 c
             },
@@ -137,7 +137,7 @@ pub fn discard(worktree: &Path, paths: &[String]) -> Result<(), String> {
         // confirmou o discard em dois cliques; sumir em silêncio é pior.
         run_git(
             {
-                let mut c = git_in(worktree);
+                let mut c = git_in_rw(worktree);
                 c.args(["clean", "-ffd"]);
                 c
             },
@@ -150,13 +150,13 @@ pub fn discard(worktree: &Path, paths: &[String]) -> Result<(), String> {
     let (clean, restore): (Vec<String>, Vec<String>) =
         paths.iter().cloned().partition(|p| untracked.contains(p));
     if !restore.is_empty() {
-        let mut c = git_in(worktree);
+        let mut c = git_in_rw(worktree);
         c.args(["restore", "--worktree", "--"]);
         c.args(literal_specs(&restore)?);
         run_git(c, "git restore")?;
     }
     if !clean.is_empty() {
-        let mut c = git_in(worktree);
+        let mut c = git_in_rw(worktree);
         c.args(["clean", "-ffd", "--"]);
         c.args(literal_specs(&clean)?);
         run_git(c, "git clean")?;
@@ -171,7 +171,7 @@ pub fn commit(worktree: &Path, message: &str) -> Result<(), String> {
     if message.is_empty() {
         return Err("mensagem de commit vazia".into());
     }
-    let mut c = git_in(worktree);
+    let mut c = git_in_rw(worktree);
     c.args(["commit", "-m", message]);
     run_git(c, "git commit")?;
     Ok(())
@@ -195,7 +195,7 @@ pub fn push(worktree: &Path) -> Result<String, AppError> {
         return Err(AppError::new("push.protected_branch").with("branch", branch));
     }
     let out = {
-        let mut c = git_in(worktree);
+        let mut c = git_in_net(worktree);
         c.args(["push", "-u", "origin", &branch]);
         c.output()
             .map_err(|e| push_failed(format!("git push: {e}")))?
@@ -247,7 +247,7 @@ fn nul_fields(raw: &[u8]) -> Vec<String> {
 
 fn merge_tree(main: &Path, base: &str, source: &str) -> Result<(String, Vec<String>), AppError> {
     let out = {
-        let mut c = git_in(main);
+        let mut c = git_in_rw(main);
         c.args([
             "merge-tree",
             "--write-tree",
@@ -373,7 +373,7 @@ pub fn merge_into_base(
             }
         });
 
-    let mut c = git_in(&main);
+    let mut c = git_in_rw(&main);
     c.args(["commit-tree", &tree, "-p", &base_head]);
     if matches!(strategy, MergeStrategy::MergeCommit) {
         c.args(["-p", &source_head]);
@@ -390,7 +390,7 @@ pub fn merge_into_base(
     }
     run_git(
         {
-            let mut c = git_in(&main);
+            let mut c = git_in_rw(&main);
             c.args(["merge", "--ff-only", &merged]);
             c
         },

@@ -64,16 +64,17 @@ Regras (`session::integration_dir`, `session::write_private`):
 - O caminho do próprio diretório **não é interpolado** dentro do script (`$TMPDIR` é do usuário, mas `"$..."` ainda expandiria `$` e crase).
 - Falha transitória **não é memoizada**: a integração é retentada na próxima sessão, com log.
 
-## Limitação conhecida: `git` roda fora do sandbox
+## O `git` do core roda encaixotado (filtro de conteúdo hostil) — #42
 
-> [!warning] Pré-requisito da fase de sandbox
-> O core faz shell-out de `git` num diretório que vem do **OSC 7** — atacante-controlável. Um repositório cujo `.git/config` define um filtro de conteúdo (`filter.<n>.clean`) associado por atributo faz o `git` **executar esse comando no processo do core**, fora de qualquer sandbox, com o env completo do usuário. `git status` executa 1×; `git diff --numstat` 3×.
+O core faz shell-out de `git` num diretório que vem do **OSC 7** — atacante-controlável. Um repositório cujo `.git/config` define um filtro de conteúdo (`filter.<n>.clean`) associado por atributo (`.gitattributes` **ou** `$GIT_DIR/info/attributes`) faz o `git` invocar esse comando. A defesa: **todo `git_in` roda dentro da `Sandbox`, com o filtro encaixotado.**
 
-- A definição do filtro **só pode vir de config**: `git clone` transporta a árvore, nunca o `.git/config`. Logo o atacante precisa de escrita em `.git/`. **Não existe vetor via repositório clonado.**
-- **Latente hoje**: a trait `Sandbox` é passthrough, então um agente que escreve `.git/config` já executa comando arbitrário por conta própria. Isto não é escalação atual — é um **primitivo de escape que arma no instante em que o sandbox virar real**.
-- `worktree::git_in()` aplica higiene de custo zero (`core.fsmonitor=false`, `diff.external=`, `core.hooksPath`, `core.pager`, `--no-ext-diff`, `env_remove` dos `GIT_*` que redirecionam I/O, stdin nulo). Isso **estreita** quais chaves funcionam; **não fecha a classe**.
-- `GIT_ATTR_SOURCE` foi avaliado e **rejeitado**: não cobre `$GIT_DIR/info/attributes`, e exige git ≥ 2.40 (Ubuntu 22.04 traz 2.34).
-- **Defesa real**: rotear o processo `git` pela trait `Sandbox`. Os três testes `#[ignore]` em `worktree/mod.rs` (`git_in_neutralizes_*_attributes`) são o gatilho — quando a defesa existir, eles passam.
+- **Read-only** (`status`, `diff`, `log`, `rev-parse`, `ls-files`, ...) → jaula **deny-all-write** + sem rede: o filtro roda mas não escreve **em lugar nenhum** e não toca a rede. A RCE fica inofensiva. É o hot path do painel e o grosso dos callers.
+- **Escrita** (`add`, `commit`, `merge`, `checkout`, `worktree`, `branch`) → libera escrita só no repo + worktrees geridos, ainda sem rede: o `clean`/`smudge` do filtro fica preso ao repo, sem escrever fora nem exfiltrar.
+- **Rede** (`push`, `fetch`) → **fora da jaula**: precisam de rede+credencial (SSH/creds) e não rodam filtro de conteúdo do worktree — não são o vetor do #42. O vetor próprio deles (transporte `ext::`, credential helper) é item separado.
+- Default read-only: um writer que esquecer de usar `git_in_rw` cai na jaula apertada e **quebra alto no teste**, nunca vira furo silencioso.
+- **macOS** via `sandbox-exec` (SBPL), **Linux** via `bubblewrap` (`--ro-bind / /` + `--unshare-net` + `--bind` no gravável). **Fail-closed**: launcher ausente → o git não roda. Higiene do `git_in` (`core.hooksPath` nulo, `--no-ext-diff`, `env_remove` dos `GIT_*`) mantida como defesa em profundidade.
+- Os três testes `git_in_neutralizes_*` deixaram de ser `#[ignore]` e provam a jaula (o `touch` do filtro não cria o marcador, `status`/`diff` seguem corretos). ADR: `tyba/decisions/2026-07-12-git-sob-sandbox-jaula-do-filtro`.
+- **Pendente**: `sh .tyba/setup.sh` também roda fora do sandbox — mesma trait, item separado.
 
 ## Conteúdo externo é input não-confiável
 
