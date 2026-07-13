@@ -18,6 +18,13 @@ use policy::AgentAccess;
 
 pub(crate) const TOOLCHAIN_HOME_DIRS: [&str; 4] = [".cargo", ".npm", ".bun", ".rustup"];
 
+/// Branches que nenhuma sessão de agente pode mover — nem por push (o core já
+/// recusa) nem localmente. Importa quando o agente é anexado ao checkout
+/// principal (review/conflitos num repo comum): ali o gitdir do worktree é o
+/// `.git` do repo, e sem regra explícita o `refs/heads/main` cairia dentro da
+/// área gravável.
+pub(crate) const PROTECTED_BRANCHES: [&str; 2] = ["main", "master"];
+
 pub struct SandboxSpec {
     pub writable_root: PathBuf,
     pub readable_root: PathBuf,

@@ -98,6 +98,33 @@ pub struct Worktree {
     pub ahead: u32,
 }
 
+/// Descreve um worktree (ou o checkout principal) que **já existe**, sem criar
+/// nada. É o que permite subir um agente numa pasta que o usuário já tem aberta
+/// — review, conflitos — pelo mesmo caminho de spawn das sessões normais, com
+/// sandbox e gate de aprovação, em vez de digitar o binário num shell cru.
+pub fn existing(path: &Path) -> Result<Worktree, String> {
+    let path = crate::repo::canonicalize_or(path);
+    if crate::repo::toplevel(&path).is_none() {
+        return Err("a pasta não é um repositório git".into());
+    }
+    let branch = git_text(
+        {
+            let mut c = git_in(&path);
+            c.args(["rev-parse", "--abbrev-ref", "HEAD"]);
+            c
+        },
+        "branch do worktree",
+    )
+    .unwrap_or_default();
+    Ok(Worktree {
+        base_ref: head_sha(&path).unwrap_or_default(),
+        dirty: is_dirty(&path).unwrap_or(true),
+        ahead: 0,
+        branch,
+        path,
+    })
+}
+
 pub(crate) fn run_git(mut cmd: Command, what: &str) -> Result<Vec<u8>, String> {
     let out = cmd.output().map_err(|e| format!("{what}: {e}"))?;
     if !out.status.success() {
@@ -1005,6 +1032,53 @@ mod lifecycle_tests {
 
         let err = run_setup(&wt.path, &script, &[]).unwrap_err();
         assert!(err.contains("quebrou"), "{err}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+    #[test]
+    fn existing_describes_a_checkout_without_creating_anything() {
+        let base = temp_base("existing");
+        let repo = temp_repo(&base);
+        let before = std::fs::read_dir(&repo).unwrap().count();
+
+        let wt = existing(&repo).unwrap();
+        assert_eq!(wt.path, crate::repo::canonicalize_or(&repo));
+        assert!(!wt.branch.is_empty(), "branch do checkout principal");
+        assert_eq!(wt.base_ref, head_sha(&repo).unwrap());
+        assert!(!wt.dirty);
+        assert_eq!(
+            std::fs::read_dir(&repo).unwrap().count(),
+            before,
+            "existing() nao pode criar nada — a pasta e do usuario"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn existing_sees_a_dirty_tree() {
+        let base = temp_base("existing-dirty");
+        let repo = temp_repo(&base);
+        std::fs::write(repo.join("a.txt"), "mudou\n").unwrap();
+        assert!(existing(&repo).unwrap().dirty);
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn existing_refuses_a_path_outside_a_repo() {
+        let base = temp_base("existing-norepo");
+        assert!(existing(&base).is_err());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn existing_resolves_the_git_dirs_the_sandbox_needs() {
+        let base = temp_base("existing-gitdirs");
+        let repo = temp_repo(&base);
+        let wt = existing(&repo).unwrap();
+        // Sem isso o sandbox_spec falha e a sessao in-place e recusada: o
+        // caminho de review/conflitos depende de resolver os dois dirs.
+        let dirs = resolved_git_dirs(&wt.path).unwrap();
+        assert!(dirs.git_dir.ends_with(".git"));
+        assert_eq!(dirs.git_dir, dirs.common_dir, "checkout principal");
         std::fs::remove_dir_all(&base).ok();
     }
 }

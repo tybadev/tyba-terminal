@@ -717,3 +717,53 @@ fn docker_socket_is_unreachable_even_with_network() {
     );
     assert!(!out.status.success());
 }
+
+/// Sessão anexada ao checkout principal (review/conflitos num repo comum): ali o
+/// gitdir do worktree É o `.git` do repo, então a área gravável do gitdir
+/// alcançaria `refs/heads/main`. Push já é recusado pelo core; mover a main
+/// LOCAL é a mesma regra vista de outro ângulo.
+#[test]
+fn agent_attached_to_the_main_checkout_cannot_move_main() {
+    require_seatbelt!();
+    let mut f = fixture();
+    f.spec.writable_root = f.spec.readable_root.clone();
+    f.spec.worktree_git_dir = f.spec.repo_git_dir.clone();
+    let spec = &f.spec;
+    let repo = spec.writable_root.clone();
+    let main_ref = spec.repo_git_dir.join("refs/heads/main");
+    let before = std::fs::read_to_string(&main_ref).unwrap();
+
+    for (what, script) in [
+        ("update-ref", "git update-ref refs/heads/main HEAD~0 2>&1"),
+        (
+            "escrita crua na ref",
+            "echo 0000000000000000000000000000000000000000 > .git/refs/heads/main",
+        ),
+        ("pack-refs", "git pack-refs --all"),
+    ] {
+        let out = run_in_sandbox(spec, &repo, script);
+        assert!(
+            !out.status.success() || std::fs::read_to_string(&main_ref).unwrap() == before,
+            "{what} moveu a main de dentro do sandbox"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&main_ref).unwrap(),
+            before,
+            "a ref da main mudou via {what}"
+        );
+    }
+
+    // Par positivo: proteger a main não pode custar o trabalho normal do agente.
+    let out = run_in_sandbox(
+        spec,
+        &repo,
+        "git checkout -q -b feature-x && echo x > novo.txt && git add novo.txt \
+         && git commit -q -m dentro && git rev-parse --abbrev-ref HEAD",
+    );
+    assert!(
+        out.status.success(),
+        "commit numa branch comum precisa funcionar: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("feature-x"));
+}

@@ -327,6 +327,20 @@ fn immutable_denies(spec: &SandboxSpec) -> Vec<Rule> {
         Rule::Node(spec.writable_root.join(".tyba/config.toml")),
         Rule::Node(spec.runtime_dir.clone()),
     ];
+    // Sessão anexada ao checkout principal (review/conflitos num repo comum): ali
+    // o gitdir do worktree É o `.git` do repo, e o allow de escrita do gitdir
+    // alcançaria `refs/heads/main`. O agente não daria push — o core recusa —, mas
+    // moveria a main LOCAL, que é a mesma regra vista de outro ângulo. O deny é
+    // final: vence qualquer allow anterior.
+    for name in super::PROTECTED_BRANCHES {
+        rules.push(Rule::Node(spec.repo_git_dir.join("refs/heads").join(name)));
+        rules.push(Rule::Node(
+            spec.repo_git_dir.join("logs/refs/heads").join(name),
+        ));
+    }
+    // `git pack-refs` move as refs pra dentro deste arquivo: gravável, ele é um
+    // segundo caminho pra reescrever a main.
+    rules.push(Rule::Node(spec.repo_git_dir.join("packed-refs")));
     rules.extend(tyba_exe_read_rules(&spec.tyba_exe));
     rules
 }
@@ -424,7 +438,12 @@ mod tests {
     #[test]
     fn policy_never_grants_write_on_main_or_the_whole_refs_tree() {
         let policy = build_policy(&spec());
-        for line in policy.lines().filter(|l| l.contains("file-write*")) {
+        // Só as linhas de ALLOW: `packed-refs` e `refs/heads/main` agora aparecem
+        // também no deny final, que é exatamente onde devem estar.
+        for line in policy
+            .lines()
+            .filter(|l| l.starts_with("(allow file-write*"))
+        {
             assert!(
                 !line.contains(r#"(subpath "/private/repo/.git/refs")"#),
                 "{line}"
@@ -521,6 +540,39 @@ mod tests {
         ] {
             assert!(deny.contains(secret), "faltou deny de {secret}");
         }
+    }
+
+    #[test]
+    fn attached_main_checkout_can_never_move_main_master_or_packed_refs() {
+        let mut s = spec();
+        // Sessão anexada ao checkout principal: gitdir do worktree == .git do repo,
+        // então o allow de escrita do gitdir alcançaria refs/heads/main.
+        s.worktree_git_dir = s.repo_git_dir.clone();
+        let policy = build_policy(&s);
+        let lines: Vec<&str> = policy.lines().collect();
+        let deny = lines
+            .iter()
+            .rposition(|l| l.starts_with("(deny file-write*"))
+            .unwrap();
+        let last_allow = lines
+            .iter()
+            .rposition(|l| l.starts_with("(allow file-write*"))
+            .unwrap();
+        assert!(deny > last_allow, "o deny precisa ser a última palavra");
+
+        let line = lines[deny];
+        for frag in [
+            r#"(subpath "/private/repo/.git/refs/heads/main")"#,
+            r#"(subpath "/private/repo/.git/refs/heads/master")"#,
+            r#"(subpath "/private/repo/.git/logs/refs/heads/main")"#,
+            r#"(subpath "/private/repo/.git/packed-refs")"#,
+        ] {
+            assert!(line.contains(frag), "faltou deny de {frag}");
+        }
+        assert!(
+            !line.contains(r#"(subpath "/private/repo/.git/refs/heads")"#),
+            "negar refs/heads inteiro tira o commit de qualquer branch — o agente pararia de funcionar"
+        );
     }
 
     #[test]

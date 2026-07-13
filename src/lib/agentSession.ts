@@ -31,6 +31,18 @@ export function runnerFromDefault(
   return null;
 }
 
+/** A preferência de review é uma linha de comando (`claude`, `codex --flag`), mas
+ * uma sessão de agente exige o runner do core — é ele que carrega hooks, sandbox
+ * e env allowlist. Casa pelo binário, ignorando argumentos; o que não for
+ * reconhecido cai no Claude Code, que é o default do produto. */
+export function runnerFromCommand(
+  command: string | null | undefined,
+): AgentRunnerId {
+  const binary = (command ?? "").trim().split(/\s+/)[0] ?? "";
+  const name = binary.split("/").pop()?.toLowerCase() ?? "";
+  return name === "codex" ? "codex" : "claude_code";
+}
+
 export interface AgentSessionParams {
   cwd: string;
   task: string;

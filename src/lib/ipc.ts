@@ -44,6 +44,9 @@ export interface CreateSessionOpts {
   cols: number;
   rows: number;
   worktree_task?: string;
+  /** Agente na pasta de `cwd`, que já existe (review, conflitos), em vez de num
+   * worktree novo. Sandbox e gate de aprovação continuam valendo. */
+  attach_existing?: boolean;
 }
 
 export interface SetupScriptInfo {
