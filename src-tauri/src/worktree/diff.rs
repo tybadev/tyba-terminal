@@ -315,9 +315,10 @@ fn diff_files(worktree: &Path, range_args: &[&str]) -> Result<Vec<FileDiff>, Str
             .collect();
 
     let rows = parse_name_status_z(&name_status);
-    // Durante merge/rebase o git emite o path conflitado como `U` (e às
-    // vezes também como `M`) — a casa dele é o banner CONFLITOS, não as
-    // seções; duplicata na mesma seção quebra as chaves do virtualizador.
+    // Durante merge/rebase o git emite o path conflitado como `U` E como
+    // `M` no diff do worktree — duplicata na mesma seção quebra as chaves
+    // do virtualizador. Fica só a entrada `U` (os hunks dela mostram os
+    // marcadores de conflito, que é o que o dono precisa ver pra decidir).
     let unmerged: std::collections::HashSet<String> = rows
         .iter()
         .filter(|(status, _, _)| *status == FileStatus::Unmerged)
@@ -327,7 +328,7 @@ fn diff_files(worktree: &Path, range_args: &[&str]) -> Result<Vec<FileDiff>, Str
     Ok(rows
         .into_iter()
         .filter(|(status, _, path)| {
-            *status != FileStatus::Unmerged && !unmerged.contains(path)
+            !unmerged.contains(path) || *status == FileStatus::Unmerged
         })
         .map(|(status, old_path, path)| {
             let (insertions, deletions) = counts.get(&path).copied().unwrap_or((Some(0), Some(0)));
@@ -380,12 +381,19 @@ pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, Stri
         (Err(e), _) => return Err(e),
     };
 
+    // No `--cached` o conflitado aparece como `U +0 −0` — eco vazio; a
+    // resolução só vira staged de verdade depois do `git add`.
+    let staged_files: Vec<FileDiff> = staged_files?
+        .into_iter()
+        .filter(|f| f.status != FileStatus::Unmerged)
+        .collect();
+
     Ok(SessionDiff {
         root: worktree.to_string_lossy().into_owned(),
         base_ref: base_ref.to_string(),
         commits,
         files,
-        staged_files: staged_files?,
+        staged_files,
         unstaged_files: unstaged_files?,
     })
 }
@@ -744,14 +752,21 @@ mod integration_tests {
         let diff = session_diff(&dir, "HEAD").expect("session_diff com conflito");
         assert!(
             diff.staged_files.iter().all(|f| f.path != "a.txt"),
-            "conflitado vazou pro staged: {:?}",
+            "eco vazio do conflitado vazou pro staged: {:?}",
             diff.staged_files
         );
-        assert!(
-            diff.unstaged_files.iter().all(|f| f.path != "a.txt"),
-            "conflitado vazou pro unstaged: {:?}",
+        let unstaged: Vec<_> = diff
+            .unstaged_files
+            .iter()
+            .filter(|f| f.path == "a.txt")
+            .collect();
+        assert_eq!(
+            unstaged.len(),
+            1,
+            "conflitado deve aparecer UMA vez no unstaged: {:?}",
             diff.unstaged_files
         );
+        assert_eq!(unstaged[0].status, FileStatus::Unmerged);
         std::fs::remove_dir_all(&dir).ok();
     }
 

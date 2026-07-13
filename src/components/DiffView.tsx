@@ -76,6 +76,7 @@ const STATUS_LETTER: Record<FileDiff["status"], string> = {
   renamed: "R",
   copied: "C",
   type_changed: "T",
+  unmerged: "U",
   other: "?",
 };
 
@@ -86,6 +87,7 @@ const STATUS_COLOR: Record<FileDiff["status"], string> = {
   renamed: "text-tyba-violet",
   copied: "text-tyba-violet",
   type_changed: "text-tyba-text-muted",
+  unmerged: "text-tyba-red",
   other: "text-tyba-text-muted",
 };
 
