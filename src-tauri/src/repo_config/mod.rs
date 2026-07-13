@@ -110,28 +110,38 @@ pub fn agent_env(
     env
 }
 
-/// No macOS `/usr/bin/git` é um **shim**: sem `DEVELOPER_DIR` ele chama
-/// `xcodebuild` pra descobrir onde mora o git de verdade. Dentro do sandbox esse
-/// caminho morre (o shim não alcança os serviços do Xcode) e o agente fica sem
-/// git — só numa máquina com Xcode completo, o que faz o bug passar batido em
-/// quem só tem as Command Line Tools. Resolvemos o dir **fora** da jaula e
-/// entregamos pronto, então o shim nunca precisa perguntar.
+/// No macOS `/usr/bin/git` é um **shim**: ele procura o git de verdade dentro do
+/// `DEVELOPER_DIR` e, **se não achar lá**, chama `xcodebuild` pra perguntar onde
+/// está. Dentro do sandbox essa segunda etapa morre, e o agente fica sem git.
+///
+/// Não basta apontar pro dir do `xcode-select`: em Xcode recente o git **não vem**
+/// no toolchain (`Contents/Developer/usr/bin/git` não existe), e aí o shim cai no
+/// `xcodebuild` de novo. Escolhemos o primeiro dir que realmente **contém** o git
+/// — normalmente as Command Line Tools — resolvendo tudo fora da jaula.
 fn developer_dir(user_env: &HashMap<String, String>) -> Option<String> {
     if !cfg!(target_os = "macos") {
         return None;
     }
+    let mut candidates: Vec<String> = Vec::new();
     if let Some(dir) = user_env.get("DEVELOPER_DIR") {
-        return Some(dir.clone());
+        candidates.push(dir.clone());
     }
-    let out = std::process::Command::new("/usr/bin/xcode-select")
+    if let Ok(out) = std::process::Command::new("/usr/bin/xcode-select")
         .arg("-p")
         .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+    {
+        if out.status.success() {
+            let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !dir.is_empty() {
+                candidates.push(dir);
+            }
+        }
     }
-    let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!dir.is_empty() && std::path::Path::new(&dir).is_dir()).then_some(dir)
+    candidates.push("/Library/Developer/CommandLineTools".to_string());
+
+    candidates
+        .into_iter()
+        .find(|dir| std::path::Path::new(dir).join("usr/bin/git").is_file())
 }
 
 #[cfg(test)]
@@ -207,6 +217,29 @@ mod tests {
         let content = "[agent]\ndefault = \"claude\"\nfuture = 42\n\n[future_section]\nx = true\n";
         let config = parse(content).unwrap();
         assert_eq!(config.default_agent.as_deref(), Some("claude"));
+    }
+
+    /// O bug que só a CI pegou: apontar o DEVELOPER_DIR pra um dir SEM git faz o
+    /// shim do /usr/bin/git cair no xcodebuild — que morre dentro da jaula. Um dir
+    /// que não tem `usr/bin/git` nunca pode ser escolhido.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn developer_dir_never_points_at_a_toolchain_without_git() {
+        let empty = tempfile::tempdir().unwrap();
+        let user = env(&[("DEVELOPER_DIR", empty.path().to_str().unwrap())]);
+
+        let chosen = developer_dir(&user);
+        assert_ne!(
+            chosen.as_deref(),
+            Some(empty.path().to_str().unwrap()),
+            "dir sem usr/bin/git manda o shim pro xcodebuild, que a jaula bloqueia"
+        );
+        if let Some(dir) = chosen {
+            assert!(
+                std::path::Path::new(&dir).join("usr/bin/git").is_file(),
+                "o dir escolhido precisa conter o git de verdade: {dir}"
+            );
+        }
     }
 
     #[test]
