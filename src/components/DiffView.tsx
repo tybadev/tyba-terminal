@@ -103,6 +103,12 @@ const CONFLICT_OPERATION_KEY: Record<ConflictState["operation"], string> = {
   cherry_pick: "conflictCherryPick",
 };
 
+const CONFLICT_RESOLVED_KEY: Record<ConflictState["operation"], string> = {
+  merge: "conflictMergeResolved",
+  rebase: "conflictRebaseResolved",
+  cherry_pick: "conflictCherryPickResolved",
+};
+
 function Numstat({ file }: { file: FileDiff }) {
   return (
     <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] tabular-nums">
@@ -1131,11 +1137,24 @@ export function DiffView({
       </header>
 
       {conflicts && !browseBranch && (
-        <div className="flex shrink-0 items-start gap-2 border-b border-tyba-border bg-tyba-red/[.06] px-3 py-2">
-          <Warning size={14} className="mt-0.5 shrink-0 text-tyba-red" />
+        <div
+          className={`flex shrink-0 items-start gap-2 border-b border-tyba-border px-3 py-2 ${
+            conflicts.files.length > 0 ? "bg-tyba-red/[.06]" : "bg-tyba-amber/[.06]"
+          }`}
+        >
+          <Warning
+            size={14}
+            className={`mt-0.5 shrink-0 ${
+              conflicts.files.length > 0 ? "text-tyba-red" : "text-tyba-amber"
+            }`}
+          />
           <div className="min-w-0 flex-1">
             <p className="text-[12px] text-tyba-text">
-              {t(CONFLICT_OPERATION_KEY[conflicts.operation])}
+              {t(
+                conflicts.files.length > 0
+                  ? CONFLICT_OPERATION_KEY[conflicts.operation]
+                  : CONFLICT_RESOLVED_KEY[conflicts.operation],
+              )}
               {conflicts.ours && conflicts.theirs && (
                 <span className="font-mono text-[11px] text-tyba-text-muted">
                   {" "}

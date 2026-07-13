@@ -20,10 +20,17 @@ describe("buildConflictPrompt", () => {
     const prompt = buildConflictPrompt(state());
     expect(prompt).toContain("merge em andamento (main ← feature)");
     expect(prompt).toContain("2 arquivo(s)");
-    expect(prompt).toContain("- src/a.ts (UU)");
-    expect(prompt).toContain("- docs/um doc.md (AA)");
+    expect(prompt).toContain("src/a.ts (UU)");
+    expect(prompt).toContain("docs/um doc.md (AA)");
     expect(prompt).toContain("não conclua o commit do merge");
     expect(prompt).not.toContain("--continue");
+  });
+
+  test("stays single line so the agent composer shows it readable", () => {
+    expect(buildConflictPrompt(state())).not.toContain("\n");
+    expect(
+      buildConflictPrompt(state({ operation: "rebase" })),
+    ).not.toContain("\n");
   });
 
   test("rebase instructs git rebase --continue instead of stopping", () => {

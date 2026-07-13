@@ -141,6 +141,10 @@ const resources = {
       conflictCherryPick: "Cherry-pick em andamento com conflitos",
       conflictAllResolved:
         "Conflitos resolvidos — falta concluir a operação (commit / --continue).",
+      conflictMergeResolved: "Merge em andamento — conflitos resolvidos",
+      conflictRebaseResolved: "Rebase em andamento — conflitos resolvidos",
+      conflictCherryPickResolved:
+        "Cherry-pick em andamento — conflitos resolvidos",
       conflictResolve: "Resolver com agente",
       conflictResolveSending: "Enviando…",
       conflictKeepOurs: "manter {{branch}}",
@@ -668,6 +672,10 @@ const resources = {
       conflictCherryPick: "Cherry-pick in progress with conflicts",
       conflictAllResolved:
         "Conflicts resolved — finish the operation (commit / --continue).",
+      conflictMergeResolved: "Merge in progress — conflicts resolved",
+      conflictRebaseResolved: "Rebase in progress — conflicts resolved",
+      conflictCherryPickResolved:
+        "Cherry-pick in progress — conflicts resolved",
       conflictResolve: "Resolve with agent",
       conflictResolveSending: "Sending…",
       conflictKeepOurs: "keep {{branch}}",
