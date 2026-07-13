@@ -110,6 +110,24 @@ export interface SessionDiff {
 
 export type DiffScope = "committed" | "staged" | "unstaged";
 
+export type ConflictOperation = "merge" | "rebase" | "cherry_pick";
+
+export interface ConflictFile {
+  path: string;
+  kind: string;
+}
+
+export interface ConflictState {
+  root: string;
+  operation: ConflictOperation;
+  ours: string | null;
+  theirs: string | null;
+  files: ConflictFile[];
+}
+
+export const sessionConflicts = (id: SessionId) =>
+  invoke<ConflictState | null>("session_conflicts", { id });
+
 export interface DiffLine {
   kind: "context" | "add" | "del";
   text: string;
