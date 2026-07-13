@@ -147,6 +147,7 @@ interface Props {
   onToggleExpand: () => void;
   onClose: () => void;
   onSendToAgent: (prompt: string) => Promise<void>;
+  onResolveConflicts: (state: ConflictState) => Promise<void>;
 }
 
 type DisplayRow =
@@ -180,6 +181,7 @@ export function DiffView({
   onToggleExpand,
   onClose,
   onSendToAgent,
+  onResolveConflicts,
 }: Props) {
   const { t } = useTranslation();
   const [diff, setDiff] = useState<SessionDiff | null>(
@@ -210,6 +212,7 @@ export function DiffView({
   const [discardArm, setDiscardArm] = useState<string | null>(null);
   const [browseBranch, setBrowseBranch] = useState<string | null>(null);
   const [conflicts, setConflicts] = useState<ConflictState | null>(null);
+  const [resolvingConflicts, setResolvingConflicts] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestedRef = useRef(new Set<string>());
@@ -1137,6 +1140,27 @@ export function DiffView({
               </p>
             )}
           </div>
+          {conflicts.files.length > 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={resolvingConflicts}
+              onClick={() => {
+                const state = conflicts;
+                setResolvingConflicts(true);
+                setActionError(null);
+                onResolveConflicts(state)
+                  .catch((e) => setActionError(String(e)))
+                  .finally(() => setResolvingConflicts(false));
+              }}
+              className="h-6 shrink-0 gap-1.5 px-2 text-[11px]"
+            >
+              <ChatCircleText size={12} />
+              {resolvingConflicts
+                ? t("conflictResolveSending")
+                : t("conflictResolve")}
+            </Button>
+          )}
         </div>
       )}
 
