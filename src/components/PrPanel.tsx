@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowSquareOut, GitPullRequest } from "@phosphor-icons/react";
+import { ArrowSquareOut, GithubLogo, GitlabLogo } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -93,6 +93,9 @@ export function PrPanel({
 
   if (!shouldShowPrIcon(status)) return null;
 
+  const isMr = status?.kind === "gitlab";
+  const title = t(isMr ? "headerPrPanelTitleMr" : "headerPrPanelTitle");
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <Tooltip>
@@ -101,18 +104,18 @@ export function PrPanel({
             <Button
               variant="ghost"
               size="icon"
-              aria-label={t("headerPrPanelTitle")}
+              aria-label={title}
               className="size-6 rounded-[4px] text-tyba-text-muted hover:text-tyba-text"
             >
-              <GitPullRequest size={16} />
+              {isMr ? <GitlabLogo size={16} /> : <GithubLogo size={16} />}
             </Button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent side="bottom">{t("headerPrPanelTitle")}</TooltipContent>
+        <TooltipContent side="bottom">{title}</TooltipContent>
       </Tooltip>
       <PopoverContent align="end" className="w-80">
         <div className="tyba-label flex items-center justify-between px-2 py-1.5">
-          {t("headerPrPanelTitle")}
+          {title}
         </div>
         <div
           role="separator"
@@ -121,7 +124,7 @@ export function PrPanel({
         />
         {loading && (
           <div className="px-2 py-5 text-center text-xs text-tyba-text-faint">
-            {t("headerPrPanelLoading")}
+            {t(isMr ? "headerPrPanelLoadingMr" : "headerPrPanelLoading")}
           </div>
         )}
         {!loading && error && (
@@ -131,7 +134,7 @@ export function PrPanel({
         )}
         {!loading && !error && prs && prs.length === 0 && (
           <div className="px-2 py-5 text-center text-xs text-tyba-text-faint">
-            {t("headerPrPanelEmpty")}
+            {t(isMr ? "headerPrPanelEmptyMr" : "headerPrPanelEmpty")}
           </div>
         )}
         {!loading && !error && prs && prs.length > 0 && (

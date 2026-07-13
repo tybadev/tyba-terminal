@@ -88,11 +88,17 @@ export function Toolbar({
         const status = snapshot?.status;
         if (!status?.dirty) return null;
         return (
-          <span key={id} className="font-mono" aria-label={t("toolbarDiff")}>
+          <button
+            key={id}
+            onClick={onOpenDiff}
+            title={t("gitStatusIconLabel")}
+            aria-label={t("toolbarDiff")}
+            className="rounded-[4px] px-1 py-0.5 font-mono transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
+          >
             {status.changed} •{" "}
             <span className="text-tyba-green">+{status.insertions}</span>{" "}
             <span className="text-tyba-red">−{status.deletions}</span>
-          </span>
+          </button>
         );
       }
       case "reviewDiff":
