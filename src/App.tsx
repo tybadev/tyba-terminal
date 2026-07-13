@@ -2874,7 +2874,7 @@ export default function App() {
                     onOpenDiff={() => {
                       const target = activeSession?.worktree
                         ? activeSession
-                        : worktreeSessionOf(activeWorkspace);
+                        : (worktreeSessionOf(activeWorkspace) ?? activeSession);
                       if (target) void openDiffTab(target.id).catch(() => {});
                     }}
                     showRichInput={richInputEligible && !richInputVisible}
