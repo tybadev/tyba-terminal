@@ -40,6 +40,7 @@ import {
   buildRows,
   buildReviewPrompt,
   defaultCollapsed,
+  MANY_FILES_AUTO_COLLAPSE,
   fileKeyOf,
   isSectionOpen,
   keyPath,
@@ -176,6 +177,7 @@ export function DiffView({
   const [hunksByKey, setHunksByKey] = useState<
     Record<string, FileHunks | undefined>
   >({});
+  const [hunkErrors, setHunkErrors] = useState<Record<string, string>>({});
   const [collapsedByKey, setCollapsedByKey] = useState<
     Record<string, boolean | undefined>
   >({});
@@ -231,6 +233,9 @@ export function DiffView({
     setHunksByKey((prev) =>
       Object.fromEntries(Object.entries(prev).filter(([k]) => keep(k))),
     );
+    setHunkErrors((prev) =>
+      Object.fromEntries(Object.entries(prev).filter(([k]) => keep(k))),
+    );
     setTokens((prev) =>
       Object.fromEntries(Object.entries(prev).filter(([k]) => hunkKeyKeep(k))),
     );
@@ -239,19 +244,29 @@ export function DiffView({
   /// Única porta de atualização: compara HEAD e as listas de trabalho com
   /// o snapshot anterior e invalida só o que mudou de verdade — HEAD novo
   /// derruba tudo; staging/worktree novos derrubam o que não é committed.
-  const lastSnapRef = useRef<{ head: string; work: string } | null>(null);
+  const lastSnapRef = useRef<{
+    root: string;
+    head: string;
+    work: string;
+  } | null>(null);
   const refresh = useCallback(() => {
     sessionDiff(session.id)
       .then((d) => {
         const head = d.commits[0]?.sha ?? "";
         const work = JSON.stringify([d.staged_files, d.unstaged_files]);
         const prev = lastSnapRef.current;
-        if (prev && prev.head !== head) {
+        // `cd` troca o repo por baixo da mesma sessão: tudo que o painel
+        // acumulou (hunks, colapsos, seções) é de OUTRO repo — zera.
+        if (prev && prev.root !== d.root) {
+          clearCaches(() => false);
+          setCollapsedByKey({});
+          setOpenSections({});
+        } else if (prev && prev.head !== head) {
           clearCaches(() => false);
         } else if (prev && prev.work !== work) {
           clearCaches((key) => keyScope(key) === "committed");
         }
-        lastSnapRef.current = { head, work };
+        lastSnapRef.current = { root: d.root, head, work };
         cacheDiff(session.id, d);
         setDiff(d);
         setLoadError(null);
@@ -325,6 +340,10 @@ export function DiffView({
     }, DISCARD_ARM_MS);
   }, []);
 
+  // No erro, a key CONTINUA em requestedRef — soltá-la faria o effect
+  // redisparar o request a cada render, um loop infinito de processos git
+  // contra um repo que está falhando. Retry é explícito (botão) ou vem
+  // de graça quando um refresh invalida os caches.
   const fetchHunks = useCallback(
     (scope: DiffScopeKey, file: FileDiff) => {
       const key = fileKeyOf(scope, file.path);
@@ -333,12 +352,28 @@ export function DiffView({
       void sessionDiffHunks(session.id, file.path, scope, file.old_path)
         .then((hunks) => {
           setHunksByKey((prev) => ({ ...prev, [key]: hunks }));
+          setHunkErrors((prev) => {
+            if (!(key in prev)) return prev;
+            const { [key]: _, ...rest } = prev;
+            return rest;
+          });
         })
-        .catch(() => {
-          requestedRef.current.delete(key);
+        .catch((e) => {
+          setHunkErrors((prev) => ({ ...prev, [key]: String(e) }));
         });
     },
     [session.id],
+  );
+
+  const retryHunks = useCallback(
+    (fileKey: string) => {
+      requestedRef.current.delete(fileKey);
+      setHunkErrors((prev) => {
+        const { [fileKey]: _, ...rest } = prev;
+        return rest;
+      });
+    },
+    [],
   );
 
   useEffect(() => {
@@ -348,10 +383,12 @@ export function DiffView({
       ["staged", diff.staged_files],
       ["unstaged", diff.unstaged_files],
     ] as const) {
+      const manyFiles = files.length > MANY_FILES_AUTO_COLLAPSE;
       for (const file of files) {
         const key = fileKeyOf(scope, file.path);
         const collapsed =
-          collapsedByKey[key] ?? defaultCollapsed(file, hunksByKey[key]);
+          collapsedByKey[key] ??
+          defaultCollapsed(file, hunksByKey[key], manyFiles);
         if (!collapsed) fetchHunks(scope, file);
       }
     }
@@ -590,11 +627,17 @@ export function DiffView({
     [diff],
   );
 
-  const allFilesCollapsed = (scope: DiffScopeKey) =>
-    scopeFiles(scope).every((file) => {
+  const allFilesCollapsed = (scope: DiffScopeKey) => {
+    const files = scopeFiles(scope);
+    const manyFiles = files.length > MANY_FILES_AUTO_COLLAPSE;
+    return files.every((file) => {
       const key = fileKeyOf(scope, file.path);
-      return collapsedByKey[key] ?? defaultCollapsed(file, hunksByKey[key]);
+      return (
+        collapsedByKey[key] ??
+        defaultCollapsed(file, hunksByKey[key], manyFiles)
+      );
     });
+  };
 
   const setAllFilesCollapsed = (scope: DiffScopeKey, collapsed: boolean) => {
     setCollapsedByKey((prev) => {
@@ -930,7 +973,26 @@ export function DiffView({
           </div>
         );
       }
-      case "empty":
+      case "empty": {
+        const fileKey = row.key.endsWith(":loading")
+          ? row.key.slice(0, -":loading".length)
+          : null;
+        const error = fileKey ? hunkErrors[fileKey] : undefined;
+        if (row.label === "loading" && fileKey && error) {
+          return (
+            <div className="flex items-center gap-2 px-16 py-2 font-mono text-[11px]">
+              <span className="max-w-md truncate text-tyba-red" title={error}>
+                {t("diffHunksError")}
+              </span>
+              <button
+                onClick={() => retryHunks(fileKey)}
+                className="rounded-[3px] px-1.5 py-0.5 text-tyba-text-faint hover:bg-tyba-text/[.06] hover:text-tyba-text"
+              >
+                {t("diffHunksRetry")}
+              </button>
+            </div>
+          );
+        }
         return (
           <div className="px-16 py-2 font-mono text-[11px] text-tyba-text-faint">
             {row.label === "binary"
@@ -940,6 +1002,7 @@ export function DiffView({
                 : t("diffNoChanges")}
           </div>
         );
+      }
     }
   };
 
