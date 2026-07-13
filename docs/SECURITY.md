@@ -70,7 +70,7 @@ O core faz shell-out de `git` num diretório que vem do **OSC 7** — atacante-c
 
 - **Read-only** (`status`, `diff`, `log`, `rev-parse`, `ls-files`, ...) → jaula **deny-all-write** + sem rede: o filtro roda mas não escreve **em lugar nenhum** e não toca a rede. A RCE fica inofensiva. É o hot path do painel e o grosso dos callers.
 - **Escrita** (`add`, `commit`, `merge`, `checkout`, `worktree`, `branch`) → libera escrita só no repo + worktrees geridos, ainda sem rede: o `clean`/`smudge` do filtro fica preso ao repo, sem escrever fora nem exfiltrar.
-- **Rede** (`push`, `fetch`) → perfil com rede+credencial; não rodam filtro de conteúdo, não são o vetor.
+- **Rede** (`push`, `fetch`) → **fora da jaula**: precisam de rede+credencial (SSH/creds) e não rodam filtro de conteúdo do worktree — não são o vetor do #42. O vetor próprio deles (transporte `ext::`, credential helper) é item separado.
 - Default read-only: um writer que esquecer de usar `git_in_rw` cai na jaula apertada e **quebra alto no teste**, nunca vira furo silencioso.
 - **macOS** via `sandbox-exec` (SBPL), **Linux** via `bubblewrap` (`--ro-bind / /` + `--unshare-net` + `--bind` no gravável). **Fail-closed**: launcher ausente → o git não roda. Higiene do `git_in` (`core.hooksPath` nulo, `--no-ext-diff`, `env_remove` dos `GIT_*`) mantida como defesa em profundidade.
 - Os três testes `git_in_neutralizes_*` deixaram de ser `#[ignore]` e provam a jaula (o `touch` do filtro não cria o marcador, `status`/`diff` seguem corretos). ADR: `tyba/decisions/2026-07-12-git-sob-sandbox-jaula-do-filtro`.

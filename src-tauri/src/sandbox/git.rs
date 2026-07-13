@@ -93,9 +93,6 @@ mod imp {
                 .join(" ");
             policy.push_str(&format!("\n(allow file-write* {roots})"));
         }
-        if profile == GitProfile::Network {
-            policy.push_str("\n(allow network-outbound)\n(allow system-socket)\n(allow mach-lookup (global-name \"com.apple.SecurityServer\") (global-name \"com.apple.trustd\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.ocspd\") (global-name \"com.apple.networkd\") (global-name \"com.apple.dnssd.service\") (global-name \"com.apple.SystemConfiguration.configd\") (global-name \"com.apple.SystemConfiguration.DNSConfiguration\"))");
-        }
         policy
     }
 
@@ -158,6 +155,13 @@ mod imp {
 }
 
 pub fn wrap(git: Command, profile: GitProfile, repo: &Path, extra: &[PathBuf]) -> Command {
+    // `push`/`fetch` não rodam filtro de conteúdo do worktree — não são o vetor
+    // do #42 — e precisam de rede + credencial (SSH/creds), que uma jaula
+    // arriscaria quebrar sem ganho no escopo desta defesa. O vetor próprio deles
+    // (transporte `ext::`, credential helper) é item separado. Ficam fora.
+    if profile == GitProfile::Network {
+        return git;
+    }
     imp::wrap(git, profile, repo, extra)
 }
 
@@ -218,13 +222,16 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn network_policy_allows_outbound_and_tls() {
-        let repo = PathBuf::from("/private/tmp/x");
-        let p = imp::policy(GitProfile::Network, &repo, &[]);
-        assert!(p.contains("(allow network-outbound)"));
-        assert!(p.contains("com.apple.SecurityServer"));
+    fn network_profile_is_not_caged() {
+        let mut git = Command::new("git");
+        git.args(["-C", "/repo", "push"]);
+        let out = wrap(git, GitProfile::Network, Path::new("/repo"), &[]);
+        assert_eq!(
+            out.get_program(),
+            "git",
+            "push/fetch ficam fora da jaula — precisam de rede+credencial e não são vetor de filtro"
+        );
     }
 
     #[cfg(target_os = "macos")]
