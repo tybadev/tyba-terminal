@@ -56,6 +56,7 @@ Chip bar layout editor (Settings → Preferences):
 - [Architecture](docs/ARCHITECTURE.md) — data model, IPC, session lifecycle
 - [Security](docs/SECURITY.md) — threat model and non-negotiable rules
 - [Roadmap](docs/ROADMAP.md) — phases and exit criteria
+- [TODO](docs/TODO.md) — what was deliberately left out of the launch, and why
 - [CLAUDE.md](CLAUDE.md) — context for development with Claude Code
 
 ## License
