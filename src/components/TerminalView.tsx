@@ -129,7 +129,7 @@ export function TerminalView({
     const term = new Terminal({
       theme,
       fontFamily:
-        '"JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+        '"JetBrains Mono", "Symbols Nerd Font Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
       fontSize: defaultFontSize,
       lineHeight: 1.35,
       cursorBlink: true,
@@ -178,6 +178,9 @@ export function TerminalView({
     });
 
     let disposed = false;
+    void document.fonts.load('12px "Symbols Nerd Font Mono"').then((faces) => {
+      if (!disposed && faces.length > 0) term.clearTextureAtlas();
+    });
     let holdsAttachment = false;
     const unlisteners: Array<() => void> = [];
     const addUnlistener = (un: () => void) => {
