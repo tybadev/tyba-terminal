@@ -11,6 +11,7 @@ import {
   GitBranch,
   GitCommit,
   Minus,
+  Warning,
   PaperPlaneTilt,
   Plus,
   Rows,
@@ -26,6 +27,7 @@ import {
   openWorktreeFile,
   sessionBranchDiff,
   sessionBranchHunks,
+  sessionConflicts,
   sessionDiff,
   sessionDiffHunks,
   worktreeCommit,
@@ -33,6 +35,7 @@ import {
   worktreePush,
   worktreeStage,
   worktreeUnstage,
+  type ConflictState,
   type FileDiff,
   type FileHunks,
   type Session,
@@ -83,6 +86,12 @@ const SECTION_LABEL_KEY: Record<DiffScopeKey, string> = {
   committed: "diffCommitted",
   staged: "diffStaged",
   unstaged: "diffChanges",
+};
+
+const CONFLICT_OPERATION_KEY: Record<ConflictState["operation"], string> = {
+  merge: "conflictMerge",
+  rebase: "conflictRebase",
+  cherry_pick: "conflictCherryPick",
 };
 
 function Numstat({ file }: { file: FileDiff }) {
@@ -200,6 +209,7 @@ export function DiffView({
   const [pushedInfo, setPushedInfo] = useState<string | null>(null);
   const [discardArm, setDiscardArm] = useState<string | null>(null);
   const [browseBranch, setBrowseBranch] = useState<string | null>(null);
+  const [conflicts, setConflicts] = useState<ConflictState | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestedRef = useRef(new Set<string>());
@@ -254,6 +264,11 @@ export function DiffView({
     work: string;
   } | null>(null);
   const refresh = useCallback(() => {
+    if (!browseBranch) {
+      sessionConflicts(session.id)
+        .then(setConflicts)
+        .catch(() => setConflicts(null));
+    }
     const load = browseBranch
       ? sessionBranchDiff(session.id, browseBranch)
       : sessionDiff(session.id);
@@ -1098,6 +1113,32 @@ export function DiffView({
           <X size={13} />
         </Button>
       </header>
+
+      {conflicts && !browseBranch && (
+        <div className="flex shrink-0 items-start gap-2 border-b border-tyba-border bg-tyba-red/[.06] px-3 py-2">
+          <Warning size={14} className="mt-0.5 shrink-0 text-tyba-red" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[12px] text-tyba-text">
+              {t(CONFLICT_OPERATION_KEY[conflicts.operation])}
+              {conflicts.ours && conflicts.theirs && (
+                <span className="font-mono text-[11px] text-tyba-text-muted">
+                  {" "}
+                  · {conflicts.ours} ← {conflicts.theirs}
+                </span>
+              )}
+            </p>
+            {conflicts.files.length > 0 ? (
+              <p className="break-words pt-0.5 font-mono text-[11px] text-tyba-red/90">
+                {conflicts.files.map((f) => f.path).join("  ")}
+              </p>
+            ) : (
+              <p className="pt-0.5 text-[11px] text-tyba-text-faint">
+                {t("conflictAllResolved")}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1">
         <aside

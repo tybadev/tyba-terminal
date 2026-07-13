@@ -7,6 +7,7 @@
 //! - `git stash` NUNCA na automação (compartilhado entre worktrees)
 
 pub mod branches;
+pub mod conflicts;
 pub mod diff;
 pub mod ops;
 

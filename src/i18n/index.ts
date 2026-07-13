@@ -136,6 +136,11 @@ const resources = {
       diffLoading: "carregando…",
       diffNoChanges: "sem mudanças de texto",
       diffEmpty: "Nada pra revisar: worktree igual à base.",
+      conflictMerge: "Merge em andamento com conflitos",
+      conflictRebase: "Rebase em andamento com conflitos",
+      conflictCherryPick: "Cherry-pick em andamento com conflitos",
+      conflictAllResolved:
+        "Conflitos resolvidos — falta concluir a operação (commit / --continue).",
       diffUnified: "Unificado",
       diffSplit: "Lado a lado",
       diffBase: "base",
@@ -636,6 +641,11 @@ const resources = {
       diffLoading: "loading…",
       diffNoChanges: "no text changes",
       diffEmpty: "Nothing to review: worktree matches the base.",
+      conflictMerge: "Merge in progress with conflicts",
+      conflictRebase: "Rebase in progress with conflicts",
+      conflictCherryPick: "Cherry-pick in progress with conflicts",
+      conflictAllResolved:
+        "Conflicts resolved — finish the operation (commit / --continue).",
       diffUnified: "Unified",
       diffSplit: "Side by side",
       diffBase: "base",

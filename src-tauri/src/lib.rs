@@ -677,6 +677,15 @@ async fn session_diff_hunks(
 }
 
 #[tauri::command]
+async fn session_conflicts(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<Option<worktree::conflicts::ConflictState>, String> {
+    let ctx = session_repo_context(&state, id)?;
+    worktree::conflicts::session_conflicts(&ctx.path)
+}
+
+#[tauri::command]
 async fn session_branches(
     state: State<'_, AppState>,
     id: SessionId,
@@ -1734,6 +1743,7 @@ pub fn run() {
             worktree_gc,
             session_diff,
             session_diff_hunks,
+            session_conflicts,
             session_branches,
             session_fetch,
             session_branch_diff,
