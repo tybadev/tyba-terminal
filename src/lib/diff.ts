@@ -198,10 +198,18 @@ export interface BuildRowsInput {
   mode: DiffMode;
 }
 
+/// Acima disso, os arquivos da seção nascem recolhidos: expandir N
+/// arquivos de uma vez dispara N buscas de hunks (N processos git) na
+/// abertura do painel — num repo com filtro de conteúdo, cada uma paga
+/// o filtro + a jaula.
+export const MANY_FILES_AUTO_COLLAPSE = 20;
+
 export function defaultCollapsed(
   file: FileDiff,
   hunks: FileHunks | undefined,
+  manyFiles = false,
 ): boolean {
+  if (manyFiles) return true;
   if (isGeneratedPath(file.path)) return true;
   if (hunks && hunkLineCount(hunks) > BIG_DIFF_LINES) return true;
   return false;
@@ -222,12 +230,13 @@ export function buildRows(input: BuildRowsInput): Row[] {
       scope: section.scope,
       count: section.files.length,
     });
+    const manyFiles = section.files.length > MANY_FILES_AUTO_COLLAPSE;
     for (const file of section.files) {
       const key = fileKeyOf(section.scope, file.path);
       const hunks = input.hunksByKey[key];
       const generated = isGeneratedPath(file.path);
       const collapsed =
-        input.collapsedByKey[key] ?? defaultCollapsed(file, hunks);
+        input.collapsedByKey[key] ?? defaultCollapsed(file, hunks, manyFiles);
       rows.push({
         kind: "file",
         key,

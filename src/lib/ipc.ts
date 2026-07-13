@@ -100,6 +100,7 @@ export interface CommitInfo {
 }
 
 export interface SessionDiff {
+  root: string;
   base_ref: string;
   commits: CommitInfo[];
   files: FileDiff[];

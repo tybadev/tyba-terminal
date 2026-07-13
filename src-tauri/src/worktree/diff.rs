@@ -56,6 +56,9 @@ pub struct FileDiff {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionDiff {
+    /// Raiz do repo que gerou este diff — a sessão troca de repo com `cd`,
+    /// e o front precisa invalidar cache/estado quando o root muda.
+    pub root: String,
     pub base_ref: String,
     pub commits: Vec<CommitInfo>,
     pub files: Vec<FileDiff>,
@@ -363,6 +366,7 @@ pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, Stri
     };
 
     Ok(SessionDiff {
+        root: worktree.to_string_lossy().into_owned(),
         base_ref: base_ref.to_string(),
         commits,
         files,
