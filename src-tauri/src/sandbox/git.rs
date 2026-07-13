@@ -159,7 +159,7 @@ mod imp {
 mod imp {
     use super::*;
 
-    pub const LAUNCHER: &str = "bwrap";
+    pub const LAUNCHER: &str = crate::sandbox::bwrap::BWRAP;
 
     pub fn wrap(git: Command, profile: GitProfile, repo: &Path, extra: &[PathBuf]) -> Command {
         let mut cmd = Command::new(LAUNCHER);

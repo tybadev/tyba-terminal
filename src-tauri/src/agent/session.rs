@@ -424,6 +424,22 @@ fn apply_git_overrides(env: &mut HashMap<String, String>) {
     }
 }
 
+fn default_data_dir(env: &HashMap<String, String>, home: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = env;
+        home.join("Library/Application Support/dev.tyba.app")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        env.get("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| home.join(".local/share"))
+            .join("dev.tyba.app")
+    }
+}
+
 pub(crate) fn sandbox_spec(
     runner: &dyn AgentRunner,
     env: &HashMap<String, String>,
@@ -451,7 +467,7 @@ pub(crate) fn sandbox_spec(
     let read_allow_extra = crate::user_config::load(&home)?.sandbox_read_allow;
     let tyba_data_dir = std::env::var_os("TYBA_DATA_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home.join("Library/Application Support/dev.tyba.app"));
+        .unwrap_or_else(|| default_data_dir(env, &home));
     Ok(SandboxSpec {
         writable_root: worktree.to_path_buf(),
         readable_root: root.to_path_buf(),

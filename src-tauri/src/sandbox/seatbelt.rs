@@ -49,7 +49,7 @@ const SYSTEM_READ_ROOTS: [&str; 10] = [
     "/dev",
 ];
 
-const TOOLCHAIN_HOME_DIRS: [&str; 4] = [".cargo", ".npm", ".bun", ".rustup"];
+use super::TOOLCHAIN_HOME_DIRS;
 
 fn mach_lookup_line(names: &[&str]) -> String {
     let globals = names
