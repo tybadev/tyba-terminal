@@ -341,6 +341,11 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    fn focused_session(&self) -> Option<SessionId> {
+        let tab = self.tabs.iter().find(|t| Some(t.id) == self.active_tab)?;
+        tab.root.as_ref()?.leaf_session(tab.active_pane?)
+    }
+
     fn bound_sessions(&self) -> Vec<SessionId> {
         let mut out = Vec::new();
         for tab in &self.tabs {
@@ -406,6 +411,21 @@ pub struct LayoutRows {
 struct Inner {
     workspaces: Vec<Workspace>,
     active: Option<WorkspaceId>,
+}
+
+/// O painel de diff mostra staged/unstaged do repo da SESSÃO — aberto com o
+/// foco em outra sessão, induz stage/descarte no repo errado. Toda mutação
+/// que muda o foco varre os workspaces e fecha o painel que ficou órfão.
+fn drop_stale_diff_views(inner: &mut Inner) {
+    for ws in inner.workspaces.iter_mut() {
+        let Some(target) = ws.side_view.as_deref().and_then(diff_view_session) else {
+            continue;
+        };
+        if ws.focused_session() != Some(target) {
+            ws.side_view = None;
+            ws.side_expanded = false;
+        }
+    }
 }
 
 pub struct LayoutManager {
@@ -632,6 +652,7 @@ impl LayoutManager {
         inner.workspaces[idx].tabs.push(tab);
         inner.workspaces[idx].active_tab = Some(tab_id);
         inner.active = Some(target);
+        drop_stale_diff_views(&mut inner);
         drop(inner);
         self.persist()?;
         Ok(tab_id)
@@ -650,6 +671,7 @@ impl LayoutManager {
                 .filter(|_| !ws.tabs.is_empty());
         }
         remove_workspace_if_empty(&mut inner, w_idx);
+        drop_stale_diff_views(&mut inner);
         drop(inner);
         self.persist()?;
         let mut bound = Vec::new();
@@ -665,6 +687,7 @@ impl LayoutManager {
         let ws_id = inner.workspaces[w_idx].id;
         inner.workspaces[w_idx].active_tab = Some(tab);
         inner.active = Some(ws_id);
+        drop_stale_diff_views(&mut inner);
         drop(inner);
         self.persist()
     }
@@ -699,6 +722,7 @@ impl LayoutManager {
                         tab.active_pane = Some(pane_id);
                     }
                 }
+                drop_stale_diff_views(&mut inner);
                 drop(inner);
                 self.persist()
             }
@@ -733,6 +757,7 @@ impl LayoutManager {
                     let tab_id = tab.id;
                     ws.active_tab = Some(tab_id);
                     inner.active = Some(ws_id);
+                    drop_stale_diff_views(&mut inner);
                     drop(inner);
                     self.persist()?;
                     return Ok(new_pane);
@@ -793,6 +818,7 @@ impl LayoutManager {
                 remove_workspace_if_empty(&mut inner, wi);
             }
         }
+        drop_stale_diff_views(&mut inner);
         drop(inner);
         self.persist()?;
         Ok(vec![session])
@@ -808,6 +834,7 @@ impl LayoutManager {
                     let tab_id = tab.id;
                     ws.active_tab = Some(tab_id);
                     inner.active = Some(ws_id);
+                    drop_stale_diff_views(&mut inner);
                     drop(inner);
                     return self.persist();
                 }
@@ -847,12 +874,19 @@ impl LayoutManager {
         view: &str,
     ) -> Result<WorkspaceId, LayoutError> {
         let mut inner = self.inner.write();
-        let Some((ws_id, tab_id, _)) = find_session_pane(&inner.workspaces, session) else {
+        let Some((ws_id, tab_id, pane_id)) = find_session_pane(&inner.workspaces, session) else {
             return Err(LayoutError::NoActiveWorkspace);
         };
         let idx = ws_index(&inner.workspaces, ws_id)?;
         inner.workspaces[idx].side_view = Some(view.to_string());
         inner.workspaces[idx].active_tab = Some(tab_id);
+        if let Some(tab) = inner.workspaces[idx]
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+        {
+            tab.active_pane = Some(pane_id);
+        }
         inner.active = Some(ws_id);
         drop(inner);
         self.persist()?;
@@ -1669,6 +1703,84 @@ mod tests {
         let ws_id = mgr.create_workspace("api", None, s).unwrap();
         mgr.set_side_view_ratio(ws_id, 0.01, true).unwrap();
         assert!((mgr.state().workspaces[0].side_ratio - MIN_RATIO).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn creating_a_tab_closes_the_diff_panel_of_the_previous_focus() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        mgr.open_workspace_side_view(s, &diff_view(s)).unwrap();
+
+        mgr.create_tab(sid(), None).unwrap();
+
+        let ws = &mgr.state().workspaces[0];
+        assert_eq!(ws.side_view, None);
+        assert!(!ws.side_expanded);
+    }
+
+    #[test]
+    fn activating_another_tab_closes_the_diff_panel() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let s_tab = mgr.state().workspaces[0].tabs[0].id;
+        let other_tab = mgr.create_tab(sid(), None).unwrap();
+        mgr.activate_tab(s_tab).unwrap();
+        mgr.open_workspace_side_view(s, &diff_view(s)).unwrap();
+
+        mgr.activate_tab(other_tab).unwrap();
+
+        assert_eq!(mgr.state().workspaces[0].side_view, None);
+    }
+
+    #[test]
+    fn reactivating_the_diff_tab_keeps_the_panel() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let s_tab = mgr.state().workspaces[0].tabs[0].id;
+        mgr.open_workspace_side_view(s, &diff_view(s)).unwrap();
+
+        mgr.activate_tab(s_tab).unwrap();
+
+        assert_eq!(
+            mgr.state().workspaces[0].side_view,
+            Some(diff_view(s)),
+            "foco continua na sessão do diff — o painel não pode fechar"
+        );
+    }
+
+    #[test]
+    fn focusing_a_pane_of_another_session_closes_the_diff_panel() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let s_pane = mgr.state().workspaces[0].tabs[0].active_pane.unwrap();
+        let s2 = sid();
+        let s2_pane = mgr.split_pane(s_pane, SplitKind::V, s2).unwrap();
+        mgr.focus_pane(s_pane).unwrap();
+        mgr.open_workspace_side_view(s, &diff_view(s)).unwrap();
+
+        mgr.focus_pane(s2_pane).unwrap();
+
+        assert_eq!(mgr.state().workspaces[0].side_view, None);
+    }
+
+    #[test]
+    fn opening_the_panel_focuses_the_pane_of_its_session() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let s_pane = mgr.state().workspaces[0].tabs[0].active_pane.unwrap();
+        let s2 = sid();
+        mgr.split_pane(s_pane, SplitKind::V, s2).unwrap();
+
+        mgr.open_workspace_side_view(s, &diff_view(s)).unwrap();
+
+        let ws = &mgr.state().workspaces[0];
+        assert_eq!(ws.tabs[0].active_pane, Some(s_pane));
+        assert_eq!(ws.side_view, Some(diff_view(s)));
     }
 
     #[test]
