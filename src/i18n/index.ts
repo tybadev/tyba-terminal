@@ -143,6 +143,12 @@ const resources = {
         "Conflitos resolvidos — falta concluir a operação (commit / --continue).",
       conflictResolve: "Resolver com agente",
       conflictResolveSending: "Enviando…",
+      commitSuggest: "Sugerir mensagem com o agente",
+      "error.suggest.no_staged":
+        "Nada staged — stage o que entra no commit antes de pedir a sugestão.",
+      "error.suggest.failed": "A sugestão falhou: {{detail}}",
+      "error.suggest.unsupported_agent":
+        "Agente {{agent}} não suportado pra sugestão (use claude ou codex).",
       branchCheckout: "Fazer checkout",
       branchCheckoutConfirm: "Clique de novo pra confirmar o checkout",
       "error.checkout.dirty":
@@ -657,6 +663,12 @@ const resources = {
         "Conflicts resolved — finish the operation (commit / --continue).",
       conflictResolve: "Resolve with agent",
       conflictResolveSending: "Sending…",
+      commitSuggest: "Suggest a message with the agent",
+      "error.suggest.no_staged":
+        "Nothing staged — stage what goes into the commit before asking for a suggestion.",
+      "error.suggest.failed": "Suggestion failed: {{detail}}",
+      "error.suggest.unsupported_agent":
+        "Agent {{agent}} not supported for suggestions (use claude or codex).",
       branchCheckout: "Check out",
       branchCheckoutConfirm: "Click again to confirm the checkout",
       "error.checkout.dirty":

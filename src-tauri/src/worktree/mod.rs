@@ -98,7 +98,7 @@ pub struct Worktree {
     pub ahead: u32,
 }
 
-fn run_git(mut cmd: Command, what: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn run_git(mut cmd: Command, what: &str) -> Result<Vec<u8>, String> {
     let out = cmd.output().map_err(|e| format!("{what}: {e}"))?;
     if !out.status.success() {
         return Err(format!(

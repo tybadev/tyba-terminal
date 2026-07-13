@@ -710,6 +710,16 @@ async fn session_fetch(state: State<'_, AppState>, id: SessionId) -> Result<(), 
 }
 
 #[tauri::command]
+async fn suggest_commit_message(
+    state: State<'_, AppState>,
+    id: SessionId,
+    agent: String,
+) -> Result<String, AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    agent::suggest::suggest_commit_message(&ctx.path, &agent)
+}
+
+#[tauri::command]
 async fn session_checkout(
     state: State<'_, AppState>,
     id: SessionId,
@@ -1767,6 +1777,7 @@ pub fn run() {
             session_branches,
             session_fetch,
             session_checkout,
+            suggest_commit_message,
             session_branch_diff,
             session_branch_hunks,
             open_diff_tab,

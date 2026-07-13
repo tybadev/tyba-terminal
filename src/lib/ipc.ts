@@ -134,6 +134,9 @@ export const sessionCheckout = (
   isRemote: boolean,
 ) => invoke<void>("session_checkout", { id, branch, isRemote });
 
+export const suggestCommitMessage = (id: SessionId, agent: string) =>
+  invoke<string>("suggest_commit_message", { id, agent });
+
 export interface DiffLine {
   kind: "context" | "add" | "del";
   text: string;
