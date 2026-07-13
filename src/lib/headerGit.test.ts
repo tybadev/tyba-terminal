@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { SessionGitStatus } from "./ipc";
-import { shouldShowGitIcon } from "./headerGit";
+import { gitIconTone } from "./headerGit";
 
 const status = (over: Partial<SessionGitStatus> = {}): SessionGitStatus => ({
   root: "/repo",
@@ -10,20 +10,20 @@ const status = (over: Partial<SessionGitStatus> = {}): SessionGitStatus => ({
   ...over,
 });
 
-describe("shouldShowGitIcon", () => {
-  test("shows when the session is a git repo with changes", () => {
-    expect(shouldShowGitIcon(status({ dirty: true }))).toBe(true);
+describe("gitIconTone", () => {
+  test("dirty repo gets the dirty tone", () => {
+    expect(gitIconTone(status({ dirty: true }))).toBe("dirty");
   });
 
-  test("hides when the repo is clean", () => {
-    expect(shouldShowGitIcon(status({ dirty: false }))).toBe(false);
+  test("clean repo still shows the icon, with the clean tone", () => {
+    expect(gitIconTone(status({ dirty: false }))).toBe("clean");
   });
 
   test("hides when the session is not a git repo (null)", () => {
-    expect(shouldShowGitIcon(null)).toBe(false);
+    expect(gitIconTone(null)).toBeNull();
   });
 
   test("hides while the status has not loaded yet (undefined)", () => {
-    expect(shouldShowGitIcon(undefined)).toBe(false);
+    expect(gitIconTone(undefined)).toBeNull();
   });
 });
