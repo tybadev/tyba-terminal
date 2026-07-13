@@ -118,6 +118,7 @@ import {
   onRepoChanged,
   onRepoReconciled,
   repoSnapshots as fetchRepoSnapshots,
+  sessionBracketedPaste,
   sessionCwd,
   sessionMarkSeen,
   sessionGitStatus,
@@ -623,7 +624,18 @@ export default function App() {
         if (cmd?.running && cmd.agent_match) break;
         await new Promise((r) => setTimeout(r, 500));
       }
-      await new Promise((r) => setTimeout(r, 700));
+      // O prompt é multilinha e o submit_rich_input recusa multilinha sem
+      // bracketed paste — esperar o TUI ligar o modo (DECSET 2004) é o
+      // sinal exato de "composer pronto"; cold start do agente estoura
+      // qualquer sleep fixo.
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const bracketed = await sessionBracketedPaste(fresh.id).catch(
+          () => false,
+        );
+        if (bracketed) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      await new Promise((r) => setTimeout(r, 300));
       return fresh.id;
     },
     [reviewAgent, typeIntoSession],

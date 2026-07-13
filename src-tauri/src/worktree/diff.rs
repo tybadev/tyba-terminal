@@ -27,6 +27,7 @@ pub enum FileStatus {
     Renamed,
     Copied,
     TypeChanged,
+    Unmerged,
     Other,
 }
 
@@ -39,6 +40,7 @@ impl FileStatus {
             b'R' => Self::Renamed,
             b'C' => Self::Copied,
             b'T' => Self::TypeChanged,
+            b'U' => Self::Unmerged,
             _ => Self::Other,
         }
     }
@@ -312,8 +314,21 @@ fn diff_files(worktree: &Path, range_args: &[&str]) -> Result<Vec<FileDiff>, Str
             .map(|e| (e.path, (e.insertions, e.deletions)))
             .collect();
 
-    Ok(parse_name_status_z(&name_status)
+    let rows = parse_name_status_z(&name_status);
+    // Durante merge/rebase o git emite o path conflitado como `U` (e às
+    // vezes também como `M`) — a casa dele é o banner CONFLITOS, não as
+    // seções; duplicata na mesma seção quebra as chaves do virtualizador.
+    let unmerged: std::collections::HashSet<String> = rows
+        .iter()
+        .filter(|(status, _, _)| *status == FileStatus::Unmerged)
+        .map(|(_, _, path)| path.clone())
+        .collect();
+
+    Ok(rows
         .into_iter()
+        .filter(|(status, _, path)| {
+            *status != FileStatus::Unmerged && !unmerged.contains(path)
+        })
         .map(|(status, old_path, path)| {
             let (insertions, deletions) = counts.get(&path).copied().unwrap_or((Some(0), Some(0)));
             FileDiff {
@@ -706,6 +721,38 @@ mod integration_tests {
         git(&dir, &["add", "-A"]);
         git(&dir, &["commit", "-qm", "base"]);
         dir
+    }
+
+    #[test]
+    fn conflicted_paths_stay_out_of_staged_and_unstaged() {
+        let dir = temp_repo();
+        git(&dir, &["checkout", "-qb", "feature"]);
+        std::fs::write(dir.join("a.txt"), "um\nfeature\ntres\n").unwrap();
+        git(&dir, &["commit", "-aqm", "feature"]);
+        git(&dir, &["checkout", "-q", "-"]);
+        std::fs::write(dir.join("a.txt"), "um\nmain\ntres\n").unwrap();
+        git(&dir, &["commit", "-aqm", "main"]);
+        let merge = Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["merge", "feature"])
+            .stdin(Stdio::null())
+            .output()
+            .expect("git merge");
+        assert!(!merge.status.success(), "merge deveria conflitar");
+
+        let diff = session_diff(&dir, "HEAD").expect("session_diff com conflito");
+        assert!(
+            diff.staged_files.iter().all(|f| f.path != "a.txt"),
+            "conflitado vazou pro staged: {:?}",
+            diff.staged_files
+        );
+        assert!(
+            diff.unstaged_files.iter().all(|f| f.path != "a.txt"),
+            "conflitado vazou pro unstaged: {:?}",
+            diff.unstaged_files
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
