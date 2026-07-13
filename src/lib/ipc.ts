@@ -245,6 +245,9 @@ export interface MergePreview {
 export const worktreeMergePreview = (id: SessionId) =>
   invoke<MergePreview>("worktree_merge_preview", { id });
 
+export const worktreeMergeMaterialize = (id: SessionId) =>
+  invoke<void>("worktree_merge_materialize", { id });
+
 export const worktreeMergeIntoBase = (
   id: SessionId,
   strategy: MergeStrategy,

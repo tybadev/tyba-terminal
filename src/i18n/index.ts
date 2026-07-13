@@ -511,6 +511,8 @@ const resources = {
       "error.merge.base_moved":
         "A branch base ({{branch}}) mudou durante o merge — nada foi alterado, tente de novo.",
       "error.merge.failed": "O merge falhou: {{detail}}",
+      "error.merge.worktree_dirty":
+        "O worktree da sessão tem mudanças não commitadas — commite ou descarte antes de materializar o conflito.",
       "error.forge.cli_failed": "O comando {{cli}} falhou: {{detail}}",
       "error.forge.not_authenticated":
         "{{cli}} não está autenticado — rode o login da CLI e tente de novo.",
@@ -1017,6 +1019,8 @@ const resources = {
       "error.merge.base_moved":
         "The base branch ({{branch}}) moved during the merge — nothing changed, try again.",
       "error.merge.failed": "Merge failed: {{detail}}",
+      "error.merge.worktree_dirty":
+        "The session worktree has uncommitted changes — commit or discard them before materializing the conflict.",
       "error.forge.cli_failed": "The {{cli}} command failed: {{detail}}",
       "error.forge.not_authenticated":
         "{{cli}} is not authenticated — run the CLI login and try again.",
