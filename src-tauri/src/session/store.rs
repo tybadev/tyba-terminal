@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS approval_history (
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    name_locked INTEGER,
     repo_root TEXT,
     color TEXT,
     group_name TEXT,
@@ -121,6 +122,10 @@ impl Store {
         let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN side_ratio REAL", []);
         let _ = conn.execute(
             "ALTER TABLE workspaces ADD COLUMN side_expanded INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE workspaces ADD COLUMN name_locked INTEGER",
             [],
         );
         Ok(Self {
@@ -350,12 +355,13 @@ impl Store {
         for w in &rows.workspaces {
             tx.execute(
                 "INSERT INTO workspaces
-                     (id, name, repo_root, color, group_name, kind, position, active_tab,
-                      side_view, side_ratio, side_expanded, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                     (id, name, name_locked, repo_root, color, group_name, kind, position,
+                      active_tab, side_view, side_ratio, side_expanded, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     w.id,
                     w.name,
+                    w.name_locked,
                     w.repo_root,
                     w.color,
                     w.group_name,
@@ -406,8 +412,8 @@ impl Store {
     pub fn load_layout(&self) -> Result<LayoutRows, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, name, repo_root, color, group_name, kind, position, active_tab,
-                    side_view, side_ratio, side_expanded, created_at
+            "SELECT id, name, name_locked, repo_root, color, group_name, kind, position,
+                    active_tab, side_view, side_ratio, side_expanded, created_at
              FROM workspaces ORDER BY position",
         )?;
         let workspaces = stmt
@@ -415,16 +421,17 @@ impl Store {
                 Ok(WorkspaceRow {
                     id: row.get(0)?,
                     name: row.get(1)?,
-                    repo_root: row.get(2)?,
-                    color: row.get(3)?,
-                    group_name: row.get(4)?,
-                    kind: row.get(5)?,
-                    position: row.get(6)?,
-                    active_tab: row.get(7)?,
-                    side_view: row.get(8)?,
-                    side_ratio: row.get(9)?,
-                    side_expanded: row.get(10)?,
-                    created_at: row.get(11)?,
+                    name_locked: row.get(2)?,
+                    repo_root: row.get(3)?,
+                    color: row.get(4)?,
+                    group_name: row.get(5)?,
+                    kind: row.get(6)?,
+                    position: row.get(7)?,
+                    active_tab: row.get(8)?,
+                    side_view: row.get(9)?,
+                    side_ratio: row.get(10)?,
+                    side_expanded: row.get(11)?,
+                    created_at: row.get(12)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

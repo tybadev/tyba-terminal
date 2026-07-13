@@ -326,6 +326,9 @@ impl WorkspaceKind {
 pub struct Workspace {
     pub id: WorkspaceId,
     pub name: String,
+    /// true = o dono nomeou de propósito (rename); false = nome automático,
+    /// a UI pode exibir o cwd vivo no lugar.
+    pub name_locked: bool,
     pub repo_root: Option<String>,
     pub color: Option<String>,
     pub group: Option<String>,
@@ -367,6 +370,7 @@ pub struct LayoutState {
 pub struct WorkspaceRow {
     pub id: String,
     pub name: String,
+    pub name_locked: Option<i64>,
     pub repo_root: Option<String>,
     pub color: Option<String>,
     pub group_name: Option<String>,
@@ -489,6 +493,7 @@ impl LayoutManager {
         let workspace = Workspace {
             id: Uuid::new_v4(),
             name: name.trim().to_string(),
+            name_locked: false,
             repo_root,
             color: None,
             group: None,
@@ -539,6 +544,7 @@ impl LayoutManager {
         let workspace = Workspace {
             id: Uuid::new_v4(),
             name: FALLBACK_WORKSPACE_NAME.to_string(),
+            name_locked: true,
             repo_root: None,
             color: None,
             group: None,
@@ -604,6 +610,7 @@ impl LayoutManager {
         let mut inner = self.inner.write();
         let idx = ws_index(&inner.workspaces, id)?;
         inner.workspaces[idx].name = trimmed.to_string();
+        inner.workspaces[idx].name_locked = true;
         drop(inner);
         self.persist()
     }
@@ -1046,6 +1053,7 @@ fn ensure_docker_workspace(inner: &mut Inner) -> WorkspaceId {
     let workspace = Workspace {
         id: Uuid::new_v4(),
         name: DOCKER_WORKSPACE_NAME.to_string(),
+        name_locked: true,
         repo_root: None,
         color: None,
         group: None,
@@ -1109,6 +1117,7 @@ pub fn workspaces_to_rows(workspaces: &[Workspace]) -> LayoutRows {
         rows.workspaces.push(WorkspaceRow {
             id: ws_id.clone(),
             name: ws.name.clone(),
+            name_locked: Some(ws.name_locked as i64),
             repo_root: ws.repo_root.clone(),
             color: ws.color.clone(),
             group_name: ws.group.clone(),
@@ -1246,6 +1255,7 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
             Some(Workspace {
                 id: ws_id,
                 name: w.name.clone(),
+                name_locked: w.name_locked.unwrap_or(0) != 0,
                 repo_root: w.repo_root.clone(),
                 color: w.color.clone(),
                 group: w.group_name.clone(),
@@ -1781,6 +1791,30 @@ mod tests {
         let ws = &mgr.state().workspaces[0];
         assert_eq!(ws.tabs[0].active_pane, Some(s_pane));
         assert_eq!(ws.side_view, Some(diff_view(s)));
+    }
+
+    #[test]
+    fn rename_locks_the_workspace_name_and_it_round_trips() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let s = sid();
+        let ws_id = {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            let ws_id = mgr.create_workspace("poc-git", None, s).unwrap();
+            assert!(
+                !mgr.state().workspaces[0].name_locked,
+                "nome de criação é automático — a UI pode seguir o cwd"
+            );
+            mgr.rename_workspace(ws_id, "meu projeto").unwrap();
+            assert!(mgr.state().workspaces[0].name_locked);
+            ws_id
+        };
+
+        let mgr = LayoutManager::new(store);
+        mgr.load(&HashSet::from([s]));
+        let ws = &mgr.state().workspaces[0];
+        assert_eq!(ws.id, ws_id);
+        assert_eq!(ws.name, "meu projeto");
+        assert!(ws.name_locked, "flag precisa sobreviver ao restart");
     }
 
     #[test]
