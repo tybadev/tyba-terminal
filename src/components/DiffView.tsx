@@ -143,6 +143,23 @@ type DisplayRow =
 
 const DISCARD_ARM_MS = 3000;
 
+// Stale-while-revalidate: o último diff de cada sessão sobrevive ao desmonte do
+// painel. Reabrir pinta na hora enquanto revalida em background, em vez de
+// mostrar "carregando" e recomputar do zero. O componente é keyed por session.id,
+// então cada montagem semeia o estado inicial daqui. Teto com evicção FIFO pra
+// não crescer sem limite ao longo da vida do app.
+const DIFF_CACHE_CAP = 64;
+const diffCache = new Map<string, SessionDiff>();
+function cacheDiff(id: string, d: SessionDiff) {
+  diffCache.delete(id);
+  diffCache.set(id, d);
+  while (diffCache.size > DIFF_CACHE_CAP) {
+    const oldest = diffCache.keys().next().value;
+    if (oldest === undefined) break;
+    diffCache.delete(oldest);
+  }
+}
+
 export function DiffView({
   session,
   editor,
@@ -152,7 +169,9 @@ export function DiffView({
   onSendToAgent,
 }: Props) {
   const { t } = useTranslation();
-  const [diff, setDiff] = useState<SessionDiff | null>(null);
+  const [diff, setDiff] = useState<SessionDiff | null>(
+    () => diffCache.get(session.id) ?? null,
+  );
   const [loadError, setLoadError] = useState<string | null>(null);
   const [hunksByKey, setHunksByKey] = useState<
     Record<string, FileHunks | undefined>
@@ -233,6 +252,7 @@ export function DiffView({
           clearCaches((key) => keyScope(key) === "committed");
         }
         lastSnapRef.current = { head, work };
+        cacheDiff(session.id, d);
         setDiff(d);
         setLoadError(null);
       })
