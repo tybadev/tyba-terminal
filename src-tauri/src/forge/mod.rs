@@ -1,3 +1,4 @@
+pub mod cli_hosts;
 pub mod exec;
 pub mod github;
 pub mod gitlab;
@@ -96,13 +97,20 @@ fn current_branch(repo_root: &Path) -> Result<String, AppError> {
     Ok(branch)
 }
 
+fn resolve_kind(remote: &Remote) -> Option<ForgeKind> {
+    remote
+        .kind()
+        .or_else(|| cli_hosts::kind_for_host(&remote.host))
+}
+
 pub fn detect(repo_root: &Path) -> Option<ForgeKind> {
-    remote_of(repo_root)?.kind()
+    let remote = remote_of(repo_root)?;
+    resolve_kind(&remote)
 }
 
 pub fn status(repo_root: &Path, branch: Option<&str>) -> Option<ForgeStatus> {
     let remote = remote_of(repo_root)?;
-    let kind = remote.kind()?;
+    let kind = resolve_kind(&remote)?;
 
     let (cli, installed, authenticated, web_create_url) = match kind {
         ForgeKind::GitHub => {
@@ -221,6 +229,12 @@ mod tests {
     #[test]
     fn detects_gitlab_from_the_origin_remote() {
         let repo = init_repo("https://gitlab.com/group/sub/app.git");
+        assert_eq!(detect(repo.path()), Some(ForgeKind::GitLab));
+    }
+
+    #[test]
+    fn detects_selfhosted_gitlab_via_subgroups() {
+        let repo = init_repo("git@git.acme.com:group/sub/infra/app.git");
         assert_eq!(detect(repo.path()), Some(ForgeKind::GitLab));
     }
 
