@@ -15,7 +15,7 @@ docker run --rm \
     set -euo pipefail
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq curl unzip build-essential file rpm \
+    apt-get install -y -qq curl unzip build-essential file rpm xdg-utils \
       libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev >/dev/null
     command -v cargo >/dev/null || {
       curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable >/dev/null

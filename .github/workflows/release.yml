@@ -47,8 +47,10 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
+          # xdg-utils não é opcional: o bundler do AppImage chama xdg-open e aborta
+          # sem ele — o .deb e o .rpm saem, o AppImage não.
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf libgtk-3-dev rpm
+            librsvg2-dev patchelf libgtk-3-dev rpm xdg-utils
 
       - run: bun install --frozen-lockfile
 
@@ -88,13 +90,21 @@ jobs:
             exit 1
           fi
 
-      - name: Verificar que o sandbox está compilado (Linux)
+      - name: Verificar os artefatos Linux
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           set -euo pipefail
-          deb=$(find src-tauri/target/${{ matrix.target }}/release/bundle/deb -name '*.deb' | head -1)
+          bundle=src-tauri/target/${{ matrix.target }}/release/bundle
+          # O bundler do AppImage falha sozinho (ex.: xdg-open ausente) enquanto o
+          # .deb e o .rpm saem normalmente — sem esta checagem o release publicaria
+          # dois formatos de três e ninguém notaria.
+          for fmt in deb rpm appimage; do
+            find "$bundle/$fmt" -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
+              | grep -q . || { echo "::error::formato $fmt não foi gerado"; exit 1; }
+          done
           # bubblewrap precisa vir declarado: sem ele o spawn de agente é recusado
           # fail-closed, e o usuário só descobriria isso na primeira sessão.
+          deb=$(find "$bundle/deb" -name '*.deb' | head -1)
           dpkg-deb -f "$deb" Depends | grep -q bubblewrap \
             || { echo "::error::o .deb não declara bubblewrap"; exit 1; }
 
