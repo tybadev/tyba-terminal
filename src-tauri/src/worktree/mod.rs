@@ -82,6 +82,22 @@ fn git_text(cmd: Command, what: &str) -> Result<String, String> {
         .to_string())
 }
 
+pub struct WorktreeGitDirs {
+    pub git_dir: PathBuf,
+    pub common_dir: PathBuf,
+}
+
+pub fn resolved_git_dirs(worktree_path: &Path) -> Result<WorktreeGitDirs, String> {
+    let git_dir = crate::repo::git_path(worktree_path, "--git-dir")
+        .ok_or("git-dir do worktree indisponível")?;
+    let common_dir = crate::repo::git_path(worktree_path, "--git-common-dir")
+        .ok_or("git-common-dir do worktree indisponível")?;
+    Ok(WorktreeGitDirs {
+        git_dir: crate::repo::canonicalize_or(&git_dir),
+        common_dir: crate::repo::canonicalize_or(&common_dir),
+    })
+}
+
 pub fn managed_root() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -671,6 +687,40 @@ mod lifecycle_tests {
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-qm", "init"]);
         repo
+    }
+
+    #[test]
+    fn resolved_git_dirs_follow_worktree_pointer_and_commondir() {
+        let base = temp_base("gitdirs");
+        let repo = temp_repo(&base);
+        let managed = base.join("managed");
+        let wt = create_in(&managed, &repo, "gitdirs").expect("create");
+
+        let dirs = resolved_git_dirs(&wt.path).unwrap();
+        let repo_canon = crate::repo::canonicalize_or(&repo);
+        assert!(dirs.git_dir.starts_with(repo_canon.join(".git/worktrees")));
+        assert_eq!(dirs.common_dir, repo_canon.join(".git"));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn resolved_git_dirs_on_main_repo_returns_git_dir_itself() {
+        let base = temp_base("gitdirs-main");
+        let repo = temp_repo(&base);
+        let dirs = resolved_git_dirs(&repo).unwrap();
+        let repo_canon = crate::repo::canonicalize_or(&repo);
+        assert_eq!(dirs.git_dir, repo_canon.join(".git"));
+        assert_eq!(dirs.common_dir, repo_canon.join(".git"));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn resolved_git_dirs_fails_without_pointer() {
+        let base = temp_base("gitdirs-none");
+        std::fs::create_dir_all(&base).unwrap();
+        assert!(resolved_git_dirs(&base).is_err());
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

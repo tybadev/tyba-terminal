@@ -15,6 +15,7 @@ pub mod session;
 pub mod shell_path;
 pub mod status;
 pub mod theme;
+pub mod user_config;
 pub mod worktree;
 
 use std::sync::Arc;

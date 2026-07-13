@@ -1,33 +1,46 @@
-//! Sandbox de execução de agentes.
-//!
-//! Princípio #2: a trait existe desde o dia 1 mesmo com implementação
-//! passthrough — retrofitar isolamento depois é cirurgia.
-//! Fase 5: Seatbelt/sandbox-exec (macOS), Landlock/bubblewrap (Linux):
-//! write apenas em worktree + temp, read no repo.
+pub mod policy;
+#[cfg(target_os = "macos")]
+pub mod seatbelt;
+#[cfg(all(test, target_os = "macos"))]
+mod seatbelt_exec_tests;
 
 use std::path::PathBuf;
 
 use portable_pty::CommandBuilder;
 
+use policy::AgentAccess;
+
 pub struct SandboxSpec {
-    /// Único diretório com permissão de escrita (o worktree da sessão).
     pub writable_root: PathBuf,
-    /// Raiz de leitura (repo original).
     pub readable_root: PathBuf,
-    /// Rede permitida? (vermelho por default para agentes)
     pub allow_network: bool,
+    pub repo_git_dir: PathBuf,
+    pub worktree_git_dir: PathBuf,
+    pub runtime_dir: PathBuf,
+    pub hook_socket: PathBuf,
+    pub tyba_exe: PathBuf,
+    pub tyba_data_dir: PathBuf,
+    pub home: PathBuf,
+    pub tmpdir: Option<PathBuf>,
+    pub exec_path_dirs: Vec<PathBuf>,
+    pub agent: AgentAccess,
+    pub read_allow_extra: Vec<PathBuf>,
 }
 
 pub trait Sandbox: Send + Sync {
-    /// Envolve o comando do agente na política de isolamento.
-    fn wrap(&self, cmd: CommandBuilder, spec: &SandboxSpec) -> CommandBuilder;
+    fn wrap(&self, cmd: CommandBuilder, spec: &SandboxSpec) -> Result<CommandBuilder, String>;
 }
 
-/// MVP: sem isolamento real, mas todo spawn de agente já passa por aqui.
-pub struct PassthroughSandbox;
-
-impl Sandbox for PassthroughSandbox {
-    fn wrap(&self, cmd: CommandBuilder, _spec: &SandboxSpec) -> CommandBuilder {
-        cmd
+pub fn platform_sandbox() -> Result<Box<dyn Sandbox>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(Box::new(seatbelt::SeatbeltSandbox::new()?))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(
+            "sandbox de agente indisponível nesta plataforma — sessão recusada (fail-closed)"
+                .into(),
+        )
     }
 }
