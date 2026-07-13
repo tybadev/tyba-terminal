@@ -513,11 +513,15 @@ pub fn setup_script(root: &Path) -> Option<SetupScript> {
 /// baseline das sessões de agente (`repo_config::AGENT_ENV_BASELINE`).
 fn filter_setup_env(
     vars: impl Iterator<Item = (String, String)>,
+    login_path: &str,
     worktree: &Path,
 ) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = vars
-        .filter(|(k, _)| crate::repo_config::AGENT_ENV_BASELINE.contains(&k.as_str()))
+        .filter(|(k, _)| {
+            k.as_str() != "PATH" && crate::repo_config::AGENT_ENV_BASELINE.contains(&k.as_str())
+        })
         .collect();
+    env.push(("PATH".into(), login_path.to_string()));
     env.push((
         "TYBA_WORKTREE".into(),
         worktree.to_string_lossy().into_owned(),
@@ -526,7 +530,7 @@ fn filter_setup_env(
 }
 
 pub fn setup_env(worktree: &Path) -> Vec<(String, String)> {
-    filter_setup_env(std::env::vars(), worktree)
+    filter_setup_env(std::env::vars(), &crate::shell_path::agent_path(), worktree)
 }
 
 /// Executa o conteúdo CONSENTIDO via stdin do `sh` — o que roda é
@@ -881,14 +885,29 @@ mod lifecycle_tests {
         let vars = vec![
             ("HOME".to_string(), "/home/t".to_string()),
             ("AWS_SECRET_ACCESS_KEY".to_string(), "vazou".to_string()),
-            ("PATH".to_string(), "/bin".to_string()),
+            (
+                "PATH".to_string(),
+                "/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
+            ),
         ];
-        let env = filter_setup_env(vars.into_iter(), Path::new("/wt"));
+        let env = filter_setup_env(
+            vars.into_iter(),
+            "/opt/homebrew/bin:/usr/bin",
+            Path::new("/wt"),
+        );
         let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
         assert!(keys.contains(&"HOME"));
-        assert!(keys.contains(&"PATH"));
         assert!(keys.contains(&"TYBA_WORKTREE"));
         assert!(!keys.contains(&"AWS_SECRET_ACCESS_KEY"));
+        let path = env
+            .iter()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert_eq!(
+            path, "/opt/homebrew/bin:/usr/bin",
+            "PATH do setup vem do shell de login, não do processo (launchd)"
+        );
     }
 
     #[test]
