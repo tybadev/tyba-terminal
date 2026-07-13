@@ -162,6 +162,25 @@ mod tests {
         stream
     }
 
+    fn firehose(lines: usize) -> Vec<u8> {
+        let mut stream = Vec::new();
+        for i in 0..lines {
+            stream.extend_from_slice(
+                format!(
+                    "\x1b[1;3{}m[{:06}]\x1b[0m \x1b[38;2;{};{};200mtruecolor bloco\x1b[0m \x1b]0;t{}\x07 世界🚀🔥 \x1b[38;5;{}m################\x1b[0m\r\n",
+                    i % 7 + 1,
+                    i,
+                    i % 255,
+                    i % 200,
+                    i,
+                    i % 256
+                )
+                .as_bytes(),
+            );
+        }
+        stream
+    }
+
     fn ends_on_complete_sequences(chunk: &[u8]) -> bool {
         let mut i = 0;
         while i < chunk.len() {
@@ -283,6 +302,47 @@ mod tests {
             }
             forwarded.extend(hold_back.flush());
             assert_eq!(forwarded, input, "chunk size {chunk_size} lost bytes");
+        }
+    }
+
+    #[test]
+    fn a_firehose_split_at_read_buffer_boundaries_is_forwarded_byte_for_byte() {
+        let input = firehose(20_000);
+        for read_size in [1024, 4096, 8192, 8191, 65_536] {
+            let mut hold_back = HoldBack::new();
+            let mut forwarded = Vec::with_capacity(input.len());
+            for chunk in input.chunks(read_size) {
+                let out = hold_back.feed(chunk);
+                assert!(
+                    ends_on_complete_sequences(&out),
+                    "read size {read_size} produced an unsafe boundary"
+                );
+                forwarded.extend(out);
+            }
+            forwarded.extend(hold_back.flush());
+            assert_eq!(forwarded, input, "read size {read_size} altered the stream");
+        }
+    }
+
+    #[test]
+    fn the_vt100_screen_is_identical_with_and_without_hold_back() {
+        let input = firehose(2_000);
+        for read_size in [512, 8192, 8191] {
+            let mut direct = vt100::Parser::new(24, 80, 1_000);
+            direct.process(&input);
+
+            let mut through = vt100::Parser::new(24, 80, 1_000);
+            let mut hold_back = HoldBack::new();
+            for chunk in input.chunks(read_size) {
+                through.process(&hold_back.feed(chunk));
+            }
+            through.process(&hold_back.flush());
+
+            assert_eq!(
+                through.screen().contents_formatted(),
+                direct.screen().contents_formatted(),
+                "snapshot diverged at read size {read_size}"
+            );
         }
     }
 
