@@ -710,6 +710,17 @@ async fn session_fetch(state: State<'_, AppState>, id: SessionId) -> Result<(), 
 }
 
 #[tauri::command]
+async fn session_checkout(
+    state: State<'_, AppState>,
+    id: SessionId,
+    branch: String,
+    is_remote: bool,
+) -> Result<(), AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    worktree::branches::checkout(&ctx.path, &branch, is_remote)
+}
+
+#[tauri::command]
 async fn session_branch_diff(
     state: State<'_, AppState>,
     id: SessionId,
@@ -1755,6 +1766,7 @@ pub fn run() {
             session_conflicts,
             session_branches,
             session_fetch,
+            session_checkout,
             session_branch_diff,
             session_branch_hunks,
             open_diff_tab,

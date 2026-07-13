@@ -128,6 +128,12 @@ export interface ConflictState {
 export const sessionConflicts = (id: SessionId) =>
   invoke<ConflictState | null>("session_conflicts", { id });
 
+export const sessionCheckout = (
+  id: SessionId,
+  branch: string,
+  isRemote: boolean,
+) => invoke<void>("session_checkout", { id, branch, isRemote });
+
 export interface DiffLine {
   kind: "context" | "add" | "del";
   text: string;
