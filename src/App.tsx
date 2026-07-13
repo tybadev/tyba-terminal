@@ -759,12 +759,24 @@ export default function App() {
   const [activeGitStatus, setActiveGitStatus] = useState<
     SessionGitStatus | null | undefined
   >(undefined);
+  // O cwd da sessão ativa chega por evento (onSessionCwd) — usar como
+  // dependência dispara o snapshot na hora do `cd`, em vez de esperar o
+  // próximo tick do poll de 4s. O poll continua cobrindo mudanças que não
+  // trocam de diretório (commit, stage) sem evento próprio.
+  const activeCwdKey = activeId
+    ? (sessionCwds[activeId]?.canonical ?? sessionCwds[activeId]?.cwd ?? null)
+    : null;
+  const statusSessionRef = useRef<SessionId | null>(null);
   useEffect(() => {
     if (!activeId) {
       setActiveGitStatus(null);
+      statusSessionRef.current = null;
       return;
     }
-    setActiveGitStatus(undefined);
+    if (statusSessionRef.current !== activeId) {
+      setActiveGitStatus(undefined);
+      statusSessionRef.current = activeId;
+    }
     let cancelled = false;
     const id = activeId;
     const check = () => {
@@ -782,7 +794,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeId]);
+  }, [activeId, activeCwdKey]);
   const gitTone = gitIconTone(activeGitStatus);
 
   const activeSession = activeId ? sessionById.get(activeId) : undefined;
