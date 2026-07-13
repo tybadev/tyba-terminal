@@ -37,6 +37,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
+      # A security-first product that never checks its own dependencies for known
+      # CVEs is telling on itself. Fails the build on any advisory.
+      - run: bun audit
       - run: bun run typecheck
       - run: bun test
 
@@ -72,4 +75,15 @@ jobs:
       - run: cargo clippy -- -D warnings
         working-directory: src-tauri
       - run: cargo test
+        working-directory: src-tauri
+
+      # Same reasoning as `bun audit`, on the Rust side. Exceptions live in
+      # src-tauri/.cargo/audit.toml — each one dated and justified, never a blanket
+      # ignore. Anything not listed there fails.
+      - name: cargo audit
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --locked --quiet
+          cargo audit
         working-directory: src-tauri

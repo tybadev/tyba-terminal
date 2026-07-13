@@ -106,8 +106,13 @@ jobs:
         with:
           args: --target ${{ matrix.target }}
 
-      - name: Verificar assinatura e notarização (macOS)
-        if: startsWith(matrix.os, 'macos')
+      # Enforced on tags — which is the only path that publishes. A dry run
+      # (workflow_dispatch) skips it on purpose: without the certificate the app is
+      # ad-hoc signed and Gatekeeper rejects it, and we still want to be able to
+      # rehearse the pipeline before the certificate exists. Publishing an unsigned
+      # build stays impossible.
+      - name: Verify signature and notarization (macOS)
+        if: startsWith(matrix.os, 'macos') && startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
           app=$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -name '*.app' -maxdepth 1 | head -1)
@@ -119,7 +124,7 @@ jobs:
             exit 1
           fi
 
-      - name: Verificar os artefatos Linux
+      - name: Verify the Linux artifacts
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           set -euo pipefail
@@ -137,7 +142,7 @@ jobs:
           dpkg-deb -f "$deb" Depends | grep -q bubblewrap \
             || { echo "::error::o .deb não declara bubblewrap"; exit 1; }
 
-      - name: Somas de verificação
+      - name: Checksums
         shell: bash
         run: |
           set -euo pipefail
