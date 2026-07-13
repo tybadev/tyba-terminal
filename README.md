@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="src/assets/tyba-mark.svg" alt="TYBA" width="96" height="96">
+<img src="docs/assets/tyba-logo.png" alt="TYBA" width="128" height="128">
 
 # TYBA
 
