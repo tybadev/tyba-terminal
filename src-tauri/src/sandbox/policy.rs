@@ -6,12 +6,25 @@ pub enum Rule {
     Subpath(PathBuf),
     Node(PathBuf),
     Prefix(PathBuf),
+    Family(PathBuf),
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct RuleSet {
     pub allow: Vec<Rule>,
     pub except: Vec<Rule>,
+}
+
+impl Rule {
+    pub fn path(&self) -> &Path {
+        match self {
+            Rule::Literal(p)
+            | Rule::Subpath(p)
+            | Rule::Node(p)
+            | Rule::Prefix(p)
+            | Rule::Family(p) => p,
+        }
+    }
 }
 
 impl RuleSet {
@@ -58,9 +71,19 @@ fn path_str(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+fn canonical_form(path: &Path) -> Option<PathBuf> {
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return Some(canon);
+    }
+    let parent = path.parent()?;
+    let name = path.file_name()?;
+    let canon_parent = std::fs::canonicalize(parent).ok()?;
+    Some(canon_parent.join(name))
+}
+
 pub fn variants(path: &Path) -> Vec<PathBuf> {
     let mut out = vec![path.to_path_buf()];
-    if let Ok(canon) = std::fs::canonicalize(path) {
+    if let Some(canon) = canonical_form(path) {
         if !out.contains(&canon) {
             out.push(canon);
         }
@@ -94,21 +117,19 @@ fn render_one(rule: &Rule, path: &Path) -> String {
             escape_regex(&s),
         ),
         Rule::Prefix(_) => format!("(regex #\"^{}\")", escape_regex(&s)),
+        Rule::Family(_) => format!("(regex #\"^{}($|[-.~])\")", escape_regex(&s)),
     }
 }
 
 pub fn render_rule(rule: &Rule) -> String {
-    let path = match rule {
-        Rule::Literal(p) | Rule::Subpath(p) | Rule::Node(p) | Rule::Prefix(p) => p,
-    };
-    variants(path)
+    variants(rule.path())
         .iter()
         .map(|v| render_one(rule, v))
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn render_rules(rules: &[Rule]) -> String {
+pub fn render_rules(rules: &[Rule]) -> String {
     rules.iter().map(render_rule).collect::<Vec<_>>().join(" ")
 }
 
@@ -166,6 +187,25 @@ mod tests {
     fn prefix_rule_emits_unanchored_tail_regex() {
         let rendered = render_rule(&Rule::Prefix(PathBuf::from("/nonexistent-h/.claude.json")));
         assert!(rendered.contains(r#"(regex #"^/nonexistent-h/\.claude\.json")"#));
+    }
+
+    #[test]
+    fn family_rule_matches_file_and_dotted_siblings_not_bare_suffix() {
+        let rendered = render_rule(&Rule::Family(PathBuf::from("/nonexistent-f/.claude.json")));
+        assert!(rendered.contains(r#"(regex #"^/nonexistent-f/\.claude\.json($|[-.~])")"#));
+    }
+
+    #[test]
+    fn canonical_form_falls_back_to_parent_for_absent_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap();
+        let absent = dir.path().join("does-not-exist-yet");
+        let vs = variants(&absent);
+        assert!(
+            vs.contains(&real.join("does-not-exist-yet")),
+            "sem a forma canônica do pai, um except/allow sobre um path ainda inexistente \
+             (socket de hook, prefixo tyba-) não casa o path resolvido pelo kernel"
+        );
     }
 
     #[test]

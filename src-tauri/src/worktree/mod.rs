@@ -88,45 +88,13 @@ pub struct WorktreeGitDirs {
 }
 
 pub fn resolved_git_dirs(worktree_path: &Path) -> Result<WorktreeGitDirs, String> {
-    let pointer = worktree_path.join(".git");
-    if pointer.is_dir() {
-        let canon = crate::repo::canonicalize_or(&pointer);
-        return Ok(WorktreeGitDirs {
-            git_dir: canon.clone(),
-            common_dir: canon,
-        });
-    }
-    let content =
-        std::fs::read_to_string(&pointer).map_err(|e| format!("ponteiro .git do worktree: {e}"))?;
-    let git_dir = content
-        .lines()
-        .find_map(|l| l.strip_prefix("gitdir:"))
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or("ponteiro .git do worktree sem gitdir")?;
-    let git_dir = PathBuf::from(git_dir);
-    let git_dir = if git_dir.is_absolute() {
-        git_dir
-    } else {
-        worktree_path.join(git_dir)
-    };
-    let git_dir = crate::repo::canonicalize_or(&git_dir);
-    let common_dir = match std::fs::read_to_string(git_dir.join("commondir")) {
-        Ok(rel) => {
-            let rel = rel.trim();
-            let common = PathBuf::from(rel);
-            let common = if common.is_absolute() {
-                common
-            } else {
-                git_dir.join(common)
-            };
-            crate::repo::canonicalize_or(&common)
-        }
-        Err(_) => git_dir.clone(),
-    };
+    let git_dir = crate::repo::git_path(worktree_path, "--git-dir")
+        .ok_or("git-dir do worktree indisponível")?;
+    let common_dir = crate::repo::git_path(worktree_path, "--git-common-dir")
+        .ok_or("git-common-dir do worktree indisponível")?;
     Ok(WorktreeGitDirs {
-        git_dir,
-        common_dir,
+        git_dir: crate::repo::canonicalize_or(&git_dir),
+        common_dir: crate::repo::canonicalize_or(&common_dir),
     })
 }
 

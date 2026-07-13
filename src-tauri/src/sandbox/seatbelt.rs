@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use portable_pty::CommandBuilder;
 
-use super::policy::{render_rule, render_ruleset, Rule, RuleSet};
+use super::policy::{render_rule, render_rules, render_ruleset, Rule, RuleSet};
 use super::{Sandbox, SandboxSpec};
 
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
@@ -36,12 +36,13 @@ const TLS_MACH_LOOKUPS: [&str; 11] = [
     "com.apple.nesessionmanager.content-filter",
 ];
 
-const SYSTEM_READ_ROOTS: [&str; 9] = [
+const SYSTEM_READ_ROOTS: [&str; 10] = [
     "/usr",
     "/System",
     "/bin",
     "/sbin",
     "/opt/homebrew",
+    "/usr/local",
     "/Library/Frameworks",
     "/Library/Preferences",
     "/private/etc",
@@ -59,53 +60,84 @@ fn mach_lookup_line(names: &[&str]) -> String {
     format!("(allow mach-lookup {globals})")
 }
 
+fn app_bundle(path: &Path) -> Option<&Path> {
+    path.ancestors()
+        .find(|a| a.extension().map(|e| e == "app").unwrap_or(false))
+}
+
 fn developer_dir_rules() -> Vec<Rule> {
     let mut rules = vec![Rule::Subpath(PathBuf::from("/Library/Developer"))];
     let Ok(target) = std::fs::read_link(XCODE_SELECT_LINK) else {
         return rules;
     };
-    let bundle = target
-        .ancestors()
-        .find(|a| a.extension().map(|e| e == "app").unwrap_or(false));
-    rules.push(Rule::Subpath(bundle.unwrap_or(&target).to_path_buf()));
+    let bundle = app_bundle(&target).unwrap_or(&target);
+    rules.push(Rule::Subpath(bundle.to_path_buf()));
     rules
 }
 
 fn darwin_cache_dir(tmpdir: &Path) -> Option<PathBuf> {
-    let canon = std::fs::canonicalize(tmpdir).unwrap_or_else(|_| tmpdir.to_path_buf());
-    if !canon.starts_with("/private/var/folders") || canon.file_name()? != "T" {
+    if !tmpdir.starts_with("/private/var/folders") || tmpdir.file_name()? != "T" {
         return None;
     }
-    Some(canon.parent()?.join("C"))
+    Some(tmpdir.parent()?.join("C"))
 }
 
-fn docker_sockets(home: &Path) -> Vec<Rule> {
-    vec![
-        Rule::Literal(PathBuf::from("/var/run/docker.sock")),
-        Rule::Literal(PathBuf::from("/private/var/run/docker.sock")),
-        Rule::Literal(home.join(".docker/run/docker.sock")),
-        Rule::Literal(home.join(".colima/default/docker.sock")),
-        Rule::Literal(home.join(".orbstack/run/docker.sock")),
+fn container_socket_dirs(home: &Path) -> Vec<Rule> {
+    let system = [
+        "/var/run/docker.sock",
+        "/private/var/run/docker.sock",
+        "/var/run/podman/podman.sock",
+        "/private/var/run/podman/podman.sock",
+        "/var/run/containerd/containerd.sock",
+        "/run/docker.sock",
+        "/run/podman/podman.sock",
     ]
+    .iter()
+    .map(|p| Rule::Literal(PathBuf::from(p)));
+    let user = [
+        ".docker/run",
+        ".colima",
+        ".orbstack/run",
+        ".rd",
+        ".lima",
+        ".local/share/containers",
+        ".local/share/nerdctl",
+        ".config/containers",
+    ]
+    .iter()
+    .map(|p| Rule::Subpath(home.join(p)));
+    system.chain(user).collect()
 }
 
 fn tyba_exe_read_rules(exe: &Path) -> Vec<Rule> {
     let mut rules = vec![Rule::Literal(exe.to_path_buf())];
-    if let Some(bundle) = exe
-        .ancestors()
-        .find(|a| a.extension().map(|e| e == "app").unwrap_or(false))
-    {
+    if let Some(bundle) = app_bundle(exe) {
         rules.push(Rule::Subpath(bundle.to_path_buf()));
     }
     rules
 }
 
+fn canonical_dir(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn exec_path_read_rules(spec: &SandboxSpec) -> Vec<Rule> {
-    spec.exec_path_dirs
-        .iter()
-        .filter(|dir| !spec.home.starts_with(dir))
-        .map(|dir| Rule::Subpath(dir.clone()))
-        .collect()
+    let home = canonical_dir(&spec.home);
+    let mut seen = std::collections::HashSet::new();
+    let mut rules = Vec::new();
+    for dir in &spec.exec_path_dirs {
+        if !dir.is_absolute() {
+            continue;
+        }
+        let canon = canonical_dir(dir);
+        if home.starts_with(&canon) {
+            continue;
+        }
+        if seen.insert(canon.clone()) {
+            rules.push(Rule::Subpath(canon));
+        }
+    }
+    rules
 }
 
 pub fn build_policy(spec: &SandboxSpec) -> String {
@@ -182,23 +214,25 @@ pub fn build_policy(spec: &SandboxSpec) -> String {
             Rule::Subpath(spec.runtime_dir.clone()),
         ]),
     ));
-    lines.extend(render_ruleset(
-        READ_OPS,
-        &RuleSet {
-            allow: vec![Rule::Subpath(PathBuf::from("/private/tmp"))],
-            except: vec![Rule::Prefix(PathBuf::from("/private/tmp/tyba-"))],
-        },
-    ));
-    if let Some(tmpdir) = &spec.tmpdir {
+
+    let private_tmp = RuleSet {
+        allow: vec![Rule::Subpath(PathBuf::from("/private/tmp"))],
+        except: vec![Rule::Prefix(PathBuf::from("/private/tmp/tyba-"))],
+    };
+    lines.extend(render_ruleset(READ_OPS, &private_tmp));
+
+    let tmpdir_rules = spec.tmpdir.as_deref().map(|raw| {
+        let tmpdir = canonical_dir(raw);
         let mut allow = vec![Rule::Subpath(tmpdir.clone())];
         let mut except = vec![Rule::Prefix(tmpdir.join("tyba-"))];
-        if let Some(cache) = darwin_cache_dir(tmpdir) {
+        if let Some(cache) = darwin_cache_dir(&tmpdir) {
             except.push(Rule::Prefix(cache.join("tyba-")));
             allow.push(Rule::Subpath(cache));
         }
-        let tmp_rules = RuleSet { allow, except };
-        lines.extend(render_ruleset(READ_OPS, &tmp_rules));
-        lines.extend(render_ruleset("file-write*", &tmp_rules));
+        RuleSet { allow, except }
+    });
+    if let Some(tmp_rules) = &tmpdir_rules {
+        lines.extend(render_ruleset(READ_OPS, tmp_rules));
     }
 
     lines.extend(render_ruleset(
@@ -224,18 +258,14 @@ pub fn build_policy(spec: &SandboxSpec) -> String {
         "file-write*",
         &RuleSet::allow(vec![
             Rule::Subpath(spec.repo_git_dir.join("objects")),
-            Rule::Subpath(spec.repo_git_dir.join("refs")),
-            Rule::Subpath(spec.repo_git_dir.join("logs")),
-            Rule::Node(spec.repo_git_dir.join("packed-refs")),
+            Rule::Node(spec.repo_git_dir.join("refs/heads/tyba")),
+            Rule::Subpath(spec.repo_git_dir.join("logs/refs/heads/tyba")),
         ]),
     ));
-    lines.extend(render_ruleset(
-        "file-write*",
-        &RuleSet {
-            allow: vec![Rule::Subpath(PathBuf::from("/private/tmp"))],
-            except: vec![Rule::Prefix(PathBuf::from("/private/tmp/tyba-"))],
-        },
-    ));
+    lines.extend(render_ruleset("file-write*", &private_tmp));
+    if let Some(tmp_rules) = &tmpdir_rules {
+        lines.extend(render_ruleset("file-write*", tmp_rules));
+    }
 
     for set in &spec.agent.read {
         lines.extend(render_ruleset(READ_OPS, set));
@@ -244,30 +274,27 @@ pub fn build_policy(spec: &SandboxSpec) -> String {
         lines.extend(render_ruleset("file-write*", set));
     }
 
-    lines.push(format!(
+    let hook_socket_allow = format!(
         "(allow network-outbound {})",
         render_rule(&Rule::Literal(spec.hook_socket.clone()))
-    ));
+    );
     if spec.allow_network {
         lines.push("(allow network-outbound)".into());
         lines.push("(allow system-socket)".into());
         lines.push("(allow network-bind (local ip \"localhost:*\"))".into());
         lines.push("(allow network-inbound (local ip \"localhost:*\"))".into());
         lines.push(mach_lookup_line(&TLS_MACH_LOOKUPS));
+        let containers = render_rules(&container_socket_dirs(&spec.home));
+        lines.push(format!("(deny network-outbound {containers})"));
     }
+    lines.push(hook_socket_allow);
 
-    let secrets = render_rules_line(&secret_denies(spec));
+    let secrets = render_rules(&secret_denies(spec));
     lines.push(format!("(deny file-read* file-write* {secrets})"));
-    let immutable = render_rules_line(&immutable_denies(spec));
+    let immutable = render_rules(&immutable_denies(spec));
     lines.push(format!("(deny file-write* {immutable})"));
-    let docker = render_rules_line(&docker_sockets(&spec.home));
-    lines.push(format!("(deny network-outbound {docker})"));
 
     lines.join("\n")
-}
-
-fn render_rules_line(rules: &[Rule]) -> String {
-    rules.iter().map(render_rule).collect::<Vec<_>>().join(" ")
 }
 
 fn secret_denies(spec: &SandboxSpec) -> Vec<Rule> {
@@ -276,13 +303,20 @@ fn secret_denies(spec: &SandboxSpec) -> Vec<Rule> {
         Rule::Node(home.join(".ssh")),
         Rule::Node(home.join(".aws")),
         Rule::Node(home.join(".gnupg")),
+        Rule::Node(home.join(".kube")),
+        Rule::Node(home.join(".config/gcloud")),
+        Rule::Node(home.join(".config/gh")),
         Rule::Node(home.join("Library/Keychains")),
+        Rule::Node(spec.tyba_data_dir.clone()),
         Rule::Node(home.join("Library/Application Support/dev.tyba.app")),
         Rule::Prefix(home.join(".git-credentials")),
         Rule::Prefix(home.join(".netrc")),
+        Rule::Prefix(home.join(".npmrc")),
+        Rule::Prefix(home.join(".pypirc")),
+        Rule::Prefix(home.join(".docker/config.json")),
         Rule::Prefix(home.join(".cargo/credentials")),
     ];
-    rules.extend(docker_sockets(home));
+    rules.extend(container_socket_dirs(home));
     rules
 }
 
@@ -339,6 +373,7 @@ mod tests {
             runtime_dir: PathBuf::from("/private/tmp/tyba-abc"),
             hook_socket: PathBuf::from("/private/tmp/tyba-abc/hook.sock"),
             tyba_exe: PathBuf::from("/Apps/Tyba.app/Contents/MacOS/tyba"),
+            tyba_data_dir: PathBuf::from("/Users/nobody/Library/Application Support/dev.tyba.app"),
             home: PathBuf::from("/Users/nobody"),
             tmpdir: Some(PathBuf::from("/private/var/folders/xx/T")),
             exec_path_dirs: vec![PathBuf::from("/Users/nobody/.local/bin")],
@@ -379,10 +414,25 @@ mod tests {
     }
 
     #[test]
-    fn policy_allows_shared_objects_refs_logs() {
+    fn policy_allows_objects_and_only_the_tyba_ref_namespace() {
         let policy = build_policy(&spec());
-        for frag in ["objects", "refs", "logs"] {
-            assert!(policy.contains(&format!("(subpath \"/private/repo/.git/{frag}\")")));
+        assert!(policy.contains(r#"(subpath "/private/repo/.git/objects")"#));
+        assert!(policy.contains(r#"(subpath "/private/repo/.git/refs/heads/tyba")"#));
+        assert!(policy.contains(r#"(subpath "/private/repo/.git/logs/refs/heads/tyba")"#));
+    }
+
+    #[test]
+    fn policy_never_grants_write_on_main_or_the_whole_refs_tree() {
+        let policy = build_policy(&spec());
+        for line in policy.lines().filter(|l| l.contains("file-write*")) {
+            assert!(
+                !line.contains(r#"(subpath "/private/repo/.git/refs")"#),
+                "{line}"
+            );
+            assert!(
+                !line.contains("packed-refs"),
+                "packed-refs gravável deixa reescrever main: {line}"
+            );
         }
     }
 
@@ -418,9 +468,25 @@ mod tests {
             .position(|l| l.starts_with("(deny network-outbound"))
             .unwrap();
         assert!(deny > allow, "no SBPL a última regra que casa vence");
-        let deny_line = policy.lines().nth(deny).unwrap();
-        assert!(deny_line.contains("/var/run/docker.sock"));
-        assert!(deny_line.contains("/Users/nobody/.docker/run/docker.sock"));
+        let lines: Vec<&str> = policy.lines().collect();
+        let deny_line = lines[deny];
+        assert!(deny_line.contains(r#"(literal "/var/run/docker.sock")"#));
+        assert!(deny_line.contains(r#"(literal "/var/run/podman/podman.sock")"#));
+        assert!(deny_line.contains(r#"(subpath "/Users/nobody/.docker/run")"#));
+        assert!(deny_line.contains(r#"(subpath "/Users/nobody/.rd")"#));
+        assert!(deny_line.contains(r#"(subpath "/Users/nobody/.lima")"#));
+        assert!(
+            !deny_line.contains(r#"(subpath "/var/run")"#),
+            "negar /var/run inteiro mata o socket do mDNSResponder e quebra DNS"
+        );
+        let hook_reallow = lines
+            .iter()
+            .rposition(|l| l.starts_with("(allow network-outbound (literal"))
+            .unwrap();
+        assert!(
+            hook_reallow > deny,
+            "o socket de hook precisa sobreviver ao deny de sockets de container"
+        );
         assert!(policy.contains("com.apple.SecurityServer"));
         assert!(policy.contains("com.apple.trustd"));
         assert!(policy.contains("com.apple.dnssd.service"));

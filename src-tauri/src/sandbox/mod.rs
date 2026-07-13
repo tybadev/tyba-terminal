@@ -19,6 +19,7 @@ pub struct SandboxSpec {
     pub runtime_dir: PathBuf,
     pub hook_socket: PathBuf,
     pub tyba_exe: PathBuf,
+    pub tyba_data_dir: PathBuf,
     pub home: PathBuf,
     pub tmpdir: Option<PathBuf>,
     pub exec_path_dirs: Vec<PathBuf>,

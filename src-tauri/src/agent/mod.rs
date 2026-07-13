@@ -41,13 +41,18 @@ pub trait AgentRunner: Send + Sync {
         false
     }
 
+    fn self_sandboxes(&self) -> bool {
+        false
+    }
+
     fn sandbox_access(&self, _home: &Path, _worktree: &Path) -> AgentAccess {
         AgentAccess::default()
     }
 }
 
 pub fn claude_project_dir_name(worktree: &Path) -> String {
-    worktree
+    let resolved = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+    resolved
         .to_string_lossy()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
@@ -132,10 +137,12 @@ impl AgentRunner for ClaudeCodeRunner {
                 },
                 RuleSet::allow(vec![
                     Rule::Node(project.clone()),
-                    Rule::Prefix(home.join(".claude.json")),
+                    Rule::Family(home.join(".claude.json")),
                 ]),
             ],
             write: vec![RuleSet::allow(vec![
+                Rule::Literal(claude.clone()),
+                Rule::Literal(claude.join("projects")),
                 Rule::Node(project),
                 Rule::Node(claude.join("todos")),
                 Rule::Node(claude.join("shell-snapshots")),
@@ -143,8 +150,8 @@ impl AgentRunner for ClaudeCodeRunner {
                 Rule::Node(claude.join("debug")),
                 Rule::Node(claude.join("ide")),
                 Rule::Node(claude.join("logs")),
-                Rule::Prefix(claude.join(".credentials.json")),
-                Rule::Prefix(home.join(".claude.json")),
+                Rule::Family(claude.join(".credentials.json")),
+                Rule::Family(home.join(".claude.json")),
             ])],
         }
     }
@@ -188,6 +195,10 @@ impl AgentRunner for CodexRunner {
         true
     }
 
+    fn self_sandboxes(&self) -> bool {
+        true
+    }
+
     fn sandbox_access(&self, home: &Path, _worktree: &Path) -> AgentAccess {
         let codex = home.join(".codex");
         AgentAccess {
@@ -198,7 +209,7 @@ impl AgentRunner for CodexRunner {
                 Rule::Node(codex.join("log")),
                 Rule::Node(codex.join("tmp")),
                 Rule::Literal(codex.join("history.jsonl")),
-                Rule::Prefix(codex.join("auth.json")),
+                Rule::Family(codex.join("auth.json")),
             ])],
         }
     }
@@ -378,13 +389,14 @@ mod tests {
             ClaudeCodeRunner.sandbox_access(Path::new("/Users/x"), Path::new("/private/wt/a"));
         for set in &access.write {
             for rule in &set.allow {
-                let p = match rule {
-                    Rule::Literal(p) | Rule::Subpath(p) | Rule::Node(p) | Rule::Prefix(p) => p,
-                };
-                let s = p.to_string_lossy();
+                let s = rule.path().to_string_lossy();
                 assert!(!s.contains("settings"), "{s}");
                 assert!(!s.ends_with("plugins"), "{s}");
-                assert!(!s.ends_with(".claude"), "{s}");
+                let dir_node = matches!(rule, Rule::Literal(_));
+                assert!(
+                    dir_node || !s.ends_with(".claude"),
+                    "escrita recursiva em ~/.claude: {s}"
+                );
             }
         }
     }
@@ -394,15 +406,22 @@ mod tests {
         let access = CodexRunner.sandbox_access(Path::new("/Users/x"), Path::new("/private/wt/a"));
         for set in &access.write {
             for rule in &set.allow {
-                let p = match rule {
-                    Rule::Literal(p) | Rule::Subpath(p) | Rule::Node(p) | Rule::Prefix(p) => p,
-                };
-                let s = p.to_string_lossy();
+                let s = rule.path().to_string_lossy();
                 assert!(!s.ends_with("config.toml"), "{s}");
                 assert!(!s.ends_with("hooks.json"), "{s}");
                 assert!(!s.ends_with(".codex"), "{s}");
             }
         }
+    }
+
+    #[test]
+    fn codex_self_sandboxes_claude_does_not() {
+        assert!(
+            CodexRunner.self_sandboxes(),
+            "o Codex aplica o Seatbelt nativo dele por comando; envolvê-lo no Seatbelt do TYBA \
+             faz o sandbox_apply aninhado falhar e quebra toda execução de tool"
+        );
+        assert!(!ClaudeCodeRunner.self_sandboxes());
     }
 
     #[test]

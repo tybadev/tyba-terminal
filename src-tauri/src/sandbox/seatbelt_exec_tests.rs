@@ -107,6 +107,7 @@ fn fixture() -> Fixture {
         runtime_dir: runtime.clone(),
         hook_socket: runtime.join("hook.sock"),
         tyba_exe: PathBuf::from("/usr/bin/true"),
+        tyba_data_dir: home.join("Library/Application Support/dev.tyba.app"),
         home: home.clone(),
         tmpdir: std::env::var_os("TMPDIR").map(PathBuf::from),
         exec_path_dirs: vec![],
@@ -377,6 +378,45 @@ fn own_runtime_dir_readable_but_sibling_session_dirs_are_not() {
     );
     let _ = std::fs::remove_dir_all(&sibling);
     assert_denied(&read, "runtime dir de outra sessão");
+}
+
+#[test]
+fn sibling_runtime_dir_in_real_tmpdir_is_not_writable() {
+    require_seatbelt!();
+    let Some(tmpdir) = std::env::var_os("TMPDIR").map(PathBuf::from) else {
+        eprintln!("pulando: sem TMPDIR");
+        return;
+    };
+    let mut f = fixture();
+    let seq = f
+        .runtime
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let sibling = tmpdir.join(format!("tyba-sib-{seq}"));
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(sibling.join("hooks.json"), "{\"real\":true}").unwrap();
+    f.spec.tmpdir = Some(tmpdir);
+
+    let write = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!("echo pwned > {}/hooks.json", sibling.display()),
+    );
+    let read = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!("cat {}/hooks.json", sibling.display()),
+    );
+    let intact = std::fs::read_to_string(sibling.join("hooks.json")).unwrap();
+    let _ = std::fs::remove_dir_all(&sibling);
+    assert_denied(&write, "escrita no runtime dir vizinho no TMPDIR real");
+    assert_denied(&read, "leitura do runtime dir vizinho no TMPDIR real");
+    assert_eq!(
+        intact, "{\"real\":true}",
+        "um agente reescreveu o hooks.json de outra sessão e derrubaria o gate dela"
+    );
 }
 
 #[test]

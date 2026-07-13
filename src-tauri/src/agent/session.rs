@@ -415,6 +415,15 @@ pub fn create_agent_session(
     result
 }
 
+fn apply_git_overrides(env: &mut HashMap<String, String>) {
+    let overrides = [("commit.gpgsign", "false"), ("tag.gpgsign", "false")];
+    env.insert("GIT_CONFIG_COUNT".into(), overrides.len().to_string());
+    for (i, (key, value)) in overrides.iter().enumerate() {
+        env.insert(format!("GIT_CONFIG_KEY_{i}"), (*key).into());
+        env.insert(format!("GIT_CONFIG_VALUE_{i}"), (*value).into());
+    }
+}
+
 pub(crate) fn sandbox_spec(
     runner: &dyn AgentRunner,
     env: &HashMap<String, String>,
@@ -440,6 +449,9 @@ pub(crate) fn sandbox_spec(
     }
     let agent = runner.sandbox_access(&home, worktree);
     let read_allow_extra = crate::user_config::load(&home)?.sandbox_read_allow;
+    let tyba_data_dir = std::env::var_os("TYBA_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join("Library/Application Support/dev.tyba.app"));
     Ok(SandboxSpec {
         writable_root: worktree.to_path_buf(),
         readable_root: root.to_path_buf(),
@@ -449,6 +461,7 @@ pub(crate) fn sandbox_spec(
         runtime_dir: runtime.to_path_buf(),
         hook_socket: socket_path.to_path_buf(),
         tyba_exe: crate::repo::canonicalize_or(exe),
+        tyba_data_dir,
         home,
         tmpdir: env.get("TMPDIR").map(PathBuf::from),
         exec_path_dirs,
@@ -489,22 +502,26 @@ fn spawn_prepared(
 
     let user_env: HashMap<String, String> = std::env::vars().collect();
     let config = consented_config(&ctx.store, &root);
-    let env = crate::repo_config::agent_env(config.as_ref(), &user_env);
-
-    let sandbox = crate::sandbox::platform_sandbox()?;
-    let spec = sandbox_spec(
-        runner.as_ref(),
-        &env,
-        &root,
-        &worktree.path,
-        &runtime,
-        &socket_path,
-        &exe,
-    )?;
+    let mut env = crate::repo_config::agent_env(config.as_ref(), &user_env);
+    apply_git_overrides(&mut env);
 
     let mut cmd = runner.build_command(&worktree.path, &env, &hook_setup);
     cmd.env("TYBA_HOOK_SOCKET", &socket_path);
-    let cmd = sandbox.wrap(cmd, &spec)?;
+    let cmd = if runner.self_sandboxes() {
+        cmd
+    } else {
+        let sandbox = crate::sandbox::platform_sandbox()?;
+        let spec = sandbox_spec(
+            runner.as_ref(),
+            &env,
+            &root,
+            &worktree.path,
+            &runtime,
+            &socket_path,
+            &exe,
+        )?;
+        sandbox.wrap(cmd, &spec)?
+    };
 
     let handler_ctx = HandlerCtx {
         app: ctx.app.clone(),
