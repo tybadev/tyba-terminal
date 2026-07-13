@@ -107,8 +107,8 @@ export function OpenPrDialog({
 
         {!ready ? (
           <>
-            <div className="rounded-[6px] border border-tyba-yellow/30 bg-tyba-yellow/[.06] p-3 text-[12px] text-tyba-text">
-              <div className="font-medium text-tyba-yellow">
+            <div className="rounded-[6px] border border-tyba-amber/30 bg-tyba-amber/[.06] p-3 text-[12px] text-tyba-text">
+              <div className="font-medium text-tyba-amber">
                 {status.installed
                   ? t("prDialogCliUnauthTitle", { cli: status.cli })
                   : t("prDialogCliMissingTitle", { cli: status.cli })}

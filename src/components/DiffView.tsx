@@ -67,7 +67,7 @@ const STATUS_LETTER: Record<FileDiff["status"], string> = {
 
 const STATUS_COLOR: Record<FileDiff["status"], string> = {
   added: "text-tyba-green",
-  modified: "text-tyba-yellow",
+  modified: "text-tyba-amber",
   deleted: "text-tyba-red",
   renamed: "text-tyba-violet",
   copied: "text-tyba-violet",
@@ -498,7 +498,7 @@ export function DiffView({
             onClick={() =>
               void gitAction(() => worktreeStage(session.id, [file.path]))
             }
-            className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-white/[.08] hover:text-tyba-green"
+            className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-green"
           >
             <Plus size={12} weight="bold" />
           </button>
@@ -510,7 +510,7 @@ export function DiffView({
             onClick={() =>
               void gitAction(() => worktreeUnstage(session.id, [file.path]))
             }
-            className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-white/[.08] hover:text-tyba-yellow"
+            className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-amber"
           >
             <Minus size={12} weight="bold" />
           </button>
@@ -537,7 +537,7 @@ export function DiffView({
               title={t("diffDiscardFile")}
               aria-label={t("diffDiscardFile")}
               onClick={() => armDiscard(discardKey)}
-              className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-white/[.08] hover:text-tyba-red"
+              className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-red"
             >
               <Trash size={12} />
             </button>
@@ -551,7 +551,7 @@ export function DiffView({
                 (e) => setActionError(String(e)),
               )
             }
-            className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-white/[.08] hover:text-tyba-text"
+            className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-text"
           >
             <ArrowSquareOut size={12} />
           </button>
@@ -567,7 +567,7 @@ export function DiffView({
           onClick={() =>
             void gitAction(() => worktreeUnstage(session.id, []))
           }
-          className="rounded-[3px] px-1.5 py-0.5 text-[10px] text-tyba-text-faint hover:bg-white/[.06] hover:text-tyba-text"
+          className="rounded-[3px] px-1.5 py-0.5 text-[10px] text-tyba-text-faint hover:bg-tyba-text/[.06] hover:text-tyba-text"
         >
           {t("diffUnstageAll")}
         </button>
@@ -580,7 +580,7 @@ export function DiffView({
             onClick={() =>
               void gitAction(() => worktreeStage(session.id, []))
             }
-            className="rounded-[3px] px-1.5 py-0.5 text-[10px] text-tyba-text-faint hover:bg-white/[.06] hover:text-tyba-text"
+            className="rounded-[3px] px-1.5 py-0.5 text-[10px] text-tyba-text-faint hover:bg-tyba-text/[.06] hover:text-tyba-text"
           >
             {t("diffStageAll")}
           </button>
@@ -601,7 +601,7 @@ export function DiffView({
           ) : (
             <button
               onClick={() => armDiscard("all")}
-              className="rounded-[3px] px-1.5 py-0.5 text-[10px] text-tyba-text-faint hover:bg-white/[.06] hover:text-tyba-red"
+              className="rounded-[3px] px-1.5 py-0.5 text-[10px] text-tyba-text-faint hover:bg-tyba-text/[.06] hover:text-tyba-red"
             >
               {t("diffDiscardAll")}
             </button>
@@ -642,8 +642,8 @@ export function DiffView({
                 onClick={() => jumpTo(key)}
                 className={`flex items-center gap-2 rounded-[4px] px-2 py-1 text-left transition-colors ${
                   active
-                    ? "bg-white/[.06] text-tyba-text"
-                    : "text-tyba-text-muted hover:bg-white/[.03] hover:text-tyba-text"
+                    ? "bg-tyba-text/[.06] text-tyba-text"
+                    : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
                 }`}
               >
                 <span
@@ -754,7 +754,7 @@ export function DiffView({
                 toggleFile(row.key, !row.collapsed);
               }
             }}
-            className="group/file flex w-full cursor-pointer items-center gap-2 border-t border-tyba-border bg-tyba-surface/60 px-4 py-2 text-left hover:bg-white/[.03]"
+            className="group/file flex w-full cursor-pointer items-center gap-2 border-t border-tyba-border bg-tyba-surface/60 px-4 py-2 text-left hover:bg-tyba-text/[.03]"
           >
             {row.collapsed ? (
               <CaretRight size={11} className="shrink-0 text-tyba-text-faint" />
@@ -770,7 +770,7 @@ export function DiffView({
               {file.old_path ? `${file.old_path} → ${file.path}` : file.path}
             </span>
             {row.generated && (
-              <span className="shrink-0 rounded-full bg-white/[.06] px-1.5 text-[9px] text-tyba-text-faint">
+              <span className="shrink-0 rounded-full bg-tyba-text/[.06] px-1.5 text-[9px] text-tyba-text-faint">
                 {t("diffGenerated")}
               </span>
             )}
@@ -825,7 +825,7 @@ export function DiffView({
           signKind: "left" | "right",
         ) => {
           if (!entry)
-            return <div className="min-w-0 flex-1 bg-white/[.015]" />;
+            return <div className="min-w-0 flex-1 bg-tyba-text/[.015]" />;
           const gutter = GUTTER_SIGN[entry.kind];
           const spans = tokens[row.hunkKey]?.[entry.idx];
           return (
@@ -894,7 +894,7 @@ export function DiffView({
             onClick={() => setMode("unified")}
             className={`flex h-6 items-center gap-1.5 rounded-[3px] px-2 text-[11px] ${
               mode === "unified"
-                ? "bg-white/[.06] text-tyba-text"
+                ? "bg-tyba-text/[.06] text-tyba-text"
                 : "text-tyba-text-faint hover:text-tyba-text"
             }`}
           >
@@ -906,7 +906,7 @@ export function DiffView({
             onClick={() => setMode("split")}
             className={`flex h-6 items-center gap-1.5 rounded-[3px] px-2 text-[11px] ${
               mode === "split"
-                ? "bg-white/[.06] text-tyba-text"
+                ? "bg-tyba-text/[.06] text-tyba-text"
                 : "text-tyba-text-faint hover:text-tyba-text"
             }`}
           >
@@ -1086,7 +1086,7 @@ export function DiffView({
         <GitBranch size={12} className="shrink-0" />
         <span>{t("diffAhead", { count: diff?.commits.length ?? 0 })}</span>
         <span className="text-tyba-text-faint">·</span>
-        <span className={stagedCount + unstagedCount > 0 ? "text-tyba-yellow" : ""}>
+        <span className={stagedCount + unstagedCount > 0 ? "text-tyba-amber" : ""}>
           {stagedCount + unstagedCount > 0 ? t("diffDirty") : t("diffClean")}
         </span>
         <div className="flex-1" />

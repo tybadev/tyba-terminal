@@ -9,7 +9,7 @@ Convenção ANSI da casa (igual aos built-ins TYBA):
   dark  base: black = surface, white = text
   light base: black = text,    white = sunken
   brightBlack = textFaint · brightWhite = #ffffff
-  cursor = green · selection = green com alpha 4d
+  cursor = primary (se o tema definir) senão green · selection = idem com alpha 4d
 """
 import pathlib
 import re
@@ -18,7 +18,7 @@ import subprocess
 import sys
 
 DS = pathlib.Path('/Users/guilherme/swell-system/tyba-design-system/ds-bundle/tokens/themes.css')
-OUT = pathlib.Path('/Users/guilherme/swell-system/tyba-terminal/src-tauri/src/theme/schemes.rs')
+OUT = pathlib.Path(__file__).resolve().parent.parent / 'src-tauri' / 'src' / 'theme' / 'schemes.rs'
 
 NAMES = {
     'solarized-dark': 'Solarized Dark',
@@ -36,6 +36,7 @@ NAMES = {
     'monokai-ristretto': 'Monokai Pro Ristretto',
     'monokai-spectrum': 'Monokai Pro Spectrum',
     'monokai-light': 'Monokai Pro Light',
+    'mono-dark': 'Mono Dark',
 }
 
 HEX = re.compile(r'#[0-9a-fA-F]{6}\b')
@@ -56,12 +57,13 @@ def palette(tokens: dict, base: str) -> dict:
         black, white = t['surface'], t['text']
     else:
         black, white = t['text'], t['sunken']
+    accent = t.get('primary', t['green'])
     return {
         'background': t['bg'],
         'foreground': t['text'],
-        'cursor': t['green'],
+        'cursor': accent,
         'cursor_accent': t['bg'],
-        'selection_background': t['green'] + '4d',
+        'selection_background': accent + '4d',
         'ansi': [
             black, t['red'], t['green'], t['amber'],
             t['blue'], t['magenta'], t['cyan'], white,
@@ -115,6 +117,8 @@ def main() -> None:
                    'amber', 'magenta', 'violet', 'blue', 'cyan', 'red'} - tokens.keys()
         if missing:
             sys.exit(f'{scheme_id}: tokens ausentes {sorted(missing)}')
+        if '--tyba-primary:' in body and 'primary' not in tokens:
+            sys.exit(f'{scheme_id}: --tyba-primary precisa ser hex literal para o gerador derivar cursor/seleção')
         ids.append(scheme_id)
         entries.append(rust_scheme(scheme_id, base, palette(tokens, base)))
 

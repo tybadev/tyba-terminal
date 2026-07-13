@@ -185,7 +185,7 @@ export function ContainersView({
     return (
       <div
         key={c.id}
-        className={`group rounded-md px-2 py-1.5 transition-colors hover:bg-white/[.03] ${
+        className={`group rounded-md px-2 py-1.5 transition-colors hover:bg-tyba-text/[.03] ${
           removing === c.id ? "opacity-40" : ""
         }`}
       >
@@ -263,7 +263,7 @@ export function ContainersView({
               [group.key]: !collapsed,
             }))
           }
-          className="flex h-7 items-center gap-1.5 rounded-[4px] px-1.5 text-left transition-colors hover:bg-white/[.03]"
+          className="flex h-7 items-center gap-1.5 rounded-[4px] px-1.5 text-left transition-colors hover:bg-tyba-text/[.03]"
         >
           {collapsed ? (
             <CaretRight size={10} className="shrink-0 text-tyba-text-faint" />
@@ -351,7 +351,7 @@ export function ContainersView({
                     [group.key]: !showStopped,
                   }))
                 }
-                className="flex h-6 items-center justify-center gap-1 rounded-md text-[10px] text-tyba-text-faint transition-colors hover:bg-white/[.03] hover:text-tyba-text-muted"
+                className="flex h-6 items-center justify-center gap-1 rounded-md text-[10px] text-tyba-text-faint transition-colors hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
               >
                 {showStopped
                   ? t("containersHideStopped")
@@ -410,7 +410,7 @@ export function ContainersView({
           {[0, 1, 2].map((i) => (
             <div
               key={i}
-              className="h-9 animate-pulse rounded-md bg-white/[.03]"
+              className="h-9 animate-pulse rounded-md bg-tyba-text/[.03]"
             />
           ))}
         </div>

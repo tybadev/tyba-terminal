@@ -166,6 +166,10 @@
   --tyba-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
   --tyba-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.5);
   --tyba-shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.7);
+  --tyba-divider-line: color-mix(in srgb, var(--tyba-text) 7%, transparent);
+  --tyba-divider-b: 0 1px 0 0 var(--tyba-divider-line);
+  --tyba-divider-t: 0 -1px 0 0 var(--tyba-divider-line);
+  --tyba-divider-r: 1px 0 0 0 var(--tyba-divider-line);
   --tyba-focus-ring: 0 0 0 2px var(--tyba-bg), 0 0 0 4px var(--tyba-green);
 
   /* ---------- Movimento ---------- */
@@ -256,6 +260,7 @@
   --tyba-shadow-sm: 0 1px 2px rgba(23, 23, 28, 0.08);
   --tyba-shadow-md: 0 4px 16px rgba(23, 23, 28, 0.1);
   --tyba-shadow-lg: 0 12px 40px rgba(23, 23, 28, 0.14);
+  --tyba-divider-line: color-mix(in srgb, var(--tyba-text) 12%, transparent);
 }
 
 /* ============================================================
@@ -747,6 +752,36 @@
   --tyba-shadow-lg: 0 12px 40px rgba(41, 36, 42, 0.14);
 }
 
+/* ---------- Mono Dark (TYBA) ---------- */
+[data-theme='mono-dark'] {
+  color-scheme: dark;
+
+  --tyba-bg: #151313;
+  --tyba-surface: #1a1616;
+  --tyba-raised: #252526;
+  --tyba-overlay: #2d2d30;
+  --tyba-border: #2b2828;
+  --tyba-border-strong: #3c3c3c;
+  --tyba-sunken: #0f0d0d;
+
+  --tyba-text: #eeffff;
+  --tyba-text-muted: #8b888f;
+  --tyba-text-faint: #5c595f;
+  --tyba-text-inverse: #252526;
+
+  --tyba-primary: #ffd867;
+  --tyba-primary-hover: #fec004;
+
+  --tyba-green: #c3e88d;
+  --tyba-lime: #d7f2ab;
+  --tyba-amber: #ffcb6b;
+  --tyba-magenta: #f07178;
+  --tyba-violet: #c792ea;
+  --tyba-blue: #82aaff;
+  --tyba-cyan: #89ddff;
+  --tyba-red: #ff5370;
+}
+
 /* dark: do Tailwind segue o esquema do tema — todo tema claro
    termina em "light" (light, solarized-light, monokai-light...) */
 @custom-variant dark (&:is(:root:not([data-theme$="light"]) *, :root:not([data-theme$="light"])));
@@ -910,6 +945,22 @@ samp {
 .tyba-focusable:focus-visible {
   outline: none;
   box-shadow: var(--tyba-focus-ring);
+}
+
+.tyba-divide-b,
+.tyba-divide-t,
+.tyba-divide-r {
+  position: relative;
+  z-index: 10;
+}
+.tyba-divide-b {
+  box-shadow: var(--tyba-divider-b);
+}
+.tyba-divide-t {
+  box-shadow: var(--tyba-divider-t);
+}
+.tyba-divide-r {
+  box-shadow: var(--tyba-divider-r);
 }
 
 /* ---------- Luz ---------- */

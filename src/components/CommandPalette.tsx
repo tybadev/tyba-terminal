@@ -149,7 +149,7 @@ export function CommandPalette({
             onClick={() => onModeChange(m)}
             className={`flex items-center gap-1.5 rounded-[4px] px-2 py-1 text-[11px] transition-colors ${
               mode === m
-                ? "bg-white/[.06] text-tyba-text"
+                ? "bg-tyba-text/[.06] text-tyba-text"
                 : "text-tyba-text-faint hover:text-tyba-text-muted"
             }`}
           >

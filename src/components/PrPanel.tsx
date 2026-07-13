@@ -36,7 +36,7 @@ import { openExternalUrl } from "../lib/clipboard";
 const TONE_DOT_CLASS: Record<CheckTone, string> = {
   success: "bg-tyba-green",
   failure: "bg-tyba-red",
-  pending: "bg-tyba-yellow",
+  pending: "bg-tyba-amber",
 };
 
 export function PrPanel({
@@ -143,7 +143,7 @@ export function PrPanel({
                   key={pr.number}
                   type="button"
                   onClick={() => void openExternalUrl(pr.url)}
-                  className="flex items-center gap-2 rounded-md p-2 text-left text-xs hover:bg-white/[.04]"
+                  className="flex items-center gap-2 rounded-md p-2 text-left text-xs hover:bg-tyba-text/[.04]"
                 >
                   <PrStatusIcon
                     status={toPrStatus(pr.state)}

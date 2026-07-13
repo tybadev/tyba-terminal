@@ -20,6 +20,7 @@ pub const IDS: &[&str] = &[
     "monokai-ristretto",
     "monokai-spectrum",
     "monokai-light",
+    "mono-dark",
 ];
 
 pub fn all() -> Vec<Theme> {
@@ -276,6 +277,23 @@ pub fn all() -> Vec<Theme> {
                     "#29242a", "#d0342c", "#269d69", "#cc7a0a", "#1c8ca8", "#e14775", "#1da08a",
                     "#ede7e5", "#a59fa0", "#d85952", "#4db07e", "#d59236", "#45a1b8", "#7058be",
                     "#46b19f", "#ffffff",
+                ]),
+            },
+        ),
+        scheme(
+            "mono-dark",
+            "Mono Dark",
+            ThemeBase::Dark,
+            TerminalPalette {
+                background: "#151313".into(),
+                foreground: "#eeffff".into(),
+                cursor: "#ffd867".into(),
+                cursor_accent: Some("#151313".into()),
+                selection_background: Some("#ffd8674d".into()),
+                ansi: ansi([
+                    "#1a1616", "#ff5370", "#c3e88d", "#ffcb6b", "#82aaff", "#f07178", "#89ddff",
+                    "#eeffff", "#5c595f", "#ff728a", "#d7f2ab", "#ffd486", "#98b9ff", "#c792ea",
+                    "#9ee3ff", "#ffffff",
                 ]),
             },
         ),

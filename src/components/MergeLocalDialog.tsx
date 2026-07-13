@@ -133,7 +133,7 @@ export function MergeLocalDialog({ session, open, onClose, onMerged }: Props) {
                   className={`flex-1 rounded-[6px] border p-2 text-left text-[12px] transition-colors ${
                     strategy === "squash"
                       ? "border-tyba-green/50 bg-tyba-green/10 text-tyba-text"
-                      : "border-tyba-border text-tyba-text-muted hover:bg-white/[.03]"
+                      : "border-tyba-border text-tyba-text-muted hover:bg-tyba-text/[.03]"
                   }`}
                 >
                   <div className="font-medium">{t("mergeDialogSquash")}</div>
@@ -148,7 +148,7 @@ export function MergeLocalDialog({ session, open, onClose, onMerged }: Props) {
                   className={`flex-1 rounded-[6px] border p-2 text-left text-[12px] transition-colors ${
                     strategy === "merge_commit"
                       ? "border-tyba-green/50 bg-tyba-green/10 text-tyba-text"
-                      : "border-tyba-border text-tyba-text-muted hover:bg-white/[.03]"
+                      : "border-tyba-border text-tyba-text-muted hover:bg-tyba-text/[.03]"
                   }`}
                 >
                   <div className="font-medium">
@@ -162,7 +162,7 @@ export function MergeLocalDialog({ session, open, onClose, onMerged }: Props) {
             </div>
 
             {!gate.enabled && (
-              <div className="flex items-start gap-2 rounded-[6px] border border-tyba-yellow/30 bg-tyba-yellow/[.06] p-2.5 text-[12px] text-tyba-yellow">
+              <div className="flex items-start gap-2 rounded-[6px] border border-tyba-amber/30 bg-tyba-amber/[.06] p-2.5 text-[12px] text-tyba-amber">
                 <WarningCircle size={14} className="mt-0.5 shrink-0" />
                 <span>{blockedMessage()}</span>
               </div>

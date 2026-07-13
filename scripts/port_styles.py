@@ -3,7 +3,7 @@
 import pathlib, re, sys
 
 DS = pathlib.Path('/Users/guilherme/swell-system/tyba-design-system/ds-bundle')
-APP = pathlib.Path('/Users/guilherme/swell-system/tyba-terminal/src/styles.css')
+APP = pathlib.Path(__file__).resolve().parent.parent / 'src' / 'styles.css'
 
 tyba = (DS / 'tokens' / 'tyba.css').read_text()
 themes = (DS / 'tokens' / 'themes.css').read_text()
@@ -94,6 +94,8 @@ tail = '''
   --color-tyba-cyan-tint: var(--tyba-cyan-tint);
   --color-tyba-red-tint: var(--tyba-red-tint);
   --color-tyba-neutral-tint: var(--tyba-neutral-tint);
+
+  --animate-tyba-pop-in: tyba-pop-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
 
   /* shadcn */
   --color-background: var(--background);
@@ -221,6 +223,22 @@ samp {
   box-shadow: var(--tyba-focus-ring);
 }
 
+.tyba-divide-b,
+.tyba-divide-t,
+.tyba-divide-r {
+  position: relative;
+  z-index: 10;
+}
+.tyba-divide-b {
+  box-shadow: var(--tyba-divider-b);
+}
+.tyba-divide-t {
+  box-shadow: var(--tyba-divider-t);
+}
+.tyba-divide-r {
+  box-shadow: var(--tyba-divider-r);
+}
+
 /* ---------- Luz ---------- */
 
 /* Canvas com aurora: respiro de cor no topo do app */
@@ -253,6 +271,17 @@ samp {
 }
 @media (prefers-reduced-motion: reduce) {
   .tyba-flow-line--live { animation: none; }
+}
+
+@keyframes tyba-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 /* xterm ocupa o container inteiro */

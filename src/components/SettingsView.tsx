@@ -174,8 +174,8 @@ function NavItem({
       onClick={onClick}
       className={`relative flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] transition-colors ${
         active
-          ? "bg-white/[.05] text-tyba-text"
-          : "text-tyba-text-faint hover:bg-white/[.03] hover:text-tyba-text-muted"
+          ? "bg-tyba-text/[.05] text-tyba-text"
+          : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
       }`}
     >
       {active && (
@@ -204,7 +204,7 @@ function Choice({
       onClick={onClick}
       className={`flex h-8 items-center gap-2 rounded-[4px] border px-3 text-[13px] transition-colors ${
         active
-          ? "border-tyba-border-strong bg-white/[.04] text-tyba-text"
+          ? "border-tyba-border-strong bg-tyba-text/[.04] text-tyba-text"
           : "border-tyba-border text-tyba-text-muted hover:text-tyba-text"
       }`}
     >
@@ -267,7 +267,7 @@ function TextField({
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
-      className="h-8 w-full rounded-[4px] border border-tyba-border bg-white/[.02] px-2.5 text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-border-strong"
+      className="h-8 w-full rounded-[4px] border border-tyba-border bg-tyba-text/[.02] px-2.5 text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-border-strong"
     />
   );
 }
@@ -308,7 +308,7 @@ function ShortcutRow({
   }, [listening, onRebind]);
 
   return (
-    <div className="flex h-9 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] hover:bg-white/[.03]">
+    <div className="flex h-9 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] hover:bg-tyba-text/[.03]">
       <span className="min-w-0 flex-1 truncate">
         {t(ACTION_LABEL_KEYS[action])}
       </span>
@@ -317,7 +317,7 @@ function ShortcutRow({
         className={`flex h-7 items-center gap-1 rounded-[4px] border px-2 text-[11px] transition-colors ${
           listening
             ? "border-tyba-green font-mono text-tyba-green"
-            : "border-transparent hover:bg-white/[.04]"
+            : "border-transparent hover:bg-tyba-text/[.04]"
         }`}
       >
         {listening ? t("pressKeys") : <Shortcut combo={combo} />}
@@ -439,7 +439,7 @@ export function SettingsView({
 
   return (
     <div className="flex min-h-0 flex-1">
-      <aside className="flex w-48 shrink-0 flex-col gap-px border-x border-tyba-border bg-tyba-surface px-2 pt-3">
+      <aside className="tyba-divide-r flex w-48 shrink-0 flex-col gap-px px-2 pt-3">
         <NavItem
           active={section === "general"}
           icon={<User size={15} />}

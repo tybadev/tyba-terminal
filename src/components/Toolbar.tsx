@@ -102,7 +102,7 @@ export function Toolbar({
             onClick={onOpenDiff}
             title={t("toolbarReviewDiff")}
             aria-label={t("toolbarReviewDiff")}
-            className="flex items-center gap-1 rounded-[4px] px-1 py-0.5 text-tyba-text-muted transition-colors hover:bg-white/[.06] hover:text-tyba-text"
+            className="flex items-center gap-1 rounded-[4px] px-1 py-0.5 text-tyba-text-muted transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
           >
             <GitDiff size={12} />
             <span>diff</span>
@@ -145,13 +145,13 @@ export function Toolbar({
   if (!showRichInput && left.length === 0 && right.length === 0) return null;
 
   return (
-    <div className="flex h-6 min-w-0 shrink-0 items-center justify-between gap-3 border-t border-tyba-border px-3 text-[11px] text-tyba-text-muted">
+    <div className="tyba-divide-t flex h-6 min-w-0 shrink-0 items-center justify-between gap-3 px-3 text-[11px] text-tyba-text-muted">
       <div className="flex min-w-0 items-center gap-3 overflow-hidden">
         {showRichInput && (
           <button
             onClick={onOpenRichInput}
             title={t("richInputHint")}
-            className="flex shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-tyba-text-muted transition-colors hover:bg-white/[.06] hover:text-tyba-text"
+            className="flex shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-tyba-text-muted transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
           >
             <TextAlignLeft size={12} />
             <span>{t("richInputToggle")}</span>
