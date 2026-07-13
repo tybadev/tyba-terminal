@@ -404,6 +404,7 @@ export type WorkspaceKind = "user" | "docker";
 export interface Workspace {
   id: WorkspaceId;
   name: string;
+  name_locked: boolean;
   repo_root: string | null;
   color: string | null;
   group: string | null;

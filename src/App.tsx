@@ -1896,6 +1896,11 @@ export default function App() {
     const showDetails = open && detailsFor(w.id) && !isConfig && !isWtView;
     const gitDir = workspaceGitDir(w);
     const displayDir = workspaceCwd(w) ?? w.repo_root;
+    // Nome automático segue o cwd vivo (cd troca o contexto da sessão);
+    // renomeou de propósito → o nome escolhido fica.
+    const displayName = w.name_locked
+      ? w.name
+      : (displayDir?.split("/").filter(Boolean).pop() ?? w.name);
     const snapshot = gitDir ? snapshotForDir(repoSnapshots, gitDir) : undefined;
     const branch = snapshot?.branch ?? undefined;
     const gitStatus = showGitStatus
@@ -2009,7 +2014,7 @@ export default function App() {
                     ? t("settings")
                     : isWtView
                       ? t("workspaceView")
-                      : w.name}
+                      : displayName}
                 </span>
                 {turnEndedUnseen && (
                   <span
@@ -2112,7 +2117,7 @@ export default function App() {
           </ContextMenu>
           {menuWorkspace !== w.id && (
             <SessionHoverCard
-              name={w.name}
+              name={displayName}
               path={workspaceCwd(w) ?? w.repo_root}
               branch={branch}
               status={gitStatus}
