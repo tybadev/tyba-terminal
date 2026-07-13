@@ -141,6 +141,8 @@ const resources = {
       conflictCherryPick: "Cherry-pick em andamento com conflitos",
       conflictAllResolved:
         "Conflitos resolvidos — falta concluir a operação (commit / --continue).",
+      conflictResolve: "Resolver com agente",
+      conflictResolveSending: "Enviando…",
       diffUnified: "Unificado",
       diffSplit: "Lado a lado",
       diffBase: "base",
@@ -646,6 +648,8 @@ const resources = {
       conflictCherryPick: "Cherry-pick in progress with conflicts",
       conflictAllResolved:
         "Conflicts resolved — finish the operation (commit / --continue).",
+      conflictResolve: "Resolve with agent",
+      conflictResolveSending: "Sending…",
       diffUnified: "Unified",
       diffSplit: "Side by side",
       diffBase: "base",

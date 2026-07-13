@@ -135,6 +135,7 @@ import {
   type RepoSnapshot,
   type Session,
   type SessionCommand,
+  type ConflictState,
   type SessionCwd,
   type SessionGitStatus,
   type SessionId,
@@ -143,6 +144,7 @@ import {
   type Workspace,
 } from "./lib/ipc";
 import { basename } from "@/lib/utils";
+import { buildConflictPrompt } from "./lib/conflicts";
 import {
   isFinishedStatus,
   sameSessionStatus,
@@ -595,6 +597,38 @@ export default function App() {
     [],
   );
 
+  // Sobe o agente configurado numa sessão nova e espera o detector de
+  // comando confirmar que o TUI assumiu o PTY (agent_match) antes de
+  // devolver — com teto de 15s pra não travar se o comando não for
+  // reconhecido como agente.
+  const spawnAgentSession = useCallback(
+    async (title: string, cwd: string) => {
+      const fresh = await createSession({
+        kind: { type: "shell" },
+        cwd,
+        cols: 100,
+        rows: 30,
+      });
+      setSessions((prev) => [...prev, fresh]);
+      try {
+        await createWorkspace(title, cwd, fresh.id);
+      } catch {
+        void disposeSession(fresh.id).catch(() => {});
+        throw new Error("não deu pra abrir a sessão no worktree");
+      }
+      const agentCommand = reviewAgent.trim() || DEFAULT_REVIEW_AGENT;
+      await typeIntoSession(fresh.id, agentCommand, true);
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const cmd = sessionCommandsRef.current[fresh.id];
+        if (cmd?.running && cmd.agent_match) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      await new Promise((r) => setTimeout(r, 700));
+      return fresh.id;
+    },
+    [reviewAgent, typeIntoSession],
+  );
+
   const sendReviewToAgent = useCallback(
     async (target: Session, prompt: string) => {
       const wtPath = target.worktree?.path;
@@ -604,37 +638,32 @@ export default function App() {
           s.id === target.id && s.status.state !== "exited" && s.status.state !== "failed",
       );
       if (!running && wtPath) {
-        const fresh = await createSession({
-          kind: { type: "shell" },
-          cwd: wtPath,
-          cols: 100,
-          rows: 30,
-        });
-        setSessions((prev) => [...prev, fresh]);
-        try {
-          await createWorkspace(target.title, wtPath, fresh.id);
-        } catch {
-          void disposeSession(fresh.id).catch(() => {});
-          throw new Error("não deu pra abrir a sessão no worktree");
-        }
-        sid = fresh.id;
-        // Sem sessão viva não tem composer: sobe o agente que o usuário
-        // configurou e espera o detector de comando confirmar que o TUI
-        // assumiu o PTY (agent_match) antes de colar — com teto de 15s
-        // pra não travar se o comando não for reconhecido como agente.
-        const agentCommand = reviewAgent.trim() || DEFAULT_REVIEW_AGENT;
-        await typeIntoSession(sid, agentCommand, true);
-        for (let attempt = 0; attempt < 30; attempt += 1) {
-          const cmd = sessionCommandsRef.current[sid];
-          if (cmd?.running && cmd.agent_match) break;
-          await new Promise((r) => setTimeout(r, 500));
-        }
-        await new Promise((r) => setTimeout(r, 700));
+        sid = await spawnAgentSession(target.title, wtPath);
       }
       await typeIntoSession(sid, prompt, false);
       goToSession(sid);
     },
-    [sessions, goToSession, reviewAgent, typeIntoSession],
+    [sessions, goToSession, spawnAgentSession, typeIntoSession],
+  );
+
+  // Sessão com agente vivo recebe o prompt direto; sessão plain (ou morta)
+  // ganha uma sessão de agente nova apontada pro repo conflitado.
+  const resolveConflictsWithAgent = useCallback(
+    async (target: Session, state: ConflictState) => {
+      const prompt = buildConflictPrompt(state);
+      const alive = sessions.find(
+        (s) =>
+          s.id === target.id && s.status.state !== "exited" && s.status.state !== "failed",
+      );
+      const cmd = sessionCommandsRef.current[target.id];
+      let sid = target.id;
+      if (!alive || !cmd?.running || !cmd.agent_match) {
+        sid = await spawnAgentSession(target.title, state.root);
+      }
+      await typeIntoSession(sid, prompt, false);
+      goToSession(sid);
+    },
+    [sessions, goToSession, spawnAgentSession, typeIntoSession],
   );
 
   const sessionIds = useMemo(
@@ -2927,6 +2956,9 @@ export default function App() {
                           }
                           onSendToAgent={(prompt) =>
                             sendReviewToAgent(sideTarget, prompt)
+                          }
+                          onResolveConflicts={(state) =>
+                            resolveConflictsWithAgent(sideTarget, state)
                           }
                         />
                       ) : (
