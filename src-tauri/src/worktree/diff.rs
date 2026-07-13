@@ -356,13 +356,31 @@ pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, Stri
         )
     });
 
+    let (commits, files) = match (log, files) {
+        (Ok(log), files) => (parse_log_z(&log), files?),
+        (Err(_), _) if head_is_unborn(worktree) => (Vec::new(), Vec::new()),
+        (Err(e), _) => return Err(e),
+    };
+
     Ok(SessionDiff {
         base_ref: base_ref.to_string(),
-        commits: parse_log_z(&log?),
-        files: files?,
+        commits,
+        files,
         staged_files: staged_files?,
         unstaged_files: unstaged_files?,
     })
+}
+
+fn head_is_unborn(worktree: &Path) -> bool {
+    run_git(
+        {
+            let mut c = git_in(worktree);
+            c.args(["rev-parse", "--verify", "--quiet", "HEAD"]);
+            c
+        },
+        "git rev-parse",
+    )
+    .is_err()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -629,6 +647,27 @@ mod integration_tests {
         git(&dir, &["add", "-A"]);
         git(&dir, &["commit", "-qm", "base"]);
         dir
+    }
+
+    #[test]
+    fn session_diff_on_unborn_head_shows_only_working_tree_state() {
+        let dir = std::env::temp_dir().join(format!("tyba-diff-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.email", "t@t.com"]);
+        git(&dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("staged.txt"), "conteudo\n").unwrap();
+        git(&dir, &["add", "staged.txt"]);
+        std::fs::write(dir.join("solto.txt"), "linha\n").unwrap();
+
+        let diff = session_diff(&dir, "HEAD").expect("session_diff em repo sem commit");
+        assert!(diff.commits.is_empty());
+        assert!(diff.files.is_empty());
+        assert_eq!(diff.staged_files.len(), 1);
+        assert_eq!(diff.staged_files[0].path, "staged.txt");
+        assert!(diff.unstaged_files.iter().any(|f| f.path == "solto.txt"));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
