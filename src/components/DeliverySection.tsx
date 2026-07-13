@@ -32,6 +32,8 @@ import { PostDeliveryDialog } from "./PostDeliveryDialog";
 interface Props {
   session: Session;
   hasUncommittedWork: boolean;
+  aheadCount: number;
+  isWorktree: boolean;
   onSendToAgent: (prompt: string) => Promise<void>;
   onClose: () => void;
 }
@@ -45,6 +47,8 @@ const CHECK_ICON = {
 export function DeliverySection({
   session,
   hasUncommittedWork,
+  aheadCount,
+  isWorktree,
   onSendToAgent,
   onClose,
 }: Props) {
@@ -108,18 +112,27 @@ export function DeliverySection({
             {t("deliveryStatusError")}
           </button>
         )}
-        {status && (
-          <Button
-            size="sm"
-            className="h-6 gap-1.5 px-2.5 text-[11px]"
-            onClick={() =>
-              pr ? void openExternalUrl(pr.url) : setOpenPr(true)
-            }
-          >
-            <GitPullRequest size={12} />
-            {t(buttonLabelKey[buttonKind])}
-          </Button>
-        )}
+        {status &&
+          (() => {
+            const deliverable = !isWorktree || aheadCount > 0;
+            const demoted = !pr && hasUncommittedWork;
+            const blocked = !pr && !deliverable;
+            return (
+              <Button
+                size="sm"
+                variant={demoted || blocked ? "outline" : "default"}
+                className="h-6 gap-1.5 px-2.5 text-[11px]"
+                disabled={blocked}
+                title={blocked ? t("deliveryCommitFirst") : undefined}
+                onClick={() =>
+                  pr ? void openExternalUrl(pr.url) : setOpenPr(true)
+                }
+              >
+                <GitPullRequest size={12} />
+                {t(buttonLabelKey[buttonKind])}
+              </Button>
+            );
+          })()}
         <Button
           variant="outline"
           size="sm"

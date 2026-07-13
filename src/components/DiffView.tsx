@@ -1046,7 +1046,7 @@ export function DiffView({
         </main>
       </div>
 
-      {stagedCount > 0 && (
+      {stagedCount + unstagedCount > 0 && (
         <div className="flex h-10 shrink-0 items-center gap-2 border-t border-tyba-border px-4">
           <GitCommit size={13} className="shrink-0 text-tyba-text-faint" />
           <input
@@ -1058,7 +1058,12 @@ export function DiffView({
                 (e.target as HTMLInputElement).blur();
                 return;
               }
-              if (e.key === "Enter" && commitMsg.trim() && busy === null) {
+              if (
+                e.key === "Enter" &&
+                commitMsg.trim() &&
+                stagedCount > 0 &&
+                busy === null
+              ) {
                 void gitAction(
                   () => worktreeCommit(session.id, commitMsg),
                   "commit",
@@ -1067,13 +1072,18 @@ export function DiffView({
                 });
               }
             }}
-            placeholder={t("diffCommitMsgPlaceholder")}
+            placeholder={
+              stagedCount > 0
+                ? t("diffCommitMsgPlaceholder")
+                : t("diffCommitStageFirst")
+            }
             className="h-7 min-w-0 flex-1 rounded-[4px] border border-tyba-border bg-black/20 px-2 font-mono text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-green/50"
           />
           <Button
             size="sm"
             className="h-7 gap-1.5 px-2.5 text-[11px]"
-            disabled={!commitMsg.trim() || busy !== null}
+            disabled={!commitMsg.trim() || stagedCount === 0 || busy !== null}
+            title={stagedCount === 0 ? t("diffCommitStageFirst") : undefined}
             onClick={() =>
               void gitAction(
                 () => worktreeCommit(session.id, commitMsg),
@@ -1097,6 +1107,8 @@ export function DiffView({
             (diff?.staged_files.length ?? 0) > 0 ||
             (diff?.unstaged_files.length ?? 0) > 0
           }
+          aheadCount={diff?.commits.length ?? 0}
+          isWorktree={Boolean(session.worktree)}
           onSendToAgent={onSendToAgent}
           onClose={onClose}
         />
