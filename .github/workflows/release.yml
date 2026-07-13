@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Buildar os artefatos sem publicar release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-apple-silicon
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            label: macos-intel
+          # 22.04 fixa a glibc mais velha que ainda suportamos: binário linkado numa
+          # glibc nova não roda em distro antiga, e o inverso sempre funciona.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Deps de sistema (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          # xdg-utils não é opcional: o bundler do AppImage chama xdg-open e aborta
+          # sem ele — o .deb e o .rpm saem, o AppImage não.
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev rpm xdg-utils
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build assinado (macOS)
+        if: startsWith(matrix.os, 'macos')
+        uses: tauri-apps/tauri-action@v0
+        env:
+          # Sem os secrets de assinatura o Gatekeeper marca o app como "danificado"
+          # e o usuário não consegue abrir. O passo de verificação abaixo recusa
+          # publicar um artefato não assinado — falha ruidosa é melhor que release
+          # que ninguém consegue instalar.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          args: --target ${{ matrix.target }}
+
+      - name: Build (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        uses: tauri-apps/tauri-action@v0
+        with:
+          args: --target ${{ matrix.target }}
+
+      - name: Verificar assinatura e notarização (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          set -euo pipefail
+          app=$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -name '*.app' -maxdepth 1 | head -1)
+          echo "app: $app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          # spctl é o veredito real do Gatekeeper: assinado E notarizado.
+          if ! spctl --assess --type execute --verbose=4 "$app"; then
+            echo "::error::app rejeitado pelo Gatekeeper — não assinado ou não notarizado"
+            exit 1
+          fi
+
+      - name: Verificar os artefatos Linux
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          set -euo pipefail
+          bundle=src-tauri/target/${{ matrix.target }}/release/bundle
+          # O bundler do AppImage falha sozinho (ex.: xdg-open ausente) enquanto o
+          # .deb e o .rpm saem normalmente — sem esta checagem o release publicaria
+          # dois formatos de três e ninguém notaria.
+          for fmt in deb rpm appimage; do
+            find "$bundle/$fmt" -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
+              | grep -q . || { echo "::error::formato $fmt não foi gerado"; exit 1; }
+          done
+          # bubblewrap precisa vir declarado: sem ele o spawn de agente é recusado
+          # fail-closed, e o usuário só descobriria isso na primeira sessão.
+          deb=$(find "$bundle/deb" -name '*.deb' | head -1)
+          dpkg-deb -f "$deb" Depends | grep -q bubblewrap \
+            || { echo "::error::o .deb não declara bubblewrap"; exit 1; }
+
+      - name: Somas de verificação
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src-tauri/target/${{ matrix.target }}/release/bundle
+          find . -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
+            -exec shasum -a 256 {} \; > SHA256SUMS-${{ matrix.label }}.txt
+          cat SHA256SUMS-${{ matrix.label }}.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tyba-${{ matrix.label }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
+            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/SHA256SUMS-*.txt
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publicar release (rascunho)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat artifacts/SHA256SUMS-*.txt > artifacts/SHA256SUMS.txt
+          # Rascunho de propósito: o dono confere os artefatos e publica na mão.
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft \
+            --title "TYBA ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            artifacts/*.dmg artifacts/*.deb artifacts/*.rpm artifacts/*.AppImage \
+            artifacts/SHA256SUMS.txt

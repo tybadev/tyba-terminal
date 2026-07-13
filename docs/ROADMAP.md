@@ -68,8 +68,14 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 
 ## Fase 6 — Distribuição
 
-- [ ] Codesign + notarização (macOS), releases assinados
-- [ ] Auto-update assinado
+- [x] Pipeline de release: matriz macOS (Apple Silicon + Intel) e Linux, gerando `.dmg`, `.deb`, `.rpm` e AppImage + SHA256SUMS; release sai como **rascunho** para conferência humana
+- [x] Gate de secrets no histórico completo (gitleaks na CI) — pré-requisito de abrir o repo
+- [x] CONTRIBUTING.md, README com instalação por plataforma
+- [ ] Codesign + notarização (macOS) — **falta o certificado Developer ID nos secrets**; o workflow já verifica com `codesign` + `spctl` e recusa publicar artefato não assinado (build ad-hoc é rejeitado pelo Gatekeeper e o usuário vê "app danificado")
+- [ ] PKGBUILD publicado na AUR (`packaging/aur/PKGBUILD` pronto; falta subir a conta/repo AUR)
+- [ ] QA de desktop em Linux real (webkitgtk + xterm.js, notificações, window-state, PTY)
+- [ ] Auto-update assinado — **fora da v0.1 de propósito**: a chave privada de update é o secret mais perigoso do projeto (quem a tiver publica um "update" que a máquina do usuário instala sozinha). Entra na v0.2, com calma.
+- [ ] Flatpak — **fora da v0.1**: o TYBA é um sandbox, e bwrap aninhado dentro do bwrap do Flatpak não sobe. O caminho é `flatpak-spawn --host` (precedente Ptyxis/Black Box), com PTY, socket de hook e a jaula atravessando a fronteira do container: projeto próprio, não um manifesto.
 - [ ] Site/docs, onboarding
 
 ## Explicitamente fora de escopo (por ora)

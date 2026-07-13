@@ -1,0 +1,23 @@
+pkgname=tyba-bin
+_pkgname=tyba
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Terminal orientado a agentes de IA — sessões em worktrees isolados, inbox de aprovações e sandbox real do SO"
+arch=('x86_64')
+url="https://github.com/tybadev/tyba-terminal"
+license=('Apache-2.0')
+# bubblewrap não é opcional: sem ele o core recusa spawnar agente (fail-closed)
+# e o Tyba vira só um terminal.
+depends=('bubblewrap' 'webkit2gtk-4.1' 'gtk3' 'git')
+optdepends=('claude-code: runner de agente Claude Code'
+            'codex: runner de agente Codex')
+provides=('tyba')
+conflicts=('tyba')
+options=('!strip')
+source=("${_pkgname}-${pkgver}.deb::${url}/releases/download/v${pkgver}/Tyba_${pkgver}_amd64.deb")
+sha256sums=('SKIP')
+
+package() {
+  bsdtar -xf "${srcdir}/${_pkgname}-${pkgver}.deb" -C "${srcdir}" data.tar.gz
+  bsdtar -xf "${srcdir}/data.tar.gz" -C "${pkgdir}"
+}
