@@ -1,0 +1,75 @@
+name: Gates
+
+# Single definition of the gates. Called by:
+#   - ci.yml on pull requests  -> blocks the merge
+#   - ci.yml on push to main   -> catches breakage that only shows up once two
+#                                 independently-green PRs are merged together
+#   - release.yml on a tag     -> blocks PUBLISHING an untested binary
+#
+# A tag does not come from main by definition — it comes from whatever commit it
+# points at. Without the gates here, `git tag` would publish a release that never
+# ran a single test.
+on:
+  workflow_call:
+
+jobs:
+  # The repo is public: the whole history is already clonable. A secret committed
+  # today is a secret leaked today — so the scan covers the full history, not the
+  # diff.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # gitleaks-action requires a paid license on ORGANIZATION repos (it is free
+      # only on personal ones) — the job died before scanning anything. The binary
+      # is the same tool and needs no license.
+      - name: gitleaks (full history)
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest \
+            detect --source=/repo --no-banner --redact --exit-code 1
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+
+  rust:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Tauri system deps (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev bubblewrap python3
+      # ubuntu-latest is 24.04, which blocks unprivileged user namespaces through
+      # AppArmor. Without this, bwrap cannot start and the Linux sandbox tests
+      # would SKIP — a green CI that never exercised the cage is worse than a red
+      # one.
+      - name: Enable unprivileged user namespaces (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: cargo fmt --check
+        working-directory: src-tauri
+      - run: cargo clippy -- -D warnings
+        working-directory: src-tauri
+      - run: cargo test
+        working-directory: src-tauri
