@@ -1,3 +1,4 @@
+pub mod git;
 pub mod policy;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
