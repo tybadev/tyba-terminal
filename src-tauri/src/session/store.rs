@@ -124,10 +124,7 @@ impl Store {
             "ALTER TABLE workspaces ADD COLUMN side_expanded INTEGER",
             [],
         );
-        let _ = conn.execute(
-            "ALTER TABLE workspaces ADD COLUMN name_locked INTEGER",
-            [],
-        );
+        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN name_locked INTEGER", []);
         Ok(Self {
             conn: Mutex::new(conn),
         })
