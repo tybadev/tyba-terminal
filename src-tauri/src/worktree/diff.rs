@@ -326,25 +326,42 @@ fn diff_files(worktree: &Path, range_args: &[&str]) -> Result<Vec<FileDiff>, Str
 
 pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, String> {
     let range = format!("{base_ref}..HEAD");
-    let log = run_git(
-        {
-            let mut c = git_in(worktree);
-            c.args(["log", "-z", "--format=%H%x1f%s%x1f%aI", &range]);
-            c
-        },
-        "git log",
-    )?;
-    let files = diff_files(worktree, &[&range])?;
-    let staged_files = diff_files(worktree, &["--cached"])?;
-    let mut unstaged_files = diff_files(worktree, &[])?;
-    unstaged_files.extend(untracked_files(worktree)?);
+
+    // As quatro consultas são independentes: rodam em paralelo em vez de ~8
+    // processos git em série. Com a jaula, cada chamada carrega o custo do
+    // sandbox-exec; paralelizar mantém o wall-clock no maior ramo, não na soma.
+    let (log, files, staged_files, unstaged_files) = std::thread::scope(|s| {
+        let log = s.spawn(|| {
+            run_git(
+                {
+                    let mut c = git_in(worktree);
+                    c.args(["log", "-z", "--format=%H%x1f%s%x1f%aI", &range]);
+                    c
+                },
+                "git log",
+            )
+        });
+        let files = s.spawn(|| diff_files(worktree, &[&range]));
+        let staged = s.spawn(|| diff_files(worktree, &["--cached"]));
+        let unstaged = s.spawn(|| {
+            let mut f = diff_files(worktree, &[])?;
+            f.extend(untracked_files(worktree)?);
+            Ok::<_, String>(f)
+        });
+        (
+            log.join().expect("log thread"),
+            files.join().expect("files thread"),
+            staged.join().expect("staged thread"),
+            unstaged.join().expect("unstaged thread"),
+        )
+    });
 
     Ok(SessionDiff {
         base_ref: base_ref.to_string(),
-        commits: parse_log_z(&log),
-        files,
-        staged_files,
-        unstaged_files,
+        commits: parse_log_z(&log?),
+        files: files?,
+        staged_files: staged_files?,
+        unstaged_files: unstaged_files?,
     })
 }
 
