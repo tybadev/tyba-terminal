@@ -44,16 +44,16 @@ pub fn session_conflicts(worktree: &Path) -> Result<Option<ConflictState>, Strin
     };
     let git_dir = dirs.git_dir;
 
-    let operation = if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists()
-    {
-        ConflictOperation::Rebase
-    } else if git_dir.join("MERGE_HEAD").exists() {
-        ConflictOperation::Merge
-    } else if git_dir.join("CHERRY_PICK_HEAD").exists() {
-        ConflictOperation::CherryPick
-    } else {
-        return Ok(None);
-    };
+    let operation =
+        if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+            ConflictOperation::Rebase
+        } else if git_dir.join("MERGE_HEAD").exists() {
+            ConflictOperation::Merge
+        } else if git_dir.join("CHERRY_PICK_HEAD").exists() {
+            ConflictOperation::CherryPick
+        } else {
+            return Ok(None);
+        };
 
     let status = run_git(
         {
@@ -107,10 +107,11 @@ fn ours_label(worktree: &Path, git_dir: &Path) -> Option<String> {
 
 fn theirs_label(worktree: &Path, operation: ConflictOperation) -> Option<String> {
     match operation {
-        ConflictOperation::Merge => {
-            git_text(worktree, &["name-rev", "--name-only", "--always", "MERGE_HEAD"])
-                .or_else(|| git_text(worktree, &["rev-parse", "--short", "MERGE_HEAD"]))
-        }
+        ConflictOperation::Merge => git_text(
+            worktree,
+            &["name-rev", "--name-only", "--always", "MERGE_HEAD"],
+        )
+        .or_else(|| git_text(worktree, &["rev-parse", "--short", "MERGE_HEAD"])),
         ConflictOperation::Rebase => git_text(worktree, &["rev-parse", "--short", "REBASE_HEAD"]),
         ConflictOperation::CherryPick => {
             git_text(worktree, &["rev-parse", "--short", "CHERRY_PICK_HEAD"])
@@ -155,8 +156,9 @@ pub fn choose_side(worktree: &Path, path: &str, side: &str) -> Result<(), AppErr
         "ours" => "--ours",
         "theirs" => "--theirs",
         other => {
-            return Err(AppError::new("conflict.failed")
-                .with("detail", format!("lado inválido: {other}")));
+            return Err(
+                AppError::new("conflict.failed").with("detail", format!("lado inválido: {other}"))
+            );
         }
     };
     ensure_unmerged(worktree, path)?;
@@ -264,7 +266,9 @@ mod tests {
     #[test]
     fn detects_a_conflicted_merge_with_files_and_labels() {
         let dir = conflicted_merge_repo();
-        let state = session_conflicts(&dir).unwrap().expect("estado de conflito");
+        let state = session_conflicts(&dir)
+            .unwrap()
+            .expect("estado de conflito");
         assert_eq!(state.operation, ConflictOperation::Merge);
         assert_eq!(state.ours.as_deref(), Some("main"));
         assert_eq!(state.theirs.as_deref(), Some("feature"));
@@ -278,7 +282,9 @@ mod tests {
         let dir = conflicted_merge_repo();
         std::fs::write(dir.join("a.txt"), "um\nresolvido\ntres\n").unwrap();
         git(&dir, &["add", "a.txt"]);
-        let state = session_conflicts(&dir).unwrap().expect("estado de conflito");
+        let state = session_conflicts(&dir)
+            .unwrap()
+            .expect("estado de conflito");
         assert_eq!(state.operation, ConflictOperation::Merge);
         assert!(state.files.is_empty());
     }
@@ -296,7 +302,9 @@ mod tests {
         let rebase = git_raw(&dir, &["rebase", "main"]);
         assert!(!rebase.status.success(), "rebase deveria conflitar");
 
-        let state = session_conflicts(&dir).unwrap().expect("estado de conflito");
+        let state = session_conflicts(&dir)
+            .unwrap()
+            .expect("estado de conflito");
         assert_eq!(state.operation, ConflictOperation::Rebase);
         assert_eq!(state.ours.as_deref(), Some("feature"));
         assert_eq!(state.files.len(), 1);
@@ -311,7 +319,9 @@ mod tests {
             std::fs::read_to_string(dir.join("a.txt")).unwrap(),
             "um\nmain\ntres\n"
         );
-        let state = session_conflicts(&dir).unwrap().expect("merge segue aberto");
+        let state = session_conflicts(&dir)
+            .unwrap()
+            .expect("merge segue aberto");
         assert!(state.files.is_empty());
     }
 
@@ -330,7 +340,9 @@ mod tests {
         let dir = conflicted_merge_repo();
         std::fs::write(dir.join("a.txt"), "um\nresolvido na mao\ntres\n").unwrap();
         mark_resolved(&dir, "a.txt").unwrap();
-        let state = session_conflicts(&dir).unwrap().expect("merge segue aberto");
+        let state = session_conflicts(&dir)
+            .unwrap()
+            .expect("merge segue aberto");
         assert!(state.files.is_empty());
     }
 

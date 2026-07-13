@@ -69,7 +69,11 @@ fn cap_diff(diff: &str) -> String {
     while !diff.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}\n[diff truncado — {} bytes no total]", &diff[..end], diff.len())
+    format!(
+        "{}\n[diff truncado — {} bytes no total]",
+        &diff[..end],
+        diff.len()
+    )
 }
 
 fn build_prompt(diff: &str) -> String {

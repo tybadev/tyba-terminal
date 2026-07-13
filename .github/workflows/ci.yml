@@ -30,11 +30,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf libgtk-3-dev
+            librsvg2-dev patchelf libgtk-3-dev bubblewrap python3
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
       - run: cargo fmt --check
         working-directory: src-tauri
       - run: cargo clippy -- -D warnings
+        working-directory: src-tauri
+      - run: cargo test
         working-directory: src-tauri

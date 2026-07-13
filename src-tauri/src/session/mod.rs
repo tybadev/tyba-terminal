@@ -511,6 +511,10 @@ pub(crate) fn verify_private_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 pub(crate) fn write_private(dir: &Path, name: &str, contents: &str) -> std::io::Result<()> {
+    write_private_bytes(dir, name, contents.as_bytes())
+}
+
+pub(crate) fn write_private_bytes(dir: &Path, name: &str, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
     let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
@@ -525,9 +529,7 @@ pub(crate) fn write_private(dir: &Path, name: &str, contents: &str) -> std::io::
     }
 
     let mut file = opts.open(&tmp)?;
-    let written = file
-        .write_all(contents.as_bytes())
-        .and_then(|()| file.sync_all());
+    let written = file.write_all(contents).and_then(|()| file.sync_all());
     drop(file);
     if let Err(err) = written {
         let _ = std::fs::remove_file(&tmp);

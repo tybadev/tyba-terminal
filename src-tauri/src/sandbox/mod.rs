@@ -1,15 +1,22 @@
+pub mod bwrap;
+#[cfg(all(test, target_os = "linux"))]
+mod bwrap_exec_tests;
 pub mod git;
 pub mod policy;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
 #[cfg(all(test, target_os = "macos"))]
 mod seatbelt_exec_tests;
+#[cfg(target_os = "linux")]
+pub mod seccomp;
 
 use std::path::PathBuf;
 
 use portable_pty::CommandBuilder;
 
 use policy::AgentAccess;
+
+pub(crate) const TOOLCHAIN_HOME_DIRS: [&str; 4] = [".cargo", ".npm", ".bun", ".rustup"];
 
 pub struct SandboxSpec {
     pub writable_root: PathBuf,
@@ -37,7 +44,11 @@ pub fn platform_sandbox() -> Result<Box<dyn Sandbox>, String> {
     {
         Ok(Box::new(seatbelt::SeatbeltSandbox::new()?))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Box::new(bwrap::BwrapSandbox::new()?))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Err(
             "sandbox de agente indisponível nesta plataforma — sessão recusada (fail-closed)"
