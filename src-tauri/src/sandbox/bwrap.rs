@@ -455,28 +455,44 @@ fn run_seccomp_exec() -> i32 {
     126
 }
 
+/// O bwrap existe E o kernel deixa ele criar user namespace? Distro com AppArmor
+/// restritivo (Ubuntu 24.04) ou kernel hardened responde não. Cacheado: a jaula do
+/// git consulta isto por operação e não pode pagar um subprocesso toda vez.
+#[cfg(target_os = "linux")]
+pub fn userns_usable() -> bool {
+    static USABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *USABLE.get_or_init(|| probe_bwrap().is_ok())
+}
+
+#[cfg(target_os = "linux")]
+fn probe_bwrap() -> Result<(), String> {
+    if !Path::new(BWRAP).is_file() {
+        return Err(format!(
+            "{BWRAP} não existe — instale o pacote bubblewrap para sessões de agente"
+        ));
+    }
+    let probe = std::process::Command::new(BWRAP)
+        .args(["--unshare-user", "--ro-bind", "/", "/", "true"])
+        .output()
+        .map_err(|e| format!("probe do bubblewrap falhou: {e}"))?;
+    if !probe.status.success() {
+        return Err(format!(
+            "bubblewrap não consegue criar user namespace neste sistema — sessão de agente \
+             recusada (fail-closed). Habilite user namespaces sem privilégio \
+             (kernel.apparmor_restrict_unprivileged_userns=0 no Ubuntu 24.04). Detalhe: {}",
+            String::from_utf8_lossy(&probe.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 pub struct BwrapSandbox;
 
 #[cfg(target_os = "linux")]
 impl BwrapSandbox {
     pub fn new() -> Result<Self, String> {
-        if !Path::new(BWRAP).is_file() {
-            return Err(format!(
-                "{BWRAP} não existe — instale o pacote bubblewrap para sessões de agente"
-            ));
-        }
-        let probe = std::process::Command::new(BWRAP)
-            .args(["--unshare-user", "--ro-bind", "/", "/", "true"])
-            .output()
-            .map_err(|e| format!("probe do bubblewrap falhou: {e}"))?;
-        if !probe.status.success() {
-            let stderr = String::from_utf8_lossy(&probe.stderr);
-            return Err(format!(
-                "bubblewrap não consegue criar user namespace neste sistema — sessão de agente recusada (fail-closed). Detalhe: {}",
-                stderr.trim()
-            ));
-        }
+        probe_bwrap()?;
         Ok(BwrapSandbox)
     }
 }

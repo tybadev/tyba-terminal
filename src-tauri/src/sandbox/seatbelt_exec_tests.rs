@@ -52,6 +52,23 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
+/// O agente recebe o PATH do shell de LOGIN (`shell_path::agent_path`), que é onde
+/// mora o git de verdade. Forçar `PATH=/usr/bin` no teste obriga o shim do Xcode —
+/// um caminho que o produto não usa e que num runner sem Command Line Tools nem
+/// existe. O teste passa a espelhar o produto: o dir do git real entra no PATH e
+/// nos `exec_path_dirs` (que a política libera pra leitura).
+fn real_git_dir() -> Option<PathBuf> {
+    let from_login_shell = crate::shell_path::agent_path();
+    let from_process = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&from_login_shell)
+        .chain(std::env::split_paths(&from_process))
+        .find(|dir| {
+            // `/usr/bin/git` é o shim do Xcode: sem Command Line Tools ele precisa
+            // do `xcodebuild`, que a jaula bloqueia. Queremos o git de verdade.
+            dir != Path::new("/usr/bin") && dir.join("git").is_file()
+        })
+}
+
 fn fixture() -> Fixture {
     let real_home = PathBuf::from(std::env::var("HOME").expect("HOME"));
     let tmp = tempfile::TempDir::new_in(&real_home).unwrap();
@@ -110,7 +127,7 @@ fn fixture() -> Fixture {
         tyba_data_dir: home.join("Library/Application Support/dev.tyba.app"),
         home: home.clone(),
         tmpdir: std::env::var_os("TMPDIR").map(PathBuf::from),
-        exec_path_dirs: vec![],
+        exec_path_dirs: real_git_dir().into_iter().collect(),
         agent: AgentAccess::default(),
         read_allow_extra: vec![],
     };
@@ -124,6 +141,16 @@ fn fixture() -> Fixture {
     }
 }
 
+fn sandbox_path(spec: &SandboxSpec) -> String {
+    let mut dirs: Vec<String> = spec
+        .exec_path_dirs
+        .iter()
+        .map(|d| d.to_string_lossy().into_owned())
+        .collect();
+    dirs.push("/usr/bin:/bin:/usr/sbin:/sbin".into());
+    dirs.join(":")
+}
+
 fn run_in_sandbox(spec: &SandboxSpec, cwd: &Path, script: &str) -> Output {
     let mut cmd = Command::new(SANDBOX_EXEC);
     cmd.arg("-p")
@@ -134,8 +161,16 @@ fn run_in_sandbox(spec: &SandboxSpec, cwd: &Path, script: &str) -> Output {
         .arg(script)
         .current_dir(cwd)
         .env_clear()
-        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("PATH", sandbox_path(spec))
         .env("HOME", &spec.home);
+    // Mesmo env que o agente recebe: sem DEVELOPER_DIR o shim do git em
+    // /usr/bin chama xcodebuild e morre dentro da jaula (numa máquina com Xcode
+    // completo). O core resolve isso fora do sandbox — o teste precisa espelhar.
+    if let Some(dir) =
+        crate::repo_config::agent_env(None, &std::env::vars().collect()).get("DEVELOPER_DIR")
+    {
+        cmd.env("DEVELOPER_DIR", dir);
+    }
     if let Some(tmpdir) = &spec.tmpdir {
         cmd.env("TMPDIR", tmpdir);
     }

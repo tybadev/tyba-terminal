@@ -104,7 +104,44 @@ pub fn agent_env(
     // binário de agente existe. O PATH do shell de login é o que o usuário
     // realmente tem (ver shell_path).
     env.insert("PATH".to_string(), crate::shell_path::agent_path());
+    if let Some(dir) = developer_dir(user_env) {
+        env.insert("DEVELOPER_DIR".to_string(), dir);
+    }
     env
+}
+
+/// No macOS `/usr/bin/git` é um **shim**: ele procura o git de verdade dentro do
+/// `DEVELOPER_DIR` e, **se não achar lá**, chama `xcodebuild` pra perguntar onde
+/// está. Dentro do sandbox essa segunda etapa morre, e o agente fica sem git.
+///
+/// Não basta apontar pro dir do `xcode-select`: em Xcode recente o git **não vem**
+/// no toolchain (`Contents/Developer/usr/bin/git` não existe), e aí o shim cai no
+/// `xcodebuild` de novo. Escolhemos o primeiro dir que realmente **contém** o git
+/// — normalmente as Command Line Tools — resolvendo tudo fora da jaula.
+fn developer_dir(user_env: &HashMap<String, String>) -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(dir) = user_env.get("DEVELOPER_DIR") {
+        candidates.push(dir.clone());
+    }
+    if let Ok(out) = std::process::Command::new("/usr/bin/xcode-select")
+        .arg("-p")
+        .output()
+    {
+        if out.status.success() {
+            let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !dir.is_empty() {
+                candidates.push(dir);
+            }
+        }
+    }
+    candidates.push("/Library/Developer/CommandLineTools".to_string());
+
+    candidates
+        .into_iter()
+        .find(|dir| std::path::Path::new(dir).join("usr/bin/git").is_file())
 }
 
 #[cfg(test)]
@@ -182,6 +219,29 @@ mod tests {
         assert_eq!(config.default_agent.as_deref(), Some("claude"));
     }
 
+    /// O bug que só a CI pegou: apontar o DEVELOPER_DIR pra um dir SEM git faz o
+    /// shim do /usr/bin/git cair no xcodebuild — que morre dentro da jaula. Um dir
+    /// que não tem `usr/bin/git` nunca pode ser escolhido.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn developer_dir_never_points_at_a_toolchain_without_git() {
+        let empty = tempfile::tempdir().unwrap();
+        let user = env(&[("DEVELOPER_DIR", empty.path().to_str().unwrap())]);
+
+        let chosen = developer_dir(&user);
+        assert_ne!(
+            chosen.as_deref(),
+            Some(empty.path().to_str().unwrap()),
+            "dir sem usr/bin/git manda o shim pro xcodebuild, que a jaula bloqueia"
+        );
+        if let Some(dir) = chosen {
+            assert!(
+                std::path::Path::new(&dir).join("usr/bin/git").is_file(),
+                "o dir escolhido precisa conter o git de verdade: {dir}"
+            );
+        }
+    }
+
     #[test]
     fn agent_env_baseline_always_present() {
         let user = env(&[("PATH", "/bin"), ("HOME", "/home/x"), ("IGNORED", "y")]);
@@ -209,8 +269,16 @@ mod tests {
     fn agent_env_none_config_only_baseline() {
         let user = env(&[("PATH", "/bin"), ("DATABASE_URL", "postgres://")]);
         let out = agent_env(None, &user);
-        assert_eq!(out.len(), 1);
         assert!(out.contains_key("PATH"));
+        // O que importa é que NADA do env do usuário vaze fora da baseline —
+        // contar chaves era um atalho que quebra sempre que a baseline cresce.
+        assert!(!out.contains_key("DATABASE_URL"));
+        for key in out.keys() {
+            assert!(
+                AGENT_ENV_BASELINE.contains(&key.as_str()) || key == "DEVELOPER_DIR",
+                "chave fora da baseline vazou: {key}"
+            );
+        }
     }
 
     #[test]
@@ -240,9 +308,10 @@ mod tests {
         let out = agent_env(Some(&config), &user);
         assert_eq!(
             out.get("PATH").map(String::as_str),
-            Some(crate::shell_path::agent_path().as_str())
+            Some(crate::shell_path::agent_path().as_str()),
+            "o PATH do core sempre vence o do repo — senão o repo escolhe o binário do agente"
         );
-        assert_eq!(out.len(), 1);
+        assert!(!out.values().any(|v| v == "/repo/injetado"));
     }
 
     #[test]

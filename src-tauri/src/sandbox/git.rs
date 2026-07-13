@@ -17,22 +17,33 @@ fn push_unique(roots: &mut Vec<PathBuf>, p: PathBuf) {
 /// Diretório do `.git` do worktree, resolvido por leitura de arquivo (sem
 /// shell-out de git): o painel chama isto por op de escrita e não pode pagar
 /// um subprocesso só pra montar a política.
+///
+/// Sobe pelos ancestrais: o caminho pode ser um **subdiretório** do repo (o
+/// `cwd` de uma sessão, por exemplo). Sem isso o gitdir não resolve, o
+/// `repo_uses_content_filter` cai no fail-secure e **toda** op num subdiretório
+/// vira op enjaulada — caro no macOS, e quebrado no Linux onde o kernel não
+/// permite user namespace sem privilégio.
 fn cheap_git_dir(repo: &Path) -> Option<PathBuf> {
-    let pointer = repo.join(".git");
-    if pointer.is_dir() {
-        return Some(pointer);
+    for dir in repo.ancestors() {
+        let pointer = dir.join(".git");
+        if pointer.is_dir() {
+            return Some(pointer);
+        }
+        let Ok(content) = std::fs::read_to_string(&pointer) else {
+            continue;
+        };
+        let rel = content
+            .lines()
+            .find_map(|l| l.strip_prefix("gitdir:"))?
+            .trim();
+        let resolved = if Path::new(rel).is_absolute() {
+            PathBuf::from(rel)
+        } else {
+            dir.join(rel)
+        };
+        return Some(resolved);
     }
-    let content = std::fs::read_to_string(&pointer).ok()?;
-    let rel = content
-        .lines()
-        .find_map(|l| l.strip_prefix("gitdir:"))?
-        .trim();
-    let dir = if Path::new(rel).is_absolute() {
-        PathBuf::from(rel)
-    } else {
-        repo.join(rel)
-    };
-    Some(dir)
+    None
 }
 
 fn config_files(repo: &Path) -> Vec<PathBuf> {
@@ -161,7 +172,28 @@ mod imp {
 
     pub const LAUNCHER: &str = crate::sandbox::bwrap::BWRAP;
 
+    /// Distro que desliga user namespace sem privilégio (Ubuntu 24.04 com o
+    /// AppArmor restritivo, kernels hardened) não deixa o bwrap subir. Sem esta
+    /// checagem o git sairia com um erro do bwrap que ninguém sabe interpretar;
+    /// com ela, a op é recusada dizendo o que fazer. Recusar é a escolha certa:
+    /// o único motivo de estarmos aqui é o repo ter filtro de conteúdo, e rodar
+    /// um filtro hostil sem jaula é justamente a RCE que a jaula existe pra
+    /// impedir (#42).
+    fn refusal() -> Command {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg(
+            "echo 'este repositório define um filtro de conteúdo do git, que o Tyba só \
+             executa dentro de uma jaula — e o kernel não permite user namespace sem \
+             privilégio. Instale o bubblewrap e habilite user namespaces \
+             (kernel.apparmor_restrict_unprivileged_userns=0 no Ubuntu 24.04).' >&2; exit 1",
+        );
+        cmd
+    }
+
     pub fn wrap(git: Command, profile: GitProfile, repo: &Path, extra: &[PathBuf]) -> Command {
+        if !crate::sandbox::bwrap::userns_usable() {
+            return refusal();
+        }
         let mut cmd = Command::new(LAUNCHER);
         cmd.args([
             "--ro-bind",
@@ -240,6 +272,39 @@ mod tests {
         );
     }
 
+    /// Um subdiretório do repo (o cwd de uma sessão) não tem `.git` próprio. Sem
+    /// subir pelos ancestrais, o gitdir não resolvia, o detector caía no
+    /// fail-secure e TODA op num subdiretório era enjaulada — caro no macOS e
+    /// quebrado no Linux sem user namespace. Só a CI (Linux) pegou isso.
+    #[test]
+    fn cheap_git_dir_resolves_from_a_subdirectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("r");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let sub = repo.join("a/b/c");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        assert_eq!(cheap_git_dir(&sub), Some(repo.join(".git")));
+        assert!(
+            !repo_uses_content_filter(&sub),
+            "subdiretório de repo limpo não pode virar op enjaulada"
+        );
+    }
+
+    #[test]
+    fn cheap_git_dir_resolves_from_inside_a_worktree_subdirectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path().join("wt");
+        let sub = wt.join("src/deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: /main/.git/worktrees/wt\n").unwrap();
+
+        assert_eq!(
+            cheap_git_dir(&sub),
+            Some(PathBuf::from("/main/.git/worktrees/wt"))
+        );
+    }
+
     #[test]
     fn writable_roots_never_shell_out_and_include_extra() {
         let tmp = tempfile::tempdir().unwrap();
@@ -308,6 +373,41 @@ mod tests {
     fn missing_gitdir_fails_secure() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(repo_uses_content_filter(&tmp.path().join("not-a-repo")));
+    }
+
+    /// Sem user namespace, a op num repo com filtro é RECUSADA — nunca rodada sem
+    /// jaula. Rodar o filtro cru é exatamente a RCE que a jaula existe pra impedir
+    /// (#42): degradar pra "sem sandbox" seria trocar segurança por conveniência
+    /// justo onde o risco é real.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn without_userns_a_filtered_repo_is_refused_never_run_bare() {
+        if crate::sandbox::bwrap::userns_usable() {
+            eprintln!("SKIP: este kernel permite userns — a jaula sobe, nada a recusar");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("r");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(
+            repo.join(".git/config"),
+            "[filter \"pwn\"]\n\tclean = touch /tmp/pwned\n",
+        )
+        .unwrap();
+
+        let mut git = Command::new("git");
+        git.args(["-C", repo.to_str().unwrap(), "status"]);
+        let out = wrap(git, GitProfile::Write, &repo, &[]).output().unwrap();
+
+        assert!(
+            !out.status.success(),
+            "sem jaula, a op tem que ser recusada"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("user namespace"),
+            "a recusa precisa dizer o que fazer, não sair com erro críptico: {stderr}"
+        );
     }
 
     #[test]
