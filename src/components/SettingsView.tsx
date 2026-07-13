@@ -237,7 +237,7 @@ function SettingRow({
       <div className="min-w-0">
         <p className="text-[13px] text-tyba-text">{label}</p>
         {hint && (
-          <p className="pt-0.5 text-[11px] leading-relaxed text-tyba-text-faint">
+          <p className="break-words pt-0.5 text-[11px] leading-relaxed text-tyba-text-faint">
             {hint}
           </p>
         )}
