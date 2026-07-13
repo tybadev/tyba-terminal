@@ -35,6 +35,56 @@ fn cheap_git_dir(repo: &Path) -> Option<PathBuf> {
     Some(dir)
 }
 
+fn config_files(repo: &Path) -> Vec<PathBuf> {
+    let Some(git_dir) = cheap_git_dir(repo) else {
+        return Vec::new();
+    };
+    let mut files = vec![git_dir.join("config"), git_dir.join("config.worktree")];
+    if let Ok(common) = std::fs::read_to_string(git_dir.join("commondir")) {
+        let common = git_dir.join(common.trim());
+        files.push(common.join("config"));
+    }
+    files
+}
+
+fn section_name(line: &str) -> Option<String> {
+    let l = line.trim();
+    let rest = l.strip_prefix('[')?;
+    let name: String = rest
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != ']' && *c != '"')
+        .collect();
+    Some(name.to_ascii_lowercase())
+}
+
+/// A RCE do #42 só arma se o repo define um filtro de conteúdo (`clean`/`smudge`/
+/// `process`) ou um `diff.*.textconv` — e um `[include]` pode esconder qualquer um.
+/// `core.fsmonitor`/`core.pager`/`diff.external` já são neutralizados por `-c` no
+/// `git_in`. Detectar por leitura de arquivo (microssegundos) evita pagar a jaula
+/// nos ~99% dos repos que não têm filtro nenhum.
+pub fn repo_uses_content_filter(repo: &Path) -> bool {
+    let files = config_files(repo);
+    if files.is_empty() {
+        return true; // não consegui resolver o gitdir → fail-secure
+    }
+    for cfg in files {
+        let Ok(content) = std::fs::read_to_string(&cfg) else {
+            continue;
+        };
+        for line in content.lines() {
+            if let Some(section) = section_name(line) {
+                if matches!(
+                    section.as_str(),
+                    "filter" | "diff" | "include" | "includeif"
+                ) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn writable_roots(repo: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
     let mut roots = vec![crate::repo::canonicalize_or(repo)];
     for e in extra {
@@ -162,6 +212,11 @@ pub fn wrap(git: Command, profile: GitProfile, repo: &Path, extra: &[PathBuf]) -
     if profile == GitProfile::Network {
         return git;
     }
+    // Sem filtro configurado no repo, não há RCE possível — roda direto, na
+    // velocidade nativa. A jaula só custa nos repos que de fato armam o vetor.
+    if !repo_uses_content_filter(repo) {
+        return git;
+    }
     imp::wrap(git, profile, repo, extra)
 }
 
@@ -220,6 +275,39 @@ mod tests {
             !p.contains("(allow network-outbound)"),
             "op de escrita não pode ter rede — um filtro encaixotado exfiltraria"
         );
+    }
+
+    #[test]
+    fn detects_content_filter_only_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("r");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+
+        std::fs::write(repo.join(".git/config"), "[core]\n\tbare = false\n").unwrap();
+        assert!(!repo_uses_content_filter(&repo), "repo limpo → sem jaula");
+
+        std::fs::write(
+            repo.join(".git/config"),
+            "[core]\n\tbare = false\n[filter \"pwn\"]\n\tclean = sh -c evil\n",
+        )
+        .unwrap();
+        assert!(repo_uses_content_filter(&repo), "filtro → jaula");
+
+        std::fs::write(
+            repo.join(".git/config"),
+            "[core]\n[include]\n\tpath = /tmp/hidden\n",
+        )
+        .unwrap();
+        assert!(
+            repo_uses_content_filter(&repo),
+            "include pode esconder filtro → fail-secure"
+        );
+    }
+
+    #[test]
+    fn missing_gitdir_fails_secure() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(repo_uses_content_filter(&tmp.path().join("not-a-repo")));
     }
 
     #[test]
