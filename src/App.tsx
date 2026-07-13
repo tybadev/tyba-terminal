@@ -76,6 +76,7 @@ import {
   SettingsView,
   type DetailsPref,
   type SidebarTogglePref,
+  type StartupMode,
 } from "./components/SettingsView";
 import { TabBar } from "./components/TabBar";
 import {
@@ -164,6 +165,7 @@ import {
   type AgentRunnerId,
 } from "./lib/agentSession";
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
+import { parseStartupMode } from "./lib/startup";
 import {
   compactPath,
   resolveWorkspaceCwd,
@@ -256,6 +258,7 @@ const FONT_SIZE_KEY = "pref.code.font_size";
 const SHOW_CONTAINERS_KEY = "pref.code.show_containers";
 const GIT_STATUS_KEY = "pref.git_status";
 const SHELL_INTEGRATION_KEY = "pref.shell_integration";
+const STARTUP_KEY = "pref.startup";
 
 function runnerLabel(kind: SessionKind): string | null {
   if (kind.type !== "agent") return null;
@@ -405,6 +408,7 @@ export default function App() {
   const dismissedCommand = useRef<Record<string, string | null>>({});
   const [showGitStatus, setShowGitStatus] = useState(true);
   const [shellIntegration, setShellIntegration] = useState(true);
+  const [startup, setStartup] = useState<StartupMode>("resume");
   const [menuWorkspace, setMenuWorkspace] = useState<string | null>(null);
   const [prompt, setPrompt] = useState<{
     kind: "rename" | "group";
@@ -1483,6 +1487,12 @@ export default function App() {
     void setPref(SHELL_INTEGRATION_KEY, value ? "on" : "off").catch(() => {});
   }, []);
 
+  // Vale no próximo boot: quem lê a pref é o core, no startup.
+  const changeStartup = useCallback((value: StartupMode) => {
+    setStartup(value);
+    void setPref(STARTUP_KEY, value).catch(() => {});
+  }, []);
+
   const toggleSidebar = useCallback(() => {
     setSidebar((current) => (current === "open" ? togglePref : "open"));
   }, [togglePref]);
@@ -1556,6 +1566,7 @@ export default function App() {
         containersRaw,
         gitStatusRaw,
         shellIntegrationRaw,
+        startupRaw,
         toolbarRaw,
         richInputRaw,
         editorRaw,
@@ -1573,6 +1584,7 @@ export default function App() {
         getPref(SHOW_CONTAINERS_KEY).catch(() => null),
         getPref(GIT_STATUS_KEY).catch(() => null),
         getPref(SHELL_INTEGRATION_KEY).catch(() => null),
+        getPref(STARTUP_KEY).catch(() => null),
         getPref(TOOLBAR_PREF_KEY).catch(() => null),
         getPref(RICH_INPUT_PREF_KEY).catch(() => null),
         getPref(EDITOR_PREF_KEY).catch(() => null),
@@ -1602,6 +1614,7 @@ export default function App() {
       setShowContainers(containersRaw === "on");
       setShowGitStatus(gitStatusRaw !== "off");
       setShellIntegration(shellIntegrationRaw !== "off");
+      setStartup(parseStartupMode(startupRaw));
       setToolbarPref(parseToolbarPref(toolbarRaw));
       if (editorRaw) setEditorPref(editorRaw);
       setWorktreeDefault(worktreeDefaultRaw === "on");
@@ -2760,6 +2773,8 @@ export default function App() {
                         onShowGitStatusChange={changeShowGitStatus}
                         shellIntegration={shellIntegration}
                         onShellIntegrationChange={changeShellIntegration}
+                        startup={startup}
+                        onStartupChange={changeStartup}
                         toolbarPref={toolbarPref}
                         onToolbarPrefChange={changeToolbarPref}
                         worktreeDefault={worktreeDefault}

@@ -125,6 +125,9 @@ impl Store {
             [],
         );
         let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN name_locked INTEGER", []);
+        // Sem o cwd não há como reabrir a sessão na mesma pasta: o PTY morre com o
+        // app e o pane fica órfão. É o que faz a tab sumir no reopen (#50).
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN cwd TEXT", []);
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -141,13 +144,14 @@ impl Store {
             .repo_root
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned());
+        let cwd = s.cwd.as_ref().map(|p| p.to_string_lossy().into_owned());
 
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO sessions (id, kind, title, repo_root, worktree, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO sessions (id, kind, title, repo_root, worktree, status, created_at, cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO UPDATE SET
-                kind = ?2, title = ?3, repo_root = ?4, worktree = ?5, status = ?6",
+                kind = ?2, title = ?3, repo_root = ?4, worktree = ?5, status = ?6, cwd = ?8",
             params![
                 s.id.to_string(),
                 kind,
@@ -156,6 +160,7 @@ impl Store {
                 worktree,
                 status,
                 s.created_at.to_rfc3339(),
+                cwd,
             ],
         )?;
         Ok(())
@@ -478,7 +483,7 @@ impl Store {
     pub fn load_sessions(&self) -> Result<Vec<Session>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, kind, title, repo_root, worktree, status, created_at
+            "SELECT id, kind, title, repo_root, worktree, status, created_at, cwd
              FROM sessions ORDER BY created_at",
         )?;
         let raw = stmt
@@ -491,6 +496,7 @@ impl Store {
                     worktree: row.get(4)?,
                     status: row.get(5)?,
                     created_at: row.get(6)?,
+                    cwd: row.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -517,6 +523,7 @@ struct RawSession {
     worktree: Option<String>,
     status: String,
     created_at: String,
+    cwd: Option<String>,
 }
 
 impl RawSession {
@@ -539,6 +546,7 @@ impl RawSession {
             status,
             attention: false,
             created_at,
+            cwd: self.cwd.map(PathBuf::from),
         })
     }
 }
@@ -557,6 +565,7 @@ mod tests {
             status: SessionStatus::Running,
             attention: false,
             created_at: Utc::now(),
+            cwd: Some(PathBuf::from("/repo/sub")),
         }
     }
 

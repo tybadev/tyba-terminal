@@ -185,6 +185,74 @@ fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
     }
 }
 
+/// Reabre no boot as sessões que morreram com o app anterior, conforme a pref de
+/// startup. Devolve o mapa `sessão morta -> sessão nova` para o layout reapontar
+/// os panes: sem isso o pane guarda um id que não existe mais e a tab abre vazia.
+///
+/// Só shell é reaberto. Um agente não é um processo idempotente: religá-lo sozinho
+/// no boot faria um agente começar a agir sem ninguém ter pedido — a sessão volta
+/// morta, e o dono decide.
+fn resume_startup(
+    app: &AppHandle,
+    store: &Arc<session::store::Store>,
+    sessions: &SharedSessionManager,
+    pty_pool: &SharedPtyPool,
+) -> std::collections::HashMap<SessionId, SessionId> {
+    let mode = session::StartupMode::parse(
+        store
+            .get_setting(session::STARTUP_PREF_KEY)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    let mut remap = std::collections::HashMap::new();
+    let dead = sessions.dead_sessions();
+
+    if mode == session::StartupMode::Fresh {
+        for s in dead {
+            sessions.forget(s.id);
+        }
+        return remap;
+    }
+    if mode == session::StartupMode::KeepLayout {
+        return remap;
+    }
+
+    for old in dead {
+        if !matches!(old.kind, SessionKind::Shell) {
+            continue;
+        }
+        let Some(cwd) = old.cwd.clone() else {
+            continue;
+        };
+        if !cwd.is_dir() {
+            continue;
+        }
+        let handle = app.clone();
+        let opts = CreateSessionOpts {
+            kind: SessionKind::Shell,
+            title: Some(old.title.clone()),
+            cwd: Some(cwd),
+            cols: 100,
+            rows: 30,
+            worktree_task: None,
+            attach_existing: false,
+        };
+        match sessions.create_shell_session(app.clone(), pty_pool, opts, move |id| {
+            session_exited(&handle, id)
+        }) {
+            Ok(fresh) => {
+                remap.insert(old.id, fresh.id);
+                sessions.forget(old.id);
+            }
+            Err(e) => {
+                eprintln!("reopen da sessão {}: {e}", old.id);
+            }
+        }
+    }
+    remap
+}
+
 #[tauri::command]
 fn create_session(
     app: AppHandle,
@@ -1701,9 +1769,10 @@ pub fn run() {
 
             let layout: layout::SharedLayout =
                 Arc::new(layout::LayoutManager::new(Arc::clone(&store)));
+            let remap = resume_startup(app.handle(), &store, &sessions, &pty_pool);
             let valid: std::collections::HashSet<SessionId> =
                 sessions.list().iter().map(|s| s.id).collect();
-            layout.load(&valid);
+            layout.load_remapped(&valid, &remap);
 
             let themes_dir = app
                 .path()

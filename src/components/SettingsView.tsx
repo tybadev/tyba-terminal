@@ -62,8 +62,12 @@ import { FONT_SIZE_EVENT, setDefaultFontSize } from "./TerminalView";
 import { ToolbarChipsEditor } from "./ToolbarChipsEditor";
 import type { RichInputPref } from "../lib/richInput";
 import type { ToolbarPref } from "../lib/repoSnapshots";
+import { parseStartupMode } from "../lib/startup";
 
 export type SidebarTogglePref = "hidden" | "rail";
+/// Espelha `session::StartupMode` no core: o que fazer com as sessões que não
+/// sobreviveram ao fechamento do app.
+export type StartupMode = "resume" | "keep_layout" | "fresh";
 export type DetailsPref = "on" | "off";
 
 type Section =
@@ -92,6 +96,8 @@ interface Props {
   onShowGitStatusChange: (value: boolean) => void;
   shellIntegration: boolean;
   onShellIntegrationChange: (value: boolean) => void;
+  startup: StartupMode;
+  onStartupChange: (value: StartupMode) => void;
   richInputPref: RichInputPref;
   onRichInputPrefChange: (value: RichInputPref) => void;
   richInputRegexInvalid: boolean;
@@ -345,6 +351,8 @@ export function SettingsView({
   onShowGitStatusChange,
   shellIntegration,
   onShellIntegrationChange,
+  startup,
+  onStartupChange,
   richInputPref,
   onRichInputPrefChange,
   richInputRegexInvalid,
@@ -582,6 +590,25 @@ export function SettingsView({
                   options={[
                     { value: "", label: t("defaultEditorSystem") },
                     ...editors.map((e) => ({ value: e.id, label: e.name })),
+                  ]}
+                />
+              </SettingRow>
+            </div>
+
+            <span className="tyba-label mt-6 block">{t("startup")}</span>
+            <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
+              {t("startupHint")}
+            </p>
+            <div className="mt-2 divide-y divide-tyba-border overflow-hidden rounded-[6px] border border-tyba-border">
+              <SettingRow label={t("startup")}>
+                <Select
+                  value={startup}
+                  onChange={(value) => onStartupChange(parseStartupMode(value))}
+                  className="w-56"
+                  options={[
+                    { value: "resume", label: t("startupResume") },
+                    { value: "keep_layout", label: t("startupKeepLayout") },
+                    { value: "fresh", label: t("startupFresh") },
                   ]}
                 />
               </SettingRow>
