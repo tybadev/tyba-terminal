@@ -56,17 +56,14 @@ fn absolute_path_only(path: &str) -> String {
         .join(":")
 }
 
-pub fn filter_env(vars: impl Iterator<Item = (String, String)>) -> Vec<(String, String)> {
+pub fn filter_env(
+    vars: impl Iterator<Item = (String, String)>,
+    login_path: &str,
+) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = vars
-        .filter(|(k, _)| allowed(k))
-        .map(|(k, v)| {
-            if k == "PATH" {
-                (k, absolute_path_only(&v))
-            } else {
-                (k, v)
-            }
-        })
+        .filter(|(k, _)| k.as_str() != "PATH" && allowed(k))
         .collect();
+    env.push(("PATH".into(), absolute_path_only(login_path)));
     for (k, v) in FORGE_ENV_FORCED {
         env.retain(|(key, _)| key != k);
         env.push((k.into(), v.into()));
@@ -112,7 +109,7 @@ pub fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    for (k, v) in filter_env(std::env::vars()) {
+    for (k, v) in filter_env(std::env::vars(), &crate::shell_path::agent_path()) {
         cmd.env(k, v);
     }
 
@@ -231,7 +228,10 @@ mod tests {
             ("AWS_SECRET_ACCESS_KEY", "leak"),
             ("OPENAI_API_KEY", "leak"),
         ];
-        let env = filter_env(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        let env = filter_env(
+            vars.iter().map(|(k, v)| (k.to_string(), v.to_string())),
+            "/usr/bin",
+        );
         let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
 
         assert!(keys.contains(&"PATH"));
@@ -245,7 +245,10 @@ mod tests {
     #[test]
     fn env_filter_forces_non_interactive_values() {
         let vars = [("NO_COLOR", "0"), ("PATH", "/usr/bin")];
-        let env = filter_env(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        let env = filter_env(
+            vars.iter().map(|(k, v)| (k.to_string(), v.to_string())),
+            "/usr/bin",
+        );
 
         let no_color: Vec<&String> = env
             .iter()
@@ -260,8 +263,7 @@ mod tests {
 
     #[test]
     fn env_filter_strips_relative_path_components() {
-        let vars = [("PATH", "/usr/bin:.:node_modules/.bin:/opt/bin")];
-        let env = filter_env(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        let env = filter_env(std::iter::empty(), "/usr/bin:.:node_modules/.bin:/opt/bin");
         let path = env
             .iter()
             .find(|(k, _)| k == "PATH")
@@ -269,6 +271,21 @@ mod tests {
             .unwrap();
         assert_eq!(path, "/usr/bin:/opt/bin");
         assert!(!path.contains('.') || path.starts_with('/'));
+    }
+
+    #[test]
+    fn env_filter_takes_path_from_the_login_shell_not_the_process() {
+        let vars = [("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"), ("HOME", "/u")];
+        let env = filter_env(
+            vars.iter().map(|(k, v)| (k.to_string(), v.to_string())),
+            "/opt/homebrew/bin:/usr/bin",
+        );
+        let path = env
+            .iter()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        assert_eq!(path, "/opt/homebrew/bin:/usr/bin");
     }
 
     #[test]
