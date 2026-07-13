@@ -17,6 +17,8 @@ const SYSTEM_RO_DIRS: [&str; 9] = [
 
 const RESOLVER_RO_DIRS: [&str; 2] = ["/run/systemd/resolve", "/run/NetworkManager"];
 
+use super::PROTECTED_BRANCHES;
+
 struct Args(Vec<OsString>);
 
 impl Args {
@@ -261,6 +263,28 @@ fn worktree_git(args: &mut Args, spec: &SandboxSpec) -> Result<(), String> {
         let p = spec.repo_git_dir.join(dir);
         ensure_dir(&p)?;
         args.bind(&p);
+    }
+
+    // Sessão anexada ao checkout principal (review/conflitos num repo comum): ali
+    // o gitdir do worktree É o `.git` do repo, então o bind rw acima alcançaria
+    // `refs/heads/main`. O agente não daria push — o core recusa —, mas moveria a
+    // main LOCAL, que é a mesma regra vista de outro ângulo. Num worktree gerido
+    // esses paths já ficam fora do bind; aqui o ro-bind é o que segura.
+    for name in PROTECTED_BRANCHES {
+        let head = spec.repo_git_dir.join("refs/heads").join(name);
+        if head.is_file() {
+            args.ro_bind(&head);
+        }
+        let log = spec.repo_git_dir.join("logs/refs/heads").join(name);
+        if log.is_file() {
+            args.ro_bind(&log);
+        }
+    }
+    // Sem isso a main volta a ser reescrevível por outro caminho: `git pack-refs`
+    // move as refs pra dentro deste arquivo, e editá-lo reescreve qualquer branch.
+    let packed = spec.repo_git_dir.join("packed-refs");
+    if packed.is_file() {
+        args.ro_bind(&packed);
     }
     Ok(())
 }
@@ -756,6 +780,53 @@ mod tests {
             "--bind",
             &spec.home.join(".claude.jsonNOT")
         ));
+    }
+
+    #[test]
+    fn attached_main_checkout_cannot_move_main_but_can_move_a_feature_branch() {
+        let (_tmp, mut spec) = fixture();
+        // Sessão anexada ao checkout principal: gitdir do worktree == .git do repo.
+        spec.worktree_git_dir = spec.repo_git_dir.clone();
+        let heads = spec.repo_git_dir.join("refs/heads");
+        std::fs::create_dir_all(&heads).unwrap();
+        for b in ["main", "master", "feature"] {
+            std::fs::write(heads.join(b), "sha\n").unwrap();
+        }
+        std::fs::write(spec.repo_git_dir.join("packed-refs"), "# pack\n").unwrap();
+
+        let argv = strs(&build_args(&spec).unwrap());
+        let gitdir = spec.repo_git_dir.to_string_lossy().into_owned();
+        let rw = triple_pos(&argv, "--bind", &gitdir, &gitdir).unwrap();
+
+        for protegido in ["main", "master"] {
+            let p = heads.join(protegido);
+            let ro = triple_pos(
+                &argv,
+                "--ro-bind",
+                &p.to_string_lossy(),
+                &p.to_string_lossy(),
+            )
+            .unwrap_or_else(|| panic!("refs/heads/{protegido} ficou gravável"));
+            assert!(ro > rw, "o ro-bind precisa sombrear o bind rw do gitdir");
+        }
+        let packed = spec.repo_git_dir.join("packed-refs");
+        assert!(
+            has_triple(&argv, "--ro-bind", &packed),
+            "packed-refs gravável reescreve a main por outro caminho (pack-refs)"
+        );
+
+        // Par positivo: proteger a main não pode custar o commit numa branch comum.
+        let feature = heads.join("feature");
+        assert!(
+            triple_pos(
+                &argv,
+                "--ro-bind",
+                &feature.to_string_lossy(),
+                &feature.to_string_lossy()
+            )
+            .is_none(),
+            "branch comum precisa continuar gravável — senão o agente não commita"
+        );
     }
 
     #[test]

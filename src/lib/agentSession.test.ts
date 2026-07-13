@@ -5,6 +5,7 @@ import {
   applyConsentDecision,
   buildAgentSessionOpts,
   needsConsentPrompt,
+  runnerFromCommand,
   runnerFromDefault,
 } from "./agentSession";
 
@@ -93,5 +94,21 @@ describe("runnerFromDefault", () => {
     expect(runnerFromDefault("cursor")).toBe(null);
     expect(runnerFromDefault(null)).toBe(null);
     expect(runnerFromDefault(undefined)).toBe(null);
+  });
+});
+
+describe("runnerFromCommand", () => {
+  test("casa pelo binário, ignorando argumentos e caminho", () => {
+    expect(runnerFromCommand("codex")).toBe("codex");
+    expect(runnerFromCommand("  codex --sandbox workspace-write ")).toBe("codex");
+    expect(runnerFromCommand("/opt/homebrew/bin/codex")).toBe("codex");
+    expect(runnerFromCommand("claude --model opus")).toBe("claude_code");
+  });
+
+  test("desconhecido ou vazio cai no default do produto", () => {
+    expect(runnerFromCommand("cursor")).toBe("claude_code");
+    expect(runnerFromCommand("")).toBe("claude_code");
+    expect(runnerFromCommand(null)).toBe("claude_code");
+    expect(runnerFromCommand(undefined)).toBe("claude_code");
   });
 });

@@ -112,6 +112,11 @@ pub struct CreateSessionOpts {
     pub rows: u16,
     #[serde(default)]
     pub worktree_task: Option<String>,
+    /// Sessão de agente na pasta de `cwd`, que já existe (review, conflitos), em
+    /// vez de num worktree novo. O agente continua passando pelo sandbox e pelo
+    /// gate de aprovação — é só a origem da pasta que muda.
+    #[serde(default)]
+    pub attach_existing: bool,
 }
 
 pub struct SessionManager {

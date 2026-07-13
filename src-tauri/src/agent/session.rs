@@ -387,17 +387,7 @@ pub fn create_agent_session(
     else {
         return Err("sessão de agente exige kind agent".into());
     };
-    let runner: Box<dyn AgentRunner> = match &runner_kind {
-        AgentRunnerKind::ClaudeCode => Box::new(ClaudeCodeRunner),
-        AgentRunnerKind::Codex => Box::new(CodexRunner),
-        AgentRunnerKind::Custom(_) => {
-            return Err("runner custom disponível em fase futura".into());
-        }
-    };
-    if !crate::agent::binary_available(&runner_kind) {
-        let binary = crate::agent::runner_binary(&runner_kind).unwrap_or("?");
-        return Err(format!("binário `{binary}` não encontrado no PATH"));
-    }
+    let runner = build_runner(&runner_kind)?;
     let task = opts
         .worktree_task
         .clone()
@@ -413,6 +403,61 @@ pub fn create_agent_session(
         let _ = crate::worktree::remove(&worktree.path, true, true);
     }
     result
+}
+
+/// Sobe um agente numa pasta que **já existe** (o worktree de uma sessão, o repo
+/// conflitado) em vez de criar um worktree novo.
+///
+/// Existe para que os fluxos de review e de resolução de conflitos passem pelo
+/// mesmo `spawn_prepared` das sessões normais. Antes o front criava uma sessão de
+/// **shell** e digitava `claude` nela: o agente subia sem sandbox, com o env
+/// inteiro do usuário e — pior — **sem os hooks**, logo sem `PreToolUse`, logo
+/// sem gate de aprovação. Um agente fora do inbox faz o que quiser.
+pub fn attach_agent_session(
+    ctx: &AgentSessionCtx,
+    opts: CreateSessionOpts,
+    on_exit: impl FnOnce(SessionId) + Send + 'static,
+) -> Result<Session, String> {
+    let SessionKind::Agent {
+        runner: runner_kind,
+    } = opts.kind.clone()
+    else {
+        return Err("sessão de agente exige kind agent".into());
+    };
+    let runner = build_runner(&runner_kind)?;
+
+    let path = opts
+        .cwd
+        .clone()
+        .ok_or("sessão de agente in-place exige a pasta alvo")?;
+    let worktree = crate::worktree::existing(&path)?;
+    let root = crate::repo::toplevel(&worktree.path)
+        .map(|r| crate::repo::canonicalize_or(&r))
+        .ok_or("a pasta da sessão não é um repositório git")?;
+
+    let task = opts
+        .worktree_task
+        .clone()
+        .or_else(|| opts.title.clone())
+        .unwrap_or_else(|| worktree.branch.clone());
+
+    // Sem `worktree::remove` no erro: a pasta é do usuário, não nossa.
+    spawn_prepared(ctx, opts, runner, root, worktree, task, on_exit)
+}
+
+fn build_runner(kind: &AgentRunnerKind) -> Result<Box<dyn AgentRunner>, String> {
+    let runner: Box<dyn AgentRunner> = match kind {
+        AgentRunnerKind::ClaudeCode => Box::new(ClaudeCodeRunner),
+        AgentRunnerKind::Codex => Box::new(CodexRunner),
+        AgentRunnerKind::Custom(_) => {
+            return Err("runner custom disponível em fase futura".into());
+        }
+    };
+    if !crate::agent::binary_available(kind) {
+        let binary = crate::agent::runner_binary(kind).unwrap_or("?");
+        return Err(format!("binário `{binary}` não encontrado no PATH"));
+    }
+    Ok(runner)
 }
 
 fn apply_git_overrides(env: &mut HashMap<String, String>) {

@@ -202,7 +202,12 @@ fn create_session(
                 store: Arc::clone(&state.store),
                 servers: Arc::clone(&state.hook_servers),
             };
-            agent::session::create_agent_session(&ctx, opts, move |id| session_exited(&handle, id))?
+            let spawn = if opts.attach_existing {
+                agent::session::attach_agent_session
+            } else {
+                agent::session::create_agent_session
+            };
+            spawn(&ctx, opts, move |id| session_exited(&handle, id))?
         }
         SessionKind::Shell => state
             .sessions
@@ -1431,6 +1436,7 @@ fn docker_open_project(
                 cols: 100,
                 rows: 30,
                 worktree_task: None,
+                attach_existing: false,
             },
             move |id| session_exited(&handle, id),
         )

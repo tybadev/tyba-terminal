@@ -160,6 +160,7 @@ import {
 import { gitIconTone } from "./lib/headerGit";
 import {
   buildAgentSessionOpts,
+  runnerFromCommand,
   type AgentRunnerId,
 } from "./lib/agentSession";
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
@@ -598,15 +599,17 @@ export default function App() {
     [],
   );
 
-  // Sobe o agente configurado numa sessão nova e espera o detector de
-  // comando confirmar que o TUI assumiu o PTY (agent_match) antes de
-  // devolver — com teto de 15s pra não travar se o comando não for
-  // reconhecido como agente.
+  // Sessão de AGENTE na pasta que já existe — nunca uma sessão de shell com o
+  // binário digitado dentro. Digitar `claude` num shell sobe o agente sem
+  // sandbox, com o env inteiro do usuário e, sobretudo, sem os hooks: sem
+  // PreToolUse não há gate, e um agente fora do inbox faz o que quiser.
   const spawnAgentSession = useCallback(
     async (title: string, cwd: string) => {
       const fresh = await createSession({
-        kind: { type: "shell" },
+        kind: { type: "agent", runner: runnerFromCommand(reviewAgent) },
         cwd,
+        title,
+        attach_existing: true,
         cols: 100,
         rows: 30,
       });
@@ -616,13 +619,6 @@ export default function App() {
       } catch {
         void disposeSession(fresh.id).catch(() => {});
         throw new Error("não deu pra abrir a sessão no worktree");
-      }
-      const agentCommand = reviewAgent.trim() || DEFAULT_REVIEW_AGENT;
-      await typeIntoSession(fresh.id, agentCommand, true);
-      for (let attempt = 0; attempt < 30; attempt += 1) {
-        const cmd = sessionCommandsRef.current[fresh.id];
-        if (cmd?.running && cmd.agent_match) break;
-        await new Promise((r) => setTimeout(r, 500));
       }
       // O prompt é multilinha e o submit_rich_input recusa multilinha sem
       // bracketed paste — esperar o TUI ligar o modo (DECSET 2004) é o
@@ -635,10 +631,9 @@ export default function App() {
         if (bracketed) break;
         await new Promise((r) => setTimeout(r, 500));
       }
-      await new Promise((r) => setTimeout(r, 300));
       return fresh.id;
     },
-    [reviewAgent, typeIntoSession],
+    [reviewAgent],
   );
 
   const sendReviewToAgent = useCallback(
