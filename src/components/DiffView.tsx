@@ -580,29 +580,81 @@ export function DiffView({
     );
   };
 
+  const scopeFiles = useCallback(
+    (scope: DiffScopeKey): FileDiff[] => {
+      if (!diff) return [];
+      if (scope === "committed") return diff.files;
+      if (scope === "staged") return diff.staged_files;
+      return diff.unstaged_files;
+    },
+    [diff],
+  );
+
+  const allFilesCollapsed = (scope: DiffScopeKey) =>
+    scopeFiles(scope).every((file) => {
+      const key = fileKeyOf(scope, file.path);
+      return collapsedByKey[key] ?? defaultCollapsed(file, hunksByKey[key]);
+    });
+
+  const setAllFilesCollapsed = (scope: DiffScopeKey, collapsed: boolean) => {
+    setCollapsedByKey((prev) => {
+      const next = { ...prev };
+      for (const file of scopeFiles(scope)) {
+        next[fileKeyOf(scope, file.path)] = collapsed;
+      }
+      return next;
+    });
+  };
+
+  const BULK_BTN =
+    "flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.06]";
+
   const sectionActions = (scope: DiffScopeKey) => {
+    const collapsed = allFilesCollapsed(scope);
+    const collapseToggle = scopeFiles(scope).length > 0 && (
+      <button
+        title={collapsed ? t("diffExpandAll") : t("diffCollapseAll")}
+        aria-label={collapsed ? t("diffExpandAll") : t("diffCollapseAll")}
+        onClick={() => setAllFilesCollapsed(scope, !collapsed)}
+        className={`${BULK_BTN} hover:text-tyba-text`}
+      >
+        {collapsed ? (
+          <ArrowsOutSimple size={12} />
+        ) : (
+          <ArrowsInSimple size={12} />
+        )}
+      </button>
+    );
     if (scope === "staged" && stagedCount > 0) {
       return (
-        <button
-          onClick={() =>
-            void gitAction(() => worktreeUnstage(session.id, []))
-          }
-          className="rounded-[3px] px-1.5 py-0.5 text-[10px] text-tyba-text-faint hover:bg-tyba-text/[.06] hover:text-tyba-text"
-        >
-          {t("diffUnstageAll")}
-        </button>
+        <span className="flex items-center gap-1">
+          {collapseToggle}
+          <button
+            title={t("diffUnstageAll")}
+            aria-label={t("diffUnstageAll")}
+            onClick={() =>
+              void gitAction(() => worktreeUnstage(session.id, []))
+            }
+            className={`${BULK_BTN} hover:text-tyba-text`}
+          >
+            <Minus size={12} />
+          </button>
+        </span>
       );
     }
     if (scope === "unstaged" && unstagedCount > 0) {
       return (
         <span className="flex items-center gap-1">
+          {collapseToggle}
           <button
+            title={t("diffStageAll")}
+            aria-label={t("diffStageAll")}
             onClick={() =>
               void gitAction(() => worktreeStage(session.id, []))
             }
-            className="rounded-[3px] px-1.5 py-0.5 text-[10px] text-tyba-text-faint hover:bg-tyba-text/[.06] hover:text-tyba-text"
+            className={`${BULK_BTN} hover:text-tyba-text`}
           >
-            {t("diffStageAll")}
+            <Plus size={12} />
           </button>
           {discardArm === "all" ? (
             <button
@@ -620,16 +672,18 @@ export function DiffView({
             </button>
           ) : (
             <button
+              title={t("diffDiscardAll")}
+              aria-label={t("diffDiscardAll")}
               onClick={() => armDiscard("all")}
-              className="rounded-[3px] px-1.5 py-0.5 text-[10px] text-tyba-text-faint hover:bg-tyba-text/[.06] hover:text-tyba-red"
+              className={`${BULK_BTN} hover:text-tyba-red`}
             >
-              {t("diffDiscardAll")}
+              <Trash size={12} />
             </button>
           )}
         </span>
       );
     }
-    return null;
+    return collapseToggle || null;
   };
 
   const sidebarSection = (
