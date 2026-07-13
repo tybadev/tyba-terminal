@@ -4,3 +4,10 @@ src-tauri/target/
 src-tauri/gen/schemas/
 .DS_Store
 *.local
+
+# Config local do Claude Code: guarda paths absolutos da máquina do dono e a
+# allowlist de comandos dele. Não é segredo, mas num repo público vaza username,
+# árvore de pastas e nomes de outros projetos. `*.local` acima não pega
+# `settings.local.json` — só nomes terminados em `.local`.
+.claude/settings.local.json
+.claude/worktrees/

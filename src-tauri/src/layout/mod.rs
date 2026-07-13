@@ -451,7 +451,33 @@ impl LayoutManager {
     }
 
     pub fn load(&self, valid_sessions: &HashSet<SessionId>) {
-        let rows = self.store.load_layout().unwrap_or_default();
+        self.load_remapped(valid_sessions, &std::collections::HashMap::new());
+    }
+
+    /// `remap` liga a sessão morta do processo anterior à que acabou de nascer no
+    /// mesmo cwd. Sem isso o pane aponta pra um id que não existe mais, o filtro
+    /// de `valid_sessions` o descarta, e a tab abre vazia — é exatamente o que
+    /// fazia o reopen perder as tabs (#50).
+    pub fn load_remapped(
+        &self,
+        valid_sessions: &HashSet<SessionId>,
+        remap: &std::collections::HashMap<SessionId, SessionId>,
+    ) {
+        let mut rows = self.store.load_layout().unwrap_or_default();
+        if !remap.is_empty() {
+            for pane in rows.panes.iter_mut() {
+                let Some(old) = pane
+                    .session_id
+                    .as_deref()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                else {
+                    continue;
+                };
+                if let Some(new) = remap.get(&old) {
+                    pane.session_id = Some(new.to_string());
+                }
+            }
+        }
         let workspaces = rows_to_workspaces(&rows, valid_sessions);
 
         let saved_active = self
@@ -1910,6 +1936,48 @@ mod tests {
         match &state.workspaces[0].tabs[0].root {
             Some(PaneNode::Leaf { session_id, .. }) => assert_eq!(*session_id, alive),
             other => panic!("esperava leaf colapsado, veio {other:?}"),
+        }
+    }
+    /// O bug do reopen (#50): o PTY morre com o app, o pane guarda o id da sessão
+    /// morta, o filtro de `valid_sessions` o descarta e a tab abre vazia. O remap
+    /// religa o pane à sessão que nasceu no mesmo cwd.
+    #[test]
+    fn load_remapped_rebinds_the_pane_to_the_reopened_session() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let dead = sid();
+        let reopened = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("poc", None, dead).unwrap();
+        }
+
+        // Sem remap: é o comportamento quebrado que o usuário via.
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load(&HashSet::from([reopened]));
+        assert!(
+            mgr.state().workspaces[0].tabs.is_empty(),
+            "sem remap a tab some — este é o bug"
+        );
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("poc", None, dead).unwrap();
+        }
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load_remapped(
+            &HashSet::from([reopened]),
+            &std::collections::HashMap::from([(dead, reopened)]),
+        );
+
+        let state = mgr.state();
+        assert_eq!(state.workspaces[0].tabs.len(), 1, "a tab precisa voltar");
+        match &state.workspaces[0].tabs[0].root {
+            Some(PaneNode::Leaf { session_id, .. }) => assert_eq!(
+                *session_id, reopened,
+                "o pane precisa apontar pra sessão nova, não pra morta"
+            ),
+            other => panic!("esperava leaf com a sessão reaberta, veio {other:?}"),
         }
     }
 }

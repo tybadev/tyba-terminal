@@ -101,6 +101,9 @@ pub struct Session {
     pub status: SessionStatus,
     pub attention: bool,
     pub created_at: DateTime<Utc>,
+    /// Pasta onde o processo subiu. É o que permite reabrir a sessão no mesmo
+    /// lugar depois de fechar o app — sem ela o PTY morre e o pane fica órfão.
+    pub cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,6 +292,10 @@ impl SessionManager {
             cmd.env("VISUAL", &command);
         }
 
+        // Lido do próprio comando: pega todo caminho de spawn (shell, agente,
+        // tab de container) sem espalhar mais um parâmetro por todos eles.
+        let cwd = cmd.get_cwd().map(PathBuf::from);
+
         pty_pool.spawn(
             app.clone(),
             id,
@@ -308,6 +315,7 @@ impl SessionManager {
             status: SessionStatus::Running,
             attention: false,
             created_at: Utc::now(),
+            cwd,
         };
         self.sessions.write().insert(id, session.clone());
         let _ = self.store.upsert_session(&session);
@@ -366,14 +374,14 @@ impl SessionManager {
         }
     }
 
+    /// Traz de volta as sessões persistidas, todas mortas: o PTY não sobrevive ao
+    /// processo. Antes as linhas de shell eram **apagadas** aqui — e com elas o
+    /// cwd, que é justamente o que permite reabrir a sessão no mesmo lugar. Quem
+    /// decide o que fazer com as mortas é o `resume_startup`, conforme a pref.
     pub fn restore(&self) -> Result<(), StoreError> {
         let persisted = self.store.load_sessions()?;
         let mut sessions = self.sessions.write();
         for mut s in persisted {
-            if matches!(s.kind, SessionKind::Shell) {
-                let _ = self.store.remove_session(s.id);
-                continue;
-            }
             if !matches!(
                 s.status,
                 SessionStatus::Exited { .. } | SessionStatus::Failed { .. }
@@ -384,6 +392,52 @@ impl SessionManager {
             sessions.entry(s.id).or_insert(s);
         }
         Ok(())
+    }
+
+    /// Sessões mortas herdadas do processo anterior, na ordem de criação.
+    pub fn dead_sessions(&self) -> Vec<Session> {
+        let sessions = self.sessions.read();
+        let mut dead: Vec<Session> = sessions
+            .values()
+            .filter(|s| {
+                matches!(
+                    s.status,
+                    SessionStatus::Exited { .. } | SessionStatus::Failed { .. }
+                )
+            })
+            .cloned()
+            .collect();
+        dead.sort_by_key(|s| s.created_at);
+        dead
+    }
+
+    pub fn forget(&self, id: SessionId) {
+        self.sessions.write().remove(&id);
+        let _ = self.store.remove_session(id);
+    }
+}
+
+/// O que fazer com as sessões que não sobreviveram ao fechamento do app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StartupMode {
+    /// Recria o shell no mesmo cwd e devolve a tab. É o que um terminal faz.
+    #[default]
+    Resume,
+    /// Mantém o layout, sem processo: a tab abre morta até o usuário interagir.
+    KeepLayout,
+    /// Janela nova, do zero.
+    Fresh,
+}
+
+pub const STARTUP_PREF_KEY: &str = "pref.startup";
+
+impl StartupMode {
+    pub fn parse(raw: Option<&str>) -> Self {
+        match raw {
+            Some("keep_layout") => StartupMode::KeepLayout,
+            Some("fresh") => StartupMode::Fresh,
+            _ => StartupMode::Resume,
+        }
     }
 }
 
@@ -639,6 +693,7 @@ mod tests {
             status,
             attention: false,
             created_at: Utc::now(),
+            cwd: Some(PathBuf::from("/tmp")),
         }
     }
 
@@ -840,8 +895,12 @@ mod tests {
         assert!(!SessionStatus::Exited { code: 0 }.wants_attention());
     }
 
+    /// Antes o `restore` apagava a linha do shell morto — e com ela o cwd, que é
+    /// justamente o que permite reabrir a sessão onde ela estava. Era isso que
+    /// deixava o pane órfão e a tab vazia no reopen (#50). A linha agora sobrevive
+    /// morta; quem a descarta é o `resume_startup`, conforme a pref.
     #[test]
-    fn restore_removes_dead_shell_rows() {
+    fn restore_keeps_the_dead_shell_and_its_cwd_for_the_reopen() {
         let store = Arc::new(Store::open_in_memory().unwrap());
         let shell = make(SessionKind::Shell, SessionStatus::Running);
         store.upsert_session(&shell).unwrap();
@@ -849,8 +908,43 @@ mod tests {
         let manager = SessionManager::new(Arc::clone(&store));
         manager.restore().unwrap();
 
+        let restored = manager.list();
+        assert_eq!(restored.len(), 1);
+        assert!(matches!(
+            restored[0].status,
+            SessionStatus::Exited { .. } | SessionStatus::Failed { .. }
+        ));
+        assert_eq!(
+            restored[0].cwd, shell.cwd,
+            "sem o cwd não há como reabrir a sessão no mesmo lugar"
+        );
+        assert_eq!(manager.dead_sessions().len(), 1);
+    }
+
+    #[test]
+    fn forget_drops_the_session_from_memory_and_disk() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let shell = make(SessionKind::Shell, SessionStatus::Exited { code: 0 });
+        store.upsert_session(&shell).unwrap();
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+
+        manager.forget(shell.id);
+
         assert!(manager.list().is_empty());
         assert!(store.load_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn startup_mode_defaults_to_resume_and_parses_the_rest() {
+        assert_eq!(StartupMode::parse(None), StartupMode::Resume);
+        assert_eq!(StartupMode::parse(Some("resume")), StartupMode::Resume);
+        assert_eq!(StartupMode::parse(Some("lixo")), StartupMode::Resume);
+        assert_eq!(
+            StartupMode::parse(Some("keep_layout")),
+            StartupMode::KeepLayout
+        );
+        assert_eq!(StartupMode::parse(Some("fresh")), StartupMode::Fresh);
     }
 
     #[test]
