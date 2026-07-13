@@ -9,7 +9,9 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::{git_in, resolved_git_dirs, run_git};
+use crate::error::AppError;
+
+use super::{git_in, git_in_rw, resolved_git_dirs, run_git};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -114,6 +116,58 @@ fn theirs_label(worktree: &Path, operation: ConflictOperation) -> Option<String>
             git_text(worktree, &["rev-parse", "--short", "CHERRY_PICK_HEAD"])
         }
     }
+}
+
+fn ensure_unmerged(worktree: &Path, path: &str) -> Result<(), AppError> {
+    let state = session_conflicts(worktree)
+        .map_err(|detail| AppError::new("conflict.failed").with("detail", detail))?;
+    let unmerged = state
+        .map(|s| s.files.iter().any(|f| f.path == path))
+        .unwrap_or(false);
+    if unmerged {
+        Ok(())
+    } else {
+        Err(AppError::new("conflict.not_unmerged").with("path", path))
+    }
+}
+
+fn run_rw(worktree: &Path, args: &[&str]) -> Result<(), AppError> {
+    let out = {
+        let mut c = git_in_rw(worktree);
+        c.args(args);
+        c.output()
+            .map_err(|e| AppError::new("conflict.failed").with("detail", format!("git: {e}")))?
+    };
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(AppError::new("conflict.failed").with(
+            "detail",
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ))
+    }
+}
+
+/// Resolve um arquivo escolhendo um lado inteiro: `checkout --ours/--theirs`
+/// + `git add`. Recuperável até o commit (`git checkout -m` refaz o conflito).
+pub fn choose_side(worktree: &Path, path: &str, side: &str) -> Result<(), AppError> {
+    let flag = match side {
+        "ours" => "--ours",
+        "theirs" => "--theirs",
+        other => {
+            return Err(AppError::new("conflict.failed")
+                .with("detail", format!("lado inválido: {other}")));
+        }
+    };
+    ensure_unmerged(worktree, path)?;
+    run_rw(worktree, &["checkout", flag, "--", path])?;
+    run_rw(worktree, &["add", "--", path])
+}
+
+/// Marca como resolvido um arquivo editado na mão (`git add`).
+pub fn mark_resolved(worktree: &Path, path: &str) -> Result<(), AppError> {
+    ensure_unmerged(worktree, path)?;
+    run_rw(worktree, &["add", "--", path])
 }
 
 fn parse_unmerged_z(bytes: &[u8]) -> Vec<ConflictFile> {
@@ -247,6 +301,46 @@ mod tests {
         assert_eq!(state.ours.as_deref(), Some("feature"));
         assert_eq!(state.files.len(), 1);
         assert_eq!(state.files[0].path, "a.txt");
+    }
+
+    #[test]
+    fn choose_ours_keeps_our_content_and_stages_it() {
+        let dir = conflicted_merge_repo();
+        choose_side(&dir, "a.txt", "ours").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "um\nmain\ntres\n"
+        );
+        let state = session_conflicts(&dir).unwrap().expect("merge segue aberto");
+        assert!(state.files.is_empty());
+    }
+
+    #[test]
+    fn choose_theirs_takes_the_other_side() {
+        let dir = conflicted_merge_repo();
+        choose_side(&dir, "a.txt", "theirs").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "um\nfeature\ntres\n"
+        );
+    }
+
+    #[test]
+    fn mark_resolved_stages_a_hand_edited_file() {
+        let dir = conflicted_merge_repo();
+        std::fs::write(dir.join("a.txt"), "um\nresolvido na mao\ntres\n").unwrap();
+        mark_resolved(&dir, "a.txt").unwrap();
+        let state = session_conflicts(&dir).unwrap().expect("merge segue aberto");
+        assert!(state.files.is_empty());
+    }
+
+    #[test]
+    fn refuses_paths_that_are_not_in_conflict() {
+        let dir = conflicted_merge_repo();
+        let err = choose_side(&dir, "outro.txt", "ours").unwrap_err();
+        assert_eq!(err.code, "conflict.not_unmerged", "{err}");
+        let err = choose_side(&dir, "a.txt", "qualquer").unwrap_err();
+        assert_eq!(err.code, "conflict.failed", "{err}");
     }
 
     #[test]

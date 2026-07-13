@@ -128,6 +128,15 @@ export interface ConflictState {
 export const sessionConflicts = (id: SessionId) =>
   invoke<ConflictState | null>("session_conflicts", { id });
 
+export const sessionConflictChoose = (
+  id: SessionId,
+  path: string,
+  side: "ours" | "theirs",
+) => invoke<void>("session_conflict_choose", { id, path, side });
+
+export const sessionConflictMarkResolved = (id: SessionId, path: string) =>
+  invoke<void>("session_conflict_mark_resolved", { id, path });
+
 export const sessionCheckout = (
   id: SessionId,
   branch: string,
