@@ -399,9 +399,9 @@ const resources = {
       alwaysAllowHint:
         "Aprova automaticamente comandos idênticos nesta sessão de agente. Vale só enquanto ela estiver aberta.",
       deliveryTitle: "Entregar",
-      deliveryStatusError: "Erro ao consultar a forja — tentar de novo",
+      deliveryStatusError: "Erro ao consultar GitHub/GitLab — tentar de novo",
       deliveryHintNoForge:
-        "Nenhuma forja detectada (o remote não é GitHub nem GitLab) — só merge local disponível.",
+        "O remote não é GitHub nem GitLab — só merge local disponível.",
       deliveryOpenPr: "Abrir PR",
       deliveryOpenMr: "Abrir MR",
       deliveryViewPr: "Ver PR",
@@ -450,7 +450,7 @@ const resources = {
       prState_closed: "fechado",
       prState_draft: "rascunho",
       prChecksNone: "sem checks",
-      prOpenInForge: "Abrir na forja",
+      prOpenInForge: "Abrir no navegador",
       gitStatusIconLabel: "Ver alterações",
       headerPrPanelTitle: "Pull requests",
       headerPrPanelTitleMr: "Merge requests",
@@ -511,7 +511,7 @@ const resources = {
         "O remote origin não aponta para GitHub nem GitLab — nada a fazer aqui.",
       "error.forge.create_failed": "Não foi possível abrir o PR/MR: {{detail}}",
       "error.forge.task_failed":
-        "A tarefa da forja não pôde ser executada: {{detail}}",
+        "A ação no GitHub/GitLab falhou: {{detail}}",
       "error.session.unavailable": "A sessão não está disponível: {{detail}}",
       "error.unknown": "Algo deu errado: {{detail}}",
     },
