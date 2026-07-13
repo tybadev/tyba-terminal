@@ -332,6 +332,31 @@ pub fn merge_preview(worktree: &Path) -> Result<MergePreview, AppError> {
     Ok(plan(worktree)?.preview)
 }
 
+/// Traz a base pra branch da sessão DENTRO do worktree, parando no conflito:
+/// o agente resolve na própria jaula e o merge local vira limpo depois. A
+/// direção inverte de propósito — o checkout do dono nunca é tocado.
+pub fn materialize_conflict(worktree: &Path) -> Result<(), AppError> {
+    let plan = plan(worktree)?;
+    if super::is_dirty(worktree).map_err(merge_failed)? {
+        return Err(AppError::new("merge.worktree_dirty"));
+    }
+    let out = {
+        let mut c = git_in_rw(worktree);
+        c.args(["merge", "--no-edit", &plan.preview.base_branch]);
+        c.output()
+            .map_err(|e| merge_failed(format!("git merge: {e}")))?
+    };
+    if out.status.success() {
+        return Ok(());
+    }
+    match super::conflicts::session_conflicts(worktree) {
+        Ok(Some(state)) if !state.files.is_empty() => Ok(()),
+        _ => Err(merge_failed(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        )),
+    }
+}
+
 pub fn merge_into_base(
     worktree: &Path,
     strategy: MergeStrategy,
@@ -474,6 +499,54 @@ mod merge_tests {
         )
         .unwrap();
         raw.split_whitespace().skip(1).map(String::from).collect()
+    }
+
+    #[test]
+    fn materialize_brings_the_conflict_into_the_worktree_only() {
+        let fx = fixture("materialize");
+        work(&fx, "a\nsessao\nc\n", "sessao");
+        fs::write(fx.repo.join("f.txt"), "a\nbase\nc\n").unwrap();
+        git(&fx.repo, &["commit", "-aqm", "base avança"]);
+
+        materialize_conflict(&fx.worktree).unwrap();
+
+        let state = super::super::conflicts::session_conflicts(&fx.worktree)
+            .unwrap()
+            .expect("conflito materializado");
+        assert_eq!(state.files.len(), 1);
+        assert_eq!(state.files[0].path, "f.txt");
+        assert_eq!(
+            super::super::conflicts::session_conflicts(&fx.repo).unwrap(),
+            None,
+            "o checkout do dono não pode ser tocado"
+        );
+    }
+
+    #[test]
+    fn materialize_refuses_a_dirty_worktree() {
+        let fx = fixture("materialize-dirty");
+        work(&fx, "a\nsessao\nc\n", "sessao");
+        fs::write(fx.repo.join("f.txt"), "a\nbase\nc\n").unwrap();
+        git(&fx.repo, &["commit", "-aqm", "base avança"]);
+        fs::write(fx.worktree.join("outro.txt"), "sujo\n").unwrap();
+
+        let err = materialize_conflict(&fx.worktree).unwrap_err();
+        assert_eq!(err.code, "merge.worktree_dirty", "{err}");
+    }
+
+    #[test]
+    fn materialize_without_conflict_completes_the_merge() {
+        let fx = fixture("materialize-clean");
+        work(&fx, "a\nsessao\nc\n", "sessao");
+        fs::write(fx.repo.join("outro.txt"), "mudou sem conflito\n").unwrap();
+        git(&fx.repo, &["commit", "-aqm", "base avança limpa"]);
+
+        materialize_conflict(&fx.worktree).unwrap();
+
+        assert_eq!(
+            super::super::conflicts::session_conflicts(&fx.worktree).unwrap(),
+            None
+        );
     }
 
     #[test]

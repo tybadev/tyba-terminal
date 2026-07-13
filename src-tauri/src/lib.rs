@@ -510,6 +510,15 @@ async fn worktree_merge_preview(
 }
 
 #[tauri::command]
+async fn worktree_merge_materialize(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), AppError> {
+    let wt = session_worktree(&state, id).map_err(session_setup_error)?;
+    worktree::ops::materialize_conflict(&wt.path)
+}
+
+#[tauri::command]
 async fn worktree_merge_into_base(
     state: State<'_, AppState>,
     id: SessionId,
@@ -1758,6 +1767,7 @@ pub fn run() {
             worktree_commit,
             worktree_push,
             worktree_merge_preview,
+            worktree_merge_materialize,
             worktree_merge_into_base,
             forge_status,
             forge_pr_for_session,

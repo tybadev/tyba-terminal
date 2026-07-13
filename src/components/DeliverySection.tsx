@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import {
   forgePrForSession,
   forgeStatus as fetchForgeStatus,
+  type ConflictState,
   type ForgeStatus,
   type PullRequest,
   type Session,
@@ -35,6 +36,7 @@ interface Props {
   aheadCount: number;
   isWorktree: boolean;
   onSendToAgent: (prompt: string) => Promise<void>;
+  onResolveConflicts: (state: ConflictState) => Promise<void>;
   onClose: () => void;
 }
 
@@ -50,6 +52,7 @@ export function DeliverySection({
   aheadCount,
   isWorktree,
   onSendToAgent,
+  onResolveConflicts,
   onClose,
 }: Props) {
   const { t } = useTranslation();
@@ -200,6 +203,7 @@ export function DeliverySection({
           setOpenMerge(false);
           setPostDelivery("merge");
         }}
+        onResolveConflicts={onResolveConflicts}
       />
 
       <PostDeliveryDialog

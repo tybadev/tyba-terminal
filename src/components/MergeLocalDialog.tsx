@@ -12,8 +12,11 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
+  sessionConflicts,
   worktreeMergeIntoBase,
+  worktreeMergeMaterialize,
   worktreeMergePreview,
+  type ConflictState,
   type MergePreview,
   type MergeStrategy,
   type Session,
@@ -25,15 +28,23 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onMerged: () => void;
+  onResolveConflicts: (state: ConflictState) => Promise<void>;
 }
 
-export function MergeLocalDialog({ session, open, onClose, onMerged }: Props) {
+export function MergeLocalDialog({
+  session,
+  open,
+  onClose,
+  onMerged,
+  onResolveConflicts,
+}: Props) {
   const { t } = useTranslation();
   const [preview, setPreview] = useState<MergePreview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [strategy, setStrategy] = useState<MergeStrategy>("squash");
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [resolveBusy, setResolveBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -61,6 +72,24 @@ export function MergeLocalDialog({ session, open, onClose, onMerged }: Props) {
       });
     }
     return t("mergeDialogBlockedNothing");
+  };
+
+  // Materializa o conflito NO worktree da sessão (base → sessão) e manda o
+  // agente resolver lá; o checkout do dono não é tocado e este merge local
+  // fica limpo depois da resolução.
+  const resolveWithAgent = async () => {
+    setResolveBusy(true);
+    setError(null);
+    try {
+      await worktreeMergeMaterialize(session.id);
+      const state = await sessionConflicts(session.id);
+      if (state) await onResolveConflicts(state);
+      onClose();
+    } catch (e) {
+      setError(translateError(e, t));
+    } finally {
+      setResolveBusy(false);
+    }
   };
 
   const confirm = async () => {
@@ -177,6 +206,19 @@ export function MergeLocalDialog({ session, open, onClose, onMerged }: Props) {
         )}
 
         <div className="flex justify-end gap-2">
+          {gate.reason === "conflicts" && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy || resolveBusy}
+              onClick={() => void resolveWithAgent()}
+              className="mr-auto"
+            >
+              {resolveBusy
+                ? t("conflictResolveSending")
+                : t("conflictResolve")}
+            </Button>
+          )}
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
             {t("cancel")}
           </Button>

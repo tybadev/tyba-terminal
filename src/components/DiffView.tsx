@@ -1321,6 +1321,7 @@ export function DiffView({
           aheadCount={diff?.commits.length ?? 0}
           isWorktree={Boolean(session.worktree)}
           onSendToAgent={onSendToAgent}
+          onResolveConflicts={onResolveConflicts}
           onClose={onClose}
         />
       </div>
