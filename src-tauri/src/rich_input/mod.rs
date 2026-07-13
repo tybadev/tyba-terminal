@@ -9,7 +9,6 @@ use parking_lot::{Mutex, RwLock};
 use regex::Regex;
 
 pub const DEFAULT_AGENT_PATTERN: &str = r"^(claude|codex|gemini)\b";
-pub const SUBMIT_DELAY: Duration = Duration::from_millis(50);
 
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";

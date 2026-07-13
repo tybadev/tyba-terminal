@@ -894,8 +894,14 @@ fn submit_rich_input(
         .pty_pool
         .bracketed_paste(id)
         .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+    let strategy = state
+        .sessions
+        .get(id)
+        .map(|s| agent::submit_strategy_for(&s.kind))
+        .unwrap_or_default();
     let (normalized, _) = rich_input::normalize(&text);
-    let payload = rich_input::plan_injection(&normalized, bracketed)?;
+    let payload =
+        rich_input::plan_injection(&normalized, bracketed && strategy.use_bracketed_paste)?;
     if payload.is_empty() {
         return Ok(());
     }
@@ -906,8 +912,13 @@ fn submit_rich_input(
         .write(id, &payload)
         .map_err(|e| e.to_string())?;
     if submit {
-        std::thread::sleep(rich_input::SUBMIT_DELAY);
-        state.pty_pool.write(id, b"\r").map_err(|e| e.to_string())?;
+        if !strategy.delay.is_zero() {
+            std::thread::sleep(strategy.delay);
+        }
+        state
+            .pty_pool
+            .write(id, strategy.submit_bytes)
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }

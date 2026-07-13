@@ -13,11 +13,39 @@ use std::time::Duration;
 use portable_pty::CommandBuilder;
 
 use crate::sandbox::policy::{AgentAccess, Rule, RuleSet};
-use crate::session::AgentRunnerKind;
+use crate::session::{AgentRunnerKind, SessionKind};
 
 pub struct HookSetup {
     pub settings_path: PathBuf,
     pub hook_command: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubmitStrategy {
+    pub use_bracketed_paste: bool,
+    pub delay: Duration,
+    pub submit_bytes: &'static [u8],
+}
+
+impl Default for SubmitStrategy {
+    fn default() -> Self {
+        Self {
+            use_bracketed_paste: true,
+            delay: Duration::from_millis(50),
+            submit_bytes: b"\r",
+        }
+    }
+}
+
+pub fn submit_strategy_for(kind: &SessionKind) -> SubmitStrategy {
+    match kind {
+        SessionKind::Shell => SubmitStrategy::default(),
+        SessionKind::Agent { runner } => match runner {
+            AgentRunnerKind::ClaudeCode => ClaudeCodeRunner.submit_strategy(),
+            AgentRunnerKind::Codex => CodexRunner.submit_strategy(),
+            AgentRunnerKind::Custom(_) => SubmitStrategy::default(),
+        },
+    }
 }
 
 pub trait AgentRunner: Send + Sync {
@@ -30,8 +58,8 @@ pub trait AgentRunner: Send + Sync {
         hooks: &HookSetup,
     ) -> CommandBuilder;
 
-    fn submit_delay(&self) -> Duration {
-        Duration::from_millis(50)
+    fn submit_strategy(&self) -> SubmitStrategy {
+        SubmitStrategy::default()
     }
 
     fn supports_hooks(&self) -> bool {
@@ -165,6 +193,13 @@ impl AgentRunner for CodexRunner {
         AgentRunnerKind::Codex
     }
 
+    fn submit_strategy(&self) -> SubmitStrategy {
+        SubmitStrategy {
+            delay: Duration::ZERO,
+            ..SubmitStrategy::default()
+        }
+    }
+
     fn build_command(
         &self,
         worktree_path: &Path,
@@ -274,8 +309,45 @@ mod tests {
     }
 
     #[test]
-    fn default_submit_delay_is_50ms() {
-        assert_eq!(ClaudeCodeRunner.submit_delay(), Duration::from_millis(50));
+    fn claude_submit_strategy_waits_50ms_before_carriage_return() {
+        let strategy = ClaudeCodeRunner.submit_strategy();
+        assert!(strategy.use_bracketed_paste);
+        assert_eq!(strategy.delay, Duration::from_millis(50));
+        assert_eq!(strategy.submit_bytes, b"\r");
+    }
+
+    #[test]
+    fn codex_submit_strategy_sends_carriage_return_without_delay() {
+        let strategy = CodexRunner.submit_strategy();
+        assert!(strategy.use_bracketed_paste);
+        assert_eq!(strategy.delay, Duration::ZERO);
+        assert_eq!(strategy.submit_bytes, b"\r");
+    }
+
+    #[test]
+    fn submit_strategy_for_maps_session_kinds() {
+        assert_eq!(
+            submit_strategy_for(&SessionKind::Shell),
+            SubmitStrategy::default()
+        );
+        assert_eq!(
+            submit_strategy_for(&SessionKind::Agent {
+                runner: AgentRunnerKind::ClaudeCode
+            }),
+            ClaudeCodeRunner.submit_strategy()
+        );
+        assert_eq!(
+            submit_strategy_for(&SessionKind::Agent {
+                runner: AgentRunnerKind::Codex
+            }),
+            CodexRunner.submit_strategy()
+        );
+        assert_eq!(
+            submit_strategy_for(&SessionKind::Agent {
+                runner: AgentRunnerKind::Custom("aider".into())
+            }),
+            SubmitStrategy::default()
+        );
     }
 
     #[test]
