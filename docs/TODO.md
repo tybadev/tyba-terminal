@@ -29,9 +29,9 @@ Regra: **notificar sempre; auto-instalar só onde faz sentido** (`.dmg` e AppIma
 ## Distribuição
 
 - **Certificado Developer ID da Apple** — único bloqueador do lançamento macOS. O pipeline já lê os secrets certos e **recusa publicar** artefato não assinado (`codesign` + `spctl`): build ad-hoc é rejeitado pelo Gatekeeper e o usuário vê "app danificado". Passo a passo no cofre (`tyba/release/assinatura-e-distribuicao`).
-- **PKGBUILD na AUR** — `packaging/aur/PKGBUILD` está pronto; falta a conta AUR e o primeiro push.
-- **QA de desktop em Linux real** — webkitgtk renderizando xterm.js, notificações nativas, window-state, PTY. A CI compila e testa em Ubuntu, mas o app nunca foi *usado* num desktop Linux.
-- **Flatpak** — fora da v0.1. O TYBA **é** um sandbox, e bwrap aninhado dentro do bwrap do Flatpak não sobe. O caminho é `flatpak-spawn --host` (precedente Ptyxis/Black Box no Flathub): PTY, socket de hook e a jaula toda atravessando a fronteira do container. É projeto próprio, não um manifesto — e os formatos nativos (.deb/.rpm/AppImage/AUR) cobrem o público de dev da v0.1.
+- **AUR — cortada por decisão do dono.** O `packaging/aur/PKGBUILD` fica no repo, mas não vai pra AUR: o AppImage já cobre quem não usa `.deb`/`.rpm`. O custo aceito é conhecido — o usuário de Arch **não** recebe update pelo `yay` junto com o resto do sistema, e baixa o AppImage à mão a cada versão. Se isso doer no uso real, o PKGBUILD está pronto e só falta a conta.
+- **Windows** — a compilação é trivial (Tauri roda, `portable-pty` fala ConPTY, `default_shell()` já trata `COMSPEC`); a **jaula** não existe. Sessão de shell (PowerShell/cmd/WSL) funciona sem jaula — só a de **agente** é recusada. Caminho decidido: **AppContainer nativo, não WSL2** — ADR no cofre (`tyba/decisions/2026-07-14-windows-appcontainer-nao-wsl`). Falta ainda o certificado de assinatura (SmartScreen).
+- **Flatpak** — fora da v0.1. O TYBA **é** um sandbox, e bwrap aninhado dentro do bwrap do Flatpak não sobe. O caminho é `flatpak-spawn --host` (precedente Ptyxis/Black Box no Flathub): PTY, socket de hook e a jaula toda atravessando a fronteira do container. É projeto próprio, não um manifesto — e os formatos nativos (.deb/.rpm/AppImage) cobrem o público de dev da v0.1.
 
 ## Segurança
 
