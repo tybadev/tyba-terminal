@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { changelogUrl } from "@/lib/changelog";
 import {
   Check,
   Code,
@@ -47,6 +49,7 @@ import {
   setPref,
   type EditorInfo,
   type ThemeState,
+  type UpdateStatus,
 } from "../lib/ipc";
 import {
   actionsByCategory,
@@ -79,6 +82,8 @@ type Section =
   | "preferences";
 
 interface Props {
+  version: string;
+  update: UpdateStatus | null;
   togglePref: SidebarTogglePref;
   onTogglePrefChange: (value: SidebarTogglePref) => void;
   detailsPref: DetailsPref;
@@ -334,6 +339,8 @@ function ShortcutRow({
 }
 
 export function SettingsView({
+  version,
+  update,
   togglePref,
   onTogglePrefChange,
   detailsPref,
@@ -488,6 +495,32 @@ export function SettingsView({
               title={t("settingsGeneral")}
               hint={t("generalHint")}
             />
+            <span className="tyba-label">{t("version")}</span>
+            <div className="mt-2 mb-6 flex items-center gap-3 rounded-[6px] border border-tyba-border px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <p className="font-mono text-[13px] text-tyba-text">
+                  {version || "—"}
+                </p>
+                <p className="pt-0.5 text-[11px] text-tyba-text-faint">
+                  {update
+                    ? t("updateAvailable", { version: update.info.version })
+                    : t("updateUpToDate")}
+                </p>
+              </div>
+              {update && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 shrink-0 gap-1.5 px-2.5 text-[11px] text-tyba-violet"
+                  onClick={() =>
+                    void openUrl(changelogUrl(i18n.language)).catch(() => {})
+                  }
+                >
+                  <DownloadSimple size={13} />
+                  {t("updateOpenChangelog")}
+                </Button>
+              )}
+            </div>
             <span className="tyba-label">{t("account")}</span>
             <div className="mt-2 mb-6 flex items-center gap-3 rounded-[6px] border border-tyba-border px-4 py-3">
               <span

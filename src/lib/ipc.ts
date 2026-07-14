@@ -800,3 +800,21 @@ export const onSessionCwd = (
   handler: (payload: SessionCwd) => void,
 ): Promise<UnlistenFn> =>
   listen<SessionCwd>(`session://cwd/${id}`, (e) => handler(e.payload));
+
+export interface UpdateInfo {
+  version: string;
+  url: string;
+  published_at: string | null;
+}
+
+export interface UpdateStatus {
+  info: UpdateInfo;
+  dismissed: boolean;
+}
+
+export const appVersion = () => invoke<string>("app_version");
+
+export const updateCheck = () => invoke<UpdateStatus | null>("update_check");
+
+export const updateDismiss = (version: string) =>
+  invoke<void>("update_dismiss", { version });
