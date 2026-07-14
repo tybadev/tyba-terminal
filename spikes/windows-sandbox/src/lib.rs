@@ -349,6 +349,26 @@ fn set_low_integrity(token: Handle) -> Result<(), String> {
     }
 }
 
+pub fn is_elevated() -> bool {
+    unsafe {
+        let mut token: Handle = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevation: TOKEN_ELEVATION = std::mem::zeroed();
+        let mut ret: u32 = 0;
+        let ok = GetTokenInformation(
+            token,
+            20,
+            &mut elevation as *mut _ as *mut c_void,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut ret,
+        );
+        CloseHandle(token);
+        ok != 0 && elevation.TokenIsElevated != 0
+    }
+}
+
 pub fn git_exe() -> Option<String> {
     let mut roots: Vec<String> = Vec::new();
     if let Ok(path) = std::env::var("PATH") {

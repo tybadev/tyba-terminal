@@ -46,6 +46,10 @@ path = "src/bin/mitigations.rs"
 name = "gitshim"
 path = "src/bin/gitshim.rs"
 
+[[bin]]
+name = "layerb"
+path = "src/bin/layerb.rs"
+
 [dependencies.windows-sys]
 version = "0.59"
 features = [

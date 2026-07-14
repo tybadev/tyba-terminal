@@ -28,6 +28,12 @@ cargo run --bin jobobject    # kill-on-close: agente morre com o TYBA (paridade 
 cargo run --bin envjail      # env por allowlist: segredo do shell não vaza
 cargo run --bin denyacl      # negar leitura de segredo ao agente (mecanismo: IL, não DACL-por-SID)
 cargo run --bin mitigations  # quais process mitigations o node tolera (menos ACG, menos win32k)
+
+# git roteado pelo core (precisa de git no PATH)
+cargo run --bin gitshim      # o agente enjaulado delega git ao core pelo pipe herdado
+
+# Camada B — usuário dedicado + WFP (PRECISA DE SHELL ELEVADO / UAC)
+cargo run --bin layerb       # sem admin: imprime o plano; com admin: roda o spike do usuário dedicado
 ```
 
 Cole a saída inteira das três de volta. O resultado vira dado na ADR e decide o
@@ -88,6 +94,22 @@ Cada peça `DESENHADO` do tech-spec, medida na máquina com a receita real da ja
   station que o boot precisa — **corrige o tech-spec**, que listava win32k). **CIG**
   (block-non-MS) boota `node -e` puro, mas bloquearia `.node` addons nativos — precisa
   de spike com addon antes de adotar.
+
+## git roteado pelo core (sonda gitshim)
+
+- **Controle**: com a receita real da jaula, `git.exe` **inicia** (exit 0) — não dá
+  mais `0xc0000142`. O motivo do shim muda de "git não roda" para **roteamento por
+  controle**: git de escrita roda no core não-enjaulado, no worktree que ele controla.
+- **Relay**: o processo enjaulado manda args de git pelo **pipe herdado**; o core roda
+  git real fora da jaula e devolve a saída. Round-trip ponta a ponta. **PASS/PASS.**
+
+## Camada B — usuário dedicado + WFP (sonda layerb) · PENDENTE DE ELEVAÇÃO
+
+Camada B exige **admin (UAC)** — criar/apagar usuário local, ACLar o perfil e aplicar
+filtros WFP são privilegiados. A sonda `layerb` é **guardada por elevação**: sem admin
+imprime o plano do spike (usuário dedicado → WFP por SID → uninstaller, cada um com par
+positivo) e o comando para rodar elevado. **Não medido nesta sessão** (shell não-admin).
+Rodar num PowerShell como admin para exercer a peça do usuário dedicado.
 
 ## Aviso honesto
 
