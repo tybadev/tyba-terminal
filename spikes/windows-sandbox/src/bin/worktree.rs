@@ -5,7 +5,6 @@ use std::ffi::c_void;
 use probe::*;
 use windows_sys::Win32::Security::Authorization::*;
 use windows_sys::Win32::Security::*;
-use windows_sys::Win32::System::Memory::LocalFree;
 
 const SET_ACCESS_MODE: i32 = 2;
 const TRUSTEE_FORM_SID: i32 = 0;
@@ -69,10 +68,8 @@ unsafe fn label_low(dir: &str) -> Result<(), String> {
     }
     let wdir = wide(dir);
     let ok = SetFileSecurityW(wdir.as_ptr(), LABEL_INFO, psd);
-    let err = last_error();
-    LocalFree(psd);
     if ok == 0 {
-        return Err(format!("SetFileSecurityW(label) falhou: {err}"));
+        return Err(format!("SetFileSecurityW(label) falhou: {}", last_error()));
     }
     Ok(())
 }
