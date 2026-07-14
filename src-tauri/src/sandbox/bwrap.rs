@@ -235,7 +235,7 @@ fn secret_shadow_files(spec: &SandboxSpec) -> Vec<Rule> {
     ]
 }
 
-fn worktree_git(args: &mut Args, spec: &SandboxSpec) -> Result<(), String> {
+fn worktree_mounts(args: &mut Args, spec: &SandboxSpec) {
     args.bind(&spec.writable_root);
     let pointer = spec.writable_root.join(".git");
     if pointer.is_file() {
@@ -245,6 +245,16 @@ fn worktree_git(args: &mut Args, spec: &SandboxSpec) -> Result<(), String> {
     if dot_tyba.exists() {
         args.ro_bind(&dot_tyba);
     }
+}
+
+fn shadow_swallows_worktree(spec: &SandboxSpec) -> bool {
+    secret_shadow_dirs(spec)
+        .iter()
+        .any(|dir| dir.is_dir() && spec.writable_root.starts_with(dir))
+}
+
+fn worktree_git(args: &mut Args, spec: &SandboxSpec) -> Result<(), String> {
+    worktree_mounts(args, spec);
 
     ensure_dir(&spec.worktree_git_dir)?;
     args.bind(&spec.worktree_git_dir);
@@ -368,6 +378,10 @@ pub fn build_args(spec: &SandboxSpec) -> Result<Vec<OsString>, String> {
                 args.mask_file(&m);
             }
         }
+    }
+
+    if shadow_swallows_worktree(spec) {
+        worktree_mounts(&mut args, spec);
     }
 
     args.0.push("--remount-ro".into());
@@ -552,10 +566,129 @@ mod tests {
         (tmp, spec)
     }
 
+    fn managed_fixture() -> (tempfile::TempDir, SandboxSpec) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let repo = root.join("repo");
+        let worktrees = home.join(".tyba/worktrees/repo");
+        let wt = worktrees.join("task-a");
+        let sibling = worktrees.join("task-b");
+        let runtime = root.join("tmp/tyba-abc");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(home.join(".tyba/config.toml"), "secret").unwrap();
+        std::fs::create_dir_all(repo.join(".git/worktrees/task-a")).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: ../../../../repo/.git").unwrap();
+        std::fs::create_dir_all(&runtime).unwrap();
+        let spec = SandboxSpec {
+            writable_root: wt,
+            readable_root: repo.clone(),
+            allow_network: true,
+            repo_git_dir: repo.join(".git"),
+            worktree_git_dir: repo.join(".git/worktrees/task-a"),
+            runtime_dir: runtime.clone(),
+            hook_socket: runtime.join("hook.sock"),
+            tyba_exe: root.join("bin/tyba"),
+            tyba_data_dir: home.join(".local/share/dev.tyba.app"),
+            home,
+            tmpdir: None,
+            exec_path_dirs: vec![],
+            agent: AgentAccess::default(),
+            read_allow_extra: vec![],
+        };
+        std::fs::create_dir_all(spec.tyba_exe.parent().unwrap()).unwrap();
+        std::fs::write(&spec.tyba_exe, "").unwrap();
+        (tmp, spec)
+    }
+
     fn strs(args: &[OsString]) -> Vec<String> {
         args.iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    fn tmpfs_pos(argv: &[String], p: &std::path::Path) -> Option<usize> {
+        let s = p.to_string_lossy();
+        argv.windows(2).position(|w| w[0] == "--tmpfs" && w[1] == s)
+    }
+
+    #[test]
+    fn managed_worktree_survives_the_dot_tyba_shadow() {
+        let (_tmp, spec) = managed_fixture();
+        let argv = strs(&build_args(&spec).unwrap());
+        let dot_tyba = spec.home.join(".tyba");
+        let wt = spec.writable_root.to_string_lossy().into_owned();
+
+        let shadow = tmpfs_pos(&argv, &dot_tyba).expect("~/.tyba precisa continuar sombreado");
+        let last_bind = argv
+            .windows(3)
+            .rposition(|w| w[0] == "--bind" && w[1] == wt && w[2] == wt)
+            .expect("o worktree precisa estar montado rw");
+
+        assert!(
+            last_bind > shadow,
+            "o tmpfs de ~/.tyba é o último mount sobre o worktree: a jaula enterra o \
+             diretório onde o agente ia trabalhar (bwrap aplica mounts em ordem)"
+        );
+    }
+
+    #[test]
+    fn worktree_pointer_stays_ro_after_the_shadow_is_undone() {
+        let (_tmp, spec) = managed_fixture();
+        let argv = strs(&build_args(&spec).unwrap());
+        let wt = spec.writable_root.to_string_lossy().into_owned();
+        let pointer = spec
+            .writable_root
+            .join(".git")
+            .to_string_lossy()
+            .into_owned();
+
+        let last_bind = argv
+            .windows(3)
+            .rposition(|w| w[0] == "--bind" && w[1] == wt && w[2] == wt)
+            .unwrap();
+        let last_pointer = argv
+            .windows(3)
+            .rposition(|w| w[0] == "--ro-bind" && w[1] == pointer && w[2] == pointer)
+            .expect("o ponteiro .git do worktree precisa ser ro");
+
+        assert!(
+            last_pointer > last_bind,
+            "o re-bind do worktree devolveu o ponteiro .git como gravável"
+        );
+    }
+
+    #[test]
+    fn worktree_outside_home_is_not_rebound() {
+        let (_tmp, spec) = fixture();
+        let argv = strs(&build_args(&spec).unwrap());
+        let wt = spec.writable_root.to_string_lossy().into_owned();
+        let binds = argv
+            .windows(3)
+            .filter(|w| w[0] == "--bind" && w[1] == wt && w[2] == wt)
+            .count();
+        assert_eq!(
+            binds, 1,
+            "sem shadow engolindo o worktree, não há o que refazer"
+        );
+    }
+
+    #[test]
+    fn dot_tyba_shadow_still_hides_the_other_sessions() {
+        let (_tmp, spec) = managed_fixture();
+        let argv = strs(&build_args(&spec).unwrap());
+        let sibling = spec.home.join(".tyba/worktrees/repo/task-b");
+        let config = spec.home.join(".tyba/config.toml");
+
+        assert!(
+            !argv.iter().any(|a| a == &sibling.to_string_lossy()),
+            "o worktree de outra sessão não pode entrar na jaula"
+        );
+        assert!(
+            !argv.iter().any(|a| a == &config.to_string_lossy()),
+            "o config do TYBA não pode entrar na jaula"
+        );
     }
 
     fn triple_pos(argv: &[String], op: &str, src: &str, dest: &str) -> Option<usize> {

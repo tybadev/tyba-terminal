@@ -2272,7 +2272,6 @@ export default function App() {
         }}
         onCreate={async (task, agent) => {
           const dir = worktreeDir;
-          setWorktreeDir(null);
           if (dir) {
             if (agent) {
               await newAgentSession(
@@ -2286,6 +2285,7 @@ export default function App() {
               await newSession(dir, task, pendingGroup, task);
             }
           }
+          setWorktreeDir(null);
           setPendingGroup(null);
         }}
       />
