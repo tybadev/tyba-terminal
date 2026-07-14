@@ -1,7 +1,5 @@
 #![cfg(windows)]
 
-use std::ffi::c_void;
-
 use probe::*;
 use windows_sys::Win32::Networking::WinSock::*;
 
@@ -20,7 +18,7 @@ fn sockaddr_un(path: &str) -> (SOCKADDR_UN, i32) {
     addr.sun_family = AF_UNIX_FAMILY;
     let bytes = path.as_bytes();
     for (i, b) in bytes.iter().enumerate().take(addr.sun_path.len() - 1) {
-        addr.sun_path[i] = *b;
+        addr.sun_path[i] = *b as i8;
     }
     (addr, std::mem::size_of::<SOCKADDR_UN>() as i32)
 }
