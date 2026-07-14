@@ -10,6 +10,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
+mod holdback;
+
 pub const EVENT_CWD_CHANGED: &str = "session://cwd-changed";
 
 const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
@@ -230,17 +232,23 @@ impl PtyPool {
             .name(format!("pty-reader-{session_id}"))
             .spawn(move || {
                 let mut buf = [0u8; READ_BUF_SIZE];
+                let mut hold_back = holdback::HoldBack::new();
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            if tx.send(buf[..n].to_vec()).is_err() {
+                            let ready = hold_back.feed(&buf[..n]);
+                            if !ready.is_empty() && tx.send(ready).is_err() {
                                 break;
                             }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(_) => break,
                     }
+                }
+                let tail = hold_back.flush();
+                if !tail.is_empty() {
+                    let _ = tx.send(tail);
                 }
             })
             .map_err(|e| {
