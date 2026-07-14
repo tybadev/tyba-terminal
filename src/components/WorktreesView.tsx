@@ -20,9 +20,11 @@ import {
   type WorktreeStatus,
 } from "../lib/ipc";
 import { basename } from "@/lib/utils";
+import { formatCombo } from "@/lib/keys";
 
 interface Props {
   repoRoots: string[];
+  newWorktreeSessionCombo: string;
   onOpenSession: (path: string, name: string) => void;
   onFocusSession: (sessionId: SessionId) => void;
   onReviewSession: (sessionId: SessionId) => void;
@@ -154,6 +156,7 @@ function WorktreeRow({
 
 export function WorktreesView({
   repoRoots,
+  newWorktreeSessionCombo,
   onOpenSession,
   onFocusSession,
   onReviewSession,
@@ -220,7 +223,9 @@ export function WorktreesView({
 
         {!loading && repos.length === 0 && (
           <div className="rounded-[8px] border border-dashed border-tyba-border p-8 text-center text-[12px] text-tyba-text-faint">
-            {t("worktreesEmpty")}
+            {t("worktreesEmpty", {
+              combo: formatCombo(newWorktreeSessionCombo),
+            })}
           </div>
         )}
 

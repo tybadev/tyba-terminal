@@ -9,6 +9,7 @@ import {
 } from "@phosphor-icons/react";
 
 import i18n from "../i18n";
+import { formatCombo, tabDigitCombo } from "@/lib/keys";
 import { ClaudeIcon } from "./icons/ClaudeIcon";
 import { OpenAIIcon } from "./icons/OpenAIIcon";
 import {
@@ -97,7 +98,7 @@ export function TabBar({
           <button
             key={tab.id}
             onClick={() => onActivate(tab.id)}
-            title={`⌘${i + 1}`}
+            title={formatCombo(tabDigitCombo(i + 1))}
             className={`group relative flex max-w-44 min-w-24 shrink-0 items-center gap-1.5 rounded-t-[4px] px-2.5 text-[12px] transition-colors ${
               isActive
                 ? "bg-tyba-bg text-tyba-text"
