@@ -69,12 +69,15 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 ## Fase 6 — Distribuição
 
 - [x] Pipeline de release: matriz macOS (Apple Silicon + Intel) e Linux, gerando `.dmg`, `.deb`, `.rpm` e AppImage + SHA256SUMS; release sai como **rascunho** para conferência humana
+- [x] Gates definidos num lugar só (`gates.yml`) e chamados pelo PR, pela main e **pela tag** — a tag não sai da main por definição, então a release roda os gates antes de publicar em vez de confiar que alguém já rodou
+- [x] Tag amarrada à versão dos manifestos: `v0.2.0` com `tauri.conf.json` em `0.1.0` publicaria um `Tyba_0.1.0.dmg` dentro do release errado — o job recusa
 - [x] Gate de secrets no histórico completo (gitleaks na CI) — pré-requisito de abrir o repo
 - [x] CONTRIBUTING.md, README com instalação por plataforma
 - [ ] Codesign + notarização (macOS) — **falta o certificado Developer ID nos secrets**; o workflow já verifica com `codesign` + `spctl` e recusa publicar artefato não assinado (build ad-hoc é rejeitado pelo Gatekeeper e o usuário vê "app danificado")
 - [ ] PKGBUILD publicado na AUR (`packaging/aur/PKGBUILD` pronto; falta subir a conta/repo AUR)
 - [ ] QA de desktop em Linux real (webkitgtk + xterm.js, notificações, window-state, PTY)
-- [ ] Auto-update assinado — **fora da v0.1 de propósito**: a chave privada de update é o secret mais perigoso do projeto (quem a tiver publica um "update" que a máquina do usuário instala sozinha). Entra na v0.2, com calma.
+- [ ] Notificação de versão nova + what's new — **não existe nada hoje** (a app nem expõe a própria versão); sem isso não há como avisar o primeiro usuário que saiu o fix do bug que ele reportou. Não precisa de chave nenhuma. Ver [TODO](TODO.md).
+- [ ] Auto-update assinado — **fora da v0.1 de propósito**: a chave privada de update é o secret mais perigoso do projeto (quem a tiver publica um "update" que a máquina do usuário instala sozinha). Entra na v0.2, com calma. Ver [TODO](TODO.md).
 - [ ] Flatpak — **fora da v0.1**: o TYBA é um sandbox, e bwrap aninhado dentro do bwrap do Flatpak não sobe. O caminho é `flatpak-spawn --host` (precedente Ptyxis/Black Box), com PTY, socket de hook e a jaula atravessando a fronteira do container: projeto próprio, não um manifesto.
 - [ ] Site/docs, onboarding
 
