@@ -4,17 +4,23 @@ O que ficou de fora do lançamento **de propósito**, com o porquê. Não é lis
 
 Fases e itens já entregues vivem no [ROADMAP](ROADMAP.md).
 
-## Avisar que saiu versão nova (v0.1.x)
+## Avisar que saiu versão nova — **ENTREGUE** (v0.1.1)
 
-Hoje **não existe nada**: nenhum `tauri-plugin-updater`, nenhuma checagem de versão, nenhum "what's new" — a app nem expõe a própria versão pra UI. Lançar assim significa não ter como avisar os primeiros usuários que saiu o fix do bug que eles reportaram.
+A app consulta a Releases API do GitHub (cache de 6h, consulta fora do boot, sem chave nenhuma), compara semver estrito e mostra um toast **uma vez por versão**, com link pro changelog do site. Badge nos Ajustes pra quem fechou o toast.
 
-São três coisas diferentes e a ordem importa:
+**Sem opt-out, por decisão do dono e o argumento é bom**: o release pode ser um fix de segurança, e um toggle desligado deixaria o usuário vulnerável **sem saber que escolheu isso**. O que segura o abuso é o desenho, não a preferência.
 
-1. **Notificação de versão nova** — consultar a Releases API do GitHub, comparar com a versão da app, mostrar um toast com link. **Não precisa de chave nenhuma.** Resolve o essencial: o usuário fica sabendo e decide.
-2. **What's new** — `CHANGELOG.md` + as notas do release (o pipeline já usa `--generate-notes`, que monta a lista a partir dos títulos de PR; os títulos já nascem descritivos).
-3. **Auto-update de verdade** — ver abaixo, fica pra v0.2.
+Fica do item original:
 
-Pré-requisito comum: expor a versão da app ao front (não existe hoje) e cachear a consulta pra não pesar no boot.
+- **What's new dentro da app** — hoje o toast leva pro changelog no navegador. Ver o que mudou **sem sair do TYBA** ainda não existe.
+
+## Painel de CI — **ENTREGUE** (#149)
+
+Runs, jobs e checks dentro do app. Fica de fora, com motivo:
+
+- **Notificação quando o CI quebra com o painel fechado** — custaria poll de fundo competindo com os agentes por CPU e rede. Entra se o uso pedir.
+- **Re-run / cancel** — é **escrita remota**, mesma classe de `push` e `gh pr create`. Precisa do gate de aprovação, não pode pegar carona num painel de leitura.
+- **GitLab** — o core devolve `None` (não lista vazia: vazio diria "não há run"; `None` diz "não sei olhar aqui"). Não há repo GitLab pra exercitar o parser, e parser que ninguém roda é a mesma armadilha do teste de sandbox que passa com a jaula quebrada.
 
 ## Auto-update assinado (v0.2 — não antes)
 
