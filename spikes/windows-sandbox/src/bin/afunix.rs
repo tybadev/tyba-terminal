@@ -76,15 +76,19 @@ fn parent() {
             }
         };
 
-        let conn = accept(listener, std::ptr::null_mut(), std::ptr::null_mut());
-        let mut buf = [0u8; 16];
-        let n = if conn != INVALID_SOCKET {
-            recv(conn, buf.as_mut_ptr(), buf.len() as i32, 0)
-        } else {
-            -1
-        };
-        let payload = if n > 0 {
-            String::from_utf8_lossy(&buf[..n as usize]).to_string()
+        let payload = if code == 0 {
+            let conn = accept(listener, std::ptr::null_mut(), std::ptr::null_mut());
+            let mut buf = [0u8; 16];
+            let n = if conn != INVALID_SOCKET {
+                recv(conn, buf.as_mut_ptr(), buf.len() as i32, 0)
+            } else {
+                -1
+            };
+            if n > 0 {
+                String::from_utf8_lossy(&buf[..n as usize]).to_string()
+            } else {
+                String::new()
+            }
         } else {
             String::new()
         };
@@ -97,7 +101,10 @@ fn parent() {
             payload == "ping" && code == 0,
             "se PASS, o hook pode usar UM transporte nos três SOs; se FAIL, o Windows fica com named pipe",
         );
-        println!("\ncódigo de saída do filho: {code}  (0 = conectou e enviou; !=0 = bloqueado)");
+        println!("\ncódigo de saída do filho: {code}");
+        println!(
+            "  0 = conectou e enviou · 2 = WSAStartup · 3 = socket · 4 = connect NEGADO · 5 = send"
+        );
     }
 }
 
