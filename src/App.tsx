@@ -1389,14 +1389,6 @@ export default function App() {
     }
   }, [activeTab, closeTabAndRefresh]);
 
-  const toggleWorktreesView = useCallback(() => {
-    if (activeTab?.view === "workspace") {
-      void closeTabAndRefresh(activeTab.id);
-    } else {
-      void openViewTab("workspace").catch(() => {});
-    }
-  }, [activeTab, closeTabAndRefresh]);
-
   const changeTogglePref = useCallback((value: SidebarTogglePref) => {
     setTogglePref(value);
     setSidebar((current) => (current === "open" ? current : value));
@@ -2366,21 +2358,17 @@ export default function App() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
-                    aria-label={t("workspaceView")}
-                    aria-pressed={activeTab?.view === "workspace"}
-                    onClick={toggleWorktreesView}
-                    className={`flex h-6 items-center gap-1.5 rounded-[3px] px-2 text-[11px] ${
-                      activeTab?.view === "workspace"
-                        ? "bg-tyba-text/[.06] text-tyba-text"
-                        : "text-tyba-text-faint hover:text-tyba-text"
-                    }`}
+                    aria-label={`${t("workspaceView")} — ${t("comingSoon")}`}
+                    aria-disabled
+                    disabled
+                    className="flex h-6 cursor-not-allowed items-center gap-1.5 rounded-[3px] px-2 text-[11px] text-tyba-text-faint/50"
                   >
                     <SquaresFour size={14} />
                     {t("workspaceView")}
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
-                  {t("workspaceView")}
+                  {t("comingSoon")}
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -2613,24 +2601,24 @@ export default function App() {
                           </span>
                         )}
                         <button
-                          onClick={toggleWorktreesView}
-                          aria-label={t("worktreesTitle")}
-                          className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
+                          disabled
+                          aria-disabled
+                          aria-label={`${t("worktreesTitle")} — ${t("comingSoon")}`}
+                          title={t("comingSoon")}
+                          className={`group relative flex h-8 shrink-0 cursor-not-allowed items-center gap-2 rounded-[4px] text-[13px] text-tyba-text-faint/50 ${
                             open ? "px-2" : "justify-center px-0"
-                          } ${
-                            activeTab?.view === "workspace"
-                              ? "bg-tyba-text/[.05] text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
                           }`}
                         >
-                          {activeTab?.view === "workspace" && (
-                            <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-tyba-green" />
-                          )}
                           <SquaresFour size={16} className="shrink-0" />
                           {open && (
-                            <span className="min-w-0 flex-1 truncate text-left">
-                              {t("worktreesTitle")}
-                            </span>
+                            <>
+                              <span className="min-w-0 flex-1 truncate text-left">
+                                {t("worktreesTitle")}
+                              </span>
+                              <span className="shrink-0 rounded-[3px] bg-tyba-text/[.06] px-1.5 py-0.5 text-[9px] uppercase tracking-wider">
+                                {t("comingSoon")}
+                              </span>
+                            </>
                           )}
                         </button>
                       </div>
