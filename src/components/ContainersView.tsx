@@ -13,6 +13,7 @@ import {
   Stop,
   TerminalWindow,
   Trash,
+  Warning,
 } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Toast,
+  ToastDescription,
+  ToastProvider,
+  ToastTitle,
+  ToastViewport,
+} from "@/components/ui/toast";
 import {
   dockerComposeOp,
   dockerListContainers,
@@ -33,10 +41,21 @@ import {
   dockerRemoveContainer,
   type ComposeOp,
   type ContainerInfo,
+  type PathStatus,
 } from "../lib/ipc";
 
 const REFRESH_MS = 3000;
+const ACTION_ERROR_MS = 8000;
 const LOOSE_KEY = "__loose__";
+
+const UNREACHABLE_PATH_LABEL: Record<
+  Exclude<PathStatus, "ok">,
+  string
+> = {
+  missing: "containersPathOffHost",
+  denied: "containersPathDenied",
+  unsupported: "containersPathUnsupported",
+};
 
 interface Props {
   onRunningChange?: (running: boolean) => void;
@@ -47,7 +66,8 @@ interface ProjectGroup {
   key: string;
   project: string | null;
   workingDir: string | null;
-  hasComposeFile: boolean;
+  workingDirStatus: PathStatus | null;
+  composeFileStatus: PathStatus | null;
   items: ContainerInfo[];
 }
 
@@ -88,7 +108,8 @@ export function ContainersView({
 }: Props) {
   const { t } = useTranslation();
   const [containers, setContainers] = useState<ContainerInfo[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [collapsedOverrides, setCollapsedOverrides] = useState<
     Record<string, boolean>
   >({});
@@ -101,11 +122,11 @@ export function ContainersView({
     try {
       const list = await dockerListContainers(null, true);
       setContainers(list);
-      setError(null);
+      setLoadError(null);
       onAvailableChange?.(true);
       onRunningChange?.(list.some((c) => c.state === "running"));
     } catch (e) {
-      setError(String(e));
+      setLoadError(String(e));
       onAvailableChange?.(false);
     }
   }, [onAvailableChange, onRunningChange]);
@@ -116,6 +137,17 @@ export function ContainersView({
     return () => window.clearInterval(timer);
   }, [load]);
 
+  useEffect(() => {
+    if (actionError === null) return;
+    const timer = window.setTimeout(
+      () => setActionError(null),
+      ACTION_ERROR_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [actionError]);
+
+  const failAction = useCallback((e: unknown) => setActionError(String(e)), []);
+
   const groups = useMemo<ProjectGroup[]>(() => {
     if (!containers) return [];
     const byKey = new Map<string, ContainerInfo[]>();
@@ -124,13 +156,13 @@ export function ContainersView({
       byKey.set(key, [...(byKey.get(key) ?? []), c]);
     }
     const result: ProjectGroup[] = [...byKey.entries()].map(([key, items]) => {
-      const workingDir =
-        items.find((c) => c.compose_working_dir)?.compose_working_dir ?? null;
+      const anchor = items.find((c) => c.compose_working_dir);
       return {
         key,
         project: key === LOOSE_KEY ? null : key,
-        workingDir,
-        hasComposeFile: items.some((c) => c.config_files),
+        workingDir: anchor?.compose_working_dir ?? null,
+        workingDirStatus: anchor?.working_dir_status ?? null,
+        composeFileStatus: anchor?.compose_file_status ?? null,
         items,
       };
     });
@@ -143,10 +175,13 @@ export function ContainersView({
     return result;
   }, [containers]);
 
-  const openTab = useCallback((kind: "logs" | "shell", id: string) => {
-    const call = kind === "logs" ? dockerOpenLogs : dockerOpenShell;
-    void call(id).catch((e) => setError(String(e)));
-  }, []);
+  const openTab = useCallback(
+    (kind: "logs" | "shell", id: string) => {
+      const call = kind === "logs" ? dockerOpenLogs : dockerOpenShell;
+      void call(id).catch(failAction);
+    },
+    [failAction],
+  );
 
   const removeContainer = useCallback(
     (id: string) => {
@@ -158,13 +193,13 @@ export function ContainersView({
       setConfirmingRm(null);
       setRemoving(id);
       void dockerRemoveContainer(id)
-        .catch((e) => setError(String(e)))
+        .catch(failAction)
         .finally(() => {
           setRemoving(null);
           void load();
         });
     },
-    [confirmingRm, load],
+    [confirmingRm, failAction, load],
   );
 
   const composeOp = useCallback(
@@ -175,9 +210,9 @@ export function ContainersView({
         return;
       }
       setConfirmingDown(null);
-      void dockerComposeOp(project, op).catch((e) => setError(String(e)));
+      void dockerComposeOp(project, op).catch(failAction);
     },
-    [confirmingDown],
+    [confirmingDown, failAction],
   );
 
   const renderContainer = (c: ContainerInfo) => {
@@ -254,6 +289,11 @@ export function ContainersView({
     const running = group.items.filter((c) => c.state === "running");
     const stopped = group.items.filter((c) => c.state !== "running");
     const showStopped = stoppedShown[group.key] ?? false;
+    const onHost = group.workingDirStatus === "ok";
+    const unreachable =
+      group.workingDirStatus !== null && group.workingDirStatus !== "ok"
+        ? group.workingDirStatus
+        : null;
     return (
       <div key={group.key} className="flex flex-col gap-px">
         <button
@@ -287,7 +327,17 @@ export function ContainersView({
         </button>
         {!collapsed && (
           <>
-            {group.project && group.workingDir && (
+            {group.project && group.workingDir && unreachable && (
+              <div className="flex flex-col gap-0.5 px-1.5 pb-1">
+                <span className="text-[10px] leading-4 text-tyba-text-faint">
+                  {t(UNREACHABLE_PATH_LABEL[unreachable])}
+                </span>
+                <span className="min-w-0 truncate font-mono text-[10px] leading-4 text-tyba-text-faint">
+                  {group.workingDir}
+                </span>
+              </div>
+            )}
+            {group.project && group.workingDir && onHost && (
               <div className="flex items-center gap-0.5 px-1.5 pb-0.5">
                 <PanelAction
                   label={t("composeUp")}
@@ -321,19 +371,19 @@ export function ContainersView({
                 <PanelAction
                   label={t("openProject")}
                   onClick={() =>
-                    void dockerOpenProject(group.project as string).catch((e) =>
-                      setError(String(e)),
+                    void dockerOpenProject(group.project as string).catch(
+                      failAction,
                     )
                   }
                 >
                   <FolderOpen size={12} />
                 </PanelAction>
-                {group.hasComposeFile && (
+                {group.composeFileStatus === "ok" && (
                   <PanelAction
                     label={t("viewCompose")}
                     onClick={() =>
                       void dockerOpenComposeFile(group.project as string).catch(
-                        (e) => setError(String(e)),
+                        failAction,
                       )
                     }
                   >
@@ -370,11 +420,9 @@ export function ContainersView({
       <div className="flex w-full max-w-xl flex-col px-6 pt-5 pb-8">
         <div className="flex items-center justify-between pb-3">
           <span className="tyba-label">{t("containers")}</span>
-          {IS_MAC && error === null && (
+          {IS_MAC && loadError === null && (
             <button
-              onClick={() =>
-                void dockerOpenDesktop().catch((e) => setError(String(e)))
-              }
+              onClick={() => void dockerOpenDesktop().catch(failAction)}
               className="flex items-center gap-1 text-[11px] text-tyba-text-faint transition-colors hover:text-tyba-text"
             >
               {t("openDockerDesktop")}
@@ -383,21 +431,19 @@ export function ContainersView({
           )}
         </div>
 
-      {error !== null ? (
+      {loadError !== null ? (
         <div className="flex flex-col items-center gap-3 px-3 py-6 text-center">
           <p className="text-xs text-tyba-text-faint">
             {t("containersDaemonOff")}
           </p>
           <p className="max-w-full truncate font-mono text-[10px] text-tyba-text-faint">
-            {error}
+            {loadError}
           </p>
           {IS_MAC && (
             <Button
               size="sm"
               variant="outline"
-              onClick={() =>
-                void dockerOpenDesktop().catch((e) => setError(String(e)))
-              }
+              onClick={() => void dockerOpenDesktop().catch(failAction)}
               className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
             >
               <ArrowSquareOut size={12} />
@@ -424,6 +470,33 @@ export function ContainersView({
         </div>
       )}
       </div>
+      <ToastProvider swipeDirection="right" duration={Infinity}>
+        {actionError !== null && (
+          <Toast
+            onOpenChange={(nextOpen) => {
+              if (!nextOpen) setActionError(null);
+            }}
+          >
+            <div className="flex items-start gap-2">
+              <Warning
+                aria-hidden="true"
+                size={16}
+                weight="fill"
+                className="mt-0.5 shrink-0 text-tyba-amber"
+              />
+              <div className="min-w-0 flex-1">
+                <ToastTitle>{t("containersActionFailed")}</ToastTitle>
+                <ToastDescription>
+                  <span className="block break-words font-mono text-xs">
+                    {actionError}
+                  </span>
+                </ToastDescription>
+              </div>
+            </div>
+          </Toast>
+        )}
+        <ToastViewport className="bottom-4 top-auto" />
+      </ToastProvider>
     </div>
   );
 }
