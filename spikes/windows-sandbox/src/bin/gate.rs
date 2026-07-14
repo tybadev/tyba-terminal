@@ -1,36 +1,50 @@
 #![cfg(windows)]
 
+use std::ffi::c_void;
 use std::io::{Read, Write};
 use std::os::windows::io::{FromRawHandle, RawHandle};
 
 use probe::*;
 use windows_sys::Win32::Foundation::*;
+use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::*;
 use windows_sys::Win32::System::Pipes::*;
+
+const GEN_READ: u32 = 0x8000_0000;
+const GEN_WRITE: u32 = 0x4000_0000;
+const ERROR_ACCESS_DENIED_CODE: u32 = 5;
+const SDDL_REV1: u32 = 1;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 4 && args[1] == "--child" {
         let handle_value: usize = args[2].parse().unwrap_or(0);
-        let pipe_name = args[3].clone();
-        std::process::exit(child(handle_value as Handle, &pipe_name));
+        std::process::exit(child(handle_value as Handle, &args[3]));
+    }
+    if args.len() >= 3 && args[1] == "--control" {
+        std::process::exit(control(&args[2]));
     }
     parent();
 }
 
 fn parent() {
     banner("SONDA A — gate por named pipe herdado (a peça sem a qual não há produto)");
-    println!("Pergunta: um agente enjaulado (WRITE_RESTRICTED + IL Low) consegue FALAR");
-    println!("com o inbox por um handle de pipe HERDADO — e é BLOQUEADO de abrir o pipe");
-    println!("pelo NOME? Se sim, o gate atravessa a jaula como no Linux/macOS.\n");
+    println!("Duas metades. (1) O agente enjaulado FALA com o inbox por um handle HERDADO.");
+    println!("(2) O acesso ao pipe PELO NOME é NEGADO. Esta versão isola o mecanismo: o pipe");
+    println!("do teste-por-nome tem instâncias LIVRES (sem PIPE_BUSY) e DACL liberando Everyone,");
+    println!("com rótulo IL Medium (no-write-up) — então só o IL Low nega. PAR POSITIVO: um");
+    println!("processo NÃO-enjaulado abre o mesmo nome (prova que o nome é abrível, não é BUSY).\n");
 
     let pid = std::process::id();
-    let pipe_name = format!(r"\\.\pipe\tyba-spike-{pid}");
-    let wname = wide(&pipe_name);
+    let name_a = format!(r"\\.\pipe\tyba-spike-inh-{pid}");
+    let name_b = format!(r"\\.\pipe\tyba-spike-name-{pid}");
+    let wa = wide(&name_a);
 
     unsafe {
-        let server = CreateNamedPipeW(
-            wname.as_ptr(),
+        // Pipe A — o gate real: handle herdado.
+        let server_a = CreateNamedPipeW(
+            wa.as_ptr(),
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_BYTE | PIPE_WAIT,
             1,
@@ -39,102 +53,172 @@ fn parent() {
             0,
             std::ptr::null(),
         );
-        if server == INVALID_HANDLE_VALUE {
-            println!("[ERRO] CreateNamedPipeW falhou: {}", last_error());
+        if server_a == INVALID_HANDLE_VALUE {
+            println!("[ERRO] CreateNamedPipeW(A): {}", last_error());
             return;
         }
-
-        let client = CreateFileW(
-            wname.as_ptr(),
-            (GENERIC_READ | GENERIC_WRITE) as u32,
+        let client_a = CreateFileW(
+            wa.as_ptr(),
+            GEN_READ | GEN_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             std::ptr::null(),
             OPEN_EXISTING,
             0,
             std::ptr::null_mut(),
         );
-        if client == INVALID_HANDLE_VALUE {
-            println!("[ERRO] CreateFileW (client) falhou: {}", last_error());
+        if client_a == INVALID_HANDLE_VALUE {
+            println!("[ERRO] CreateFileW(A client): {}", last_error());
             return;
         }
-        if SetHandleInformation(client, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0 {
-            println!("[ERRO] SetHandleInformation falhou: {}", last_error());
+        SetHandleInformation(client_a, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+
+        // Pipe B — teste por-nome. DACL: Everyone GENERIC_ALL (DACL não nega).
+        // Rótulo: IL Medium no-write-up (só o IL Low nega). Duas instâncias livres → sem PIPE_BUSY.
+        let sddl = wide("D:(A;;GA;;;WD)S:(ML;;NW;;;ME)");
+        let mut psd: *mut c_void = std::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REV1,
+            &mut psd,
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            println!("[ERRO] Convert SDDL(B): {}", last_error());
             return;
+        }
+        let mut sa: SECURITY_ATTRIBUTES = std::mem::zeroed();
+        sa.nLength = std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32;
+        sa.lpSecurityDescriptor = psd;
+        sa.bInheritHandle = 0;
+        let wb = wide(&name_b);
+        for _ in 0..2 {
+            let inst = CreateNamedPipeW(
+                wb.as_ptr(),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_WAIT,
+                2,
+                4096,
+                4096,
+                0,
+                &sa,
+            );
+            if inst == INVALID_HANDLE_VALUE {
+                println!("[ERRO] CreateNamedPipeW(B): {}", last_error());
+                return;
+            }
         }
 
-        let restricted = match build_restricted_low_il() {
+        // PAR POSITIVO: processo NÃO-enjaulado abre o pipe B pelo nome.
+        let exe = std::env::current_exe().unwrap();
+        let control_code = std::process::Command::new(&exe)
+            .arg("--control")
+            .arg(&name_b)
+            .status()
+            .ok()
+            .and_then(|s| s.code())
+            .unwrap_or(-1);
+        let control_opened = control_code == 0;
+
+        // TESTE ENJAULADO: o filho fala por A (herdado) e tenta abrir B pelo nome.
+        let restricted = match build_restricted(&jail_spec(true)) {
             Ok(r) => r,
             Err(e) => {
-                println!("[ERRO] montar token restrito: {e}");
+                println!("[ERRO] token da jaula: {e}");
                 return;
             }
         };
+        let cmd = format!("\"{}\" --child {} {}", exe.display(), client_a as usize, name_b);
+        if let Err(e) = spawn_with_token(restricted.token, &cmd, &[client_a]) {
+            println!("[ERRO] spawn enjaulado: {e}");
+            return;
+        }
 
-        let exe = std::env::current_exe().unwrap();
-        let cmd = format!(
-            "\"{}\" --child {} {}",
-            exe.display(),
-            client as usize,
-            pipe_name
-        );
-
-        let code = match spawn_with_token(restricted.token, &cmd, &[client]) {
-            Ok(c) => c,
-            Err(e) => {
-                println!("[ERRO] spawn enjaulado: {e}");
-                return;
-            }
-        };
-
-        let mut server_file = std::fs::File::from_raw_handle(server as RawHandle);
-        let mut buf = [0u8; 16];
+        let mut server_file = std::fs::File::from_raw_handle(server_a as RawHandle);
+        let mut buf = [0u8; 128];
         let n = server_file.read(&mut buf).unwrap_or(0);
-        let payload = String::from_utf8_lossy(&buf[..n]).to_string();
+        let report = String::from_utf8_lossy(&buf[..n]).to_string();
+
+        let inherited_ok = report.starts_with("ping");
+        let byname_denied = report.contains("byname=denied");
+        let gle = report
+            .split("gle=")
+            .nth(1)
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0);
 
         println!();
         verdict(
             "handle herdado usável sob a jaula",
-            payload == "ping",
+            inherited_ok,
             "o filho escreveu no pipe pelo handle que herdou — o inbox recebe o PreToolUse mesmo enjaulado",
         );
         verdict(
-            "acesso ao pipe PELO NOME negado",
-            code == 13,
-            "o filho NÃO conseguiu reabrir o pipe pelo nome (esperado: só o handle herdado vale, o resto é DACL/IL)",
+            "CONTROLE: processo NÃO-enjaulado abre o pipe B pelo nome",
+            control_opened,
+            "prova que o nome É abrível (instância livre, DACL libera) — descarta PIPE_BUSY e inexistência",
+        );
+        verdict(
+            "acesso ao pipe PELO NOME negado à jaula, com ACCESS_DENIED (não BUSY)",
+            byname_denied && gle == ERROR_ACCESS_DENIED_CODE && control_opened,
+            "o filho Low IL foi negado por integrity level (no-write-up ao pipe Medium); GetLastError=5 confirma que é o IL, não instância ocupada",
         );
 
-        println!("\ncódigo de saída do filho: {code}");
-        println!("  13 = herdado OK e por-nome negado (o cenário que queremos)");
-        println!("  12 = herdado OK mas por-nome também abriu (jaula fraca no pipe)");
-        println!("  11 = herdado FALHOU");
+        println!("\nrelato do filho: {report:?}");
+        println!("controle (não-enjaulado) abrindo por nome: exit {control_code} (0 = abriu)");
+        println!("GetLastError do filho no open-por-nome: {gle} (5 = ACCESS_DENIED, 231 = PIPE_BUSY)");
     }
 }
 
-fn child(inherited: Handle, pipe_name: &str) -> i32 {
+fn child(inherited: Handle, name_b: &str) -> i32 {
     unsafe {
-        let mut pipe = std::fs::File::from_raw_handle(inherited as RawHandle);
-        let inherited_ok = pipe.write_all(b"ping").and_then(|_| pipe.flush()).is_ok();
-        std::mem::forget(pipe);
-
-        let wname = wide(pipe_name);
         let by_name = CreateFileW(
-            wname.as_ptr(),
-            (GENERIC_READ | GENERIC_WRITE) as u32,
+            wide(name_b).as_ptr(),
+            GEN_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             std::ptr::null(),
             OPEN_EXISTING,
             0,
             std::ptr::null_mut(),
         );
-        let by_name_denied = by_name == INVALID_HANDLE_VALUE;
-        if !by_name_denied {
+        let (denied, gle) = if by_name == INVALID_HANDLE_VALUE {
+            (true, last_error())
+        } else {
             CloseHandle(by_name);
-        }
+            (false, 0)
+        };
 
-        match (inherited_ok, by_name_denied) {
+        let mut pipe = std::fs::File::from_raw_handle(inherited as RawHandle);
+        let msg = format!(
+            "ping;byname={};gle={}",
+            if denied { "denied" } else { "opened" },
+            gle
+        );
+        let wrote = pipe.write_all(msg.as_bytes()).and_then(|_| pipe.flush()).is_ok();
+        std::mem::forget(pipe);
+
+        match (wrote, denied) {
             (true, true) => 13,
-            (false, _) => 11,
             (true, false) => 12,
+            (false, _) => 11,
         }
+    }
+}
+
+fn control(name_b: &str) -> i32 {
+    unsafe {
+        let h = CreateFileW(
+            wide(name_b).as_ptr(),
+            GEN_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if h == INVALID_HANDLE_VALUE {
+            return last_error() as i32;
+        }
+        CloseHandle(h);
+        0
     }
 }

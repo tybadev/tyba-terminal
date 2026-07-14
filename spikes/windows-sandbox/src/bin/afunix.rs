@@ -17,17 +17,38 @@ fn sockaddr_un(path: &str) -> (SOCKADDR_UN, i32) {
     let mut addr: SOCKADDR_UN = unsafe { std::mem::zeroed() };
     addr.sun_family = AF_UNIX_FAMILY;
     let bytes = path.as_bytes();
-    for (i, b) in bytes.iter().enumerate().take(addr.sun_path.len() - 1) {
+    let n = bytes.len().min(addr.sun_path.len() - 1);
+    for (i, b) in bytes.iter().enumerate().take(n) {
         addr.sun_path[i] = *b as i8;
     }
-    (addr, std::mem::size_of::<SOCKADDR_UN>() as i32)
+    // addrlen = offset de sun_path (sun_family: u16 = 2 bytes) + path + NUL
+    let len = (2 + n + 1) as i32;
+    (addr, len)
+}
+
+fn accept_ping(listener: SOCKET) -> String {
+    unsafe {
+        let conn = accept(listener, std::ptr::null_mut(), std::ptr::null_mut());
+        if conn == INVALID_SOCKET {
+            return String::new();
+        }
+        let mut buf = [0u8; 16];
+        let n = recv(conn, buf.as_mut_ptr(), buf.len() as i32, 0);
+        closesocket(conn);
+        if n > 0 {
+            String::from_utf8_lossy(&buf[..n as usize]).to_string()
+        } else {
+            String::new()
+        }
+    }
 }
 
 fn parent() {
     banner("SONDA C — AF_UNIX sob a jaula (transporte único cross-platform, ou não?)");
     println!("Pergunta: um filho enjaulado (IL Low) consegue conectar num socket AF_UNIX");
-    println!("criado pelo pai? Se sim, o mesmo transporte do hook serve os três SOs. Se não,");
-    println!("o Windows precisa do seu próprio (named pipe da sonda A).\n");
+    println!("criado pelo pai? PAR POSITIVO: um filho NÃO-enjaulado conecta no mesmo socket —");
+    println!("sem isso, um 'connect falhou' não distingue jaula de AF_UNIX simplesmente não");
+    println!("funcionar aqui. Só a diferença entre os dois atribui a negação à jaula.\n");
 
     unsafe {
         let mut wsa: WSADATA = std::mem::zeroed();
@@ -53,58 +74,63 @@ fn parent() {
             println!("[ERRO] bind({path}) falhou: {}", WSAGetLastError());
             return;
         }
-        if listen(listener, 1) == SOCKET_ERROR {
+        if listen(listener, 2) == SOCKET_ERROR {
             println!("[ERRO] listen falhou: {}", WSAGetLastError());
             return;
         }
 
-        let restricted = match build_restricted_low_il() {
+        let exe = std::env::current_exe().unwrap();
+
+        // PAR POSITIVO: filho NÃO-enjaulado conecta no socket.
+        let mut control = std::process::Command::new(&exe)
+            .arg("--child")
+            .arg(&path)
+            .spawn()
+            .expect("spawn controle");
+        let control_payload = accept_ping(listener);
+        let control_code = control.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+        let control_ok = control_code == 0 && control_payload == "ping";
+
+        // TESTE ENJAULADO: mesmo socket, filho sob a jaula (IL Low).
+        let restricted = match build_restricted(&jail_spec(true)) {
             Ok(r) => r,
             Err(e) => {
                 println!("[ERRO] montar token restrito: {e}");
                 return;
             }
         };
-
-        let exe = std::env::current_exe().unwrap();
         let cmd = format!("\"{}\" --child {}", exe.display(), path);
-        let code = match spawn_with_token(restricted.token, &cmd, &[]) {
+        let jailed_code = match spawn_with_token(restricted.token, &cmd, &[]) {
             Ok(c) => c,
             Err(e) => {
                 println!("[ERRO] spawn enjaulado: {e}");
                 return;
             }
         };
-
-        let payload = if code == 0 {
-            let conn = accept(listener, std::ptr::null_mut(), std::ptr::null_mut());
-            let mut buf = [0u8; 16];
-            let n = if conn != INVALID_SOCKET {
-                recv(conn, buf.as_mut_ptr(), buf.len() as i32, 0)
-            } else {
-                -1
-            };
-            if n > 0 {
-                String::from_utf8_lossy(&buf[..n as usize]).to_string()
-            } else {
-                String::new()
-            }
+        let jailed_payload = if jailed_code == 0 {
+            accept_ping(listener)
         } else {
             String::new()
         };
+        let jailed_connected = jailed_code == 0 && jailed_payload == "ping";
 
         let _ = std::fs::remove_file(&path);
 
         println!();
         verdict(
-            "AF_UNIX atravessa a jaula (IL Low → socket do pai)",
-            payload == "ping" && code == 0,
-            "se PASS, o hook pode usar UM transporte nos três SOs; se FAIL, o Windows fica com named pipe",
+            "CONTROLE: processo NÃO-enjaulado conecta no socket AF_UNIX",
+            control_ok,
+            "prova que o socket é conectável — se isto falhar, AF_UNIX não serve aqui e nada abaixo é atribuível à jaula",
         );
-        println!("\ncódigo de saída do filho: {code}");
-        println!(
-            "  0 = conectou e enviou · 2 = WSAStartup · 3 = socket · 4 = connect NEGADO · 5 = send"
+        verdict(
+            "a jaula BLOQUEIA AF_UNIX (filho enjaulado: connect negado)",
+            control_ok && !jailed_connected,
+            "com o controle conectando e o enjaulado não, a negação é da jaula (IL Low → socket do pai). Windows fica com named pipe",
         );
+
+        println!("\ncontrole  -> exit {control_code} | payload {control_payload:?}");
+        println!("enjaulado -> exit {jailed_code} | payload {jailed_payload:?}");
+        println!("  (filho: 0=conectou+enviou · 2=WSAStartup · 3=socket · 4=connect NEGADO · 5=send)");
     }
 }
 
