@@ -1,6 +1,6 @@
 pkgname=tyba-bin
 _pkgname=tyba
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Terminal orientado a agentes de IA — sessões em worktrees isolados, inbox de aprovações e sandbox real do SO"
 arch=('x86_64')
@@ -14,8 +14,15 @@ optdepends=('claude-code: runner de agente Claude Code'
 provides=('tyba')
 conflicts=('tyba')
 options=('!strip')
+# O .deb (e não o tarball) é a fonte de propósito: ele carrega o .desktop e os
+# ícones, que o tarball não tem. O pacote da AUR só reempacota o que a CI
+# publicou — e o que a CI publicou tem attestation de procedência.
 source=("${_pkgname}-${pkgver}.deb::${url}/releases/download/v${pkgver}/Tyba_${pkgver}_amd64.deb")
-sha256sums=('SKIP')
+# NUNCA 'SKIP': num pacote -bin, o checksum é a ÚNICA coisa que amarra o que o
+# usuário instala ao que nós publicamos. O placeholder é preenchido no release
+# (skill `cut-release`) com o hash do artefato publicado — e falha alto se
+# alguém esquecer, em vez de instalar sem verificar nada.
+sha256sums=('__SHA256_DEB__')
 
 package() {
   bsdtar -xf "${srcdir}/${_pkgname}-${pkgver}.deb" -C "${srcdir}" data.tar.gz

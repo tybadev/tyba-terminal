@@ -220,7 +220,7 @@ jobs:
           # .deb e o .rpm saem normalmente — sem esta checagem o release publicaria
           # dois formatos de três e ninguém notaria.
           for fmt in deb rpm appimage tarball; do
-            find "$bundle/$fmt" -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.tar.gz' \) \
+            find "$bundle/$fmt" -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.tar.gz' \) \
               | grep -q . || { echo "::error::formato $fmt não foi gerado"; exit 1; }
           done
           # bubblewrap precisa vir declarado: sem ele o spawn de agente é recusado
@@ -234,7 +234,10 @@ jobs:
         run: |
           set -euo pipefail
           cd src-tauri/target/${{ matrix.target }}/release/bundle
-          find . -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.tar.gz' \) \
+          # O `-path` no tarball não é preciosismo: o bundler deixa o .deb extraído em
+          # disco, então `-name '*.tar.gz'` casaria com o data.tar.gz e o control.tar.gz
+          # de dentro dele — e o publish subiria os dois como asset do release.
+          find . -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -path './tarball/*.tar.gz' \) \
             -exec shasum -a 256 {} \; > SHA256SUMS-${{ matrix.label }}.txt
           cat SHA256SUMS-${{ matrix.label }}.txt
 
@@ -294,7 +297,8 @@ jobs:
             files+=("$f")
           done < <(
             find artifacts -type f \
-              \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.tar.gz' \) \
+              \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+                 -o -path '*/tarball/*.tar.gz' \) \
               | sort
           )
 
