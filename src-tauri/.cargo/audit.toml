@@ -1,0 +1,20 @@
+[advisories]
+# Exceptions are explicit, justified and dated — never a blanket "ignore all".
+# Anything NOT listed here fails the build.
+ignore = [
+  # quick-xml 0.39.4: two denial-of-service advisories (unbounded namespace
+  # allocation; quadratic duplicate-attribute check). Both require parsing
+  # ATTACKER-CONTROLLED XML.
+  #
+  # Our only path to it is `wayland-scanner`, a proc-macro that parses the Wayland
+  # protocol XML files shipped inside the crate — at BUILD time, from local trusted
+  # input. No runtime path in TYBA feeds untrusted XML into quick-xml.
+  #
+  # We cannot fix it ourselves: wayland-scanner requires `^0.39` and the fix landed
+  # in 0.41. Chain: tauri-plugin-clipboard-manager -> arboard -> wl-clipboard-rs ->
+  # wayland-protocols-wlr -> wayland-client -> wayland-scanner.
+  #
+  # Remove these the moment wayland-scanner bumps. Reviewed: 2026-07-13.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]

@@ -9,9 +9,17 @@ on:
         description: "Build the artifacts without publishing a release"
         type: boolean
         default: true
+      platforms:
+        description: "Which platforms to build/release"
+        type: choice
+        default: all
+        options: [all, linux, macos]
 
+# Least privilege. The default used to be `contents: write` for EVERY job — the
+# test jobs could publish a release. Now nothing writes unless it says so, and only
+# the publish job says so.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # A tag can point at any commit, not just a green main — so the release runs the
@@ -23,11 +31,16 @@ jobs:
   # 0.1.0, Tauri happily builds `Tyba_0.1.0.dmg` and publishes it under the v0.2.0
   # release — the kind of mismatch nobody notices until a user reports it.
   version:
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # The JOB must always run. A job-level `if` makes it SKIP on a dry run, and
+      # `build` (which needs it) skips in cascade — a green run that built nothing.
+      # Only the check is tag-scoped.
       - name: Tag must match the manifests
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
@@ -42,32 +55,65 @@ jobs:
             fi
           done
 
-  build:
+  # Linux must be able to ship without macOS. The macOS build needs the Apple
+  # certificate to produce something installable (an unsigned .dmg exists, but
+  # Gatekeeper calls it "damaged"), and waiting on Apple should not hold the Linux
+  # release hostage. So the matrix itself is computed — filtering by `if` inside the
+  # job would still leave a failed/blocked job that `publish` waits on.
+  matrix:
     needs: [gates, version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      include: ${{ steps.pick.outputs.include }}
+    steps:
+      - id: pick
+        env:
+          # A tag with no input builds everything.
+          PLATFORMS: ${{ inputs.platforms || 'all' }}
+        run: |
+          set -euo pipefail
+          mac='{"os":"macos-latest","target":"aarch64-apple-darwin","label":"macos-apple-silicon"},
+               {"os":"macos-latest","target":"x86_64-apple-darwin","label":"macos-intel"}'
+          # 22.04 pins the oldest glibc we support: a binary linked against a newer
+          # glibc will not run on an older distro, while the reverse always works.
+          linux='{"os":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","label":"linux-x86_64"}'
+          case "$PLATFORMS" in
+            linux) include="[$linux]" ;;
+            macos) include="[$mac]" ;;
+            *)     include="[$mac,$linux]" ;;
+          esac
+          include=$(echo "$include" | tr -d '\n' | tr -s ' ')
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+          echo "$include"
+
+  build:
+    needs: [gates, version, matrix]
+    # The Apple certificate lives in this environment, not in plain repo secrets: a
+    # run from an arbitrary branch cannot read it, and the environment can require a
+    # human reviewer before the job starts.
+    environment: release
+    permissions:
+      contents: read
+      # Provenance attestation: cryptographic proof that these bytes came from this
+      # repo, this workflow and this commit. It is how an artifact that did NOT come
+      # out of CI gets caught.
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            label: macos-apple-silicon
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            label: macos-intel
-          # 22.04 pins the oldest glibc we support: a binary linked against a newer
-          # glibc will not run on an older distro, while the reverse always works.
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            label: linux-x86_64
+        include: ${{ fromJSON(needs.matrix.outputs.include) }}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: oven-sh/setup-bun@v2
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
           key: ${{ matrix.target }}
@@ -83,14 +129,14 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Build assinado (macOS)
-        if: startsWith(matrix.os, 'macos')
-        uses: tauri-apps/tauri-action@v0
+      # Signed build — tags only, because tags are the only path that publishes.
+      # Without the certificate, Gatekeeper marks the app as "damaged" and nobody
+      # can open it; the verification step below refuses to publish an unsigned
+      # artifact. Loud failure beats a release nobody can install.
+      - name: Build, signed (macOS)
+        if: startsWith(matrix.os, 'macos') && startsWith(github.ref, 'refs/tags/v')
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
-          # Sem os secrets de assinatura o Gatekeeper marca o app como "danificado"
-          # e o usuário não consegue abrir. O passo de verificação abaixo recusa
-          # publicar um artefato não assinado — falha ruidosa é melhor que release
-          # que ninguém consegue instalar.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -100,14 +146,30 @@ jobs:
         with:
           args: --target ${{ matrix.target }}
 
-      - name: Build (Linux)
-        if: startsWith(matrix.os, 'ubuntu')
-        uses: tauri-apps/tauri-action@v0
+      # Dry run: build WITHOUT the signing env. Passing empty certificate variables
+      # makes tauri-action try to import a null certificate and die
+      # (`SecKeychainItemImport: parameters not valid`) — which is precisely what
+      # the first rehearsal caught. An unsigned build can never be published: the
+      # publish job only runs on tags, and on tags the signature is verified.
+      - name: Build, unsigned (macOS, dry run)
+        if: startsWith(matrix.os, 'macos') && !startsWith(github.ref, 'refs/tags/v')
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         with:
           args: --target ${{ matrix.target }}
 
-      - name: Verificar assinatura e notarização (macOS)
-        if: startsWith(matrix.os, 'macos')
+      - name: Build (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        with:
+          args: --target ${{ matrix.target }}
+
+      # Enforced on tags — which is the only path that publishes. A dry run
+      # (workflow_dispatch) skips it on purpose: without the certificate the app is
+      # ad-hoc signed and Gatekeeper rejects it, and we still want to be able to
+      # rehearse the pipeline before the certificate exists. Publishing an unsigned
+      # build stays impossible.
+      - name: Verify signature and notarization (macOS)
+        if: startsWith(matrix.os, 'macos') && startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
           app=$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -name '*.app' -maxdepth 1 | head -1)
@@ -119,7 +181,7 @@ jobs:
             exit 1
           fi
 
-      - name: Verificar os artefatos Linux
+      - name: Verify the Linux artifacts
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           set -euo pipefail
@@ -137,7 +199,7 @@ jobs:
           dpkg-deb -f "$deb" Depends | grep -q bubblewrap \
             || { echo "::error::o .deb não declara bubblewrap"; exit 1; }
 
-      - name: Somas de verificação
+      - name: Checksums
         shell: bash
         run: |
           set -euo pipefail
@@ -146,7 +208,16 @@ jobs:
             -exec shasum -a 256 {} \; > SHA256SUMS-${{ matrix.label }}.txt
           cat SHA256SUMS-${{ matrix.label }}.txt
 
-      - uses: actions/upload-artifact@v4
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
+            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tyba-${{ matrix.label }}
           if-no-files-found: error
@@ -161,9 +232,12 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    # The only job in the whole pipeline allowed to write to the repo.
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           merge-multiple: true

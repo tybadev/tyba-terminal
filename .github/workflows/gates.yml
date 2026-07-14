@@ -19,7 +19,7 @@ jobs:
   secrets:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
       # gitleaks-action requires a paid license on ORGANIZATION repos (it is free
@@ -34,9 +34,12 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - run: bun install --frozen-lockfile
+      # A security-first product that never checks its own dependencies for known
+      # CVEs is telling on itself. Fails the build on any advisory.
+      - run: bun audit
       - run: bun run typecheck
       - run: bun test
 
@@ -47,8 +50,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: clippy, rustfmt
       - name: Tauri system deps (Linux)
@@ -64,7 +67,7 @@ jobs:
       - name: Enable unprivileged user namespaces (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
       - run: cargo fmt --check
@@ -72,4 +75,15 @@ jobs:
       - run: cargo clippy -- -D warnings
         working-directory: src-tauri
       - run: cargo test
+        working-directory: src-tauri
+
+      # Same reasoning as `bun audit`, on the Rust side. Exceptions live in
+      # src-tauri/.cargo/audit.toml — each one dated and justified, never a blanket
+      # ignore. Anything not listed there fails.
+      - name: cargo audit
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --locked --quiet
+          cargo audit
         working-directory: src-tauri

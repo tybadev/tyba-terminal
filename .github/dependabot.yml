@@ -1,0 +1,14 @@
+version: 2
+
+# Actions are pinned to commit SHAs (a tag is a movable pointer: whoever controls
+# the action's repo can repoint `v4` at malicious code, which then runs inside the
+# job holding our secrets — that is how tj-actions/changed-files was compromised).
+#
+# Pinning has a cost: a pinned SHA never picks up a security fix on its own. This
+# is the other half of the deal — Dependabot opens a PR when an action moves, and
+# the bump goes through review and the gates like any other change.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
