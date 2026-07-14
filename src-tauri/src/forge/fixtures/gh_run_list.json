@@ -1,0 +1,32 @@
+[
+  {
+    "conclusion": null,
+    "createdAt": "2026-07-14T05:25:00Z",
+    "databaseId": 111111111,
+    "event": "push",
+    "headBranch": "v9.9.9",
+    "name": "Release",
+    "status": "in_progress",
+    "url": "https://github.com/acme/widget/actions/runs/111111111"
+  },
+  {
+    "conclusion": "success",
+    "createdAt": "2026-07-14T05:24:46Z",
+    "databaseId": 222222222,
+    "event": "push",
+    "headBranch": "main",
+    "name": "CI",
+    "status": "completed",
+    "url": "https://github.com/acme/widget/actions/runs/222222222"
+  },
+  {
+    "conclusion": "failure",
+    "createdAt": "2026-07-14T04:03:00Z",
+    "databaseId": 333333333,
+    "event": "pull_request",
+    "headBranch": "feat/knob",
+    "name": "CI",
+    "status": "completed",
+    "url": "https://github.com/acme/widget/actions/runs/333333333"
+  }
+]

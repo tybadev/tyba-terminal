@@ -674,6 +674,43 @@ async fn forge_pr_list(
     forge_blocking(move || forge::pr_list(&path)).await
 }
 
+/// Limite deliberado: 10 runs. O painel responde "e agora?", não é um histórico
+/// de CI — e cada item a mais é rede e processo competindo com os agentes.
+const WORKFLOW_RUN_LIMIT: u32 = 10;
+
+/// `fresh` distingue as duas chamadas: o painel ABERTO precisa do estado real
+/// (senão o poll mostraria o mesmo retrato pela vida do cache), e o
+/// pré-carregamento aceita o cache — é ele que faz o painel abrir instantâneo
+/// sem gastar um processo `gh` por troca de aba.
+#[tauri::command]
+async fn forge_workflow_runs(
+    state: State<'_, AppState>,
+    id: SessionId,
+    fresh: bool,
+) -> Result<Option<Vec<forge::WorkflowRun>>, AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    forge_blocking(move || {
+        if fresh {
+            forge::workflow_runs_fresh(&path, WORKFLOW_RUN_LIMIT)
+        } else {
+            forge::workflow_runs_cached(&path, WORKFLOW_RUN_LIMIT)
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+async fn forge_workflow_jobs(
+    state: State<'_, AppState>,
+    id: SessionId,
+    run_id: u64,
+) -> Result<Vec<forge::WorkflowJob>, AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    forge_blocking(move || forge::workflow_jobs(&path, run_id)).await
+}
+
 /// Abre um arquivo do worktree como TEXTO — nunca "executa" o arquivo.
 /// `open <arquivo>`/`xdg-open` rodariam um script/app deixado por um
 /// agente no worktree com um clique; aqui só editor configurado ou
@@ -1935,6 +1972,8 @@ pub fn run() {
             forge_pr_comments,
             forge_create_pr,
             forge_pr_list,
+            forge_workflow_runs,
+            forge_workflow_jobs,
             session_git_status,
             open_worktree_file,
             repo_snapshots,

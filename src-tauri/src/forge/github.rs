@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use super::exec::{self, LOCAL_TIMEOUT, NETWORK_TIMEOUT};
 use super::remote::Remote;
-use super::{is_auth_error, CheckRun, PullRequest, ReviewComment};
+use super::{is_auth_error, CheckRun, PullRequest, ReviewComment, WorkflowJob, WorkflowRun};
 use crate::error::AppError;
 
 pub const CLI: &str = "gh";
@@ -30,6 +30,81 @@ fn create_failed(detail: impl Into<String>) -> AppError {
 }
 
 const PR_FIELDS: &str = "number,title,url,state,statusCheckRollup";
+
+const RUN_FIELDS: &str = "databaseId,name,status,conclusion,url,headBranch,event,createdAt";
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhRun {
+    database_id: u64,
+    name: String,
+    status: String,
+    conclusion: Option<String>,
+    url: String,
+    head_branch: String,
+    event: String,
+    created_at: String,
+}
+
+impl From<GhRun> for WorkflowRun {
+    fn from(r: GhRun) -> Self {
+        WorkflowRun {
+            id: r.database_id,
+            name: r.name,
+            // O `gh` já entrega minúsculo, mas normalizar aqui é o que garante
+            // que a UI possa comparar sem adivinhar — mesmo contrato do CheckRun.
+            status: r.status.to_lowercase(),
+            conclusion: r
+                .conclusion
+                .filter(|c| !c.is_empty())
+                .map(|c| c.to_lowercase()),
+            url: r.url,
+            head_branch: r.head_branch,
+            event: r.event,
+            created_at: r.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GhJobs {
+    jobs: Vec<GhJob>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhJob {
+    name: String,
+    status: String,
+    conclusion: Option<String>,
+    url: Option<String>,
+}
+
+impl From<GhJob> for WorkflowJob {
+    fn from(j: GhJob) -> Self {
+        WorkflowJob {
+            name: j.name,
+            status: j.status.to_lowercase(),
+            conclusion: j
+                .conclusion
+                .filter(|c| !c.is_empty())
+                .map(|c| c.to_lowercase()),
+            url: j.url,
+        }
+    }
+}
+
+pub fn parse_runs(stdout: &[u8]) -> Result<Vec<WorkflowRun>, String> {
+    let runs: Vec<GhRun> = serde_json::from_slice(stdout)
+        .map_err(|e| format!("resposta inesperada de `gh run list`: {e}"))?;
+    Ok(runs.into_iter().map(Into::into).collect())
+}
+
+pub fn parse_jobs(stdout: &[u8]) -> Result<Vec<WorkflowJob>, String> {
+    let out: GhJobs = serde_json::from_slice(stdout)
+        .map_err(|e| format!("resposta inesperada de `gh run view`: {e}"))?;
+    Ok(out.jobs.into_iter().map(Into::into).collect())
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -251,6 +326,38 @@ pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest
         .next())
 }
 
+pub fn run_list(repo: &Path, limit: u32) -> Result<Vec<WorkflowRun>, AppError> {
+    let limit = limit.clamp(1, 50).to_string();
+    let out = exec::run(
+        CLI,
+        &["run", "list", "--limit", &limit, "--json", RUN_FIELDS],
+        repo,
+        None,
+        NETWORK_TIMEOUT,
+    )
+    .map_err(cli_failed)?;
+    if !out.ok {
+        return Err(cli_failed(out.stderr_message()));
+    }
+    parse_runs(&out.stdout).map_err(cli_failed)
+}
+
+pub fn run_jobs(repo: &Path, run_id: u64) -> Result<Vec<WorkflowJob>, AppError> {
+    let id = run_id.to_string();
+    let out = exec::run(
+        CLI,
+        &["run", "view", &id, "--json", "jobs"],
+        repo,
+        None,
+        NETWORK_TIMEOUT,
+    )
+    .map_err(cli_failed)?;
+    if !out.ok {
+        return Err(cli_failed(out.stderr_message()));
+    }
+    parse_jobs(&out.stdout).map_err(cli_failed)
+}
+
 pub fn pr_list(repo: &Path) -> Result<Vec<PullRequest>, AppError> {
     let out = exec::run(
         CLI,
@@ -397,5 +504,53 @@ mod tests {
             web_create_url(&remote, "feat/forge#1"),
             "https://github.com/tybadev/tyba-terminal/compare/feat%2Fforge%231?expand=1"
         );
+    }
+
+    #[test]
+    fn parse_runs_le_a_fixture_do_gh() {
+        let runs = parse_runs(include_str!("fixtures/gh_run_list.json").as_bytes()).unwrap();
+        assert_eq!(runs.len(), 3);
+
+        let release = &runs[0];
+        assert_eq!(release.id, 111_111_111);
+        assert_eq!(release.name, "Release");
+        assert_eq!(release.status, "in_progress");
+        assert_eq!(release.conclusion, None);
+        // A tag no head_branch é o ponto da feature: um run de tag não tem PR,
+        // e é ele que responde "cortei a tag, em que pé está o release?".
+        assert_eq!(release.head_branch, "v9.9.9");
+        assert_eq!(release.event, "push");
+    }
+
+    #[test]
+    fn parse_runs_normaliza_status_e_conclusao() {
+        let runs = parse_runs(include_str!("fixtures/gh_run_list.json").as_bytes()).unwrap();
+        assert_eq!(runs[1].conclusion.as_deref(), Some("success"));
+        assert_eq!(runs[2].conclusion.as_deref(), Some("failure"));
+        for r in &runs {
+            assert_eq!(r.status, r.status.to_lowercase());
+        }
+    }
+
+    #[test]
+    fn parse_jobs_le_a_fixture_do_gh() {
+        let jobs = parse_jobs(include_str!("fixtures/gh_run_jobs.json").as_bytes()).unwrap();
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[0].name, "gates / frontend");
+        assert_eq!(jobs[0].conclusion.as_deref(), Some("success"));
+        assert_eq!(jobs[1].status, "in_progress");
+        assert_eq!(jobs[1].conclusion, None);
+        // Job na fila ainda não tem url — e a UI não pode explodir por isso.
+        assert_eq!(jobs[2].status, "queued");
+        assert_eq!(jobs[2].url, None);
+    }
+
+    #[test]
+    fn parse_runs_recusa_lixo_em_vez_de_entregar_run_vazio() {
+        assert!(parse_runs(b"").is_err());
+        assert!(parse_runs(b"nao sou json").is_err());
+        assert!(parse_jobs(b"{}").is_err());
+        // Lista vazia é resposta legítima: repo sem run nenhum.
+        assert_eq!(parse_runs(b"[]").unwrap().len(), 0);
     }
 }

@@ -4,7 +4,11 @@ pub mod github;
 pub mod gitlab;
 pub mod remote;
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
@@ -42,6 +46,34 @@ pub struct CheckRun {
     pub name: String,
     pub status: String,
     pub conclusion: Option<String>,
+}
+
+/// Um run de workflow. Nasce separado do `CheckRun` de propósito: o CheckRun é
+/// pobre (nome, status, conclusão) e é consumido pelo tom agregado do PR —
+/// esticá-lo pra caber `id`, `url` e `head_branch` quebraria dois consumidores
+/// pra servir um terceiro.
+///
+/// `head_branch` guarda branch OU tag. É ele que responde "cortei a tag, em que
+/// pé está o release?" — a pergunta que o painel de PR não tem como responder,
+/// porque um run de tag não tem pull request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkflowRun {
+    pub id: u64,
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub url: String,
+    pub head_branch: String,
+    pub event: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkflowJob {
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -239,6 +271,79 @@ pub fn pr_list(repo_root: &Path) -> Result<Vec<PullRequest>, AppError> {
     match kind {
         ForgeKind::GitHub => github::pr_list(repo_root),
         ForgeKind::GitLab => gitlab::pr_list(repo_root),
+    }
+}
+
+/// `None` e lista vazia dizem coisas diferentes, e a UI depende disso: vazio é
+/// "não há run"; `None` é "não sei olhar aqui". O GitLab devolve `None` porque
+/// não há repositório GitLab para exercitar o parser — escrever parser que
+/// ninguém roda é a mesma armadilha do teste de sandbox que passa com a jaula
+/// quebrada.
+/// Segurar o resultado por 30s tem um propósito único: o painel abre INSTANTÂNEO
+/// em vez de mostrar "carregando". Sem cache, pré-carregar ao focar a sessão
+/// custaria um processo `gh` por troca de aba — e o core divide máquina com os
+/// agentes.
+const CACHE_TTL: Duration = Duration::from_secs(30);
+
+type RunCache = HashMap<PathBuf, (Instant, Option<Vec<WorkflowRun>>)>;
+
+fn cache() -> &'static Mutex<RunCache> {
+    static CACHE: std::sync::OnceLock<Mutex<RunCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_runs(repo_root: &Path) -> Option<Option<Vec<WorkflowRun>>> {
+    let cache = cache().lock();
+    let (at, runs) = cache.get(repo_root)?;
+    if at.elapsed() > CACHE_TTL {
+        return None;
+    }
+    Some(runs.clone())
+}
+
+/// O painel aberto precisa ver o run que acabou de mudar de estado — se ele
+/// lesse o cache, o poll de 15s mostraria o mesmo retrato por 30s.
+pub fn workflow_runs_fresh(
+    repo_root: &Path,
+    limit: u32,
+) -> Result<Option<Vec<WorkflowRun>>, AppError> {
+    let runs = workflow_runs(repo_root, limit)?;
+    cache()
+        .lock()
+        .insert(repo_root.to_path_buf(), (Instant::now(), runs.clone()));
+    Ok(runs)
+}
+
+/// Usado pelo pré-carregamento: se o cache está fresco, não gasta processo.
+pub fn workflow_runs_cached(
+    repo_root: &Path,
+    limit: u32,
+) -> Result<Option<Vec<WorkflowRun>>, AppError> {
+    if let Some(runs) = cached_runs(repo_root) {
+        return Ok(runs);
+    }
+    workflow_runs_fresh(repo_root, limit)
+}
+
+pub fn workflow_runs(repo_root: &Path, limit: u32) -> Result<Option<Vec<WorkflowRun>>, AppError> {
+    let kind = kind_of(repo_root)?;
+    if cli_missing(kind) {
+        return Ok(Some(Vec::new()));
+    }
+    match kind {
+        ForgeKind::GitHub => github::run_list(repo_root, limit).map(Some),
+        ForgeKind::GitLab => Ok(None),
+    }
+}
+
+pub fn workflow_jobs(repo_root: &Path, run_id: u64) -> Result<Vec<WorkflowJob>, AppError> {
+    let kind = kind_of(repo_root)?;
+    if cli_missing(kind) {
+        return Ok(Vec::new());
+    }
+    match kind {
+        ForgeKind::GitHub => github::run_jobs(repo_root, run_id),
+        ForgeKind::GitLab => Ok(Vec::new()),
     }
 }
 
