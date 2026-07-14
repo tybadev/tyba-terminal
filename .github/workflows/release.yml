@@ -175,6 +175,24 @@ jobs:
         with:
           args: --target ${{ matrix.target }}
 
+      # O bundler do Tauri não gera tarball. Ele existe para quem não quer
+      # gerenciador de pacote nem AppImage — joga o binário em ~/.local/bin e pronto.
+      # Mora dentro de bundle/ de propósito: é o diretório que o checksum, a
+      # attestation e o upload varrem.
+      - name: Tarball do binário (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          set -euo pipefail
+          rel=src-tauri/target/${{ matrix.target }}/release
+          ver=$(jq -r .version src-tauri/tauri.conf.json)
+          if [ ! -x "$rel/tyba" ]; then
+            echo "::error::binário não encontrado em $rel/tyba"
+            exit 1
+          fi
+          mkdir -p "$rel/bundle/tarball"
+          tar -czf "$rel/bundle/tarball/tyba-${ver}-linux-x86_64.tar.gz" -C "$rel" tyba
+          ls -la "$rel/bundle/tarball"
+
       # Enforced on tags — which is the only path that publishes. A dry run
       # (workflow_dispatch) skips it on purpose: without the certificate the app is
       # ad-hoc signed and Gatekeeper rejects it, and we still want to be able to
@@ -201,8 +219,8 @@ jobs:
           # O bundler do AppImage falha sozinho (ex.: xdg-open ausente) enquanto o
           # .deb e o .rpm saem normalmente — sem esta checagem o release publicaria
           # dois formatos de três e ninguém notaria.
-          for fmt in deb rpm appimage; do
-            find "$bundle/$fmt" -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
+          for fmt in deb rpm appimage tarball; do
+            find "$bundle/$fmt" -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.tar.gz' \) \
               | grep -q . || { echo "::error::formato $fmt não foi gerado"; exit 1; }
           done
           # bubblewrap precisa vir declarado: sem ele o spawn de agente é recusado
@@ -216,7 +234,7 @@ jobs:
         run: |
           set -euo pipefail
           cd src-tauri/target/${{ matrix.target }}/release/bundle
-          find . -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
+          find . -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.tar.gz' \) \
             -exec shasum -a 256 {} \; > SHA256SUMS-${{ matrix.label }}.txt
           cat SHA256SUMS-${{ matrix.label }}.txt
 
@@ -228,6 +246,7 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
             src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
             src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/tarball/*.tar.gz
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -238,6 +257,7 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
             src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
             src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/tarball/*.tar.gz
             src-tauri/target/${{ matrix.target }}/release/bundle/SHA256SUMS-*.txt
 
   publish:
@@ -274,7 +294,7 @@ jobs:
             files+=("$f")
           done < <(
             find artifacts -type f \
-              \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
+              \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.tar.gz' \) \
               | sort
           )
 
@@ -292,6 +312,7 @@ jobs:
           # montá-lo à mão a partir da versão erra o comando de instalação.
           name_of() { printf '%s\n' "${files[@]}" | grep -m1 "$1" | xargs -r basename; }
           deb=$(name_of '\.deb$'); rpm=$(name_of '\.rpm$'); app=$(name_of '\.AppImage$')
+          tgz=$(name_of '\.tar\.gz$')
 
           {
             echo "O TYBA é um terminal orientado a agentes: sessões de agente em git"
@@ -321,14 +342,21 @@ jobs:
               echo "chmod +x $app && ./$app"
               echo '```'
             fi
+            if [ -n "$tgz" ]; then
+              echo '```bash'
+              echo "# Binário cru, sem gerenciador de pacote"
+              echo "tar -xzf $tgz && install -Dm755 tyba ~/.local/bin/tyba"
+              echo '```'
+            fi
             if printf '%s\n' "${files[@]}" | grep -q '\.dmg$'; then
               echo "**macOS**: baixe o \`.dmg\` da sua arquitetura (Apple Silicon ou Intel)."
               echo
             fi
             echo
             echo "> O \`.deb\` e o \`.rpm\` declaram **bubblewrap** como dependência: sem ele o"
-            echo "> core recusa a sessão de agente em vez de rodar sem jaula. No AppImage,"
-            echo "> instale \`bubblewrap\` pelo gerenciador da sua distro."
+            echo "> core recusa a sessão de agente em vez de rodar sem jaula. Com o AppImage"
+            echo "> ou o tarball, instale \`bubblewrap\` pelo gerenciador da sua distro — senão"
+            echo "> o TYBA abre e a sessão de agente é recusada."
             echo
             echo "## Verificar o que você baixou"
             echo
