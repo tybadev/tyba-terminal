@@ -28,14 +28,28 @@ Daí decorrem as duas travas que **não** devem ser afrouxadas:
 
 ## Ensaiar antes (não pule)
 
-Os gates da CI **não exercitam o `release.yml`** — ele só roda de verdade numa tag ou num dispatch. Isso significa que qualquer mudança em action, bump de dependência ou passo novo **passa verde em todos os PRs e só quebra no dia**. Foi assim que os bumps do Dependabot entraram sem nunca terem sido executados.
+Os gates da CI **não exercitam o `release.yml`** — ele só roda de verdade numa tag ou num dispatch. Qualquer mudança em action, bump de dependência ou passo novo **passa verde em todos os PRs e só quebra no dia**. Foi assim que os bumps do Dependabot entraram sem nunca terem sido executados.
+
+**Ensaie com uma tag `dry-v<versão>`.** Ela roda o pipeline **inteiro — `publish` incluído** — contra um release descartável, confere que os assets subiram, e apaga release e tag no fim.
 
 ```bash
-gh workflow run release.yml --ref main -f platforms=linux
+git tag dry-v0.1.1        # a MESMA versão dos manifestos: o job `version` roda de verdade
+git push origin dry-v0.1.1
 gh run watch
 ```
 
-Rodando na `main` (não numa tag), `github.ref` não é `refs/tags/v*`: não assina, não verifica e **não publica**. É ensaio de verdade — build completo, os 3 formatos de Linux e a attestation.
+Sufixo para reensaiar sem colidir com uma tag que não foi limpa: `dry-v0.1.1-2`.
+
+> [!danger] O ensaio antigo (dispatch na `main`) PARAVA antes do `publish`
+> `github.ref` era `refs/heads/main`, o `if` do job `publish` não casava, e ele **nem começava**. Ou seja: o ensaio exercitava tudo **menos** o único passo que nunca tinha rodado. Foi assim que a `v0.1.0` queimou — e a tag `v*` não se apaga (ruleset, e é para não apagar mesmo).
+>
+> **Um passo que só roda no dia do release não é um passo testado — é uma aposta.**
+
+O dispatch (`gh workflow run release.yml --ref main -f platforms=linux`) continua existindo e ainda serve para checar só o build, mais rápido. Mas **ele não prova o `publish`**. Antes de cortar tag real, o ensaio que vale é o `dry-v*`.
+
+O ensaio roda no environment **`dry`**: sem secret, sem revisor, aceitando só `dry-v*`. Ele **nunca** vê o certificado da Apple — e não é o YAML que garante isso, é a política de ref do environment (`release` só aceita `v*`, `dry` só aceita `dry-v*`). Quem pode ensaiar não pode assinar.
+
+ADR: `tyba/decisions/2026-07-14-tag-dry-ensaia-o-publish`.
 
 ## Cortar
 
@@ -66,9 +80,10 @@ Disparar **na tag** faz `github.ref` ser `refs/tags/v0.1.0`: assina, verifica e 
 ## Armadilhas que já custaram caro
 
 - **Verde que mente.** Já aconteceu duas vezes: teste de sandbox passando com a jaula quebrada, e o release voltando `success` com o build skipado em cascata (um `if` de tag no job `version` fazia `build` skipar junto). Sempre pergunte: *passou porque funcionou, ou porque nem chegou a rodar?*
-- **O `publish` já quebrou por causa de um glob.** Ele globava `artifacts/*.dmg` mesmo num release só de Linux — o glob não expandia e o `gh` morria com "no such file". Hoje a lista sai de um `find`, e um release **sem instalador nenhum falha alto**. Se mexer nesse passo, teste os três casos: só Linux, Linux+macOS, e nenhum instalador.
-- **O input `dry_run` é decorativo.** Está declarado e **não é usado em lugar nenhum**. Quem decide tudo é `startsWith(github.ref, 'refs/tags/v')`. Não confie nele.
-- **Ensaio só sai da `main` ou de tag.** O Environment `release` recusa branch arbitrária — o job nem começa, zero steps. É o custo consciente da proteção.
+- **O `publish` já quebrou por causa de um glob.** Ele globava `artifacts/*.dmg` mesmo num release só de Linux — o glob não expandia e o `gh` morria com "no such file". Hoje a lista sai de um `find`, e um release **sem instalador nenhum falha alto**. Se mexer nesse passo, ensaie com `dry-v*` — que é exatamente o que passou a existir para isso.
+- **O input `dry_run` era decorativo — foi REMOVIDO.** Estava declarado e não era lido em lugar nenhum: um botão que prometia ensaiar e não ensaiava. Quem decide tudo é o `github.ref`.
+- **Ensaio só sai da `main` ou de tag.** Os Environments recusam branch arbitrária — o job nem começa, zero steps. É o custo consciente da proteção.
+- **O `publish` agora CONFERE o que publicou** — consulta os assets do release e falha se faltar algum, ou se algum vier com tamanho zero (upload truncado volta `success` e só quebra na mão de quem baixa). "Não deu erro" não é prova.
 - **Nunca gere a chave de assinatura de update no CI.** ADR aceita: o app verifica com a chave pública embutida, então canal e chave são defesas independentes; pôr a chave no CI colapsa as duas numa só. E o updater **não tem revogação**.
 
 ## Fechar
