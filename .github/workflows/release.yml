@@ -70,8 +70,12 @@ jobs:
     steps:
       - id: pick
         env:
-          # A tag with no input builds everything.
-          PLATFORMS: ${{ inputs.platforms || 'all' }}
+          # A tag push carries no input, so it falls back to the repo variable —
+          # which is what lets a tag ship Linux while the Apple certificate does
+          # not exist yet. Set RELEASE_PLATFORMS=all once it does. Without this,
+          # `git push --tags` would always build macOS, fail for lack of a
+          # certificate, and take the Linux release down with it.
+          PLATFORMS: ${{ inputs.platforms || vars.RELEASE_PLATFORMS || 'all' }}
         run: |
           set -euo pipefail
           mac='{"os":"macos-latest","target":"aarch64-apple-darwin","label":"macos-apple-silicon"},
@@ -248,10 +252,37 @@ jobs:
         run: |
           set -euo pipefail
           cat artifacts/SHA256SUMS-*.txt > artifacts/SHA256SUMS.txt
+
+          # Globbing os quatro formatos direto no comando quebra o release que não
+          # tem todos eles: sem macOS na matriz não há .dmg, o glob não expande, e
+          # o `gh` morre com "no such file" — derrubando justamente a publicação
+          # Linux-first que a matriz computada existe para permitir.
+          files=()
+          while IFS= read -r f; do
+            files+=("$f")
+          done < <(
+            find artifacts -maxdepth 1 -type f \
+              \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
+              | sort
+          )
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::nenhum instalador nos artefatos — não há o que publicar"
+            exit 1
+          fi
+          files+=(artifacts/SHA256SUMS.txt)
+          printf 'publicando: %s\n' "${files[@]}"
+
           # Rascunho de propósito: o dono confere os artefatos e publica na mão.
-          gh release create "${GITHUB_REF_NAME}" \
-            --draft \
-            --title "TYBA ${GITHUB_REF_NAME}" \
-            --generate-notes \
-            artifacts/*.dmg artifacts/*.deb artifacts/*.rpm artifacts/*.AppImage \
-            artifacts/SHA256SUMS.txt
+          # E `create` só na primeira vez: quando o certificado da Apple chegar, o
+          # macOS é anexado a ESTA release — um segundo `create` na mesma tag falha
+          # com "release already exists".
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" --clobber "${files[@]}"
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --draft \
+              --title "TYBA ${GITHUB_REF_NAME}" \
+              --generate-notes \
+              "${files[@]}"
+          fi
