@@ -22,6 +22,12 @@ cargo run --bin worktree
 
 # SONDA nodecheck — node.exe real inicia sob a jaula? (precisa de node no PATH)
 cargo run --bin nodecheck
+
+# Camada A — completude (cada uma com par positivo; precisam de node no PATH)
+cargo run --bin jobobject    # kill-on-close: agente morre com o TYBA (paridade killpg)
+cargo run --bin envjail      # env por allowlist: segredo do shell não vaza
+cargo run --bin denyacl      # negar leitura de segredo ao agente (mecanismo: IL, não DACL-por-SID)
+cargo run --bin mitigations  # quais process mitigations o node tolera (menos ACG, menos win32k)
 ```
 
 Cole a saída inteira das três de volta. O resultado vira dado na ADR e decide o
@@ -58,6 +64,30 @@ precisa do dele.
   (logon+Everyone presentes) e a negação-fora **sobrevive** — IL Low + DACL
   seguram, o `Everyone` no restricting set não abre escrita ao diretório de fora.
   Receita da jaula: `lib::jail_spec(low_il=true)`.
+
+## Camada A — completude (sondas jobobject/envjail/denyacl/mitigations)
+
+Cada peça `DESENHADO` do tech-spec, medida na máquina com a receita real da jaula:
+
+- **jobobject** → Job Object com `KILL_ON_JOB_CLOSE`: node enjaulado é atribuído,
+  segue vivo com o job aberto (controle) e **morre quando o handle fecha**. Paridade
+  real com o `killpg` do Linux (princípio #9). **PASS/PASS/PASS.**
+- **envjail** → `CreateProcessAsUserW` com bloco de env montado da allowlist: o node
+  vê só as vars liberadas + o marcador `TYBA_SANDBOX`, e um segredo no env do pai
+  **não vaza**. **PASS/PASS/PASS.**
+- **denyacl** → **achado que corrige o tech-spec**: um deny-ACE no SID sintético
+  **não** nega leitura (o SID só conta no 2º access-check de *escrita*; o agente
+  carrega a identidade do usuário na leitura). O mecanismo que **funciona** para
+  negar leitura ao agente é o **rótulo IL `NO_READ_UP`** (`S:(ML;;NRNW;;;ME)`): o
+  processo Low IL não lê o arquivo Medium-com-NR, o dono lê normal. Confinação de
+  **leitura é por IL, não por DACL-de-SID**.
+- **mitigations** → ablação de `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`. **Seguras**
+  (aplicar): DEP, force-relocate, bottom-up ASLR, high-entropy ASLR, strict-handle-checks,
+  extension-point-disable. **Quebram** (não aplicar): **ACG** (`PROHIBIT_DYNAMIC_CODE`,
+  mata o JIT do V8 — `0x80000003`) e **win32k lockdown** (`0xc0000142`, severa a window
+  station que o boot precisa — **corrige o tech-spec**, que listava win32k). **CIG**
+  (block-non-MS) boota `node -e` puro, mas bloquearia `.node` addons nativos — precisa
+  de spike com addon antes de adotar.
 
 ## Aviso honesto
 

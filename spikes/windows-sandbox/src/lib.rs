@@ -1,12 +1,18 @@
 #![cfg(windows)]
 
 use std::ffi::c_void;
+use std::io::Read;
+use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Security::Authorization::*;
 use windows_sys::Win32::Security::*;
+use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::*;
+
+pub const STARTF_USESTDHANDLES_FLAG: u32 = 0x0000_0100;
+pub const PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY: usize = 0x0002_0007;
 
 pub const WRITE_RESTRICTED_FLAG: u32 = 8;
 pub const DISABLE_MAX_PRIVILEGE_FLAG: u32 = 1;
@@ -20,6 +26,55 @@ pub type Handle = *mut c_void;
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+pub fn node_exe() -> Option<String> {
+    let mut roots: Vec<String> = Vec::new();
+    if let Ok(path) = std::env::var("PATH") {
+        roots.extend(path.split(';').map(|s| s.to_string()));
+    }
+    roots.push(r"C:\Program Files\nodejs".to_string());
+    for dir in roots {
+        if dir.trim().is_empty() {
+            continue;
+        }
+        let candidate = std::path::Path::new(dir.trim()).join("node.exe");
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+pub fn spawn_handles(
+    token: Handle,
+    command_line: &str,
+    creation_flags: u32,
+) -> Result<(Handle, Handle), String> {
+    unsafe {
+        let mut si: STARTUPINFOW = std::mem::zeroed();
+        si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+        let mut cmd = wide(command_line);
+        let flags = creation_flags | CREATE_UNICODE_ENVIRONMENT;
+        let ok = CreateProcessAsUserW(
+            token,
+            std::ptr::null(),
+            cmd.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            flags,
+            std::ptr::null(),
+            std::ptr::null(),
+            &si,
+            &mut pi,
+        );
+        if ok == 0 {
+            return Err(format!("CreateProcessAsUserW falhou: {}", last_error()));
+        }
+        Ok((pi.hProcess, pi.hThread))
+    }
 }
 
 pub fn last_error() -> u32 {
@@ -383,6 +438,164 @@ pub fn spawn_with_token(
         CloseHandle(pi.hThread);
         DeleteProcThreadAttributeList(attr_list);
         Ok(code)
+    }
+}
+
+pub fn make_env_block(pairs: &[(String, String)]) -> Vec<u16> {
+    let mut block: Vec<u16> = Vec::new();
+    for (k, v) in pairs {
+        block.extend(format!("{k}={v}").encode_utf16());
+        block.push(0);
+    }
+    block.push(0);
+    block
+}
+
+pub fn capture(
+    token: Handle,
+    command_line: &str,
+    desktop: Option<&str>,
+    env_block: Option<&[u16]>,
+    extra_flags: u32,
+    mitigation: Option<u64>,
+) -> Result<(u32, String), String> {
+    unsafe {
+        let mut sa: SECURITY_ATTRIBUTES = std::mem::zeroed();
+        sa.nLength = std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32;
+        sa.bInheritHandle = 1;
+
+        let mut read_h: Handle = std::ptr::null_mut();
+        let mut write_h: Handle = std::ptr::null_mut();
+        if CreatePipe(&mut read_h, &mut write_h, &sa, 0) == 0 {
+            return Err(format!("CreatePipe falhou: {}", last_error()));
+        }
+        if SetHandleInformation(read_h, HANDLE_FLAG_INHERIT, 0) == 0 {
+            return Err(format!("SetHandleInformation(read) falhou: {}", last_error()));
+        }
+
+        let mut desktop_w = desktop.map(wide);
+
+        let mut si_ex: STARTUPINFOEXW = std::mem::zeroed();
+        si_ex.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        si_ex.StartupInfo.dwFlags = STARTF_USESTDHANDLES_FLAG;
+        si_ex.StartupInfo.hStdInput = std::ptr::null_mut();
+        si_ex.StartupInfo.hStdOutput = write_h;
+        si_ex.StartupInfo.hStdError = write_h;
+        if let Some(d) = desktop_w.as_mut() {
+            si_ex.StartupInfo.lpDesktop = d.as_mut_ptr();
+        }
+
+        let attr_count = 1 + mitigation.is_some() as u32;
+        let mut attr_size: usize = 0;
+        InitializeProcThreadAttributeList(std::ptr::null_mut(), attr_count, 0, &mut attr_size);
+        let mut attr_buf = vec![0u8; attr_size];
+        let attr_list = attr_buf.as_mut_ptr() as *mut _;
+        if InitializeProcThreadAttributeList(attr_list, attr_count, 0, &mut attr_size) == 0 {
+            return Err(format!(
+                "InitializeProcThreadAttributeList falhou: {}",
+                last_error()
+            ));
+        }
+        let mut handles: Vec<Handle> = vec![write_h];
+        if UpdateProcThreadAttribute(
+            attr_list,
+            0,
+            HANDLE_LIST_ATTRIBUTE,
+            handles.as_mut_ptr() as *const c_void,
+            handles.len() * std::mem::size_of::<Handle>(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        ) == 0
+        {
+            DeleteProcThreadAttributeList(attr_list);
+            return Err(format!("UpdateProcThreadAttribute falhou: {}", last_error()));
+        }
+        let mut policy: u64 = mitigation.unwrap_or(0);
+        if mitigation.is_some() {
+            if UpdateProcThreadAttribute(
+                attr_list,
+                0,
+                PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+                &mut policy as *mut u64 as *const c_void,
+                std::mem::size_of::<u64>(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            ) == 0
+            {
+                DeleteProcThreadAttributeList(attr_list);
+                return Err(format!(
+                    "UpdateProcThreadAttribute(mitigation) falhou: {}",
+                    last_error()
+                ));
+            }
+        }
+        si_ex.lpAttributeList = attr_list;
+
+        let mut cmd = wide(command_line);
+        let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+        let mut flags = EXTENDED_STARTUPINFO_PRESENT | extra_flags;
+        let env_ptr = match env_block {
+            Some(b) => {
+                flags |= CREATE_UNICODE_ENVIRONMENT;
+                b.as_ptr() as *const c_void
+            }
+            None => {
+                flags |= CREATE_UNICODE_ENVIRONMENT;
+                std::ptr::null()
+            }
+        };
+
+        let created = if token.is_null() {
+            CreateProcessW(
+                std::ptr::null(),
+                cmd.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+                flags,
+                env_ptr,
+                std::ptr::null(),
+                &si_ex.StartupInfo,
+                &mut pi,
+            )
+        } else {
+            CreateProcessAsUserW(
+                token,
+                std::ptr::null(),
+                cmd.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+                flags,
+                env_ptr,
+                std::ptr::null(),
+                &si_ex.StartupInfo,
+                &mut pi,
+            )
+        };
+
+        if created == 0 {
+            let err = last_error();
+            DeleteProcThreadAttributeList(attr_list);
+            CloseHandle(read_h);
+            CloseHandle(write_h);
+            return Err(format!("CreateProcess falhou: {err}"));
+        }
+
+        CloseHandle(write_h);
+        DeleteProcThreadAttributeList(attr_list);
+
+        let mut out = String::new();
+        let mut reader = std::fs::File::from_raw_handle(read_h as RawHandle);
+        let _ = reader.read_to_string(&mut out);
+
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        let mut code: u32 = 0;
+        GetExitCodeProcess(pi.hProcess, &mut code);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+
+        Ok((code, out))
     }
 }
 

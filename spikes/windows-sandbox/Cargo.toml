@@ -26,6 +26,22 @@ path = "src/bin/worktree.rs"
 name = "nodecheck"
 path = "src/bin/nodecheck.rs"
 
+[[bin]]
+name = "jobobject"
+path = "src/bin/jobobject.rs"
+
+[[bin]]
+name = "envjail"
+path = "src/bin/envjail.rs"
+
+[[bin]]
+name = "denyacl"
+path = "src/bin/denyacl.rs"
+
+[[bin]]
+name = "mitigations"
+path = "src/bin/mitigations.rs"
+
 [dependencies.windows-sys]
 version = "0.59"
 features = [
@@ -35,6 +51,7 @@ features = [
     "Win32_System_Threading",
     "Win32_System_Pipes",
     "Win32_System_StationsAndDesktops",
+    "Win32_System_JobObjects",
     "Win32_System_Memory",
     "Win32_Storage_FileSystem",
     "Win32_Networking_WinSock",
