@@ -15,6 +15,7 @@ pub mod session;
 pub mod shell_path;
 pub mod status;
 pub mod theme;
+pub mod update;
 pub mod user_config;
 pub mod worktree;
 
@@ -1184,6 +1185,22 @@ fn set_pref(state: State<'_, AppState>, key: String, value: String) -> Result<()
 }
 
 #[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
+async fn update_check(state: State<'_, AppState>) -> Result<Option<update::UpdateStatus>, String> {
+    let now = chrono::Utc::now().timestamp();
+    Ok(update::check(&state.store, env!("CARGO_PKG_VERSION"), now).await)
+}
+
+#[tauri::command]
+fn update_dismiss(state: State<'_, AppState>, version: String) -> Result<(), String> {
+    update::dismiss(&state.store, &version)
+}
+
+#[tauri::command]
 fn activate_tab(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1954,6 +1971,9 @@ pub fn run() {
             focus_pane,
             set_split_ratio,
             get_pref,
+            app_version,
+            update_check,
+            update_dismiss,
             set_pref,
             list_editors,
             docker_available,

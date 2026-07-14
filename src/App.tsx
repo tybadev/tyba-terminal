@@ -56,6 +56,7 @@ import { NotificationsInbox } from "./components/NotificationsInbox";
 import { NotificationToaster } from "./components/NotificationToaster";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { WindowControls, WindowResizeEdges } from "./components/WindowChrome";
+import { UpdateToast } from "./components/UpdateToast";
 import { IS_MAC } from "./lib/platform";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
@@ -146,6 +147,10 @@ import {
   type SessionKind,
   type SplitKind,
   type Workspace,
+  appVersion,
+  updateCheck,
+  updateDismiss,
+  type UpdateStatus,
 } from "./lib/ipc";
 import { basename } from "@/lib/utils";
 import { buildConflictPrompt } from "./lib/conflicts";
@@ -426,6 +431,17 @@ export default function App() {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [version, setVersion] = useState("");
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+
+  useEffect(() => {
+    void appVersion()
+      .then(setVersion)
+      .catch(() => {});
+    void updateCheck()
+      .then(setUpdate)
+      .catch(() => {});
+  }, []);
   const booted = useRef(false);
 
   useEffect(() => {
@@ -2210,6 +2226,14 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={400}>
       <ErrorBoundary region="notificações">
+        <UpdateToast
+          status={update}
+          onDismiss={() => {
+            if (!update) return;
+            void updateDismiss(update.info.version).catch(() => {});
+            setUpdate({ ...update, dismissed: true });
+          }}
+        />
         <NotificationToaster
           sessions={sessions}
           activeSessionId={activeId}
@@ -2749,6 +2773,8 @@ export default function App() {
                   {activeTab?.view === "settings" && (
                     <div className="absolute inset-0 flex">
                       <SettingsView
+                        version={version}
+                        update={update}
                         togglePref={togglePref}
                         onTogglePrefChange={changeTogglePref}
                         detailsPref={detailsPref}

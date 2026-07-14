@@ -33,6 +33,7 @@ notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 sha2 = "0.10"
 toml = "0.8"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -51,3 +52,4 @@ codegen-units = 1
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 tempfile = "3"
+tokio = { version = "1", features = ["rt", "macros"] }
