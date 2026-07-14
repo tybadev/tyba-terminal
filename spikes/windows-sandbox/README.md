@@ -33,7 +33,8 @@ cargo run --bin mitigations  # quais process mitigations o node tolera (menos AC
 cargo run --bin gitshim      # o agente enjaulado delega git ao core pelo pipe herdado
 
 # Camada B — usuário dedicado + WFP (PRECISA DE SHELL ELEVADO / UAC)
-cargo run --bin layerb       # sem admin: imprime o plano; com admin: roda o spike do usuário dedicado
+cargo run --bin layerb       # usuário dedicado isola leitura (dono lê, agente não)
+cargo run --bin wfp          # rede por SID: loopback+RFC1918 negados, 443 externo livre
 ```
 
 Cole a saída inteira das três de volta. O resultado vira dado na ADR e decide o
@@ -126,11 +127,19 @@ Cada peça `DESENHADO` do tech-spec, medida na máquina com a receita real da ja
 
 ## Camada B — usuário dedicado + WFP (sonda layerb) · PENDENTE DE ELEVAÇÃO
 
-Camada B exige **admin (UAC)** — criar/apagar usuário local, ACLar o perfil e aplicar
-filtros WFP são privilegiados. A sonda `layerb` é **guardada por elevação**: sem admin
-imprime o plano do spike (usuário dedicado → WFP por SID → uninstaller, cada um com par
-positivo) e o comando para rodar elevado. **Não medido nesta sessão** (shell não-admin).
-Rodar num PowerShell como admin para exercer a peça do usuário dedicado.
+Camada B exige **admin (UAC)** — as sondas `layerb` e `wfp` são guardadas por
+`is_elevated()`. **Medido em PowerShell admin:**
+
+- **layerb / usuário dedicado** → cria `tyba-agent-*`, o **dono lê** um segredo do
+  próprio perfil (controle), o agente rodando **como o usuário dedicado** é **negado**
+  (`Access is denied.`), uninstaller remove o usuário. Leitura default-deny de verdade —
+  por não-ter-acesso, não por deny-ACE enumerada.
+- **wfp / rede por SID** → filtros WFP raw (sessão dinâmica) na camada
+  `ALE_AUTH_CONNECT_V4` + `ALE_USER_ID` + endereço remoto, ação BLOCK para loopback +
+  RFC1918. O **dono conecta** num listener de loopback e o **agente é bloqueado** no
+  mesmo (`LOOP=blocked`), mas **alcança 443 externo** (`EXT=ok`). Sessão dinâmica remove
+  os filtros ao fechar a engine (0 órfãos). Corta o agente de Docker/ollama/TYBA em
+  localhost — o que a Camada A (blacklist) não faz.
 
 ## Aviso honesto
 
