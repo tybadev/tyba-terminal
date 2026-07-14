@@ -42,6 +42,10 @@ path = "src/bin/denyacl.rs"
 name = "mitigations"
 path = "src/bin/mitigations.rs"
 
+[[bin]]
+name = "gitshim"
+path = "src/bin/gitshim.rs"
+
 [dependencies.windows-sys]
 version = "0.59"
 features = [

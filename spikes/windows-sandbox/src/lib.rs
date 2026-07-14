@@ -349,6 +349,85 @@ fn set_low_integrity(token: Handle) -> Result<(), String> {
     }
 }
 
+pub fn git_exe() -> Option<String> {
+    let mut roots: Vec<String> = Vec::new();
+    if let Ok(path) = std::env::var("PATH") {
+        roots.extend(path.split(';').map(|s| s.to_string()));
+    }
+    roots.push(r"C:\Program Files\Git\cmd".to_string());
+    roots.push(r"C:\Program Files\Git\bin".to_string());
+    for dir in roots {
+        if dir.trim().is_empty() {
+            continue;
+        }
+        let candidate = std::path::Path::new(dir.trim()).join("git.exe");
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+pub fn spawn_inherit_async(
+    token: Handle,
+    command_line: &str,
+    inherit: &[Handle],
+) -> Result<(Handle, Handle), String> {
+    unsafe {
+        let mut si_ex: STARTUPINFOEXW = std::mem::zeroed();
+        si_ex.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+
+        let mut attr_size: usize = 0;
+        InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut attr_size);
+        let mut attr_buf = vec![0u8; attr_size];
+        let attr_list = attr_buf.as_mut_ptr() as *mut _;
+        if InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_size) == 0 {
+            return Err(format!(
+                "InitializeProcThreadAttributeList falhou: {}",
+                last_error()
+            ));
+        }
+        let mut handles: Vec<Handle> = inherit.to_vec();
+        if !handles.is_empty()
+            && UpdateProcThreadAttribute(
+                attr_list,
+                0,
+                HANDLE_LIST_ATTRIBUTE,
+                handles.as_mut_ptr() as *const c_void,
+                handles.len() * std::mem::size_of::<Handle>(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            ) == 0
+        {
+            DeleteProcThreadAttributeList(attr_list);
+            return Err(format!("UpdateProcThreadAttribute falhou: {}", last_error()));
+        }
+        si_ex.lpAttributeList = attr_list;
+
+        let mut cmd = wide(command_line);
+        let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+        let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
+        let created = CreateProcessAsUserW(
+            token,
+            std::ptr::null(),
+            cmd.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+            flags,
+            std::ptr::null(),
+            std::ptr::null(),
+            &si_ex.StartupInfo,
+            &mut pi,
+        );
+        DeleteProcThreadAttributeList(attr_list);
+        if created == 0 {
+            return Err(format!("CreateProcessAsUserW falhou: {}", last_error()));
+        }
+        Ok((pi.hProcess, pi.hThread))
+    }
+}
+
 pub fn spawn_with_token(
     token: Handle,
     command_line: &str,
