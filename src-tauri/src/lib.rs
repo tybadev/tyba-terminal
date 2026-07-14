@@ -1538,13 +1538,23 @@ fn docker_open_compose_file(
         .docker
         .project_info(&project)
         .map_err(|e| e.to_string())?;
-    let file = info.config_file.ok_or("projeto sem arquivo compose")?;
-    docker::validate_compose_file(&file).map_err(|e| e.to_string())?;
+    let files = info.config_files;
+    if files.is_empty() {
+        return Err("projeto sem arquivo compose".into());
+    }
+    for file in &files {
+        docker::validate_compose_file(file).map_err(|e| e.to_string())?;
+    }
     docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
     let workspace_id = Some(state.layout.docker_workspace().map_err(|e| e.to_string())?);
 
     let shell = session::default_shell();
-    let script = format!("exec \"${{EDITOR:-vi}}\" '{file}'");
+    let quoted = files
+        .iter()
+        .map(|file| format!("'{file}'"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = format!("exec \"${{EDITOR:-vi}}\" {quoted}");
     let title = format!("compose: {project}");
     spawn_tab_session(
         &app,

@@ -629,6 +629,8 @@ export function leafSessions(node: PaneNode): SessionId[] {
   return [...leafSessions(node.first), ...leafSessions(node.second)];
 }
 
+export type PathStatus = "ok" | "missing" | "denied" | "unsupported";
+
 export interface ContainerInfo {
   id: string;
   name: string;
@@ -640,6 +642,8 @@ export interface ContainerInfo {
   compose_working_dir: string | null;
   service: string | null;
   config_files: string | null;
+  working_dir_status: PathStatus | null;
+  compose_file_status: PathStatus | null;
 }
 
 export type ComposeOp = "up" | "down" | "restart";

@@ -386,6 +386,13 @@ const resources = {
       openProject: "Abrir projeto",
       viewCompose: "Ver compose",
       containersDaemonOff: "Docker não está respondendo.",
+      containersActionFailed: "A ação falhou.",
+      containersPathOffHost:
+        "O compose deste projeto não está nesta máquina — o container guarda o caminho do ambiente onde subiu.",
+      containersPathDenied:
+        "Sem permissão de leitura no caminho do projeto nesta máquina.",
+      containersPathUnsupported:
+        "Caminho do projeto não suportado (contém aspas simples).",
       dockerUnavailable: "Docker indisponível",
       openDockerDesktop: "Abrir Docker Desktop",
       containerLogs: "Logs em tab",
@@ -925,6 +932,13 @@ const resources = {
       openProject: "Open project",
       viewCompose: "View compose",
       containersDaemonOff: "Docker is not responding.",
+      containersActionFailed: "The action failed.",
+      containersPathOffHost:
+        "This project's compose is not on this machine — the container stores the path of the environment it came up in.",
+      containersPathDenied:
+        "No read permission on the project path on this machine.",
+      containersPathUnsupported:
+        "Unsupported project path (contains a single quote).",
       dockerUnavailable: "Docker unavailable",
       openDockerDesktop: "Open Docker Desktop",
       containerLogs: "Logs in tab",
