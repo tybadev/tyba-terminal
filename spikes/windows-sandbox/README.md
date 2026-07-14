@@ -40,14 +40,35 @@ Cole a saída inteira das três de volta. O resultado vira dado na ADR e decide 
 desenho da jaula — inclusive se o transporte do hook fica único ou se o Windows
 precisa do dele.
 
+## Verificação adversarial da suíte (2026-07-14)
+
+A suíte inteira passou por um orquestrador de **verificação adversarial** (um
+revisor cético por sonda, lendo o código + a saída, aplicando a regra "teste de
+jaula sem par positivo e sem prova de que a jaula subiu não prova nada"). Achado:
+as 7 sondas novas (worktree, nodecheck, jobobject, envjail, denyacl, mitigations,
+gitshim) confirmaram; as **duas fundacionais tinham furos** e foram corrigidas:
+
+- **gate** — a metade "por-nome negado" estava confundida: pipe de 1 instância já
+  ocupada pelo pai dava `ERROR_PIPE_BUSY`, não `ACCESS_DENIED`. Reescrito com duas
+  instâncias livres, DACL liberando Everyone + rótulo IL Medium no-write-up (só o
+  IL Low nega), controle não-enjaulado que abre por nome, e leitura de
+  `GetLastError` — agora prova `gle=5` (ACCESS_DENIED). **Re-verificado: CONFIRMED.**
+- **afunix** — não tinha par positivo. Reescrito com controle não-enjaulado que
+  conecta (exit 0), então a negação do enjaulado (exit 4) é atribuível à jaula.
+  addrlen corrigido. **Re-verificado: CONFIRMED.**
+
+Lição amarrada: no Windows a proteção da jaula (IPC por nome, leitura de segredo)
+é por **Integrity Level**, não por DACL — vale para gate e denyacl.
+
 ## O que cada PASS/FAIL significa
 
-- **A / handle herdado usável + por-nome negado** → o inbox recebe o `PreToolUse`
-  do agente enjaulado, e o único caminho até o pipe é o handle que herdou. É o
-  cenário que a ADR aposta. Sem ele **não há produto** no Windows.
-- **C / AF_UNIX atravessa** → o socket do hook pode ser o mesmo dos três SOs.
-  Se `FAIL`, o Windows fica com o named pipe da sonda A (não é bloqueio, é escolha
-  de transporte).
+- **A / handle herdado usável + por-nome negado (com par positivo)** → o inbox
+  recebe o `PreToolUse` do agente enjaulado pelo handle herdado; abrir o pipe pelo
+  nome é negado por IL (`ACCESS_DENIED`, gle=5), enquanto um processo não-enjaulado
+  abre o mesmo nome. É o cenário que a ADR aposta. Sem ele **não há produto**.
+- **C / a jaula bloqueia AF_UNIX (com par positivo)** → o controle não-enjaulado
+  conecta, o enjaulado não → o hook do Windows fica com o named pipe da sonda A
+  (não é um transporte único cross-platform; é escolha de transporte por SO).
 - **B / escreve dentro, negado fora, git commita** → o modelo de escrita
   (`WRITE_RESTRICTED` + SID por sessão) sustenta o worktree isolado com base de
   filesystem, não só política.
