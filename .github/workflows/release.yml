@@ -135,7 +135,7 @@ jobs:
       # artifact. Loud failure beats a release nobody can install.
       - name: Build, signed (macOS)
         if: startsWith(matrix.os, 'macos') && startsWith(github.ref, 'refs/tags/v')
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -153,13 +153,13 @@ jobs:
       # publish job only runs on tags, and on tags the signature is verified.
       - name: Build, unsigned (macOS, dry run)
         if: startsWith(matrix.os, 'macos') && !startsWith(github.ref, 'refs/tags/v')
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         with:
           args: --target ${{ matrix.target }}
 
       - name: Build (Linux)
         if: startsWith(matrix.os, 'ubuntu')
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         with:
           args: --target ${{ matrix.target }}
 
