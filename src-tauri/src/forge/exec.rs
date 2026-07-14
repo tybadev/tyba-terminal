@@ -119,9 +119,16 @@ pub fn run(
         cmd.process_group(0);
     }
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("falha ao executar `{program}`: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        // ENOENT aqui significa "a CLI não está instalada" — e "arquivo ou diretório
+        // inexistente" é a pior mensagem possível pra isso: não diz QUAL arquivo, e
+        // parece defeito do Tyba. Quem chama decide se degrada ou avisa.
+        if e.kind() == std::io::ErrorKind::NotFound {
+            format!("`{program}` não está instalado")
+        } else {
+            format!("falha ao executar `{program}`: {e}")
+        }
+    })?;
 
     let stdin_handle = stdin.map(|bytes| {
         let bytes = bytes.to_vec();
@@ -308,6 +315,29 @@ mod tests {
         let err = run("sleep", &["30"], &dir, None, Duration::from_millis(300))
             .expect_err("deveria estourar o timeout");
         assert!(err.contains("tempo limite"), "{err}");
+    }
+
+    /// O bug do QA no Linux: sem o `gh`, o painel de git mostrava "falha ao executar
+    /// gh: arquivo ou diretório inexistente". A mensagem não diz QUAL arquivo e
+    /// parece defeito do Tyba — quando na verdade é só uma CLI que a maioria das
+    /// pessoas não instala.
+    #[test]
+    fn a_missing_cli_says_it_is_not_installed_not_enoent() {
+        let err = run(
+            "tyba-cli-que-nao-existe",
+            &["--version"],
+            Path::new("/"),
+            None,
+            LOCAL_TIMEOUT,
+        )
+        .expect_err("binário inexistente");
+
+        assert!(err.contains("não está instalado"), "{err}");
+        assert!(
+            !err.to_lowercase().contains("no such file")
+                && !err.to_lowercase().contains("inexistente\""),
+            "a mensagem crua do SO não pode vazar pro usuário: {err}"
+        );
     }
 
     #[test]

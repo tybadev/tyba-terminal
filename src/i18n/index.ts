@@ -546,6 +546,8 @@ const resources = {
         "{{cli}} não está autenticado — rode o login da CLI e tente de novo.",
       "error.forge.no_forge":
         "O remote origin não aponta para GitHub nem GitLab — nada a fazer aqui.",
+      "error.forge.cli_missing":
+        "O {{cli}} não está instalado. Você não precisa dele: use “Push e abrir no navegador” para criar o PR. Instale o {{cli}} só se quiser ver checks e comentários dentro do Tyba.",
       "error.forge.create_failed": "Não foi possível abrir o PR/MR: {{detail}}",
       "error.forge.task_failed":
         "A ação no GitHub/GitLab falhou: {{detail}}",
@@ -1082,6 +1084,8 @@ const resources = {
         "{{cli}} is not authenticated — run the CLI login and try again.",
       "error.forge.no_forge":
         "The origin remote points to neither GitHub nor GitLab — nothing to do here.",
+      "error.forge.cli_missing":
+        "{{cli}} is not installed. You do not need it: use “Push and open in browser” to create the PR. Install {{cli}} only if you want checks and comments inside Tyba.",
       "error.forge.create_failed": "Could not open the PR/MR: {{detail}}",
       "error.forge.task_failed": "The forge task could not run: {{detail}}",
       "error.session.unavailable": "The session is unavailable: {{detail}}",
