@@ -5013,6 +5013,7 @@ dependencies = [
  "toml 0.8.2",
  "uuid",
  "vt100",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

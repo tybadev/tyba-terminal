@@ -1,11 +1,17 @@
 mod client;
+mod framing;
 mod protocol;
 mod server;
+#[cfg(windows)]
+mod pipe;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub use client::run_client;
 pub use server::HookServer;
+
+pub type Handler = Arc<dyn Fn(HookEvent) -> HookAction + Send + Sync>;
 
 pub struct HookEvent {
     pub hook_event_name: String,
@@ -33,5 +39,5 @@ pub fn maybe_run_hook_mode() -> Option<i32> {
     Some(code)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;
