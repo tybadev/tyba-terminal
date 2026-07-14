@@ -9,6 +9,11 @@ on:
         description: "Build the artifacts without publishing a release"
         type: boolean
         default: true
+      platforms:
+        description: "Which platforms to build/release"
+        type: choice
+        default: all
+        options: [all, linux, macos]
 
 # Least privilege. The default used to be `contents: write` for EVERY job — the
 # test jobs could publish a release. Now nothing writes unless it says so, and only
@@ -50,8 +55,41 @@ jobs:
             fi
           done
 
-  build:
+  # Linux must be able to ship without macOS. The macOS build needs the Apple
+  # certificate to produce something installable (an unsigned .dmg exists, but
+  # Gatekeeper calls it "damaged"), and waiting on Apple should not hold the Linux
+  # release hostage. So the matrix itself is computed — filtering by `if` inside the
+  # job would still leave a failed/blocked job that `publish` waits on.
+  matrix:
     needs: [gates, version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      include: ${{ steps.pick.outputs.include }}
+    steps:
+      - id: pick
+        env:
+          # A tag with no input builds everything.
+          PLATFORMS: ${{ inputs.platforms || 'all' }}
+        run: |
+          set -euo pipefail
+          mac='{"os":"macos-latest","target":"aarch64-apple-darwin","label":"macos-apple-silicon"},
+               {"os":"macos-latest","target":"x86_64-apple-darwin","label":"macos-intel"}'
+          # 22.04 pins the oldest glibc we support: a binary linked against a newer
+          # glibc will not run on an older distro, while the reverse always works.
+          linux='{"os":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","label":"linux-x86_64"}'
+          case "$PLATFORMS" in
+            linux) include="[$linux]" ;;
+            macos) include="[$mac]" ;;
+            *)     include="[$mac,$linux]" ;;
+          esac
+          include=$(echo "$include" | tr -d '\n' | tr -s ' ')
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+          echo "$include"
+
+  build:
+    needs: [gates, version, matrix]
     # The Apple certificate lives in this environment, not in plain repo secrets: a
     # run from an arbitrary branch cannot read it, and the environment can require a
     # human reviewer before the job starts.
@@ -66,18 +104,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            label: macos-apple-silicon
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            label: macos-intel
-          # 22.04 pins the oldest glibc we support: a binary linked against a newer
-          # glibc will not run on an older distro, while the reverse always works.
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            label: linux-x86_64
+        include: ${{ fromJSON(needs.matrix.outputs.include) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
