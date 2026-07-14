@@ -1,22 +1,5 @@
 name: Release
 
-# Dois gatilhos de tag, e a diferença entre eles é a razão de este arquivo existir.
-#
-#   v*      → release de verdade. A tag é imutável (ruleset), o artefato vai pro
-#             usuário, não há desfazer.
-#   dry-v*  → ENSAIO. Roda o pipeline INTEIRO, `publish` incluído, contra um release
-#             descartável que é apagado no fim (job `dry-cleanup`).
-#
-# O ensaio antigo (dispatch na `main`) parava ANTES do `publish` — `github.ref` era
-# `refs/heads/main`, e o `if` do job não casava. Resultado: o `publish` nunca havia
-# rodado, e quebrou na primeira tag real (v0.1.0, queimada — o `upload-artifact`
-# preserva a estrutura de pastas do bundler e o glob procurava na raiz). Um passo que
-# só roda no dia do release não é um passo testado, é uma aposta.
-#
-# ADR: tyba/decisions/2026-07-14-tag-dry-ensaia-o-publish
-#
-# O input `dry_run` foi REMOVIDO: era decorativo (declarado e nunca lido), e um botão
-# que promete ensaiar sem ensaiar é o mesmo verde que mente, só que com rótulo bonito.
 on:
   push:
     tags: ["v*", "dry-v*"]
@@ -49,28 +32,32 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: A tag de release tem que descender da main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::a tag ${GITHUB_REF_NAME} aponta para ${GITHUB_SHA}, que não está na main — release só sai de código que passou por PR"
+            exit 1
+          fi
+          echo "ok: ${GITHUB_SHA} descende da main"
+
       # The JOB must always run. A job-level `if` makes it SKIP on a dry run, and
       # `build` (which needs it) skips in cascade — a green run that built nothing.
       # Only the check is tag-scoped.
-      #
-      # O ensaio (dry-v*) roda esta checagem DE VERDADE, contra a versão real dos
-      # manifestos — é por isso que a tag de ensaio carrega uma versão em vez de ser
-      # `dry-<qualquer coisa>`. Ensaio que pula um job reproduz o problema que ele
-      # existe para matar: cobertura parcial se apresentando como cobertura.
       - name: Tag must match the manifests
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/dry-v')
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF_NAME" == dry-* ]]; then
-            # `dry-v0.1.1` e `dry-v0.1.1-2` descrevem a MESMA versão: o sufixo existe
-            # só para reensaiar sem colidir com uma tag de ensaio que não foi limpa.
             ref="${GITHUB_REF_NAME#dry-}"
             tag="${ref#v}"
             tag="${tag%%-*}"
           else
-            # Tag real: sem tratamento de sufixo, de propósito. Se um dia existir
-            # `v0.2.0-rc1`, ela tem que bater com o manifesto NA ÍNTEGRA — encurtar
-            # aqui faria a checagem aprovar uma divergência.
             tag="${GITHUB_REF_NAME#v}"
           fi
           conf=$(jq -r .version src-tauri/tauri.conf.json)
@@ -112,15 +99,6 @@ jobs:
           # chave de assinatura. O macOS abre o cofre (certificado Developer ID), o
           # Linux não abre nada — a procedência dele vem de OIDC, que é efêmero e
           # não é secret. Fazer o Linux esperar aprovação era pedágio sem proteção.
-          #
-          # O ENSAIO não abre cofre nenhum: vai inteiro pro environment `dry`, que
-          # não tem secret nem revisor. Um ensaio com acesso à chave de assinatura é
-          # PIOR que nenhum ensaio — multiplica as chances de a chave vazar e não
-          # protege nada em troca. Quem pode ensaiar não pode assinar.
-          #
-          # E a trava não depende deste `if` estar certo: a política de ref dos
-          # environments é de mão dupla — `dry` só aceita `dry-v*`, `release` só
-          # aceita `v*`. Quem recusa é o GitHub, não este script.
           if [ "$IS_DRY" = "true" ]; then
             mac_env=dry
             linux_env=dry
@@ -294,6 +272,7 @@ jobs:
           cat SHA256SUMS-${{ matrix.label }}.txt
 
       - name: Attest build provenance
+        if: "!startsWith(github.ref, 'refs/tags/dry-v')"
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: |
@@ -317,11 +296,6 @@ jobs:
 
   publish:
     needs: build
-    # O ensaio publica de verdade — é o ponto inteiro. A diferença está no ALVO: a
-    # tag `dry-v*` cria um release rascunho + pré-release, que o `dry-cleanup` apaga
-    # logo depois. Rascunho não aparece na Releases API sem autenticação, e o site lê
-    # sem token: um ensaio NUNCA pode fazer tyba.dev/download anunciar uma versão que
-    # não existe.
     if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/dry-v')
     runs-on: ubuntu-latest
     # The only job in the whole pipeline allowed to write to the repo.
@@ -367,9 +341,6 @@ jobs:
           files+=(artifacts/SHA256SUMS.txt)
           printf 'publicando: %s\n' "${files[@]}"
 
-          # O que PROMETEMOS subir. O passo de conferência compara esta lista com o
-          # que a API do GitHub diz que existe no release — "o gh não deu erro" não é
-          # prova de que o arquivo chegou lá inteiro.
           printf '%s\n' "${files[@]}" | xargs -n1 basename | sort > expected-assets.txt
 
           # `--generate-notes` cola títulos de PR. Título de PR é para quem revisa
@@ -439,9 +410,6 @@ jobs:
 
           cat notes.md
 
-          # As notas do ensaio saem do MESMO gerador — é o gerador que se quer
-          # exercitar. Só ganham um carimbo por cima, para o caso de alguém topar com
-          # o rascunho antes de o `dry-cleanup` apagá-lo.
           title="TYBA ${GITHUB_REF_NAME}"
           extra=()
           if [ "$IS_DRY" = "true" ]; then
@@ -473,13 +441,6 @@ jobs:
               "${files[@]}"
           fi
 
-      # A lição que a sessão 18 cobrou quatro vezes: confiar num sinal que não prova o
-      # que se quer provar. Um ensaio que só verifica "o publish não retornou erro" é a
-      # mesma armadilha com roupa nova — `gh release create` volta 0 e ainda assim pode
-      # ter subido um asset truncado, que só quebra na mão de quem baixa.
-      #
-      # Então o ensaio AFIRMA: consulta o release de verdade e compara com o que
-      # prometeu subir. Vale para o release real também — a conferência é a mesma.
       - name: Conferir que o publish publicou mesmo
         env:
           GH_TOKEN: ${{ github.token }}
@@ -499,10 +460,6 @@ jobs:
           echo "--- prometido ---"; cat expected-assets.txt
           echo "--- publicado ---"; cat got-assets.txt
 
-          # Contido, não igual. Quando o certificado da Apple chegar, o dispatch de
-          # macOS anexa os .dmg a uma release que JÁ tem os assets de Linux: o release
-          # correto terá mais coisa do que aquele run prometeu. Exigir igualdade
-          # reprovaria justamente o caminho que a skill `cut-release` manda usar.
           missing=$(comm -23 expected-assets.txt got-assets.txt)
           if [ -n "$missing" ]; then
             echo "::error::o publish prometeu e não entregou: $(echo "$missing" | tr '\n' ' ')"
@@ -510,13 +467,6 @@ jobs:
           fi
           echo "ok: $(wc -l < expected-assets.txt) assets prometidos estão publicados, nenhum vazio"
 
-  # Ensaio não deixa resíduo. Roda dê no que der (`always()`): se o build morreu, não
-  # há release para apagar, mas a TAG está lá — e uma tag de ensaio esquecida vira a
-  # confusão da próxima vez que alguém for cortar release.
-  #
-  # As tags `dry-*` ficam FORA do ruleset `refs/tags/v*` de propósito: precisam ser
-  # apagáveis. As de release continuam imutáveis. É a mesma regra vista dos dois lados
-  # — o que o usuário baixou não se move; o que ninguém baixou não fica.
   dry-cleanup:
     needs: [gates, version, matrix, build, publish]
     if: always() && startsWith(github.ref, 'refs/tags/dry-v')
@@ -527,26 +477,16 @@ jobs:
       - name: Apagar o release descartável e a tag do ensaio
         env:
           GH_TOKEN: ${{ github.token }}
-          # Este job NÃO faz checkout — não precisa de código, só da API. Sem isto o
-          # `gh release` não sabe em que repositório mexer e falha; embrulhado num
-          # `if`, ele falharia CALADO e o passo terminaria verde tendo pulado a
-          # deleção. Foi exatamente o que aconteceu no primeiro ensaio: a tag caiu, o
-          # release rascunho ficou, e o job reportou success.
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
 
-          # Guarda-corpo. O `gh` só recebe a tag do próprio run, então não há caminho
-          # daqui até uma `v*` — mas a deleção não pode depender de o resto do
-          # workflow estar correto. Se o alvo não for de ensaio, este passo recusa.
           case "$tag" in
             dry-*) ;;
             *) echo "::error::limpeza chamada para '$tag', que não é tag de ensaio"; exit 1 ;;
           esac
 
-          # O release SAI PRIMEIRO. Apagar a tag antes deixaria o rascunho órfão — com
-          # assets e sem tag, que é o pior dos dois mundos para quem for depurar.
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release delete "$tag" --yes
             echo "release descartável apagado: $tag"
@@ -557,9 +497,6 @@ jobs:
             echo "tag de ensaio apagada: $tag"
           fi
 
-          # E CONFERE. Um `if` que pula em silêncio termina com exit 0 e jura que
-          # limpou — a limpeza tem que provar que limpou, pelo mesmo motivo que o
-          # publish tem que provar que publicou.
           fail=0
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "::error::o release de ensaio $tag AINDA EXISTE depois da limpeza"
