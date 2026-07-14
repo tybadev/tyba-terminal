@@ -4,10 +4,13 @@ use std::ffi::c_void;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows_sys::Win32::Foundation::*;
+use windows_sys::Win32::Security::Authorization::*;
 use windows_sys::Win32::Security::*;
 use windows_sys::Win32::System::Threading::*;
 
 pub const WRITE_RESTRICTED_FLAG: u32 = 8;
+pub const DISABLE_MAX_PRIVILEGE_FLAG: u32 = 1;
+pub const LUA_TOKEN_FLAG: u32 = 4;
 pub const SE_GROUP_INTEGRITY_FLAG: u32 = 0x0000_0020;
 pub const TOKEN_INTEGRITY_LEVEL_CLASS: i32 = 25;
 pub const MANDATORY_LOW_RID: u32 = 0x0000_1000;
@@ -28,11 +31,41 @@ pub struct Restricted {
     pub synthetic_sid: *mut c_void,
 }
 
-pub fn build_restricted_low_il() -> Result<Restricted, String> {
-    build_restricted(true)
+pub const TOKEN_LOGON_SID_CLASS: i32 = 28;
+pub const SECURITY_WORLD_RID: u32 = 0;
+
+pub struct TokenSpec {
+    pub low_il: bool,
+    pub add_logon_sid: bool,
+    pub add_everyone: bool,
+    pub flags: u32,
 }
 
-pub fn build_restricted(low_il: bool) -> Result<Restricted, String> {
+impl Default for TokenSpec {
+    fn default() -> Self {
+        TokenSpec {
+            low_il: true,
+            add_logon_sid: false,
+            add_everyone: false,
+            flags: WRITE_RESTRICTED_FLAG,
+        }
+    }
+}
+
+pub fn build_restricted_low_il() -> Result<Restricted, String> {
+    build_restricted(&TokenSpec::default())
+}
+
+pub fn jail_spec(low_il: bool) -> TokenSpec {
+    TokenSpec {
+        low_il,
+        add_logon_sid: true,
+        add_everyone: true,
+        flags: WRITE_RESTRICTED_FLAG | DISABLE_MAX_PRIVILEGE_FLAG | LUA_TOKEN_FLAG,
+    }
+}
+
+pub fn build_restricted(spec: &TokenSpec) -> Result<Restricted, String> {
     unsafe {
         let mut source: Handle = std::ptr::null_mut();
         let want = TOKEN_DUPLICATE
@@ -46,15 +79,46 @@ pub fn build_restricted(low_il: bool) -> Result<Restricted, String> {
 
         let synthetic = make_synthetic_sid()?;
 
-        let mut restrict = [SID_AND_ATTRIBUTES {
+        let mut restrict = vec![SID_AND_ATTRIBUTES {
             Sid: synthetic,
             Attributes: 0,
         }];
 
+        let _logon_buf = if spec.add_logon_sid {
+            let (buf, sid) = match logon_sid(source) {
+                Ok(v) => v,
+                Err(e) => {
+                    CloseHandle(source);
+                    return Err(e);
+                }
+            };
+            restrict.push(SID_AND_ATTRIBUTES {
+                Sid: sid,
+                Attributes: 0,
+            });
+            Some(buf)
+        } else {
+            None
+        };
+
+        if spec.add_everyone {
+            let world = match everyone_sid() {
+                Ok(s) => s,
+                Err(e) => {
+                    CloseHandle(source);
+                    return Err(e);
+                }
+            };
+            restrict.push(SID_AND_ATTRIBUTES {
+                Sid: world,
+                Attributes: 0,
+            });
+        }
+
         let mut restricted: Handle = std::ptr::null_mut();
         let ok = CreateRestrictedToken(
             source,
-            WRITE_RESTRICTED_FLAG,
+            spec.flags,
             0,
             std::ptr::null(),
             0,
@@ -64,11 +128,12 @@ pub fn build_restricted(low_il: bool) -> Result<Restricted, String> {
             &mut restricted,
         );
         CloseHandle(source);
+        drop(_logon_buf);
         if ok == 0 {
             return Err(format!("CreateRestrictedToken falhou: {}", last_error()));
         }
 
-        if low_il {
+        if spec.low_il {
             set_low_integrity(restricted)?;
         }
 
@@ -77,6 +142,91 @@ pub fn build_restricted(low_il: bool) -> Result<Restricted, String> {
             synthetic_sid: synthetic,
         })
     }
+}
+
+fn everyone_sid() -> Result<*mut c_void, String> {
+    unsafe {
+        let authority = SID_IDENTIFIER_AUTHORITY {
+            Value: [0, 0, 0, 0, 0, 1],
+        };
+        let mut sid: *mut c_void = std::ptr::null_mut();
+        if AllocateAndInitializeSid(&authority, 1, SECURITY_WORLD_RID, 0, 0, 0, 0, 0, 0, 0, &mut sid)
+            == 0
+        {
+            return Err(format!("Everyone SID falhou: {}", last_error()));
+        }
+        Ok(sid)
+    }
+}
+
+pub fn describe_restricting_sids(token: Handle) -> String {
+    unsafe {
+        let mut size: u32 = 0;
+        GetTokenInformation(token, 11, std::ptr::null_mut(), 0, &mut size);
+        if size == 0 {
+            return format!("(TokenRestrictedSids tamanho 0: {})", last_error());
+        }
+        let mut buf = vec![0u8; size as usize];
+        if GetTokenInformation(token, 11, buf.as_mut_ptr() as *mut c_void, size, &mut size) == 0 {
+            return format!("(TokenRestrictedSids falhou: {})", last_error());
+        }
+        let groups = buf.as_ptr() as *const TOKEN_GROUPS;
+        let count = (*groups).GroupCount;
+        let base = (*groups).Groups.as_ptr();
+        let mut out = format!("{count} restricting SID(s): ");
+        for i in 0..count {
+            let sid = base.add(i as usize).read().Sid;
+            let mut str_ptr: *mut u16 = std::ptr::null_mut();
+            if ConvertSidToStringSidW(sid, &mut str_ptr) != 0 {
+                let mut len = 0;
+                while *str_ptr.add(len) != 0 {
+                    len += 1;
+                }
+                let s = String::from_utf16_lossy(std::slice::from_raw_parts(str_ptr, len));
+                out.push_str(&s);
+            } else {
+                out.push_str("<?>");
+            }
+            if i + 1 < count {
+                out.push_str(", ");
+            }
+        }
+        out
+    }
+}
+
+unsafe fn logon_sid(token: Handle) -> Result<(Vec<u8>, *mut c_void), String> {
+    let mut size: u32 = 0;
+    GetTokenInformation(
+        token,
+        TOKEN_LOGON_SID_CLASS,
+        std::ptr::null_mut(),
+        0,
+        &mut size,
+    );
+    if size == 0 {
+        return Err(format!("GetTokenInformation(TokenLogonSid) tamanho: {}", last_error()));
+    }
+    let mut buf = vec![0u8; size as usize];
+    if GetTokenInformation(
+        token,
+        TOKEN_LOGON_SID_CLASS,
+        buf.as_mut_ptr() as *mut c_void,
+        size,
+        &mut size,
+    ) == 0
+    {
+        return Err(format!("GetTokenInformation(TokenLogonSid) falhou: {}", last_error()));
+    }
+    let groups = buf.as_ptr() as *const TOKEN_GROUPS;
+    if (*groups).GroupCount < 1 {
+        return Err("token sem logon SID".to_string());
+    }
+    let sid = (*groups).Groups.as_ptr().read().Sid;
+    if sid.is_null() {
+        return Err("logon SID nulo".to_string());
+    }
+    Ok((buf, sid))
 }
 
 fn make_synthetic_sid() -> Result<*mut c_void, String> {

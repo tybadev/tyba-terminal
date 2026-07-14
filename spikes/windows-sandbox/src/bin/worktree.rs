@@ -88,13 +88,16 @@ fn parent() {
     let wt = worktree.to_string_lossy().to_string();
     let out = outside.to_string_lossy().to_string();
 
-    let restricted = match build_restricted_low_il() {
+    let restricted = match build_restricted(&jail_spec(true)) {
         Ok(r) => r,
         Err(e) => {
             println!("[ERRO] montar token restrito: {e}");
             return;
         }
     };
+    println!("token da jaula real: {}", describe_restricting_sids(restricted.token));
+    println!("(logon SID + Everyone estão no restricting set — o que faz o node bootar;");
+    println!(" esta sonda confirma que a negação-fora sobrevive a esse conjunto mais amplo)\n");
     unsafe {
         if let Err(e) = label_low(&wt) {
             println!("[ERRO] rotular o worktree como Low IL: {e}");
@@ -133,9 +136,10 @@ fn parent() {
 
     let _ = std::fs::remove_dir_all(&base);
     println!("\ncódigo de saída do filho (bitmask): {code}  (bit0 escreve-dentro, bit1 nega-fora)");
-    println!("Sobre git.exe sob a jaula: rodou 0xc0000142 (STATUS_DLL_INIT_FAILED) no ensaio");
-    println!("anterior — sinal de acesso à window station/desktop negado ao token restrito, a");
-    println!("etapa que o Chromium faz explícita. Fica para a jaula real, não para a sonda.");
+    println!("O 0xc0000142 do git/node sob a jaula foi RESOLVIDO pela sonda nodecheck: era o");
+    println!("restricting set estreito (só o SID sintético). Com logon SID + Everyone no");
+    println!("conjunto — como acima — processos reais iniciam, e esta sonda confirma que a");
+    println!("negação-fora sobrevive a esse conjunto mais amplo (IL Low + DACL seguram).");
 }
 
 fn child(worktree: &str, outside: &str) -> i32 {

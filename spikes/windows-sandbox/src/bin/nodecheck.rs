@@ -6,25 +6,21 @@ use std::os::windows::io::{FromRawHandle, RawHandle};
 
 use probe::*;
 use windows_sys::Win32::Foundation::*;
-use windows_sys::Win32::Security::Authorization::*;
-use windows_sys::Win32::Security::*;
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Pipes::CreatePipe;
-use windows_sys::Win32::System::StationsAndDesktops::*;
 use windows_sys::Win32::System::Threading::*;
 
 const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
 const STATUS_DLL_INIT_FAILED: u32 = 0xC000_0142;
-const GENERIC_ALL: u32 = 0x1000_0000;
-const SET_ACCESS_MODE: i32 = 2;
-const TRUSTEE_FORM_SID: i32 = 0;
-const TRUSTEE_TYPE_UNKNOWN: i32 = 0;
-const SUB_CONTAINERS_AND_OBJECTS: u32 = 0x3;
-const SE_WINDOW_OBJECT: i32 = 7;
-const DACL_INFO: u32 = 0x0000_0004;
+const INTERACTIVE_DESKTOP: &str = "Winsta0\\Default";
 
 struct Captured {
     exit_code: u32,
     stdout: String,
+}
+
+fn codex_recipe(low_il: bool) -> TokenSpec {
+    jail_spec(low_il)
 }
 
 fn main() {
@@ -36,130 +32,169 @@ fn main() {
         }
     };
 
-    banner("SONDA nodecheck — node.exe real sob a jaula (o agente inicia ou morre como o git?)");
-    println!("Pergunta: um node.exe DE VERDADE (WRITE_RESTRICTED + IL Low, spawn por");
-    println!("CreateProcessAsUserW) chega a executar JS — ou cai no 0xc0000142");
-    println!("(STATUS_DLL_INIT_FAILED) que o git.exe deu, sinal de window station negada?");
-    println!("E se cair: conceder o SID sintético à winsta+desktop conserta? (precedente Chromium)\n");
+    banner("SONDA nodecheck — node.exe real sob a jaula: qual receita faz o agente iniciar?");
+    println!("O bare (WRITE_RESTRICTED + IL Low, sem lpDesktop) dá 0xc0000142 igual ao git.");
+    println!("Esta escada ablaciona a receita conhecida-boa (codex windows-sandbox-rs):");
+    println!("logon SID + Everyone no restricting set, flags LUA_TOKEN, e lpDesktop explícito.\n");
     println!("node: {node}\n");
 
     let cmd = format!("\"{node}\" -e \"console.log('jailed ok')\"");
 
-    let control = match spawn_capturing(std::ptr::null_mut(), &cmd) {
-        Ok(c) => c,
-        Err(e) => {
-            println!("[ERRO] controle (node sem jaula) não spawnou: {e}");
-            std::process::exit(2);
-        }
-    };
+    let mut rungs: Vec<Rung> = Vec::new();
 
-    let restricted = match build_restricted_low_il() {
-        Ok(r) => r,
-        Err(e) => {
-            println!("[ERRO] montar token restrito: {e}");
-            std::process::exit(2);
-        }
-    };
-    let bare = match spawn_capturing(restricted.token, &cmd) {
-        Ok(c) => c,
-        Err(e) => {
-            println!("[ERRO] spawn enjaulado (bare) do node: {e}");
-            std::process::exit(2);
-        }
-    };
-
-    let granted: Option<Result<Captured, String>> = if bare.exit_code == STATUS_DLL_INIT_FAILED {
-        let grant = unsafe { grant_winsta_desktop(restricted.synthetic_sid) };
-        Some(match grant {
-            Ok(()) => spawn_capturing(restricted.token, &cmd),
-            Err(e) => Err(format!("conceder winsta/desktop ao SID: {e}")),
-        })
-    } else {
-        None
-    };
-
-    let medium = match build_restricted(false) {
-        Ok(r) => spawn_capturing(r.token, &cmd),
-        Err(e) => Err(format!("montar token restrito Medium IL: {e}")),
-    };
-
-    let control_ok = control.exit_code == 0 && control.stdout.contains("jailed ok");
-    let bare_started = bare.exit_code == 0 && bare.stdout.contains("jailed ok");
+    rungs.push(measure(
+        "controle: node sem jaula",
+        &cmd,
+        None,
+        None,
+        "baseline — prova comando e captura de stdout",
+    ));
+    rungs.push(measure(
+        "bare: só SID sintético, IL Low, SEM lpDesktop (a jaula original)",
+        &cmd,
+        Some(TokenSpec::default()),
+        None,
+        "reproduz o 0xc0000142; é o ponto de partida a consertar",
+    ));
+    rungs.push(measure(
+        "RECEITA codex: +logon +Everyone, LUA_TOKEN, IL Medium, lpDesktop=Winsta0\\Default",
+        &cmd,
+        Some(codex_recipe(false)),
+        Some(INTERACTIVE_DESKTOP),
+        "receita conhecida-boa completa — se PASS, o agente roda enjaulado",
+    ));
+    rungs.push(measure(
+        "ablação lpDesktop: receita codex mas SEM lpDesktop",
+        &cmd,
+        Some(codex_recipe(false)),
+        None,
+        "se FAIL só aqui, o lpDesktop explícito é o fator decisivo",
+    ));
+    rungs.push(measure(
+        "ablação Everyone: +logon SEM Everyone, IL Medium, lpDesktop set",
+        &cmd,
+        Some(TokenSpec {
+            low_il: false,
+            add_logon_sid: true,
+            add_everyone: false,
+            flags: WRITE_RESTRICTED_FLAG | DISABLE_MAX_PRIVILEGE_FLAG | LUA_TOKEN_FLAG,
+        }),
+        Some(INTERACTIVE_DESKTOP),
+        "se FAIL só aqui, o Everyone no restricting set é necessário para iniciar",
+    ));
+    rungs.push(measure(
+        "ablação IL: receita codex mas em IL Low (defesa em profundidade)",
+        &cmd,
+        Some(codex_recipe(true)),
+        Some(INTERACTIVE_DESKTOP),
+        "se PASS, dá pra manter IL Low com lpDesktop set; se FAIL, o agente fica em Medium",
+    ));
 
     println!();
-    verdict(
-        "controle: node inicia SEM jaula",
-        control_ok,
-        "prova que a linha de comando e a captura de stdout estão certas antes de acusar a jaula",
-    );
-    verdict(
-        "jaula bare: node inicia sob WRITE_RESTRICTED + IL Low (sem concessão)",
-        bare_started,
-        "se FAIL com 0xc0000142, o token restrito não alcança a window station — igual ao git",
-    );
-
-    match &medium {
-        Ok(m) => {
-            let med_started = m.exit_code == 0 && m.stdout.contains("jailed ok");
-            verdict(
-                "isola IL: node inicia RESTRITO mas em IL Medium (sem rebaixar integridade)",
-                med_started,
-                "se PASS aqui e FAIL no bare, o culpado do 0xc0000142 é o IL Low (desktop nega write-up), não a restrição do token",
-            );
+    for r in &rungs {
+        verdict(&r.label, r.started, &r.meaning);
+        if let Some(sids) = &r.restricting {
+            println!("       tok: {sids}");
         }
-        Err(e) => println!("[ERRO] medição IL Medium: {e}"),
+        println!(
+            "       -> exit {} | stdout: {:?}",
+            fmt_code(r.exit_code),
+            r.stdout.trim()
+        );
     }
 
-    println!("\ncontrole   -> exit {} | stdout: {:?}", fmt_code(control.exit_code), control.stdout.trim());
-    println!("bare(Low)  -> exit {} | stdout: {:?}", fmt_code(bare.exit_code), bare.stdout.trim());
-    if let Ok(m) = &medium {
-        println!("restr(Med) -> exit {} | stdout: {:?}", fmt_code(m.exit_code), m.stdout.trim());
-    }
+    print_conclusion(&rungs);
+}
 
-    match &granted {
-        None => {
-            if bare_started {
-                println!("\n>>> node inicia enjaulado SEM tocar a window station. A Camada A pode");
-                println!("    spawnar o agente direto — sem a concessão de winsta que o git exigiria.");
-            } else {
-                println!("\n>>> bare falhou, mas NÃO com 0xc0000142 — falha diferente do git.");
-                println!("    Ler o exit code acima antes de assumir a causa; sem etapa de concessão.");
+struct Rung {
+    label: String,
+    meaning: String,
+    started: bool,
+    exit_code: u32,
+    stdout: String,
+    restricting: Option<String>,
+}
+
+fn measure(label: &str, cmd: &str, spec: Option<TokenSpec>, desktop: Option<&str>, meaning: &str) -> Rung {
+    let (token, restricting) = match spec {
+        None => (std::ptr::null_mut(), None),
+        Some(s) => match build_restricted(&s) {
+            Ok(r) => {
+                let sids = describe_restricting_sids(r.token);
+                (r.token, Some(sids))
+            }
+            Err(e) => {
+                return Rung {
+                    label: label.to_string(),
+                    meaning: format!("{meaning} [ERRO ao montar token: {e}]"),
+                    started: false,
+                    exit_code: 0,
+                    stdout: String::new(),
+                    restricting: None,
+                }
+            }
+        },
+    };
+
+    match spawn_capturing(token, cmd, desktop) {
+        Ok(c) => {
+            let started = c.exit_code == 0 && c.stdout.contains("jailed ok");
+            Rung {
+                label: label.to_string(),
+                meaning: meaning.to_string(),
+                started,
+                exit_code: c.exit_code,
+                stdout: c.stdout,
+                restricting,
             }
         }
-        Some(Err(e)) => {
-            verdict(
-                "concessão winsta+desktop ao SID e re-spawn",
-                false,
-                "a própria concessão falhou — ver erro abaixo",
-            );
-            println!("\n>>> falha ao conceder/re-spawnar: {e}");
-        }
-        Some(Ok(g)) => {
-            let granted_started = g.exit_code == 0 && g.stdout.contains("jailed ok");
-            verdict(
-                "jaula + concessão: node inicia após conceder winsta+desktop ao SID",
-                granted_started,
-                "se PASS, a jaula do Windows precisa conceder window station/desktop ao SID da sessão (como o Chromium) e então o agente roda",
-            );
-            println!("granted    -> exit {} | stdout: {:?}", fmt_code(g.exit_code), g.stdout.trim());
-            if granted_started {
-                println!("\n>>> DECIDIDO: bare morre em 0xc0000142; conceder winsta0\\default + desktop");
-                println!("    ao SID sintético faz o node.exe iniciar enjaulado. A jaula real (Camada A)");
-                println!("    deve incluir essa concessão no spawn — é a etapa que o git expôs.");
-            } else {
-                println!("\n>>> A concessão de winsta+desktop ao SID NÃO bastou (exit {}).", fmt_code(g.exit_code));
-                println!("    Cruzando com a medição de IL Medium (que falha igual), fica isolado:");
-                println!("    o 0xc0000142 NÃO é o IL Low nem a DACL da window station pelo SID.");
-                println!("    Sobra a própria restrição do token barrando a conexão com a sessão");
-                println!("    interativa (csrss/winsta). Próximo spike: winsta+desktop dedicados com");
-                println!("    trustee correto (modelo Chromium), não um grant de DACL na winsta0.");
-            }
-        }
+        Err(e) => Rung {
+            label: label.to_string(),
+            meaning: format!("{meaning} [ERRO no spawn: {e}]"),
+            started: false,
+            exit_code: 0,
+            stdout: String::new(),
+            restricting,
+        },
     }
 }
 
+fn print_conclusion(rungs: &[Rung]) {
+    let recipe = rungs.get(2).map(|r| r.started).unwrap_or(false);
+    let no_desktop = rungs.get(3).map(|r| r.started).unwrap_or(false);
+    let no_everyone = rungs.get(4).map(|r| r.started).unwrap_or(false);
+    let low_il = rungs.get(5).map(|r| r.started).unwrap_or(false);
+
+    println!("\n======== conclusão ========");
+    if !recipe {
+        println!("A receita codex NÃO fez o node iniciar — ver exit acima. O modelo do produto");
+        println!("(jaula por token restrito) precisa de revisão antes de virar sandbox/windows.rs.");
+        return;
+    }
+    println!("A receita codex FAZ o node iniciar enjaulado. Fatores isolados:");
+    println!(
+        "  - lpDesktop explícito (Winsta0\\Default): {}",
+        if no_desktop { "dispensável" } else { "NECESSÁRIO (sem ele volta o 0xc0000142)" }
+    );
+    println!(
+        "  - Everyone no restricting set: {}",
+        if no_everyone { "dispensável (logon SID basta)" } else { "NECESSÁRIO" }
+    );
+    println!(
+        "  - IL Low em vez de Medium: {}",
+        if low_il { "OK — dá pra manter Low IL (defesa em profundidade)" } else { "não inicia em Low; agente fica em Medium IL" }
+    );
+    println!("\nO SID sintético permanece no restricting set — é a chave da confinação de");
+    println!("escrita ao worktree (sonda B). Próximo passo: re-rodar a sonda worktree com");
+    println!("ESTA receita (logon+Everyone presentes) e confirmar que a negação-fora sobrevive.");
+}
+
 fn fmt_code(code: u32) -> String {
-    format!("{code} (0x{code:08X})")
+    if code == STATUS_DLL_INIT_FAILED {
+        format!("{code} (0xC0000142 STATUS_DLL_INIT_FAILED)")
+    } else {
+        format!("{code} (0x{code:08X})")
+    }
 }
 
 fn find_node() -> Option<String> {
@@ -180,68 +215,7 @@ fn find_node() -> Option<String> {
     None
 }
 
-unsafe fn grant_object(handle: Handle, sid: *mut c_void) -> Result<(), String> {
-    let mut old_dacl: *mut ACL = std::ptr::null_mut();
-    let mut psd: *mut c_void = std::ptr::null_mut();
-    let rc = GetSecurityInfo(
-        handle,
-        SE_WINDOW_OBJECT,
-        DACL_INFO,
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        &mut old_dacl,
-        std::ptr::null_mut(),
-        &mut psd,
-    );
-    if rc != 0 {
-        return Err(format!("GetSecurityInfo falhou: {rc}"));
-    }
-
-    let mut ea: EXPLICIT_ACCESS_W = std::mem::zeroed();
-    ea.grfAccessPermissions = GENERIC_ALL;
-    ea.grfAccessMode = SET_ACCESS_MODE;
-    ea.grfInheritance = SUB_CONTAINERS_AND_OBJECTS;
-    ea.Trustee.TrusteeForm = TRUSTEE_FORM_SID;
-    ea.Trustee.TrusteeType = TRUSTEE_TYPE_UNKNOWN;
-    ea.Trustee.ptstrName = sid as *mut u16;
-
-    let mut new_dacl: *mut ACL = std::ptr::null_mut();
-    let rc = SetEntriesInAclW(1, &ea, old_dacl, &mut new_dacl);
-    if rc != 0 {
-        return Err(format!("SetEntriesInAclW falhou: {rc}"));
-    }
-
-    let rc = SetSecurityInfo(
-        handle,
-        SE_WINDOW_OBJECT,
-        DACL_INFO,
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        new_dacl,
-        std::ptr::null_mut(),
-    );
-    if rc != 0 {
-        return Err(format!("SetSecurityInfo falhou: {rc}"));
-    }
-    Ok(())
-}
-
-unsafe fn grant_winsta_desktop(sid: *mut c_void) -> Result<(), String> {
-    let winsta = GetProcessWindowStation() as Handle;
-    if winsta.is_null() {
-        return Err(format!("GetProcessWindowStation falhou: {}", last_error()));
-    }
-    grant_object(winsta, sid).map_err(|e| format!("winsta: {e}"))?;
-
-    let desktop = GetThreadDesktop(GetCurrentThreadId()) as Handle;
-    if desktop.is_null() {
-        return Err(format!("GetThreadDesktop falhou: {}", last_error()));
-    }
-    grant_object(desktop, sid).map_err(|e| format!("desktop: {e}"))?;
-    Ok(())
-}
-
-fn spawn_capturing(token: Handle, command_line: &str) -> Result<Captured, String> {
+fn spawn_capturing(token: Handle, command_line: &str, desktop: Option<&str>) -> Result<Captured, String> {
     unsafe {
         let mut sa: SECURITY_ATTRIBUTES = std::mem::zeroed();
         sa.nLength = std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32;
@@ -256,12 +230,17 @@ fn spawn_capturing(token: Handle, command_line: &str) -> Result<Captured, String
             return Err(format!("SetHandleInformation(read) falhou: {}", last_error()));
         }
 
+        let mut desktop_w = desktop.map(wide);
+
         let mut si_ex: STARTUPINFOEXW = std::mem::zeroed();
         si_ex.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
         si_ex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         si_ex.StartupInfo.hStdInput = std::ptr::null_mut();
         si_ex.StartupInfo.hStdOutput = write_h;
         si_ex.StartupInfo.hStdError = write_h;
+        if let Some(d) = desktop_w.as_mut() {
+            si_ex.StartupInfo.lpDesktop = d.as_mut_ptr();
+        }
 
         let mut attr_size: usize = 0;
         InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut attr_size);

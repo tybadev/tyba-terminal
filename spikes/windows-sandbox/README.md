@@ -41,12 +41,23 @@ precisa do dele.
   filesystem, não só política.
 - **nodecheck / node inicia enjaulado?** → o `git.exe` sob a jaula dava
   `0xc0000142` (`STATUS_DLL_INIT_FAILED`); esta sonda mede o `node.exe` real (o
-  agente). Achado: node **também** morre em `0xc0000142`. A sonda isola a causa
-  medindo três tokens — bare (Low IL), restrito em IL Medium, e Low IL com a
-  winsta+desktop concedidas ao SID sintético. **Os três falham igual**: não é o
-  IL Low nem a DACL da window station pelo SID — é a própria restrição do token
-  barrando a conexão com a sessão interativa (csrss/winsta). O próximo passo
-  (winsta+desktop dedicados, modelo Chromium) é outro spike, não código de jaula.
+  agente) e **resolve a causa** com uma escada de ablação. Achado: o bloqueio era
+  o **restricting set estreito** — a jaula original punha só um SID sintético,
+  que não concede nada aos objetos que o init de um processo real toca (portas do
+  csrss, `BaseNamedObjects` da sessão). A receita conhecida-boa (do
+  `codex/windows-sandbox-rs` + Chromium) é pôr o **logon SID e o `Everyone`
+  (S-1-1-0)** no restricting set. Ablação isola os fatores nesta máquina:
+  - `Everyone` no restricting set: **necessário** (sem ele, volta o `0xc0000142`).
+  - logon SID: presente na receita; sozinho não basta.
+  - `lpDesktop=Winsta0\Default`: **dispensável** aqui (o codex seta por seguro).
+  - **IL Low: mantido** — o node inicia em Low IL com o restricting set certo, então
+    a jaula fica com a defesa-em-profundidade do IL baixo, não precisa subir a Medium.
+
+  O SID sintético **permanece** no restricting set (é a chave da confinação de
+  escrita ao worktree). A sonda `worktree` foi re-rodada com ESTE token real
+  (logon+Everyone presentes) e a negação-fora **sobrevive** — IL Low + DACL
+  seguram, o `Everyone` no restricting set não abre escrita ao diretório de fora.
+  Receita da jaula: `lib::jail_spec(low_il=true)`.
 
 ## Aviso honesto
 
