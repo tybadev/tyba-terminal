@@ -1,6 +1,7 @@
 #![cfg(windows)]
 
-use std::ffi::c_void;
+use std::io::{Read, Write};
+use std::os::windows::io::{FromRawHandle, RawHandle};
 
 use probe::*;
 use windows_sys::Win32::Foundation::*;
@@ -85,20 +86,10 @@ fn parent() {
             }
         };
 
+        let mut server_file = std::fs::File::from_raw_handle(server as RawHandle);
         let mut buf = [0u8; 16];
-        let mut read = 0u32;
-        let got = ReadFile(
-            server,
-            buf.as_mut_ptr() as *mut c_void,
-            buf.len() as u32,
-            &mut read,
-            std::ptr::null_mut(),
-        );
-        let payload = if got != 0 {
-            String::from_utf8_lossy(&buf[..read as usize]).to_string()
-        } else {
-            String::new()
-        };
+        let n = server_file.read(&mut buf).unwrap_or(0);
+        let payload = String::from_utf8_lossy(&buf[..n]).to_string();
 
         println!();
         verdict(
@@ -122,15 +113,9 @@ fn parent() {
 
 fn child(inherited: Handle, pipe_name: &str) -> i32 {
     unsafe {
-        let mut written = 0u32;
-        let wrote = WriteFile(
-            inherited,
-            b"ping".as_ptr() as *const c_void,
-            4,
-            &mut written,
-            std::ptr::null_mut(),
-        );
-        let inherited_ok = wrote != 0 && written == 4;
+        let mut pipe = std::fs::File::from_raw_handle(inherited as RawHandle);
+        let inherited_ok = pipe.write_all(b"ping").and_then(|_| pipe.flush()).is_ok();
+        std::mem::forget(pipe);
 
         let wname = wide(pipe_name);
         let by_name = CreateFileW(
