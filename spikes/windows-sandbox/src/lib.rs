@@ -29,6 +29,10 @@ pub struct Restricted {
 }
 
 pub fn build_restricted_low_il() -> Result<Restricted, String> {
+    build_restricted(true)
+}
+
+pub fn build_restricted(low_il: bool) -> Result<Restricted, String> {
     unsafe {
         let mut source: Handle = std::ptr::null_mut();
         let want = TOKEN_DUPLICATE
@@ -64,7 +68,9 @@ pub fn build_restricted_low_il() -> Result<Restricted, String> {
             return Err(format!("CreateRestrictedToken falhou: {}", last_error()));
         }
 
-        set_low_integrity(restricted)?;
+        if low_il {
+            set_low_integrity(restricted)?;
+        }
 
         Ok(Restricted {
             token: restricted,

@@ -19,6 +19,9 @@ cargo run --bin afunix
 
 # SONDA B — git escreve só no worktree? (precisa de git no PATH)
 cargo run --bin worktree
+
+# SONDA nodecheck — node.exe real inicia sob a jaula? (precisa de node no PATH)
+cargo run --bin nodecheck
 ```
 
 Cole a saída inteira das três de volta. O resultado vira dado na ADR e decide o
@@ -36,6 +39,14 @@ precisa do dele.
 - **B / escreve dentro, negado fora, git commita** → o modelo de escrita
   (`WRITE_RESTRICTED` + SID por sessão) sustenta o worktree isolado com base de
   filesystem, não só política.
+- **nodecheck / node inicia enjaulado?** → o `git.exe` sob a jaula dava
+  `0xc0000142` (`STATUS_DLL_INIT_FAILED`); esta sonda mede o `node.exe` real (o
+  agente). Achado: node **também** morre em `0xc0000142`. A sonda isola a causa
+  medindo três tokens — bare (Low IL), restrito em IL Medium, e Low IL com a
+  winsta+desktop concedidas ao SID sintético. **Os três falham igual**: não é o
+  IL Low nem a DACL da window station pelo SID — é a própria restrição do token
+  barrando a conexão com a sessão interativa (csrss/winsta). O próximo passo
+  (winsta+desktop dedicados, modelo Chromium) é outro spike, não código de jaula.
 
 ## Aviso honesto
 
