@@ -78,11 +78,15 @@ jobs:
           PLATFORMS: ${{ inputs.platforms || vars.RELEASE_PLATFORMS || 'all' }}
         run: |
           set -euo pipefail
-          mac='{"os":"macos-latest","target":"aarch64-apple-darwin","label":"macos-apple-silicon"},
-               {"os":"macos-latest","target":"x86_64-apple-darwin","label":"macos-intel"}'
+          # `environment` sai daqui porque a trava de revisor protege UMA coisa: a
+          # chave de assinatura. O macOS abre o cofre (certificado Developer ID), o
+          # Linux não abre nada — a procedência dele vem de OIDC, que é efêmero e
+          # não é secret. Fazer o Linux esperar aprovação era pedágio sem proteção.
+          mac='{"os":"macos-latest","target":"aarch64-apple-darwin","label":"macos-apple-silicon","environment":"release"},
+               {"os":"macos-latest","target":"x86_64-apple-darwin","label":"macos-intel","environment":"release"}'
           # 22.04 pins the oldest glibc we support: a binary linked against a newer
           # glibc will not run on an older distro, while the reverse always works.
-          linux='{"os":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","label":"linux-x86_64"}'
+          linux='{"os":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","label":"linux-x86_64","environment":"release-unsigned"}'
           case "$PLATFORMS" in
             linux) include="[$linux]" ;;
             macos) include="[$mac]" ;;
@@ -94,10 +98,14 @@ jobs:
 
   build:
     needs: [gates, version, matrix]
-    # The Apple certificate lives in this environment, not in plain repo secrets: a
-    # run from an arbitrary branch cannot read it, and the environment can require a
-    # human reviewer before the job starts.
-    environment: release
+    # O environment vem da matriz. `release` guarda o certificado da Apple e exige
+    # revisor humano; `release-unsigned` não guarda secret nenhum e não exige. Os
+    # dois recusam rodar fora de `main` e de tag `v*`.
+    #
+    # O que a trava protege é a CHAVE: sem revisor, uma action de terceiro
+    # sequestrada assinaria um binário em nome do dono. Quando o Windows ganhar
+    # certificado, ele entra em `release` pelo mesmo motivo.
+    environment: ${{ matrix.environment }}
     permissions:
       contents: read
       # Provenance attestation: cryptographic proof that these bytes came from this
@@ -257,11 +265,15 @@ jobs:
           # tem todos eles: sem macOS na matriz não há .dmg, o glob não expande, e
           # o `gh` morre com "no such file" — derrubando justamente a publicação
           # Linux-first que a matriz computada existe para permitir.
+          #
+          # E o find é RECURSIVO de propósito: o upload-artifact preserva a estrutura
+          # do bundler, então os instaladores chegam em artifacts/deb/, artifacts/rpm/
+          # e artifacts/appimage/ — nunca soltos na raiz. Só o SHA256SUMS fica no topo.
           files=()
           while IFS= read -r f; do
             files+=("$f")
           done < <(
-            find artifacts -maxdepth 1 -type f \
+            find artifacts -type f \
               \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
               | sort
           )
@@ -273,16 +285,78 @@ jobs:
           files+=(artifacts/SHA256SUMS.txt)
           printf 'publicando: %s\n' "${files[@]}"
 
+          # `--generate-notes` cola títulos de PR. Título de PR é para quem revisa
+          # código; quem chega na página do release quer saber o que instalar e
+          # como. O changelog de verdade mora no site, e é para lá que a app aponta.
+          # O nome do arquivo vem do bundler (Tyba_0.1.0_amd64.deb, T maiúsculo) —
+          # montá-lo à mão a partir da versão erra o comando de instalação.
+          name_of() { printf '%s\n' "${files[@]}" | grep -m1 "$1" | xargs -r basename; }
+          deb=$(name_of '\.deb$'); rpm=$(name_of '\.rpm$'); app=$(name_of '\.AppImage$')
+
+          {
+            echo "O TYBA é um terminal orientado a agentes: sessões de agente em git"
+            echo "worktrees isolados, cada uma dentro de uma jaula do sistema, com toda"
+            echo "ação de risco passando por uma inbox de aprovação."
+            echo
+            echo "**O que mudou:** https://tyba.dev/pt-br/changelog"
+            echo "**Baixar:** https://tyba.dev/pt-br/download"
+            echo
+            echo "## Instalar"
+            echo
+            if [ -n "$deb" ]; then
+              echo '```bash'
+              echo "# Debian, Ubuntu e derivados"
+              echo "sudo apt install ./$deb"
+              echo '```'
+            fi
+            if [ -n "$rpm" ]; then
+              echo '```bash'
+              echo "# Fedora, RHEL e derivados"
+              echo "sudo dnf install ./$rpm"
+              echo '```'
+            fi
+            if [ -n "$app" ]; then
+              echo '```bash'
+              echo "# Qualquer distro, sem instalar"
+              echo "chmod +x $app && ./$app"
+              echo '```'
+            fi
+            if printf '%s\n' "${files[@]}" | grep -q '\.dmg$'; then
+              echo "**macOS**: baixe o \`.dmg\` da sua arquitetura (Apple Silicon ou Intel)."
+              echo
+            fi
+            echo
+            echo "> O \`.deb\` e o \`.rpm\` declaram **bubblewrap** como dependência: sem ele o"
+            echo "> core recusa a sessão de agente em vez de rodar sem jaula. No AppImage,"
+            echo "> instale \`bubblewrap\` pelo gerenciador da sua distro."
+            echo
+            echo "## Verificar o que você baixou"
+            echo
+            echo "Todo binário sai da CI com checksum e **atestação de procedência assinada"
+            echo "pelo GitHub** — a prova de que ele saiu deste repositório, deste commit,"
+            echo "por este workflow."
+            echo
+            echo '```bash'
+            echo "gh attestation verify <arquivo> --repo ${GITHUB_REPOSITORY}"
+            echo "sha256sum -c SHA256SUMS.txt --ignore-missing"
+            echo '```'
+          } > notes.md
+
+          cat notes.md
+
           # Rascunho de propósito: o dono confere os artefatos e publica na mão.
           # E `create` só na primeira vez: quando o certificado da Apple chegar, o
           # macOS é anexado a ESTA release — um segundo `create` na mesma tag falha
           # com "release already exists".
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            # Anexar o macOS depois muda a lista de instaladores, então as notas
+            # são reescritas junto — senão a página continuaria só com o Linux.
             gh release upload "${GITHUB_REF_NAME}" --clobber "${files[@]}"
+            gh release edit "${GITHUB_REF_NAME}" --notes-file notes.md
           else
             gh release create "${GITHUB_REF_NAME}" \
               --draft \
               --title "TYBA ${GITHUB_REF_NAME}" \
-              --generate-notes \
+              --notes-file notes.md \
               "${files[@]}"
           fi
