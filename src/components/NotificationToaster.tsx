@@ -11,6 +11,11 @@ import {
   ToastTitle,
   ToastViewport,
 } from "@/components/ui/toast";
+import {
+  OPEN_LATEST_SESSION_COMBO,
+  comboKeys,
+  comboOf,
+} from "@/lib/keys";
 import { RISK_DOT, RISK_LABEL, canAlwaysAllow } from "@/lib/notifications";
 import {
   onApprovalRequested,
@@ -192,7 +197,7 @@ export function NotificationToaster({
   useEffect(() => {
     if (outcomes.length === 0) return;
     const onKey = (event: KeyboardEvent) => {
-      if (!event.metaKey || !event.shiftKey || event.key.toLowerCase() !== "o") {
+      if (comboOf(event) !== OPEN_LATEST_SESSION_COMBO) {
         return;
       }
       event.preventDefault();
@@ -461,7 +466,7 @@ export function NotificationToaster({
                     aria-label={t("openSessionShortcut")}
                     className="ml-auto flex shrink-0 items-center gap-0.5"
                   >
-                    {["⌘", "⇧", "O"].map((key) => (
+                    {comboKeys(OPEN_LATEST_SESSION_COMBO).map((key) => (
                       <kbd
                         key={key}
                         className="rounded-[3px] border border-tyba-border bg-tyba-sunken px-1 py-0.5 font-mono text-[10px] leading-none text-tyba-text-faint"

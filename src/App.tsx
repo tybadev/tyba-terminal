@@ -55,6 +55,8 @@ import { getThemeMode, onThemeModeChange, setThemeMode, type ThemeMode } from ".
 import { NotificationsInbox } from "./components/NotificationsInbox";
 import { NotificationToaster } from "./components/NotificationToaster";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { WindowControls, WindowResizeEdges } from "./components/WindowChrome";
+import { IS_MAC } from "./lib/platform";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { Clock } from "./components/Clock";
@@ -200,6 +202,8 @@ import {
   parseBindings,
   BINDINGS_PREF_KEY,
   isTerminalAction,
+  isPaneResizeChord,
+  isTabDigitChord,
   type Bindings,
   type KeyAction,
 } from "./lib/keys";
@@ -1766,7 +1770,7 @@ export default function App() {
         }
         return;
       }
-      if (e.metaKey && e.ctrlKey && !e.shiftKey && !e.altKey) {
+      if (isPaneResizeChord(e)) {
         const key = e.key.toLowerCase();
         if (key === "arrowleft" || key === "arrowright") {
           e.preventDefault();
@@ -1779,15 +1783,7 @@ export default function App() {
           return;
         }
       }
-      if (
-        e.metaKey &&
-        !e.repeat &&
-        !e.shiftKey &&
-        !e.altKey &&
-        !e.ctrlKey &&
-        e.key >= "1" &&
-        e.key <= "9"
-      ) {
+      if (isTabDigitChord(e) && !e.repeat && e.key >= "1" && e.key <= "9") {
         const target = activeWorkspace?.tabs[Number(e.key) - 1];
         if (target) {
           e.preventDefault();
@@ -2318,9 +2314,12 @@ export default function App() {
         }}
       />
       <div className="tyba-aurora flex h-screen flex-col text-tyba-text">
+        <WindowResizeEdges />
         <header
           data-tauri-drag-region
-          className="tyba-glass tyba-divide-b flex h-9 shrink-0 items-center gap-1 pl-20 pr-2.5"
+          className={`tyba-glass tyba-divide-b flex h-9 shrink-0 items-center gap-1 pr-2.5 ${
+            IS_MAC ? "pl-20" : "pl-2.5"
+          }`}
         >
           <IconAction
             label={t("panelToggle")}
@@ -2515,6 +2514,8 @@ export default function App() {
               </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          <WindowControls />
         </header>
 
         <div className="flex min-h-0 flex-1">
@@ -2734,6 +2735,7 @@ export default function App() {
                     <div className="absolute inset-0 flex">
                       <WorktreesView
                         repoRoots={worktreeRepoRoots}
+                        newWorktreeSessionCombo={bindings.newWorktreeSession}
                         onOpenSession={(path, name) =>
                           void newSession(path, name)
                         }

@@ -53,6 +53,7 @@ import {
   ACTION_LABEL_KEYS,
   captureState,
   comboOf,
+  formatCombo,
   KEY_CATEGORY_LABEL_KEYS,
   type Bindings,
   type KeyAction,
@@ -799,7 +800,11 @@ export function SettingsView({
               hint={t("preferencesHint")}
             />
             <div className="divide-y divide-tyba-border overflow-hidden rounded-[8px] border border-tyba-border">
-              <SettingRow label={t("sidebarToggleBehavior")}>
+              <SettingRow
+                label={t("sidebarToggleBehavior", {
+                  combo: formatCombo(bindings.panel),
+                })}
+              >
                 <Select
                   value={togglePref}
                   onChange={(v) => onTogglePrefChange(v as SidebarTogglePref)}
@@ -849,7 +854,11 @@ export function SettingsView({
                 <SettingRow
                   key={field}
                   label={t(label)}
-                  hint={hint ? t(hint) : undefined}
+                  hint={
+                    hint
+                      ? t(hint, { combo: formatCombo(bindings.richInput) })
+                      : undefined
+                  }
                 >
                   <Switch
                     checked={richInputPref[field]}

@@ -1153,6 +1153,8 @@ fn new_window(app: AppHandle) -> Result<(), String> {
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.decorations(false);
     builder.build().map_err(|e| e.to_string())?;
     Ok(())
 }

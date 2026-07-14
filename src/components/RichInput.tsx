@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Paperclip, PaperPlaneRight, Warning } from "@phosphor-icons/react";
 
+import { formatCombo, SEND_PROMPT_COMBO } from "@/lib/keys";
 import {
   listWorktreeFiles,
   onSessionBracketedPaste,
@@ -281,7 +282,9 @@ export function RichInput({
           ref={textareaRef}
           value={text}
           rows={1}
-          placeholder={t("richInputPlaceholder")}
+          placeholder={t("richInputPlaceholder", {
+            combo: formatCombo(SEND_PROMPT_COMBO),
+          })}
           onChange={onChange}
           onKeyDown={onKeyDown}
           onKeyUp={syncCaret}

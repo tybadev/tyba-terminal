@@ -154,7 +154,7 @@ export function actionsByCategory(): [KeyCategory, KeyAction[]][] {
 
 export type Bindings = Record<KeyAction, string>;
 
-export const DEFAULT_BINDINGS: Bindings = {
+export const MAC_BINDINGS: Bindings = {
   paletteActions: "meta+p",
   paletteSessions: "meta+shift+p",
   panel: "meta+b",
@@ -176,12 +176,68 @@ export const DEFAULT_BINDINGS: Bindings = {
   paneRight: "meta+alt+arrowright",
   paneUp: "meta+alt+arrowup",
   paneDown: "meta+alt+arrowdown",
-  copy: IS_MAC ? "meta+c" : "ctrl+shift+c",
-  paste: IS_MAC ? "meta+v" : "ctrl+shift+v",
-  search: IS_MAC ? "meta+f" : "ctrl+shift+f",
-  selectAll: IS_MAC ? "meta+a" : "ctrl+shift+a",
-  richInput: IS_MAC ? "meta+shift+g" : "ctrl+shift+g",
+  copy: "meta+c",
+  paste: "meta+v",
+  search: "meta+f",
+  selectAll: "meta+a",
+  richInput: "meta+shift+g",
 };
+
+export const PC_BINDINGS: Bindings = {
+  paletteActions: "ctrl+shift+p",
+  paletteSessions: "ctrl+alt+shift+p",
+  panel: "ctrl+shift+b",
+  settings: "ctrl+,",
+  newSession: "ctrl+shift+n",
+  newWorktreeSession: "ctrl+alt+shift+t",
+  newTab: "ctrl+shift+t",
+  newWindow: "ctrl+alt+shift+n",
+  closePane: "ctrl+shift+w",
+  openFolder: "ctrl+shift+o",
+  prevSession: "ctrl+shift+arrowup",
+  nextSession: "ctrl+shift+arrowdown",
+  prevTab: "ctrl+pageup",
+  nextTab: "ctrl+pagedown",
+  splitRight: "ctrl+shift+e",
+  splitDown: "ctrl+shift+d",
+  nextPane: "ctrl+tab",
+  paneLeft: "ctrl+alt+arrowleft",
+  paneRight: "ctrl+alt+arrowright",
+  paneUp: "ctrl+alt+arrowup",
+  paneDown: "ctrl+alt+arrowdown",
+  copy: "ctrl+shift+c",
+  paste: "ctrl+shift+v",
+  search: "ctrl+shift+f",
+  selectAll: "ctrl+shift+a",
+  richInput: "ctrl+shift+g",
+};
+
+export const DEFAULT_BINDINGS: Bindings = IS_MAC ? MAC_BINDINGS : PC_BINDINGS;
+
+export const TAB_DIGIT_MODIFIER = IS_MAC ? "meta" : "alt";
+
+export function isTabDigitChord(e: KeyboardEvent): boolean {
+  const held = IS_MAC ? e.metaKey && !e.altKey : e.altKey && !e.metaKey;
+  return held && !e.ctrlKey && !e.shiftKey;
+}
+
+export function isPaneResizeChord(e: KeyboardEvent): boolean {
+  return IS_MAC
+    ? e.metaKey && e.ctrlKey && !e.shiftKey && !e.altKey
+    : e.ctrlKey && e.altKey && e.shiftKey && !e.metaKey;
+}
+
+export const PANE_RESIZE_COMBO_PREFIX = IS_MAC ? "meta+ctrl" : "ctrl+alt+shift";
+
+export const OPEN_LATEST_SESSION_COMBO = IS_MAC
+  ? "meta+shift+o"
+  : "ctrl+alt+shift+o";
+
+export const SEND_PROMPT_COMBO = IS_MAC ? "meta+enter" : "ctrl+enter";
+
+export function tabDigitCombo(index: number): string {
+  return `${TAB_DIGIT_MODIFIER}+${index}`;
+}
 
 export const BINDINGS_PREF_KEY = "pref.keybindings";
 
@@ -200,11 +256,7 @@ export function comboOf(e: KeyboardEvent): string | null {
   return parts.join("+");
 }
 
-const SYMBOLS: Record<string, string> = {
-  meta: "⌘",
-  ctrl: "⌃",
-  alt: "⌥",
-  shift: "⇧",
+const SHARED_SYMBOLS: Record<string, string> = {
   arrowup: "↑",
   arrowdown: "↓",
   arrowleft: "←",
@@ -214,8 +266,34 @@ const SYMBOLS: Record<string, string> = {
   " ": "␣",
 };
 
+const MAC_SYMBOLS: Record<string, string> = {
+  ...SHARED_SYMBOLS,
+  meta: "⌘",
+  ctrl: "⌃",
+  alt: "⌥",
+  shift: "⇧",
+  tab: "⇥",
+  pageup: "⇞",
+  pagedown: "⇟",
+};
+
+const PC_SYMBOLS: Record<string, string> = {
+  ...SHARED_SYMBOLS,
+  meta: "Super",
+  ctrl: "Ctrl",
+  alt: "Alt",
+  shift: "Shift",
+  tab: "Tab",
+  pageup: "PgUp",
+  pagedown: "PgDn",
+};
+
+const SYMBOLS = IS_MAC ? MAC_SYMBOLS : PC_SYMBOLS;
+
+const COMBO_SEPARATOR = IS_MAC ? "" : "+";
+
 export function formatCombo(combo: string): string {
-  return comboKeys(combo).join("");
+  return comboKeys(combo).join(COMBO_SEPARATOR);
 }
 
 export function comboKeys(combo: string): string[] {
