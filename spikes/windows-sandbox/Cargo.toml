@@ -54,6 +54,10 @@ path = "src/bin/layerb.rs"
 name = "wfp"
 path = "src/bin/wfp.rs"
 
+[[bin]]
+name = "conpty"
+path = "src/bin/conpty.rs"
+
 [dependencies.windows-sys]
 version = "0.59"
 features = [
@@ -64,6 +68,7 @@ features = [
     "Win32_System_Pipes",
     "Win32_System_StationsAndDesktops",
     "Win32_System_JobObjects",
+    "Win32_System_Console",
     "Win32_NetworkManagement_WindowsFilteringPlatform",
     "Win32_System_Rpc",
     "Win32_System_Memory",

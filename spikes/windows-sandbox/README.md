@@ -35,6 +35,9 @@ cargo run --bin gitshim      # o agente enjaulado delega git ao core pelo pipe h
 # Camada B — usuário dedicado + WFP (PRECISA DE SHELL ELEVADO / UAC)
 cargo run --bin layerb       # usuário dedicado isola leitura (dono lê, agente não)
 cargo run --bin wfp          # rede por SID: loopback+RFC1918 negados, 443 externo livre
+
+# ConPTY sob a jaula (RODAR COM CONSOLE REAL, não com stdout redirecionado)
+Start-Process (Resolve-Path .\target\debug\conpty.exe) -Wait   # depois: cat $env:TEMP\tyba-conpty-result.txt
 ```
 
 Cole a saída inteira das três de volta. O resultado vira dado na ADR e decide o
@@ -60,6 +63,20 @@ gitshim) confirmaram; as **duas fundacionais tinham furos** e foram corrigidas:
 
 Lição amarrada: no Windows a proteção da jaula (IPC por nome, leitura de segredo)
 é por **Integrity Level**, não por DACL — vale para gate e denyacl.
+
+## ConPTY sob a jaula (sonda conpty)
+
+O agente roda num pseudo-console — é dele que vêm cores, prompt e `isatty`.
+**Medido**: um `node.exe` sob token restrito (`jail_spec`), spawnado com o atributo
+`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` via `CreateProcessAsUserW`, vê
+`process.stdout.isTTY == true` (exit 7) — **o ConPTY sobrevive à jaula**. Par
+positivo: o mesmo spawn sem jaula também dá isTTY=true. Consequência para o
+produto: `sandbox/windows.rs` pode spawnar o agente **direto sob a jaula com o
+ConPTY**, sem helper de passagem de handle. **Armadilha do harness**: ConPTY exige
+um pai com console REAL — se o stdout do probe for redirecionado (pipe/arquivo), o
+`isatty` do filho falha por artefato, não pela jaula (o controle fica vermelho e
+avisa). Por isso a sonda grava o resultado em `%TEMP%\tyba-conpty-result.txt` e se
+roda via `Start-Process`.
 
 ## O que cada PASS/FAIL significa
 
