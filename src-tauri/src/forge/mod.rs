@@ -148,6 +148,23 @@ fn kind_of(worktree: &Path) -> Result<ForgeKind, AppError> {
     detect(worktree).ok_or_else(|| AppError::new("forge.no_forge"))
 }
 
+fn cli_installed(kind: ForgeKind) -> bool {
+    match kind {
+        ForgeKind::GitHub => github::installed(),
+        ForgeKind::GitLab => gitlab::installed(),
+    }
+}
+
+/// Consulta de leitura sem a CLI: **não há o que consultar** — status de PR, checks
+/// e comentários são API da forja, e sem `gh`/`glab` não existe caminho até ela.
+/// Isso não é erro do usuário: a maioria das pessoas não instala `gh`. Antes, o
+/// ENOENT do binário subia até a UI como "falha ao executar gh: arquivo ou
+/// diretório inexistente" — mensagem que não diz nada e parece defeito do Tyba.
+/// Agora a informação simplesmente não aparece.
+fn cli_missing(kind: ForgeKind) -> bool {
+    !cli_installed(kind)
+}
+
 fn is_auth_error(detail: &str) -> bool {
     let detail = detail.to_ascii_lowercase();
     [
@@ -171,8 +188,19 @@ pub fn create_pr(worktree: &Path, title: &str, body: &str) -> Result<PullRequest
     if matches!(branch.as_str(), "main" | "master") {
         return Err(AppError::new("push.protected_branch").with("branch", branch));
     }
+    let kind = kind_of(worktree)?;
+    // Ação (diferente de consulta) precisa dizer o que fazer. O diálogo já oferece
+    // "push + abrir no navegador", que funciona sem CLI nenhuma — mas se alguém
+    // chegar aqui sem a CLI, o erro tem que ser acionável, não um ENOENT cru.
+    if cli_missing(kind) {
+        let cli = match kind {
+            ForgeKind::GitHub => github::CLI,
+            ForgeKind::GitLab => gitlab::CLI,
+        };
+        return Err(AppError::new("forge.cli_missing").with("cli", cli));
+    }
     crate::worktree::ops::push(worktree)?;
-    match kind_of(worktree)? {
+    match kind {
         ForgeKind::GitHub => github::create_pr(worktree, title, body),
         ForgeKind::GitLab => gitlab::create_pr(worktree, title, body),
     }
@@ -182,21 +210,33 @@ pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest
     if branch.trim().is_empty() {
         return Err(AppError::new("pr.branch_empty"));
     }
-    match kind_of(worktree)? {
+    let kind = kind_of(worktree)?;
+    if cli_missing(kind) {
+        return Ok(None);
+    }
+    match kind {
         ForgeKind::GitHub => github::pr_for_branch(worktree, branch),
         ForgeKind::GitLab => gitlab::pr_for_branch(worktree, branch),
     }
 }
 
 pub fn pr_comments(worktree: &Path, number: u64) -> Result<Vec<ReviewComment>, AppError> {
-    match kind_of(worktree)? {
+    let kind = kind_of(worktree)?;
+    if cli_missing(kind) {
+        return Ok(Vec::new());
+    }
+    match kind {
         ForgeKind::GitHub => github::pr_comments(worktree, number),
         ForgeKind::GitLab => gitlab::pr_comments(worktree, number),
     }
 }
 
 pub fn pr_list(repo_root: &Path) -> Result<Vec<PullRequest>, AppError> {
-    match kind_of(repo_root)? {
+    let kind = kind_of(repo_root)?;
+    if cli_missing(kind) {
+        return Ok(Vec::new());
+    }
+    match kind {
         ForgeKind::GitHub => github::pr_list(repo_root),
         ForgeKind::GitLab => gitlab::pr_list(repo_root),
     }
