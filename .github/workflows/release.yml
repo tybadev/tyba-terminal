@@ -527,6 +527,12 @@ jobs:
       - name: Apagar o release descartável e a tag do ensaio
         env:
           GH_TOKEN: ${{ github.token }}
+          # Este job NÃO faz checkout — não precisa de código, só da API. Sem isto o
+          # `gh release` não sabe em que repositório mexer e falha; embrulhado num
+          # `if`, ele falharia CALADO e o passo terminaria verde tendo pulado a
+          # deleção. Foi exatamente o que aconteceu no primeiro ensaio: a tag caiu, o
+          # release rascunho ficou, e o job reportou success.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
@@ -539,6 +545,8 @@ jobs:
             *) echo "::error::limpeza chamada para '$tag', que não é tag de ensaio"; exit 1 ;;
           esac
 
+          # O release SAI PRIMEIRO. Apagar a tag antes deixaria o rascunho órfão — com
+          # assets e sem tag, que é o pior dos dois mundos para quem for depurar.
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release delete "$tag" --yes
             echo "release descartável apagado: $tag"
@@ -548,3 +556,18 @@ jobs:
             gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}"
             echo "tag de ensaio apagada: $tag"
           fi
+
+          # E CONFERE. Um `if` que pula em silêncio termina com exit 0 e jura que
+          # limpou — a limpeza tem que provar que limpou, pelo mesmo motivo que o
+          # publish tem que provar que publicou.
+          fail=0
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::o release de ensaio $tag AINDA EXISTE depois da limpeza"
+            fail=1
+          fi
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            echo "::error::a tag de ensaio $tag AINDA EXISTE depois da limpeza"
+            fail=1
+          fi
+          [ "$fail" -eq 0 ] || exit 1
+          echo "ok: ensaio $tag não deixou resíduo — release e tag apagados"
