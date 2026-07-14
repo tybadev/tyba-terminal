@@ -104,10 +104,9 @@ fn parent() {
         );
 
         println!("\ncódigo de saída do filho: {code}");
-        println!("  10 = herdado OK e por-nome negado (o cenário que queremos)");
-        println!("  11 = herdado FALHOU");
+        println!("  13 = herdado OK e por-nome negado (o cenário que queremos)");
         println!("  12 = herdado OK mas por-nome também abriu (jaula fraca no pipe)");
-        println!("  13 = alias de 'ambos como esperado' quando a leitura do servidor confirma");
+        println!("  11 = herdado FALHOU");
     }
 }
 
