@@ -1,0 +1,22 @@
+{
+  "jobs": [
+    {
+      "name": "gates / frontend",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/acme/widget/actions/runs/111111111/job/1"
+    },
+    {
+      "name": "build (ubuntu-22.04)",
+      "status": "in_progress",
+      "conclusion": null,
+      "url": "https://github.com/acme/widget/actions/runs/111111111/job/2"
+    },
+    {
+      "name": "publish",
+      "status": "queued",
+      "conclusion": null,
+      "url": null
+    }
+  ]
+}

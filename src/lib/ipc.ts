@@ -323,6 +323,35 @@ export const forgePrForSession = (id: SessionId) =>
 export const forgePrList = (id: SessionId) =>
   invoke<PullRequest[]>("forge_pr_list", { id });
 
+export interface WorkflowRun {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  url: string;
+  head_branch: string;
+  event: string;
+  created_at: string;
+}
+
+export interface WorkflowJob {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  url: string | null;
+}
+
+/**
+ * `null` = a forja não sabe olhar CI (GitLab hoje). `[]` = não há run.
+ * `fresh: false` aceita o cache do core — é o que faz o painel abrir instantâneo
+ * sem gastar um processo `gh` por troca de sessão.
+ */
+export const forgeWorkflowRuns = (id: SessionId, fresh: boolean) =>
+  invoke<WorkflowRun[] | null>("forge_workflow_runs", { id, fresh });
+
+export const forgeWorkflowJobs = (id: SessionId, runId: number) =>
+  invoke<WorkflowJob[]>("forge_workflow_jobs", { id, runId });
+
 export const forgePrComments = (id: SessionId, number: number) =>
   invoke<ForgeReviewComment[]>("forge_pr_comments", { id, number });
 

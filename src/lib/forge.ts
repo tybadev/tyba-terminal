@@ -4,6 +4,8 @@ import type {
   ForgeStatus,
   MergePreview,
   PullRequest,
+  WorkflowJob,
+  WorkflowRun,
 } from "./ipc";
 
 export type DeliveryAction = "open_pr" | "open_mr" | "merge_only";
@@ -64,6 +66,40 @@ export function overallChecksTone(checks: CheckRun[]): CheckTone | null {
   if (tones.includes("failure")) return "failure";
   if (tones.includes("pending")) return "pending";
   return "success";
+}
+
+/**
+ * Um run/job tem a mesma semântica de tom do CheckRun — status + conclusão —
+ * então a regra é uma só. Duplicá-la faria o painel de CI e o de PR divergirem
+ * na primeira conclusão nova que o GitHub inventasse.
+ */
+export function runTone(run: {
+  status: string;
+  conclusion: string | null;
+}): CheckTone {
+  return checkTone({ name: "", status: run.status, conclusion: run.conclusion });
+}
+
+/** Enquanto houver run rodando, o painel se atualiza; parado, ele para. */
+export function hasRunningWork(runs: WorkflowRun[]): boolean {
+  return runs.some((r) => r.status !== "completed");
+}
+
+/**
+ * O que o usuário quer ver primeiro é o que está acontecendo AGORA. Depois, o
+ * mais recente. A ordem do `gh` já é por data, mas um run antigo ainda rodando
+ * importa mais que um novo já concluído.
+ */
+export function sortRuns(runs: WorkflowRun[]): WorkflowRun[] {
+  const running = (r: WorkflowRun) => (r.status === "completed" ? 1 : 0);
+  return [...runs].sort(
+    (a, b) =>
+      running(a) - running(b) || b.created_at.localeCompare(a.created_at),
+  );
+}
+
+export function jobTone(job: WorkflowJob): CheckTone {
+  return runTone(job);
 }
 
 export function buildForgeCommentPrompt(

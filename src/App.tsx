@@ -69,7 +69,7 @@ import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
 import { WorktreesView } from "./components/WorktreesView";
 import { DiffView } from "./components/DiffView";
-import { PrPanel } from "./components/PrPanel";
+import { ForgePanel } from "./components/ForgePanel";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
 import { DiffStat } from "./components/DiffStat";
 import { SessionHoverCard } from "./components/SessionHoverCard";
@@ -2461,8 +2461,8 @@ export default function App() {
             </Tooltip>
           )}
 
-          <ErrorBoundary region="pull requests">
-            <PrPanel
+          <ErrorBoundary region="forge">
+            <ForgePanel
               sessionId={activeId}
               repoRoot={activeGitStatus?.root ?? null}
             />
