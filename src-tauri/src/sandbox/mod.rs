@@ -9,6 +9,8 @@ pub mod seatbelt;
 mod seatbelt_exec_tests;
 #[cfg(target_os = "linux")]
 pub mod seccomp;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 use std::path::PathBuf;
 
@@ -55,7 +57,13 @@ pub fn platform_sandbox() -> Result<Box<dyn Sandbox>, String> {
     {
         Ok(Box::new(bwrap::BwrapSandbox::new()?))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        // Camada A do Windows em construção: `new()` é fail-closed até o spawn
+        // enjaulado com ConPTY existir. Ver `sandbox/windows.rs`.
+        Ok(Box::new(windows::WindowsSandbox::new()?))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         Err(
             "sandbox de agente indisponível nesta plataforma — sessão recusada (fail-closed)"
