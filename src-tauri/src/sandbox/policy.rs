@@ -208,6 +208,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn variants_resolve_symlinks_preserving_literal() {
         let dir = tempfile::tempdir().unwrap();
@@ -220,6 +221,7 @@ mod tests {
         assert!(vs.contains(&target.canonicalize().unwrap()));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn variants_add_firmlink_form_for_data_volume_paths() {
         let vs = variants(Path::new("/nonexistent-y/dir"));

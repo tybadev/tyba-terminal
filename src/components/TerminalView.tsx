@@ -43,6 +43,20 @@ export const FONT_SIZE_EVENT = "tyba:font-size";
 
 const EXIT_BANNER_SETTLE_MS = 120;
 
+const IS_WINDOWS = navigator.platform.toUpperCase().includes("WIN");
+
+// O ConPTY passou a emitir as sequências de wrap corretas no build 21376 do
+// Win11 (microsoft/terminal#405). Informar `backend`+`buildNumber` ao xterm
+// desliga o reflow duplo que embaralha o terminal no resize: em vez de recalcular
+// a quebra de linha por conta própria (heurística "última coluna não-branca"), o
+// xterm passa a confiar nos marcadores do ConPTY — que no core roda com
+// PSEUDOCONSOLE_RESIZE_QUIRK. Como a jaula ConPTY é alvo exclusivo do Win11, o
+// piso 21376 é sempre satisfeito.
+const WINDOWS_PTY: { backend: "conpty"; buildNumber: number } = {
+  backend: "conpty",
+  buildNumber: 21376,
+};
+
 export function requestTerminalRelayout() {
   requestAnimationFrame(() => window.dispatchEvent(new Event(RELAYOUT_EVENT)));
 }
@@ -138,6 +152,7 @@ export function TerminalView({
       rightClickSelectsWord: true,
       macOptionClickForcesSelection: true,
       macOptionIsMeta: false,
+      ...(IS_WINDOWS ? { windowsPty: WINDOWS_PTY } : {}),
       linkHandler: {
         activate: (_event, uri) => {
           void openExternalUrl(uri);
@@ -159,8 +174,30 @@ export function TerminalView({
     });
     term.loadAddon(webLinks);
 
-    term.open(el);
-    fit.fit();
+    let disposed = false;
+    let opened = false;
+    // O StrictMode (dev) monta → desmonta → remonta o efeito no mesmo tick. Se
+    // `term.open()` rodar na montagem DESCARTÁVEL, o xterm agenda um `setTimeout`
+    // interno de layout que dispara DEPOIS do dispose — e lê `dimensions` de um
+    // renderer já morto (`RenderService._renderer.value` undefined → estoura em
+    // `Viewport.syncScrollArea`), derrubando o terminal. Por isso adiamos o open
+    // para um `requestAnimationFrame` e o cancelamos no cleanup: a montagem
+    // descartável nunca chega a abrir o xterm. No Windows/WebView2 o timing bate
+    // (por isso "nada, zero"); no mac não — mas o fix vale pros dois. O fit inicial
+    // só roda se o elemento já tem tamanho; senão o ResizeObserver refaz.
+    let openFrame = requestAnimationFrame(() => {
+      openFrame = 0;
+      if (disposed) return;
+      term.open(el);
+      opened = true;
+      if (el.offsetWidth > 0 && el.offsetHeight > 0) {
+        try {
+          fit.fit();
+        } catch {
+          /* dimensões ainda não prontas — o ResizeObserver refaz o fit */
+        }
+      }
+    });
 
     registerTerm(sessionId, { term, search });
 
@@ -177,9 +214,8 @@ export function TerminalView({
       void writeToSession(sessionId, data).catch(() => {});
     });
 
-    let disposed = false;
     void document.fonts.load('12px "Symbols Nerd Font Mono"').then((faces) => {
-      if (!disposed && faces.length > 0) term.clearTextureAtlas();
+      if (!disposed && opened && faces.length > 0) term.clearTextureAtlas();
     });
     let holdsAttachment = false;
     const unlisteners: Array<() => void> = [];
@@ -228,6 +264,7 @@ export function TerminalView({
     let timer: number | null = null;
     const refit = () => {
       timer = null;
+      if (!opened) return; // o rAF de open ainda não rodou — nada a ajustar
       if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
       const buffer = term.buffer.active;
       const wasAtBottom = buffer.viewportY === buffer.baseY;
@@ -269,6 +306,7 @@ export function TerminalView({
 
     return () => {
       disposed = true;
+      if (openFrame) cancelAnimationFrame(openFrame);
       releaseAttachment();
       if (timer !== null) window.clearTimeout(timer);
       ro.disconnect();
@@ -313,6 +351,27 @@ export function TerminalView({
       webglRef.current = null;
     }
   }, [focused, visible]);
+
+  // Ao ficar visível (troca de aba), o container sai de `display:none` e ganha
+  // tamanho, mas o canvas do xterm ainda está nas dimensões antigas — a CSS o
+  // estica até o ResizeObserver refazer o fit (com debounce de 80ms). Refaz o fit
+  // e re-renderiza JÁ (no próximo frame) pra não aparecer o frame esticado.
+  useEffect(() => {
+    if (!visible) return;
+    const term = termRef.current;
+    const el = containerRef.current;
+    if (!term || !el) return;
+    const raf = requestAnimationFrame(() => {
+      if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
+      try {
+        fitRef.current?.fit();
+      } catch {
+        /* dimensões ainda não prontas — o ResizeObserver refaz */
+      }
+      term.refresh(0, term.rows - 1);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [visible, rect]);
 
   const frameClass = framed ? "border border-tyba-border" : "";
   const frameStyle: React.CSSProperties =

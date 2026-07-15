@@ -568,8 +568,11 @@ fn spawn_prepared(
 
     let mut cmd = runner.build_command(&worktree.path, &env, &hook_setup);
     cmd.env("TYBA_HOOK_SOCKET", &socket_path);
-    let cmd = if runner.self_sandboxes() {
-        cmd
+    // Camada A do Windows (Opção B): a jaula se aplica no spawn (token + ConPTY),
+    // não por `wrap`. `jailed_spawner` devolve `Some` só no Windows; mac/linux
+    // seguem reescrevendo argv via `wrap` e `jail` fica `None`.
+    let (cmd, jail) = if runner.self_sandboxes() {
+        (cmd, None)
     } else {
         let sandbox = crate::sandbox::platform_sandbox()?;
         let spec = sandbox_spec(
@@ -581,7 +584,10 @@ fn spawn_prepared(
             &socket_path,
             &exe,
         )?;
-        sandbox.wrap(cmd, &spec)?
+        match sandbox.jailed_spawner(&spec)? {
+            Some(spawner) => (cmd, Some(spawner)),
+            None => (sandbox.wrap(cmd, &spec)?, None),
+        }
     };
 
     let handler_ctx = HandlerCtx {
@@ -614,6 +620,7 @@ fn spawn_prepared(
             title,
             Some(root),
             Some(worktree),
+            jail,
             opts.cols,
             opts.rows,
             on_exit,

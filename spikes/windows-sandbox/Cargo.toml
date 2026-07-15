@@ -22,6 +22,42 @@ path = "src/bin/afunix.rs"
 name = "worktree"
 path = "src/bin/worktree.rs"
 
+[[bin]]
+name = "nodecheck"
+path = "src/bin/nodecheck.rs"
+
+[[bin]]
+name = "jobobject"
+path = "src/bin/jobobject.rs"
+
+[[bin]]
+name = "envjail"
+path = "src/bin/envjail.rs"
+
+[[bin]]
+name = "denyacl"
+path = "src/bin/denyacl.rs"
+
+[[bin]]
+name = "mitigations"
+path = "src/bin/mitigations.rs"
+
+[[bin]]
+name = "gitshim"
+path = "src/bin/gitshim.rs"
+
+[[bin]]
+name = "layerb"
+path = "src/bin/layerb.rs"
+
+[[bin]]
+name = "wfp"
+path = "src/bin/wfp.rs"
+
+[[bin]]
+name = "conpty"
+path = "src/bin/conpty.rs"
+
 [dependencies.windows-sys]
 version = "0.59"
 features = [
@@ -30,6 +66,11 @@ features = [
     "Win32_Security_Authorization",
     "Win32_System_Threading",
     "Win32_System_Pipes",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_JobObjects",
+    "Win32_System_Console",
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_System_Rpc",
     "Win32_System_Memory",
     "Win32_Storage_FileSystem",
     "Win32_Networking_WinSock",

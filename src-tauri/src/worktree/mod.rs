@@ -25,6 +25,7 @@ const HOOKS_PATH: &str = "core.hooksPath=/dev/null";
 
 fn git_base(path: &Path) -> Command {
     let mut cmd = Command::new("git");
+    crate::repo::no_console_window(&mut cmd);
     cmd.arg("-C").arg(path);
     cmd.args([
         "-c",

@@ -1,12 +1,17 @@
-use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io::{BufReader, Read, Write};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
 use serde::Serialize;
 
-use super::protocol::{RequestEnvelope, ResponseEnvelope, PROTOCOL_VERSION};
+use super::framing;
+use super::protocol::ResponseEnvelope;
+
+#[cfg(unix)]
+type Stream = std::os::unix::net::UnixStream;
+#[cfg(windows)]
+type Stream = super::pipe::Pipe;
 
 const PRE_TOOL_USE: &str = "PreToolUse";
 const PERMISSION_REQUEST: &str = "PermissionRequest";
@@ -124,9 +129,19 @@ fn emit_transport_failure<W: Write>(stdout: &mut W, kind: EventKind) {
     }
 }
 
-fn connect_with_retry(socket_path: &Path, retry: RetryPlan) -> Option<UnixStream> {
+#[cfg(unix)]
+fn connect_once(socket_path: &Path) -> Option<Stream> {
+    std::os::unix::net::UnixStream::connect(socket_path).ok()
+}
+
+#[cfg(windows)]
+fn connect_once(socket_path: &Path) -> Option<Stream> {
+    super::pipe::connect(&super::pipe::pipe_name(socket_path))
+}
+
+fn connect_with_retry(socket_path: &Path, retry: RetryPlan) -> Option<Stream> {
     for attempt in 0..retry.attempts {
-        if let Ok(stream) = UnixStream::connect(socket_path) {
+        if let Some(stream) = connect_once(socket_path) {
             return Some(stream);
         }
         let backoff = retry.base * 2u32.pow(attempt);
@@ -135,23 +150,9 @@ fn connect_with_retry(socket_path: &Path, retry: RetryPlan) -> Option<UnixStream
     None
 }
 
-fn exchange(mut stream: UnixStream, event: &serde_json::Value) -> Option<ResponseEnvelope> {
-    let request = RequestEnvelope {
-        v: PROTOCOL_VERSION,
-        event: event.clone(),
-    };
-    let mut payload = serde_json::to_vec(&request).ok()?;
-    payload.push(b'\n');
-    stream.write_all(&payload).ok()?;
-    stream.flush().ok()?;
-
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    match reader.read_line(&mut line) {
-        Ok(0) | Err(_) => return None,
-        Ok(_) => {}
-    }
-    serde_json::from_str::<ResponseEnvelope>(line.trim_end()).ok()
+fn exchange(stream: Stream, event: &serde_json::Value) -> Option<ResponseEnvelope> {
+    let read_half = stream.try_clone().ok()?;
+    framing::exchange(BufReader::new(read_half), stream, event)
 }
 
 fn emit_response<W: Write>(

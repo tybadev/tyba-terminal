@@ -361,13 +361,13 @@ pub fn docker_bin() -> Option<&'static PathBuf> {
             format!("{home}/.docker/bin/docker"),
         ];
         candidates.into_iter().map(PathBuf::from).find(|c| {
-            Command::new(c)
-                .arg("--version")
+            let mut cmd = Command::new(c);
+            cmd.arg("--version")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success())
+                .stderr(Stdio::null());
+            crate::repo::no_console_window(&mut cmd);
+            cmd.status().is_ok_and(|s| s.success())
         })
     })
     .as_ref()
@@ -396,12 +396,13 @@ fn drain(
 
 fn run_docker(args: &[&str], timeout: Duration) -> Result<String, DockerError> {
     let bin = docker_bin().ok_or(DockerError::NotInstalled)?;
-    let mut child = Command::new(bin)
-        .args(args)
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    crate::repo::no_console_window(&mut cmd);
+    let mut child = cmd.spawn()?;
     let (out, err) = drain(&mut child);
     let start = Instant::now();
     loop {

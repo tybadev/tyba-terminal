@@ -1225,6 +1225,7 @@ export default function App() {
       name: string,
       group?: string | null,
       worktreeTask?: string,
+      shell?: string,
     ) => {
       const session = await createSession({
         kind: { type: "shell" },
@@ -1232,6 +1233,7 @@ export default function App() {
         cols: 100,
         rows: 30,
         worktree_task: worktreeTask,
+        shell,
       });
       setSessions((prev) => [...prev, session]);
       try {
@@ -1790,21 +1792,26 @@ export default function App() {
         const key = e.key.toLowerCase();
         if (key === "arrowleft" || key === "arrowright") {
           e.preventDefault();
+          e.stopPropagation();
           resizeActivePane("v", key === "arrowright" ? 0.05 : -0.05);
           return;
         }
         if (key === "arrowup" || key === "arrowdown") {
           e.preventDefault();
+          e.stopPropagation();
           resizeActivePane("h", key === "arrowdown" ? 0.05 : -0.05);
           return;
         }
       }
-      if (isTabDigitChord(e) && !e.repeat && e.key >= "1" && e.key <= "9") {
+      if (isTabDigitChord(e) && e.key >= "1" && e.key <= "9") {
+        // Consome o chord SEMPRE (mesmo já na aba, ou aba inexistente), senão o
+        // dígito vaza pro xterm e é digitado no shell.
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;
         const target = activeWorkspace?.tabs[Number(e.key) - 1];
-        if (target) {
-          e.preventDefault();
-          void activateTab(target.id);
-        }
+        if (target) void activateTab(target.id);
+        return;
       }
     };
     window.addEventListener("keydown", onKey, true);
@@ -1965,7 +1972,9 @@ export default function App() {
     // renomeou de propósito → o nome escolhido fica.
     const displayName = w.name_locked
       ? w.name
-      : (displayDir?.split("/").filter(Boolean).pop() ?? w.name);
+      : displayDir
+        ? basename(displayDir)
+        : w.name;
     const snapshot = gitDir ? snapshotForDir(repoSnapshots, gitDir) : undefined;
     const branch = snapshot?.branch ?? undefined;
     const gitStatus = showGitStatus
@@ -2280,12 +2289,12 @@ export default function App() {
         }}
         isolate={newSessionIsolate}
         onIsolateChange={setNewSessionIsolate}
-        onCreate={(cwd, name, isolate) => {
+        onCreate={(cwd, name, isolate, shell) => {
           if (isolate && cwd) {
             setWorktreeDir(cwd);
             return;
           }
-          void newSession(cwd, name, pendingGroup);
+          void newSession(cwd, name, pendingGroup, undefined, shell ?? undefined);
         }}
       />
       <WorktreeCreateDialog
