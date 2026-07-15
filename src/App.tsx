@@ -1792,21 +1792,26 @@ export default function App() {
         const key = e.key.toLowerCase();
         if (key === "arrowleft" || key === "arrowright") {
           e.preventDefault();
+          e.stopPropagation();
           resizeActivePane("v", key === "arrowright" ? 0.05 : -0.05);
           return;
         }
         if (key === "arrowup" || key === "arrowdown") {
           e.preventDefault();
+          e.stopPropagation();
           resizeActivePane("h", key === "arrowdown" ? 0.05 : -0.05);
           return;
         }
       }
-      if (isTabDigitChord(e) && !e.repeat && e.key >= "1" && e.key <= "9") {
+      if (isTabDigitChord(e) && e.key >= "1" && e.key <= "9") {
+        // Consome o chord SEMPRE (mesmo já na aba, ou aba inexistente), senão o
+        // dígito vaza pro xterm e é digitado no shell.
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;
         const target = activeWorkspace?.tabs[Number(e.key) - 1];
-        if (target) {
-          e.preventDefault();
-          void activateTab(target.id);
-        }
+        if (target) void activateTab(target.id);
+        return;
       }
     };
     window.addEventListener("keydown", onKey, true);

@@ -352,6 +352,27 @@ export function TerminalView({
     }
   }, [focused, visible]);
 
+  // Ao ficar visível (troca de aba), o container sai de `display:none` e ganha
+  // tamanho, mas o canvas do xterm ainda está nas dimensões antigas — a CSS o
+  // estica até o ResizeObserver refazer o fit (com debounce de 80ms). Refaz o fit
+  // e re-renderiza JÁ (no próximo frame) pra não aparecer o frame esticado.
+  useEffect(() => {
+    if (!visible) return;
+    const term = termRef.current;
+    const el = containerRef.current;
+    if (!term || !el) return;
+    const raf = requestAnimationFrame(() => {
+      if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
+      try {
+        fitRef.current?.fit();
+      } catch {
+        /* dimensões ainda não prontas — o ResizeObserver refaz */
+      }
+      term.refresh(0, term.rows - 1);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [visible, rect]);
+
   const frameClass = framed ? "border border-tyba-border" : "";
   const frameStyle: React.CSSProperties =
     framed && focused
