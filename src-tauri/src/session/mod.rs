@@ -25,6 +25,7 @@ pub type SessionId = Uuid;
 pub enum SessionKind {
     Shell,
     Agent { runner: AgentRunnerKind },
+    Ssh { host_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,6 +277,40 @@ impl SessionManager {
             cmd,
             SessionKind::Shell,
             title,
+            None,
+            None,
+            None,
+            cols,
+            rows,
+            on_exit,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_ssh_session(
+        &self,
+        app: AppHandle,
+        pty_pool: &SharedPtyPool,
+        host_id: String,
+        alias: &str,
+        cwd: Option<&std::path::Path>,
+        cols: u16,
+        rows: u16,
+        on_exit: impl FnOnce(SessionId) + Send + 'static,
+    ) -> Result<Session, PtyError> {
+        let id = Uuid::new_v4();
+        let mut cmd = CommandBuilder::new("ssh");
+        cmd.arg(alias);
+        if let Some(cwd) = cwd {
+            cmd.cwd(cwd);
+        }
+        self.spawn_session(
+            app,
+            pty_pool,
+            id,
+            cmd,
+            SessionKind::Ssh { host_id },
+            format!("ssh {alias}"),
             None,
             None,
             None,

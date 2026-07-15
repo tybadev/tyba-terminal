@@ -9,7 +9,8 @@ export type SessionId = string;
 
 export type SessionKind =
   | { type: "shell" }
-  | { type: "agent"; runner: "claude_code" | "codex" | { custom: string } };
+  | { type: "agent"; runner: "claude_code" | "codex" | { custom: string } }
+  | { type: "ssh"; host_id: string };
 
 export type AwaitingReason = "approval" | "reply";
 
@@ -428,6 +429,68 @@ export const attachSession = (id: SessionId) =>
 
 export const detachSession = (id: SessionId) =>
   invoke<void>("detach_session", { id });
+
+// --- SSH: gestor de conexões (Host / Host Group) ---
+
+export interface Host {
+  id: string;
+  alias: string;
+  hostname: string;
+  port: number | null;
+  username: string | null;
+  identity_file: string | null;
+  proxy_jump: string | null;
+  group_id: string | null;
+  color: string | null;
+  notes: string | null;
+  position: number;
+  created_at: string;
+  last_connected_at: string | null;
+}
+
+export interface HostGroup {
+  id: string;
+  name: string;
+  color: string | null;
+  notes: string | null;
+  position: number;
+  created_at: string;
+}
+
+export interface HostInput {
+  alias: string;
+  hostname: string;
+  port?: number | null;
+  username?: string | null;
+  identity_file?: string | null;
+  proxy_jump?: string | null;
+  group_id?: string | null;
+  color?: string | null;
+  notes?: string | null;
+}
+
+export interface HostGroupInput {
+  name: string;
+  color?: string | null;
+  notes?: string | null;
+}
+
+export const listHosts = () => invoke<Host[]>("list_hosts");
+export const listHostGroups = () => invoke<HostGroup[]>("list_host_groups");
+export const createHost = (input: HostInput) =>
+  invoke<Host>("create_host", { input });
+export const updateHost = (host: Host) => invoke<Host>("update_host", { host });
+export const deleteHost = (id: string) => invoke<void>("delete_host", { id });
+export const createHostGroup = (input: HostGroupInput) =>
+  invoke<HostGroup>("create_host_group", { input });
+export const updateHostGroup = (group: HostGroup) =>
+  invoke<HostGroup>("update_host_group", { group });
+export const deleteHostGroup = (id: string) =>
+  invoke<void>("delete_host_group", { id });
+
+/** Conecta a um Host abrindo uma SSH Session (reusa create_session). */
+export const connectHost = (hostId: string, cols: number, rows: number) =>
+  createSession({ kind: { type: "ssh", host_id: hostId }, cols, rows });
 
 export const resizeSession = (id: SessionId, cols: number, rows: number) =>
   invoke<void>("resize_session", { id, cols, rows });

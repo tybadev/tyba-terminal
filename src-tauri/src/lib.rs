@@ -13,6 +13,7 @@ pub mod rich_input;
 pub mod sandbox;
 pub mod session;
 pub mod shell_path;
+pub mod ssh;
 pub mod status;
 pub mod theme;
 pub mod update;
@@ -91,7 +92,7 @@ fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
 fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
     for id in ids {
         if let Some(s) = state.sessions.get(*id) {
-            if matches!(s.kind, SessionKind::Shell) {
+            if matches!(s.kind, SessionKind::Shell | SessionKind::Ssh { .. }) {
                 state.sessions.dispose(&state.pty_pool, *id);
             }
         }
@@ -111,7 +112,7 @@ fn session_exited(app: &AppHandle, id: SessionId) {
         return;
     };
     teardown_agent_session(app, &state, id);
-    if matches!(session.kind, SessionKind::Shell) {
+    if matches!(session.kind, SessionKind::Shell | SessionKind::Ssh { .. }) {
         state.sessions.dispose(&state.pty_pool, id);
         let _ = state.layout.session_disposed(id);
         emit_layout(app, &state);
@@ -285,9 +286,161 @@ fn create_session(
                 session_exited(&handle, id)
             })
             .map_err(|e| e.to_string())?,
+        SessionKind::Ssh { host_id } => {
+            let host = state
+                .store
+                .load_hosts()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|h| &h.id == host_id)
+                .ok_or_else(|| {
+                    crate::error::AppError::new("ssh.host_not_found")
+                        .with("id", host_id.clone())
+                        .to_string()
+                })?;
+            let home = crate::ssh::home_dir();
+            let session = state
+                .sessions
+                .create_ssh_session(
+                    app.clone(),
+                    &state.pty_pool,
+                    host.id.clone(),
+                    &host.alias,
+                    home.as_deref(),
+                    opts.cols,
+                    opts.rows,
+                    move |id| session_exited(&handle, id),
+                )
+                .map_err(|e| e.to_string())?;
+            let _ = state
+                .store
+                .touch_host_connected(&host.id, chrono::Utc::now());
+            session
+        }
     };
     run_setup_if_consented(&app, &state, &session);
     Ok(session)
+}
+
+fn store_err(e: session::store::StoreError) -> crate::error::AppError {
+    crate::error::AppError::new("store.failed").with("detail", e.to_string())
+}
+
+fn validate_alias(alias: &str) -> Result<(), crate::error::AppError> {
+    if alias.trim().is_empty() || alias.chars().any(|c| c.is_whitespace()) {
+        return Err(
+            crate::error::AppError::new("ssh.alias_invalid").with("alias", alias.to_string())
+        );
+    }
+    Ok(())
+}
+
+fn rematerialize_hosts(state: &State<'_, AppState>) -> Result<(), crate::error::AppError> {
+    let hosts = state.store.load_hosts().map_err(store_err)?;
+    if let Some(home) = crate::ssh::home_dir() {
+        crate::ssh::config::materialize(&home, &hosts)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_hosts(state: State<'_, AppState>) -> Result<Vec<crate::ssh::Host>, crate::error::AppError> {
+    state.store.load_hosts().map_err(store_err)
+}
+
+#[tauri::command]
+fn list_host_groups(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::ssh::HostGroup>, crate::error::AppError> {
+    state.store.load_host_groups().map_err(store_err)
+}
+
+#[tauri::command]
+fn create_host(
+    state: State<'_, AppState>,
+    input: crate::ssh::HostInput,
+) -> Result<crate::ssh::Host, crate::error::AppError> {
+    validate_alias(&input.alias)?;
+    let existing = state.store.load_hosts().map_err(store_err)?;
+    if existing.iter().any(|h| h.alias == input.alias) {
+        return Err(crate::error::AppError::new("ssh.alias_duplicate").with("alias", input.alias));
+    }
+    let host = crate::ssh::Host {
+        id: uuid::Uuid::new_v4().to_string(),
+        alias: input.alias,
+        hostname: input.hostname,
+        port: input.port,
+        username: input.username,
+        identity_file: input.identity_file,
+        proxy_jump: input.proxy_jump,
+        group_id: input.group_id,
+        color: input.color,
+        notes: input.notes,
+        position: existing.len() as i64,
+        created_at: chrono::Utc::now(),
+        last_connected_at: None,
+    };
+    state.store.upsert_host(&host).map_err(store_err)?;
+    rematerialize_hosts(&state)?;
+    Ok(host)
+}
+
+#[tauri::command]
+fn update_host(
+    state: State<'_, AppState>,
+    host: crate::ssh::Host,
+) -> Result<crate::ssh::Host, crate::error::AppError> {
+    validate_alias(&host.alias)?;
+    let existing = state.store.load_hosts().map_err(store_err)?;
+    if existing
+        .iter()
+        .any(|h| h.alias == host.alias && h.id != host.id)
+    {
+        return Err(crate::error::AppError::new("ssh.alias_duplicate").with("alias", host.alias));
+    }
+    state.store.upsert_host(&host).map_err(store_err)?;
+    rematerialize_hosts(&state)?;
+    Ok(host)
+}
+
+#[tauri::command]
+fn delete_host(state: State<'_, AppState>, id: String) -> Result<(), crate::error::AppError> {
+    state.store.remove_host(&id).map_err(store_err)?;
+    rematerialize_hosts(&state)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn create_host_group(
+    state: State<'_, AppState>,
+    input: crate::ssh::HostGroupInput,
+) -> Result<crate::ssh::HostGroup, crate::error::AppError> {
+    let existing = state.store.load_host_groups().map_err(store_err)?;
+    let group = crate::ssh::HostGroup {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: input.name,
+        color: input.color,
+        notes: input.notes,
+        position: existing.len() as i64,
+        created_at: chrono::Utc::now(),
+    };
+    state.store.upsert_host_group(&group).map_err(store_err)?;
+    Ok(group)
+}
+
+#[tauri::command]
+fn update_host_group(
+    state: State<'_, AppState>,
+    group: crate::ssh::HostGroup,
+) -> Result<crate::ssh::HostGroup, crate::error::AppError> {
+    state.store.upsert_host_group(&group).map_err(store_err)?;
+    Ok(group)
+}
+
+#[tauri::command]
+fn delete_host_group(state: State<'_, AppState>, id: String) -> Result<(), crate::error::AppError> {
+    state.store.remove_host_group(&id).map_err(store_err)?;
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -1942,6 +2095,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent_binary_available,
             create_session,
+            list_hosts,
+            list_host_groups,
+            create_host,
+            update_host,
+            delete_host,
+            create_host_group,
+            update_host_group,
+            delete_host_group,
             write_to_session,
             submit_rich_input,
             set_agent_match_pattern,

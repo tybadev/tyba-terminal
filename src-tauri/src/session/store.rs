@@ -7,6 +7,7 @@ use rusqlite::{params, Connection};
 use crate::layout::{LayoutRows, PaneRow, TabRow, WorkspaceRow};
 use crate::session::redact::redact;
 use crate::session::{Session, SessionId, SessionKind, SessionStatus};
+use crate::ssh::{Host, HostGroup};
 use crate::worktree::Worktree;
 
 const SCHEMA: &str = "
@@ -80,6 +81,29 @@ CREATE TABLE IF NOT EXISTS panes (
     ratio REAL,
     position INTEGER,
     session_id TEXT
+);
+CREATE TABLE IF NOT EXISTS host_group (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    color TEXT,
+    notes TEXT,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS host (
+    id TEXT PRIMARY KEY,
+    alias TEXT NOT NULL UNIQUE,
+    hostname TEXT NOT NULL,
+    port INTEGER,
+    username TEXT,
+    identity_file TEXT,
+    proxy_jump TEXT,
+    group_id TEXT REFERENCES host_group(id) ON DELETE SET NULL,
+    color TEXT,
+    notes TEXT,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    last_connected_at TEXT
 );
 ";
 
@@ -172,6 +196,127 @@ impl Store {
             "DELETE FROM sessions WHERE id = ?1",
             params![id.to_string()],
         )?;
+        Ok(())
+    }
+
+    pub fn upsert_host(&self, h: &Host) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO host (id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(id) DO UPDATE SET
+                alias = ?2, hostname = ?3, port = ?4, username = ?5, identity_file = ?6,
+                proxy_jump = ?7, group_id = ?8, color = ?9, notes = ?10, position = ?11,
+                last_connected_at = ?13",
+            params![
+                h.id,
+                h.alias,
+                h.hostname,
+                h.port,
+                h.username,
+                h.identity_file,
+                h.proxy_jump,
+                h.group_id,
+                h.color,
+                h.notes,
+                h.position,
+                h.created_at.to_rfc3339(),
+                h.last_connected_at.map(|t| t.to_rfc3339()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_hosts(&self) -> Result<Vec<Host>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at
+             FROM host ORDER BY position, alias",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(RawHost {
+                id: row.get(0)?,
+                alias: row.get(1)?,
+                hostname: row.get(2)?,
+                port: row.get(3)?,
+                username: row.get(4)?,
+                identity_file: row.get(5)?,
+                proxy_jump: row.get(6)?,
+                group_id: row.get(7)?,
+                color: row.get(8)?,
+                notes: row.get(9)?,
+                position: row.get(10)?,
+                created_at: row.get(11)?,
+                last_connected_at: row.get(12)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?.into_host()?);
+        }
+        Ok(out)
+    }
+
+    pub fn remove_host(&self, id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM host WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn touch_host_connected(&self, id: &str, when: DateTime<Utc>) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE host SET last_connected_at = ?2 WHERE id = ?1",
+            params![id, when.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_host_group(&self, g: &HostGroup) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO host_group (id, name, color, notes, position, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                name = ?2, color = ?3, notes = ?4, position = ?5",
+            params![
+                g.id,
+                g.name,
+                g.color,
+                g.notes,
+                g.position,
+                g.created_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_host_groups(&self) -> Result<Vec<HostGroup>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, color, notes, position, created_at
+             FROM host_group ORDER BY position, name",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(RawHostGroup {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                notes: row.get(3)?,
+                position: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?.into_group()?);
+        }
+        Ok(out)
+    }
+
+    pub fn remove_host_group(&self, id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM host_group WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -551,6 +696,67 @@ impl RawSession {
     }
 }
 
+struct RawHost {
+    id: String,
+    alias: String,
+    hostname: String,
+    port: Option<i64>,
+    username: Option<String>,
+    identity_file: Option<String>,
+    proxy_jump: Option<String>,
+    group_id: Option<String>,
+    color: Option<String>,
+    notes: Option<String>,
+    position: i64,
+    created_at: String,
+    last_connected_at: Option<String>,
+}
+
+impl RawHost {
+    fn into_host(self) -> Result<Host, StoreError> {
+        Ok(Host {
+            id: self.id,
+            alias: self.alias,
+            hostname: self.hostname,
+            port: self.port.map(|p| p as u16),
+            username: self.username,
+            identity_file: self.identity_file,
+            proxy_jump: self.proxy_jump,
+            group_id: self.group_id,
+            color: self.color,
+            notes: self.notes,
+            position: self.position,
+            created_at: DateTime::parse_from_rfc3339(&self.created_at)?.with_timezone(&Utc),
+            last_connected_at: match self.last_connected_at {
+                Some(s) => Some(DateTime::parse_from_rfc3339(&s)?.with_timezone(&Utc)),
+                None => None,
+            },
+        })
+    }
+}
+
+struct RawHostGroup {
+    id: String,
+    name: String,
+    color: Option<String>,
+    notes: Option<String>,
+    position: i64,
+    created_at: String,
+}
+
+impl RawHostGroup {
+    fn into_group(self) -> Result<HostGroup, StoreError> {
+        Ok(HostGroup {
+            id: self.id,
+            name: self.name,
+            color: self.color,
+            notes: self.notes,
+            position: self.position,
+            created_at: DateTime::parse_from_rfc3339(&self.created_at)?.with_timezone(&Utc),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +787,74 @@ mod tests {
         assert_eq!(loaded[0].title, "zsh");
         assert!(matches!(loaded[0].status, SessionStatus::Running));
         assert_eq!(loaded[0].repo_root, Some(PathBuf::from("/repo")));
+    }
+
+    fn sample_host(alias: &str) -> Host {
+        Host {
+            id: uuid::Uuid::new_v4().to_string(),
+            alias: alias.to_string(),
+            hostname: format!("{alias}.example.com"),
+            port: Some(22),
+            username: Some("deploy".into()),
+            identity_file: None,
+            proxy_jump: None,
+            group_id: None,
+            color: None,
+            notes: None,
+            position: 0,
+            created_at: Utc::now(),
+            last_connected_at: None,
+        }
+    }
+
+    #[test]
+    fn round_trips_a_host() {
+        let store = Store::open_in_memory().unwrap();
+        let h = sample_host("web-01");
+        store.upsert_host(&h).unwrap();
+        let loaded = store.load_hosts().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].alias, "web-01");
+        assert_eq!(loaded[0].port, Some(22));
+        assert_eq!(loaded[0].username.as_deref(), Some("deploy"));
+    }
+
+    #[test]
+    fn upsert_host_updates_in_place_then_remove_deletes() {
+        let store = Store::open_in_memory().unwrap();
+        let mut h = sample_host("db-01");
+        store.upsert_host(&h).unwrap();
+        h.hostname = "10.0.0.9".into();
+        store.upsert_host(&h).unwrap();
+        let loaded = store.load_hosts().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].hostname, "10.0.0.9");
+        store.remove_host(&h.id).unwrap();
+        assert!(store.load_hosts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn host_group_round_trips_and_fk_nulls_on_group_delete() {
+        let store = Store::open_in_memory().unwrap();
+        let g = HostGroup {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "prod".into(),
+            color: Some("#f00".into()),
+            notes: None,
+            position: 0,
+            created_at: Utc::now(),
+        };
+        store.upsert_host_group(&g).unwrap();
+        let mut h = sample_host("web-01");
+        h.group_id = Some(g.id.clone());
+        store.upsert_host(&h).unwrap();
+        assert_eq!(store.load_host_groups().unwrap().len(), 1);
+        assert_eq!(
+            store.load_hosts().unwrap()[0].group_id.as_deref(),
+            Some(g.id.as_str())
+        );
+        store.remove_host_group(&g.id).unwrap();
+        assert_eq!(store.load_hosts().unwrap()[0].group_id, None);
     }
 
     #[test]

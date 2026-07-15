@@ -8,6 +8,7 @@ import {
   GearSix,
   GitBranch,
   GitDiff,
+  HardDrives,
   Keyboard,
   MagnifyingGlass,
   Plus,
@@ -64,6 +65,7 @@ import { Clock } from "./components/Clock";
 import { CommandPalette } from "./components/CommandPalette";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ContainersView } from "./components/ContainersView";
+import { ConnectionsView } from "./components/ConnectionsView";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
@@ -147,6 +149,7 @@ import {
   type SessionKind,
   type SplitKind,
   type Workspace,
+  type Host,
   appVersion,
   updateCheck,
   updateDismiss,
@@ -1249,6 +1252,20 @@ export default function App() {
     },
     [],
   );
+
+  const connectToHost = useCallback(async (host: Host) => {
+    const session = await createSession({
+      kind: { type: "ssh", host_id: host.id },
+      cols: 100,
+      rows: 30,
+    });
+    setSessions((prev) => [...prev, session]);
+    try {
+      await createWorkspace(host.alias, null, session.id);
+    } catch {
+      void disposeSession(session.id).catch(() => {});
+    }
+  }, []);
 
   const newAgentSession = useCallback(
     async (
@@ -2714,6 +2731,30 @@ export default function App() {
                         {t("newSession")}
                       </TooltipContent>
                     </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          onClick={() =>
+                            void openViewTab("connections").catch(() => {})
+                          }
+                          aria-label={t("connectionsTitle")}
+                          className={`mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal ${
+                            open ? "justify-start px-2" : "justify-center px-0"
+                          } ${
+                            activeTab?.view === "connections"
+                              ? "bg-tyba-text/[.05] text-tyba-text"
+                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text"
+                          }`}
+                        >
+                          <HardDrives size={14} />
+                          {open && t("connectionsTitle")}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side={open ? "bottom" : "right"}>
+                        {t("connectionsTitle")}
+                      </TooltipContent>
+                    </Tooltip>
                   </nav>
                 </aside>
               )}
@@ -2761,6 +2802,13 @@ export default function App() {
                       <ContainersView
                         onAvailableChange={setDockerUp}
                         onRunningChange={setDockerRunning}
+                      />
+                    </div>
+                  )}
+                  {activeTab?.view === "connections" && (
+                    <div className="absolute inset-0 flex">
+                      <ConnectionsView
+                        onConnect={(host) => void connectToHost(host)}
                       />
                     </div>
                   )}
