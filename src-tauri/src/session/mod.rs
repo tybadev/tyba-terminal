@@ -120,6 +120,10 @@ pub struct CreateSessionOpts {
     /// gate de aprovação — é só a origem da pasta que muda.
     #[serde(default)]
     pub attach_existing: bool,
+    /// Id do shell escolhido no picker (ver [`available_shells`]). `None` cai no
+    /// [`default_shell`]. Só vale para sessão de shell.
+    #[serde(default)]
+    pub shell: Option<String>,
 }
 
 pub struct SessionManager {
@@ -171,10 +175,20 @@ impl SessionManager {
             None => (None, None),
         };
 
-        let shell = default_shell();
-        let label = shell_label(&shell);
         let integration = self.shell_integration_enabled();
-        let mut cmd = CommandBuilder::new(&shell);
+        let (program, pre_args, label): (PathBuf, Vec<String>, String) =
+            match opts.shell.as_deref().and_then(resolve_shell) {
+                Some(sh) => (sh.program, sh.args, sh.label),
+                None => {
+                    let program = default_shell();
+                    let label = shell_label(&program);
+                    (PathBuf::from(program), Vec::new(), label)
+                }
+            };
+        let mut cmd = CommandBuilder::new(&program);
+        for arg in &pre_args {
+            cmd.arg(arg);
+        }
 
         let bash_rc = if cfg!(unix) && label == "bash" && integration {
             bash_integration_file()
@@ -196,7 +210,7 @@ impl SessionManager {
             Some(wt) => wt.path.clone(),
             None => resolve_cwd(opts.cwd.as_deref()),
         };
-        cmd.cwd(strip_verbatim_prefix(cwd));
+        cmd.cwd(strip_verbatim_prefix(&cwd));
 
         if label == "zsh" && integration {
             if let Some(dir) = zsh_integration_dir() {
@@ -298,7 +312,10 @@ impl SessionManager {
 
         // Lido do próprio comando: pega todo caminho de spawn (shell, agente,
         // tab de container) sem espalhar mais um parâmetro por todos eles.
-        let cwd = cmd.get_cwd().map(PathBuf::from);
+        // Sem o prefixo verbatim do Windows (`\\?\`) — é o cwd que a UI exibe.
+        let cwd = cmd
+            .get_cwd()
+            .map(|c| strip_verbatim_prefix(Path::new(c)));
 
         pty_pool.spawn(
             app.clone(),
@@ -462,22 +479,6 @@ pub fn expand_home(path: &Path) -> PathBuf {
         return PathBuf::from(home).join(rest);
     }
     path.to_path_buf()
-}
-
-/// Remove o prefixo verbatim `\\?\` (e `\\?\UNC\`) de um caminho. O
-/// `std::fs::canonicalize` do Windows devolve esse prefixo, e ele vazava até o cwd
-/// do shell — **cmd.exe e o PowerShell não aceitam `\\?\`/UNC como diretório de
-/// trabalho** e saem/erram na hora (era a causa do "shell não abre" no Windows).
-/// Em Unix é no-op (nenhum caminho tem esse prefixo).
-fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
-    let s = path.to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{rest}"));
-    }
-    if let Some(rest) = s.strip_prefix(r"\\?\") {
-        return PathBuf::from(rest.to_string());
-    }
-    path
 }
 
 pub fn resolve_cwd(requested: Option<&Path>) -> PathBuf {
@@ -702,7 +703,7 @@ pub fn default_shell() -> String {
 #[cfg(windows)]
 fn windows_default_shell() -> String {
     if let Some(pwsh) = find_on_path("pwsh.exe") {
-        return pwsh;
+        return pwsh.to_string_lossy().into_owned();
     }
     if let Some(root) = std::env::var_os("SystemRoot") {
         let ps5 = std::path::Path::new(&root)
@@ -714,20 +715,201 @@ fn windows_default_shell() -> String {
     std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
 }
 
-#[cfg(windows)]
-fn find_on_path(exe: &str) -> Option<String> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(exe))
-        .find(|p| p.is_file())
-        .map(|p| p.to_string_lossy().into_owned())
-}
-
 fn shell_label(shell: &str) -> String {
     std::path::Path::new(shell)
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| shell.to_string())
+}
+
+/// Um shell que o usuário pode escolher ao abrir uma sessão. `id` é estável e
+/// reversível por [`resolve_shell`]; `program`/`args` acompanham só para o
+/// picker exibir/depurar — quem spawna é sempre o core, a partir do `id`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ShellOption {
+    pub id: String,
+    pub label: String,
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+/// Programa + args já resolvidos a partir de um `id` de shell.
+pub struct ResolvedShell {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub label: String,
+}
+
+/// Shells disponíveis nesta máquina, na ordem que o picker mostra.
+#[cfg(windows)]
+pub fn available_shells() -> Vec<ShellOption> {
+    let mut out = Vec::new();
+    if let Some(pwsh) = find_on_path("pwsh.exe") {
+        out.push(ShellOption {
+            id: "pwsh".into(),
+            label: "PowerShell 7".into(),
+            program: pwsh.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        });
+    }
+    if let Some(ps) = windows_powershell() {
+        out.push(ShellOption {
+            id: "powershell".into(),
+            label: "Windows PowerShell".into(),
+            program: ps.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        });
+    }
+    let cmd = windows_cmd();
+    out.push(ShellOption {
+        id: "cmd".into(),
+        label: "Prompt de Comando".into(),
+        program: cmd.to_string_lossy().into_owned(),
+        args: Vec::new(),
+    });
+    for distro in wsl_distros() {
+        out.push(ShellOption {
+            id: format!("wsl:{distro}"),
+            label: format!("WSL: {distro}"),
+            program: "wsl.exe".into(),
+            args: vec!["-d".into(), distro],
+        });
+    }
+    out
+}
+
+#[cfg(not(windows))]
+pub fn available_shells() -> Vec<ShellOption> {
+    let program = default_shell();
+    let label = shell_label(&program);
+    vec![ShellOption {
+        id: "default".into(),
+        label,
+        program,
+        args: Vec::new(),
+    }]
+}
+
+/// Reconstrói o programa a spawnar a partir de um `id` do picker. Devolve `None`
+/// se o `id` não corresponde a nada disponível — a sessão então cai no
+/// [`default_shell`] (fail-safe, nunca spawna algo arbitrário).
+#[cfg(windows)]
+pub fn resolve_shell(id: &str) -> Option<ResolvedShell> {
+    if let Some(distro) = id.strip_prefix("wsl:") {
+        if distro.is_empty() {
+            return None;
+        }
+        return Some(ResolvedShell {
+            program: PathBuf::from("wsl.exe"),
+            args: vec!["-d".into(), distro.to_string()],
+            label: format!("WSL: {distro}"),
+        });
+    }
+    match id {
+        "pwsh" => find_on_path("pwsh.exe").map(|program| ResolvedShell {
+            program,
+            args: Vec::new(),
+            label: "PowerShell 7".into(),
+        }),
+        "powershell" => windows_powershell().map(|program| ResolvedShell {
+            program,
+            args: Vec::new(),
+            label: "Windows PowerShell".into(),
+        }),
+        "cmd" => Some(ResolvedShell {
+            program: windows_cmd(),
+            args: Vec::new(),
+            label: "Prompt de Comando".into(),
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(not(windows))]
+pub fn resolve_shell(id: &str) -> Option<ResolvedShell> {
+    if id != "default" {
+        return None;
+    }
+    let program = default_shell();
+    let label = shell_label(&program);
+    Some(ResolvedShell {
+        program: PathBuf::from(program),
+        args: Vec::new(),
+        label,
+    })
+}
+
+#[cfg(windows)]
+fn system_root() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+}
+
+#[cfg(windows)]
+fn windows_powershell() -> Option<PathBuf> {
+    let p = system_root().join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    p.is_file().then_some(p)
+}
+
+#[cfg(windows)]
+fn windows_cmd() -> PathBuf {
+    std::env::var_os("COMSPEC")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| system_root().join(r"System32\cmd.exe"))
+}
+
+#[cfg(windows)]
+fn find_on_path(exe: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(exe))
+        .find(|p| p.is_file())
+}
+
+/// Distros WSL instaladas, via `wsl.exe -l -q`. Sem WSL (ou erro), lista vazia.
+#[cfg(windows)]
+fn wsl_distros() -> Vec<String> {
+    let Ok(out) = std::process::Command::new("wsl.exe")
+        .args(["-l", "-q"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    decode_wsl_list(&out.stdout)
+}
+
+/// `wsl.exe -l -q` emite UTF-16LE (com BOM, CR e às vezes NUL). Decodifica e
+/// limpa em nomes de distro. Parser frágil → tem teste.
+#[cfg(windows)]
+fn decode_wsl_list(bytes: &[u8]) -> Vec<String> {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    String::from_utf16_lossy(&units)
+        .lines()
+        .map(|line| line.trim().trim_matches('\u{feff}').trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+/// Remove o prefixo verbatim do Windows (`\\?\`, `\\?\UNC\`) de um caminho para
+/// exibição. Caminhos canonicalizados no Windows vêm com esse prefixo: feio na
+/// UI e desnecessário fora de chamadas de FS. No-op em qualquer outro caminho.
+pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path.to_path_buf()
 }
 
 pub type SharedSessionManager = Arc<SessionManager>;
@@ -986,6 +1168,41 @@ mod tests {
 
         assert!(manager.list().is_empty());
         assert!(store.load_sessions().unwrap().is_empty());
+    }
+
+    #[cfg(windows)]
+    fn utf16le(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn decode_wsl_list_reads_utf16le_and_drops_noise() {
+        // BOM + duas distros, terminador CRLF como o wsl.exe emite.
+        let raw = utf16le("\u{feff}Ubuntu\r\nDebian\r\n");
+        assert_eq!(decode_wsl_list(&raw), vec!["Ubuntu", "Debian"]);
+        assert!(decode_wsl_list(&utf16le("")).is_empty());
+        assert!(decode_wsl_list(&utf16le("   \r\n")).is_empty());
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_cleans_windows_paths_and_leaves_others() {
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\C:\Users\a")),
+            PathBuf::from(r"C:\Users\a")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\server\share")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new("/home/user/proj")),
+            PathBuf::from("/home/user/proj")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"C:\Users\a")),
+            PathBuf::from(r"C:\Users\a")
+        );
     }
 
     #[test]

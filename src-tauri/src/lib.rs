@@ -238,6 +238,7 @@ fn resume_startup(
             rows: 30,
             worktree_task: None,
             attach_existing: false,
+            shell: None,
         };
         match sessions.create_shell_session(app.clone(), pty_pool, opts, move |id| {
             session_exited(&handle, id)
@@ -1072,7 +1073,9 @@ fn create_workspace(
 ) -> Result<layout::WorkspaceId, String> {
     let repo_root = repo_root.map(|r| {
         let expanded = session::expand_home(std::path::Path::new(&r));
-        repo::canonicalize_or(&expanded)
+        // Sem o prefixo verbatim (`\\?\`) que o canonicalize adiciona no Windows:
+        // é este repo_root que a sidebar exibe.
+        session::strip_verbatim_prefix(&repo::canonicalize_or(&expanded))
             .to_string_lossy()
             .into_owned()
     });
@@ -1200,6 +1203,14 @@ fn new_window(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn list_editors() -> Vec<editor::Editor> {
     editor::detect()
+}
+
+/// Shells que o usuário pode escolher ao abrir uma sessão. No Windows: PowerShell
+/// 7, Windows PowerShell, Prompt de Comando e cada distro WSL instalada. Fora do
+/// Windows: uma entrada com o `$SHELL` do usuário.
+#[tauri::command]
+fn list_shells() -> Vec<session::ShellOption> {
+    session::available_shells()
 }
 
 #[tauri::command]
@@ -1572,6 +1583,7 @@ fn docker_open_project(
                 rows: 30,
                 worktree_task: None,
                 attach_existing: false,
+                shell: None,
             },
             move |id| session_exited(&handle, id),
         )
@@ -2015,6 +2027,7 @@ pub fn run() {
             update_dismiss,
             set_pref,
             list_editors,
+            list_shells,
             docker_available,
             docker_list_containers,
             docker_open_logs,

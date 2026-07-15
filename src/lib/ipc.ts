@@ -47,7 +47,19 @@ export interface CreateSessionOpts {
   /** Agente na pasta de `cwd`, que já existe (review, conflitos), em vez de num
    * worktree novo. Sandbox e gate de aprovação continuam valendo. */
   attach_existing?: boolean;
+  /** Id do shell escolhido no picker (ver `listShells`). Ausente = default do OS. */
+  shell?: string;
 }
+
+/** Um shell disponível para abrir uma sessão (ver `listShells`). */
+export interface ShellOption {
+  id: string;
+  label: string;
+  program: string;
+  args: string[];
+}
+
+export const listShells = () => invoke<ShellOption[]>("list_shells");
 
 export interface SetupScriptInfo {
   path: string;

@@ -1225,6 +1225,7 @@ export default function App() {
       name: string,
       group?: string | null,
       worktreeTask?: string,
+      shell?: string,
     ) => {
       const session = await createSession({
         kind: { type: "shell" },
@@ -1232,6 +1233,7 @@ export default function App() {
         cols: 100,
         rows: 30,
         worktree_task: worktreeTask,
+        shell,
       });
       setSessions((prev) => [...prev, session]);
       try {
@@ -1965,7 +1967,9 @@ export default function App() {
     // renomeou de propósito → o nome escolhido fica.
     const displayName = w.name_locked
       ? w.name
-      : (displayDir?.split("/").filter(Boolean).pop() ?? w.name);
+      : displayDir
+        ? basename(displayDir)
+        : w.name;
     const snapshot = gitDir ? snapshotForDir(repoSnapshots, gitDir) : undefined;
     const branch = snapshot?.branch ?? undefined;
     const gitStatus = showGitStatus
@@ -2280,12 +2284,12 @@ export default function App() {
         }}
         isolate={newSessionIsolate}
         onIsolateChange={setNewSessionIsolate}
-        onCreate={(cwd, name, isolate) => {
+        onCreate={(cwd, name, isolate, shell) => {
           if (isolate && cwd) {
             setWorktreeDir(cwd);
             return;
           }
-          void newSession(cwd, name, pendingGroup);
+          void newSession(cwd, name, pendingGroup, undefined, shell ?? undefined);
         }}
       />
       <WorktreeCreateDialog

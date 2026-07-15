@@ -7,6 +7,7 @@ import {
   FolderOpen,
   GitBranch,
   House,
+  TerminalWindow,
 } from "@phosphor-icons/react";
 
 import {
@@ -16,8 +17,8 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { getPref, setPref } from "../lib/ipc";
-import { basename } from "@/lib/utils";
+import { getPref, listShells, setPref, type ShellOption } from "../lib/ipc";
+import { basename, cn } from "@/lib/utils";
 
 const LAST_DIR_KEY = "pref.last_session_dir";
 const DEFAULT_DIR_KEY = "pref.default_session_dir";
@@ -25,7 +26,12 @@ const DEFAULT_DIR_KEY = "pref.default_session_dir";
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreate: (cwd: string | null, name: string, isolate: boolean) => void;
+  onCreate: (
+    cwd: string | null,
+    name: string,
+    isolate: boolean,
+    shell?: string,
+  ) => void;
   isolate: boolean;
   onIsolateChange: (value: boolean) => void;
 }
@@ -40,6 +46,8 @@ export function NewSessionPrompt({
   const { t } = useTranslation();
   const [lastDir, setLastDir] = useState<string | null>(null);
   const [defaultDir, setDefaultDir] = useState<string | null>(null);
+  const [shells, setShells] = useState<ShellOption[]>([]);
+  const [shellId, setShellId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -49,11 +57,17 @@ export function NewSessionPrompt({
     void getPref(DEFAULT_DIR_KEY)
       .then((v) => setDefaultDir(v || null))
       .catch(() => setDefaultDir(null));
+    void listShells()
+      .then((list) => {
+        setShells(list);
+        setShellId((prev) => prev ?? list[0]?.id ?? null);
+      })
+      .catch(() => setShells([]));
   }, [open]);
 
   const create = (dir: string | null) => {
     if (dir) void setPref(LAST_DIR_KEY, dir).catch(() => {});
-    onCreate(dir, dir ? basename(dir) : "shell", isolate);
+    onCreate(dir, dir ? basename(dir) : "shell", isolate, shellId ?? undefined);
   };
 
   const chooseFolder = async () => {
@@ -72,6 +86,28 @@ export function NewSessionPrompt({
       className="top-28 max-w-[480px] translate-y-0 rounded-[6px] border-tyba-border-strong bg-tyba-surface shadow-2xl"
     >
       <CommandInput placeholder={t("newSessionWhere")} />
+      {shells.length > 1 && (
+        <div className="flex items-center gap-1.5 border-b border-tyba-border px-3 py-1.5">
+          <TerminalWindow size={13} className="shrink-0 text-tyba-text-faint" />
+          <div className="flex min-w-0 flex-wrap gap-1">
+            {shells.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => setShellId(s.id)}
+                className={cn(
+                  "rounded-[4px] px-2 py-0.5 text-[11px] transition-colors",
+                  s.id === shellId
+                    ? "bg-tyba-green/15 text-tyba-green"
+                    : "text-tyba-text-faint hover:text-tyba-text",
+                )}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <CommandList>
         <CommandGroup>
           {defaultDir && (
