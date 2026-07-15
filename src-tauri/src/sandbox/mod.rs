@@ -46,6 +46,17 @@ pub struct SandboxSpec {
 
 pub trait Sandbox: Send + Sync {
     fn wrap(&self, cmd: CommandBuilder, spec: &SandboxSpec) -> Result<CommandBuilder, String>;
+
+    /// Camada A do Windows (decisão de integração Opção B): a jaula se aplica no
+    /// spawn (token restrito + ConPTY), não por reescrita de argv. Quando devolve
+    /// `Some`, a camada de sessão sobe o agente por esse spawner e NÃO chama `wrap`.
+    /// Default `None`: mac/linux aplicam a jaula via `wrap`.
+    fn jailed_spawner(
+        &self,
+        _spec: &SandboxSpec,
+    ) -> Result<Option<Box<dyn crate::pty::JailedSpawner>>, String> {
+        Ok(None)
+    }
 }
 
 pub fn platform_sandbox() -> Result<Box<dyn Sandbox>, String> {
@@ -59,8 +70,8 @@ pub fn platform_sandbox() -> Result<Box<dyn Sandbox>, String> {
     }
     #[cfg(target_os = "windows")]
     {
-        // Camada A do Windows em construção: `new()` é fail-closed até o spawn
-        // enjaulado com ConPTY existir. Ver `sandbox/windows.rs`.
+        // Camada A do Windows: a jaula se aplica no spawn (token restrito + ConPTY)
+        // via `Sandbox::jailed_spawner`, não por `wrap`. Ver `sandbox/windows.rs`.
         Ok(Box::new(windows::WindowsSandbox::new()?))
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

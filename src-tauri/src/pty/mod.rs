@@ -12,6 +12,9 @@ use uuid::Uuid;
 
 mod holdback;
 
+#[cfg(target_os = "windows")]
+pub mod conpty_jailed;
+
 pub const EVENT_CWD_CHANGED: &str = "session://cwd-changed";
 
 const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
@@ -75,6 +78,19 @@ impl ScreenState {
 }
 
 type SharedScreen = Arc<Mutex<ScreenState>>;
+
+/// Estratégia de spawn enjaulado (Camada A do Windows, decisão de integração
+/// Opção B). Quando o `PtyPool` recebe uma, sobe o processo por ela — ConPTY sob
+/// token restrito — em vez do `portable-pty` nativo. A trait é cross-platform de
+/// propósito (só o Windows a implementa hoje) para não espalhar `cfg` pelas
+/// assinaturas da camada de sessão.
+pub trait JailedSpawner: Send {
+    fn spawn_jailed(
+        &self,
+        cmd: &CommandBuilder,
+        size: PtySize,
+    ) -> Result<(Box<dyn MasterPty + Send>, Box<dyn Child + Send + Sync>), String>;
+}
 
 fn emit_pending(state: &mut ScreenState, app: &AppHandle, event: &str) {
     if let Some(bytes) = state.take_pending() {
@@ -166,20 +182,11 @@ impl PtyPool {
         session_id: PtyId,
         mut cmd: CommandBuilder,
         env: Option<&HashMap<String, String>>,
+        jail: Option<Box<dyn JailedSpawner>>,
         cols: u16,
         rows: u16,
         on_exit: Box<dyn FnOnce() + Send>,
     ) -> Result<(), PtyError> {
-        let pty_system = portable_pty::native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| PtyError::Open(e.to_string()))?;
-
         if let Some(env) = env {
             cmd.env_clear();
             for (k, v) in env {
@@ -187,21 +194,38 @@ impl PtyPool {
             }
         }
 
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| PtyError::Spawn(e.to_string()))?;
-        drop(pair.slave);
+        let size = PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+
+        // Camada A do Windows: quando há jaula, o agente sobe pelo spawn enjaulado
+        // (ConPTY sob token restrito), não pelo PTY nativo. Reader/writer/child
+        // seguem idênticos daqui pra baixo — a trait devolve os mesmos objetos.
+        let (master, child) = match jail {
+            Some(spawner) => spawner.spawn_jailed(&cmd, size).map_err(PtyError::Spawn)?,
+            None => {
+                let pair = portable_pty::native_pty_system()
+                    .openpty(size)
+                    .map_err(|e| PtyError::Open(e.to_string()))?;
+                let child = pair
+                    .slave
+                    .spawn_command(cmd)
+                    .map_err(|e| PtyError::Spawn(e.to_string()))?;
+                drop(pair.slave);
+                (pair.master, child)
+            }
+        };
 
         let leader_pid = child.process_id();
         let leader_start = leader_pid.and_then(crate::repo::process_start_time);
 
-        let mut reader = pair
-            .master
+        let mut reader = master
             .try_clone_reader()
             .map_err(|e| PtyError::Open(e.to_string()))?;
-        let writer = pair
-            .master
+        let writer = master
             .take_writer()
             .map_err(|e| PtyError::Open(e.to_string()))?;
 
@@ -211,7 +235,7 @@ impl PtyPool {
         self.ptys.lock().insert(
             session_id,
             PtyHandle {
-                master: pair.master,
+                master,
                 writer,
                 child,
                 leader_pid,
