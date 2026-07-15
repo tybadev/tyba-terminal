@@ -43,6 +43,20 @@ export const FONT_SIZE_EVENT = "tyba:font-size";
 
 const EXIT_BANNER_SETTLE_MS = 120;
 
+const IS_WINDOWS = navigator.platform.toUpperCase().includes("WIN");
+
+// O ConPTY passou a emitir as sequências de wrap corretas no build 21376 do
+// Win11 (microsoft/terminal#405). Informar `backend`+`buildNumber` ao xterm
+// desliga o reflow duplo que embaralha o terminal no resize: em vez de recalcular
+// a quebra de linha por conta própria (heurística "última coluna não-branca"), o
+// xterm passa a confiar nos marcadores do ConPTY — que no core roda com
+// PSEUDOCONSOLE_RESIZE_QUIRK. Como a jaula ConPTY é alvo exclusivo do Win11, o
+// piso 21376 é sempre satisfeito.
+const WINDOWS_PTY: { backend: "conpty"; buildNumber: number } = {
+  backend: "conpty",
+  buildNumber: 21376,
+};
+
 export function requestTerminalRelayout() {
   requestAnimationFrame(() => window.dispatchEvent(new Event(RELAYOUT_EVENT)));
 }
@@ -138,6 +152,7 @@ export function TerminalView({
       rightClickSelectsWord: true,
       macOptionClickForcesSelection: true,
       macOptionIsMeta: false,
+      ...(IS_WINDOWS ? { windowsPty: WINDOWS_PTY } : {}),
       linkHandler: {
         activate: (_event, uri) => {
           void openExternalUrl(uri);

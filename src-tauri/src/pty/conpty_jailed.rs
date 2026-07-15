@@ -34,6 +34,11 @@ use windows_sys::Win32::System::Threading::*;
 type Handle = *mut c_void;
 
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x0002_0016;
+/// `PSEUDOCONSOLE_RESIZE_QUIRK` — não impede o output (ao contrário de
+/// `INHERIT_CURSOR 0x1`, que trava o conhost esperando um DSR de cursor que nunca
+/// respondemos). Só evita o cursor pular no resize; combinado com `windowsPty` no
+/// xterm, corta o reflow duplo que embaralha o terminal. NUNCA usar `0x1` aqui.
+const PSEUDOCONSOLE_RESIZE_QUIRK: u32 = 0x0000_0002;
 const PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY: usize = 0x0002_0007;
 const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
 const CREATE_SUSPENDED_FLAG: u32 = 0x0000_0004;
@@ -99,7 +104,13 @@ unsafe fn spawn_inner(
         Y: params.size.rows as i16,
     };
     let mut hpcon: HPCON = 0;
-    let hr = CreatePseudoConsole(coord, in_read, out_write, 0, &mut hpcon);
+    let hr = CreatePseudoConsole(
+        coord,
+        in_read,
+        out_write,
+        PSEUDOCONSOLE_RESIZE_QUIRK,
+        &mut hpcon,
+    );
     // O ConPTY duplicou in_read/out_write; soltamos as nossas cópias.
     CloseHandle(in_read);
     CloseHandle(out_write);
