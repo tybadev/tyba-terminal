@@ -70,15 +70,11 @@ pub struct JailSpawnParams {
 
 /// Sobe o agente enjaulado num ConPTY novo. Devolve o master/child que o `PtyPool`
 /// consome como qualquer PTY.
-pub fn spawn(
-    params: JailSpawnParams,
-) -> Result<(Box<dyn MasterPty + Send>, Box<dyn Child + Send + Sync>), String> {
+pub fn spawn(params: JailSpawnParams) -> Result<super::JailedPtyPair, String> {
     unsafe { spawn_inner(params) }
 }
 
-unsafe fn spawn_inner(
-    mut params: JailSpawnParams,
-) -> Result<(Box<dyn MasterPty + Send>, Box<dyn Child + Send + Sync>), String> {
+unsafe fn spawn_inner(mut params: JailSpawnParams) -> Result<super::JailedPtyPair, String> {
     // Pipes não-herdáveis: o ConPTY duplica as pontas que precisa; o filho não
     // herda as nossas (ele fala com o pseudoconsole pelo atributo).
     let mut sa: SECURITY_ATTRIBUTES = std::mem::zeroed();

@@ -79,17 +79,17 @@ impl ScreenState {
 
 type SharedScreen = Arc<Mutex<ScreenState>>;
 
+/// Par (master, child) de um spawn enjaulado. Alias porque a tupla de dois trait
+/// objects boxed dispara `clippy::type_complexity` no gate.
+type JailedPtyPair = (Box<dyn MasterPty + Send>, Box<dyn Child + Send + Sync>);
+
 /// Estratégia de spawn enjaulado (Camada A do Windows, decisão de integração
 /// Opção B). Quando o `PtyPool` recebe uma, sobe o processo por ela — ConPTY sob
 /// token restrito — em vez do `portable-pty` nativo. A trait é cross-platform de
 /// propósito (só o Windows a implementa hoje) para não espalhar `cfg` pelas
 /// assinaturas da camada de sessão.
 pub trait JailedSpawner: Send {
-    fn spawn_jailed(
-        &self,
-        cmd: &CommandBuilder,
-        size: PtySize,
-    ) -> Result<(Box<dyn MasterPty + Send>, Box<dyn Child + Send + Sync>), String>;
+    fn spawn_jailed(&self, cmd: &CommandBuilder, size: PtySize) -> Result<JailedPtyPair, String>;
 }
 
 fn emit_pending(state: &mut ScreenState, app: &AppHandle, event: &str) {
