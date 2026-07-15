@@ -118,6 +118,7 @@ pub fn run(
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+    crate::repo::no_console_window(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
         // ENOENT aqui significa "a CLI não está instalada" — e "arquivo ou diretório

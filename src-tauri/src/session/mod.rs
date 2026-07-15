@@ -871,10 +871,10 @@ fn find_on_path(exe: &str) -> Option<PathBuf> {
 /// Distros WSL instaladas, via `wsl.exe -l -q`. Sem WSL (ou erro), lista vazia.
 #[cfg(windows)]
 fn wsl_distros() -> Vec<String> {
-    let Ok(out) = std::process::Command::new("wsl.exe")
-        .args(["-l", "-q"])
-        .output()
-    else {
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.args(["-l", "-q"]);
+    crate::repo::no_console_window(&mut cmd);
+    let Ok(out) = cmd.output() else {
         return Vec::new();
     };
     if !out.status.success() {

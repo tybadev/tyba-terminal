@@ -13,6 +13,22 @@ use crate::worktree::git_in;
 pub const EVENT_CHANGED: &str = "repo://changed";
 pub const EVENT_RECONCILED: &str = "repo://reconciled";
 
+/// No Windows, spawnar um programa de console (git, wsl, etc.) faz piscar uma
+/// janela de console a cada chamada. `CREATE_NO_WINDOW` suprime isso. No-op fora
+/// do Windows.
+pub(crate) fn no_console_window(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
 const DEBOUNCE: Duration = Duration::from_millis(300);
 const MIN_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(2);
 const UNTRACKED_MAX_BYTES: u64 = 512 * 1024;
