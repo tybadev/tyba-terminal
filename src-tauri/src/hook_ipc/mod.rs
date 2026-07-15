@@ -1,9 +1,9 @@
 mod client;
 mod framing;
-mod protocol;
-mod server;
 #[cfg(windows)]
 mod pipe;
+mod protocol;
+mod server;
 
 use std::path::PathBuf;
 use std::sync::Arc;

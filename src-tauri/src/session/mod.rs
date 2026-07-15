@@ -313,9 +313,7 @@ impl SessionManager {
         // Lido do próprio comando: pega todo caminho de spawn (shell, agente,
         // tab de container) sem espalhar mais um parâmetro por todos eles.
         // Sem o prefixo verbatim do Windows (`\\?\`) — é o cwd que a UI exibe.
-        let cwd = cmd
-            .get_cwd()
-            .map(|c| strip_verbatim_prefix(Path::new(c)));
+        let cwd = cmd.get_cwd().map(|c| strip_verbatim_prefix(Path::new(c)));
 
         pty_pool.spawn(
             app.clone(),
@@ -706,8 +704,8 @@ fn windows_default_shell() -> String {
         return pwsh.to_string_lossy().into_owned();
     }
     if let Some(root) = std::env::var_os("SystemRoot") {
-        let ps5 = std::path::Path::new(&root)
-            .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let ps5 =
+            std::path::Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
         if ps5.is_file() {
             return ps5.to_string_lossy().into_owned();
         }

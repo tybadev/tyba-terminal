@@ -115,8 +115,7 @@ fn spec_at(base: &std::path::Path, worktree: &std::path::Path) -> SandboxSpec {
 /// jaula não nega por acidente).
 #[test]
 fn jaula_confina_escrita_e_nega_leitura_de_segredo() {
-    let base: PathBuf =
-        std::env::temp_dir().join(format!("tyba-jail-e2e-{}", std::process::id()));
+    let base: PathBuf = std::env::temp_dir().join(format!("tyba-jail-e2e-{}", std::process::id()));
     let worktree = base.join("worktree");
     let outside = base.join("outside");
     let ssh = base.join(".ssh"); // vira segredo via `secret_paths(spec)` (home/.ssh)
@@ -187,8 +186,7 @@ fn jaula_confina_escrita_e_nega_leitura_de_segredo() {
 
     let wrote_in = worktree.join("in.txt").exists();
     let wrote_out = outside.join("out.txt").exists();
-    let read_secret =
-        std::fs::read_to_string(worktree.join("read_secret.txt")).unwrap_or_default();
+    let read_secret = std::fs::read_to_string(worktree.join("read_secret.txt")).unwrap_or_default();
     let read_open = std::fs::read_to_string(worktree.join("read_open.txt")).unwrap_or_default();
     let _ = std::fs::remove_dir_all(&base);
 

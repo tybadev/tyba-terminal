@@ -12,8 +12,8 @@
 //! primitivas de ConPTY), então o leitor/emissor/resize/kill do `PtyPool` seguem
 //! sem tocar — a única diferença é o token e o Job Object.
 
-use std::ffi::{OsStr, OsString};
 use std::ffi::c_void;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{Error as IoError, Read, Result as IoResult, Write};
 use std::os::windows::ffi::OsStrExt;
@@ -164,7 +164,9 @@ unsafe fn spawn_inner(
         drop(job);
         drop(con);
         cleanup(in_write, out_read);
-        return Err(format!("UpdateProcThreadAttribute(pseudoconsole) falhou: {e}"));
+        return Err(format!(
+            "UpdateProcThreadAttribute(pseudoconsole) falhou: {e}"
+        ));
     }
     let mut policy: u64 = params.mitigation.unwrap_or(0);
     if params.mitigation.is_some()
@@ -196,9 +198,7 @@ unsafe fn spawn_inner(
     si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
     si.lpAttributeList = attr_list;
 
-    let flags = EXTENDED_STARTUPINFO_PRESENT
-        | CREATE_UNICODE_ENVIRONMENT
-        | CREATE_SUSPENDED_FLAG;
+    let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED_FLAG;
     let cwd_ptr = params
         .cwd
         .as_ref()
@@ -243,7 +243,10 @@ unsafe fn spawn_inner(
         drop(job);
         drop(con);
         cleanup(in_write, out_read);
-        return Err(format!("CreateProcess (token={}) falhou: {e}", !params.token.is_null()));
+        return Err(format!(
+            "CreateProcess (token={}) falhou: {e}",
+            !params.token.is_null()
+        ));
     }
     DeleteProcThreadAttributeList(attr_list);
 
@@ -294,7 +297,9 @@ unsafe fn create_kill_on_close_job() -> Result<JobHandle, String> {
     {
         let e = last_error();
         CloseHandle(job);
-        return Err(format!("SetInformationJobObject(kill-on-close) falhou: {e}"));
+        return Err(format!(
+            "SetInformationJobObject(kill-on-close) falhou: {e}"
+        ));
     }
     Ok(JobHandle(OwnedHandle::from_raw_handle(job as RawHandle)))
 }
@@ -538,11 +543,7 @@ fn search_path(cmd: &CommandBuilder, exe: &OsStr) -> OsString {
 fn append_quoted(arg: &OsStr, out: &mut Vec<u16>) {
     let needs_quote = arg.is_empty()
         || arg.encode_wide().any(|c| {
-            c == ' ' as u16
-                || c == '\t' as u16
-                || c == '\n' as u16
-                || c == 0x0b
-                || c == '"' as u16
+            c == ' ' as u16 || c == '\t' as u16 || c == '\n' as u16 || c == 0x0b || c == '"' as u16
         });
     if !needs_quote {
         out.extend(arg.encode_wide());
@@ -581,7 +582,9 @@ fn append_quoted(arg: &OsStr, out: &mut Vec<u16>) {
 #[cfg(test)]
 fn wide_to_string(w: &[u16]) -> String {
     let end = w.iter().position(|&c| c == 0).unwrap_or(w.len());
-    OsString::from_wide(&w[..end]).to_string_lossy().into_owned()
+    OsString::from_wide(&w[..end])
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]
@@ -609,10 +612,7 @@ mod tests {
         cmd.env_clear();
         cmd.env("PATH", "C:\\bin");
         cmd.env("FOO", "bar");
-        let block = encode_env_block(
-            &cmd,
-            &[("TYBA_SANDBOX".to_string(), "windows".to_string())],
-        );
+        let block = encode_env_block(&cmd, &[("TYBA_SANDBOX".to_string(), "windows".to_string())]);
         assert_eq!(
             &block[block.len() - 2..],
             &[0, 0],
@@ -623,7 +623,10 @@ mod tests {
             .map(|seg| OsString::from_wide(seg).to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(joined.contains("FOO=bar"), "env herdado do comando: {joined}");
+        assert!(
+            joined.contains("FOO=bar"),
+            "env herdado do comando: {joined}"
+        );
         assert!(
             joined.contains("TYBA_SANDBOX=windows"),
             "marcador injetado: {joined}"
@@ -635,10 +638,7 @@ mod tests {
         let mut cmd = CommandBuilder::new("prog.exe");
         cmd.env_clear();
         cmd.env("Tyba_Sandbox", "errado");
-        let block = encode_env_block(
-            &cmd,
-            &[("TYBA_SANDBOX".to_string(), "windows".to_string())],
-        );
+        let block = encode_env_block(&cmd, &[("TYBA_SANDBOX".to_string(), "windows".to_string())]);
         let joined: String = block
             .split(|&c| c == 0)
             .map(|seg| OsString::from_wide(seg).to_string_lossy().into_owned())

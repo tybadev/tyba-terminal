@@ -134,26 +134,24 @@ mod imp {
             let accept_name = name.clone();
             let accept_shutdown = shutdown.clone();
             let inflight = Arc::new(AtomicUsize::new(0));
-            let accept_handle = thread::spawn(move || {
-                loop {
-                    if accept_shutdown.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    let instance = pipe::create_instance(&accept_name);
-                    if instance == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
-                        break;
-                    }
-                    let connected = pipe::wait_connect(instance);
-                    if accept_shutdown.load(Ordering::SeqCst) {
-                        pipe::close(instance);
-                        break;
-                    }
-                    if !connected {
-                        pipe::close(instance);
-                        continue;
-                    }
-                    dispatch(pipe::into_file(instance), &handler, &inflight);
+            let accept_handle = thread::spawn(move || loop {
+                if accept_shutdown.load(Ordering::SeqCst) {
+                    break;
                 }
+                let instance = pipe::create_instance(&accept_name);
+                if instance == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                    break;
+                }
+                let connected = pipe::wait_connect(instance);
+                if accept_shutdown.load(Ordering::SeqCst) {
+                    pipe::close(instance);
+                    break;
+                }
+                if !connected {
+                    pipe::close(instance);
+                    continue;
+                }
+                dispatch(pipe::into_file(instance), &handler, &inflight);
             });
 
             Ok(HookServer {

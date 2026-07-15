@@ -156,8 +156,19 @@ fn everyone_sid() -> Result<*mut c_void, String> {
             Value: [0, 0, 0, 0, 0, 1],
         };
         let mut sid: *mut c_void = std::ptr::null_mut();
-        if AllocateAndInitializeSid(&authority, 1, SECURITY_WORLD_RID, 0, 0, 0, 0, 0, 0, 0, &mut sid)
-            == 0
+        if AllocateAndInitializeSid(
+            &authority,
+            1,
+            SECURITY_WORLD_RID,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            &mut sid,
+        ) == 0
         {
             return Err(format!("Everyone SID falhou: {}", last_error()));
         }
@@ -168,7 +179,13 @@ fn everyone_sid() -> Result<*mut c_void, String> {
 /// Extrai o LOGON SID do token (buffer precisa viver até o CreateRestrictedToken).
 unsafe fn logon_sid(token: Handle) -> Result<(Vec<u8>, *mut c_void), String> {
     let mut size: u32 = 0;
-    GetTokenInformation(token, TOKEN_LOGON_SID_CLASS, std::ptr::null_mut(), 0, &mut size);
+    GetTokenInformation(
+        token,
+        TOKEN_LOGON_SID_CLASS,
+        std::ptr::null_mut(),
+        0,
+        &mut size,
+    );
     if size == 0 {
         return Err(format!("TokenLogonSid tamanho: {}", last_error()));
     }
@@ -313,7 +330,9 @@ unsafe fn grant_write(dir: &Path, sid: *mut c_void) -> Result<(), String> {
         std::ptr::null_mut(),
     );
     if rc != 0 {
-        return Err(format!("SetNamedSecurityInfoW(DACL do worktree) falhou: {rc}"));
+        return Err(format!(
+            "SetNamedSecurityInfoW(DACL do worktree) falhou: {rc}"
+        ));
     }
     Ok(())
 }
@@ -329,10 +348,7 @@ unsafe fn set_sacl_label(path: &Path, sddl: &str) -> Result<(), String> {
         std::ptr::null_mut(),
     ) == 0
     {
-        return Err(format!(
-            "Convert SDDL `{sddl}` falhou: {}",
-            last_error()
-        ));
+        return Err(format!("Convert SDDL `{sddl}` falhou: {}", last_error()));
     }
     let path_w = wide(path);
     let ok = SetFileSecurityW(path_w.as_ptr(), LABEL_SECURITY_INFORMATION, psd);
@@ -366,10 +382,7 @@ fn deny_read_tree(path: &Path) -> Result<(), String> {
         for entry in entries.flatten() {
             let child = entry.path();
             // Não segue symlink (evita escapar da árvore do segredo ao rotular).
-            let is_symlink = entry
-                .file_type()
-                .map(|t| t.is_symlink())
-                .unwrap_or(false);
+            let is_symlink = entry.file_type().map(|t| t.is_symlink()).unwrap_or(false);
             if is_symlink {
                 unsafe { set_sacl_label(&child, "S:(ML;;NRNW;;;ME)")? };
             } else {
@@ -502,10 +515,7 @@ impl Sandbox for WindowsSandbox {
         Err("jaula do Windows não se aplica via wrap — usar o spawn enjaulado da sessão".into())
     }
 
-    fn jailed_spawner(
-        &self,
-        spec: &SandboxSpec,
-    ) -> Result<Option<Box<dyn JailedSpawner>>, String> {
+    fn jailed_spawner(&self, spec: &SandboxSpec) -> Result<Option<Box<dyn JailedSpawner>>, String> {
         Ok(Some(Box::new(build_jail(spec)?)))
     }
 }
@@ -518,7 +528,10 @@ mod tests {
     fn session_token_monta_com_os_tres_restricting_sids() {
         let t = session_token(true).expect("montar token da jaula");
         assert!(!t.token.is_null(), "token não pode ser nulo");
-        assert!(!t.synthetic_sid.is_null(), "SID sintético não pode ser nulo");
+        assert!(
+            !t.synthetic_sid.is_null(),
+            "SID sintético não pode ser nulo"
+        );
         unsafe {
             CloseHandle(t.token);
             FreeSid(t.synthetic_sid);
