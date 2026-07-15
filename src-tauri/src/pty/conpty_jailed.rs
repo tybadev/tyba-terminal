@@ -196,27 +196,43 @@ unsafe fn spawn_inner(
     let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
 
     // Suspenso: atribui ao Job Object ANTES de rodar, então nenhum filho escapa
-    // do kill-on-close entre o spawn e o assign.
-    let created = CreateProcessAsUserW(
-        params.token,
-        std::ptr::null(),
-        params.command_line.as_mut_ptr(),
-        std::ptr::null(),
-        std::ptr::null(),
-        0,
-        flags,
-        params.env_block.as_mut_ptr() as *const c_void,
-        cwd_ptr,
-        &si.StartupInfo,
-        &mut pi,
-    );
+    // do kill-on-close entre o spawn e o assign. Token nulo = sessão de shell (sem
+    // jaula) → CreateProcessW; com token = agente enjaulado → CreateProcessAsUserW.
+    let created = if params.token.is_null() {
+        CreateProcessW(
+            std::ptr::null(),
+            params.command_line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            flags,
+            params.env_block.as_mut_ptr() as *const c_void,
+            cwd_ptr,
+            &si.StartupInfo,
+            &mut pi,
+        )
+    } else {
+        CreateProcessAsUserW(
+            params.token,
+            std::ptr::null(),
+            params.command_line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            flags,
+            params.env_block.as_mut_ptr() as *const c_void,
+            cwd_ptr,
+            &si.StartupInfo,
+            &mut pi,
+        )
+    };
     if created == 0 {
         let e = last_error();
         DeleteProcThreadAttributeList(attr_list);
         drop(job);
         drop(con);
         cleanup(in_write, out_read);
-        return Err(format!("CreateProcessAsUserW (jaula) falhou: {e}"));
+        return Err(format!("CreateProcess (token={}) falhou: {e}", !params.token.is_null()));
     }
     DeleteProcThreadAttributeList(attr_list);
 

@@ -192,10 +192,11 @@ impl SessionManager {
                 cmd.arg("-l");
             }
         }
-        match &worktree {
-            Some(wt) => cmd.cwd(&wt.path),
-            None => cmd.cwd(resolve_cwd(opts.cwd.as_deref())),
-        }
+        let cwd = match &worktree {
+            Some(wt) => wt.path.clone(),
+            None => resolve_cwd(opts.cwd.as_deref()),
+        };
+        cmd.cwd(strip_verbatim_prefix(cwd));
 
         if label == "zsh" && integration {
             if let Some(dir) = zsh_integration_dir() {
@@ -463,6 +464,22 @@ pub fn expand_home(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Remove o prefixo verbatim `\\?\` (e `\\?\UNC\`) de um caminho. O
+/// `std::fs::canonicalize` do Windows devolve esse prefixo, e ele vazava até o cwd
+/// do shell — **cmd.exe e o PowerShell não aceitam `\\?\`/UNC como diretório de
+/// trabalho** e saem/erram na hora (era a causa do "shell não abre" no Windows).
+/// Em Unix é no-op (nenhum caminho tem esse prefixo).
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest.to_string());
+    }
+    path
+}
+
 pub fn resolve_cwd(requested: Option<&Path>) -> PathBuf {
     let home = || {
         std::env::var("HOME")
@@ -667,11 +684,43 @@ fn current_uid() -> String {
 }
 
 pub fn default_shell() -> String {
-    if cfg!(windows) {
-        std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".into())
-    } else {
+    #[cfg(windows)]
+    {
+        windows_default_shell()
+    }
+    #[cfg(not(windows))]
+    {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())
     }
+}
+
+/// PowerShell é o default esperado no Windows moderno (o Windows Terminal também
+/// abre nele). O código antigo lia `COMSPEC` — que aponta SEMPRE para `cmd.exe` —,
+/// então o fallback para PowerShell era código morto e a sessão caía sempre no cmd.
+/// Ordem: PowerShell 7 (`pwsh`, se instalado) → Windows PowerShell 5.1 (sempre
+/// presente) → `cmd.exe` (último recurso, via COMSPEC).
+#[cfg(windows)]
+fn windows_default_shell() -> String {
+    if let Some(pwsh) = find_on_path("pwsh.exe") {
+        return pwsh;
+    }
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        let ps5 = std::path::Path::new(&root)
+            .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        if ps5.is_file() {
+            return ps5.to_string_lossy().into_owned();
+        }
+    }
+    std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
+}
+
+#[cfg(windows)]
+fn find_on_path(exe: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(exe))
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 fn shell_label(shell: &str) -> String {

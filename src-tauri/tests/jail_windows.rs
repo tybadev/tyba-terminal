@@ -15,6 +15,63 @@ use tyba_lib::sandbox::policy::AgentAccess;
 use tyba_lib::sandbox::windows::WindowsSandbox;
 use tyba_lib::sandbox::{Sandbox, SandboxSpec};
 
+/// Via de PRODUÇÃO: `conpty_jailed::spawn` com token nulo (shell, sem jaula) sobe
+/// um `cmd` e entrega o output do filho pelo `MasterPty` real — o mesmo caminho que
+/// o `PtyPool` usa agora no Windows. Prova que a troca do portable-pty resolve.
+#[test]
+fn spawn_shell_entrega_output_pela_via_de_producao() {
+    use std::io::Read;
+    use std::time::Duration;
+
+    let mut cmd = CommandBuilder::new("cmd.exe");
+    cmd.arg("/k");
+    cmd.arg("echo");
+    cmd.arg("PROD_MARKER_XYZ");
+    for k in ["SystemRoot", "PATH", "TEMP", "TMP", "ComSpec"] {
+        if let Ok(v) = std::env::var(k) {
+            cmd.env(k, v);
+        }
+    }
+    let params = conpty_jailed::JailSpawnParams {
+        token: std::ptr::null_mut(),
+        command_line: conpty_jailed::encode_command_line(&cmd).expect("cmdline"),
+        env_block: conpty_jailed::encode_env_block(&cmd, &[]),
+        cwd: None,
+        size: PtySize {
+            rows: 30,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+        mitigation: None,
+    };
+    let (master, mut child) = conpty_jailed::spawn(params).expect("spawn de produção");
+    let mut reader = master.try_clone_reader().expect("reader");
+    let handle = std::thread::spawn(move || {
+        let mut buf = vec![0u8; 8192];
+        let mut acc = String::new();
+        for _ in 0..20 {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => acc.push_str(&String::from_utf8_lossy(&buf[..n])),
+                Err(_) => break,
+            }
+            if acc.contains("PROD_MARKER_XYZ") {
+                break;
+            }
+        }
+        acc
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    let _ = child.kill();
+    drop(master);
+    let out = handle.join().unwrap_or_default();
+    assert!(
+        out.contains("PROD_MARKER_XYZ"),
+        "a via de produção tem que entregar o output do shell: {out:?}"
+    );
+}
+
 /// Quoting da cmdline: argumentos com espaço/aspas sobrevivem ao re-encode manual
 /// (os getters `cmdline` do portable-pty são `pub(crate)`, então reconstruímos).
 #[test]

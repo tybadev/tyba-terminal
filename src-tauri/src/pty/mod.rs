@@ -207,15 +207,38 @@ impl PtyPool {
         let (master, child) = match jail {
             Some(spawner) => spawner.spawn_jailed(&cmd, size).map_err(PtyError::Spawn)?,
             None => {
-                let pair = portable_pty::native_pty_system()
-                    .openpty(size)
-                    .map_err(|e| PtyError::Open(e.to_string()))?;
-                let child = pair
-                    .slave
-                    .spawn_command(cmd)
-                    .map_err(|e| PtyError::Spawn(e.to_string()))?;
-                drop(pair.slave);
-                (pair.master, child)
+                // Windows: o ConPTY do portable-pty usa PSEUDOCONSOLE_INHERIT_CURSOR,
+                // que faz o conhost mandar `ESC[6n` e TRAVAR esperando a resposta da
+                // posição do cursor neste build (26200) — o shell nunca renderiza.
+                // Usamos nosso próprio spawn (`conpty_jailed`, flags=0) sem token.
+                #[cfg(windows)]
+                {
+                    let command_line =
+                        conpty_jailed::encode_command_line(&cmd).map_err(PtyError::Spawn)?;
+                    let env_block = conpty_jailed::encode_env_block(&cmd, &[]);
+                    let cwd = conpty_jailed::encode_cwd(&cmd);
+                    conpty_jailed::spawn(conpty_jailed::JailSpawnParams {
+                        token: std::ptr::null_mut(),
+                        command_line,
+                        env_block,
+                        cwd,
+                        size,
+                        mitigation: None,
+                    })
+                    .map_err(PtyError::Spawn)?
+                }
+                #[cfg(not(windows))]
+                {
+                    let pair = portable_pty::native_pty_system()
+                        .openpty(size)
+                        .map_err(|e| PtyError::Open(e.to_string()))?;
+                    let child = pair
+                        .slave
+                        .spawn_command(cmd)
+                        .map_err(|e| PtyError::Spawn(e.to_string()))?;
+                    drop(pair.slave);
+                    (pair.master, child)
+                }
             }
         };
 

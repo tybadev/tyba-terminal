@@ -159,8 +159,30 @@ export function TerminalView({
     });
     term.loadAddon(webLinks);
 
-    term.open(el);
-    fit.fit();
+    let disposed = false;
+    let opened = false;
+    // O StrictMode (dev) monta → desmonta → remonta o efeito no mesmo tick. Se
+    // `term.open()` rodar na montagem DESCARTÁVEL, o xterm agenda um `setTimeout`
+    // interno de layout que dispara DEPOIS do dispose — e lê `dimensions` de um
+    // renderer já morto (`RenderService._renderer.value` undefined → estoura em
+    // `Viewport.syncScrollArea`), derrubando o terminal. Por isso adiamos o open
+    // para um `requestAnimationFrame` e o cancelamos no cleanup: a montagem
+    // descartável nunca chega a abrir o xterm. No Windows/WebView2 o timing bate
+    // (por isso "nada, zero"); no mac não — mas o fix vale pros dois. O fit inicial
+    // só roda se o elemento já tem tamanho; senão o ResizeObserver refaz.
+    let openFrame = requestAnimationFrame(() => {
+      openFrame = 0;
+      if (disposed) return;
+      term.open(el);
+      opened = true;
+      if (el.offsetWidth > 0 && el.offsetHeight > 0) {
+        try {
+          fit.fit();
+        } catch {
+          /* dimensões ainda não prontas — o ResizeObserver refaz o fit */
+        }
+      }
+    });
 
     registerTerm(sessionId, { term, search });
 
@@ -177,9 +199,8 @@ export function TerminalView({
       void writeToSession(sessionId, data).catch(() => {});
     });
 
-    let disposed = false;
     void document.fonts.load('12px "Symbols Nerd Font Mono"').then((faces) => {
-      if (!disposed && faces.length > 0) term.clearTextureAtlas();
+      if (!disposed && opened && faces.length > 0) term.clearTextureAtlas();
     });
     let holdsAttachment = false;
     const unlisteners: Array<() => void> = [];
@@ -228,6 +249,7 @@ export function TerminalView({
     let timer: number | null = null;
     const refit = () => {
       timer = null;
+      if (!opened) return; // o rAF de open ainda não rodou — nada a ajustar
       if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
       const buffer = term.buffer.active;
       const wasAtBottom = buffer.viewportY === buffer.baseY;
@@ -269,6 +291,7 @@ export function TerminalView({
 
     return () => {
       disposed = true;
+      if (openFrame) cancelAnimationFrame(openFrame);
       releaseAttachment();
       if (timer !== null) window.clearTimeout(timer);
       ro.disconnect();
