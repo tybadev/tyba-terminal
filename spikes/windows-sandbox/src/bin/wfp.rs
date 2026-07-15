@@ -16,6 +16,7 @@ const FWP_ACTION_BLOCK_V: u32 = 0x1001;
 const FWP_MATCH_EQUAL_V: i32 = 0;
 const FWP_SECURITY_DESCRIPTOR_TYPE_V: i32 = 14;
 const FWP_V4_ADDR_MASK_V: i32 = 0x100;
+const FWP_V6_ADDR_MASK_V: i32 = 0x101;
 const FWP_EMPTY_V: i32 = 0;
 const FWPM_SESSION_FLAG_DYNAMIC_V: u32 = 0x0000_0001;
 const RPC_C_AUTHN_WINNT_V: u32 = 10;
@@ -26,6 +27,12 @@ const LAYER_ALE_AUTH_CONNECT_V4: GUID = GUID {
     data2: 0x05a7,
     data3: 0x4c33,
     data4: [0x90, 0x4f, 0x7f, 0xbc, 0xee, 0xe6, 0x0e, 0x82],
+};
+const LAYER_ALE_AUTH_CONNECT_V6: GUID = GUID {
+    data1: 0x4a72_393b,
+    data2: 0x319f,
+    data3: 0x44bc,
+    data4: [0x84, 0xc3, 0xba, 0x54, 0xdc, 0xb3, 0xb6, 0xb4],
 };
 const COND_ALE_USER_ID: GUID = GUID {
     data1: 0xaf04_3a0a,
@@ -52,6 +59,25 @@ const RANGES: &[(&str, u32, u32)] = &[
     ("RFC1918 10/8", 0x0A00_0000, 0xFF00_0000),
     ("RFC1918 172.16/12", 0xAC10_0000, 0xFFF0_0000),
     ("RFC1918 192.168/16", 0xC0A8_0000, 0xFFFF_0000),
+];
+
+// (rótulo, addr [u8;16], prefixLength)
+const RANGES6: &[(&str, [u8; 16], u8)] = &[
+    (
+        "loopback ::1",
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+        128,
+    ),
+    (
+        "ULA fc00::/7",
+        [0xfc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        7,
+    ),
+    (
+        "link-local fe80::/10",
+        [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        10,
+    ),
 ];
 
 fn main() {
@@ -106,15 +132,23 @@ Write-Output ((Get-LocalUser -Name '{SPIKE_USER}' -ErrorAction SilentlyContinue)
         }
     };
 
-    // 3. listener de loopback do DONO + controle positivo (o dono conecta)
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    // 3. listeners de loopback do DONO (v4 e v6) + controle positivo (o dono conecta)
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback v4");
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             drop(stream);
         }
     });
-    let owner_loopback_ok = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
+    let listener6 = TcpListener::bind("[::1]:0").expect("bind loopback v6");
+    let port6 = listener6.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener6.incoming() {
+            drop(stream);
+        }
+    });
+    let owner_loopback_ok = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+        && std::net::TcpStream::connect(("::1", port6)).is_ok();
 
     // 4. teste como o usuário dedicado (deve ser barrado no loopback, livre no externo)
     let base = std::env::temp_dir().join(format!("tyba-wfp-{pid}"));
@@ -130,7 +164,7 @@ Write-Output ((Get-LocalUser -Name '{SPIKE_USER}' -ErrorAction SilentlyContinue)
     let test = format!(
         r#"$sp=ConvertTo-SecureString '{pw}' -AsPlainText -Force
 $cred=New-Object System.Management.Automation.PSCredential('{SPIKE_USER}',$sp)
-$script='function T($h,$p){{try{{$c=New-Object Net.Sockets.TcpClient;$a=$c.BeginConnect($h,$p,$null,$null);if($a.AsyncWaitHandle.WaitOne(3000) -and $c.Connected){{$c.Close();return \"ok\"}}else{{$c.Close();return \"blocked\"}}}}catch{{return \"blocked\"}}}}; \"LOOP=\"+(T \"127.0.0.1\" {port})+\";EXT=\"+(T \"1.1.1.1\" 443) | Set-Content -Path \"{out_file}\"'
+$script='function T($h,$p){{try{{$fam=if($h -match \":\"){{[Net.Sockets.AddressFamily]::InterNetworkV6}}else{{[Net.Sockets.AddressFamily]::InterNetwork}};$c=New-Object Net.Sockets.TcpClient($fam);$a=$c.BeginConnect($h,$p,$null,$null);if($a.AsyncWaitHandle.WaitOne(3000) -and $c.Connected){{$c.Close();return \"ok\"}}else{{$c.Close();return \"blocked\"}}}}catch{{return \"blocked\"}}}}; \"LOOP=\"+(T \"127.0.0.1\" {port})+\";LOOP6=\"+(T \"::1\" {port6})+\";EXT=\"+(T \"1.1.1.1\" 443) | Set-Content -Path \"{out_file}\"'
 Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-Command',$script -Credential $cred -WorkingDirectory 'C:\' -Wait"#
     );
     let _ = Command::new("powershell")
@@ -141,6 +175,7 @@ Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-Command',$
     let _ = std::fs::File::open(&out_file).and_then(|mut f| f.read_to_string(&mut res));
     let res = res.trim().to_string();
     let loop_blocked = res.contains("LOOP=blocked");
+    let loop6_blocked = res.contains("LOOP6=blocked");
     let ext_ok = res.contains("EXT=ok");
 
     // 5. fecha a engine → sessão dinâmica remove TODOS os filtros (uninstaller sem órfão)
@@ -162,9 +197,14 @@ Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-Command',$
         "prova que o listener funciona — o bloqueio abaixo é o WFP, não porta fechada",
     );
     verdict(
-        "o agente (usuário dedicado) é BLOQUEADO no loopback pelo WFP",
+        "o agente (usuário dedicado) é BLOQUEADO no loopback IPv4 pelo WFP",
         owner_loopback_ok && loop_blocked,
         "corta o agente de falar com Docker/ollama/TYBA em 127.0.0.1 — o que a Camada A não faz",
+    );
+    verdict(
+        "o agente é BLOQUEADO no loopback IPv6 (::1) pelo WFP",
+        owner_loopback_ok && loop6_blocked,
+        "sem o filtro V6, um serviço local em ::1 escaparia — a camada ALE_AUTH_CONNECT_V6 fecha isso",
     );
     verdict(
         "CONTROLE: o agente AINDA alcança a internet externa (443)",
@@ -258,7 +298,41 @@ fn add_wfp_filters(sid: &str) -> Result<*mut c_void, String> {
             let rc = FwpmFilterAdd0(engine, &filter, std::ptr::null_mut(), &mut id);
             if rc != 0 {
                 FwpmEngineClose0(engine);
-                return Err(format!("FwpmFilterAdd0({label}): 0x{rc:08X}"));
+                return Err(format!("FwpmFilterAdd0(v4 {label}): 0x{rc:08X}"));
+            }
+        }
+
+        for (label, addr, prefix) in RANGES6 {
+            let mut v6 = FWP_V6_ADDR_AND_MASK {
+                addr: *addr,
+                prefixLength: *prefix,
+            };
+
+            let mut conds: [FWPM_FILTER_CONDITION0; 2] = std::mem::zeroed();
+            conds[0].fieldKey = COND_ALE_USER_ID;
+            conds[0].matchType = FWP_MATCH_EQUAL_V;
+            conds[0].conditionValue.r#type = FWP_SECURITY_DESCRIPTOR_TYPE_V;
+            conds[0].conditionValue.Anonymous.sd = &mut blob;
+            conds[1].fieldKey = COND_IP_REMOTE_ADDRESS;
+            conds[1].matchType = FWP_MATCH_EQUAL_V;
+            conds[1].conditionValue.r#type = FWP_V6_ADDR_MASK_V;
+            conds[1].conditionValue.Anonymous.v6AddrMask = &mut v6;
+
+            let mut filter: FWPM_FILTER0 = std::mem::zeroed();
+            let mut name = wide(&format!("tyba-block {label}"));
+            filter.displayData.name = name.as_mut_ptr();
+            filter.layerKey = LAYER_ALE_AUTH_CONNECT_V6;
+            filter.subLayerKey = OUR_SUBLAYER;
+            filter.weight.r#type = FWP_EMPTY_V;
+            filter.numFilterConditions = 2;
+            filter.filterCondition = conds.as_mut_ptr();
+            filter.action.r#type = FWP_ACTION_BLOCK_V;
+
+            let mut id: u64 = 0;
+            let rc = FwpmFilterAdd0(engine, &filter, std::ptr::null_mut(), &mut id);
+            if rc != 0 {
+                FwpmEngineClose0(engine);
+                return Err(format!("FwpmFilterAdd0(v6 {label}): 0x{rc:08X}"));
             }
         }
 
