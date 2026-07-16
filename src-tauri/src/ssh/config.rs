@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use crate::error::AppError;
 use crate::ssh::Host;
@@ -126,9 +127,34 @@ pub fn write_tyba_conf(home: &Path, content: &str) -> Result<(), AppError> {
     set_mode(&ssh_dir(home), 0o700)?;
     set_mode(dir, 0o700)?;
     let path = conf_path(home);
-    fs::write(&path, content).map_err(write_failed)?;
+    let staged = path.with_extension("conf.staged");
+    fs::write(&staged, content).map_err(write_failed)?;
+    set_mode(&staged, 0o600)?;
+    if let Err(e) = ssh_parses(&staged) {
+        let _ = fs::remove_file(&staged);
+        return Err(e);
+    }
+    fs::rename(&staged, &path).map_err(write_failed)?;
     set_mode(&path, 0o600)?;
     Ok(())
+}
+
+fn ssh_parses(path: &Path) -> Result<(), AppError> {
+    let out = Command::new("ssh")
+        .arg("-F")
+        .arg(path)
+        .args(["-G", "tyba-config-check"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(AppError::new("ssh.config_invalid").with(
+            "detail",
+            String::from_utf8_lossy(&o.stderr).trim().to_string(),
+        )),
+        Err(_) => Ok(()),
+    }
 }
 
 /// Garante `Include config.d/tyba.conf` no topo do `~/.ssh/config`. Idempotente:
@@ -169,6 +195,45 @@ pub fn materialize(home: &Path, hosts: &[Host]) -> Result<(), AppError> {
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    #[test]
+    fn config_ruim_nunca_substitui_o_arquivo_bom() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        write_tyba_conf(home, "Host bom\n    HostName ok.host\n").unwrap();
+
+        let err = write_tyba_conf(home, "Host x\n    LocalForward 5432:localhost:5432\n");
+
+        assert!(
+            err.is_err(),
+            "linha invalida no tyba.conf quebra TODO ssh/scp/git da maquina \
+             (o arquivo e Included): o ssh -G tem que barrar antes de instalar"
+        );
+        let vivo = fs::read_to_string(conf_path(home)).unwrap();
+        assert!(
+            vivo.contains("ok.host"),
+            "o arquivo bom tem que sobreviver a tentativa ruim; got:\n{vivo}"
+        );
+        assert!(
+            !conf_path(home).with_extension("conf.staged").exists(),
+            "o staged nao pode ficar para tras"
+        );
+    }
+
+    #[test]
+    fn config_bom_e_instalado() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tyba_conf(
+            tmp.path(),
+            "Host bom\n    LocalForward 5432 localhost:5432\n",
+        )
+        .unwrap();
+        let vivo = fs::read_to_string(conf_path(tmp.path())).unwrap();
+        assert!(
+            vivo.contains("LocalForward 5432 localhost:5432"),
+            "got:\n{vivo}"
+        );
+    }
 
     fn host(alias: &str, hostname: &str) -> Host {
         Host {
