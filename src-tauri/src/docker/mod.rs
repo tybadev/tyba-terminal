@@ -15,6 +15,20 @@ const VERSION_TIMEOUT: Duration = Duration::from_millis(1500);
 const PS_TIMEOUT: Duration = Duration::from_secs(3);
 const RM_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Timeout local mede docker que responde em milissegundos. Sobre ssh o mesmo
+/// comando paga handshake, aprovação do agente de chave e a rede — cabia em 3s
+/// nunca, e o painel remoto só entregava timeout (lista vazia). Na primeira
+/// conexão o teto é a aprovação humana no 1Password; depois dela o ControlMaster
+/// reusa a conexão e as chamadas voltam a ser rápidas.
+const REMOTE_FIRST_TIMEOUT: Duration = Duration::from_secs(45);
+
+fn timeout_for(base: Duration, host: Option<&str>) -> Duration {
+    match host {
+        Some(_) => base.max(REMOTE_FIRST_TIMEOUT),
+        None => base,
+    }
+}
+
 const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
 const COMPOSE_WORKING_DIR_LABEL: &str = "com.docker.compose.project.working_dir";
 const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
@@ -394,13 +408,28 @@ fn drain(
     (out, err)
 }
 
-fn run_docker(args: &[&str], timeout: Duration) -> Result<String, DockerError> {
+/// Alvo dos comandos: a máquina local ou um Host SSH (pelo alias já
+/// materializado no ssh_config). O docker fala com máquina remota nativamente
+/// por `DOCKER_HOST=ssh://`; o alias resolve porque o TYBA escreve o Include.
+pub fn docker_host_env(host: Option<&str>) -> Option<String> {
+    host.map(|alias| format!("ssh://{alias}"))
+}
+
+fn run_docker(args: &[&str], timeout: Duration, host: Option<&str>) -> Result<String, DockerError> {
+    let timeout = timeout_for(timeout, host);
     let bin = docker_bin().ok_or(DockerError::NotInstalled)?;
     let mut cmd = Command::new(bin);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Limite conhecido do docker-over-ssh: o helper chama o `ssh` com stdin
+    // nulo, então host que só aceita senha não conecta — precisa de chave. Não
+    // dá pra forçar BatchMode sem mexer no ssh_config do usuário (o que
+    // quebraria a sessão interativa dele), então o caso cai no timeout.
+    if let Some(target) = docker_host_env(host) {
+        cmd.env("DOCKER_HOST", target);
+    }
     crate::repo::no_console_window(&mut cmd);
     let mut child = cmd.spawn()?;
     let (out, err) = drain(&mut child);
@@ -431,7 +460,8 @@ fn run_docker(args: &[&str], timeout: Duration) -> Result<String, DockerError> {
 
 #[derive(Default)]
 pub struct DockerManager {
-    availability: Mutex<Option<(bool, Instant)>>,
+    /// Por alvo (`None` = local): docker no Mac não diz nada sobre docker na VPS.
+    availability: Mutex<HashMap<Option<String>, (bool, Instant)>>,
     known: Mutex<HashMap<String, String>>,
     projects: Mutex<HashMap<String, ProjectInfo>>,
     tabs: Mutex<HashMap<(String, ContainerTab), SessionId>>,
@@ -444,21 +474,23 @@ impl DockerManager {
         Self::default()
     }
 
-    pub fn available(&self) -> bool {
+    pub fn available(&self, host: Option<&str>) -> bool {
+        let key = host.map(str::to_string);
         {
             let cache = self.availability.lock();
-            if let Some((ok, at)) = *cache {
+            if let Some((ok, at)) = cache.get(&key) {
                 if at.elapsed() < AVAILABILITY_TTL {
-                    return ok;
+                    return *ok;
                 }
             }
         }
         let ok = run_docker(
             &["version", "--format", "{{.Server.Version}}"],
             VERSION_TIMEOUT,
+            host,
         )
         .is_ok();
-        *self.availability.lock() = Some((ok, Instant::now()));
+        self.availability.lock().insert(key, (ok, Instant::now()));
         ok
     }
 
@@ -466,22 +498,30 @@ impl DockerManager {
         &self,
         repo_root: Option<&str>,
         all: bool,
+        host: Option<&str>,
     ) -> Result<Vec<ContainerInfo>, DockerError> {
+        let key = host.map(str::to_string);
         let raw = match run_docker(
             &["ps", "-a", "--no-trunc", "--format", "{{json .}}"],
             PS_TIMEOUT,
+            host,
         ) {
             Ok(raw) => {
-                *self.availability.lock() = Some((true, Instant::now()));
+                self.availability.lock().insert(key, (true, Instant::now()));
                 raw
             }
             Err(e) => {
-                *self.availability.lock() = Some((false, Instant::now()));
+                self.availability
+                    .lock()
+                    .insert(key, (false, Instant::now()));
                 return Err(e);
             }
         };
         let mut containers = parse_ps_output(&raw);
-        annotate_host_paths(&mut containers);
+        // Caminho do host remoto não existe no Mac: anotar viraria link quebrado.
+        if host.is_none() {
+            annotate_host_paths(&mut containers);
+        }
         {
             let mut known = self.known.lock();
             known.clear();
@@ -529,9 +569,9 @@ impl DockerManager {
             .ok_or_else(|| DockerError::UnknownContainer(id.chars().take(12).collect()))
     }
 
-    pub fn remove(&self, id: &str) -> Result<(), DockerError> {
+    pub fn remove(&self, id: &str, host: Option<&str>) -> Result<(), DockerError> {
         self.container_name(id)?;
-        run_docker(&["rm", "-f", id], RM_TIMEOUT)?;
+        run_docker(&["rm", "-f", id], RM_TIMEOUT, host)?;
         self.known.lock().remove(id);
         self.prune_tabs();
         Ok(())
@@ -564,6 +604,31 @@ impl DockerManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_target_has_no_docker_host() {
+        assert_eq!(docker_host_env(None), None);
+    }
+
+    #[test]
+    fn remoto_ganha_folga_pro_handshake_e_pra_aprovacao_da_chave() {
+        assert_eq!(timeout_for(PS_TIMEOUT, None), PS_TIMEOUT);
+        assert_eq!(
+            timeout_for(PS_TIMEOUT, Some("vps")),
+            REMOTE_FIRST_TIMEOUT,
+            "3s não cobre handshake + 1Password: o painel remoto só dava timeout"
+        );
+        let longo = Duration::from_secs(60);
+        assert_eq!(timeout_for(longo, Some("vps")), longo, "nunca encurta");
+    }
+
+    #[test]
+    fn ssh_target_uses_the_alias_materializado() {
+        assert_eq!(
+            docker_host_env(Some("Hostinger-vps")).as_deref(),
+            Some("ssh://Hostinger-vps")
+        );
+    }
 
     const FIXTURE: &str = r#"
 {"Command":"\"docker-entrypoint.s…\"","CreatedAt":"2026-07-08 10:00:00 -0300 -03","ID":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","Image":"postgres:16","Labels":"com.docker.compose.project=tyba-terminal,com.docker.compose.project.working_dir=/Users/dev/tyba-terminal,com.docker.compose.project.config_files=/Users/dev/tyba-terminal/docker-compose.yml,com.docker.compose.service=db","LocalVolumes":"1","Mounts":"pgdata","Names":"tyba-db-1","Networks":"tyba_default","Ports":"0.0.0.0:5432->5432/tcp","RunningFor":"2 hours ago","Size":"0B","State":"running","Status":"Up 2 hours"}

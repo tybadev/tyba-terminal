@@ -13,6 +13,7 @@ pub mod rich_input;
 pub mod sandbox;
 pub mod session;
 pub mod shell_path;
+pub mod ssh;
 pub mod status;
 pub mod theme;
 pub mod update;
@@ -91,7 +92,7 @@ fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
 fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
     for id in ids {
         if let Some(s) = state.sessions.get(*id) {
-            if matches!(s.kind, SessionKind::Shell) {
+            if matches!(s.kind, SessionKind::Shell | SessionKind::Ssh { .. }) {
                 state.sessions.dispose(&state.pty_pool, *id);
             }
         }
@@ -111,7 +112,7 @@ fn session_exited(app: &AppHandle, id: SessionId) {
         return;
     };
     teardown_agent_session(app, &state, id);
-    if matches!(session.kind, SessionKind::Shell) {
+    if matches!(session.kind, SessionKind::Shell | SessionKind::Ssh { .. }) {
         state.sessions.dispose(&state.pty_pool, id);
         let _ = state.layout.session_disposed(id);
         emit_layout(app, &state);
@@ -285,9 +286,165 @@ fn create_session(
                 session_exited(&handle, id)
             })
             .map_err(|e| e.to_string())?,
+        // Container nasce pelo painel de Docker (open_container_tab), não por aqui.
+        SessionKind::Container { .. } => {
+            return Err(crate::error::AppError::new("session.kind_unsupported").to_string())
+        }
+        SessionKind::Ssh { host_id } => {
+            let host = state
+                .store
+                .load_hosts()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|h| &h.id == host_id)
+                .ok_or_else(|| {
+                    crate::error::AppError::new("ssh.host_not_found")
+                        .with("id", host_id.clone())
+                        .to_string()
+                })?;
+            let home = crate::ssh::home_dir();
+            let session = state
+                .sessions
+                .create_ssh_session(
+                    app.clone(),
+                    &state.pty_pool,
+                    host.id.clone(),
+                    &host.alias,
+                    home.as_deref(),
+                    opts.cols,
+                    opts.rows,
+                    move |id| session_exited(&handle, id),
+                )
+                .map_err(|e| e.to_string())?;
+            let _ = state
+                .store
+                .touch_host_connected(&host.id, chrono::Utc::now());
+            session
+        }
     };
     run_setup_if_consented(&app, &state, &session);
     Ok(session)
+}
+
+fn store_err(e: session::store::StoreError) -> crate::error::AppError {
+    crate::error::AppError::new("store.failed").with("detail", e.to_string())
+}
+
+fn validate_alias(alias: &str) -> Result<(), crate::error::AppError> {
+    if alias.trim().is_empty() || alias.chars().any(|c| c.is_whitespace()) {
+        return Err(
+            crate::error::AppError::new("ssh.alias_invalid").with("alias", alias.to_string())
+        );
+    }
+    Ok(())
+}
+
+fn rematerialize_hosts(state: &State<'_, AppState>) -> Result<(), crate::error::AppError> {
+    let hosts = state.store.load_hosts().map_err(store_err)?;
+    if let Some(home) = crate::ssh::home_dir() {
+        crate::ssh::config::materialize(&home, &hosts)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_hosts(state: State<'_, AppState>) -> Result<Vec<crate::ssh::Host>, crate::error::AppError> {
+    state.store.load_hosts().map_err(store_err)
+}
+
+#[tauri::command]
+fn list_host_groups(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::ssh::HostGroup>, crate::error::AppError> {
+    state.store.load_host_groups().map_err(store_err)
+}
+
+#[tauri::command]
+fn create_host(
+    state: State<'_, AppState>,
+    input: crate::ssh::HostInput,
+) -> Result<crate::ssh::Host, crate::error::AppError> {
+    validate_alias(&input.alias)?;
+    let existing = state.store.load_hosts().map_err(store_err)?;
+    if existing.iter().any(|h| h.alias == input.alias) {
+        return Err(crate::error::AppError::new("ssh.alias_duplicate").with("alias", input.alias));
+    }
+    let host = crate::ssh::Host {
+        id: uuid::Uuid::new_v4().to_string(),
+        alias: input.alias,
+        hostname: input.hostname,
+        port: input.port,
+        username: input.username,
+        identity_file: input.identity_file,
+        proxy_jump: input.proxy_jump,
+        group_id: input.group_id,
+        color: input.color,
+        notes: input.notes,
+        position: existing.len() as i64,
+        created_at: chrono::Utc::now(),
+        last_connected_at: None,
+    };
+    state.store.upsert_host(&host).map_err(store_err)?;
+    rematerialize_hosts(&state)?;
+    Ok(host)
+}
+
+#[tauri::command]
+fn update_host(
+    state: State<'_, AppState>,
+    host: crate::ssh::Host,
+) -> Result<crate::ssh::Host, crate::error::AppError> {
+    validate_alias(&host.alias)?;
+    let existing = state.store.load_hosts().map_err(store_err)?;
+    if existing
+        .iter()
+        .any(|h| h.alias == host.alias && h.id != host.id)
+    {
+        return Err(crate::error::AppError::new("ssh.alias_duplicate").with("alias", host.alias));
+    }
+    state.store.upsert_host(&host).map_err(store_err)?;
+    rematerialize_hosts(&state)?;
+    Ok(host)
+}
+
+#[tauri::command]
+fn delete_host(state: State<'_, AppState>, id: String) -> Result<(), crate::error::AppError> {
+    state.store.remove_host(&id).map_err(store_err)?;
+    rematerialize_hosts(&state)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn create_host_group(
+    state: State<'_, AppState>,
+    input: crate::ssh::HostGroupInput,
+) -> Result<crate::ssh::HostGroup, crate::error::AppError> {
+    let existing = state.store.load_host_groups().map_err(store_err)?;
+    let group = crate::ssh::HostGroup {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: input.name,
+        color: input.color,
+        notes: input.notes,
+        position: existing.len() as i64,
+        created_at: chrono::Utc::now(),
+    };
+    state.store.upsert_host_group(&group).map_err(store_err)?;
+    Ok(group)
+}
+
+#[tauri::command]
+fn update_host_group(
+    state: State<'_, AppState>,
+    group: crate::ssh::HostGroup,
+) -> Result<crate::ssh::HostGroup, crate::error::AppError> {
+    state.store.upsert_host_group(&group).map_err(store_err)?;
+    Ok(group)
+}
+
+#[tauri::command]
+fn delete_host_group(state: State<'_, AppState>, id: String) -> Result<(), crate::error::AppError> {
+    state.store.remove_host_group(&id).map_err(store_err)?;
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -1070,6 +1227,9 @@ fn create_workspace(
     name: String,
     repo_root: Option<String>,
     session_id: SessionId,
+    // Identidade junto na criação: renomear/colorir/agrupar em chamadas
+    // separadas faz a sidebar piscar entre os estados intermediários.
+    #[allow(unused_variables)] tag: Option<WorkspaceTag>,
 ) -> Result<layout::WorkspaceId, String> {
     let repo_root = repo_root.map(|r| {
         let expanded = session::expand_home(std::path::Path::new(&r));
@@ -1081,10 +1241,54 @@ fn create_workspace(
     });
     let id = state
         .layout
-        .create_workspace(&name, repo_root, session_id)
+        .create_workspace_tagged(
+            &name,
+            repo_root,
+            session_id,
+            tag.map(Into::into).unwrap_or_default(),
+        )
         .map_err(|e| e.to_string())?;
     emit_layout(&app, &state);
     Ok(id)
+}
+
+/// O painel de containers é singleton e o alvo dele muda: o workspace segue o
+/// que está na tela (nome, cor e grupo do host, ou "Docker" quando é local).
+/// Numa chamada só — nome/cor/grupo em três round-trips fazem a sidebar piscar.
+#[tauri::command]
+fn tag_workspace(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: layout::WorkspaceId,
+    name: String,
+    tag: WorkspaceTag,
+) -> Result<(), String> {
+    state
+        .layout
+        .tag_workspace(id, &name, tag.into())
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct WorkspaceTag {
+    #[serde(default)]
+    lock_name: bool,
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    group: Option<String>,
+}
+
+impl From<WorkspaceTag> for layout::Tag {
+    fn from(t: WorkspaceTag) -> Self {
+        layout::Tag {
+            lock_name: t.lock_name,
+            color: t.color,
+            group: t.group,
+        }
+    }
 }
 
 #[tauri::command]
@@ -1347,20 +1551,53 @@ fn set_split_ratio(
 }
 
 #[tauri::command]
-fn docker_available(state: State<'_, AppState>) -> bool {
-    state.docker.available()
+// Docker num host remoto fala por ssh: a chamada leva segundos, não milissegundos.
+// Comando síncrono do Tauri roda na main thread e congelaria a janela inteira —
+// terminal junto. O trabalho bloqueante sai da main thread.
+async fn docker_blocking<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn docker_list_containers(
+async fn docker_available(
+    state: State<'_, AppState>,
+    host: Option<String>,
+) -> Result<bool, String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || docker.available(host.as_deref())).await
+}
+
+#[tauri::command]
+async fn docker_list_containers(
     state: State<'_, AppState>,
     repo_root: Option<String>,
     all: bool,
+    host: Option<String>,
 ) -> Result<Vec<docker::ContainerInfo>, String> {
-    state
-        .docker
-        .list(repo_root.as_deref(), all)
-        .map_err(|e| e.to_string())
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || {
+        docker
+            // Filtro por projeto compara caminho local do compose: num host
+            // remoto o caminho é de lá, então filtrar por repo daqui zeraria a
+            // lista.
+            .list(
+                if host.is_some() {
+                    None
+                } else {
+                    repo_root.as_deref()
+                },
+                all,
+                host.as_deref(),
+            )
+            .map_err(|e| e.to_string())
+    })
+    .await?
 }
 
 fn open_container_tab(
@@ -1368,6 +1605,7 @@ fn open_container_tab(
     state: &State<'_, AppState>,
     container_id: &str,
     tab: docker::ContainerTab,
+    host: Option<&str>,
 ) -> Result<(), String> {
     let name = state
         .docker
@@ -1384,7 +1622,23 @@ fn open_container_tab(
             return Ok(());
         }
     }
-    let workspace_id = Some(state.layout.docker_workspace().map_err(|e| e.to_string())?);
+    // Container remoto mora dentro do host: cai no grupo e na cor daquele host,
+    // com o alias no nome. O workspace do Docker é o balaio da máquina local —
+    // misturar os dois deixa `sh: postgres` do Mac igual ao da VPS, e o estrago
+    // de confundir é grande.
+    let remote = host.and_then(|alias| {
+        let host = state
+            .store
+            .load_hosts()
+            .ok()?
+            .into_iter()
+            .find(|h| h.alias == alias)?;
+        Some(host)
+    });
+    let workspace_id = match &remote {
+        Some(_) => None,
+        None => Some(state.layout.docker_workspace().map_err(|e| e.to_string())?),
+    };
 
     let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
     let (args, title) = match tab {
@@ -1411,16 +1665,82 @@ fn open_container_tab(
         ),
     };
 
-    let session = spawn_tab_session(
-        app,
-        state,
-        bin.as_path(),
-        &args,
-        title,
-        None,
-        &name,
-        workspace_id,
-    )?;
+    // `-H` é flag global do docker e vem antes do subcomando: evita carregar
+    // env pelo spawn e deixa o alvo explícito na própria linha de comando.
+    let args = match docker::docker_host_env(host) {
+        Some(target) => {
+            let mut with_host = vec!["-H".to_string(), target];
+            with_host.extend(args);
+            with_host
+        }
+        None => args,
+    };
+
+    let session = match &remote {
+        // Container do host tem workspace próprio: `create_tab` sem alvo cai no
+        // workspace ATIVO — foi assim que o shell entrou (e renomeou) a sessão
+        // ssh do usuário em vez de nascer do lado dela.
+        Some(h) => {
+            let title = format!("{} · {title}", h.alias);
+            let handle = app.clone();
+            let session = state
+                .sessions
+                .create_command_session(
+                    app.clone(),
+                    &state.pty_pool,
+                    bin.as_path(),
+                    &args,
+                    title.clone(),
+                    None,
+                    100,
+                    30,
+                    SessionKind::Container {
+                        host_id: Some(h.id.clone()),
+                        container_id: container_id.to_string(),
+                    },
+                    move |id| session_exited(&handle, id),
+                )
+                .map_err(|e| e.to_string())?;
+            let group = h.group_id.as_ref().and_then(|gid| {
+                state
+                    .store
+                    .load_host_groups()
+                    .ok()?
+                    .into_iter()
+                    .find(|g| &g.id == gid)
+                    .map(|g| g.name)
+            });
+            state
+                .layout
+                .create_workspace_tagged(
+                    &title,
+                    None,
+                    session.id,
+                    layout::Tag {
+                        lock_name: true,
+                        color: h.color.clone(),
+                        group,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            emit_layout(app, state);
+            session.id
+        }
+        None => spawn_tab_session(
+            app,
+            state,
+            bin.as_path(),
+            &args,
+            title.clone(),
+            None,
+            &title,
+            workspace_id,
+            SessionKind::Container {
+                host_id: None,
+                container_id: container_id.to_string(),
+            },
+        )?,
+    };
     state.docker.remember_tab(container_id, tab, session);
     Ok(())
 }
@@ -1435,6 +1755,7 @@ fn spawn_tab_session(
     cwd: Option<&std::path::Path>,
     fallback_workspace: &str,
     workspace_id: Option<layout::WorkspaceId>,
+    kind: SessionKind,
 ) -> Result<SessionId, String> {
     let handle = app.clone();
     let session = state
@@ -1448,6 +1769,7 @@ fn spawn_tab_session(
             cwd,
             100,
             30,
+            kind,
             move |id| session_exited(&handle, id),
         )
         .map_err(|e| e.to_string())?;
@@ -1471,8 +1793,15 @@ fn docker_open_logs(
     app: AppHandle,
     state: State<'_, AppState>,
     container_id: String,
+    host: Option<String>,
 ) -> Result<(), String> {
-    open_container_tab(&app, &state, &container_id, docker::ContainerTab::Logs)
+    open_container_tab(
+        &app,
+        &state,
+        &container_id,
+        docker::ContainerTab::Logs,
+        host.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -1480,13 +1809,23 @@ fn docker_open_shell(
     app: AppHandle,
     state: State<'_, AppState>,
     container_id: String,
+    host: Option<String>,
 ) -> Result<(), String> {
-    open_container_tab(&app, &state, &container_id, docker::ContainerTab::Shell)
+    open_container_tab(
+        &app,
+        &state,
+        &container_id,
+        docker::ContainerTab::Shell,
+        host.as_deref(),
+    )
 }
 
 #[tauri::command]
 fn open_view_tab(app: AppHandle, state: State<'_, AppState>, view: String) -> Result<(), String> {
-    if view != layout::VIEW_SETTINGS && view != layout::VIEW_WORKSPACE {
+    if view != layout::VIEW_SETTINGS
+        && view != layout::VIEW_WORKSPACE
+        && view != layout::VIEW_CONNECTIONS
+    {
         return Err(format!("view desconhecida: {view}"));
     }
     state
@@ -1537,6 +1876,7 @@ fn docker_compose_op(
         Some(std::path::Path::new(&info.working_dir)),
         &project,
         workspace_id,
+        SessionKind::Shell,
     )?;
     Ok(())
 }
@@ -1633,16 +1973,24 @@ fn docker_open_compose_file(
         Some(std::path::Path::new(&info.working_dir)),
         &project,
         workspace_id,
+        SessionKind::Shell,
     )?;
     Ok(())
 }
 
 #[tauri::command]
-fn docker_remove_container(state: State<'_, AppState>, container_id: String) -> Result<(), String> {
-    state
-        .docker
-        .remove(&container_id)
-        .map_err(|e| e.to_string())
+async fn docker_remove_container(
+    state: State<'_, AppState>,
+    container_id: String,
+    host: Option<String>,
+) -> Result<(), String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || {
+        docker
+            .remove(&container_id, host.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -1851,6 +2199,18 @@ pub fn run() {
         })
         .setup(|app| {
             let store = Arc::new(open_store(app.handle()));
+
+            // O tyba.conf é derivado do banco, então se regenera no boot: quem
+            // cadastrou host numa versão antiga recebe o que mudou no formato
+            // (multiplexing, p.ex.) sem ter que reeditar host por host.
+            if let (Ok(hosts), Some(home)) = (store.load_hosts(), ssh::home_dir()) {
+                if !hosts.is_empty() {
+                    if let Err(e) = ssh::config::materialize(&home, &hosts) {
+                        eprintln!("tyba: ssh config não materializou: {e}");
+                    }
+                }
+            }
+
             let pty_pool: SharedPtyPool = Arc::new(pty::PtyPool::new());
             let sessions: SharedSessionManager =
                 Arc::new(session::SessionManager::new(Arc::clone(&store)));
@@ -1942,6 +2302,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent_binary_available,
             create_session,
+            list_hosts,
+            list_host_groups,
+            create_host,
+            update_host,
+            delete_host,
+            create_host_group,
+            update_host_group,
+            delete_host_group,
             write_to_session,
             submit_rich_input,
             set_agent_match_pattern,
@@ -2006,6 +2374,7 @@ pub fn run() {
             import_theme,
             layout_state,
             create_workspace,
+            tag_workspace,
             close_workspace,
             activate_workspace,
             rename_workspace,

@@ -9,7 +9,9 @@ export type SessionId = string;
 
 export type SessionKind =
   | { type: "shell" }
-  | { type: "agent"; runner: "claude_code" | "codex" | { custom: string } };
+  | { type: "agent"; runner: "claude_code" | "codex" | { custom: string } }
+  | { type: "ssh"; host_id: string }
+  | { type: "container"; host_id: string | null; container_id: string };
 
 export type AwaitingReason = "approval" | "reply";
 
@@ -429,6 +431,68 @@ export const attachSession = (id: SessionId) =>
 export const detachSession = (id: SessionId) =>
   invoke<void>("detach_session", { id });
 
+// --- SSH: gestor de conexões (Host / Host Group) ---
+
+export interface Host {
+  id: string;
+  alias: string;
+  hostname: string;
+  port: number | null;
+  username: string | null;
+  identity_file: string | null;
+  proxy_jump: string | null;
+  group_id: string | null;
+  color: string | null;
+  notes: string | null;
+  position: number;
+  created_at: string;
+  last_connected_at: string | null;
+}
+
+export interface HostGroup {
+  id: string;
+  name: string;
+  color: string | null;
+  notes: string | null;
+  position: number;
+  created_at: string;
+}
+
+export interface HostInput {
+  alias: string;
+  hostname: string;
+  port?: number | null;
+  username?: string | null;
+  identity_file?: string | null;
+  proxy_jump?: string | null;
+  group_id?: string | null;
+  color?: string | null;
+  notes?: string | null;
+}
+
+export interface HostGroupInput {
+  name: string;
+  color?: string | null;
+  notes?: string | null;
+}
+
+export const listHosts = () => invoke<Host[]>("list_hosts");
+export const listHostGroups = () => invoke<HostGroup[]>("list_host_groups");
+export const createHost = (input: HostInput) =>
+  invoke<Host>("create_host", { input });
+export const updateHost = (host: Host) => invoke<Host>("update_host", { host });
+export const deleteHost = (id: string) => invoke<void>("delete_host", { id });
+export const createHostGroup = (input: HostGroupInput) =>
+  invoke<HostGroup>("create_host_group", { input });
+export const updateHostGroup = (group: HostGroup) =>
+  invoke<HostGroup>("update_host_group", { group });
+export const deleteHostGroup = (id: string) =>
+  invoke<void>("delete_host_group", { id });
+
+/** Conecta a um Host abrindo uma SSH Session (reusa create_session). */
+export const connectHost = (hostId: string, cols: number, rows: number) =>
+  createSession({ kind: { type: "ssh", host_id: hostId }, cols, rows });
+
 export const resizeSession = (id: SessionId, cols: number, rows: number) =>
   invoke<void>("resize_session", { id, cols, rows });
 
@@ -543,11 +607,29 @@ export interface LayoutState {
 
 export const layoutState = () => invoke<LayoutState>("layout_state");
 
+/** Identidade junto na criação: renomear/colorir/agrupar depois faz a sidebar
+ * piscar entre os estados intermediários. */
+export interface WorkspaceTag {
+  lock_name?: boolean;
+  color?: string | null;
+  group?: string | null;
+}
+
 export const createWorkspace = (
   name: string,
   repoRoot: string | null,
   sessionId: SessionId,
-) => invoke<WorkspaceId>("create_workspace", { name, repoRoot, sessionId });
+  tag?: WorkspaceTag,
+) =>
+  invoke<WorkspaceId>("create_workspace", {
+    name,
+    repoRoot,
+    sessionId,
+    tag: tag ?? null,
+  });
+
+export const tagWorkspace = (id: WorkspaceId, name: string, tag: WorkspaceTag) =>
+  invoke<void>("tag_workspace", { id, name, tag });
 
 export const closeWorkspace = (id: WorkspaceId) =>
   invoke<void>("close_workspace", { id });
@@ -689,16 +771,26 @@ export interface ContainerInfo {
 
 export type ComposeOp = "up" | "down" | "restart";
 
-export const dockerAvailable = () => invoke<boolean>("docker_available");
+/** `host` = alias SSH (materializado no ssh_config); ausente = máquina local. */
+export const dockerAvailable = (host?: string | null) =>
+  invoke<boolean>("docker_available", { host: host ?? null });
 
-export const dockerListContainers = (repoRoot: string | null, all: boolean) =>
-  invoke<ContainerInfo[]>("docker_list_containers", { repoRoot, all });
+export const dockerListContainers = (
+  repoRoot: string | null,
+  all: boolean,
+  host?: string | null,
+) =>
+  invoke<ContainerInfo[]>("docker_list_containers", {
+    repoRoot,
+    all,
+    host: host ?? null,
+  });
 
-export const dockerOpenLogs = (containerId: string) =>
-  invoke<void>("docker_open_logs", { containerId });
+export const dockerOpenLogs = (containerId: string, host?: string | null) =>
+  invoke<void>("docker_open_logs", { containerId, host: host ?? null });
 
-export const dockerOpenShell = (containerId: string) =>
-  invoke<void>("docker_open_shell", { containerId });
+export const dockerOpenShell = (containerId: string, host?: string | null) =>
+  invoke<void>("docker_open_shell", { containerId, host: host ?? null });
 
 export const dockerOpenDashboard = () =>
   invoke<void>("docker_open_dashboard");
@@ -706,8 +798,10 @@ export const dockerOpenDashboard = () =>
 export const openViewTab = (view: string) =>
   invoke<void>("open_view_tab", { view });
 
-export const dockerRemoveContainer = (containerId: string) =>
-  invoke<void>("docker_remove_container", { containerId });
+export const dockerRemoveContainer = (
+  containerId: string,
+  host?: string | null,
+) => invoke<void>("docker_remove_container", { containerId, host: host ?? null });
 
 export const dockerOpenDesktop = () =>
   invoke<void>("docker_open_desktop");
