@@ -136,7 +136,15 @@ fn end_ssh_session_on_host(state: &State<'_, AppState>, session: &session::Sessi
         return;
     };
     let name = crate::ssh::tmux::session_name(&install, session.id);
+    let tunnels = state
+        .store
+        .load_session_tunnels(session.id)
+        .unwrap_or_default();
+    let _ = state.store.remove_session_tunnels(session.id);
     std::thread::spawn(move || {
+        for t in &tunnels {
+            let _ = crate::ssh::tunnel::close_on_master(&alias, &t.tunnel);
+        }
         let _ = crate::ssh::tmux::kill_remote(&alias, &name);
     });
 }
@@ -185,6 +193,50 @@ fn ssh_target(state: &State<'_, AppState>, id: SessionId) -> Option<(String, Str
     Some((host_id.clone(), alias, name))
 }
 
+#[derive(Clone, serde::Serialize)]
+struct SessionTunnelPayload {
+    session_id: SessionId,
+    tunnels: Vec<crate::ssh::tunnel::SessionTunnel>,
+}
+
+fn emit_session_tunnels(
+    app: &AppHandle,
+    id: SessionId,
+    tunnels: &[crate::ssh::tunnel::SessionTunnel],
+) {
+    let _ = app.emit(
+        "session-tunnels",
+        SessionTunnelPayload {
+            session_id: id,
+            tunnels: tunnels.to_vec(),
+        },
+    );
+}
+
+fn restore_session_tunnels(app: &AppHandle, id: SessionId, alias: &str) {
+    let state = app.state::<AppState>();
+    let Ok(mut tunnels) = state.store.load_session_tunnels(id) else {
+        return;
+    };
+    if tunnels.is_empty() {
+        return;
+    }
+    emit_session_tunnels(app, id, &tunnels);
+    for t in &mut tunnels {
+        t.state = if crate::ssh::tunnel::control_master_available() {
+            match crate::ssh::tunnel::open_on_master(alias, &t.tunnel) {
+                Ok(()) => crate::ssh::tunnel::TunnelState::Live,
+                Err(e) => crate::ssh::tunnel::TunnelState::Error {
+                    detail: e.params.get("detail").cloned().unwrap_or(e.code),
+                },
+            }
+        } else {
+            crate::ssh::tunnel::TunnelState::Opening
+        };
+    }
+    emit_session_tunnels(app, id, &tunnels);
+}
+
 fn reattach_or_finish(app: AppHandle, id: SessionId) {
     std::thread::spawn(move || {
         let Some((host_id, alias, name)) = ssh_target(&app.state::<AppState>(), id) else {
@@ -225,6 +277,7 @@ fn reattach_or_finish(app: AppHandle, id: SessionId) {
             std::thread::sleep(delay);
 
             if reattach_now(&app, id, &host_id, &alias).is_ok() {
+                restore_session_tunnels(&app, id, &alias);
                 return;
             }
             attempt += 1;
@@ -378,6 +431,11 @@ fn resume_startup(
                 move |id| session_exited(&handle, id),
             ) {
                 eprintln!("reattach da sessão {}: {e}", old.id);
+            } else {
+                let handle = app.clone();
+                let alias = alias.clone();
+                let id = old.id;
+                std::thread::spawn(move || restore_session_tunnels(&handle, id, &alias));
             }
             continue;
         }
@@ -576,6 +634,83 @@ fn update_host(
     state.store.upsert_host(&host).map_err(store_err)?;
     rematerialize_hosts(&state)?;
     Ok(host)
+}
+
+#[tauri::command]
+fn list_session_tunnels(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+) -> Result<Vec<crate::ssh::tunnel::SessionTunnel>, crate::error::AppError> {
+    state
+        .store
+        .load_session_tunnels(session_id)
+        .map_err(store_err)
+}
+
+#[tauri::command]
+fn open_session_tunnel(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    tunnel: crate::ssh::tunnel::Tunnel,
+    confirmed: bool,
+) -> Result<crate::ssh::tunnel::SessionTunnel, crate::error::AppError> {
+    tunnel.validate()?;
+    if tunnel.kind.needs_confirmation() && !confirmed {
+        return Err(crate::error::AppError::new("ssh.tunnel_needs_confirmation")
+            .with("kind", tunnel.kind.flag()));
+    }
+    let alias = ssh_target(&state, session_id)
+        .map(|(_, alias, _)| alias)
+        .ok_or_else(|| crate::error::AppError::new("ssh.session_not_found"))?;
+
+    let master = crate::ssh::tunnel::control_master_available();
+    if master {
+        crate::ssh::tunnel::open_on_master(&alias, &tunnel)?;
+    } else if !crate::ssh::tunnel::local_port_free(&tunnel) {
+        return Err(crate::error::AppError::new("ssh.tunnel_open_failed")
+            .with("port", tunnel.listen_port.to_string())
+            .with("detail", "a porta local já está em uso"));
+    }
+
+    let entry = crate::ssh::tunnel::SessionTunnel {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id,
+        tunnel,
+        state: if master {
+            crate::ssh::tunnel::TunnelState::Live
+        } else {
+            crate::ssh::tunnel::TunnelState::Opening
+        },
+        created_at: chrono::Utc::now(),
+    };
+    state.store.add_session_tunnel(&entry).map_err(store_err)?;
+
+    if !master {
+        let _ = state.pty_pool.kill(session_id);
+    }
+    Ok(entry)
+}
+
+#[tauri::command]
+fn close_session_tunnel(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    tunnel_id: String,
+) -> Result<(), crate::error::AppError> {
+    let tunnels = state
+        .store
+        .load_session_tunnels(session_id)
+        .map_err(store_err)?;
+    let Some(entry) = tunnels.into_iter().find(|t| t.id == tunnel_id) else {
+        return Ok(());
+    };
+    if let Some((_, alias, _)) = ssh_target(&state, session_id) {
+        let _ = crate::ssh::tunnel::close_on_master(&alias, &entry.tunnel);
+    }
+    state
+        .store
+        .remove_session_tunnel(&tunnel_id)
+        .map_err(store_err)
 }
 
 #[tauri::command]
@@ -2619,6 +2754,9 @@ pub fn run() {
             create_host,
             update_host,
             delete_host,
+            list_session_tunnels,
+            open_session_tunnel,
+            close_session_tunnel,
             create_host_group,
             update_host_group,
             delete_host_group,

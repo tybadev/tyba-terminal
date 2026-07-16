@@ -129,6 +129,69 @@ impl Tunnel {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum TunnelState {
+    Opening,
+    Live,
+    Error { detail: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionTunnel {
+    pub id: String,
+    pub session_id: uuid::Uuid,
+    #[serde(flatten)]
+    pub tunnel: Tunnel,
+    pub state: TunnelState,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub fn control_master_available() -> bool {
+    cfg!(unix)
+}
+
+fn control(alias: &str, op: &str, t: &Tunnel) -> Result<std::process::Output, AppError> {
+    let args = t.cli_args()?;
+    std::process::Command::new("ssh")
+        .args(["-O", op])
+        .args(&args)
+        .arg(alias)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| AppError::new("ssh.tunnel_control_failed").with("detail", e.to_string()))
+}
+
+pub fn open_on_master(alias: &str, t: &Tunnel) -> Result<(), AppError> {
+    let out = control(alias, "forward", t)?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(AppError::new("ssh.tunnel_open_failed")
+        .with("port", t.listen_port.to_string())
+        .with("detail", control_reason(&out.stderr)))
+}
+
+pub fn close_on_master(alias: &str, t: &Tunnel) -> Result<(), AppError> {
+    control(alias, "cancel", t)?;
+    Ok(())
+}
+
+pub fn local_port_free(t: &Tunnel) -> bool {
+    std::net::TcpListener::bind((t.bind_address(), t.listen_port)).is_ok()
+}
+
+fn control_reason(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(str::trim)
+        .find(|l| l.contains("forwarding request failed"))
+        .and_then(|l| l.rsplit(':').next().map(str::trim))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("o ssh recusou o forward")
+        .to_string()
+}
+
 fn valid_host(h: &str) -> bool {
     !h.is_empty()
         && h.len() <= 255
@@ -292,6 +355,91 @@ mod tests {
         };
         assert_eq!(t.bind_address(), "0.0.0.0");
         assert!(t.config_line().unwrap().contains("0.0.0.0:5432"));
+    }
+
+    #[test]
+    fn a_razao_da_recusa_do_ssh_vira_texto_do_dono() {
+        let stderr = b"mux_client_forward: forwarding request failed: Port forwarding failed\n\
+                       muxclient: master forward request failed\n";
+        assert_eq!(control_reason(stderr), "Port forwarding failed");
+    }
+
+    #[test]
+    fn recusa_sem_motivo_reconhecivel_ainda_diz_algo() {
+        assert!(
+            !control_reason(b"barulho qualquer").is_empty(),
+            "erro sem detalhe não pode virar string vazia na UI: o dono ficaria \
+             com um túnel vermelho e nenhuma pista"
+        );
+    }
+
+    #[test]
+    fn o_estado_do_tunel_e_eixo_proprio_e_serializa_com_o_motivo() {
+        let json = serde_json::to_string(&TunnelState::Error {
+            detail: "Port forwarding failed".into(),
+        })
+        .unwrap();
+        assert!(json.contains("\"state\":\"error\""), "got: {json}");
+        assert!(
+            json.contains("Port forwarding failed"),
+            "o motivo viaja junto do estado: falhar é ruidoso, nunca silencioso. got: {json}"
+        );
+    }
+
+    #[test]
+    #[ignore = "usa rede: exige TYBA_E2E_SSH_ALIAS com ControlMaster de pé"]
+    fn na_vps_real_o_tunel_sobe_e_a_porta_tomada_vira_erro_visivel() {
+        let alias = std::env::var("TYBA_E2E_SSH_ALIAS").expect("TYBA_E2E_SSH_ALIAS");
+        let t = Tunnel {
+            kind: TunnelKind::Local,
+            listen_port: 15493,
+            listen_host: None,
+            target_host: Some("localhost".into()),
+            target_port: Some(22),
+        };
+        let _ = close_on_master(&alias, &t);
+
+        open_on_master(&alias, &t).expect("o túnel sobe no master vivo");
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", 15493))
+            .expect("a porta que o dono digitou tem que ser a que atende");
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut buf = [0u8; 8];
+        let n = std::io::Read::read(&mut s, &mut buf).unwrap();
+        assert!(
+            buf[..n].starts_with(b"SSH-"),
+            "o byte tem que atravessar até o sshd remoto"
+        );
+        close_on_master(&alias, &t).unwrap();
+
+        let squatter = std::net::TcpListener::bind(("127.0.0.1", 15493)).expect("impostor senta");
+        let err = open_on_master(&alias, &t)
+            .expect_err("porta tomada TEM que virar erro: com bind explícito o ssh devolve 255");
+        assert_eq!(err.code, "ssh.tunnel_open_failed");
+        assert_eq!(
+            err.params.get("port").map(String::as_str),
+            Some("15493"),
+            "o erro diz QUAL porta falhou; o painel mostra isso no túnel certo"
+        );
+        drop(squatter);
+    }
+
+    #[test]
+    fn pre_voo_ve_a_porta_tomada_no_endereco_que_o_tunel_usa() {
+        let t = Tunnel {
+            listen_port: 15487,
+            ..local(15487)
+        };
+        assert!(local_port_free(&t), "porta livre antes do impostor");
+
+        let squatter = std::net::TcpListener::bind(("127.0.0.1", 15487)).unwrap();
+        assert!(
+            !local_port_free(&t),
+            "o pré-voo pergunta pelo bind_address do túnel (127.0.0.1), que é \
+             exatamente o endereço que o ssh vai tentar — perguntar por outro \
+             endereço aprovaria uma porta que o ssh não consegue ligar"
+        );
+        drop(squatter);
     }
 
     #[test]

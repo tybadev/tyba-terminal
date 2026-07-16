@@ -7,8 +7,10 @@ use rusqlite::{params, Connection};
 use crate::layout::{LayoutRows, PaneRow, TabRow, WorkspaceRow};
 use crate::session::redact::redact;
 use crate::session::{Session, SessionId, SessionKind, SessionStatus};
+use crate::ssh::tunnel::{SessionTunnel, Tunnel, TunnelState};
 use crate::ssh::{Host, HostGroup};
 use crate::worktree::Worktree;
+use uuid::Uuid;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS sessions (
@@ -106,6 +108,17 @@ CREATE TABLE IF NOT EXISTS host (
     created_at TEXT NOT NULL,
     last_connected_at TEXT
 );
+CREATE TABLE IF NOT EXISTS session_tunnel (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    listen_port INTEGER NOT NULL,
+    listen_host TEXT,
+    target_host TEXT,
+    target_port INTEGER,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS session_tunnel_by_session ON session_tunnel (session_id);
 ";
 
 #[derive(Debug, thiserror::Error)]
@@ -260,6 +273,83 @@ impl Store {
             out.push(row?.into_host()?);
         }
         Ok(out)
+    }
+
+    pub fn add_session_tunnel(&self, t: &SessionTunnel) -> Result<(), StoreError> {
+        let kind = serde_json::to_string(&t.tunnel.kind)?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO session_tunnel (id, session_id, kind, listen_port, listen_host, target_host, target_port, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                t.id,
+                t.session_id.to_string(),
+                kind,
+                t.tunnel.listen_port,
+                t.tunnel.listen_host,
+                t.tunnel.target_host,
+                t.tunnel.target_port,
+                t.created_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_session_tunnels(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Vec<SessionTunnel>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, kind, listen_port, listen_host, target_host, target_port, created_at
+             FROM session_tunnel WHERE session_id = ?1 ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map(params![session_id.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, u16>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<u16>>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, sid, kind, listen_port, listen_host, target_host, target_port, created_at) =
+                row?;
+            out.push(SessionTunnel {
+                id,
+                session_id: Uuid::parse_str(&sid)?,
+                tunnel: Tunnel {
+                    kind: serde_json::from_str(&kind)?,
+                    listen_port,
+                    listen_host,
+                    target_host,
+                    target_port,
+                },
+                state: TunnelState::Opening,
+                created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn remove_session_tunnel(&self, id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM session_tunnel WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn remove_session_tunnels(&self, session_id: SessionId) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM session_tunnel WHERE session_id = ?1",
+            params![session_id.to_string()],
+        )?;
+        Ok(())
     }
 
     pub fn remove_host(&self, id: &str) -> Result<(), StoreError> {
@@ -854,6 +944,84 @@ mod tests {
             "host gravado antes da coluna existir tem tunnels NULL: \
              carregar tem que dar lista vazia, nunca erro de JSON — \
              senão o gestor inteiro para de listar host no primeiro boot pós-update"
+        );
+    }
+
+    fn sample_session_tunnel(session_id: SessionId, port: u16) -> SessionTunnel {
+        SessionTunnel {
+            id: Uuid::new_v4().to_string(),
+            session_id,
+            tunnel: Tunnel {
+                kind: crate::ssh::tunnel::TunnelKind::Local,
+                listen_port: port,
+                listen_host: None,
+                target_host: Some("localhost".into()),
+                target_port: Some(5432),
+            },
+            state: TunnelState::Live,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn tunel_de_sessao_sobrevive_a_fechar_o_app() {
+        let store = Store::open_in_memory().unwrap();
+        let sid = Uuid::new_v4();
+        let t = sample_session_tunnel(sid, 5432);
+        store.add_session_tunnel(&t).unwrap();
+
+        let loaded = store.load_session_tunnels(sid).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].tunnel, t.tunnel);
+        assert_eq!(
+            loaded[0].state,
+            TunnelState::Opening,
+            "estado não se persiste: ele é derivado da realidade. Voltar Live do \
+             disco seria alegar que o túnel está de pé antes de alguém ter tentado \
+             abrir — é a mentira silenciosa que a tech-spec §4 proíbe"
+        );
+    }
+
+    #[test]
+    fn tunel_de_sessao_e_privado_da_sua_sessao() {
+        let store = Store::open_in_memory().unwrap();
+        let minha = Uuid::new_v4();
+        let outra = Uuid::new_v4();
+        store
+            .add_session_tunnel(&sample_session_tunnel(minha, 5432))
+            .unwrap();
+        store
+            .add_session_tunnel(&sample_session_tunnel(outra, 6432))
+            .unwrap();
+
+        assert_eq!(store.load_session_tunnels(minha).unwrap().len(), 1);
+        assert_eq!(
+            store.load_session_tunnels(minha).unwrap()[0]
+                .tunnel
+                .listen_port,
+            5432
+        );
+    }
+
+    #[test]
+    fn fechar_a_sessao_leva_os_tuneis_dela_e_so_os_dela() {
+        let store = Store::open_in_memory().unwrap();
+        let morta = Uuid::new_v4();
+        let viva = Uuid::new_v4();
+        store
+            .add_session_tunnel(&sample_session_tunnel(morta, 5432))
+            .unwrap();
+        store
+            .add_session_tunnel(&sample_session_tunnel(viva, 6432))
+            .unwrap();
+
+        store.remove_session_tunnels(morta).unwrap();
+
+        assert!(store.load_session_tunnels(morta).unwrap().is_empty());
+        assert_eq!(
+            store.load_session_tunnels(viva).unwrap().len(),
+            1,
+            "o túnel pertence à SSH Session: matar uma não pode levar o da outra"
         );
     }
 
