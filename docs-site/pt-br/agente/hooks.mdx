@@ -1,0 +1,126 @@
+---
+title: "Como o TYBA fala com o agente"
+sidebarTitle: "Como o TYBA fala com o agente"
+description: "De onde vem o gate de aprovação. Página explicativa — não há nada para configurar aqui."
+---
+
+<Note>
+**Não há nada para você configurar nesta página.** Não existe tela de hooks, não existe arquivo de hooks seu, não existe preferência para ligar ou desligar.
+
+Isto aqui é doc de *como funciona*, para quem quer entender de onde sai o [inbox de aprovações](/pt-br/seguranca/classificacao-de-risco). Se você só quer usar o produto, pode pular.
+</Note>
+
+## O problema
+
+Um agente que roda solto é um processo que decide sozinho. Ele lê o que quiser, escreve o que quiser, e você descobre depois — lendo o diff, ou não lendo.
+
+Para existir um gate, alguém precisa ser **avisado antes** de cada ferramenta rodar, e precisa poder **segurar a execução** até a resposta chegar. Não dá para fazer isso raspando a tela: quando o texto apareceu no terminal, o comando já rodou.
+
+Claude Code e Codex têm um mecanismo para isso — **hooks**. O TYBA usa esse mecanismo.
+
+## O que o TYBA faz
+
+Toda vez que uma sessão de agente sobe, o TYBA injeta uma configuração de hooks no agente e abre um canal local para receber os eventos.
+
+<Steps>
+<Step title="Ele monta a configuração">
+Um punhado de eventos apontando para um único comando: **o próprio binário do TYBA**, num modo especial (`_hook`).
+</Step>
+<Step title="Ele injeta no agente">
+**Claude Code** — um `hooks.json` num diretório privado da sessão, passado com `--settings`.
+
+**Codex** — sem arquivo: os hooks vão como `--config` na linha de comando, cada um com um hash que o Codex confere para aceitar sem te perguntar.
+
+<Warning>
+Repare no que **não** acontece: o TYBA não encosta no seu `~/.claude/settings.json`. A configuração vive num diretório efêmero, daquela sessão, e morre com ela.
+</Warning>
+</Step>
+<Step title="Ele abre o canal">
+Um socket local — **AF_UNIX** no macOS e Linux, **named pipe** no Windows, porque socket unix não atravessa a jaula de lá. O caminho vai para o agente na variável `TYBA_HOOK_SOCKET`.
+</Step>
+<Step title="O agente chama de volta">
+Antes de usar uma ferramenta, o agente executa o comando do hook. Ele re-executa o binário do TYBA, que lê o socket da variável e entrega o evento ao app.
+</Step>
+</Steps>
+
+Nada disso sai da sua máquina. É processo local falando com processo local.
+
+## Os eventos
+
+| Evento | Para que serve |
+| --- | --- |
+| `PreToolUse` | **O gate.** Toda ferramenta, antes de rodar |
+| `SessionStart` | A sessão está de pé |
+| `Stop` | O turno acabou |
+| `SessionEnd` | A sessão morreu |
+| `Notification` (`idle_prompt`) | O agente está esperando você |
+
+No Codex há também `PermissionRequest`, que é como ele pede permissão.
+
+## Por que o `PreToolUse` é o produto inteiro
+
+Quando o agente vai usar uma ferramenta, o hook dispara **antes** e **fica pendurado esperando resposta**. É essa espera que dá tempo de existir uma decisão.
+
+O TYBA classifica a ação em verde, amarelo ou vermelho. Verde volta permitido na hora, sem você ver. Amarelo e vermelho **bloqueiam o hook** e viram item no inbox — o agente fica literalmente parado no meio da chamada, porque o processo do hook não retornou ainda.
+
+Você responde, o hook retorna permitido ou negado, e o agente segue ou recebe a recusa.
+
+<Note>
+O timeout do `PreToolUse` é de **86.400 segundos — 24 horas**. Não é exagero: é o número que diz "espere pelo usuário o tempo que for". Os outros eventos, que só avisam, têm 60 segundos.
+
+Enquanto isso, o Claude Code mostra *"Aguardando aprovação no TYBA…"* na tela dele.
+</Note>
+
+O que cai em cada cor está em [Classificação de risco](/pt-br/seguranca/classificacao-de-risco).
+
+## De onde vem o status da sessão
+
+Do mesmo canal. Os eventos de hook viram status direto:
+
+| Evento | Status |
+| --- | --- |
+| `PreToolUse` | `Running` |
+| `Stop` | `Idle` |
+| `Notification` (`idle_prompt`) | `AwaitingInput` |
+
+Isso é **dado estruturado**, não texto raspado da tela. Nenhuma heurística olha o que o agente desenhou no terminal para adivinhar se ele terminou.
+
+<Warning>
+**Correção de uma afirmação antiga.** Circulou por aí — inclusive na doc de arquitetura deste repositório — que o status vem do `stream-json` do Claude Code, com OSC 133 e uma heurística de silêncio como fallback.
+
+**Nada disso existe no código.** O TYBA sobe o Claude Code como `claude --settings <arquivo>`, sem `--output-format stream-json`. Não há parser de JSON-lines, e não há heurística de silêncio.
+
+O status vem dos hooks. Ponto.
+</Warning>
+
+O **OSC 133** existe, mas serve a outra coisa: detectar que um agente está rodando **num shell comum**, para o composer aparecer. Isso é dica de exibição, [nunca autorização](/pt-br/terminal/shell-integration) — e um shell não tem gate.
+
+## Isto não é o consentimento do repositório
+
+Confusão fácil, e as duas coisas não têm relação:
+
+| | Hooks | `.tyba/config.toml` |
+| --- | --- | --- |
+| Quem escreve | O TYBA, sozinho | O repositório |
+| Você configura? | **Não** | Não — você **aprova** |
+| Te pergunta? | Nunca | **Sempre**, por hash |
+| O que decide | Como o gate existe | Agente padrão e allowlist de ambiente |
+
+Os hooks são maquinaria interna: sem eles não há gate, então não há um botão para desligá-los — desligar seria remover a única coisa que segura o agente.
+
+O `.tyba/config.toml` é conteúdo de terceiro, veio junto com um `git clone`, e por isso **não vale nada até você aprovar**. As regras estão em [Configuração do repositório](/pt-br/configuracao/repositorio).
+
+## Quando o canal quebra
+
+Fail-closed. Sessão que morre com pedidos pendentes tem todos **negados**; canal quebrado **nega**. Não existe caminho em que falha de infraestrutura vire permissão — o mesmo princípio descrito em [Classificação de risco](/pt-br/seguranca/classificacao-de-risco#fail-closed).
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Classificação de risco" icon="shield" href="/pt-br/seguranca/classificacao-de-risco">
+    O que o `PreToolUse` faz com cada comando.
+  </Card>
+  <Card title="Agente via SSH" icon="triangle-alert" href="/pt-br/ssh/agente-via-ssh">
+    O que acontece quando o hook não existe.
+  </Card>
+</CardGroup>

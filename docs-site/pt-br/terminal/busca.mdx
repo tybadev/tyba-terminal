@@ -1,0 +1,85 @@
+---
+title: "Busca no scrollback"
+description: "Achar no que já rolou — e o teto de 10.000 linhas que decide o que dá para achar."
+---
+
+## Abrir
+
+<Tabs>
+<Tab title="macOS">
+`⌘F` abre e fecha a busca do painel ativo.
+</Tab>
+<Tab title="Windows e Linux">
+`Ctrl+Shift+F` abre e fecha a busca do painel ativo.
+</Tab>
+</Tabs>
+
+Também pelo **botão direito no terminal** → *Buscar no terminal*.
+
+A caixa aparece no canto superior direito do painel. A busca é **do painel** — cada terminal tem o histórico dele, e a busca só enxerga aquele.
+
+## Navegar
+
+| Tecla | O que faz |
+| --- | --- |
+| `↵` | Próximo resultado |
+| `⇧↵` | Resultado anterior |
+| `Esc` | Fecha e devolve o foco ao terminal |
+
+As setas `▲` `▼` da caixa fazem o mesmo que `⇧↵` e `↵`.
+
+Enquanto você digita, o TYBA já vai marcando o primeiro resultado — não precisa apertar Enter para ver onde bateu.
+
+## O contador
+
+À direita do campo:
+
+| O que aparece | Significa |
+| --- | --- |
+| `3/17` | Você está no terceiro de dezessete. |
+| **Sem resultados** | O termo não existe no scrollback deste painel. |
+| *(vazio)* | Você ainda não digitou nada. |
+
+Os resultados ficam pintados com as **cores do seu tema**: todos os matches com uma marcação, e o ativo em outra. Trocou de tema, a busca troca junto.
+
+## Ele já vem preenchido
+
+Se você tinha algo **selecionado** ao abrir a busca, a query nasce com aquele texto — já selecionado no campo, pronto para ser substituído se não for o que você queria.
+
+<Note>
+Isso só vale para seleção **de uma linha só**. Seleção com quebra de linha não pré-preenche nada: a busca é por texto corrido, e uma query de três linhas nunca acharia nada.
+</Note>
+
+O fluxo que isso destrava: viu um hash de commit, um ID de request ou um nome de arquivo no output, deu dois cliques nele, `⌘F`, `↵` — e você está percorrendo todas as outras vezes em que ele apareceu.
+
+## O limite de 10.000 linhas
+
+O terminal guarda **10.000 linhas** de scrollback. Fixo.
+
+<Warning>
+**O que passou dessas 10.000 linhas não existe mais.** A busca não acha porque não há o que achar — a linha foi descartada quando a 10.001ª chegou.
+</Warning>
+
+Isso não é um número que você possa aumentar: não há campo em Configurações, nem preferência escondida, nem arquivo para editar. Um `cat` de um log gigante, um build verboso, um agente despejando diff — qualquer um deles empurra para fora o que estava lá antes.
+
+Se o que você precisa achar é de meia hora e mil comandos atrás, o lugar de procurar não é a busca do terminal — é o arquivo, o log ou o `git`.
+
+## O que a busca não vê
+
+| | |
+| --- | --- |
+| **Outros painéis** | Cada painel tem o seu buffer. A busca é só do painel ativo. |
+| **Sessões fechadas** | Fechou o painel, foi. |
+| **O histórico de antes de reabrir o app** | O processo do terminal não sobrevive ao fechamento do TYBA. A sessão volta, o buffer não. |
+| **Regex** | Não há toggle de regex, "só palavra inteira" ou "diferenciar maiúsculas" na caixa. É busca de texto. |
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Usando o terminal" icon="terminal" href="/pt-br/terminal/usando-o-terminal">
+    Seleção e cópia — o que alimenta a busca.
+  </Card>
+  <Card title="Atalhos" icon="keyboard" href="/pt-br/interface/atalhos">
+    Onde remapear `⌘F`.
+  </Card>
+</CardGroup>

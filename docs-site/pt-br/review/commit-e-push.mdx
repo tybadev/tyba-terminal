@@ -1,0 +1,110 @@
+---
+title: "Commit e push"
+description: "A barra de commit do painel de revisão, a sugestão de mensagem pelo agente, e as duas coisas que o push recusa."
+---
+
+Commit e push moram no painel de revisão, depois do diff — na ordem em que você lê, não em que o git executa. E ambos rodam **pelo TYBA, fora da jaula**: a sessão do agente nunca teve credencial de rede.
+
+## A barra de commit
+
+Ela só existe quando há algo staged ou modificado. Sumiu, é porque o worktree está limpo.
+
+```
+[⎘] [ Mensagem do commit…            ] [✦] [ Commit · 3 arquivos ]
+```
+
+| Elemento | Regra |
+| --- | --- |
+| Campo de mensagem | `↵` commita. `Esc` só tira o foco. |
+| Botão **Commit · N arquivos** | N é o número de arquivos **staged**. |
+| Sem nada staged | O placeholder vira *Stage o que entra no commit…* e o botão fica travado. |
+
+Só entra no commit o que está staged — é `git commit -m` puro. Mensagem vazia é recusada antes de encostar no git.
+
+<Note>
+**Não existe** amend, commit assinado por opção, `--no-verify`, nem mensagem de múltiplas linhas: o campo é de uma linha só.
+</Note>
+
+## Sugerir a mensagem
+
+O botão `✦` ao lado do campo manda o **diff staged** para um agente headless e escreve a resposta no campo. Você continua podendo editar — nada é commitado sozinho.
+
+<Tabs>
+  <Tab title="Claude">
+    ```
+    claude -p --output-format text
+    ```
+    O prompt vai pelo stdin.
+  </Tab>
+  <Tab title="Codex">
+    ```
+    codex exec "<prompt>"
+    ```
+  </Tab>
+</Tabs>
+
+O prompt pede uma linha só, em **conventional commits** (`tipo(escopo): resumo`), em português. Da resposta, o TYBA pega a primeira linha não-vazia e tira aspas e crases em volta — se o agente resolver explicar, a explicação é jogada fora.
+
+| Detalhe | Valor |
+| --- | --- |
+| Diff enviado | `git diff --cached`, **capado em 48 KB** (o resto vira `[diff truncado]`) |
+| Timeout | 60 segundos |
+| Sem nada staged | Erro: *Nada staged — stage o que entra no commit antes de pedir a sugestão.* |
+
+<Warning>
+**Isso é rede, e é uma CLI de agente rodando na sua máquina** — com o diff staged dentro do prompt. Acontece só no clique explícito, nunca sozinho. Se o repositório tem código que não pode sair, não use o botão.
+</Warning>
+
+### Qual agente responde
+
+O de **Configurações → Preferências → Agente de review**. E aqui há uma pegadinha:
+
+<Note>
+A sugestão só aceita `claude` ou `codex`. Se o seu agente de review é um **comando custom**, a sugestão cai em **`claude`** — não no seu comando. O core recusa qualquer outro nome antes de executar nada.
+</Note>
+
+## Push
+
+O botão **Push** só aparece quando há pelo menos um commit à frente da base. Ele roda:
+
+```bash
+git push -u origin <branch-atual>
+```
+
+Sem diálogo, sem escolher remote, sem escolher branch. O `origin` e a branch em que a sessão está — nada mais. Deu certo, o rodapé mostra *Push feito ✓* por 5 segundos.
+
+### O que o push recusa
+
+<Warning>
+**`main` e `master` são recusadas pelo core, sempre.** Não importa quem clicou: a checagem é da branch atual, não de quem pediu.
+
+Do lado do agente a mesma regra é mais dura ainda — `git push origin main` [nem chega a virar pedido de aprovação](/pt-br/seguranca/classificacao-de-risco#o-que-nem-chega-a-ser-perguntado).
+</Warning>
+
+**HEAD destacado** também é recusado: sem branch, não há o que fazer com `-u`.
+
+## O que não existe
+
+| | |
+| --- | --- |
+| **Force push** | Não existe. Nem opção, nem caixinha. |
+| **Escolher remote** | Não existe. É `origin`. |
+| **Pull / rebase no painel** | Não existe. Há `fetch` no seletor de branch, e é só. |
+| **Push sem ter commitado** | O botão nem aparece. |
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Ler o diff" icon="git-compare" href="/pt-br/review/ler-o-diff">
+    O que você stageia antes de commitar.
+  </Card>
+  <Card title="Pull requests" icon="git-pull-request" href="/pt-br/review/pull-requests">
+    O push que o diálogo de PR faz por você.
+  </Card>
+  <Card title="Merge local" icon="git-merge" href="/pt-br/review/merge-local">
+    Quando o destino é a branch base, não o remote.
+  </Card>
+  <Card title="Classificação de risco" icon="shield" href="/pt-br/seguranca/classificacao-de-risco">
+    Por que o agente não tem credencial de rede.
+  </Card>
+</CardGroup>

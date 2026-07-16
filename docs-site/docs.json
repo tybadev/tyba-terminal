@@ -3,7 +3,7 @@
   "theme": "mint",
   "name": "TYBA",
   "colors": {
-    "primary": "#7cc544",
+    "primary": "#4f8a2b",
     "light": "#7cc544",
     "dark": "#7cc544"
   },
@@ -24,14 +24,77 @@
             "pages": [
               "pt-br/index",
               "pt-br/instalacao",
-              "pt-br/primeira-sessao"
+              "pt-br/primeira-sessao",
+              "pt-br/tour-da-interface"
             ]
           },
           {
-            "group": "Configuração",
+            "group": "O terminal",
             "pages": [
-              "pt-br/configuracao/usuario",
-              "pt-br/configuracao/repositorio"
+              "pt-br/terminal/usando-o-terminal",
+              "pt-br/terminal/busca",
+              "pt-br/terminal/colar-com-seguranca",
+              "pt-br/terminal/shell-integration"
+            ]
+          },
+          {
+            "group": "Interface",
+            "pages": [
+              "pt-br/interface/abas-e-workspaces",
+              "pt-br/interface/split-de-paineis",
+              "pt-br/interface/paleta-de-comandos",
+              "pt-br/interface/atalhos"
+            ]
+          },
+          {
+            "group": "Temas",
+            "pages": [
+              "pt-br/temas/modo-e-slots",
+              "pt-br/temas/os-temas",
+              "pt-br/temas/importar-tema"
+            ]
+          },
+          {
+            "group": "Sessões de agente",
+            "pages": [
+              "pt-br/agente/claude-code-e-codex",
+              "pt-br/agente/composer",
+              "pt-br/agente/hooks",
+              "pt-br/agente/notificacoes"
+            ]
+          },
+          {
+            "group": "Worktrees e Git",
+            "pages": [
+              "pt-br/git/worktrees",
+              "pt-br/git/setup-script",
+              "pt-br/git/branches",
+              "pt-br/git/conflitos"
+            ]
+          },
+          {
+            "group": "Review e entrega",
+            "pages": [
+              "pt-br/review/ler-o-diff",
+              "pt-br/review/commit-e-push",
+              "pt-br/review/merge-local",
+              "pt-br/review/pull-requests",
+              "pt-br/review/comentarios-para-o-agente"
+            ]
+          },
+          {
+            "group": "SSH",
+            "pages": [
+              "pt-br/ssh/hosts-e-grupos",
+              "pt-br/ssh/broadcast",
+              "pt-br/ssh/agente-via-ssh"
+            ]
+          },
+          {
+            "group": "Docker",
+            "pages": [
+              "pt-br/docker/containers",
+              "pt-br/docker/docker-remoto"
             ]
           },
           {
@@ -39,6 +102,13 @@
             "pages": [
               "pt-br/seguranca/classificacao-de-risco",
               "pt-br/seguranca/plataformas"
+            ]
+          },
+          {
+            "group": "Referência",
+            "pages": [
+              "pt-br/configuracao/usuario",
+              "pt-br/configuracao/repositorio"
             ]
           }
         ]

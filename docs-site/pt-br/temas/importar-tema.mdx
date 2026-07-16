@@ -1,0 +1,186 @@
+---
+title: "Importar um tema"
+sidebarTitle: "Importar um tema"
+description: "Um .json, duas chaves obrigatórias, e um validador que não deixa passar meio-tema."
+---
+
+Não gostou de nenhum dos [18 embutidos](/pt-br/temas/os-temas)? Traga o seu. É um arquivo `.json`, e o TYBA valida tudo antes de aceitar.
+
+## Os dois botões
+
+**Configurações → Aparência**, na linha da seção **Temas**:
+
+| Botão | O que faz |
+| --- | --- |
+| **Copiar exemplo** | Põe um tema completo e válido na sua área de transferência. |
+| **Importar tema…** | Abre o seletor de arquivos, filtrado em `.json`. |
+
+*Importar tema…* também está na [paleta de comandos](/pt-br/interface/paleta-de-comandos) (`⌘P` / `Ctrl+Shift+P`), no grupo **Tema**.
+
+<Note>
+**Importar não aplica.** O tema entra na grade; para usá-lo, clique nele. E clicar pode mudar o modo — veja [Modo claro e escuro](/pt-br/temas/modo-e-slots).
+</Note>
+
+## O exemplo
+
+É exatamente isto que o botão **Copiar exemplo** coloca na sua área de transferência. Edite as cores e importe.
+
+```json
+{
+  "name": "Meu Tema",
+  "base": "dark",
+  "ui": {
+    "bg": "#282a36",
+    "surface": "#313342",
+    "text": "#f8f8f2",
+    "primary": "#50fa7b",
+    "violet": "#bd93f9"
+  },
+  "terminal": {
+    "background": "#282a36",
+    "foreground": "#f8f8f2",
+    "cursor": "#f8f8f2",
+    "selectionBackground": "#44475a80",
+    "ansi": ["#21222c", "#ff5555", "#50fa7b", "#f1fa8c",
+             "#bd93f9", "#ff79c6", "#8be9fd", "#f8f8f2",
+             "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5",
+             "#d6acff", "#ff92df", "#a4ffff", "#ffffff"]
+  }
+}
+```
+
+## Os campos do topo
+
+| Campo | Obrigatório | O que é |
+| --- | --- | --- |
+| `name` | **Sim** | 1 a 64 caracteres (contados depois de tirar os espaços das pontas). |
+| `base` | **Sim** | `"dark"` ou `"light"`. Nada mais. Decide em qual slot o tema pode entrar. |
+| `ui` | Não | As cores da interface. |
+| `terminal` | Não | A paleta do terminal. |
+
+<Warning>
+**Campo desconhecido no topo derruba o arquivo inteiro.** Um `"author"` ou `"version"` a mais não é ignorado — é erro. O mesmo vale dentro de `terminal`.
+</Warning>
+
+O `ui` e o `terminal` são os dois **opcionais**, e omitir tem um significado útil:
+
+- Sem `terminal`, o tema herda a paleta de terminal do **TYBA Dark** ou do **TYBA Light**, conforme a `base`.
+- Sem `ui`, a interface fica com as superfícies padrão daquela base.
+
+Ou seja: `{ "name": "Meu Tema", "base": "light" }` é um tema válido — só não muda nada. E você só precisa declarar as chaves de `ui` que quer mudar; o resto herda da base.
+
+## `ui` — as 21 chaves
+
+Qualquer chave fora desta lista é rejeitada. Todas são opcionais.
+
+| Grupo | Chaves |
+| --- | --- |
+| Superfícies | `bg` · `surface` · `raised` · `overlay` · `sunken` |
+| Bordas | `border` · `borderStrong` |
+| Texto | `text` · `textMuted` · `textFaint` · `textInverse` |
+| Ação | `primary` · `primaryHover` |
+| Acentos | `green` · `lime` · `amber` · `magenta` · `violet` · `blue` · `cyan` · `red` |
+
+<Note>
+Tints, glows, cor de seleção, vidro e hover **derivam sozinhos** dos acentos. Não existe chave para eles — e é por isso que dá para escrever um tema com cinco cores e ele sair coerente.
+</Note>
+
+## `terminal`
+
+| Campo | Obrigatório | O que é |
+| --- | --- | --- |
+| `background` | **Sim** | Fundo do terminal. |
+| `foreground` | **Sim** | Texto padrão. |
+| `cursor` | **Sim** | Cursor. |
+| `cursorAccent` | Não | Cor do caractere sob o cursor. |
+| `selectionBackground` | Não | Fundo da seleção — use hex com alfa. |
+| `ansi` | **Sim** | Lista com **exatamente 16** cores. |
+
+<Warning>
+**16 cores, nem 15 nem 17.** Uma lista de outro tamanho é erro — não é preenchida nem cortada.
+</Warning>
+
+A ordem do `ansi` é a de sempre: as 8 normais e depois as 8 brilhantes.
+
+| Índice | Cor | Índice | Cor |
+| --- | --- | --- | --- |
+| 0 | preto | 8 | preto brilhante |
+| 1 | vermelho | 9 | vermelho brilhante |
+| 2 | verde | 10 | verde brilhante |
+| 3 | amarelo | 11 | amarelo brilhante |
+| 4 | azul | 12 | azul brilhante |
+| 5 | magenta | 13 | magenta brilhante |
+| 6 | ciano | 14 | ciano brilhante |
+| 7 | branco | 15 | branco brilhante |
+
+## As cores
+
+Só hexadecimal, sempre com `#`:
+
+| Forma | Exemplo |
+| --- | --- |
+| `#RGB` | `#fff` |
+| `#RRGGBB` | `#282a36` |
+| `#RRGGBBAA` | `#44475a80` |
+
+`red`, `rgb(0,0,0)`, `hsl(...)` e `#ffff` são todos rejeitados. A mensagem de erro diz qual chave estragou.
+
+## Nome, id e nomes reservados
+
+O **id** do tema é o slug do `name`: minúsculas, e tudo que não é letra ou número vira hífen. `Dracula Pro!` vira `dracula-pro`. `Café com Leite` vira `caf-com-leite` — acentos não sobrevivem ao slug, mas o `name` que aparece na grade continua acentuado.
+
+<Warning>
+**Nome que colide com um tema embutido é recusado** — o erro é *nome reservado*. Não dá para importar algo chamado "Dracula" ou "TYBA Dark" e sobrescrever o original. Escolha outro nome.
+</Warning>
+
+Se um nome só tem símbolos (`___`), o slug fica vazio e o import falha por nome inválido.
+
+Dois imports com o mesmo slug: **o segundo sobrescreve o primeiro**, sem perguntar. A grade continua com uma entrada só.
+
+## Tamanho
+
+O arquivo precisa ser um arquivo regular e ter **no máximo 256 KB**. Acima disso, recusado antes mesmo de ser lido como JSON.
+
+## Quando dá errado
+
+Erro de import vira um **alerta do sistema** com a mensagem de validação — chave errada, cor inválida, ansi de tamanho errado, nome reservado. Nada é gravado.
+
+## Onde o tema mora
+
+O import copia o arquivo, já normalizado, para a pasta de configuração do app:
+
+| Sistema | Pasta |
+| --- | --- |
+| macOS | `~/Library/Application Support/dev.tyba.app/themes/` |
+| Linux | `~/.config/dev.tyba.app/themes/` |
+| Windows | `%APPDATA%\dev.tyba.app\themes\` |
+
+O nome do arquivo é o id: `dracula-pro.json`. O arquivo original de onde você importou não é usado depois — mexer nele não muda nada.
+
+<Note>
+Você pode colocar `.json` direto nessa pasta em vez de usar o botão. O TYBA lê a pasta toda ao listar os temas. Mas aí não há alerta: **arquivo inválido é simplesmente ignorado** e o tema não aparece. Arquivo cujo nome bate com um id embutido também é ignorado — o embutido sempre ganha.
+</Note>
+
+## O que não existe
+
+| | |
+| --- | --- |
+| **Editor visual de tema** | Não existe. É o `.json` e mais nada. |
+| **Botão de excluir** | Não existe. Para remover, apague o `.json` na pasta acima. |
+| **Botão de exportar** | Não existe — nem para os embutidos, nem para os importados. Para partilhar um tema seu, mande o `.json`. |
+| **Galeria ou instalação por URL** | Não existe. O import é sempre de um arquivo local. |
+
+<Note>
+Apagou o `.json` de um tema que estava em uso? O slot cai para o embutido daquela base na próxima leitura. O app não trava.
+</Note>
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Os temas" icon="palette" href="/pt-br/temas/os-temas">
+    Os 18 embutidos, antes de você escrever o seu.
+  </Card>
+  <Card title="Modo claro e escuro" icon="circle-half" href="/pt-br/temas/modo-e-slots">
+    Onde o seu tema vai cair depois de importado.
+  </Card>
+</CardGroup>

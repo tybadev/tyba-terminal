@@ -59,7 +59,7 @@ Quando algo precisa da sua aprovação, vira item no inbox com notificação nat
 O que precisa de aprovação e o que passa sozinho está em [Classificação de risco](/pt-br/seguranca/classificacao-de-risco).
 
 <Note>
-O TYBA prefere dado estruturado a adivinhação: o Claude Code roda com `--output-format stream-json`, então uma ferramenta pendente vira evento JSON em vez de texto raspado da tela. Sem isso, ele cai para integração de shell via OSC 133 e uma heurística de silêncio.
+O status não é adivinhado raspando a tela. O TYBA injeta hooks no agente e escuta os eventos num canal local: a ferramenta que vai rodar vira `Running`, o fim de turno vira `Idle`, e um pedido de resposta vira `AwaitingInput`. É o mesmo canal que alimenta o inbox de aprovações — [como o TYBA fala com o agente](/pt-br/agente/hooks).
 </Note>
 
 ## 5. Revisar

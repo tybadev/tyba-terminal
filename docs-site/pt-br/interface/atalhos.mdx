@@ -1,0 +1,119 @@
+---
+title: "Atalhos de teclado"
+description: "A lista completa, o que dá para remapear, e a armadilha do conflito silencioso."
+---
+
+Todos os atalhos abaixo funcionam com a janela do TYBA em foco. Não há menu nativo do sistema nem atalho global — nada dispara com o app em segundo plano.
+
+Para ver e mudar: **Configurações → Atalhos** (`⌘,` no macOS, `Ctrl+,` no Windows e Linux).
+
+<Note>
+No Windows e no Linux o padrão é `Ctrl+Shift+…`. Isso é deliberado: `Ctrl+C` e `Ctrl+V` **continuam sendo do shell** — interromper um processo é mais importante que copiar.
+</Note>
+
+## Geral
+
+| Ação | macOS | Windows / Linux |
+| --- | --- | --- |
+| Paleta de comandos | `⌘P` | `Ctrl+Shift+P` |
+| Paleta de sessões | `⌘⇧P` | `Ctrl+Alt+Shift+P` |
+| Alternar sidebar | `⌘B` | `Ctrl+Shift+B` |
+| Configurações | `⌘,` | `Ctrl+,` |
+
+## Sessões
+
+| Ação | macOS | Windows / Linux |
+| --- | --- | --- |
+| Nova sessão | `⌘N` | `Ctrl+Shift+N` |
+| Nova sessão em worktree | `⌘⇧T` | `Ctrl+Alt+Shift+T` |
+| Nova janela | `⌘⇧N` | `Ctrl+Alt+Shift+N` |
+| Abrir pasta do projeto | `⌘O` | `Ctrl+Shift+O` |
+
+## Abas e workspaces
+
+| Ação | macOS | Windows / Linux |
+| --- | --- | --- |
+| Nova aba | `⌘T` | `Ctrl+Shift+T` |
+| Aba anterior | `⌘⇧←` | `Ctrl+PgUp` |
+| Próxima aba | `⌘⇧→` | `Ctrl+PgDn` |
+| Ir para a aba N | `⌘1`…`⌘9` | `Alt+1`…`Alt+9` |
+| Workspace anterior | `⌘⇧↑` | `Ctrl+Shift+↑` |
+| Próximo workspace | `⌘⇧↓` | `Ctrl+Shift+↓` |
+
+## Painéis
+
+| Ação | macOS | Windows / Linux |
+| --- | --- | --- |
+| Dividir à direita | `⌘D` | `Ctrl+Shift+E` |
+| Dividir abaixo | `⌘⇧D` | `Ctrl+Shift+D` |
+| Fechar painel | `⌘W` | `Ctrl+Shift+W` |
+| Próximo painel | `⌘]` | `Ctrl+Tab` |
+| Painel na direção | `⌘⌥` + setas | `Ctrl+Alt` + setas |
+| Redimensionar | `⌘⌃` + setas | `Ctrl+Alt+Shift` + setas |
+
+## Terminal
+
+| Ação | macOS | Windows / Linux |
+| --- | --- | --- |
+| Copiar seleção | `⌘C` | `Ctrl+Shift+C` |
+| Colar | `⌘V` | `Ctrl+Shift+V` |
+| Selecionar tudo | `⌘A` | `Ctrl+Shift+A` |
+| Buscar | `⌘F` | `Ctrl+Shift+F` |
+| Composer (rich input) | `⌘⇧G` | `Ctrl+Shift+G` |
+
+<Note>
+`⌘C` só copia **quando há seleção**. Sem seleção, ele passa direto para o shell e continua interrompendo o processo, como você espera.
+</Note>
+
+## Nos diálogos
+
+| Onde | Teclas |
+| --- | --- |
+| Paleta de comandos | `↑` `↓` navega · `↵` executa · `Esc` fecha |
+| Busca no terminal | `↵` próximo · `⇧↵` anterior · `Esc` fecha |
+| Inbox de aprovações | `1` `2` `3` decidem a primeira da fila |
+| Negar com feedback | `⌘↵` / `Ctrl+↵` confirma · `Esc` cancela |
+
+Os números do inbox mudam conforme o risco: em verde e amarelo são `[1] Sim` `[2] Sempre` `[3] Não`; em **vermelho** são só `[1] Sim` `[2] Não` — [vermelho nunca tem "Sempre"](/pt-br/seguranca/classificacao-de-risco#o-que-sempre-realmente-significa).
+
+## Remapear
+
+**Configurações → Atalhos.** Clique no atalho, pressione a combinação nova, pronto. `Esc` cancela a captura.
+
+Enquanto você grava, os atalhos do app ficam desligados — senão a combinação que você está digitando dispararia a ação em vez de ser gravada.
+
+<Warning>
+**Não existe detecção de conflito.** Nada impede você de colocar duas ações no mesmo atalho. Quando isso acontece, uma delas ganha — sempre a mesma, por ordem interna — e **a outra para de funcionar sem aviso**.
+
+Se um atalho "sumiu" depois de você mexer, procure por duplicata.
+</Warning>
+
+Combinação inválida volta ao padrão. Se a configuração inteira corromper, tudo volta ao padrão — você não fica travado sem atalho.
+
+<Note>
+**Não há botão "restaurar padrão"** por atalho nem geral.
+</Note>
+
+## Os que não dá para remapear
+
+| Ação | macOS | Windows / Linux |
+| --- | --- | --- |
+| Ir para a aba N | `⌘1`…`⌘9` | `Alt+1`…`Alt+9` |
+| Redimensionar painel | `⌘⌃` + setas | `Ctrl+Alt+Shift` + setas |
+| Abrir sessão do último aviso | `⌘⇧O` | `Ctrl+Alt+Shift+O` |
+| Enviar prompt no composer | `⌘↵` | `Ctrl+↵` |
+
+<Note>
+`⌘1` até `⌘9` são **sempre consumidos**, mesmo quando a aba não existe. `⌘7` com quatro abas abertas não faz nada — e o importante é que ele também não digita `7` no seu shell.
+</Note>
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Paleta de comandos" icon="command" href="/pt-br/interface/paleta-de-comandos">
+    O que não tem atalho, tem paleta.
+  </Card>
+  <Card title="Split de painéis" icon="columns" href="/pt-br/interface/split-de-paineis">
+    Os atalhos de painel em contexto.
+  </Card>
+</CardGroup>

@@ -1,0 +1,102 @@
+---
+title: "Os temas"
+description: "18 embutidos, a grade de preview, e o detalhe de que o tema pinta o app inteiro — não só o terminal."
+---
+
+## Onde trocar
+
+**Configurações → Aparência** (`⌘,` no macOS, `Ctrl+,` no Windows e Linux). A seção **Temas** é uma grade de cards com preview: o fundo do terminal e seis cores da paleta ANSI, do jeito que vão ficar. O que está em uso aparece com a borda verde e um check.
+
+Também pela [paleta de comandos](/pt-br/interface/paleta-de-comandos) (`⌘P` / `Ctrl+Shift+P`), no grupo **Tema**: *Usar tema X*.
+
+<Note>
+A paleta lista os temas **menos** TYBA Dark e TYBA Light. Os dois padrões só aparecem na grade de Configurações.
+</Note>
+
+Clicar num tema o coloca no slot da base dele — e pode mudar o modo junto. Isso está em [Modo claro e escuro](/pt-br/temas/modo-e-slots).
+
+## O tema pinta o app inteiro
+
+<Warning>
+**Não é só o terminal.** Trocar o tema repinta a sidebar, as abas, os diálogos, a paleta de comandos, as Configurações — tudo.
+</Warning>
+
+Cada tema carrega duas coisas: a **paleta do terminal** (fundo, texto, cursor, seleção e as 16 cores ANSI) e as **superfícies e acentos da interface**. Os dois andam juntos.
+
+O que o tema **não** muda é a identidade do TYBA: tipografia, espaçamento, raios de canto e o gradiente-assinatura continuam os mesmos. Tema muda cor, não desenho.
+
+## Os 18 embutidos
+
+<Tabs>
+<Tab title="Base escura (12)">
+| Tema | Observação |
+| --- | --- |
+| **TYBA Dark** | O padrão. Terminal em preto absoluto. |
+| Solarized Dark | |
+| Dracula | |
+| Gruvbox Dark | |
+| GitHub Dark | |
+| Monokai | |
+| Monokai Pro | |
+| Monokai Pro Machine | |
+| Monokai Pro Octagon | |
+| Monokai Pro Ristretto | |
+| Monokai Pro Spectrum | |
+| Mono Dark | Sem acentos coloridos — escala de cinza. |
+</Tab>
+<Tab title="Base clara (6)">
+| Tema | Observação |
+| --- | --- |
+| **TYBA Light** | O padrão do slot claro. |
+| Solarized Light | |
+| Dracula Light (Alucard) | |
+| Gruvbox Light | |
+| GitHub Light | |
+| Monokai Pro Light | |
+</Tab>
+</Tabs>
+
+<Note>
+**Não há Catppuccin, Nord nem Tokyo Night.** Se você quer um deles, dá para trazer o seu — veja [Importar um tema](/pt-br/temas/importar-tema).
+</Note>
+
+Alguns esquemas clássicos não têm paleta completa; nesses casos o TYBA deriva o que falta em vez de inventar. Na família Monokai, por exemplo, o "vermelho" oficial é rosado e vira o **magenta** — o vermelho de erro é derivado mais grave, para que erro continue parecendo erro.
+
+## Fonte
+
+Mesma tela — **Configurações → Aparência → Fonte**. São dois seletores, e eles fazem coisas diferentes:
+
+| Seletor | O que controla |
+| --- | --- |
+| **Família** | A fonte da **interface**: JetBrains Mono (padrão) ou Space Grotesk. |
+| **Tamanho** | O tamanho do **terminal**, de 11px a 16px. Padrão: 13px. |
+
+<Warning>
+A **família da interface** não afeta o terminal, e o **tamanho** não afeta a interface. O nome da seção é um só, mas os dois controles não conversam.
+</Warning>
+
+<Note>
+**A família do terminal é fixa** e não é configurável. O terminal roda em JetBrains Mono, com Symbols Nerd Font Mono e Fira Code atrás para glifos que faltarem, e a monoespaçada do sistema no fim da fila. Não há campo para trocar.
+</Note>
+
+O tamanho vale para os terminais que você abrir e para os que já estão abertos — a troca é imediata em todos os painéis.
+
+## O que não existe
+
+| | |
+| --- | --- |
+| **Editor visual de tema** | Não existe. Temas próprios são [arquivo JSON](/pt-br/temas/importar-tema). |
+| **Escolher a fonte do terminal** | Fixa. |
+| **Opacidade da janela / blur de fundo** | Não existe. |
+| **Tema por aba, painel ou workspace** | O tema é do app inteiro. |
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Modo claro e escuro" icon="circle-half" href="/pt-br/temas/modo-e-slots">
+    Os dois slots e o modo Sistema.
+  </Card>
+  <Card title="Importar um tema" icon="download" href="/pt-br/temas/importar-tema">
+    Trazer o seu, e as regras que ele precisa passar.
+  </Card>
+</CardGroup>

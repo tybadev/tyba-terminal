@@ -1,0 +1,77 @@
+---
+title: "Docker remoto"
+description: "O painel apontando para um host SSH — inferido do workspace ativo. Exige chave, e o compose fica de fora."
+---
+
+O painel de containers tem um **seletor de alvo**: **Local** ou o **apelido** de qualquer host SSH cadastrado.
+
+É o caso de uso bom da coisa toda: você está numa sessão SSH na VPS, abre o painel, e ele já está listando os containers **de lá**.
+
+## O alvo é inferido do workspace
+
+<Note>
+**Você quase nunca precisa mexer no seletor.** Se o workspace ativo é uma sessão SSH, o painel já abre apontando para aquele host.
+</Note>
+
+Workspace local, alvo Local. Workspace da VPS, alvo VPS. O seletor está lá para quando você quiser sair do padrão.
+
+## Como funciona por baixo
+
+O `docker` fala com máquina remota nativamente, por `ssh://`. O TYBA só aponta o alvo:
+
+```bash
+docker -H ssh://prod-api ps
+```
+
+E isso funciona **porque o alias resolve**: o TYBA já [escreveu o `Include config.d/tyba.conf` no seu `~/.ssh/config`](/pt-br/ssh/hosts-e-grupos). O apelido que você cadastrou é um host de verdade para o OpenSSH, então é um host de verdade para o Docker.
+
+Nada de daemon exposto, nada de porta aberta, nada de TLS para configurar. É o seu SSH.
+
+### O shell de um container remoto
+
+Abrir o shell de um container remoto cria um **workspace próprio**, com o **apelido no título e a cor do host**.
+
+Isso é de propósito: ele **não sequestra o seu pane SSH**. Misturar os dois deixaria o `sh: postgres` do seu Mac com a mesma cara do da VPS, e confundir os dois custa caro.
+
+## As limitações
+
+<Warning>
+**Host só-senha não funciona. Docker remoto exige chave.**
+
+O helper do Docker chama o `ssh` com o stdin nulo — não há onde o prompt de senha aparecer, e não há quem o responda. O caso não dá erro claro: ele **cai no timeout**.
+
+Forçar `BatchMode` daria uma mensagem melhor, mas quebraria a sua sessão interativa. Então: cadastre uma **Chave privada (caminho)** no host, e o painel remoto funciona.
+</Warning>
+
+<Warning>
+**Compose não roda no alvo remoto.** Up, down, restart, abrir a pasta do projeto e abrir o arquivo compose ficam **desabilitados** quando o alvo é um host SSH.
+
+O motivo: essas ações dependem de caminhos do projeto **nesta máquina**, e o caminho da VPS não existe aqui. Para compose remoto, use um pane SSH e rode `docker compose` lá.
+</Warning>
+
+O que **funciona** remotamente: listar, logs, shell e remover.
+
+### É mais lento — e tudo bem
+
+O refresh remoto paga handshake, rede e, na primeira conexão, **a sua aprovação no 1Password**. O timeout local mede um Docker que responde em milissegundos; o remoto ganha bem mais folga, porque com o teto local o painel remoto só entregava lista vazia.
+
+Depois da primeira conexão, o [`ControlMaster`](/pt-br/ssh/hosts-e-grupos) reusa a conexão e as chamadas voltam a ser rápidas.
+
+<Note>
+**A disponibilidade é cacheada por alvo.** Docker no seu Mac não diz nada sobre Docker na VPS, então cada alvo tem o próprio estado — e o painel não fica reperguntando a cada pisada de olho.
+</Note>
+
+<Warning>
+Isso vale para o **Windows** também: sem `ControlMaster`, cada chamada do painel remoto pode reabrir conexão e repedir autenticação.
+</Warning>
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Containers" icon="container" href="/pt-br/docker/containers">
+    O painel, a integração e o que ele faz local.
+  </Card>
+  <Card title="Hosts e grupos" icon="hard-drive" href="/pt-br/ssh/hosts-e-grupos">
+    O cadastro, a chave e o Include que fazem isso funcionar.
+  </Card>
+</CardGroup>

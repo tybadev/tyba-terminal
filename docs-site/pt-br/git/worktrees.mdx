@@ -1,0 +1,140 @@
+---
+title: "Worktrees"
+description: "Uma sessão, uma árvore, uma branch — e um SHA de base que não se mexe mais."
+---
+
+Uma sessão isolada do TYBA é um `git worktree`. Uma pasta própria, uma branch própria, um índice próprio. A sessão A editando `src/` não vê nem atropela a árvore da sessão B, e nenhuma das duas encosta na sua cópia de trabalho.
+
+Tudo mora sob:
+
+```
+~/.tyba/worktrees/<repo>/<slug>-<sufixo>
+```
+
+O `<repo>` é o nome da pasta raiz, normalizado. Nada é criado fora dali.
+
+## Criar
+
+Duas portas, o mesmo diálogo:
+
+| Como | macOS | Windows / Linux |
+| --- | --- | --- |
+| Nova sessão em worktree | `⌘⇧T` | `Ctrl+Alt+Shift+T` |
+| Nova sessão + **Isolar em git worktree** | `⌘N` | `Ctrl+Shift+N` |
+
+O atalho de worktree é o mesmo diálogo de Nova Sessão com o toggle já ligado. Se você quiser que ele venha ligado sempre, **Configurações → Novas sessões isoladas por padrão**.
+
+<Note>
+A pasta precisa ser um repositório git. Se não for, a criação falha com *"a pasta da sessão não é um repositório git"* — não existe worktree fora de repo.
+</Note>
+
+No diálogo você dá um **título da task** (`fix do watcher`) e, se quiser, liga **Subir um agente neste worktree** — [Claude Code, ou Codex quando o binário está no `PATH`](/pt-br/agente/claude-code-e-codex).
+
+<Note>
+Sessão de agente **exige** worktree: não há como subir agente sem isolar. Se o spawn do agente falhar, o worktree recém-criado é removido junto — você não fica com uma pasta órfã por causa de um binário que não abriu.
+</Note>
+
+## A branch
+
+O título vira uma branch:
+
+```
+tyba/<slug>-<sufixo>
+```
+
+O slug é o título em ASCII minúsculo, não-alfanumérico virando `-`, no máximo 40 caracteres. `Fix do Watcher!` vira `fix-do-watcher`. Título que não sobra nada — só emoji, só acento — vira `task`.
+
+O sufixo são **8 dígitos hex de um UUID v4**, e ele existe por um motivo prático: você vai rodar a mesma tarefa duas vezes. Duas tentativas de `fix do watcher` produziriam a mesma branch, e a segunda `git worktree add` falharia porque a branch já existe. Com sufixo, `tyba/fix-do-watcher-a3f19c02` e `tyba/fix-do-watcher-7d40b1e8` convivem.
+
+## O base_sha fixado
+
+Na criação, o TYBA lê o `HEAD` da raiz do repositório e **grava aquele SHA na sessão**. O worktree nasce ali:
+
+```
+git worktree add <path> -b tyba/<slug>-<sufixo> <base_sha>
+```
+
+Depois disso, todo diff que você vê é:
+
+```
+base_sha..HEAD
+```
+
+Isso é o desenho mais importante da página. O `base_sha` é um SHA **congelado**, não a `main`. Um agente que passou duas horas trabalhando te entrega exatamente o que ele fez — e não o que entrou na `main` nesse meio-tempo. A `main` andou dez commits? A revisão continua do mesmo tamanho.
+
+O chip no topo do painel de revisão mostra o que está valendo: `base <sha curto> ‥ HEAD`.
+
+<Note>
+Numa sessão **não isolada**, não há `base_sha` — o TYBA usa `HEAD`, e o painel te mostra só o que ainda não foi commitado. O diff longo é um benefício do worktree, não do painel.
+</Note>
+
+## Listar e abrir
+
+Cada sessão isolada é um workspace na sidebar. É por ali que você volta pra ela, e é o `Revisar` da sessão que abre o [painel de diff](/pt-br/review/ler-o-diff) com o `base_sha..HEAD`.
+
+<Note>
+**Não existe um painel "Worktrees".** A view de Workspace no topo aparece desabilitada, marcada como *Em breve* — o botão continua visível de propósito, porque sumir com ele esconderia a intenção. Enquanto isso, worktree se acha pela sessão dele.
+</Note>
+
+## Remover
+
+O momento de remover é logo depois da entrega. Quando você abre um PR ou faz o merge local, o TYBA pergunta: **Entrega feita — e o worktree?**
+
+- **Manter** — a sessão continua, você continua trabalhando.
+- **Remover worktree e encerrar sessão** — pede um segundo clique pra confirmar.
+
+A remoção por esse botão é sempre **forçada** e sempre **apaga a branch** `tyba/…`. Se ainda houver trabalho não-commitado no worktree, o segundo clique vem com o aviso na cara: *"Há trabalho não-commitado no worktree que NÃO foi pro PR/merge — remover vai descartá-lo permanentemente."*
+
+<Warning>
+Não há desfazer. O worktree some, a branch some, e o que não foi commitado nunca esteve em lugar nenhum pra ser recuperado.
+</Warning>
+
+Duas coisas o core recusa, sempre:
+
+- **Worktree com sessão rodando** — *"encerre a sessão antes de remover"*.
+- **Worktree fora de `~/.tyba/worktrees`** — *"fora do diretório gerenciado do TYBA"*. O TYBA não apaga pasta que ele não criou.
+
+## O gc de órfãos
+
+Worktree órfão é o que ficou em `~/.tyba/worktrees` sem sessão nenhuma apontando pra ele — o app fechou no meio, a sessão morreu, você reiniciou.
+
+**O gc roda sozinho, uma vez, quando o TYBA abre.** Numa thread de fundo, sem diálogo, sem barra de progresso. Ele só remove um órfão quando *todas* estas forem verdade:
+
+<Steps>
+<Step title="Está dentro de ~/.tyba/worktrees">
+E não é symlink. Um link simbólico plantado ali dentro não faz o gc alcançar nada fora.
+</Step>
+<Step title="Nenhuma sessão viva o conhece">
+Worktree de sessão aberta nunca é candidato.
+</Step>
+<Step title="Foi tocado há mais de 2 minutos">
+A janela de carência existe pro worktree que acabou de nascer e ainda está esperando o dono. *"recém-criado (aguardando dono)"*.
+</Step>
+<Step title="Está limpo">
+Qualquer coisa não commitada e ele fica. *"mudanças não commitadas"*.
+</Step>
+<Step title="Não tem commit fora da base">
+Se tiver commit que não está no `HEAD` do repo principal, ele fica. *"commits não mergeados"*.
+</Step>
+</Steps>
+
+Passou nos cinco, o worktree e a branch dele são removidos, e sai uma linha no log do processo. Qualquer dúvida — repo principal inacessível, HEAD ilegível, histórico ilegível — é motivo pra **manter**. O gc erra pro lado de não apagar.
+
+## O que não existe
+
+- **Botão de gc.** Não há como pedir a limpeza; ela acontece na abertura do app.
+- **Relatório de gc na interface.** O que foi removido sai no log do processo, não numa tela.
+- **Remover worktree fora do fluxo de entrega.** O diálogo pós-entrega é a porta.
+- **Criar worktree a partir de outra base.** A base é sempre o `HEAD` do repo naquele instante.
+- **Reaproveitar worktree.** Cada sessão isolada cria a sua.
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Primeira sessão" icon="play" href="/pt-br/primeira-sessao">
+    O pipeline inteiro, do prompt ao merge.
+  </Card>
+  <Card title=".tyba/setup.sh" icon="terminal" href="/pt-br/git/setup-script">
+    O que roda no worktree assim que ele nasce.
+  </Card>
+</CardGroup>

@@ -1,0 +1,97 @@
+---
+title: "Notificações"
+sidebarTitle: "Notificações"
+description: "Quando o sistema te avisa, por que o texto vem censurado, e o atalho que abre a sessão do último aviso."
+---
+
+Sessão de agente tem tempo morto. Você sai da janela, e a pergunta é como voltar na hora certa — sem ficar olhando.
+
+## Só quando você não está olhando
+
+<Note>
+**Notificação nativa só dispara com a janela do TYBA fora de foco.**
+</Note>
+
+É a primeira coisa que o TYBA checa. Com a janela em foco, ele não notifica: você está vendo a sidebar e o inbox, e um balão do sistema seria ruído em cima de informação que já está na tela.
+
+## Quando dispara
+
+| Situação | Quando |
+| --- | --- |
+| O agente terminou o turno | depois de ~2s de acomodação |
+| O agente quer uma resposta | na hora |
+| Um comando espera aprovação | na hora |
+
+<Note>
+**Os ~2 segundos são só do fim de turno.** O agente costuma parar e voltar num piscar — o intervalo evita te avisar de um "terminei" que já não é verdade. Se um turno novo começou nesse meio-tempo, o aviso é engolido.
+
+O TYBA também usa esses 2s para reler o fim da conversa e escrever um corpo melhor que "terminou". Aprovação e pedido de resposta não esperam nada — é você que está bloqueando o agente.
+</Note>
+
+## O que aparece
+
+**Título:** `Tyba — <nome da sessão>`. Sem nome, vira `Tyba — sessão de agente`.
+
+**Corpo:** o que aconteceu — `Aprovação pendente: <comando>`, `Agente aguardando sua resposta`, ou o resumo do que ele fez.
+
+### O corpo é redigido
+
+<Warning>
+**Segredo não vira notificação.** Antes de o texto virar balão do sistema, ele passa por um filtro que troca padrões conhecidos por `[REDACTED]`.
+</Warning>
+
+O que é apagado:
+
+```
+AKIA… / ASIA…      chaves da AWS
+sk-…               chaves no formato OpenAI
+ghp_ ghu_ gho_     tokens do GitHub
+ghs_ ghr_
+glpat-…            tokens do GitLab
+JWT                tokens de três partes
+```
+
+O motivo é o alcance: notificação do sistema aparece na tela de bloqueio, entra na central de notificações, e pode ir para o relógio ou o outro laptop pareado. É o texto do TYBA que mais escapa da sua máquina — então é o que menos pode carregar segredo.
+
+<Note>
+É um filtro por **padrão conhecido**, não um detector universal. Uma senha que não pareça nenhum desses formatos passa. A defesa de verdade é o agente [não receber seus segredos](/pt-br/configuracao/repositorio) — a redação é a última linha, não a primeira.
+</Note>
+
+## Voltar para a sessão do último aviso
+
+| Ação | macOS | Windows / Linux |
+| --- | --- | --- |
+| Abrir sessão do último aviso | `⌘⇧O` | `Ctrl+Alt+Shift+O` |
+
+Ele leva direto à última sessão que pediu atenção — sem procurar na sidebar qual das sete abas era.
+
+<Note>
+**Não é remapeável.** Ele não aparece em Configurações → Atalhos; é constante. Há inclusive um teste que impede qualquer atalho padrão de colidir com essa combinação.
+
+Sem aviso nenhum pendente, ele não faz nada.
+</Note>
+
+## O que não existe
+
+<Warning>
+**Não há liga/desliga de notificação.** Nenhuma preferência, em lugar nenhum. Se o TYBA tem o que dizer e a janela está fora de foco, ele diz.
+
+**Não há som.** Nenhum, nem configurável nem fixo. As notificações são visuais.
+</Warning>
+
+Para silenciar, a ferramenta é o **seu sistema**: o Não Perturbe do macOS, o Assistente de Foco do Windows, o que a sua área de trabalho do Linux oferecer. O TYBA usa a API nativa, então respeitar o silêncio do sistema é de graça.
+
+<Note>
+A única coisa chamada "Notificações" nas Configurações é o **título do painel de inbox**. Não é um grupo de opções.
+</Note>
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Claude Code e Codex" icon="robot" href="/pt-br/agente/claude-code-e-codex">
+    Os status que geram os avisos.
+  </Card>
+  <Card title="Classificação de risco" icon="shield" href="/pt-br/seguranca/classificacao-de-risco">
+    O que faz um comando parar e te chamar.
+  </Card>
+</CardGroup>

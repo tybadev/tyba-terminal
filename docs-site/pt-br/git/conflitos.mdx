@@ -1,0 +1,98 @@
+---
+title: "Resolver conflitos"
+description: "A faixa que aparece no painel de revisão quando um merge, rebase ou cherry-pick parou no meio — e o que dá pra fazer nela."
+---
+
+Quando uma operação do git para no meio, o painel de revisão te conta. Uma faixa nasce no topo, **vermelha** se ainda há arquivo em conflito, **âmbar** se já não há.
+
+Você não precisa pedir. A faixa aparece sozinha, e some sozinha quando a operação termina.
+
+## O que ele detecta
+
+O TYBA olha marcadores no git-dir daquela árvore, nesta ordem:
+
+| Marcador | Vira |
+| --- | --- |
+| `rebase-merge/` ou `rebase-apply/` | **Rebase em andamento com conflitos** |
+| `MERGE_HEAD` | **Merge em andamento com conflitos** |
+| `CHERRY_PICK_HEAD` | **Cherry-pick em andamento com conflitos** |
+
+Nenhum deles, nenhuma faixa.
+
+Ao lado do título vêm os dois lados: `main ← feature`. O **ours** é a sua branch (durante um rebase, o `HEAD` está solto, então ele lê o `head-name` que a própria operação deixou). O **theirs** é o outro lado — nome quando o git sabe dizer, SHA curto quando não sabe.
+
+<Note>
+Não importa quem começou o merge. Você rodando `git merge` no terminal da sessão, ou o agente fazendo isso sozinho: a fonte é o estado real do git, e a faixa reflete os dois igual.
+</Note>
+
+## A lista de arquivos
+
+Cada arquivo em conflito é uma linha, com o código `XY` do git ao lado — `UU` (os dois mudaram), `AA` (os dois adicionaram), `DD`, `AU`… O código está ali porque ele muda o que "escolher um lado" significa.
+
+Cada linha tem quatro ações:
+
+| Ação | O que faz |
+| --- | --- |
+| **manter `<ours>`** | `git checkout --ours` + `git add` |
+| **aceitar `<theirs>`** | `git checkout --theirs` + `git add` |
+| **Abrir no editor** | abre o arquivo com os marcadores no seu editor |
+| **Marcar resolvido (git add)** | só o `git add`, pro que você editou na mão |
+
+Escolher um lado é **o arquivo inteiro**. Não é hunk, não é linha. É a ferramenta certa pra lockfile, snapshot, arquivo gerado — e a ferramenta errada pro `src/` que tem intenção dos dois lados.
+
+<Note>
+Errou o lado? Até a operação ser concluída, `git checkout -m -- <arquivo>` no terminal da sessão refaz o conflito e devolve os marcadores. Nada aqui é irreversível antes do commit.
+</Note>
+
+Se o arquivo não está mais em conflito quando você clica — porque a lista envelheceu, porque o agente resolveu enquanto isso — a ação é recusada: *"não está em conflito — a lista deve ter atualizado."* Nenhuma ação escreve às cegas.
+
+## Resolver com agente
+
+O botão à direita da faixa manda o problema pro agente.
+
+Ele monta um prompt com a operação, os dois lados, a lista de arquivos com seus códigos, e uma instrução explícita de preservar a intenção dos dois lados e remover os marcadores. Aí:
+
+- **Sessão de agente viva na pasta?** O prompt vai pro composer dela.
+- **Não?** O TYBA sobe uma sessão de agente **naquela pasta** — com sandbox e com o gate de aprovação — e o prompt vai pro composer dela.
+
+<Note>
+**O prompt é digitado, não enviado.** Ele para no composer, escrito, esperando o seu `↵`. É de propósito, e o prompt é de uma linha só pelo mesmo motivo: colagem multilinha vira o chip `[Pasted text]` no composer, e você não conseguiria ler o que vai mandar antes de mandar.
+</Note>
+
+O fim do prompt muda com a operação:
+
+- **Merge** — o agente resolve, dá `git add`, e **para**. Não conclui o commit do merge. Quem revisa a resolução e commita é você.
+- **Rebase / cherry-pick** — o agente resolve e roda `--continue` até a operação terminar, sem criar commits além dos que a própria operação replica.
+
+<Warning>
+Uma sessão de agente aberta na pasta conflitada vê aquela pasta. Se o conflito é no **seu repositório principal** e não num worktree, é a sua cópia de trabalho que o agente está editando — com aprovação no inbox, mas dentro dela. O worktree existe justamente pra isso não acontecer sem você escolher.
+</Warning>
+
+## O último passo é seu
+
+Resolveu tudo? A faixa não some — ela fica âmbar e diz:
+
+> Conflitos resolvidos — falta concluir a operação (commit / --continue).
+
+Isso não é bug: **o TYBA não conclui a operação por você.** Ele detecta, ele te deixa escolher lado por lado, ele marca resolvido. O `git commit` do merge, o `git rebase --continue`, o `git cherry-pick --continue` são seus, no terminal da sessão. É o último ato deliberado antes de o histórico mudar de forma.
+
+Quando a operação terminar, o marcador some do git-dir e a faixa some da tela.
+
+## O que não existe
+
+- **Concluir a operação por botão.** Nem commit de merge, nem `--continue`.
+- **Abortar por botão.** `git merge --abort` é no terminal.
+- **Editor de merge de três vias.** As opções são: um lado inteiro, ou o seu editor.
+- **Escolher lado por hunk.** É o arquivo todo.
+- **A faixa enquanto você explora outra branch.** [Explorando uma branch no picker](/pt-br/git/branches#explorar), o painel esconde a faixa — o que está na tela não é a árvore conflitada. Volte pra sessão e ela reaparece.
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Branches" icon="git-branch" href="/pt-br/git/branches">
+    Trocar de branch, fetch, e o que o picker recusa.
+  </Card>
+  <Card title="Classificação de risco" icon="shield" href="/pt-br/seguranca/classificacao-de-risco">
+    O que o agente faz sozinho enquanto resolve.
+  </Card>
+</CardGroup>
