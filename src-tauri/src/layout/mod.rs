@@ -246,6 +246,7 @@ impl PaneNode {
 pub const VIEW_CONTAINERS: &str = "containers";
 pub const VIEW_SETTINGS: &str = "settings";
 pub const VIEW_WORKSPACE: &str = "workspace";
+pub const VIEW_CONNECTIONS: &str = "connections";
 pub const VIEW_DIFF_PREFIX: &str = "diff:";
 pub const DOCKER_WORKSPACE_NAME: &str = "Docker";
 pub const FALLBACK_WORKSPACE_NAME: &str = "tyba";

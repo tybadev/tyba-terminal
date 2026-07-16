@@ -2,6 +2,8 @@ import type { ElementType } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  CaretDown,
+  CaretRight,
   Check,
   DotsThree,
   FolderOpen,
@@ -66,6 +68,8 @@ import { CommandPalette } from "./components/CommandPalette";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ContainersView } from "./components/ContainersView";
 import { ConnectionsView } from "./components/ConnectionsView";
+import { HostPicker } from "./components/HostPicker";
+import { matchSshHost } from "./lib/sshCommand";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
@@ -150,6 +154,8 @@ import {
   type SplitKind,
   type Workspace,
   type Host,
+  listHosts,
+  listHostGroups,
   appVersion,
   updateCheck,
   updateDismiss,
@@ -281,6 +287,10 @@ function runnerLabel(kind: SessionKind): string | null {
 
 function isConfigWorkspace(w: Workspace): boolean {
   return w.tabs.length > 0 && w.tabs.every((t) => t.view === "settings");
+}
+
+function isConnectionsWorkspace(w: Workspace): boolean {
+  return w.tabs.length > 0 && w.tabs.every((t) => t.view === "connections");
 }
 
 function isWorktreesWorkspace(w: Workspace): boolean {
@@ -538,6 +548,17 @@ export default function App() {
     () => new Map(sessions.map((s) => [s.id, s])),
     [sessions],
   );
+
+  const [collapsedGroups, setCollapsedGroups] = useState<
+    Record<string, boolean>
+  >({});
+  const [sshHosts, setSshHosts] = useState<Host[]>([]);
+  const [hostPickerOpen, setHostPickerOpen] = useState(false);
+  useEffect(() => {
+    void listHosts()
+      .then(setSshHosts)
+      .catch(() => {});
+  }, [hostPickerOpen]);
 
   const sideView = activeWorkspace?.side_view ?? null;
   const sideTarget = useMemo(
@@ -1013,7 +1034,8 @@ export default function App() {
   const titleBase =
     activeWorkspace &&
     !isConfigWorkspace(activeWorkspace) &&
-    !isWorktreesWorkspace(activeWorkspace)
+    !isWorktreesWorkspace(activeWorkspace) &&
+    !isConnectionsWorkspace(activeWorkspace)
       ? activeWorkspace.name
       : "Tyba";
   const activeAgentRunning = activeWorkspace
@@ -1062,6 +1084,45 @@ export default function App() {
     [sessionCwds],
   );
 
+  // Sessão SSH roda o `ssh` localmente: o cwd do processo fica no home e nunca
+  // reflete o `cd` do outro lado. Mostrar caminho local seria mentira — o que
+  // localiza o usuário é o destino.
+  // A sessão SSH é um contexto, não uma janela solta: o que nasce dentro dela
+  // (split, tab, "+" do grupo) herda a conexão em vez de cair num shell local.
+  const workspaceSshHostId = useCallback(
+    (w: Workspace | null | undefined): string | null => {
+      if (!w) return null;
+      for (const tab of w.tabs) {
+        if (!tab.root) continue;
+        for (const sid of leafSessions(tab.root)) {
+          const kind = sessionById.get(sid)?.kind;
+          if (kind?.type === "ssh") return kind.host_id;
+          // Shell que rodou `ssh` à mão não É uma SSH Session — ele ESTÁ numa.
+          // Derivar do comando vivo dá o mesmo contexto e se desfaz sozinho no
+          // exit, em vez de deixar a sessão mentindo que é remota.
+          const cmd = sessionCommands[sid];
+          if (cmd?.running) {
+            const host = matchSshHost(cmd.command, sshHosts);
+            if (host) return host.id;
+          }
+        }
+      }
+      return null;
+    },
+    [sessionById, sessionCommands, sshHosts],
+  );
+
+  const workspaceSshHost = useCallback(
+    (w: Workspace): string | null => {
+      const id = workspaceSshHostId(w);
+      if (!id) return null;
+      const host = sshHosts.find((h) => h.id === id);
+      if (!host) return null;
+      return host.username ? `${host.username}@${host.hostname}` : host.hostname;
+    },
+    [workspaceSshHostId, sshHosts],
+  );
+
   const detailsFor = useCallback(
     (id: string): boolean => (detailOverrides[id] ?? detailsPref) === "on",
     [detailOverrides, detailsPref],
@@ -1105,9 +1166,10 @@ export default function App() {
   const splitActive = useCallback(
     async (kind: SplitKind) => {
       if (!activeWorkspace || !activeTab?.active_pane) return;
+      const hostId = workspaceSshHostId(activeWorkspace);
       const session = await createSession({
-        kind: { type: "shell" },
-        cwd: activeWorkspace.repo_root ?? undefined,
+        kind: hostId ? { type: "ssh", host_id: hostId } : { type: "shell" },
+        cwd: hostId ? undefined : (activeWorkspace.repo_root ?? undefined),
         cols: 80,
         rows: 24,
       });
@@ -1118,7 +1180,7 @@ export default function App() {
         void disposeSession(session.id).catch(() => {});
       }
     },
-    [activeWorkspace, activeTab],
+    [activeWorkspace, activeTab, workspaceSshHostId],
   );
 
   const cyclePane = useCallback(() => {
@@ -1261,7 +1323,14 @@ export default function App() {
     });
     setSessions((prev) => [...prev, session]);
     try {
-      await createWorkspace(host.alias, null, session.id);
+      const workspaceId = await createWorkspace(host.alias, null, session.id);
+      await renameWorkspace(workspaceId, host.alias);
+      if (host.color) await setWorkspaceColor(workspaceId, host.color);
+      const group = host.group_id
+        ? ((await listHostGroups()).find((g) => g.id === host.group_id)?.name ??
+          null)
+        : null;
+      if (group) await setWorkspaceGroup(workspaceId, group);
     } catch {
       void disposeSession(session.id).catch(() => {});
     }
@@ -1360,12 +1429,32 @@ export default function App() {
     }
   }, [sessions]);
 
+  // Grupo de conexões é um grupo de SSH: o "+" abre outra sessão no mesmo host,
+  // em vez de perguntar por uma pasta da máquina local.
+  const groupSshHostId = useCallback(
+    (group: string): string | null => {
+      for (const w of layout.workspaces) {
+        if (w.group !== group) continue;
+        const hostId = workspaceSshHostId(w);
+        if (hostId) return hostId;
+      }
+      return null;
+    },
+    [layout.workspaces, workspaceSshHostId],
+  );
+
   const newSessionInGroup = useCallback(
     (group: string) => {
+      // Grupo de conexões: o "+" pergunta qual host — o SSH abrange todas as
+      // conexões, não só a última daquele grupo.
+      if (groupSshHostId(group)) {
+        setHostPickerOpen(true);
+        return;
+      }
       setPendingGroup(group);
       openNewSession();
     },
-    [openNewSession],
+    [openNewSession, groupSshHostId],
   );
 
   const newTab = useCallback(async () => {
@@ -1373,9 +1462,10 @@ export default function App() {
       openNewSession();
       return;
     }
+    const hostId = workspaceSshHostId(activeWorkspace);
     const session = await createSession({
-      kind: { type: "shell" },
-      cwd: activeWorkspace.repo_root ?? undefined,
+      kind: hostId ? { type: "ssh", host_id: hostId } : { type: "shell" },
+      cwd: hostId ? undefined : (activeWorkspace.repo_root ?? undefined),
       cols: 100,
       rows: 30,
     });
@@ -1385,7 +1475,7 @@ export default function App() {
     } catch {
       void disposeSession(session.id).catch(() => {});
     }
-  }, [activeWorkspace, openNewSession]);
+  }, [activeWorkspace, openNewSession, workspaceSshHostId]);
 
   const openProjectFolder = useCallback(async () => {
     const dir = await openFileDialog({ directory: true, multiple: false });
@@ -1984,6 +2074,7 @@ export default function App() {
     const isWtView = isWorktreesWorkspace(w);
     const showDetails = open && detailsFor(w.id) && !isConfig && !isWtView;
     const gitDir = workspaceGitDir(w);
+    const sshHost = workspaceSshHost(w);
     const displayDir = workspaceCwd(w) ?? w.repo_root;
     // Nome automático segue o cwd vivo (cd troca o contexto da sessão);
     // renomeou de propósito → o nome escolhido fica.
@@ -2117,7 +2208,11 @@ export default function App() {
               </span>
               {showDetails && (
                 <span className="w-full truncate text-left font-mono text-[10px] leading-none text-tyba-text-faint">
-                  {displayDir ? compactPath(displayDir) : "~"}
+                  {sshHost
+                    ? sshHost
+                    : displayDir
+                      ? compactPath(displayDir)
+                      : "~"}
                 </span>
               )}
               {showDetails && (
@@ -2296,6 +2391,11 @@ export default function App() {
         text={pastePrompt?.text ?? null}
         onCancel={() => setPastePrompt(null)}
         onConfirm={confirmPaste}
+      />
+      <HostPicker
+        open={hostPickerOpen}
+        onOpenChange={setHostPickerOpen}
+        onPick={(host) => void connectToHost(host)}
       />
       <NewSessionPrompt
         open={newSessionOpen}
@@ -2680,9 +2780,26 @@ export default function App() {
                         className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-tyba-text/[.015] p-1"
                       >
                         <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
-                          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
-                            {name}
-                          </span>
+                          <button
+                            aria-label={name}
+                            aria-expanded={!collapsedGroups[name]}
+                            onClick={() =>
+                              setCollapsedGroups((prev) => ({
+                                ...prev,
+                                [name]: !prev[name],
+                              }))
+                            }
+                            className="flex min-w-0 items-center gap-1 text-tyba-text-faint transition-colors hover:text-tyba-text"
+                          >
+                            {collapsedGroups[name] ? (
+                              <CaretRight size={9} weight="bold" />
+                            ) : (
+                              <CaretDown size={9} weight="bold" />
+                            )}
+                            <span className="truncate text-[10px] font-medium uppercase tracking-[0.14em]">
+                              {name}
+                            </span>
+                          </button>
                           <span className="h-px min-w-0 flex-1 bg-tyba-border" />
                           <span className="font-mono text-[9px] text-tyba-text-faint">
                             {list.length}
@@ -2702,12 +2819,15 @@ export default function App() {
                             </TooltipContent>
                           </Tooltip>
                         </span>
-                        {list.map(renderWorkspace)}
+                        {!collapsedGroups[name] && list.map(renderWorkspace)}
                       </div>
                     ))}
                     {groupedWorkspaces.loose
                       .filter(
-                        (w) => !isConfigWorkspace(w) && !isWorktreesWorkspace(w),
+                        (w) =>
+                          !isConfigWorkspace(w) &&
+                          !isWorktreesWorkspace(w) &&
+                          !isConnectionsWorkspace(w),
                       )
                       .map(renderWorkspace)}
                     <Tooltip>
@@ -2776,7 +2896,8 @@ export default function App() {
                 >
                 {activeWorkspace &&
                   activeWorkspace.tabs.length > 0 &&
-                  activeTab?.view !== "settings" && (
+                  activeTab?.view !== "settings" &&
+                  activeTab?.view !== "connections" && (
                   <TabBar
                     tabs={activeWorkspace.tabs}
                     activeTab={activeWorkspace.active_tab}
@@ -2878,6 +2999,7 @@ export default function App() {
                         visible={paneRect !== null}
                         focused={s.id === activeId}
                         framed={(paneLayout?.panes.length ?? 0) > 1}
+                        connecting={s.kind.type === "ssh"}
                         exited={isFinishedStatus(s.status)}
                         rect={
                           paneRect

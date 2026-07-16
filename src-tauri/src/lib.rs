@@ -1639,7 +1639,10 @@ fn docker_open_shell(
 
 #[tauri::command]
 fn open_view_tab(app: AppHandle, state: State<'_, AppState>, view: String) -> Result<(), String> {
-    if view != layout::VIEW_SETTINGS && view != layout::VIEW_WORKSPACE {
+    if view != layout::VIEW_SETTINGS
+        && view != layout::VIEW_WORKSPACE
+        && view != layout::VIEW_CONNECTIONS
+    {
         return Err(format!("view desconhecida: {view}"));
     }
     state

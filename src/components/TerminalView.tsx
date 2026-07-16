@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { CircleNotch } from "@phosphor-icons/react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -103,6 +104,8 @@ interface Props {
   framed: boolean;
   rect: PaneRectStyle | null;
   exited?: boolean;
+  /** Sessão SSH: o handshake demora e a tela fica preta até o servidor falar. */
+  connecting?: boolean;
   onExit?: () => void;
   onFocus?: () => void;
   onPaste?: (sessionId: SessionId, text: string) => void;
@@ -117,12 +120,14 @@ export function TerminalView({
   framed,
   rect,
   exited,
+  connecting,
   onExit,
   onFocus,
   onPaste,
   onSearch,
   onSplit,
 }: Props) {
+  const [gotOutput, setGotOutput] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -232,7 +237,9 @@ export function TerminalView({
     const attached = (async () => {
       addUnlistener(
         await onPtyOutput(sessionId, (bytes) => {
-          if (!disposed) term.write(bytes);
+          if (disposed) return;
+          term.write(bytes);
+          setGotOutput(true);
         }),
       );
       if (disposed) return;
@@ -400,7 +407,31 @@ export function TerminalView({
       .catch(() => {});
   };
 
+  const showConnecting = Boolean(connecting) && !gotOutput && visible && !!rect;
+
   return (
+    <>
+    {showConnecting && rect && (
+      <div
+        className="pointer-events-none z-10 flex items-center justify-center gap-2 rounded-[4px] bg-tyba-sunken"
+        style={{
+          position: "absolute",
+          left: `${rect.left}%`,
+          top: `${rect.top}%`,
+          width: `${rect.width}%`,
+          height: `${rect.height}%`,
+        }}
+      >
+        <CircleNotch
+          size={14}
+          className="animate-spin text-tyba-text-faint"
+          weight="bold"
+        />
+        <span className="font-mono text-[11px] text-tyba-text-faint">
+          {i18n.t("sshConnecting")}
+        </span>
+      </div>
+    )}
     <ContextMenu
       onOpenChange={(o) => {
         if (!o) return;
@@ -466,5 +497,6 @@ export function TerminalView({
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
+    </>
   );
 }

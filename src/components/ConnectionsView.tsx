@@ -4,6 +4,7 @@ import {
   CaretDown,
   CaretRight,
   FolderPlus,
+  HardDrives,
   PencilSimple,
   Plug,
   Plugs,
@@ -678,79 +679,99 @@ export function ConnectionsView({ onConnect }: Props) {
     [confirmingDeleteGroup, failAction, load],
   );
 
-  const renderHost = (host: Host) => (
-    <div
-      key={host.id}
-      role="button"
-      tabIndex={0}
-      onDoubleClick={() => onConnect(host)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") onConnect(host);
-      }}
-      className="group flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-tyba-text/[.03]"
-    >
-      <span
-        className="size-1.5 shrink-0 rounded-full"
-        style={{
-          background: host.color
-            ? `var(--tyba-${host.color})`
-            : "var(--tyba-text-faint)",
+  const renderHostCard = (host: Host) => {
+    const accent = host.color ? `var(--tyba-${host.color})` : undefined;
+    return (
+      <div
+        key={host.id}
+        role="button"
+        tabIndex={0}
+        onDoubleClick={() => onConnect(host)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") onConnect(host);
         }}
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <span className="truncate text-[12px] font-semibold text-tyba-text">
-            {host.alias}
+        className="group relative flex flex-col justify-between gap-3 overflow-hidden rounded-lg border border-tyba-border bg-tyba-text/[.02] p-3 transition-colors hover:border-tyba-border-strong hover:bg-tyba-text/[.04]"
+      >
+        {accent && (
+          <span
+            className="absolute inset-y-0 left-0 w-0.5"
+            style={{ background: accent }}
+          />
+        )}
+        <div className="flex items-start gap-2.5">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-tyba-text/[.04] text-tyba-text-muted">
+            <HardDrives size={16} />
           </span>
-          <span className="min-w-0 truncate font-mono text-[10px] text-tyba-text-faint">
-            {host.hostname}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <span
+                className="size-1.5 shrink-0 rounded-full"
+                style={{ background: accent ?? "var(--tyba-text-faint)" }}
+              />
+              <span className="truncate text-[13px] font-semibold text-tyba-text">
+                {host.alias}
+              </span>
+            </div>
+            <div className="truncate font-mono text-[11px] text-tyba-text-muted">
+              {host.username ? `${host.username}@` : ""}
+              {host.hostname}
+            </div>
+            <div className="truncate font-mono text-[10px] text-tyba-text-faint">
+              {t("connectionsPort", { port: host.port ?? 22 })}
+              {host.proxy_jump ? ` · ${host.proxy_jump}` : ""}
+            </div>
+          </div>
+          <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+            {confirmingDeleteHost === host.id ? (
+              <button
+                type="button"
+                onClick={() => requestDeleteHost(host.id)}
+                className="rounded-[3px] bg-tyba-red px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-tyba-red/90"
+              >
+                {t("connectionsDeleteHostConfirm")}
+              </button>
+            ) : (
+              <>
+                <PanelAction
+                  label={t("connectionsEditHost")}
+                  onClick={() => setHostDialog({ mode: "edit", host })}
+                >
+                  <PencilSimple size={13} />
+                </PanelAction>
+                <PanelAction
+                  label={t("connectionsDeleteHost")}
+                  destructive
+                  onClick={() => requestDeleteHost(host.id)}
+                >
+                  <Trash size={13} />
+                </PanelAction>
+              </>
+            )}
           </span>
         </div>
-        {host.last_connected_at && (
-          <span className="block truncate text-[10px] text-tyba-text-faint">
-            {t("connectionsLastConnected", {
-              when: formatLastConnected(host.last_connected_at, i18n.language),
-            })}
+        <div className="flex items-center justify-between gap-2">
+          <span className="truncate text-[10px] text-tyba-text-faint">
+            {host.last_connected_at
+              ? t("connectionsLastConnected", {
+                  when: formatLastConnected(
+                    host.last_connected_at,
+                    i18n.language,
+                  ),
+                })
+              : t("connectionsNeverConnected")}
           </span>
-        )}
-      </div>
-      <span className="flex shrink-0 items-center gap-1">
-        {confirmingDeleteHost === host.id ? (
-          <button
-            type="button"
-            onClick={() => requestDeleteHost(host.id)}
-            className="rounded-[3px] bg-tyba-red px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-tyba-red/90"
+          <Button
+            size="xs"
+            onClick={() => onConnect(host)}
+            className="h-6 shrink-0 rounded-[4px] px-2 text-[11px]"
           >
-            {t("connectionsDeleteHostConfirm")}
-          </button>
-        ) : (
-          <span className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-            <PanelAction
-              label={t("connectionsEditHost")}
-              onClick={() => setHostDialog({ mode: "edit", host })}
-            >
-              <PencilSimple size={13} />
-            </PanelAction>
-            <PanelAction
-              label={t("connectionsDeleteHost")}
-              destructive
-              onClick={() => requestDeleteHost(host.id)}
-            >
-              <Trash size={13} />
-            </PanelAction>
-          </span>
-        )}
-        <Button
-          size="xs"
-          onClick={() => onConnect(host)}
-          className="h-6 rounded-[4px] px-2 text-[11px]"
-        >
-          <Plug size={11} />
-          {t("connectionsConnect")}
-        </Button>
-      </span>
-    </div>
-  );
+            <Plug size={11} />
+            {t("connectionsConnect")}
+          </Button>
+        </div>
+      </div>
+    );
+  };
 
   const renderSection = (section: {
     key: string;
@@ -758,15 +779,18 @@ export function ConnectionsView({ onConnect }: Props) {
     items: Host[];
   }) => {
     const isCollapsed = collapsed[section.key] ?? false;
+    const accent = section.group?.color
+      ? `var(--tyba-${section.group.color})`
+      : "var(--tyba-text-faint)";
     return (
-      <div key={section.key} className="group/section flex flex-col gap-px">
-        <div className="flex h-7 items-center gap-1.5 rounded-[4px] px-1.5">
+      <div key={section.key} className="group/section flex flex-col gap-2.5">
+        <div className="flex h-6 items-center gap-2">
           <button
             type="button"
             onClick={() =>
               setCollapsed((prev) => ({ ...prev, [section.key]: !isCollapsed }))
             }
-            className="flex min-w-0 flex-1 items-center gap-1.5 text-left transition-colors hover:text-tyba-text"
+            className="flex min-w-0 items-center gap-1.5 text-left transition-colors hover:text-tyba-text"
           >
             {isCollapsed ? (
               <CaretRight size={10} className="shrink-0 text-tyba-text-faint" />
@@ -775,16 +799,12 @@ export function ConnectionsView({ onConnect }: Props) {
             )}
             <span
               className="size-1.5 shrink-0 rounded-full"
-              style={{
-                background: section.group?.color
-                  ? `var(--tyba-${section.group.color})`
-                  : "var(--tyba-text-faint)",
-              }}
+              style={{ background: accent }}
             />
-            <span className="min-w-0 flex-1 truncate text-[11px] font-medium uppercase tracking-[0.1em] text-tyba-text-faint">
+            <span className="min-w-0 truncate text-[11px] font-medium uppercase tracking-[0.1em] text-tyba-text-muted">
               {section.group ? section.group.name : t("connectionsNoGroup")}
             </span>
-            <span className="font-mono text-[10px] text-tyba-text-faint">
+            <span className="shrink-0 rounded-full bg-tyba-text/[.05] px-1.5 font-mono text-[10px] text-tyba-text-faint">
               {section.items.length}
             </span>
           </button>
@@ -819,8 +839,13 @@ export function ConnectionsView({ onConnect }: Props) {
               )}
             </span>
           )}
+          <span className="h-px min-w-0 flex-1 bg-tyba-border" />
         </div>
-        {!isCollapsed && section.items.map(renderHost)}
+        {!isCollapsed && (
+          <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
+            {section.items.map(renderHostCard)}
+          </div>
+        )}
       </div>
     );
   };
@@ -830,7 +855,7 @@ export function ConnectionsView({ onConnect }: Props) {
 
   return (
     <div className="flex min-h-0 flex-1 justify-center overflow-y-auto">
-      <div className="flex w-full max-w-xl flex-col px-6 pt-5 pb-8">
+      <div className="flex w-full max-w-5xl flex-col px-6 pt-5 pb-8">
         <div className="flex items-center justify-between pb-3">
           <span className="tyba-label">{t("connectionsTitle")}</span>
           <div className="flex items-center gap-1.5">
@@ -891,7 +916,7 @@ export function ConnectionsView({ onConnect }: Props) {
             </p>
           </div>
         ) : (
-          <div className="flex flex-col gap-1.5">{sections.map(renderSection)}</div>
+          <div className="flex flex-col gap-5">{sections.map(renderSection)}</div>
         )}
       </div>
 
