@@ -1071,6 +1071,129 @@ fn write_to_session(state: State<'_, AppState>, id: SessionId, data: String) -> 
     state.pty_pool.write(id, &bytes).map_err(|e| e.to_string())
 }
 
+/// Abre um Host Group inteiro como **panes de um workspace só** — é o que dá
+/// sentido visual ao broadcast: digitar uma vez e conferir as N saídas lado a
+/// lado. Um workspace por host deixaria a rajada acontecendo fora da tela.
+#[tauri::command]
+fn connect_host_group(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    host_ids: Vec<String>,
+    name: String,
+    color: Option<String>,
+    group: Option<String>,
+) -> Result<Vec<Session>, String> {
+    let hosts = state.store.load_hosts().map_err(|e| e.to_string())?;
+    let picked: Vec<_> = host_ids
+        .iter()
+        .filter_map(|id| hosts.iter().find(|h| &h.id == id))
+        .collect();
+    if picked.is_empty() {
+        return Err(crate::error::AppError::new("ssh.host_not_found").to_string());
+    }
+
+    let home = crate::ssh::home_dir();
+    let mut opened: Vec<Session> = Vec::new();
+    let mut last_pane: Option<layout::PaneId> = None;
+
+    for host in picked {
+        let handle = app.clone();
+        let session = state
+            .sessions
+            .create_ssh_session(
+                app.clone(),
+                &state.pty_pool,
+                host.id.clone(),
+                &host.alias,
+                home.as_deref(),
+                100,
+                30,
+                move |id| session_exited(&handle, id),
+            )
+            .map_err(|e| e.to_string())?;
+        let _ = state
+            .store
+            .touch_host_connected(&host.id, chrono::Utc::now());
+
+        match last_pane {
+            None => {
+                state
+                    .layout
+                    .create_workspace_tagged(
+                        &name,
+                        None,
+                        session.id,
+                        layout::Tag {
+                            lock_name: true,
+                            color: color.clone(),
+                            group: group.clone(),
+                        },
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            Some(pane) => {
+                // Vertical: as saídas ficam lado a lado, que é o ponto de olhar
+                // N hosts ao mesmo tempo.
+                state
+                    .layout
+                    .split_pane(pane, layout::SplitKind::V, session.id)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        last_pane = state.layout.pane_of_session(session.id);
+        opened.push(session);
+    }
+    emit_layout(&app, &state);
+    Ok(opened)
+}
+
+/// Espelha tecla crua nos alvos. Sem gate de propósito: tecla não executa nada
+/// — o que executa é o Enter, e é lá que o core decide (ver [`broadcast_submit`]).
+#[tauri::command]
+fn broadcast_write(
+    state: State<'_, AppState>,
+    ids: Vec<SessionId>,
+    data: String,
+) -> Result<(), String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data)
+        .map_err(|e| e.to_string())?;
+    // Falha de um alvo não pode sumir calada: a tecla ir para 1 de 3 hosts e o
+    // app dizer "ok" é como o usuário descobre tarde que a rajada não foi.
+    let mut failed = Vec::new();
+    for id in ids {
+        if let Err(e) = state.pty_pool.write(id, &bytes) {
+            failed.push(format!("{id}: {e}"));
+        }
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(crate::error::AppError::new("broadcast.write_failed")
+            .with("detail", failed.join("; "))
+            .to_string())
+    }
+}
+
+/// Enter da rajada: o core classifica e **recusa vermelho sem confirmação
+/// humana**. A regra vive aqui, não na UI — o webview não dispara `rm -rf` em N
+/// máquinas nem que queira (regra #4).
+#[tauri::command]
+fn broadcast_submit(
+    state: State<'_, AppState>,
+    ids: Vec<SessionId>,
+    command: String,
+    confirmed: bool,
+) -> Result<ssh::broadcast::BroadcastVerdict, String> {
+    let verdict = ssh::broadcast::decide(&command, ids.len(), confirmed);
+    if let ssh::broadcast::BroadcastVerdict::Sent { .. } = verdict {
+        for id in ids {
+            let _ = state.pty_pool.write(id, b"\r");
+        }
+    }
+    Ok(verdict)
+}
+
 fn session_cwd_of(state: &AppState, id: SessionId) -> Result<std::path::PathBuf, String> {
     let pid = state
         .pty_pool
@@ -2302,6 +2425,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent_binary_available,
             create_session,
+            broadcast_write,
+            broadcast_submit,
+            connect_host_group,
             list_hosts,
             list_host_groups,
             create_host,
