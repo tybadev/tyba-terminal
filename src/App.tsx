@@ -1257,6 +1257,7 @@ export default function App() {
       const kind = s.kind;
       if (kind.type !== "ssh") continue;
       if (isFinishedStatus(s.status)) continue;
+      if (s.connection && s.connection !== "live") continue;
       const host = sshHosts.find((h) => h.id === kind.host_id);
       if (!host) continue;
       out.push({ sessionId: s.id, alias: host.alias, color: host.color });

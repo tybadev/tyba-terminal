@@ -7,10 +7,6 @@ use crate::session::store::{Store, StoreError};
 
 pub const INSTALL_ID_KEY: &str = "ssh.install_id";
 
-/// Identidade desta instalação do TYBA no remoto. Não resolve "qual sessão é
-/// esta?" (o `session_id` já resolve, e sobrevive ao restart) e sim "eu posso
-/// matá-la?": o GC de uma máquina não tem autoridade sobre a sessão viva de
-/// outra. Ver ADR `2026-07-16-ssh-tmux-namespace-por-instalacao`.
 pub fn install_id(store: &Store) -> Result<String, StoreError> {
     if let Some(existing) = store.get_setting(INSTALL_ID_KEY)? {
         if !existing.trim().is_empty() {
@@ -26,15 +22,6 @@ pub fn session_name(install_id: &str, session_id: Uuid) -> String {
     format!("tyba-{install_id}-{}", session_id.simple())
 }
 
-/// O comando que roda no Host. O fallback mora aqui, e não numa sonda prévia,
-/// por dois motivos: não custa round-trip no connect, e nada fica cacheado para
-/// mentir depois que alguém instalar tmux no Host.
-///
-/// A invisibilidade é o resto: `status off` (a tela é do dono), `prefix None` (o
-/// TYBA controla pelo CLI, nunca por tecla — então não disputa Ctrl-B) e `env -u
-/// TMUX` no **comando do pane**, que é onde o tmux seta a variável: sem isso o
-/// tmux do dono recusa aninhar e um fluxo que funcionava antes do wrap quebra.
-/// Ver ADR `2026-07-16-ssh-tmux-invisivel-o-do-dono-aninha-dentro`.
 pub fn wrap_command(name: &str) -> String {
     format!(
         "command -v tmux >/dev/null 2>&1 && \
@@ -46,27 +33,14 @@ pub fn wrap_command(name: &str) -> String {
     )
 }
 
-/// O veredito do árbitro. O TYBA pergunta ao Host em vez de inferir intenção do
-/// exit code do `ssh`: 255 é queda **e** falha de auth, e o detach do tmux sai 0
-/// igual ao `exit` do dono — dois sinais ambíguos.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Probe {
-    /// A SSH Session está viva no Host; o que caiu foi o Cano.
     Alive,
-    /// O dono deu `exit`: acabou de verdade, sem órfã.
     Gone,
-    /// O Host não tem tmux. Sem isto, um Host vivo e sem tmux reconectaria para
-    /// sempre — a sonda falharia igual a "não sei".
     NoTmux,
-    /// Não deu para perguntar (Host fora do ar).
     Unknown,
 }
 
-/// `tmux has-session -t <nome>` → veredito.
-///
-/// `None` é o processo morto por sinal. "Não sei" cai para o lado de reatar:
-/// errar reatando custa uma tentativa; errar para o outro lado descarta trabalho
-/// vivo do dono.
 pub fn interpret_has_session(exit_code: Option<i32>) -> Probe {
     match exit_code {
         Some(0) => Probe::Alive,
@@ -85,12 +59,6 @@ impl Probe {
 const BACKOFF_CEILING: Duration = Duration::from_secs(30);
 const GIVE_UP_AFTER: Duration = Duration::from_secs(300);
 
-/// Espera antes da tentativa `attempt` (0-based). `None` = desistiu: vai para
-/// `Dropped` com botão manual.
-///
-/// Desistir não perde nada — a SSH Session não vai a lugar nenhum. Perde-se só o
-/// direito de sondar de graça uma VPS desligada, que é o que a regra de
-/// performance cobra (o core disputa rede com os agentes).
 pub fn retry_delay(attempt: u32) -> Option<Duration> {
     let delay = Duration::from_secs(1u64 << attempt.min(5));
     let delay = delay.min(BACKOFF_CEILING);
@@ -103,15 +71,6 @@ fn elapsed_before(attempt: u32) -> Duration {
         .sum()
 }
 
-/// Sessões `tyba-*` no Host que esta instalação deve recolher.
-///
-/// `listed` é o `tmux ls -F '#{session_name}'` do Host. `known` são os
-/// `session_id` do SQLite — **inclusive os mortos**: sessão `Exited` com tmux
-/// vivo é o caso de reattach, não órfã (o `restore()` preserva a linha, e é dela
-/// que o reattach sai).
-///
-/// Só o próprio namespace entra. Sessão de outra instalação não é "poupada por
-/// heurística": ela é invisível.
 pub fn orphans(listed: &[String], install_id: &str, known: &HashSet<Uuid>) -> Vec<String> {
     let prefix = format!("tyba-{install_id}-");
     listed
@@ -125,10 +84,6 @@ pub fn orphans(listed: &[String], install_id: &str, known: &HashSet<Uuid>) -> Ve
         .collect()
 }
 
-/// Pergunta ao Host se a SSH Session ainda existe.
-///
-/// Falha de rede vira `Unknown` (que reata) e não `Gone`: só o Host tem
-/// autoridade para dizer que acabou, e um Host que não responde não disse nada.
 pub fn probe(alias: &str, name: &str) -> Probe {
     let status = std::process::Command::new("ssh")
         .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias])
@@ -143,13 +98,6 @@ pub fn probe(alias: &str, name: &str) -> Probe {
     }
 }
 
-/// Encerra a SSH Session no Host. É o gesto deliberado do dono (fechar tab),
-/// simétrico ao `killpg` do shell local — não é o Cano caindo.
-///
-/// `-o BatchMode=yes` porque isto roda sem tela: sem ele, um host que peça senha
-/// penduraria a thread esperando input que ninguém vai digitar. O ControlMaster
-/// da conexão que acabou de morrer ainda está quente (ControlPersist 10m), então
-/// na prática não há handshake novo.
 pub fn kill_remote(alias: &str, name: &str) -> std::io::Result<std::process::ExitStatus> {
     std::process::Command::new("ssh")
         .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias])
@@ -160,21 +108,6 @@ pub fn kill_remote(alias: &str, name: &str) -> std::io::Result<std::process::Exi
         .status()
 }
 
-/// Mata a sessão **e** o cliente que sobrou.
-///
-/// Achado no primeiro teste real: quando o Cano morre, o processo
-/// `tmux new-session` que o `ssh` spawnou não morre com o hangup — reaparece com
-/// `ppid=1`, sem tty, e fica pendurado na máquina do dono. O `kill-session`
-/// derruba o cliente daquela sessão junto; o `pkill` cobre o que já tinha sido
-/// adotado pelo init numa queda anterior. `true` no fim porque não achar nada
-/// para matar é sucesso, não erro.
-///
-/// O `[t]` não é enfeite: o padrão do `pkill` aparece na linha de comando do
-/// próprio shell que o executa (o `bash -c` do sshd), e `pkill -f` exclui a si
-/// mesmo mas **não ao pai**. Medido na VPS: sem o colchete o comando se suicida
-/// no meio — o `true` nunca roda e o ssh devolve 255. Com ele, a regex `[t]mux`
-/// casa `tmux` nos alvos, e a linha do shell (que contém `[t]mux` literal) não
-/// casa consigo mesma.
 pub fn kill_command(name: &str) -> String {
     format!(
         "tmux kill-session -t {name} 2>/dev/null; \
@@ -210,19 +143,6 @@ mod tests {
         );
     }
 
-    /// Medido na VPS: `pkill -f 'tmux new-session…'` casa a linha do próprio
-    /// `bash -c` que o executa e mata o pai — o `true` não roda e o ssh volta 255.
-    /// O `[t]` faz a regex casar os alvos sem casar a si mesma.
-    #[test]
-    fn kill_nao_pode_matar_o_shell_que_o_executa() {
-        let cmd = kill_command(&session_name("a3f", uuid(0x9f3a)));
-        assert!(
-            !cmd.contains("pkill -f 'tmux"),
-            "sem o [t] o comando se suicida no meio: {cmd}"
-        );
-        assert!(cmd.contains("pkill -f '[t]mux"), "got: {cmd}");
-    }
-
     #[test]
     fn kill_e_especifico_da_sessao_nunca_do_servidor() {
         let cmd = kill_command(&session_name("a3f", uuid(0x9f3a)));
@@ -230,6 +150,17 @@ mod tests {
             !cmd.contains("kill-server"),
             "kill-server derrubaria as sessões do dono e as de outras instalações: {cmd}"
         );
+    }
+
+    #[test]
+    fn kill_nao_pode_matar_o_shell_que_o_executa() {
+        let cmd = kill_command(&session_name("a3f", uuid(0x9f3a)));
+        assert!(
+            !cmd.contains("pkill -f 'tmux"),
+            "medido na VPS: sem o [t] o pkill casa a linha do bash -c que o roda, \
+             mata o próprio pai, o true não executa e o ssh volta 255: {cmd}"
+        );
+        assert!(cmd.contains("pkill -f '[t]mux"), "got: {cmd}");
     }
 
     #[test]
@@ -279,21 +210,15 @@ mod tests {
         );
     }
 
-    /// Verificado na VPS real: um `contains("env -u TMUX")` passa com o `env` no
-    /// ramo do fallback — onde `$TMUX` nem existe — e o dono ainda leva
-    /// "sessions should be nested with care" na cara. O que importa é o ramo: o
-    /// `env` tem que ser o **comando do pane**, porque é o tmux que seta `$TMUX`.
     #[test]
     fn wrap_limpa_tmux_no_shell_dentro_do_nosso_tmux() {
         let cmd = wrap_command("tyba-a3f-9f3a");
         assert!(
             cmd.contains("new-session -A -s tyba-a3f-9f3a 'exec env -u TMUX "),
-            "o env tem que ser o comando do pane, não o fallback: {cmd}"
+            "verificado na VPS: o env tem que ser o comando do pane, porque é o \
+             tmux que seta $TMUX; no fallback não há tmux para setar nada: {cmd}"
         );
-        assert!(
-            !cmd.contains("|| exec env -u TMUX"),
-            "no fallback não há tmux, logo não há $TMUX para limpar: {cmd}"
-        );
+        assert!(!cmd.contains("|| exec env -u TMUX"), "got: {cmd}");
     }
 
     #[test]
