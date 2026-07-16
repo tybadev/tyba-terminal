@@ -948,6 +948,27 @@ fn open_diff_tab(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> R
 }
 
 #[tauri::command]
+fn open_tunnels_panel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), crate::error::AppError> {
+    let session = state
+        .sessions
+        .get(id)
+        .ok_or_else(|| crate::error::AppError::new("ssh.session_not_found"))?;
+    if !matches!(session.kind, SessionKind::Ssh { .. }) {
+        return Err(crate::error::AppError::new("ssh.not_an_ssh_session"));
+    }
+    state
+        .layout
+        .open_workspace_side_view(id, &layout::tunnels_view(id))
+        .map_err(|e| crate::error::AppError::new("layout.failed").with("detail", e.to_string()))?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
 fn close_side_view(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -2786,6 +2807,7 @@ pub fn run() {
             session_branch_diff,
             session_branch_hunks,
             open_diff_tab,
+            open_tunnels_panel,
             close_side_view,
             set_side_view_expanded,
             set_side_view_ratio,
