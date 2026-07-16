@@ -147,6 +147,32 @@ pub struct SessionTunnel {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Default)]
+pub struct TunnelStates {
+    by_id: parking_lot::Mutex<std::collections::HashMap<String, TunnelState>>,
+}
+
+pub type SharedTunnelStates = std::sync::Arc<TunnelStates>;
+
+impl TunnelStates {
+    pub fn set(&self, tunnel_id: &str, state: TunnelState) {
+        self.by_id.lock().insert(tunnel_id.to_string(), state);
+    }
+
+    pub fn forget(&self, tunnel_id: &str) {
+        self.by_id.lock().remove(tunnel_id);
+    }
+
+    pub fn apply(&self, tunnels: &mut [SessionTunnel]) {
+        let map = self.by_id.lock();
+        for t in tunnels {
+            if let Some(state) = map.get(&t.id) {
+                t.state = state.clone();
+            }
+        }
+    }
+}
+
 pub fn control_master_available() -> bool {
     cfg!(unix)
 }
@@ -440,6 +466,52 @@ mod tests {
              endereço aprovaria uma porta que o ssh não consegue ligar"
         );
         drop(squatter);
+    }
+
+    #[test]
+    fn o_estado_vivo_vence_o_opening_que_vem_do_disco() {
+        let states = TunnelStates::default();
+        let mut carregados = vec![SessionTunnel {
+            id: "t1".into(),
+            session_id: uuid::Uuid::nil(),
+            tunnel: local(5432),
+            state: TunnelState::Opening,
+            created_at: chrono::Utc::now(),
+        }];
+        states.set("t1", TunnelState::Live);
+
+        states.apply(&mut carregados);
+
+        assert_eq!(
+            carregados[0].state,
+            TunnelState::Live,
+            "o store não guarda estado (de propósito) e devolve Opening sempre; \
+             sem o mapa vivo por cima, o painel mostra 'abrindo' eternamente num \
+             túnel de pé — e o vermelho da porta tomada nunca apareceria"
+        );
+    }
+
+    #[test]
+    fn tunel_esquecido_volta_a_ser_o_que_o_disco_diz() {
+        let states = TunnelStates::default();
+        states.set("t1", TunnelState::Live);
+        states.forget("t1");
+        let mut carregados = vec![SessionTunnel {
+            id: "t1".into(),
+            session_id: uuid::Uuid::nil(),
+            tunnel: local(5432),
+            state: TunnelState::Opening,
+            created_at: chrono::Utc::now(),
+        }];
+
+        states.apply(&mut carregados);
+
+        assert_eq!(
+            carregados[0].state,
+            TunnelState::Opening,
+            "estado de túnel fechado não pode ficar pendurado no mapa: um id \
+             reusado herdaria Live sem ninguém ter aberto nada"
+        );
     }
 
     #[test]

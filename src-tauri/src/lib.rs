@@ -47,6 +47,7 @@ struct AppState {
     rich_input_submit: parking_lot::Mutex<()>,
     worktree_files: rich_input::FilesCache,
     hook_servers: Arc<agent::session::HookServerRegistry>,
+    tunnel_states: crate::ssh::tunnel::SharedTunnelStates,
 }
 
 fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::PathBuf> {
@@ -140,6 +141,9 @@ fn end_ssh_session_on_host(state: &State<'_, AppState>, session: &session::Sessi
         .store
         .load_session_tunnels(session.id)
         .unwrap_or_default();
+    for t in &tunnels {
+        state.tunnel_states.forget(&t.id);
+    }
     let _ = state.store.remove_session_tunnels(session.id);
     std::thread::spawn(move || {
         for t in &tunnels {
@@ -233,6 +237,7 @@ fn restore_session_tunnels(app: &AppHandle, id: SessionId, alias: &str) {
         } else {
             crate::ssh::tunnel::TunnelState::Opening
         };
+        state.tunnel_states.set(&t.id, t.state.clone());
     }
     emit_session_tunnels(app, id, &tunnels);
 }
@@ -641,10 +646,12 @@ fn list_session_tunnels(
     state: State<'_, AppState>,
     session_id: SessionId,
 ) -> Result<Vec<crate::ssh::tunnel::SessionTunnel>, crate::error::AppError> {
-    state
+    let mut tunnels = state
         .store
         .load_session_tunnels(session_id)
-        .map_err(store_err)
+        .map_err(store_err)?;
+    state.tunnel_states.apply(&mut tunnels);
+    Ok(tunnels)
 }
 
 #[tauri::command]
@@ -684,6 +691,7 @@ fn open_session_tunnel(
         created_at: chrono::Utc::now(),
     };
     state.store.add_session_tunnel(&entry).map_err(store_err)?;
+    state.tunnel_states.set(&entry.id, entry.state.clone());
 
     if !master {
         let _ = state.pty_pool.kill(session_id);
@@ -707,6 +715,7 @@ fn close_session_tunnel(
     if let Some((_, alias, _)) = ssh_target(&state, session_id) {
         let _ = crate::ssh::tunnel::close_on_master(&alias, &entry.tunnel);
     }
+    state.tunnel_states.forget(&tunnel_id);
     state
         .store
         .remove_session_tunnel(&tunnel_id)
@@ -2711,6 +2720,7 @@ pub fn run() {
                 rich_input_submit: parking_lot::Mutex::new(()),
                 worktree_files: rich_input::FilesCache::default(),
                 hook_servers: Arc::new(agent::session::HookServerRegistry::default()),
+                tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
             });
 
             std::thread::Builder::new()
