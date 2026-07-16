@@ -1,0 +1,115 @@
+---
+title: "The composer"
+sidebarTitle: "The composer"
+description: "The long-prompt box — the file autocomplete, and the table that settles the Enter confusion."
+---
+
+Typing a three-paragraph prompt straight into the PTY is rough: the agent redraws the line, the up arrow becomes its history, and an accidental Enter sends half of your idea.
+
+The composer is a real text box for writing before you send.
+
+**`⌘⇧G` on macOS, `Ctrl+Shift+G` on Windows and Linux.** It opens **below the terminal**, above the chip bar.
+
+<Note>
+In Settings it goes by its internal name, **Rich Input**. Same thing.
+</Note>
+
+The shortcut is a **focus toggle**, not an on/off switch: with the box already focused, `⌘⇧G` hands focus back to the terminal and **leaves the box open**, with your text where it was. `Esc` is what closes it.
+
+## `@` for files
+
+Type `@` and start the name. The `@` only arms the autocomplete **at the start of a line or after a space** — a `user@host` triggers nothing.
+
+The list comes from the worktree's `git ls-files`: tracked and untracked, with `.gitignore` respected. Paths are relative to the **session directory**, and the search is fuzzy.
+
+With the popover open:
+
+| Key | What it does |
+| --- | --- |
+| `↑` `↓` | Navigates, wrapping at the end of the list |
+| `Tab` or `↵` | Picks the file |
+| `Esc` | Closes **the popover only** — the box and the text stay |
+
+With no popover, `Esc` closes the composer.
+
+<Note>
+The popover only exists when there is **at least one match**. If you typed `@xyz` and nothing matches, there is no popover — and then `Esc` closes the whole box, because it's the only `Esc` left.
+</Note>
+
+The paperclip next to it opens the system file picker and inserts the path — relative to the session when it can, absolute when it can't.
+
+## Enter: the two settings
+
+This is the confusing part, so here it is in full.
+
+What rules is the **"Send with Ctrl+Enter"** preference (Settings → Preferences), **on by default**:
+
+| You press | On (default) | Off |
+| --- | --- | --- |
+| `↵` | Newline | **Sends** |
+| `Ctrl+↵` / `⌘↵` | **Sends** | **Nothing happens** |
+| `⇧↵` | Newline | Newline |
+
+Two things worth calling out:
+
+<Warning>
+**With the preference off, `⌘↵` does nothing.** It neither sends nor inserts a newline — it is a dead key, on purpose.
+
+The reasoning: if `↵` already sends, a `⌘↵` is almost certainly muscle memory from someone expecting the other setting. Better to do nothing than to send half a prompt.
+</Warning>
+
+<Note>
+**`⇧↵` always inserts a newline**, under both settings. It is the key that works without you remembering how the preference is set.
+</Note>
+
+The send shortcut (`⌘↵` / `Ctrl+↵`) [cannot be remapped](/en/interface/shortcuts). The `⌘⇧G` that opens the box can.
+
+<Warning>
+**A session without bracketed paste is a single-line session.** The composer sends the text wrapped in `DECSET 2004`; without that, there is no way for a `\n` to be text instead of Enter. When TYBA detects that the session hasn't enabled it, it blocks the newline and warns: *"Session without bracketed paste: single line only."*
+</Warning>
+
+## The sensitive-prompt warning
+
+With **"Warn about sensitive prompts"** on (default), the core looks at the text before sending. If it thinks there is sensitive data in it, the send **does not happen**: the button turns amber and *"May contain sensitive data — click again to send."* appears.
+
+Pressing again sends. It is a one-click toll, not a block.
+
+The check is a **substring search, no regex**, against a fixed list of twelve terms, in Portuguese and English:
+
+```
+password   senha   secret   token   api key   api_key   apikey
+credential   credencial   private key   chave privada   .env
+```
+
+<Warning>
+**This is not a secret detector.** It finds the *word*, not the value.
+
+An `AKIA…` pasted raw sails right through — none of those words appear. And "fix the tokenizer" trips it, because it contains `token`. Treat it as a crude reminder, not a net.
+</Warning>
+
+Editing the text re-arms the warning. If the check fails, the prompt **goes** — it fails open, because an IPC error shouldn't stop you from working.
+
+## The preferences
+
+All in **Settings → Preferences**:
+
+| Preference | Default | What it does |
+| --- | --- | --- |
+| Send with Ctrl+Enter | **On** | The table above |
+| Open by itself when the agent is idle | Off | The box appears when the agent stops |
+| Open when an agent session starts | Off | Born open in an agent session |
+| Close after sending | **On** | Disappears after the send, focus returns to the terminal |
+| Warn about sensitive prompts | **On** | The toll above |
+
+With "Close after sending" off, the box stays open and empty — good for firing off several prompts in a row.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Claude Code and Codex" icon="robot" href="/en/agent/claude-code-and-codex">
+    Where the agent session is born.
+  </Card>
+  <Card title="Shortcuts" icon="keyboard" href="/en/interface/shortcuts">
+    What you can and cannot remap.
+  </Card>
+</CardGroup>

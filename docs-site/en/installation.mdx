@@ -1,0 +1,82 @@
+---
+title: "Installation"
+description: "macOS, Linux and Windows — and the two prerequisites that don't come in the box."
+---
+
+The binaries for the current version are on [Releases](https://github.com/tybadev/tyba-terminal/releases).
+
+<Tabs>
+<Tab title="macOS">
+**macOS 11 or later.** Download the `.dmg` for your chip — Apple Silicon or Intel.
+
+Signed and notarized: it opens without a Gatekeeper warning.
+</Tab>
+
+<Tab title="Linux">
+Download the `.deb`, `.rpm` or `.AppImage`:
+
+```bash
+sudo apt install ./Tyba_0.1.2_amd64.deb     # Debian / Ubuntu
+sudo dnf install ./Tyba-0.1.2-1.x86_64.rpm  # Fedora
+yay -S tyba-bin                             # Arch (AUR)
+```
+
+<Warning>
+**`bubblewrap` is a hard dependency, not a suggestion.** Without it the core refuses to create agent sessions and TYBA is just a terminal.
+
+The `.deb`, the `.rpm` and the AUR package pull it in for you. With the AppImage, install it yourself: `apt install bubblewrap`.
+</Warning>
+
+If your distro ships unprivileged user namespaces disabled — some hardened kernels, or Debian with `kernel.unprivileged_userns_clone=0` — agent sessions are refused with a message explaining why. The sandbox never degrades silently.
+</Tab>
+
+<Tab title="Windows">
+Download the `.exe` or the `.msi`:
+
+| File | When to use it |
+| --- | --- |
+| `.exe` | For most people — click and install |
+| `.msi` | Managed or silent installs |
+
+<Warning>
+**The installer is not signed yet.** SmartScreen will show *"Windows protected your PC"*. Click **More info → Run anyway**. Signing lands once the certificate is in place.
+</Warning>
+
+The agent jail reached Windows in 0.1.2. Like on the other platforms, it is fail-closed: if it cannot be applied, the session is refused instead of running unjailed.
+
+<Warning>
+**The read guarantee on Windows is weaker than on macOS and Linux.** Writes are contained the same way, but reads are allow-by-default, with a deny list of known secrets. In practice: the `.env` files of your other projects and other repositories on your machine **are readable by the agent**.
+
+Read [Platforms](/en/security/platforms) before deciding whether that works for you.
+</Warning>
+</Tab>
+</Tabs>
+
+## Install an agent
+
+<Warning>
+**Agents are not bundled.** TYBA orchestrates Claude Code and Codex — it does not embed them.
+</Warning>
+
+Install at least one:
+
+- [Claude Code](https://claude.com/claude-code)
+- [Codex](https://developers.openai.com/codex/cli)
+
+TYBA picks both up from your `PATH`. If neither is installed, you can still use the terminal, but not create an agent session.
+
+## You need a git repository
+
+Agent sessions run in worktrees, and a worktree is a git concept. A folder that isn't a repository won't do.
+
+## Check it
+
+Open TYBA and create an agent session. If it comes up, all three prerequisites are in place: the agent is on your `PATH`, the sandbox applies, and the directory is a repository.
+
+If something is missing, the message says which — TYBA fails with an explanation, not in silence.
+
+## Next
+
+<Card title="First session" icon="arrow-right" href="/en/first-session">
+What happens between you describing the task and the code existing.
+</Card>

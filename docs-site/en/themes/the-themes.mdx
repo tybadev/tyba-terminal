@@ -1,0 +1,102 @@
+---
+title: "The themes"
+description: "18 built-ins, the preview grid, and the detail that a theme paints the whole app — not just the terminal."
+---
+
+## Where to switch
+
+**Settings → Appearance** (`⌘,` on macOS, `Ctrl+,` on Windows and Linux). The **Themes** section is a grid of preview cards: the terminal background and six colors from the ANSI palette, exactly as they will look. The one in use has a green border and a check.
+
+Also from the [command palette](/en/interface/command-palette) (`⌘P` / `Ctrl+Shift+P`), under **Theme**: *Use X theme*.
+
+<Note>
+The palette lists every theme **except** TYBA Dark and TYBA Light. The two defaults only appear in the Settings grid.
+</Note>
+
+Clicking a theme puts it in the slot for its base — and may change the mode along with it. That is covered in [Light and dark mode](/en/themes/light-and-dark).
+
+## The theme paints the whole app
+
+<Warning>
+**It is not just the terminal.** Switching the theme repaints the sidebar, the tabs, the dialogs, the command palette, the Settings — everything.
+</Warning>
+
+Each theme carries two things: the **terminal palette** (background, text, cursor, selection and the 16 ANSI colors) and the **interface surfaces and accents**. The two travel together.
+
+What the theme does **not** change is TYBA's identity: typography, spacing, corner radii and the signature gradient stay the same. A theme changes color, not design.
+
+## The 18 built-ins
+
+<Tabs>
+<Tab title="Dark base (12)">
+| Theme | Note |
+| --- | --- |
+| **TYBA Dark** | The default. Terminal in absolute black. |
+| Solarized Dark | |
+| Dracula | |
+| Gruvbox Dark | |
+| GitHub Dark | |
+| Monokai | |
+| Monokai Pro | |
+| Monokai Pro Machine | |
+| Monokai Pro Octagon | |
+| Monokai Pro Ristretto | |
+| Monokai Pro Spectrum | |
+| Mono Dark | No colored accents — grayscale. |
+</Tab>
+<Tab title="Light base (6)">
+| Theme | Note |
+| --- | --- |
+| **TYBA Light** | The default for the light slot. |
+| Solarized Light | |
+| Dracula Light (Alucard) | |
+| Gruvbox Light | |
+| GitHub Light | |
+| Monokai Pro Light | |
+</Tab>
+</Tabs>
+
+<Note>
+**There is no Catppuccin, Nord or Tokyo Night.** If you want one of them, you can bring your own — see [Import a theme](/en/themes/import-a-theme).
+</Note>
+
+Some classic schemes don't have a complete palette; in those cases TYBA derives what is missing instead of inventing it. In the Monokai family, for example, the official "red" is pinkish and becomes the **magenta** — the error red is derived darker, so that an error still looks like an error.
+
+## Font
+
+Same screen — **Settings → Appearance → Font**. There are two selectors, and they do different things:
+
+| Selector | What it controls |
+| --- | --- |
+| **Family** | The **interface** font: JetBrains Mono (default) or Space Grotesk. |
+| **Size** | The **terminal** size, from 11px to 16px. Default: 13px. |
+
+<Warning>
+The **interface family** does not affect the terminal, and the **size** does not affect the interface. The section has a single name, but the two controls don't talk to each other.
+</Warning>
+
+<Note>
+**The terminal family is fixed** and not configurable. The terminal runs on JetBrains Mono, with Symbols Nerd Font Mono and Fira Code behind it for missing glyphs, and the system monospace at the end of the line. There is no field to change it.
+</Note>
+
+The size applies to the terminals you open next and to the ones already open — the change is immediate across every pane.
+
+## What does not exist
+
+| | |
+| --- | --- |
+| **A visual theme editor** | Does not exist. Your own themes are a [JSON file](/en/themes/import-a-theme). |
+| **Choosing the terminal font** | Fixed. |
+| **Window opacity / background blur** | Does not exist. |
+| **A theme per tab, pane or workspace** | The theme belongs to the whole app. |
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Light and dark mode" icon="circle-half" href="/en/themes/light-and-dark">
+    The two slots and System mode.
+  </Card>
+  <Card title="Import a theme" icon="download" href="/en/themes/import-a-theme">
+    Bring your own, and the rules it has to pass.
+  </Card>
+</CardGroup>

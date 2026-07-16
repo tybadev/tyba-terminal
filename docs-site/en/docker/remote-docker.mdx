@@ -1,0 +1,77 @@
+---
+title: "Remote Docker"
+description: "The panel pointed at an SSH host — inferred from the active workspace. Requires a key, and compose is left out."
+---
+
+The containers panel has a **target selector**: **Local** or the **alias** of any registered SSH host.
+
+This is the good use case for the whole thing: you're in an SSH session on the VPS, you open the panel, and it is already listing the containers **from over there**.
+
+## The target is inferred from the workspace
+
+<Note>
+**You almost never need to touch the selector.** If the active workspace is an SSH session, the panel already opens pointed at that host.
+</Note>
+
+Local workspace, Local target. VPS workspace, VPS target. The selector is there for when you want to leave the default.
+
+## How it works underneath
+
+`docker` talks to a remote machine natively, over `ssh://`. TYBA only points the target:
+
+```bash
+docker -H ssh://prod-api ps
+```
+
+And this works **because the alias resolves**: TYBA already [wrote `Include config.d/tyba.conf` into your `~/.ssh/config`](/en/ssh/hosts-and-groups). The alias you registered is a real host to OpenSSH, so it is a real host to Docker.
+
+No exposed daemon, no open port, no TLS to configure. It's your SSH.
+
+### A remote container's shell
+
+Opening a remote container's shell creates **its own workspace**, with the **alias in the title and the host's color**.
+
+That is on purpose: it **does not hijack your SSH pane**. Mixing the two would make the `sh: postgres` on your Mac look exactly like the VPS's, and confusing those two is expensive.
+
+## The limitations
+
+<Warning>
+**A password-only host doesn't work. Remote Docker requires a key.**
+
+Docker's helper calls `ssh` with a null stdin — there is nowhere for the password prompt to appear, and nobody to answer it. The case doesn't produce a clear error: it **hits the timeout**.
+
+Forcing `BatchMode` would give a better message, but it would break your interactive session. So: register a **Private key (path)** on the host, and the remote panel works.
+</Warning>
+
+<Warning>
+**Compose doesn't run on a remote target.** Up, down, restart, opening the project folder and opening the compose file are **disabled** when the target is an SSH host.
+
+The reason: those actions depend on project paths **on this machine**, and the VPS's path doesn't exist here. For remote compose, use an SSH pane and run `docker compose` there.
+</Warning>
+
+What **does** work remotely: listing, logs, shell and remove.
+
+### It's slower — and that's fine
+
+The remote refresh pays for a handshake, the network and, on the first connection, **your approval in 1Password**. The local timeout measures a Docker that answers in milliseconds; the remote one gets a lot more slack, because with the local ceiling the remote panel only ever delivered an empty list.
+
+After the first connection, [`ControlMaster`](/en/ssh/hosts-and-groups) reuses the connection and the calls go back to being fast.
+
+<Note>
+**Availability is cached per target.** Docker on your Mac says nothing about Docker on the VPS, so each target has its own state — and the panel doesn't keep re-asking every time you glance at it.
+</Note>
+
+<Warning>
+This applies to **Windows** too: without `ControlMaster`, each call from the remote panel may reopen the connection and ask for authentication again.
+</Warning>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Containers" icon="container" href="/en/docker/containers">
+    The panel, the integration and what it does locally.
+  </Card>
+  <Card title="Hosts and groups" icon="hard-drive" href="/en/ssh/hosts-and-groups">
+    The registry, the key and the Include that make this work.
+  </Card>
+</CardGroup>

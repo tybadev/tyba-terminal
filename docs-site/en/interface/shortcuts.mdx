@@ -1,0 +1,119 @@
+---
+title: "Keyboard shortcuts"
+description: "The full list, what you can remap, and the silent-conflict trap."
+---
+
+Every shortcut below works with the TYBA window in focus. There's no native system menu and no global shortcut — nothing fires with the app in the background.
+
+To see and change them: **Settings → Shortcuts** (`⌘,` on macOS, `Ctrl+,` on Windows and Linux).
+
+<Note>
+On Windows and Linux the default is `Ctrl+Shift+…`. That's deliberate: `Ctrl+C` and `Ctrl+V` **still belong to the shell** — interrupting a process matters more than copying.
+</Note>
+
+## General
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| Command palette | `⌘P` | `Ctrl+Shift+P` |
+| Sessions palette | `⌘⇧P` | `Ctrl+Alt+Shift+P` |
+| Toggle sidebar | `⌘B` | `Ctrl+Shift+B` |
+| Settings | `⌘,` | `Ctrl+,` |
+
+## Sessions
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| New session | `⌘N` | `Ctrl+Shift+N` |
+| New worktree session | `⌘⇧T` | `Ctrl+Alt+Shift+T` |
+| New window | `⌘⇧N` | `Ctrl+Alt+Shift+N` |
+| Open project folder | `⌘O` | `Ctrl+Shift+O` |
+
+## Tabs and workspaces
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| New tab | `⌘T` | `Ctrl+Shift+T` |
+| Previous tab | `⌘⇧←` | `Ctrl+PgUp` |
+| Next tab | `⌘⇧→` | `Ctrl+PgDn` |
+| Go to tab N | `⌘1`…`⌘9` | `Alt+1`…`Alt+9` |
+| Previous workspace | `⌘⇧↑` | `Ctrl+Shift+↑` |
+| Next workspace | `⌘⇧↓` | `Ctrl+Shift+↓` |
+
+## Panes
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| Split right | `⌘D` | `Ctrl+Shift+E` |
+| Split down | `⌘⇧D` | `Ctrl+Shift+D` |
+| Close pane | `⌘W` | `Ctrl+Shift+W` |
+| Next pane | `⌘]` | `Ctrl+Tab` |
+| Pane by direction | `⌘⌥` + arrows | `Ctrl+Alt` + arrows |
+| Resize | `⌘⌃` + arrows | `Ctrl+Alt+Shift` + arrows |
+
+## Terminal
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| Copy selection | `⌘C` | `Ctrl+Shift+C` |
+| Paste | `⌘V` | `Ctrl+Shift+V` |
+| Select all | `⌘A` | `Ctrl+Shift+A` |
+| Search | `⌘F` | `Ctrl+Shift+F` |
+| Composer (rich input) | `⌘⇧G` | `Ctrl+Shift+G` |
+
+<Note>
+`⌘C` only copies **when there is a selection**. Without one, it passes straight through to the shell and keeps interrupting the process, as you'd expect.
+</Note>
+
+## In dialogs
+
+| Where | Keys |
+| --- | --- |
+| Command palette | `↑` `↓` navigates · `↵` runs · `Esc` closes |
+| Terminal search | `↵` next · `⇧↵` previous · `Esc` closes |
+| Approvals inbox | `1` `2` `3` decide the first in the queue |
+| Deny with feedback | `⌘↵` / `Ctrl+↵` confirms · `Esc` cancels |
+
+The inbox numbers change with the risk: on green and yellow they're `[1] Yes` `[2] Always` `[3] No`; on **red** they're only `[1] Yes` `[2] No` — [red never has "Always"](/en/security/risk-classification#what-always-really-means).
+
+## Remapping
+
+**Settings → Shortcuts.** Click the shortcut, press the new combination, done. `Esc` cancels the capture.
+
+While you're recording, the app's shortcuts are turned off — otherwise the combination you're typing would fire the action instead of being recorded.
+
+<Warning>
+**There is no conflict detection.** Nothing stops you from putting two actions on the same shortcut. When that happens, one of them wins — always the same one, by internal ordering — and **the other stops working with no warning**.
+
+If a shortcut "disappeared" after you changed things, look for a duplicate.
+</Warning>
+
+An invalid combination reverts to the default. If the whole configuration gets corrupted, everything reverts to the defaults — you don't get stuck without shortcuts.
+
+<Note>
+**There's no "restore defaults" button**, per shortcut or overall.
+</Note>
+
+## The ones you can't remap
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| Go to tab N | `⌘1`…`⌘9` | `Alt+1`…`Alt+9` |
+| Resize pane | `⌘⌃` + arrows | `Ctrl+Alt+Shift` + arrows |
+| Open the session from the last notification | `⌘⇧O` | `Ctrl+Alt+Shift+O` |
+| Send the prompt in the composer | `⌘↵` | `Ctrl+↵` |
+
+<Note>
+`⌘1` through `⌘9` are **always consumed**, even when the tab doesn't exist. `⌘7` with four tabs open does nothing — and the important part is that it doesn't type `7` into your shell either.
+</Note>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Command palette" icon="command" href="/en/interface/command-palette">
+    What has no shortcut, has a palette.
+  </Card>
+  <Card title="Split panes" icon="columns" href="/en/interface/split-panes">
+    The pane shortcuts in context.
+  </Card>
+</CardGroup>

@@ -1,0 +1,98 @@
+---
+title: "Resolving conflicts"
+description: "The banner that shows up in the review panel when a merge, rebase or cherry-pick stopped halfway — and what you can do in it."
+---
+
+When a git operation stops halfway, the review panel tells you. A banner is born at the top, **red** if there is still a file in conflict, **amber** if there isn't.
+
+You don't have to ask. The banner appears by itself, and disappears by itself when the operation is over.
+
+## What it detects
+
+TYBA looks at markers in that tree's git-dir, in this order:
+
+| Marker | Becomes |
+| --- | --- |
+| `rebase-merge/` or `rebase-apply/` | **Rebase in progress with conflicts** |
+| `MERGE_HEAD` | **Merge in progress with conflicts** |
+| `CHERRY_PICK_HEAD` | **Cherry-pick in progress with conflicts** |
+
+None of them, no banner.
+
+Next to the title come the two sides: `main ← feature`. **Ours** is your branch (during a rebase, `HEAD` is detached, so it reads the `head-name` the operation itself left behind). **Theirs** is the other side — a name when git can say, a short SHA when it can't.
+
+<Note>
+It doesn't matter who started the merge. You running `git merge` in the session's terminal, or the agent doing it on its own: the source is git's real state, and the banner reflects both the same way.
+</Note>
+
+## The file list
+
+Each conflicted file is a row, with git's `XY` code beside it — `UU` (both changed), `AA` (both added), `DD`, `AU`… The code is there because it changes what "pick a side" means.
+
+Each row has four actions:
+
+| Action | What it does |
+| --- | --- |
+| **keep `<ours>`** | `git checkout --ours` + `git add` |
+| **take `<theirs>`** | `git checkout --theirs` + `git add` |
+| **Open in editor** | opens the file with the markers in your editor |
+| **Mark resolved (git add)** | just the `git add`, for what you edited by hand |
+
+Picking a side is **the whole file**. Not a hunk, not a line. It is the right tool for a lockfile, a snapshot, a generated file — and the wrong tool for the `src/` that has intent on both sides.
+
+<Note>
+Picked the wrong side? Until the operation is finished, `git checkout -m -- <file>` in the session's terminal recreates the conflict and gives the markers back. Nothing here is irreversible before the commit.
+</Note>
+
+If the file is no longer in conflict when you click — because the list went stale, because the agent resolved it in the meantime — the action is refused: *"is not in conflict — the list may have refreshed."* No action writes blind.
+
+## Resolve with agent
+
+The button on the right of the banner hands the problem to the agent.
+
+It builds a prompt with the operation, both sides, the list of files with their codes, and an explicit instruction to preserve the intent of both sides and remove the markers. Then:
+
+- **A live agent session in the folder?** The prompt goes to its composer.
+- **No?** TYBA starts an agent session **in that folder** — with the sandbox and with the approval gate — and the prompt goes to its composer.
+
+<Note>
+**The prompt is typed, not sent.** It stops in the composer, written, waiting for your `↵`. That is on purpose, and the prompt is a single line for the same reason: a multiline paste becomes a `[Pasted text]` chip in the composer, and you wouldn't be able to read what you're about to send before sending it.
+</Note>
+
+The end of the prompt changes with the operation:
+
+- **Merge** — the agent resolves, runs `git add`, and **stops**. It does not finish the merge commit. Reviewing the resolution and committing is on you.
+- **Rebase / cherry-pick** — the agent resolves and runs `--continue` until the operation is over, without creating commits beyond the ones the operation itself replays.
+
+<Warning>
+An agent session open in the conflicted folder sees that folder. If the conflict is in **your main repository** and not in a worktree, it is your working copy the agent is editing — with approval in the inbox, but inside it. The worktree exists precisely so that this doesn't happen without you choosing it.
+</Warning>
+
+## The last step is yours
+
+Resolved everything? The banner doesn't disappear — it turns amber and says:
+
+> Conflicts resolved — finish the operation (commit / --continue).
+
+That is not a bug: **TYBA does not finish the operation for you.** It detects, it lets you choose side by side, it marks things resolved. The merge's `git commit`, the `git rebase --continue`, the `git cherry-pick --continue` are yours, in the session's terminal. It is the last deliberate act before the history changes shape.
+
+When the operation finishes, the marker disappears from the git-dir and the banner disappears from the screen.
+
+## What does not exist
+
+- **Finishing the operation with a button.** Neither a merge commit nor `--continue`.
+- **Aborting with a button.** `git merge --abort` is in the terminal.
+- **A three-way merge editor.** The options are: one whole side, or your editor.
+- **Picking a side per hunk.** It is the whole file.
+- **The banner while you explore another branch.** [Exploring a branch in the picker](/en/git/branches#exploring), the panel hides the banner — what's on screen is not the conflicted tree. Go back to the session and it reappears.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Branches" icon="git-branch" href="/en/git/branches">
+    Switching branches, fetch, and what the picker refuses.
+  </Card>
+  <Card title="Risk classification" icon="shield" href="/en/security/risk-classification">
+    What the agent does on its own while resolving.
+  </Card>
+</CardGroup>

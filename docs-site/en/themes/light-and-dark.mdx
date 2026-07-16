@@ -1,0 +1,72 @@
+---
+title: "Light and dark mode"
+description: "Two slots, one mode — and why clicking a light theme drops you into light."
+---
+
+TYBA has no "active theme". It has **two slots** — one theme for dark, one theme for light — and a **mode** that decides which of the two is on screen right now.
+
+## The two slots
+
+| Slot | What it holds |
+| --- | --- |
+| **Dark** | The theme that shows when the effective mode is dark. Default: **TYBA Dark**. |
+| **Light** | The theme that shows when the effective mode is light. Default: **TYBA Light**. |
+
+The slots are **independent**. Dracula in dark and Solarized Light in light is a valid combination — and it is how most people end up using it.
+
+<Note>
+A theme only goes into the slot for its own base. A theme with base `dark` never occupies the light slot, and vice versa. If a slot points at a theme that vanished (you deleted the `.json`) or that has the wrong base, it falls back to the built-in for that base — TYBA Dark or TYBA Light. You are never left without a theme.
+</Note>
+
+## The mode
+
+**Settings → Appearance → Color mode** (`⌘,` on macOS, `Ctrl+,` on Windows and Linux). Three options:
+
+| Mode | What it does |
+| --- | --- |
+| **Dark** (default) | Always the dark slot. |
+| **Light** | Always the light slot. |
+| **System** | Follows the operating system's `prefers-color-scheme`. |
+
+On **System**, the switch is live: macOS flips to light at dusk and TYBA flips with it — no restart, no reopening the window.
+
+You can also do it from the [command palette](/en/interface/command-palette) (`⌘P` / `Ctrl+Shift+P`), under **Theme**: *Switch theme to Dark / Light / System*. The palette only offers the two modes you are **not** using.
+
+## Clicking a theme from another base changes the mode too
+
+<Warning>
+**Picking a theme does two things.** It goes into the slot for its base — and, if that base is not the one on screen, the **mode changes to follow it**.
+</Warning>
+
+You are in dark, you click **GitHub Light**. TYBA writes GitHub Light into the light slot **and switches the mode to Light**. There is no way to "save a light theme for later" by clicking — clicking is using.
+
+This includes leaving **System**: if you are on System (with the OS in dark) and click a light theme, the mode stops being System and becomes a fixed Light. To follow the system again, pick **System** in Color mode.
+
+The other direction is painless: in dark, clicking a dark theme only swaps the slot. The mode does not move.
+
+## What gets saved
+
+The mode and both slots live in TYBA's database (`tyba.db`), not in a text file. Close and reopen, and everything comes back as it was.
+
+<Note>
+There is a cache in the embedded webview, but it exists only so the app doesn't flash white for a frame at startup. The database is the authority.
+</Note>
+
+## What does not exist
+
+| | |
+| --- | --- |
+| **A third slot** | There are two: dark and light. No "SSH theme" or per-workspace theme. |
+| **A theme per tab or per pane** | The theme belongs to the whole app. |
+| **Scheduling the switch by time of day** | Only **System** — and the operating system decides the timing. |
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="The themes" icon="palette" href="/en/themes/the-themes">
+    The 18 built-ins, and what changes beyond color.
+  </Card>
+  <Card title="Import a theme" icon="download" href="/en/themes/import-a-theme">
+    The JSON format, the rules, and the limits.
+  </Card>
+</CardGroup>

@@ -1,0 +1,149 @@
+---
+title: "Risk classification"
+description: "Every agent command gets a color before it runs. This page lists exactly what falls into each one."
+---
+
+Before any agent tool executes, TYBA classifies the action into three levels. The color decides what happens: sail through, wait for you, or not even be offered.
+
+<CardGroup cols={3}>
+  <Card title="Green" icon="circle-check">
+    Passes on its own. You never see it.
+  </Card>
+  <Card title="Yellow" icon="circle-pause">
+    Waits for you. Can become "always" in this session.
+  </Card>
+  <Card title="Red" icon="circle-alert">
+    Waits for you. Never becomes "always".
+  </Card>
+</CardGroup>
+
+The underlying rule is **when in doubt, yellow**. Green is a closed list, not a heuristic — a command nobody anticipated does not pass on its own.
+
+## Green
+
+The entire list. There is nothing else:
+
+```
+ls   pwd   cat   grep   rg   head   tail   which   file   wc
+git status   git log   git diff   git show
+```
+
+<Warning>
+**A build is not green.** `cargo build`, `bun install`, `make` — all yellow, all wait for you. A build runs arbitrary scripts from dependencies; the green list is reads only.
+</Warning>
+
+Green is auto-approved **always**, with no way to turn it off. There is no setting that forces `cat` to ask for permission.
+
+## Red
+
+| What | Exact rule |
+| --- | --- |
+| `sudo` | first token |
+| `curl`, `wget` | first token |
+| Pipe into a shell | `\| sh`, `\| bash`, `\|sh`, `\|bash` — anywhere on the line |
+| Recursive and forced `rm` | flags containing `r`/`R` **and** `f`, in any order |
+| `chmod`, `chown` | first token |
+| `git push` | `git` followed by `push`, in any position |
+| `gh pr create` | the first three tokens |
+
+Note the detail on `rm`: `rm -rf`, `rm -fr` and `rm -r -f` are all red. But `rm file.txt` is **yellow** — deleting a file inside the worktree is normal agent work.
+
+And the pipe into a shell is what catches `curl ... | bash` even when it's written so that `curl` isn't the first token.
+
+## Yellow
+
+Everything else. Including an empty command.
+
+```
+cargo build      bun add left-pad      git commit -m "..."
+make test        npm run dev           python script.py
+```
+
+## Leaving the worktree paints it red
+
+Regardless of the command, any token that starts with `/` or `~/` and resolves **outside the session's worktree** escalates to red:
+
+```bash
+cat ~/.ssh/id_rsa        # cat is green — this is red
+```
+
+The exceptions are the system paths every command touches:
+
+```
+/bin   /sbin   /usr/bin   /usr/sbin   /dev/null
+```
+
+That is why `cargo build 2> /dev/null` stays yellow instead of escalating.
+
+The same goes for writes: writing inside the worktree is green; escaping it — via an absolute path, via `../`, or through a symlink pointing outside — is red.
+
+## By tool
+
+| Tool | Level |
+| --- | --- |
+| `Read`, `Glob`, `Grep`, `LS`, `NotebookRead`, `TodoRead`, `TodoWrite` | Green |
+| `Bash` | Classified by the command (tables above) |
+| `Write`, `Edit`, `MultiEdit`, `NotebookEdit` | Green in the worktree, red outside |
+| `WebFetch`, `WebSearch` | **Red, always** |
+| MCP tool (`mcp__*`) | Yellow |
+| Unknown | Yellow |
+
+The network is always red because it is the way out: it is how content from your disk would turn into an outbound request.
+
+On Codex, `apply_patch` is classified by the **worst path** it touches — a patch with ten files inside the worktree and one outside is red.
+
+## What you answer
+
+When something is waiting on you, TYBA notifies you and the session stays blocked until the answer.
+
+<Tabs>
+<Tab title="Green and yellow">
+```
+[1] Yes   [2] Always   [3] No
+```
+</Tab>
+<Tab title="Red">
+```
+[1] Yes   [2] No
+```
+</Tab>
+</Tabs>
+
+**Red has no "Always".** It is not the interface hiding the button — the core refuses to memorize any red, so there is no path for that combination to exist.
+
+When denying, you can write the reason. The text goes to the agent as the grounds for the refusal, and it usually tries another route instead of pushing.
+
+## What "Always" really means
+
+<Warning>
+"Always" is **for this session** and **for this exact command**. None of it reaches the disk.
+</Warning>
+
+- It holds while the session lives. Closed, dead.
+- It matches the exact string: allowing `cargo test` does **not** allow `cargo test --release`.
+- It never accepts a red.
+
+There is no persistent cross-session "always allow" today.
+
+## What never even gets asked
+
+```bash
+git push origin main
+```
+
+An agent pushing to `main` or `master` is **refused by the core**. It doesn't become an approval request, it doesn't show in the inbox, there is no button. The agent gets the error directly:
+
+```
+refused by the core: pushing to main/master is never allowed
+```
+
+The refusal understands the variants — `HEAD:main`, `+main` and the like fall under the same rule.
+
+## Fail-closed
+
+If the session dies with pending requests, all of them become **denied**. If the approval channel breaks, the default is **deny**. There is no path where an infrastructure failure turns into permission.
+
+## See also
+
+- [Platforms](/en/security/platforms) — what the sandbox guarantees on each system
+- [Repository configuration](/en/reference/repo-config) — the environment the agent receives

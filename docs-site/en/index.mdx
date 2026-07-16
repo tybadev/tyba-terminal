@@ -1,0 +1,59 @@
+---
+title: "TYBA"
+sidebarTitle: "Introduction"
+description: "Open-source, AI-agent-oriented terminal — many agents in parallel, each in its own jail, behind an approvals inbox."
+---
+
+TYBA runs several coding agents at once — Claude Code, Codex — each in an isolated git worktree, inside an OS sandbox, behind an approvals inbox.
+
+It exists because running agents in parallel has two problems nobody solves together: they trample each other, and you don't know what they are doing until it has already happened.
+
+## What it guarantees
+
+<CardGroup cols={2}>
+  <Card title="Real isolation" icon="lock">
+    The jail is enforced by the kernel, not asked for in a prompt. A `bash -c` the agent spawns inherits the same jail.
+  </Card>
+  <Card title="Parallel without collisions" icon="git-branch">
+    One worktree per session. Agent A can't see or clobber B's tree, and neither touches your working copy.
+  </Card>
+  <Card title="Review before anything leaves" icon="eye">
+    The diff is built from local `.git` alone. The button that approves a push lives inside it.
+  </Card>
+  <Card title="An inbox, not N terminals" icon="inbox">
+    You answer whoever is blocked, without babysitting whoever isn't.
+  </Card>
+</CardGroup>
+
+**Fail-closed all the way down**: a policy that doesn't apply takes the session down. An approval channel that breaks becomes a denial. There is no path where failure turns into permission.
+
+## Where to start
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/en/installation">
+    macOS, Linux and Windows — and the prerequisites that don't come in the box.
+  </Card>
+  <Card title="First session" icon="play" href="/en/first-session">
+    What happens between describing the task and the code existing.
+  </Card>
+  <Card title="Risk classification" icon="shield" href="/en/security/risk-classification">
+    Exactly what goes through on its own and what waits for you.
+  </Card>
+  <Card title="Platforms" icon="monitor" href="/en/security/platforms">
+    What the sandbox guarantees on each system — and where it guarantees less.
+  </Card>
+</CardGroup>
+
+## Before you install
+
+<Warning>
+**The guarantee is not the same on all three systems.** On macOS and Linux the agent's reads are deny-by-default: your `~/.ssh` isn't forbidden, it doesn't exist. On Windows reads are allow-by-default, with a deny list of known secrets — your other repositories and the `.env` files of other projects are readable.
+
+It's all in [Platforms](/en/security/platforms). Read it before, not after.
+</Warning>
+
+## About this documentation
+
+It describes what runs today, in **0.1.2**. What doesn't exist yet doesn't show up here as if it did — same rule as the site: nothing here is a promise.
+
+The name comes from Tupi: *tyba* is the suffix of abundance, the place where things gather.
