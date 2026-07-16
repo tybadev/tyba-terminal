@@ -70,7 +70,7 @@ Si lo que necesitas encontrar es de hace media hora y mil comandos, el lugar don
 | --- | --- |
 | **Otros paneles** | Cada panel tiene su propio buffer. La búsqueda es solo del panel activo. |
 | **Sesiones cerradas** | Cerraste el panel, se fue. |
-| **El historial de antes de reabrir la app** | El proceso de la terminal no sobrevive al cierre de TYBA. La sesión vuelve, el buffer no. |
+| **El historial de antes de reabrir la app** | El proceso local no sobrevive al cierre de TYBA: la sesión vuelve, el buffer no. **Los paneles SSH son la excepción** — la shell remota sigue viva y el reattach trae el buffer consigo ([persistencia](/es/ssh/persistencia)). |
 | **Regex** | No hay toggle de regex, "solo palabra entera" ni "distinguir mayúsculas" en la caja. Es una búsqueda de texto. |
 
 ## Ver también

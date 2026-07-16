@@ -125,9 +125,13 @@ What comes back *inside* the panes depends on **Settings → Code → On app sta
 
 | Option | What it does |
 | --- | --- |
-| **Reopen the sessions** (default) | Recreates the shell sessions |
-| **Layout only** | Keeps the layout, without restarting sessions |
+| **Reopen the sessions** (default) | Recreates the shell sessions and **reattaches SSH sessions** to the tmux still alive on the host |
+| **Layout only** | Keeps the layout, without restarting anything |
 | **New window** | Starts clean |
+
+<Note>
+SSH panes are the only ones that bring work back: the remote shell never stopped, and the reattach hands you back whatever was running. See [session persistence](/en/ssh/persistence).
+</Note>
 
 <Warning>
 **Agent sessions never restart on their own**, under any of the options. An agent coming back out of nowhere, unasked, would do work you didn't ask for.

@@ -1,0 +1,175 @@
+---
+title: "Persistencia de la sesión"
+sidebarTitle: "Persistencia"
+description: "La sesión vive en el host, dentro de un tmux que TYBA crea. El proceso ssh es solo el caño — y un caño que se cae no se lleva tu trabajo."
+---
+
+La red se cae, el Wi-Fi cambia, el laptop se duerme. Lo que muere en esos casos es el **proceso `ssh` local**. Lo que estaba corriendo del otro lado — el build, el `tail -f`, el deploy a medias — no tiene nada que ver con eso.
+
+TYBA se toma en serio esa distinción: **toda sesión SSH nace dentro de un `tmux` en el host**. El `ssh` es el caño. La sesión es del host.
+
+## El tmux que no ves
+
+Al conectar, el comando que TYBA manda al host es este:
+
+```bash
+command -v tmux >/dev/null 2>&1 && \
+  exec tmux new-session -A -s tyba-<install_id>-<uuid> 'exec env -u TMUX "${SHELL:-/bin/sh}" -l' \; \
+  set-option -t tyba-<install_id>-<uuid> status off \; \
+  set-option -t tyba-<install_id>-<uuid> prefix None \; \
+  set-option -t tyba-<install_id>-<uuid> history-limit 5000 || \
+  exec "${SHELL:-/bin/sh}" -l
+```
+
+Ahí importan tres cosas:
+
+- **`-A`** es lo que hace reatar en vez de crear otra. El mismo pane volviendo a la misma sesión es siempre `new-session -A` con el mismo nombre.
+- **`status off` y `prefix None`** existen para que el tmux sea invisible. No hay barra verde abajo, y **tu `Ctrl-B` no es secuestrado** — TYBA maneja esa sesión por el CLI, no por prefijo.
+- **`env -u TMUX`** limpia la variable dentro del pane. Consecuencia: **tu tmux personal funciona ahí adentro**, normal, sin quejarse de anidamiento.
+
+El scrollback del tmux es de **5000 líneas** (`history-limit 5000`).
+
+<Note>
+Nada de esto toca la configuración de tmux del host. Las opciones se aplican **`-t` a esa sesión**, no al servidor.
+</Note>
+
+## tmux no es obligatorio — y la consecuencia es dura
+
+Mira el `||` del comando: sin `tmux` en el host, TYBA cae en `exec $SHELL -l`. Un login shell normal, directo por el caño.
+
+<Warning>
+**Host sin `tmux` = sesión sin persistencia y sin reattach.**
+
+Se comporta como cualquier terminal SSH: se cayó el caño, se acabó. No hay a qué reatar, y TYBA no se queda intentando — identifica el caso y cierra el pane.
+
+Si la persistencia importa en ese host, instalar `tmux` es el requisito.
+</Warning>
+
+## Cuando el caño se cae
+
+La sesión no muere. Pasa a **reconnecting**, y el pane recibe un overlay:
+
+> **reconnecting…**
+> the session is still alive on the host
+
+Por detrás, TYBA reintenta el reattach con **backoff exponencial**, y espera antes de cada intento:
+
+| Intento | Espera |
+| --- | --- |
+| 1º | 1s |
+| 2º | 2s |
+| 3º | 4s |
+| 4º | 8s |
+| 5º | 16s |
+| 6º en adelante | 30s (techo) |
+
+Las esperas suman **cerca de 5 minutos** antes de desistir. Esa ventana no es arbitraria: es del tamaño de un laptop que se durmió, de un túnel de metro, de un cambio de VPN.
+
+Pasados esos ~5 minutos, el estado se vuelve **connection lost** y el overlay cambia el spinner por un botón **Reconnect**:
+
+> **connection lost**
+> the session is still alive on the host
+>
+> `Reconnect`
+
+El botón corre exactamente la misma máquina — sondea, reata, y el backoff empieza de cero. **Desistir es solo dejar de insistir solo. No termina nada en el host.**
+
+## Reatar o terminar: cómo decide TYBA
+
+Cuando el proceso `ssh` termina, TYBA no adivina el motivo — le pregunta al host, con `tmux has-session`, y decide por el código de salida:
+
+| `has-session` | Lectura | Qué pasa |
+| --- | --- | --- |
+| `0` | La sesión está viva | **Reata.** Era el caño el que se había caído. |
+| `1` | Ya no existe | **No reata.** Escribiste `exit` — reatar sería resucitar lo que terminaste. |
+| `127` | El host no tiene `tmux` | **No reata.** Ahí no hay persistencia; insistir sería reconectar para siempre. |
+| Cualquier otro (`255`, timeout) | No se pudo saber | **Reata, ante la duda.** |
+
+<Note>
+El último caso es una elección deliberada: **equivocarse reatando cuesta un intento; equivocarse para el otro lado descarta trabajo vivo.** Un host inalcanzable responde `255`, y un host inalcanzable es exactamente el caso en que la sesión sigue ahí.
+</Note>
+
+En los casos `1` y `127` el pane se cierra — que es lo que pediste cuando escribiste `exit`, y lo único honesto que hacer cuando no hay tmux.
+
+## Cerrar la pestaña mata la sesión en el host
+
+Cerrar el pane, la pestaña o el workspace **termina la sesión de verdad**: TYBA manda `tmux kill-session` para ese nombre y mata al cliente huérfano que pueda haber quedado colgado.
+
+<Warning>
+**Esta es la distinción que importa en el día a día:**
+
+- **Cerrar la pestaña** → la sesión se termina en el host. Es un `kill`, no un "hasta luego".
+- **Cerrar la app, que se caiga la red, que se duerma el laptop** → solo se cae el caño. El `tmux` sobrevive del otro lado.
+
+Si quieres dejar algo corriendo, **no cierres la pestaña**.
+</Warning>
+
+El `kill` es siempre **de la sesión**, nunca `kill-server`. El tmux del dueño del host y el de otras instalaciones de TYBA no se tocan.
+
+## El install_id: a quién puede matar TYBA
+
+Toda sesión se llama `tyba-<install_id>-<uuid>`. El `install_id` es un identificador de **12 caracteres**, generado una sola vez y guardado en la base local de TYBA (`ssh.install_id`). Es estable entre boots y distinto en cada instalación.
+
+Existe para responder una sola pregunta: **¿qué tiene autoridad para matar este TYBA?**
+
+Al conectar a un host, TYBA lista las sesiones tmux de ahí y recoge las **huérfanas** — y huérfana tiene una definición estrecha:
+
+1. el nombre empieza con `tyba-<install_id>-` — **el suyo**, no el de otro; y
+2. el `uuid` **no es conocido por la base local**.
+
+Lo que eso garantiza:
+
+<CardGroup cols={2}>
+  <Card title="Tu tmux es tuyo" icon="shield">
+    Sesiones llamadas `work`, `0` o hasta `tyba` no casan el prefijo. Nunca se tocan.
+  </Card>
+  <Card title="El laptop no mata al desktop" icon="laptop">
+    El TYBA del laptop no tiene autoridad sobre la sesión del TYBA del desktop en el mismo host — su SQLite no prueba nada sobre ella.
+  </Card>
+</CardGroup>
+
+Y una sesión **conocida** nunca se recoge, aunque el pane esté muerto: sesión muerta con tmux vivo es justamente el caso de reattach.
+
+<Warning>
+**Reinstalar la app o borrar el `tyba.db` genera un `install_id` nuevo.**
+
+Las sesiones viejas siguen en pie en el host, pero con el prefijo de la instalación anterior — el TYBA nuevo no tiene autoridad sobre ellas y **nunca las recoge**. Se vuelven basura que solo un `tmux kill-session` tuyo resuelve.
+</Warning>
+
+## Qué sobrevive a qué
+
+| Situación | ¿La sesión sobrevive? | Cómo vuelves |
+| --- | --- | --- |
+| **Se cayó la red, cambió la VPN, se durmió el laptop** | **Sí** | Reattach automático por ~5 min; después, el botón **Reconnect**. |
+| **Cerraste la app / reiniciaste la máquina local** | **Sí** — el `tmux` sigue ahí | Depende de **Settings → Code → On app start**. Ver abajo. |
+| **Cerraste la pestaña, el pane o el workspace** | **No**, por diseño | No vuelve. Se terminó en el host. |
+| **El host remoto se reinició** | **No** | `tmux` es un proceso: un reboot del host se lleva todo. |
+| **Host sin `tmux`** | **No** | Ahí no hay persistencia. |
+
+### Cerrar la app
+
+El `tmux` sobrevive — pero lo que TYBA hace con él en el próximo boot depende de tu preferencia en **Settings → Code → On app start**:
+
+| Opción | Qué pasa con el pane SSH |
+| --- | --- |
+| **Reopen the sessions** (predeterminado) | TYBA reconecta y **reata el mismo tmux** — mismo nombre, misma sesión, tu trabajo de vuelta. |
+| **Layout only** | El pane vuelve muerto. El `tmux` sigue vivo en el host y **no se recoge** — pero nada reata solo. |
+| **New window** | Igual: la sesión SSH no se olvida de la base (y por eso no se vuelve huérfana), pero nada reata solo. |
+
+<Note>
+Las sesiones SSH **nunca se olvidan** de la base local, en ninguna de las tres opciones. Es a propósito: olvidar el `uuid` haría que la sesión viva en el host se volviera huérfana de su propio prefijo, y el GC la mataría en la próxima conexión. Perderías el build del viernes por abrir la app el lunes.
+</Note>
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Hosts y grupos" icon="hard-drive" href="/es/ssh/hosts-y-grupos">
+    El registro, el `ssh_config` y el multiplexing.
+  </Card>
+  <Card title="Broadcast" icon="radio" href="/es/ssh/broadcast">
+    Un grupo, N panes, una sola escritura.
+  </Card>
+  <Card title="Agente por SSH" icon="triangle-alert" href="/es/ssh/agente-por-ssh">
+    Lo que pierdes al correr un agente del otro lado del caño.
+  </Card>
+</CardGroup>

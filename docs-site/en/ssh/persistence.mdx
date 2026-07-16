@@ -1,0 +1,175 @@
+---
+title: "Session persistence"
+sidebarTitle: "Persistence"
+description: "The session lives on the host, inside a tmux TYBA creates. The ssh process is just the pipe — and a pipe going down doesn't take your work with it."
+---
+
+The network drops, the Wi-Fi switches, the laptop sleeps. What dies in those cases is the **local `ssh` process**. What was running on the other side — the build, the `tail -f`, the half-finished deploy — has nothing to do with any of it.
+
+TYBA takes that distinction seriously: **every SSH session is born inside a `tmux` on the host**. `ssh` is the pipe. The session belongs to the host.
+
+## The tmux you never see
+
+On connect, this is the command TYBA sends to the host:
+
+```bash
+command -v tmux >/dev/null 2>&1 && \
+  exec tmux new-session -A -s tyba-<install_id>-<uuid> 'exec env -u TMUX "${SHELL:-/bin/sh}" -l' \; \
+  set-option -t tyba-<install_id>-<uuid> status off \; \
+  set-option -t tyba-<install_id>-<uuid> prefix None \; \
+  set-option -t tyba-<install_id>-<uuid> history-limit 5000 || \
+  exec "${SHELL:-/bin/sh}" -l
+```
+
+Three things matter there:
+
+- **`-A`** is what reattaches instead of creating another one. The same pane coming back to the same session is always `new-session -A` with the same name.
+- **`status off` and `prefix None`** exist so the tmux is invisible. There is no green bar at the bottom, and **your `Ctrl-B` is not hijacked** — TYBA drives this session through the CLI, not through a prefix.
+- **`env -u TMUX`** clears the variable inside the pane. Consequence: **your own tmux works in there**, normally, without complaining about nesting.
+
+The tmux scrollback is **5000 lines** (`history-limit 5000`).
+
+<Note>
+None of this touches the host's tmux configuration. The options are applied **`-t` to that session**, not to the server.
+</Note>
+
+## tmux is not required — and the consequence is harsh
+
+Look at the `||` in the command: with no `tmux` on the host, TYBA falls back to `exec $SHELL -l`. A plain login shell, straight down the pipe.
+
+<Warning>
+**Host without `tmux` = session without persistence and without reattach.**
+
+It behaves like any SSH terminal: the pipe went down, it's over. There is nothing to reattach to, and TYBA does not keep trying — it identifies the case and closes the pane.
+
+If persistence matters on that host, installing `tmux` is the requirement.
+</Warning>
+
+## When the pipe goes down
+
+The session does not die. It moves to **reconnecting**, and the pane gets an overlay:
+
+> **reconnecting…**
+> the session is still alive on the host
+
+Behind it, TYBA retries the reattach with **exponential backoff**, waiting before each attempt:
+
+| Attempt | Wait |
+| --- | --- |
+| 1st | 1s |
+| 2nd | 2s |
+| 3rd | 4s |
+| 4th | 8s |
+| 5th | 16s |
+| 6th onward | 30s (ceiling) |
+
+The waits add up to **about 5 minutes** before it gives up. That window is not arbitrary: it is the size of a laptop that slept, of a subway tunnel, of a VPN switch.
+
+After those ~5 minutes, the state becomes **connection lost** and the overlay swaps the spinner for a **Reconnect** button:
+
+> **connection lost**
+> the session is still alive on the host
+>
+> `Reconnect`
+
+The button runs exactly the same machine — probe, reattach, and the backoff starts over from zero. **Giving up only means it stops insisting on its own. It ends nothing on the host.**
+
+## Reattach or finish: how TYBA decides
+
+When the `ssh` process ends, TYBA does not guess why — it asks the host, with `tmux has-session`, and decides by the exit code:
+
+| `has-session` | Reading | What happens |
+| --- | --- | --- |
+| `0` | The session is alive | **Reattaches.** It was the pipe that went down. |
+| `1` | It's gone | **Does not reattach.** You typed `exit` — reattaching would resurrect what you ended. |
+| `127` | The host has no `tmux` | **Does not reattach.** There is no persistence there; insisting would mean reconnecting forever. |
+| Anything else (`255`, timeout) | Couldn't tell | **Reattaches, when in doubt.** |
+
+<Note>
+The last case is a deliberate choice: **getting it wrong by reattaching costs one attempt; getting it wrong the other way discards live work.** An unreachable host answers `255`, and an unreachable host is exactly the case where the session is still there.
+</Note>
+
+In the `1` and `127` cases the pane closes — which is what you asked for when you typed `exit`, and the only honest thing to do when there is no tmux.
+
+## Closing the tab kills the session on the host
+
+Closing the pane, the tab or the workspace **really ends the session**: TYBA sends `tmux kill-session` for that name and kills the orphaned client that may have been left hanging.
+
+<Warning>
+**This is the distinction that matters day to day:**
+
+- **Closing the tab** → the session is ended on the host. It's a `kill`, not a "see you later".
+- **Closing the app, the network dropping, the laptop sleeping** → only the pipe goes down. The `tmux` survives on the other side.
+
+If you want to leave something running, **don't close the tab**.
+</Warning>
+
+The `kill` is always **session-specific**, never `kill-server`. The host owner's tmux and other TYBA installations' sessions are not touched.
+
+## install_id: what TYBA is allowed to kill
+
+Every session is named `tyba-<install_id>-<uuid>`. The `install_id` is a **12-character** identifier, generated once and stored in TYBA's local database (`ssh.install_id`). It is stable across boots and different on every installation.
+
+It exists to answer a single question: **what does this TYBA have the authority to kill?**
+
+When connecting to a host, TYBA lists the tmux sessions there and collects the **orphans** — and orphan has a narrow definition:
+
+1. the name starts with `tyba-<install_id>-` — **its own**, not someone else's; and
+2. the `uuid` is **not known by the local database**.
+
+What that guarantees:
+
+<CardGroup cols={2}>
+  <Card title="Your tmux is yours" icon="shield">
+    Sessions named `work`, `0` or even `tyba` don't match the prefix. They are never touched.
+  </Card>
+  <Card title="Laptop doesn't kill desktop" icon="laptop">
+    The laptop's TYBA has no authority over the desktop's TYBA session on the same host — its SQLite proves nothing about it.
+  </Card>
+</CardGroup>
+
+And a **known** session is never collected, even if the pane is dead: a dead session with a live tmux is precisely the reattach case.
+
+<Warning>
+**Reinstalling the app or deleting `tyba.db` generates a new `install_id`.**
+
+The old sessions stay up on the host, but under the previous installation's prefix — the new TYBA has no authority over them and **never collects them**. They become garbage only a `tmux kill-session` of your own will clear.
+</Warning>
+
+## What survives what
+
+| Situation | Does the session survive? | How you get back |
+| --- | --- | --- |
+| **Network dropped, VPN switched, laptop slept** | **Yes** | Automatic reattach for ~5 min; after that, the **Reconnect** button. |
+| **Closed the app / restarted the local machine** | **Yes** — the `tmux` is still there | Depends on **Settings → Code → On app start**. See below. |
+| **Closed the tab, the pane or the workspace** | **No**, by design | It doesn't come back. It was ended on the host. |
+| **The remote host rebooted** | **No** | `tmux` is a process: a host reboot takes everything. |
+| **Host without `tmux`** | **No** | There is no persistence there. |
+
+### Closing the app
+
+The `tmux` survives — but what TYBA does with it on the next boot depends on your preference in **Settings → Code → On app start**:
+
+| Option | What happens to the SSH pane |
+| --- | --- |
+| **Reopen the sessions** (default) | TYBA reconnects and **reattaches the same tmux** — same name, same session, your work back. |
+| **Layout only** | The pane comes back dead. The `tmux` stays alive on the host and **is not collected** — but nothing reattaches on its own. |
+| **New window** | Same: the SSH session is not forgotten from the database (so it doesn't become an orphan), but nothing reattaches on its own. |
+
+<Note>
+SSH sessions are **never forgotten** from the local database, under any of the three options. That is on purpose: forgetting the `uuid` would turn the live session on the host into an orphan of its own prefix, and the GC would kill it on the next connection. You'd lose Friday's build by opening the app on Monday.
+</Note>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Hosts and groups" icon="hard-drive" href="/en/ssh/hosts-and-groups">
+    The registry, the `ssh_config` and multiplexing.
+  </Card>
+  <Card title="Broadcast" icon="radio" href="/en/ssh/broadcast">
+    One group, N panes, a single typing.
+  </Card>
+  <Card title="Agent over SSH" icon="triangle-alert" href="/en/ssh/agent-over-ssh">
+    What you lose by running an agent on the other side of the pipe.
+  </Card>
+</CardGroup>

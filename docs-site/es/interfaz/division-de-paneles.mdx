@@ -125,9 +125,13 @@ Lo que vuelve *dentro* de los paneles depende de **Settings → Code → On app 
 
 | Opción | Qué hace |
 | --- | --- |
-| **Reopen the sessions** (por defecto) | Recrea las sesiones de shell |
-| **Layout only** | Mantiene el diseño, sin volver a levantar las sesiones |
+| **Reopen the sessions** (por defecto) | Recrea las sesiones de shell y **reengancha las sesiones SSH** al tmux que siguió vivo en el host |
+| **Layout only** | Mantiene el diseño, sin volver a levantar nada |
 | **New window** | Empieza limpio |
+
+<Note>
+El panel SSH es el único que devuelve trabajo: la shell remota nunca se detuvo, y el reattach te entrega lo que estaba corriendo. Ver [persistencia de la sesión](/es/ssh/persistencia).
+</Note>
 
 <Warning>
 **Las sesiones de agente nunca se vuelven a levantar solas**, en ninguna de las opciones. Un agente que vuelve de la nada, sin que se lo pidas, haría trabajo que no pediste.

@@ -125,9 +125,13 @@ O que volta *dentro* dos painéis depende de **Configurações → Code → Ao a
 
 | Opção | O que faz |
 | --- | --- |
-| **Reabrir as sessões** (padrão) | Recria as sessões de shell |
-| **Só o layout** | Mantém o desenho, sem religar sessões |
+| **Reabrir as sessões** (padrão) | Recria as sessões de shell e **reata as sessões SSH** ao tmux que continuou vivo no host |
+| **Só o layout** | Mantém o desenho, sem religar nada |
 | **Janela nova** | Começa limpo |
+
+<Note>
+Painel SSH é o único que traz trabalho de volta: o shell remoto nunca parou, e o reattach devolve o que estava rodando. Veja [persistência da sessão](/pt-br/ssh/persistencia).
+</Note>
 
 <Warning>
 **Sessões de agente nunca religam sozinhas**, em nenhuma das opções. Um agente que volta do nada, sem você pedir, faria trabalho que você não pediu.

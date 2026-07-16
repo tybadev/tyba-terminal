@@ -70,7 +70,7 @@ If what you need to find is half an hour and a thousand commands back, the place
 | --- | --- |
 | **Other panes** | Each pane has its own buffer. Search covers the active pane only. |
 | **Closed sessions** | Close the pane and it's gone. |
-| **History from before you reopened the app** | The terminal process doesn't survive closing TYBA. The session comes back, the buffer doesn't. |
+| **History from before you reopened the app** | The local process doesn't survive closing TYBA: the session comes back, the buffer doesn't. **SSH panes are the exception** — the remote shell stays alive and the reattach brings the buffer with it ([persistence](/en/ssh/persistence)). |
 | **Regex** | There's no regex, "whole word only" or "match case" toggle in the box. It's a text search. |
 
 ## See also
