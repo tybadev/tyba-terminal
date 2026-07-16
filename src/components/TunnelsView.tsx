@@ -97,6 +97,14 @@ export function TunnelsView({
     [session.id, refresh],
   );
 
+  const retry = useCallback(
+    async (tn: SessionTunnel) => {
+      await closeSessionTunnel(session.id, tn.id).catch(() => {});
+      await submit(tn, true);
+    },
+    [session.id, submit],
+  );
+
   const remove = useCallback(
     async (id: string) => {
       await closeSessionTunnel(session.id, id).catch(() => {});
@@ -176,7 +184,7 @@ export function TunnelsView({
                     {tn.state.detail}
                   </span>
                   <button
-                    onClick={() => void submit(tn, true)}
+                    onClick={() => void retry(tn)}
                     className="flex shrink-0 items-center gap-1 text-[11px] text-tyba-text-faint hover:text-tyba-text"
                   >
                     <ArrowUUpLeft size={11} />
