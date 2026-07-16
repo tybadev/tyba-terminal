@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS host (
     color TEXT,
     notes TEXT,
     position INTEGER NOT NULL DEFAULT 0,
+    tunnels TEXT,
     created_at TEXT NOT NULL,
     last_connected_at TEXT
 );
@@ -152,6 +153,7 @@ impl Store {
         // Sem o cwd não há como reabrir a sessão na mesma pasta: o PTY morre com o
         // app e o pane fica órfão. É o que faz a tab sumir no reopen (#50).
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN cwd TEXT", []);
+        let _ = conn.execute("ALTER TABLE host ADD COLUMN tunnels TEXT", []);
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -200,14 +202,15 @@ impl Store {
     }
 
     pub fn upsert_host(&self, h: &Host) -> Result<(), StoreError> {
+        let tunnels = serde_json::to_string(&h.tunnels)?;
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO host (id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            "INSERT INTO host (id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at, tunnels)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(id) DO UPDATE SET
                 alias = ?2, hostname = ?3, port = ?4, username = ?5, identity_file = ?6,
                 proxy_jump = ?7, group_id = ?8, color = ?9, notes = ?10, position = ?11,
-                last_connected_at = ?13",
+                last_connected_at = ?13, tunnels = ?14",
             params![
                 h.id,
                 h.alias,
@@ -222,6 +225,7 @@ impl Store {
                 h.position,
                 h.created_at.to_rfc3339(),
                 h.last_connected_at.map(|t| t.to_rfc3339()),
+                tunnels,
             ],
         )?;
         Ok(())
@@ -230,7 +234,7 @@ impl Store {
     pub fn load_hosts(&self) -> Result<Vec<Host>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at
+            "SELECT id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at, tunnels
              FROM host ORDER BY position, alias",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -248,6 +252,7 @@ impl Store {
                 position: row.get(10)?,
                 created_at: row.get(11)?,
                 last_connected_at: row.get(12)?,
+                tunnels: row.get(13)?,
             })
         })?;
         let mut out = Vec::new();
@@ -711,11 +716,16 @@ struct RawHost {
     position: i64,
     created_at: String,
     last_connected_at: Option<String>,
+    tunnels: Option<String>,
 }
 
 impl RawHost {
     fn into_host(self) -> Result<Host, StoreError> {
         Ok(Host {
+            tunnels: match self.tunnels.as_deref() {
+                Some(j) => serde_json::from_str(j)?,
+                None => Vec::new(),
+            },
             id: self.id,
             alias: self.alias,
             hostname: self.hostname,
@@ -804,9 +814,47 @@ mod tests {
             color: None,
             notes: None,
             position: 0,
+            tunnels: Vec::new(),
             created_at: Utc::now(),
             last_connected_at: None,
         }
+    }
+
+    #[test]
+    fn tuneis_do_host_sobrevivem_ao_round_trip() {
+        use crate::ssh::tunnel::{Tunnel, TunnelKind};
+        let store = Store::open_in_memory().unwrap();
+        let mut h = sample_host("db-01");
+        h.tunnels = vec![Tunnel {
+            kind: TunnelKind::Local,
+            listen_port: 5432,
+            listen_host: None,
+            target_host: Some("localhost".into()),
+            target_port: Some(5432),
+        }];
+        store.upsert_host(&h).unwrap();
+        assert_eq!(store.load_hosts().unwrap()[0].tunnels, h.tunnels);
+    }
+
+    #[test]
+    fn host_de_antes_da_coluna_carrega_sem_tunel() {
+        let store = Store::open_in_memory().unwrap();
+        {
+            let conn = store.conn.lock();
+            conn.execute(
+                "INSERT INTO host (id, alias, hostname, position, created_at)
+                 VALUES ('x', 'legado', 'legado.host', 0, ?1)",
+                params![Utc::now().to_rfc3339()],
+            )
+            .unwrap();
+        }
+        let loaded = store.load_hosts().unwrap();
+        assert!(
+            loaded[0].tunnels.is_empty(),
+            "host gravado antes da coluna existir tem tunnels NULL: \
+             carregar tem que dar lista vazia, nunca erro de JSON — \
+             senão o gestor inteiro para de listar host no primeiro boot pós-update"
+        );
     }
 
     #[test]

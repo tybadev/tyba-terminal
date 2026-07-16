@@ -500,6 +500,13 @@ fn validate_alias(alias: &str) -> Result<(), crate::error::AppError> {
     Ok(())
 }
 
+fn validate_tunnels(host: &crate::ssh::Host) -> Result<(), crate::error::AppError> {
+    for t in &host.tunnels {
+        t.validate()?;
+    }
+    Ok(())
+}
+
 fn rematerialize_hosts(state: &State<'_, AppState>) -> Result<(), crate::error::AppError> {
     let hosts = state.store.load_hosts().map_err(store_err)?;
     if let Some(home) = crate::ssh::home_dir() {
@@ -542,9 +549,11 @@ fn create_host(
         color: input.color,
         notes: input.notes,
         position: existing.len() as i64,
+        tunnels: input.tunnels,
         created_at: chrono::Utc::now(),
         last_connected_at: None,
     };
+    validate_tunnels(&host)?;
     state.store.upsert_host(&host).map_err(store_err)?;
     rematerialize_hosts(&state)?;
     Ok(host)
@@ -563,6 +572,7 @@ fn update_host(
     {
         return Err(crate::error::AppError::new("ssh.alias_duplicate").with("alias", host.alias));
     }
+    validate_tunnels(&host)?;
     state.store.upsert_host(&host).map_err(store_err)?;
     rematerialize_hosts(&state)?;
     Ok(host)

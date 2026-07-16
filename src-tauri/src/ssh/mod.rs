@@ -27,6 +27,8 @@ pub struct Host {
     pub notes: Option<String>,
     #[serde(default)]
     pub position: i64,
+    #[serde(default)]
+    pub tunnels: Vec<tunnel::Tunnel>,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub last_connected_at: Option<DateTime<Utc>>,
@@ -63,6 +65,8 @@ pub struct HostInput {
     pub color: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    #[serde(default)]
+    pub tunnels: Vec<tunnel::Tunnel>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

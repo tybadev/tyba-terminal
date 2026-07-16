@@ -86,6 +86,9 @@ fn render_with(hosts: &[Host], multiplex: bool) -> Result<String, AppError> {
             &h.alias,
         )?;
         push_field(&mut out, "ProxyJump", h.proxy_jump.as_deref(), &h.alias)?;
+        for t in &h.tunnels {
+            out.push_str(&t.config_line()?);
+        }
         if multiplex {
             out.push_str(MULTIPLEX);
         }
@@ -194,6 +197,7 @@ pub fn materialize(home: &Path, hosts: &[Host]) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssh::tunnel::{Tunnel, TunnelKind};
     use chrono::Utc;
 
     #[test]
@@ -248,9 +252,179 @@ mod tests {
             color: None,
             notes: None,
             position: 0,
+            tunnels: Vec::new(),
             created_at: Utc::now(),
             last_connected_at: None,
         }
+    }
+
+    fn tunnels() -> Vec<Tunnel> {
+        vec![
+            Tunnel {
+                kind: TunnelKind::Local,
+                listen_port: 5432,
+                listen_host: None,
+                target_host: Some("localhost".into()),
+                target_port: Some(5432),
+            },
+            Tunnel {
+                kind: TunnelKind::Remote,
+                listen_port: 8000,
+                listen_host: None,
+                target_host: Some("localhost".into()),
+                target_port: Some(3000),
+            },
+            Tunnel {
+                kind: TunnelKind::Dynamic,
+                listen_port: 1080,
+                listen_host: None,
+                target_host: None,
+                target_port: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn tunel_de_host_sai_dentro_do_bloco_do_host_certo() {
+        let mut a = host("a", "a.host");
+        a.tunnels = tunnels();
+        let out = render_with(&[a, host("b", "b.host")], false).unwrap();
+
+        let expected = "Host a\n    HostName a.host\n    \
+             LocalForward 5432 localhost:5432\n    \
+             RemoteForward 8000 localhost:3000\n    \
+             DynamicForward 1080\n\nHost b\n";
+        assert!(
+            out.contains(expected),
+            "os forwards têm que sair ancorados no bloco do host que os declarou: \
+             fora do bloco eles valeriam para TODO host do ssh_config. \
+             got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn tunel_de_host_vem_antes_do_multiplex() {
+        let mut h = host("db", "10.0.0.5");
+        h.tunnels = vec![tunnels().remove(0)];
+        let out = render_with(&[h], true).unwrap();
+        let fwd = out.find("LocalForward").expect("forward na saída");
+        let cm = out.find("ControlMaster").expect("multiplex na saída");
+        assert!(
+            fwd < cm,
+            "ordem estável do bloco: forwards do cadastro, depois o multiplex. \
+             got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_com_tunel_e_idempotente() {
+        let mut h = host("db", "10.0.0.5");
+        h.tunnels = tunnels();
+        let um = render_tyba_conf(std::slice::from_ref(&h)).unwrap();
+        let dois = render_tyba_conf(&[h]).unwrap();
+        assert_eq!(um, dois, "o writer é puro: mesma entrada, mesma saída");
+        assert_eq!(
+            um.matches("DynamicForward 1080").count(),
+            1,
+            "cada túnel sai uma vez só; duplicar é config inválida no ~/.ssh"
+        );
+    }
+
+    #[test]
+    #[ignore = "usa rede: exige TYBA_E2E_SSH_ALIAS apontando para um host real e alcançável"]
+    fn o_conf_renderizado_abre_um_tunel_que_o_ssh_de_verdade_aceita() {
+        let alias = std::env::var("TYBA_E2E_SSH_ALIAS").expect("TYBA_E2E_SSH_ALIAS");
+        let home = tmp_home();
+        let mut h = host(&alias, "placeholder");
+        h.hostname = std::env::var("TYBA_E2E_SSH_HOSTNAME").expect("TYBA_E2E_SSH_HOSTNAME");
+        h.username = std::env::var("TYBA_E2E_SSH_USER").ok();
+        h.tunnels = vec![Tunnel {
+            kind: TunnelKind::Local,
+            listen_port: 15432,
+            listen_host: Some("127.0.0.1".into()),
+            target_host: Some("localhost".into()),
+            target_port: Some(22),
+        }];
+        materialize(home.path(), &[h]).unwrap();
+        let conf = conf_path(home.path());
+
+        let mut cmd = Command::new("ssh");
+        cmd.arg("-F")
+            .arg(&conf)
+            .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
+        if let Ok(agent) = std::env::var("TYBA_E2E_SSH_IDENTITY_AGENT") {
+            cmd.arg("-o").arg(format!("IdentityAgent=\"{agent}\""));
+        }
+        let out = cmd.args([&alias, "true"]).output().expect("ssh roda");
+        assert!(
+            out.status.success(),
+            "o ssh recusou o conf com LocalForward: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let g = Command::new("ssh")
+            .arg("-F")
+            .arg(&conf)
+            .args(["-G", &alias])
+            .output()
+            .expect("ssh -G roda");
+        let rendered = String::from_utf8_lossy(&g.stdout).to_lowercase();
+        assert!(
+            rendered.contains("localforward [127.0.0.1]:15432 [localhost]:22"),
+            "o ssh tem que ENTENDER o forward, não só tolerar a linha — \
+             `ssh -G` mostra o que ele de fato aplicaria, já normalizado. got:\n{rendered}"
+        );
+
+        let mut piped = Command::new("ssh");
+        piped
+            .arg("-F")
+            .arg(&conf)
+            .args(["-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes"]);
+        if let Ok(agent) = std::env::var("TYBA_E2E_SSH_IDENTITY_AGENT") {
+            piped.arg("-o").arg(format!("IdentityAgent=\"{agent}\""));
+        }
+        let mut child = piped
+            .args(["-N", &alias])
+            .spawn()
+            .expect("o cano do túnel sobe");
+
+        let banner = (0..50)
+            .find_map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let mut s = std::net::TcpStream::connect(("127.0.0.1", 15432)).ok()?;
+                s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .ok()?;
+                let mut buf = [0u8; 32];
+                let n = std::io::Read::read(&mut s, &mut buf).ok()?;
+                Some(String::from_utf8_lossy(&buf[..n]).to_string())
+            })
+            .unwrap_or_default();
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            banner.starts_with("SSH-"),
+            "o teste de verdade não é o ssh aceitar a linha, é o byte atravessar: \
+             127.0.0.1:15432 tem que entregar o banner do sshd do host remoto. got: {banner:?}"
+        );
+    }
+
+    #[test]
+    fn tunel_invalido_barra_o_render_inteiro() {
+        let mut h = host("db", "10.0.0.5");
+        h.tunnels = vec![Tunnel {
+            kind: TunnelKind::Local,
+            listen_port: 5432,
+            listen_host: None,
+            target_host: Some("localhost\n    RemoteForward 22 localhost:22".into()),
+            target_port: Some(5432),
+        }];
+        assert_eq!(
+            render_tyba_conf(&[h]).unwrap_err().code,
+            "ssh.tunnel_host_invalid",
+            "o alvo do túnel entra num arquivo que é Include do ~/.ssh/config: \
+             injeção aqui reescreve o ssh da máquina inteira"
+        );
     }
 
     #[test]
