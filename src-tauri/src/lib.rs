@@ -93,15 +93,60 @@ fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
     for id in ids {
         if let Some(s) = state.sessions.get(*id) {
             if matches!(s.kind, SessionKind::Shell | SessionKind::Ssh { .. }) {
+                end_ssh_session_on_host(state, &s);
                 state.sessions.dispose(&state.pty_pool, *id);
             }
         }
     }
 }
 
+fn gc_host(state: &State<'_, AppState>, alias: &str) {
+    let Ok(install) = crate::ssh::tmux::install_id(&state.store) else {
+        return;
+    };
+    let known: std::collections::HashSet<SessionId> =
+        state.sessions.list().into_iter().map(|s| s.id).collect();
+    let alias = alias.to_string();
+    std::thread::spawn(move || {
+        let collected = crate::ssh::tmux::collect_orphans(&alias, &install, &known);
+        if !collected.is_empty() {
+            eprintln!(
+                "{alias}: {} sessão(ões) órfã(s) recolhida(s)",
+                collected.len()
+            );
+        }
+    });
+}
+
+fn end_ssh_session_on_host(state: &State<'_, AppState>, session: &session::Session) {
+    let SessionKind::Ssh { host_id } = &session.kind else {
+        return;
+    };
+    let Ok(hosts) = state.store.load_hosts() else {
+        return;
+    };
+    let Some(alias) = hosts
+        .iter()
+        .find(|h| &h.id == host_id)
+        .map(|h| h.alias.clone())
+    else {
+        return;
+    };
+    let Ok(install) = crate::ssh::tmux::install_id(&state.store) else {
+        return;
+    };
+    let name = crate::ssh::tmux::session_name(&install, session.id);
+    std::thread::spawn(move || {
+        let _ = crate::ssh::tmux::kill_remote(&alias, &name);
+    });
+}
+
 fn dispose_all(app: &AppHandle, state: &State<'_, AppState>, ids: &[SessionId]) {
     for id in ids {
         teardown_agent_session(app, state, *id);
+        if let Some(s) = state.sessions.get(*id) {
+            end_ssh_session_on_host(state, &s);
+        }
         state.sessions.dispose(&state.pty_pool, *id);
     }
 }
@@ -112,7 +157,11 @@ fn session_exited(app: &AppHandle, id: SessionId) {
         return;
     };
     teardown_agent_session(app, &state, id);
-    if matches!(session.kind, SessionKind::Shell | SessionKind::Ssh { .. }) {
+    if matches!(session.kind, SessionKind::Ssh { .. }) {
+        reattach_or_finish(app.clone(), id);
+        return;
+    }
+    if matches!(session.kind, SessionKind::Shell) {
         state.sessions.dispose(&state.pty_pool, id);
         let _ = state.layout.session_disposed(id);
         emit_layout(app, &state);
@@ -122,6 +171,85 @@ fn session_exited(app: &AppHandle, id: SessionId) {
             .set_status(app, id, SessionStatus::Exited { code: -1 });
         let _ = state.repo_reconcile.send(());
     }
+}
+
+fn ssh_target(state: &State<'_, AppState>, id: SessionId) -> Option<(String, String, String)> {
+    let session = state.sessions.get(id)?;
+    let SessionKind::Ssh { host_id } = &session.kind else {
+        return None;
+    };
+    let hosts = state.store.load_hosts().ok()?;
+    let alias = hosts.iter().find(|h| &h.id == host_id)?.alias.clone();
+    let install = crate::ssh::tmux::install_id(&state.store).ok()?;
+    let name = crate::ssh::tmux::session_name(&install, id);
+    Some((host_id.clone(), alias, name))
+}
+
+fn reattach_or_finish(app: AppHandle, id: SessionId) {
+    std::thread::spawn(move || {
+        let Some((host_id, alias, name)) = ssh_target(&app.state::<AppState>(), id) else {
+            return;
+        };
+
+        let mut attempt = 0u32;
+        loop {
+            if app.state::<AppState>().sessions.get(id).is_none() {
+                return;
+            }
+
+            let verdict = crate::ssh::tmux::probe(&alias, &name);
+            if !verdict.should_reattach() {
+                let state = app.state::<AppState>();
+                if verdict == crate::ssh::tmux::Probe::NoTmux {
+                    eprintln!("{alias}: host sem tmux — sessão sem persistência");
+                }
+                state.sessions.dispose(&state.pty_pool, id);
+                let _ = state.layout.session_disposed(id);
+                emit_layout(&app, &state);
+                return;
+            }
+
+            let Some(delay) = crate::ssh::tmux::retry_delay(attempt) else {
+                app.state::<AppState>().sessions.set_connection(
+                    &app,
+                    id,
+                    session::ConnectionState::Dropped,
+                );
+                return;
+            };
+            app.state::<AppState>().sessions.set_connection(
+                &app,
+                id,
+                session::ConnectionState::Reconnecting,
+            );
+            std::thread::sleep(delay);
+
+            if reattach_now(&app, id, &host_id, &alias).is_ok() {
+                return;
+            }
+            attempt += 1;
+        }
+    });
+}
+
+fn reattach_now(app: &AppHandle, id: SessionId, host_id: &str, alias: &str) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let handle = app.clone();
+    state
+        .sessions
+        .spawn_ssh(
+            app.clone(),
+            &state.pty_pool,
+            id,
+            host_id.to_string(),
+            alias,
+            None,
+            100,
+            30,
+            move |id| session_exited(&handle, id),
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -191,6 +319,15 @@ fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
 /// startup. Devolve o mapa `sessão morta -> sessão nova` para o layout reapontar
 /// os panes: sem isso o pane guarda um id que não existe mais e a tab abre vazia.
 ///
+fn hosts_alias(store: &Arc<session::store::Store>, host_id: &str) -> Option<String> {
+    store
+        .load_hosts()
+        .ok()?
+        .iter()
+        .find(|h| h.id == host_id)
+        .map(|h| h.alias.clone())
+}
+
 /// Só shell é reaberto. Um agente não é um processo idempotente: religá-lo sozinho
 /// no boot faria um agente começar a agir sem ninguém ter pedido — a sessão volta
 /// morta, e o dono decide.
@@ -212,6 +349,9 @@ fn resume_startup(
 
     if mode == session::StartupMode::Fresh {
         for s in dead {
+            if !s.kind.forgettable_on_fresh() {
+                continue;
+            }
             sessions.forget(s.id);
         }
         return remap;
@@ -221,6 +361,26 @@ fn resume_startup(
     }
 
     for old in dead {
+        if let SessionKind::Ssh { host_id } = &old.kind {
+            let Some(alias) = hosts_alias(store, host_id) else {
+                continue;
+            };
+            let handle = app.clone();
+            if let Err(e) = sessions.spawn_ssh(
+                app.clone(),
+                pty_pool,
+                old.id,
+                host_id.clone(),
+                &alias,
+                None,
+                100,
+                30,
+                move |id| session_exited(&handle, id),
+            ) {
+                eprintln!("reattach da sessão {}: {e}", old.id);
+            }
+            continue;
+        }
         if !matches!(old.kind, SessionKind::Shell) {
             continue;
         }
@@ -319,6 +479,7 @@ fn create_session(
             let _ = state
                 .store
                 .touch_host_connected(&host.id, chrono::Utc::now());
+            gc_host(&state, &host.alias);
             session
         }
     };
@@ -1114,6 +1275,7 @@ fn connect_host_group(
         let _ = state
             .store
             .touch_host_connected(&host.id, chrono::Utc::now());
+        gc_host(&state, &host.alias);
 
         match last_pane {
             None => {
@@ -1463,6 +1625,19 @@ fn close_tab(app: AppHandle, state: State<'_, AppState>, id: layout::TabId) -> R
     let bound = state.layout.close_tab(id).map_err(|e| e.to_string())?;
     dispose_shells(&state, &bound);
     emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn reconnect_ssh(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
+    let session = state
+        .sessions
+        .get(id)
+        .ok_or_else(|| crate::error::AppError::new("ssh.session_not_found").to_string())?;
+    if !matches!(session.kind, SessionKind::Ssh { .. }) {
+        return Err(crate::error::AppError::new("ssh.not_an_ssh_session").to_string());
+    }
+    reattach_or_finish(app, id);
     Ok(())
 }
 
@@ -2428,6 +2603,7 @@ pub fn run() {
             broadcast_write,
             broadcast_submit,
             connect_host_group,
+            reconnect_ssh,
             list_hosts,
             list_host_groups,
             create_host,

@@ -692,6 +692,7 @@ impl RawSession {
             attention: false,
             created_at,
             cwd: self.cwd.map(PathBuf::from),
+            connection: crate::session::ConnectionState::default(),
         })
     }
 }
@@ -772,6 +773,7 @@ mod tests {
             attention: false,
             created_at: Utc::now(),
             cwd: Some(PathBuf::from("/repo/sub")),
+            connection: crate::session::ConnectionState::default(),
         }
     }
 

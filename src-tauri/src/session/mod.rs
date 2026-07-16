@@ -104,6 +104,15 @@ impl SessionStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionState {
+    #[default]
+    Live,
+    Reconnecting,
+    Dropped,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
     pub id: SessionId,
@@ -117,6 +126,8 @@ pub struct Session {
     /// Pasta onde o processo subiu. É o que permite reabrir a sessão no mesmo
     /// lugar depois de fechar o app — sem ela o PTY morre e o pane fica órfão.
     pub cwd: Option<PathBuf>,
+    #[serde(default)]
+    pub connection: ConnectionState,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,6 +156,14 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    fn tmux_wrap(&self, id: SessionId) -> Result<String, PtyError> {
+        let install = crate::ssh::tmux::install_id(&self.store)
+            .map_err(|e| PtyError::Spawn(format!("install_id: {e}")))?;
+        Ok(crate::ssh::tmux::wrap_command(
+            &crate::ssh::tmux::session_name(&install, id),
+        ))
+    }
+
     fn preferred_editor_command(&self) -> Option<String> {
         let id = self.store.get_setting(EDITOR_PREF_KEY).ok().flatten()?;
         crate::editor::env_command(&id)
@@ -301,9 +320,36 @@ impl SessionManager {
         rows: u16,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
-        let id = Uuid::new_v4();
+        self.spawn_ssh(
+            app,
+            pty_pool,
+            Uuid::new_v4(),
+            host_id,
+            alias,
+            cwd,
+            cols,
+            rows,
+            on_exit,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_ssh(
+        &self,
+        app: AppHandle,
+        pty_pool: &SharedPtyPool,
+        id: SessionId,
+        host_id: String,
+        alias: &str,
+        cwd: Option<&std::path::Path>,
+        cols: u16,
+        rows: u16,
+        on_exit: impl FnOnce(SessionId) + Send + 'static,
+    ) -> Result<Session, PtyError> {
         let mut cmd = CommandBuilder::new("ssh");
+        cmd.arg("-t");
         cmd.arg(alias);
+        cmd.arg(self.tmux_wrap(id)?);
         if let Some(cwd) = cwd {
             cmd.cwd(cwd);
         }
@@ -374,6 +420,7 @@ impl SessionManager {
             attention: false,
             created_at: Utc::now(),
             cwd,
+            connection: ConnectionState::Live,
         };
         self.sessions.write().insert(id, session.clone());
         let _ = self.store.upsert_session(&session);
@@ -406,6 +453,17 @@ impl SessionManager {
         }
     }
 
+    pub fn set_connection(&self, app: &AppHandle, id: SessionId, connection: ConnectionState) {
+        let mut sessions = self.sessions.write();
+        if let Some(s) = sessions.get_mut(&id) {
+            if s.connection == connection {
+                return;
+            }
+            s.connection = connection;
+            emit_status(app, s);
+        }
+    }
+
     pub fn mark_seen(&self, app: &AppHandle, id: SessionId) {
         let mut sessions = self.sessions.write();
         if let Some(s) = sessions.get_mut(&id) {
@@ -418,8 +476,8 @@ impl SessionManager {
     }
 
     pub fn dispose(&self, pty_pool: &SharedPtyPool, id: SessionId) {
-        let _ = pty_pool.kill(id);
         self.sessions.write().remove(&id);
+        let _ = pty_pool.kill(id);
         let _ = self.store.remove_session(id);
     }
 
@@ -488,6 +546,12 @@ pub enum StartupMode {
 }
 
 pub const STARTUP_PREF_KEY: &str = "pref.startup";
+
+impl SessionKind {
+    pub fn forgettable_on_fresh(&self) -> bool {
+        !matches!(self, SessionKind::Ssh { .. })
+    }
+}
 
 impl StartupMode {
     pub fn parse(raw: Option<&str>) -> Self {
@@ -965,6 +1029,7 @@ mod tests {
             attention: false,
             created_at: Utc::now(),
             cwd: Some(PathBuf::from("/tmp")),
+            connection: ConnectionState::default(),
         }
     }
 
@@ -1251,6 +1316,51 @@ mod tests {
             StartupMode::KeepLayout
         );
         assert_eq!(StartupMode::parse(Some("fresh")), StartupMode::Fresh);
+    }
+
+    #[test]
+    fn fresh_nunca_esquece_ssh_porque_o_gc_mataria_a_sessao_viva() {
+        let ssh = SessionKind::Ssh {
+            host_id: "h1".into(),
+        };
+        assert!(
+            !ssh.forgettable_on_fresh(),
+            "forget apaga o id do SQLite → a sessão viva no Host vira órfã do \
+             próprio prefixo → o GC a mata no boot: o dono perde o build da sexta \
+             por abrir o app na segunda"
+        );
+    }
+
+    #[test]
+    fn fresh_esquece_o_resto_normalmente() {
+        assert!(SessionKind::Shell.forgettable_on_fresh());
+        assert!(SessionKind::Agent {
+            runner: AgentRunnerKind::ClaudeCode
+        }
+        .forgettable_on_fresh());
+        assert!(SessionKind::Container {
+            host_id: Some("h1".into()),
+            container_id: "c1".into()
+        }
+        .forgettable_on_fresh(),);
+    }
+
+    #[test]
+    fn conexao_e_eixo_separado_do_status() {
+        let mut s = make(
+            SessionKind::Ssh {
+                host_id: "h1".into(),
+            },
+            SessionStatus::Running,
+        );
+        s.connection = ConnectionState::Dropped;
+        assert_eq!(
+            s.status,
+            SessionStatus::Running,
+            "o build segue rodando no Host com o Cano no chão — é a combinação \
+             que a feature existe para representar"
+        );
+        assert_eq!(s.connection, ConnectionState::Dropped);
     }
 
     #[test]

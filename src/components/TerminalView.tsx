@@ -30,6 +30,7 @@ import {
   detachSession,
   writeToSession,
   type SessionId,
+  type ConnectionState,
 } from "../lib/ipc";
 import {
   nativePasteSuppressed,
@@ -106,6 +107,8 @@ interface Props {
   exited?: boolean;
   /** Sessão SSH: o handshake demora e a tela fica preta até o servidor falar. */
   connecting?: boolean;
+  connection?: ConnectionState;
+  onReconnect?: () => void;
   /** Devolve true quando a rajada consumiu a tecla (não vai para este PTY). */
   onBroadcastInput?: (data: string) => boolean;
   onExit?: () => void;
@@ -123,6 +126,8 @@ export function TerminalView({
   rect,
   exited,
   connecting,
+  connection,
+  onReconnect,
   onBroadcastInput,
   onExit,
   onFocus,
@@ -418,9 +423,47 @@ export function TerminalView({
   };
 
   const showConnecting = Boolean(connecting) && !gotOutput && visible && !!rect;
+  const droppedPipe = connection === "dropped";
+  const showPipe =
+    (connection === "reconnecting" || droppedPipe) && visible && !!rect;
 
   return (
     <>
+    {showPipe && rect && (
+      <div
+        className="z-10 flex flex-col items-center justify-center gap-2 rounded-[4px] bg-tyba-sunken/90"
+        style={{
+          position: "absolute",
+          left: `${rect.left}%`,
+          top: `${rect.top}%`,
+          width: `${rect.width}%`,
+          height: `${rect.height}%`,
+        }}
+      >
+        {!droppedPipe && (
+          <CircleNotch
+            size={14}
+            className="animate-spin text-tyba-text-faint"
+            weight="bold"
+          />
+        )}
+        <span className="font-mono text-[11px] text-tyba-text-faint">
+          {i18n.t(droppedPipe ? "sshDropped" : "sshReconnecting")}
+        </span>
+        <span className="font-mono text-[10px] text-tyba-text-faint/70">
+          {i18n.t("sshSessionAlive")}
+        </span>
+        {droppedPipe && onReconnect && (
+          <button
+            type="button"
+            onClick={onReconnect}
+            className="mt-1 rounded-[3px] border border-tyba-border px-2 py-1 font-mono text-[10px] text-tyba-text hover:bg-tyba-raised"
+          >
+            {i18n.t("sshReconnect")}
+          </button>
+        )}
+      </div>
+    )}
     {showConnecting && rect && (
       <div
         className="pointer-events-none z-10 flex items-center justify-center gap-2 rounded-[4px] bg-tyba-sunken"

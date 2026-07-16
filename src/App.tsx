@@ -163,6 +163,7 @@ import {
   broadcastWrite,
   broadcastSubmit,
   connectHostGroup,
+  reconnectSsh,
   listHosts,
   listHostGroups,
   tagWorkspace,
@@ -1257,6 +1258,7 @@ export default function App() {
       const kind = s.kind;
       if (kind.type !== "ssh") continue;
       if (isFinishedStatus(s.status)) continue;
+      if (s.connection && s.connection !== "live") continue;
       const host = sshHosts.find((h) => h.id === kind.host_id);
       if (!host) continue;
       out.push({ sessionId: s.id, alias: host.alias, color: host.color });
@@ -3171,6 +3173,14 @@ export default function App() {
                         focused={s.id === activeId}
                         framed={(paneLayout?.panes.length ?? 0) > 1}
                         connecting={s.kind.type === "ssh"}
+                        connection={
+                          s.kind.type === "ssh" ? s.connection : undefined
+                        }
+                        onReconnect={
+                          s.kind.type === "ssh"
+                            ? () => void reconnectSsh(s.id)
+                            : undefined
+                        }
                         onBroadcastInput={
                           broadcastOn && s.kind.type === "ssh"
                             ? handleBroadcastInput

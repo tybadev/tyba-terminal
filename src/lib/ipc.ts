@@ -28,6 +28,8 @@ export interface Worktree {
   base_ref: string;
 }
 
+export type ConnectionState = "live" | "reconnecting" | "dropped";
+
 export interface Session {
   id: SessionId;
   kind: SessionKind;
@@ -37,6 +39,7 @@ export interface Session {
   status: SessionStatus;
   attention: boolean;
   created_at: string;
+  connection?: ConnectionState;
 }
 
 export interface CreateSessionOpts {
@@ -525,6 +528,9 @@ export const connectHostGroup = (
 /** Conecta a um Host abrindo uma SSH Session (reusa create_session). */
 export const connectHost = (hostId: string, cols: number, rows: number) =>
   createSession({ kind: { type: "ssh", host_id: hostId }, cols, rows });
+
+export const reconnectSsh = (id: SessionId) =>
+  invoke<void>("reconnect_ssh", { id });
 
 export const resizeSession = (id: SessionId, cols: number, rows: number) =>
   invoke<void>("resize_session", { id, cols, rows });
