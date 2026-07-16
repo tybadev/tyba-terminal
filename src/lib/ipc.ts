@@ -10,7 +10,8 @@ export type SessionId = string;
 export type SessionKind =
   | { type: "shell" }
   | { type: "agent"; runner: "claude_code" | "codex" | { custom: string } }
-  | { type: "ssh"; host_id: string };
+  | { type: "ssh"; host_id: string }
+  | { type: "container"; host_id: string | null; container_id: string };
 
 export type AwaitingReason = "approval" | "reply";
 
@@ -606,11 +607,29 @@ export interface LayoutState {
 
 export const layoutState = () => invoke<LayoutState>("layout_state");
 
+/** Identidade junto na criação: renomear/colorir/agrupar depois faz a sidebar
+ * piscar entre os estados intermediários. */
+export interface WorkspaceTag {
+  lock_name?: boolean;
+  color?: string | null;
+  group?: string | null;
+}
+
 export const createWorkspace = (
   name: string,
   repoRoot: string | null,
   sessionId: SessionId,
-) => invoke<WorkspaceId>("create_workspace", { name, repoRoot, sessionId });
+  tag?: WorkspaceTag,
+) =>
+  invoke<WorkspaceId>("create_workspace", {
+    name,
+    repoRoot,
+    sessionId,
+    tag: tag ?? null,
+  });
+
+export const tagWorkspace = (id: WorkspaceId, name: string, tag: WorkspaceTag) =>
+  invoke<void>("tag_workspace", { id, name, tag });
 
 export const closeWorkspace = (id: WorkspaceId) =>
   invoke<void>("close_workspace", { id });
@@ -752,16 +771,26 @@ export interface ContainerInfo {
 
 export type ComposeOp = "up" | "down" | "restart";
 
-export const dockerAvailable = () => invoke<boolean>("docker_available");
+/** `host` = alias SSH (materializado no ssh_config); ausente = máquina local. */
+export const dockerAvailable = (host?: string | null) =>
+  invoke<boolean>("docker_available", { host: host ?? null });
 
-export const dockerListContainers = (repoRoot: string | null, all: boolean) =>
-  invoke<ContainerInfo[]>("docker_list_containers", { repoRoot, all });
+export const dockerListContainers = (
+  repoRoot: string | null,
+  all: boolean,
+  host?: string | null,
+) =>
+  invoke<ContainerInfo[]>("docker_list_containers", {
+    repoRoot,
+    all,
+    host: host ?? null,
+  });
 
-export const dockerOpenLogs = (containerId: string) =>
-  invoke<void>("docker_open_logs", { containerId });
+export const dockerOpenLogs = (containerId: string, host?: string | null) =>
+  invoke<void>("docker_open_logs", { containerId, host: host ?? null });
 
-export const dockerOpenShell = (containerId: string) =>
-  invoke<void>("docker_open_shell", { containerId });
+export const dockerOpenShell = (containerId: string, host?: string | null) =>
+  invoke<void>("docker_open_shell", { containerId, host: host ?? null });
 
 export const dockerOpenDashboard = () =>
   invoke<void>("docker_open_dashboard");
@@ -769,8 +798,10 @@ export const dockerOpenDashboard = () =>
 export const openViewTab = (view: string) =>
   invoke<void>("open_view_tab", { view });
 
-export const dockerRemoveContainer = (containerId: string) =>
-  invoke<void>("docker_remove_container", { containerId });
+export const dockerRemoveContainer = (
+  containerId: string,
+  host?: string | null,
+) => invoke<void>("docker_remove_container", { containerId, host: host ?? null });
 
 export const dockerOpenDesktop = () =>
   invoke<void>("docker_open_desktop");

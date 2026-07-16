@@ -50,11 +50,21 @@ fn push_field(out: &mut String, key: &str, val: Option<&str>, alias: &str) -> Re
     Ok(())
 }
 
-/// Renderiza o `tyba.conf` inteiro a partir dos hosts. Função pura — o DB é a
-/// fonte de verdade, então cada mutação regenera tudo. Recusa alias/valor com
-/// `\n`/`\r`/`"` (guard de injeção: um `\n` num campo quebraria pra fora do bloco
-/// e reescreveria o ssh_config do usuário).
-pub fn render_tyba_conf(hosts: &[Host]) -> Result<String, AppError> {
+/// Multiplexing: uma conexão por host, reusada. Sem isso cada `ssh` (split,
+/// tab, e cada `docker ps` do painel) abre conexão nova e o agente de chave
+/// (1Password, ssh-agent) pede aprovação **de novo** — autenticar uma vez é
+/// normal, a cada comando é bug.
+///
+/// `%C` é o hash da conexão: o socket precisa ser curto porque caminho de socket
+/// unix estoura em ~104 bytes. Ele nasce em `~/.ssh`, que a jaula já nega ao
+/// agente nas três plataformas — quem alcança o socket entra no servidor sem
+/// re-autenticar, então ele não pode viver num lugar que o agente leia.
+///
+/// Windows fica de fora: o OpenSSH de lá não implementa ControlMaster.
+const MULTIPLEX: &str =
+    "    ControlMaster auto\n    ControlPath ~/.ssh/tyba-cm-%C\n    ControlPersist 10m\n";
+
+fn render_with(hosts: &[Host], multiplex: bool) -> Result<String, AppError> {
     let mut out = String::from(HEADER);
     for h in hosts {
         if !valid_alias(&h.alias) {
@@ -75,9 +85,20 @@ pub fn render_tyba_conf(hosts: &[Host]) -> Result<String, AppError> {
             &h.alias,
         )?;
         push_field(&mut out, "ProxyJump", h.proxy_jump.as_deref(), &h.alias)?;
+        if multiplex {
+            out.push_str(MULTIPLEX);
+        }
         out.push('\n');
     }
     Ok(out)
+}
+
+/// Renderiza o `tyba.conf` inteiro a partir dos hosts. Função pura — o DB é a
+/// fonte de verdade, então cada mutação regenera tudo. Recusa alias/valor com
+/// `\n`/`\r`/`"` (guard de injeção: um `\n` num campo quebraria pra fora do bloco
+/// e reescreveria o ssh_config do usuário).
+pub fn render_tyba_conf(hosts: &[Host]) -> Result<String, AppError> {
+    render_with(hosts, cfg!(unix))
 }
 
 #[cfg(unix)]
@@ -207,6 +228,23 @@ mod tests {
             out.contains("    IdentityFile \"/home/My User/.ssh/key\"\n"),
             "got:\n{out}"
         );
+    }
+
+    #[test]
+    fn multiplex_reusa_a_conexao_uma_auth_so() {
+        let out = render_with(&[host("web-01", "h")], true).unwrap();
+        assert!(out.contains("    ControlMaster auto\n"), "got:\n{out}");
+        assert!(out.contains("    ControlPersist 10m\n"));
+        // Socket em ~/.ssh: a jaula já nega esse caminho ao agente, e quem lê o
+        // socket entra no servidor sem re-autenticar.
+        assert!(out.contains("    ControlPath ~/.ssh/tyba-cm-%C\n"));
+    }
+
+    #[test]
+    fn sem_multiplex_o_bloco_nao_sai() {
+        let out = render_with(&[host("web-01", "h")], false).unwrap();
+        assert!(!out.contains("ControlMaster"));
+        assert!(!out.contains("ControlPath"));
     }
 
     #[test]

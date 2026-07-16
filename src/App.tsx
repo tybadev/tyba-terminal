@@ -154,8 +154,10 @@ import {
   type SplitKind,
   type Workspace,
   type Host,
+  type HostGroup,
   listHosts,
   listHostGroups,
+  tagWorkspace,
   appVersion,
   updateCheck,
   updateDismiss,
@@ -553,10 +555,14 @@ export default function App() {
     Record<string, boolean>
   >({});
   const [sshHosts, setSshHosts] = useState<Host[]>([]);
+  const [hostGroups, setHostGroups] = useState<HostGroup[]>([]);
   const [hostPickerOpen, setHostPickerOpen] = useState(false);
   useEffect(() => {
     void listHosts()
       .then(setSshHosts)
+      .catch(() => {});
+    void listHostGroups()
+      .then(setHostGroups)
       .catch(() => {});
   }, [hostPickerOpen]);
 
@@ -1097,6 +1103,9 @@ export default function App() {
         for (const sid of leafSessions(tab.root)) {
           const kind = sessionById.get(sid)?.kind;
           if (kind?.type === "ssh") return kind.host_id;
+          // Container do host: o `sh` de dentro não fala OSC 133, então o
+          // vínculo vem do próprio kind — sem ele o split cai no shell local.
+          if (kind?.type === "container" && kind.host_id) return kind.host_id;
           // Shell que rodou `ssh` à mão não É uma SSH Session — ele ESTÁ numa.
           // Derivar do comando vivo dá o mesmo contexto e se desfaz sozinho no
           // exit, em vez de deixar a sessão mentindo que é remota.
@@ -1161,6 +1170,48 @@ export default function App() {
       if (next) void activateWorkspace(next.id);
     },
     [layout],
+  );
+
+  // O painel Docker segue a conexão vigente. Abrir o painel troca o workspace
+  // ativo (ele tem o seu), então o alvo é lembrado do último workspace de
+  // trabalho — as views (docker/settings/conexões) não mexem no contexto.
+  const [dockerSshHost, setDockerSshHost] = useState<string | null>(null);
+  useEffect(() => {
+    if (!activeWorkspace) return;
+    if (
+      activeWorkspace.kind === "docker" ||
+      isConfigWorkspace(activeWorkspace) ||
+      isConnectionsWorkspace(activeWorkspace) ||
+      isWorktreesWorkspace(activeWorkspace)
+    ) {
+      return;
+    }
+    const id = workspaceSshHostId(activeWorkspace);
+    setDockerSshHost(
+      id ? (sshHosts.find((h) => h.id === id)?.alias ?? null) : null,
+    );
+  }, [activeWorkspace, workspaceSshHostId, sshHosts]);
+
+  // O painel de containers é um só e o alvo dele muda: o workspace do Docker
+  // segue o que está na tela, senão a sidebar diz "Docker" enquanto a lista
+  // mostra a VPS — e um `sh` na máquina errada é caro.
+  const tagDockerWorkspace = useCallback(
+    (alias: string | null) => {
+      const ws = layout.workspaces.find((w) => w.kind === "docker");
+      if (!ws) return;
+      const host = alias ? sshHosts.find((h) => h.alias === alias) : undefined;
+      const group = host?.group_id
+        ? (hostGroups.find((g) => g.id === host.group_id)?.name ?? null)
+        : null;
+      const name = host ? `${host.alias} · Docker` : "Docker";
+      if (ws.name === name && ws.color === (host?.color ?? null)) return;
+      void tagWorkspace(ws.id, name, {
+        lock_name: true,
+        color: host?.color ?? null,
+        group,
+      }).catch(() => {});
+    },
+    [layout.workspaces, sshHosts, hostGroups],
   );
 
   const splitActive = useCallback(
@@ -1323,14 +1374,15 @@ export default function App() {
     });
     setSessions((prev) => [...prev, session]);
     try {
-      const workspaceId = await createWorkspace(host.alias, null, session.id);
-      await renameWorkspace(workspaceId, host.alias);
-      if (host.color) await setWorkspaceColor(workspaceId, host.color);
       const group = host.group_id
         ? ((await listHostGroups()).find((g) => g.id === host.group_id)?.name ??
           null)
         : null;
-      if (group) await setWorkspaceGroup(workspaceId, group);
+      await createWorkspace(host.alias, null, session.id, {
+        lock_name: true,
+        color: host.color,
+        group,
+      });
     } catch {
       void disposeSession(session.id).catch(() => {});
     }
@@ -2398,6 +2450,7 @@ export default function App() {
         onPick={(host) => void connectToHost(host)}
       />
       <NewSessionPrompt
+        onConnectHost={(host) => void connectToHost(host)}
         open={newSessionOpen}
         onOpenChange={(open) => {
           setNewSessionOpen(open);
@@ -2921,6 +2974,8 @@ export default function App() {
                   {activeTab?.view === "containers" && (
                     <div className="absolute inset-0 flex">
                       <ContainersView
+                        sshHost={dockerSshHost}
+                        onTargetChange={tagDockerWorkspace}
                         onAvailableChange={setDockerUp}
                         onRunningChange={setDockerRunning}
                       />
@@ -3090,6 +3145,21 @@ export default function App() {
                             <Shortcut combo={bindings.newTab} />
                           </button>
                         )}
+                        <button
+                          onClick={() =>
+                            sshHosts.length > 0
+                              ? setHostPickerOpen(true)
+                              : void openViewTab("connections").catch(() => {})
+                          }
+                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
+                        >
+                          <HardDrives size={14} className="text-tyba-cyan" />
+                          <span className="flex-1 text-left">
+                            {sshHosts.length > 0
+                              ? t("connectSsh")
+                              : t("connectionsTitle")}
+                          </span>
+                        </button>
                         <button
                           onClick={() => openPalette("actions")}
                           className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"

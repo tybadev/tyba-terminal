@@ -17,6 +17,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { IS_MAC } from "@/lib/platform";
 import {
   Tooltip,
@@ -39,14 +40,19 @@ import {
   dockerOpenProject,
   dockerOpenShell,
   dockerRemoveContainer,
+  listHosts,
   type ComposeOp,
   type ContainerInfo,
+  type Host,
   type PathStatus,
 } from "../lib/ipc";
 
 const REFRESH_MS = 3000;
+/** Cada ciclo remoto é rede + CPU competindo com os agentes: 3s ali é abuso. */
+const REMOTE_REFRESH_MS = 15000;
 const ACTION_ERROR_MS = 8000;
 const LOOSE_KEY = "__loose__";
+const LOCAL_TARGET = "__local__";
 
 const UNREACHABLE_PATH_LABEL: Record<
   Exclude<PathStatus, "ok">,
@@ -60,6 +66,9 @@ const UNREACHABLE_PATH_LABEL: Record<
 interface Props {
   onRunningChange?: (running: boolean) => void;
   onAvailableChange?: (available: boolean) => void;
+  sshHost?: string | null;
+  /** Alvo na tela (alias, ou null = local) — a sidebar segue o painel. */
+  onTargetChange?: (alias: string | null) => void;
 }
 
 interface ProjectGroup {
@@ -75,11 +84,13 @@ function PanelAction({
   label,
   onClick,
   destructive,
+  disabled,
   children,
 }: {
   label: string;
   onClick: () => void;
   destructive?: boolean;
+  disabled?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -87,11 +98,15 @@ function PanelAction({
       <TooltipTrigger asChild>
         <button
           aria-label={label}
-          onClick={onClick}
+          aria-disabled={disabled}
+          disabled={disabled}
+          onClick={disabled ? undefined : onClick}
           className={`rounded-[3px] p-1 transition-colors ${
-            destructive
-              ? "text-tyba-text-faint hover:text-tyba-red"
-              : "text-tyba-text-faint hover:text-tyba-text"
+            disabled
+              ? "cursor-not-allowed text-tyba-text-faint/50"
+              : destructive
+                ? "text-tyba-text-faint hover:text-tyba-red"
+                : "text-tyba-text-faint hover:text-tyba-text"
           }`}
         >
           {children}
@@ -105,6 +120,8 @@ function PanelAction({
 export function ContainersView({
   onRunningChange,
   onAvailableChange,
+  sshHost,
+  onTargetChange,
 }: Props) {
   const { t } = useTranslation();
   const [containers, setContainers] = useState<ContainerInfo[] | null>(null);
@@ -117,10 +134,42 @@ export function ContainersView({
   const [confirmingRm, setConfirmingRm] = useState<string | null>(null);
   const [confirmingDown, setConfirmingDown] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
+  const [hosts, setHosts] = useState<Host[]>([]);
+  const [selected, setSelected] = useState<string | null>(sshHost ?? null);
+  const remoteTarget = selected !== null;
+
+  useEffect(() => {
+    setSelected(sshHost ?? null);
+  }, [sshHost]);
+
+  useEffect(() => {
+    onTargetChange?.(selected);
+  }, [selected, onTargetChange]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listHosts()
+      .then((list) => {
+        if (!cancelled) setHosts(list);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [sshHost]);
+
+  useEffect(() => {
+    setContainers(null);
+    setLoadError(null);
+    setConfirmingRm(null);
+    setConfirmingDown(null);
+    setCollapsedOverrides({});
+    setStoppedShown({});
+  }, [selected]);
 
   const load = useCallback(async () => {
     try {
-      const list = await dockerListContainers(null, true);
+      const list = await dockerListContainers(null, true, selected);
       setContainers(list);
       setLoadError(null);
       onAvailableChange?.(true);
@@ -129,13 +178,27 @@ export function ContainersView({
       setLoadError(String(e));
       onAvailableChange?.(false);
     }
-  }, [onAvailableChange, onRunningChange]);
+  }, [onAvailableChange, onRunningChange, selected]);
 
   useEffect(() => {
-    void load();
-    const timer = window.setInterval(() => void load(), REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, [load]);
+    let cancelled = false;
+    let timer = 0;
+    const tick = async () => {
+      // Sem a trava, cada ciclo abre um `docker ps` novo enquanto o anterior
+      // ainda espera a aprovação da chave — a fila de prompts vira o bug.
+      await load();
+      if (cancelled) return;
+      timer = window.setTimeout(
+        () => void tick(),
+        selected ? REMOTE_REFRESH_MS : REFRESH_MS,
+      );
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [load, selected]);
 
   useEffect(() => {
     if (actionError === null) return;
@@ -147,6 +210,14 @@ export function ContainersView({
   }, [actionError]);
 
   const failAction = useCallback((e: unknown) => setActionError(String(e)), []);
+
+  const targetOptions = useMemo(
+    () => [
+      { value: LOCAL_TARGET, label: t("containersTargetLocal") },
+      ...hosts.map((h) => ({ value: h.alias, label: h.alias })),
+    ],
+    [hosts, t],
+  );
 
   const groups = useMemo<ProjectGroup[]>(() => {
     if (!containers) return [];
@@ -178,9 +249,9 @@ export function ContainersView({
   const openTab = useCallback(
     (kind: "logs" | "shell", id: string) => {
       const call = kind === "logs" ? dockerOpenLogs : dockerOpenShell;
-      void call(id).catch(failAction);
+      void call(id, selected).catch(failAction);
     },
-    [failAction],
+    [failAction, selected],
   );
 
   const removeContainer = useCallback(
@@ -192,18 +263,19 @@ export function ContainersView({
       }
       setConfirmingRm(null);
       setRemoving(id);
-      void dockerRemoveContainer(id)
+      void dockerRemoveContainer(id, selected)
         .catch(failAction)
         .finally(() => {
           setRemoving(null);
           void load();
         });
     },
-    [confirmingRm, failAction, load],
+    [confirmingRm, failAction, load, selected],
   );
 
   const composeOp = useCallback(
     (project: string, op: ComposeOp) => {
+      if (remoteTarget) return;
       if (op === "down" && confirmingDown !== project) {
         setConfirmingDown(project);
         setConfirmingRm(null);
@@ -212,7 +284,7 @@ export function ContainersView({
       setConfirmingDown(null);
       void dockerComposeOp(project, op).catch(failAction);
     },
-    [confirmingDown, failAction],
+    [confirmingDown, failAction, remoteTarget],
   );
 
   const renderContainer = (c: ContainerInfo) => {
@@ -337,21 +409,29 @@ export function ContainersView({
                 </span>
               </div>
             )}
-            {group.project && group.workingDir && onHost && (
+            {group.project && group.workingDir && (onHost || remoteTarget) && (
               <div className="flex items-center gap-0.5 px-1.5 pb-0.5">
                 <PanelAction
-                  label={t("composeUp")}
+                  label={
+                    remoteTarget ? t("composeRemoteDisabledHint") : t("composeUp")
+                  }
+                  disabled={remoteTarget}
                   onClick={() => composeOp(group.project as string, "up")}
                 >
                   <Play size={12} />
                 </PanelAction>
                 <PanelAction
-                  label={t("composeRestart")}
+                  label={
+                    remoteTarget
+                      ? t("composeRemoteDisabledHint")
+                      : t("composeRestart")
+                  }
+                  disabled={remoteTarget}
                   onClick={() => composeOp(group.project as string, "restart")}
                 >
                   <ArrowsClockwise size={12} />
                 </PanelAction>
-                {confirmingDown === group.project ? (
+                {confirmingDown === group.project && !remoteTarget ? (
                   <button
                     onClick={() => composeOp(group.project as string, "down")}
                     className="rounded-[3px] bg-tyba-amber px-1.5 py-0.5 text-[10px] font-medium text-black hover:bg-tyba-amber/90"
@@ -360,8 +440,13 @@ export function ContainersView({
                   </button>
                 ) : (
                   <PanelAction
-                    label={t("composeDown")}
+                    label={
+                      remoteTarget
+                        ? t("composeRemoteDisabledHint")
+                        : t("composeDown")
+                    }
                     destructive
+                    disabled={remoteTarget}
                     onClick={() => composeOp(group.project as string, "down")}
                   >
                     <Stop size={12} />
@@ -369,7 +454,12 @@ export function ContainersView({
                 )}
                 <span className="flex-1" />
                 <PanelAction
-                  label={t("openProject")}
+                  label={
+                    remoteTarget
+                      ? t("composeRemoteDisabledHint")
+                      : t("openProject")
+                  }
+                  disabled={remoteTarget}
                   onClick={() =>
                     void dockerOpenProject(group.project as string).catch(
                       failAction,
@@ -380,7 +470,12 @@ export function ContainersView({
                 </PanelAction>
                 {group.composeFileStatus === "ok" && (
                   <PanelAction
-                    label={t("viewCompose")}
+                    label={
+                      remoteTarget
+                        ? t("composeRemoteDisabledHint")
+                        : t("viewCompose")
+                    }
+                    disabled={remoteTarget}
                     onClick={() =>
                       void dockerOpenComposeFile(group.project as string).catch(
                         failAction,
@@ -418,28 +513,45 @@ export function ContainersView({
   return (
     <div className="flex min-h-0 flex-1 justify-center overflow-y-auto">
       <div className="flex w-full max-w-xl flex-col px-6 pt-5 pb-8">
-        <div className="flex items-center justify-between pb-3">
-          <span className="tyba-label">{t("containers")}</span>
-          {IS_MAC && loadError === null && (
-            <button
-              onClick={() => void dockerOpenDesktop().catch(failAction)}
-              className="flex items-center gap-1 text-[11px] text-tyba-text-faint transition-colors hover:text-tyba-text"
-            >
-              {t("openDockerDesktop")}
-              <ArrowSquareOut size={11} />
-            </button>
-          )}
+        <div className="flex items-center justify-between gap-2 pb-3">
+          <span className="tyba-label shrink-0">{t("containers")}</span>
+          <div className="flex min-w-0 items-center gap-2">
+            {remoteTarget && (
+              <span className="truncate rounded-[4px] border border-tyba-amber/40 bg-tyba-amber/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-tyba-amber">
+                {selected}
+              </span>
+            )}
+            <Select
+              value={selected ?? LOCAL_TARGET}
+              options={targetOptions}
+              onChange={(value) =>
+                setSelected(value === LOCAL_TARGET ? null : value)
+              }
+              className="h-6 px-2 text-[11px]"
+            />
+            {IS_MAC && loadError === null && !remoteTarget && (
+              <button
+                onClick={() => void dockerOpenDesktop().catch(failAction)}
+                className="flex shrink-0 items-center gap-1 text-[11px] text-tyba-text-faint transition-colors hover:text-tyba-text"
+              >
+                {t("openDockerDesktop")}
+                <ArrowSquareOut size={11} />
+              </button>
+            )}
+          </div>
         </div>
 
       {loadError !== null ? (
         <div className="flex flex-col items-center gap-3 px-3 py-6 text-center">
           <p className="text-xs text-tyba-text-faint">
-            {t("containersDaemonOff")}
+            {remoteTarget
+              ? t("containersDaemonOffRemote", { host: selected })
+              : t("containersDaemonOff")}
           </p>
           <p className="max-w-full truncate font-mono text-[10px] text-tyba-text-faint">
             {loadError}
           </p>
-          {IS_MAC && (
+          {IS_MAC && !remoteTarget && (
             <Button
               size="sm"
               variant="outline"

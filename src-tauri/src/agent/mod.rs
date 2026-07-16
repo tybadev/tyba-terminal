@@ -39,7 +39,9 @@ impl Default for SubmitStrategy {
 
 pub fn submit_strategy_for(kind: &SessionKind) -> SubmitStrategy {
     match kind {
-        SessionKind::Shell | SessionKind::Ssh { .. } => SubmitStrategy::default(),
+        SessionKind::Shell | SessionKind::Ssh { .. } | SessionKind::Container { .. } => {
+            SubmitStrategy::default()
+        }
         SessionKind::Agent { runner } => match runner {
             AgentRunnerKind::ClaudeCode => ClaudeCodeRunner.submit_strategy(),
             AgentRunnerKind::Codex => CodexRunner.submit_strategy(),

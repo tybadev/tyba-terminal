@@ -243,6 +243,15 @@ impl PaneNode {
     }
 }
 
+/// Identidade que o workspace já nasce com (nome travado, cor, grupo) em vez de
+/// receber por mutações em sequência.
+#[derive(Debug, Clone, Default)]
+pub struct Tag {
+    pub lock_name: bool,
+    pub color: Option<String>,
+    pub group: Option<String>,
+}
+
 pub const VIEW_CONTAINERS: &str = "containers";
 pub const VIEW_SETTINGS: &str = "settings";
 pub const VIEW_WORKSPACE: &str = "workspace";
@@ -512,6 +521,19 @@ impl LayoutManager {
         repo_root: Option<String>,
         session: SessionId,
     ) -> Result<WorkspaceId, LayoutError> {
+        self.create_workspace_tagged(name, repo_root, session, Tag::default())
+    }
+
+    /// Nasce com nome travado, cor e grupo de uma vez: criar e depois mutar em
+    /// três chamadas persiste e emite layout a cada passo, e a sidebar pisca
+    /// entre os estados intermediários antes de assentar.
+    pub fn create_workspace_tagged(
+        &self,
+        name: &str,
+        repo_root: Option<String>,
+        session: SessionId,
+        tag: Tag,
+    ) -> Result<WorkspaceId, LayoutError> {
         let mut inner = self.inner.write();
         if find_session_pane(&inner.workspaces, session).is_some() {
             return Err(LayoutError::SessionAlreadyBound(session));
@@ -520,10 +542,10 @@ impl LayoutManager {
         let workspace = Workspace {
             id: Uuid::new_v4(),
             name: name.trim().to_string(),
-            name_locked: false,
+            name_locked: tag.lock_name,
             repo_root,
-            color: None,
-            group: None,
+            color: tag.color,
+            group: tag.group,
             kind: WorkspaceKind::User,
             active_tab: Some(tab.id),
             tabs: vec![tab],
@@ -735,6 +757,28 @@ impl LayoutManager {
         ws.tabs.insert(to, moved);
         drop(inner);
         self.persist()
+    }
+
+    /// Nome + cor + grupo de uma vez (ver [`Tag`]).
+    pub fn tag_workspace(&self, id: WorkspaceId, name: &str, tag: Tag) -> Result<(), LayoutError> {
+        let mut inner = self.inner.write();
+        let idx = ws_index(&inner.workspaces, id)?;
+        let ws = &mut inner.workspaces[idx];
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            ws.name = trimmed.to_string();
+            ws.name_locked = tag.lock_name;
+        }
+        ws.color = tag.color;
+        ws.group = tag.group;
+        drop(inner);
+        self.persist()
+    }
+
+    #[allow(dead_code)]
+    pub fn workspace_of_session(&self, session: SessionId) -> Option<WorkspaceId> {
+        let inner = self.inner.read();
+        find_session_pane(&inner.workspaces, session).map(|(ws, _, _)| ws)
     }
 
     pub fn open_session(&self, session: SessionId) -> Result<(), LayoutError> {
@@ -1581,6 +1625,15 @@ mod tests {
         assert!(state.workspaces[0].tabs.is_empty());
         assert_eq!(state.workspaces[0].active_tab, None);
         assert_eq!(state.active_workspace, Some(state.workspaces[0].id));
+    }
+
+    #[test]
+    fn workspace_of_session_acha_o_dono_e_ignora_sessao_solta() {
+        let mgr = manager();
+        let session = SessionId::new_v4();
+        let ws = mgr.create_workspace("x", None, session).unwrap();
+        assert_eq!(mgr.workspace_of_session(session), Some(ws));
+        assert_eq!(mgr.workspace_of_session(SessionId::new_v4()), None);
     }
 
     #[test]

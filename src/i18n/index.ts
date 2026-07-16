@@ -395,6 +395,10 @@ const resources = {
       openProject: "Abrir projeto",
       viewCompose: "Ver compose",
       containersDaemonOff: "Docker não está respondendo.",
+      containersDaemonOffRemote: "Docker não está respondendo em {{host}}.",
+      containersTargetLocal: "Local",
+      composeRemoteDisabledHint:
+        "Compose só na máquina local — os caminhos do compose são locais.",
       containersActionFailed: "A ação falhou.",
       containersPathOffHost:
         "O compose deste projeto não está nesta máquina — o container guarda o caminho do ambiente onde subiu.",
@@ -589,6 +593,7 @@ const resources = {
       connectionsNeverConnected: "nunca conectado",
       connectionsPort: "porta {{port}}",
       sshConnecting: "conectando…",
+      connectSsh: "Conectar via SSH",
       hostPickerPlaceholder: "Buscar conexão SSH…",
       hostPickerEmpty: "Nenhuma conexão encontrada",
       connectionsEditHost: "Editar conexão",
@@ -1014,6 +1019,10 @@ const resources = {
       openProject: "Open project",
       viewCompose: "View compose",
       containersDaemonOff: "Docker is not responding.",
+      containersDaemonOffRemote: "Docker is not responding on {{host}}.",
+      containersTargetLocal: "Local",
+      composeRemoteDisabledHint:
+        "Compose is local only — compose paths are local.",
       containersActionFailed: "The action failed.",
       containersPathOffHost:
         "This project's compose is not on this machine — the container stores the path of the environment it came up in.",
@@ -1205,6 +1214,7 @@ const resources = {
       connectionsNeverConnected: "never connected",
       connectionsPort: "port {{port}}",
       sshConnecting: "connecting…",
+      connectSsh: "Connect via SSH",
       hostPickerPlaceholder: "Search SSH connection…",
       hostPickerEmpty: "No connection found",
       connectionsEditHost: "Edit connection",

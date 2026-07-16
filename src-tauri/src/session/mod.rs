@@ -24,8 +24,20 @@ pub type SessionId = Uuid;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionKind {
     Shell,
-    Agent { runner: AgentRunnerKind },
-    Ssh { host_id: String },
+    Agent {
+        runner: AgentRunnerKind,
+    },
+    Ssh {
+        host_id: String,
+    },
+    /// Shell/logs de container. `host_id` presente = o container roda num Host
+    /// remoto: sem isso a sessão parece um shell local qualquer e o split cai na
+    /// máquina errada (o `sh` do container não fala OSC 133, então não dá pra
+    /// derivar do comando como se faz com o `ssh` digitado à mão).
+    Container {
+        host_id: Option<String>,
+        container_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +264,7 @@ impl SessionManager {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn create_command_session(
         &self,
         app: AppHandle,
@@ -262,6 +275,7 @@ impl SessionManager {
         cwd: Option<&std::path::Path>,
         cols: u16,
         rows: u16,
+        kind: SessionKind,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
@@ -271,18 +285,7 @@ impl SessionManager {
             cmd.cwd(cwd);
         }
         self.spawn_session(
-            app,
-            pty_pool,
-            id,
-            cmd,
-            SessionKind::Shell,
-            title,
-            None,
-            None,
-            None,
-            cols,
-            rows,
-            on_exit,
+            app, pty_pool, id, cmd, kind, title, None, None, None, cols, rows, on_exit,
         )
     }
 
