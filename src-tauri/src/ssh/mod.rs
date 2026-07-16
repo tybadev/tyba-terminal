@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod broadcast;
 pub mod config;
+pub mod tmux;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Host {
