@@ -69,6 +69,8 @@ const CONNECTION_COLORS = [
 
 interface Props {
   onConnect: (host: Host) => void;
+  /** Abre o grupo como panes de um workspace só (base do broadcast). */
+  onConnectGroup?: (group: HostGroup | null, hosts: Host[]) => void;
 }
 
 interface HostFormValues {
@@ -579,7 +581,7 @@ function GroupDialog({
   );
 }
 
-export function ConnectionsView({ onConnect }: Props) {
+export function ConnectionsView({ onConnect, onConnectGroup }: Props) {
   const { t, i18n } = useTranslation();
   const [hosts, setHosts] = useState<Host[] | null>(null);
   const [groups, setGroups] = useState<HostGroup[] | null>(null);
@@ -808,6 +810,17 @@ export function ConnectionsView({ onConnect }: Props) {
               {section.items.length}
             </span>
           </button>
+          {onConnectGroup && section.items.length > 1 && (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => onConnectGroup(section.group, section.items)}
+              className="h-5 shrink-0 rounded-[4px] px-1.5 text-[10px] text-tyba-text-muted"
+            >
+              <Plug size={10} />
+              {t("connectionsConnectGroup", { count: section.items.length })}
+            </Button>
+          )}
           {section.group && (
             <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/section:opacity-100">
               {confirmingDeleteGroup === section.group.id ? (

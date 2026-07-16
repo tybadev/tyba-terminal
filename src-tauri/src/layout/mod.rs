@@ -781,6 +781,11 @@ impl LayoutManager {
         find_session_pane(&inner.workspaces, session).map(|(ws, _, _)| ws)
     }
 
+    pub fn pane_of_session(&self, session: SessionId) -> Option<PaneId> {
+        let inner = self.inner.read();
+        find_session_pane(&inner.workspaces, session).map(|(_, _, pane)| pane)
+    }
+
     pub fn open_session(&self, session: SessionId) -> Result<(), LayoutError> {
         let existing = {
             let inner = self.inner.read();

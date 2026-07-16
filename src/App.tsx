@@ -69,6 +69,11 @@ import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ContainersView } from "./components/ContainersView";
 import { ConnectionsView } from "./components/ConnectionsView";
 import { HostPicker } from "./components/HostPicker";
+import {
+  BroadcastBar,
+  BroadcastConfirmDialog,
+  type BroadcastTarget,
+} from "./components/BroadcastBar";
 import { matchSshHost } from "./lib/sshCommand";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
@@ -155,6 +160,9 @@ import {
   type Workspace,
   type Host,
   type HostGroup,
+  broadcastWrite,
+  broadcastSubmit,
+  connectHostGroup,
   listHosts,
   listHostGroups,
   tagWorkspace,
@@ -1212,6 +1220,95 @@ export default function App() {
       }).catch(() => {});
     },
     [layout.workspaces, sshHosts, hostGroups],
+  );
+
+  const connectGroup = useCallback(
+    async (group: HostGroup | null, hosts: Host[]) => {
+      if (hosts.length === 0) return;
+      const opened = await connectHostGroup(
+        hosts.map((h) => h.id),
+        group?.name ?? hosts[0].alias,
+        group?.color ?? null,
+        group?.name ?? null,
+      );
+      setSessions((prev) => [...prev, ...opened]);
+    },
+    [],
+  );
+
+  // --- Broadcast: a rajada para as SSH Sessions vivas do Broadcast Set ---
+  const [broadcastOn, setBroadcastOn] = useState(false);
+  const [broadcastSet, setBroadcastSet] = useState<SessionId[]>([]);
+  const [broadcastAsk, setBroadcastAsk] = useState<string | null>(null);
+  // A linha digitada, para o core poder classificar no Enter. É reconstrução:
+  // seta/tab/histórico não passam por aqui, então serve ao gate, não à verdade
+  // do terminal — o que executa continua sendo o que está no prompt.
+  const broadcastLine = useRef("");
+
+  // Só os panes do workspace ativo: rajada em sessão que você não está vendo é
+  // comando disparado no escuro — metade do valor do broadcast é conferir as
+  // saídas lado a lado.
+  const broadcastTargets = useMemo<BroadcastTarget[]>(() => {
+    if (!activeTab?.root) return [];
+    const out: BroadcastTarget[] = [];
+    for (const sid of leafSessions(activeTab.root)) {
+      const s = sessionById.get(sid);
+      if (!s) continue;
+      const kind = s.kind;
+      if (kind.type !== "ssh") continue;
+      if (isFinishedStatus(s.status)) continue;
+      const host = sshHosts.find((h) => h.id === kind.host_id);
+      if (!host) continue;
+      out.push({ sessionId: s.id, alias: host.alias, color: host.color });
+    }
+    return out;
+  }, [activeTab, sessionById, sshHosts]);
+
+  // Semeado pelo grupo, refinado pelo usuário: alvo que some (sessão morreu)
+  // sai sozinho, senão a rajada miraria um pane fantasma.
+  useEffect(() => {
+    const live = new Set(broadcastTargets.map((t) => t.sessionId));
+    setBroadcastSet((prev) => {
+      const kept = prev.filter((id) => live.has(id));
+      if (kept.length > 0) return kept.length === prev.length ? prev : kept;
+      return broadcastTargets.map((t) => t.sessionId);
+    });
+  }, [broadcastTargets]);
+
+  const submitBroadcast = useCallback(
+    async (confirmed: boolean) => {
+      const line = broadcastLine.current;
+      const verdict = await broadcastSubmit(broadcastSet, line, confirmed);
+      if (verdict.outcome === "needs_confirmation") {
+        setBroadcastAsk(verdict.command);
+        return;
+      }
+      broadcastLine.current = "";
+      setBroadcastAsk(null);
+    },
+    [broadcastSet],
+  );
+
+  const handleBroadcastInput = useCallback(
+    (data: string): boolean => {
+      if (!broadcastOn || broadcastSet.length === 0) return false;
+      if (data === "\r" || data === "\n") {
+        void submitBroadcast(false).catch(() => {});
+        return true;
+      }
+      if (data === "") {
+        broadcastLine.current = broadcastLine.current.slice(0, -1);
+      } else if (data === "") {
+        broadcastLine.current = "";
+      } else if (!data.startsWith("")) {
+        broadcastLine.current += data;
+      }
+      void broadcastWrite(broadcastSet, data).catch((e) => {
+        console.error("broadcast", e);
+      });
+      return true;
+    },
+    [broadcastOn, broadcastSet, submitBroadcast],
   );
 
   const splitActive = useCallback(
@@ -2449,6 +2546,13 @@ export default function App() {
         onOpenChange={setHostPickerOpen}
         onPick={(host) => void connectToHost(host)}
       />
+      <BroadcastConfirmDialog
+        open={broadcastAsk !== null}
+        command={broadcastAsk ?? ""}
+        targets={broadcastSet.length}
+        onConfirm={() => void submitBroadcast(true).catch(() => {})}
+        onCancel={() => setBroadcastAsk(null)}
+      />
       <NewSessionPrompt
         onConnectHost={(host) => void connectToHost(host)}
         open={newSessionOpen}
@@ -2961,6 +3065,15 @@ export default function App() {
                     onNew={() => void newTab()}
                   />
                 )}
+                {broadcastTargets.length > 1 && (
+                  <BroadcastBar
+                    targets={broadcastTargets}
+                    enabled={broadcastOn}
+                    selected={broadcastSet}
+                    onToggle={setBroadcastOn}
+                    onSelectedChange={setBroadcastSet}
+                  />
+                )}
                 <div
                   ref={paneAreaRef}
                   className="relative min-h-0 flex-1 overflow-hidden"
@@ -2985,6 +3098,9 @@ export default function App() {
                     <div className="absolute inset-0 flex">
                       <ConnectionsView
                         onConnect={(host) => void connectToHost(host)}
+                        onConnectGroup={(group, hosts) =>
+                          void connectGroup(group, hosts)
+                        }
                       />
                     </div>
                   )}
@@ -3055,6 +3171,11 @@ export default function App() {
                         focused={s.id === activeId}
                         framed={(paneLayout?.panes.length ?? 0) > 1}
                         connecting={s.kind.type === "ssh"}
+                        onBroadcastInput={
+                          broadcastOn && s.kind.type === "ssh"
+                            ? handleBroadcastInput
+                            : undefined
+                        }
                         exited={isFinishedStatus(s.status)}
                         rect={
                           paneRect

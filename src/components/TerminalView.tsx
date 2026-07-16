@@ -106,6 +106,8 @@ interface Props {
   exited?: boolean;
   /** Sessão SSH: o handshake demora e a tela fica preta até o servidor falar. */
   connecting?: boolean;
+  /** Devolve true quando a rajada consumiu a tecla (não vai para este PTY). */
+  onBroadcastInput?: (data: string) => boolean;
   onExit?: () => void;
   onFocus?: () => void;
   onPaste?: (sessionId: SessionId, text: string) => void;
@@ -121,6 +123,7 @@ export function TerminalView({
   rect,
   exited,
   connecting,
+  onBroadcastInput,
   onExit,
   onFocus,
   onPaste,
@@ -128,6 +131,10 @@ export function TerminalView({
   onSplit,
 }: Props) {
   const [gotOutput, setGotOutput] = useState(false);
+  // O onData é assinado uma vez no mount: sem ref, a rajada ficaria presa no
+  // callback do primeiro render.
+  const broadcastRef = useRef(onBroadcastInput);
+  broadcastRef.current = onBroadcastInput;
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -216,6 +223,9 @@ export function TerminalView({
     fitRef.current = fit;
 
     const dataSub = term.onData((data) => {
+      // Broadcast intercepta antes do PTY: a tecla vai para o conjunto inteiro,
+      // e o Enter passa pelo core (que barra vermelho sem confirmação).
+      if (broadcastRef.current?.(data)) return;
       void writeToSession(sessionId, data).catch(() => {});
     });
 

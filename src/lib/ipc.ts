@@ -489,6 +489,39 @@ export const updateHostGroup = (group: HostGroup) =>
 export const deleteHostGroup = (id: string) =>
   invoke<void>("delete_host_group", { id });
 
+// --- Broadcast: uma rajada para N SSH Sessions vivas ---
+
+export type BroadcastVerdict =
+  | { outcome: "sent"; targets: number }
+  | {
+      outcome: "needs_confirmation";
+      risk: "green" | "yellow" | "red";
+      command: string;
+      targets: number;
+    };
+
+/** Tecla crua espelhada: nada executa sem Enter. */
+export const broadcastWrite = (ids: SessionId[], data: string) =>
+  invoke<void>("broadcast_write", { ids, data: encodeBase64(data) });
+
+/** Enter da rajada. O core recusa vermelho sem `confirmed` — a regra não vive
+ * aqui, o webview não consegue burlar. */
+export const broadcastSubmit = (
+  ids: SessionId[],
+  command: string,
+  confirmed: boolean,
+) => invoke<BroadcastVerdict>("broadcast_submit", { ids, command, confirmed });
+
+/** Abre o grupo inteiro como panes de um workspace só — é o que dá sentido
+ * visual ao broadcast (digitar uma vez, conferir as N saídas lado a lado). */
+export const connectHostGroup = (
+  hostIds: string[],
+  name: string,
+  color: string | null,
+  group: string | null,
+) =>
+  invoke<Session[]>("connect_host_group", { hostIds, name, color, group });
+
 /** Conecta a um Host abrindo uma SSH Session (reusa create_session). */
 export const connectHost = (hostId: string, cols: number, rows: number) =>
   createSession({ kind: { type: "ssh", host_id: hostId }, cols, rows });

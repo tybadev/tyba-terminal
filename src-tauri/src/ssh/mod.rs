@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+pub mod broadcast;
 pub mod config;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

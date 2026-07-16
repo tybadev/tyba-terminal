@@ -821,6 +821,11 @@ mod tests {
         );
         git(&clone, &["config", "user.email", "t@t.com"]);
         git(&clone, &["config", "user.name", "t"]);
+        // Sem isso o commit do teste herda o `commit.gpgsign` global: com
+        // `gpg.format=ssh` o git chama o agente de chave, o dono vê um prompt
+        // no meio da suíte e o teste pendura até morrer.
+        git(&clone, &["config", "commit.gpgsign", "false"]);
+        git(&clone, &["config", "tag.gpgsign", "false"]);
 
         let synced = super::snapshot(&clone, &mut super::UntrackedCache::default());
         assert_eq!((synced.ahead, synced.behind), (Some(0), Some(0)));
