@@ -1,0 +1,102 @@
+---
+title: "Los temas"
+description: "18 integrados, la cuadrícula de preview, y el detalle de que el tema pinta toda la app — no solo la terminal."
+---
+
+## Dónde cambiarlo
+
+**Settings → Appearance** (`⌘,` en macOS, `Ctrl+,` en Windows y Linux). La sección **Themes** es una cuadrícula de cards con preview: el fondo de la terminal y seis colores de la paleta ANSI, tal como van a verse. El que está en uso aparece con el borde verde y un check.
+
+También desde la [paleta de comandos](/es/interfaz/paleta-de-comandos) (`⌘P` / `Ctrl+Shift+P`), en el grupo **Theme**: *Use X theme*.
+
+<Note>
+La paleta lista los temas **menos** TYBA Dark y TYBA Light. Los dos por defecto solo aparecen en la cuadrícula de Settings.
+</Note>
+
+Hacer clic en un tema lo coloca en el slot de su base — y puede cambiar el modo junto con él. Eso está en [Modo claro y oscuro](/es/temas/claro-y-oscuro).
+
+## El tema pinta toda la app
+
+<Warning>
+**No es solo la terminal.** Cambiar el tema repinta la sidebar, las pestañas, los diálogos, la paleta de comandos, los Settings — todo.
+</Warning>
+
+Cada tema lleva dos cosas: la **paleta de la terminal** (fondo, texto, cursor, selección y los 16 colores ANSI) y las **superficies y acentos de la interfaz**. Los dos van juntos.
+
+Lo que el tema **no** cambia es la identidad de TYBA: tipografía, espaciado, radios de esquina y el gradiente-firma siguen siendo los mismos. Un tema cambia el color, no el diseño.
+
+## Los 18 integrados
+
+<Tabs>
+<Tab title="Base oscura (12)">
+| Tema | Observación |
+| --- | --- |
+| **TYBA Dark** | El de por defecto. Terminal en negro absoluto. |
+| Solarized Dark | |
+| Dracula | |
+| Gruvbox Dark | |
+| GitHub Dark | |
+| Monokai | |
+| Monokai Pro | |
+| Monokai Pro Machine | |
+| Monokai Pro Octagon | |
+| Monokai Pro Ristretto | |
+| Monokai Pro Spectrum | |
+| Mono Dark | Sin acentos de color — escala de grises. |
+</Tab>
+<Tab title="Base clara (6)">
+| Tema | Observación |
+| --- | --- |
+| **TYBA Light** | El de por defecto del slot claro. |
+| Solarized Light | |
+| Dracula Light (Alucard) | |
+| Gruvbox Light | |
+| GitHub Light | |
+| Monokai Pro Light | |
+</Tab>
+</Tabs>
+
+<Note>
+**No hay Catppuccin, Nord ni Tokyo Night.** Si quieres uno de ellos, puedes traer el tuyo — ve [Importar un tema](/es/temas/importar-un-tema).
+</Note>
+
+Algunos esquemas clásicos no tienen la paleta completa; en esos casos TYBA deriva lo que falta en vez de inventarlo. En la familia Monokai, por ejemplo, el "rojo" oficial es rosado y se convierte en el **magenta** — el rojo de error se deriva más grave, para que un error siga pareciendo un error.
+
+## Fuente
+
+Misma pantalla — **Settings → Appearance → Font**. Son dos selectores, y hacen cosas diferentes:
+
+| Selector | Qué controla |
+| --- | --- |
+| **Family** | La fuente de la **interfaz**: JetBrains Mono (por defecto) o Space Grotesk. |
+| **Size** | El tamaño de la **terminal**, de 11px a 16px. Por defecto: 13px. |
+
+<Warning>
+La **familia de la interfaz** no afecta a la terminal, y el **tamaño** no afecta a la interfaz. La sección tiene un solo nombre, pero los dos controles no se hablan.
+</Warning>
+
+<Note>
+**La familia de la terminal es fija** y no es configurable. La terminal corre en JetBrains Mono, con Symbols Nerd Font Mono y Fira Code detrás para los glifos que falten, y la monoespaciada del sistema al final de la fila. No hay campo para cambiarla.
+</Note>
+
+El tamaño vale para las terminales que abras y para las que ya están abiertas — el cambio es inmediato en todos los paneles.
+
+## Qué no existe
+
+| | |
+| --- | --- |
+| **Editor visual de temas** | No existe. Los temas propios son un [archivo JSON](/es/temas/importar-un-tema). |
+| **Elegir la fuente de la terminal** | Fija. |
+| **Opacidad de la ventana / blur de fondo** | No existe. |
+| **Tema por pestaña, panel o workspace** | El tema es de toda la app. |
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Modo claro y oscuro" icon="circle-half" href="/es/temas/claro-y-oscuro">
+    Los dos slots y el modo System.
+  </Card>
+  <Card title="Importar un tema" icon="download" href="/es/temas/importar-un-tema">
+    Traer el tuyo, y las reglas que tiene que pasar.
+  </Card>
+</CardGroup>

@@ -1,0 +1,106 @@
+---
+title: "Configuración del usuario"
+sidebarTitle: "~/.tyba/config.toml"
+description: "El archivo que afloja la lectura del sandbox — un campo, y no hace lo que parece en todos los sistemas."
+---
+
+TYBA lee un archivo de configuración de tu home:
+
+```
+~/.tyba/config.toml
+```
+
+**No se crea en la instalación.** Si no existe, TYBA usa los valores por defecto y no se queja. Créalo a mano cuando lo necesites.
+
+La ruta es siempre `$HOME/.tyba/config.toml`, en cualquier sistema. No hay variación por plataforma — ni `%APPDATA%` en Windows.
+
+<Warning>
+En Windows, TYBA exige que la variable `HOME` esté definida y sea una ruta absoluta. No cae a `%USERPROFILE%`. Sin `HOME`, las sesiones de agente fallan antes de levantar.
+</Warning>
+
+## El archivo entero
+
+Hoy existe **un campo**:
+
+```toml title="~/.tyba/config.toml"
+[sandbox]
+read_allow = [
+  "~/referencias",
+  "/opt/sdk-compartilhado",
+]
+```
+
+| Campo | Tipo | Por defecto | Qué hace |
+| --- | --- | --- | --- |
+| `sandbox.read_allow` | lista de strings | `[]` | Rutas extra que el agente puede **leer** dentro del sandbox |
+
+Las secciones y claves desconocidas se ignoran en silencio — no hay error por campo extra.
+
+## Qué ruta vale
+
+Cada entrada tiene que ser **absoluta** o empezar con `~`:
+
+```toml
+read_allow = [
+  "~",                        # tu home entera
+  "~/referencias",            # subcarpeta de la home
+  "/opt/sdk-compartilhado",   # ruta absoluta
+]
+```
+
+Una ruta relativa se rechaza:
+
+```toml
+read_allow = ["./referencias"]   # ✗
+```
+
+```
+read_allow exige path absoluto ou ~/: ./referencias
+```
+
+## Cuándo agarra el cambio
+
+El archivo se lee **una vez por sesión de agente**, en el momento en que levanta. No hay watcher y no hay hot reload.
+
+En la práctica: editas, guardas, y la próxima sesión de agente que crees ya usa el valor nuevo. **No hace falta reiniciar TYBA.** Las sesiones que ya están corriendo siguen con el valor antiguo hasta que mueran.
+
+## Cuando el archivo está mal
+
+<Warning>
+Un TOML malformado o una ruta relativa **tira abajo la creación de la sesión de agente**. TYBA no cae al valor por defecto — falla, con el mensaje apuntando al error.
+</Warning>
+
+```
+~/.tyba/config.toml inválido: expected an equals, found a newline at line 2
+```
+
+Esto es deliberado: un archivo de sandbox que no parsea es demasiado ambiguo para adivinarlo. Un archivo **ausente** es distinto de un archivo **roto** — el ausente es el caso normal y no da error.
+
+## Lo que no consigue aflojar
+
+`read_allow` **no abre tus secretos**. Las negaciones se aplican después de cualquier permiso y ganan siempre:
+
+```
+~/.ssh   ~/.aws   ~/.gnupg   ~/.kube
+~/.config/gcloud   ~/.config/gh   ~/.docker
+```
+
+Incluso `read_allow = ["~"]` — tu home entera — deja esas rutas ilegibles para el agente. No hay configuración que revierta esto.
+
+## No hace nada en Windows
+
+<Warning>
+En Windows este campo se acepta, se valida y se **descarta**. No tiene ningún efecto.
+</Warning>
+
+Esto no es un agujero, es una consecuencia de cómo cada sistema contiene la lectura:
+
+- **macOS y Linux** — la lectura está **cerrada por defecto**. `read_allow` es lo que abre excepciones. Sin él, el agente no lee la ruta.
+- **Windows** — la lectura está **abierta por defecto**, y solo se cierra una lista de secretos conocidos. No existe nada que abrir: lo que `read_allow` concedería ya está concedido.
+
+El campo es inerte ahí porque no hay traba que aflojar. Si usas Windows, lee [Plataformas](/es/seguridad/plataformas) — la diferencia es mayor que este campo y vale la pena entenderla.
+
+## Ver también
+
+- [Configuración del repositorio](/es/referencia/config-de-repo) — el otro `.tyba/config.toml`, con reglas bien distintas
+- [Plataformas](/es/seguridad/plataformas) — lo que el sandbox garantiza en cada sistema

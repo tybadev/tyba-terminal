@@ -1,0 +1,152 @@
+---
+title: "División de paneles"
+description: "Dividir, navegar, redimensionar — y la diferencia que confunde a quien viene de otra terminal."
+---
+
+## Dividir
+
+<Tabs>
+<Tab title="macOS">
+| Acción | Atajo |
+| --- | --- |
+| Split a la derecha | `⌘D` |
+| Split abajo | `⌘⇧D` |
+</Tab>
+<Tab title="Windows y Linux">
+| Acción | Atajo |
+| --- | --- |
+| Split a la derecha | `Ctrl+Shift+E` |
+| Split abajo | `Ctrl+Shift+D` |
+</Tab>
+</Tabs>
+
+También se puede con el **botón derecho en la terminal** → *Split right* / *Split down*.
+
+<Note>
+No hay ítem de split en la [paleta de comandos](/es/interfaz/paleta-de-comandos). Solo atajo o menú contextual.
+</Note>
+
+## Cada split es una sesión nueva
+
+<Warning>
+**El split no divide el shell que está ahí — abre un shell nuevo.**
+</Warning>
+
+Si vienes de iTerm, de tmux o de Windows Terminal, esta es la diferencia que te va a agarrar. Dividir no es "mostrar el mismo shell en dos lugares": el panel nuevo nace con una sesión propia, con su propio historial y su propio proceso.
+
+Si el workspace está atado a un [host SSH](/es/ssh/hosts-y-grupos), el panel nuevo nace **en ese host** — el split hereda la conexión en vez de volver a tu máquina.
+
+## Anidar
+
+Los splits son un árbol: **todo panel puede dividirse de nuevo**, y el resultado puede dividirse otra vez. No hay límite en el código — el límite es tu pantalla.
+
+```
+┌─────────────┬─────────────┐
+│             │             │
+│             ├──────┬──────┤
+│             │      │      │
+└─────────────┴──────┴──────┘
+```
+
+## Navegar
+
+Dos formas, y la segunda es la buena:
+
+<Tabs>
+<Tab title="macOS">
+| Acción | Atajo |
+| --- | --- |
+| Panel siguiente (ciclo) | `⌘]` |
+| Panel a la izquierda | `⌘⌥←` |
+| Panel a la derecha | `⌘⌥→` |
+| Panel de arriba | `⌘⌥↑` |
+| Panel de abajo | `⌘⌥↓` |
+</Tab>
+<Tab title="Windows y Linux">
+| Acción | Atajo |
+| --- | --- |
+| Panel siguiente (ciclo) | `Ctrl+Tab` |
+| Panel a la izquierda | `Ctrl+Alt+←` |
+| Panel a la derecha | `Ctrl+Alt+→` |
+| Panel de arriba | `Ctrl+Alt+↑` |
+| Panel de abajo | `Ctrl+Alt+↓` |
+</Tab>
+</Tabs>
+
+La navegación por dirección es **geométrica**: TYBA calcula dónde está cada panel en la pantalla y va al vecino real en esa dirección. No es "el siguiente de la lista" — con cuatro paneles anidados, `⌘⌥→` va al que de hecho está a la derecha.
+
+El ciclo es circular: del último vuelve al primero.
+
+## Redimensionar
+
+**Con el mouse:** arrastra el divisor.
+
+**Con el teclado**, en pasos de 5%:
+
+<Tabs>
+<Tab title="macOS">
+| Acción | Atajo |
+| --- | --- |
+| Más estrecho / más ancho | `⌘⌃←` / `⌘⌃→` |
+| Más bajo / más alto | `⌘⌃↑` / `⌘⌃↓` |
+</Tab>
+<Tab title="Windows y Linux">
+| Acción | Atajo |
+| --- | --- |
+| Más estrecho / más ancho | `Ctrl+Alt+Shift+←` / `Ctrl+Alt+Shift+→` |
+| Más bajo / más alto | `Ctrl+Alt+Shift+↑` / `Ctrl+Alt+Shift+↓` |
+</Tab>
+</Tabs>
+
+<Note>
+Estos cuatro **no son remapeables** — son fijos.
+</Note>
+
+Ningún panel desaparece: la proporción está limitada entre **10% y 90%**. No se puede aplastar un panel a cero por accidente.
+
+## Cerrar
+
+<Tabs>
+<Tab title="macOS">
+`⌘W` cierra el panel activo.
+</Tab>
+<Tab title="Windows y Linux">
+`Ctrl+Shift+W` cierra el panel activo.
+</Tab>
+</Tabs>
+
+Al cerrar el último panel, la pestaña se cierra con él. Los paneles vecinos se reacomodan para ocupar el espacio.
+
+## El layout se recuerda
+
+El árbol de paneles, las proporciones y el panel activo se graban en cada cambio. Cerraste y abriste TYBA, el diseño vuelve.
+
+Lo que vuelve *dentro* de los paneles depende de **Settings → Code → On app start**:
+
+| Opción | Qué hace |
+| --- | --- |
+| **Reopen the sessions** (por defecto) | Recrea las sesiones de shell |
+| **Layout only** | Mantiene el diseño, sin volver a levantar las sesiones |
+| **New window** | Empieza limpio |
+
+<Warning>
+**Las sesiones de agente nunca se vuelven a levantar solas**, en ninguna de las opciones. Un agente que vuelve de la nada, sin que se lo pidas, haría trabajo que no pediste.
+</Warning>
+
+## Lo que no existe
+
+| | |
+| --- | --- |
+| **Zoom / maximizar panel** | No existe. Ni atajo, ni menú. |
+| **Límite de paneles** | No hay límite en el código. |
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Pestañas y workspaces" icon="layout" href="/es/interfaz/pestanas-y-workspaces">
+    La capa por encima de los paneles.
+  </Card>
+  <Card title="Atajos" icon="keyboard" href="/es/interfaz/atajos">
+    La lista entera, y cómo remapear.
+  </Card>
+</CardGroup>

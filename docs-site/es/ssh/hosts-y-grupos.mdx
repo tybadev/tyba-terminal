@@ -1,0 +1,140 @@
+---
+title: "Hosts y grupos"
+description: "Registrar una conexión, los tres caminos para abrirla, y lo que TYBA hace con tu ~/.ssh/config — que no es lo que esperas."
+---
+
+Una conexión SSH en TYBA es un **host registrado**: alias, dirección y el resto opcional. Conectar abre **un workspace** por host, con el nombre, el color y el grupo que le diste.
+
+El registro está en **SSH Connections**, en la sidebar. De ahí sale todo.
+
+## Los tres caminos para conectar
+
+<CardGroup cols={3}>
+  <Card title="Pantalla de Connections" icon="hard-drive">
+    El card del host tiene **Connect**. Doble clic en el card o `↵` con él en foco hacen lo mismo.
+  </Card>
+  <Card title="Nueva sesión" icon="plus">
+    `⌘N` / `Ctrl+Shift+N`. El prompt lista los hosts registrados junto a las demás opciones.
+  </Card>
+  <Card title="HostPicker" icon="list">
+    Cuando el workspace ya es SSH, el **"+"** pregunta qué host — no repite el último.
+  </Card>
+</CardGroup>
+
+<Note>
+**No existe atajo dedicado** para abrir Connections, y **no están en la paleta de comandos**. Los caminos son los tres de arriba.
+</Note>
+
+## Registrar un host
+
+**New connection**, en la pantalla de Connections. Solo dos campos son obligatorios.
+
+| Campo | Obligatorio | Qué hace |
+| --- | --- | --- |
+| **Alias** | sí | El nombre del host en TYBA **y** en tu `ssh_config`. Es con él que haces `ssh alias` en la terminal. **No puede tener espacios.** |
+| **Host** | sí | La dirección de verdad: IP o DNS. Se convierte en `HostName`. |
+| Port | no | Vacío = 22. |
+| Username | no | Se convierte en `User`. Vacío deja que OpenSSH decida. |
+| **Private key (path)** | no | Se convierte en `IdentityFile`. Es **la ruta del archivo** — TYBA nunca guarda la clave en sí. |
+| **ProxyJump** | no | El bastion por el que salta la conexión. Se convierte en `ProxyJump`. |
+| Group | no | Agrupa en la pantalla y te da el **"Connect all N"**. |
+| Color | no | El puntito del host — en el card, en el workspace y en los chips del broadcast. |
+| Notes | no | Texto tuyo. No va a ninguna parte. |
+
+Un alias con espacio se rechaza al guardar, y un alias duplicado también. Los datos viven **en la base de datos local de TYBA**, no en un archivo que tú editas.
+
+## Grupos y colores
+
+El grupo es organización, y es lo que habilita el [broadcast](/es/ssh/broadcast): el encabezado de un grupo con **dos o más hosts** gana el botón **"Connect all N"**, que los abre todos como panes verticales de un solo workspace.
+
+El color no es decoración: va al workspace, a los chips del broadcast y al workspace de un shell de container remoto. En una pantalla con cuatro panes SSH, es como sabes dónde estás escribiendo.
+
+Conectar por un grupo nombra el workspace con el **nombre y el color del grupo**. Conectar un host solo usa el **alias y el color del host**.
+
+## Tu ~/.ssh/config
+
+Aquí la expectativa suele estar invertida.
+
+<Warning>
+**TYBA no lee tu `~/.ssh/config`. No existe import.** Registrar un host es escribirlo, no apuntar a un archivo existente.
+
+El flujo es el contrario: **TYBA escribe.**
+</Warning>
+
+A partir de su propia base, TYBA genera `~/.ssh/config.d/tyba.conf` (permiso `0600`) e inserta una línea en la **cima** de tu `~/.ssh/config`:
+
+```ssh-config ~/.ssh/config
+Include config.d/tyba.conf
+
+# … todo lo que ya era tuyo sigue aquí, intacto
+```
+
+- **Tu config se preserva.** TYBA solo añade el `Include`; nunca toca el resto.
+- **El `Include` es idempotente.** No se duplica, y si ya tenías la línea, se respeta.
+- Si el `~/.ssh/config` no existe, nace solo con esa línea.
+
+El efecto colateral bueno: como el alias vive en el `ssh_config` de verdad, `ssh prod-api` funciona **fuera de TYBA** — en tu shell, en `rsync`, y es lo que hace que exista el [Docker remoto](/es/docker/docker-remoto).
+
+<Warning>
+**El `tyba.conf` se regenera entero en cada cambio de host.** La base de datos es la fuente de verdad.
+
+Editar ese archivo a mano es trabajo perdido: la próxima vez que guardes cualquier host, se sobrescribe. Lo que es tuyo va en el `~/.ssh/config`; el `config.d/tyba.conf` es de la app.
+</Warning>
+
+## Multiplexing: autenticar una vez, no en cada pane
+
+En Unix (macOS y Linux), cada bloque generado lleva:
+
+```ssh-config
+ControlMaster auto
+ControlPath ~/.ssh/tyba-cm-%C
+ControlPersist 10m
+```
+
+Traducido a lo que sientes: la **primera** conexión con un host autentica; el split, la pestaña nueva y cada consulta del panel de Docker **reusan la misma conexión**. Sin esto, tu 1Password o `ssh-agent` pediría aprobación de nuevo en cada `docker ps`. Autenticar una vez es normal; en cada comando es un bug.
+
+La conexión queda en pie durante 10 minutos después de que muere el último uso.
+
+<Warning>
+**En Windows el bloque no se emite.** El OpenSSH de Windows no implementa `ControlMaster`.
+
+Consecuencia práctica: allá **cada conexión puede pedir autenticación de nuevo** — cada split, cada pestaña. El registro y el `Include` funcionan igual; solo el reuso de conexión no existe.
+</Warning>
+
+## Autenticación: lo que vale
+
+<Note>
+**TYBA no implementa autenticación SSH.** Corre el binario `ssh` de tu sistema.
+</Note>
+
+Eso es una elección, y define el resto: **vale exactamente lo que hace tu OpenSSH.**
+
+- **Clave** vía `IdentityFile` (el campo "Private key") o vía agent — funciona.
+- **Contraseña** funciona: el prompt aparece en la terminal, como siempre. La escribes ahí.
+- **1Password, `ssh-agent`, YubiKey** — lo que ya resuelve tu `ssh` en la línea de comandos lo resuelve aquí.
+
+Y lo que **no existe**:
+
+- **No hay campo de contraseña.** TYBA no guarda, no pregunta y no retransmite contraseñas. Es de OpenSSH, en la terminal.
+- **No hay `ForwardAgent` configurable.** Si lo necesitas, ponlo en tu `~/.ssh/config` — `ssh` lo lee normalmente, y el `Include` de TYBA convive con él.
+
+<Warning>
+Un host **solo-contraseña** conecta normal en un pane, pero **no sirve para el [Docker remoto](/es/docker/docker-remoto)** — allá la exigencia de clave es técnica, no una preferencia.
+</Warning>
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Broadcast" icon="radio" href="/es/ssh/broadcast">
+    Un grupo, N panes, una sola escritura.
+  </Card>
+  <Card title="Agente por SSH" icon="triangle-alert" href="/es/ssh/agente-por-ssh">
+    Lo que pierdes al correr un agente del otro lado del caño.
+  </Card>
+  <Card title="Pestañas y workspaces" icon="columns" href="/es/interfaz/pestanas-y-workspaces">
+    Cada conexión se vuelve un workspace — cómo se organizan.
+  </Card>
+  <Card title="Docker remoto" icon="container" href="/es/docker/docker-remoto">
+    Lo que el `Include` en el ssh_config habilita gratis.
+  </Card>
+</CardGroup>

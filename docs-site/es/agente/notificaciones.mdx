@@ -1,0 +1,97 @@
+---
+title: "Notificaciones"
+sidebarTitle: "Notificaciones"
+description: "Cuándo el sistema te avisa, por qué el texto viene censurado, y el atajo que abre la sesión del último aviso."
+---
+
+Una sesión de agente tiene tiempo muerto. Te vas de la ventana, y la pregunta es cómo volver en el momento justo — sin quedarte mirando.
+
+## Solo cuando no estás mirando
+
+<Note>
+**Una notificación nativa solo dispara con la ventana de TYBA fuera de foco.**
+</Note>
+
+Es lo primero que TYBA comprueba. Con la ventana en foco, no notifica: estás viendo la sidebar y el inbox, y un banner del sistema sería ruido encima de información que ya está en pantalla.
+
+## Cuándo dispara
+
+| Situación | Cuándo |
+| --- | --- |
+| El agente terminó el turno | después de ~2s de acomodación |
+| El agente quiere una respuesta | al instante |
+| Un comando espera aprobación | al instante |
+
+<Note>
+**Los ~2 segundos son solo del fin de turno.** El agente suele parar y volver en un parpadeo — el intervalo evita avisarte de un "terminé" que ya no es verdad. Si un turno nuevo empezó en ese intervalo, el aviso se lo traga.
+
+TYBA también usa esos 2s para releer el final de la conversación y escribir un cuerpo mejor que "terminó". Las aprobaciones y las peticiones de respuesta no esperan nada — eres tú quien está bloqueando al agente.
+</Note>
+
+## Qué aparece
+
+**Título:** `Tyba — <nombre de la sesión>`. Sin nombre, queda `Tyba — agent session`.
+
+**Cuerpo:** lo que pasó — `Approval pending: <comando>`, `Agent waiting for your answer`, o el resumen de lo que hizo.
+
+### El cuerpo va redactado
+
+<Warning>
+**Un secreto no se convierte en notificación.** Antes de que el texto se convierta en un banner del sistema, pasa por un filtro que cambia los patrones conocidos por `[REDACTED]`.
+</Warning>
+
+Lo que se borra:
+
+```
+AKIA… / ASIA…      claves de AWS
+sk-…               claves en formato OpenAI
+ghp_ ghu_ gho_     tokens de GitHub
+ghs_ ghr_
+glpat-…            tokens de GitLab
+JWT                tokens de tres partes
+```
+
+El motivo es el alcance: una notificación del sistema aparece en la pantalla de bloqueo, entra en el centro de notificaciones, y puede irse al reloj o al otro portátil emparejado. Es el texto de TYBA que más se escapa de tu máquina — así que es el que menos puede cargar un secreto.
+
+<Note>
+Es un filtro por **patrón conocido**, no un detector universal. Una contraseña que no se parezca a ninguno de esos formatos pasa. La defensa de verdad es que el agente [no reciba tus secretos](/es/referencia/config-de-repo) — la redacción es la última línea, no la primera.
+</Note>
+
+## Volver a la sesión del último aviso
+
+| Acción | macOS | Windows / Linux |
+| --- | --- | --- |
+| Abrir la sesión del último aviso | `⌘⇧O` | `Ctrl+Alt+Shift+O` |
+
+Te lleva directo a la última sesión que pidió atención — sin buscar en la sidebar cuál de las siete pestañas era.
+
+<Note>
+**No se puede remapear.** No aparece en Settings → Shortcuts; es constante. Hay incluso un test que impide que cualquier atajo por defecto choque con esa combinación.
+
+Sin ningún aviso pendiente, no hace nada.
+</Note>
+
+## Qué no existe
+
+<Warning>
+**No hay interruptor de notificaciones.** Ninguna preferencia, en ningún sitio. Si TYBA tiene algo que decir y la ventana está fuera de foco, lo dice.
+
+**No hay sonido.** Ninguno, ni configurable ni fijo. Las notificaciones son visuales.
+</Warning>
+
+Para silenciarlas, la herramienta es **tu sistema**: el No molestar de macOS, el Asistente de concentración de Windows, lo que ofrezca tu escritorio de Linux. TYBA usa la API nativa, así que respetar el silencio del sistema sale gratis.
+
+<Note>
+La única cosa llamada "Notifications" en los Settings es el **título del panel del inbox**. No es un grupo de opciones.
+</Note>
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Claude Code y Codex" icon="robot" href="/es/agente/claude-code-y-codex">
+    Los status que generan los avisos.
+  </Card>
+  <Card title="Clasificación de riesgo" icon="shield" href="/es/seguridad/clasificacion-de-riesgo">
+    Lo que hace que un comando pare y te llame.
+  </Card>
+</CardGroup>

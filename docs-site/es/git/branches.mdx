@@ -1,0 +1,129 @@
+---
+title: "Branches"
+description: "El picker del panel de revisión: explorar, traer del remoto, cambiar de branch — y la única operación de red que hay ahí."
+---
+
+El panel de revisión tiene un chip con un icono de branch. Por defecto dice:
+
+```
+base a3f19c0 ‥ HEAD
+```
+
+Ese es el [`base_sha` fijado en la creación del worktree](/es/git/worktrees). Haz clic en él y se abre el **BranchPicker**.
+
+## La lista
+
+Las branches vienen del git local, ordenadas por **fecha del commit, la más reciente primero**. Cada línea trae el nombre, el asunto del último commit y, si es remota, la etiqueta `remote`.
+
+Lo que la lista hace por ti:
+
+| Regla | Efecto |
+| --- | --- |
+| La local le gana a la remota | ¿Existe `feat/x` local? La `origin/feat/x` desaparece de la lista. Una línea por branch. |
+| `origin/HEAD` se cae | Es un symref, no es una branch. Es ruido. |
+| Tope de 200 | Por encima de eso, el pie cuenta: *"+N branches not listed"*. |
+
+La branch actual viene con un ✓ verde.
+
+<Note>
+El filtro es **200 branches, punto** — las 200 más recientes. En un repo con un historial grande, la branch que quieres puede no estar en la lista, y ahí la caja de búsqueda no ayuda: filtra lo que ya vino, no va a buscar más.
+</Note>
+
+La búsqueda filtra por **nombre o asunto del commit**. `watcher` encuentra tanto `fix/watcher` como la branch cuyo último commit dice *"fix: watcher en loop"*.
+
+## Explorar
+
+Hacer clic en la línea de una branch **no cambia de branch**. Pasa a ser lo que el panel muestra — el chip se pone violeta con su nombre, y el diff pasa a ser el trabajo de esa branch.
+
+El diff de exploración no es `base_sha..HEAD`. Es:
+
+```
+merge-base(base-por-defecto, branch)..branch
+```
+
+El merge-base se recalcula cada vez, así que lo que ves es lo que la branch tiene **sobre la base por defecto** — sin lo que la base haya avanzado por su lado.
+
+**Back to session** deshace la exploración y el chip vuelve al `base ‥ HEAD`.
+
+## La base por defecto
+
+La base de comparación se resuelve en este orden, y para en la primera que exista:
+
+<Steps>
+<Step title="origin/HEAD">
+La branch default del remoto. Es el caso normal de un repo clonado.
+</Step>
+<Step title="main, después master">
+Local. Vale cuando no hay remoto — o cuando el `origin/HEAD` no está resuelto en tu clon.
+</Step>
+<Step title="HEAD">
+Último recurso. Comparar contra sí mismo da un diff vacío, y eso es mejor que un error.
+</Step>
+</Steps>
+
+<Note>
+Un clon superficial, o hecho de una forma que no trajo el `origin/HEAD`, cae en la `main`/`master` local. Si tu proyecto usa `develop` como base, la exploración va a comparar contra la `main` — no hay forma de configurar esto.
+</Note>
+
+## Fetch
+
+El icono de nube al lado de la búsqueda ejecuta:
+
+```
+git fetch --all --prune
+```
+
+Esa es la **única operación de red del picker**, y solo ocurre por un clic tuyo. Nada hace fetch en segundo plano, nada hace fetch por temporizador. Terminado el fetch, la lista se recarga sola — y el `--prune` hace que las remotas que murieron en el servidor desaparezcan de la lista.
+
+## Cambiar de branch
+
+El checkout tiene puerta propia: el icono a la derecha de cada línea que no es la actual.
+
+Está **armado en dos clics**. El primero pone el icono en ámbar (*"Click again to confirm the checkout"*); el segundo ejecuta. Si no confirmas en 3 segundos, se desarma solo.
+
+Lo que pasa después:
+
+- **Branch local** → `git checkout <branch>`.
+- **Branch remota** → `git checkout --track origin/<branch>`, creando la local con tracking.
+
+<Warning>
+**Un árbol sucio rechaza el checkout.** Si hay cualquier cosa sin commitear, viene el error: *"The working tree has uncommitted changes — commit or discard them before switching branches."*
+
+Esto no es conservadurismo: TYBA **nunca** usa `git stash` en la automatización. La stash está compartida entre todos los worktrees del repositorio — automatizar `stash` en una sesión sería tocar la pila de otra. Así que rechaza, y la decisión es tuya.
+</Warning>
+
+<Warning>
+En una sesión **no aislada**, el picker opera en la raíz del repositorio de la sesión. El checkout ahí cambia la branch de **tu copia de trabajo de verdad** — la misma en la que tu editor tiene los archivos abiertos.
+
+En una [sesión aislada](/es/git/worktrees), el checkout toca solo su worktree, y el resto de tu máquina no lo siente.
+</Warning>
+
+## Nombres de ref
+
+Todo nombre que sale del picker se valida antes de convertirse en argumento de `git`. Se rechaza lo que:
+
+- está vacío;
+- empieza con `-` (`-rf` es una flag, no una branch);
+- contiene `..` (`a..b` es un rango, no una branch);
+- tiene un espacio o un byte nulo.
+
+Los nombres vienen del propio `for-each-ref`, así que en la práctica pasan. La validación existe porque el IPC es una frontera: lo que llega ahí es entrada, no un hecho.
+
+## Qué no existe
+
+- **Crear una branch desde el picker.** Una branch nace con el worktree, derivada del título de la task.
+- **Borrar una branch desde el picker.** La branch `tyba/…` se borra junto con el worktree, en el flujo posterior a la entrega.
+- **Configurar la base por defecto.** Es `origin/HEAD` → `main` → `master` → `HEAD`, y ya.
+- **Fetch automático.** Red solo por clic.
+- **Push desde el picker.** El push [vive en la revisión](/es/review/commit-y-push), después de que hayas visto el diff.
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Leer el diff" icon="file-magnifying-glass" href="/es/review/leer-el-diff">
+    El panel donde vive el picker.
+  </Card>
+  <Card title="Resolver conflictos" icon="warning" href="/es/git/conflictos">
+    Cuando el merge para a mitad de camino.
+  </Card>
+</CardGroup>

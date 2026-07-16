@@ -209,6 +209,103 @@
             ]
           }
         ]
+      },
+      {
+        "language": "es",
+        "groups": [
+          {
+            "group": "Empezando",
+            "pages": [
+              "es/index",
+              "es/instalacion",
+              "es/primera-sesion",
+              "es/tour-de-la-interfaz"
+            ]
+          },
+          {
+            "group": "La terminal",
+            "pages": [
+              "es/terminal/usando-la-terminal",
+              "es/terminal/busqueda",
+              "es/terminal/pegar-con-seguridad",
+              "es/terminal/shell-integration"
+            ]
+          },
+          {
+            "group": "Interfaz",
+            "pages": [
+              "es/interfaz/pestanas-y-workspaces",
+              "es/interfaz/division-de-paneles",
+              "es/interfaz/paleta-de-comandos",
+              "es/interfaz/atajos"
+            ]
+          },
+          {
+            "group": "Temas",
+            "pages": [
+              "es/temas/claro-y-oscuro",
+              "es/temas/los-temas",
+              "es/temas/importar-un-tema"
+            ]
+          },
+          {
+            "group": "Sesiones de agente",
+            "pages": [
+              "es/agente/claude-code-y-codex",
+              "es/agente/composer",
+              "es/agente/hooks",
+              "es/agente/notificaciones"
+            ]
+          },
+          {
+            "group": "Worktrees y Git",
+            "pages": [
+              "es/git/worktrees",
+              "es/git/setup-script",
+              "es/git/branches",
+              "es/git/conflictos"
+            ]
+          },
+          {
+            "group": "Review y entrega",
+            "pages": [
+              "es/review/leer-el-diff",
+              "es/review/commit-y-push",
+              "es/review/merge-local",
+              "es/review/pull-requests",
+              "es/review/comentarios-al-agente"
+            ]
+          },
+          {
+            "group": "SSH",
+            "pages": [
+              "es/ssh/hosts-y-grupos",
+              "es/ssh/broadcast",
+              "es/ssh/agente-por-ssh"
+            ]
+          },
+          {
+            "group": "Docker",
+            "pages": [
+              "es/docker/contenedores",
+              "es/docker/docker-remoto"
+            ]
+          },
+          {
+            "group": "Seguridad",
+            "pages": [
+              "es/seguridad/clasificacion-de-riesgo",
+              "es/seguridad/plataformas"
+            ]
+          },
+          {
+            "group": "Referencia",
+            "pages": [
+              "es/referencia/config-de-usuario",
+              "es/referencia/config-de-repo"
+            ]
+          }
+        ]
       }
     ]
   },
