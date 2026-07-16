@@ -21,6 +21,7 @@ import {
 
 interface Props {
   session: Session;
+  hostAlias: string;
   expanded: boolean;
   onToggleExpand: () => void;
   onClose: () => void;
@@ -48,6 +49,7 @@ function dotClass(t: SessionTunnel): string {
 
 export function TunnelsView({
   session,
+  hostAlias,
   expanded,
   onToggleExpand,
   onClose,
@@ -120,7 +122,7 @@ export function TunnelsView({
           {t("tunnelsTitle")}
         </span>
         <span className="truncate font-mono text-[11px] text-tyba-text-muted">
-          {session.title}
+          {hostAlias}
         </span>
         <div className="flex-1" />
         <button
@@ -207,10 +209,10 @@ export function TunnelsView({
             <p className="mt-1 text-[11px] text-tyba-text-muted">
               {pendingRisky.kind === "remote"
                 ? t("tunnelsConfirmRemote", {
-                    host: session.title,
+                    host: hostAlias,
                     port: pendingRisky.listen_port,
                   })
-                : t("tunnelsConfirmDynamic", { host: session.title })}
+                : t("tunnelsConfirmDynamic", { host: hostAlias })}
             </p>
             <div className="mt-2 flex gap-1.5">
               <Button

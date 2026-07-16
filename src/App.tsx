@@ -593,6 +593,11 @@ export default function App() {
         : null,
     [sideView, sessionById],
   );
+  const tunnelsHostAlias = useMemo(() => {
+    const kind = tunnelsTarget?.kind;
+    if (kind?.type !== "ssh") return "";
+    return sshHosts.find((h) => h.id === kind.host_id)?.alias ?? "";
+  }, [tunnelsTarget, sshHosts]);
   const sideExpanded = Boolean(sideView && activeWorkspace?.side_expanded);
   const sideRatio = activeWorkspace?.side_ratio ?? 0.5;
 
@@ -3401,6 +3406,7 @@ export default function App() {
                           <TunnelsView
                             key={tunnelsTarget.id}
                             session={tunnelsTarget}
+                            hostAlias={tunnelsHostAlias}
                             expanded={sideExpanded}
                             onToggleExpand={() =>
                               void setSideViewExpanded(
