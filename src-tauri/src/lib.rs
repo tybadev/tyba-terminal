@@ -100,6 +100,24 @@ fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
     }
 }
 
+fn gc_host(state: &State<'_, AppState>, alias: &str) {
+    let Ok(install) = crate::ssh::tmux::install_id(&state.store) else {
+        return;
+    };
+    let known: std::collections::HashSet<SessionId> =
+        state.sessions.list().into_iter().map(|s| s.id).collect();
+    let alias = alias.to_string();
+    std::thread::spawn(move || {
+        let collected = crate::ssh::tmux::collect_orphans(&alias, &install, &known);
+        if !collected.is_empty() {
+            eprintln!(
+                "{alias}: {} sessão(ões) órfã(s) recolhida(s)",
+                collected.len()
+            );
+        }
+    });
+}
+
 fn end_ssh_session_on_host(state: &State<'_, AppState>, session: &session::Session) {
     let SessionKind::Ssh { host_id } = &session.kind else {
         return;
@@ -461,6 +479,7 @@ fn create_session(
             let _ = state
                 .store
                 .touch_host_connected(&host.id, chrono::Utc::now());
+            gc_host(&state, &host.alias);
             session
         }
     };
@@ -1256,6 +1275,7 @@ fn connect_host_group(
         let _ = state
             .store
             .touch_host_connected(&host.id, chrono::Utc::now());
+        gc_host(&state, &host.alias);
 
         match last_pane {
             None => {

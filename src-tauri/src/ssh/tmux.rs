@@ -108,6 +108,33 @@ pub fn kill_remote(alias: &str, name: &str) -> std::io::Result<std::process::Exi
         .status()
 }
 
+pub fn list_sessions(alias: &str) -> Vec<String> {
+    let out = std::process::Command::new("ssh")
+        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias])
+        .arg("tmux ls -F '#{session_name}' 2>/dev/null; true")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+pub fn collect_orphans(alias: &str, install_id: &str, known: &HashSet<Uuid>) -> Vec<String> {
+    let listed = list_sessions(alias);
+    let doomed = orphans(&listed, install_id, known);
+    for name in &doomed {
+        let _ = kill_remote(alias, name);
+    }
+    doomed
+}
+
 pub fn kill_command(name: &str) -> String {
     format!(
         "tmux kill-session -t {name} 2>/dev/null; \
