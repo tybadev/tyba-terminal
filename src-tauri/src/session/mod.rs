@@ -104,6 +104,25 @@ impl SessionStatus {
     }
 }
 
+/// O estado do **Cano** — não o da sessão. Responde "eu alcanço o Host?", que é
+/// pergunta independente de "o que o processo está fazendo" (`SessionStatus`).
+///
+/// Os dois eixos existem porque a combinação que a persistência inteira serve
+/// para representar — *build `Running` no Host, Cano `Dropped`* — é indizível num
+/// enum só: achatar obrigaria a escolher qual das duas verdades contar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionState {
+    /// O Cano está de pé.
+    #[default]
+    Live,
+    /// O Cano caiu, a SSH Session está viva no Host, o TYBA está tentando voltar.
+    Reconnecting,
+    /// Desistiu de tentar sozinho. A SSH Session **continua viva no Host** — o
+    /// que acabou foi a paciência do backoff, não o trabalho do dono.
+    Dropped,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
     pub id: SessionId,
@@ -117,6 +136,10 @@ pub struct Session {
     /// Pasta onde o processo subiu. É o que permite reabrir a sessão no mesmo
     /// lugar depois de fechar o app — sem ela o PTY morre e o pane fica órfão.
     pub cwd: Option<PathBuf>,
+    /// Só faz sentido em `SessionKind::Ssh`. Derivado do Cano, nunca persistido:
+    /// no boot ninguém está conectado ainda.
+    #[serde(default)]
+    pub connection: ConnectionState,
 }
 
 #[derive(Debug, Deserialize)]
@@ -311,7 +334,37 @@ impl SessionManager {
         rows: u16,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
-        let id = Uuid::new_v4();
+        self.spawn_ssh(
+            app,
+            pty_pool,
+            Uuid::new_v4(),
+            host_id,
+            alias,
+            cwd,
+            cols,
+            rows,
+            on_exit,
+        )
+    }
+
+    /// Sobe o `ssh` para `id`. **Reusar o id é o que faz reatar reatar**: o nome
+    /// do tmux no Host deriva dele, então um id novo abriria uma sessão nova e
+    /// abandonaria a que tem o trabalho do dono — que o GC depois recolheria.
+    /// Por isso o reattach (queda ou boot) passa aqui com o id de sempre, em vez
+    /// de criar sessão e remapear como o Resume faz com shell.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_ssh(
+        &self,
+        app: AppHandle,
+        pty_pool: &SharedPtyPool,
+        id: SessionId,
+        host_id: String,
+        alias: &str,
+        cwd: Option<&std::path::Path>,
+        cols: u16,
+        rows: u16,
+        on_exit: impl FnOnce(SessionId) + Send + 'static,
+    ) -> Result<Session, PtyError> {
         let mut cmd = CommandBuilder::new("ssh");
         // `-t` porque com comando remoto o ssh não pede pty por conta própria, e
         // sem pty o tmux recusa a subir.
@@ -388,6 +441,7 @@ impl SessionManager {
             attention: false,
             created_at: Utc::now(),
             cwd,
+            connection: ConnectionState::Live,
         };
         self.sessions.write().insert(id, session.clone());
         let _ = self.store.upsert_session(&session);
@@ -420,6 +474,19 @@ impl SessionManager {
         }
     }
 
+    /// Move o eixo do Cano sem tocar no `SessionStatus`: um build `Running` no
+    /// Host continua `Running` com o Cano no chão.
+    pub fn set_connection(&self, app: &AppHandle, id: SessionId, connection: ConnectionState) {
+        let mut sessions = self.sessions.write();
+        if let Some(s) = sessions.get_mut(&id) {
+            if s.connection == connection {
+                return;
+            }
+            s.connection = connection;
+            emit_status(app, s);
+        }
+    }
+
     pub fn mark_seen(&self, app: &AppHandle, id: SessionId) {
         let mut sessions = self.sessions.write();
         if let Some(s) = sessions.get_mut(&id) {
@@ -432,8 +499,13 @@ impl SessionManager {
     }
 
     pub fn dispose(&self, pty_pool: &SharedPtyPool, id: SessionId) {
-        let _ = pty_pool.kill(id);
+        // Tirar do mapa ANTES de matar não é estilo: matar o PTY dispara o
+        // `on_exit`, e o `session_exited` de uma SSH Session tenta reatar. Se ele
+        // ainda encontrar a sessão aqui, o TYBA reconecta o que o dono acabou de
+        // fechar — a sonda pode chegar antes do `kill-session` remoto e ver a
+        // sessão viva. Removendo primeiro, `session_exited` sai na porta.
         self.sessions.write().remove(&id);
+        let _ = pty_pool.kill(id);
         let _ = self.store.remove_session(id);
     }
 
@@ -502,6 +574,20 @@ pub enum StartupMode {
 }
 
 pub const STARTUP_PREF_KEY: &str = "pref.startup";
+
+impl SessionKind {
+    /// No modo `Fresh`, esta sessão pode ser esquecida (`forget`)?
+    ///
+    /// Para SSH a resposta é **não**, e não é detalhe: o `forget` apaga o id do
+    /// SQLite, a sessão viva no Host vira órfã do **próprio prefixo** e o GC a
+    /// mata no boot — o dono perderia o build da sexta por ter aberto o app na
+    /// segunda. "Janela nova, do zero" é preferência sobre o que abre na tela,
+    /// não autorização para encerrar trabalho em servidor; e quem escolheu Fresh
+    /// escolheu antes de existir SSH no TYBA.
+    pub fn forgettable_on_fresh(&self) -> bool {
+        !matches!(self, SessionKind::Ssh { .. })
+    }
+}
 
 impl StartupMode {
     pub fn parse(raw: Option<&str>) -> Self {
@@ -979,6 +1065,7 @@ mod tests {
             attention: false,
             created_at: Utc::now(),
             cwd: Some(PathBuf::from("/tmp")),
+            connection: ConnectionState::default(),
         }
     }
 
@@ -1265,6 +1352,51 @@ mod tests {
             StartupMode::KeepLayout
         );
         assert_eq!(StartupMode::parse(Some("fresh")), StartupMode::Fresh);
+    }
+
+    #[test]
+    fn fresh_nunca_esquece_ssh_porque_o_gc_mataria_a_sessao_viva() {
+        let ssh = SessionKind::Ssh {
+            host_id: "h1".into(),
+        };
+        assert!(
+            !ssh.forgettable_on_fresh(),
+            "forget apaga o id do SQLite → a sessão viva no Host vira órfã do \
+             próprio prefixo → o GC a mata no boot: o dono perde o build da sexta \
+             por abrir o app na segunda"
+        );
+    }
+
+    #[test]
+    fn fresh_esquece_o_resto_normalmente() {
+        assert!(SessionKind::Shell.forgettable_on_fresh());
+        assert!(SessionKind::Agent {
+            runner: AgentRunnerKind::ClaudeCode
+        }
+        .forgettable_on_fresh());
+        assert!(SessionKind::Container {
+            host_id: Some("h1".into()),
+            container_id: "c1".into()
+        }
+        .forgettable_on_fresh(),);
+    }
+
+    #[test]
+    fn conexao_e_eixo_separado_do_status() {
+        let mut s = make(
+            SessionKind::Ssh {
+                host_id: "h1".into(),
+            },
+            SessionStatus::Running,
+        );
+        s.connection = ConnectionState::Dropped;
+        assert_eq!(
+            s.status,
+            SessionStatus::Running,
+            "o build segue rodando no Host com o Cano no chão — é a combinação \
+             que a feature existe para representar"
+        );
+        assert_eq!(s.connection, ConnectionState::Dropped);
     }
 
     #[test]

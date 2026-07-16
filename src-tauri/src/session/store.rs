@@ -692,6 +692,9 @@ impl RawSession {
             attention: false,
             created_at,
             cwd: self.cwd.map(PathBuf::from),
+            // Estado do Cano não se persiste: no boot não há Cano nenhum de pé.
+            // Quem restaura uma SSH Session decide se reata.
+            connection: crate::session::ConnectionState::default(),
         })
     }
 }
@@ -772,6 +775,7 @@ mod tests {
             attention: false,
             created_at: Utc::now(),
             cwd: Some(PathBuf::from("/repo/sub")),
+            connection: crate::session::ConnectionState::default(),
         }
     }
 

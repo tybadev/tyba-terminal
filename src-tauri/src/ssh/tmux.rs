@@ -125,6 +125,24 @@ pub fn orphans(listed: &[String], install_id: &str, known: &HashSet<Uuid>) -> Ve
         .collect()
 }
 
+/// Pergunta ao Host se a SSH Session ainda existe.
+///
+/// Falha de rede vira `Unknown` (que reata) e não `Gone`: só o Host tem
+/// autoridade para dizer que acabou, e um Host que não responde não disse nada.
+pub fn probe(alias: &str, name: &str) -> Probe {
+    let status = std::process::Command::new("ssh")
+        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias])
+        .arg(format!("tmux has-session -t {name}"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match status {
+        Ok(s) => interpret_has_session(s.code()),
+        Err(_) => Probe::Unknown,
+    }
+}
+
 /// Encerra a SSH Session no Host. É o gesto deliberado do dono (fechar tab),
 /// simétrico ao `killpg` do shell local — não é o Cano caindo.
 ///

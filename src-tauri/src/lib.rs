@@ -146,7 +146,13 @@ fn session_exited(app: &AppHandle, id: SessionId) {
         return;
     };
     teardown_agent_session(app, &state, id);
-    if matches!(session.kind, SessionKind::Shell | SessionKind::Ssh { .. }) {
+    // O `ssh` morrer deixou de significar "acabou": a SSH Session mora no Host.
+    // Quem decide é o Host, não este processo.
+    if matches!(session.kind, SessionKind::Ssh { .. }) {
+        reattach_or_finish(app.clone(), id);
+        return;
+    }
+    if matches!(session.kind, SessionKind::Shell) {
         state.sessions.dispose(&state.pty_pool, id);
         let _ = state.layout.session_disposed(id);
         emit_layout(app, &state);
@@ -156,6 +162,96 @@ fn session_exited(app: &AppHandle, id: SessionId) {
             .set_status(app, id, SessionStatus::Exited { code: -1 });
         let _ = state.repo_reconcile.send(());
     }
+}
+
+/// Dados de uma SSH Session que o laço de reattach precisa carregar para a
+/// thread — resolvidos aqui porque `State` não atravessa.
+fn ssh_target(state: &State<'_, AppState>, id: SessionId) -> Option<(String, String, String)> {
+    let session = state.sessions.get(id)?;
+    let SessionKind::Ssh { host_id } = &session.kind else {
+        return None;
+    };
+    let hosts = state.store.load_hosts().ok()?;
+    let alias = hosts.iter().find(|h| &h.id == host_id)?.alias.clone();
+    let install = crate::ssh::tmux::install_id(&state.store).ok()?;
+    let name = crate::ssh::tmux::session_name(&install, id);
+    Some((host_id.clone(), alias, name))
+}
+
+/// O Cano caiu. Pergunta ao Host o que aconteceu e age.
+///
+/// Tudo numa thread: sondar e reconectar são rede, e comando síncrono do Tauri
+/// roda na main thread — a janela congelaria a cada queda.
+fn reattach_or_finish(app: AppHandle, id: SessionId) {
+    std::thread::spawn(move || {
+        let Some((host_id, alias, name)) = ssh_target(&app.state::<AppState>(), id) else {
+            return;
+        };
+
+        let mut attempt = 0u32;
+        loop {
+            // A sessão saiu do mapa no meio do caminho: o dono fechou a tab.
+            if app.state::<AppState>().sessions.get(id).is_none() {
+                return;
+            }
+
+            let verdict = crate::ssh::tmux::probe(&alias, &name);
+            if !verdict.should_reattach() {
+                let state = app.state::<AppState>();
+                if verdict == crate::ssh::tmux::Probe::NoTmux {
+                    eprintln!("{alias}: host sem tmux — sessão sem persistência");
+                }
+                state.sessions.dispose(&state.pty_pool, id);
+                let _ = state.layout.session_disposed(id);
+                emit_layout(&app, &state);
+                return;
+            }
+
+            let Some(delay) = crate::ssh::tmux::retry_delay(attempt) else {
+                // Desistir não perde nada: a SSH Session continua viva no Host.
+                // O que acabou foi a paciência do backoff.
+                app.state::<AppState>().sessions.set_connection(
+                    &app,
+                    id,
+                    session::ConnectionState::Dropped,
+                );
+                return;
+            };
+            app.state::<AppState>().sessions.set_connection(
+                &app,
+                id,
+                session::ConnectionState::Reconnecting,
+            );
+            std::thread::sleep(delay);
+
+            if reattach_now(&app, id, &host_id, &alias).is_ok() {
+                return;
+            }
+            attempt += 1;
+        }
+    });
+}
+
+/// Sobe o `ssh` de novo **com o mesmo id** — é o id que nomeia o tmux, então é
+/// ele que faz o `new-session -A` reatar em vez de criar outra.
+fn reattach_now(app: &AppHandle, id: SessionId, host_id: &str, alias: &str) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let handle = app.clone();
+    state
+        .sessions
+        .spawn_ssh(
+            app.clone(),
+            &state.pty_pool,
+            id,
+            host_id.to_string(),
+            alias,
+            None,
+            100,
+            30,
+            move |id| session_exited(&handle, id),
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -225,9 +321,23 @@ fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
 /// startup. Devolve o mapa `sessão morta -> sessão nova` para o layout reapontar
 /// os panes: sem isso o pane guarda um id que não existe mais e a tab abre vazia.
 ///
-/// Só shell é reaberto. Um agente não é um processo idempotente: religá-lo sozinho
-/// no boot faria um agente começar a agir sem ninguém ter pedido — a sessão volta
-/// morta, e o dono decide.
+fn hosts_alias(store: &Arc<session::store::Store>, host_id: &str) -> Option<String> {
+    store
+        .load_hosts()
+        .ok()?
+        .iter()
+        .find(|h| h.id == host_id)
+        .map(|h| h.alias.clone())
+}
+
+/// Shell é reaberto e SSH é **reatado** — coisas diferentes: o shell morreu e
+/// nasce de novo no mesmo cwd; a SSH Session nunca morreu, está viva no Host e o
+/// TYBA só reconstrói o Cano até ela (mesmo id ⇒ mesmo nome de tmux ⇒ o
+/// `new-session -A` acha a sessão de ontem em vez de criar outra).
+///
+/// Agente continua de fora: não é processo idempotente. Religá-lo sozinho no boot
+/// faria um agente começar a agir sem ninguém ter pedido — a sessão volta morta, e
+/// o dono decide.
 fn resume_startup(
     app: &AppHandle,
     store: &Arc<session::store::Store>,
@@ -246,13 +356,7 @@ fn resume_startup(
 
     if mode == session::StartupMode::Fresh {
         for s in dead {
-            // "Janela nova, do zero" é preferência sobre o que abre na tela, não
-            // autorização para encerrar trabalho em servidor: quem escolheu Fresh
-            // escolheu antes de existir SSH. Dar `forget` aqui apagaria o id do
-            // SQLite, a sessão viva no Host viraria órfã do PRÓPRIO prefixo e o GC
-            // a mataria no boot seguinte — o dono perderia o build da sexta por ter
-            // aberto o app na segunda. Ela sobrevive como Sessão recuperável.
-            if matches!(s.kind, SessionKind::Ssh { .. }) {
+            if !s.kind.forgettable_on_fresh() {
                 continue;
             }
             sessions.forget(s.id);
@@ -264,6 +368,30 @@ fn resume_startup(
     }
 
     for old in dead {
+        // SSH reata com o **mesmo id** e sem remap: o id nomeia o tmux no Host,
+        // então um id novo abriria outra sessão e abandonaria a que tem o
+        // trabalho do dono. É o oposto do shell, cujo processo morreu de verdade
+        // e só precisa nascer de novo no mesmo cwd.
+        if let SessionKind::Ssh { host_id } = &old.kind {
+            let Some(alias) = hosts_alias(store, host_id) else {
+                continue;
+            };
+            let handle = app.clone();
+            if let Err(e) = sessions.spawn_ssh(
+                app.clone(),
+                pty_pool,
+                old.id,
+                host_id.clone(),
+                &alias,
+                None,
+                100,
+                30,
+                move |id| session_exited(&handle, id),
+            ) {
+                eprintln!("reattach da sessão {}: {e}", old.id);
+            }
+            continue;
+        }
         if !matches!(old.kind, SessionKind::Shell) {
             continue;
         }
