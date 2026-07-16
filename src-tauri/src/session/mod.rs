@@ -150,9 +150,9 @@ impl SessionManager {
     fn tmux_wrap(&self, id: SessionId) -> Result<String, PtyError> {
         let install = crate::ssh::tmux::install_id(&self.store)
             .map_err(|e| PtyError::Spawn(format!("install_id: {e}")))?;
-        Ok(crate::ssh::tmux::wrap_command(&crate::ssh::tmux::session_name(
-            &install, id,
-        )))
+        Ok(crate::ssh::tmux::wrap_command(
+            &crate::ssh::tmux::session_name(&install, id),
+        ))
     }
 
     fn preferred_editor_command(&self) -> Option<String> {

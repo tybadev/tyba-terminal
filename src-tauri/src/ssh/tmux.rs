@@ -125,12 +125,93 @@ pub fn orphans(listed: &[String], install_id: &str, known: &HashSet<Uuid>) -> Ve
         .collect()
 }
 
+/// Encerra a SSH Session no Host. É o gesto deliberado do dono (fechar tab),
+/// simétrico ao `killpg` do shell local — não é o Cano caindo.
+///
+/// `-o BatchMode=yes` porque isto roda sem tela: sem ele, um host que peça senha
+/// penduraria a thread esperando input que ninguém vai digitar. O ControlMaster
+/// da conexão que acabou de morrer ainda está quente (ControlPersist 10m), então
+/// na prática não há handshake novo.
+pub fn kill_remote(alias: &str, name: &str) -> std::io::Result<std::process::ExitStatus> {
+    std::process::Command::new("ssh")
+        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias])
+        .arg(kill_command(name))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+}
+
+/// Mata a sessão **e** o cliente que sobrou.
+///
+/// Achado no primeiro teste real: quando o Cano morre, o processo
+/// `tmux new-session` que o `ssh` spawnou não morre com o hangup — reaparece com
+/// `ppid=1`, sem tty, e fica pendurado na máquina do dono. O `kill-session`
+/// derruba o cliente daquela sessão junto; o `pkill` cobre o que já tinha sido
+/// adotado pelo init numa queda anterior. `true` no fim porque não achar nada
+/// para matar é sucesso, não erro.
+///
+/// O `[t]` não é enfeite: o padrão do `pkill` aparece na linha de comando do
+/// próprio shell que o executa (o `bash -c` do sshd), e `pkill -f` exclui a si
+/// mesmo mas **não ao pai**. Medido na VPS: sem o colchete o comando se suicida
+/// no meio — o `true` nunca roda e o ssh devolve 255. Com ele, a regex `[t]mux`
+/// casa `tmux` nos alvos, e a linha do shell (que contém `[t]mux` literal) não
+/// casa consigo mesma.
+pub fn kill_command(name: &str) -> String {
+    format!(
+        "tmux kill-session -t {name} 2>/dev/null; \
+         pkill -f '[t]mux new-session -A -s {name}' 2>/dev/null; \
+         true"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn uuid(n: u128) -> Uuid {
         Uuid::from_u128(n)
+    }
+
+    #[test]
+    fn kill_mata_a_sessao_e_o_cliente_orfao() {
+        let name = session_name("a3f", uuid(0x9f3a));
+        let cmd = kill_command(&name);
+        assert!(
+            cmd.contains(&format!("kill-session -t {name}")),
+            "got: {cmd}"
+        );
+        assert!(
+            cmd.contains(&format!("pkill -f '[t]mux new-session -A -s {name}'")),
+            "o cliente vira órfão do init quando o cano morre; kill-session sozinho \
+             não o alcança se ele já ficou pendurado antes: {cmd}"
+        );
+        assert!(
+            cmd.ends_with("true"),
+            "não achar o que matar é sucesso, não erro: {cmd}"
+        );
+    }
+
+    /// Medido na VPS: `pkill -f 'tmux new-session…'` casa a linha do próprio
+    /// `bash -c` que o executa e mata o pai — o `true` não roda e o ssh volta 255.
+    /// O `[t]` faz a regex casar os alvos sem casar a si mesma.
+    #[test]
+    fn kill_nao_pode_matar_o_shell_que_o_executa() {
+        let cmd = kill_command(&session_name("a3f", uuid(0x9f3a)));
+        assert!(
+            !cmd.contains("pkill -f 'tmux"),
+            "sem o [t] o comando se suicida no meio: {cmd}"
+        );
+        assert!(cmd.contains("pkill -f '[t]mux"), "got: {cmd}");
+    }
+
+    #[test]
+    fn kill_e_especifico_da_sessao_nunca_do_servidor() {
+        let cmd = kill_command(&session_name("a3f", uuid(0x9f3a)));
+        assert!(
+            !cmd.contains("kill-server"),
+            "kill-server derrubaria as sessões do dono e as de outras instalações: {cmd}"
+        );
     }
 
     #[test]

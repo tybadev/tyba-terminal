@@ -93,15 +93,49 @@ fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
     for id in ids {
         if let Some(s) = state.sessions.get(*id) {
             if matches!(s.kind, SessionKind::Shell | SessionKind::Ssh { .. }) {
+                end_ssh_session_on_host(state, &s);
                 state.sessions.dispose(&state.pty_pool, *id);
             }
         }
     }
 }
 
+/// Fechar tab é o único gesto que encerra a SSH Session no Host — fechar o app,
+/// dormir ou perder o wifi só derrubam o Cano. Sem isto, cada tab fechada deixa
+/// uma sessão viva na máquina do dono para sempre.
+///
+/// Vai para uma thread porque comando síncrono do Tauri roda na **main thread**:
+/// fechar tab é gesto instantâneo e não pode esperar um round-trip de rede. E se
+/// falhar, não trava nada — o GC recolhe depois, que é para isso que ele existe.
+fn end_ssh_session_on_host(state: &State<'_, AppState>, session: &session::Session) {
+    let SessionKind::Ssh { host_id } = &session.kind else {
+        return;
+    };
+    let Ok(hosts) = state.store.load_hosts() else {
+        return;
+    };
+    let Some(alias) = hosts
+        .iter()
+        .find(|h| &h.id == host_id)
+        .map(|h| h.alias.clone())
+    else {
+        return;
+    };
+    let Ok(install) = crate::ssh::tmux::install_id(&state.store) else {
+        return;
+    };
+    let name = crate::ssh::tmux::session_name(&install, session.id);
+    std::thread::spawn(move || {
+        let _ = crate::ssh::tmux::kill_remote(&alias, &name);
+    });
+}
+
 fn dispose_all(app: &AppHandle, state: &State<'_, AppState>, ids: &[SessionId]) {
     for id in ids {
         teardown_agent_session(app, state, *id);
+        if let Some(s) = state.sessions.get(*id) {
+            end_ssh_session_on_host(state, &s);
+        }
         state.sessions.dispose(&state.pty_pool, *id);
     }
 }
@@ -212,6 +246,15 @@ fn resume_startup(
 
     if mode == session::StartupMode::Fresh {
         for s in dead {
+            // "Janela nova, do zero" é preferência sobre o que abre na tela, não
+            // autorização para encerrar trabalho em servidor: quem escolheu Fresh
+            // escolheu antes de existir SSH. Dar `forget` aqui apagaria o id do
+            // SQLite, a sessão viva no Host viraria órfã do PRÓPRIO prefixo e o GC
+            // a mataria no boot seguinte — o dono perderia o build da sexta por ter
+            // aberto o app na segunda. Ela sobrevive como Sessão recuperável.
+            if matches!(s.kind, SessionKind::Ssh { .. }) {
+                continue;
+            }
             sessions.forget(s.id);
         }
         return remap;
