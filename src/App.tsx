@@ -163,6 +163,7 @@ import {
   broadcastWrite,
   broadcastSubmit,
   connectHostGroup,
+  reconnectSsh,
   listHosts,
   listHostGroups,
   tagWorkspace,
@@ -3172,6 +3173,14 @@ export default function App() {
                         focused={s.id === activeId}
                         framed={(paneLayout?.panes.length ?? 0) > 1}
                         connecting={s.kind.type === "ssh"}
+                        connection={
+                          s.kind.type === "ssh" ? s.connection : undefined
+                        }
+                        onReconnect={
+                          s.kind.type === "ssh"
+                            ? () => void reconnectSsh(s.id)
+                            : undefined
+                        }
                         onBroadcastInput={
                           broadcastOn && s.kind.type === "ssh"
                             ? handleBroadcastInput
