@@ -145,6 +145,16 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    /// O comando remoto de uma SSH Session: um tmux que o dono não vê, para que
+    /// a sessão sobreviva ao Cano. Ver `ssh::tmux` e a tech-spec 02.
+    fn tmux_wrap(&self, id: SessionId) -> Result<String, PtyError> {
+        let install = crate::ssh::tmux::install_id(&self.store)
+            .map_err(|e| PtyError::Spawn(format!("install_id: {e}")))?;
+        Ok(crate::ssh::tmux::wrap_command(&crate::ssh::tmux::session_name(
+            &install, id,
+        )))
+    }
+
     fn preferred_editor_command(&self) -> Option<String> {
         let id = self.store.get_setting(EDITOR_PREF_KEY).ok().flatten()?;
         crate::editor::env_command(&id)
@@ -303,7 +313,11 @@ impl SessionManager {
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
         let mut cmd = CommandBuilder::new("ssh");
+        // `-t` porque com comando remoto o ssh não pede pty por conta própria, e
+        // sem pty o tmux recusa a subir.
+        cmd.arg("-t");
         cmd.arg(alias);
+        cmd.arg(self.tmux_wrap(id)?);
         if let Some(cwd) = cwd {
             cmd.cwd(cwd);
         }
