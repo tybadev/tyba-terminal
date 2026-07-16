@@ -43,6 +43,13 @@ impl TunnelKind {
         self.reach() == TunnelReach::Inbound
     }
 
+    pub fn binds_locally(self) -> bool {
+        match self {
+            TunnelKind::Local | TunnelKind::Dynamic => true,
+            TunnelKind::Remote => false,
+        }
+    }
+
     pub fn flag(self) -> &'static str {
         match self {
             TunnelKind::Local => "-L",
@@ -204,6 +211,9 @@ pub fn close_on_master(alias: &str, t: &Tunnel) -> Result<(), AppError> {
 }
 
 pub fn local_port_free(t: &Tunnel) -> bool {
+    if !t.kind.binds_locally() {
+        return true;
+    }
     std::net::TcpListener::bind((t.bind_address(), t.listen_port)).is_ok()
 }
 
@@ -512,6 +522,37 @@ mod tests {
             "estado de túnel fechado não pode ficar pendurado no mapa: um id \
              reusado herdaria Live sem ninguém ter aberto nada"
         );
+    }
+
+    #[test]
+    fn o_pre_voo_nao_opina_sobre_o_remote_forward() {
+        let squatter = std::net::TcpListener::bind(("127.0.0.1", 15486)).unwrap();
+        let r = Tunnel {
+            kind: TunnelKind::Remote,
+            listen_port: 15486,
+            listen_host: None,
+            target_host: Some("localhost".into()),
+            target_port: Some(3000),
+        };
+
+        assert!(
+            local_port_free(&r),
+            "o -R escuta no HOST REMOTO: perguntar pela porta local é pergunta \
+             errada. Sem isto, abrir -R 15500 no Windows seria recusado porque o \
+             próprio -L 15500 do dono segura a porta aqui"
+        );
+        assert!(
+            !local_port_free(&Tunnel {
+                kind: TunnelKind::Dynamic,
+                listen_port: 15486,
+                listen_host: None,
+                target_host: None,
+                target_port: None,
+            }),
+            "-D escuta local (é proxy SOCKS na máquina do dono), então o pré-voo \
+             vale — este eixo NÃO é o reach() do ADR, onde -D anda com -R"
+        );
+        drop(squatter);
     }
 
     #[test]
