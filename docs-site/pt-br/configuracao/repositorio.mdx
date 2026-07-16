@@ -1,0 +1,105 @@
+---
+title: "Configuração do repositório"
+sidebarTitle: ".tyba/config.toml"
+description: "Agente padrão e variáveis de ambiente por repositório — e por que um arquivo novo não vale nada até você aprovar."
+---
+
+Cada repositório pode ter o seu:
+
+```
+<raiz-do-repo>/.tyba/config.toml
+```
+
+A raiz é o toplevel do git — o mesmo que `git rev-parse --show-toplevel`. Não é criado pelo TYBA; ausente é o caso normal.
+
+Ele é **versionado junto com o projeto**, e é aí que mora o problema que a próxima seção resolve.
+
+## O arquivo inteiro
+
+```toml title=".tyba/config.toml"
+[agent]
+default = "claude"
+
+[agent.env]
+allow = ["DATABASE_URL", "BUN_INSTALL"]
+```
+
+| Campo | Tipo | Padrão | O que faz |
+| --- | --- | --- | --- |
+| `agent.default` | string | — | Agente pré-selecionado ao criar sessão neste repo |
+| `agent.env.allow` | lista de strings | `[]` | Variáveis do seu ambiente repassadas ao agente |
+
+## `agent.default`
+
+Três valores são reconhecidos:
+
+| Valor | Efeito |
+| --- | --- |
+| `"codex"` | Pré-seleciona o Codex — **se o binário `codex` estiver instalado** |
+| `"claude"` | Claude Code |
+| `"claude_code"` | Idem, forma longa |
+
+Qualquer outro valor é **ignorado em silêncio**. `default = "cursor"` não dá erro e não faz nada.
+
+<Note>
+Como o Claude Code já é o padrão do produto, na prática `default = "claude"` não muda nada. O campo só tem efeito visível com `"codex"`, e mesmo assim só quando o `codex` está no seu `PATH`.
+</Note>
+
+## `agent.env.allow`
+
+Sessões de agente **não herdam o seu ambiente**. Elas recebem uma base fixa e nada mais:
+
+```
+PATH   HOME   USER   LANG   TMPDIR   SHELL
+```
+
+Seus tokens, `DATABASE_URL`, chaves de API — nada disso chega ao agente por padrão. Se o projeto precisa de alguma variável, liste aqui:
+
+```toml
+[agent.env]
+allow = ["DATABASE_URL", "BUN_INSTALL"]
+```
+
+Os nomes precisam ser identificadores válidos (`[A-Za-z_][A-Za-z0-9_]*`).
+
+<Note>
+A allowlist só **soma** sobre a base — nunca sobrescreve. Listar `PATH` não sequestra o `PATH` do agente: o TYBA força o dele depois, e um repositório hostil não consegue apontar o binário do agente para outro lugar.
+</Note>
+
+## Um arquivo novo não vale nada até você aprovar
+
+Este é o desenho mais importante da página, e ele existe por um motivo concreto: **você clona repositório de terceiros.** Se um `.tyba/config.toml` versionado tivesse efeito automático, qualquer repositório poderia pedir o seu `AWS_SECRET_ACCESS_KEY` no ambiente do agente só por você abrir o projeto.
+
+Então:
+
+<Steps>
+<Step title="O TYBA calcula o hash do arquivo">
+Um SHA-256 do conteúdo exato.
+</Step>
+<Step title="Ele pergunta a você">
+O que aquele arquivo pede — agente padrão e quais variáveis — antes de aplicar qualquer coisa.
+</Step>
+<Step title="Seu consentimento vale para aquele hash, e só">
+Enquanto o arquivo não mudar, ele vale.
+</Step>
+<Step title="Um byte diferente derruba o consentimento">
+Alterou, veio um `git pull` que mexeu nele, trocou de branch — o hash muda, o consentimento morre, e o TYBA pergunta de novo.
+</Step>
+</Steps>
+
+**Sem consentimento, o arquivo é como se não existisse.** A sessão sobe normalmente, com a base fixa de seis variáveis.
+
+<Warning>
+Isso significa que um `.tyba/config.toml` correto **não funciona sozinho em máquina nova**. Clonou o projeto num computador novo, o consentimento não veio junto — ele é seu, local, por máquina. Você vai ser perguntado outra vez. É o comportamento pretendido.
+</Warning>
+
+## Arquivo quebrado é ignorado, não derruba
+
+Ao contrário do [config do usuário](/pt-br/configuracao/usuario), um `.tyba/config.toml` de repositório com TOML inválido **não impede a sessão de subir**. Ele é simplesmente ignorado, e você fica com a base fixa.
+
+A assimetria é intencional. O config do usuário é seu — se está quebrado, é um erro seu e você quer saber agora. O config do repositório pode ter vindo de qualquer pessoa, e um arquivo malformado num repositório clonado não deveria conseguir travar a sua ferramenta.
+
+## Veja também
+
+- [Configuração do usuário](/pt-br/configuracao/usuario) — `~/.tyba/config.toml`
+- [Classificação de risco](/pt-br/seguranca/classificacao-de-risco) — o que precisa da sua aprovação

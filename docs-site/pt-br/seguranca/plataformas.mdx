@@ -1,0 +1,118 @@
+---
+title: "Plataformas"
+description: "O sandbox do TYBA não garante a mesma coisa em macOS, Linux e Windows. Esta página diz exatamente o quê, onde."
+---
+
+O TYBA usa o mecanismo de isolamento nativo de cada sistema. Eles não são equivalentes, e a diferença muda o que o produto promete a você.
+
+Esta página existe para você não deduzir no Windows uma garantia que só vale no macOS.
+
+## O resumo
+
+| | macOS | Linux | Windows |
+| --- | --- | --- | --- |
+| Mecanismo | Seatbelt | bubblewrap + seccomp | Token restrito + Integrity Level Low |
+| Escrita fora do worktree | negada | negada | negada |
+| **Leitura** | **fechada por padrão** | **fechada por padrão** | **aberta por padrão** |
+| Proteção de segredos | tudo negado, exceto o permitido | tudo negado, exceto o permitido | lista de segredos conhecidos |
+| `sandbox.read_allow` | funciona | funciona | inerte |
+
+A linha que importa é a da leitura. As outras são iguais.
+
+## macOS e Linux: nada existe até ser permitido
+
+A leitura é **negada por padrão**. O agente não enxerga o sistema de arquivos e recebe acesso a um conjunto pequeno: o worktree, temp, os diretórios do próprio agente.
+
+O efeito prático é o que você espera de um sandbox:
+
+- Seu `~/.ssh` não é "proibido" — ele **não existe** no mundo do agente.
+- Um repositório seu em outra pasta não existe.
+- O `.env` do projeto ao lado não existe.
+- Um caminho de segredo que ninguém previu **também não existe**, porque nada existe por padrão.
+
+Esse último ponto é o valor real do desenho: a proteção não depende de alguém ter lembrado do seu segredo.
+
+<Note>
+**Conteúdo, não metadados.** O agente pode verificar se um arquivo existe, seu tamanho e sua data. Só o **conteúdo** é negado por padrão — resolver caminhos é necessário para qualquer programa funcionar.
+</Note>
+
+**Fail-closed**: se a política não puder ser aplicada, o agente não sobe. Não há degradação silenciosa para "sem sandbox".
+
+No Linux, o `bubblewrap` é dependência obrigatória — sem ele, o core recusa criar sessões de agente. Distribuições com namespaces de usuário não-privilegiados desabilitados recusam a sessão com mensagem explícita.
+
+<Note>
+**O Codex tem contenção própria no macOS.** O Seatbelt do TYBA não envolve o Codex — aninhar as duas políticas falha no sistema. O Codex aplica o Seatbelt nativo dele por comando. É contenção real, mas não é a mesma, e restringir a leitura do Codex ao nível do Claude Code ainda é trabalho pendente.
+</Note>
+
+## Windows: aberto por padrão, com uma lista de segredos fechados
+
+<Warning>
+No Windows a leitura **não** é fechada por padrão. A jaula contém **escrita**. Arquivos seus que não estejam na lista abaixo **são legíveis pelo agente**.
+</Warning>
+
+A jaula é um token restrito com Integrity Level Low e um SID sintético por sessão. Ela é sólida no que se propõe: a escrita é confinada ao worktree por ACE, e escrever fora é negado. Assim como nos outros sistemas, ela é fail-closed — falhou, o agente não sobe.
+
+Mas o modelo de leitura é invertido. Em vez de negar tudo e abrir exceções, ele deixa aberto e fecha uma lista de segredos conhecidos:
+
+```
+~/.ssh                   ~/.aws                ~/.gnupg
+~/.kube                  ~/.config/gcloud      ~/.config/gh
+~/.git-credentials       ~/.netrc              ~/.npmrc
+~/.pypirc                ~/.docker/config.json ~/.cargo/credentials
+```
+
+(mais o diretório de dados do próprio TYBA)
+
+Esses treze são rotulados para negar leitura, recursivamente, arquivo por arquivo.
+
+### O que isso significa na prática
+
+**O que está na lista está protegido.** Suas chaves SSH e credenciais de nuvem são tão inacessíveis no Windows quanto no macOS.
+
+**O que não está na lista, o agente lê.** Por exemplo:
+
+```
+~/.terraformrc          ~/.config/fly           ~/.m2/settings.xml
+~/.kaggle               ~/.Rprofile             ~/.databrickscfg
+```
+
+E, mais importante que qualquer arquivo de configuração:
+
+- **O `.env` de qualquer outro projeto seu.**
+- **Qualquer outro repositório na sua máquina.**
+- Seus Documentos, sua Área de Trabalho.
+
+No macOS e no Linux, nada disso existe para o agente. No Windows, tudo isso é legível.
+
+### Por que é assim
+
+Deny-by-default de leitura no Windows exigiria AppContainer, e o TYBA escolheu não usá-lo — o custo de compatibilidade inviabilizaria os agentes que o produto existe para rodar. O token restrito é o mecanismo que faz o agente iniciar.
+
+É um tradeoff assumido, não um descuido. Mas ele muda a garantia, e você merece saber disso antes de instalar, não depois.
+
+### O que fazer com isso
+
+Se o seu modelo de ameaça é *"quero rodar agente sem que ele leia minhas chaves"*, o Windows entrega.
+
+Se é *"quero rodar agente de forma que ele não veja nada além do projeto atual"*, o Windows **não** entrega hoje. Use macOS ou Linux.
+
+## `read_allow` no Windows
+
+O campo `sandbox.read_allow` do [config do usuário](/pt-br/configuracao/usuario) não tem efeito no Windows. Ele é aceito e validado, mas descartado.
+
+Não há perda: como a leitura já está aberta, tudo que ele poderia conceder já está concedido. E o que ele não consegue conceder — os segredos da lista — ele também não consegue no macOS, onde as negações vencem qualquer permissão.
+
+## O que vale igual em todos
+
+Estas garantias não dependem de plataforma:
+
+- **Push do agente para `main`/`master` é recusado pelo core.** Sempre.
+- **O agente não tem suas credenciais.** Push, fetch e merge são executados pelo TYBA, fora da jaula. A sessão do agente nunca teve rede autenticada.
+- **Refs compartilhadas só no namespace `refs/heads/tyba/`.** Um agente comprometido não move a sua `main` local.
+- **Commits do agente não são assinados.** Eles nascem num worktree descartável e são revisados por você antes de qualquer coisa sair da máquina.
+- **Toda ação passa pelo gate de aprovação**, com a mesma [classificação de risco](/pt-br/seguranca/classificacao-de-risco).
+
+## Veja também
+
+- [Classificação de risco](/pt-br/seguranca/classificacao-de-risco) — o que precisa da sua aprovação
+- [Configuração do usuário](/pt-br/configuracao/usuario) — `sandbox.read_allow`

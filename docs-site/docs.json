@@ -1,0 +1,67 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "TYBA",
+  "colors": {
+    "primary": "#7cc544",
+    "light": "#7cc544",
+    "dark": "#7cc544"
+  },
+  "favicon": "/images/favicon.png",
+  "logo": {
+    "light": "/images/logo.png",
+    "dark": "/images/logo.png",
+    "href": "https://www.tyba.dev"
+  },
+  "navigation": {
+    "languages": [
+      {
+        "language": "pt-BR",
+        "default": true,
+        "groups": [
+          {
+            "group": "Começando",
+            "pages": [
+              "pt-br/index",
+              "pt-br/instalacao",
+              "pt-br/primeira-sessao"
+            ]
+          },
+          {
+            "group": "Configuração",
+            "pages": [
+              "pt-br/configuracao/usuario",
+              "pt-br/configuracao/repositorio"
+            ]
+          },
+          {
+            "group": "Segurança",
+            "pages": [
+              "pt-br/seguranca/classificacao-de-risco",
+              "pt-br/seguranca/plataformas"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/tybadev/tyba-terminal"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Download",
+      "href": "https://www.tyba.dev/pt-br/download"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/tybadev/tyba-terminal",
+      "website": "https://www.tyba.dev"
+    }
+  }
+}

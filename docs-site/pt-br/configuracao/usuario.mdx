@@ -1,0 +1,106 @@
+---
+title: "Configuração do usuário"
+sidebarTitle: "~/.tyba/config.toml"
+description: "O arquivo que afrouxa a leitura do sandbox — um campo, e ele não faz o que parece em todo sistema."
+---
+
+O TYBA lê um arquivo de configuração da sua home:
+
+```
+~/.tyba/config.toml
+```
+
+Ele **não é criado na instalação**. Se não existir, o TYBA usa os padrões e não reclama. Crie na mão quando precisar.
+
+O caminho é sempre `$HOME/.tyba/config.toml`, em qualquer sistema. Não há variação por plataforma — nem `%APPDATA%` no Windows.
+
+<Warning>
+No Windows, o TYBA exige que a variável `HOME` esteja definida e seja um caminho absoluto. Ela não cai para `%USERPROFILE%`. Sem `HOME`, sessões de agente falham antes de subir.
+</Warning>
+
+## O arquivo inteiro
+
+Hoje existe **um campo**:
+
+```toml title="~/.tyba/config.toml"
+[sandbox]
+read_allow = [
+  "~/referencias",
+  "/opt/sdk-compartilhado",
+]
+```
+
+| Campo | Tipo | Padrão | O que faz |
+| --- | --- | --- | --- |
+| `sandbox.read_allow` | lista de strings | `[]` | Caminhos extras que o agente pode **ler** dentro do sandbox |
+
+Seções e chaves desconhecidas são ignoradas em silêncio — não há erro de campo extra.
+
+## Que caminho vale
+
+Cada entrada precisa ser **absoluta** ou começar com `~`:
+
+```toml
+read_allow = [
+  "~",                        # sua home inteira
+  "~/referencias",            # subpasta da home
+  "/opt/sdk-compartilhado",   # caminho absoluto
+]
+```
+
+Caminho relativo é recusado:
+
+```toml
+read_allow = ["./referencias"]   # ✗
+```
+
+```
+read_allow exige path absoluto ou ~/: ./referencias
+```
+
+## Quando a mudança pega
+
+O arquivo é lido **uma vez por sessão de agente**, no momento em que ela sobe. Não há watcher e não há hot reload.
+
+Na prática: você edita, salva, e a próxima sessão de agente que você criar já usa o valor novo. **Não precisa reiniciar o TYBA.** Sessões que já estão rodando seguem com o valor antigo até morrerem.
+
+## Quando o arquivo está errado
+
+<Warning>
+TOML malformado ou caminho relativo **derruba a criação da sessão de agente**. O TYBA não cai para o padrão — ele falha, com a mensagem apontando o erro.
+</Warning>
+
+```
+~/.tyba/config.toml inválido: expected an equals, found a newline at line 2
+```
+
+Isso é deliberado: um arquivo de sandbox que não parseia é ambíguo demais para adivinhar. Arquivo **ausente** é diferente de arquivo **quebrado** — ausente é o caso normal e não dá erro.
+
+## O que ele não consegue afrouxar
+
+`read_allow` **não abre seus segredos**. As negações são aplicadas depois de qualquer permissão e vencem sempre:
+
+```
+~/.ssh   ~/.aws   ~/.gnupg   ~/.kube
+~/.config/gcloud   ~/.config/gh   ~/.docker
+```
+
+Mesmo `read_allow = ["~"]` — sua home inteira — deixa esses caminhos ilegíveis para o agente. Não há configuração que reverta isso.
+
+## Ele não faz nada no Windows
+
+<Warning>
+No Windows este campo é aceito, validado e **descartado**. Ele não tem efeito nenhum.
+</Warning>
+
+Isso não é um furo, é uma consequência de como cada sistema contém a leitura:
+
+- **macOS e Linux** — a leitura é **fechada por padrão**. `read_allow` é o que abre exceções. Sem ele, o agente não lê o caminho.
+- **Windows** — a leitura é **aberta por padrão**, e só uma lista de segredos conhecidos é fechada. Não existe o que abrir: o que `read_allow` concederia já está concedido.
+
+O campo é inerte ali porque não há tranca para afrouxar. Se você usa Windows, leia [Plataformas](/pt-br/seguranca/plataformas) — a diferença é maior que este campo e vale entender.
+
+## Veja também
+
+- [Configuração do repositório](/pt-br/configuracao/repositorio) — o outro `.tyba/config.toml`, com regras bem diferentes
+- [Plataformas](/pt-br/seguranca/plataformas) — o que o sandbox garante em cada sistema
