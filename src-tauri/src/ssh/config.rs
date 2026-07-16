@@ -291,9 +291,9 @@ mod tests {
         let out = render_with(&[a, host("b", "b.host")], false).unwrap();
 
         let expected = "Host a\n    HostName a.host\n    \
-             LocalForward 5432 localhost:5432\n    \
-             RemoteForward 8000 localhost:3000\n    \
-             DynamicForward 1080\n\nHost b\n";
+             LocalForward 127.0.0.1:5432 localhost:5432\n    \
+             RemoteForward 127.0.0.1:8000 localhost:3000\n    \
+             DynamicForward 127.0.0.1:1080\n\nHost b\n";
         assert!(
             out.contains(expected),
             "os forwards têm que sair ancorados no bloco do host que os declarou: \
@@ -324,7 +324,7 @@ mod tests {
         let dois = render_tyba_conf(&[h]).unwrap();
         assert_eq!(um, dois, "o writer é puro: mesma entrada, mesma saída");
         assert_eq!(
-            um.matches("DynamicForward 1080").count(),
+            um.matches("DynamicForward 127.0.0.1:1080").count(),
             1,
             "cada túnel sai uma vez só; duplicar é config inválida no ~/.ssh"
         );

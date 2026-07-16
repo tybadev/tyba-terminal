@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
+pub const DEFAULT_BIND: &str = "127.0.0.1";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TunnelKind {
@@ -93,11 +95,12 @@ impl Tunnel {
         Ok(())
     }
 
+    pub fn bind_address(&self) -> &str {
+        self.listen_host.as_deref().unwrap_or(DEFAULT_BIND)
+    }
+
     fn listen(&self) -> String {
-        match self.listen_host.as_deref() {
-            Some(h) => format!("{h}:{}", self.listen_port),
-            None => self.listen_port.to_string(),
-        }
+        format!("{}:{}", self.bind_address(), self.listen_port)
     }
 
     fn target(&self) -> String {
@@ -187,7 +190,7 @@ mod tests {
     fn config_line_do_local() {
         assert_eq!(
             local(5432).config_line().unwrap(),
-            "    LocalForward 5432 localhost:5432\n"
+            "    LocalForward 127.0.0.1:5432 localhost:5432\n"
         );
     }
 
@@ -195,7 +198,7 @@ mod tests {
     fn config_line_do_remote() {
         assert_eq!(
             remote(8000).config_line().unwrap(),
-            "    RemoteForward 8000 localhost:3000\n"
+            "    RemoteForward 127.0.0.1:8000 localhost:3000\n"
         );
     }
 
@@ -208,7 +211,10 @@ mod tests {
             target_host: None,
             target_port: None,
         };
-        assert_eq!(d.config_line().unwrap(), "    DynamicForward 1080\n");
+        assert_eq!(
+            d.config_line().unwrap(),
+            "    DynamicForward 127.0.0.1:1080\n"
+        );
     }
 
     #[test]
@@ -227,12 +233,65 @@ mod tests {
     fn cli_args_batem_com_a_config_line() {
         assert_eq!(
             local(5432).cli_args().unwrap(),
-            vec!["-L".to_string(), "5432:localhost:5432".to_string()]
+            vec![
+                "-L".to_string(),
+                "127.0.0.1:5432:localhost:5432".to_string()
+            ]
         );
         assert_eq!(
             remote(8000).cli_args().unwrap(),
-            vec!["-R".to_string(), "8000:localhost:3000".to_string()]
+            vec![
+                "-R".to_string(),
+                "127.0.0.1:8000:localhost:3000".to_string()
+            ]
         );
+    }
+
+    #[test]
+    fn nenhuma_forma_de_porta_nua_escapa_do_writer_nem_do_cli() {
+        let sem_host = Tunnel {
+            listen_host: None,
+            ..local(5432)
+        };
+        assert_eq!(
+            sem_host.config_line().unwrap(),
+            "    LocalForward 127.0.0.1:5432 localhost:5432\n",
+            "medido na VPS: com porta nua o ssh resolve localhost para ::1 E \
+             127.0.0.1, liga no que conseguir e devolve 0 — o dono acaba falando \
+             com quem tomou a porta achando que está na prod. Ver ADR \
+             ssh-tunel-bind-explicito"
+        );
+        assert_eq!(
+            sem_host.cli_args().unwrap(),
+            vec![
+                "-L".to_string(),
+                "127.0.0.1:5432:localhost:5432".to_string()
+            ],
+            "o bind explícito é o que faz o exit code do -O forward virar oráculo: \
+             sem ele o ssh mente 0 com a porta tomada"
+        );
+
+        let dynamic = Tunnel {
+            kind: TunnelKind::Dynamic,
+            listen_port: 1080,
+            listen_host: None,
+            target_host: None,
+            target_port: None,
+        };
+        assert_eq!(
+            dynamic.config_line().unwrap(),
+            "    DynamicForward 127.0.0.1:1080\n"
+        );
+    }
+
+    #[test]
+    fn bind_explicito_do_dono_vence_o_padrao() {
+        let t = Tunnel {
+            listen_host: Some("0.0.0.0".into()),
+            ..local(5432)
+        };
+        assert_eq!(t.bind_address(), "0.0.0.0");
+        assert!(t.config_line().unwrap().contains("0.0.0.0:5432"));
     }
 
     #[test]
