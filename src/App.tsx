@@ -75,6 +75,7 @@ import {
   BroadcastConfirmDialog,
   type BroadcastTarget,
 } from "./components/BroadcastBar";
+import { ptyExitEndsSession } from "./lib/sessionExit";
 import { matchSshHost } from "./lib/sshCommand";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
@@ -3207,6 +3208,7 @@ export default function App() {
                         focused={s.id === activeId}
                         framed={(paneLayout?.panes.length ?? 0) > 1}
                         connecting={s.kind.type === "ssh"}
+                        reattaches={!ptyExitEndsSession(s.kind)}
                         connection={
                           s.kind.type === "ssh" ? s.connection : undefined
                         }
