@@ -1,0 +1,115 @@
+---
+title: "El composer"
+sidebarTitle: "El composer"
+description: "La caja de prompt largo — el autocompletado de archivos, y la tabla que resuelve la confusión del Enter."
+---
+
+Escribir un prompt de tres párrafos directo en el PTY es incómodo: el agente redibuja la línea, la flecha arriba pasa a ser su historial, y un Enter accidental manda media idea.
+
+El composer es una caja de texto de verdad para escribir antes de enviar.
+
+**`⌘⇧G` en macOS, `Ctrl+Shift+G` en Windows y Linux.** Se abre **debajo de la terminal**, encima de la barra de chips.
+
+<Note>
+En los Settings aparece con su nombre interno, **Rich Input**. Es lo mismo.
+</Note>
+
+El atajo es un **alternador de foco**, no un interruptor: con la caja ya enfocada, `⌘⇧G` devuelve el foco a la terminal y **deja la caja abierta**, con tu texto donde estaba. Quien la cierra es `Esc`.
+
+## `@` para archivos
+
+Escribe `@` y empieza el nombre. El `@` solo arma el autocompletado **al principio de la línea o después de un espacio** — un `user@host` no dispara nada.
+
+La lista viene del `git ls-files` del worktree: rastreados y no rastreados, con el `.gitignore` respetado. Las rutas son relativas al **directorio de la sesión**, y la búsqueda es fuzzy.
+
+Con el popover abierto:
+
+| Tecla | Qué hace |
+| --- | --- |
+| `↑` `↓` | Navega, con vuelta al final de la lista |
+| `Tab` o `↵` | Elige el archivo |
+| `Esc` | Cierra **solo el popover** — la caja y el texto se quedan |
+
+Sin popover, `Esc` cierra el composer.
+
+<Note>
+El popover solo existe cuando hay **al menos un match**. Si escribiste `@xyz` y no coincide nada, no hay popover — y entonces el `Esc` cierra la caja entera, porque es el único `Esc` que queda.
+</Note>
+
+El clip de al lado abre el selector de archivos del sistema e inserta la ruta — relativa a la sesión cuando puede, absoluta cuando no.
+
+## Enter: las dos configuraciones
+
+Esta es la parte que confunde, así que aquí está entera.
+
+Quien manda es la preferencia **"Send with Ctrl+Enter"** (Settings → Preferences), **activada por defecto**:
+
+| Pulsas | Activada (por defecto) | Desactivada |
+| --- | --- | --- |
+| `↵` | Salto de línea | **Envía** |
+| `Ctrl+↵` / `⌘↵` | **Envía** | **No pasa nada** |
+| `⇧↵` | Salto de línea | Salto de línea |
+
+Dos cosas que merecen destacarse:
+
+<Warning>
+**Con la preferencia desactivada, `⌘↵` no hace nada.** Ni envía ni inserta un salto de línea — es una tecla muerta, a propósito.
+
+El razonamiento: si `↵` ya envía, un `⌘↵` es casi seguro un reflejo de memoria muscular de quien esperaba la otra configuración. Mejor no hacer nada que enviar medio prompt.
+</Warning>
+
+<Note>
+**`⇧↵` siempre inserta un salto de línea**, en las dos configuraciones. Es la tecla que funciona sin que te acuerdes de cómo está la preferencia.
+</Note>
+
+El atajo de envío (`⌘↵` / `Ctrl+↵`) [no se puede remapear](/es/interfaz/atajos). El `⌘⇧G` que abre la caja sí.
+
+<Warning>
+**Una sesión sin bracketed paste es una sesión de una sola línea.** El composer manda el texto envuelto en `DECSET 2004`; sin eso, no hay forma de que un `\n` sea texto en vez de Enter. Cuando TYBA detecta que la sesión no lo habilitó, bloquea el salto de línea y avisa: *"Session without bracketed paste: single line only."*
+</Warning>
+
+## El aviso de prompt sensible
+
+Con **"Warn about sensitive prompts"** activada (por defecto), el core mira el texto antes de enviarlo. Si le parece que hay datos sensibles, el envío **no ocurre**: el botón se pone ámbar y aparece *"May contain sensitive data — click again to send."*
+
+Pulsar de nuevo envía. Es un peaje de un clic, no un bloqueo.
+
+La comprobación es una **búsqueda de substring, sin regex**, contra una lista fija de doce términos, en portugués e inglés:
+
+```
+password   senha   secret   token   api key   api_key   apikey
+credential   credencial   private key   chave privada   .env
+```
+
+<Warning>
+**Esto no es un detector de secretos.** Encuentra la *palabra*, no el valor.
+
+Un `AKIA…` pegado en crudo pasa de largo — ninguna de esas palabras aparece. Y "arreglar el tokenizer" lo dispara, porque contiene `token`. Trátalo como un recordatorio tosco, no como una red.
+</Warning>
+
+Editar el texto rearma el aviso. Si la comprobación falla, el prompt **se va** — falla abierta, porque un error de IPC no debería impedirte trabajar.
+
+## Las preferencias
+
+Todas en **Settings → Preferences**:
+
+| Preferencia | Por defecto | Qué hace |
+| --- | --- | --- |
+| Send with Ctrl+Enter | **Activada** | La tabla de arriba |
+| Open by itself when the agent is idle | Desactivada | La caja aparece cuando el agente para |
+| Open when an agent session starts | Desactivada | Nace ya abierta en la sesión de agente |
+| Close after sending | **Activada** | Desaparece tras el envío, el foco vuelve a la terminal |
+| Warn about sensitive prompts | **Activada** | El peaje de arriba |
+
+Con "Close after sending" desactivada, la caja se queda abierta y vacía — bueno para quien manda varios prompts seguidos.
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Claude Code y Codex" icon="robot" href="/es/agente/claude-code-y-codex">
+    Dónde nace la sesión de agente.
+  </Card>
+  <Card title="Atajos" icon="keyboard" href="/es/interfaz/atajos">
+    Lo que se puede y lo que no se puede remapear.
+  </Card>
+</CardGroup>

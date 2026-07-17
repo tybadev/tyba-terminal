@@ -1,0 +1,84 @@
+---
+title: "Agente via SSH: o que você perde"
+sidebarTitle: "Agente via SSH"
+description: "Nada impede você de rodar um agente dentro de um pane SSH. Mas do outro lado do cano, as duas garantias do TYBA não existem."
+---
+
+<Warning>
+**Um agente rodando dentro de um pane SSH não tem jaula e não passa pelo inbox de aprovações.**
+
+Ele é um agente cru, na máquina remota, sem nada do que o TYBA existe para dar.
+</Warning>
+
+## O que não existe
+
+O TYBA **não tem sessão de agente remota**. Sessões de agente são sempre locais — o conceito nem admite um host.
+
+O que existe é uma sessão SSH, que é um terminal remoto. E nada impede você de digitar `claude` ou `codex` dentro dele.
+
+Isso funciona. É que não é a mesma coisa, nem de longe.
+
+## O que você perde
+
+<CardGroup cols={2}>
+  <Card title="A jaula" icon="lock-open">
+    Não se aplica.
+  </Card>
+  <Card title="O inbox de aprovações" icon="circle-slash">
+    Não existe.
+  </Card>
+</CardGroup>
+
+### Por que a jaula não vale
+
+A jaula — Seatbelt, bubblewrap ou o token restrito do Windows — é aplicada **no momento em que o TYBA cria o processo do agente**, na sua máquina.
+
+Uma sessão SSH é um processo `ssh` local. O que roda do outro lado é criado pelo servidor SSH do host remoto, e o TYBA não tem alcance nenhum ali. Não há onde aplicar política.
+
+Consequência: no host remoto, o agente lê e escreve **tudo que o seu usuário lê e escreve**. As chaves de lá, os outros projetos de lá, o `/etc` de lá. Nada disso é filtrado.
+
+### Por que o inbox não vale
+
+O gate de aprovação funciona porque o TYBA injeta hooks no agente e escuta os eventos num servidor **local**. Cada ferramenta que o agente vai usar vira um evento, é classificada em verde/amarelo/vermelho, e espera você.
+
+Um agente do outro lado do cano não fala com esse servidor. Ele nunca chega no inbox.
+
+Concretamente, num pane SSH:
+
+- Não há classificação de risco.
+- `rm -rf`, `sudo`, `curl | sh` **não param para perguntar**.
+- **`git push` para `main` não é recusado.** A recusa do core vale para sessões de agente do TYBA — não para um processo qualquer numa máquina remota.
+- O TYBA nem sabe que aquilo é um agente. Para ele, é texto passando num terminal.
+
+## Como saber se você está nessa situação
+
+Você está **protegido** quando criou a sessão pelo TYBA — Nova sessão, escolhendo Claude Code ou Codex. Ela nasce com worktree, jaula, env por allowlist e inbox.
+
+Você está **desprotegido** quando abriu um pane SSH e digitou o nome do agente. É um shell remoto, e a responsabilidade é sua.
+
+<Warning>
+**Nada na interface avisa a diferença hoje.** Os dois panes são pretos com texto branco. A diferença é só como a sessão nasceu.
+</Warning>
+
+## O que fazer
+
+**Rode o agente localmente, contra código local.** É para isso que o TYBA foi construído: worktree isolado, jaula do kernel, revisão do diff antes de qualquer coisa sair.
+
+Se o código só existe no host remoto, saiba que rodar agente lá é rodar agente sem rede de proteção — exatamente como seria rodar sem o TYBA. Nesse caso, as contenções são as do próprio agente e do host, não as do TYBA.
+
+## O broadcast é um caso diferente
+
+O [broadcast](/pt-br/ssh/broadcast) **tem** gate: quando você aperta Enter, o comando passa pelo mesmo classificador de risco, e vermelho pede confirmação antes de disparar em N hosts.
+
+Mas repare no que ele protege: **o que você digita**. Ele não vê e não filtra nada que um agente faça dentro de um pane.
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Plataformas" icon="shield" href="/pt-br/seguranca/plataformas">
+    O que a jaula garante — onde ela existe.
+  </Card>
+  <Card title="Classificação de risco" icon="circle-alert" href="/pt-br/seguranca/classificacao-de-risco">
+    O gate que sessões locais têm e o pane SSH não.
+  </Card>
+</CardGroup>

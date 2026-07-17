@@ -1,0 +1,120 @@
+---
+title: "Claude Code y Codex"
+sidebarTitle: "Claude Code y Codex"
+description: "Los dos agentes que TYBA levanta, por qué no vienen en la caja, y qué muestra la sesión mientras trabajan."
+---
+
+TYBA levanta **dos** agentes:
+
+| Agente | Binario |
+| --- | --- |
+| Claude Code | `claude` |
+| Codex | `codex` |
+
+<Warning>
+**Ninguno de los dos viene incluido.** TYBA no empaqueta, no descarga ni instala agentes. Busca el binario en tu `PATH` y usa el que encuentre.
+</Warning>
+
+Instalar y mantener la suscripción de cada uno corre por tu cuenta. Sin ninguno de los dos, TYBA sigue siendo una terminal completa — lo que no puedes hacer es **crear una sesión de agente**.
+
+<Note>
+El `PATH` que consulta es el de tu **shell de login**, no el del proceso. TYBA ejecuta `$SHELL -lic` una vez para descubrir dónde están las cosas, y guarda el resultado.
+
+Por eso un agente instalado vía `nvm`, `asdf` o Homebrew se encuentra incluso cuando la app se abre desde un lanzador gráfico (el Dock, en macOS), que hereda un `PATH` mínimo.
+</Note>
+
+## Crear una sesión de agente
+
+| Acción | macOS | Windows / Linux |
+| --- | --- | --- |
+| Nueva sesión | `⌘N` | `Ctrl+Shift+N` |
+| Nueva sesión en worktree | `⌘⇧T` | `Ctrl+Alt+Shift+T` |
+
+Los dos abren el mismo diálogo. Primero pregunta **dónde** trabaja la sesión: carpeta por defecto, última carpeta, elegir carpeta, tu home, o un host SSH.
+
+La elección del agente viene después — y **solo aparece cuando la sesión está aislada en un worktree**. Ahí está la diferencia entre los dos atajos:
+
+- `⌘⇧T` ya entra con **"Isolate in a git worktree"** activado.
+- `⌘N` respeta la preferencia **"Isolate new sessions by default"** (Settings → Preferences, **desactivada** por defecto).
+
+Con la preferencia activada, los dos atajos hacen lo mismo.
+
+<Note>
+**Una sesión de agente es siempre una sesión en worktree.** No es un acoplamiento accidental: worktree, jaula, env por allowlist e inbox nacen juntos, en el mismo paso. El camino entero está en [Primera sesión](/es/primera-sesion).
+
+Ejecutar `claude` escribiendo su nombre en un shell es otra cosa — y lo que pierdes está descrito en [Agente por SSH](/es/ssh/agente-por-ssh).
+</Note>
+
+La preferencia **"Default folder for new sessions"** (Settings → General) pone una carpeta como **primera opción** de la lista, marcada con la etiqueta `default folder`. Vacía = sin valor por defecto.
+
+### Cuando el binario no está ahí
+
+<Warning>
+**Solo Codex se comprueba de antemano.** El diálogo prueba si `codex` existe y, si no existe, deshabilita su botón con el motivo: *"`codex` binary not found in PATH — install the Codex CLI"*.
+
+El **botón de Claude Code nunca se deshabilita.** Sin `claude` instalado, lo eliges, envías, y solo entonces recibes el error del core: `` `claude` binary not found in PATH ``. Aparece en el propio diálogo — la sesión no arranca, no se rompe nada, pero te enteras tarde.
+</Warning>
+
+### Agente por defecto del repositorio
+
+Un repositorio puede preseleccionar el agente con `agent.default` en `.tyba/config.toml` — y eso **solo vale después de que apruebes ese archivo**. Las reglas (y por qué el consentimiento es por hash) están en [Configuración del repositorio](/es/referencia/config-de-repo).
+
+## Qué informa la sesión
+
+| Status | Aparece como | Qué es |
+| --- | --- | --- |
+| `Running` | **en curso** (azul) | trabajando |
+| `AwaitingInput` · aprobación | **bloqueado** (ámbar) | paró en un gate — [el inbox](/es/seguridad/clasificacion-de-riesgo) |
+| `AwaitingInput` · respuesta | **esperando** (ámbar) | quiere una respuesta tuya |
+| `Idle` | **terminado** (verde) | acabó el turno |
+| `Failed` | **falló** (rojo) | la sesión se rompió |
+| `Exited` | — | se acabó |
+
+Dos cosas que vale la pena saber:
+
+<Note>
+**`Exited` no dibuja nada.** Una sesión que terminó normalmente no genera punto ni etiqueta — el silencio es el estado correcto de lo que ya acabó.
+
+**`Idle` solo aparece cuando pide atención.** Si ya viste el resultado, el verde desaparece.
+</Note>
+
+El status aparece en la **entrada de la sidebar** y en el **hover card** — no en la pestaña. Cuando un workspace tiene varias sesiones, la sidebar muestra la más urgente: falló > bloqueado/esperando > terminado > en curso.
+
+## El agente de review
+
+En **Settings → Code**, el campo **"Review agent"** decide quién recibe los comentarios que escribes en un diff **cuando no hay una sesión viva en ese worktree**. Si hay sesión, el prompt va hacia ella.
+
+Sin sesión, TYBA abre una, levanta el agente elegido y pega el prompt.
+
+| Opción | Qué hace |
+| --- | --- |
+| Claude Code | por defecto |
+| Codex | exige `codex` en el `PATH` |
+| Custom command… | abre el campo **"Agent command"** |
+
+<Warning>
+**"Custom command" no ejecuta un comando.** El campo acepta una línea (`claude --model opus`), pero TYBA lee **solo el nombre del binario** y tira los argumentos: `codex` levanta Codex, **cualquier otra cosa levanta Claude Code**.
+
+Así que `claude --model opus` levanta un Claude Code común, sin `--model opus`. Y `aider` también levanta Claude Code, en silencio.
+
+El placeholder del campo sugiere lo contrario — está equivocado, y el comportamiento de arriba es el real.
+</Warning>
+
+La limitación es deliberada. Una sesión de agente tiene que pasar por el runner del core: es él quien carga los hooks, la jaula y la allowlist de entorno. Una línea de comando arbitraria levantaría un proceso **sin gate de aprobación** — exactamente lo que TYBA existe para impedir.
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Cómo TYBA habla con el agente" icon="plug" href="/es/agente/hooks">
+    De dónde viene el gate de aprobación.
+  </Card>
+  <Card title="El composer" icon="keyboard" href="/es/agente/composer">
+    La caja de prompt largo.
+  </Card>
+  <Card title="Configuración del repositorio" icon="file-code" href="/es/referencia/config-de-repo">
+    `agent.default` y la allowlist de entorno.
+  </Card>
+  <Card title="Agente por SSH" icon="triangle-alert" href="/es/ssh/agente-por-ssh">
+    Lo que pierdes al otro lado del tubo.
+  </Card>
+</CardGroup>

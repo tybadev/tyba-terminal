@@ -1,0 +1,72 @@
+---
+title: "Modo claro y oscuro"
+description: "Dos slots, un modo — y por qué hacer clic en un tema claro te lleva al claro."
+---
+
+TYBA no tiene "un tema activo". Tiene **dos slots** — un tema para el oscuro, un tema para el claro — y un **modo** que decide cuál de los dos está en pantalla ahora.
+
+## Los dos slots
+
+| Slot | Qué guarda |
+| --- | --- |
+| **Oscuro** | El tema que aparece cuando el modo efectivo es oscuro. Por defecto: **TYBA Dark**. |
+| **Claro** | El tema que aparece cuando el modo efectivo es claro. Por defecto: **TYBA Light**. |
+
+Los slots son **independientes**. Dracula en el oscuro y Solarized Light en el claro es una combinación válida — y así es como termina usándolo la mayoría.
+
+<Note>
+Un tema solo entra en el slot de su propia base. Un tema de base `dark` nunca ocupa el slot claro, ni al revés. Si un slot apunta a un tema que desapareció (borraste el `.json`) o que tiene la base equivocada, cae al integrado de esa base — TYBA Dark o TYBA Light. Nunca te quedas sin tema.
+</Note>
+
+## El modo
+
+**Settings → Appearance → Color mode** (`⌘,` en macOS, `Ctrl+,` en Windows y Linux). Tres opciones:
+
+| Modo | Qué hace |
+| --- | --- |
+| **Dark** (por defecto) | Siempre el slot oscuro. |
+| **Light** | Siempre el slot claro. |
+| **System** | Sigue el `prefers-color-scheme` del sistema operativo. |
+
+En **System**, el cambio es en vivo: el sistema operativo pasa al claro al anochecer y TYBA cambia con él — sin reiniciar, sin reabrir la ventana.
+
+También se puede desde la [paleta de comandos](/es/interfaz/paleta-de-comandos) (`⌘P` / `Ctrl+Shift+P`), en el grupo **Theme**: *Switch theme to Dark / Light / System*. La paleta solo ofrece los dos modos que **no** estás usando.
+
+## Hacer clic en un tema de otra base cambia el modo también
+
+<Warning>
+**Elegir un tema hace dos cosas.** Va al slot de su base — y, si esa base no es la que está en pantalla, el **modo cambia para seguirlo**.
+</Warning>
+
+Estás en el oscuro y haces clic en **GitHub Light**. TYBA graba GitHub Light en el slot claro **y pasa el modo a Light**. No hay forma de "guardar un tema claro para después" con el clic — hacer clic es usar.
+
+Esto vale incluso para salir de **System**: si estás en System (con el SO en oscuro) y haces clic en un tema claro, el modo deja de ser System y pasa a Light fijo. Para volver a seguir al sistema, elige **System** otra vez en Color mode.
+
+El camino inverso es indoloro: en el oscuro, hacer clic en un tema oscuro solo cambia el slot. El modo no se mueve.
+
+## Qué queda guardado
+
+El modo y los dos slots viven en la base de datos de TYBA (`tyba.db`), no en un archivo de texto. Cierras y abres, y todo vuelve como estaba.
+
+<Note>
+Hay una caché en el navegador integrado, pero existe solo para que la app no parpadee en blanco por un frame al arrancar. Quien manda es la base de datos.
+</Note>
+
+## Qué no existe
+
+| | |
+| --- | --- |
+| **Un tercer slot** | Son dos: oscuro y claro. Nada de "tema para SSH" ni por workspace. |
+| **Tema por pestaña o por panel** | El tema es de toda la app. |
+| **Programar el cambio por horario** | Solo **System** — y quien decide el horario es el sistema operativo. |
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Los temas" icon="palette" href="/es/temas/los-temas">
+    Los 18 integrados, y lo que cambia más allá del color.
+  </Card>
+  <Card title="Importar un tema" icon="download" href="/es/temas/importar-un-tema">
+    El formato JSON, las reglas y los límites.
+  </Card>
+</CardGroup>

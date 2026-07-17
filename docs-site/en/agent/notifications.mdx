@@ -1,0 +1,97 @@
+---
+title: "Notifications"
+sidebarTitle: "Notifications"
+description: "When the system pings you, why the text comes censored, and the shortcut that opens the session behind the last alert."
+---
+
+An agent session has dead time. You leave the window, and the question is how to come back at the right moment — without staring at it.
+
+## Only when you are not looking
+
+<Note>
+**A native notification only fires when the TYBA window is out of focus.**
+</Note>
+
+It is the first thing TYBA checks. With the window focused, it does not notify: you are looking at the sidebar and the inbox, and a system banner would be noise on top of information already on screen.
+
+## When it fires
+
+| Situation | When |
+| --- | --- |
+| The agent finished the turn | after ~2s of settling |
+| The agent wants an answer | immediately |
+| A command is waiting for approval | immediately |
+
+<Note>
+**The ~2 seconds only apply to the end of a turn.** The agent tends to stop and come back in a blink — the delay keeps you from being told about a "done" that is no longer true. If a new turn started in the meantime, the alert is swallowed.
+
+TYBA also uses those 2s to re-read the end of the conversation and write a body better than "finished". Approvals and requests for an answer wait for nothing — you are the one blocking the agent.
+</Note>
+
+## What shows up
+
+**Title:** `Tyba — <session name>`. With no name, it becomes `Tyba — agent session`.
+
+**Body:** what happened — `Approval pending: <command>`, `Agent waiting for your answer`, or a summary of what it did.
+
+### The body is redacted
+
+<Warning>
+**Secrets do not become notifications.** Before the text turns into a system banner, it passes through a filter that swaps known patterns for `[REDACTED]`.
+</Warning>
+
+What gets wiped:
+
+```
+AKIA… / ASIA…      AWS keys
+sk-…               OpenAI-format keys
+ghp_ ghu_ gho_     GitHub tokens
+ghs_ ghr_
+glpat-…            GitLab tokens
+JWT                three-part tokens
+```
+
+The reason is reach: a system notification shows on the lock screen, lands in the notification center, and can travel to your watch or the other paired laptop. It is the TYBA text that most escapes your machine — so it is the one that can least afford to carry a secret.
+
+<Note>
+It is a **known-pattern** filter, not a universal detector. A password that doesn't look like any of those formats gets through. The real defense is the agent [not receiving your secrets](/en/reference/repo-config) — redaction is the last line, not the first.
+</Note>
+
+## Back to the session behind the last alert
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| Open the session behind the last alert | `⌘⇧O` | `Ctrl+Alt+Shift+O` |
+
+It takes you straight to the last session that asked for attention — no hunting through the sidebar for which of the seven tabs it was.
+
+<Note>
+**It cannot be remapped.** It does not appear in Settings → Shortcuts; it is constant. There is even a test that stops any default shortcut from colliding with that combination.
+
+With no alert pending, it does nothing.
+</Note>
+
+## What does not exist
+
+<Warning>
+**There is no notification on/off switch.** No preference, nowhere. If TYBA has something to say and the window is out of focus, it says it.
+
+**There is no sound.** None, neither configurable nor fixed. The notifications are visual.
+</Warning>
+
+To silence them, the tool is **your system**: macOS's Do Not Disturb, Windows's Focus Assist, whatever your Linux desktop offers. TYBA uses the native API, so respecting the system's silence comes for free.
+
+<Note>
+The only thing called "Notifications" in Settings is the **title of the inbox panel**. It is not a group of options.
+</Note>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Claude Code and Codex" icon="robot" href="/en/agent/claude-code-and-codex">
+    The statuses that generate the alerts.
+  </Card>
+  <Card title="Risk classification" icon="shield" href="/en/security/risk-classification">
+    What makes a command stop and call you.
+  </Card>
+</CardGroup>

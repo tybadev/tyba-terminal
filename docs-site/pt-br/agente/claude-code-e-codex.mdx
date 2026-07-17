@@ -1,0 +1,120 @@
+---
+title: "Claude Code e Codex"
+sidebarTitle: "Claude Code e Codex"
+description: "Os dois agentes que o TYBA sobe, por que eles não vêm na caixa, e o que a sessão mostra enquanto trabalha."
+---
+
+O TYBA sobe **dois** agentes:
+
+| Agente | Binário |
+| --- | --- |
+| Claude Code | `claude` |
+| Codex | `codex` |
+
+<Warning>
+**Nenhum dos dois vem junto.** O TYBA não embute, não baixa e não instala agente. Ele procura o binário no seu `PATH` e usa o que achar.
+</Warning>
+
+Instalar e manter a assinatura de cada um é com você. Sem nenhum dos dois, o TYBA continua sendo um terminal inteiro — o que você não consegue é **criar sessão de agente**.
+
+<Note>
+O `PATH` consultado é o do seu **shell de login**, não o do processo. O TYBA roda `$SHELL -lic` uma vez para descobrir onde as coisas estão, e guarda o resultado.
+
+É por isso que um agente instalado via `nvm`, `asdf` ou Homebrew é encontrado mesmo quando o app abre por um lançador gráfico (o Dock, no macOS), que herda um `PATH` mínimo.
+</Note>
+
+## Criar uma sessão de agente
+
+| Ação | macOS | Windows / Linux |
+| --- | --- | --- |
+| Nova sessão | `⌘N` | `Ctrl+Shift+N` |
+| Nova sessão em worktree | `⌘⇧T` | `Ctrl+Alt+Shift+T` |
+
+Os dois abrem o mesmo diálogo. Ele pergunta primeiro **onde** a sessão trabalha: pasta padrão, última pasta, escolher pasta, sua home, ou um host SSH.
+
+A escolha do agente vem depois — e **só aparece quando a sessão é isolada em worktree**. É aí que está a diferença entre os dois atalhos:
+
+- `⌘⇧T` já entra com **"Isolar em git worktree"** ligado.
+- `⌘N` respeita a preferência **"Novas sessões isoladas por padrão"** (Configurações → Preferências, **desligada** por padrão).
+
+Com a preferência ligada, os dois atalhos fazem a mesma coisa.
+
+<Note>
+**Sessão de agente é sempre sessão em worktree.** Não é uma amarração acidental: worktree, jaula, env por allowlist e inbox nascem juntos, no mesmo passo. O caminho inteiro está em [Primeira sessão](/pt-br/primeira-sessao).
+
+Rodar `claude` digitando o nome dele num shell é outra coisa — e o que você perde está descrito em [Agente via SSH](/pt-br/ssh/agente-via-ssh).
+</Note>
+
+A preferência **"Pasta padrão para novas sessões"** (Configurações → Geral) coloca uma pasta como **primeira opção** da lista, marcada com a etiqueta `pasta padrão`. Vazia = sem padrão.
+
+### Quando o binário não está lá
+
+<Warning>
+**Só o Codex é checado antes.** O diálogo testa se o `codex` existe e, se não existir, desabilita o botão dele com o motivo: *"Binário `codex` não encontrado no PATH — instale o Codex CLI"*.
+
+O **botão do Claude Code nunca é desabilitado.** Sem o `claude` instalado, você escolhe, envia, e só então recebe o erro do core: `` binário `claude` não encontrado no PATH ``. Ele aparece no próprio diálogo — a sessão não sobe, nada quebra, mas a descoberta é tardia.
+</Warning>
+
+### Agente padrão do repositório
+
+Um repositório pode pré-selecionar o agente com `agent.default` no `.tyba/config.toml` — e isso **só vale depois de você aprovar aquele arquivo**. As regras (e por que o consentimento é por hash) estão em [Configuração do repositório](/pt-br/configuracao/repositorio).
+
+## O que a sessão informa
+
+| Status | Aparece como | O que é |
+| --- | --- | --- |
+| `Running` | **em andamento** (azul) | trabalhando |
+| `AwaitingInput` · aprovação | **bloqueado** (âmbar) | parou num gate — [o inbox](/pt-br/seguranca/classificacao-de-risco) |
+| `AwaitingInput` · resposta | **aguardando** (âmbar) | quer uma resposta sua |
+| `Idle` | **concluído** (verde) | terminou o turno |
+| `Failed` | **falhou** (vermelho) | a sessão quebrou |
+| `Exited` | — | acabou |
+
+Duas coisas que valem saber:
+
+<Note>
+**`Exited` não desenha nada.** Sessão que terminou normalmente não vira bolinha nem etiqueta — silêncio é o estado correto de quem acabou.
+
+**`Idle` só aparece quando pede atenção.** Se você já viu o resultado, o verde some.
+</Note>
+
+O status aparece na **entrada da sidebar** e no **hover card** — não na aba. Quando um workspace tem várias sessões, a sidebar mostra a mais urgente: falhou > bloqueado/aguardando > concluído > em andamento.
+
+## O agente de review
+
+Em **Configurações → Code**, o campo **"Agente de review"** decide quem recebe os comentários que você escreve num diff **quando não há sessão viva naquele worktree**. Havendo sessão, o prompt vai para ela.
+
+Sem sessão, o TYBA abre uma, sobe o agente escolhido e cola o prompt.
+
+| Opção | O que faz |
+| --- | --- |
+| Claude Code | padrão |
+| Codex | exige o `codex` no `PATH` |
+| Comando custom… | abre o campo **"Comando do agente"** |
+
+<Warning>
+**"Comando custom" não executa comando.** O campo aceita uma linha (`claude --model opus`), mas o TYBA lê **só o nome do binário** e joga os argumentos fora: `codex` sobe o Codex, **qualquer outra coisa sobe o Claude Code**.
+
+Então `claude --model opus` sobe um Claude Code comum, sem `--model opus`. E `aider` também sobe Claude Code, em silêncio.
+
+O placeholder do campo sugere o contrário — ele está errado, e o comportamento acima é o real.
+</Warning>
+
+A limitação é deliberada. Uma sessão de agente precisa passar pelo runner do core: é ele que carrega os hooks, a jaula e a allowlist de ambiente. Uma linha de comando arbitrária subiria um processo **sem gate de aprovação** — exatamente o que o TYBA existe para impedir.
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Como o TYBA fala com o agente" icon="plug" href="/pt-br/agente/hooks">
+    De onde vem o gate de aprovação.
+  </Card>
+  <Card title="O composer" icon="keyboard" href="/pt-br/agente/composer">
+    A caixa de prompt longo.
+  </Card>
+  <Card title="Configuração do repositório" icon="file-code" href="/pt-br/configuracao/repositorio">
+    `agent.default` e a allowlist de ambiente.
+  </Card>
+  <Card title="Agente via SSH" icon="triangle-alert" href="/pt-br/ssh/agente-via-ssh">
+    O que você perde do outro lado do cano.
+  </Card>
+</CardGroup>

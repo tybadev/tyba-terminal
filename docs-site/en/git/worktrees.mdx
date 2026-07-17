@@ -1,0 +1,140 @@
+---
+title: "Worktrees"
+description: "One session, one tree, one branch — and a base SHA that never moves again."
+---
+
+An isolated TYBA session is a `git worktree`. Its own folder, its own branch, its own index. Session A editing `src/` neither sees nor tramples session B's tree, and neither of them touches your working copy.
+
+Everything lives under:
+
+```
+~/.tyba/worktrees/<repo>/<slug>-<suffix>
+```
+
+The `<repo>` is the root folder's name, normalized. Nothing is created outside of it.
+
+## Creating
+
+Two doors, the same dialog:
+
+| How | macOS | Windows / Linux |
+| --- | --- | --- |
+| New worktree session | `⌘⇧T` | `Ctrl+Alt+Shift+T` |
+| New session + **Isolate in a git worktree** | `⌘N` | `Ctrl+Shift+N` |
+
+The worktree shortcut is the same New Session dialog with the toggle already on. If you want it on every time, **Settings → Isolate new sessions by default**.
+
+<Note>
+The folder has to be a git repository. If it isn't, creation fails with *"the folder is not a git repository"* — there is no worktree outside a repo.
+</Note>
+
+In the dialog you give a **task title** (`watcher fix`) and, if you want, turn on **Start an agent in this worktree** — [Claude Code, or Codex when the binary is on the `PATH`](/en/agent/claude-code-and-codex).
+
+<Note>
+An agent session **requires** a worktree: there is no way to start an agent without isolating. If the agent spawn fails, the freshly created worktree is removed along with it — you don't get left with an orphan folder because a binary wouldn't open.
+</Note>
+
+## The branch
+
+The title becomes a branch:
+
+```
+tyba/<slug>-<suffix>
+```
+
+The slug is the title in lowercase ASCII, non-alphanumerics turning into `-`, capped at 40 characters. `Fix the Watcher!` becomes `fix-the-watcher`. A title with nothing left over — only emoji, only accents — becomes `task`.
+
+The suffix is **8 hex digits from a UUID v4**, and it exists for a practical reason: you will run the same task twice. Two attempts at `watcher fix` would produce the same branch, and the second `git worktree add` would fail because the branch already exists. With a suffix, `tyba/fix-the-watcher-a3f19c02` and `tyba/fix-the-watcher-7d40b1e8` coexist.
+
+## The pinned base_sha
+
+At creation, TYBA reads the repository root's `HEAD` and **writes that SHA into the session**. The worktree is born there:
+
+```
+git worktree add <path> -b tyba/<slug>-<suffix> <base_sha>
+```
+
+After that, every diff you see is:
+
+```
+base_sha..HEAD
+```
+
+This is the most important design decision on the page. The `base_sha` is a **frozen** SHA, not `main`. An agent that spent two hours working hands you exactly what it did — and not what landed on `main` in the meantime. `main` moved ten commits? The review stays the same size.
+
+The chip at the top of the review panel shows what's in effect: `base <short sha> ‥ HEAD`.
+
+<Note>
+In a **non-isolated** session there is no `base_sha` — TYBA uses `HEAD`, and the panel shows you only what has not been committed yet. The long diff is a benefit of the worktree, not of the panel.
+</Note>
+
+## Listing and opening
+
+Each isolated session is a workspace in the sidebar. That is how you get back to it, and it is the session's `Review` that opens the [diff panel](/en/review/reading-the-diff) with `base_sha..HEAD`.
+
+<Note>
+**There is no "Worktrees" panel.** The Workspace view at the top appears disabled, marked *Soon* — the button stays visible on purpose, because hiding it would hide the intent. In the meantime, you find a worktree through its session.
+</Note>
+
+## Removing
+
+The moment to remove is right after delivery. When you open a PR or do a local merge, TYBA asks: **Delivered — what about the worktree?**
+
+- **Keep** — the session continues, you keep working.
+- **Remove worktree and close session** — asks for a second click to confirm.
+
+Removal through that button is always **forced** and always **deletes the** `tyba/…` **branch**. If there is still uncommitted work in the worktree, the second click comes with the warning right in your face: *"There is uncommitted work in the worktree that did NOT go into the PR/merge — removing will discard it permanently."*
+
+<Warning>
+There is no undo. The worktree is gone, the branch is gone, and what was never committed was never anywhere to be recovered from.
+</Warning>
+
+Two things the core always refuses:
+
+- **A worktree with a running session** — *"close the session before removing"*.
+- **A worktree outside `~/.tyba/worktrees`** — *"worktree outside TYBA's managed directory"*. TYBA does not delete a folder it did not create.
+
+## Orphan gc
+
+An orphan worktree is one left in `~/.tyba/worktrees` with no session pointing at it — the app closed mid-flight, the session died, you restarted.
+
+**The gc runs by itself, once, when TYBA opens.** On a background thread, no dialog, no progress bar. It only removes an orphan when *all* of these are true:
+
+<Steps>
+<Step title="It is inside ~/.tyba/worktrees">
+And is not a symlink. A symbolic link planted in there does not let the gc reach anything outside.
+</Step>
+<Step title="No live session knows about it">
+An open session's worktree is never a candidate.
+</Step>
+<Step title="It was touched more than 2 minutes ago">
+The grace window exists for the worktree that was just born and is still waiting for its owner. *"just created (waiting for its owner)"*.
+</Step>
+<Step title="It is clean">
+Anything uncommitted and it stays. *"uncommitted changes"*.
+</Step>
+<Step title="It has no commits beyond the base">
+If it has a commit that is not in the main repo's `HEAD`, it stays. *"unmerged commits"*.
+</Step>
+</Steps>
+
+Pass all five and the worktree and its branch are removed, and a line goes to the process log. Any doubt — main repo unreachable, unreadable HEAD, unreadable history — is a reason to **keep**. The gc errs on the side of not deleting.
+
+## What does not exist
+
+- **A gc button.** There is no way to ask for the cleanup; it happens when the app opens.
+- **A gc report in the interface.** What was removed goes to the process log, not to a screen.
+- **Removing a worktree outside the delivery flow.** The post-delivery dialog is the door.
+- **Creating a worktree from another base.** The base is always the repo's `HEAD` at that instant.
+- **Reusing a worktree.** Each isolated session creates its own.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="First session" icon="play" href="/en/first-session">
+    The whole pipeline, from prompt to merge.
+  </Card>
+  <Card title=".tyba/setup.sh" icon="terminal" href="/en/git/setup-script">
+    What runs in the worktree the moment it is born.
+  </Card>
+</CardGroup>

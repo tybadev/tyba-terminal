@@ -1,0 +1,126 @@
+---
+title: "How TYBA talks to the agent"
+sidebarTitle: "How TYBA talks to the agent"
+description: "Where the approval gate comes from. An explainer — there is nothing to configure here."
+---
+
+<Note>
+**There is nothing for you to configure on this page.** There is no hooks screen, there is no hooks file of yours, there is no preference to turn this on or off.
+
+This is *how it works* documentation, for anyone who wants to understand where the [approvals inbox](/en/security/risk-classification) comes from. If you just want to use the product, skip it.
+</Note>
+
+## The problem
+
+An agent running loose is a process that decides on its own. It reads what it wants, writes what it wants, and you find out afterwards — by reading the diff, or by not reading it.
+
+For a gate to exist, someone has to be **told before** each tool runs, and has to be able to **hold execution** until the answer arrives. You cannot do that by scraping the screen: by the time the text shows up in the terminal, the command has already run.
+
+Claude Code and Codex have a mechanism for this — **hooks**. TYBA uses that mechanism.
+
+## What TYBA does
+
+Every time an agent session starts, TYBA injects a hooks configuration into the agent and opens a local channel to receive the events.
+
+<Steps>
+<Step title="It builds the configuration">
+A handful of events pointing at a single command: **TYBA's own binary**, in a special mode (`_hook`).
+</Step>
+<Step title="It injects it into the agent">
+**Claude Code** — a `hooks.json` in a private directory for the session, passed with `--settings`.
+
+**Codex** — no file: the hooks go as `--config` on the command line, each with a hash that Codex checks so it can accept them without asking you.
+
+<Warning>
+Note what does **not** happen: TYBA does not touch your `~/.claude/settings.json`. The configuration lives in an ephemeral directory, belonging to that session, and dies with it.
+</Warning>
+</Step>
+<Step title="It opens the channel">
+A local socket — **AF_UNIX** on macOS and Linux, a **named pipe** on Windows, because a unix socket does not cross the jail there. The path reaches the agent in the `TYBA_HOOK_SOCKET` variable.
+</Step>
+<Step title="The agent calls back">
+Before using a tool, the agent runs the hook command. It re-executes TYBA's binary, which reads the socket from the variable and hands the event to the app.
+</Step>
+</Steps>
+
+None of this leaves your machine. It is a local process talking to a local process.
+
+## The events
+
+| Event | What it is for |
+| --- | --- |
+| `PreToolUse` | **The gate.** Every tool, before it runs |
+| `SessionStart` | The session is up |
+| `Stop` | The turn is over |
+| `SessionEnd` | The session died |
+| `Notification` (`idle_prompt`) | The agent is waiting on you |
+
+On Codex there is also `PermissionRequest`, which is how it asks for permission.
+
+## Why `PreToolUse` is the whole product
+
+When the agent is about to use a tool, the hook fires **first** and **hangs there waiting for an answer**. That wait is what makes room for a decision to exist.
+
+TYBA classifies the action as green, yellow or red. Green comes back allowed immediately, without you seeing it. Yellow and red **block the hook** and become an inbox item — the agent is literally stopped mid-call, because the hook process has not returned yet.
+
+You answer, the hook returns allowed or denied, and the agent moves on or takes the refusal.
+
+<Note>
+The `PreToolUse` timeout is **86,400 seconds — 24 hours**. It is not excessive: it is the number that says "wait for the user however long it takes". The other events, which only report, get 60 seconds.
+
+Meanwhile, Claude Code shows *"Waiting for approval in TYBA…"* on its own screen.
+</Note>
+
+What lands in each color is in [Risk classification](/en/security/risk-classification).
+
+## Where the session status comes from
+
+From the same channel. The hook events become status directly:
+
+| Event | Status |
+| --- | --- |
+| `PreToolUse` | `Running` |
+| `Stop` | `Idle` |
+| `Notification` (`idle_prompt`) | `AwaitingInput` |
+
+This is **structured data**, not text scraped off the screen. No heuristic looks at what the agent drew in the terminal to guess whether it is done.
+
+<Warning>
+**A correction to an old claim.** It has been said — including in this repository's architecture doc — that the status comes from Claude Code's `stream-json`, with OSC 133 and a silence heuristic as a fallback.
+
+**None of that exists in the code.** TYBA starts Claude Code as `claude --settings <file>`, without `--output-format stream-json`. There is no JSON-lines parser, and there is no silence heuristic.
+
+The status comes from the hooks. Full stop.
+</Warning>
+
+**OSC 133** does exist, but it serves something else: detecting that an agent is running **in a plain shell**, so the composer can appear. That is a display hint, [never authorization](/en/terminal/shell-integration) — and a shell has no gate.
+
+## This is not the repository consent
+
+An easy confusion, and the two have nothing to do with each other:
+
+| | Hooks | `.tyba/config.toml` |
+| --- | --- | --- |
+| Who writes it | TYBA, by itself | The repository |
+| Do you configure it? | **No** | No — you **approve** it |
+| Does it ask you? | Never | **Always**, per hash |
+| What it decides | How the gate exists | Default agent and environment allowlist |
+
+The hooks are internal machinery: without them there is no gate, so there is no button to turn them off — turning them off would remove the only thing holding the agent back.
+
+The `.tyba/config.toml` is third-party content, it came along with a `git clone`, and that is why it **counts for nothing until you approve it**. The rules are in [Repository configuration](/en/reference/repo-config).
+
+## When the channel breaks
+
+Fail-closed. A session that dies with pending requests has all of them **denied**; a broken channel **denies**. There is no path where an infrastructure failure turns into permission — the same principle described in [Risk classification](/en/security/risk-classification#fail-closed).
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Risk classification" icon="shield" href="/en/security/risk-classification">
+    What `PreToolUse` does with each command.
+  </Card>
+  <Card title="Agent over SSH" icon="triangle-alert" href="/en/ssh/agent-over-ssh">
+    What happens when the hook does not exist.
+  </Card>
+</CardGroup>

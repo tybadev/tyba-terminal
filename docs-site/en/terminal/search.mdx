@@ -1,0 +1,85 @@
+---
+title: "Scrollback search"
+description: "Finding what already scrolled by — and the 10,000-line ceiling that decides what you can find."
+---
+
+## Opening
+
+<Tabs>
+<Tab title="macOS">
+`⌘F` opens and closes search for the active pane.
+</Tab>
+<Tab title="Windows and Linux">
+`Ctrl+Shift+F` opens and closes search for the active pane.
+</Tab>
+</Tabs>
+
+Also via **right-click in the terminal** → *Search in terminal*.
+
+The box appears in the pane's top-right corner. The search belongs to **the pane** — each terminal has its own history, and search only sees that one.
+
+## Navigating
+
+| Key | What it does |
+| --- | --- |
+| `↵` | Next result |
+| `⇧↵` | Previous result |
+| `Esc` | Closes and returns focus to the terminal |
+
+The `▲` `▼` arrows in the box do the same as `⇧↵` and `↵`.
+
+As you type, TYBA already marks the first result — no need to press Enter to see where it hit.
+
+## The counter
+
+To the right of the field:
+
+| What shows | What it means |
+| --- | --- |
+| `3/17` | You're on the third of seventeen. |
+| **No results** | The term doesn't exist in this pane's scrollback. |
+| *(empty)* | You haven't typed anything yet. |
+
+Results are painted with **your theme's colors**: every match gets one marking, and the active one another. Change the theme and search changes with it.
+
+## It comes pre-filled
+
+If you had something **selected** when you opened search, the query starts with that text — already selected in the field, ready to be replaced if it isn't what you wanted.
+
+<Note>
+This only applies to **single-line** selections. A selection with a line break pre-fills nothing: search is for running text, and a three-line query would never find anything.
+</Note>
+
+The flow this unlocks: you spot a commit hash, a request ID or a filename in the output, double-click it, `⌘F`, `↵` — and you're walking through every other time it appeared.
+
+## The 10,000-line limit
+
+The terminal keeps **10,000 lines** of scrollback. Fixed.
+
+<Warning>
+**Whatever went past those 10,000 lines doesn't exist anymore.** Search doesn't find it because there's nothing to find — the line was discarded when the 10,001st arrived.
+</Warning>
+
+This isn't a number you can raise: there's no field in Settings, no hidden preference, no file to edit. A `cat` of a huge log, a verbose build, an agent dumping a diff — any of them pushes out whatever was there before.
+
+If what you need to find is half an hour and a thousand commands back, the place to look isn't the terminal's search — it's the file, the log or `git`.
+
+## What search doesn't see
+
+| | |
+| --- | --- |
+| **Other panes** | Each pane has its own buffer. Search covers the active pane only. |
+| **Closed sessions** | Close the pane and it's gone. |
+| **History from before you reopened the app** | The local process doesn't survive closing TYBA: the session comes back, the buffer doesn't. **SSH panes are the exception** — the remote shell stays alive and the reattach brings the buffer with it ([persistence](/en/ssh/persistence)). |
+| **Regex** | There's no regex, "whole word only" or "match case" toggle in the box. It's a text search. |
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Using the terminal" icon="terminal" href="/en/terminal/using-the-terminal">
+    Selecting and copying — what feeds search.
+  </Card>
+  <Card title="Shortcuts" icon="keyboard" href="/en/interface/shortcuts">
+    Where to remap `⌘F`.
+  </Card>
+</CardGroup>

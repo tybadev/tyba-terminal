@@ -1,0 +1,91 @@
+---
+title: "Containers"
+description: "The containers panel: turning it on, listing, logs, shell, remove and compose. Requires Docker on the machine."
+---
+
+The containers panel lists what is running, opens a container's **logs** and **shell** in tabs, and gives you **compose up/down/restart** per project. It is not a stub — it is the whole panel.
+
+## Turning the integration on
+
+<Warning>
+**The integration ships OFF by default.** It lives in **Settings → Code → Docker integration**.
+</Warning>
+
+With the toggle on, a **Docker icon appears in the header** with a status dot: green when a container is running, red when Docker isn't responding. Clicking it opens the panel.
+
+Off, there is no icon and no panel.
+
+## Requirements
+
+TYBA looks for the `docker` binary in this order:
+
+| Where |
+| --- |
+| `docker` (whatever is in `PATH`) |
+| `/usr/local/bin/docker` |
+| `/opt/homebrew/bin/docker` |
+| `/usr/bin/docker` |
+| `~/.docker/bin/docker` |
+
+<Note>
+With no binary, or with the daemon stopped, the panel doesn't make anything up: it says **"Docker is not responding"**. On macOS it also offers an **"Open Docker Desktop"** shortcut — on other platforms, bringing Docker up is on you.
+</Note>
+
+## The list
+
+Containers come **grouped by compose project**, and whatever belongs to no project falls under **"loose"**.
+
+- **Running first**, then by name.
+- **Stopped ones appear too** — but they stay collapsed behind an "N stopped — show".
+- Each group shows the count of what's up.
+
+## Logs and shell
+
+Each becomes **a tab**.
+
+**Logs** follows the output (`-f`) starting from the last 200 lines.
+
+**Shell** tries the good shell and falls back to whatever exists:
+
+```bash
+command -v bash >/dev/null && exec bash || exec sh
+```
+
+In other words: **`bash` if the container has it, `sh` if it doesn't.** An Alpine container isn't left without a shell.
+
+## Remove
+
+**Removal is a red action: it asks for confirmation in two clicks.** The first click arms the button, the second executes. There is no dialog, but there is also no way to remove something by accident with a single click.
+
+## Compose
+
+When the group is a compose project and its folder **exists on this machine**, the header gains the project's actions:
+
+| Action | Behavior |
+| --- | --- |
+| **Up** | `compose up -d`. Straight through. |
+| **Restart** | `compose restart`. Straight through. |
+| **Down** | Destructive: **asks for confirmation in two clicks**, like remove. |
+| **Open the project folder** | Opens in your file manager. |
+| **Open the compose file** | Only appears when the file is genuinely reachable. |
+
+### When the path isn't from this machine
+
+A container reports the path **of the environment it came up in**, which isn't always yours. When TYBA looks at the path and it isn't here — or it is, but with no read permission — it **says so and shows the path**, instead of offering a button that would open nothing.
+
+That is why the compose actions only appear for a project whose folder TYBA can actually see.
+
+<Note>
+On a **remote** target this check is skipped on purpose: the remote host's path doesn't exist on this machine, and flagging it would just be a broken link. That's why the compose actions **don't work remotely** — see [Remote Docker](/en/docker/remote-docker).
+</Note>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Remote Docker" icon="cloud" href="/en/docker/remote-docker">
+    The same panel pointed at an SSH host.
+  </Card>
+  <Card title="Hosts and groups" icon="hard-drive" href="/en/ssh/hosts-and-groups">
+    The registry that makes the remote target exist.
+  </Card>
+</CardGroup>

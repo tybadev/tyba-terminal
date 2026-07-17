@@ -1,0 +1,373 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "TYBA",
+  "colors": {
+    "primary": "#4f8a2b",
+    "light": "#7cc544",
+    "dark": "#7cc544"
+  },
+  "favicon": "/images/favicon.png",
+  "logo": {
+    "light": "/images/logo-light.svg",
+    "dark": "/images/logo-dark.svg",
+    "href": "https://www.tyba.dev"
+  },
+  "navigation": {
+    "languages": [
+      {
+        "language": "pt-BR",
+        "default": true,
+        "groups": [
+          {
+            "group": "Começando",
+            "pages": [
+              "pt-br/index",
+              "pt-br/instalacao",
+              "pt-br/primeira-sessao",
+              "pt-br/tour-da-interface"
+            ]
+          },
+          {
+            "group": "O terminal",
+            "pages": [
+              "pt-br/terminal/usando-o-terminal",
+              "pt-br/terminal/busca",
+              "pt-br/terminal/colar-com-seguranca",
+              "pt-br/terminal/shell-integration"
+            ]
+          },
+          {
+            "group": "Interface",
+            "pages": [
+              "pt-br/interface/abas-e-workspaces",
+              "pt-br/interface/split-de-paineis",
+              "pt-br/interface/paleta-de-comandos",
+              "pt-br/interface/atalhos"
+            ]
+          },
+          {
+            "group": "Temas",
+            "pages": [
+              "pt-br/temas/modo-e-slots",
+              "pt-br/temas/os-temas",
+              "pt-br/temas/importar-tema"
+            ]
+          },
+          {
+            "group": "Sessões de agente",
+            "pages": [
+              "pt-br/agente/claude-code-e-codex",
+              "pt-br/agente/composer",
+              "pt-br/agente/hooks",
+              "pt-br/agente/notificacoes"
+            ]
+          },
+          {
+            "group": "Worktrees e Git",
+            "pages": [
+              "pt-br/git/worktrees",
+              "pt-br/git/setup-script",
+              "pt-br/git/branches",
+              "pt-br/git/conflitos"
+            ]
+          },
+          {
+            "group": "Review e entrega",
+            "pages": [
+              "pt-br/review/ler-o-diff",
+              "pt-br/review/commit-e-push",
+              "pt-br/review/merge-local",
+              "pt-br/review/pull-requests",
+              "pt-br/review/comentarios-para-o-agente"
+            ]
+          },
+          {
+            "group": "SSH",
+            "pages": [
+              "pt-br/ssh/hosts-e-grupos",
+              "pt-br/ssh/persistencia",
+              "pt-br/ssh/broadcast",
+              "pt-br/ssh/agente-via-ssh"
+            ]
+          },
+          {
+            "group": "Docker",
+            "pages": [
+              "pt-br/docker/containers",
+              "pt-br/docker/docker-remoto"
+            ]
+          },
+          {
+            "group": "Segurança",
+            "pages": [
+              "pt-br/seguranca/classificacao-de-risco",
+              "pt-br/seguranca/plataformas"
+            ]
+          },
+          {
+            "group": "Referência",
+            "pages": [
+              "pt-br/configuracao/usuario",
+              "pt-br/configuracao/repositorio"
+            ]
+          }
+        ],
+        "navbar": {
+          "links": [
+            {
+              "label": "GitHub",
+              "href": "https://github.com/tybadev/tyba-terminal"
+            }
+          ],
+          "primary": {
+            "type": "button",
+            "label": "Download",
+            "href": "https://www.tyba.dev/pt-br/download"
+          }
+        }
+      },
+      {
+        "language": "en",
+        "groups": [
+          {
+            "group": "Getting started",
+            "pages": [
+              "en/index",
+              "en/installation",
+              "en/first-session",
+              "en/interface-tour"
+            ]
+          },
+          {
+            "group": "The terminal",
+            "pages": [
+              "en/terminal/using-the-terminal",
+              "en/terminal/search",
+              "en/terminal/safe-paste",
+              "en/terminal/shell-integration"
+            ]
+          },
+          {
+            "group": "Interface",
+            "pages": [
+              "en/interface/tabs-and-workspaces",
+              "en/interface/split-panes",
+              "en/interface/command-palette",
+              "en/interface/shortcuts"
+            ]
+          },
+          {
+            "group": "Themes",
+            "pages": [
+              "en/themes/light-and-dark",
+              "en/themes/the-themes",
+              "en/themes/import-a-theme"
+            ]
+          },
+          {
+            "group": "Agent sessions",
+            "pages": [
+              "en/agent/claude-code-and-codex",
+              "en/agent/composer",
+              "en/agent/hooks",
+              "en/agent/notifications"
+            ]
+          },
+          {
+            "group": "Worktrees and Git",
+            "pages": [
+              "en/git/worktrees",
+              "en/git/setup-script",
+              "en/git/branches",
+              "en/git/conflicts"
+            ]
+          },
+          {
+            "group": "Review and delivery",
+            "pages": [
+              "en/review/reading-the-diff",
+              "en/review/commit-and-push",
+              "en/review/local-merge",
+              "en/review/pull-requests",
+              "en/review/pr-comments-to-agent"
+            ]
+          },
+          {
+            "group": "SSH",
+            "pages": [
+              "en/ssh/hosts-and-groups",
+              "en/ssh/persistence",
+              "en/ssh/broadcast",
+              "en/ssh/agent-over-ssh"
+            ]
+          },
+          {
+            "group": "Docker",
+            "pages": [
+              "en/docker/containers",
+              "en/docker/remote-docker"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "en/security/risk-classification",
+              "en/security/platforms"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "en/reference/user-config",
+              "en/reference/repo-config"
+            ]
+          }
+        ],
+        "navbar": {
+          "links": [
+            {
+              "label": "GitHub",
+              "href": "https://github.com/tybadev/tyba-terminal"
+            }
+          ],
+          "primary": {
+            "type": "button",
+            "label": "Download",
+            "href": "https://www.tyba.dev/en/download"
+          }
+        }
+      },
+      {
+        "language": "es",
+        "groups": [
+          {
+            "group": "Empezando",
+            "pages": [
+              "es/index",
+              "es/instalacion",
+              "es/primera-sesion",
+              "es/tour-de-la-interfaz"
+            ]
+          },
+          {
+            "group": "La terminal",
+            "pages": [
+              "es/terminal/usando-la-terminal",
+              "es/terminal/busqueda",
+              "es/terminal/pegar-con-seguridad",
+              "es/terminal/shell-integration"
+            ]
+          },
+          {
+            "group": "Interfaz",
+            "pages": [
+              "es/interfaz/pestanas-y-workspaces",
+              "es/interfaz/division-de-paneles",
+              "es/interfaz/paleta-de-comandos",
+              "es/interfaz/atajos"
+            ]
+          },
+          {
+            "group": "Temas",
+            "pages": [
+              "es/temas/claro-y-oscuro",
+              "es/temas/los-temas",
+              "es/temas/importar-un-tema"
+            ]
+          },
+          {
+            "group": "Sesiones de agente",
+            "pages": [
+              "es/agente/claude-code-y-codex",
+              "es/agente/composer",
+              "es/agente/hooks",
+              "es/agente/notificaciones"
+            ]
+          },
+          {
+            "group": "Worktrees y Git",
+            "pages": [
+              "es/git/worktrees",
+              "es/git/setup-script",
+              "es/git/branches",
+              "es/git/conflictos"
+            ]
+          },
+          {
+            "group": "Review y entrega",
+            "pages": [
+              "es/review/leer-el-diff",
+              "es/review/commit-y-push",
+              "es/review/merge-local",
+              "es/review/pull-requests",
+              "es/review/comentarios-al-agente"
+            ]
+          },
+          {
+            "group": "SSH",
+            "pages": [
+              "es/ssh/hosts-y-grupos",
+              "es/ssh/persistencia",
+              "es/ssh/broadcast",
+              "es/ssh/agente-por-ssh"
+            ]
+          },
+          {
+            "group": "Docker",
+            "pages": [
+              "es/docker/contenedores",
+              "es/docker/docker-remoto"
+            ]
+          },
+          {
+            "group": "Seguridad",
+            "pages": [
+              "es/seguridad/clasificacion-de-riesgo",
+              "es/seguridad/plataformas"
+            ]
+          },
+          {
+            "group": "Referencia",
+            "pages": [
+              "es/referencia/config-de-usuario",
+              "es/referencia/config-de-repo"
+            ]
+          }
+        ],
+        "navbar": {
+          "links": [
+            {
+              "label": "GitHub",
+              "href": "https://github.com/tybadev/tyba-terminal"
+            }
+          ],
+          "primary": {
+            "type": "button",
+            "label": "Download",
+            "href": "https://www.tyba.dev/download"
+          }
+        }
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/tybadev/tyba-terminal"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Download",
+      "href": "https://www.tyba.dev/pt-br/download"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/tybadev/tyba-terminal",
+      "website": "https://www.tyba.dev"
+    }
+  }
+}

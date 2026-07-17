@@ -1,0 +1,84 @@
+---
+title: "Agent over SSH: what you lose"
+sidebarTitle: "Agent over SSH"
+description: "Nothing stops you from running an agent inside an SSH pane. But on the other side of the pipe, TYBA's two guarantees do not exist."
+---
+
+<Warning>
+**An agent running inside an SSH pane has no jail and does not go through the approvals inbox.**
+
+It is a raw agent, on the remote machine, without any of what TYBA exists to give.
+</Warning>
+
+## What does not exist
+
+TYBA **has no remote agent session**. Agent sessions are always local — the concept doesn't even admit a host.
+
+What exists is an SSH session, which is a remote terminal. And nothing stops you from typing `claude` or `codex` inside it.
+
+That works. It is just not the same thing, not even close.
+
+## What you lose
+
+<CardGroup cols={2}>
+  <Card title="The jail" icon="lock-open">
+    Does not apply.
+  </Card>
+  <Card title="The approvals inbox" icon="circle-slash">
+    Does not exist.
+  </Card>
+</CardGroup>
+
+### Why the jail doesn't hold
+
+The jail — Seatbelt, bubblewrap, or the Windows restricted token — is applied **at the moment TYBA creates the agent's process**, on your machine.
+
+An SSH session is a local `ssh` process. Whatever runs on the other side is created by the remote host's SSH server, and TYBA has no reach there at all. There is nowhere to apply a policy.
+
+Consequence: on the remote host, the agent reads and writes **everything your user reads and writes**. The keys over there, the other projects over there, the `/etc` over there. None of it is filtered.
+
+### Why the inbox doesn't hold
+
+The approval gate works because TYBA injects hooks into the agent and listens for the events on a **local** server. Every tool the agent is about to use becomes an event, gets classified green/yellow/red, and waits for you.
+
+An agent on the other side of the pipe does not talk to that server. It never reaches the inbox.
+
+Concretely, in an SSH pane:
+
+- There is no risk classification.
+- `rm -rf`, `sudo`, `curl | sh` **do not stop to ask**.
+- **`git push` to `main` is not refused.** The core's refusal applies to TYBA agent sessions — not to some process on a remote machine.
+- TYBA doesn't even know that thing is an agent. To it, it's text going by in a terminal.
+
+## How to tell whether you're in this situation
+
+You are **protected** when you created the session through TYBA — New session, picking Claude Code or Codex. It is born with a worktree, a jail, an allowlisted env and the inbox.
+
+You are **unprotected** when you opened an SSH pane and typed the agent's name. It is a remote shell, and the responsibility is yours.
+
+<Warning>
+**Nothing in the interface flags the difference today.** Both panes are black with white text. The difference is only in how the session was born.
+</Warning>
+
+## What to do
+
+**Run the agent locally, against local code.** That is what TYBA was built for: isolated worktree, kernel jail, diff review before anything leaves.
+
+If the code only exists on the remote host, know that running an agent there is running an agent without a safety net — exactly as it would be running without TYBA. In that case, the containment is the agent's own and the host's, not TYBA's.
+
+## Broadcast is a different case
+
+[Broadcast](/en/ssh/broadcast) **does** have a gate: when you hit Enter, the command goes through the same risk classifier, and red asks for confirmation before firing at N hosts.
+
+But notice what it protects: **what you type**. It does not see and does not filter anything an agent does inside a pane.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Platforms" icon="shield" href="/en/security/platforms">
+    What the jail guarantees — where it exists.
+  </Card>
+  <Card title="Risk classification" icon="circle-alert" href="/en/security/risk-classification">
+    The gate local sessions have and the SSH pane doesn't.
+  </Card>
+</CardGroup>

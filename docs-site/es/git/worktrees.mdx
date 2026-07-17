@@ -1,0 +1,140 @@
+---
+title: "Worktrees"
+description: "Una sesión, un árbol, una branch — y un SHA de base que ya no se mueve."
+---
+
+Una sesión aislada de TYBA es un `git worktree`. Una carpeta propia, una branch propia, un índice propio. La sesión A editando `src/` no ve ni atropella el árbol de la sesión B, y ninguna de las dos toca tu copia de trabajo.
+
+Todo vive bajo:
+
+```
+~/.tyba/worktrees/<repo>/<slug>-<sufijo>
+```
+
+El `<repo>` es el nombre de la carpeta raíz, normalizado. Nada se crea fuera de ahí.
+
+## Crear
+
+Dos puertas, el mismo diálogo:
+
+| Cómo | macOS | Windows / Linux |
+| --- | --- | --- |
+| Nueva sesión en worktree | `⌘⇧T` | `Ctrl+Alt+Shift+T` |
+| Nueva sesión + **Isolate in a git worktree** | `⌘N` | `Ctrl+Shift+N` |
+
+El atajo de worktree es el mismo diálogo de New Session con el toggle ya activado. Si quieres que venga activado siempre, **Settings → Isolate new sessions by default**.
+
+<Note>
+La carpeta tiene que ser un repositorio git. Si no lo es, la creación falla con *"the folder is not a git repository"* — no existe worktree fuera de un repo.
+</Note>
+
+En el diálogo le das un **título de la task** (`fix del watcher`) y, si quieres, activas **Start an agent in this worktree** — [Claude Code, o Codex cuando el binario está en el `PATH`](/es/agente/claude-code-y-codex).
+
+<Note>
+Una sesión de agente **exige** worktree: no hay forma de levantar un agente sin aislar. Si el spawn del agente falla, el worktree recién creado se elimina con él — no te quedas con una carpeta huérfana por culpa de un binario que no abrió.
+</Note>
+
+## La branch
+
+El título se convierte en una branch:
+
+```
+tyba/<slug>-<sufijo>
+```
+
+El slug es el título en ASCII minúscula, con lo no alfanumérico convertido en `-`, con un tope de 40 caracteres. `Fix del Watcher!` pasa a ser `fix-del-watcher`. Un título del que no queda nada — solo emoji, solo acentos — pasa a ser `task`.
+
+El sufijo son **8 dígitos hex de un UUID v4**, y existe por un motivo práctico: vas a ejecutar la misma tarea dos veces. Dos intentos de `fix del watcher` producirían la misma branch, y el segundo `git worktree add` fallaría porque la branch ya existe. Con sufijo, `tyba/fix-del-watcher-a3f19c02` y `tyba/fix-del-watcher-7d40b1e8` conviven.
+
+## El base_sha fijado
+
+En la creación, TYBA lee el `HEAD` de la raíz del repositorio y **graba ese SHA en la sesión**. El worktree nace ahí:
+
+```
+git worktree add <path> -b tyba/<slug>-<sufijo> <base_sha>
+```
+
+Después de eso, todo diff que ves es:
+
+```
+base_sha..HEAD
+```
+
+Este es el diseño más importante de la página. El `base_sha` es un SHA **congelado**, no la `main`. Un agente que pasó dos horas trabajando te entrega exactamente lo que hizo — y no lo que entró en la `main` mientras tanto. ¿La `main` avanzó diez commits? La revisión sigue siendo del mismo tamaño.
+
+El chip en la parte de arriba del panel de revisión muestra lo que está vigente: `base <sha corto> ‥ HEAD`.
+
+<Note>
+En una sesión **no aislada** no hay `base_sha` — TYBA usa `HEAD`, y el panel te muestra solo lo que todavía no se ha commiteado. El diff largo es un beneficio del worktree, no del panel.
+</Note>
+
+## Listar y abrir
+
+Cada sesión aislada es un workspace en la sidebar. Por ahí es como vuelves a ella, y es el `Review` de la sesión lo que abre el [panel de diff](/es/review/leer-el-diff) con el `base_sha..HEAD`.
+
+<Note>
+**No existe un panel "Worktrees".** La vista de Workspace de arriba aparece deshabilitada, marcada como *Soon* — el botón sigue visible a propósito, porque quitarlo escondería la intención. Mientras tanto, un worktree se encuentra por su sesión.
+</Note>
+
+## Eliminar
+
+El momento de eliminar es justo después de la entrega. Cuando abres un PR o haces el merge local, TYBA pregunta: **Delivered — what about the worktree?**
+
+- **Keep** — la sesión continúa, tú sigues trabajando.
+- **Remove worktree and close session** — pide un segundo clic para confirmar.
+
+La eliminación por ese botón es siempre **forzada** y siempre **borra la branch** `tyba/…`. Si todavía hay trabajo sin commitear en el worktree, el segundo clic viene con el aviso en la cara: *"There is uncommitted work in the worktree that did NOT go into the PR/merge — removing will discard it permanently."*
+
+<Warning>
+No hay deshacer. El worktree desaparece, la branch desaparece, y lo que no se commiteó nunca estuvo en ningún sitio del que recuperarlo.
+</Warning>
+
+Dos cosas que el core rechaza, siempre:
+
+- **Worktree con una sesión corriendo** — *"close the session before removing"*.
+- **Worktree fuera de `~/.tyba/worktrees`** — *"worktree outside TYBA's managed directory"*. TYBA no borra una carpeta que no creó él.
+
+## El gc de huérfanos
+
+Un worktree huérfano es el que quedó en `~/.tyba/worktrees` sin ninguna sesión apuntándole — la app se cerró a medias, la sesión murió, reiniciaste.
+
+**El gc corre solo, una vez, cuando TYBA abre.** En un hilo de fondo, sin diálogo, sin barra de progreso. Solo elimina un huérfano cuando *todas* estas son verdad:
+
+<Steps>
+<Step title="Está dentro de ~/.tyba/worktrees">
+Y no es un symlink. Un enlace simbólico plantado ahí dentro no hace que el gc alcance nada de fuera.
+</Step>
+<Step title="Ninguna sesión viva lo conoce">
+El worktree de una sesión abierta nunca es candidato.
+</Step>
+<Step title="Se tocó hace más de 2 minutos">
+La ventana de gracia existe para el worktree que acaba de nacer y todavía está esperando a su dueño. *"just created (waiting for its owner)"*.
+</Step>
+<Step title="Está limpio">
+Cualquier cosa sin commitear y se queda. *"uncommitted changes"*.
+</Step>
+<Step title="No tiene commits fuera de la base">
+Si tiene un commit que no está en el `HEAD` del repo principal, se queda. *"unmerged commits"*.
+</Step>
+</Steps>
+
+Si pasa las cinco, el worktree y su branch se eliminan, y sale una línea en el log del proceso. Cualquier duda — repo principal inaccesible, HEAD ilegible, historial ilegible — es motivo para **mantener**. El gc se equivoca hacia el lado de no borrar.
+
+## Qué no existe
+
+- **Botón de gc.** No hay forma de pedir la limpieza; ocurre al abrir la app.
+- **Informe del gc en la interfaz.** Lo que se eliminó sale en el log del proceso, no en una pantalla.
+- **Eliminar un worktree fuera del flujo de entrega.** El diálogo posterior a la entrega es la puerta.
+- **Crear un worktree a partir de otra base.** La base es siempre el `HEAD` del repo en ese instante.
+- **Reaprovechar un worktree.** Cada sesión aislada crea el suyo.
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Primera sesión" icon="play" href="/es/primera-sesion">
+    El pipeline entero, del prompt al merge.
+  </Card>
+  <Card title=".tyba/setup.sh" icon="terminal" href="/es/git/setup-script">
+    Lo que corre en el worktree en cuanto nace.
+  </Card>
+</CardGroup>

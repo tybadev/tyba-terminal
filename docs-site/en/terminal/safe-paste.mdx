@@ -1,0 +1,112 @@
+---
+title: "Safe paste"
+description: "Why it sometimes asks before pasting and sometimes doesn't. It isn't random."
+---
+
+Pasting into a terminal is the most dangerous thing you do without thinking. Text copied from a web page can end with a line break — and a line break, in a shell, is **Enter**. The command runs before you read it.
+
+TYBA doesn't solve this by asking for confirmation every time (you'd learn to click "Paste" without reading in two days). It asks **when the text can run on its own**, and shuts up when it can't.
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| Paste | `⌘V` | `Ctrl+Shift+V` |
+
+Also via **right-click** → *Paste*. Both paths go through the same check — no shortcut jumps the queue.
+
+## The rule
+
+Every pasted text goes through three questions, in this order:
+
+<Steps>
+  <Step title="The terminator is stripped — always">
+    The `ESC[201~` sequence is torn out of the text before anything else, on **every** paste, risky or not. It's what marks "the paste is over" in the terminal protocol: text carrying it convinces the shell that the paste ended there, and that the rest — whatever comes after — is you typing.
+
+    That's how you paste one innocent-looking line that executes a command you never saw. TYBA doesn't let that byte reach the shell. Ever.
+  </Step>
+  <Step title="Is the terminal in bracketed paste?">
+    TYBA reads the terminal's **actual** state at that moment — not a guess, not a preference of yours. Either the program on the other side turned the mode on, or it didn't.
+  </Step>
+  <Step title="Is this risky?">
+    It's risky if **any** of these is true:
+
+    - The text **has** unsafe **control characters**; **or**
+    - The text is **multiline** *and* bracketed paste is **off**.
+
+    Risky opens the dialog. Everything else pastes straight through.
+  </Step>
+</Steps>
+
+## What bracketed paste is
+
+It's a mode the terminal program turns on by itself to say: *"I know how to tell pasted text from typed text"*.
+
+With it on, pasted text reaches the program wrapped in markers. Line breaks arrive as **text**, not as Enter. A modern shell (zsh, bash with a recent readline), Claude Code, `vim` — they all turn it on. A raw `bash` without readline, a script's `read`, a simple program asking for input — they don't.
+
+<Warning>
+**The same paste behaves differently in different places — and that's the thing working.**
+
+Pasting 20 lines inside **Claude Code**: nothing happens, the text goes into the prompt. It turns bracketed paste on, so the 20 lines can't run on their own.
+
+Pasting **the same 20 lines** into a raw `bash` that didn't turn the mode on: **the dialog opens**. There, every line break is an Enter — that's 20 commands, and TYBA isn't going to let that happen silently.
+
+It isn't random. It isn't TYBA "being annoying sometimes". It's the right answer to two different contexts.
+</Warning>
+
+<Note>
+A control character **always** opens the dialog, even with bracketed paste on and even on a single line. Bracketed paste protects against the accidental Enter; it doesn't protect against an `ESC` in the middle of the text.
+</Note>
+
+## The dialog
+
+Title: **Paste multiple lines?**
+
+It gives you exactly what you need to decide:
+
+| | |
+| --- | --- |
+| **The line count** | How many lines the content has — and the warning that it may run as soon as it's pasted. |
+| **The text** | All of it, scrollable. Control characters show up as **`␣`** — what was invisible becomes visible. |
+| **Amber banner** | Only when there are control characters. Warns that they'll be removed if you paste as a single line. |
+
+You read what you're about to paste. That's the point.
+
+### The three ways out
+
+| Button | What happens |
+| --- | --- |
+| **Cancel** | Nothing is pasted. `Esc` does the same. |
+| **Paste as a single line** | Line breaks become **spaces**, control characters are **removed**, the trailing break is dropped. Twenty commands become one long command — which waits for you to press Enter. |
+| **Paste** | Pastes as-is (already without the terminator from step 1). It's what you want when you *know* it's 20 commands and that's exactly right. |
+
+<Note>
+**Paste as a single line** is the way out for the most common case: you copied a command that wrapped across three lines on a documentation site and you want it back in one piece. It isn't a generic "safe mode" — it's a flattening, and the result is still a command you're going to run.
+</Note>
+
+Once you choose, focus goes back to the terminal.
+
+## What this isn't
+
+<Warning>
+The paste check looks at the **shape** of the text: can it run on its own? It **does not judge what the command does**. `rm -rf /` pasted on a single line, with no control characters, pastes straight through and in silence — to the check, it's a command waiting for your Enter, and you're the one pressing it.
+
+What judges what a command does is [risk classification](/en/security/risk-classification), and that applies to what **agents** ask to run. Pasting is you. The responsibility stays yours.
+</Warning>
+
+## What doesn't exist
+
+| | |
+| --- | --- |
+| **A "don't ask again" toggle** | Doesn't exist. If it did, someone would tick it on day one and the protection would die right there. |
+| **A configurable line limit** | Doesn't exist. The trigger is the rule above, not a number. |
+| **A per-app exception list** | Doesn't exist. TYBA reads the terminal's state, not a list of names. |
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Risk classification" icon="shield" href="/en/security/risk-classification">
+    Green, yellow, red — what agents are allowed to run.
+  </Card>
+  <Card title="Using the terminal" icon="terminal" href="/en/terminal/using-the-terminal">
+    The other side: selecting and copying.
+  </Card>
+</CardGroup>

@@ -1,0 +1,119 @@
+---
+title: "Atajos de teclado"
+description: "La lista completa, lo que se puede remapear, y la trampa del conflicto silencioso."
+---
+
+Todos los atajos de abajo funcionan con la ventana de TYBA en foco. No hay menú nativo del sistema ni atajo global — nada se dispara con la app en segundo plano.
+
+Para verlos y cambiarlos: **Settings → Shortcuts** (`⌘,` en macOS, `Ctrl+,` en Windows y Linux).
+
+<Note>
+En Windows y Linux el default es `Ctrl+Shift+…`. Eso es deliberado: `Ctrl+C` y `Ctrl+V` **siguen siendo del shell** — interrumpir un proceso importa más que copiar.
+</Note>
+
+## General
+
+| Acción | macOS | Windows / Linux |
+| --- | --- | --- |
+| Paleta de comandos | `⌘P` | `Ctrl+Shift+P` |
+| Paleta de sesiones | `⌘⇧P` | `Ctrl+Alt+Shift+P` |
+| Alternar la sidebar | `⌘B` | `Ctrl+Shift+B` |
+| Settings | `⌘,` | `Ctrl+,` |
+
+## Sesiones
+
+| Acción | macOS | Windows / Linux |
+| --- | --- | --- |
+| Nueva sesión | `⌘N` | `Ctrl+Shift+N` |
+| Nueva sesión en worktree | `⌘⇧T` | `Ctrl+Alt+Shift+T` |
+| Nueva ventana | `⌘⇧N` | `Ctrl+Alt+Shift+N` |
+| Abrir la carpeta del proyecto | `⌘O` | `Ctrl+Shift+O` |
+
+## Pestañas y workspaces
+
+| Acción | macOS | Windows / Linux |
+| --- | --- | --- |
+| Nueva pestaña | `⌘T` | `Ctrl+Shift+T` |
+| Pestaña anterior | `⌘⇧←` | `Ctrl+PgUp` |
+| Pestaña siguiente | `⌘⇧→` | `Ctrl+PgDn` |
+| Ir a la pestaña N | `⌘1`…`⌘9` | `Alt+1`…`Alt+9` |
+| Workspace anterior | `⌘⇧↑` | `Ctrl+Shift+↑` |
+| Workspace siguiente | `⌘⇧↓` | `Ctrl+Shift+↓` |
+
+## Paneles
+
+| Acción | macOS | Windows / Linux |
+| --- | --- | --- |
+| Split a la derecha | `⌘D` | `Ctrl+Shift+E` |
+| Split abajo | `⌘⇧D` | `Ctrl+Shift+D` |
+| Cerrar el panel | `⌘W` | `Ctrl+Shift+W` |
+| Panel siguiente | `⌘]` | `Ctrl+Tab` |
+| Panel por dirección | `⌘⌥` + flechas | `Ctrl+Alt` + flechas |
+| Redimensionar | `⌘⌃` + flechas | `Ctrl+Alt+Shift` + flechas |
+
+## Terminal
+
+| Acción | macOS | Windows / Linux |
+| --- | --- | --- |
+| Copiar la selección | `⌘C` | `Ctrl+Shift+C` |
+| Pegar | `⌘V` | `Ctrl+Shift+V` |
+| Seleccionar todo | `⌘A` | `Ctrl+Shift+A` |
+| Buscar | `⌘F` | `Ctrl+Shift+F` |
+| Composer (rich input) | `⌘⇧G` | `Ctrl+Shift+G` |
+
+<Note>
+`⌘C` solo copia **cuando hay selección**. Sin selección, pasa directo al shell y sigue interrumpiendo el proceso, como esperas.
+</Note>
+
+## En los diálogos
+
+| Dónde | Teclas |
+| --- | --- |
+| Paleta de comandos | `↑` `↓` navega · `↵` ejecuta · `Esc` cierra |
+| Búsqueda en la terminal | `↵` siguiente · `⇧↵` anterior · `Esc` cierra |
+| Inbox de aprobaciones | `1` `2` `3` deciden el primero de la cola |
+| Denegar con feedback | `⌘↵` / `Ctrl+↵` confirma · `Esc` cancela |
+
+Los números del inbox cambian según el riesgo: en verde y amarillo son `[1] Yes` `[2] Always` `[3] No`; en **rojo** son solo `[1] Yes` `[2] No` — [el rojo nunca tiene "Always"](/es/seguridad/clasificacion-de-riesgo#lo-que-siempre-significa-realmente).
+
+## Remapear
+
+**Settings → Shortcuts.** Haz clic en el atajo, pulsa la combinación nueva, listo. `Esc` cancela la captura.
+
+Mientras grabas, los atajos de la app quedan apagados — si no, la combinación que estás escribiendo dispararía la acción en vez de grabarse.
+
+<Warning>
+**No existe detección de conflictos.** Nada te impide poner dos acciones en el mismo atajo. Cuando eso pasa, una de ellas gana — siempre la misma, por orden interno — y **la otra deja de funcionar sin aviso**.
+
+Si un atajo "desapareció" después de que tocaste algo, busca un duplicado.
+</Warning>
+
+Una combinación inválida vuelve al default. Si la configuración entera se corrompe, todo vuelve a los defaults — no te quedas trabado sin atajos.
+
+<Note>
+**No hay botón de "restaurar defaults"** ni por atajo ni general.
+</Note>
+
+## Los que no se pueden remapear
+
+| Acción | macOS | Windows / Linux |
+| --- | --- | --- |
+| Ir a la pestaña N | `⌘1`…`⌘9` | `Alt+1`…`Alt+9` |
+| Redimensionar el panel | `⌘⌃` + flechas | `Ctrl+Alt+Shift` + flechas |
+| Abrir la sesión del último aviso | `⌘⇧O` | `Ctrl+Alt+Shift+O` |
+| Enviar el prompt en el composer | `⌘↵` | `Ctrl+↵` |
+
+<Note>
+`⌘1` hasta `⌘9` **siempre se consumen**, incluso cuando la pestaña no existe. `⌘7` con cuatro pestañas abiertas no hace nada — y lo importante es que tampoco escribe `7` en tu shell.
+</Note>
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Paleta de comandos" icon="command" href="/es/interfaz/paleta-de-comandos">
+    Lo que no tiene atajo, tiene paleta.
+  </Card>
+  <Card title="División de paneles" icon="columns" href="/es/interfaz/division-de-paneles">
+    Los atajos de panel en contexto.
+  </Card>
+</CardGroup>

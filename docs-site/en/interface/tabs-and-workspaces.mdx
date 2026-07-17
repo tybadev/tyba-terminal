@@ -1,0 +1,204 @@
+---
+title: "Tabs and workspaces"
+description: "Two layers that look like one — and what each one lets you do."
+---
+
+## The difference
+
+| | Workspace | Tab |
+| --- | --- | --- |
+| **Where it shows** | In the sidebar | In the tab bar, inside the workspace |
+| **Has its own name?** | Yes — you rename it | **No** |
+| **Has a color and a group?** | Yes | No |
+| **Contains** | Tabs | A tree of panes |
+
+The workspace is the project: a folder, a color, a group, a spot in the sidebar. The tab is a view **inside** it.
+
+<Warning>
+**The interface calls a workspace a "session".** *Rename session*, *Session options*, *Search sessions…* — all of that acts on the workspace. See the [interface tour](/en/interface-tour).
+</Warning>
+
+## Tabs
+
+### Creating
+
+The **`+`** button at the end of the bar, or:
+
+<Tabs>
+<Tab title="macOS">
+`⌘T`
+</Tab>
+<Tab title="Windows and Linux">
+`Ctrl+Shift+T`
+</Tab>
+</Tabs>
+
+### Closing
+
+The **`X`** that appears when you hover the tab.
+
+<Note>
+`⌘W` / `Ctrl+Shift+W` closes the **pane**, not the tab. The tab closes along with it when it was the last pane — see [split panes](/en/interface/split-panes#closing).
+</Note>
+
+### Switching
+
+By clicking, or:
+
+<Tabs>
+<Tab title="macOS">
+| Action | Shortcut |
+| --- | --- |
+| Previous tab | `⌘⇧←` |
+| Next tab | `⌘⇧→` |
+| Go to tab N | `⌘1`…`⌘9` |
+</Tab>
+<Tab title="Windows and Linux">
+| Action | Shortcut |
+| --- | --- |
+| Previous tab | `Ctrl+PgUp` |
+| Next tab | `Ctrl+PgDn` |
+| Go to tab N | `Alt+1`…`Alt+9` |
+</Tab>
+</Tabs>
+
+Each tab's tooltip is its numeric shortcut.
+
+### The tab name is derived
+
+You don't choose it. TYBA resolves it in this order:
+
+1. The view's name, if it's a [special view](#special-views).
+2. **The folder of the tab's first session** — that's the normal case.
+3. The session title.
+4. `shell`.
+
+Change folders in the shell and the label follows.
+
+## Workspaces
+
+### Switching workspaces
+
+<Tabs>
+<Tab title="macOS">
+| Action | Shortcut |
+| --- | --- |
+| Previous workspace | `⌘⇧↑` |
+| Next workspace | `⌘⇧↓` |
+| Sessions palette | `⌘⇧P` |
+</Tab>
+<Tab title="Windows and Linux">
+| Action | Shortcut |
+| --- | --- |
+| Previous workspace | `Ctrl+Shift+↑` |
+| Next workspace | `Ctrl+Shift+↓` |
+| Sessions palette | `Ctrl+Alt+Shift+P` |
+</Tab>
+</Tabs>
+
+With many workspaces open, the [sessions palette](/en/interface/command-palette) beats cycling.
+
+### The context menu
+
+Right-click a workspace in the sidebar — or the `⋯` that appears on hover (*Session options*):
+
+| Item | What it does |
+| --- | --- |
+| **Rename session** | Opens a dialog. Renaming **locks** the name: it stops following the folder. |
+| **Review diff** | Only when the session has a worktree. Opens the [side view](#the-side-view). |
+| **Group in…** | Submenu with the existing groups, plus *New group…*. Picking the current group ungroups it. |
+| **Remove from group** | Only when it's already in a group. |
+| **Copy branch** | Only when the branch is known. |
+| **Copy working directory** | Only when the workspace has a folder. |
+| **Colors** | A row of 7 colors plus *No color*. |
+| **Show / Hide details** | Overrides the global preference, for this workspace only. |
+| **Kill session** | In red. Closes the workspace. |
+
+<Warning>
+**Kill session doesn't ask anything.** There's no confirmation dialog and no undo.
+</Warning>
+
+<Note>
+The **Settings** workspace has no context menu and no preview.
+</Note>
+
+### Color and group
+
+Color and group belong to the workspace only — the tab neither inherits nor has its own. The color shows as a dot in the sidebar and in the preview. The group becomes a foldable header, with a `+` to open another session already inside it.
+
+Creating a group means typing a name that doesn't exist yet in *New group…*. **An empty name removes it from the group.**
+
+## The side view
+
+A pane that lives **beside the tab column** — not inside a tab. Today it serves one purpose: **a session's diff**.
+
+It opens from:
+
+- The **View changes** button in the header.
+- **Review diff** in the workspace context menu.
+- The **Uncommitted changes** and **Review worktree diff** chips.
+
+Drag the divider to change the proportion — clamped between 10% and 90%, same as panes. The expand button (*Expand diff*) hides the terminal column; *Back to split* brings it back.
+
+While it's open, the workspace gets a child row in the sidebar with the session title and an `X` (*Close diff*). The diff's own `X` is *Close review*.
+
+<Note>
+It's **one per workspace**. Opening another session's diff replaces what's there.
+</Note>
+
+## Special views
+
+Some tabs have no panes and no terminal — they take up the whole tab:
+
+| View | How it opens |
+| --- | --- |
+| **Settings** | Gear in the sidebar, account menu, palette, or `⌘,` / `Ctrl+,` |
+| **SSH Connections** | Button in the sidebar footer |
+| **Containers** | Docker icon in the header |
+
+In the Settings view and the Connections view, the **tab bar disappears**.
+
+<Note>
+Containers lives in a workspace of its own, of type `docker` — it doesn't mix with yours.
+</Note>
+
+## SSH workspaces
+
+Connecting to a host creates **one workspace**, which inherits the host's **alias** (already locked), **color** and **group**.
+
+<Warning>
+**Opening a whole Host Group doesn't make one workspace per host.** It makes **a single one**, with the hosts in side-by-side panes — which is what makes broadcast make sense: type once and check the N outputs together.
+</Warning>
+
+See [hosts and groups](/en/ssh/hosts-and-groups).
+
+## What doesn't exist
+
+| | |
+| --- | --- |
+| **Renaming a tab** | Doesn't exist. The model has a title field, but **no part of the interface writes to it**. The label comes from the folder. |
+| **Reordering a tab** | Doesn't exist. There's no drag and no command. |
+| **A tab context menu** | Doesn't exist. Right-clicking a tab does nothing. |
+| **The Workspace / Worktrees view** | Disabled, marked **Soon** — in the header and in the sidebar. |
+| **A side view that isn't a diff** | Doesn't exist. Diff only. |
+
+<Note>
+Want a name of your own? **Rename the workspace.** It's the only layer that takes your name.
+</Note>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Interface tour" icon="map" href="/en/interface-tour">
+    The whole mental map.
+  </Card>
+  <Card title="Split panes" icon="columns" href="/en/interface/split-panes">
+    The layer below the tab.
+  </Card>
+  <Card title="Command palette" icon="command" href="/en/interface/command-palette">
+    The fast way to switch workspaces.
+  </Card>
+  <Card title="Shortcuts" icon="keyboard" href="/en/interface/shortcuts">
+    The whole list, and how to remap.
+  </Card>
+</CardGroup>

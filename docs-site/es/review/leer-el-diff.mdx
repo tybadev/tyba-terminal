@@ -1,0 +1,154 @@
+---
+title: "Leer el diff"
+description: "La revisión se monta solo desde el git local. Timeline de commits, hunks bajo demanda, stage y discard — sin salir de la ventana."
+---
+
+El panel de revisión de TYBA **no habla con GitHub**. Todo lo que muestra sale de `git` corriendo en el worktree de la sesión: la timeline de commits, el resumen por archivo, los hunks. No hay PR, no hay login, no hay red.
+
+Eso es lo que hace que la revisión funcione antes de que exista un PR — que es justo cuando la necesitas.
+
+## Cómo abrirlo
+
+<CardGroup cols={3}>
+  <Card title="Icono de git" icon="git-branch">
+    En el encabezado, cuando la sesión activa está en un repositorio.
+  </Card>
+  <Card title="Barra de chips" icon="square-dashed">
+    *Uncommitted changes* o *Review worktree diff*.
+  </Card>
+  <Card title="Menú del workspace" icon="list">
+    *Review diff* — solo para una sesión con worktree.
+  </Card>
+</CardGroup>
+
+Se abre como **side view del workspace**: un panel al lado de la columna de pestañas, con divisor arrastrable y botón de expandir. La mecánica está en [El side view](/es/interfaz/pestanas-y-workspaces#el-side-view).
+
+<Note>
+**No existe pestaña de diff.** Existió, y al cargar un layout antiguo las pestañas de diff simplemente desaparecen. Hoy el diff es side view — uno por workspace.
+</Note>
+
+## Lo que ves
+
+En la columna de la izquierda, **Commits**: la timeline de la sesión, sha corto y asunto, del más nuevo al más viejo. Abajo, el resumen por archivo en tres secciones:
+
+| Sección | Qué es |
+| --- | --- |
+| **Committed** | `base..HEAD` — lo que el agente commiteó |
+| **Staged** | lo que está en el index |
+| **Changes** | worktree sucio + archivos untracked |
+
+Las dos últimas son el punto importante: **lo que el agente dejó sin commitear también aparece**. Un agente que se detuvo a medias no te esconde nada.
+
+### La base
+
+El diff commiteado es `base_sha..HEAD`, y el `base_sha` quedó **fijado cuando nació el worktree** ([Worktrees](/es/git/worktrees)). El encabezado muestra `base <sha> ‥ HEAD`.
+
+Por eso la revisión sigue siendo legible después de dos horas: lo que entró en `main` mientras tanto no aparece aquí.
+
+## Hunks bajo demanda
+
+El resumen por archivo viene de `--numstat`. **El diff de verdad solo se pide cuando el archivo se abre** — un clic en la fila del archivo.
+
+Algunos ya nacen cerrados:
+
+| Regla | Por qué |
+| --- | --- |
+| Ruta **generada** (`bun.lock`, `package-lock.json`, `Cargo.lock`, `go.sum`, `dist/`, `.min.js`, `.snap`…) | El diff de un lockfile tiene decenas de miles de líneas. Viene marcado `generated`. |
+| Archivo con **más de 800 líneas** de hunk | Se cierra después de la primera carga. |
+| Sección con **más de 20 archivos** | Todo cerrado por defecto. |
+
+Con las dos flechas del encabezado de la sección expandes o recoges todos los archivos de esa sección de una vez.
+
+<Note>
+Un error al cargar los hunks de un archivo **no reintenta solo**. Aparece *failed to load the diff* con un *retry* al lado. El reintento automático contra un repo roto sería un bucle infinito de procesos git.
+</Note>
+
+## Unificado y lado a lado
+
+`Unified` y `Side by side` en el encabezado. El resaltado de sintaxis corre en el cliente y **se salta los hunks de más de 2.000 líneas** — en esos, el texto aparece sin color.
+
+El binario aparece como `bin` en lugar del conteo, y `binary file — no text diff` en el cuerpo.
+
+## Stage, unstage, discard
+
+Pasa el mouse por la fila del archivo:
+
+| Dónde | Acciones |
+| --- | --- |
+| **Changes** | `+` stage · papelera discard · abrir archivo |
+| **Staged** | `−` unstage · abrir archivo |
+| Encabezado de **Changes** | stage a todo · descartar todo |
+| Encabezado de **Staged** | sacar todo del stage |
+
+<Warning>
+**Discard es una acción roja y pide dos clics.** El primero la arma (*Discard?*), el segundo la ejecuta — y el armado expira solo en **3 segundos**.
+
+Lo tracked vuelve con `git restore`. Lo untracked se va con `git clean -ffd` — incluido un repositorio anidado que el agente haya dejado. No hay deshacer.
+</Warning>
+
+Sacar del stage un archivo renombrado saca el par entero (el path antiguo junto), si no el commit siguiente perdería el archivo del historial.
+
+## Lo que no existe
+
+| | |
+| --- | --- |
+| **Stage por hunk o por línea** | No existe. El core recibe `paths` — la unidad es el **archivo**, o la sección entera. |
+| **Diff en pestaña propia** | Ya no existe. Solo side view. |
+| **Diff que venga de GitHub** | No existe. Solo git local. |
+| **Ignorar whitespace / cambiar contexto** | No existe. `git diff` corre sin opciones de presentación. |
+
+## Comentar una línea
+
+Pasa el mouse sobre una línea del diff y haz clic en el `+` verde del canal. Escribe lo que necesita cambiar.
+
+| Tecla | Qué |
+| --- | --- |
+| `⌘↵` / `Ctrl+↵` | guarda el comentario |
+| `Esc` | cancela el borrador |
+
+El comentario queda anclado a la línea, en verde. Con al menos uno guardado, el pie gana **Send N comments to the agent** — que es [otra página](/es/review/comentarios-al-agente).
+
+<Warning>
+**Los comentarios no se persisten.** Viven en el panel: cerrar la revisión descarta todo lo que no enviaste. No van al git, no se convierten en review de GitHub.
+</Warning>
+
+## Abrir el archivo
+
+El icono de flecha abre el archivo **como texto** — en el editor de GUI configurado en Settings, o, en macOS sin editor, con `open -t`.
+
+<Note>
+Nunca `open <archivo>` ni `xdg-open`: eso ejecutaría con un clic un script dejado por el agente en el worktree. En Windows y en Linux sin editor configurado, el botón da error pidiéndote que configures uno — a propósito.
+</Note>
+
+## Explorar otra branch
+
+El selector al lado de la base entra en modo explorar: elige una branch y el panel muestra **su diff contra la base**, read-only. Solo la sección Committed — staged y worktree son de tu directorio, no de la branch que estás mirando. Hay `fetch` y `checkout` en el mismo selector.
+
+Salir del modo explorar vuelve a la revisión de la sesión.
+
+## Conflicto en el worktree
+
+Si hay un merge, rebase o cherry-pick en curso, el panel gana una franja arriba con los archivos en conflicto y, por archivo: *keep `<branch>`*, *take `<branch>`*, abrir en el editor, *mark resolved (git add)*. Y un *Resolve with agent*, que le tira el conflicto en el regazo a quien lo creó.
+
+## Actualización
+
+El watcher del core solo ve el git dir — índice, HEAD, refs. Editar un archivo en el worktree no genera evento. Por eso, con el panel abierto, corre también un poll ligero cada **5 segundos**.
+
+<Note>
+**El panel se cierra solo cuando el foco cambia de sesión.** Muestra el staged y el worktree del repo de *esa* sesión: abierto con otra en foco, te induciría a hacer stage — o discard — en el repo equivocado.
+</Note>
+
+## Sesión sin worktree
+
+El panel abre para cualquier sesión cuyo directorio sea un repositorio git. Ahí la base es `HEAD`: **Committed viene vacío** y ves solo staged y worktree. El merge local y abrir PR necesitan worktree y van a fallar.
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Commit y push" icon="git-commit" href="/es/review/commit-y-push">
+    La barra de commit, la sugerencia de mensaje y lo que el push rechaza.
+  </Card>
+  <Card title="Comentarios al agente" icon="message-square" href="/es/review/comentarios-al-agente">
+    Lo que el agente recibe cuando aprietas enviar.
+  </Card>
+</CardGroup>

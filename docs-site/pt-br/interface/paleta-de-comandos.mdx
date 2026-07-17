@@ -1,0 +1,125 @@
+---
+title: "Paleta de comandos"
+description: "São duas, não uma — e a que você quer depende de estar procurando uma ação ou um lugar."
+---
+
+## São duas
+
+<Tabs>
+<Tab title="macOS">
+| Paleta | Atalho | Para que serve |
+| --- | --- | --- |
+| **Ações** | `⌘P` | Fazer alguma coisa |
+| **Sessões** | `⌘⇧P` | Ir para algum lugar |
+</Tab>
+<Tab title="Windows e Linux">
+| Paleta | Atalho | Para que serve |
+| --- | --- | --- |
+| **Ações** | `Ctrl+Shift+P` | Fazer alguma coisa |
+| **Sessões** | `Ctrl+Alt+Shift+P` | Ir para algum lugar |
+</Tab>
+</Tabs>
+
+<Warning>
+**Se você vem do VS Code, o `⇧` está trocado.** Lá `⌘⇧P` é a paleta de comandos. Aqui `⌘⇧P` é a de **sessões** — a de ações é `⌘P` limpo.
+</Warning>
+
+É o mesmo diálogo com dois modos. No topo há dois botões — **Ações** e **Sessões** — cada um com o próprio atalho ao lado. Dá para trocar de modo com o clique, sem fechar.
+
+O ícone de lupa no cabeçalho abre a paleta de **ações**.
+
+## Navegar
+
+| Tecla | O que faz |
+| --- | --- |
+| `↑` `↓` | Navega |
+| `↵` | Executa |
+| `Esc` | Fecha |
+
+Digitar filtra. Sem resultado, ela diz *Nada encontrado*.
+
+## A paleta de ações
+
+`⌘P` / `Ctrl+Shift+P`. Quatro grupos.
+
+### Ações
+
+| Item | Atalho |
+| --- | --- |
+| **Nova sessão** | — |
+| **Nova sessão isolada em worktree** | `⌘⇧T` / `Ctrl+Alt+Shift+T` |
+| **Nova aba** | `⌘T` / `Ctrl+Shift+T` |
+| **Fechar painel** | `⌘W` / `Ctrl+Shift+W` |
+| **Alternar painel** | `⌘B` / `Ctrl+Shift+B` |
+| **Configurações** | — |
+
+<Note>
+*Fechar painel* só aparece quando há um workspace ativo. Sem nada aberto, não há painel para fechar.
+</Note>
+
+### Tema
+
+| Item | O que faz |
+| --- | --- |
+| **Mudar tema para Escuro / Claro / Sistema** | O modo atual não aparece na lista. |
+| **Usar tema {nome}** | Um item por tema disponível — os clássicos embutidos e os que você importou. Só TYBA Dark e TYBA Light ficam de fora. |
+| **Importar tema…** | Abre o seletor de arquivo, filtrado em `.json`. |
+
+Veja [os temas](/pt-br/temas/os-temas) e [importar tema](/pt-br/temas/importar-tema).
+
+### Fonte da interface
+
+**Mudar fonte para {nome}** — a fonte ativa não aparece.
+
+### Idioma
+
+**Mudar idioma para {idioma}** — o idioma ativo não aparece.
+
+<Note>
+O padrão dos grupos é o mesmo: **a opção que já está valendo some da lista**. A paleta só oferece mudança.
+</Note>
+
+## A paleta de sessões
+
+`⌘⇧P` / `Ctrl+Alt+Shift+P`.
+
+Apesar do nome, ela lista **workspaces** — não shells. Cada linha traz o nome, um ícone verde se for o ativo, e a contagem de abas à direita.
+
+A busca casa com o **nome**, o **caminho do repositório** e o id. Procurar pela pasta funciona mesmo quando o workspace foi renomeado.
+
+`↵` vai para o workspace. É o caminho mais rápido quando o ciclo `⌘⇧↑` / `⌘⇧↓` ficou longo demais — veja [abas e workspaces](/pt-br/interface/abas-e-workspaces).
+
+<Note>
+Sem nenhum workspace aberto, o modo Sessões fica vazio.
+</Note>
+
+## O que não tem na paleta
+
+| | |
+| --- | --- |
+| **Split** | Não existe. Dividir é só por atalho ou botão direito no terminal — veja [split de painéis](/pt-br/interface/split-de-paineis). |
+| **SSH / conexões** | Não existe. Conectar num host é pela vista *Conexões SSH*, no rodapé da sidebar. |
+| **Renomear, colorir, agrupar ou encerrar workspace** | Não existe. Tudo isso é [menu de contexto](/pt-br/interface/abas-e-workspaces#o-menu-de-contexto). |
+| **Trocar de aba** | Não existe. A paleta de sessões vai a workspaces, nunca a uma aba específica. |
+| **Chips, atalhos, containers** | Não existem. Só via *Configurações* e o cabeçalho. |
+
+<Warning>
+A paleta **não é** um índice de tudo que o app faz. Ela cobre um punhado de ações e a navegação entre workspaces — o resto mora no menu de contexto, no cabeçalho e nas Configurações.
+</Warning>
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Atalhos" icon="keyboard" href="/pt-br/interface/atalhos">
+    A lista inteira, e como remapear.
+  </Card>
+  <Card title="Abas e workspaces" icon="layout" href="/pt-br/interface/abas-e-workspaces">
+    O que a paleta de sessões navega.
+  </Card>
+  <Card title="Os temas" icon="palette" href="/pt-br/temas/os-temas">
+    O que o grupo Tema muda.
+  </Card>
+  <Card title="Tour da interface" icon="map" href="/pt-br/tour-da-interface">
+    Onde a paleta se encaixa.
+  </Card>
+</CardGroup>

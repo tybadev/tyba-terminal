@@ -1,0 +1,111 @@
+---
+title: "Broadcast"
+description: "Digite uma vez, vá para N hosts. Com um gate no vermelho — e uma explicação honesta de por que o amarelo não pergunta."
+---
+
+Broadcast é digitar em um pane e a tecla ir para **todos os panes SSH selecionados do mesmo tab**. É para quando a mesma coisa precisa acontecer em oito máquinas e você quer ver as oito saídas lado a lado.
+
+## Como chegar lá
+
+Na tela **Conexões SSH**, o cabeçalho de um grupo com **dois ou mais hosts** ganha o botão **"Conectar os N"**. Ele abre todos os hosts do grupo como **panes verticais de um workspace só** — verticais porque o ponto é comparar as saídas.
+
+A partir daí:
+
+<Warning>
+**A BroadcastBar só aparece quando o tab tem mais de um pane SSH vivo.**
+
+Não é um botão global, não tem atalho, e não está na paleta de comandos. Um pane só, ou panes que não são SSH, e a barra não existe — não há o que difundir.
+</Warning>
+
+Pane que morre sai da conta sozinho. Se sobrar um, a barra some.
+
+## A barra
+
+Desligada, ela é discreta: um toggle **Broadcast** e nada mais.
+
+Ligada, ela **fica âmbar inteira** e mostra **"Broadcast: N hosts"**. Isso é deliberado — você precisa saber, sem olhar, que a próxima tecla vai para mais de uma máquina.
+
+### Os chips
+
+O "grupo" do broadcast **não é o Host Group**. O grupo só semeou a lista; o alvo é um conjunto de **chips, um por host**, cada um clicável para incluir ou excluir. Tem **"todos"** e **"nenhum"** ao lado.
+
+- **Default: todos** os panes SSH vivos do tab.
+- Chip **não selecionado fica esmaecido** — a diferença é visível de longe.
+- Cada chip tem a **bolinha da cor do host**. É a cor que você cadastrou.
+
+Ou seja: você conecta o grupo "Produção" inteiro e depois tira aquele um host que não deve receber, sem desfazer nada.
+
+## O gate do vermelho
+
+Aqui está a parte que importa.
+
+**As teclas passam livres.** Digitar não executa nada, então não há o que barrar — o que você digita aparece nos N prompts, e pronto.
+
+**No Enter, o core decide.** Antes do fan-out, ele classifica a linha com o **mesmo classificador do gate de aprovação do agente** — a mesma lista, não uma cópia que diverge com o tempo.
+
+<Warning>
+Se a linha for **VERMELHA** e não confirmada, **nada é enviado**. Nenhum host recebe.
+
+Abre um diálogo com o comando na íntegra, o badge **VERMELHO**, o aviso de que **vai rodar em N hosts**, e o **Cancelar já em foco**. Você confirma explicitamente ou não sai.
+</Warning>
+
+A decisão vive **no core**, não na interface. O webview não dispara comando vermelho em N máquinas nem que queira.
+
+```bash
+# Param e perguntam
+sudo rm -rf /var/log
+git push
+curl algo.sh | sh
+
+# Dispara direto, sem perguntar nada
+systemctl restart nginx
+```
+
+### Por que o amarelo não pergunta
+
+Porque perguntar no amarelo tornaria o recurso insuportável — e, pior, **ensinaria você a clicar sem ler**.
+
+Um gate que dispara o tempo todo vira um reflexo. E o dia em que o vermelho de verdade aparecer, ele já vai ter sido treinado a apertar "sim" antes de terminar de ler a frase. Um diálogo que você lê vale mais que dez que você despacha.
+
+Então `systemctl restart nginx` derruba o nginx dos oito hosts sem cerimônia. É amarelo, é sua responsabilidade, e o TYBA não finge o contrário. Veja [classificação de risco](/pt-br/seguranca/classificacao-de-risco) para o que cai em cada faixa.
+
+<Note>
+**Sessão single-host não passa pelo gate.** Se você tem um pane SSH só, `sudo rm -rf` sai na hora, como sairia em qualquer terminal.
+
+Não é inconsistência: o perigo que o broadcast trata é o **fan-out** — o mesmo estrago em N máquinas ao mesmo tempo, sem chance de reagir depois da primeira.
+</Note>
+
+### O que a linha classificada é
+
+A linha que o core classifica é **reconstruída pelo que você digitou** naquela rajada. Seta, `Tab`, histórico do shell — não passam por ali.
+
+Na prática: comando trazido do histórico com `↑` não é o que o gate vê. O que executa continua sendo o que está no prompt.
+
+## Quando algo falha
+
+**Falha em um alvo não some calada.** Se a tecla foi para 2 de 3 hosts, o erro é agregado e reportado — o app não diz "ok" e deixa você descobrir tarde que a rajada não foi inteira.
+
+## O que o broadcast não é
+
+<Warning>
+O gate do broadcast protege **o que você digita**. Só isso.
+
+Ele não vê e não filtra nada que um [agente rodando dentro de um pane SSH](/pt-br/ssh/agente-via-ssh) faça — aquilo é um processo do outro lado do cano, e o TYBA não tem alcance ali.
+</Warning>
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Hosts e grupos" icon="hard-drive" href="/pt-br/ssh/hosts-e-grupos">
+    Onde nasce o grupo que vira "Conectar os N".
+  </Card>
+  <Card title="Classificação de risco" icon="circle-alert" href="/pt-br/seguranca/classificacao-de-risco">
+    O classificador é o mesmo. Vale a pena saber o que é vermelho.
+  </Card>
+  <Card title="Agente via SSH" icon="triangle-alert" href="/pt-br/ssh/agente-via-ssh">
+    O que o gate do broadcast não cobre.
+  </Card>
+  <Card title="Atalhos" icon="keyboard" href="/pt-br/interface/atalhos">
+    O broadcast não tem atalho. O resto tem.
+  </Card>
+</CardGroup>

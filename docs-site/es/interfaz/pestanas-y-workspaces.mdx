@@ -1,0 +1,204 @@
+---
+title: "Pestañas y workspaces"
+description: "Dos capas que parecen una sola — y lo que cada una te deja hacer."
+---
+
+## La diferencia
+
+| | Workspace | Pestaña |
+| --- | --- | --- |
+| **Dónde aparece** | En la sidebar | En la barra de pestañas, dentro del workspace |
+| **¿Tiene nombre propio?** | Sí — tú lo renombras | **No** |
+| **¿Tiene color y grupo?** | Sí | No |
+| **Contiene** | Pestañas | Un árbol de paneles |
+
+El workspace es el proyecto: una carpeta, un color, un grupo, un lugar en la sidebar. La pestaña es una vista **dentro** de él.
+
+<Warning>
+**La interfaz llama "session" al workspace.** *Rename session*, *Session options*, *Search sessions…* — todo eso actúa sobre el workspace. Ver el [tour de la interfaz](/es/tour-de-la-interfaz).
+</Warning>
+
+## Pestañas
+
+### Crear
+
+El botón **`+`** al final de la barra, o:
+
+<Tabs>
+<Tab title="macOS">
+`⌘T`
+</Tab>
+<Tab title="Windows y Linux">
+`Ctrl+Shift+T`
+</Tab>
+</Tabs>
+
+### Cerrar
+
+La **`X`** que aparece al pasar el mouse por la pestaña.
+
+<Note>
+`⌘W` / `Ctrl+Shift+W` cierra el **panel**, no la pestaña. La pestaña se cierra junto con él cuando era el último panel — ver [división de paneles](/es/interfaz/division-de-paneles#cerrar).
+</Note>
+
+### Cambiar
+
+Haciendo clic, o:
+
+<Tabs>
+<Tab title="macOS">
+| Acción | Atajo |
+| --- | --- |
+| Pestaña anterior | `⌘⇧←` |
+| Pestaña siguiente | `⌘⇧→` |
+| Ir a la pestaña N | `⌘1`…`⌘9` |
+</Tab>
+<Tab title="Windows y Linux">
+| Acción | Atajo |
+| --- | --- |
+| Pestaña anterior | `Ctrl+PgUp` |
+| Pestaña siguiente | `Ctrl+PgDn` |
+| Ir a la pestaña N | `Alt+1`…`Alt+9` |
+</Tab>
+</Tabs>
+
+El tooltip de cada pestaña es su atajo numérico.
+
+### El nombre de la pestaña es derivado
+
+Tú no lo eliges. TYBA lo resuelve en este orden:
+
+1. El nombre de la vista, si es una [vista especial](#vistas-especiales).
+2. **La carpeta de la primera sesión de la pestaña** — es el caso normal.
+3. El título de la sesión.
+4. `shell`.
+
+Cambias de carpeta en el shell y la etiqueta lo sigue.
+
+## Workspaces
+
+### Cambiar de workspace
+
+<Tabs>
+<Tab title="macOS">
+| Acción | Atajo |
+| --- | --- |
+| Workspace anterior | `⌘⇧↑` |
+| Workspace siguiente | `⌘⇧↓` |
+| Paleta de sesiones | `⌘⇧P` |
+</Tab>
+<Tab title="Windows y Linux">
+| Acción | Atajo |
+| --- | --- |
+| Workspace anterior | `Ctrl+Shift+↑` |
+| Workspace siguiente | `Ctrl+Shift+↓` |
+| Paleta de sesiones | `Ctrl+Alt+Shift+P` |
+</Tab>
+</Tabs>
+
+Con muchos workspaces abiertos, la [paleta de sesiones](/es/interfaz/paleta-de-comandos) le gana al ciclo.
+
+### El menú contextual
+
+Botón derecho en un workspace de la sidebar — o el `⋯` que aparece en el hover (*Session options*):
+
+| Ítem | Qué hace |
+| --- | --- |
+| **Rename session** | Abre un diálogo. Renombrar **fija** el nombre: deja de seguir a la carpeta. |
+| **Review diff** | Solo cuando la sesión tiene worktree. Abre el [side view](#el-side-view). |
+| **Group in…** | Submenú con los grupos que existen, más *New group…*. Elegir el grupo actual lo desagrupa. |
+| **Remove from group** | Solo cuando ya está en un grupo. |
+| **Copy branch** | Solo cuando el branch es conocido. |
+| **Copy working directory** | Solo cuando el workspace tiene carpeta. |
+| **Colors** | Una fila de 7 colores más *No color*. |
+| **Show / Hide details** | Sobrescribe la preferencia global, solo para este workspace. |
+| **Kill session** | En rojo. Cierra el workspace. |
+
+<Warning>
+**Kill session no pregunta nada.** No hay diálogo de confirmación y no hay deshacer.
+</Warning>
+
+<Note>
+El workspace de **Settings** no tiene menú contextual ni preview.
+</Note>
+
+### Color y grupo
+
+El color y el grupo son solo del workspace — la pestaña ni los hereda ni tiene los suyos. El color aparece como un punto en la sidebar y en el preview. El grupo se vuelve un encabezado plegable, con un `+` para abrir otra sesión ya dentro de él.
+
+Crear un grupo es escribir un nombre que todavía no existe en *New group…*. **Un nombre vacío lo saca del grupo.**
+
+## El side view
+
+Un panel que vive **al lado de la columna de pestañas** — no dentro de una pestaña. Hoy sirve para una sola cosa: **el diff de una sesión**.
+
+Se abre por:
+
+- El botón **View changes** del encabezado.
+- **Review diff** en el menú contextual del workspace.
+- Los chips **Uncommitted changes** y **Review worktree diff**.
+
+Arrastra el divisor para cambiar la proporción — limitada entre 10% y 90%, igual que los paneles. El botón de expandir (*Expand diff*) esconde la columna de la terminal; *Back to split* la trae de vuelta.
+
+Mientras está abierto, el workspace gana una fila hija en la sidebar con el título de la sesión y una `X` (*Close diff*). La `X` del propio diff es *Close review*.
+
+<Note>
+Es **uno por workspace**. Abrir el diff de otra sesión reemplaza lo que hay ahí.
+</Note>
+
+## Vistas especiales
+
+Algunas pestañas no tienen paneles ni terminal — ocupan la pestaña entera:
+
+| Vista | Cómo se abre |
+| --- | --- |
+| **Settings** | Engranaje en la sidebar, menú de la cuenta, paleta, o `⌘,` / `Ctrl+,` |
+| **SSH Connections** | Botón en el pie de la sidebar |
+| **Containers** | Icono de Docker en el encabezado |
+
+En la vista de Settings y en la de Connections, la **barra de pestañas desaparece**.
+
+<Note>
+Containers vive en un workspace propio, de tipo `docker` — no se mezcla con los tuyos.
+</Note>
+
+## Workspaces de SSH
+
+Conectarse a un host crea **un workspace**, que hereda del host el **alias** (ya fijado), el **color** y el **grupo**.
+
+<Warning>
+**Abrir un Host Group entero no hace un workspace por host.** Hace **uno solo**, con los hosts en paneles lado a lado — que es lo que le da sentido al broadcast: escribir una vez y revisar las N salidas juntas.
+</Warning>
+
+Ver [hosts y grupos](/es/ssh/hosts-y-grupos).
+
+## Lo que no existe
+
+| | |
+| --- | --- |
+| **Renombrar una pestaña** | No existe. El modelo tiene un campo de título, pero **ninguna parte de la interfaz escribe en él**. La etiqueta viene de la carpeta. |
+| **Reordenar una pestaña** | No existe. No hay arrastre ni comando. |
+| **Menú contextual en la pestaña** | No existe. El botón derecho en una pestaña no hace nada. |
+| **La vista Workspace / Worktrees** | Desactivada, marcada **Soon** — en el encabezado y en la sidebar. |
+| **Un side view que no sea diff** | No existe. Solo diff. |
+
+<Note>
+¿Quieres un nombre propio? **Renombra el workspace.** Es la única capa que acepta un nombre tuyo.
+</Note>
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Tour de la interfaz" icon="map" href="/es/tour-de-la-interfaz">
+    El mapa mental entero.
+  </Card>
+  <Card title="División de paneles" icon="columns" href="/es/interfaz/division-de-paneles">
+    La capa debajo de la pestaña.
+  </Card>
+  <Card title="Paleta de comandos" icon="command" href="/es/interfaz/paleta-de-comandos">
+    La forma rápida de cambiar de workspace.
+  </Card>
+  <Card title="Atajos" icon="keyboard" href="/es/interfaz/atajos">
+    La lista entera, y cómo remapear.
+  </Card>
+</CardGroup>

@@ -1,0 +1,120 @@
+---
+title: "Claude Code and Codex"
+sidebarTitle: "Claude Code and Codex"
+description: "The two agents TYBA starts, why they don't come in the box, and what the session shows while they work."
+---
+
+TYBA starts **two** agents:
+
+| Agent | Binary |
+| --- | --- |
+| Claude Code | `claude` |
+| Codex | `codex` |
+
+<Warning>
+**Neither one is bundled.** TYBA does not embed, download or install an agent. It looks for the binary on your `PATH` and uses whatever it finds.
+</Warning>
+
+Installing and paying for each of them is on you. Without either, TYBA is still a full terminal — what you can't do is **create an agent session**.
+
+<Note>
+The `PATH` it consults is your **login shell's**, not the process's. TYBA runs `$SHELL -lic` once to find out where things are, and caches the result.
+
+That is why an agent installed through `nvm`, `asdf` or Homebrew is found even when the app is opened from a GUI launcher (the Dock, on macOS), which inherits a minimal `PATH`.
+</Note>
+
+## Creating an agent session
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| New session | `⌘N` | `Ctrl+Shift+N` |
+| New worktree session | `⌘⇧T` | `Ctrl+Alt+Shift+T` |
+
+Both open the same dialog. It asks **where** the session works first: default folder, last folder, choose a folder, your home, or an SSH host.
+
+The agent choice comes after — and it **only appears when the session is isolated in a worktree**. That is where the two shortcuts differ:
+
+- `⌘⇧T` starts with **"Isolate in a git worktree"** already on.
+- `⌘N` respects the **"Isolate new sessions by default"** preference (Settings → Preferences, **off** by default).
+
+With the preference on, both shortcuts do the same thing.
+
+<Note>
+**An agent session is always a worktree session.** This is not accidental coupling: worktree, jail, env by allowlist and inbox are born together, in the same step. The whole path is in [First session](/en/first-session).
+
+Running `claude` by typing its name into a shell is a different thing — and what you lose is described in [Agent over SSH](/en/ssh/agent-over-ssh).
+</Note>
+
+The **"Default folder for new sessions"** preference (Settings → General) puts a folder as the **first option** in the list, marked with the `default folder` label. Empty = no default.
+
+### When the binary isn't there
+
+<Warning>
+**Only Codex is checked up front.** The dialog tests whether `codex` exists and, if it doesn't, disables its button with the reason: *"`codex` binary not found in PATH — install the Codex CLI"*.
+
+The **Claude Code button is never disabled.** Without `claude` installed, you pick it, submit, and only then get the error from the core: `` `claude` binary not found in PATH ``. It shows up in the dialog itself — the session doesn't start, nothing breaks, but you find out late.
+</Warning>
+
+### The repository's default agent
+
+A repository can pre-select the agent with `agent.default` in `.tyba/config.toml` — and that **only applies after you approve that file**. The rules (and why consent is per hash) are in [Repository configuration](/en/reference/repo-config).
+
+## What the session reports
+
+| Status | Shows as | What it is |
+| --- | --- | --- |
+| `Running` | **in progress** (blue) | working |
+| `AwaitingInput` · approval | **blocked** (amber) | stopped at a gate — [the inbox](/en/security/risk-classification) |
+| `AwaitingInput` · answer | **awaiting** (amber) | wants an answer from you |
+| `Idle` | **finished** (green) | the turn is over |
+| `Failed` | **failed** (red) | the session broke |
+| `Exited` | — | it's done |
+
+Two things worth knowing:
+
+<Note>
+**`Exited` draws nothing.** A session that ended normally gets no dot and no label — silence is the correct state for something that is over.
+
+**`Idle` only shows when it wants attention.** Once you've seen the result, the green disappears.
+</Note>
+
+The status shows on the **sidebar entry** and on the **hover card** — not on the tab. When a workspace has several sessions, the sidebar shows the most urgent one: failed > blocked/awaiting > finished > in progress.
+
+## The review agent
+
+In **Settings → Code**, the **"Review agent"** field decides who receives the comments you write on a diff **when there is no live session in that worktree**. If there is a session, the prompt goes to it.
+
+With no session, TYBA opens one, starts the chosen agent and pastes the prompt.
+
+| Option | What it does |
+| --- | --- |
+| Claude Code | default |
+| Codex | requires `codex` on the `PATH` |
+| Custom command… | opens the **"Agent command"** field |
+
+<Warning>
+**"Custom command" does not run a command.** The field accepts a line (`claude --model opus`), but TYBA reads **only the binary name** and throws the arguments away: `codex` starts Codex, **anything else starts Claude Code**.
+
+So `claude --model opus` starts a plain Claude Code, without `--model opus`. And `aider` also starts Claude Code, silently.
+
+The field's placeholder suggests otherwise — it is wrong, and the behavior above is the real one.
+</Warning>
+
+The limitation is deliberate. An agent session has to go through the core's runner: it is what loads the hooks, the jail and the environment allowlist. An arbitrary command line would start a process **with no approval gate** — exactly what TYBA exists to prevent.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="How TYBA talks to the agent" icon="plug" href="/en/agent/hooks">
+    Where the approval gate comes from.
+  </Card>
+  <Card title="The composer" icon="keyboard" href="/en/agent/composer">
+    The long-prompt box.
+  </Card>
+  <Card title="Repository configuration" icon="file-code" href="/en/reference/repo-config">
+    `agent.default` and the environment allowlist.
+  </Card>
+  <Card title="Agent over SSH" icon="triangle-alert" href="/en/ssh/agent-over-ssh">
+    What you lose on the other side of the pipe.
+  </Card>
+</CardGroup>

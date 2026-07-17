@@ -1,0 +1,140 @@
+---
+title: "Usando o terminal"
+description: "Selecionar, copiar, clicar em link — e o que o TYBA decidiu por você e não dá para mudar."
+---
+
+O terminal do TYBA é xterm.js com aceleração por GPU. Se o contexto gráfico cair, ele volta sozinho para o render normal — você não perde a sessão, no máximo perde alguns quadros por segundo.
+
+## Selecionar
+
+**Arraste** para selecionar. **Botão direito seleciona a palavra** debaixo do cursor antes de abrir o menu — não existe seleção "vazia" por engano.
+
+| Ação | macOS | Windows / Linux |
+| --- | --- | --- |
+| Selecionar tudo | `⌘A` | `Ctrl+Shift+A` |
+
+### Quando o app captura o mouse
+
+Vim, tmux, `less`, agentes com TUI — muitos programas ligam o **mouse mode** e passam a receber o clique eles mesmos. Nesse estado, arrastar não seleciona: rola a tela do programa.
+
+A saída é forçar a seleção:
+
+<Tabs>
+<Tab title="macOS">
+Segure **Option** e arraste.
+</Tab>
+<Tab title="Windows e Linux">
+Segure **Alt** e arraste.
+</Tab>
+</Tabs>
+
+<Note>
+O TYBA sabe quando isso está acontecendo. Com o mouse mode ligado e nada selecionado, o menu de contexto mostra exatamente essa dica no lugar das opções de cópia — em vez de te dar um "Copiar seleção" desabilitado sem explicação.
+</Note>
+
+## Copiar
+
+| Ação | macOS | Windows / Linux |
+| --- | --- | --- |
+| Copiar seleção | `⌘C` | `Ctrl+Shift+C` |
+
+<Note>
+`⌘C` / `Ctrl+Shift+C` **só age quando há seleção**. Sem seleção, a tecla passa direto para o shell e continua sendo o `SIGINT` de sempre. Interromper um processo é mais importante que copiar.
+</Note>
+
+### Copiar como Markdown
+
+No menu de contexto, **Copiar como Markdown** copia a mesma seleção embrulhada em cerca de código:
+
+````
+```
+...sua seleção...
+```
+````
+
+É para colar direto no chat de um agente, num PR ou num issue sem ter que arrumar a indentação do outro lado.
+
+## O menu de contexto
+
+Botão direito no terminal:
+
+| Item | O que faz |
+| --- | --- |
+| **Copiar seleção** | Texto puro. |
+| **Copiar como Markdown** | O mesmo, entre ```` ``` ````. |
+| **Colar** | Passa pela [checagem de colagem](/pt-br/terminal/colar-com-seguranca). |
+| **Buscar no terminal** | Abre a [busca](/pt-br/terminal/busca). |
+| **Dividir à direita** / **Dividir abaixo** | Igual aos atalhos de [split](/pt-br/interface/split-de-paineis). |
+
+Os dois itens de cópia ficam desabilitados sem seleção.
+
+## Links clicáveis
+
+URLs no output viram links. Clicar abre **no seu navegador padrão**, não dentro do TYBA.
+
+<Warning>
+Só `http://` e `https://` abrem. Qualquer outro esquema — `file:`, `javascript:`, um protocolo custom que alguém plantou no output — é **ignorado em silêncio**. URL com usuário e senha embutidos (`https://user:senha@host`) também não abre.
+
+Output de terminal é texto que qualquer processo escreve. Um clique não deveria conseguir mais que abrir uma página.
+</Warning>
+
+## Redimensionar
+
+Não tem nada para fazer: o terminal se ajusta sozinho ao painel. Arraste o divisor do split, redimensione a janela, troque de aba — o TYBA refaz as colunas e as linhas e avisa o processo do outro lado.
+
+Se você estava com a tela no fim quando o número de linhas mudou, ele te mantém no fim. Se você tinha rolado para trás para ler algo, ele te deixa onde estava.
+
+## Emoji, CJK e Nerd Fonts
+
+O terminal usa a tabela de largura do **Unicode 11**: emoji e caracteres chineses/japoneses/coreanos ocupam duas colunas, como devem. Prompts com glifos de Nerd Font (`starship`, `powerlevel10k`) renderizam — a família de fonte já inclui **Symbols Nerd Font Mono** no encadeamento.
+
+## Fonte
+
+**Configurações → Aparência → Fonte.** Só o **tamanho** do terminal é configurável: `11`, `12`, `13`, `14`, `15` ou `16` px. O padrão é `13`.
+
+<Note>
+O outro seletor dessa mesma linha (**JetBrains Mono** / **Space Grotesk**) é a fonte da **interface** — sidebar, menus, diálogos. Ele não toca no terminal.
+</Note>
+
+A família do terminal é fixa, nesta ordem:
+
+```
+"JetBrains Mono", "Symbols Nerd Font Mono", "Fira Code",
+ui-monospace, SFMono-Regular, Menlo, monospace
+```
+
+## O que não existe
+
+| | |
+| --- | --- |
+| **Scrollback configurável** | Fixo em **10.000 linhas**. Não há campo, nem preferência, nem arquivo. Veja [Busca](/pt-br/terminal/busca#o-limite-de-10000-linhas). |
+| **Estilo de cursor** | Sempre bloco piscando. Não dá para trocar a forma nem **desligar o piscar**. |
+| **Opacidade / transparência da janela** | Não existe. |
+| **Toggle de ligaduras** | Não existe. O que a fonte fizer, fica. |
+| **Notificação sonora / bell** | Não existe toggle. As notificações nativas, logo abaixo, são outra coisa. |
+| **Shell padrão configurável** | Não há campo. O TYBA usa o `$SHELL` do sistema. |
+
+## Notificações
+
+Não confunda com bell: o TYBA dispara **notificação nativa do sistema** quando uma sessão de agente termina o turno ou fica esperando você responder.
+
+<Note>
+Elas só disparam com a **janela do TYBA fora de foco**. Se você está olhando para o app, ele não te avisa do que está na sua frente. E o corpo da notificação passa por redação — segredos que apareceram no output não vazam para a central de notificações do sistema.
+</Note>
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Colar com segurança" icon="clipboard" href="/pt-br/terminal/colar-com-seguranca">
+    Por que às vezes ele pergunta antes de colar.
+  </Card>
+  <Card title="Busca no scrollback" icon="magnifying-glass" href="/pt-br/terminal/busca">
+    Achar no que já rolou — e o limite disso.
+  </Card>
+  <Card title="Atalhos" icon="keyboard" href="/pt-br/interface/atalhos">
+    A lista inteira, e como remapear.
+  </Card>
+  <Card title="Split de painéis" icon="columns" href="/pt-br/interface/split-de-paineis">
+    Dividir, navegar, redimensionar.
+  </Card>
+</CardGroup>

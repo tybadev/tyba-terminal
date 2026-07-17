@@ -1,0 +1,132 @@
+---
+title: "`.tyba/setup.sh`"
+sidebarTitle: ".tyba/setup.sh"
+description: "O script que prepara o worktree recém-criado — e por que ele pede sua permissão de novo a cada byte alterado."
+---
+
+Worktree novo é uma pasta vazia de tudo que não está versionado. Sem `node_modules`, sem `.env`, sem banco. Um agente que sobe ali e roda o projeto não encontra nada.
+
+O `.tyba/setup.sh` é a resposta:
+
+```
+<raiz-do-repo>/.tyba/setup.sh
+```
+
+Não é criado pelo TYBA; ausente é o caso normal. Ele é **versionado junto com o projeto** — e é exatamente por isso que ele precisa da sua permissão.
+
+## Quando roda
+
+Uma vez, na criação do worktree, logo depois do `git worktree add` e antes de você começar a usar a sessão.
+
+- **`cwd` é o worktree**, não o repo principal.
+- Roda numa thread de fundo. **Nunca bloqueia a criação da sessão.**
+- Se falhar, o worktree continua de pé. A falha vira log — o TYBA guarda a saída do script (com o rabo do log, os últimos 400 caracteres, quando dá erro) e a sessão segue.
+
+<Note>
+Sem `.tyba/setup.sh` no worktree, nada acontece — nenhum aviso, nenhum erro. Não ter script é o normal.
+</Note>
+
+## Um script novo não vale nada até você aprovar
+
+Mesma ideia do [`.tyba/config.toml`](/pt-br/configuracao/repositorio), pelo mesmo motivo concreto: **você clona repositório de terceiros.** Um `.tyba/setup.sh` versionado com efeito automático seria execução de código arbitrário por abrir um projeto.
+
+Então o diálogo de criação de worktree te mostra o script **inteiro**, com um toggle. Sem o toggle ligado, o arquivo é como se não existisse.
+
+O consentimento é atrelado ao **SHA-256 do conteúdo**, guardado localmente por `(raiz do repo, hash)`:
+
+<Steps>
+<Step title="O TYBA hasheia o conteúdo exato">
+Um SHA-256 dos bytes.
+</Step>
+<Step title="Você lê o script no diálogo e decide">
+O conteúdo aparece na tela. Não é um resumo — é o script.
+</Step>
+<Step title="Seu 'sim' vale para aquele hash, e só">
+Enquanto o script não mudar, ele vale, e o diálogo já vem com o toggle ligado: *"setup.sh já permitido para este repo."*
+</Step>
+<Step title="Um byte diferente derruba o consentimento">
+Alterou, veio um `git pull` que mexeu nele, trocou de branch — o hash muda, o consentimento morre, e o TYBA pergunta de novo.
+</Step>
+</Steps>
+
+<Note>
+O que executa são os **bytes consentidos**, entregues no stdin do `sh` — não o arquivo em disco. Trocar o arquivo entre o seu "sim" e a execução não muda o que roda.
+</Note>
+
+<Warning>
+**O script roda fora do sandbox.** Diferente da sessão de agente, que nasce dentro da jaula, o `.tyba/setup.sh` executa como um processo comum na sua máquina — sem jaula, com acesso ao disco e à rede que o seu usuário tem. Há um TODO no core pra rotear ele pelo sandbox; até lá, isso é código de um repositório que pode não ser seu, rodando solto.
+
+**Leia o script antes de ligar o toggle.** É a única barreira que existe.
+</Warning>
+
+## O ambiente que ele recebe
+
+O script é código do repo, não seu. Ele não herda o seu shell. O ambiente é montado do zero:
+
+| Variável | De onde vem |
+| --- | --- |
+| `HOME` `USER` `LANG` `TMPDIR` `SHELL` | do seu ambiente, quando existem |
+| `PATH` | do seu **shell de login** — não do processo do app |
+| `TYBA_WORKTREE` | caminho absoluto do worktree recém-criado |
+
+E nada mais. Seu `AWS_SECRET_ACCESS_KEY`, seus tokens, seu `DATABASE_URL` não estão lá.
+
+<Note>
+O `agent.env.allow` do [`.tyba/config.toml`](/pt-br/configuracao/repositorio) **não vale aqui**. Aquela allowlist é do agente; o setup recebe só a base acima. Se o script precisa de um segredo, ele tem que ir buscar (num arquivo, num keychain) — não vai chegar por variável.
+</Note>
+
+O `PATH` vir do shell de login importa na prática: no macOS o app pode nascer pelo launchd, com um `PATH` mínimo que não tem `bun`, `mise` nem `/opt/homebrew/bin`. O TYBA resolve o `PATH` do seu login e é esse que o script vê.
+
+## Um script real
+
+```sh title=".tyba/setup.sh"
+#!/bin/sh
+set -e
+
+# 1. O .env não é versionado — o worktree nasce sem ele.
+#    Symlink pro do repo principal: um arquivo, uma verdade.
+if [ -f "$HOME/projetos/api/.env" ]; then
+  ln -sf "$HOME/projetos/api/.env" "$TYBA_WORKTREE/.env"
+fi
+
+# 2. Dependências. O worktree tem o lockfile; não tem node_modules.
+bun install --frozen-lockfile
+
+# 3. Banco por worktree: duas sessões não podem brigar pela mesma base.
+#    O nome sai do próprio caminho, que é único por worktree.
+DB="tyba_$(basename "$TYBA_WORKTREE" | tr -c 'a-zA-Z0-9' '_')"
+createdb "$DB" 2>/dev/null || true
+echo "DATABASE_URL=postgres://localhost/$DB" >> "$TYBA_WORKTREE/.env.local"
+bun run migrate
+```
+
+Os três casos de uso são esses: **trazer o que não é versionado**, **instalar o que não é versionado**, **isolar o que não pode ser compartilhado**.
+
+<Note>
+Nada limpa o que o script criou. O banco do exemplo continua lá depois que o worktree é removido — se isso importa pro seu projeto, o `dropdb` é problema seu.
+</Note>
+
+## Editou o script? Commite
+
+O diálogo lê o `.tyba/setup.sh` da **sua cópia de trabalho**, e é o hash dela que o seu "sim" carimba. O que roda é o `.tyba/setup.sh` **do worktree** — que nasceu no `base_sha`, ou seja, na versão **commitada**.
+
+Se você editou o script e não commitou, os dois hashes são diferentes, e o resultado é silencioso: o setup simplesmente não roda. Commite a mudança e crie o worktree de novo.
+
+## O que não existe
+
+- **Rodar o setup de novo numa sessão existente.** É criação de worktree, ou nada.
+- **`.tyba/setup.ps1` ou equivalente.** O contrato é `sh` com o conteúdo no stdin.
+- **Timeout.** Um script que trava fica travado; a sessão sobe do mesmo jeito.
+- **Painel de logs do setup.** O resultado sai como evento da sessão, não como uma aba.
+- **Consentimento que viaja.** Ele é seu, local, por máquina. Máquina nova pergunta de novo — é o comportamento pretendido.
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Worktrees" icon="git-branch" href="/pt-br/git/worktrees">
+    Onde o script roda e quando aquela pasta nasce.
+  </Card>
+  <Card title=".tyba/config.toml" icon="sliders" href="/pt-br/configuracao/repositorio">
+    O outro arquivo do repo que pede consentimento por hash.
+  </Card>
+</CardGroup>

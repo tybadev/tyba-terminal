@@ -1,0 +1,156 @@
+---
+title: "Split de painéis"
+description: "Dividir, navegar, redimensionar — e a diferença que confunde quem vem de outro terminal."
+---
+
+## Dividir
+
+<Tabs>
+<Tab title="macOS">
+| Ação | Atalho |
+| --- | --- |
+| Dividir à direita | `⌘D` |
+| Dividir abaixo | `⌘⇧D` |
+</Tab>
+<Tab title="Windows e Linux">
+| Ação | Atalho |
+| --- | --- |
+| Dividir à direita | `Ctrl+Shift+E` |
+| Dividir abaixo | `Ctrl+Shift+D` |
+</Tab>
+</Tabs>
+
+Também dá pelo **botão direito no terminal** → *Dividir à direita* / *Dividir abaixo*.
+
+<Note>
+Não há item de split na [paleta de comandos](/pt-br/interface/paleta-de-comandos). Só atalho ou menu de contexto.
+</Note>
+
+## Cada split é uma sessão nova
+
+<Warning>
+**O split não divide o shell que está ali — ele abre um shell novo.**
+</Warning>
+
+Se você veio do iTerm, do tmux ou do Windows Terminal, essa é a diferença que vai te pegar. Dividir não é "mostrar o mesmo shell em dois lugares": o painel novo nasce com uma sessão própria, com o histórico dela e o processo dela.
+
+Se o workspace estiver ligado a um [host SSH](/pt-br/ssh/hosts-e-grupos), o painel novo nasce **naquele host** — o split herda a conexão em vez de voltar pra sua máquina.
+
+## Aninhar
+
+Splits são uma árvore: **todo painel pode ser dividido de novo**, e o resultado pode ser dividido outra vez. Não há limite no código — o limite é a sua tela.
+
+```
+┌─────────────┬─────────────┐
+│             │             │
+│             ├──────┬──────┤
+│             │      │      │
+└─────────────┴──────┴──────┘
+```
+
+## Navegar
+
+Duas formas, e a segunda é a boa:
+
+<Tabs>
+<Tab title="macOS">
+| Ação | Atalho |
+| --- | --- |
+| Próximo painel (ciclo) | `⌘]` |
+| Painel à esquerda | `⌘⌥←` |
+| Painel à direita | `⌘⌥→` |
+| Painel acima | `⌘⌥↑` |
+| Painel abaixo | `⌘⌥↓` |
+</Tab>
+<Tab title="Windows e Linux">
+| Ação | Atalho |
+| --- | --- |
+| Próximo painel (ciclo) | `Ctrl+Tab` |
+| Painel à esquerda | `Ctrl+Alt+←` |
+| Painel à direita | `Ctrl+Alt+→` |
+| Painel acima | `Ctrl+Alt+↑` |
+| Painel abaixo | `Ctrl+Alt+↓` |
+</Tab>
+</Tabs>
+
+A navegação por direção é **geométrica**: o TYBA calcula onde cada painel está na tela e vai para o vizinho real naquela direção. Não é "o próximo da lista" — com quatro painéis aninhados, `⌘⌥→` vai para quem está de fato à direita.
+
+O ciclo é circular: do último volta para o primeiro.
+
+## Redimensionar
+
+**Com o mouse:** arraste o divisor.
+
+**Com o teclado**, em passos de 5%:
+
+<Tabs>
+<Tab title="macOS">
+| Ação | Atalho |
+| --- | --- |
+| Mais estreito / mais largo | `⌘⌃←` / `⌘⌃→` |
+| Mais baixo / mais alto | `⌘⌃↑` / `⌘⌃↓` |
+</Tab>
+<Tab title="Windows e Linux">
+| Ação | Atalho |
+| --- | --- |
+| Mais estreito / mais largo | `Ctrl+Alt+Shift+←` / `Ctrl+Alt+Shift+→` |
+| Mais baixo / mais alto | `Ctrl+Alt+Shift+↑` / `Ctrl+Alt+Shift+↓` |
+</Tab>
+</Tabs>
+
+<Note>
+Estes quatro **não são remapeáveis** — são fixos.
+</Note>
+
+Nenhum painel some: a proporção é travada entre **10% e 90%**. Não dá para esmagar um painel a zero por acidente.
+
+## Fechar
+
+<Tabs>
+<Tab title="macOS">
+`⌘W` fecha o painel ativo.
+</Tab>
+<Tab title="Windows e Linux">
+`Ctrl+Shift+W` fecha o painel ativo.
+</Tab>
+</Tabs>
+
+Fechando o último painel, a aba fecha junto. Os painéis vizinhos se reacomodam para ocupar o espaço.
+
+## O layout é lembrado
+
+A árvore de painéis, as proporções e o painel ativo são gravados a cada mudança. Fechou e abriu o TYBA, o desenho volta.
+
+O que volta *dentro* dos painéis depende de **Configurações → Code → Ao abrir o app**:
+
+| Opção | O que faz |
+| --- | --- |
+| **Reabrir as sessões** (padrão) | Recria as sessões de shell e **reata as sessões SSH** ao tmux que continuou vivo no host |
+| **Só o layout** | Mantém o desenho, sem religar nada |
+| **Janela nova** | Começa limpo |
+
+<Note>
+Painel SSH é o único que traz trabalho de volta: o shell remoto nunca parou, e o reattach devolve o que estava rodando. Veja [persistência da sessão](/pt-br/ssh/persistencia).
+</Note>
+
+<Warning>
+**Sessões de agente nunca religam sozinhas**, em nenhuma das opções. Um agente que volta do nada, sem você pedir, faria trabalho que você não pediu.
+</Warning>
+
+## O que não existe
+
+| | |
+| --- | --- |
+| **Zoom / maximizar painel** | Não existe. Nem atalho, nem menu. |
+| **Limite de painéis** | Não há limite no código. |
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Abas e workspaces" icon="layout" href="/pt-br/interface/abas-e-workspaces">
+    A camada acima dos painéis.
+  </Card>
+  <Card title="Atalhos" icon="keyboard" href="/pt-br/interface/atalhos">
+    A lista inteira, e como remapear.
+  </Card>
+</CardGroup>

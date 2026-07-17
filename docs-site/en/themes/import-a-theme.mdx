@@ -1,0 +1,186 @@
+---
+title: "Import a theme"
+sidebarTitle: "Import a theme"
+description: "One .json, two required keys, and a validator that won't let half a theme through."
+---
+
+None of the [18 built-ins](/en/themes/the-themes) work for you? Bring your own. It is a `.json` file, and TYBA validates all of it before accepting it.
+
+## The two buttons
+
+**Settings → Appearance**, on the **Themes** section header:
+
+| Button | What it does |
+| --- | --- |
+| **Copy example** | Puts a complete, valid theme on your clipboard. |
+| **Import theme…** | Opens the file picker, filtered to `.json`. |
+
+*Import theme…* is also in the [command palette](/en/interface/command-palette) (`⌘P` / `Ctrl+Shift+P`), under **Theme**.
+
+<Note>
+**Importing from Settings does not apply.** The theme lands in the grid; to use it, click it. And clicking may change the mode — see [Light and dark mode](/en/themes/light-and-dark). From the command palette it's different: there, importing applies the theme right away.
+</Note>
+
+## The example
+
+This is exactly what the **Copy example** button puts on your clipboard. Edit the colors and import it.
+
+```json
+{
+  "name": "My Theme",
+  "base": "dark",
+  "ui": {
+    "bg": "#282a36",
+    "surface": "#313342",
+    "text": "#f8f8f2",
+    "primary": "#50fa7b",
+    "violet": "#bd93f9"
+  },
+  "terminal": {
+    "background": "#282a36",
+    "foreground": "#f8f8f2",
+    "cursor": "#f8f8f2",
+    "selectionBackground": "#44475a80",
+    "ansi": ["#21222c", "#ff5555", "#50fa7b", "#f1fa8c",
+             "#bd93f9", "#ff79c6", "#8be9fd", "#f8f8f2",
+             "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5",
+             "#d6acff", "#ff92df", "#a4ffff", "#ffffff"]
+  }
+}
+```
+
+## The top-level fields
+
+| Field | Required | What it is |
+| --- | --- | --- |
+| `name` | **Yes** | 1 to 64 characters (counted after trimming the ends). |
+| `base` | **Yes** | `"dark"` or `"light"`. Nothing else. Decides which slot the theme can go into. |
+| `ui` | No | The interface colors. |
+| `terminal` | No | The terminal palette. |
+
+<Warning>
+**An unknown top-level field kills the whole file.** A stray `"author"` or `"version"` is not ignored — it is an error. The same goes inside `terminal`.
+</Warning>
+
+`ui` and `terminal` are the two **optional** ones, and omitting them has a useful meaning:
+
+- Without `terminal`, the theme inherits the terminal palette from **TYBA Dark** or **TYBA Light**, according to its `base`.
+- Without `ui`, the interface keeps the default surfaces for that base.
+
+In other words: `{ "name": "My Theme", "base": "light" }` is a valid theme — it just doesn't change anything. And you only need to declare the `ui` keys you want to change; the rest inherits from the base.
+
+## `ui` — the 21 keys
+
+Any key outside this list is rejected. All of them are optional.
+
+| Group | Keys |
+| --- | --- |
+| Surfaces | `bg` · `surface` · `raised` · `overlay` · `sunken` |
+| Borders | `border` · `borderStrong` |
+| Text | `text` · `textMuted` · `textFaint` · `textInverse` |
+| Action | `primary` · `primaryHover` |
+| Accents | `green` · `lime` · `amber` · `magenta` · `violet` · `blue` · `cyan` · `red` |
+
+<Note>
+Tints, glows, selection color, glass and hover **derive themselves** from the accents. There is no key for them — and that is why you can write a theme with five colors and have it come out coherent.
+</Note>
+
+## `terminal`
+
+| Field | Required | What it is |
+| --- | --- | --- |
+| `background` | **Yes** | Terminal background. |
+| `foreground` | **Yes** | Default text. |
+| `cursor` | **Yes** | Cursor. |
+| `cursorAccent` | No | Color of the character under the cursor. |
+| `selectionBackground` | No | Selection background — use hex with alpha. |
+| `ansi` | **Yes** | A list of **exactly 16** colors. |
+
+<Warning>
+**16 colors, not 15 and not 17.** A list of any other size is an error — it is neither padded nor truncated.
+</Warning>
+
+The `ansi` order is the usual one: the 8 normal colors and then the 8 bright ones.
+
+| Index | Color | Index | Color |
+| --- | --- | --- | --- |
+| 0 | black | 8 | bright black |
+| 1 | red | 9 | bright red |
+| 2 | green | 10 | bright green |
+| 3 | yellow | 11 | bright yellow |
+| 4 | blue | 12 | bright blue |
+| 5 | magenta | 13 | bright magenta |
+| 6 | cyan | 14 | bright cyan |
+| 7 | white | 15 | bright white |
+
+## The colors
+
+Hex only, always with `#`:
+
+| Form | Example |
+| --- | --- |
+| `#RGB` | `#fff` |
+| `#RRGGBB` | `#282a36` |
+| `#RRGGBBAA` | `#44475a80` |
+
+`red`, `rgb(0,0,0)`, `hsl(...)` and `#ffff` are all rejected. The error message tells you which key broke it.
+
+## Name, id and reserved names
+
+The theme's **id** is the slug of the `name`: lowercase, and anything that is not a letter or a number becomes a hyphen. `Dracula Pro!` becomes `dracula-pro`. `Café com Leite` becomes `caf-com-leite` — accents do not survive the slug, but the `name` shown in the grid keeps them.
+
+<Warning>
+**A name that collides with a built-in theme is refused** — the error is *reserved name*. You cannot import something called "Dracula" or "TYBA Dark" and overwrite the original. Pick another name.
+</Warning>
+
+If a name is nothing but symbols (`___`), the slug comes out empty and the import fails with an invalid name.
+
+Two imports with the same slug: **the second overwrites the first**, without asking. The grid still has a single entry.
+
+## Size
+
+The file has to be a regular file and at most **256 KB**. Beyond that, it is refused before it is even read as JSON.
+
+## When it goes wrong
+
+An import error becomes a **system alert** with the validation message — wrong key, invalid color, ansi of the wrong size, reserved name. Nothing is written.
+
+## Where the theme lives
+
+The import copies the file, already normalized, into the app's configuration folder:
+
+| System | Folder |
+| --- | --- |
+| macOS | `~/Library/Application Support/dev.tyba.app/themes/` |
+| Linux | `~/.config/dev.tyba.app/themes/` |
+| Windows | `%APPDATA%\dev.tyba.app\themes\` |
+
+The file name is the id: `dracula-pro.json`. The original file you imported from is not used afterwards — touching it changes nothing.
+
+<Note>
+You can drop `.json` files straight into that folder instead of using the button. TYBA reads the whole folder when listing themes. But then there is no alert: **an invalid file is simply ignored** and the theme does not show up. A file whose name matches a built-in id is ignored too — the built-in always wins.
+</Note>
+
+## What does not exist
+
+| | |
+| --- | --- |
+| **A visual theme editor** | Does not exist. It is the `.json` and nothing else. |
+| **A delete button** | Does not exist. To remove one, delete the `.json` in the folder above. |
+| **An export button** | Does not exist — not for the built-ins, not for imported ones. To share a theme of yours, send the `.json`. |
+| **A gallery or install-by-URL** | Does not exist. The import is always from a local file. |
+
+<Note>
+Deleted the `.json` of a theme that was in use? The slot falls back to the built-in for that base on the next read. The app does not break.
+</Note>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="The themes" icon="palette" href="/en/themes/the-themes">
+    The 18 built-ins, before you go write your own.
+  </Card>
+  <Card title="Light and dark mode" icon="circle-half" href="/en/themes/light-and-dark">
+    Where your theme lands after it is imported.
+  </Card>
+</CardGroup>

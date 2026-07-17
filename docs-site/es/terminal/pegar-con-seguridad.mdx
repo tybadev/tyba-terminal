@@ -1,0 +1,112 @@
+---
+title: "Pegar con seguridad"
+description: "Por qué a veces pregunta antes de pegar y a veces no. No es aleatorio."
+---
+
+Pegar en una terminal es lo más peligroso que haces sin pensar. Un texto copiado de una página web puede terminar con un salto de línea — y un salto de línea, en un shell, es **Enter**. El comando corre antes de que lo leas.
+
+TYBA no resuelve esto pidiendo confirmación siempre (aprenderías a hacer clic en "Paste" sin leer en dos días). Pregunta **cuando el texto puede correr solo**, y se calla cuando no puede.
+
+| Acción | macOS | Windows / Linux |
+| --- | --- | --- |
+| Pegar | `⌘V` | `Ctrl+Shift+V` |
+
+También con el **botón derecho** → *Paste*. Los dos caminos pasan por la misma comprobación — no hay atajo que se salte la fila.
+
+## La regla
+
+Todo texto pegado pasa por tres preguntas, en este orden:
+
+<Steps>
+  <Step title="El terminador se elimina — siempre">
+    La secuencia `ESC[201~` se arranca del texto antes que cualquier otra cosa, en **todo** pegado, arriesgado o no. Es lo que marca "se acabó el pegado" en el protocolo de la terminal: un texto que la lleva convence al shell de que el pegado terminó ahí, y que el resto — lo que viene después — eres tú escribiendo.
+
+    Así es como se pega una línea inocente que ejecuta un comando que no viste. TYBA no deja que ese byte llegue al shell. Nunca.
+  </Step>
+  <Step title="¿La terminal está en bracketed paste?">
+    TYBA lee el estado **real** de la terminal en ese instante — no una suposición, no una preferencia tuya. O el programa del otro lado encendió el modo, o no lo encendió.
+  </Step>
+  <Step title="¿Esto es arriesgado?">
+    Es arriesgado si **cualquiera** de estas es cierta:
+
+    - El texto **tiene caracteres de control** inseguros; **o**
+    - El texto es **multilínea** *y* el bracketed paste está **apagado**.
+
+    Lo arriesgado abre el diálogo. El resto se pega directo.
+  </Step>
+</Steps>
+
+## Qué es el bracketed paste
+
+Es un modo que el programa de la terminal enciende solo para decir: *"yo sé diferenciar texto pegado de texto escrito"*.
+
+Con él encendido, el texto pegado llega al programa envuelto en marcadores. Los saltos de línea entran como **texto**, no como Enter. Un shell moderno (zsh, bash con un readline reciente), Claude Code, `vim` — todos lo encienden. Un `bash` crudo sin readline, un `read` de un script, un programa simple pidiendo input — no lo encienden.
+
+<Warning>
+**El mismo pegado se comporta distinto en lugares distintos — y eso es la cosa funcionando.**
+
+Pegar 20 líneas dentro de **Claude Code**: no pasa nada, el texto entra en el prompt. Él enciende el bracketed paste, así que las 20 líneas no pueden correr solas.
+
+Pegar **las mismas 20 líneas** en un `bash` crudo que no encendió el modo: **el diálogo abre**. Ahí, cada salto de línea es un Enter — son 20 comandos, y TYBA no va a dejar que eso pase en silencio.
+
+No es aleatorio. No es TYBA "siendo molesto a veces". Es la respuesta correcta para dos contextos distintos.
+</Warning>
+
+<Note>
+Un carácter de control **siempre** abre el diálogo, incluso con el bracketed paste encendido e incluso en una sola línea. El bracketed paste protege contra el Enter accidental; no protege contra un `ESC` en medio del texto.
+</Note>
+
+## El diálogo
+
+Título: **Paste multiple lines?**
+
+Te da exactamente lo que falta para decidir:
+
+| | |
+| --- | --- |
+| **El conteo de líneas** | Cuántas líneas tiene el contenido — y el aviso de que puede correr apenas se pegue. |
+| **El texto** | Entero, con scroll. Los caracteres de control aparecen como **`␣`** — lo que era invisible se vuelve visible. |
+| **Franja ámbar** | Solo cuando hay caracteres de control. Avisa que serán eliminados si pegas como una sola línea. |
+
+Lees lo que vas a pegar. Ese es el punto.
+
+### Las tres salidas
+
+| Botón | Qué pasa |
+| --- | --- |
+| **Cancel** | No se pega nada. `Esc` hace lo mismo. |
+| **Paste as a single line** | Los saltos de línea se vuelven **espacio**, los caracteres de control se **eliminan**, el salto final se descarta. Veinte comandos se vuelven un comando largo — que espera a que pulses Enter. |
+| **Paste** | Pega tal cual (ya sin el terminador del paso 1). Es lo que quieres cuando *sabes* que son 20 comandos y es justo eso. |
+
+<Note>
+**Paste as a single line** es la salida para el caso más común: copiaste un comando que se partió en tres líneas en el sitio de la documentación y lo quieres de vuelta entero. No es un "modo seguro" genérico — es un aplanamiento, y el resultado sigue siendo un comando que vas a ejecutar.
+</Note>
+
+Una vez que eliges, el foco vuelve a la terminal.
+
+## Lo que esto no es
+
+<Warning>
+La comprobación de pegado mira la **forma** del texto: ¿puede correr solo? **No juzga lo que el comando hace**. `rm -rf /` pegado en una sola línea, sin ningún carácter de control, se pega directo y en silencio — para la comprobación, es un comando esperando tu Enter, y eres tú quien lo pulsa.
+
+Quien juzga lo que un comando hace es la [clasificación de riesgo](/es/seguridad/clasificacion-de-riesgo), y eso vale para lo que **los agentes** piden ejecutar. Pegar eres tú. La responsabilidad sigue siendo tuya.
+</Warning>
+
+## Lo que no existe
+
+| | |
+| --- | --- |
+| **Un toggle de "no preguntar más"** | No existe. Si existiera, alguien lo marcaría el primer día y la protección moriría ahí. |
+| **Un límite de líneas configurable** | No existe. El disparador es la regla de arriba, no un número. |
+| **Una lista de excepciones por app** | No existe. TYBA lee el estado de la terminal, no una lista de nombres. |
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Clasificación de riesgo" icon="shield" href="/es/seguridad/clasificacion-de-riesgo">
+    Verde, amarillo, rojo — lo que los agentes pueden ejecutar.
+  </Card>
+  <Card title="Usando la terminal" icon="terminal" href="/es/terminal/usando-la-terminal">
+    El otro lado: seleccionar y copiar.
+  </Card>
+</CardGroup>

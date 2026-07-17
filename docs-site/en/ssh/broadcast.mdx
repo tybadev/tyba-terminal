@@ -1,0 +1,111 @@
+---
+title: "Broadcast"
+description: "Type once, reach N hosts. With a gate on red — and an honest explanation of why yellow doesn't ask."
+---
+
+Broadcast is typing in one pane and having the keystroke go to **every selected SSH pane in the same tab**. It is for when the same thing needs to happen on eight machines and you want to see the eight outputs side by side.
+
+## How to get there
+
+On the **SSH Connections** screen, the header of a group with **two or more hosts** gains the **"Connect all N"** button. It opens every host in the group as **vertical panes of a single workspace** — vertical because the point is comparing the outputs.
+
+From there:
+
+<Warning>
+**The BroadcastBar only appears when the tab has more than one live SSH pane.**
+
+It is not a global button, it has no shortcut, and it is not in the command palette. A single pane, or panes that aren't SSH, and the bar doesn't exist — there is nothing to broadcast.
+</Warning>
+
+A pane that dies drops out of the count on its own. If one is left, the bar disappears.
+
+## The bar
+
+Off, it is discreet: a **Broadcast** toggle and nothing else.
+
+On, it **turns entirely amber** and shows **"Broadcast: N hosts"**. That is deliberate — you need to know, without looking, that the next keystroke goes to more than one machine.
+
+### The chips
+
+The broadcast's "group" **is not the Host Group**. The group only seeded the list; the target is a set of **chips, one per host**, each clickable to include or exclude. There is **"all"** and **"none"** next to them.
+
+- **Default: all** the tab's live SSH panes.
+- An **unselected chip is dimmed** — the difference is visible from across the room.
+- Each chip carries the **host's color dot**. It's the color you registered.
+
+In other words: you connect the whole "Production" group and then drop that one host that shouldn't receive it, without undoing anything.
+
+## The red gate
+
+Here is the part that matters.
+
+**Keystrokes pass through freely.** Typing doesn't execute anything, so there is nothing to block — what you type shows up in the N prompts, and that's it.
+
+**On Enter, the core decides.** Before the fan-out, it classifies the line with the **same classifier as the agent's approval gate** — the same list, not a copy that drifts over time.
+
+<Warning>
+If the line is **RED** and not confirmed, **nothing is sent**. No host receives it.
+
+A dialog opens with the command in full, the **RED** badge, the warning that it **will run on N hosts**, and **Cancel already focused**. You confirm explicitly or it doesn't go.
+</Warning>
+
+The decision lives **in the core**, not in the interface. The webview cannot fire a red command at N machines even if it wanted to.
+
+```bash
+# Stop and ask
+sudo rm -rf /var/log
+git push
+curl algo.sh | sh
+
+# Fires straight away, asking nothing
+systemctl restart nginx
+```
+
+### Why yellow doesn't ask
+
+Because asking on yellow would make the feature unbearable — and, worse, **would teach you to click without reading**.
+
+A gate that fires all the time becomes a reflex. And the day the real red shows up, you will have been trained to hit "yes" before finishing the sentence. One dialog you read is worth more than ten you dismiss.
+
+So `systemctl restart nginx` takes nginx down on all eight hosts without ceremony. It's yellow, it's your responsibility, and TYBA doesn't pretend otherwise. See [risk classification](/en/security/risk-classification) for what falls in each band.
+
+<Note>
+**A single-host session doesn't go through the gate.** If you have just one SSH pane, `sudo rm -rf` goes out immediately, as it would in any terminal.
+
+That is not an inconsistency: the danger broadcast addresses is the **fan-out** — the same damage on N machines at once, with no chance to react after the first.
+</Note>
+
+### What the classified line is
+
+The line the core classifies is **reconstructed from what you typed** in that burst. Arrow keys, `Tab`, shell history — those don't pass through it.
+
+In practice: a command pulled from history with `↑` is not what the gate sees. What executes is still what's at the prompt.
+
+## When something fails
+
+**A failure on one target doesn't go quiet.** If the keystroke reached 2 of 3 hosts, the error is aggregated and reported — the app doesn't say "ok" and leave you to find out too late that the burst wasn't complete.
+
+## What broadcast is not
+
+<Warning>
+The broadcast gate protects **what you type**. That's all.
+
+It does not see and does not filter anything an [agent running inside an SSH pane](/en/ssh/agent-over-ssh) does — that is a process on the other side of the pipe, and TYBA has no reach there.
+</Warning>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Hosts and groups" icon="hard-drive" href="/en/ssh/hosts-and-groups">
+    Where the group that becomes "Connect all N" is born.
+  </Card>
+  <Card title="Risk classification" icon="circle-alert" href="/en/security/risk-classification">
+    The classifier is the same. It's worth knowing what's red.
+  </Card>
+  <Card title="Agent over SSH" icon="triangle-alert" href="/en/ssh/agent-over-ssh">
+    What the broadcast gate doesn't cover.
+  </Card>
+  <Card title="Shortcuts" icon="keyboard" href="/en/interface/shortcuts">
+    Broadcast has no shortcut. Everything else does.
+  </Card>
+</CardGroup>

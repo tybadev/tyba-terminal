@@ -1,0 +1,105 @@
+---
+title: "Configuración del repositorio"
+sidebarTitle: ".tyba/config.toml"
+description: "Agente por defecto y variables de entorno por repositorio — y por qué un archivo nuevo no vale nada hasta que lo apruebas."
+---
+
+Cada repositorio puede tener el suyo:
+
+```
+<raiz-del-repo>/.tyba/config.toml
+```
+
+La raíz es el toplevel de git — lo mismo que `git rev-parse --show-toplevel`. TYBA no lo crea; ausente es el caso normal.
+
+Está **versionado junto con el proyecto**, y ahí es donde vive el problema que resuelve la próxima sección.
+
+## El archivo entero
+
+```toml title=".tyba/config.toml"
+[agent]
+default = "claude"
+
+[agent.env]
+allow = ["DATABASE_URL", "BUN_INSTALL"]
+```
+
+| Campo | Tipo | Por defecto | Qué hace |
+| --- | --- | --- | --- |
+| `agent.default` | string | — | Agente preseleccionado al crear una sesión en este repo |
+| `agent.env.allow` | lista de strings | `[]` | Variables de tu entorno que se le pasan al agente |
+
+## `agent.default`
+
+Se reconocen tres valores:
+
+| Valor | Efecto |
+| --- | --- |
+| `"codex"` | Preselecciona Codex — **si el binario `codex` está instalado** |
+| `"claude"` | Claude Code |
+| `"claude_code"` | Ídem, forma larga |
+
+Cualquier otro valor se **ignora en silencio**. `default = "cursor"` no da error y no hace nada.
+
+<Note>
+Como Claude Code ya es el valor por defecto del producto, en la práctica `default = "claude"` no cambia nada. El campo solo tiene efecto visible con `"codex"`, y aun así solo cuando `codex` está en tu `PATH`.
+</Note>
+
+## `agent.env.allow`
+
+Las sesiones de agente **no heredan tu entorno**. Reciben una base fija y nada más:
+
+```
+PATH   HOME   USER   LANG   TMPDIR   SHELL
+```
+
+Tus tokens, `DATABASE_URL`, claves de API — nada de eso llega al agente por defecto. Si el proyecto necesita alguna variable, lístala aquí:
+
+```toml
+[agent.env]
+allow = ["DATABASE_URL", "BUN_INSTALL"]
+```
+
+Los nombres tienen que ser identificadores válidos (`[A-Za-z_][A-Za-z0-9_]*`).
+
+<Note>
+La allowlist solo **suma** sobre la base — nunca sobrescribe. Listar `PATH` no secuestra el `PATH` del agente: TYBA fuerza el suyo después, y un repositorio hostil no consigue apuntar el binario del agente a otro lugar.
+</Note>
+
+## Un archivo nuevo no vale nada hasta que lo apruebas
+
+Este es el diseño más importante de la página, y existe por un motivo concreto: **tú clonas repositorios de terceros.** Si un `.tyba/config.toml` versionado tuviera efecto automático, cualquier repositorio podría pedir tu `AWS_SECRET_ACCESS_KEY` en el entorno del agente solo con que abrieras el proyecto.
+
+Entonces:
+
+<Steps>
+<Step title="TYBA calcula el hash del archivo">
+Un SHA-256 del contenido exacto.
+</Step>
+<Step title="Te pregunta">
+Lo que ese archivo pide — agente por defecto y qué variables — antes de aplicar nada.
+</Step>
+<Step title="Tu consentimiento vale para ese hash, y solo ese">
+Mientras el archivo no cambie, vale.
+</Step>
+<Step title="Un byte distinto tira abajo el consentimiento">
+Lo cambiaste, vino un `git pull` que lo tocó, cambiaste de branch — el hash cambia, el consentimiento muere, y TYBA pregunta de nuevo.
+</Step>
+</Steps>
+
+**Sin consentimiento, el archivo es como si no existiera.** La sesión levanta normalmente, con la base fija de seis variables.
+
+<Warning>
+Esto significa que un `.tyba/config.toml` correcto **no funciona solo en una máquina nueva**. Clonaste el proyecto en un ordenador nuevo, el consentimiento no vino con él — es tuyo, local, por máquina. Te lo van a preguntar otra vez. Es el comportamiento pretendido.
+</Warning>
+
+## Un archivo roto se ignora, no tira nada abajo
+
+Al contrario que la [config del usuario](/es/referencia/config-de-usuario), un `.tyba/config.toml` de repositorio con TOML inválido **no impide que la sesión levante**. Simplemente se ignora, y te quedas con la base fija.
+
+La asimetría es intencional. La config del usuario es tuya — si está rota, es un error tuyo y quieres saberlo ahora. La config del repositorio puede haber venido de cualquier persona, y un archivo malformado en un repositorio clonado no debería poder trabar tu herramienta.
+
+## Ver también
+
+- [Configuración del usuario](/es/referencia/config-de-usuario) — `~/.tyba/config.toml`
+- [Clasificación de riesgo](/es/seguridad/clasificacion-de-riesgo) — lo que necesita tu aprobación

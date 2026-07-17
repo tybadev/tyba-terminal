@@ -1,0 +1,125 @@
+---
+title: "Command palette"
+description: "There are two, not one — and which one you want depends on whether you're after an action or a place."
+---
+
+## There are two
+
+<Tabs>
+<Tab title="macOS">
+| Palette | Shortcut | What it's for |
+| --- | --- | --- |
+| **Actions** | `⌘P` | Doing something |
+| **Sessions** | `⌘⇧P` | Going somewhere |
+</Tab>
+<Tab title="Windows and Linux">
+| Palette | Shortcut | What it's for |
+| --- | --- | --- |
+| **Actions** | `Ctrl+Shift+P` | Doing something |
+| **Sessions** | `Ctrl+Alt+Shift+P` | Going somewhere |
+</Tab>
+</Tabs>
+
+<Warning>
+**If you come from VS Code, the `⇧` is swapped.** There, `⌘⇧P` is the command palette. Here `⌘⇧P` is the **sessions** one — the actions palette is plain `⌘P`.
+</Warning>
+
+It's the same dialog with two modes. At the top there are two buttons — **Actions** and **Sessions** — each with its own shortcut next to it. You can switch modes with a click, without closing.
+
+The magnifying-glass icon in the header opens the **actions** palette.
+
+## Navigating
+
+| Key | What it does |
+| --- | --- |
+| `↑` `↓` | Navigates |
+| `↵` | Runs |
+| `Esc` | Closes |
+
+Typing filters. With no match, it says *No results.*
+
+## The actions palette
+
+`⌘P` / `Ctrl+Shift+P`. Four groups.
+
+### Actions
+
+| Item | Shortcut |
+| --- | --- |
+| **New session** | — |
+| **New isolated worktree session** | `⌘⇧T` / `Ctrl+Alt+Shift+T` |
+| **New tab** | `⌘T` / `Ctrl+Shift+T` |
+| **Close pane** | `⌘W` / `Ctrl+Shift+W` |
+| **Toggle panel** | `⌘B` / `Ctrl+Shift+B` |
+| **Settings** | — |
+
+<Note>
+*Close pane* only appears when there's an active workspace. With nothing open, there's no pane to close.
+</Note>
+
+### Theme
+
+| Item | What it does |
+| --- | --- |
+| **Switch theme to Dark / Light / System** | The current mode doesn't show in the list. |
+| **Use {name} theme** | One item per available theme — the built-in classics and the ones you imported. Only TYBA Dark and TYBA Light are left out. |
+| **Import theme…** | Opens the file picker, filtered to `.json`. |
+
+See [the themes](/en/themes/the-themes) and [import a theme](/en/themes/import-a-theme).
+
+### Interface font
+
+**Switch font to {name}** — the active font doesn't show.
+
+### Language
+
+**Switch language to {language}** — the active language doesn't show.
+
+<Note>
+The pattern across the groups is the same: **whatever is already in effect disappears from the list**. The palette only offers change.
+</Note>
+
+## The sessions palette
+
+`⌘⇧P` / `Ctrl+Alt+Shift+P`.
+
+Despite the name, it lists **workspaces** — not shells. Each row carries the name, a green icon if it's the active one, and the tab count on the right.
+
+The search matches the **name**, the **repository path** and the id. Searching by folder works even when the workspace was renamed.
+
+`↵` goes to the workspace. It's the fastest path when the `⌘⇧↑` / `⌘⇧↓` cycle got too long — see [tabs and workspaces](/en/interface/tabs-and-workspaces).
+
+<Note>
+With no workspace open, the Sessions mode is empty.
+</Note>
+
+## What the palette doesn't have
+
+| | |
+| --- | --- |
+| **Split** | Doesn't exist. Splitting is shortcut or right-click in the terminal only — see [split panes](/en/interface/split-panes). |
+| **SSH / connections** | Doesn't exist. Connecting to a host goes through the *SSH Connections* view, in the sidebar footer. |
+| **Renaming, coloring, grouping or killing a workspace** | Doesn't exist. All of that is the [context menu](/en/interface/tabs-and-workspaces#the-context-menu). |
+| **Switching tabs** | Doesn't exist. The sessions palette goes to workspaces, never to a specific tab. |
+| **Chips, shortcuts, containers** | Don't exist. Only via *Settings* and the header. |
+
+<Warning>
+The palette **is not** an index of everything the app does. It covers a handful of actions and navigation between workspaces — the rest lives in the context menu, the header and Settings.
+</Warning>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Shortcuts" icon="keyboard" href="/en/interface/shortcuts">
+    The whole list, and how to remap it.
+  </Card>
+  <Card title="Tabs and workspaces" icon="layout" href="/en/interface/tabs-and-workspaces">
+    What the sessions palette navigates.
+  </Card>
+  <Card title="The themes" icon="palette" href="/en/themes/the-themes">
+    What the Theme group changes.
+  </Card>
+  <Card title="Interface tour" icon="map" href="/en/interface-tour">
+    Where the palette fits.
+  </Card>
+</CardGroup>

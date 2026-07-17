@@ -1,0 +1,106 @@
+---
+title: "User configuration"
+sidebarTitle: "~/.tyba/config.toml"
+description: "The file that loosens the sandbox's reads — one field, and it doesn't do what it looks like on every system."
+---
+
+TYBA reads a configuration file from your home:
+
+```
+~/.tyba/config.toml
+```
+
+It **is not created on installation**. If it doesn't exist, TYBA uses the defaults and doesn't complain. Create it by hand when you need it.
+
+The path is always `$HOME/.tyba/config.toml`, on any system. There is no per-platform variation — not even `%APPDATA%` on Windows.
+
+<Warning>
+On Windows, TYBA requires the `HOME` variable to be defined and to be an absolute path. It does not fall back to `%USERPROFILE%`. Without `HOME`, agent sessions fail before starting.
+</Warning>
+
+## The whole file
+
+Today there is **one field**:
+
+```toml title="~/.tyba/config.toml"
+[sandbox]
+read_allow = [
+  "~/referencias",
+  "/opt/sdk-compartilhado",
+]
+```
+
+| Field | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `sandbox.read_allow` | list of strings | `[]` | Extra paths the agent can **read** inside the sandbox |
+
+Unknown sections and keys are ignored silently — there is no error for an extra field.
+
+## Which paths are valid
+
+Each entry must be **absolute** or start with `~`:
+
+```toml
+read_allow = [
+  "~",                        # your entire home
+  "~/referencias",            # a subfolder of home
+  "/opt/sdk-compartilhado",   # absolute path
+]
+```
+
+A relative path is refused:
+
+```toml
+read_allow = ["./referencias"]   # ✗
+```
+
+```
+read_allow exige path absoluto ou ~/: ./referencias
+```
+
+## When the change takes effect
+
+The file is read **once per agent session**, at the moment it starts. There is no watcher and no hot reload.
+
+In practice: you edit, you save, and the next agent session you create already uses the new value. **You don't need to restart TYBA.** Sessions already running carry on with the old value until they die.
+
+## When the file is wrong
+
+<Warning>
+Malformed TOML or a relative path **takes down the creation of the agent session**. TYBA does not fall back to the default — it fails, with the message pointing at the error.
+</Warning>
+
+```
+~/.tyba/config.toml inválido: expected an equals, found a newline at line 2
+```
+
+This is deliberate: a sandbox file that doesn't parse is too ambiguous to guess at. A **missing** file is different from a **broken** one — missing is the normal case and raises no error.
+
+## What it cannot loosen
+
+`read_allow` **does not open your secrets**. The denials are applied after any permission and always win:
+
+```
+~/.ssh   ~/.aws   ~/.gnupg   ~/.kube
+~/.config/gcloud   ~/.config/gh   ~/.docker
+```
+
+Even `read_allow = ["~"]` — your entire home — leaves those paths unreadable to the agent. There is no configuration that reverses this.
+
+## It does nothing on Windows
+
+<Warning>
+On Windows this field is accepted, validated and **discarded**. It has no effect at all.
+</Warning>
+
+This isn't a hole, it's a consequence of how each system contains reads:
+
+- **macOS and Linux** — reads are **closed by default**. `read_allow` is what opens exceptions. Without it, the agent does not read the path.
+- **Windows** — reads are **open by default**, and only a list of known secrets is closed. There is nothing to open: what `read_allow` would grant is already granted.
+
+The field is inert there because there is no lock to loosen. If you use Windows, read [Platforms](/en/security/platforms) — the difference is bigger than this field and worth understanding.
+
+## See also
+
+- [Repository configuration](/en/reference/repo-config) — the other `.tyba/config.toml`, with quite different rules
+- [Platforms](/en/security/platforms) — what the sandbox guarantees on each system

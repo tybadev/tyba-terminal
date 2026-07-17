@@ -1,0 +1,115 @@
+---
+title: "O composer"
+sidebarTitle: "O composer"
+description: "A caixa de prompt longo — o autocomplete de arquivos, e a tabela que resolve a confusão do Enter."
+---
+
+Digitar um prompt de três parágrafos direto no PTY é ruim: o agente redesenha a linha, a seta para cima vira histórico dele, e um Enter acidental manda metade da ideia.
+
+O composer é uma caixa de texto de verdade para escrever antes de enviar.
+
+**`⌘⇧G` no macOS, `Ctrl+Shift+G` no Windows e Linux.** Ele abre **abaixo do terminal**, acima da barra de chips.
+
+<Note>
+Nas Configurações ele aparece pelo nome interno, **Rich Input**. É a mesma coisa.
+</Note>
+
+O atalho é um **alternador de foco**, não um liga/desliga: com a caixa já focada, `⌘⇧G` devolve o foco ao terminal e **deixa a caixa aberta**, com o seu texto onde estava. Quem fecha é `Esc`.
+
+## `@` para arquivos
+
+Digite `@` e comece o nome. O `@` só arma o autocomplete **no começo da linha ou depois de um espaço** — um `user@host` não dispara nada.
+
+A lista vem do `git ls-files` do worktree: rastreados e não rastreados, com o `.gitignore` respeitado. Os caminhos são relativos ao **diretório da sessão**, e a busca é fuzzy.
+
+Com o popover aberto:
+
+| Tecla | O que faz |
+| --- | --- |
+| `↑` `↓` | Navega, com volta no fim da lista |
+| `Tab` ou `↵` | Escolhe o arquivo |
+| `Esc` | Fecha **só o popover** — a caixa e o texto ficam |
+
+Sem popover, `Esc` fecha o composer.
+
+<Note>
+O popover só existe quando há **pelo menos um match**. Se você digitou `@xyz` e nada bate, não há popover — e aí o `Esc` fecha a caixa inteira, porque é o único `Esc` que sobrou.
+</Note>
+
+O clipe ao lado abre o seletor de arquivos do sistema e insere o caminho — relativo à sessão quando dá, absoluto quando não dá.
+
+## Enter: as duas configurações
+
+Esta é a parte que confunde, então aqui está inteira.
+
+O que manda é a preferência **"Enviar com Ctrl+Enter"** (Configurações → Preferências), **ligada por padrão**:
+
+| Você aperta | Ligada (padrão) | Desligada |
+| --- | --- | --- |
+| `↵` | Quebra linha | **Envia** |
+| `Ctrl+↵` / `⌘↵` | **Envia** | **Nada acontece** |
+| `⇧↵` | Quebra linha | Quebra linha |
+
+Duas coisas que valem o destaque:
+
+<Warning>
+**Com a preferência desligada, `⌘↵` não faz nada.** Não envia e não quebra linha — é uma tecla morta, de propósito.
+
+O raciocínio: se `↵` já envia, um `⌘↵` quase certamente é um reflexo de músculo de quem esperava a outra configuração. Melhor não fazer nada do que enviar um prompt pela metade.
+</Warning>
+
+<Note>
+**`⇧↵` sempre quebra linha**, nas duas configurações. É a tecla que funciona sem você lembrar como está a preferência.
+</Note>
+
+O atalho de envio (`⌘↵` / `Ctrl+↵`) [não é remapeável](/pt-br/interface/atalhos). Já o `⌘⇧G` que abre a caixa é.
+
+<Warning>
+**Sessão sem bracketed paste é sessão de uma linha só.** O composer manda o texto embrulhado em `DECSET 2004`; sem isso, não há como um `\n` ser texto em vez de Enter. Quando o TYBA detecta que a sessão não habilitou, ele bloqueia a quebra de linha e avisa: *"Sessão sem bracketed paste: apenas uma linha."*
+</Warning>
+
+## O aviso de prompt sensível
+
+Com **"Avisar sobre prompt sensível"** ligada (padrão), o core olha o texto antes de enviar. Se ele acha que tem dado sensível, o envio **não acontece**: o botão fica âmbar e aparece *"Pode conter dado sensível — clique de novo para enviar."*
+
+Apertar de novo envia. É um pedágio de um clique, não um bloqueio.
+
+A checagem é uma **busca de substring, sem regex**, contra uma lista fixa de doze termos, em português e inglês:
+
+```
+password   senha   secret   token   api key   api_key   apikey
+credential   credencial   private key   chave privada   .env
+```
+
+<Warning>
+**Isso não é um detector de segredo.** Ele acha a *palavra*, não o valor.
+
+`AKIA…` colado cru passa direto — nenhuma daquelas palavras aparece. E "corrigir o tokenizer" trava, porque contém `token`. Trate como um lembrete grosseiro, não como uma rede.
+</Warning>
+
+Editar o texto rearma o aviso. Se a checagem falhar, o prompt **vai** — ela falha aberta, porque um erro de IPC não deveria impedir você de trabalhar.
+
+## As preferências
+
+Todas em **Configurações → Preferências**:
+
+| Preferência | Padrão | O que faz |
+| --- | --- | --- |
+| Enviar com Ctrl+Enter | **Ligada** | A tabela acima |
+| Abrir sozinho quando o agente estiver ocioso | Desligada | A caixa aparece quando o agente para |
+| Abrir ao iniciar sessão de agente | Desligada | Já nasce aberta na sessão de agente |
+| Fechar após enviar | **Ligada** | Some depois do envio, foco volta ao terminal |
+| Avisar sobre prompt sensível | **Ligada** | O pedágio acima |
+
+Com "Fechar após enviar" desligada, a caixa fica aberta e vazia — bom para quem manda vários prompts seguidos.
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Claude Code e Codex" icon="robot" href="/pt-br/agente/claude-code-e-codex">
+    Onde a sessão de agente nasce.
+  </Card>
+  <Card title="Atalhos" icon="keyboard" href="/pt-br/interface/atalhos">
+    O que dá e o que não dá para remapear.
+  </Card>
+</CardGroup>

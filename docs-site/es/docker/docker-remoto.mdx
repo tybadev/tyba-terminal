@@ -1,0 +1,77 @@
+---
+title: "Docker remoto"
+description: "El panel apuntando a un host SSH — inferido del workspace activo. Exige clave, y el compose se queda fuera."
+---
+
+El panel de containers tiene un **selector de objetivo**: **Local** o el **alias** de cualquier host SSH registrado.
+
+Es el buen caso de uso de todo esto: estás en una sesión SSH en un host, abres el panel, y ya está listando los containers **de allá**.
+
+## El objetivo se infiere del workspace
+
+<Note>
+**Casi nunca necesitas tocar el selector.** Si el workspace activo es una sesión SSH, el panel ya abre apuntando a ese host.
+</Note>
+
+Workspace local, objetivo Local. Workspace de un host, ese host como objetivo. El selector está ahí para cuando quieras salir del valor por defecto.
+
+## Cómo funciona por debajo
+
+`docker` habla con una máquina remota de forma nativa, por `ssh://`. TYBA solo apunta el objetivo:
+
+```bash
+docker -H ssh://prod-api ps
+```
+
+Y esto funciona **porque el alias resuelve**: TYBA ya [escribió el `Include config.d/tyba.conf` en tu `~/.ssh/config`](/es/ssh/hosts-y-grupos). El alias que registraste es un host de verdad para OpenSSH, así que es un host de verdad para Docker.
+
+Nada de daemon expuesto, nada de puerto abierto, nada de TLS que configurar. Es tu SSH.
+
+### El shell de un container remoto
+
+Abrir el shell de un container remoto crea un **workspace propio**, con el **alias en el título y el color del host**.
+
+Eso es a propósito: **no secuestra tu pane SSH**. Mezclar los dos dejaría el `sh: postgres` de esta máquina con la misma cara que el que corre en el host remoto, y confundirlos sale caro.
+
+## Las limitaciones
+
+<Warning>
+**Un host solo-contraseña no funciona. El Docker remoto exige clave.**
+
+El helper de Docker llama a `ssh` con el stdin nulo — no hay dónde aparezca el prompt de contraseña, ni quién lo responda. El caso no da un error claro: **cae en el timeout**.
+
+Forzar `BatchMode` daría un mensaje mejor, pero rompería tu sesión interactiva. Entonces: registra una **Private key (path)** en el host, y el panel remoto funciona.
+</Warning>
+
+<Warning>
+**El compose no corre en el objetivo remoto.** Up, down, restart, abrir la carpeta del proyecto y abrir el archivo compose quedan **deshabilitados** cuando el objetivo es un host SSH.
+
+El motivo: esas acciones dependen de rutas del proyecto **en esta máquina**, y la ruta del host remoto no existe aquí. Para compose remoto, usa un pane SSH y corre `docker compose` allá.
+</Warning>
+
+Lo que **sí** funciona remotamente: listar, logs, shell y remover.
+
+### Es más lento — y está bien
+
+El refresh remoto paga handshake, red y, en la primera conexión, **lo que tu autenticación SSH exija** — escribir la passphrase de la clave, tocar la YubiKey, aprobar en el agent. El timeout local mide un Docker que responde en milisegundos; el remoto gana bastante más holgura, porque con el techo local el panel remoto solo entregaba una lista vacía.
+
+Después de la primera conexión, el [`ControlMaster`](/es/ssh/hosts-y-grupos) reusa la conexión y las llamadas vuelven a ser rápidas.
+
+<Note>
+**La disponibilidad se cachea por objetivo.** Docker en esta máquina no dice nada sobre Docker en un host remoto, así que cada objetivo tiene su propio estado — y el panel no se queda repreguntando cada vez que le echas un ojo.
+</Note>
+
+<Warning>
+Esto vale para **Windows** también: sin `ControlMaster`, cada llamada del panel remoto puede reabrir la conexión y volver a pedir autenticación.
+</Warning>
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Containers" icon="container" href="/es/docker/contenedores">
+    El panel, la integración y lo que hace en local.
+  </Card>
+  <Card title="Hosts y grupos" icon="hard-drive" href="/es/ssh/hosts-y-grupos">
+    El registro, la clave y el Include que hacen que esto funcione.
+  </Card>
+</CardGroup>

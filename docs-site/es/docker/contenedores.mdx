@@ -1,0 +1,91 @@
+---
+title: "Containers"
+description: "El panel de containers: encenderlo, listar, logs, shell, remover y compose. Requiere Docker en la máquina."
+---
+
+El panel de containers lista lo que está corriendo, abre los **logs** y el **shell** de un container en pestañas, y te da **compose up/down/restart** por proyecto. No es un stub — es el panel entero.
+
+## Encender la integración
+
+<Warning>
+**La integración viene APAGADA por defecto.** Está en **Settings → Code → Docker integration**.
+</Warning>
+
+Con el toggle encendido, aparece un **icono de Docker en el header** con un puntito de estado: verde cuando hay un container corriendo, rojo cuando Docker no responde. Hacer clic en él abre el panel.
+
+Apagado, no hay icono y no hay panel.
+
+## Requisitos
+
+TYBA busca el binario de `docker` en este orden:
+
+| Dónde |
+| --- |
+| `docker` (lo que esté en el `PATH`) |
+| `/usr/local/bin/docker` |
+| `/opt/homebrew/bin/docker` |
+| `/usr/bin/docker` |
+| `~/.docker/bin/docker` |
+
+<Note>
+Sin binario, o con el daemon parado, el panel no inventa nada: dice **"Docker is not responding"**. En macOS ofrece además el atajo **"Open Docker Desktop"** — en las otras plataformas, levantar Docker queda de tu lado.
+</Note>
+
+## La lista
+
+Los containers vienen **agrupados por proyecto compose**, y lo que no pertenece a ningún proyecto cae en **"loose"**.
+
+- **Los que corren primero**, después por orden de nombre.
+- **Los parados también aparecen** — pero quedan recogidos detrás de un "N stopped — show".
+- Cada grupo muestra la cuenta de lo que está en pie.
+
+## Logs y shell
+
+Cada uno se vuelve **una pestaña**.
+
+**Logs** sigue la salida (`-f`) empezando por las últimas 200 líneas.
+
+**Shell** intenta el shell bueno y cae en el que exista:
+
+```bash
+command -v bash >/dev/null && exec bash || exec sh
+```
+
+O sea: **`bash` si el container lo tiene, `sh` si no.** Un container Alpine no se queda sin shell.
+
+## Remover
+
+**La remoción es una acción roja: pide confirmación en dos clics.** El primer clic arma el botón, el segundo ejecuta. No hay diálogo, pero tampoco hay forma de remover por error con un solo clic.
+
+## Compose
+
+Cuando el grupo es un proyecto compose y su carpeta **existe en esta máquina**, el encabezado gana las acciones del proyecto:
+
+| Acción | Comportamiento |
+| --- | --- |
+| **Up** | `compose up -d`. Directo. |
+| **Restart** | `compose restart`. Directo. |
+| **Down** | Destructivo: **pide confirmación en dos clics**, como el remover. |
+| **Abrir la carpeta del proyecto** | Abre en tu gestor de archivos. |
+| **Abrir el archivo compose** | Solo aparece cuando el archivo es alcanzable de verdad. |
+
+### Cuando la ruta no es de esta máquina
+
+Un container reporta la ruta **del entorno donde levantó**, que no siempre es el tuyo. Cuando TYBA mira la ruta y no está aquí — o está, pero sin permiso de lectura — **lo dice y muestra la ruta**, en vez de ofrecer un botón que abriría la nada.
+
+Por eso las acciones de compose solo aparecen para un proyecto cuya carpeta TYBA consigue ver.
+
+<Note>
+En el objetivo **remoto** esa comprobación se salta a propósito: la ruta del host remoto no existe en esta máquina, y anotarla sería un enlace roto. Por eso las acciones de compose **no funcionan remotamente** — mira [Docker remoto](/es/docker/docker-remoto).
+</Note>
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Docker remoto" icon="cloud" href="/es/docker/docker-remoto">
+    El mismo panel apuntando a un host SSH.
+  </Card>
+  <Card title="Hosts y grupos" icon="hard-drive" href="/es/ssh/hosts-y-grupos">
+    El registro que hace que exista el objetivo remoto.
+  </Card>
+</CardGroup>

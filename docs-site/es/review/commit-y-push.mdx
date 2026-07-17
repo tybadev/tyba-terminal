@@ -1,0 +1,110 @@
+---
+title: "Commit y push"
+description: "La barra de commit del panel de revisión, la sugerencia de mensaje del agente, y las dos cosas que el push rechaza."
+---
+
+El commit y el push viven en el panel de revisión, después del diff — en el orden en que lees, no en el que git ejecuta. Y ambos corren **por TYBA, fuera de la jaula**: la sesión del agente nunca tuvo credenciales de red.
+
+## La barra de commit
+
+Solo existe cuando hay algo staged o modificado. Si desapareció, es porque el worktree está limpio.
+
+```
+[⎘] [ Commit message…                 ] [✦] [ Commit · 3 files ]
+```
+
+| Elemento | Regla |
+| --- | --- |
+| Campo de mensaje | `↵` commitea. `Esc` solo quita el foco. |
+| Botón **Commit · N files** | N es el número de archivos **staged**. |
+| Sin nada staged | El placeholder pasa a ser *Stage what goes into the commit…* y el botón queda trabado. |
+
+Al commit solo entra lo que está staged — es `git commit -m` puro. Un mensaje vacío se rechaza antes de tocar git.
+
+<Note>
+**No existe** amend, ni commit firmado por opción, ni `--no-verify`, ni mensaje de varias líneas: el campo es de una sola línea.
+</Note>
+
+## Sugerir el mensaje
+
+El botón `✦` al lado del campo manda el **diff staged** a un agente headless y escribe la respuesta en el campo. Puedes seguir editándola — nada se commitea solo.
+
+<Tabs>
+  <Tab title="Claude">
+    ```
+    claude -p --output-format text
+    ```
+    El prompt va por stdin.
+  </Tab>
+  <Tab title="Codex">
+    ```
+    codex exec "<prompt>"
+    ```
+  </Tab>
+</Tabs>
+
+El prompt pide una sola línea, en **conventional commits** (`tipo(alcance): resumen`), en portugués. De la respuesta, TYBA se queda con la primera línea no vacía y le quita las comillas y las comillas invertidas de alrededor — si al agente le da por explicarse, la explicación se tira.
+
+| Detalle | Valor |
+| --- | --- |
+| Diff enviado | `git diff --cached`, **capado en 48 KB** (el resto pasa a ser `[diff truncado]`) |
+| Timeout | 60 segundos |
+| Sin nada staged | Error: *Nothing staged — stage what goes into the commit before asking for a suggestion.* |
+
+<Warning>
+**Esto es red, y es una CLI de agente corriendo en tu máquina** — con el diff staged dentro del prompt. Pasa solo con el clic explícito, nunca solo. Si el repositorio tiene código que no puede salir, no uses el botón.
+</Warning>
+
+### Qué agente responde
+
+El de **Settings → Preferences → Review agent**. Y aquí hay una trampa:
+
+<Note>
+La sugerencia solo acepta `claude` o `codex`. Si tu agente de review es un **comando custom**, la sugerencia cae en **`claude`** — no en tu comando. El core rechaza cualquier otro nombre antes de ejecutar nada.
+</Note>
+
+## Push
+
+El botón **Push** solo aparece cuando hay al menos un commit por delante de la base. Corre:
+
+```bash
+git push -u origin <branch-actual>
+```
+
+Sin diálogo, sin elegir remote, sin elegir branch. El `origin` y la branch en la que está la sesión — nada más. Si sale bien, el pie muestra *Pushed ✓* durante 5 segundos.
+
+### Lo que el push rechaza
+
+<Warning>
+**`main` y `master` las rechaza el core, siempre.** No importa quién hizo clic: la comprobación es sobre la branch actual, no sobre quién lo pidió.
+
+Del lado del agente la misma regla es todavía más dura — `git push origin main` [ni siquiera llega a ser un pedido de aprobación](/es/seguridad/clasificacion-de-riesgo#lo-que-ni-siquiera-se-pregunta).
+</Warning>
+
+**HEAD desacoplado** también se rechaza: sin branch, no hay nada que hacer con `-u`.
+
+## Lo que no existe
+
+| | |
+| --- | --- |
+| **Force push** | No existe. Ni opción, ni casilla. |
+| **Elegir remote** | No existe. Es `origin`. |
+| **Pull / rebase en el panel** | No existe. Hay `fetch` en el selector de branch, y ya. |
+| **Push sin haber commiteado** | El botón ni aparece. |
+
+## Ver también
+
+<CardGroup cols={2}>
+  <Card title="Leer el diff" icon="git-compare" href="/es/review/leer-el-diff">
+    Lo que pones en stage antes de commitear.
+  </Card>
+  <Card title="Pull requests" icon="git-pull-request" href="/es/review/pull-requests">
+    El push que el diálogo de PR hace por ti.
+  </Card>
+  <Card title="Merge local" icon="git-merge" href="/es/review/merge-local">
+    Cuando el destino es la branch base, no el remote.
+  </Card>
+  <Card title="Clasificación de riesgo" icon="shield" href="/es/seguridad/clasificacion-de-riesgo">
+    Por qué el agente no tiene credenciales de red.
+  </Card>
+</CardGroup>

@@ -1,0 +1,154 @@
+---
+title: "Reading the diff"
+description: "The review is built from local git alone. Commit timeline, hunks on demand, stage and discard — without leaving the window."
+---
+
+TYBA's review panel **does not talk to GitHub**. Everything it shows comes out of `git` running in the session's worktree: the commit timeline, the per-file summary, the hunks. There is no PR, no login, no network.
+
+That is what makes the review work before a PR exists — which is exactly when you need it.
+
+## How to open it
+
+<CardGroup cols={3}>
+  <Card title="Git icon" icon="git-branch">
+    In the header, when the active session is in a repository.
+  </Card>
+  <Card title="Chip bar" icon="square-dashed">
+    *Uncommitted changes* or *Review worktree diff*.
+  </Card>
+  <Card title="Workspace menu" icon="list">
+    *Review diff* — only for a session with a worktree.
+  </Card>
+</CardGroup>
+
+It opens as a **workspace side view**: a panel next to the tab column, with a draggable divider and an expand button. The mechanics are in [The side view](/en/interface/tabs-and-workspaces#the-side-view).
+
+<Note>
+**There is no diff tab.** There used to be, and when an old layout loads, diff tabs simply disappear. Today the diff is a side view — one per workspace.
+</Note>
+
+## What you see
+
+In the left column, **Commits**: the session's timeline, short sha and subject, newest to oldest. Below it, the per-file summary in three sections:
+
+| Section | What it is |
+| --- | --- |
+| **Committed** | `base..HEAD` — what the agent committed |
+| **Staged** | what is in the index |
+| **Changes** | dirty worktree + untracked files |
+
+The last two are the important part: **what the agent left uncommitted shows up too**. An agent that stopped halfway hides nothing from you.
+
+### The base
+
+The committed diff is `base_sha..HEAD`, and the `base_sha` was **pinned when the worktree was born** ([Worktrees](/en/git/worktrees)). The header shows `base <sha> ‥ HEAD`.
+
+That is why the review stays readable after two hours: whatever landed on `main` meanwhile does not show up here.
+
+## Hunks on demand
+
+The per-file summary comes from `--numstat`. **The real diff is only fetched when the file opens** — one click on the file row.
+
+Some are born collapsed:
+
+| Rule | Why |
+| --- | --- |
+| **Generated** path (`bun.lock`, `package-lock.json`, `Cargo.lock`, `go.sum`, `dist/`, `.min.js`, `.snap`…) | A lockfile diff has tens of thousands of lines. It comes marked `generated`. |
+| File with **more than 800 lines** of hunk | Collapses after the first load. |
+| Section with **more than 20 files** | All collapsed by default. |
+
+The two arrows in the section header expand or collapse every file in that section at once.
+
+<Note>
+A failure loading a file's hunks **does not retry on its own**. You get *failed to load the diff* with a *retry* next to it. Automatic retry against a broken repo would be an infinite loop of git processes.
+</Note>
+
+## Unified and side by side
+
+`Unified` and `Side by side` in the header. Syntax highlighting runs on the client and **skips hunks over 2,000 lines** — in those, the text shows up without color.
+
+Binary shows as `bin` in place of the count, and `binary file — no text diff` in the body.
+
+## Stage, unstage, discard
+
+Hover over the file row:
+
+| Where | Actions |
+| --- | --- |
+| **Changes** | `+` stage · trash discard · open file |
+| **Staged** | `−` unstage · open file |
+| **Changes** header | stage all · discard all |
+| **Staged** header | unstage all |
+
+<Warning>
+**Discard is a red action and asks for two clicks.** The first arms it (*Discard?*), the second executes — and the arming expires on its own after **3 seconds**.
+
+Tracked comes back with `git restore`. Untracked goes away with `git clean -ffd` — including a nested repository the agent may have left behind. There is no undo.
+</Warning>
+
+Unstaging a renamed file unstages the whole pair (the old path along with it); otherwise the next commit would lose the file from history.
+
+## What does not exist
+
+| | |
+| --- | --- |
+| **Stage by hunk or by line** | Does not exist. The core receives `paths` — the unit is the **file**, or the whole section. |
+| **Diff in its own tab** | Not anymore. Side view only. |
+| **Diff coming from GitHub** | Does not exist. Local git only. |
+| **Ignore whitespace / change context** | Does not exist. `git diff` runs with no presentation options. |
+
+## Comment on a line
+
+Hover over a diff line and click the green `+` in the gutter. Write what needs to change.
+
+| Key | What |
+| --- | --- |
+| `⌘↵` / `Ctrl+↵` | saves the comment |
+| `Esc` | cancels the draft |
+
+The comment stays anchored to the line, in green. With at least one saved, the footer gains **Send N comments to the agent** — which is [another page](/en/review/pr-comments-to-agent).
+
+<Warning>
+**The comments are not persisted.** They live in the panel: closing the review discards everything you did not send. They do not go to git, and they do not become a GitHub review.
+</Warning>
+
+## Open the file
+
+The arrow icon opens the file **as text** — in the GUI editor configured in Settings, or, on macOS with no editor, via `open -t`.
+
+<Note>
+Never `open <file>` nor `xdg-open`: that would execute a script the agent left in the worktree with one click. On Windows and on Linux with no editor configured, the button errors out asking you to configure one — on purpose.
+</Note>
+
+## Explore another branch
+
+The selector next to the base enters explore mode: pick a branch and the panel shows **its diff against the base**, read-only. Committed only — staged and worktree belong to your directory, not to the branch you are looking at. There is `fetch` and `checkout` in the same selector.
+
+Leaving explore mode returns to the session's review.
+
+## Conflict in the worktree
+
+If there is a merge, rebase or cherry-pick in progress, the panel gains a banner at the top with the conflicted files and, per file: *keep `<branch>`*, *take `<branch>`*, open in editor, *mark resolved (git add)*. Plus a *Resolve with agent*, which drops the conflict into the lap of whoever created it.
+
+## Refresh
+
+The core's watcher only sees the git dir — index, HEAD, refs. Editing a file in the worktree generates no event. So, with the panel open, a light poll also runs every **5 seconds**.
+
+<Note>
+**The panel closes itself when focus moves to another session.** It shows the staged and worktree of *that* session's repo: left open with another one focused, it would lure you into staging — or discarding — in the wrong repo.
+</Note>
+
+## Session without a worktree
+
+The panel opens for any session whose directory is a git repository. There the base is `HEAD`: **Committed comes up empty** and you see only staged and worktree. Local merge and opening a PR need a worktree and will fail.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Commit and push" icon="git-commit" href="/en/review/commit-and-push">
+    The commit bar, the message suggestion, and what push refuses.
+  </Card>
+  <Card title="PR comments to the agent" icon="message-square" href="/en/review/pr-comments-to-agent">
+    What the agent receives when you hit send.
+  </Card>
+</CardGroup>

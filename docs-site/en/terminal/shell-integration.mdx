@@ -1,0 +1,91 @@
+---
+title: "Shell integration"
+description: "How TYBA knows which command is running — without ever touching your dotfiles."
+---
+
+An ordinary terminal has no idea what's going on inside it. It sees bytes. "Is something running?", "what command is that?", "did it fail?" — none of that is in the stream.
+
+**Shell integration** fixes that: TYBA injects a handful of hooks into the session's shell, and the shell starts *reporting* where it is — prompt started, command started, command finished with this exit code, the directory changed.
+
+**Settings → Code → Shell integration.** It ships **on**.
+
+## What you get
+
+| | |
+| --- | --- |
+| **The session description in the sidebar** | The running command appears under the workspace name, with the green dot pulsing. It's what lets you glance at the sidebar and know what each session is doing, Warp-style. |
+| **Running / Idle** | The status on the tab and in the hover card comes from here. |
+| **The current directory** | The shell reports when you `cd`. |
+
+Without it, an idle session and a session that's been compiling for three minutes look identical.
+
+## It doesn't touch your dotfiles
+
+<Note>
+**Nothing is written to your `~/.zshrc`, `~/.bashrc` or `~/.zprofile`.** Ever. Not at install, not on first use, not when you flip the toggle.
+</Note>
+
+TYBA writes the integration files into a temporary directory that's yours alone — created with `0700` permissions, verified on every use (right owner, nobody else gets in) — and points **that session's** shell there, via an environment variable. Its files start by sourcing **yours**, and only then install the hooks.
+
+The consequence: your configuration runs in full, in its usual order, and TYBA comes in last. If it fails, your shell carries on — the hooks were written not to take the session down, not even under `set -e`.
+
+It's the same pattern VS Code and iTerm2 use. Uninstalling TYBA leaves no residue anywhere: there is no residue to leave.
+
+## Where it works
+
+| Shell | |
+| --- | --- |
+| **zsh** | Yes — via `ZDOTDIR` pointed at the session's directory. |
+| **bash** | Yes — via `--rcfile`, reproducing the login init chain and `~/.bashrc` before the hooks. Verified on macOS's bash 3.2 and Linux's 5.2. |
+| **fish, nu, others** | No. The session works normally, it just doesn't report status. |
+| **PowerShell, cmd** | No. |
+| **SSH sessions** | No — the shell is on the other side, and TYBA doesn't write to the remote machine. |
+
+<Note>
+The toggle is called **"Shell integration (zsh)"** because zsh is the main path and macOS's default. It governs both: turn it off and neither zsh nor bash gets hooks.
+</Note>
+
+TYBA uses the system's `$SHELL` — [there's no configurable default shell](/en/terminal/using-the-terminal). If you want the hooks, the way there is having zsh or bash as your shell.
+
+## This is not what gives agent sessions their status
+
+<Note>
+**Agent sessions don't depend on shell integration.** Turning the toggle off doesn't degrade your agents' status.
+</Note>
+
+They're two different channels, and it's worth not mixing them up:
+
+| | Where the status comes from |
+| --- | --- |
+| **Agent session** | Hooks TYBA injects into the agent itself, over a local channel |
+| **Shell session** | The OSC markers on this page |
+
+The agent reports on its own: the tool about to run becomes `Running`, the end of a turn becomes `Idle`, a request for an answer becomes `AwaitingInput`. It's the same channel as the approvals inbox, and it exists independently of your shell — see [how TYBA talks to the agent](/en/agent/hooks).
+
+What shell integration does give agents is something else: **detecting an agent running inside an ordinary shell**. You typed `claude` in a shell pane — TYBA finds that out from the command line the shell reports, and it's the integration doing the reporting.
+
+## Turning it off
+
+**Settings → Code → Shell integration**, toggle off. It applies to **new** sessions — the hooks go in when the shell is born, so sessions already open stay as they are until you open another.
+
+A legitimate reason to turn it off: your shell has an exotic config and something started behaving strangely — a duplicated prompt, `PROMPT_COMMAND` fighting back, a plugin that doesn't like company. Turning it off is the two-line test for whether TYBA is to blame.
+
+What you lose:
+
+| | |
+| --- | --- |
+| **The sidebar description** | Gone. The session becomes just the name. |
+| **Running / Idle** | Gone. |
+| **Agent status** | Left with only what the runner reports, without the fallback. |
+| **The terminal** | Nothing. Identical — pasting, searching, copying, splits, everything. |
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Using the terminal" icon="terminal" href="/en/terminal/using-the-terminal">
+    What changes and what doesn't in the terminal.
+  </Card>
+  <Card title="User settings" icon="sliders" href="/en/reference/user-config">
+    Where the toggle lives, and the rest of the Code section.
+  </Card>
+</CardGroup>

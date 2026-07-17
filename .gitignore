@@ -11,3 +11,6 @@ src-tauri/gen/schemas/
 # `settings.local.json` — só nomes terminados em `.local`.
 .claude/settings.local.json
 .claude/worktrees/
+
+# Mintlify CLI (preview local da doc)
+docs-site/.mintlify/

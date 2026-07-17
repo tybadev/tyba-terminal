@@ -1,0 +1,156 @@
+---
+title: "Split panes"
+description: "Split, navigate, resize — and the difference that trips up anyone coming from another terminal."
+---
+
+## Splitting
+
+<Tabs>
+<Tab title="macOS">
+| Action | Shortcut |
+| --- | --- |
+| Split right | `⌘D` |
+| Split down | `⌘⇧D` |
+</Tab>
+<Tab title="Windows and Linux">
+| Action | Shortcut |
+| --- | --- |
+| Split right | `Ctrl+Shift+E` |
+| Split down | `Ctrl+Shift+D` |
+</Tab>
+</Tabs>
+
+Also via **right-click in the terminal** → *Split right* / *Split down*.
+
+<Note>
+There's no split item in the [command palette](/en/interface/command-palette). Shortcut or context menu only.
+</Note>
+
+## Every split is a new session
+
+<Warning>
+**A split doesn't divide the shell that's there — it opens a new shell.**
+</Warning>
+
+If you came from iTerm, tmux or Windows Terminal, this is the difference that will get you. Splitting isn't "show the same shell in two places": the new pane is born with a session of its own, with its own history and its own process.
+
+If the workspace is tied to an [SSH host](/en/ssh/hosts-and-groups), the new pane is born **on that host** — the split inherits the connection instead of coming back to your machine.
+
+## Nesting
+
+Splits are a tree: **every pane can be split again**, and the result can be split once more. There's no limit in the code — the limit is your screen.
+
+```
+┌─────────────┬─────────────┐
+│             │             │
+│             ├──────┬──────┤
+│             │      │      │
+└─────────────┴──────┴──────┘
+```
+
+## Navigating
+
+Two ways, and the second is the good one:
+
+<Tabs>
+<Tab title="macOS">
+| Action | Shortcut |
+| --- | --- |
+| Next pane (cycle) | `⌘]` |
+| Pane left | `⌘⌥←` |
+| Pane right | `⌘⌥→` |
+| Pane up | `⌘⌥↑` |
+| Pane down | `⌘⌥↓` |
+</Tab>
+<Tab title="Windows and Linux">
+| Action | Shortcut |
+| --- | --- |
+| Next pane (cycle) | `Ctrl+Tab` |
+| Pane left | `Ctrl+Alt+←` |
+| Pane right | `Ctrl+Alt+→` |
+| Pane up | `Ctrl+Alt+↑` |
+| Pane down | `Ctrl+Alt+↓` |
+</Tab>
+</Tabs>
+
+Directional navigation is **geometric**: TYBA computes where each pane sits on screen and goes to the real neighbor in that direction. It isn't "the next one in the list" — with four nested panes, `⌘⌥→` goes to whoever is actually on the right.
+
+The cycle wraps: from the last one back to the first.
+
+## Resizing
+
+**With the mouse:** drag the divider.
+
+**With the keyboard**, in 5% steps:
+
+<Tabs>
+<Tab title="macOS">
+| Action | Shortcut |
+| --- | --- |
+| Narrower / wider | `⌘⌃←` / `⌘⌃→` |
+| Shorter / taller | `⌘⌃↑` / `⌘⌃↓` |
+</Tab>
+<Tab title="Windows and Linux">
+| Action | Shortcut |
+| --- | --- |
+| Narrower / wider | `Ctrl+Alt+Shift+←` / `Ctrl+Alt+Shift+→` |
+| Shorter / taller | `Ctrl+Alt+Shift+↑` / `Ctrl+Alt+Shift+↓` |
+</Tab>
+</Tabs>
+
+<Note>
+These four **are not remappable** — they're fixed.
+</Note>
+
+No pane disappears: the proportion is clamped between **10% and 90%**. You can't crush a pane to zero by accident.
+
+## Closing
+
+<Tabs>
+<Tab title="macOS">
+`⌘W` closes the active pane.
+</Tab>
+<Tab title="Windows and Linux">
+`Ctrl+Shift+W` closes the active pane.
+</Tab>
+</Tabs>
+
+Closing the last pane closes the tab along with it. The neighboring panes rearrange to take up the space.
+
+## The layout is remembered
+
+The pane tree, the proportions and the active pane are saved on every change. Close and reopen TYBA and the layout comes back.
+
+What comes back *inside* the panes depends on **Settings → Code → On app start**:
+
+| Option | What it does |
+| --- | --- |
+| **Reopen the sessions** (default) | Recreates the shell sessions and **reattaches SSH sessions** to the tmux still alive on the host |
+| **Layout only** | Keeps the layout, without restarting anything |
+| **New window** | Starts clean |
+
+<Note>
+SSH panes are the only ones that bring work back: the remote shell never stopped, and the reattach hands you back whatever was running. See [session persistence](/en/ssh/persistence).
+</Note>
+
+<Warning>
+**Agent sessions never restart on their own**, under any of the options. An agent coming back out of nowhere, unasked, would do work you didn't ask for.
+</Warning>
+
+## What doesn't exist
+
+| | |
+| --- | --- |
+| **Zoom / maximize pane** | Doesn't exist. No shortcut, no menu. |
+| **A pane limit** | There's no limit in the code. |
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Tabs and workspaces" icon="layout" href="/en/interface/tabs-and-workspaces">
+    The layer above the panes.
+  </Card>
+  <Card title="Shortcuts" icon="keyboard" href="/en/interface/shortcuts">
+    The whole list, and how to remap.
+  </Card>
+</CardGroup>

@@ -1,0 +1,91 @@
+---
+title: "Shell integration"
+description: "Como o TYBA sabe qual comando está rodando — sem nunca tocar nos seus dotfiles."
+---
+
+Um terminal comum não faz ideia do que está acontecendo dentro dele. Ele vê bytes. "Está rodando alguma coisa?", "que comando é esse?", "deu erro?" — nada disso está no stream.
+
+A **shell integration** resolve isso: o TYBA injeta um punhado de hooks no shell da sessão, e o shell passa a *contar* onde está — prompt começou, comando começou, comando terminou com o código tal, o diretório mudou.
+
+**Configurações → Code → Shell integration.** Vem **ligada**.
+
+## O que você ganha
+
+| | |
+| --- | --- |
+| **A descrição da sessão na sidebar** | O comando em execução aparece embaixo do nome do workspace, com o ponto verde pulsando. É o que te deixa olhar a sidebar e saber o que cada sessão está fazendo, estilo Warp. |
+| **Executando / Ocioso** | O status na aba e no hover card sai daqui. |
+| **O diretório atual** | O shell avisa quando você faz `cd`. |
+
+Sem isso, uma sessão parada e uma sessão compilando há três minutos são visualmente idênticas.
+
+## Não mexe nos seus dotfiles
+
+<Note>
+**Nada é escrito no seu `~/.zshrc`, `~/.bashrc` ou `~/.zprofile`.** Nunca. Nem na instalação, nem no primeiro uso, nem quando você liga o toggle.
+</Note>
+
+O TYBA escreve os arquivos de integração num diretório temporário só seu — criado com permissão `0700`, verificado a cada uso (dono certo, ninguém mais entra) — e aponta o shell **daquela sessão** para lá, via variável de ambiente. Os arquivos dele começam sourceando **os seus**, e só depois instalam os hooks.
+
+Consequência: sua configuração roda inteira, na ordem de sempre, e o TYBA entra por último. Se ele falhar, o seu shell continua — os hooks foram escritos para não derrubar a sessão nem sob `set -e`.
+
+É o mesmo padrão que o VS Code e o iTerm2 usam. Desinstalar o TYBA não deixa resíduo em lugar nenhum: não há resíduo para deixar.
+
+## Onde funciona
+
+| Shell | |
+| --- | --- |
+| **zsh** | Sim — via `ZDOTDIR` apontado para o diretório da sessão. |
+| **bash** | Sim — via `--rcfile`, reproduzindo a cadeia de init de login e o `~/.bashrc` antes dos hooks. Verificado no bash 3.2 do macOS e no 5.2 do Linux. |
+| **fish, nu, outros** | Não. A sessão funciona normalmente, só não reporta status. |
+| **PowerShell, cmd** | Não. |
+| **Sessões SSH** | Não — o shell é do outro lado, e o TYBA não escreve na máquina remota. |
+
+<Note>
+O toggle se chama **"Shell integration (zsh)"** porque o zsh é o caminho principal e o padrão do macOS. Ele governa os dois: desligou, nem zsh nem bash recebem hooks.
+</Note>
+
+O TYBA usa o `$SHELL` do sistema — [não há shell padrão configurável](/pt-br/terminal/usando-o-terminal). Se você quer os hooks, o caminho é ter zsh ou bash como seu shell.
+
+## Isso não é o que dá status às sessões de agente
+
+<Note>
+**Sessão de agente não depende da shell integration.** Desligar o toggle não degrada o status dos seus agentes.
+</Note>
+
+São dois canais diferentes, e vale não confundir:
+
+| | De onde vem o status |
+| --- | --- |
+| **Sessão de agente** | Hooks que o TYBA injeta no próprio agente, por um canal local |
+| **Sessão de shell** | Os marcadores OSC desta página |
+
+O agente avisa por conta própria: a ferramenta que vai rodar vira `Running`, o fim de turno vira `Idle`, um pedido de resposta vira `AwaitingInput`. É o mesmo canal do inbox de aprovações, e ele existe independente do seu shell — veja [como o TYBA fala com o agente](/pt-br/agente/hooks).
+
+O que a shell integration dá para agentes é outra coisa: a **detecção de agente rodando dentro de um shell comum**. Você digitou `claude` num pane de shell — o TYBA descobre isso pela linha de comando que o shell reporta, e é a integração que reporta.
+
+## Desligar
+
+**Configurações → Code → Shell integration**, toggle off. Vale para as sessões **novas** — os hooks entram no nascimento do shell, então as sessões já abertas continuam como estão até você abrir outra.
+
+Motivo legítimo para desligar: seu shell tem uma config exótica e alguma coisa começou a se comportar estranho — prompt duplicado, `PROMPT_COMMAND` brigando, um plugin que não gosta de companhia. Desligar é o teste de duas linhas para saber se o TYBA é o culpado.
+
+O que você perde:
+
+| | |
+| --- | --- |
+| **A descrição na sidebar** | Some. A sessão vira só o nome. |
+| **Executando / Ocioso** | Some. |
+| **Status de agente** | Fica só com o que o runner reportar, sem o fallback. |
+| **O terminal** | Nada. Continua idêntico — colar, buscar, copiar, splits, tudo. |
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Usando o terminal" icon="terminal" href="/pt-br/terminal/usando-o-terminal">
+    O que muda e o que não muda no terminal.
+  </Card>
+  <Card title="Configurações do usuário" icon="sliders" href="/pt-br/configuracao/usuario">
+    Onde mora o toggle, e o resto da seção Code.
+  </Card>
+</CardGroup>

@@ -1,0 +1,140 @@
+---
+title: "Clasificación de riesgo"
+description: "Todo comando del agente recibe un color antes de correr. Esta página lista exactamente qué cae en cada uno."
+---
+
+Antes de que cualquier herramienta del agente se ejecute, TYBA clasifica la acción en tres niveles. El color decide qué pasa: pasar de largo, esperarte, o ni siquiera ofrecerse.
+
+<CardGroup cols={3}>
+  <Card title="Verde" icon="circle-check">
+    Pasa solo. Ni lo ves.
+  </Card>
+  <Card title="Amarillo" icon="circle-pause">
+    Te espera. Puede convertirse en "siempre" en esta sesión.
+  </Card>
+  <Card title="Rojo" icon="circle-alert">
+    Te espera. Nunca se convierte en "siempre".
+  </Card>
+</CardGroup>
+
+La regla de fondo es **en la duda, amarillo**. El verde es una lista cerrada, no una heurística — un comando que nadie previó no pasa solo.
+
+## Verde
+
+La lista entera. No hay nada más:
+
+```
+ls   pwd   cat   grep   rg   head   tail   which   file   wc
+git status   git log   git diff   git show
+```
+
+<Warning>
+**Un build no es verde.** `cargo build`, `bun install`, `make` — todos amarillos, todos te esperan. Un build ejecuta scripts arbitrarios de las dependencias; la lista verde es solo lectura.
+</Warning>
+
+El verde se auto-aprueba **siempre**, sin opción de desactivarlo. No existe una configuración que fuerce a `cat` a pedir permiso.
+
+## Rojo
+
+| Qué | Regla exacta |
+| --- | --- |
+| `sudo` | primer token |
+| `curl`, `wget` | primer token |
+| Pipe hacia un shell | `\| sh`, `\| bash`, `\|sh`, `\|bash` — en cualquier posición de la línea |
+| `rm` recursivo y forzado | flags que contengan `r`/`R` **y** `f`, en cualquier orden |
+| `chmod`, `chown` | primer token |
+| `git push` | `git` seguido de `push`, en cualquier posición |
+| `gh pr create` | los tres primeros tokens |
+
+Fíjate en el detalle del `rm`: `rm -rf`, `rm -fr` y `rm -r -f` son todos rojos. En cambio `rm archivo.txt` es **amarillo** — borrar un archivo dentro del worktree es trabajo normal de un agente.
+
+Y el pipe hacia un shell es lo que atrapa `curl ... | bash` incluso escrito de una forma en la que `curl` no es el primer token.
+
+## Salir del worktree lo pinta de rojo
+
+Independientemente del comando, cualquier token que empiece con `/` o `~/` y resuelva **fuera del worktree de la sesión** escala a rojo:
+
+```bash
+cat ~/.ssh/id_rsa        # cat es verde — esto es rojo
+```
+
+Las excepciones son las rutas de sistema que todo comando toca:
+
+```
+/bin   /sbin   /usr/bin   /usr/sbin   /dev/null
+```
+
+Por eso `cargo build 2> /dev/null` sigue siendo amarillo en vez de escalar.
+
+Lo mismo vale para la escritura: grabar dentro del worktree es verde; escaparse de él — por ruta absoluta, por `../`, o a través de un symlink que apunta hacia fuera — es rojo.
+
+## Por herramienta
+
+| Herramienta | Nivel |
+| --- | --- |
+| `Read`, `Glob`, `Grep`, `LS`, `NotebookRead`, `TodoRead`, `TodoWrite` | Verde |
+| `Bash` | Clasificado por el comando (tablas de arriba) |
+| `Write`, `Edit`, `MultiEdit`, `NotebookEdit` | Verde en el worktree, rojo fuera |
+| `WebFetch`, `WebSearch` | **Rojo, siempre** |
+| Herramienta MCP (`mcp__*`) | Amarillo |
+| Desconocida | Amarillo |
+
+La red siempre es roja porque es el camino de salida: es por ahí por donde el contenido de tu disco se convertiría en una petición hacia fuera.
+
+En Codex, `apply_patch` se clasifica por la **peor ruta** que toca — un patch con diez archivos dentro del worktree y uno fuera es rojo.
+
+## Qué respondes
+
+Cuando algo te está esperando, TYBA notifica y la sesión queda bloqueada hasta la respuesta.
+
+<Tabs>
+<Tab title="Verde y amarillo">
+```
+[1] Yes   [2] Always   [3] No
+```
+</Tab>
+<Tab title="Rojo">
+```
+[1] Yes   [2] No
+```
+</Tab>
+</Tabs>
+
+**El rojo no tiene "Always".** No es la interfaz escondiendo el botón — el core se niega a memorizar cualquier rojo, así que no hay camino para que esa combinación exista.
+
+Al denegar, puedes escribir el motivo. El texto va al agente como razón del rechazo, y él suele intentar otro camino en vez de insistir.
+
+## Qué significa realmente "Always"
+
+<Warning>
+"Always" es **de esta sesión** y **de este comando exacto**. Nada de eso va al disco.
+</Warning>
+
+- Vale mientras la sesión viva. Cerraste, murió.
+- Casa con la cadena exacta: liberar `cargo test` **no** libera `cargo test --release`.
+- Nunca acepta un rojo.
+
+Hoy no existe un "permitir siempre" persistente entre sesiones.
+
+## Qué ni siquiera llega a preguntarse
+
+```bash
+git push origin main
+```
+
+Un push del agente a `main` o `master` es **rechazado por el core**. No se convierte en un pedido de aprobación, no aparece en el inbox, no tiene botón. El agente recibe el error directo:
+
+```
+recusado pelo core: push para main/master nunca é permitido
+```
+
+El rechazo entiende las variantes — `HEAD:main`, `+main` y similares caen en la misma regla.
+
+## Fail-closed
+
+Si la sesión muere con pedidos pendientes, todos se vuelven **denegados**. Si el canal de aprobación se rompe, el valor por defecto es **denegar**. No hay camino en el que el fallo de la infraestructura se convierta en permiso.
+
+## Ver también
+
+- [Plataformas](/es/seguridad/plataformas) — lo que el sandbox garantiza en cada sistema
+- [Configuración del repositorio](/es/referencia/config-de-repo) — el entorno que el agente recibe

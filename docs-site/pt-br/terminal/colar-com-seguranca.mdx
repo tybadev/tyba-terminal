@@ -1,0 +1,112 @@
+---
+title: "Colar com segurança"
+description: "Por que às vezes ele pergunta antes de colar e às vezes não. Não é aleatório."
+---
+
+Colar num terminal é a coisa mais perigosa que você faz sem pensar. Um texto copiado de uma página web pode terminar com uma quebra de linha — e quebra de linha, num shell, é **Enter**. O comando roda antes de você ler.
+
+O TYBA não resolve isso pedindo confirmação sempre (você aprenderia a clicar em "Colar" sem ler em dois dias). Ele pergunta **quando o texto pode rodar sozinho**, e cala a boca quando não pode.
+
+| Ação | macOS | Windows / Linux |
+| --- | --- | --- |
+| Colar | `⌘V` | `Ctrl+Shift+V` |
+
+Também pelo **botão direito** → *Colar*. Os dois caminhos passam pela mesma checagem — não existe atalho que fure a fila.
+
+## A regra
+
+Todo texto colado passa por três perguntas, nesta ordem:
+
+<Steps>
+  <Step title="O terminador é removido — sempre">
+    A sequência `ESC[201~` é arrancada do texto antes de qualquer outra coisa, em **toda** colagem, arriscada ou não. Ela é o que marca "acabou a colagem" no protocolo do terminal: um texto que a carrega convence o shell de que a colagem terminou ali, e que o resto — o que vem depois — é você digitando.
+
+    É assim que se cola uma linha inocente que executa um comando que você não viu. O TYBA não deixa esse byte chegar ao shell. Nunca.
+  </Step>
+  <Step title="O terminal está em bracketed paste?">
+    O TYBA lê o estado **real** do terminal naquele instante — não um palpite, não uma preferência sua. Ou o programa do outro lado ligou o modo, ou não ligou.
+  </Step>
+  <Step title="Isso é arriscado?">
+    É arriscado se **qualquer uma** for verdade:
+
+    - O texto **tem caracteres de controle** inseguros; **ou**
+    - O texto é **multilinha** *e* o bracketed paste está **desligado**.
+
+    Arriscado abre o diálogo. O resto cola direto.
+  </Step>
+</Steps>
+
+## O que é bracketed paste
+
+É um modo que o programa do terminal liga sozinho para dizer: *"eu sei diferenciar texto colado de texto digitado"*.
+
+Com ele ligado, o texto colado chega ao programa embrulhado em marcadores. As quebras de linha entram como **texto**, não como Enter. Um shell moderno (zsh, bash com readline recente), o Claude Code, o `vim` — todos ligam. Um `bash` cru sem readline, um `read` de script, um programa simples pedindo input — não ligam.
+
+<Warning>
+**A mesma colagem se comporta diferente em lugares diferentes — e isso é a coisa funcionando.**
+
+Colar 20 linhas dentro do **Claude Code**: nada acontece, o texto entra no prompt. Ele liga bracketed paste, então as 20 linhas não podem rodar sozinhas.
+
+Colar **as mesmas 20 linhas** num `bash` cru que não ligou o modo: **o diálogo abre**. Ali, cada quebra de linha é um Enter — são 20 comandos, e o TYBA não vai deixar isso acontecer no silêncio.
+
+Não é aleatório. Não é o TYBA "sendo chato às vezes". É a resposta certa para dois contextos diferentes.
+</Warning>
+
+<Note>
+Caractere de controle **sempre** abre o diálogo, mesmo com bracketed paste ligado e mesmo numa linha só. Bracketed paste protege contra o Enter acidental; não protege contra um `ESC` no meio do texto.
+</Note>
+
+## O diálogo
+
+Título: **Colar várias linhas?**
+
+Ele te dá exatamente o que falta para decidir:
+
+| | |
+| --- | --- |
+| **A contagem de linhas** | Quantas linhas o conteúdo tem — e o aviso de que pode rodar assim que colado. |
+| **O texto** | Inteiro, rolável. Caracteres de controle aparecem como **`␣`** — o que era invisível fica visível. |
+| **Faixa âmbar** | Só quando há caracteres de controle. Avisa que eles serão removidos se você colar como uma linha. |
+
+Você lê o que vai colar. É esse o ponto.
+
+### As três saídas
+
+| Botão | O que acontece |
+| --- | --- |
+| **Cancelar** | Nada é colado. `Esc` faz o mesmo. |
+| **Colar como uma linha** | As quebras de linha viram **espaço**, os caracteres de controle são **removidos**, a quebra final é descartada. Vinte comandos viram um comando longo — que espera você apertar Enter. |
+| **Colar** | Cola como está (já sem o terminador do passo 1). É o que você quer quando *sabe* que são 20 comandos e é isso mesmo. |
+
+<Note>
+**Colar como uma linha** é a saída para o caso mais comum: você copiou um comando que quebrou em três linhas no site da documentação e quer ele de volta inteiro. Não é um "modo seguro" genérico — é um achatamento, e o resultado ainda é um comando que você vai executar.
+</Note>
+
+Escolheu, o foco volta para o terminal.
+
+## O que isso não é
+
+<Warning>
+A checagem de colagem olha para a **forma** do texto: ele pode rodar sozinho? Ela **não julga o que o comando faz**. `rm -rf /` colado numa linha só, sem controle nenhum, cola direto e em silêncio — para a checagem, é um comando esperando seu Enter, e é você quem aperta.
+
+Quem julga o que um comando faz é a [classificação de risco](/pt-br/seguranca/classificacao-de-risco), e ela vale para o que **os agentes** pedem para executar. Colar é você. A responsabilidade continua sua.
+</Warning>
+
+## O que não existe
+
+| | |
+| --- | --- |
+| **Toggle "não perguntar mais"** | Não existe. Se existisse, alguém marcaria no primeiro dia e a proteção morreria ali. |
+| **Limite de linhas configurável** | Não existe. O gatilho é a regra acima, não um número. |
+| **Lista de exceções por app** | Não existe. O TYBA lê o estado do terminal, não uma lista de nomes. |
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Classificação de risco" icon="shield" href="/pt-br/seguranca/classificacao-de-risco">
+    Verde, amarelo, vermelho — o que os agentes podem rodar.
+  </Card>
+  <Card title="Usando o terminal" icon="terminal" href="/pt-br/terminal/usando-o-terminal">
+    O outro lado: selecionar e copiar.
+  </Card>
+</CardGroup>

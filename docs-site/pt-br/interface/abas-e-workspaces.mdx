@@ -1,0 +1,204 @@
+---
+title: "Abas e workspaces"
+description: "Duas camadas que parecem uma só — e o que cada uma deixa você fazer."
+---
+
+## A diferença
+
+| | Workspace | Aba |
+| --- | --- | --- |
+| **Onde aparece** | Na sidebar | Na barra de abas, dentro do workspace |
+| **Tem nome próprio?** | Sim — você renomeia | **Não** |
+| **Tem cor e grupo?** | Sim | Não |
+| **Contém** | Abas | Uma árvore de painéis |
+
+O workspace é o projeto: uma pasta, uma cor, um grupo, um lugar na sidebar. A aba é uma vista **dentro** dele.
+
+<Warning>
+**A interface chama workspace de "sessão".** *Renomear sessão*, *Opções da sessão*, *Buscar sessão…* — tudo isso age no workspace. Veja o [tour da interface](/pt-br/tour-da-interface).
+</Warning>
+
+## Abas
+
+### Criar
+
+O botão **`+`** no fim da barra, ou:
+
+<Tabs>
+<Tab title="macOS">
+`⌘T`
+</Tab>
+<Tab title="Windows e Linux">
+`Ctrl+Shift+T`
+</Tab>
+</Tabs>
+
+### Fechar
+
+O **`X`**, que aparece ao passar o mouse na aba.
+
+<Note>
+`⌘W` / `Ctrl+Shift+W` fecha o **painel**, não a aba. A aba fecha junto quando era o último painel — veja [split de painéis](/pt-br/interface/split-de-paineis#fechar).
+</Note>
+
+### Trocar
+
+Clicando, ou:
+
+<Tabs>
+<Tab title="macOS">
+| Ação | Atalho |
+| --- | --- |
+| Aba anterior | `⌘⇧←` |
+| Próxima aba | `⌘⇧→` |
+| Ir para a aba N | `⌘1`…`⌘9` |
+</Tab>
+<Tab title="Windows e Linux">
+| Ação | Atalho |
+| --- | --- |
+| Aba anterior | `Ctrl+PgUp` |
+| Próxima aba | `Ctrl+PgDn` |
+| Ir para a aba N | `Alt+1`…`Alt+9` |
+</Tab>
+</Tabs>
+
+O tooltip de cada aba é o atalho numérico dela.
+
+### O nome da aba é derivado
+
+Você não escolhe. O TYBA resolve nesta ordem:
+
+1. O nome da vista, se for uma [vista especial](#vistas-especiais).
+2. **A pasta da primeira sessão da aba** — é o caso normal.
+3. O título da sessão.
+4. `shell`.
+
+Mudou de pasta no shell, o rótulo acompanha.
+
+## Workspaces
+
+### Trocar de workspace
+
+<Tabs>
+<Tab title="macOS">
+| Ação | Atalho |
+| --- | --- |
+| Workspace anterior | `⌘⇧↑` |
+| Próximo workspace | `⌘⇧↓` |
+| Paleta de sessões | `⌘⇧P` |
+</Tab>
+<Tab title="Windows e Linux">
+| Ação | Atalho |
+| --- | --- |
+| Workspace anterior | `Ctrl+Shift+↑` |
+| Próximo workspace | `Ctrl+Shift+↓` |
+| Paleta de sessões | `Ctrl+Alt+Shift+P` |
+</Tab>
+</Tabs>
+
+Com muitos workspaces abertos, a [paleta de sessões](/pt-br/interface/paleta-de-comandos) ganha do ciclo.
+
+### O menu de contexto
+
+Botão direito num workspace da sidebar — ou o `⋯` que aparece no hover (*Opções da sessão*):
+
+| Item | O que faz |
+| --- | --- |
+| **Renomear sessão** | Abre um diálogo. Renomear **trava** o nome: ele para de seguir a pasta. |
+| **Revisar diff** | Só quando a sessão tem worktree. Abre o [side view](#o-side-view). |
+| **Agrupar em…** | Submenu com os grupos que existem, mais *Novo grupo…*. Escolher o grupo atual desagrupa. |
+| **Remover do grupo** | Só quando já está num grupo. |
+| **Copiar branch** | Só quando a branch é conhecida. |
+| **Copiar diretório** | Só quando o workspace tem pasta. |
+| **Cores** | Uma fileira de 7 cores mais *Sem cor*. |
+| **Mostrar / Ocultar detalhes** | Sobrescreve a preferência global, só para este workspace. |
+| **Encerrar sessão** | Em vermelho. Fecha o workspace. |
+
+<Warning>
+**Encerrar sessão não pergunta nada.** Não há diálogo de confirmação e não há desfazer.
+</Warning>
+
+<Note>
+O workspace de **Configurações** não tem menu de contexto nem preview.
+</Note>
+
+### Cor e grupo
+
+Cor e grupo são só do workspace — a aba não herda nem tem os seus. A cor aparece como um ponto na sidebar e no preview. O grupo vira um cabeçalho dobrável, com um `+` para abrir outra sessão já dentro dele.
+
+Criar grupo é digitar um nome que ainda não existe em *Novo grupo…*. **Nome vazio remove do grupo.**
+
+## O side view
+
+Um painel que vive **ao lado da coluna de abas** — não dentro de uma aba. Hoje ele serve para uma coisa só: **o diff de uma sessão**.
+
+Abre por:
+
+- O botão **Ver alterações** no cabeçalho.
+- **Revisar diff** no menu de contexto do workspace.
+- Os chips **Alterações não commitadas** e **Revisar diff do worktree**.
+
+Arraste o divisor para mudar a proporção — travada entre 10% e 90%, igual aos painéis. O botão de expandir (*Expandir diff*) esconde a coluna do terminal; *Voltar ao split* traz de volta.
+
+Enquanto está aberto, o workspace ganha uma linha filha na sidebar com o título da sessão e um `X` (*Fechar diff*). O `X` do próprio diff é *Fechar revisão*.
+
+<Note>
+É **um por workspace**. Abrir o diff de outra sessão troca o que está ali.
+</Note>
+
+## Vistas especiais
+
+Algumas abas não têm painéis nem terminal — ocupam a aba inteira:
+
+| Vista | Como abre |
+| --- | --- |
+| **Configurações** | Engrenagem na sidebar, menu da conta, paleta, ou `⌘,` / `Ctrl+,` |
+| **Conexões SSH** | Botão no rodapé da sidebar |
+| **Containers** | Ícone do Docker no cabeçalho |
+
+Na vista de Configurações e na de Conexões, a **barra de abas some**.
+
+<Note>
+Containers vive num workspace próprio, de tipo `docker` — ele não se mistura com os seus.
+</Note>
+
+## Workspaces de SSH
+
+Conectar num host cria **um workspace**, que herda do host o **alias** (já travado), a **cor** e o **grupo**.
+
+<Warning>
+**Abrir um Host Group inteiro não faz um workspace por host.** Faz **um só**, com os hosts em painéis lado a lado — é o que dá sentido ao broadcast: digitar uma vez e conferir as N saídas juntas.
+</Warning>
+
+Veja [hosts e grupos](/pt-br/ssh/hosts-e-grupos).
+
+## O que não existe
+
+| | |
+| --- | --- |
+| **Renomear aba** | Não existe. O modelo tem um campo de título, mas **nenhuma parte da interface escreve nele**. O rótulo vem da pasta. |
+| **Reordenar aba** | Não existe. Não há arraste nem comando. |
+| **Menu de contexto na aba** | Não existe. Botão direito numa aba não faz nada. |
+| **Vista de Workspace / Worktrees** | Desligada, marcada **Em breve** — no cabeçalho e na sidebar. |
+| **Side view que não seja diff** | Não existe. Só diff. |
+
+<Note>
+Quer nome próprio? **Renomeie o workspace.** É a única camada que aceita nome seu.
+</Note>
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Tour da interface" icon="map" href="/pt-br/tour-da-interface">
+    O mapa mental inteiro.
+  </Card>
+  <Card title="Split de painéis" icon="columns" href="/pt-br/interface/split-de-paineis">
+    A camada abaixo da aba.
+  </Card>
+  <Card title="Paleta de comandos" icon="command" href="/pt-br/interface/paleta-de-comandos">
+    O jeito rápido de trocar de workspace.
+  </Card>
+  <Card title="Atalhos" icon="keyboard" href="/pt-br/interface/atalhos">
+    A lista inteira, e como remapear.
+  </Card>
+</CardGroup>

@@ -1,0 +1,116 @@
+---
+title: "Platforms"
+description: "TYBA's sandbox does not guarantee the same thing on macOS, Linux and Windows. This page says exactly what, where."
+---
+
+TYBA uses each system's native isolation mechanism. They are not equivalent, and the difference changes what the product promises you.
+
+This page exists so you don't assume on Windows a guarantee that only holds on macOS.
+
+## The summary
+
+| | macOS | Linux | Windows |
+| --- | --- | --- | --- |
+| Mechanism | Seatbelt | bubblewrap + seccomp | Restricted token + Integrity Level Low |
+| Writes outside the worktree | denied | denied | denied |
+| **Reads** | **closed by default** | **closed by default** | **open by default** |
+| Secret protection | everything denied except what is allowed | everything denied except what is allowed | list of known secrets |
+| `sandbox.read_allow` | works | works | inert |
+
+The row that matters is the reads one. The others are the same.
+
+## macOS and Linux: nothing exists until it is allowed
+
+Reads are **denied by default**. The agent does not see the filesystem and is given access to a small set: the worktree, temp, the agent's own directories.
+
+The practical effect is what you expect from a sandbox:
+
+- Your `~/.ssh` is not "forbidden" — it **does not exist** in the agent's world.
+- A repository of yours in another folder does not exist.
+- The `.env` of the project next door does not exist.
+- A secret path nobody anticipated **also does not exist**, because nothing exists by default.
+
+That last point is the real value of the design: the protection does not depend on someone having remembered your secret.
+
+<Note>
+**Content, not metadata.** The agent can check whether a file exists, its size and its date. Only the **content** is denied by default — resolving paths is necessary for any program to work.
+</Note>
+
+**Fail-closed**: if the policy cannot be applied, the agent does not start. There is no silent degradation to "no sandbox".
+
+On Linux, `bubblewrap` is a hard dependency — without it, the core refuses to create agent sessions. Distributions with unprivileged user namespaces disabled refuse the session with an explicit message.
+
+<Note>
+**Codex has its own containment on macOS.** TYBA's Seatbelt does not wrap Codex — nesting the two policies fails on the system. Codex applies its own native Seatbelt per command. It is real containment, but it is not the same one, and restricting Codex's reads to Claude Code's level is still pending work.
+</Note>
+
+## Windows: open by default, with a list of closed secrets
+
+<Warning>
+On Windows, reads are **not** closed by default. The jail contains **writes**. Files of yours that are not on the list below **are readable by the agent**.
+</Warning>
+
+The jail is a restricted token with Integrity Level Low and a synthetic SID per session. It is solid at what it sets out to do: writes are confined to the worktree by ACE, and writing outside is denied. Just like on the other systems, it is fail-closed — if it fails, the agent does not start.
+
+But the read model is inverted. Instead of denying everything and opening exceptions, it leaves things open and closes a list of known secrets:
+
+```
+~/.ssh                   ~/.aws                ~/.gnupg
+~/.kube                  ~/.config/gcloud      ~/.config/gh
+~/.git-credentials       ~/.netrc              ~/.npmrc
+~/.pypirc                ~/.docker/config.json ~/.cargo/credentials
+```
+
+These twelve, plus TYBA's own data directory, are labeled to deny reads — recursively, file by file.
+
+### What this means in practice
+
+**What is on the list is protected.** Your SSH keys and cloud credentials are just as inaccessible on Windows as on macOS.
+
+**What is not on the list, the agent reads.** For example:
+
+```
+~/.terraformrc          ~/.config/fly           ~/.m2/settings.xml
+~/.kaggle               ~/.Rprofile             ~/.databrickscfg
+```
+
+And, more important than any configuration file:
+
+- **The `.env` of any other project of yours.**
+- **Any other repository on your machine.**
+- Your Documents, your Desktop.
+
+On macOS and Linux, none of that exists for the agent. On Windows, all of it is readable.
+
+### Why it is like this
+
+Deny-by-default reads on Windows would require AppContainer, and TYBA chose not to use it — the compatibility cost would make the agents the product exists to run unviable. The restricted token is the mechanism that gets the agent to start.
+
+It is an accepted tradeoff, not an oversight. But it changes the guarantee, and you deserve to know that before installing, not after.
+
+### What to do about it
+
+If your threat model is *"I want to run an agent without it reading my keys"*, Windows delivers.
+
+If it is *"I want to run an agent such that it sees nothing beyond the current project"*, Windows **does not** deliver today. Use macOS or Linux.
+
+## `read_allow` on Windows
+
+The `sandbox.read_allow` field from the [user config](/en/reference/user-config) has no effect on Windows. It is accepted and validated, but discarded.
+
+Nothing is lost: since reads are already open, everything it could grant is already granted. And what it cannot grant — the secrets on the list — it cannot grant on macOS either, where denials beat any permission.
+
+## What holds the same everywhere
+
+These guarantees do not depend on the platform:
+
+- **An agent pushing to `main`/`master` is refused by the core.** Always.
+- **The agent does not have your credentials.** Push, fetch and merge are executed by TYBA, outside the jail. The agent's session never had an authenticated network.
+- **Shared refs only in the `refs/heads/tyba/` namespace.** A compromised agent does not move your local `main`.
+- **The agent's commits are not signed.** They are born in a disposable worktree and reviewed by you before anything leaves the machine.
+- **Every action goes through the approval gate**, with the same [risk classification](/en/security/risk-classification).
+
+## See also
+
+- [Risk classification](/en/security/risk-classification) — what needs your approval
+- [User configuration](/en/reference/user-config) — `sandbox.read_allow`

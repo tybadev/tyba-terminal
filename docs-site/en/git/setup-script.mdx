@@ -1,0 +1,132 @@
+---
+title: "`.tyba/setup.sh`"
+sidebarTitle: ".tyba/setup.sh"
+description: "The script that prepares a freshly created worktree — and why it asks for your permission again on every changed byte."
+---
+
+A new worktree is a folder empty of everything that isn't versioned. No `node_modules`, no `.env`, no database. An agent that starts there and runs the project finds nothing.
+
+`.tyba/setup.sh` is the answer:
+
+```
+<repo-root>/.tyba/setup.sh
+```
+
+TYBA does not create it; not having one is the normal case. It is **versioned along with the project** — and that is exactly why it needs your permission.
+
+## When it runs
+
+Once, when the worktree is created, right after `git worktree add` and before you start using the session.
+
+- **`cwd` is the worktree**, not the main repo.
+- It runs on a background thread. **It never blocks session creation.**
+- If it fails, the worktree stays up. The failure becomes a log — TYBA keeps the script's output (with the tail of the log, the last 400 characters, when it errors) and the session moves on.
+
+<Note>
+With no `.tyba/setup.sh` in the worktree, nothing happens — no warning, no error. Having no script is the normal case.
+</Note>
+
+## A new script counts for nothing until you approve it
+
+Same idea as [`.tyba/config.toml`](/en/reference/repo-config), for the same concrete reason: **you clone other people's repositories.** A versioned `.tyba/setup.sh` with automatic effect would be arbitrary code execution triggered by opening a project.
+
+So the worktree creation dialog shows you the **whole** script, with a toggle. Without the toggle on, the file may as well not exist.
+
+Consent is tied to the **SHA-256 of the content**, stored locally by `(repo root, hash)`:
+
+<Steps>
+<Step title="TYBA hashes the exact content">
+A SHA-256 of the bytes.
+</Step>
+<Step title="You read the script in the dialog and decide">
+The content appears on screen. It is not a summary — it is the script.
+</Step>
+<Step title="Your 'yes' applies to that hash, and only that one">
+As long as the script doesn't change, it holds, and the dialog comes with the toggle already on: *"setup.sh already allowed for this repo."*
+</Step>
+<Step title="One different byte kills the consent">
+You edited it, a `git pull` touched it, you switched branches — the hash changes, the consent dies, and TYBA asks again.
+</Step>
+</Steps>
+
+<Note>
+What executes are the **consented bytes**, handed to `sh` on stdin — not the file on disk. Swapping the file between your "yes" and the execution does not change what runs.
+</Note>
+
+<Warning>
+**The script runs outside the sandbox.** Unlike the agent session, which is born inside the jail, `.tyba/setup.sh` executes as an ordinary process on your machine — no jail, with the disk and network access your user has. There is a TODO in the core to route it through the sandbox; until then, this is code from a repository that may not be yours, running loose.
+
+**Read the script before flipping the toggle.** It is the only barrier there is.
+</Warning>
+
+## The environment it gets
+
+The script is the repo's code, not yours. It does not inherit your shell. The environment is built from scratch:
+
+| Variable | Where it comes from |
+| --- | --- |
+| `HOME` `USER` `LANG` `TMPDIR` `SHELL` | from your environment, when they exist |
+| `PATH` | from your **login shell** — not from the app's process |
+| `TYBA_WORKTREE` | absolute path of the freshly created worktree |
+
+And nothing else. Your `AWS_SECRET_ACCESS_KEY`, your tokens, your `DATABASE_URL` are not there.
+
+<Note>
+The `agent.env.allow` from [`.tyba/config.toml`](/en/reference/repo-config) **does not apply here**. That allowlist belongs to the agent; the setup gets only the baseline above. If the script needs a secret, it has to go fetch it (from a file, from a keychain) — it will not arrive in a variable.
+</Note>
+
+The `PATH` coming from the login shell matters in practice: on macOS the app may be born from launchd, with a minimal `PATH` that has no `bun`, no `mise` and no `/opt/homebrew/bin`. TYBA resolves your login `PATH` and that is the one the script sees.
+
+## A real script
+
+```sh title=".tyba/setup.sh"
+#!/bin/sh
+set -e
+
+# 1. The .env is not versioned — the worktree is born without it.
+#    Symlink to the main repo's: one file, one truth.
+if [ -f "$HOME/projects/api/.env" ]; then
+  ln -sf "$HOME/projects/api/.env" "$TYBA_WORKTREE/.env"
+fi
+
+# 2. Dependencies. The worktree has the lockfile; it has no node_modules.
+bun install --frozen-lockfile
+
+# 3. A database per worktree: two sessions can't fight over the same one.
+#    The name comes from the path itself, which is unique per worktree.
+DB="tyba_$(basename "$TYBA_WORKTREE" | tr -c 'a-zA-Z0-9' '_')"
+createdb "$DB" 2>/dev/null || true
+echo "DATABASE_URL=postgres://localhost/$DB" >> "$TYBA_WORKTREE/.env.local"
+bun run migrate
+```
+
+Those are the three use cases: **bring in what isn't versioned**, **install what isn't versioned**, **isolate what can't be shared**.
+
+<Note>
+Nothing cleans up what the script created. The database in the example is still there after the worktree is removed — if that matters to your project, the `dropdb` is your problem.
+</Note>
+
+## Edited the script? Commit it
+
+The dialog reads the `.tyba/setup.sh` from **your working copy**, and it is that copy's hash your "yes" stamps. What runs is the worktree's `.tyba/setup.sh` — which was born at the `base_sha`, that is, at the **committed** version.
+
+If you edited the script and didn't commit, the two hashes differ, and the result is silent: the setup simply doesn't run. Commit the change and create the worktree again.
+
+## What does not exist
+
+- **Running the setup again in an existing session.** It is worktree creation, or nothing.
+- **`.tyba/setup.ps1` or an equivalent.** The contract is `sh` with the content on stdin.
+- **A timeout.** A script that hangs stays hung; the session comes up either way.
+- **A setup logs panel.** The result comes out as a session event, not as a tab.
+- **Consent that travels.** It is yours, local, per machine. A new machine asks again — that is the intended behavior.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Worktrees" icon="git-branch" href="/en/git/worktrees">
+    Where the script runs and when that folder is born.
+  </Card>
+  <Card title=".tyba/config.toml" icon="sliders" href="/en/reference/repo-config">
+    The repo's other file that asks for consent by hash.
+  </Card>
+</CardGroup>
