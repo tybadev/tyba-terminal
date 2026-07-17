@@ -518,6 +518,7 @@ export interface HostInput {
   group_id?: string | null;
   color?: string | null;
   notes?: string | null;
+  tunnels?: Tunnel[];
 }
 
 export interface HostGroupInput {
@@ -528,9 +529,10 @@ export interface HostGroupInput {
 
 export const listHosts = () => invoke<Host[]>("list_hosts");
 export const listHostGroups = () => invoke<HostGroup[]>("list_host_groups");
-export const createHost = (input: HostInput) =>
-  invoke<Host>("create_host", { input });
-export const updateHost = (host: Host) => invoke<Host>("update_host", { host });
+export const createHost = (input: HostInput, confirmed = false) =>
+  invoke<Host>("create_host", { input, confirmed });
+export const updateHost = (host: Host, confirmed = false) =>
+  invoke<Host>("update_host", { host, confirmed });
 export const deleteHost = (id: string) => invoke<void>("delete_host", { id });
 export const createHostGroup = (input: HostGroupInput) =>
   invoke<HostGroup>("create_host_group", { input });

@@ -5,12 +5,12 @@ import {
   ArrowsInSimple,
   ArrowUUpLeft,
   Plus,
-  ShieldWarning,
   Trash,
   X,
 } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { RiskyTunnelConfirm } from "@/components/RiskyTunnelConfirm";
 import type { Session, SessionTunnel, Tunnel, TunnelKind } from "@/lib/ipc";
 import {
   closeSessionTunnel,
@@ -18,6 +18,7 @@ import {
   onSessionTunnels,
   openSessionTunnel,
 } from "@/lib/ipc";
+import { BLANK_TUNNEL, describeTunnel, tunnelFlag } from "@/lib/tunnels";
 
 interface Props {
   session: Session;
@@ -25,20 +26,6 @@ interface Props {
   expanded: boolean;
   onToggleExpand: () => void;
   onClose: () => void;
-}
-
-const BLANK: Tunnel = {
-  kind: "local",
-  listen_port: 0,
-  listen_host: null,
-  target_host: "localhost",
-  target_port: null,
-};
-
-function describe(t: Tunnel): string {
-  const bind = t.listen_host ?? "127.0.0.1";
-  if (t.kind === "dynamic") return `${bind}:${t.listen_port} → SOCKS`;
-  return `${bind}:${t.listen_port} → ${t.target_host}:${t.target_port}`;
 }
 
 function dotClass(t: SessionTunnel): string {
@@ -56,7 +43,7 @@ export function TunnelsView({
 }: Props) {
   const { t } = useTranslation();
   const [tunnels, setTunnels] = useState<SessionTunnel[]>([]);
-  const [draft, setDraft] = useState<Tunnel>(BLANK);
+  const [draft, setDraft] = useState<Tunnel>(BLANK_TUNNEL);
   const [adding, setAdding] = useState(false);
   const [pendingRisky, setPendingRisky] = useState<Tunnel | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -83,7 +70,7 @@ export function TunnelsView({
       setError(null);
       try {
         await openSessionTunnel(session.id, tunnel, confirmed);
-        setDraft(BLANK);
+        setDraft(BLANK_TUNNEL);
         setAdding(false);
         setPendingRisky(null);
         refresh();
@@ -163,14 +150,10 @@ export function TunnelsView({
                   className={`size-1.5 shrink-0 rounded-full ${dotClass(tn)}`}
                 />
                 <span className="shrink-0 font-mono text-[11px] text-tyba-text-muted">
-                  {tn.kind === "local"
-                    ? "-L"
-                    : tn.kind === "remote"
-                      ? "-R"
-                      : "-D"}
+                  {tunnelFlag(tn)}
                 </span>
                 <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-tyba-text">
-                  {describe(tn)}
+                  {describeTunnel(tn)}
                 </span>
                 <button
                   onClick={() => void remove(tn.id)}
@@ -199,37 +182,14 @@ export function TunnelsView({
         </ul>
 
         {pendingRisky && (
-          <div className="mt-2 rounded-[5px] border border-tyba-red/50 bg-tyba-red/5 p-2">
-            <div className="flex items-center gap-1.5">
-              <ShieldWarning size={13} className="shrink-0 text-tyba-red" />
-              <span className="text-[12px] text-tyba-text">
-                {t("tunnelsConfirmTitle")}
-              </span>
-            </div>
-            <p className="mt-1 text-[11px] text-tyba-text-muted">
-              {pendingRisky.kind === "remote"
-                ? t("tunnelsConfirmRemote", {
-                    host: hostAlias,
-                    port: pendingRisky.listen_port,
-                  })
-                : t("tunnelsConfirmDynamic", { host: hostAlias })}
-            </p>
-            <div className="mt-2 flex gap-1.5">
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={() => void submit(pendingRisky, true)}
-              >
-                {t("tunnelsConfirmYes")}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setPendingRisky(null)}
-              >
-                {t("tunnelsConfirmNo")}
-              </Button>
-            </div>
+          <div className="mt-2">
+            <RiskyTunnelConfirm
+              tunnels={[pendingRisky]}
+              host={hostAlias}
+              confirmLabel={t("tunnelsConfirmYes")}
+              onConfirm={() => void submit(pendingRisky, true)}
+              onCancel={() => setPendingRisky(null)}
+            />
           </div>
         )}
 
@@ -292,7 +252,7 @@ export function TunnelsView({
                     max={65535}
                     required
                     placeholder={t("tunnelsTargetPort")}
-                    value={draft.target_port ?? ""}
+                    value={draft.target_port || ""}
                     onChange={(e) =>
                       setDraft({ ...draft, target_port: Number(e.target.value) })
                     }
