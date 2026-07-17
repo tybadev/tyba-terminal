@@ -164,6 +164,19 @@ impl SessionManager {
         ))
     }
 
+    fn baked_tunnel_args(&self, id: SessionId) -> Vec<String> {
+        if crate::ssh::tunnel::control_master_available() {
+            return Vec::new();
+        }
+        self.store
+            .load_session_tunnels(id)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|t| t.tunnel.cli_args().ok())
+            .flatten()
+            .collect()
+    }
+
     fn preferred_editor_command(&self) -> Option<String> {
         let id = self.store.get_setting(EDITOR_PREF_KEY).ok().flatten()?;
         crate::editor::env_command(&id)
@@ -348,6 +361,9 @@ impl SessionManager {
     ) -> Result<Session, PtyError> {
         let mut cmd = CommandBuilder::new("ssh");
         cmd.arg("-t");
+        for arg in self.baked_tunnel_args(id) {
+            cmd.arg(arg);
+        }
         cmd.arg(alias);
         cmd.arg(self.tmux_wrap(id)?);
         if let Some(cwd) = cwd {

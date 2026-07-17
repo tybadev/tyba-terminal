@@ -15,6 +15,7 @@ const host = (over: Partial<Host>): Host => ({
   color: null,
   notes: null,
   position: 0,
+  tunnels: [],
   created_at: "2026-07-16T00:00:00Z",
   last_connected_at: null,
   ...over,

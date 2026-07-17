@@ -448,9 +448,56 @@ export interface Host {
   color: string | null;
   notes: string | null;
   position: number;
+  tunnels: Tunnel[];
   created_at: string;
   last_connected_at: string | null;
 }
+
+export type TunnelKind = "local" | "remote" | "dynamic";
+
+export interface Tunnel {
+  kind: TunnelKind;
+  listen_port: number;
+  listen_host: string | null;
+  target_host: string | null;
+  target_port: number | null;
+}
+
+export type TunnelState =
+  | { state: "opening" }
+  | { state: "live" }
+  | { state: "error"; detail: string };
+
+export interface SessionTunnel extends Tunnel {
+  id: string;
+  session_id: SessionId;
+  state: TunnelState;
+  created_at: string;
+}
+
+export const listSessionTunnels = (sessionId: SessionId) =>
+  invoke<SessionTunnel[]>("list_session_tunnels", { sessionId });
+
+export const openSessionTunnel = (
+  sessionId: SessionId,
+  tunnel: Tunnel,
+  confirmed: boolean,
+) =>
+  invoke<SessionTunnel>("open_session_tunnel", { sessionId, tunnel, confirmed });
+
+export const closeSessionTunnel = (sessionId: SessionId, tunnelId: string) =>
+  invoke<void>("close_session_tunnel", { sessionId, tunnelId });
+
+export const openTunnelsPanel = (id: SessionId) =>
+  invoke<void>("open_tunnels_panel", { id });
+
+export const onSessionTunnels = (
+  handler: (p: { session_id: SessionId; tunnels: SessionTunnel[] }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ session_id: SessionId; tunnels: SessionTunnel[] }>(
+    "session-tunnels",
+    (e) => handler(e.payload),
+  );
 
 export interface HostGroup {
   id: string;

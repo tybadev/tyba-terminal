@@ -20,6 +20,8 @@ import { RISK_DOT, RISK_LABEL, canAlwaysAllow } from "@/lib/notifications";
 import {
   onApprovalRequested,
   onApprovalResolved,
+  onSessionTunnels,
+  openTunnelsPanel,
   resolveApproval,
   sessionMarkSeen,
   type ApprovalDecision,
@@ -88,6 +90,16 @@ export function NotificationToaster({
   const [confirmingId, setConfirmingId] = useState<number | null>(null);
   const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
   const agentReadyTimers = useRef(new Map<SessionId, ReturnType<typeof setTimeout>>());
+  const [failedTunnels, setFailedTunnels] = useState<
+    Record<string, { sessionId: SessionId; label: string; detail: string }>
+  >({});
+
+  const dismissTunnel = (id: string) =>
+    setFailedTunnels((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
 
   const [outcomes, setOutcomes] = useState<OutcomeToast[]>([]);
   const outcomeTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -258,6 +270,25 @@ export function NotificationToaster({
       void p.then((un) => (disposed ? un() : unlisteners.push(un)));
     };
     track(
+      onSessionTunnels((p) => {
+        setFailedTunnels((prev) => {
+          const next = { ...prev };
+          for (const tn of p.tunnels) {
+            if (tn.state.state === "error") {
+              next[tn.id] = {
+                sessionId: p.session_id,
+                label: `${tn.listen_host ?? "127.0.0.1"}:${tn.listen_port}`,
+                detail: tn.state.detail,
+              };
+            } else {
+              delete next[tn.id];
+            }
+          }
+          return next;
+        });
+      }),
+    );
+    track(
       onApprovalRequested((request) => {
         setToasts((prev) => addApprovalToast(prev, request));
         const timer = setTimeout(() => dismiss(request.id), AUTO_DISMISS_MS);
@@ -372,6 +403,50 @@ export function NotificationToaster({
           </div>
         </Toast>
       ))}
+      {Object.entries(failedTunnels).map(([id, f]) => (
+        <Toast
+          key={`tunnel:${id}`}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) dismissTunnel(id);
+          }}
+        >
+          <div className="min-w-0 flex-1">
+            <ToastTitle>{t("tunnelFailedTitle", { tunnel: f.label })}</ToastTitle>
+            <ToastDescription>{f.detail}</ToastDescription>
+            <SessionDeepLink
+              label={sessionTitle(f.sessionId)}
+              onClick={() => onGoToSession(f.sessionId)}
+            />
+            <div className="mt-2 flex flex-wrap gap-2">
+              <ToastAction altText={t("tunnelFailedAction")} asChild>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    onGoToSession(f.sessionId);
+                    void openTunnelsPanel(f.sessionId).catch(() => {});
+                    dismissTunnel(id);
+                  }}
+                  className="h-6 rounded-[4px] px-2.5 text-[11px]"
+                >
+                  {t("tunnelFailedAction")}
+                </Button>
+              </ToastAction>
+              <ToastAction altText={t("dismiss")} asChild>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => dismissTunnel(id)}
+                  className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
+                >
+                  {t("dismiss")}
+                </Button>
+              </ToastAction>
+            </div>
+          </div>
+        </Toast>
+      ))}
+
       {agentReadySessionIds.map((sessionId) => (
         <Toast
           key={`agent-ready:${sessionId}`}

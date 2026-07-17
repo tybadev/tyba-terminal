@@ -257,6 +257,7 @@ pub const VIEW_SETTINGS: &str = "settings";
 pub const VIEW_WORKSPACE: &str = "workspace";
 pub const VIEW_CONNECTIONS: &str = "connections";
 pub const VIEW_DIFF_PREFIX: &str = "diff:";
+pub const VIEW_TUNNELS_PREFIX: &str = "tunnels:";
 pub const DOCKER_WORKSPACE_NAME: &str = "Docker";
 pub const FALLBACK_WORKSPACE_NAME: &str = "tyba";
 
@@ -266,8 +267,18 @@ pub fn diff_view(session: SessionId) -> String {
     format!("{VIEW_DIFF_PREFIX}{session}")
 }
 
+pub fn tunnels_view(session: SessionId) -> String {
+    format!("{VIEW_TUNNELS_PREFIX}{session}")
+}
+
 fn diff_view_session(view: &str) -> Option<SessionId> {
     view.strip_prefix(VIEW_DIFF_PREFIX)
+        .and_then(|s| Uuid::parse_str(s).ok())
+}
+
+fn side_view_session(view: &str) -> Option<SessionId> {
+    view.strip_prefix(VIEW_DIFF_PREFIX)
+        .or_else(|| view.strip_prefix(VIEW_TUNNELS_PREFIX))
         .and_then(|s| Uuid::parse_str(s).ok())
 }
 
@@ -1327,7 +1338,7 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
             let side_view = w
                 .side_view
                 .clone()
-                .filter(|view| diff_view_session(view).is_none_or(|s| valid.contains(&s)));
+                .filter(|view| side_view_session(view).is_none_or(|s| valid.contains(&s)));
             Some(Workspace {
                 id: ws_id,
                 name: w.name.clone(),
@@ -1915,6 +1926,29 @@ mod tests {
         let state = mgr.state();
         assert_eq!(state.workspaces.len(), 1);
         assert_eq!(state.workspaces[0].side_view, None);
+    }
+
+    #[test]
+    fn painel_de_tuneis_de_sessao_morta_nao_volta_no_boot() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let dead = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("b", None, dead).unwrap();
+            mgr.open_workspace_side_view(dead, &tunnels_view(dead))
+                .unwrap();
+        }
+
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load(&HashSet::new());
+
+        for w in &mgr.state().workspaces {
+            assert_eq!(
+                w.side_view, None,
+                "o filtro tem que enxergar o prefixo tunnels: também — só o diff: \
+                 deixaria um painel de túneis pendurado numa sessão que não existe mais"
+            );
+        }
     }
 
     #[test]

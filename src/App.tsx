@@ -9,6 +9,7 @@ import {
   FolderOpen,
   GearSix,
   GitBranch,
+  TreeStructure,
   GitDiff,
   HardDrives,
   Keyboard,
@@ -80,6 +81,7 @@ import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
 import { WorktreesView } from "./components/WorktreesView";
 import { DiffView } from "./components/DiffView";
+import { TunnelsView } from "./components/TunnelsView";
 import { ForgePanel } from "./components/ForgePanel";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
 import { DiffStat } from "./components/DiffStat";
@@ -127,6 +129,7 @@ import {
   onSessionCwd,
   onSessionStatus,
   openDiffTab,
+  openTunnelsPanel,
   openViewTab,
   paneSession,
   renameWorkspace,
@@ -583,6 +586,18 @@ export default function App() {
         : null,
     [sideView, sessionById],
   );
+  const tunnelsTarget = useMemo(
+    () =>
+      sideView?.startsWith("tunnels:")
+        ? (sessionById.get(sideView.slice(8)) ?? null)
+        : null,
+    [sideView, sessionById],
+  );
+  const tunnelsHostAlias = useMemo(() => {
+    const kind = tunnelsTarget?.kind;
+    if (kind?.type !== "ssh") return "";
+    return sshHosts.find((h) => h.id === kind.host_id)?.alias ?? "";
+  }, [tunnelsTarget, sshHosts]);
   const sideExpanded = Boolean(sideView && activeWorkspace?.side_expanded);
   const sideRatio = activeWorkspace?.side_ratio ?? 0.5;
 
@@ -2720,6 +2735,25 @@ export default function App() {
             </Tooltip>
           )}
 
+          {activeId && activeSession?.kind.type === "ssh" && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={t("tunnelsAction")}
+                  onClick={() =>
+                    void openTunnelsPanel(activeId).catch(() => {})
+                  }
+                  className="size-6 rounded-[4px] text-tyba-text-faint hover:text-tyba-text"
+                >
+                  <TreeStructure size={16} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{t("tunnelsAction")}</TooltipContent>
+            </Tooltip>
+          )}
+
           {gitTone && activeId && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -3367,7 +3401,31 @@ export default function App() {
                       </div>
                     )}
                     <div className="flex min-h-0 min-w-0 flex-1">
-                      {sideTarget ? (
+                      {sideView.startsWith("tunnels:") ? (
+                        tunnelsTarget ? (
+                          <TunnelsView
+                            key={tunnelsTarget.id}
+                            session={tunnelsTarget}
+                            hostAlias={tunnelsHostAlias}
+                            expanded={sideExpanded}
+                            onToggleExpand={() =>
+                              void setSideViewExpanded(
+                                activeWorkspace.id,
+                                !sideExpanded,
+                              ).catch(() => {})
+                            }
+                            onClose={() =>
+                              void closeSideView(activeWorkspace.id).catch(
+                                () => {},
+                              )
+                            }
+                          />
+                        ) : (
+                          <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
+                            {t("tunnelsSessionGone")}
+                          </div>
+                        )
+                      ) : sideTarget ? (
                         <DiffView
                           key={sideTarget.id}
                           session={sideTarget}
