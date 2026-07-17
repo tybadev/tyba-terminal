@@ -75,6 +75,16 @@ jobs:
       - run: cargo clippy -- -D warnings
         working-directory: src-tauri
       - run: cargo test
+        if: matrix.os != 'windows-latest'
+        working-directory: src-tauri
+
+      # Windows compila e linka, mas o binário de teste não SOBE
+      # (STATUS_ENTRYPOINT_NOT_FOUND — issue #163), então nenhum teste jamais
+      # rodou lá. `--no-run` cobre o que dá para cobrir hoje e é deliberadamente
+      # menos que as outras plataformas. Quando a #163 fechar: voltar para
+      # `cargo test` e apagar estes dois `if`.
+      - run: cargo test --no-run
+        if: matrix.os == 'windows-latest'
         working-directory: src-tauri
 
       # Same reasoning as `bun audit`, on the Rust side. Exceptions live in
