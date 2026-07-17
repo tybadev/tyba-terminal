@@ -105,6 +105,13 @@ interface Props {
   framed: boolean;
   rect: PaneRectStyle | null;
   exited?: boolean;
+  /**
+   * O PTY morrer não encerra esta sessão — o core reata. Quem vive no host
+   * (SSH) some da tela quando o cano cai e volta segundos depois; dizer
+   * "sessão encerrada" aí é o oposto do que aconteceu, justo no instante em
+   * que o dono teme ter perdido trabalho.
+   */
+  reattaches?: boolean;
   /** Sessão SSH: o handshake demora e a tela fica preta até o servidor falar. */
   connecting?: boolean;
   connection?: ConnectionState;
@@ -125,6 +132,7 @@ export function TerminalView({
   framed,
   rect,
   exited,
+  reattaches,
   connecting,
   connection,
   onReconnect,
@@ -149,6 +157,8 @@ export function TerminalView({
   const onPasteRef = useRef(onPaste);
   onPasteRef.current = onPaste;
   const showExitBannerRef = useRef<(() => void) | null>(null);
+  const reattachesRef = useRef(false);
+  reattachesRef.current = Boolean(reattaches);
   const [menuHasSelection, setMenuHasSelection] = useState(false);
   const [menuMouseMode, setMenuMouseMode] = useState(false);
 
@@ -266,7 +276,7 @@ export function TerminalView({
     let exitBannerShown = false;
     const showExitBanner = () => {
       void attached.then(() => {
-        if (disposed || exitBannerShown) return;
+        if (disposed || exitBannerShown || reattachesRef.current) return;
         exitBannerShown = true;
         term.write(`\r\n\x1b[2m${i18n.t("sessionEnded")}\x1b[0m\r\n`);
       });
