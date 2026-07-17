@@ -82,9 +82,9 @@ Full threat model and command risk classification: [docs/SECURITY.md](docs/SECUR
 
 ## Install
 
-**macOS 11+** — download the `.dmg` for your chip (Apple Silicon or Intel) from [Releases](https://github.com/tybadev/tyba-terminal/releases). Signed and notarized.
+**macOS 11+** — download the `.dmg` for your chip (Apple Silicon or Intel) from the [download page](https://www.tyba.dev/en/download). Signed and notarized.
 
-**Linux** — download the `.deb`, `.rpm` or `.AppImage` from [Releases](https://github.com/tybadev/tyba-terminal/releases):
+**Linux** — download the `.deb`, `.rpm` or `.AppImage` from the [download page](https://www.tyba.dev/en/download):
 
 ```bash
 sudo apt install ./Tyba_0.1.2_amd64.deb    # Debian / Ubuntu
@@ -94,7 +94,7 @@ yay -S tyba-bin                            # Arch (AUR)
 
 `bubblewrap` is a hard dependency, not a suggestion: without it the core refuses to spawn agents (fail-closed) and TYBA is just a terminal. The `.deb`/`.rpm`/AUR packages pull it in for you; with the AppImage, install it yourself (`apt install bubblewrap`). If your distro ships unprivileged user namespaces disabled (some hardened kernels, Debian with `kernel.unprivileged_userns_clone=0`), agent sessions are refused with an actionable message — the sandbox never silently degrades.
 
-**Windows** — download the `.exe` (installer) or `.msi` (managed install) from [Releases](https://github.com/tybadev/tyba-terminal/releases). The binary is not signed yet: SmartScreen will warn — *More info → Run anyway*. The Windows jail confines writes and denies known secrets; reads are otherwise open — read [the platform docs](https://docs.tyba.dev/en/security/platforms) before relying on it.
+**Windows** — download the `.exe` (installer) or `.msi` (managed install) from the [download page](https://www.tyba.dev/en/download). The binary is not signed yet: SmartScreen will warn — *More info → Run anyway*. The Windows jail confines writes and denies known secrets; reads are otherwise open — read [the platform docs](https://docs.tyba.dev/en/security/platforms) before relying on it.
 
 Agents themselves are not bundled: install [Claude Code](https://claude.com/claude-code) or [Codex](https://developers.openai.com/codex/cli) separately and TYBA picks them up from your `PATH`.
 

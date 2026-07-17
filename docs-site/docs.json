@@ -112,7 +112,20 @@
               "pt-br/configuracao/repositorio"
             ]
           }
-        ]
+        ],
+        "navbar": {
+          "links": [
+            {
+              "label": "GitHub",
+              "href": "https://github.com/tybadev/tyba-terminal"
+            }
+          ],
+          "primary": {
+            "type": "button",
+            "label": "Download",
+            "href": "https://www.tyba.dev/pt-br/download"
+          }
+        }
       },
       {
         "language": "en",
@@ -210,7 +223,20 @@
               "en/reference/repo-config"
             ]
           }
-        ]
+        ],
+        "navbar": {
+          "links": [
+            {
+              "label": "GitHub",
+              "href": "https://github.com/tybadev/tyba-terminal"
+            }
+          ],
+          "primary": {
+            "type": "button",
+            "label": "Download",
+            "href": "https://www.tyba.dev/en/download"
+          }
+        }
       },
       {
         "language": "es",
@@ -308,7 +334,20 @@
               "es/referencia/config-de-repo"
             ]
           }
-        ]
+        ],
+        "navbar": {
+          "links": [
+            {
+              "label": "GitHub",
+              "href": "https://github.com/tybadev/tyba-terminal"
+            }
+          ],
+          "primary": {
+            "type": "button",
+            "label": "Download",
+            "href": "https://www.tyba.dev/download"
+          }
+        }
       }
     ]
   },
