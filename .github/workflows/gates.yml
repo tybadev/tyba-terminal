@@ -48,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -75,6 +75,16 @@ jobs:
       - run: cargo clippy -- -D warnings
         working-directory: src-tauri
       - run: cargo test
+        if: matrix.os != 'windows-latest'
+        working-directory: src-tauri
+
+      # Windows compila e linka, mas o binário de teste não SOBE
+      # (STATUS_ENTRYPOINT_NOT_FOUND — issue #163), então nenhum teste jamais
+      # rodou lá. `--no-run` cobre o que dá para cobrir hoje e é deliberadamente
+      # menos que as outras plataformas. Quando a #163 fechar: voltar para
+      # `cargo test` e apagar estes dois `if`.
+      - run: cargo test --no-run
+        if: matrix.os == 'windows-latest'
         working-directory: src-tauri
 
       # Same reasoning as `bun audit`, on the Rust side. Exceptions live in
