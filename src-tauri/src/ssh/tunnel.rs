@@ -134,6 +134,16 @@ impl Tunnel {
         self.validate()?;
         Ok(vec![self.kind.flag().to_string(), self.spec(':')])
     }
+
+    fn exposure(&self) -> (TunnelKind, &str, u16, Option<&str>, Option<u16>) {
+        (
+            self.kind,
+            self.bind_address(),
+            self.listen_port,
+            self.target_host.as_deref(),
+            self.target_port,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +188,11 @@ impl TunnelStates {
             }
         }
     }
+}
+
+pub fn added_risky_tunnel<'a>(prev: &[Tunnel], next: &'a [Tunnel]) -> Option<&'a Tunnel> {
+    next.iter()
+        .find(|t| t.kind.needs_confirmation() && !prev.iter().any(|p| p.exposure() == t.exposure()))
 }
 
 pub fn control_master_available() -> bool {
@@ -553,6 +568,74 @@ mod tests {
              vale — este eixo NÃO é o reach() do ADR, onde -D anda com -R"
         );
         drop(squatter);
+    }
+
+    #[test]
+    fn tunel_de_host_r_novo_exige_confirmacao() {
+        let novo = remote(8000);
+        assert_eq!(
+            added_risky_tunnel(&[], std::slice::from_ref(&novo)),
+            Some(&novo),
+            "salvar o cadastro com -R novo é criar o túnel: o gate do ADR \
+             risco-pela-direcao vale no create/update_host igual vale no \
+             open_session_tunnel — sem isto a UI do cadastro vira bypass"
+        );
+    }
+
+    #[test]
+    fn tunel_de_host_r_ja_salvo_nao_repergunta() {
+        let salvo = remote(8000);
+        assert_eq!(
+            added_risky_tunnel(std::slice::from_ref(&salvo), std::slice::from_ref(&salvo)),
+            None,
+            "o dono já disse sim na criação; reperguntar a cada edição de \
+             cor/nota treina o clique automático — mesma regra do reattach"
+        );
+    }
+
+    #[test]
+    fn tunel_de_host_l_novo_passa_sem_gate() {
+        assert_eq!(added_risky_tunnel(&[], &[local(5432)]), None);
+    }
+
+    #[test]
+    fn remover_tunel_nunca_pergunta() {
+        assert_eq!(added_risky_tunnel(&[remote(8000)], &[]), None);
+    }
+
+    #[test]
+    fn bind_implicito_e_explicito_sao_a_mesma_exposicao() {
+        let salvo = remote(8000);
+        let explicito = Tunnel {
+            listen_host: Some("127.0.0.1".into()),
+            ..remote(8000)
+        };
+        assert_eq!(
+            added_risky_tunnel(std::slice::from_ref(&salvo), &[explicito]),
+            None,
+            "a comparação é por exposição (kind, bind efetivo, portas, alvo), \
+             não por igualdade de struct: None e Some(127.0.0.1) são o mesmo \
+             forward, e campo cosmético futuro no Tunnel não pode reperguntar \
+             um -R já aprovado — gate que repergunta à toa treina o Sim \
+             automático"
+        );
+    }
+
+    #[test]
+    fn d_novo_ao_lado_de_r_antigo_e_o_que_gateia() {
+        let antigo = remote(8000);
+        let novo_d = Tunnel {
+            kind: TunnelKind::Dynamic,
+            listen_port: 1080,
+            listen_host: None,
+            target_host: None,
+            target_port: None,
+        };
+        let next = vec![antigo.clone(), novo_d.clone()];
+        assert_eq!(
+            added_risky_tunnel(std::slice::from_ref(&antigo), &next),
+            Some(&novo_d)
+        );
     }
 
     #[test]

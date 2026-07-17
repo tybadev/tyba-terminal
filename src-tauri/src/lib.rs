@@ -590,10 +590,27 @@ fn list_host_groups(
     state.store.load_host_groups().map_err(store_err)
 }
 
+fn gate_new_risky_tunnels(
+    prev: &[crate::ssh::tunnel::Tunnel],
+    next: &[crate::ssh::tunnel::Tunnel],
+    confirmed: Option<bool>,
+) -> Result<(), crate::error::AppError> {
+    if confirmed == Some(true) {
+        return Ok(());
+    }
+    match crate::ssh::tunnel::added_risky_tunnel(prev, next) {
+        Some(t) => Err(crate::error::AppError::new("ssh.tunnel_needs_confirmation")
+            .with("kind", t.kind.flag())
+            .with("port", t.listen_port.to_string())),
+        None => Ok(()),
+    }
+}
+
 #[tauri::command]
 fn create_host(
     state: State<'_, AppState>,
     input: crate::ssh::HostInput,
+    confirmed: Option<bool>,
 ) -> Result<crate::ssh::Host, crate::error::AppError> {
     validate_alias(&input.alias)?;
     let existing = state.store.load_hosts().map_err(store_err)?;
@@ -617,6 +634,7 @@ fn create_host(
         last_connected_at: None,
     };
     validate_tunnels(&host)?;
+    gate_new_risky_tunnels(&[], &host.tunnels, confirmed)?;
     state.store.upsert_host(&host).map_err(store_err)?;
     rematerialize_hosts(&state)?;
     Ok(host)
@@ -626,6 +644,7 @@ fn create_host(
 fn update_host(
     state: State<'_, AppState>,
     host: crate::ssh::Host,
+    confirmed: Option<bool>,
 ) -> Result<crate::ssh::Host, crate::error::AppError> {
     validate_alias(&host.alias)?;
     let existing = state.store.load_hosts().map_err(store_err)?;
@@ -635,7 +654,13 @@ fn update_host(
     {
         return Err(crate::error::AppError::new("ssh.alias_duplicate").with("alias", host.alias));
     }
+    let prev = existing
+        .iter()
+        .find(|h| h.id == host.id)
+        .map(|h| h.tunnels.as_slice())
+        .unwrap_or(&[]);
     validate_tunnels(&host)?;
+    gate_new_risky_tunnels(prev, &host.tunnels, confirmed)?;
     state.store.upsert_host(&host).map_err(store_err)?;
     rematerialize_hosts(&state)?;
     Ok(host)
@@ -664,7 +689,8 @@ fn open_session_tunnel(
     tunnel.validate()?;
     if tunnel.kind.needs_confirmation() && !confirmed {
         return Err(crate::error::AppError::new("ssh.tunnel_needs_confirmation")
-            .with("kind", tunnel.kind.flag()));
+            .with("kind", tunnel.kind.flag())
+            .with("port", tunnel.listen_port.to_string()));
     }
     let alias = ssh_target(&state, session_id)
         .map(|(_, alias, _)| alias)

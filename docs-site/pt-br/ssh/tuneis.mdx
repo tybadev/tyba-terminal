@@ -19,6 +19,12 @@ Eles não são a mesma coisa, e a diferença aparece no dia a dia:
 
 O Túnel de Host é o que faz o DBeaver enxergar o mesmo túnel que você configurou aqui. O TYBA escreve o cadastro no seu `~/.ssh/config`; quem lê aquele arquivo ganha o túnel de graça.
 
+### Cadastrar um Túnel de Host
+
+O Túnel de Host mora no cadastro da conexão, não no painel — o painel é da sessão. Em **Conexões SSH**, edite (ou crie) o host: a seção **Túneis** tem uma linha para cada túnel — o tipo (`-L`/`-R`/`-D`), a porta local e o destino. **+ Novo túnel** adiciona uma linha; **Salvar** grava. Não há passo de "adicionar" no meio: linha vazia é ignorada, linha pela metade avisa antes de salvar.
+
+A partir daí o túnel sobe em **toda** conexão a esse host — pelo TYBA e por qualquer coisa que leia o `~/.ssh/config`. O mesmo gate de `-R`/`-D` vale aqui: salvar um túnel que abre caminho de volta para a sua máquina pede confirmação uma vez, dizendo quem passa a te alcançar.
+
 ## O painel
 
 Numa sessão SSH, o ícone de túneis abre o painel ao lado do terminal. Cada túnel mostra o tipo, o caminho e um ponto de estado:

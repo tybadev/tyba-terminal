@@ -51,7 +51,11 @@ import {
   type HostGroup,
   type HostInput,
   type HostGroupInput,
+  type Tunnel,
+  type TunnelKind,
 } from "@/lib/ipc";
+import { BLANK_TUNNEL, addedRiskyTunnels } from "@/lib/tunnels";
+import { RiskyTunnelConfirm } from "@/components/RiskyTunnelConfirm";
 
 const UNGROUPED_KEY = "__ungrouped__";
 const NO_GROUP_VALUE = "__none__";
@@ -83,6 +87,23 @@ interface HostFormValues {
   group_id: string;
   color: string | null;
   notes: string;
+  tunnels: Tunnel[];
+}
+
+function validPort(p: number | null): boolean {
+  return p !== null && Number.isInteger(p) && p >= 1 && p <= 65535;
+}
+
+function normalizeTunnelDraft(d: Tunnel): Tunnel | null {
+  if (!validPort(d.listen_port)) return null;
+  if (d.kind === "dynamic") return { ...d, target_host: null, target_port: null };
+  const target = d.target_host?.trim();
+  if (!target || !validPort(d.target_port)) return null;
+  return { ...d, target_host: target };
+}
+
+function tunnelRowHasInput(d: Tunnel): boolean {
+  return d.listen_port > 0 || (d.target_port ?? 0) > 0;
 }
 
 interface HostGroupFormValues {
@@ -112,6 +133,7 @@ function emptyHostForm(): HostFormValues {
     group_id: NO_GROUP_VALUE,
     color: null,
     notes: "",
+    tunnels: [],
   };
 }
 
@@ -126,6 +148,7 @@ function hostToForm(host: Host): HostFormValues {
     group_id: host.group_id ?? NO_GROUP_VALUE,
     color: host.color,
     notes: host.notes ?? "",
+    tunnels: host.tunnels,
   };
 }
 
@@ -260,12 +283,16 @@ function HostDialog({
   const [values, setValues] = useState<HostFormValues>(emptyHostForm());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tunnelError, setTunnelError] = useState<string | null>(null);
+  const [confirmRisky, setConfirmRisky] = useState<Tunnel[] | null>(null);
 
   useEffect(() => {
     if (state === null) return;
     setValues(state.mode === "edit" ? hostToForm(state.host) : emptyHostForm());
     setError(null);
     setBusy(false);
+    setTunnelError(null);
+    setConfirmRisky(null);
   }, [state]);
 
   if (state === null) return null;
@@ -275,7 +302,31 @@ function HostDialog({
     ...groups.map((g) => ({ value: g.id, label: g.name })),
   ];
 
-  const save = async () => {
+  const addTunnelRow = () => {
+    setTunnelError(null);
+    setConfirmRisky(null);
+    setValues((v) => ({ ...v, tunnels: [...v.tunnels, BLANK_TUNNEL] }));
+  };
+
+  const patchTunnel = (index: number, patch: Partial<Tunnel>) => {
+    setTunnelError(null);
+    setConfirmRisky(null);
+    setValues((v) => ({
+      ...v,
+      tunnels: v.tunnels.map((tn, i) => (i === index ? { ...tn, ...patch } : tn)),
+    }));
+  };
+
+  const removeTunnel = (index: number) => {
+    setTunnelError(null);
+    setConfirmRisky(null);
+    setValues((v) => ({
+      ...v,
+      tunnels: v.tunnels.filter((_, i) => i !== index),
+    }));
+  };
+
+  const save = async (confirmed: boolean) => {
     const alias = values.alias.trim();
     const hostname = values.hostname.trim();
     if (!alias) {
@@ -290,11 +341,23 @@ function HostDialog({
     const portTrimmed = values.port.trim();
     if (portTrimmed) {
       port = Number(portTrimmed);
-      if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      if (!validPort(port)) {
         setError(t("hostFieldPortInvalid"));
         return;
       }
     }
+    const tunnels: Tunnel[] = [];
+    for (const row of values.tunnels) {
+      if (!tunnelRowHasInput(row)) continue;
+      const norm = normalizeTunnelDraft(row);
+      if (norm === null) {
+        setTunnelError(t("hostTunnelInvalid"));
+        return;
+      }
+      tunnels.push(norm);
+    }
+    setTunnelError(null);
+    setValues((v) => ({ ...v, tunnels }));
     const groupId = values.group_id === NO_GROUP_VALUE ? null : values.group_id;
     const username = values.username.trim() || null;
     const identityFile = values.identity_file.trim() || null;
@@ -315,8 +378,9 @@ function HostDialog({
           group_id: groupId,
           color: values.color,
           notes,
+          tunnels,
         };
-        await createHost(input);
+        await createHost(input, confirmed);
       } else {
         const updated: Host = {
           ...state.host,
@@ -329,11 +393,32 @@ function HostDialog({
           group_id: groupId,
           color: values.color,
           notes,
+          tunnels,
         };
-        await updateHost(updated);
+        await updateHost(updated, confirmed);
       }
       onSaved();
     } catch (e) {
+      const err = e as { code?: string; params?: Record<string, string> };
+      if (err.code === "ssh.tunnel_needs_confirmation") {
+        const prev = state.mode === "edit" ? state.host.tunnels : [];
+        const risky = addedRiskyTunnels(prev, tunnels);
+        setConfirmRisky(
+          risky.length > 0
+            ? risky
+            : [
+                {
+                  kind: err.params?.kind === "-D" ? "dynamic" : "remote",
+                  listen_port: Number(err.params?.port ?? 0),
+                  listen_host: null,
+                  target_host: null,
+                  target_port: null,
+                },
+              ],
+        );
+        setBusy(false);
+        return;
+      }
       setError(translateError(e, t));
       setBusy(false);
     }
@@ -423,6 +508,92 @@ function HostDialog({
           />
         </FormField>
 
+        <FormField
+          label={t("hostFieldTunnels")}
+          htmlFor="host-tunnels"
+          hint={t("hostFieldTunnelsHint")}
+        >
+          <div id="host-tunnels" className="flex flex-col gap-1.5">
+            {values.tunnels.map((tn, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <select
+                  aria-label={t("tunnelsKind")}
+                  value={tn.kind}
+                  onChange={(e) => {
+                    const kind = e.target.value as TunnelKind;
+                    patchTunnel(i, {
+                      kind,
+                      target_host: kind === "dynamic" ? null : (tn.target_host ?? "localhost"),
+                      target_port: kind === "dynamic" ? null : tn.target_port,
+                    });
+                  }}
+                  className="h-7 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 text-[11px] text-tyba-text"
+                >
+                  <option value="local">-L</option>
+                  <option value="remote">-R</option>
+                  <option value="dynamic">-D</option>
+                </select>
+                <input
+                  aria-label={t("tunnelsListenPort")}
+                  type="number"
+                  min={1}
+                  max={65535}
+                  placeholder={t("tunnelsListenPort")}
+                  value={tn.listen_port || ""}
+                  onChange={(e) =>
+                    patchTunnel(i, { listen_port: Number(e.target.value) })
+                  }
+                  className="h-7 w-20 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
+                />
+                {tn.kind !== "dynamic" && (
+                  <>
+                    <input
+                      aria-label={t("tunnelsTargetHost")}
+                      placeholder="localhost"
+                      value={tn.target_host ?? ""}
+                      onChange={(e) =>
+                        patchTunnel(i, { target_host: e.target.value })
+                      }
+                      className="h-7 min-w-0 flex-1 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
+                    />
+                    <input
+                      aria-label={t("tunnelsTargetPort")}
+                      type="number"
+                      min={1}
+                      max={65535}
+                      placeholder={t("tunnelsTargetPort")}
+                      value={tn.target_port || ""}
+                      onChange={(e) =>
+                        patchTunnel(i, { target_port: Number(e.target.value) })
+                      }
+                      className="h-7 w-20 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
+                    />
+                  </>
+                )}
+                <button
+                  type="button"
+                  aria-label={t("hostTunnelRemove")}
+                  onClick={() => removeTunnel(i)}
+                  className="shrink-0 text-tyba-text-faint hover:text-tyba-red"
+                >
+                  <Trash size={12} />
+                </button>
+              </div>
+            ))}
+            {tunnelError && (
+              <p className="text-[11px] text-tyba-red">{tunnelError}</p>
+            )}
+            <button
+              type="button"
+              onClick={addTunnelRow}
+              className="flex items-center gap-1.5 px-1 text-[11px] text-tyba-text-faint hover:text-tyba-text"
+            >
+              <Plus size={11} />
+              {t("tunnelsNew")}
+            </button>
+          </div>
+        </FormField>
+
         <div className="grid grid-cols-2 gap-3">
           <FormField label={t("hostFieldGroup")} htmlFor="host-group">
             <Select
@@ -456,14 +627,27 @@ function HostDialog({
           </div>
         )}
 
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
-            {t("cancel")}
-          </Button>
-          <Button size="sm" onClick={() => void save()} disabled={busy}>
-            {busy ? t("connectionsSaving") : t("connectionsSave")}
-          </Button>
-        </div>
+        {confirmRisky ? (
+          <RiskyTunnelConfirm
+            tunnels={confirmRisky}
+            host={values.alias.trim() || values.hostname.trim()}
+            confirmLabel={
+              busy ? t("connectionsSaving") : t("hostTunnelConfirmSave")
+            }
+            busy={busy}
+            onConfirm={() => void save(true)}
+            onCancel={() => setConfirmRisky(null)}
+          />
+        ) : (
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
+              {t("cancel")}
+            </Button>
+            <Button size="sm" onClick={() => void save(false)} disabled={busy}>
+              {busy ? t("connectionsSaving") : t("connectionsSave")}
+            </Button>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -721,6 +905,9 @@ export function ConnectionsView({ onConnect, onConnectGroup }: Props) {
             <div className="truncate font-mono text-[10px] text-tyba-text-faint">
               {t("connectionsPort", { port: host.port ?? 22 })}
               {host.proxy_jump ? ` · ${host.proxy_jump}` : ""}
+              {host.tunnels.length > 0
+                ? ` · ${t("connectionsTunnels", { count: host.tunnels.length })}`
+                : ""}
             </div>
           </div>
           <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
