@@ -82,15 +82,16 @@ Full threat model and command risk classification: [docs/SECURITY.md](docs/SECUR
 
 ## Install
 
-**macOS 11+** — download the `.dmg` for your chip (Apple Silicon or Intel) from the [download page](https://www.tyba.dev/en/download). Signed and notarized.
+**macOS 11+** — the `.dmg` ships as soon as the Apple Developer ID certificate lands: the pipeline verifies signature + notarization and refuses to publish an unsigned build (Gatekeeper would show it as "damaged"). Until then, build from source (see [Development](#development)).
 
 **Linux** — download the `.deb`, `.rpm` or `.AppImage` from the [download page](https://www.tyba.dev/en/download):
 
 ```bash
-sudo apt install ./Tyba_0.1.2_amd64.deb    # Debian / Ubuntu
-sudo dnf install ./Tyba-0.1.2-1.x86_64.rpm # Fedora
-yay -S tyba-bin                            # Arch (AUR)
+sudo apt install ./Tyba_0.1.3_amd64.deb    # Debian / Ubuntu
+sudo dnf install ./Tyba-0.1.3-1.x86_64.rpm # Fedora
 ```
+
+Arch: the PKGBUILD lives in [`packaging/aur/`](packaging/aur/) (`makepkg -si`); the AUR package is not published yet.
 
 `bubblewrap` is a hard dependency, not a suggestion: without it the core refuses to spawn agents (fail-closed) and TYBA is just a terminal. The `.deb`/`.rpm`/AUR packages pull it in for you; with the AppImage, install it yourself (`apt install bubblewrap`). If your distro ships unprivileged user namespaces disabled (some hardened kernels, Debian with `kernel.unprivileged_userns_clone=0`), agent sessions are refused with an actionable message — the sandbox never silently degrades.
 

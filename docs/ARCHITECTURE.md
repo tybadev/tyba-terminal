@@ -79,7 +79,6 @@ disposeSession(id, { removeWorktree: boolean })
 ```typescript
 `pty://output/${id}`       // chunks batched para xterm.js
 `session://status/${id}`   // mudanças de SessionStatus
-`session://progress/${id}` // eventos estruturados do stream-json
 ```
 
 **Batching obrigatório**: acumular output de PTY em buffer no Rust e flushar a cada ~8-16ms. `cargo build`/`bun install` geram output rápido demais para um emit por chunk (serialização JSON do IPC vira gargalo). Evolução futura: `tauri::ipc::Channel` binário.
@@ -88,8 +87,8 @@ disposeSession(id, { removeWorktree: boolean })
 
 Dois modos, por confiabilidade:
 
-1. **Estruturado (preferido)**: Claude Code com `--output-format stream-json --include-partial-messages`. Cada linha do stdout é um evento JSON — tool use pendente de aprovação mapeia direto para `AwaitingInput`. Zero scraping de ANSI.
-2. **Heurístico (fallback)**: shell integration OSC 133 (`A` = prompt, `C` = executando, `D` = terminou) + timeout de silêncio com último frame terminando em padrão de pergunta (`? `, `[y/n]`, `❯`).
+1. **Estruturado (o que roda)**: hooks injetados no runner — `--settings` no Claude Code, `-c` no Codex. O TUI interativo continua sendo a sessão; os hooks reportam por fora: `PreToolUse` **bloqueia** a ação até a decisão do inbox (unix socket no macOS/Linux, named pipe no Windows, deny fail-closed), e `Stop`/`Notification`/`SessionEnd` viram `SessionStatus`. Zero scraping de ANSI. O plano original era `stream-json`, que nunca foi construído — implicaria modo print e mataria o TUI (ADR `2026-07-11-aprovacao-decidida-pelo-hook-nao-pelo-tui`, no cofre).
+2. **Heurístico (previsto, não construído)**: shell integration OSC 133 + timeout de silêncio. Só faz sentido para runner sem hooks, e o runner Custom está bloqueado por design — fica para quando ele voltar.
 
 ## Ciclo de vida da sessão de agente
 

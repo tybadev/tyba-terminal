@@ -20,7 +20,7 @@ Seu ambiente, tudo conectado. Terminal opensource orientado a agentes de IA: orq
 4. **Ações vermelhas nunca são automáticas**: `git push`, `gh pr create`, `sudo`, rede, escrita fora do worktree, `rm -rf`. Hard-coded no runner, não configurável para "sempre permitir".
 5. **Push para main/master de sessão de agente é recusado pelo core.** Sempre.
 6. **Env filtrado para agentes**: sessões de agente recebem env por allowlist (config por repo), nunca o env completo do shell do usuário.
-7. **Three-dot semantics em diff de sessão**: `git diff <base_sha>..HEAD` dentro do worktree (base_sha salvo na criação), nunca comparar com o estado atual da main.
+7. **Diff de sessão contra base fixa**: `git diff <base_sha>..HEAD` dentro do worktree, com `base_sha` salvo na criação — é o base congelado que dá a semântica de three-dot (a sintaxe `..` é two-dot); nunca comparar com o estado atual da main.
 8. **Output de git sempre com `-z`, `--no-color` e `-c core.quotePath=false`.** Parsing NUL-separated.
 9. **Kill de sessão mata o process group inteiro** (`killpg`), não só o processo pai.
 10. **Secrets nunca em log/scrollback persistido**: redação de padrões (AWS keys, JWT, `sk-...`) antes de gravar no SQLite.
