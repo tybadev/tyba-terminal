@@ -19,6 +19,12 @@ They are not the same thing, and the difference shows up daily:
 
 The host tunnel is what lets DBeaver see the same tunnel you configured here. TYBA writes the host into your `~/.ssh/config`; anything that reads that file gets the tunnel for free.
 
+### Registering a host tunnel
+
+The host tunnel lives in the connection form, not in the panel — the panel is the session's. Under **SSH Connections**, edit (or create) the host: the **Tunnels** section has one row per tunnel — the kind (`-L`/`-R`/`-D`), the local port, and the destination. **New tunnel** adds a row; **Save** writes it. There is no intermediate "add" step: an empty row is ignored, a half-filled row warns before saving.
+
+From then on the tunnel opens on **every** connection to that host — through TYBA and through anything that reads `~/.ssh/config`. The same `-R`/`-D` gate applies here: saving a tunnel that opens a path back into your machine asks for confirmation once, spelling out who gets to reach you.
+
 ## The panel
 
 In an SSH session, the tunnels icon opens the panel beside the terminal. Each tunnel shows its kind, its path and a state dot:
