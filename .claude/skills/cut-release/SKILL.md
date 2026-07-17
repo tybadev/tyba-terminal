@@ -62,7 +62,13 @@ git push origin v0.1.0
 O que acontece, em ordem:
 
 1. `gates` → `version` (tag × manifestos) → `matrix` (lê `RELEASE_PLATFORMS`).
-2. **O run PAUSA.** O job `build` está no Environment `release`, que exige **revisor humano (o dono)**. Aparece como *"Review deployments"* na aba Actions. **Não é bug — é a trava funcionando, e ninguém além do dono aprova.**
+2. **Pausa ou não pausa, conforme a plataforma** — e a diferença importa:
+   - **`macos` → PAUSA.** O build vai para o Environment `release`, que exige **revisor humano (o dono)**. Aparece como *"Review deployments"* na aba Actions. **Não é bug — é a trava funcionando, e ninguém além do dono aprova.**
+   - **`linux`/`windows` → NÃO pausa.** Eles buildam no Environment **`release-unsigned`**, que não tem revisor.
+
+   Não é inconsistência: **o revisor protege o segredo, não a publicação.** Quem aprova o `release` está liberando o uso do certificado Developer ID; o `release-unsigned` não tem segredo nenhum a proteger. Quem protege a publicação é o **rascunho** do passo 4.
+
+   Enquanto o certificado da Apple não existir, **nenhum release pausa** — não fique esperando um botão que não vai aparecer. (Verificado na v0.1.3: esta página afirmava a pausa como incondicional e fez a sessão anunciar ao dono uma trava que não existia naquele caminho.)
 3. Build → checksums → attestation de procedência.
 4. `publish` cria o release como **rascunho**, de propósito: o dono confere os artefatos e publica na mão.
 
@@ -96,6 +102,15 @@ Disparar **na tag** faz `github.ref` ser `refs/tags/v0.1.0`: assina, verifica e 
   4. Commit e push em `ssh://aur@aur.archlinux.org/tyba-bin.git`.
 
   **Feito localmente, de propósito.** Automatizar exigiria guardar uma chave SSH da AUR num secret — e quem a tiver publica um PKGBUILD apontando para onde quiser. Mesma regra da chave do repo apt e da chave de update: publicação sensível não mora no CI.
+- **Acrescentar a versão em `tyba-site/src/lib/versions.ts`** — a página de versões antigas (`/{locale}/versions`) é **estática, mantida à mão**, exatamente como o changelog: sem fetch, sem rate limit, sem fallback para manter. Gere a entrada do release **que já existe**, nunca derive URL por padrão de nome:
+
+  ```bash
+  gh release view v0.1.3 --json publishedAt,assets \
+    --jq '{version:"0.1.3", date:(.publishedAt[0:7]),
+           assets:[.assets[]|{name,url:.url,size}]}'
+  ```
+
+  O nome do bundle é decidido pelo Tauri e já mudou entre versões: adivinhar o padrão gera link 404 silencioso, que é a mesma classe de mentira que o `LAST_KNOWN_RELEASE` existe para evitar.
 - **Gravar a versão publicada em `tyba-site/src/lib/release.ts` (`LAST_KNOWN_RELEASE`)** — versão + plataformas que de fato saíram. **Este passo não é cosmético.** O site lê a Releases API sem token, e a Vercel roda em IP compartilhado: sob rate limit o fetch falha, e sem essa memória a página conclui *"nenhum binário publicado"* — ou seja, no pico de tráfego ela diz ao usuário que o download não existe. A regra: **o site pode não saber que saiu versão nova; nunca pode dizer que não existe binário quando existe.**
 - Conferir que `tyba.dev/{locale}/download` já mostra a versão (a página lê a Releases API com cache de 1h — pode levar até uma hora, ou force um redeploy).
 - Conferir que o changelog do site tem a versão publicada, **sem o selo de pré-release** (ele some sozinho quando o release existe).

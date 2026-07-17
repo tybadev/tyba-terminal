@@ -88,6 +88,7 @@
               "pt-br/ssh/hosts-e-grupos",
               "pt-br/ssh/persistencia",
               "pt-br/ssh/broadcast",
+              "pt-br/ssh/tuneis",
               "pt-br/ssh/agente-via-ssh"
             ]
           },
@@ -199,6 +200,7 @@
               "en/ssh/hosts-and-groups",
               "en/ssh/persistence",
               "en/ssh/broadcast",
+              "en/ssh/tunnels",
               "en/ssh/agent-over-ssh"
             ]
           },
@@ -310,6 +312,7 @@
               "es/ssh/hosts-y-grupos",
               "es/ssh/persistencia",
               "es/ssh/broadcast",
+              "es/ssh/tuneles",
               "es/ssh/agente-por-ssh"
             ]
           },
