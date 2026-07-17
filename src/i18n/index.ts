@@ -662,7 +662,6 @@ const resources = {
       hostFieldTunnels: "Túneis",
       hostFieldTunnelsHint:
         "Abrem em toda conexão a este host e valem fora do TYBA (ssh, scp, DBeaver).",
-      hostTunnelAdd: "Adicionar",
       hostTunnelRemove: "Remover túnel",
       hostTunnelInvalid: "Túnel incompleto — confira porta e destino.",
       hostTunnelConfirmSave: "Salvar mesmo assim",
@@ -1338,7 +1337,6 @@ const resources = {
       hostFieldTunnels: "Tunnels",
       hostFieldTunnelsHint:
         "Open on every connection to this host and work outside TYBA (ssh, scp, DBeaver).",
-      hostTunnelAdd: "Add",
       hostTunnelRemove: "Remove tunnel",
       hostTunnelInvalid: "Incomplete tunnel — check port and target.",
       hostTunnelConfirmSave: "Save anyway",

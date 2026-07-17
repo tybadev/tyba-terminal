@@ -54,12 +54,7 @@ import {
   type Tunnel,
   type TunnelKind,
 } from "@/lib/ipc";
-import {
-  BLANK_TUNNEL,
-  addedRiskyTunnels,
-  describeTunnel,
-  tunnelFlag,
-} from "@/lib/tunnels";
+import { BLANK_TUNNEL, addedRiskyTunnels } from "@/lib/tunnels";
 import { RiskyTunnelConfirm } from "@/components/RiskyTunnelConfirm";
 
 const UNGROUPED_KEY = "__ungrouped__";
@@ -107,7 +102,7 @@ function normalizeTunnelDraft(d: Tunnel): Tunnel | null {
   return { ...d, target_host: target };
 }
 
-function tunnelDraftDirty(d: Tunnel): boolean {
+function tunnelRowHasInput(d: Tunnel): boolean {
   return d.listen_port > 0 || (d.target_port ?? 0) > 0;
 }
 
@@ -288,8 +283,6 @@ function HostDialog({
   const [values, setValues] = useState<HostFormValues>(emptyHostForm());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [tunnelDraft, setTunnelDraft] = useState<Tunnel>(BLANK_TUNNEL);
-  const [addingTunnel, setAddingTunnel] = useState(false);
   const [tunnelError, setTunnelError] = useState<string | null>(null);
   const [confirmRisky, setConfirmRisky] = useState<Tunnel[] | null>(null);
 
@@ -298,8 +291,6 @@ function HostDialog({
     setValues(state.mode === "edit" ? hostToForm(state.host) : emptyHostForm());
     setError(null);
     setBusy(false);
-    setTunnelDraft(BLANK_TUNNEL);
-    setAddingTunnel(false);
     setTunnelError(null);
     setConfirmRisky(null);
   }, [state]);
@@ -311,25 +302,28 @@ function HostDialog({
     ...groups.map((g) => ({ value: g.id, label: g.name })),
   ];
 
-  const addTunnel = () => {
-    const next = normalizeTunnelDraft(tunnelDraft);
-    if (next === null) {
-      setTunnelError(t("hostTunnelInvalid"));
-      return;
-    }
-    setValues((v) => ({ ...v, tunnels: [...v.tunnels, next] }));
-    setTunnelDraft(BLANK_TUNNEL);
-    setAddingTunnel(false);
+  const addTunnelRow = () => {
     setTunnelError(null);
     setConfirmRisky(null);
+    setValues((v) => ({ ...v, tunnels: [...v.tunnels, BLANK_TUNNEL] }));
+  };
+
+  const patchTunnel = (index: number, patch: Partial<Tunnel>) => {
+    setTunnelError(null);
+    setConfirmRisky(null);
+    setValues((v) => ({
+      ...v,
+      tunnels: v.tunnels.map((tn, i) => (i === index ? { ...tn, ...patch } : tn)),
+    }));
   };
 
   const removeTunnel = (index: number) => {
+    setTunnelError(null);
+    setConfirmRisky(null);
     setValues((v) => ({
       ...v,
       tunnels: v.tunnels.filter((_, i) => i !== index),
     }));
-    setConfirmRisky(null);
   };
 
   const save = async (confirmed: boolean) => {
@@ -352,19 +346,18 @@ function HostDialog({
         return;
       }
     }
-    let tunnels = values.tunnels;
-    if (addingTunnel && tunnelDraftDirty(tunnelDraft)) {
-      const flushed = normalizeTunnelDraft(tunnelDraft);
-      if (flushed === null) {
+    const tunnels: Tunnel[] = [];
+    for (const row of values.tunnels) {
+      if (!tunnelRowHasInput(row)) continue;
+      const norm = normalizeTunnelDraft(row);
+      if (norm === null) {
         setTunnelError(t("hostTunnelInvalid"));
         return;
       }
-      tunnels = [...tunnels, flushed];
-      setValues((v) => ({ ...v, tunnels }));
-      setTunnelDraft(BLANK_TUNNEL);
-      setAddingTunnel(false);
-      setTunnelError(null);
+      tunnels.push(norm);
     }
+    setTunnelError(null);
+    setValues((v) => ({ ...v, tunnels }));
     const groupId = values.group_id === NO_GROUP_VALUE ? null : values.group_id;
     const username = values.username.trim() || null;
     const identityFile = values.identity_file.trim() || null;
@@ -522,16 +515,61 @@ function HostDialog({
         >
           <div id="host-tunnels" className="flex flex-col gap-1.5">
             {values.tunnels.map((tn, i) => (
-              <div
-                key={`${tn.kind}-${tn.listen_port}-${i}`}
-                className="flex items-center gap-2 rounded-[5px] border border-tyba-border px-2 py-1.5"
-              >
-                <span className="shrink-0 font-mono text-[11px] text-tyba-text-muted">
-                  {tunnelFlag(tn)}
-                </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-tyba-text">
-                  {describeTunnel(tn)}
-                </span>
+              <div key={i} className="flex items-center gap-1.5">
+                <select
+                  aria-label={t("tunnelsKind")}
+                  value={tn.kind}
+                  onChange={(e) => {
+                    const kind = e.target.value as TunnelKind;
+                    patchTunnel(i, {
+                      kind,
+                      target_host: kind === "dynamic" ? null : (tn.target_host ?? "localhost"),
+                      target_port: kind === "dynamic" ? null : tn.target_port,
+                    });
+                  }}
+                  className="h-7 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 text-[11px] text-tyba-text"
+                >
+                  <option value="local">-L</option>
+                  <option value="remote">-R</option>
+                  <option value="dynamic">-D</option>
+                </select>
+                <input
+                  aria-label={t("tunnelsListenPort")}
+                  type="number"
+                  min={1}
+                  max={65535}
+                  placeholder={t("tunnelsListenPort")}
+                  value={tn.listen_port || ""}
+                  onChange={(e) =>
+                    patchTunnel(i, { listen_port: Number(e.target.value) })
+                  }
+                  className="h-7 w-20 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
+                />
+                {tn.kind !== "dynamic" && (
+                  <>
+                    <input
+                      aria-label={t("tunnelsTargetHost")}
+                      placeholder="localhost"
+                      value={tn.target_host ?? ""}
+                      onChange={(e) =>
+                        patchTunnel(i, { target_host: e.target.value })
+                      }
+                      className="h-7 min-w-0 flex-1 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
+                    />
+                    <input
+                      aria-label={t("tunnelsTargetPort")}
+                      type="number"
+                      min={1}
+                      max={65535}
+                      placeholder={t("tunnelsTargetPort")}
+                      value={tn.target_port || ""}
+                      onChange={(e) =>
+                        patchTunnel(i, { target_port: Number(e.target.value) })
+                      }
+                      className="h-7 w-20 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
+                    />
+                  </>
+                )}
                 <button
                   type="button"
                   aria-label={t("hostTunnelRemove")}
@@ -542,107 +580,17 @@ function HostDialog({
                 </button>
               </div>
             ))}
-            {addingTunnel ? (
-              <div className="flex flex-col gap-1.5 rounded-[5px] border border-tyba-border p-2">
-                <div className="flex gap-1.5">
-                  <select
-                    aria-label={t("tunnelsKind")}
-                    value={tunnelDraft.kind}
-                    onChange={(e) =>
-                      setTunnelDraft({
-                        ...tunnelDraft,
-                        kind: e.target.value as TunnelKind,
-                        target_host:
-                          e.target.value === "dynamic" ? null : "localhost",
-                        target_port:
-                          e.target.value === "dynamic"
-                            ? null
-                            : tunnelDraft.target_port,
-                      })
-                    }
-                    className="h-7 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 text-[11px] text-tyba-text"
-                  >
-                    <option value="local">-L</option>
-                    <option value="remote">-R</option>
-                    <option value="dynamic">-D</option>
-                  </select>
-                  <input
-                    aria-label={t("tunnelsListenPort")}
-                    type="number"
-                    min={1}
-                    max={65535}
-                    placeholder={t("tunnelsListenPort")}
-                    value={tunnelDraft.listen_port || ""}
-                    onChange={(e) =>
-                      setTunnelDraft({
-                        ...tunnelDraft,
-                        listen_port: Number(e.target.value),
-                      })
-                    }
-                    className="h-7 w-20 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
-                  />
-                  {tunnelDraft.kind !== "dynamic" && (
-                    <>
-                      <input
-                        aria-label={t("tunnelsTargetHost")}
-                        placeholder="localhost"
-                        value={tunnelDraft.target_host ?? ""}
-                        onChange={(e) =>
-                          setTunnelDraft({
-                            ...tunnelDraft,
-                            target_host: e.target.value,
-                          })
-                        }
-                        className="h-7 min-w-0 flex-1 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
-                      />
-                      <input
-                        aria-label={t("tunnelsTargetPort")}
-                        type="number"
-                        min={1}
-                        max={65535}
-                        placeholder={t("tunnelsTargetPort")}
-                        value={tunnelDraft.target_port || ""}
-                        onChange={(e) =>
-                          setTunnelDraft({
-                            ...tunnelDraft,
-                            target_port: Number(e.target.value),
-                          })
-                        }
-                        className="h-7 w-20 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
-                      />
-                    </>
-                  )}
-                </div>
-                {tunnelError && (
-                  <p className="text-[11px] text-tyba-red">{tunnelError}</p>
-                )}
-                <div className="flex gap-1.5">
-                  <Button size="sm" type="button" onClick={addTunnel}>
-                    {t("hostTunnelAdd")}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    type="button"
-                    onClick={() => {
-                      setAddingTunnel(false);
-                      setTunnelError(null);
-                    }}
-                  >
-                    {t("tunnelsCancel")}
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setAddingTunnel(true)}
-                className="flex items-center gap-1.5 px-1 text-[11px] text-tyba-text-faint hover:text-tyba-text"
-              >
-                <Plus size={11} />
-                {t("tunnelsNew")}
-              </button>
+            {tunnelError && (
+              <p className="text-[11px] text-tyba-red">{tunnelError}</p>
             )}
+            <button
+              type="button"
+              onClick={addTunnelRow}
+              className="flex items-center gap-1.5 px-1 text-[11px] text-tyba-text-faint hover:text-tyba-text"
+            >
+              <Plus size={11} />
+              {t("tunnelsNew")}
+            </button>
           </div>
         </FormField>
 
