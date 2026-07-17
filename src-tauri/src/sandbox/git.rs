@@ -8,6 +8,10 @@ pub enum GitProfile {
     Network,
 }
 
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux")),
+    allow(dead_code, reason = "só o imp de macOS/Linux monta política de jaula")
+)]
 fn push_unique(roots: &mut Vec<PathBuf>, p: PathBuf) {
     if !roots.contains(&p) {
         roots.push(p);
@@ -96,6 +100,10 @@ pub fn repo_uses_content_filter(repo: &Path) -> bool {
     false
 }
 
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux")),
+    allow(dead_code, reason = "só o imp de macOS/Linux monta política de jaula")
+)]
 fn writable_roots(repo: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
     let mut roots = vec![crate::repo::canonicalize_or(repo)];
     for e in extra {
