@@ -91,7 +91,7 @@ ControlPath ~/.ssh/tyba-cm-%C
 ControlPersist 10m
 ```
 
-Traducido a lo que sientes: la **primera** conexión con un host autentica; el split, la pestaña nueva y cada consulta del panel de Docker **reusan la misma conexión**. Sin esto, tu 1Password o `ssh-agent` pediría aprobación de nuevo en cada `docker ps`. Autenticar una vez es normal; en cada comando es un bug.
+Traducido a lo que sientes: la **primera** conexión con un host autentica; el split, la pestaña nueva y cada consulta del panel de Docker **reusan la misma conexión**. Sin esto, tu `ssh` pediría autenticarse de nuevo en cada `docker ps` — passphrase, toque de la clave, lo que sea. Autenticar una vez es normal; en cada comando es un bug.
 
 La conexión queda en pie durante 10 minutos después de que muere el último uso.
 

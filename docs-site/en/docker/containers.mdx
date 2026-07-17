@@ -28,7 +28,7 @@ TYBA looks for the `docker` binary in this order:
 | `~/.docker/bin/docker` |
 
 <Note>
-With no binary, or with the daemon stopped, the panel doesn't make anything up: it shows **"Open Docker Desktop"**.
+With no binary, or with the daemon stopped, the panel doesn't make anything up: it says **"Docker is not responding"**. On macOS it also offers an **"Open Docker Desktop"** shortcut — on other platforms, bringing Docker up is on you.
 </Note>
 
 ## The list
@@ -76,7 +76,7 @@ A container reports the path **of the environment it came up in**, which isn't a
 That is why the compose actions only appear for a project whose folder TYBA can actually see.
 
 <Note>
-On a **remote** target this check is skipped on purpose: the VPS's path doesn't exist on your Mac, and flagging it would just be a broken link. That's why the compose actions **don't work remotely** — see [Remote Docker](/en/docker/remote-docker).
+On a **remote** target this check is skipped on purpose: the remote host's path doesn't exist on this machine, and flagging it would just be a broken link. That's why the compose actions **don't work remotely** — see [Remote Docker](/en/docker/remote-docker).
 </Note>
 
 ## See also

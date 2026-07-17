@@ -28,7 +28,7 @@ O TYBA procura o binário do `docker` nesta ordem:
 | `~/.docker/bin/docker` |
 
 <Note>
-Sem binário, ou com o daemon parado, o painel não inventa nada: ele mostra **"Abrir Docker Desktop"**.
+Sem binário, ou com o daemon parado, o painel não inventa nada: ele diz **"Docker não está respondendo"**. No macOS, oferece junto o atalho **"Abrir Docker Desktop"** — nas outras plataformas, subir o Docker fica com você.
 </Note>
 
 ## A lista
@@ -76,7 +76,7 @@ Um container reporta o caminho **do ambiente onde ele subiu**, que nem sempre é
 É por isso que as ações de compose só aparecem para projeto cuja pasta o TYBA consegue enxergar.
 
 <Note>
-No alvo **remoto** essa checagem é pulada de propósito: caminho da VPS não existe no seu Mac, e anotar viraria link quebrado. Por isso as ações de compose **não funcionam remotamente** — veja [Docker remoto](/pt-br/docker/docker-remoto).
+No alvo **remoto** essa checagem é pulada de propósito: o caminho do host remoto não existe nesta máquina, e anotar viraria link quebrado. Por isso as ações de compose **não funcionam remotamente** — veja [Docker remoto](/pt-br/docker/docker-remoto).
 </Note>
 
 ## Veja também

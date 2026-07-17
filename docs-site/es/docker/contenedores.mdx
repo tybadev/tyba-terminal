@@ -28,7 +28,7 @@ TYBA busca el binario de `docker` en este orden:
 | `~/.docker/bin/docker` |
 
 <Note>
-Sin binario, o con el daemon parado, el panel no inventa nada: muestra **"Open Docker Desktop"**.
+Sin binario, o con el daemon parado, el panel no inventa nada: dice **"Docker is not responding"**. En macOS ofrece además el atajo **"Open Docker Desktop"** — en las otras plataformas, levantar Docker queda de tu lado.
 </Note>
 
 ## La lista
@@ -76,7 +76,7 @@ Un container reporta la ruta **del entorno donde levantó**, que no siempre es e
 Por eso las acciones de compose solo aparecen para un proyecto cuya carpeta TYBA consigue ver.
 
 <Note>
-En el objetivo **remoto** esa comprobación se salta a propósito: la ruta de la VPS no existe en tu Mac, y anotarla sería un enlace roto. Por eso las acciones de compose **no funcionan remotamente** — mira [Docker remoto](/es/docker/docker-remoto).
+En el objetivo **remoto** esa comprobación se salta a propósito: la ruta del host remoto no existe en esta máquina, y anotarla sería un enlace roto. Por eso las acciones de compose **no funcionan remotamente** — mira [Docker remoto](/es/docker/docker-remoto).
 </Note>
 
 ## Ver también
