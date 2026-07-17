@@ -1,0 +1,78 @@
+---
+title: "Tunnels"
+description: "Open and close port-forwards without memorizing flags — and why a TYBA tunnel always tells you which address it listens on."
+---
+
+A tunnel is reaching a port that lives on the other side of SSH. `ssh` already does that with `-L`, `-R` and `-D`; what TYBA adds is opening, closing and **seeing** the tunnel without memorizing where the colons go.
+
+## Two tunnels, two uses
+
+They are not the same thing, and the difference shows up daily:
+
+| | **Host tunnel** | **Session tunnel** |
+|---|---|---|
+| Lives in | your `~/.ssh/config` | the SSH session |
+| Works outside TYBA | **yes** — `ssh`, `scp`, DBeaver, VSCode Remote | no |
+| Born | on every connection, by `ssh` itself | when you click |
+| Gone | when you edit the host | when you close the tunnel or the session |
+| Good for | "always" — the prod Postgres | "right now" — peek at a port |
+
+The host tunnel is what lets DBeaver see the same tunnel you configured here. TYBA writes the host into your `~/.ssh/config`; anything that reads that file gets the tunnel for free.
+
+## The panel
+
+In an SSH session, the tunnels icon opens the panel beside the terminal. Each tunnel shows its kind, its path and a state dot:
+
+| Dot | Means |
+|---|---|
+| **green** | up — bytes cross |
+| **grey, pulsing** | opening |
+| **red** | failed, with the reason `ssh` gave and a **Try again** button |
+
+## The gate: `-L` passes, `-R` and `-D` ask
+
+Classification is **by direction**, not by parsing a command string:
+
+- **`-L` (local)** — you reach a port that is over there. It asks nothing: you already have a shell on that host, so this grants you no new reach.
+- **`-R` (remote)** — opens a port **on the host** that leads **into your machine**. It asks.
+- **`-D` (dynamic)** — turns your machine into a SOCKS proxy into the host's network. It asks.
+
+<Warning>
+The `-R`/`-D` dialog tells you **who gets to reach what** — it is not an "are you sure?". Refusing is the default, and the gate lives in the core: no screen can open a `-R` without your confirmation.
+</Warning>
+
+A tunnel that reattaches **does not ask again**: you already said yes once.
+
+## The tunnel follows the session
+
+The session tunnel is **persisted** and comes back when the SSH session reattaches — Wi-Fi dropping, the laptop sleeping, quitting the app. One rule:
+
+> The tunnel belongs to the SSH session. The SSH session survives. Therefore the tunnel survives.
+
+See [Session persistence](/en/ssh/persistence) for why the session survives.
+
+### When the local port got taken
+
+If something grabbed your local port while the connection was down, the tunnel **does not come back quietly**: it turns **red**, says why, and a toast reaches you even if you are in another workspace.
+
+<Note>
+This is deliberate, and it is the worst case the feature exists to prevent: the terminal coming back perfect while `localhost:5432` silently stops working. You would find out minutes later, debugging the wrong app.
+</Note>
+
+## Why the tunnel always shows `127.0.0.1`
+
+You will notice TYBA writes `127.0.0.1:5432` where `ssh` would accept just `5432`. That is not verbosity.
+
+`localhost` resolves to **two** addresses: `::1` (IPv6) and `127.0.0.1` (IPv4). With a bare port, `ssh` binds whatever it can and **reports success if it got at least one**. So if some process already holds `127.0.0.1:5432`, the tunnel comes up on `::1` only, `ssh` says it worked — and your `psql localhost:5432` talks to that other process believing it is prod.
+
+With an explicit address, the same `ssh` fails and says why. That is what lets the panel go red instead of lying green.
+
+If you want a different listen address, type it — the field takes it. `0.0.0.0` exposes the forward to your local network.
+
+## On Windows
+
+It looks the same on screen, but the mechanism underneath differs: Windows OpenSSH has no ControlMaster, so there is no `ssh -O forward`. There, TYBA **drops the connection and brings it back** with the tunnel baked in — you see the same `reconnecting…` as a bad Wi-Fi, and your work is intact on the other side, because the session lives on the host.
+
+<Warning>
+**SSH has not been tested on a real Windows machine yet** — only on Linux and macOS. It was built to work there; if it doesn't, that's a bug, and the report helps.
+</Warning>

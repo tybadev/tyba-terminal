@@ -1,0 +1,78 @@
+---
+title: "Túneis"
+description: "Abrir e fechar port-forward sem decorar flag — e por que o túnel do TYBA sempre diz em que endereço ele escuta."
+---
+
+Túnel é alcançar uma porta que está do outro lado do SSH. O `ssh` já faz isso com `-L`, `-R` e `-D`; o que o TYBA faz é te deixar abrir, fechar e **ver** o túnel sem decorar a ordem dos dois-pontos.
+
+## Dois túneis, dois usos
+
+Eles não são a mesma coisa, e a diferença aparece no dia a dia:
+
+| | **Túnel de Host** | **Túnel de Sessão** |
+|---|---|---|
+| Mora em | o seu `~/.ssh/config` | a sessão SSH |
+| Vale fora do TYBA | **sim** — `ssh`, `scp`, DBeaver, VSCode Remote | não |
+| Nasce | a cada conexão, feito pelo próprio `ssh` | quando você clica |
+| Some | quando você edita o cadastro | quando você fecha o túnel ou a sessão |
+| Serve a | "quero sempre" — o Postgres da prod | "quero agora" — espiar uma porta |
+
+O Túnel de Host é o que faz o DBeaver enxergar o mesmo túnel que você configurou aqui. O TYBA escreve o cadastro no seu `~/.ssh/config`; quem lê aquele arquivo ganha o túnel de graça.
+
+## O painel
+
+Numa sessão SSH, o ícone de túneis abre o painel ao lado do terminal. Cada túnel mostra o tipo, o caminho e um ponto de estado:
+
+| Ponto | Significa |
+|---|---|
+| **verde** | de pé — o byte atravessa |
+| **cinza pulsando** | abrindo |
+| **vermelho** | falhou, com o motivo que o `ssh` deu e um botão **Tentar de novo** |
+
+## O gate: `-L` passa, `-R` e `-D` perguntam
+
+A classificação é **pela direção**, não pelo texto do comando:
+
+- **`-L` (local)** — você alcança uma porta que está lá. Não pergunta nada: você já tem shell no host, isso não te dá alcance novo.
+- **`-R` (remoto)** — abre uma porta **no host** que entra **na sua máquina**. Pergunta.
+- **`-D` (dinâmico)** — faz da sua máquina um proxy SOCKS para dentro da rede do host. Pergunta.
+
+<Warning>
+O diálogo do `-R`/`-D` diz **quem passa a alcançar o quê** — não é um "tem certeza?". Recusar é o padrão, e o gate vive no core: nenhuma tela consegue abrir um `-R` sem a sua confirmação.
+</Warning>
+
+Recriar um túnel que reata **não repergunta**: você já disse sim uma vez.
+
+## O túnel segue a sessão
+
+O Túnel de Sessão é **persistido** e volta quando a sessão SSH reata — queda de wifi, o laptop dormindo e fechar o app. A regra é uma só:
+
+> O túnel pertence à sessão SSH. A sessão SSH sobrevive. Logo o túnel sobrevive.
+
+Ver [Persistência da sessão](/pt-br/ssh/persistencia) para o porquê de a sessão sobreviver.
+
+### Quando a porta local foi tomada
+
+Se algo ocupou a sua porta local enquanto a conexão estava caída, o túnel **não volta calado**: ele fica **vermelho**, diz o motivo, e um toast te avisa mesmo se você estiver em outro workspace.
+
+<Note>
+Isso é deliberado, e é o pior cenário que a feature existe para evitar: o terminal voltar perfeito e o `localhost:5432` parar de funcionar **em silêncio**. Você descobriria minutos depois, debugando a aplicação errada.
+</Note>
+
+## Por que o túnel sempre mostra `127.0.0.1`
+
+Você vai reparar que o TYBA escreve `127.0.0.1:5432` onde o `ssh` aceitaria só `5432`. Não é verbosidade.
+
+`localhost` resolve para **dois** endereços: `::1` (IPv6) e `127.0.0.1` (IPv4). Com a porta nua, o `ssh` liga no que conseguir e **devolve sucesso se conseguiu pelo menos um**. Então, se algum processo já estiver no `127.0.0.1:5432`, o túnel sobe só no `::1`, o `ssh` diz que deu certo — e o seu `psql localhost:5432` fala com o outro processo achando que está na prod.
+
+Com o endereço explícito, o mesmo `ssh` falha e diz o porquê. É o que permite ao painel ficar vermelho em vez de mentir de verde.
+
+Se você quiser outro endereço de escuta, pode digitar — o campo aceita. `0.0.0.0` expõe o forward para a sua rede local.
+
+## No Windows
+
+Funciona igual na tela, mas por baixo é outro mecanismo: o OpenSSH do Windows não tem ControlMaster, então não existe `ssh -O forward`. Lá o TYBA **derruba a conexão e sobe de novo** com o túnel embutido — você vê o mesmo `reconectando…` de um wifi ruim, e o trabalho continua intacto do outro lado, porque a sessão mora no host.
+
+<Warning>
+**O SSH ainda não foi testado numa máquina Windows de verdade** — só no Linux e no macOS. Foi feito para funcionar lá; se não funcionar, é bug, e o relato ajuda.
+</Warning>
