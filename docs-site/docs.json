@@ -9,8 +9,8 @@
   },
   "favicon": "/images/favicon.png",
   "logo": {
-    "light": "/images/wordmark-light.svg",
-    "dark": "/images/wordmark-dark.svg",
+    "light": "/images/logo-light.svg",
+    "dark": "/images/logo-dark.svg",
     "href": "https://www.tyba.dev"
   },
   "navigation": {

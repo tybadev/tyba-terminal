@@ -1,0 +1,43 @@
+<svg viewBox="0 0 105.7 26" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TYBA">
+  <defs>
+    <linearGradient id="d-top" x1="15.3" y1="4.5" x2="48.7" y2="4.5" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7dc242" /><stop offset="1" stop-color="#f2bb0f" />
+    </linearGradient>
+    <linearGradient id="d-right" x1="58.1" y1="12.3" x2="58.1" y2="46.8" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f8bb10" /><stop offset="1" stop-color="#6c9d1a" />
+    </linearGradient>
+    <linearGradient id="d-left" x1="5.8" y1="12.3" x2="5.8" y2="46.8" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1fab4e" /><stop offset="1" stop-color="#008d84" />
+    </linearGradient>
+    <linearGradient id="d-wave-hi" x1="11.8" y1="53.6" x2="52.2" y2="53.6" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0179d4" /><stop offset="0.5" stop-color="#00a2c4" /><stop offset="1" stop-color="#0179d4" />
+    </linearGradient>
+    <linearGradient id="d-wave-lo" x1="18.7" y1="59.6" x2="45.3" y2="59.6" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#04408e" /><stop offset="0.5" stop-color="#0658a8" /><stop offset="1" stop-color="#04408e" />
+    </linearGradient>
+    <linearGradient id="d-core" x1="32" y1="25.4" x2="32" y2="33.4" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#c3d95f" /><stop offset="1" stop-color="#46a175" />
+    </linearGradient>
+    <clipPath id="d-wm-clip"><rect x="0" y="0" width="531" height="100" /></clipPath>
+  </defs>
+
+  <g transform="scale(0.40625)">
+    <g stroke-width="3.8" stroke-linecap="round" fill="none">
+      <path d="M15.3 4.5 Q32 31.6 48.7 4.5" stroke="url(#d-top)" />
+      <path d="M58.1 12.3 Q36.9 29.3 58.1 46.8" stroke="url(#d-right)" />
+      <path d="M5.8 12.3 Q27.1 29.3 5.8 46.8" stroke="url(#d-left)" />
+      <path d="M11.8 53.6 Q32 25.8 52.2 53.6" stroke="url(#d-wave-hi)" />
+      <path d="M18.7 59.6 Q32 38.7 45.3 59.6" stroke="url(#d-wave-lo)" />
+    </g>
+    <circle cx="32" cy="29.4" r="4.05" fill="url(#d-core)" />
+  </g>
+
+  <g transform="translate(36, 6.44) scale(0.1312)">
+    <g clip-path="url(#d-wm-clip)" stroke="#f5f5f6" stroke-width="14.5" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M0 7.25 H101.4 M50 0 V100" />
+      <path d="M138.4 0 L185.5 58 L234.1 0 M185.5 58 V100" />
+      <path d="M280.7 0 V100 M280.7 7.25 H351.2 A15 15 0 0 1 366.2 22.25 V31.4 A15 15 0 0 1 351.2 46.4 H280.7 M280.7 46.4 H354.1 A15 15 0 0 1 369.1 61.4 V77.75 A15 15 0 0 1 354.1 92.75 H280.7" />
+      <path d="M413.3 100 L467.1 0 L518.7 100" />
+    </g>
+  </g>
+</svg>
