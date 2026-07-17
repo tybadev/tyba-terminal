@@ -5,8 +5,8 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 ## Fase 0 — Fundação do repo ✅ (exceto itens anotados)
 
 - [x] Scaffold Tauri 2 + React + TS + Tailwind v4 + shadcn/ui (bun)
-- [x] Licença Apache-2.0, SECURITY.md — _CONTRIBUTING.md ainda falta_
-- [x] CI: clippy `-D warnings` + fmt + testes Rust (macOS + Ubuntu) + testes frontend — _Windows e build empacotado ficam para a Fase 6_
+- [x] Licença Apache-2.0, SECURITY.md, CONTRIBUTING.md
+- [x] CI: clippy `-D warnings` + fmt + testes Rust (macOS + Ubuntu) + testes frontend — Windows entrou nos gates (#162), mas **compila os testes sem executá-los** até o [#163](https://github.com/tybadev/tyba-terminal/issues/163)
 - [x] Estrutura de módulos do src-tauri conforme CLAUDE.md (traits de Sandbox e AgentRunner criadas)
 
 ## Fase 1 — Terminal single-session ✅
@@ -19,12 +19,12 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 
 **Critério de saída**: usar como terminal do dia a dia sem fricção (vim/htop/lazygit funcionando). ✅ — em dogfooding diário.
 
-## Fase 2 — Multi-session ✅ (exceto reopen)
+## Fase 2 — Multi-session ✅ **concluída**
 
 - [x] SessionManager + tabs/splits + workspaces
 - [x] SQLite store (sessões + scrollback com redação de secrets)
 - [x] Sessões sobrevivem a fechar a janela (attach/detach no core, refcount por janela)
-- [ ] Reconexão no reopen do app — [#50](https://github.com/tybadev/tyba-terminal/issues/50), spec pendente; blocos persistidos (ADR 2026-07-10) já nascem como fonte de dado
+- [x] Reconexão no reopen do app — [#50](https://github.com/tybadev/tyba-terminal/issues/50), entregue no #119 (`resume_startup`, preferência em Settings)
 - [x] Kill com killpg
 
 ## Fase 3 — Worktree lifecycle ✅ **concluída** (PRs #71, #72)
@@ -69,7 +69,7 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 
 ## Fase 6 — Distribuição
 
-- [x] Pipeline de release: matriz macOS (Apple Silicon + Intel) e Linux, gerando `.dmg`, `.deb`, `.rpm` e AppImage + SHA256SUMS; release sai como **rascunho** para conferência humana
+- [x] Pipeline de release: matriz macOS (Apple Silicon + Intel), Linux e Windows, gerando `.dmg`, `.deb`, `.rpm`, AppImage, `.exe`/`.msi` + SHA256SUMS; release sai como **rascunho** para conferência humana (macOS builda mas não publica até o certificado — ver abaixo)
 - [x] Gates definidos num lugar só (`gates.yml`) e chamados pelo PR, pela main e **pela tag** — a tag não sai da main por definição, então a release roda os gates antes de publicar em vez de confiar que alguém já rodou
 - [x] Tag amarrada à versão dos manifestos: `v0.2.0` com `tauri.conf.json` em `0.1.0` publicaria um `Tyba_0.1.0.dmg` dentro do release errado — o job recusa
 - [x] Gate de secrets no histórico completo (gitleaks na CI) — pré-requisito de abrir o repo
@@ -78,7 +78,7 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 - [ ] Codesign Windows (SmartScreen) — o release já builda e publica Windows **unsigned** (NSIS `.exe` + MSI); sem certificado, o SmartScreen avisa "app não reconhecido". Mesma classe do bloqueador da Apple: aquisição de certificado, não código
 - [ ] PKGBUILD publicado na AUR (`packaging/aur/PKGBUILD` pronto; falta subir a conta/repo AUR)
 - [ ] QA de desktop em Linux real (webkitgtk + xterm.js, notificações, window-state, PTY)
-- [ ] Notificação de versão nova + what's new — **não existe nada hoje** (a app nem expõe a própria versão); sem isso não há como avisar o primeiro usuário que saiu o fix do bug que ele reportou. Não precisa de chave nenhuma. Ver [TODO](TODO.md).
+- [x] Notificação de versão nova + what's new — entregue na v0.1.1 (#140): `update/` no core compara com a última release, toast acionável + botão em Settings apontando para o changelog do site. What's new **dentro** da app (sem sair pro site) fica como polish futuro.
 - [ ] Auto-update assinado — **fora da v0.1 de propósito**: a chave privada de update é o secret mais perigoso do projeto (quem a tiver publica um "update" que a máquina do usuário instala sozinha). Entra na v0.2, com calma. Ver [TODO](TODO.md).
 - [ ] Flatpak — **fora da v0.1**: o TYBA é um sandbox, e bwrap aninhado dentro do bwrap do Flatpak não sobe. O caminho é `flatpak-spawn --host` (precedente Ptyxis/Black Box), com PTY, socket de hook e a jaula atravessando a fronteira do container: projeto próprio, não um manifesto.
 - [ ] Site/docs, onboarding
@@ -94,3 +94,11 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 ## Entregue fora do roadmap (refinamento do shell, 2026-07)
 
 Trabalho que não estava listado mas aproximou o shell dos concorrentes e preparou a Fase 4: barra de chips com editor drag-and-drop, Rich Input (composer multiline pra agentes, `@arquivo` com cache), watcher de git no core (notify + reconcile), detecção de editores (`$EDITOR`/`$VISUAL`), Settings completo (temas, atalhos, preferências, i18n pt-BR/en), attach/detach multi-janela no core, liveness de processo por start time.
+
+## Entregue fora do roadmap (SSH, Docker e forge, 2026-07)
+
+Dois eixos inteiros que o plano original não previa, mais um item de forge — specs e ADRs no cofre (`tyba/features/ssh`, decisões `2026-07-15/16-ssh-*`):
+
+- **SSH como feature humana** (o agente remoto é projeto separado, por decisão): gestor de conexões com grupos/cores (#156), credenciais por delegação zero-segredo (ssh-agent/1Password, o TYBA nunca vê chave), hosts materializados em `~/.ssh/config.d/tyba.conf` via Include (dividendo: `ssh`/`scp`/DBeaver ganham os hosts e túneis de graça), broadcast para N sessões com gate por risco (#157), persistência via tmux invisível no host (#158 — a SSH Session sobrevive a wifi, sleep e ⌘Q), túneis `-L`/`-R`/`-D` visuais com gate pela direção do risco e bind explícito (#159). **Atenção**: agente digitado num pane SSH roda cru na máquina remota — sem jaula nem inbox; documentado na doc pública, aviso na UI pendente.
+- **Docker como sessão**: containers locais e do host remoto (via a conexão SSH) viram sessões de terminal com a mesma UX.
+- **Painel de CI no forge** (#149): checks da PR visíveis no painel, sem sair do TYBA.
