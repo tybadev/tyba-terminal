@@ -85,6 +85,7 @@ interface Props {
   onGoToWorkspace: (id: WorkspaceId) => void;
   launchConfigs: LaunchConfig[];
   onApplyLaunchConfig: (id: LaunchConfigId) => void;
+  onNewLaunchConfig: () => void;
   onSaveWorkspaceAsLaunchConfig: () => void;
 }
 
@@ -107,6 +108,7 @@ export function CommandPalette({
   onGoToWorkspace,
   launchConfigs,
   onApplyLaunchConfig,
+  onNewLaunchConfig,
   onSaveWorkspaceAsLaunchConfig,
 }: Props) {
   const { t, i18n } = useTranslation();
@@ -192,10 +194,16 @@ export function CommandPalette({
             <Plus size={15} />
             {t("newSession")}
           </CommandItem>
-          <CommandItem onSelect={run(onSaveWorkspaceAsLaunchConfig)}>
+          <CommandItem onSelect={run(onNewLaunchConfig)}>
             <Stack size={15} />
-            {t("launchSaveWorkspaceAs")}
+            {t("launchConfigNew")}
           </CommandItem>
+          {activeWorkspace && (
+            <CommandItem onSelect={run(onSaveWorkspaceAsLaunchConfig)}>
+              <Stack size={15} />
+              {t("launchSaveWorkspaceAs")}
+            </CommandItem>
+          )}
           <CommandItem onSelect={run(onNewWorktreeSession)}>
             <GitBranch size={15} />
             {t("worktreeNewSession")}

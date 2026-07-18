@@ -457,6 +457,31 @@ export default function App() {
     refreshLaunchConfigs();
   }, [paletteOpen, refreshLaunchConfigs]);
 
+  const newLaunchConfig = useCallback(() => {
+    const slotId = crypto.randomUUID();
+    setLaunchDraft({
+      name: "",
+      repoRoot: "",
+      slots: [
+        {
+          id: slotId,
+          name: "slot-1",
+          kind: { type: "shell" },
+          cwd_rel: null,
+          isolate: false,
+          initial_prompt: null,
+        },
+      ],
+      tabs: [
+        {
+          id: crypto.randomUUID(),
+          title: null,
+          root: { type: "leaf", id: crypto.randomUUID(), slot_id: slotId },
+        },
+      ],
+    });
+  }, []);
+
   const saveWorkspaceAsLaunchConfig = useCallback(() => {
     void launchConfigSeed()
       .then((seed) =>
@@ -2634,6 +2659,7 @@ export default function App() {
         onGoToWorkspace={(id) => void activateWorkspace(id)}
         launchConfigs={launchConfigs}
         onApplyLaunchConfig={applyLaunchConfigById}
+        onNewLaunchConfig={newLaunchConfig}
         onSaveWorkspaceAsLaunchConfig={saveWorkspaceAsLaunchConfig}
       />
       <LaunchConfigDialog

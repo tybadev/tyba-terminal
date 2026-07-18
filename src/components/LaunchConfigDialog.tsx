@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
+  FolderOpen,
   Robot,
   SplitHorizontal,
   SplitVertical,
@@ -49,6 +51,7 @@ const uid = () => crypto.randomUUID();
 export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
   const { t } = useTranslation();
   const [name, setName] = useState("");
+  const [repoRoot, setRepoRoot] = useState("");
   const [slots, setSlots] = useState<LaunchSlot[]>([]);
   const [tabs, setTabs] = useState<ipc.LaunchConfigTab[]>([]);
   const [activeTab, setActiveTab] = useState(0);
@@ -60,6 +63,7 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
   useEffect(() => {
     if (!draft) return;
     setName(draft.name);
+    setRepoRoot(draft.repoRoot);
     setSlots(draft.slots);
     setTabs(draft.tabs);
     setActiveTab(0);
@@ -117,12 +121,17 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
     setSelected(slotIds(next)[0] ?? null);
   };
 
+  const pickFolder = async () => {
+    const dir = await openFileDialog({ directory: true, multiple: false });
+    if (typeof dir === "string") setRepoRoot(dir);
+  };
+
   const save = async () => {
     setBusy(true);
     setError(null);
     try {
       const saved = await ipc.saveLaunchConfig(
-        { name, repo_root: draft.repoRoot, slots, tabs },
+        { name, repo_root: repoRoot, slots, tabs },
         draft.id,
       );
       if (saved.secret_warnings.length > 0 && warnings.length === 0) {
@@ -158,9 +167,19 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
             placeholder={t("launchConfigNamePlaceholder")}
             autoFocus
           />
-          <span className="font-mono text-[11px] text-tyba-text-faint">
-            {draft.repoRoot}
-          </span>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <span className="tyba-label">{t("launchConfigFolder")}</span>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={pickFolder}>
+              <FolderOpen size={14} />
+              {t("launchConfigPickFolder")}
+            </Button>
+            <span className="truncate font-mono text-[11px] text-tyba-text-faint">
+              {repoRoot || t("launchConfigNoFolder")}
+            </span>
+          </div>
         </div>
 
         <div className="grid grid-cols-[1fr_280px] gap-4">
@@ -325,7 +344,7 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
           <Button variant="ghost" onClick={onClose}>
             {t("cancel")}
           </Button>
-          <Button onClick={save} disabled={busy || !name.trim()}>
+          <Button onClick={save} disabled={busy || !name.trim() || !repoRoot}>
             {warnings.length > 0 ? t("launchSaveAnyway") : t("launchConfigSave")}
           </Button>
         </div>
