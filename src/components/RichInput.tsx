@@ -35,6 +35,7 @@ interface Props {
   pref: RichInputPref;
   focusNonce: number;
   openedExplicitly: boolean;
+  prefill?: string | null;
   onFocusChange: (focused: boolean) => void;
   onClose: () => void;
 }
@@ -44,6 +45,7 @@ export function RichInput({
   pref,
   focusNonce,
   openedExplicitly,
+  prefill,
   onFocusChange,
   onClose,
 }: Props) {
@@ -58,6 +60,16 @@ export function RichInput({
   const [warnArmed, setWarnArmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [popoverLeft, setPopoverLeft] = useState(0);
+
+  useEffect(() => {
+    if (!prefill) return;
+    setText(prefill);
+    setCaret(prefill.length);
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(prefill.length, prefill.length);
+  }, [prefill]);
 
   const active = useMemo(() => atQuery(text, caret), [text, caret]);
   const popoverOpen = active !== null && files.length > 0;

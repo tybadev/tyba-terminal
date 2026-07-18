@@ -10,7 +10,9 @@ import {
   FolderOpen,
   Keyboard,
   Palette,
+  Plus,
   SlidersHorizontal,
+  Stack,
   TerminalWindow,
   User,
 } from "@phosphor-icons/react";
@@ -50,6 +52,8 @@ import {
   type EditorInfo,
   type ThemeState,
   type UpdateStatus,
+  type LaunchConfig,
+  type LaunchConfigId,
 } from "../lib/ipc";
 import {
   actionsByCategory,
@@ -79,10 +83,17 @@ type Section =
   | "general"
   | "appearance"
   | "code"
+  | "launch"
   | "shortcuts"
   | "preferences";
 
 interface Props {
+  launchConfigs: LaunchConfig[];
+  onApplyLaunchConfig: (id: LaunchConfigId) => void;
+  onEditLaunchConfig: (id: LaunchConfigId) => void;
+  onDeleteLaunchConfig: (id: LaunchConfigId) => void;
+  onNewLaunchConfig: () => void;
+  onRefreshLaunchConfigs: () => void;
   version: string;
   update: UpdateStatus | null;
   togglePref: SidebarTogglePref;
@@ -340,6 +351,12 @@ function ShortcutRow({
 }
 
 export function SettingsView({
+  launchConfigs,
+  onApplyLaunchConfig,
+  onEditLaunchConfig,
+  onDeleteLaunchConfig,
+  onNewLaunchConfig,
+  onRefreshLaunchConfigs,
   version,
   update,
   togglePref,
@@ -372,6 +389,11 @@ export function SettingsView({
 }: Props) {
   const { t, i18n } = useTranslation();
   const [section, setSection] = useState<Section>("general");
+
+  useEffect(() => {
+    if (section !== "launch") return;
+    onRefreshLaunchConfigs();
+  }, [section, onRefreshLaunchConfigs]);
   const [mode, setMode] = useState<ThemeMode>(getThemeMode);
   const [themes, setThemes] = useState<Theme[]>([]);
   const [editors, setEditors] = useState<EditorInfo[]>([]);
@@ -476,6 +498,12 @@ export function SettingsView({
           onClick={() => setSection("code")}
         />
         <NavItem
+          active={section === "launch"}
+          icon={<Stack size={15} />}
+          label={t("settingsLaunchConfigs")}
+          onClick={() => setSection("launch")}
+        />
+        <NavItem
           active={section === "shortcuts"}
           icon={<Keyboard size={15} />}
           label={t("settingsShortcuts")}
@@ -562,6 +590,70 @@ export function SettingsView({
             <p className="pt-2 text-[11px] text-tyba-text-faint">
               {t("defaultSessionDirHint")}
             </p>
+          </section>
+        )}
+
+        {section === "launch" && (
+          <section className="mx-auto w-full max-w-lg">
+            <SectionHeader
+              title={t("settingsLaunchConfigs")}
+              hint={t("settingsLaunchConfigsHint")}
+            />
+            <div className="mt-4 flex flex-col gap-2">
+              {launchConfigs.length === 0 && (
+                <span className="text-[12px] text-tyba-text-faint">
+                  {t("launchNoConfigs")}
+                </span>
+              )}
+              {launchConfigs.map((config) => (
+                <div
+                  key={config.id}
+                  className="flex items-center gap-3 rounded-md border border-tyba-border p-2.5"
+                >
+                  <Stack size={15} className="shrink-0 text-tyba-violet" />
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-[13px] text-tyba-text">
+                      {config.name}
+                    </span>
+                    <span className="truncate font-mono text-[11px] text-tyba-text-faint">
+                      {config.repo_root} · {config.slots.length}{" "}
+                      {config.slots.length === 1 ? "pane" : "panes"}
+                    </span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onApplyLaunchConfig(config.id)}
+                  >
+                    {t("launchOpen")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onEditLaunchConfig(config.id)}
+                  >
+                    {t("launchEdit")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-tyba-red"
+                    onClick={() => onDeleteLaunchConfig(config.id)}
+                  >
+                    {t("launchDelete")}
+                  </Button>
+                </div>
+              ))}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="self-start"
+                onClick={onNewLaunchConfig}
+              >
+                <Plus size={14} />
+                {t("launchConfigNew")}
+              </Button>
+            </div>
           </section>
         )}
 

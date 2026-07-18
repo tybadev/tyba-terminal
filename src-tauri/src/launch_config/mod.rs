@@ -10,6 +10,8 @@ use crate::session::redact::redact;
 use crate::session::SessionKind;
 use crate::worktree::slugify;
 
+pub const EVENT_PREFILL: &str = "launch-config://prefill";
+
 pub type LaunchConfigId = Uuid;
 pub type SlotId = Uuid;
 
@@ -34,6 +36,10 @@ pub enum LaunchConfigError {
     NotFound(LaunchConfigId),
     #[error("workspace sem repositório: launch config exige um repo")]
     NoRepoRoot,
+    #[error("slot remoto não pode isolar em worktree: {0}")]
+    RemoteCannotIsolate(String),
+    #[error("slot de container não é suportado em launch config: {0}")]
+    ContainerSlot(String),
     #[error("store: {0}")]
     Store(#[from] crate::session::store::StoreError),
 }
@@ -327,6 +333,15 @@ pub fn validate(draft: &LaunchConfigDraft) -> Result<(), LaunchConfigError> {
         if !seen.insert(name) {
             return Err(LaunchConfigError::DuplicateSlotName(slot.name.clone()));
         }
+        match slot.kind {
+            SessionKind::Container { .. } => {
+                return Err(LaunchConfigError::ContainerSlot(slot.name.clone()))
+            }
+            SessionKind::Ssh { .. } if slot.isolate => {
+                return Err(LaunchConfigError::RemoteCannotIsolate(slot.name.clone()))
+            }
+            _ => {}
+        }
     }
 
     let mut placed = Vec::new();
@@ -455,15 +470,15 @@ pub fn bind_slots_to_sessions(
     bind: &dyn Fn(SlotId) -> Option<Uuid>,
 ) -> Vec<PaneRow> {
     rows.iter()
-        .filter_map(|row| {
-            let session_id = match row.session_id.as_deref() {
-                None => None,
-                Some(slot) => {
-                    let slot = Uuid::parse_str(slot).ok()?;
-                    Some(bind(slot)?.to_string())
-                }
-            };
-            Some(PaneRow {
+        .map(|row| {
+            let session_id = row.session_id.as_deref().map(|slot| {
+                Uuid::parse_str(slot)
+                    .ok()
+                    .and_then(bind)
+                    .unwrap_or_else(Uuid::new_v4)
+                    .to_string()
+            });
+            PaneRow {
                 id: row.id.clone(),
                 tab_id: row.tab_id.clone(),
                 parent_id: row.parent_id.clone(),
@@ -471,7 +486,7 @@ pub fn bind_slots_to_sessions(
                 ratio: row.ratio,
                 position: row.position,
                 session_id,
-            })
+            }
         })
         .collect()
 }
@@ -678,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn binding_drops_panes_whose_slot_has_no_session() {
+    fn unbound_slot_keeps_its_pane_so_the_split_can_be_pruned_later() {
         let a = slot("a");
         let b = slot("b");
         let tree = SlotNode::Split {
@@ -699,10 +714,13 @@ mod tests {
                 None
             }
         });
-        assert_eq!(bound.len(), 2);
+        assert_eq!(bound.len(), 3);
         assert!(bound
             .iter()
             .any(|r| r.session_id.as_deref() == Some(session.to_string().as_str())));
+        let leaves: Vec<&PaneRow> = bound.iter().filter(|r| r.split.is_none()).collect();
+        assert_eq!(leaves.len(), 2);
+        assert!(leaves.iter().all(|r| r.session_id.is_some()));
     }
 
     #[test]
@@ -722,6 +740,77 @@ mod tests {
         assert!(matches!(
             validate(&draft),
             Err(LaunchConfigError::DuplicateSlotName(_))
+        ));
+    }
+
+    #[test]
+    fn ssh_slot_is_allowed_and_stores_only_the_host_reference() {
+        let mut remote = slot("prod");
+        remote.kind = SessionKind::Ssh {
+            host_id: "host-abc".into(),
+        };
+        let draft = LaunchConfigDraft {
+            name: "ops".into(),
+            repo_root: "/repo".into(),
+            slots: vec![remote.clone()],
+            tabs: vec![ConfigTab {
+                id: Uuid::new_v4(),
+                title: None,
+                root: leaf(&remote),
+            }],
+        };
+        assert!(validate(&draft).is_ok());
+
+        let json = serde_json::to_string(&remote).unwrap();
+        assert!(json.contains("host-abc"));
+        for secret in ["password", "identity_file", "hostname", "username"] {
+            assert!(!json.contains(secret), "slot vazou {secret}");
+        }
+    }
+
+    #[test]
+    fn ssh_slot_cannot_isolate_in_a_worktree() {
+        let mut remote = slot("prod");
+        remote.kind = SessionKind::Ssh {
+            host_id: "host-abc".into(),
+        };
+        remote.isolate = true;
+        let draft = LaunchConfigDraft {
+            name: "ops".into(),
+            repo_root: "/repo".into(),
+            slots: vec![remote.clone()],
+            tabs: vec![ConfigTab {
+                id: Uuid::new_v4(),
+                title: None,
+                root: leaf(&remote),
+            }],
+        };
+        assert!(matches!(
+            validate(&draft),
+            Err(LaunchConfigError::RemoteCannotIsolate(_))
+        ));
+    }
+
+    #[test]
+    fn container_slot_is_refused() {
+        let mut c = slot("db");
+        c.kind = SessionKind::Container {
+            host_id: None,
+            container_id: "abc".into(),
+        };
+        let draft = LaunchConfigDraft {
+            name: "ops".into(),
+            repo_root: "/repo".into(),
+            slots: vec![c.clone()],
+            tabs: vec![ConfigTab {
+                id: Uuid::new_v4(),
+                title: None,
+                root: leaf(&c),
+            }],
+        };
+        assert!(matches!(
+            validate(&draft),
+            Err(LaunchConfigError::ContainerSlot(_))
         ));
     }
 
@@ -883,6 +972,101 @@ mod tests {
         assert!(rows.slots.is_empty());
         assert!(rows.panes.is_empty());
         assert!(rows.tabs.is_empty());
+    }
+
+    fn assemble(
+        tree: &SlotNode,
+        bindings: &std::collections::HashMap<SlotId, Uuid>,
+    ) -> Option<crate::layout::Workspace> {
+        let ws_id = Uuid::new_v4().to_string();
+        let tab_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let mut panes = Vec::new();
+        tree_to_rows(&tab_id, tree, &mut panes);
+        let bound = bind_slots_to_sessions(&panes, &|slot| bindings.get(&slot).copied());
+        let rows = crate::layout::LayoutRows {
+            workspaces: vec![crate::layout::WorkspaceRow {
+                id: ws_id.clone(),
+                name: "cfg".into(),
+                name_locked: Some(1),
+                repo_root: Some("/repo".into()),
+                color: None,
+                group_name: None,
+                kind: Some("user".into()),
+                launch_config_id: None,
+                position: 0,
+                active_tab: None,
+                side_view: None,
+                side_ratio: None,
+                side_expanded: None,
+                created_at: now.clone(),
+            }],
+            tabs: vec![crate::layout::TabRow {
+                id: tab_id,
+                workspace_id: Some(ws_id),
+                title: None,
+                view: None,
+                position: 0,
+                active_pane: None,
+                created_at: now,
+            }],
+            panes: bound,
+        };
+        let valid: HashSet<Uuid> = bindings.values().copied().collect();
+        crate::layout::rows_to_workspaces(&rows, &valid).pop()
+    }
+
+    #[test]
+    fn apply_assembles_the_split_when_every_slot_spawned() {
+        let a = slot("a");
+        let b = slot("b");
+        let tree = SlotNode::Split {
+            id: Uuid::new_v4(),
+            split: SplitKind::V,
+            ratio: 0.7,
+            first: Box::new(leaf(&a)),
+            second: Box::new(leaf(&b)),
+        };
+        let mut bindings = std::collections::HashMap::new();
+        bindings.insert(a.id, Uuid::new_v4());
+        bindings.insert(b.id, Uuid::new_v4());
+
+        let ws = assemble(&tree, &bindings).unwrap();
+        assert!(matches!(
+            ws.tabs[0].root,
+            Some(crate::layout::PaneNode::Split { ratio, .. }) if (ratio - 0.7).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn one_failed_slot_collapses_the_split_instead_of_killing_the_tab() {
+        let a = slot("a");
+        let b = slot("b");
+        let tree = SlotNode::Split {
+            id: Uuid::new_v4(),
+            split: SplitKind::V,
+            ratio: 0.5,
+            first: Box::new(leaf(&a)),
+            second: Box::new(leaf(&b)),
+        };
+        let survivor = Uuid::new_v4();
+        let mut bindings = std::collections::HashMap::new();
+        bindings.insert(a.id, survivor);
+
+        let ws = assemble(&tree, &bindings).unwrap();
+        assert_eq!(ws.tabs.len(), 1);
+        assert!(matches!(
+            ws.tabs[0].root,
+            Some(crate::layout::PaneNode::Leaf { session_id, .. }) if session_id == survivor
+        ));
+    }
+
+    #[test]
+    fn every_slot_failing_leaves_no_workspace_to_insert() {
+        let a = slot("a");
+        let tree = leaf(&a);
+        let ws = assemble(&tree, &std::collections::HashMap::new());
+        assert!(ws.is_none_or(|w| w.tabs.is_empty()));
     }
 
     #[test]
