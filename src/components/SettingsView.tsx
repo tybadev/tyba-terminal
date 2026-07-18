@@ -62,6 +62,7 @@ import {
   type KeyAction,
 } from "../lib/keys";
 import { Shortcut } from "@/components/ui/kbd";
+import { toastError } from "../lib/toast";
 import { FONT_SIZE_EVENT, setDefaultFontSize } from "./TerminalView";
 import { ToolbarChipsEditor } from "./ToolbarChipsEditor";
 import type { RichInputPref } from "../lib/richInput";
@@ -447,7 +448,7 @@ export function SettingsView({
       await importThemeCmd(path);
       refresh();
     } catch (error) {
-      window.alert(t("themeImportFailed", { error: String(error) }));
+      toastError(t("themeImportFailedTitle"), error);
     }
   };
 

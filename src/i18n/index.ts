@@ -350,6 +350,7 @@ const resources = {
       pasteConfirm: "Colar",
       pasteAsSingleLine: "Colar como uma linha",
       cancel: "Cancelar",
+      confirm: "Confirmar",
       retry: "Tentar de novo",
       regionCrashed: "Erro ao renderizar {{region}}. O resto do Tyba segue funcionando.",
       pasteControlChars:
@@ -403,6 +404,7 @@ const resources = {
       switchFontTo: "Mudar fonte para {{font}}",
       importTheme: "Importar tema…",
       themeImportFailed: "Falha ao importar tema: {{error}}",
+      themeImportFailedTitle: "Falha ao importar tema",
       containers: "Containers",
       containersEmpty: "Nenhum container deste projeto.",
       containersEmptyAll: "Nenhum container no daemon.",
@@ -1029,6 +1031,7 @@ const resources = {
       pasteConfirm: "Paste",
       pasteAsSingleLine: "Paste as a single line",
       cancel: "Cancel",
+      confirm: "Confirm",
       retry: "Try again",
       regionCrashed: "Failed to render {{region}}. The rest of Tyba keeps working.",
       pasteControlChars:
@@ -1082,6 +1085,7 @@ const resources = {
       switchFontTo: "Switch font to {{font}}",
       importTheme: "Import theme…",
       themeImportFailed: "Failed to import theme: {{error}}",
+      themeImportFailedTitle: "Failed to import theme",
       containers: "Containers",
       containersEmpty: "No containers for this project.",
       containersEmptyAll: "No containers in the daemon.",

@@ -66,6 +66,8 @@ import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { Clock } from "./components/Clock";
 import { CommandPalette } from "./components/CommandPalette";
+import { ConfirmHost } from "./components/ConfirmHost";
+import { ToastHost } from "./components/ToastHost";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ContainersView } from "./components/ContainersView";
 import { ConnectionsView } from "./components/ConnectionsView";
@@ -2514,6 +2516,8 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={400}>
       <ErrorBoundary region="notificações">
+        <ToastHost />
+        <ConfirmHost />
         <UpdateToast
           status={update}
           onDismiss={() => {
