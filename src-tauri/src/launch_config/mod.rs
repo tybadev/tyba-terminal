@@ -36,6 +36,10 @@ pub enum LaunchConfigError {
     NotFound(LaunchConfigId),
     #[error("workspace sem repositório: launch config exige um repo")]
     NoRepoRoot,
+    #[error("slot remoto não pode isolar em worktree: {0}")]
+    RemoteCannotIsolate(String),
+    #[error("slot de container não é suportado em launch config: {0}")]
+    ContainerSlot(String),
     #[error("store: {0}")]
     Store(#[from] crate::session::store::StoreError),
 }
@@ -332,6 +336,15 @@ pub fn validate(draft: &LaunchConfigDraft) -> Result<(), LaunchConfigError> {
         }
         if !seen.insert(name) {
             return Err(LaunchConfigError::DuplicateSlotName(slot.name.clone()));
+        }
+        match slot.kind {
+            SessionKind::Container { .. } => {
+                return Err(LaunchConfigError::ContainerSlot(slot.name.clone()))
+            }
+            SessionKind::Ssh { .. } if slot.isolate => {
+                return Err(LaunchConfigError::RemoteCannotIsolate(slot.name.clone()))
+            }
+            _ => {}
         }
     }
 
@@ -734,6 +747,77 @@ mod tests {
         assert!(matches!(
             validate(&draft),
             Err(LaunchConfigError::DuplicateSlotName(_))
+        ));
+    }
+
+    #[test]
+    fn ssh_slot_is_allowed_and_stores_only_the_host_reference() {
+        let mut remote = slot("prod");
+        remote.kind = SessionKind::Ssh {
+            host_id: "host-abc".into(),
+        };
+        let draft = LaunchConfigDraft {
+            name: "ops".into(),
+            repo_root: "/repo".into(),
+            slots: vec![remote.clone()],
+            tabs: vec![ConfigTab {
+                id: Uuid::new_v4(),
+                title: None,
+                root: leaf(&remote),
+            }],
+        };
+        assert!(validate(&draft).is_ok());
+
+        let json = serde_json::to_string(&remote).unwrap();
+        assert!(json.contains("host-abc"));
+        for secret in ["password", "identity_file", "hostname", "username"] {
+            assert!(!json.contains(secret), "slot vazou {secret}");
+        }
+    }
+
+    #[test]
+    fn ssh_slot_cannot_isolate_in_a_worktree() {
+        let mut remote = slot("prod");
+        remote.kind = SessionKind::Ssh {
+            host_id: "host-abc".into(),
+        };
+        remote.isolate = true;
+        let draft = LaunchConfigDraft {
+            name: "ops".into(),
+            repo_root: "/repo".into(),
+            slots: vec![remote.clone()],
+            tabs: vec![ConfigTab {
+                id: Uuid::new_v4(),
+                title: None,
+                root: leaf(&remote),
+            }],
+        };
+        assert!(matches!(
+            validate(&draft),
+            Err(LaunchConfigError::RemoteCannotIsolate(_))
+        ));
+    }
+
+    #[test]
+    fn container_slot_is_refused() {
+        let mut c = slot("db");
+        c.kind = SessionKind::Container {
+            host_id: None,
+            container_id: "abc".into(),
+        };
+        let draft = LaunchConfigDraft {
+            name: "ops".into(),
+            repo_root: "/repo".into(),
+            slots: vec![c.clone()],
+            tabs: vec![ConfigTab {
+                id: Uuid::new_v4(),
+                title: None,
+                root: leaf(&c),
+            }],
+        };
+        assert!(matches!(
+            validate(&draft),
+            Err(LaunchConfigError::ContainerSlot(_))
         ));
     }
 

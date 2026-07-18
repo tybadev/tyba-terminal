@@ -1,4 +1,9 @@
-import { Robot, TerminalWindow, TreeStructure } from "@phosphor-icons/react";
+import {
+  CloudArrowUp,
+  Robot,
+  TerminalWindow,
+  TreeStructure,
+} from "@phosphor-icons/react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -81,7 +86,7 @@ export function LaunchCanvas({
         const slot = slotId ? slotById.get(slotId) : undefined;
         const isSelected = slotId != null && slotId === selected;
         const compact = rect.w * rect.h < COMPACT_AREA;
-        const isAgent = slot?.kind.type === "agent";
+        const kind = slot?.kind.type;
         return (
           <button
             key={rect.pane}
@@ -102,12 +107,14 @@ export function LaunchCanvas({
             }}
           >
             <span className="flex items-center gap-1.5 truncate">
-              {isAgent ? (
+              {kind === "agent" ? (
                 <Robot
                   size={13}
                   weight="fill"
                   className={isSelected ? "text-tyba-green" : "text-tyba-violet"}
                 />
+              ) : kind === "ssh" ? (
+                <CloudArrowUp size={13} className="text-tyba-cyan" />
               ) : (
                 <TerminalWindow size={13} className="text-tyba-text-faint" />
               )}
@@ -117,8 +124,11 @@ export function LaunchCanvas({
             </span>
             {!compact && (
               <span className="truncate font-mono text-[10px] text-tyba-text-faint">
-                {slot?.cwd_rel?.trim() ? slot.cwd_rel : "."}
-                {slot?.isolate ? " · worktree" : ""}
+                {slot?.kind.type === "ssh"
+                  ? t("launchSlotRemote")
+                  : `${slot?.cwd_rel?.trim() ? slot.cwd_rel : "."}${
+                      slot?.isolate ? " · worktree" : ""
+                    }`}
               </span>
             )}
             {isSelected &&

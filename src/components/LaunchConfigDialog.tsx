@@ -3,11 +3,13 @@ import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   FolderOpen,
+  Plus,
   Robot,
   SplitHorizontal,
   SplitVertical,
   Trash,
   Warning,
+  X,
 } from "@phosphor-icons/react";
 
 import {
@@ -59,6 +61,15 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [hosts, setHosts] = useState<ipc.Host[]>([]);
+
+  useEffect(() => {
+    if (!draft) return;
+    void ipc
+      .listHosts()
+      .then(setHosts)
+      .catch(() => setHosts([]));
+  }, [draft]);
 
   useEffect(() => {
     if (!draft) return;
@@ -108,6 +119,42 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
     setSlots((prev) => [...prev, newSlot]);
     updateRoot(splitPane(tab.root, pane, kind, uid(), newSlot.id, uid()));
     setSelected(newSlot.id);
+  };
+
+  const addTab = () => {
+    const slotId = uid();
+    const newSlot: LaunchSlot = {
+      id: slotId,
+      name: nextSlotName(slots),
+      kind: { type: "shell" },
+      cwd_rel: null,
+      isolate: false,
+      initial_prompt: null,
+    };
+    setSlots((prev) => [...prev, newSlot]);
+    setTabs((prev) => [
+      ...prev,
+      {
+        id: uid(),
+        title: null,
+        root: { type: "leaf", id: uid(), slot_id: slotId },
+      },
+    ]);
+    setActiveTab(tabs.length);
+    setSelected(slotId);
+  };
+
+  const removeTab = (index: number) => {
+    if (tabs.length < 2) return;
+    const doomed = tabs[index];
+    const orphaned = new Set(slotIds(doomed.root));
+    const nextTabs = tabs.filter((_, i) => i !== index);
+    const nextSlots = slots.filter((s) => !orphaned.has(s.id));
+    setTabs(nextTabs);
+    setSlots(nextSlots);
+    const nextIndex = Math.min(index, nextTabs.length - 1);
+    setActiveTab(nextIndex);
+    setSelected(slotIds(nextTabs[nextIndex].root)[0] ?? null);
   };
 
   const doRemove = () => {
@@ -184,6 +231,48 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
 
         <div className="grid grid-cols-[1fr_280px] gap-4">
           <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-1 border-b border-tyba-border pb-1.5">
+              {tabs.map((item, index) => (
+                <div
+                  key={item.id}
+                  className={`group flex items-center gap-1 rounded-[4px] px-2 py-1 text-[11px] transition-colors ${
+                    index === activeTab
+                      ? "bg-tyba-text/[.06] text-tyba-text"
+                      : "text-tyba-text-faint hover:text-tyba-text-muted"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab(index);
+                      setSelected(slotIds(item.root)[0] ?? null);
+                    }}
+                  >
+                    {item.title?.trim()
+                      ? item.title
+                      : t("launchTabLabel", { n: index + 1 })}
+                  </button>
+                  {tabs.length > 1 && (
+                    <button
+                      type="button"
+                      aria-label={t("launchRemoveTab")}
+                      onClick={() => removeTab(index)}
+                      className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-tyba-red"
+                    >
+                      <X size={11} />
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button
+                type="button"
+                aria-label={t("launchAddTab")}
+                onClick={addTab}
+                className="rounded-[4px] px-1.5 py-1 text-tyba-text-faint transition-colors hover:text-tyba-text"
+              >
+                <Plus size={12} />
+              </button>
+            </div>
             {tab && (
               <LaunchCanvas
                 root={tab.root}
@@ -272,9 +361,51 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
                     >
                       codex
                     </Button>
+                    <Button
+                      variant={slot.kind.type === "ssh" ? "default" : "ghost"}
+                      size="sm"
+                      disabled={hosts.length === 0}
+                      title={hosts.length === 0 ? t("launchNoHosts") : undefined}
+                      onClick={() =>
+                        updateSlot({
+                          kind: { type: "ssh", host_id: hosts[0].id },
+                          isolate: false,
+                          cwd_rel: null,
+                          initial_prompt: null,
+                        })
+                      }
+                    >
+                      ssh
+                    </Button>
                   </div>
                 </div>
 
+                {slot.kind.type === "ssh" && (
+                  <div className="flex flex-col gap-1.5">
+                    <span className="tyba-label">{t("launchSlotHost")}</span>
+                    <select
+                      value={slot.kind.host_id}
+                      onChange={(e) =>
+                        updateSlot({
+                          kind: { type: "ssh", host_id: e.target.value },
+                        })
+                      }
+                      className="tyba-focusable h-8 rounded-[4px] border border-tyba-border bg-tyba-sunken px-2 font-mono text-[12px] text-tyba-text"
+                    >
+                      {hosts.map((host) => (
+                        <option key={host.id} value={host.id}>
+                          {host.alias}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-[11px] text-tyba-text-faint">
+                      {t("launchSlotHostHelp")}
+                    </span>
+                  </div>
+                )}
+
+                {slot.kind.type !== "ssh" && (
+                  <>
                 <div className="flex flex-col gap-1.5">
                   <span className="tyba-label">{t("launchSlotFolder")}</span>
                   <Input
@@ -316,6 +447,8 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
                     {t("launchSlotPromptHelp")}
                   </span>
                 </div>
+                  </>
+                )}
               </>
             ) : (
               <span className="text-[12px] text-tyba-text-faint">
