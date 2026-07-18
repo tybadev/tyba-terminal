@@ -453,8 +453,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!paletteOpen) return;
     refreshLaunchConfigs();
-  }, [refreshLaunchConfigs]);
+  }, [paletteOpen, refreshLaunchConfigs]);
 
   const saveWorkspaceAsLaunchConfig = useCallback(() => {
     void launchConfigSeed()
