@@ -477,13 +477,12 @@ mod tests {
 
     #[test]
     fn pre_voo_ve_a_porta_tomada_no_endereco_que_o_tunel_usa() {
+        let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = squatter.local_addr().unwrap().port();
         let t = Tunnel {
-            listen_port: 15487,
-            ..local(15487)
+            listen_port: port,
+            ..local(port)
         };
-        assert!(local_port_free(&t), "porta livre antes do impostor");
-
-        let squatter = std::net::TcpListener::bind(("127.0.0.1", 15487)).unwrap();
         assert!(
             !local_port_free(&t),
             "o pré-voo pergunta pelo bind_address do túnel (127.0.0.1), que é \
@@ -491,6 +490,14 @@ mod tests {
              endereço aprovaria uma porta que o ssh não consegue ligar"
         );
         drop(squatter);
+        assert!(
+            local_port_free(&t),
+            "solta o impostor e a porta volta a estar livre — o pré-voo lê o \
+             estado real, não um palpite. A porta vem de um bind em :0 (o SO dá \
+             uma livre e exclusiva) em vez de número fixo, senão dois testes em \
+             paralelo brigam pela mesma e um flakeia — foi o que derrubou o \
+             macOS no corte da v0.1.4"
+        );
     }
 
     #[test]
@@ -541,10 +548,11 @@ mod tests {
 
     #[test]
     fn o_pre_voo_nao_opina_sobre_o_remote_forward() {
-        let squatter = std::net::TcpListener::bind(("127.0.0.1", 15486)).unwrap();
+        let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = squatter.local_addr().unwrap().port();
         let r = Tunnel {
             kind: TunnelKind::Remote,
-            listen_port: 15486,
+            listen_port: port,
             listen_host: None,
             target_host: Some("localhost".into()),
             target_port: Some(3000),
@@ -559,7 +567,7 @@ mod tests {
         assert!(
             !local_port_free(&Tunnel {
                 kind: TunnelKind::Dynamic,
-                listen_port: 15486,
+                listen_port: port,
                 listen_host: None,
                 target_host: None,
                 target_port: None,
