@@ -50,6 +50,7 @@ import {
   type WorkspaceId,
 } from "../lib/ipc";
 import { type Bindings } from "../lib/keys";
+import { toastError } from "../lib/toast";
 
 const THEME_ICONS: Record<ThemeMode, typeof Moon> = {
   dark: Moon,
@@ -129,7 +130,7 @@ export function CommandPalette({
       const imported = await importThemeCmd(path);
       await applyTheme(imported);
     } catch (error) {
-      window.alert(t("themeImportFailed", { error: String(error) }));
+      toastError(t("themeImportFailedTitle"), error);
     }
   };
 

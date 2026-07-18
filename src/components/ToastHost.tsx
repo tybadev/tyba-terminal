@@ -1,0 +1,70 @@
+import { useEffect, useState } from "react";
+import { Info, Warning, WarningOctagon } from "@phosphor-icons/react";
+
+import {
+  Toast,
+  ToastDescription,
+  ToastProvider,
+  ToastTitle,
+  ToastViewport,
+} from "@/components/ui/toast";
+import {
+  dismissToast,
+  subscribeToasts,
+  type ToastMessage,
+  type ToastTone,
+} from "@/lib/toast";
+
+const TONE_ICON: Record<ToastTone, typeof Info> = {
+  info: Info,
+  warning: Warning,
+  error: WarningOctagon,
+};
+
+const TONE_CLASS: Record<ToastTone, string> = {
+  info: "text-tyba-blue",
+  warning: "text-tyba-amber",
+  error: "text-tyba-red",
+};
+
+export function ToastHost() {
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  useEffect(() => subscribeToasts(setToasts), []);
+
+  return (
+    <ToastProvider swipeDirection="right" duration={Infinity}>
+      {toasts.map((toast) => {
+        const Icon = TONE_ICON[toast.tone];
+        return (
+          <Toast
+            key={toast.id}
+            onOpenChange={(open) => {
+              if (!open) dismissToast(toast.id);
+            }}
+          >
+            <div className="flex items-start gap-2">
+              <Icon
+                aria-hidden="true"
+                size={16}
+                weight="fill"
+                className={`mt-0.5 shrink-0 ${TONE_CLASS[toast.tone]}`}
+              />
+              <div className="min-w-0 flex-1">
+                <ToastTitle>{toast.title}</ToastTitle>
+                {toast.detail && (
+                  <ToastDescription>
+                    <span className="block break-words font-mono text-xs">
+                      {toast.detail}
+                    </span>
+                  </ToastDescription>
+                )}
+              </div>
+            </div>
+          </Toast>
+        );
+      })}
+      <ToastViewport className="bottom-4 top-auto" />
+    </ToastProvider>
+  );
+}
