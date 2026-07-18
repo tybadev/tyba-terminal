@@ -91,7 +91,7 @@ export function LaunchCanvas({
             aria-label={slot?.name ?? t("launchSlotUnnamed")}
             className={`tyba-focusable absolute flex flex-col gap-1 overflow-hidden p-2 text-left transition-colors ${
               isSelected
-                ? "border-2 border-tyba-green bg-tyba-green-tint"
+                ? "border border-tyba-green bg-tyba-raised"
                 : "border border-tyba-border-strong bg-tyba-surface hover:border-tyba-text-faint"
             }`}
             style={{
@@ -121,6 +121,19 @@ export function LaunchCanvas({
                 {slot?.isolate ? " · worktree" : ""}
               </span>
             )}
+            {isSelected &&
+              [
+                "left-0 top-0",
+                "right-0 top-0",
+                "left-0 bottom-0",
+                "right-0 bottom-0",
+              ].map((pos) => (
+                <span
+                  key={pos}
+                  aria-hidden
+                  className={`absolute size-[5px] bg-tyba-green ${pos}`}
+                />
+              ))}
           </button>
         );
       })}

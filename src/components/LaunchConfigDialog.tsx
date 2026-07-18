@@ -151,7 +151,7 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-[880px] border-tyba-border-strong bg-tyba-surface">
+      <DialogContent className="max-w-[880px] sm:max-w-[880px] border-tyba-border-strong bg-tyba-surface">
         <DialogHeader>
           <DialogTitle>
             {draft.id ? t("launchConfigEdit") : t("launchConfigNew")}
