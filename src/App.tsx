@@ -127,6 +127,7 @@ import {
   listSessions,
   newWindow,
   applyLaunchConfig,
+  deleteLaunchConfig,
   launchConfigSeed,
   listLaunchConfigs,
   type LaunchConfig,
@@ -481,6 +482,33 @@ export default function App() {
       ],
     });
   }, []);
+
+  const editLaunchConfig = useCallback(
+    (id: LaunchConfigId) => {
+      const config = launchConfigs.find((c) => c.id === id);
+      if (!config) return;
+      setLaunchDraft({
+        id: config.id,
+        name: config.name,
+        repoRoot: config.repo_root,
+        slots: config.slots,
+        tabs: config.tabs,
+      });
+    },
+    [launchConfigs],
+  );
+
+  const removeLaunchConfig = useCallback(
+    (id: LaunchConfigId) => {
+      const config = launchConfigs.find((c) => c.id === id);
+      if (!window.confirm(t("launchDeleteConfirm", { name: config?.name ?? "" })))
+        return;
+      void deleteLaunchConfig(id)
+        .then(refreshLaunchConfigs)
+        .catch((e) => window.alert(String(e)));
+    },
+    [launchConfigs, refreshLaunchConfigs, t],
+  );
 
   const saveWorkspaceAsLaunchConfig = useCallback(() => {
     void launchConfigSeed()
@@ -3272,6 +3300,12 @@ export default function App() {
                   {activeTab?.view === "settings" && (
                     <div className="absolute inset-0 flex">
                       <SettingsView
+                        launchConfigs={launchConfigs}
+                        onApplyLaunchConfig={applyLaunchConfigById}
+                        onEditLaunchConfig={editLaunchConfig}
+                        onDeleteLaunchConfig={removeLaunchConfig}
+                        onNewLaunchConfig={newLaunchConfig}
+                        onRefreshLaunchConfigs={refreshLaunchConfigs}
                         version={version}
                         update={update}
                         togglePref={togglePref}
