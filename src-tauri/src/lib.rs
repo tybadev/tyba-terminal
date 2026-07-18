@@ -1719,7 +1719,10 @@ struct SavedLaunchConfig {
 fn list_launch_configs(
     state: State<'_, AppState>,
 ) -> Result<Vec<launch_config::LaunchConfig>, String> {
-    let rows = state.store.load_launch_configs().map_err(|e| e.to_string())?;
+    let rows = state
+        .store
+        .load_launch_configs()
+        .map_err(|e| e.to_string())?;
     Ok(launch_config::from_rows(&rows))
 }
 
@@ -1731,7 +1734,10 @@ fn save_launch_config(
 ) -> Result<SavedLaunchConfig, String> {
     launch_config::validate(&draft).map_err(|e| e.to_string())?;
 
-    let rows = state.store.load_launch_configs().map_err(|e| e.to_string())?;
+    let rows = state
+        .store
+        .load_launch_configs()
+        .map_err(|e| e.to_string())?;
     let existing = launch_config::from_rows(&rows);
     let taken: std::collections::HashSet<String> = existing
         .iter()
@@ -1943,7 +1949,10 @@ fn apply_launch_config(
         }
     }
 
-    let stored = state.store.load_launch_configs().map_err(|e| e.to_string())?;
+    let stored = state
+        .store
+        .load_launch_configs()
+        .map_err(|e| e.to_string())?;
     let config = launch_config::from_rows(&stored)
         .into_iter()
         .find(|c| c.id == id)

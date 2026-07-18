@@ -308,11 +308,7 @@ pub fn prompt_looks_secret(prompt: &str) -> bool {
 pub fn secret_warnings(slots: &[Slot]) -> Vec<String> {
     slots
         .iter()
-        .filter(|s| {
-            s.initial_prompt
-                .as_deref()
-                .is_some_and(prompt_looks_secret)
-        })
+        .filter(|s| s.initial_prompt.as_deref().is_some_and(prompt_looks_secret))
         .map(|s| s.name.clone())
         .collect()
 }
@@ -609,10 +605,7 @@ mod tests {
             slot_branch("tyba feature", "Core Rust"),
             slot_branch("tyba-feature", "core-rust")
         );
-        assert_ne!(
-            slot_branch("api", "backend"),
-            slot_branch("web", "backend"),
-        );
+        assert_ne!(slot_branch("api", "backend"), slot_branch("web", "backend"),);
     }
 
     #[test]
@@ -780,7 +773,8 @@ mod tests {
     #[test]
     fn secret_in_prompt_is_flagged_not_redacted() {
         let mut s = slot("core");
-        s.initial_prompt = Some("use a chave sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
+        s.initial_prompt =
+            Some("use a chave sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
         let warned = secret_warnings(std::slice::from_ref(&s));
         assert_eq!(warned, vec!["core".to_string()]);
         assert!(s.initial_prompt.unwrap().contains("sk-ant-api03"));
@@ -887,9 +881,7 @@ mod tests {
         let a = slot("a");
         let config = config_with_tree(leaf(&a), vec![a.clone()]);
         store.upsert_launch_config(&to_rows(&config)).unwrap();
-        store
-            .delete_launch_config(&config.id.to_string())
-            .unwrap();
+        store.delete_launch_config(&config.id.to_string()).unwrap();
 
         let rows = store.load_launch_configs().unwrap();
         assert!(rows.configs.is_empty());
