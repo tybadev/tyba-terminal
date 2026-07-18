@@ -354,6 +354,7 @@ pub struct Workspace {
     pub color: Option<String>,
     pub group: Option<String>,
     pub kind: WorkspaceKind,
+    pub launch_config_id: Option<Uuid>,
     pub active_tab: Option<TabId>,
     pub tabs: Vec<Tab>,
     /// Painel lateral do workspace (ex.: "diff:<session>") — vive AO LADO
@@ -396,6 +397,7 @@ pub struct WorkspaceRow {
     pub color: Option<String>,
     pub group_name: Option<String>,
     pub kind: Option<String>,
+    pub launch_config_id: Option<String>,
     pub position: i64,
     pub active_tab: Option<String>,
     pub side_view: Option<String>,
@@ -558,6 +560,7 @@ impl LayoutManager {
             color: tag.color,
             group: tag.group,
             kind: WorkspaceKind::User,
+            launch_config_id: None,
             active_tab: Some(tab.id),
             tabs: vec![tab],
             side_view: None,
@@ -609,6 +612,7 @@ impl LayoutManager {
             color: None,
             group: None,
             kind: WorkspaceKind::User,
+            launch_config_id: None,
             active_tab: Some(tab_id),
             tabs: vec![tab],
             side_view: None,
@@ -1145,6 +1149,7 @@ fn ensure_docker_workspace(inner: &mut Inner) -> WorkspaceId {
         color: None,
         group: None,
         kind: WorkspaceKind::Docker,
+        launch_config_id: None,
         active_tab: Some(tab.id),
         tabs: vec![tab],
         side_view: None,
@@ -1197,6 +1202,12 @@ fn push_pane_rows(
     }
 }
 
+pub fn pane_rows(root: &PaneNode, tab_id: &str) -> Vec<PaneRow> {
+    let mut out = Vec::new();
+    push_pane_rows(root, tab_id, None, None, &mut out);
+    out
+}
+
 pub fn workspaces_to_rows(workspaces: &[Workspace]) -> LayoutRows {
     let mut rows = LayoutRows::default();
     for (wi, ws) in workspaces.iter().enumerate() {
@@ -1209,6 +1220,7 @@ pub fn workspaces_to_rows(workspaces: &[Workspace]) -> LayoutRows {
             color: ws.color.clone(),
             group_name: ws.group.clone(),
             kind: Some(ws.kind.as_str().to_string()),
+            launch_config_id: ws.launch_config_id.map(|id| id.to_string()),
             position: wi as i64,
             active_tab: ws.active_tab.map(|id| id.to_string()),
             side_view: ws.side_view.clone(),
@@ -1347,6 +1359,10 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
                 color: w.color.clone(),
                 group: w.group_name.clone(),
                 kind: WorkspaceKind::parse(w.kind.as_deref()),
+                launch_config_id: w
+                    .launch_config_id
+                    .as_deref()
+                    .and_then(|s| Uuid::parse_str(s).ok()),
                 active_tab,
                 tabs,
                 side_view,
