@@ -658,6 +658,25 @@ impl LayoutManager {
         Ok(removed.bound_sessions())
     }
 
+    pub fn workspace_of_launch_config(&self, config: Uuid) -> Option<WorkspaceId> {
+        self.inner
+            .read()
+            .workspaces
+            .iter()
+            .find(|w| w.launch_config_id == Some(config))
+            .map(|w| w.id)
+    }
+
+    pub fn insert_workspace(&self, workspace: Workspace) -> Result<WorkspaceId, LayoutError> {
+        let id = workspace.id;
+        let mut inner = self.inner.write();
+        inner.workspaces.push(workspace);
+        inner.active = Some(id);
+        drop(inner);
+        self.persist()?;
+        Ok(id)
+    }
+
     pub fn activate_workspace(&self, id: WorkspaceId) -> Result<(), LayoutError> {
         let mut inner = self.inner.write();
         ws_index(&inner.workspaces, id)?;

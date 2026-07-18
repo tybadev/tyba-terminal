@@ -464,6 +464,7 @@ fn resume_startup(
             worktree_task: None,
             attach_existing: false,
             shell: None,
+            initial_prompt: None,
         };
         match sessions.create_shell_session(app.clone(), pty_pool, opts, move |id| {
             session_exited(&handle, id)
@@ -1808,6 +1809,246 @@ fn launch_config_seed(
     .map_err(|e| e.to_string())
 }
 
+#[derive(serde::Serialize)]
+struct SlotFailure {
+    slot: String,
+    message: String,
+}
+
+#[derive(serde::Serialize)]
+struct AppliedLaunchConfig {
+    workspace_id: layout::WorkspaceId,
+    reused: bool,
+    failures: Vec<SlotFailure>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct PrefillPayload {
+    session_id: SessionId,
+    prompt: String,
+}
+
+struct SlotSpawn<'a> {
+    config: &'a launch_config::LaunchConfig,
+    repo_root: &'a std::path::Path,
+    clean: bool,
+    cols: u16,
+    rows: u16,
+}
+
+fn spawn_slot(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    ctx: &SlotSpawn<'_>,
+    slot: &launch_config::Slot,
+) -> Result<Session, String> {
+    let SlotSpawn {
+        config,
+        repo_root,
+        clean,
+        cols,
+        rows,
+    } = *ctx;
+    let cwd = match &slot.cwd_rel {
+        Some(rel) if !rel.is_empty() && rel != "." => repo_root.join(rel),
+        _ => repo_root.to_path_buf(),
+    };
+
+    if !slot.isolate {
+        return create_session(
+            app.clone(),
+            state.clone(),
+            CreateSessionOpts {
+                kind: slot.kind.clone(),
+                title: Some(slot.name.clone()),
+                cwd: Some(cwd),
+                cols,
+                rows,
+                worktree_task: None,
+                attach_existing: true,
+                shell: None,
+                initial_prompt: slot.initial_prompt.clone(),
+            },
+        );
+    }
+
+    let branch = launch_config::slot_branch(&config.slug, &slot.name);
+    let existing = if clean {
+        None
+    } else {
+        worktree::find_by_branch(repo_root, &branch).unwrap_or(None)
+    };
+
+    let worktree_path = match existing {
+        Some(path) if path.exists() => path,
+        Some(_) => {
+            let _ = worktree::prune(repo_root);
+            worktree::create_named(repo_root, &branch)?.path
+        }
+        None => {
+            let branch = if clean {
+                format!("{branch}-{}", uuid::Uuid::new_v4().simple())
+            } else {
+                branch
+            };
+            worktree::create_named(repo_root, &branch)?.path
+        }
+    };
+
+    let sub = match &slot.cwd_rel {
+        Some(rel) if !rel.is_empty() && rel != "." => worktree_path.join(rel),
+        _ => worktree_path,
+    };
+
+    create_session(
+        app.clone(),
+        state.clone(),
+        CreateSessionOpts {
+            kind: slot.kind.clone(),
+            title: Some(slot.name.clone()),
+            cwd: Some(sub),
+            cols,
+            rows,
+            worktree_task: None,
+            attach_existing: true,
+            shell: None,
+            initial_prompt: slot.initial_prompt.clone(),
+        },
+    )
+}
+
+#[tauri::command]
+fn apply_launch_config(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: launch_config::LaunchConfigId,
+    clean: Option<bool>,
+    cols: u16,
+    rows: u16,
+) -> Result<AppliedLaunchConfig, String> {
+    let clean = clean.unwrap_or(false);
+
+    if !clean {
+        if let Some(ws) = state.layout.workspace_of_launch_config(id) {
+            state
+                .layout
+                .activate_workspace(ws)
+                .map_err(|e| e.to_string())?;
+            let _ = app.emit(layout::EVENT_CHANGED, state.layout.state());
+            return Ok(AppliedLaunchConfig {
+                workspace_id: ws,
+                reused: true,
+                failures: Vec::new(),
+            });
+        }
+    }
+
+    let stored = state.store.load_launch_configs().map_err(|e| e.to_string())?;
+    let config = launch_config::from_rows(&stored)
+        .into_iter()
+        .find(|c| c.id == id)
+        .ok_or("configuração não encontrada")?;
+
+    let repo_root = std::path::PathBuf::from(&config.repo_root);
+    if !repo_root.is_dir() {
+        return Err(format!("repositório indisponível: {}", config.repo_root));
+    }
+
+    let mut bindings: std::collections::HashMap<launch_config::SlotId, SessionId> =
+        std::collections::HashMap::new();
+    let mut prefills: Vec<PrefillPayload> = Vec::new();
+    let mut failures: Vec<SlotFailure> = Vec::new();
+
+    let ctx = SlotSpawn {
+        config: &config,
+        repo_root: &repo_root,
+        clean,
+        cols,
+        rows,
+    };
+    for slot in &config.slots {
+        match spawn_slot(&app, &state, &ctx, slot) {
+            Ok(session) => {
+                if let Some(prompt) = &slot.initial_prompt {
+                    prefills.push(PrefillPayload {
+                        session_id: session.id,
+                        prompt: prompt.clone(),
+                    });
+                }
+                bindings.insert(slot.id, session.id);
+            }
+            Err(message) => failures.push(SlotFailure {
+                slot: slot.name.clone(),
+                message,
+            }),
+        }
+    }
+
+    if bindings.is_empty() {
+        return Err("nenhum slot pôde subir".into());
+    }
+
+    let ws_id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut layout_rows = layout::LayoutRows {
+        workspaces: vec![layout::WorkspaceRow {
+            id: ws_id.to_string(),
+            name: config.name.clone(),
+            name_locked: Some(1),
+            repo_root: Some(config.repo_root.clone()),
+            color: None,
+            group_name: None,
+            kind: Some("user".to_string()),
+            launch_config_id: Some(config.id.to_string()),
+            position: 0,
+            active_tab: None,
+            side_view: None,
+            side_ratio: None,
+            side_expanded: None,
+            created_at: now.clone(),
+        }],
+        ..Default::default()
+    };
+
+    for (i, tab) in config.tabs.iter().enumerate() {
+        let tab_id = uuid::Uuid::new_v4().to_string();
+        let mut panes = Vec::new();
+        launch_config::tree_to_rows(&tab_id, &tab.root, &mut panes);
+        let bound =
+            launch_config::bind_slots_to_sessions(&panes, &|slot| bindings.get(&slot).copied());
+        layout_rows.tabs.push(layout::TabRow {
+            id: tab_id,
+            workspace_id: Some(ws_id.to_string()),
+            title: tab.title.clone(),
+            view: None,
+            position: i as i64,
+            active_pane: None,
+            created_at: now.clone(),
+        });
+        layout_rows.panes.extend(bound);
+    }
+
+    let valid: std::collections::HashSet<SessionId> = bindings.values().copied().collect();
+    let workspace = layout::rows_to_workspaces(&layout_rows, &valid)
+        .pop()
+        .ok_or("não foi possível montar o layout da configuração")?;
+    let workspace_id = state
+        .layout
+        .insert_workspace(workspace)
+        .map_err(|e| e.to_string())?;
+
+    let _ = app.emit(layout::EVENT_CHANGED, state.layout.state());
+    for prefill in prefills {
+        let _ = app.emit(launch_config::EVENT_PREFILL, prefill);
+    }
+
+    Ok(AppliedLaunchConfig {
+        workspace_id,
+        reused: false,
+        failures,
+    })
+}
+
 #[tauri::command]
 fn create_workspace(
     app: AppHandle,
@@ -2525,6 +2766,7 @@ fn docker_open_project(
                 worktree_task: None,
                 attach_existing: false,
                 shell: None,
+                initial_prompt: None,
             },
             move |id| session_exited(&handle, id),
         )
@@ -2985,6 +3227,7 @@ pub fn run() {
             layout_state,
             create_workspace,
             list_launch_configs,
+            apply_launch_config,
             save_launch_config,
             delete_launch_config,
             launch_config_seed,

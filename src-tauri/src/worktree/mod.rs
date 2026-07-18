@@ -267,6 +267,57 @@ fn create_in(managed: &Path, repo_root: &Path, title: &str) -> Result<Worktree, 
     })
 }
 
+pub fn find_by_branch(repo: &Path, branch: &str) -> Result<Option<PathBuf>, String> {
+    Ok(list(repo)?
+        .into_iter()
+        .find(|e| e.branch.as_deref() == Some(branch))
+        .map(|e| e.path))
+}
+
+pub fn prune(repo: &Path) -> Result<(), String> {
+    let mut cmd = git_in_rw_within(repo, &[managed_root()?]);
+    cmd.args(["worktree", "prune"]);
+    run_git(cmd, "git worktree prune")?;
+    Ok(())
+}
+
+pub fn create_named(repo_root: &Path, branch: &str) -> Result<Worktree, String> {
+    create_named_in(&managed_root()?, repo_root, branch)
+}
+
+fn create_named_in(managed: &Path, repo_root: &Path, branch: &str) -> Result<Worktree, String> {
+    let repo_root = crate::repo::canonicalize_or(repo_root);
+    let base_ref = head_sha(&repo_root)?;
+    let repo_name = repo_root
+        .file_name()
+        .map(|n| slugify(&n.to_string_lossy()))
+        .unwrap_or_else(|| "repo".into());
+    let dir = branch
+        .strip_prefix("tyba/")
+        .unwrap_or(branch)
+        .replace('/', "-");
+    let path = managed.join(repo_name).join(dir);
+    std::fs::create_dir_all(path.parent().unwrap_or(managed))
+        .map_err(|e| format!("mkdir worktrees: {e}"))?;
+
+    let mut cmd = git_in_rw_within(&repo_root, &[managed.to_path_buf()]);
+    cmd.arg("worktree")
+        .arg("add")
+        .arg(&path)
+        .arg("-b")
+        .arg(branch)
+        .arg(&base_ref);
+    run_git(cmd, "git worktree add")?;
+
+    Ok(Worktree {
+        path,
+        branch: branch.to_string(),
+        base_ref,
+        dirty: false,
+        ahead: 0,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorktreeEntry {
     pub path: PathBuf,
