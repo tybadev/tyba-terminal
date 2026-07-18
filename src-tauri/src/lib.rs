@@ -2698,29 +2698,11 @@ pub fn run() {
         })
         .setup(|app| {
             let store = Arc::new(open_store(app.handle()));
-
-            // O tyba.conf é derivado do banco, então se regenera no boot: quem
-            // cadastrou host numa versão antiga recebe o que mudou no formato
-            // (multiplexing, p.ex.) sem ter que reeditar host por host.
-            if let (Ok(hosts), Some(home)) = (store.load_hosts(), ssh::home_dir()) {
-                if !hosts.is_empty() {
-                    if let Err(e) = ssh::config::materialize(&home, &hosts) {
-                        eprintln!("tyba: ssh config não materializou: {e}");
-                    }
-                }
-            }
-
             let pty_pool: SharedPtyPool = Arc::new(pty::PtyPool::new());
             let sessions: SharedSessionManager =
                 Arc::new(session::SessionManager::new(Arc::clone(&store)));
-            let _ = sessions.restore();
-
             let layout: layout::SharedLayout =
                 Arc::new(layout::LayoutManager::new(Arc::clone(&store)));
-            let remap = resume_startup(app.handle(), &store, &sessions, &pty_pool);
-            let valid: std::collections::HashSet<SessionId> =
-                sessions.list().iter().map(|s| s.id).collect();
-            layout.load_remapped(&valid, &remap);
 
             let themes_dir = app
                 .path()
@@ -2739,7 +2721,7 @@ pub fn run() {
                 sessions: Arc::clone(&sessions),
                 approvals: Arc::new(approvals::ApprovalsManager::new()),
                 themes,
-                layout,
+                layout: Arc::clone(&layout),
                 docker: Arc::new(docker::DockerManager::new()),
                 repos,
                 repo_reconcile: reconcile_tx.clone(),
@@ -2748,6 +2730,25 @@ pub fn run() {
                 hook_servers: Arc::new(agent::session::HookServerRegistry::default()),
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
             });
+
+            // O tyba.conf é derivado do banco, então se regenera no boot: quem
+            // cadastrou host numa versão antiga recebe o que mudou no formato
+            // (multiplexing, p.ex.) sem ter que reeditar host por host.
+            if let (Ok(hosts), Some(home)) = (store.load_hosts(), ssh::home_dir()) {
+                if !hosts.is_empty() {
+                    if let Err(e) = ssh::config::materialize(&home, &hosts) {
+                        eprintln!("tyba: ssh config não materializou: {e}");
+                    }
+                }
+            }
+
+            let _ = sessions.restore();
+            let remap = resume_startup(app.handle(), &store, &sessions, &pty_pool);
+            let valid: std::collections::HashSet<SessionId> =
+                sessions.list().iter().map(|s| s.id).collect();
+            layout.load_remapped(&valid, &remap);
+
+            let _ = app.emit(layout::EVENT_CHANGED, layout.state());
 
             std::thread::Builder::new()
                 .name("scrollback-flush".into())
