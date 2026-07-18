@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 
+use crate::launch_config::{ConfigPaneRow, ConfigRow, ConfigTabRow, LaunchConfigRows, SlotRow};
 use crate::layout::{LayoutRows, PaneRow, TabRow, WorkspaceRow};
 use crate::session::redact::redact;
 use crate::session::{Session, SessionId, SessionKind, SessionStatus};
@@ -84,6 +85,44 @@ CREATE TABLE IF NOT EXISTS panes (
     position INTEGER,
     session_id TEXT
 );
+CREATE TABLE IF NOT EXISTS launch_config (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    repo_root TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'local',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS launch_config_slot (
+    id TEXT PRIMARY KEY,
+    config_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    cwd_rel TEXT,
+    isolate INTEGER NOT NULL DEFAULT 0,
+    initial_prompt TEXT,
+    position INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS launch_config_tab (
+    id TEXT PRIMARY KEY,
+    config_id TEXT NOT NULL,
+    title TEXT,
+    view TEXT,
+    position INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS launch_config_pane (
+    id TEXT PRIMARY KEY,
+    config_id TEXT NOT NULL,
+    tab_id TEXT NOT NULL,
+    parent_id TEXT,
+    split TEXT,
+    ratio REAL,
+    position INTEGER,
+    slot_id TEXT
+);
+CREATE INDEX IF NOT EXISTS launch_config_slot_by_config ON launch_config_slot (config_id);
+CREATE INDEX IF NOT EXISTS launch_config_pane_by_config ON launch_config_pane (config_id);
 CREATE TABLE IF NOT EXISTS host_group (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -167,6 +206,10 @@ impl Store {
         // app e o pane fica órfão. É o que faz a tab sumir no reopen (#50).
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN cwd TEXT", []);
         let _ = conn.execute("ALTER TABLE host ADD COLUMN tunnels TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE workspaces ADD COLUMN launch_config_id TEXT",
+            [],
+        );
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -598,8 +641,9 @@ impl Store {
             tx.execute(
                 "INSERT INTO workspaces
                      (id, name, name_locked, repo_root, color, group_name, kind, position,
-                      active_tab, side_view, side_ratio, side_expanded, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                      active_tab, side_view, side_ratio, side_expanded, created_at,
+                      launch_config_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     w.id,
                     w.name,
@@ -613,7 +657,8 @@ impl Store {
                     w.side_view,
                     w.side_ratio,
                     w.side_expanded,
-                    w.created_at
+                    w.created_at,
+                    w.launch_config_id
                 ],
             )?;
         }
@@ -655,7 +700,8 @@ impl Store {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, name, name_locked, repo_root, color, group_name, kind, position,
-                    active_tab, side_view, side_ratio, side_expanded, created_at
+                    active_tab, side_view, side_ratio, side_expanded, created_at,
+                    launch_config_id
              FROM workspaces ORDER BY position",
         )?;
         let workspaces = stmt
@@ -674,6 +720,7 @@ impl Store {
                     side_ratio: row.get(10)?,
                     side_expanded: row.get(11)?,
                     created_at: row.get(12)?,
+                    launch_config_id: row.get(13)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -718,6 +765,185 @@ impl Store {
             tabs,
             panes,
         })
+    }
+
+    pub fn upsert_launch_config(&self, rows: &LaunchConfigRows) -> Result<(), StoreError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        for cfg in &rows.configs {
+            tx.execute(
+                "DELETE FROM launch_config_pane WHERE config_id = ?1",
+                params![cfg.id],
+            )?;
+            tx.execute(
+                "DELETE FROM launch_config_tab WHERE config_id = ?1",
+                params![cfg.id],
+            )?;
+            tx.execute(
+                "DELETE FROM launch_config_slot WHERE config_id = ?1",
+                params![cfg.id],
+            )?;
+            tx.execute(
+                "INSERT INTO launch_config (id, name, slug, repo_root, source, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                    name = ?2, slug = ?3, repo_root = ?4, source = ?5, updated_at = ?7",
+                params![
+                    cfg.id,
+                    cfg.name,
+                    cfg.slug,
+                    cfg.repo_root,
+                    cfg.source,
+                    cfg.created_at,
+                    cfg.updated_at
+                ],
+            )?;
+        }
+        for s in &rows.slots {
+            tx.execute(
+                "INSERT INTO launch_config_slot
+                     (id, config_id, name, kind, cwd_rel, isolate, initial_prompt, position)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    s.id,
+                    s.config_id,
+                    s.name,
+                    s.kind,
+                    s.cwd_rel,
+                    s.isolate,
+                    s.initial_prompt,
+                    s.position
+                ],
+            )?;
+        }
+        for t in &rows.tabs {
+            tx.execute(
+                "INSERT INTO launch_config_tab (id, config_id, title, position)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![t.id, t.config_id, t.title, t.position],
+            )?;
+        }
+        for p in &rows.panes {
+            tx.execute(
+                "INSERT INTO launch_config_pane
+                     (id, config_id, tab_id, parent_id, split, ratio, position, slot_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    p.pane.id,
+                    p.config_id,
+                    p.pane.tab_id,
+                    p.pane.parent_id,
+                    p.pane.split,
+                    p.pane.ratio,
+                    p.pane.position,
+                    p.pane.session_id
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn load_launch_configs(&self) -> Result<LaunchConfigRows, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, slug, repo_root, source, created_at, updated_at
+             FROM launch_config ORDER BY name",
+        )?;
+        let configs = stmt
+            .query_map([], |row| {
+                Ok(ConfigRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    slug: row.get(2)?,
+                    repo_root: row.get(3)?,
+                    source: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, config_id, name, kind, cwd_rel, isolate, initial_prompt, position
+             FROM launch_config_slot ORDER BY position",
+        )?;
+        let slots = stmt
+            .query_map([], |row| {
+                Ok(SlotRow {
+                    id: row.get(0)?,
+                    config_id: row.get(1)?,
+                    name: row.get(2)?,
+                    kind: row.get(3)?,
+                    cwd_rel: row.get(4)?,
+                    isolate: row.get(5)?,
+                    initial_prompt: row.get(6)?,
+                    position: row.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, config_id, title, position FROM launch_config_tab ORDER BY position",
+        )?;
+        let tabs = stmt
+            .query_map([], |row| {
+                Ok(ConfigTabRow {
+                    id: row.get(0)?,
+                    config_id: row.get(1)?,
+                    title: row.get(2)?,
+                    position: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, config_id, tab_id, parent_id, split, ratio, position, slot_id
+             FROM launch_config_pane",
+        )?;
+        let panes = stmt
+            .query_map([], |row| {
+                Ok(ConfigPaneRow {
+                    config_id: row.get(1)?,
+                    pane: PaneRow {
+                        id: row.get(0)?,
+                        tab_id: row.get(2)?,
+                        parent_id: row.get(3)?,
+                        split: row.get(4)?,
+                        ratio: row.get(5)?,
+                        position: row.get(6)?,
+                        session_id: row.get(7)?,
+                    },
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(LaunchConfigRows {
+            configs,
+            slots,
+            tabs,
+            panes,
+        })
+    }
+
+    pub fn delete_launch_config(&self, id: &str) -> Result<(), StoreError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM launch_config_pane WHERE config_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM launch_config_tab WHERE config_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM launch_config_slot WHERE config_id = ?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM launch_config WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn load_sessions(&self) -> Result<Vec<Session>, StoreError> {

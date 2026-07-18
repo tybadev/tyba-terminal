@@ -5,6 +5,7 @@ pub mod editor;
 pub mod error;
 pub mod forge;
 pub mod hook_ipc;
+pub mod launch_config;
 pub mod layout;
 pub mod pty;
 pub mod repo;
@@ -1706,6 +1707,113 @@ fn layout_state(state: State<'_, AppState>) -> layout::LayoutState {
     state.layout.state()
 }
 
+#[derive(serde::Serialize)]
+struct SavedLaunchConfig {
+    id: launch_config::LaunchConfigId,
+    slug: String,
+    secret_warnings: Vec<String>,
+}
+
+#[tauri::command]
+fn list_launch_configs(
+    state: State<'_, AppState>,
+) -> Result<Vec<launch_config::LaunchConfig>, String> {
+    let rows = state
+        .store
+        .load_launch_configs()
+        .map_err(|e| e.to_string())?;
+    Ok(launch_config::from_rows(&rows))
+}
+
+#[tauri::command]
+fn save_launch_config(
+    state: State<'_, AppState>,
+    id: Option<launch_config::LaunchConfigId>,
+    draft: launch_config::LaunchConfigDraft,
+) -> Result<SavedLaunchConfig, String> {
+    launch_config::validate(&draft).map_err(|e| e.to_string())?;
+
+    let rows = state
+        .store
+        .load_launch_configs()
+        .map_err(|e| e.to_string())?;
+    let existing = launch_config::from_rows(&rows);
+    let taken: std::collections::HashSet<String> = existing
+        .iter()
+        .filter(|c| Some(c.id) != id)
+        .map(|c| c.slug.clone())
+        .collect();
+
+    let now = chrono::Utc::now();
+    let previous = id.and_then(|id| existing.iter().find(|c| c.id == id));
+    let config = launch_config::LaunchConfig {
+        id: id.unwrap_or_else(uuid::Uuid::new_v4),
+        slug: previous
+            .map(|p| p.slug.clone())
+            .unwrap_or_else(|| launch_config::unique_slug(&draft.name, &taken)),
+        name: draft.name.trim().to_string(),
+        repo_root: draft.repo_root.clone(),
+        source: launch_config::ConfigSource::Local,
+        slots: draft.slots.clone(),
+        tabs: draft.tabs.clone(),
+        created_at: previous.map(|p| p.created_at).unwrap_or(now),
+        updated_at: now,
+    };
+
+    state
+        .store
+        .upsert_launch_config(&launch_config::to_rows(&config))
+        .map_err(|e| e.to_string())?;
+
+    Ok(SavedLaunchConfig {
+        id: config.id,
+        slug: config.slug,
+        secret_warnings: launch_config::secret_warnings(&config.slots),
+    })
+}
+
+#[tauri::command]
+fn delete_launch_config(
+    state: State<'_, AppState>,
+    id: launch_config::LaunchConfigId,
+) -> Result<(), String> {
+    state
+        .store
+        .delete_launch_config(&id.to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn launch_config_seed(
+    state: State<'_, AppState>,
+    workspace_id: Option<layout::WorkspaceId>,
+) -> Result<launch_config::SnapshotSeed, String> {
+    let layout_state = state.layout.state();
+    let workspace = match workspace_id.or(layout_state.active_workspace) {
+        Some(id) => layout_state.workspaces.iter().find(|w| w.id == id),
+        None => None,
+    }
+    .ok_or("nenhum workspace ativo")?;
+
+    let repo_root = workspace
+        .repo_root
+        .clone()
+        .ok_or("o workspace não está ancorado num repositório")?;
+    let repo_root = std::path::PathBuf::from(&repo_root);
+
+    launch_config::snapshot_workspace(workspace, &|session_id| {
+        let session = state.sessions.get(session_id)?;
+        let cwd_rel = session.cwd.as_ref().and_then(|cwd| {
+            cwd.strip_prefix(&repo_root)
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+                .filter(|p| !p.is_empty())
+        });
+        Some((session.kind.clone(), cwd_rel, session.worktree.is_some()))
+    })
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn create_workspace(
     app: AppHandle,
@@ -2883,6 +2991,10 @@ pub fn run() {
             import_theme,
             layout_state,
             create_workspace,
+            list_launch_configs,
+            save_launch_config,
+            delete_launch_config,
+            launch_config_seed,
             tag_workspace,
             close_workspace,
             activate_workspace,
