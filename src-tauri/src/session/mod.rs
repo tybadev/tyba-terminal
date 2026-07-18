@@ -148,6 +148,8 @@ pub struct CreateSessionOpts {
     /// [`default_shell`]. Só vale para sessão de shell.
     #[serde(default)]
     pub shell: Option<String>,
+    #[serde(default)]
+    pub initial_prompt: Option<String>,
 }
 
 pub struct SessionManager {
