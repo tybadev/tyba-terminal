@@ -66,6 +66,10 @@ import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { Clock } from "./components/Clock";
 import { CommandPalette } from "./components/CommandPalette";
+import {
+  LaunchConfigDialog,
+  type LaunchConfigDraftState,
+} from "./components/LaunchConfigDialog";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ContainersView } from "./components/ContainersView";
 import { ConnectionsView } from "./components/ConnectionsView";
@@ -122,9 +126,15 @@ import {
   listApprovals,
   listSessions,
   newWindow,
+  applyLaunchConfig,
+  launchConfigSeed,
+  listLaunchConfigs,
+  type LaunchConfig,
+  type LaunchConfigId,
   onAnyAgentReady,
   onApprovalRequested,
   onApprovalResolved,
+  onLaunchConfigPrefill,
   onLayoutChanged,
   onSessionCommand,
   onSessionCwd,
@@ -408,10 +418,78 @@ export default function App() {
   const [newSessionIsolate, setNewSessionIsolate] = useState(false);
   const [worktreeDir, setWorktreeDir] = useState<string | null>(null);
   const [worktreeDefault, setWorktreeDefault] = useState(false);
+  const [launchConfigs, setLaunchConfigs] = useState<LaunchConfig[]>([]);
+  const [launchDraft, setLaunchDraft] =
+    useState<LaunchConfigDraftState | null>(null);
   const agentReadyCancels = useRef<Map<string, () => void>>(new Map());
   const [agentReadyWarnings, setAgentReadyWarnings] = useState<
     Record<SessionId, boolean>
   >({});
+
+  const [launchPrefills, setLaunchPrefills] = useState<
+    Record<SessionId, string>
+  >({});
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    void onLaunchConfigPrefill(({ session_id, prompt }) => {
+      setLaunchPrefills((prev) => ({ ...prev, [session_id]: prompt }));
+      setRichInputOpened((prev) => new Set(prev).add(session_id));
+    }).then((un) => {
+      if (disposed) un();
+      else unlisten = un;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const refreshLaunchConfigs = useCallback(() => {
+    void listLaunchConfigs()
+      .then(setLaunchConfigs)
+      .catch(() => setLaunchConfigs([]));
+  }, []);
+
+  useEffect(() => {
+    refreshLaunchConfigs();
+  }, [refreshLaunchConfigs]);
+
+  const saveWorkspaceAsLaunchConfig = useCallback(() => {
+    void launchConfigSeed()
+      .then((seed) =>
+        setLaunchDraft({
+          name: seed.name,
+          repoRoot: seed.repo_root,
+          slots: seed.slots,
+          tabs: seed.tabs,
+        }),
+      )
+      .catch(() => window.alert(t("launchNeedsRepo")));
+  }, [t]);
+
+  const applyLaunchConfigById = useCallback(
+    (id: LaunchConfigId) => {
+      const config = launchConfigs.find((c) => c.id === id);
+      void applyLaunchConfig(id, 100, 30)
+        .then((applied) => {
+          if (applied.failures.length > 0) {
+            window.alert(
+              t("launchAppliedWithFailures", {
+                name: config?.name ?? "",
+                count: applied.failures.length,
+                detail: applied.failures
+                  .map((f) => `${f.slot}: ${f.message}`)
+                  .join("; "),
+              }),
+            );
+          }
+        })
+        .catch((e) => window.alert(String(e)));
+    },
+    [launchConfigs, t],
+  );
 
   const openNewSession = useCallback(
     (isolate?: boolean) => {
@@ -2553,6 +2631,14 @@ export default function App() {
         onOpenSettings={() => void openViewTab("settings").catch(() => {})}
         onTogglePanel={toggleSidebar}
         onGoToWorkspace={(id) => void activateWorkspace(id)}
+        launchConfigs={launchConfigs}
+        onApplyLaunchConfig={applyLaunchConfigById}
+        onSaveWorkspaceAsLaunchConfig={saveWorkspaceAsLaunchConfig}
+      />
+      <LaunchConfigDialog
+        draft={launchDraft}
+        onClose={() => setLaunchDraft(null)}
+        onSaved={refreshLaunchConfigs}
       />
       <PasteConfirmDialog
         text={pastePrompt?.text ?? null}
@@ -3358,6 +3444,7 @@ export default function App() {
                     pref={richInputPref}
                     focusNonce={richInputFocusNonce}
                     openedExplicitly={richInputOpened.has(activeSession.id)}
+                    prefill={launchPrefills[activeSession.id] ?? null}
                     onFocusChange={(focused) => {
                       richInputFocused.current = focused;
                     }}

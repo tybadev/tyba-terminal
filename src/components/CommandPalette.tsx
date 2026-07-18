@@ -11,6 +11,7 @@ import {
   Palette,
   Plus,
   SidebarSimple,
+  Stack,
   Sun,
   TerminalWindow,
   TextAa,
@@ -46,6 +47,8 @@ import {
 import {
   importThemeCmd,
   listThemes,
+  type LaunchConfig,
+  type LaunchConfigId,
   type Workspace,
   type WorkspaceId,
 } from "../lib/ipc";
@@ -80,6 +83,9 @@ interface Props {
   onOpenSettings: () => void;
   onTogglePanel: () => void;
   onGoToWorkspace: (id: WorkspaceId) => void;
+  launchConfigs: LaunchConfig[];
+  onApplyLaunchConfig: (id: LaunchConfigId) => void;
+  onSaveWorkspaceAsLaunchConfig: () => void;
 }
 
 export function CommandPalette({
@@ -99,6 +105,9 @@ export function CommandPalette({
   onOpenSettings,
   onTogglePanel,
   onGoToWorkspace,
+  launchConfigs,
+  onApplyLaunchConfig,
+  onSaveWorkspaceAsLaunchConfig,
 }: Props) {
   const { t, i18n } = useTranslation();
   const [selectableThemes, setSelectableThemes] = useState<Theme[]>([]);
@@ -183,6 +192,10 @@ export function CommandPalette({
             <Plus size={15} />
             {t("newSession")}
           </CommandItem>
+          <CommandItem onSelect={run(onSaveWorkspaceAsLaunchConfig)}>
+            <Stack size={15} />
+            {t("launchSaveWorkspaceAs")}
+          </CommandItem>
           <CommandItem onSelect={run(onNewWorktreeSession)}>
             <GitBranch size={15} />
             {t("worktreeNewSession")}
@@ -210,6 +223,25 @@ export function CommandPalette({
             {t("settings")}
           </CommandItem>
         </CommandGroup>
+        )}
+
+        {mode === "actions" && launchConfigs.length > 0 && (
+          <CommandGroup heading={t("launchApply")}>
+            {launchConfigs.map((config) => (
+              <CommandItem
+                key={config.id}
+                value={`${config.name} ${config.slug} ${config.repo_root}`}
+                onSelect={run(() => onApplyLaunchConfig(config.id))}
+              >
+                <Stack size={15} className="text-tyba-violet" />
+                <span className="truncate">{config.name}</span>
+                <span className="ml-auto font-mono text-[10px] text-tyba-text-faint">
+                  {config.slots.length}{" "}
+                  {config.slots.length === 1 ? "pane" : "panes"}
+                </span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
         )}
 
         {mode === "sessions" && workspaces.length > 0 && (

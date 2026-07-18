@@ -680,6 +680,7 @@ export interface Workspace {
   color: string | null;
   group: string | null;
   kind: WorkspaceKind;
+  launch_config_id: LaunchConfigId | null;
   active_tab: TabId | null;
   tabs: Tab[];
   side_view: string | null;
@@ -694,6 +695,115 @@ export interface LayoutState {
 }
 
 export const layoutState = () => invoke<LayoutState>("layout_state");
+
+export type LaunchConfigId = string;
+export type SlotId = string;
+
+export type SlotNode =
+  | { type: "leaf"; id: PaneId; slot_id: SlotId }
+  | {
+      type: "split";
+      id: PaneId;
+      split: SplitKind;
+      ratio: number;
+      first: SlotNode;
+      second: SlotNode;
+    };
+
+export interface LaunchSlot {
+  id: SlotId;
+  name: string;
+  kind: SessionKind;
+  cwd_rel: string | null;
+  isolate: boolean;
+  initial_prompt: string | null;
+}
+
+export interface LaunchConfigTab {
+  id: TabId;
+  title: string | null;
+  root: SlotNode;
+}
+
+export interface LaunchConfig {
+  id: LaunchConfigId;
+  name: string;
+  slug: string;
+  repo_root: string;
+  source: "local";
+  slots: LaunchSlot[];
+  tabs: LaunchConfigTab[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LaunchConfigDraft {
+  name: string;
+  repo_root: string;
+  slots: LaunchSlot[];
+  tabs: LaunchConfigTab[];
+}
+
+export interface SavedLaunchConfig {
+  id: LaunchConfigId;
+  slug: string;
+  secret_warnings: string[];
+}
+
+export interface SlotFailure {
+  slot: string;
+  message: string;
+}
+
+export interface AppliedLaunchConfig {
+  workspace_id: WorkspaceId;
+  reused: boolean;
+  failures: SlotFailure[];
+}
+
+export interface SnapshotSeed {
+  name: string;
+  repo_root: string;
+  slots: LaunchSlot[];
+  tabs: LaunchConfigTab[];
+}
+
+export const listLaunchConfigs = () =>
+  invoke<LaunchConfig[]>("list_launch_configs");
+
+export const applyLaunchConfig = (
+  id: LaunchConfigId,
+  cols: number,
+  rows: number,
+  clean?: boolean,
+) =>
+  invoke<AppliedLaunchConfig>("apply_launch_config", {
+    id,
+    clean: clean ?? null,
+    cols,
+    rows,
+  });
+
+export const saveLaunchConfig = (
+  draft: LaunchConfigDraft,
+  id?: LaunchConfigId,
+) => invoke<SavedLaunchConfig>("save_launch_config", { id: id ?? null, draft });
+
+export const deleteLaunchConfig = (id: LaunchConfigId) =>
+  invoke<void>("delete_launch_config", { id });
+
+export const launchConfigSeed = (workspaceId?: WorkspaceId) =>
+  invoke<SnapshotSeed>("launch_config_seed", {
+    workspaceId: workspaceId ?? null,
+  });
+
+export const onLaunchConfigPrefill = (
+  handler: (payload: { session_id: SessionId; prompt: string }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ session_id: SessionId; prompt: string }>(
+    "launch-config://prefill",
+    (e) => handler(e.payload),
+  );
 
 /** Identidade junto na criação: renomear/colorir/agrupar depois faz a sidebar
  * piscar entre os estados intermediários. */
