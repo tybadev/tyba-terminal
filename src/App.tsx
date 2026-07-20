@@ -68,6 +68,8 @@ import { Clock } from "./components/Clock";
 import { CommandPalette } from "./components/CommandPalette";
 import { ConfirmHost } from "./components/ConfirmHost";
 import { ToastHost } from "./components/ToastHost";
+import { requestConfirm } from "./lib/confirm";
+import { pushToast, toastError } from "./lib/toast";
 import {
   LaunchConfigDialog,
   type LaunchConfigDraftState,
@@ -501,48 +503,58 @@ export default function App() {
   );
 
   const removeLaunchConfig = useCallback(
-    (id: LaunchConfigId) => {
+    async (id: LaunchConfigId) => {
       const config = launchConfigs.find((c) => c.id === id);
-      if (!window.confirm(t("launchDeleteConfirm", { name: config?.name ?? "" })))
-        return;
-      void deleteLaunchConfig(id)
-        .then(refreshLaunchConfigs)
-        .catch((e) => window.alert(String(e)));
+      const confirmed = await requestConfirm({
+        title: t("launchDeleteConfirm", { name: config?.name ?? "" }),
+        confirmLabel: t("launchDelete"),
+        destructive: true,
+      });
+      if (!confirmed) return;
+      try {
+        await deleteLaunchConfig(id);
+        await refreshLaunchConfigs();
+      } catch (e) {
+        toastError(t("launchDeleteFailed"), e);
+      }
     },
     [launchConfigs, refreshLaunchConfigs, t],
   );
 
-  const saveWorkspaceAsLaunchConfig = useCallback(() => {
-    void launchConfigSeed()
-      .then((seed) =>
-        setLaunchDraft({
-          name: seed.name,
-          repoRoot: seed.repo_root,
-          slots: seed.slots,
-          tabs: seed.tabs,
-        }),
-      )
-      .catch(() => window.alert(t("launchNeedsRepo")));
+  const saveWorkspaceAsLaunchConfig = useCallback(async () => {
+    try {
+      const seed = await launchConfigSeed();
+      setLaunchDraft({
+        name: seed.name,
+        repoRoot: seed.repo_root,
+        slots: seed.slots,
+        tabs: seed.tabs,
+      });
+    } catch (e) {
+      toastError(t("launchNeedsRepo"), e);
+    }
   }, [t]);
 
   const applyLaunchConfigById = useCallback(
-    (id: LaunchConfigId) => {
+    async (id: LaunchConfigId) => {
       const config = launchConfigs.find((c) => c.id === id);
-      void applyLaunchConfig(id, 100, 30)
-        .then((applied) => {
-          if (applied.failures.length > 0) {
-            window.alert(
-              t("launchAppliedWithFailures", {
-                name: config?.name ?? "",
-                count: applied.failures.length,
-                detail: applied.failures
-                  .map((f) => `${f.slot}: ${f.message}`)
-                  .join("; "),
-              }),
-            );
-          }
-        })
-        .catch((e) => window.alert(String(e)));
+      try {
+        const applied = await applyLaunchConfig(id, 100, 30);
+        if (applied.failures.length > 0) {
+          pushToast({
+            tone: "warning",
+            title: t("launchAppliedWithFailures", {
+              name: config?.name ?? "",
+              count: applied.failures.length,
+            }),
+            detail: applied.failures
+              .map((f) => `${f.slot}: ${f.message}`)
+              .join("; "),
+          });
+        }
+      } catch (e) {
+        toastError(t("launchApplyFailed"), e);
+      }
     },
     [launchConfigs, t],
   );
