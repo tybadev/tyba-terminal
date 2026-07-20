@@ -397,8 +397,12 @@ const resources = {
       launchSaveWorkspaceAs: "Salvar workspace como launch config",
       launchNoConfigs: "Nenhuma launch config salva",
       launchApplied: "{{name}} aberta",
-      launchAppliedWithFailures:
-        "{{name}} aberta, mas {{count}} pane não subiu: {{detail}}",
+      launchAppliedWithFailures_one:
+        "{{name}} aberta, mas {{count}} pane não subiu",
+      launchAppliedWithFailures_other:
+        "{{name}} aberta, mas {{count}} panes não subiram",
+      launchDeleteFailed: "Não foi possível apagar a launch config",
+      launchApplyFailed: "Não foi possível abrir a launch config",
       launchNeedsRepo:
         "Este workspace não está num repositório. Launch config precisa de um.",
       retry: "Tentar de novo",
@@ -1128,8 +1132,12 @@ const resources = {
       launchSaveWorkspaceAs: "Save workspace as launch config",
       launchNoConfigs: "No launch configs saved",
       launchApplied: "{{name}} opened",
-      launchAppliedWithFailures:
-        "{{name}} opened, but {{count}} pane failed to start: {{detail}}",
+      launchAppliedWithFailures_one:
+        "{{name}} opened, but {{count}} pane failed to start",
+      launchAppliedWithFailures_other:
+        "{{name}} opened, but {{count}} panes failed to start",
+      launchDeleteFailed: "Couldn't delete the launch config",
+      launchApplyFailed: "Couldn't open the launch config",
       launchNeedsRepo:
         "This workspace isn't in a repository. Launch configs need one.",
       retry: "Try again",
