@@ -1386,14 +1386,23 @@ export interface LspInstallHint {
 
 export type LspStatus =
   | { state: "unsupported" }
-  | { state: "absent"; server: string; install: LspInstallHint; experimental: boolean }
-  | { state: "available"; server: string; experimental: boolean }
+  | { state: "experimental"; server: string }
+  | {
+      state: "absent";
+      server: string;
+      install: LspInstallHint | null;
+      alternatives: LspInstallHint[];
+    }
+  | { state: "available"; server: string }
   | { state: "starting"; server: string }
-  | { state: "ready"; server: string; diagnostics: number }
-  | { state: "crashed"; server: string };
+  | { state: "ready"; server: string; diagnostics: number; truncated: boolean }
+  | { state: "crashed"; server: string; reason: string | null };
 
 export const lspStatus = (id: SessionId, path: string) =>
   invoke<LspStatus>("lsp_status", { id, path });
+
+export const lspRetry = (id: SessionId, path: string) =>
+  invoke<LspStatus>("lsp_retry", { id, path });
 
 export const lspOpen = (
   id: SessionId,
@@ -1446,9 +1455,14 @@ export const lspOpenExternal = (path: string, editor?: string) =>
 
 export const onLspDiagnostics = (
   id: SessionId,
-  handler: (files: { path: string; diagnostics: LspDiagnostic[] }[]) => void,
+  handler: (
+    files: { path: string; diagnostics: LspDiagnostic[] }[],
+    filesTruncated: boolean,
+  ) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ files: { path: string; diagnostics: LspDiagnostic[] }[] }>(
-    `lsp://diagnostics/${id}`,
-    (e) => handler(e.payload.files),
+  listen<{
+    files: { path: string; diagnostics: LspDiagnostic[] }[];
+    files_truncated: boolean;
+  }>(`lsp://diagnostics/${id}`, (e) =>
+    handler(e.payload.files, e.payload.files_truncated),
   );

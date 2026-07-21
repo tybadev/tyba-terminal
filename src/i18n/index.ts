@@ -173,6 +173,14 @@ const resources = {
       lspCopied: "copiado",
       lspGotoExternalTitle: "Definição fora da raiz do painel",
       lspGotoExternalOpen: "abrir no editor externo",
+      lspExperimental: "experimental",
+      lspExperimentalHint:
+        "{{server}} é experimental e vem desligado nesta versão",
+      lspDiagnosticsCount: "{{errors}} erro(s), {{warnings}} aviso(s)",
+      lspAlternatives: "outras {{count}}",
+      lspHideAlternatives: "ocultar alternativas",
+      lspNoInstaller: "Nenhum instalador conhecido para {{server}}",
+      lspTruncated: "lista de diagnósticos truncada (limite atingido)",
       reviewAgent: "Agente de review",
       reviewAgentHint:
         "Quem recebe os comentários do diff quando não há sessão aberta no worktree: o Tyba abre uma sessão, sobe esse agente e cola o prompt no composer.",
@@ -965,6 +973,13 @@ const resources = {
       lspCopied: "copied",
       lspGotoExternalTitle: "Definition outside the panel root",
       lspGotoExternalOpen: "open in external editor",
+      lspExperimental: "experimental",
+      lspExperimentalHint: "{{server}} is experimental and off in this version",
+      lspDiagnosticsCount: "{{errors}} error(s), {{warnings}} warning(s)",
+      lspAlternatives: "{{count}} more",
+      lspHideAlternatives: "hide alternatives",
+      lspNoInstaller: "No known installer for {{server}}",
+      lspTruncated: "diagnostics list truncated (limit reached)",
       reviewAgent: "Review agent",
       reviewAgentHint:
         "Who receives the diff comments when no session is open in the worktree: Tyba opens a session, starts this agent and pastes the prompt into its composer.",
