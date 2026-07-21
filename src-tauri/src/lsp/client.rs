@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
@@ -16,10 +16,14 @@ use super::registry::ServerEntry;
 use super::{DiagnosticIpc, DiagnosticsBatch, FileDiagnostics, RunState};
 use crate::sandbox::SandboxSpec;
 
-const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(15);
+const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(2500);
 const DIAG_DEBOUNCE: Duration = Duration::from_millis(120);
 const MAX_RESTARTS: u32 = 4;
+const MAX_RESTARTS_PER_HOUR: usize = 8;
+const RESTART_WINDOW: Duration = Duration::from_secs(3600);
+pub const MAX_DIAG_FILES: usize = 500;
+pub const MAX_DIAG_PER_FILE: usize = 1000;
 
 pub type DiagEmitter = dyn Fn(DiagnosticsBatch) + Send + Sync;
 
@@ -49,11 +53,23 @@ pub struct LspServer {
     leader_pid: Mutex<Option<u32>>,
     open_docs: Mutex<HashMap<String, OpenDoc>>,
     diagnostics: Mutex<HashMap<String, Vec<DiagnosticIpc>>>,
+    dirty_diags: Mutex<HashSet<String>>,
+    files_truncated: AtomicBool,
     state: Mutex<RunState>,
+    last_error: Mutex<Option<String>>,
     last_activity: Mutex<Instant>,
     shutting_down: AtomicBool,
     restart_attempts: AtomicU32,
+    restart_window: Mutex<Vec<Instant>>,
     diag_tx: Mutex<Option<Sender<()>>>,
+}
+
+impl Drop for LspServer {
+    fn drop(&mut self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        *self.diag_tx.lock() = None;
+        self.kill_process();
+    }
 }
 
 impl LspServer {
@@ -77,10 +93,14 @@ impl LspServer {
             leader_pid: Mutex::new(None),
             open_docs: Mutex::new(HashMap::new()),
             diagnostics: Mutex::new(HashMap::new()),
+            dirty_diags: Mutex::new(HashSet::new()),
+            files_truncated: AtomicBool::new(false),
             state: Mutex::new(RunState::Starting),
+            last_error: Mutex::new(None),
             last_activity: Mutex::new(Instant::now()),
             shutting_down: AtomicBool::new(false),
             restart_attempts: AtomicU32::new(0),
+            restart_window: Mutex::new(Vec::new()),
             diag_tx: Mutex::new(None),
         });
         boot(&server)?;
@@ -89,6 +109,28 @@ impl LspServer {
 
     pub fn state(&self) -> RunState {
         *self.state.lock()
+    }
+
+    pub fn last_error(&self) -> Option<String> {
+        self.last_error.lock().clone()
+    }
+
+    pub fn diagnostics_truncated(&self) -> bool {
+        self.files_truncated.load(Ordering::Relaxed)
+    }
+
+    pub fn retry(self: &Arc<Self>) {
+        if matches!(self.state(), RunState::Starting | RunState::Ready) {
+            return;
+        }
+        self.shutting_down.store(false, Ordering::SeqCst);
+        self.restart_attempts.store(0, Ordering::SeqCst);
+        self.restart_window.lock().clear();
+        *self.last_error.lock() = None;
+        *self.state.lock() = RunState::Starting;
+        if boot(self).is_err() {
+            *self.state.lock() = RunState::Crashed;
+        }
     }
 
     pub fn root(&self) -> &std::path::Path {
@@ -195,7 +237,11 @@ impl LspServer {
 
     pub fn did_close(&self, rel: &str) {
         let removed = self.open_docs.lock().remove(rel);
-        self.diagnostics.lock().remove(rel);
+        let had_diags = self.diagnostics.lock().remove(rel).is_some();
+        if had_diags {
+            self.dirty_diags.lock().insert(rel.to_string());
+            self.queue_diag_emit();
+        }
         if let Some(doc) = removed {
             if matches!(self.state(), RunState::Ready) {
                 self.notify(
@@ -280,16 +326,25 @@ impl LspServer {
     }
 
     fn emit_diagnostics(&self) {
-        let snapshot: Vec<FileDiagnostics> = self
-            .diagnostics
-            .lock()
-            .iter()
-            .map(|(path, diags)| FileDiagnostics {
-                path: path.clone(),
-                diagnostics: diags.clone(),
+        let dirty: Vec<String> = self.dirty_diags.lock().drain().collect();
+        if dirty.is_empty() {
+            return;
+        }
+        let diags = self.diagnostics.lock();
+        let files: Vec<FileDiagnostics> = dirty
+            .into_iter()
+            .map(|path| {
+                let list = diags.get(&path).cloned().unwrap_or_default();
+                FileDiagnostics {
+                    path,
+                    diagnostics: list,
+                }
             })
             .collect();
-        (self.emit)(DiagnosticsBatch { files: snapshot });
+        (self.emit)(DiagnosticsBatch {
+            files,
+            files_truncated: self.files_truncated.load(Ordering::Relaxed),
+        });
     }
 }
 
@@ -301,11 +356,16 @@ fn absolute_only(path: &str) -> String {
         .join(":")
 }
 
-pub fn base_env(user_env: &HashMap<String, String>) -> Vec<(String, String)> {
+pub fn base_env(user_env: &HashMap<String, String>, entry: &ServerEntry) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = Vec::new();
     for key in ["HOME", "USER", "LANG", "TMPDIR", "SHELL"] {
         if let Some(v) = user_env.get(key) {
             env.push((key.to_string(), v.clone()));
+        }
+    }
+    for var in entry.forwarded_env() {
+        if let Some(v) = user_env.get(var) {
+            env.push((var.to_string(), v.clone()));
         }
     }
     env.push((
@@ -439,12 +499,14 @@ fn handshake(server: &Arc<LspServer>) {
         Ok(_) => {
             server.notify("initialized", json!({}));
             *server.state.lock() = RunState::Ready;
+            *server.last_error.lock() = None;
             server.restart_attempts.store(0, Ordering::SeqCst);
             reopen_documents(server);
         }
-        Err(_) => {
+        Err(e) => {
+            *server.last_error.lock() = Some(format!("initialize falhou: {e}"));
             *server.state.lock() = RunState::Crashed;
-            schedule_restart(server);
+            server.kill_process();
         }
     }
 }
@@ -473,18 +535,40 @@ fn on_reader_exit(server: &Arc<LspServer>) {
     if server.shutting_down.load(Ordering::SeqCst) {
         return;
     }
+    if matches!(server.state(), RunState::Crashed) {
+        return;
+    }
     *server.state.lock() = RunState::Crashed;
+    *server.last_error.lock() = Some("o processo do language server encerrou".into());
     server.kill_process();
     schedule_restart(server);
+}
+
+fn restart_window_exhausted(server: &Arc<LspServer>) -> bool {
+    let mut window = server.restart_window.lock();
+    let now = Instant::now();
+    window.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
+    if window.len() >= MAX_RESTARTS_PER_HOUR {
+        return true;
+    }
+    window.push(now);
+    false
 }
 
 fn schedule_restart(server: &Arc<LspServer>) {
     if server.shutting_down.load(Ordering::SeqCst) {
         return;
     }
+    if restart_window_exhausted(server) {
+        *server.state.lock() = RunState::Crashed;
+        *server.last_error.lock() =
+            Some("reinícios demais em pouco tempo — pare e tente de novo".into());
+        return;
+    }
     let attempt = server.restart_attempts.fetch_add(1, Ordering::SeqCst) + 1;
     if attempt > MAX_RESTARTS {
         *server.state.lock() = RunState::Crashed;
+        *server.last_error.lock() = Some("o language server segue caindo".into());
         return;
     }
     let backoff = Duration::from_millis(500 * (1u64 << (attempt.min(5) - 1)));
@@ -570,13 +654,58 @@ fn handle_diagnostics(server: &Arc<LspServer>, params: Option<&Value>) {
     let Some(rel) = super::uri::to_rel(&server.root, uri) else {
         return;
     };
-    let diags: Vec<DiagnosticIpc> = params
+    let mut diags: Vec<DiagnosticIpc> = params
         .get("diagnostics")
         .and_then(Value::as_array)
         .map(|arr| arr.iter().filter_map(DiagnosticIpc::from_lsp).collect())
         .unwrap_or_default();
-    server.diagnostics.lock().insert(rel, diags);
+    if cap_per_file(&mut diags) {
+        server.files_truncated.store(true, Ordering::Relaxed);
+    }
+    {
+        let mut map = server.diagnostics.lock();
+        match admit_file(map.len(), map.contains_key(&rel), diags.is_empty()) {
+            Admit::Skip => return,
+            Admit::SkipTruncated => {
+                server.files_truncated.store(true, Ordering::Relaxed);
+                return;
+            }
+            Admit::Track => {}
+        }
+        if diags.is_empty() {
+            map.remove(&rel);
+        } else {
+            map.insert(rel.clone(), diags);
+        }
+    }
+    server.dirty_diags.lock().insert(rel);
     server.queue_diag_emit();
+}
+
+fn cap_per_file(diags: &mut Vec<DiagnosticIpc>) -> bool {
+    if diags.len() > MAX_DIAG_PER_FILE {
+        diags.truncate(MAX_DIAG_PER_FILE);
+        true
+    } else {
+        false
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Admit {
+    Track,
+    Skip,
+    SkipTruncated,
+}
+
+fn admit_file(map_len: usize, known: bool, empty: bool) -> Admit {
+    if !known && empty {
+        Admit::Skip
+    } else if !known && map_len >= MAX_DIAG_FILES {
+        Admit::SkipTruncated
+    } else {
+        Admit::Track
+    }
 }
 
 fn client_capabilities() -> Value {
@@ -616,5 +745,54 @@ fn kill_group(pid: u32) {
     #[cfg(not(unix))]
     {
         let _ = pid;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lsp::{PosIpc, RangeIpc};
+
+    fn diag(msg: &str) -> DiagnosticIpc {
+        DiagnosticIpc {
+            range: RangeIpc {
+                start: PosIpc {
+                    line: 0,
+                    character: 0,
+                },
+                end: PosIpc {
+                    line: 0,
+                    character: 1,
+                },
+            },
+            severity: 1,
+            message: msg.to_string(),
+            source: None,
+        }
+    }
+
+    #[test]
+    fn per_file_cap_truncates_and_signals() {
+        let mut small = vec![diag("a"); 10];
+        assert!(!cap_per_file(&mut small));
+        assert_eq!(small.len(), 10);
+
+        let mut huge = vec![diag("x"); MAX_DIAG_PER_FILE + 50];
+        assert!(
+            cap_per_file(&mut huge),
+            "estouro precisa sinalizar truncamento"
+        );
+        assert_eq!(huge.len(), MAX_DIAG_PER_FILE);
+    }
+
+    #[test]
+    fn new_file_beyond_the_cap_is_dropped_with_a_signal() {
+        assert_eq!(
+            admit_file(MAX_DIAG_FILES, false, false),
+            Admit::SkipTruncated
+        );
+        assert_eq!(admit_file(MAX_DIAG_FILES, true, false), Admit::Track);
+        assert_eq!(admit_file(3, false, true), Admit::Skip);
+        assert_eq!(admit_file(3, false, false), Admit::Track);
     }
 }
