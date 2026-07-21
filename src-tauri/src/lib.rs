@@ -1033,7 +1033,7 @@ fn resolve_files_root(
         .leader_pid(id)
         .ok_or("a sessão não tem um processo ativo")?;
     let cwd = repo::process_cwd(pid).ok_or("não foi possível ler o diretório da sessão")?;
-    match repo::toplevel(&cwd) {
+    match files::find_repo_root(&cwd) {
         Some(root) => Ok((repo::canonicalize_or(&root), files::Context::Repo)),
         None => Ok((repo::canonicalize_or(&cwd), files::Context::OutsideRepo)),
     }

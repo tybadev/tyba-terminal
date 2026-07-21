@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use notify::RecursiveMode;
-use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
+use notify_debouncer_full::{new_debouncer_opt, DebounceEventResult, Debouncer, NoCache};
 use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
@@ -131,6 +131,17 @@ fn rel_of(root: &Path, path: &Path) -> Option<String> {
     Some(s)
 }
 
+pub fn find_repo_root(start: &Path) -> Option<PathBuf> {
+    let mut cur = Some(start);
+    while let Some(dir) = cur {
+        if dir.join(".git").exists() {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
 pub fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel = rel.trim_start_matches('/');
     let candidate = if rel.is_empty() {
@@ -157,17 +168,36 @@ pub fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf, String> {
 }
 
 fn ignored_set(root: &Path, rels: &[String]) -> HashSet<String> {
+    use std::io::Write;
+    use std::process::Stdio;
     if rels.is_empty() {
         return HashSet::new();
     }
     let mut cmd = crate::worktree::git_in(root);
     cmd.env("GIT_LITERAL_PATHSPECS", "1");
-    cmd.args(["check-ignore", "-z", "--"]);
+    cmd.args(["check-ignore", "-z", "--stdin"]);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::null());
+    let Ok(mut child) = cmd.spawn() else {
+        return HashSet::new();
+    };
+    let stdin = child.stdin.take();
+    let mut payload = Vec::new();
     for rel in rels {
-        cmd.arg(rel);
+        payload.extend_from_slice(rel.as_bytes());
+        payload.push(0);
     }
-    match crate::worktree::run_git(cmd, "git check-ignore") {
-        Ok(raw) => raw
+    let writer = std::thread::spawn(move || {
+        if let Some(mut stdin) = stdin {
+            let _ = stdin.write_all(&payload);
+        }
+    });
+    let output = child.wait_with_output();
+    let _ = writer.join();
+    match output {
+        Ok(out) => out
+            .stdout
             .split(|b| *b == 0)
             .filter(|f| !f.is_empty())
             .map(|f| String::from_utf8_lossy(f).into_owned())
@@ -465,7 +495,7 @@ pub fn compute_decorations(root: &Path, context: &Context) -> Vec<Decoration> {
     }
 }
 
-type FileDebouncer = Debouncer<notify::RecommendedWatcher, RecommendedCache>;
+type FileDebouncer = Debouncer<notify::RecommendedWatcher, NoCache>;
 
 struct Panel {
     root: PathBuf,
@@ -590,51 +620,59 @@ fn spawn_watcher<R: Runtime>(
     let cb_context = context.clone();
     let cb_watched = Arc::clone(watched);
 
-    let mut debouncer = new_debouncer(WATCH_DEBOUNCE, None, move |result: DebounceEventResult| {
-        let Ok(events) = result else {
-            return;
-        };
-        let mut touched_git = false;
-        let mut affected: HashSet<PathBuf> = HashSet::new();
-        {
-            let live = cb_watched.lock();
-            for event in &events {
-                for path in &event.paths {
-                    if crate::repo::is_watched_event_path(path) {
-                        touched_git = true;
-                    }
-                    if live.contains(path.as_path()) {
-                        affected.insert(path.clone());
-                    }
-                    if let Some(parent) = path.parent() {
-                        if live.contains(parent) {
-                            affected.insert(parent.to_path_buf());
+    let mut debouncer = new_debouncer_opt::<_, notify::RecommendedWatcher, NoCache>(
+        WATCH_DEBOUNCE,
+        None,
+        move |result: DebounceEventResult| {
+            let Ok(events) = result else {
+                return;
+            };
+            let mut touched_git = false;
+            let mut affected: HashSet<PathBuf> = HashSet::new();
+            {
+                let live = cb_watched.lock();
+                for event in &events {
+                    for path in &event.paths {
+                        if crate::repo::is_watched_event_path(path) {
+                            touched_git = true;
+                        }
+                        if live.contains(path.as_path()) {
+                            affected.insert(path.clone());
+                        }
+                        if let Some(parent) = path.parent() {
+                            if live.contains(parent) {
+                                affected.insert(parent.to_path_buf());
+                            }
                         }
                     }
                 }
             }
-        }
-        if !affected.is_empty() {
-            let dirs: Vec<String> = affected
-                .iter()
-                .filter_map(|d| rel_of(&cb_root, d))
-                .collect();
-            let _ = app.emit(&tree_ev, TreePayload { dirs });
-        }
-        if touched_git || !affected.is_empty() {
-            let decorations = compute_decorations(&cb_root, &cb_context);
-            let _ = app.emit(&deco_ev, DecorationsPayload { decorations });
-        }
-    })
+            if !affected.is_empty() {
+                let dirs: Vec<String> = affected
+                    .iter()
+                    .filter_map(|d| rel_of(&cb_root, d))
+                    .collect();
+                let _ = app.emit(&tree_ev, TreePayload { dirs });
+            }
+            if touched_git || !affected.is_empty() {
+                let decorations = compute_decorations(&cb_root, &cb_context);
+                let _ = app.emit(&deco_ev, DecorationsPayload { decorations });
+            }
+        },
+        NoCache,
+        notify::Config::default(),
+    )
     .ok()?;
 
-    for dir in crate::repo::watch_dirs(&root) {
-        let mode = if dir.ends_with("refs/heads") {
-            RecursiveMode::Recursive
-        } else {
-            RecursiveMode::NonRecursive
-        };
-        let _ = debouncer.watch(&dir, mode);
+    if !matches!(context, Context::OutsideRepo) {
+        for dir in crate::repo::watch_dirs(&root) {
+            let mode = if dir.ends_with("refs/heads") {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+            let _ = debouncer.watch(&dir, mode);
+        }
     }
     Some(debouncer)
 }
@@ -730,6 +768,26 @@ mod tests {
 
         std::fs::remove_dir_all(&first).ok();
         std::fs::remove_dir_all(&second).ok();
+    }
+
+    #[test]
+    fn find_repo_root_walks_up_to_the_dot_git() {
+        let base = tmp();
+        let repo = base.join("proj");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let deep = repo.join("src/inner");
+        std::fs::create_dir_all(&deep).unwrap();
+        assert_eq!(find_repo_root(&deep).as_deref(), Some(repo.as_path()));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn find_repo_root_does_not_flag_a_dir_without_dot_git() {
+        let base = tmp();
+        let plain = base.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_ne!(find_repo_root(&plain).as_deref(), Some(plain.as_path()));
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[cfg(unix)]
