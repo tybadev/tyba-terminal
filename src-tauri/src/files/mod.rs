@@ -17,6 +17,7 @@ pub const EVENT_TREE_PREFIX: &str = "files://tree/";
 pub const EVENT_DECORATIONS_PREFIX: &str = "files://decorations/";
 
 pub const READ_PAGE_BYTES: usize = 256 * 1024;
+pub const MAX_DIR_ENTRIES: usize = 2000;
 const IMAGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
 
@@ -58,6 +59,8 @@ pub struct Entry {
 pub struct DirListing {
     pub dir: String,
     pub entries: Vec<Entry>,
+    pub total: usize,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -179,7 +182,6 @@ pub fn list_dir(root: &Path, dir_rel: &str, context: &Context) -> Result<DirList
         return Err("não é um diretório".into());
     }
     let mut entries = Vec::new();
-    let mut child_rels = Vec::new();
     for ent in std::fs::read_dir(&dir).map_err(|e| format!("falha ao listar: {e}"))? {
         let Ok(ent) = ent else {
             continue;
@@ -191,7 +193,6 @@ pub fn list_dir(root: &Path, dir_rel: &str, context: &Context) -> Result<DirList
         let is_symlink = ent.file_type().map(|t| t.is_symlink()).unwrap_or(false);
         let is_dir = ent.metadata().map(|m| m.is_dir()).unwrap_or(false);
         let rel = join_rel(dir_rel, &name);
-        child_rels.push(rel.clone());
         entries.push(Entry {
             name,
             rel_path: rel,
@@ -200,22 +201,30 @@ pub fn list_dir(root: &Path, dir_rel: &str, context: &Context) -> Result<DirList
             gitignored: false,
         });
     }
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    let total = entries.len();
+    let truncated = total > MAX_DIR_ENTRIES;
+    if truncated {
+        entries.truncate(MAX_DIR_ENTRIES);
+    }
     if !matches!(context, Context::OutsideRepo) {
-        let ignored = ignored_set(root, &child_rels);
+        let kept: Vec<String> = entries.iter().map(|e| e.rel_path.clone()).collect();
+        let ignored = ignored_set(root, &kept);
         for entry in entries.iter_mut() {
             if ignored.contains(&entry.rel_path) {
                 entry.gitignored = true;
             }
         }
     }
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
     Ok(DirListing {
         dir: dir_rel.to_string(),
         entries,
+        total,
+        truncated,
     })
 }
 
@@ -232,9 +241,54 @@ fn image_mime(name: &str) -> Option<&'static str> {
     })
 }
 
-fn read_range(path: &Path, offset: usize, len: usize) -> Result<Vec<u8>, String> {
+#[cfg(target_os = "macos")]
+fn fd_real_path(file: &std::fs::File) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::AsRawFd;
+    let mut buf = [0u8; libc::PATH_MAX as usize];
+    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) };
+    if rc < 0 {
+        return None;
+    }
+    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..end])))
+}
+
+#[cfg(target_os = "linux")]
+fn fd_real_path(file: &std::fs::File) -> Option<PathBuf> {
+    use std::os::unix::io::AsRawFd;
+    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn fd_real_path(_file: &std::fs::File) -> Option<PathBuf> {
+    None
+}
+
+pub(crate) fn open_verified(root: &Path, full: &Path) -> Result<(std::fs::File, PathBuf), String> {
+    let file = std::fs::File::open(full).map_err(|e| format!("falha ao abrir: {e}"))?;
+    let root_canon = std::fs::canonicalize(root).map_err(|e| format!("raiz inacessível: {e}"))?;
+    let real = match fd_real_path(&file) {
+        Some(path) => std::fs::canonicalize(&path).unwrap_or(path),
+        None => {
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            {
+                return Err("não foi possível revalidar o arquivo aberto".into());
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            {
+                std::fs::canonicalize(full).map_err(|e| format!("arquivo inacessível: {e}"))?
+            }
+        }
+    };
+    if !real.starts_with(&root_canon) {
+        return Err("arquivo fora da raiz do painel".into());
+    }
+    Ok((file, real))
+}
+
+fn read_page(file: &mut std::fs::File, offset: usize, len: usize) -> Result<Vec<u8>, String> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut file = std::fs::File::open(path).map_err(|e| format!("falha ao abrir: {e}"))?;
     file.seek(SeekFrom::Start(offset as u64))
         .map_err(|e| format!("seek: {e}"))?;
     let mut buf = vec![0u8; len];
@@ -247,6 +301,15 @@ fn read_range(path: &Path, offset: usize, len: usize) -> Result<Vec<u8>, String>
         }
     }
     buf.truncate(read);
+    Ok(buf)
+}
+
+fn read_capped(file: &mut std::fs::File, cap: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    file.take(cap as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("read: {e}"))?;
     Ok(buf)
 }
 
@@ -263,12 +326,15 @@ fn page_end(data: &[u8], more_ahead: bool) -> usize {
 
 pub fn read_file(root: &Path, rel: &str, offset: usize) -> Result<FileContent, String> {
     let full = resolve_within(root, rel)?;
-    let meta = std::fs::metadata(&full).map_err(|e| format!("arquivo inacessível: {e}"))?;
+    let (mut file, real) = open_verified(root, &full)?;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("arquivo inacessível: {e}"))?;
     if !meta.is_file() {
         return Err("não é um arquivo".into());
     }
     let total = meta.len();
-    let name = full
+    let name = real
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or_default()
@@ -276,7 +342,7 @@ pub fn read_file(root: &Path, rel: &str, offset: usize) -> Result<FileContent, S
 
     if let Some(mime) = image_mime(&name) {
         if total <= IMAGE_MAX_BYTES {
-            let bytes = std::fs::read(&full).map_err(|e| format!("falha ao ler: {e}"))?;
+            let bytes = read_capped(&mut file, IMAGE_MAX_BYTES as usize)?;
             let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
             return Ok(FileContent::Image {
                 data,
@@ -290,7 +356,7 @@ pub fn read_file(root: &Path, rel: &str, offset: usize) -> Result<FileContent, S
         });
     }
 
-    let buf = read_range(&full, offset, READ_PAGE_BYTES)?;
+    let buf = read_page(&mut file, offset, READ_PAGE_BYTES)?;
     if offset == 0 && buf.contains(&0) {
         return Ok(FileContent::Binary { total, mime: None });
     }
@@ -609,6 +675,32 @@ mod tests {
         let root_canon = std::fs::canonicalize(&root).unwrap();
         assert!(resolved.starts_with(&root_canon));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn open_verified_accepts_a_file_inside_root() {
+        let root = tmp();
+        std::fs::write(root.join("a.txt"), "ok").unwrap();
+        let full = resolve_within(&root, "a.txt").unwrap();
+        let (_file, real) = open_verified(&root, &full).expect("arquivo dentro da raiz abre");
+        let root_canon = std::fs::canonicalize(&root).unwrap();
+        assert!(real.starts_with(&root_canon));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_verified_rejects_an_fd_resolving_outside_root() {
+        let root = tmp();
+        let outside = tmp();
+        std::fs::write(outside.join("secret.txt"), "leak").unwrap();
+        let link = root.join("escape");
+        std::os::unix::fs::symlink(outside.join("secret.txt"), &link).unwrap();
+        let err = open_verified(&root, &link)
+            .expect_err("fd que resolve pra fora da raiz é recusado na revalidação");
+        assert!(err.contains("fora"));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 
     #[cfg(unix)]

@@ -978,10 +978,12 @@ async fn session_git_status(
 #[tauri::command]
 fn open_diff_tab(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
     session_repo_context(&state, id)?;
+    let previous = session_side_view(&state, id);
     state
         .layout
         .open_workspace_side_view(id, &layout::diff_view(id))
         .map_err(|e| e.to_string())?;
+    close_orphaned_files_panel(&state, previous, None);
     emit_layout(&app, &state);
     Ok(())
 }
@@ -999,10 +1001,12 @@ fn open_tunnels_panel(
     if !matches!(session.kind, SessionKind::Ssh { .. }) {
         return Err(crate::error::AppError::new("ssh.not_an_ssh_session"));
     }
+    let previous = session_side_view(&state, id);
     state
         .layout
         .open_workspace_side_view(id, &layout::tunnels_view(id))
         .map_err(|e| crate::error::AppError::new("layout.failed").with("detail", e.to_string()))?;
+    close_orphaned_files_panel(&state, previous, None);
     emit_layout(&app, &state);
     Ok(())
 }
@@ -1035,6 +1039,36 @@ fn resolve_files_root(
     }
 }
 
+fn workspace_side_view(state: &AppState, workspace: layout::WorkspaceId) -> Option<String> {
+    state
+        .layout
+        .state()
+        .workspaces
+        .into_iter()
+        .find(|w| w.id == workspace)
+        .and_then(|w| w.side_view)
+}
+
+fn session_side_view(state: &AppState, session: SessionId) -> Option<String> {
+    let workspace = state.layout.workspace_of_session(session)?;
+    workspace_side_view(state, workspace)
+}
+
+fn close_orphaned_files_panel(state: &AppState, previous: Option<String>, keep: Option<&str>) {
+    let Some(prev) = previous else {
+        return;
+    };
+    if keep == Some(prev.as_str()) {
+        return;
+    }
+    if let Some(id) = prev
+        .strip_prefix(layout::VIEW_FILES_PREFIX)
+        .and_then(|s| s.parse::<SessionId>().ok())
+    {
+        state.files.close(id);
+    }
+}
+
 #[tauri::command]
 fn open_files_panel(
     app: AppHandle,
@@ -1044,10 +1078,13 @@ fn open_files_panel(
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
+    let new_view = layout::files_view(id);
+    let previous = session_side_view(&state, id);
     state
         .layout
-        .open_workspace_side_view(id, &layout::files_view(id))
+        .open_workspace_side_view(id, &new_view)
         .map_err(|e| e.to_string())?;
+    close_orphaned_files_panel(&state, previous, Some(&new_view));
     emit_layout(&app, &state);
     state.files.emit_decorations(&app, id);
     Ok(root.to_string_lossy().into_owned())
@@ -1152,10 +1189,12 @@ fn close_side_view(
     state: State<'_, AppState>,
     workspace_id: layout::WorkspaceId,
 ) -> Result<(), String> {
+    let previous = workspace_side_view(&state, workspace_id);
     state
         .layout
         .close_side_view(workspace_id)
         .map_err(|e| e.to_string())?;
+    close_orphaned_files_panel(&state, previous, None);
     emit_layout(&app, &state);
     Ok(())
 }
@@ -1453,7 +1492,8 @@ async fn files_open_external(
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
     let full = files::resolve_within(&root, &path)?;
-    open_path_in_editor(full, editor)
+    let (_file, real) = files::open_verified(&root, &full)?;
+    open_path_in_editor(real, editor)
 }
 
 #[tauri::command]

@@ -129,6 +129,7 @@ const resources = {
       filesSessionGone: "A sessão deste painel não existe mais.",
       filesLoadError: "Não foi possível abrir o arquivo.",
       filesEmptyDir: "Pasta vazia.",
+      filesMore: "+{{count}} itens não exibidos",
       reviewAgent: "Agente de review",
       reviewAgentHint:
         "Quem recebe os comentários do diff quando não há sessão aberta no worktree: o Tyba abre uma sessão, sobe esse agente e cola o prompt no composer.",
@@ -878,6 +879,7 @@ const resources = {
       filesSessionGone: "This panel's session no longer exists.",
       filesLoadError: "Could not open the file.",
       filesEmptyDir: "Empty folder.",
+      filesMore: "+{{count}} items not shown",
       reviewAgent: "Review agent",
       reviewAgentHint:
         "Who receives the diff comments when no session is open in the worktree: Tyba opens a session, starts this agent and pastes the prompt into its composer.",

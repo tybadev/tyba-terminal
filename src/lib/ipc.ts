@@ -1165,6 +1165,8 @@ export interface FileEntry {
 export interface DirListing {
   dir: string;
   entries: FileEntry[];
+  total: number;
+  truncated: boolean;
 }
 
 export type FileDecoStatus =

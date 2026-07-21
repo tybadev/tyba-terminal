@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   ArrowsInSimple,
@@ -37,6 +37,7 @@ import {
 } from "@/lib/ipc";
 import { langOfPath } from "@/lib/diff";
 import { highlightBlock, type TokenSpan } from "@/lib/highlight";
+import { isRemoteUrl, safeMarkdownUrl } from "@/lib/markdownUrl";
 
 interface Props {
   session: Session;
@@ -69,6 +70,29 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const MD_COMPONENTS: Components = {
+  img(props) {
+    const { src, alt } = props;
+    return typeof src === "string" && src.length > 0 && !isRemoteUrl(src) ? (
+      <img src={src} alt={alt ?? ""} className="max-w-full" />
+    ) : (
+      <span className="text-tyba-text-faint">{alt ?? ""}</span>
+    );
+  },
+  a(props) {
+    const { href, children } = props;
+    return (
+      <a
+        href={href || undefined}
+        onClick={(e) => e.preventDefault()}
+        className="text-tyba-green underline"
+      >
+        {children}
+      </a>
+    );
+  },
+};
+
 export function FilesPanel({
   session,
   editor,
@@ -91,16 +115,24 @@ export function FilesPanel({
   const [contentError, setContentError] = useState<string | null>(null);
   const [markdownSource, setMarkdownSource] = useState(false);
   const [tokens, setTokens] = useState<TokenSpan[][] | null>(null);
+  const [dirMeta, setDirMeta] = useState<
+    Record<string, { total: number; truncated: boolean }>
+  >({});
 
   const entriesRef = useRef(entriesByDir);
   entriesRef.current = entriesByDir;
+  const reqId = useRef(0);
 
   const relist = useCallback(
     (dir: string) => {
       void filesListDir(session.id, dir)
-        .then((listing) =>
-          setEntriesByDir((prev) => ({ ...prev, [dir]: listing.entries })),
-        )
+        .then((listing) => {
+          setEntriesByDir((prev) => ({ ...prev, [dir]: listing.entries }));
+          setDirMeta((prev) => ({
+            ...prev,
+            [dir]: { total: listing.total, truncated: listing.truncated },
+          }));
+        })
         .catch(() => {});
     },
     [session.id],
@@ -109,6 +141,7 @@ export function FilesPanel({
   useEffect(() => {
     let alive = true;
     setEntriesByDir({});
+    setDirMeta({});
     setExpandedDirs(new Set());
     setSelected(null);
     setContent(null);
@@ -119,7 +152,9 @@ export function FilesPanel({
       .catch(() => {});
     void filesListDir(session.id, "")
       .then((listing) => {
-        if (alive) setEntriesByDir({ "": listing.entries });
+        if (!alive) return;
+        setEntriesByDir({ "": listing.entries });
+        setDirMeta({ "": { total: listing.total, truncated: listing.truncated } });
       })
       .catch(() => {});
     void filesWatchDir(session.id, "").catch(() => {});
@@ -164,24 +199,32 @@ export function FilesPanel({
 
   const openFile = useCallback(
     (rel: string) => {
+      const my = ++reqId.current;
       setSelected(rel);
       setContent(null);
       setContentError(null);
       setMarkdownSource(false);
       setTokens(null);
       void filesRead(session.id, rel, 0)
-        .then(setContent)
-        .catch((e) => setContentError(String(e)));
+        .then((c) => {
+          if (reqId.current === my) setContent(c);
+        })
+        .catch((e) => {
+          if (reqId.current === my) setContentError(String(e));
+        });
     },
     [session.id],
   );
 
   const loadAll = useCallback(async () => {
+    const my = reqId.current;
     let cur = content;
     while (cur && cur.kind === "text" && cur.truncated && selected) {
+      if (reqId.current !== my) return;
       const next = await filesRead(session.id, selected, cur.next_offset).catch(
         () => null,
       );
+      if (reqId.current !== my) return;
       if (!next || next.kind !== "text") break;
       cur = { ...next, text: cur.text + next.text, offset: 0 };
       setContent(cur);
@@ -189,12 +232,16 @@ export function FilesPanel({
   }, [content, selected, session.id]);
 
   const reanchor = useCallback(async () => {
+    reqId.current += 1;
     await filesReanchor(session.id).catch(() => {});
     setExpandedDirs(new Set());
     setSelected(null);
     setContent(null);
     const listing = await filesListDir(session.id, "").catch(() => null);
-    if (listing) setEntriesByDir({ "": listing.entries });
+    if (listing) {
+      setEntriesByDir({ "": listing.entries });
+      setDirMeta({ "": { total: listing.total, truncated: listing.truncated } });
+    }
     const next = await filesPanelInfo(session.id).catch(() => null);
     if (next) setInfo(next);
   }, [session.id]);
@@ -221,19 +268,31 @@ export function FilesPanel({
   const selectedDecorated = selected ? decorations.has(selected) : false;
 
   const rows = useMemo(() => {
-    const out: { entry: FileEntry; depth: number }[] = [];
+    type Row =
+      | { kind: "entry"; entry: FileEntry; depth: number }
+      | { kind: "more"; dir: string; hidden: number; depth: number };
+    const out: Row[] = [];
     const walk = (dir: string, depth: number) => {
       const entries = entriesByDir[dir] ?? [];
       for (const entry of entries) {
-        out.push({ entry, depth });
+        out.push({ kind: "entry", entry, depth });
         if (entry.is_dir && expandedDirs.has(entry.rel_path)) {
           walk(entry.rel_path, depth + 1);
         }
       }
+      const meta = dirMeta[dir];
+      if (meta?.truncated) {
+        out.push({
+          kind: "more",
+          dir,
+          hidden: Math.max(0, meta.total - entries.length),
+          depth,
+        });
+      }
     };
     walk("", 0);
     return out;
-  }, [entriesByDir, expandedDirs]);
+  }, [entriesByDir, expandedDirs, dirMeta]);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-tyba-bg">
@@ -278,7 +337,19 @@ export function FilesPanel({
               {t("filesEmptyDir")}
             </div>
           ) : (
-            rows.map(({ entry, depth }) => {
+            rows.map((row) => {
+              if (row.kind === "more") {
+                return (
+                  <div
+                    key={`more:${row.dir}`}
+                    className="flex h-6 items-center text-[11px] italic text-tyba-text-faint"
+                    style={{ paddingLeft: `${8 + (row.depth + 1) * 12}px` }}
+                  >
+                    {t("filesMore", { count: row.hidden })}
+                  </div>
+                );
+              }
+              const { entry, depth } = row;
               const deco = decorations.get(entry.rel_path);
               const isSelected = selected === entry.rel_path;
               return (
@@ -407,7 +478,11 @@ export function FilesPanel({
                   </div>
                 ) : isMarkdown && !markdownSource ? (
                   <div className="files-markdown px-4 py-3 text-[13px] leading-relaxed text-tyba-text">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      urlTransform={safeMarkdownUrl}
+                      components={MD_COMPONENTS}
+                    >
                       {content.text}
                     </ReactMarkdown>
                   </div>
