@@ -1,36 +1,104 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Platform {
-    Macos,
-    Linux,
-    Windows,
+pub enum Runtime {
+    Native,
+    Node,
+    Php,
+    Jvm,
+    Beam,
 }
 
-pub fn current_platform() -> Platform {
-    #[cfg(target_os = "macos")]
-    {
-        Platform::Macos
+impl Runtime {
+    pub fn interpreter(&self) -> Option<&'static str> {
+        match self {
+            Runtime::Native => None,
+            Runtime::Node => Some("node"),
+            Runtime::Php => Some("php"),
+            Runtime::Jvm => Some("java"),
+            Runtime::Beam => Some("elixir"),
+        }
     }
-    #[cfg(target_os = "linux")]
-    {
-        Platform::Linux
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Manager {
+    Rustup,
+    Go,
+    Cargo,
+    Composer,
+    Mix,
+    Brew,
+    Bun,
+    Pipx,
+    Scoop,
+    Npm,
+    Manual,
+}
+
+impl Manager {
+    pub fn binary(&self) -> Option<&'static str> {
+        match self {
+            Manager::Rustup => Some("rustup"),
+            Manager::Go => Some("go"),
+            Manager::Cargo => Some("cargo"),
+            Manager::Composer => Some("composer"),
+            Manager::Mix => Some("mix"),
+            Manager::Brew => Some("brew"),
+            Manager::Bun => Some("bun"),
+            Manager::Pipx => Some("pipx"),
+            Manager::Scoop => Some("scoop"),
+            Manager::Npm => Some("npm"),
+            Manager::Manual => None,
+        }
     }
-    #[cfg(target_os = "windows")]
-    {
-        Platform::Windows
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Manager::Rustup => "rustup",
+            Manager::Go => "go",
+            Manager::Cargo => "cargo",
+            Manager::Composer => "composer",
+            Manager::Mix => "mix",
+            Manager::Brew => "brew",
+            Manager::Bun => "bun",
+            Manager::Pipx => "pipx",
+            Manager::Scoop => "scoop",
+            Manager::Npm => "npm",
+            Manager::Manual => "manual",
+        }
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        Platform::Linux
+
+    fn rank(&self) -> u8 {
+        match self {
+            Manager::Rustup | Manager::Go => 0,
+            Manager::Cargo | Manager::Composer | Manager::Mix => 1,
+            Manager::Brew => 2,
+            Manager::Bun => 3,
+            Manager::Pipx => 4,
+            Manager::Scoop => 5,
+            Manager::Npm => 6,
+            Manager::Manual => 10,
+        }
+    }
+
+    pub fn available(&self, path_dirs: &[PathBuf]) -> bool {
+        match self.binary() {
+            None => true,
+            Some(bin) => path_dirs.iter().any(|dir| {
+                candidate_names(bin)
+                    .iter()
+                    .any(|name| is_executable(&dir.join(name)))
+            }),
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct InstallHint {
-    pub platform: Platform,
+pub struct Install {
+    pub manager: Manager,
     pub command: &'static str,
-    pub manager: &'static str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -48,16 +116,26 @@ pub enum ProfilePath {
     Env(&'static str, &'static str),
 }
 
+impl ProfilePath {
+    pub fn env_var(&self) -> Option<&'static str> {
+        match self {
+            ProfilePath::Env(var, _) => Some(var),
+            _ => None,
+        }
+    }
+}
+
 pub struct ServerEntry {
     pub id: &'static str,
     pub label: &'static str,
+    pub runtime: Runtime,
     pub binaries: &'static [&'static str],
     pub args: &'static [&'static str],
     pub extensions: &'static [(&'static str, &'static str)],
     pub filenames: &'static [(&'static str, &'static str)],
     pub dockerfile_prefix: bool,
     pub extra_bin_dirs: &'static [BinDir],
-    pub install: &'static [InstallHint],
+    pub install: &'static [Install],
     pub init_options: Option<&'static str>,
     pub reads: &'static [ProfilePath],
     pub writes: &'static [ProfilePath],
@@ -66,17 +144,22 @@ pub struct ServerEntry {
 }
 
 impl ServerEntry {
-    pub fn install_hint(&self, platform: Platform) -> Option<&'static InstallHint> {
-        self.install
-            .iter()
-            .find(|h| h.platform == platform)
-            .or_else(|| self.install.first())
+    pub fn forwarded_env(&self) -> Vec<&'static str> {
+        let mut vars: Vec<&'static str> = Vec::new();
+        for path in self.reads.iter().chain(self.writes.iter()) {
+            if let Some(var) = path.env_var() {
+                if !vars.contains(&var) {
+                    vars.push(var);
+                }
+            }
+        }
+        vars
     }
 }
 
-macro_rules! hints {
-    ($($plat:ident => $mgr:literal : $cmd:literal),+ $(,)?) => {
-        &[$(InstallHint { platform: Platform::$plat, command: $cmd, manager: $mgr }),+]
+macro_rules! installs {
+    ($($mgr:ident : $cmd:literal),+ $(,)?) => {
+        &[$(Install { manager: Manager::$mgr, command: $cmd }),+]
     };
 }
 
@@ -84,16 +167,16 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "rust-analyzer",
         label: "rust-analyzer",
+        runtime: Runtime::Native,
         binaries: &["rust-analyzer"],
         args: &[],
         extensions: &[("rs", "rust")],
         filenames: &[],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::HomeCargoBin],
-        install: hints!(
-            Macos => "rustup": "rustup component add rust-analyzer",
-            Linux => "rustup": "rustup component add rust-analyzer",
-            Windows => "rustup": "rustup component add rust-analyzer",
+        install: installs!(
+            Rustup: "rustup component add rust-analyzer",
+            Brew: "brew install rust-analyzer",
         ),
         init_options: None,
         reads: &[],
@@ -104,6 +187,7 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "typescript-language-server",
         label: "typescript-language-server",
+        runtime: Runtime::Node,
         binaries: &["typescript-language-server"],
         args: &["--stdio"],
         extensions: &[
@@ -119,10 +203,9 @@ pub static REGISTRY: &[ServerEntry] = &[
         filenames: &[],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::NodeModulesBin],
-        install: hints!(
-            Macos => "npm": "npm install -g typescript-language-server typescript",
-            Linux => "npm": "npm install -g typescript-language-server typescript",
-            Windows => "npm": "npm install -g typescript-language-server typescript",
+        install: installs!(
+            Bun: "bun add -g typescript-language-server typescript",
+            Npm: "npm install -g typescript-language-server typescript",
         ),
         init_options: None,
         reads: &[],
@@ -133,16 +216,18 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "pyright",
         label: "Pyright",
+        runtime: Runtime::Node,
         binaries: &["pyright-langserver"],
         args: &["--stdio"],
         extensions: &[("py", "python"), ("pyi", "python")],
         filenames: &[],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::NodeModulesBin],
-        install: hints!(
-            Macos => "npm": "npm install -g pyright",
-            Linux => "npm": "npm install -g pyright",
-            Windows => "npm": "npm install -g pyright",
+        install: installs!(
+            Brew: "brew install pyright",
+            Pipx: "pipx install pyright",
+            Bun: "bun add -g pyright",
+            Npm: "npm install -g pyright",
         ),
         init_options: None,
         reads: &[],
@@ -153,21 +238,21 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "gopls",
         label: "gopls",
+        runtime: Runtime::Native,
         binaries: &["gopls"],
         args: &[],
         extensions: &[("go", "go")],
         filenames: &[("go.mod", "go.mod"), ("go.sum", "go.sum")],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::HomeGoBin],
-        install: hints!(
-            Macos => "go": "go install golang.org/x/tools/gopls@latest",
-            Linux => "go": "go install golang.org/x/tools/gopls@latest",
-            Windows => "go": "go install golang.org/x/tools/gopls@latest",
+        install: installs!(
+            Go: "go install golang.org/x/tools/gopls@latest",
+            Brew: "brew install gopls",
         ),
         init_options: None,
         reads: &[ProfilePath::Env("GOPATH", "go")],
         writes: &[
-            ProfilePath::Env("GOPATH", "go"),
+            ProfilePath::Env("GOMODCACHE", "go/pkg/mod"),
             ProfilePath::Env("GOCACHE", "Library/Caches/go-build"),
             ProfilePath::Home(".cache/go-build"),
         ],
@@ -177,6 +262,7 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "bash-language-server",
         label: "bash-language-server",
+        runtime: Runtime::Node,
         binaries: &["bash-language-server"],
         args: &["start"],
         extensions: &[
@@ -191,10 +277,10 @@ pub static REGISTRY: &[ServerEntry] = &[
         ],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::NodeModulesBin],
-        install: hints!(
-            Macos => "npm": "npm install -g bash-language-server",
-            Linux => "npm": "npm install -g bash-language-server",
-            Windows => "npm": "npm install -g bash-language-server",
+        install: installs!(
+            Brew: "brew install bash-language-server",
+            Bun: "bun add -g bash-language-server",
+            Npm: "npm install -g bash-language-server",
         ),
         init_options: None,
         reads: &[],
@@ -205,16 +291,16 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "yaml-language-server",
         label: "yaml-language-server",
+        runtime: Runtime::Node,
         binaries: &["yaml-language-server"],
         args: &["--stdio"],
         extensions: &[("yaml", "yaml"), ("yml", "yaml")],
         filenames: &[],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::NodeModulesBin],
-        install: hints!(
-            Macos => "npm": "npm install -g yaml-language-server",
-            Linux => "npm": "npm install -g yaml-language-server",
-            Windows => "npm": "npm install -g yaml-language-server",
+        install: installs!(
+            Bun: "bun add -g yaml-language-server",
+            Npm: "npm install -g yaml-language-server",
         ),
         init_options: Some(
             r#"{"yaml":{"validate":true,"hover":true,"completion":true,"schemaStore":{"enable":false},"schemas":{"https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json":["docker-compose*.yml","docker-compose*.yaml","compose*.yml","compose*.yaml"],"https://json.schemastore.org/github-workflow.json":[".github/workflows/*.yml",".github/workflows/*.yaml"],"kubernetes":["*.k8s.yaml","*.k8s.yml"]}}}"#,
@@ -227,16 +313,16 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "taplo",
         label: "Taplo (TOML)",
+        runtime: Runtime::Native,
         binaries: &["taplo"],
         args: &["lsp", "stdio"],
         extensions: &[("toml", "toml")],
         filenames: &[],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::HomeCargoBin],
-        install: hints!(
-            Macos => "brew": "brew install taplo",
-            Linux => "cargo": "cargo install taplo-cli --locked",
-            Windows => "cargo": "cargo install taplo-cli --locked",
+        install: installs!(
+            Brew: "brew install taplo",
+            Cargo: "cargo install taplo-cli --locked",
         ),
         init_options: None,
         reads: &[],
@@ -247,6 +333,7 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "dockerfile-language-server",
         label: "dockerfile-language-server",
+        runtime: Runtime::Node,
         binaries: &["docker-langserver"],
         args: &["--stdio"],
         extensions: &[("dockerfile", "dockerfile")],
@@ -256,10 +343,9 @@ pub static REGISTRY: &[ServerEntry] = &[
         ],
         dockerfile_prefix: true,
         extra_bin_dirs: &[BinDir::NodeModulesBin],
-        install: hints!(
-            Macos => "npm": "npm install -g dockerfile-language-server-nodejs",
-            Linux => "npm": "npm install -g dockerfile-language-server-nodejs",
-            Windows => "npm": "npm install -g dockerfile-language-server-nodejs",
+        install: installs!(
+            Bun: "bun add -g dockerfile-language-server-nodejs",
+            Npm: "npm install -g dockerfile-language-server-nodejs",
         ),
         init_options: None,
         reads: &[],
@@ -270,16 +356,17 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "marksman",
         label: "Marksman (Markdown)",
+        runtime: Runtime::Native,
         binaries: &["marksman"],
         args: &["server"],
         extensions: &[("md", "markdown"), ("markdown", "markdown")],
         filenames: &[],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::HomeLocalBin],
-        install: hints!(
-            Macos => "brew": "brew install marksman",
-            Linux => "manual": "curl -L -o ~/.local/bin/marksman https://github.com/artempyanykh/marksman/releases/latest/download/marksman-linux-x64 && chmod +x ~/.local/bin/marksman",
-            Windows => "scoop": "scoop install marksman",
+        install: installs!(
+            Brew: "brew install marksman",
+            Scoop: "scoop install marksman",
+            Manual: "Baixe marksman em github.com/artempyanykh/marksman/releases e ponha no PATH",
         ),
         init_options: None,
         reads: &[],
@@ -290,16 +377,16 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "vscode-json-language-server",
         label: "vscode-json-language-server",
+        runtime: Runtime::Node,
         binaries: &["vscode-json-language-server"],
         args: &["--stdio"],
         extensions: &[("json", "json"), ("jsonc", "jsonc")],
         filenames: &[("tsconfig.json", "jsonc"), (".babelrc", "jsonc")],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::NodeModulesBin],
-        install: hints!(
-            Macos => "npm": "npm install -g vscode-langservers-extracted",
-            Linux => "npm": "npm install -g vscode-langservers-extracted",
-            Windows => "npm": "npm install -g vscode-langservers-extracted",
+        install: installs!(
+            Bun: "bun add -g vscode-langservers-extracted",
+            Npm: "npm install -g vscode-langservers-extracted",
         ),
         init_options: None,
         reads: &[],
@@ -310,16 +397,16 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "terraform-ls",
         label: "terraform-ls",
+        runtime: Runtime::Native,
         binaries: &["terraform-ls"],
         args: &["serve"],
         extensions: &[("tf", "terraform"), ("tfvars", "terraform")],
         filenames: &[],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::HomeLocalBin],
-        install: hints!(
-            Macos => "brew": "brew install hashicorp/tap/terraform-ls",
-            Linux => "brew": "brew install hashicorp/tap/terraform-ls",
-            Windows => "scoop": "scoop install terraform-ls",
+        install: installs!(
+            Brew: "brew install hashicorp/tap/terraform-ls",
+            Scoop: "scoop install terraform-ls",
         ),
         init_options: None,
         reads: &[ProfilePath::Home(".terraform.d")],
@@ -330,16 +417,16 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "jdtls",
         label: "Eclipse JDT (Java)",
+        runtime: Runtime::Jvm,
         binaries: &["jdtls"],
         args: &[],
         extensions: &[("java", "java")],
         filenames: &[],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::HomeLocalBin],
-        install: hints!(
-            Macos => "brew": "brew install jdtls",
-            Linux => "manual": "Baixe o Eclipse JDT LS e coloque `jdtls` no PATH",
-            Windows => "manual": "Baixe o Eclipse JDT LS e coloque `jdtls` no PATH",
+        install: installs!(
+            Brew: "brew install jdtls",
+            Manual: "Baixe o Eclipse JDT LS e ponha `jdtls` no PATH",
         ),
         init_options: None,
         reads: &[ProfilePath::Home(".config/jdtls")],
@@ -353,6 +440,7 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "clojure-lsp",
         label: "clojure-lsp",
+        runtime: Runtime::Native,
         binaries: &["clojure-lsp"],
         args: &[],
         extensions: &[
@@ -364,10 +452,10 @@ pub static REGISTRY: &[ServerEntry] = &[
         filenames: &[],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::HomeLocalBin],
-        install: hints!(
-            Macos => "brew": "brew install clojure-lsp/brew/clojure-lsp-native",
-            Linux => "manual": "Baixe clojure-lsp em github.com/clojure-lsp/clojure-lsp/releases",
-            Windows => "scoop": "scoop install clojure-lsp",
+        install: installs!(
+            Brew: "brew install clojure-lsp/brew/clojure-lsp-native",
+            Scoop: "scoop install clojure-lsp",
+            Manual: "Baixe clojure-lsp em github.com/clojure-lsp/clojure-lsp/releases",
         ),
         init_options: None,
         reads: &[ProfilePath::Home(".m2"), ProfilePath::Home(".gitlibs")],
@@ -381,16 +469,16 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "elixir-ls",
         label: "ElixirLS",
+        runtime: Runtime::Beam,
         binaries: &["elixir-ls", "language_server.sh"],
         args: &[],
         extensions: &[("ex", "elixir"), ("exs", "elixir")],
         filenames: &[],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::HomeLocalBin],
-        install: hints!(
-            Macos => "brew": "brew install elixir-ls",
-            Linux => "manual": "Baixe ElixirLS em github.com/elixir-lsp/elixir-ls/releases",
-            Windows => "manual": "Baixe ElixirLS em github.com/elixir-lsp/elixir-ls/releases",
+        install: installs!(
+            Brew: "brew install elixir-ls",
+            Manual: "Baixe ElixirLS em github.com/elixir-lsp/elixir-ls/releases",
         ),
         init_options: None,
         reads: &[ProfilePath::Home(".mix"), ProfilePath::Home(".hex")],
@@ -401,16 +489,16 @@ pub static REGISTRY: &[ServerEntry] = &[
     ServerEntry {
         id: "phpactor",
         label: "Phpactor (PHP)",
+        runtime: Runtime::Php,
         binaries: &["phpactor"],
         args: &["language-server"],
         extensions: &[("php", "php")],
         filenames: &[],
         dockerfile_prefix: false,
         extra_bin_dirs: &[BinDir::HomeLocalBin],
-        install: hints!(
-            Macos => "composer": "composer global require phpactor/phpactor",
-            Linux => "composer": "composer global require phpactor/phpactor",
-            Windows => "composer": "composer global require phpactor/phpactor",
+        install: installs!(
+            Composer: "composer global require phpactor/phpactor",
+            Brew: "brew install phpactor",
         ),
         init_options: None,
         reads: &[
@@ -425,6 +513,30 @@ pub static REGISTRY: &[ServerEntry] = &[
         default_enabled: true,
     },
 ];
+
+pub struct ChosenInstall {
+    pub chosen: Option<Install>,
+    pub alternatives: Vec<Install>,
+}
+
+pub fn choose_install(entry: &ServerEntry, path_dirs: &[PathBuf]) -> ChosenInstall {
+    let mut ranked: Vec<&Install> = entry.install.iter().collect();
+    ranked.sort_by_key(|i| (!i.manager.available(path_dirs), i.manager.rank()));
+    let chosen = ranked
+        .iter()
+        .find(|i| i.manager.available(path_dirs))
+        .or_else(|| ranked.first())
+        .map(|i| **i);
+    let alternatives: Vec<Install> = ranked
+        .iter()
+        .filter(|i| Some(i.manager) != chosen.map(|c| c.manager))
+        .map(|i| **i)
+        .collect();
+    ChosenInstall {
+        chosen,
+        alternatives,
+    }
+}
 
 fn file_name_lower(path: &str) -> String {
     let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
@@ -511,6 +623,20 @@ fn candidate_names(name: &str) -> Vec<String> {
     ]
 }
 
+fn find_in_dirs(names: &[&str], dirs: &[PathBuf]) -> Option<PathBuf> {
+    for bin in names {
+        for dir in dirs {
+            for candidate in candidate_names(bin) {
+                let full = dir.join(&candidate);
+                if is_executable(&full) {
+                    return Some(full);
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn discover(
     entry: &ServerEntry,
     path_dirs: &[PathBuf],
@@ -523,17 +649,64 @@ pub fn discover(
             search.push(resolved);
         }
     }
-    for bin in entry.binaries {
-        for dir in &search {
-            for candidate in candidate_names(bin) {
-                let full = dir.join(&candidate);
-                if is_executable(&full) {
-                    return Some(full);
-                }
+    find_in_dirs(entry.binaries, &search)
+}
+
+pub fn resolve_real(binary: &Path) -> PathBuf {
+    std::fs::canonicalize(binary).unwrap_or_else(|_| binary.to_path_buf())
+}
+
+pub fn node_modules_root(real: &Path) -> Option<PathBuf> {
+    let mut last: Option<PathBuf> = None;
+    for ancestor in real.ancestors() {
+        if ancestor
+            .file_name()
+            .map(|n| n == "node_modules")
+            .unwrap_or(false)
+        {
+            last = Some(ancestor.to_path_buf());
+        }
+    }
+    last
+}
+
+pub fn discover_interpreter(runtime: Runtime, path_dirs: &[PathBuf]) -> Option<PathBuf> {
+    let name = runtime.interpreter()?;
+    find_in_dirs(&[name], path_dirs)
+}
+
+pub fn derived_read_grants(
+    entry: &ServerEntry,
+    binary: &Path,
+    path_dirs: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut grants: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let push = |p: PathBuf, grants: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>| {
+        if seen.insert(p.clone()) {
+            grants.push(p);
+        }
+    };
+
+    let real = resolve_real(binary);
+    match node_modules_root(&real) {
+        Some(nm) => push(nm, &mut grants, &mut seen),
+        None => {
+            if let Some(parent) = real.parent() {
+                push(parent.to_path_buf(), &mut grants, &mut seen);
             }
         }
     }
-    None
+
+    if let Some(interp) = discover_interpreter(entry.runtime, path_dirs) {
+        let real_interp = resolve_real(&interp);
+        if let Some(parent) = real_interp.parent() {
+            push(parent.to_path_buf(), &mut grants, &mut seen);
+        }
+        push(real_interp, &mut grants, &mut seen);
+    }
+
+    grants
 }
 
 #[cfg(test)]
@@ -585,17 +758,9 @@ mod tests {
     }
 
     #[test]
-    fn every_server_carries_an_install_hint_for_each_platform() {
+    fn every_server_offers_at_least_one_install() {
         for entry in REGISTRY {
-            for platform in [Platform::Macos, Platform::Linux, Platform::Windows] {
-                let hint = entry.install_hint(platform).unwrap();
-                assert!(
-                    !hint.command.is_empty(),
-                    "{} sem comando de instalação para {:?}",
-                    entry.id,
-                    platform
-                );
-            }
+            assert!(!entry.install.is_empty(), "{} sem install", entry.id);
         }
     }
 
@@ -657,5 +822,81 @@ mod tests {
         #[cfg(unix)]
         assert!(found.is_none(), "arquivo sem bit de execução não conta");
         let _ = found;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn derived_grants_include_the_node_modules_tree_of_a_symlinked_wrapper() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let prefix = tempfile::tempdir().unwrap();
+        let pkg = prefix
+            .path()
+            .join("lib/node_modules/typescript-language-server/lib");
+        std::fs::create_dir_all(&pkg).unwrap();
+        let cli = pkg.join("cli.mjs");
+        std::fs::write(&cli, "#!/usr/bin/env node\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bindir = prefix.path().join("bin");
+        std::fs::create_dir_all(&bindir).unwrap();
+        let wrapper = bindir.join("typescript-language-server");
+        symlink(&cli, &wrapper).unwrap();
+
+        let entry = entry_by_id("typescript-language-server").unwrap();
+        let grants = derived_read_grants(entry, &wrapper, &[]);
+        let node_modules = prefix
+            .path()
+            .join("lib/node_modules")
+            .canonicalize()
+            .unwrap();
+        assert!(
+            grants.contains(&node_modules),
+            "a árvore node_modules inteira (deps hoisted) precisa ser legível: {grants:?}"
+        );
+    }
+
+    #[test]
+    fn install_prefers_a_present_manager_by_rank() {
+        let entry = entry_by_id("typescript-language-server").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let bun = dir.path().join("bun");
+        std::fs::write(&bun, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bun, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let chosen = choose_install(entry, &[dir.path().to_path_buf()]);
+        assert_eq!(chosen.chosen.unwrap().manager, Manager::Bun);
+        assert!(chosen
+            .alternatives
+            .iter()
+            .any(|i| i.manager == Manager::Npm));
+    }
+
+    #[test]
+    fn forwarded_env_collects_profile_env_vars() {
+        let gopls = entry_by_id("gopls").unwrap();
+        let vars = gopls.forwarded_env();
+        assert!(vars.contains(&"GOPATH"));
+        assert!(vars.contains(&"GOMODCACHE"));
+        assert!(vars.contains(&"GOCACHE"));
+    }
+
+    #[test]
+    fn gopls_write_grant_is_the_module_cache_not_the_gopath_bin() {
+        let gopls = entry_by_id("gopls").unwrap();
+        let writes: Vec<&'static str> = gopls
+            .writes
+            .iter()
+            .filter_map(|p| match p {
+                ProfilePath::Env(v, _) => Some(*v),
+                _ => None,
+            })
+            .collect();
+        assert!(writes.contains(&"GOMODCACHE"), "escreve o module cache");
+        assert!(
+            !writes.contains(&"GOPATH"),
+            "não escreve GOPATH inteiro (que contém go/bin no PATH)"
+        );
     }
 }

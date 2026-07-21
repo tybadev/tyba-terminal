@@ -13,6 +13,7 @@ pub struct LspSpecCtx<'a> {
     pub env: &'a HashMap<String, String>,
     pub exec_path_dirs: Vec<PathBuf>,
     pub read_allow_extra: Vec<PathBuf>,
+    pub extra_reads: Vec<PathBuf>,
     pub data_dir: PathBuf,
 }
 
@@ -59,7 +60,15 @@ pub fn lsp_sandbox_spec(entry: &ServerEntry, ctx: &LspSpecCtx) -> Result<Sandbox
         .ok_or("HOME indisponível — a jaula do LSP exige a home do usuário")?;
 
     let inert_git = ctx.cache_dir.join(".no-git");
-    let agent = agent_access(entry, &home, ctx.env);
+    let mut agent = agent_access(entry, &home, ctx.env);
+    if !ctx.extra_reads.is_empty() {
+        agent.read.push(RuleSet::allow(
+            ctx.extra_reads
+                .iter()
+                .map(|p| Rule::Subpath(p.clone()))
+                .collect(),
+        ));
+    }
 
     Ok(SandboxSpec {
         writable_root: ctx.root.to_path_buf(),
@@ -114,8 +123,34 @@ mod tests {
             env,
             exec_path_dirs: vec![PathBuf::from("/opt/homebrew/bin")],
             read_allow_extra: vec![],
+            extra_reads: vec![],
             data_dir: PathBuf::from("/Users/nobody/Library/Application Support/dev.tyba.app"),
         }
+    }
+
+    #[test]
+    fn extra_reads_land_in_the_agent_read_allowlist() {
+        let env = ctx_env();
+        let mut c = ctx(
+            Path::new("/private/wt/proj"),
+            Path::new("/private/tmp/tyba-lsp-ts"),
+            Path::new("/x/tyba"),
+            &env,
+        );
+        c.extra_reads = vec![PathBuf::from("/usr/local/lib/node_modules")];
+        let entry = entry_by_id("typescript-language-server").unwrap();
+        let spec = lsp_sandbox_spec(entry, &c).unwrap();
+        let reads: Vec<PathBuf> = spec
+            .agent
+            .read
+            .iter()
+            .flat_map(|set| set.allow.iter())
+            .map(|r| r.path().to_path_buf())
+            .collect();
+        assert!(
+            reads.contains(&PathBuf::from("/usr/local/lib/node_modules")),
+            "grants derivados da descoberta precisam ser legíveis: {reads:?}"
+        );
     }
 
     #[test]
@@ -181,8 +216,12 @@ mod tests {
             .map(|r| r.path().to_path_buf())
             .collect();
         assert!(
-            write_paths.contains(&PathBuf::from("/Users/nobody/go")),
-            "GOPATH precisa ser gravável: {write_paths:?}"
+            write_paths.contains(&PathBuf::from("/Users/nobody/go/pkg/mod")),
+            "o module cache precisa ser gravável: {write_paths:?}"
+        );
+        assert!(
+            !write_paths.contains(&PathBuf::from("/Users/nobody/go")),
+            "GOPATH inteiro (com go/bin no PATH) não pode ser gravável: {write_paths:?}"
         );
         let read_paths: Vec<PathBuf> = spec
             .agent
@@ -193,14 +232,14 @@ mod tests {
             .collect();
         assert!(
             read_paths.contains(&PathBuf::from("/Users/nobody/go")),
-            "um cache gravável também precisa ser legível: {read_paths:?}"
+            "GOPATH precisa ser legível: {read_paths:?}"
         );
     }
 
     #[test]
     fn env_profile_paths_prefer_the_env_var_over_the_fallback() {
         let mut env = ctx_env();
-        env.insert("GOPATH".into(), "/opt/gopath".into());
+        env.insert("GOMODCACHE".into(), "/opt/modcache".into());
         let c = ctx(
             Path::new("/private/wt/proj"),
             Path::new("/private/tmp/tyba-lsp-go"),
@@ -216,8 +255,8 @@ mod tests {
             .flat_map(|set| set.allow.iter())
             .map(|r| r.path().to_path_buf())
             .collect();
-        assert!(write_paths.contains(&PathBuf::from("/opt/gopath")));
-        assert!(!write_paths.contains(&PathBuf::from("/Users/nobody/go")));
+        assert!(write_paths.contains(&PathBuf::from("/opt/modcache")));
+        assert!(!write_paths.contains(&PathBuf::from("/Users/nobody/go/pkg/mod")));
     }
 
     #[test]
