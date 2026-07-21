@@ -53,6 +53,7 @@ Regra: **notificar sempre; auto-instalar só onde faz sentido** (`.dmg` e AppIma
 
 ## Produto
 
+- **Usage descriptions de TCC no macOS** — `ls` em `~/Downloads`/`~/Documents` dentro do TYBA falha com `Operation not permitted` quando o app não tem a permissão de Arquivos e Pastas do sistema (o shell filho herda o TCC do app). Descoberto no E2E do file explorer, em build dev. Falta declarar as usage descriptions (`NSDownloadsFolderUsageDescription` e afins) no Info.plist pra o prompt do macOS aparecer na primeira leitura, como iTerm/Warp fazem; sem isso o usuário vê o erro cru do `ls` sem saber que é permissão.
 - Explorer fase 2 restante: criar branch pela UI; badge ahead/behind (precisa de cache).
 - Abort da operação de conflito pela UI; merge 3-way visual.
 - Seletor de base/branch no painel de diff (three-dot/merge-base) — grill pendente.

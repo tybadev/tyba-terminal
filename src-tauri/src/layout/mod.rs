@@ -258,6 +258,7 @@ pub const VIEW_WORKSPACE: &str = "workspace";
 pub const VIEW_CONNECTIONS: &str = "connections";
 pub const VIEW_DIFF_PREFIX: &str = "diff:";
 pub const VIEW_TUNNELS_PREFIX: &str = "tunnels:";
+pub const VIEW_FILES_PREFIX: &str = "files:";
 pub const DOCKER_WORKSPACE_NAME: &str = "Docker";
 pub const FALLBACK_WORKSPACE_NAME: &str = "tyba";
 
@@ -271,6 +272,10 @@ pub fn tunnels_view(session: SessionId) -> String {
     format!("{VIEW_TUNNELS_PREFIX}{session}")
 }
 
+pub fn files_view(session: SessionId) -> String {
+    format!("{VIEW_FILES_PREFIX}{session}")
+}
+
 fn diff_view_session(view: &str) -> Option<SessionId> {
     view.strip_prefix(VIEW_DIFF_PREFIX)
         .and_then(|s| Uuid::parse_str(s).ok())
@@ -279,6 +284,7 @@ fn diff_view_session(view: &str) -> Option<SessionId> {
 fn side_view_session(view: &str) -> Option<SessionId> {
     view.strip_prefix(VIEW_DIFF_PREFIX)
         .or_else(|| view.strip_prefix(VIEW_TUNNELS_PREFIX))
+        .or_else(|| view.strip_prefix(VIEW_FILES_PREFIX))
         .and_then(|s| Uuid::parse_str(s).ok())
 }
 
@@ -1060,12 +1066,15 @@ impl LayoutManager {
                 None => break,
             }
         }
-        // O painel de diff referencia a sessão; sem ela vira casca órfã.
-        let view = diff_view(session);
+        // O painel de diff/arquivos referencia a sessão; sem ela vira casca órfã.
+        let diff = diff_view(session);
+        let files = files_view(session);
         let mut inner = self.inner.write();
         let mut changed = false;
         for ws in inner.workspaces.iter_mut() {
-            if ws.side_view.as_deref() == Some(view.as_str()) {
+            if ws.side_view.as_deref() == Some(diff.as_str())
+                || ws.side_view.as_deref() == Some(files.as_str())
+            {
                 ws.side_view = None;
                 ws.side_expanded = false;
                 changed = true;

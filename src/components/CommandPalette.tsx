@@ -4,6 +4,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   Desktop,
   DownloadSimple,
+  FolderOpen,
   GearSix,
   Globe,
   MagnifyingGlass,
@@ -83,6 +84,7 @@ interface Props {
   onCloseActive: () => void;
   onOpenSettings: () => void;
   onTogglePanel: () => void;
+  onOpenFiles: () => void;
   onGoToWorkspace: (id: WorkspaceId) => void;
   launchConfigs: LaunchConfig[];
   onApplyLaunchConfig: (id: LaunchConfigId) => void;
@@ -106,6 +108,7 @@ export function CommandPalette({
   onCloseActive,
   onOpenSettings,
   onTogglePanel,
+  onOpenFiles,
   onGoToWorkspace,
   launchConfigs,
   onApplyLaunchConfig,
@@ -227,6 +230,13 @@ export function CommandPalette({
             {t("togglePanel")}
             <Shortcut combo={bindings.panel} className="ml-auto" />
           </CommandItem>
+          {activeWorkspace && (
+            <CommandItem onSelect={run(onOpenFiles)}>
+              <FolderOpen size={15} />
+              {t("filesPanel")}
+              <Shortcut combo={bindings.files} className="ml-auto" />
+            </CommandItem>
+          )}
           <CommandItem onSelect={run(onOpenSettings)}>
             <GearSix size={15} />
             {t("settings")}

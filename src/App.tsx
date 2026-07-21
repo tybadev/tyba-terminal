@@ -91,6 +91,7 @@ import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
 import { WorktreesView } from "./components/WorktreesView";
 import { DiffView } from "./components/DiffView";
 import { TunnelsView } from "./components/TunnelsView";
+import { FilesPanel } from "./components/FilesPanel";
 import { ForgePanel } from "./components/ForgePanel";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
 import { DiffStat } from "./components/DiffStat";
@@ -145,6 +146,7 @@ import {
   onSessionCwd,
   onSessionStatus,
   openDiffTab,
+  openFilesPanel,
   openTunnelsPanel,
   openViewTab,
   paneSession,
@@ -737,6 +739,13 @@ export default function App() {
     () =>
       sideView?.startsWith("tunnels:")
         ? (sessionById.get(sideView.slice(8)) ?? null)
+        : null,
+    [sideView, sessionById],
+  );
+  const filesTarget = useMemo(
+    () =>
+      sideView?.startsWith("files:")
+        ? (sessionById.get(sideView.slice(6)) ?? null)
         : null,
     [sideView, sessionById],
   );
@@ -2162,6 +2171,8 @@ export default function App() {
           openPalette("sessions");
         } else if (action === "panel") {
           toggleSidebar();
+        } else if (action === "files") {
+          if (activeId) void openFilesPanel(activeId).catch(() => {});
         } else if (action === "newTab") {
           void newTab();
         } else if (action === "closePane") {
@@ -2700,6 +2711,9 @@ export default function App() {
         onCloseActive={() => void closeActivePane()}
         onOpenSettings={() => void openViewTab("settings").catch(() => {})}
         onTogglePanel={toggleSidebar}
+        onOpenFiles={() => {
+          if (activeId) void openFilesPanel(activeId).catch(() => {});
+        }}
         onGoToWorkspace={(id) => void activateWorkspace(id)}
         launchConfigs={launchConfigs}
         onApplyLaunchConfig={applyLaunchConfigById}
@@ -3589,6 +3603,33 @@ export default function App() {
                         ) : (
                           <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
                             {t("tunnelsSessionGone")}
+                          </div>
+                        )
+                      ) : sideView.startsWith("files:") ? (
+                        filesTarget ? (
+                          <FilesPanel
+                            key={filesTarget.id}
+                            session={filesTarget}
+                            editor={editorPref}
+                            expanded={sideExpanded}
+                            onToggleExpand={() =>
+                              void setSideViewExpanded(
+                                activeWorkspace.id,
+                                !sideExpanded,
+                              ).catch(() => {})
+                            }
+                            onClose={() =>
+                              void closeSideView(activeWorkspace.id).catch(
+                                () => {},
+                              )
+                            }
+                            onJumpToDiff={() =>
+                              void openDiffTab(filesTarget.id).catch(() => {})
+                            }
+                          />
+                        ) : (
+                          <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
+                            {t("filesSessionGone")}
                           </div>
                         )
                       ) : sideTarget ? (

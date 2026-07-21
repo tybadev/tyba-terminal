@@ -3,6 +3,7 @@ pub mod approvals;
 pub mod docker;
 pub mod editor;
 pub mod error;
+pub mod files;
 pub mod forge;
 pub mod hook_ipc;
 pub mod launch_config;
@@ -44,6 +45,7 @@ struct AppState {
     layout: layout::SharedLayout,
     docker: docker::SharedDocker,
     repos: repo::SharedRepoWatcher,
+    files: files::SharedFiles,
     repo_reconcile: std::sync::mpsc::Sender<()>,
     rich_input_submit: parking_lot::Mutex<()>,
     worktree_files: rich_input::FilesCache,
@@ -976,10 +978,12 @@ async fn session_git_status(
 #[tauri::command]
 fn open_diff_tab(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
     session_repo_context(&state, id)?;
+    let previous = session_side_view(&state, id);
     state
         .layout
         .open_workspace_side_view(id, &layout::diff_view(id))
         .map_err(|e| e.to_string())?;
+    close_orphaned_files_panel(&state, previous, None);
     emit_layout(&app, &state);
     Ok(())
 }
@@ -997,12 +1001,186 @@ fn open_tunnels_panel(
     if !matches!(session.kind, SessionKind::Ssh { .. }) {
         return Err(crate::error::AppError::new("ssh.not_an_ssh_session"));
     }
+    let previous = session_side_view(&state, id);
     state
         .layout
         .open_workspace_side_view(id, &layout::tunnels_view(id))
         .map_err(|e| crate::error::AppError::new("layout.failed").with("detail", e.to_string()))?;
+    close_orphaned_files_panel(&state, previous, None);
     emit_layout(&app, &state);
     Ok(())
+}
+
+fn resolve_files_root(
+    state: &AppState,
+    id: SessionId,
+) -> Result<(std::path::PathBuf, files::Context), String> {
+    let session = state
+        .sessions
+        .get(id)
+        .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+    if let Some(wt) = session.worktree {
+        let root = repo::canonicalize_or(&wt.path);
+        return Ok((
+            root,
+            files::Context::AgentWorktree {
+                base_ref: wt.base_ref,
+            },
+        ));
+    }
+    let pid = state
+        .pty_pool
+        .leader_pid(id)
+        .ok_or("a sessão não tem um processo ativo")?;
+    let cwd = repo::process_cwd(pid).ok_or("não foi possível ler o diretório da sessão")?;
+    match files::find_repo_root(&cwd) {
+        Some(root) => Ok((repo::canonicalize_or(&root), files::Context::Repo)),
+        None => Ok((repo::canonicalize_or(&cwd), files::Context::OutsideRepo)),
+    }
+}
+
+fn workspace_side_view(state: &AppState, workspace: layout::WorkspaceId) -> Option<String> {
+    state
+        .layout
+        .state()
+        .workspaces
+        .into_iter()
+        .find(|w| w.id == workspace)
+        .and_then(|w| w.side_view)
+}
+
+fn session_side_view(state: &AppState, session: SessionId) -> Option<String> {
+    let workspace = state.layout.workspace_of_session(session)?;
+    workspace_side_view(state, workspace)
+}
+
+fn close_orphaned_files_panel(state: &AppState, previous: Option<String>, keep: Option<&str>) {
+    let Some(prev) = previous else {
+        return;
+    };
+    if keep == Some(prev.as_str()) {
+        return;
+    }
+    if let Some(id) = prev
+        .strip_prefix(layout::VIEW_FILES_PREFIX)
+        .and_then(|s| s.parse::<SessionId>().ok())
+    {
+        state.files.close(id);
+    }
+}
+
+#[tauri::command]
+fn open_files_panel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<String, String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    let new_view = layout::files_view(id);
+    let previous = session_side_view(&state, id);
+    state
+        .layout
+        .open_workspace_side_view(id, &new_view)
+        .map_err(|e| e.to_string())?;
+    close_orphaned_files_panel(&state, previous, Some(&new_view));
+    emit_layout(&app, &state);
+    state.files.emit_decorations(&app, id);
+    Ok(root.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn files_panel_info(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<files::PanelInfo, String> {
+    let (root, context) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    Ok(files::PanelInfo {
+        root: root.to_string_lossy().into_owned(),
+        kind: context.kind_str().to_string(),
+        decorated: !matches!(context, files::Context::OutsideRepo),
+    })
+}
+
+#[tauri::command]
+fn files_list_dir(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<files::DirListing, String> {
+    let (root, context) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::list_dir(&root, &path, &context)
+}
+
+#[tauri::command]
+fn files_read(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    offset: Option<usize>,
+) -> Result<files::FileContent, String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::read_file(&root, &path, offset.unwrap_or(0))
+}
+
+#[tauri::command]
+fn files_watch_dir(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<(), String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    let dir = files::resolve_within(&root, &path)?;
+    if !dir.is_dir() {
+        return Err("não é um diretório".into());
+    }
+    state.files.watch_dir(id, dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn files_unwatch_dir(state: State<'_, AppState>, id: SessionId, path: String) {
+    if let Some((root, _)) = state.files.info(id) {
+        if let Ok(dir) = files::resolve_within(&root, &path) {
+            state.files.unwatch_dir(id, dir);
+        }
+    }
+}
+
+#[tauri::command]
+fn files_reanchor(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<String, String> {
+    let (root, context) = resolve_files_root(&state, id)?;
+    state.files.seed(&app, id, root.clone(), context);
+    state.files.emit_tree_reset(&app, id);
+    state.files.emit_decorations(&app, id);
+    Ok(root.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn files_decorations(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
+    state.files.emit_decorations(&app, id);
+}
+
+#[tauri::command]
+fn files_close(state: State<'_, AppState>, id: SessionId) {
+    state.files.close(id);
 }
 
 #[tauri::command]
@@ -1011,10 +1189,12 @@ fn close_side_view(
     state: State<'_, AppState>,
     workspace_id: layout::WorkspaceId,
 ) -> Result<(), String> {
+    let previous = workspace_side_view(&state, workspace_id);
     state
         .layout
         .close_side_view(workspace_id)
         .map_err(|e| e.to_string())?;
+    close_orphaned_files_panel(&state, previous, None);
     emit_layout(&app, &state);
     Ok(())
 }
@@ -1238,26 +1418,7 @@ async fn forge_workflow_jobs(
 /// agente no worktree com um clique; aqui só editor configurado ou
 /// visualizador de texto. Path do webview: resolve dentro do worktree
 /// e recusa qualquer coisa fora.
-#[tauri::command]
-async fn open_worktree_file(
-    state: State<'_, AppState>,
-    id: SessionId,
-    path: String,
-    editor: Option<String>,
-) -> Result<(), String> {
-    let wt = session_worktree(&state, id)?;
-    let root = wt
-        .path
-        .canonicalize()
-        .map_err(|e| format!("worktree inacessível: {e}"))?;
-    let full = root
-        .join(&path)
-        .canonicalize()
-        .map_err(|e| format!("arquivo inacessível: {e}"))?;
-    if !full.starts_with(&root) {
-        return Err("arquivo fora do worktree".into());
-    }
-
+fn open_path_in_editor(full: std::path::PathBuf, editor: Option<String>) -> Result<(), String> {
     let gui_editor = editor
         .filter(|id| !id.is_empty())
         .and_then(|id| editor::detect().into_iter().find(|e| e.id == id))
@@ -1295,6 +1456,44 @@ async fn open_worktree_file(
         })
         .ok();
     Ok(())
+}
+
+#[tauri::command]
+async fn open_worktree_file(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    editor: Option<String>,
+) -> Result<(), String> {
+    let wt = session_worktree(&state, id)?;
+    let root = wt
+        .path
+        .canonicalize()
+        .map_err(|e| format!("worktree inacessível: {e}"))?;
+    let full = root
+        .join(&path)
+        .canonicalize()
+        .map_err(|e| format!("arquivo inacessível: {e}"))?;
+    if !full.starts_with(&root) {
+        return Err("arquivo fora do worktree".into());
+    }
+    open_path_in_editor(full, editor)
+}
+
+#[tauri::command]
+async fn files_open_external(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    editor: Option<String>,
+) -> Result<(), String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    let full = files::resolve_within(&root, &path)?;
+    let (_file, real) = files::open_verified(&root, &full)?;
+    open_path_in_editor(real, editor)
 }
 
 #[tauri::command]
@@ -1699,6 +1898,7 @@ fn session_mark_seen(app: AppHandle, state: State<'_, AppState>, id: SessionId) 
 fn dispose_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
     teardown_agent_session(&app, &state, id);
     state.sessions.dispose(&state.pty_pool, id);
+    state.files.close(id);
     let _ = state.layout.session_disposed(id);
     emit_layout(&app, &state);
 }
@@ -3077,6 +3277,7 @@ pub fn run() {
                 layout: Arc::clone(&layout),
                 docker: Arc::new(docker::DockerManager::new()),
                 repos,
+                files: Arc::new(files::FilesManager::new()),
                 repo_reconcile: reconcile_tx.clone(),
                 rich_input_submit: parking_lot::Mutex::new(()),
                 worktree_files: rich_input::FilesCache::default(),
@@ -3198,6 +3399,16 @@ pub fn run() {
             session_branch_hunks,
             open_diff_tab,
             open_tunnels_panel,
+            open_files_panel,
+            files_panel_info,
+            files_list_dir,
+            files_read,
+            files_watch_dir,
+            files_unwatch_dir,
+            files_reanchor,
+            files_decorations,
+            files_open_external,
+            files_close,
             close_side_view,
             set_side_view_expanded,
             set_side_view_ratio,
