@@ -46,6 +46,7 @@ struct AppState {
     docker: docker::SharedDocker,
     repos: repo::SharedRepoWatcher,
     files: files::SharedFiles,
+    remote_files: files::remote::SharedRemoteFiles,
     repo_reconcile: std::sync::mpsc::Sender<()>,
     rich_input_submit: parking_lot::Mutex<()>,
     worktree_files: rich_input::FilesCache,
@@ -1039,6 +1040,65 @@ fn resolve_files_root(
     }
 }
 
+/// Alias materializado + nome do tmux invisível de uma sessão SSH — o par que o
+/// backend SFTP usa para abrir o canal na conexão multiplexada e para achar o
+/// cwd remoto (`pane_current_path`). `None` quando a sessão não é SSH.
+fn ssh_alias_tmux(state: &AppState, id: SessionId) -> Option<(String, String)> {
+    let session = state.sessions.get(id)?;
+    let SessionKind::Ssh { host_id } = &session.kind else {
+        return None;
+    };
+    let hosts = state.store.load_hosts().ok()?;
+    let alias = hosts.iter().find(|h| &h.id == host_id)?.alias.clone();
+    let install = crate::ssh::tmux::install_id(&state.store).ok()?;
+    let name = crate::ssh::tmux::session_name(&install, id);
+    Some((alias, name))
+}
+
+/// Despacho por tipo de sessão: `None` = sessão local (segue o `FilesManager`
+/// existente); `Some(Ok)` = painel SFTP pronto (montado sob demanda, reusando a
+/// conexão viva); `Some(Err)` = sessão SSH cujo host não resolveu.
+fn remote_files_panel(
+    state: &AppState,
+    id: SessionId,
+) -> Option<Result<std::sync::Arc<files::remote::RemotePanel>, String>> {
+    let session = state.sessions.get(id)?;
+    if !matches!(session.kind, SessionKind::Ssh { .. }) {
+        return None;
+    }
+    let Some((alias, tmux_name)) = ssh_alias_tmux(state, id) else {
+        return Some(Err("host da sessão SSH não encontrado".to_string()));
+    };
+    Some(
+        state
+            .remote_files
+            .ensure(id, || files::remote::build_panel(&alias, Some(&tmux_name))),
+    )
+}
+
+/// Roda uma operação do painel remoto fora da thread do command (as chamadas
+/// SFTP/exec são de rede — nunca podem travar a UI). `spawn_blocking` mantém o
+/// core responsivo, mesmo padrão do docker-over-ssh.
+async fn on_remote<T, F>(
+    panel: std::sync::Arc<files::remote::RemotePanel>,
+    f: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&files::remote::RemotePanel) -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || f(&panel))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn is_ssh_session(state: &AppState, id: SessionId) -> bool {
+    matches!(
+        state.sessions.get(id).map(|s| s.kind),
+        Some(SessionKind::Ssh { .. })
+    )
+}
+
 fn workspace_side_view(state: &AppState, workspace: layout::WorkspaceId) -> Option<String> {
     state
         .layout
@@ -1066,18 +1126,25 @@ fn close_orphaned_files_panel(state: &AppState, previous: Option<String>, keep: 
         .and_then(|s| s.parse::<SessionId>().ok())
     {
         state.files.close(id);
+        state.remote_files.close(id);
     }
 }
 
 #[tauri::command]
-fn open_files_panel(
+async fn open_files_panel(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<String, String> {
-    let (root, _ctx) = state
-        .files
-        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    let root = match remote_files_panel(&state, id) {
+        Some(panel) => panel?.info().root,
+        None => {
+            let (root, _ctx) = state
+                .files
+                .ensure(&app, id, || resolve_files_root(&state, id))?;
+            root.to_string_lossy().into_owned()
+        }
+    };
     let new_view = layout::files_view(id);
     let previous = session_side_view(&state, id);
     state
@@ -1086,15 +1153,18 @@ fn open_files_panel(
         .map_err(|e| e.to_string())?;
     close_orphaned_files_panel(&state, previous, Some(&new_view));
     emit_layout(&app, &state);
-    Ok(root.to_string_lossy().into_owned())
+    Ok(root)
 }
 
 #[tauri::command]
-fn files_panel_info(
+async fn files_panel_info(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<files::PanelInfo, String> {
+    if let Some(panel) = remote_files_panel(&state, id) {
+        return Ok(panel?.info());
+    }
     let (root, context) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1102,16 +1172,22 @@ fn files_panel_info(
         root: root.to_string_lossy().into_owned(),
         kind: context.kind_str().to_string(),
         decorated: !matches!(context, files::Context::OutsideRepo),
+        remote: false,
+        host: None,
     })
 }
 
 #[tauri::command]
-fn files_list_dir(
+async fn files_list_dir(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: String,
 ) -> Result<files::DirListing, String> {
+    if let Some(panel) = remote_files_panel(&state, id) {
+        let panel = panel?;
+        return on_remote(panel, move |p| p.list_dir(&path)).await?;
+    }
     let (root, context) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1119,13 +1195,18 @@ fn files_list_dir(
 }
 
 #[tauri::command]
-fn files_read(
+async fn files_read(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: String,
     offset: Option<usize>,
 ) -> Result<files::FileContent, String> {
+    if let Some(panel) = remote_files_panel(&state, id) {
+        let panel = panel?;
+        let off = offset.unwrap_or(0);
+        return on_remote(panel, move |p| p.read_file(&path, off)).await?;
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1139,6 +1220,10 @@ fn files_watch_dir(
     id: SessionId,
     path: String,
 ) -> Result<(), String> {
+    // Sessão SSH não tem watcher: refresh é sob demanda. No-op sem tocar a rede.
+    if is_ssh_session(&state, id) {
+        return Ok(());
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1152,6 +1237,9 @@ fn files_watch_dir(
 
 #[tauri::command]
 fn files_unwatch_dir(state: State<'_, AppState>, id: SessionId, path: String) {
+    if is_ssh_session(&state, id) {
+        return;
+    }
     if let Some((root, _)) = state.files.info(id) {
         if let Ok(dir) = files::resolve_within(&root, &path) {
             state.files.unwatch_dir(id, dir);
@@ -1159,12 +1247,34 @@ fn files_unwatch_dir(state: State<'_, AppState>, id: SessionId, path: String) {
     }
 }
 
+/// Refresh explícito do painel remoto — o substituto do watcher. Invalida o
+/// cache de listagem; a próxima leitura reconsulta o host. No-op no local (lá o
+/// watcher já mantém a árvore viva).
 #[tauri::command]
-fn files_reanchor(
+fn files_refresh(state: State<'_, AppState>, id: SessionId) {
+    if let Some(panel) = state.remote_files.get(id) {
+        panel.refresh();
+    }
+}
+
+#[tauri::command]
+async fn files_reanchor(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<String, String> {
+    if is_ssh_session(&state, id) {
+        state.remote_files.close(id);
+        let panel = match remote_files_panel(&state, id) {
+            Some(res) => res?,
+            None => return Err("host da sessão SSH não encontrado".into()),
+        };
+        let root = panel.info().root;
+        state.files.emit_tree_reset(&app, id);
+        let decos = on_remote(std::sync::Arc::clone(&panel), |p| p.decorations()).await?;
+        files::emit_decorations_to(&app, id, decos);
+        return Ok(root);
+    }
     let (root, context) = resolve_files_root(&state, id)?;
     state.files.seed(&app, id, root.clone(), context);
     state.files.emit_tree_reset(&app, id);
@@ -1173,11 +1283,15 @@ fn files_reanchor(
 }
 
 #[tauri::command]
-fn files_decorations(
+async fn files_decorations(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<Vec<files::Decoration>, String> {
+    if let Some(panel) = remote_files_panel(&state, id) {
+        let panel = panel?;
+        return on_remote(panel, |p| p.decorations()).await;
+    }
     state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1187,10 +1301,11 @@ fn files_decorations(
 #[tauri::command]
 fn files_close(state: State<'_, AppState>, id: SessionId) {
     state.files.close(id);
+    state.remote_files.close(id);
 }
 
 #[tauri::command]
-fn files_write(
+async fn files_write(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
@@ -1198,6 +1313,22 @@ fn files_write(
     content: String,
     expected_hash: String,
 ) -> Result<files::write::WriteResult, String> {
+    if let Some(panel) = remote_files_panel(&state, id) {
+        let panel = panel?;
+        let rel = path.clone();
+        let result = on_remote(std::sync::Arc::clone(&panel), move |p| {
+            p.write(&rel, &content, &expected_hash)
+        })
+        .await??;
+        if matches!(result, files::write::WriteResult::Written { .. }) {
+            let rel = path.clone();
+            let markers = on_remote(std::sync::Arc::clone(&panel), move |p| p.gutter(&rel)).await?;
+            let decos = on_remote(panel, |p| p.decorations()).await?;
+            files::emit_gutter_to(&app, id, path, markers);
+            files::emit_decorations_to(&app, id, decos);
+        }
+        return Ok(result);
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1211,13 +1342,17 @@ fn files_write(
 }
 
 #[tauri::command]
-fn files_create(
+async fn files_create(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: String,
     is_dir: bool,
 ) -> Result<(), String> {
+    if let Some(panel) = remote_files_panel(&state, id) {
+        let panel = panel?;
+        return on_remote(panel, move |p| p.create(&path, is_dir)).await?;
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1227,13 +1362,17 @@ fn files_create(
 }
 
 #[tauri::command]
-fn files_rename(
+async fn files_rename(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     from: String,
     to: String,
 ) -> Result<(), String> {
+    if let Some(panel) = remote_files_panel(&state, id) {
+        let panel = panel?;
+        return on_remote(panel, move |p| p.rename(&from, &to)).await?;
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1243,12 +1382,16 @@ fn files_rename(
 }
 
 #[tauri::command]
-fn files_delete(
+async fn files_delete(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: String,
 ) -> Result<(), String> {
+    if let Some(panel) = remote_files_panel(&state, id) {
+        let panel = panel?;
+        return on_remote(panel, move |p| p.delete(&path)).await?;
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1258,26 +1401,39 @@ fn files_delete(
 }
 
 #[tauri::command]
-fn files_search(
+async fn files_search(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     query: String,
     limit: Option<usize>,
 ) -> Result<files::search::SearchOutcome, String> {
+    let cap = limit.unwrap_or(50).min(500);
+    if let Some(panel) = remote_files_panel(&state, id) {
+        let panel = panel?;
+        return on_remote(panel, move |p| p.search(&query, cap)).await;
+    }
     state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
-    Ok(state.files.search(id, &query, limit.unwrap_or(50).min(500)))
+    Ok(state.files.search(id, &query, cap))
 }
 
 #[tauri::command]
-fn files_focus(
+async fn files_focus(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: Option<String>,
 ) -> Result<Vec<files::gutter::GutterMarker>, String> {
+    if let Some(panel) = remote_files_panel(&state, id) {
+        let panel = panel?;
+        panel.set_open(path.clone());
+        return Ok(match path {
+            Some(rel) => on_remote(panel, move |p| p.gutter(&rel)).await?,
+            None => Vec::new(),
+        });
+    }
     state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1289,12 +1445,16 @@ fn files_focus(
 }
 
 #[tauri::command]
-fn files_gutter(
+async fn files_gutter(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: String,
 ) -> Result<Vec<files::gutter::GutterMarker>, String> {
+    if let Some(panel) = remote_files_panel(&state, id) {
+        let panel = panel?;
+        return on_remote(panel, move |p| p.gutter(&path)).await;
+    }
     state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1308,12 +1468,17 @@ struct EditContent {
 }
 
 #[tauri::command]
-fn files_edit_begin(
+async fn files_edit_begin(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: String,
 ) -> Result<EditContent, String> {
+    if let Some(panel) = remote_files_panel(&state, id) {
+        let panel = panel?;
+        let (text, hash) = on_remote(panel, move |p| p.edit_begin(&path)).await??;
+        return Ok(EditContent { text, hash });
+    }
     state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1323,6 +1488,10 @@ fn files_edit_begin(
 
 #[tauri::command]
 fn files_edit_end(state: State<'_, AppState>, id: SessionId) {
+    if let Some(panel) = state.remote_files.get(id) {
+        panel.set_open(None);
+        return;
+    }
     state.files.edit_end(id);
 }
 
@@ -1631,6 +1800,11 @@ async fn files_open_external(
     path: String,
     editor: Option<String>,
 ) -> Result<(), String> {
+    // Arquivo remoto não tem caminho local para o editor externo — o botão some
+    // no painel remoto; aqui só barramos o caso por segurança.
+    if is_ssh_session(&state, id) {
+        return Err("arquivo remoto não tem caminho local para o editor externo".into());
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -3421,6 +3595,7 @@ pub fn run() {
                 docker: Arc::new(docker::DockerManager::new()),
                 repos,
                 files: Arc::new(files::FilesManager::new()),
+                remote_files: Arc::new(files::remote::RemoteFilesManager::new()),
                 repo_reconcile: reconcile_tx.clone(),
                 rich_input_submit: parking_lot::Mutex::new(()),
                 worktree_files: rich_input::FilesCache::default(),
@@ -3548,6 +3723,7 @@ pub fn run() {
             files_read,
             files_watch_dir,
             files_unwatch_dir,
+            files_refresh,
             files_reanchor,
             files_decorations,
             files_open_external,
