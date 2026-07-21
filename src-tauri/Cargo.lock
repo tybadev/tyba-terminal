@@ -5015,6 +5015,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
+ "rustix",
  "seccompiler",
  "serde",
  "serde_json",

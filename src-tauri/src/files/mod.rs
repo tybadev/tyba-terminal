@@ -311,11 +311,10 @@ fn image_mime(name: &str) -> Option<&'static str> {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn fd_real_path(file: &std::fs::File) -> Option<PathBuf> {
+pub(crate) fn fd_real_path_raw(fd: std::os::unix::io::RawFd) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::io::AsRawFd;
     let mut buf = [0u8; libc::PATH_MAX as usize];
-    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) };
+    let rc = unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr()) };
     if rc < 0 {
         return None;
     }
@@ -324,9 +323,14 @@ pub(crate) fn fd_real_path(file: &std::fs::File) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn fd_real_path_raw(fd: std::os::unix::io::RawFd) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/self/fd/{fd}")).ok()
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn fd_real_path(file: &std::fs::File) -> Option<PathBuf> {
     use std::os::unix::io::AsRawFd;
-    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
+    fd_real_path_raw(file.as_raw_fd())
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]

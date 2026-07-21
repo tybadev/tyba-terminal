@@ -39,6 +39,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "h
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+rustix = { version = "1", features = ["fs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "0.5"
