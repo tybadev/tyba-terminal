@@ -1197,6 +1197,10 @@ export interface FilesPanelInfo {
   root: string;
   kind: FilesKind;
   decorated: boolean;
+  /** Raiz remota (sessão SSH) — o painel troca watcher por refresh sob demanda. */
+  remote: boolean;
+  /** Alias do host quando remoto; `null` no local. */
+  host: string | null;
 }
 
 export const openFilesPanel = (id: SessionId) =>
@@ -1219,6 +1223,11 @@ export const filesUnwatchDir = (id: SessionId, path: string) =>
 
 export const filesReanchor = (id: SessionId) =>
   invoke<string>("files_reanchor", { id });
+
+/** Refresh sob demanda do painel remoto (substituto do watcher): invalida o
+ * cache de listagem no core. No-op no local. */
+export const filesRefresh = (id: SessionId) =>
+  invoke<void>("files_refresh", { id });
 
 export const filesOpenExternal = (
   id: SessionId,

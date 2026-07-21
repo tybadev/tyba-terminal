@@ -23,7 +23,9 @@ fn config_path(home: &Path) -> PathBuf {
 }
 
 fn valid_alias(alias: &str) -> bool {
-    !alias.is_empty() && !alias.chars().any(|c| c.is_whitespace())
+    // `-` inicial vira opção do `ssh` (`-oProxyCommand=...` = exec local); barra
+    // aqui também, não só na entrada da UI.
+    !alias.is_empty() && !alias.starts_with('-') && !alias.chars().any(|c| c.is_whitespace())
 }
 
 fn sanitize_value(val: &str, alias: &str, field: &str) -> Result<String, AppError> {
@@ -489,6 +491,14 @@ mod tests {
     #[test]
     fn render_rejects_alias_with_whitespace() {
         let err = render_tyba_conf(&[host("bad alias", "h")]).unwrap_err();
+        assert_eq!(err.code, "ssh.alias_invalid");
+    }
+
+    #[test]
+    fn render_rejects_alias_starting_with_dash() {
+        // Um alias como `-oProxyCommand=id` seria lido pelo ssh como opção, não
+        // host — exec local disfarçado de conexão.
+        let err = render_tyba_conf(&[host("-oProxyCommand=id", "h")]).unwrap_err();
         assert_eq!(err.code, "ssh.alias_invalid");
     }
 

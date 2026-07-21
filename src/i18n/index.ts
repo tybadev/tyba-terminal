@@ -118,6 +118,13 @@ const resources = {
       filesPanel: "Arquivos",
       filesTitle: "Arquivos",
       filesReanchor: "Re-ancorar no cwd atual",
+      filesRefresh: "Atualizar",
+      filesRemoteHost: "Raiz remota em {{host}}",
+      filesReconnecting: "Conexão com o host caiu — as operações podem falhar até reconectar.",
+      filesLoading: "Carregando…",
+      filesDeleteRemoteTitle: 'Excluir "{{name}}" no host?',
+      filesDeleteRemoteDetail:
+        "Sem Lixeira remota: a remoção é definitiva, não há como desfazer.",
       filesOpenExternal: "Abrir no editor externo",
       filesJumpToDiff: "Ver no diff",
       filesLoadAll: "Carregar tudo",
@@ -919,6 +926,14 @@ const resources = {
       filesPanel: "Files",
       filesTitle: "Files",
       filesReanchor: "Re-anchor to current cwd",
+      filesRefresh: "Refresh",
+      filesRemoteHost: "Remote root on {{host}}",
+      filesReconnecting:
+        "Connection to the host dropped — operations may fail until it reconnects.",
+      filesLoading: "Loading…",
+      filesDeleteRemoteTitle: 'Delete "{{name}}" on the host?',
+      filesDeleteRemoteDetail:
+        "No remote Trash: deletion is permanent, there is no undo.",
       filesOpenExternal: "Open in external editor",
       filesJumpToDiff: "View in diff",
       filesLoadAll: "Load all",

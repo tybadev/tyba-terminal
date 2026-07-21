@@ -47,6 +47,7 @@ struct AppState {
     docker: docker::SharedDocker,
     repos: repo::SharedRepoWatcher,
     files: files::SharedFiles,
+    remote_files: files::remote::SharedRemoteFiles,
     lsp: lsp::SharedLsp,
     repo_reconcile: std::sync::mpsc::Sender<()>,
     rich_input_submit: parking_lot::Mutex<()>,
@@ -561,7 +562,11 @@ fn store_err(e: session::store::StoreError) -> crate::error::AppError {
 }
 
 fn validate_alias(alias: &str) -> Result<(), crate::error::AppError> {
-    if alias.trim().is_empty() || alias.chars().any(|c| c.is_whitespace()) {
+    // `-` inicial faria o alias ser interpretado como opção do `ssh`
+    // (`-oProxyCommand=...` = exec local): recusado na entrada, o que protege de
+    // graça os sites que passam o alias pro ssh (tmux, túneis, SFTP).
+    if alias.trim().is_empty() || alias.chars().any(|c| c.is_whitespace()) || alias.starts_with('-')
+    {
         return Err(
             crate::error::AppError::new("ssh.alias_invalid").with("alias", alias.to_string())
         );
@@ -1041,6 +1046,91 @@ fn resolve_files_root(
     }
 }
 
+/// Alias materializado + nome do tmux invisível de uma sessão SSH — o par que o
+/// backend SFTP usa para abrir o canal na conexão multiplexada e para achar o
+/// cwd remoto (`pane_current_path`). `None` quando a sessão não é SSH.
+fn ssh_alias_tmux(state: &AppState, id: SessionId) -> Option<(String, String)> {
+    let session = state.sessions.get(id)?;
+    let SessionKind::Ssh { host_id } = &session.kind else {
+        return None;
+    };
+    let hosts = state.store.load_hosts().ok()?;
+    let alias = hosts.iter().find(|h| &h.id == host_id)?.alias.clone();
+    let install = crate::ssh::tmux::install_id(&state.store).ok()?;
+    let name = crate::ssh::tmux::session_name(&install, id);
+    Some((alias, name))
+}
+
+type RemoteTarget = (files::remote::SharedRemoteFiles, String, String);
+
+/// Despacho por tipo de sessão, SÍNCRONO e sem rede: `None` = sessão local
+/// (segue o `FilesManager`); `Some(Ok((gestor, alias, tmux)))` = alvo remoto
+/// (o painel é montado depois, fora da thread do executor); `Some(Err)` = SSH
+/// cujo host não resolveu. Extrai só dados `Send` para que nada de `State` seja
+/// segurado através do `.await` do build.
+fn remote_target(state: &AppState, id: SessionId) -> Option<Result<RemoteTarget, String>> {
+    let session = state.sessions.get(id)?;
+    if !matches!(session.kind, SessionKind::Ssh { .. }) {
+        return None;
+    }
+    match ssh_alias_tmux(state, id) {
+        Some((alias, tmux)) => Some(Ok((
+            std::sync::Arc::clone(&state.remote_files),
+            alias,
+            tmux,
+        ))),
+        None => Some(Err("host da sessão SSH não encontrado".to_string())),
+    }
+}
+
+/// Monta (ou reusa) o painel remoto FORA da thread do command: `build_panel`
+/// abre o canal SFTP e faz o handshake — rede pura, que não pode congelar um
+/// worker do Tokio. `spawn_blocking` + `ConnectTimeout` no ssh cobrem host morto.
+async fn open_remote_panel(
+    remote_files: files::remote::SharedRemoteFiles,
+    id: SessionId,
+    alias: String,
+    tmux: String,
+) -> Result<std::sync::Arc<files::remote::RemotePanel>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        remote_files.ensure(id, || files::remote::build_panel(&alias, Some(&tmux)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Teardown único do painel de arquivos: derruba o painel local, o remoto (SFTP)
+/// e a sessão de LSP da fatia 3, num só lugar. Chamado por todos os sites que
+/// encerram um painel — a lição do watcher órfão, terceira aparição.
+fn close_files_panel(state: &AppState, id: SessionId) {
+    state.files.close(id);
+    state.remote_files.close(id);
+    state.lsp.close_session(id);
+}
+
+/// Roda uma operação do painel remoto fora da thread do command (as chamadas
+/// SFTP/exec são de rede — nunca podem travar a UI). `spawn_blocking` mantém o
+/// core responsivo, mesmo padrão do docker-over-ssh.
+async fn on_remote<T, F>(
+    panel: std::sync::Arc<files::remote::RemotePanel>,
+    f: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&files::remote::RemotePanel) -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || f(&panel))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn is_ssh_session(state: &AppState, id: SessionId) -> bool {
+    matches!(
+        state.sessions.get(id).map(|s| s.kind),
+        Some(SessionKind::Ssh { .. })
+    )
+}
+
 fn workspace_side_view(state: &AppState, workspace: layout::WorkspaceId) -> Option<String> {
     state
         .layout
@@ -1067,20 +1157,28 @@ fn close_orphaned_files_panel(state: &AppState, previous: Option<String>, keep: 
         .strip_prefix(layout::VIEW_FILES_PREFIX)
         .and_then(|s| s.parse::<SessionId>().ok())
     {
-        state.files.close(id);
-        state.lsp.close_session(id);
+        close_files_panel(state, id);
     }
 }
 
 #[tauri::command]
-fn open_files_panel(
+async fn open_files_panel(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<String, String> {
-    let (root, _ctx) = state
-        .files
-        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    let root = match remote_target(&state, id) {
+        Some(t) => {
+            let (rf, alias, tmux) = t?;
+            open_remote_panel(rf, id, alias, tmux).await?.info().root
+        }
+        None => {
+            let (root, _ctx) = state
+                .files
+                .ensure(&app, id, || resolve_files_root(&state, id))?;
+            root.to_string_lossy().into_owned()
+        }
+    };
     let new_view = layout::files_view(id);
     let previous = session_side_view(&state, id);
     state
@@ -1089,15 +1187,19 @@ fn open_files_panel(
         .map_err(|e| e.to_string())?;
     close_orphaned_files_panel(&state, previous, Some(&new_view));
     emit_layout(&app, &state);
-    Ok(root.to_string_lossy().into_owned())
+    Ok(root)
 }
 
 #[tauri::command]
-fn files_panel_info(
+async fn files_panel_info(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<files::PanelInfo, String> {
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        return Ok(open_remote_panel(rf, id, alias, tmux).await?.info());
+    }
     let (root, context) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1105,16 +1207,23 @@ fn files_panel_info(
         root: root.to_string_lossy().into_owned(),
         kind: context.kind_str().to_string(),
         decorated: !matches!(context, files::Context::OutsideRepo),
+        remote: false,
+        host: None,
     })
 }
 
 #[tauri::command]
-fn files_list_dir(
+async fn files_list_dir(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: String,
 ) -> Result<files::DirListing, String> {
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
+        return on_remote(panel, move |p| p.list_dir(&path)).await?;
+    }
     let (root, context) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1122,13 +1231,19 @@ fn files_list_dir(
 }
 
 #[tauri::command]
-fn files_read(
+async fn files_read(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: String,
     offset: Option<usize>,
 ) -> Result<files::FileContent, String> {
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
+        let off = offset.unwrap_or(0);
+        return on_remote(panel, move |p| p.read_file(&path, off)).await?;
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1142,6 +1257,10 @@ fn files_watch_dir(
     id: SessionId,
     path: String,
 ) -> Result<(), String> {
+    // Sessão SSH não tem watcher: refresh é sob demanda. No-op sem tocar a rede.
+    if is_ssh_session(&state, id) {
+        return Ok(());
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1155,6 +1274,9 @@ fn files_watch_dir(
 
 #[tauri::command]
 fn files_unwatch_dir(state: State<'_, AppState>, id: SessionId, path: String) {
+    if is_ssh_session(&state, id) {
+        return;
+    }
     if let Some((root, _)) = state.files.info(id) {
         if let Ok(dir) = files::resolve_within(&root, &path) {
             state.files.unwatch_dir(id, dir);
@@ -1162,14 +1284,44 @@ fn files_unwatch_dir(state: State<'_, AppState>, id: SessionId, path: String) {
     }
 }
 
+/// Refresh explícito do painel remoto — o substituto do watcher. Invalida o
+/// cache de listagem; a próxima leitura reconsulta o host. No-op no local (lá o
+/// watcher já mantém a árvore viva).
 #[tauri::command]
-fn files_reanchor(
+fn files_refresh(state: State<'_, AppState>, id: SessionId) {
+    if let Some(panel) = state.remote_files.get(id) {
+        if panel.is_dead() {
+            // Canal SFTP morto: derruba o painel para a próxima op reconstruir
+            // sobre a conexão remultiplexada — o botão "Atualizar" recupera de fato.
+            state.remote_files.close(id);
+        } else {
+            panel.refresh();
+        }
+    }
+}
+
+#[tauri::command]
+async fn files_reanchor(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<String, String> {
+    // Re-ancorar troca a raiz: derruba tudo da raiz antiga (local + remoto + LSP)
+    // e reconstrói na nova. Teardown unificado.
+    close_files_panel(&state, id);
+    if is_ssh_session(&state, id) {
+        let (rf, alias, tmux) = match remote_target(&state, id) {
+            Some(t) => t?,
+            None => return Err("host da sessão SSH não encontrado".into()),
+        };
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
+        let root = panel.info().root;
+        state.files.emit_tree_reset(&app, id);
+        let decos = on_remote(std::sync::Arc::clone(&panel), |p| p.decorations()).await?;
+        files::emit_decorations_to(&app, id, decos);
+        return Ok(root);
+    }
     let (root, context) = resolve_files_root(&state, id)?;
-    state.lsp.close_session(id);
     state.files.seed(&app, id, root.clone(), context);
     state.files.emit_tree_reset(&app, id);
     state.files.emit_decorations(&app, id);
@@ -1177,11 +1329,16 @@ fn files_reanchor(
 }
 
 #[tauri::command]
-fn files_decorations(
+async fn files_decorations(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<Vec<files::Decoration>, String> {
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
+        return on_remote(panel, |p| p.decorations()).await;
+    }
     state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1190,12 +1347,11 @@ fn files_decorations(
 
 #[tauri::command]
 fn files_close(state: State<'_, AppState>, id: SessionId) {
-    state.files.close(id);
-    state.lsp.close_session(id);
+    close_files_panel(&state, id);
 }
 
 #[tauri::command]
-fn files_write(
+async fn files_write(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
@@ -1203,6 +1359,23 @@ fn files_write(
     content: String,
     expected_hash: String,
 ) -> Result<files::write::WriteResult, String> {
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
+        let rel = path.clone();
+        let result = on_remote(std::sync::Arc::clone(&panel), move |p| {
+            p.write(&rel, &content, &expected_hash)
+        })
+        .await??;
+        if matches!(result, files::write::WriteResult::Written { .. }) {
+            let rel = path.clone();
+            let markers = on_remote(std::sync::Arc::clone(&panel), move |p| p.gutter(&rel)).await?;
+            let decos = on_remote(panel, |p| p.decorations()).await?;
+            files::emit_gutter_to(&app, id, path, markers);
+            files::emit_decorations_to(&app, id, decos);
+        }
+        return Ok(result);
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1216,13 +1389,18 @@ fn files_write(
 }
 
 #[tauri::command]
-fn files_create(
+async fn files_create(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: String,
     is_dir: bool,
 ) -> Result<(), String> {
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
+        return on_remote(panel, move |p| p.create(&path, is_dir)).await?;
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1232,13 +1410,18 @@ fn files_create(
 }
 
 #[tauri::command]
-fn files_rename(
+async fn files_rename(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     from: String,
     to: String,
 ) -> Result<(), String> {
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
+        return on_remote(panel, move |p| p.rename(&from, &to)).await?;
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1248,12 +1431,17 @@ fn files_rename(
 }
 
 #[tauri::command]
-fn files_delete(
+async fn files_delete(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: String,
 ) -> Result<(), String> {
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
+        return on_remote(panel, move |p| p.delete(&path)).await?;
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1263,26 +1451,41 @@ fn files_delete(
 }
 
 #[tauri::command]
-fn files_search(
+async fn files_search(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     query: String,
     limit: Option<usize>,
 ) -> Result<files::search::SearchOutcome, String> {
+    let cap = limit.unwrap_or(50).min(500);
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
+        return on_remote(panel, move |p| p.search(&query, cap)).await;
+    }
     state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
-    Ok(state.files.search(id, &query, limit.unwrap_or(50).min(500)))
+    Ok(state.files.search(id, &query, cap))
 }
 
 #[tauri::command]
-fn files_focus(
+async fn files_focus(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: Option<String>,
 ) -> Result<Vec<files::gutter::GutterMarker>, String> {
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
+        panel.set_open(path.clone());
+        return Ok(match path {
+            Some(rel) => on_remote(panel, move |p| p.gutter(&rel)).await?,
+            None => Vec::new(),
+        });
+    }
     state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1294,12 +1497,17 @@ fn files_focus(
 }
 
 #[tauri::command]
-fn files_gutter(
+async fn files_gutter(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: String,
 ) -> Result<Vec<files::gutter::GutterMarker>, String> {
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
+        return on_remote(panel, move |p| p.gutter(&path)).await;
+    }
     state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1313,12 +1521,18 @@ struct EditContent {
 }
 
 #[tauri::command]
-fn files_edit_begin(
+async fn files_edit_begin(
     app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     path: String,
 ) -> Result<EditContent, String> {
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
+        let (text, hash) = on_remote(panel, move |p| p.edit_begin(&path)).await??;
+        return Ok(EditContent { text, hash });
+    }
     state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1328,6 +1542,10 @@ fn files_edit_begin(
 
 #[tauri::command]
 fn files_edit_end(state: State<'_, AppState>, id: SessionId) {
+    if let Some(panel) = state.remote_files.get(id) {
+        panel.set_open(None);
+        return;
+    }
     state.files.edit_end(id);
 }
 
@@ -1338,6 +1556,11 @@ fn lsp_status(
     id: SessionId,
     path: String,
 ) -> Result<lsp::LspStatus, String> {
+    // LSP é local-only (fatia 3): sessão SSH nunca sobe server (o LSP remoto é a
+    // fatia 4b). Guarda no core — não resolve raiz local nem spawna. UI espelha.
+    if is_ssh_session(&state, id) {
+        return Ok(lsp::LspStatus::Unsupported);
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1353,6 +1576,9 @@ fn lsp_open(
     text: String,
     spawn: bool,
 ) -> Result<lsp::LspStatus, String> {
+    if is_ssh_session(&state, id) {
+        return Ok(lsp::LspStatus::Unsupported);
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1367,6 +1593,9 @@ fn lsp_retry(
     id: SessionId,
     path: String,
 ) -> Result<lsp::LspStatus, String> {
+    if is_ssh_session(&state, id) {
+        return Ok(lsp::LspStatus::Unsupported);
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -1747,6 +1976,11 @@ async fn files_open_external(
     path: String,
     editor: Option<String>,
 ) -> Result<(), String> {
+    // Arquivo remoto não tem caminho local para o editor externo — o botão some
+    // no painel remoto; aqui só barramos o caso por segurança.
+    if is_ssh_session(&state, id) {
+        return Err("arquivo remoto não tem caminho local para o editor externo".into());
+    }
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
@@ -2169,8 +2403,7 @@ fn session_mark_seen(app: AppHandle, state: State<'_, AppState>, id: SessionId) 
 fn dispose_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
     teardown_agent_session(&app, &state, id);
     state.sessions.dispose(&state.pty_pool, id);
-    state.files.close(id);
-    state.lsp.close_session(id);
+    close_files_panel(&state, id);
     let _ = state.layout.session_disposed(id);
     emit_layout(&app, &state);
 }
@@ -2662,6 +2895,10 @@ fn reconnect_ssh(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> R
     if !matches!(session.kind, SessionKind::Ssh { .. }) {
         return Err(crate::error::AppError::new("ssh.not_an_ssh_session").to_string());
     }
+    // O canal SFTP do painel morreu com a conexão anterior; derruba o painel
+    // (teardown unificado) para a próxima operação reconstruí-lo sobre a conexão
+    // remultiplexada.
+    close_files_panel(&state, id);
     reattach_or_finish(app, id);
     Ok(())
 }
@@ -3553,6 +3790,7 @@ pub fn run() {
                 docker: Arc::new(docker::DockerManager::new()),
                 repos,
                 files: Arc::new(files::FilesManager::new()),
+                remote_files: Arc::new(files::remote::RemoteFilesManager::new()),
                 lsp,
                 repo_reconcile: reconcile_tx.clone(),
                 rich_input_submit: parking_lot::Mutex::new(()),
@@ -3681,6 +3919,7 @@ pub fn run() {
             files_read,
             files_watch_dir,
             files_unwatch_dir,
+            files_refresh,
             files_reanchor,
             files_decorations,
             files_open_external,

@@ -14,7 +14,9 @@ use tauri::{AppHandle, Emitter, Runtime};
 use crate::session::SessionId;
 use crate::worktree::diff::{FileStatus, SessionDiff};
 
+pub mod backend;
 pub mod gutter;
+pub mod remote;
 pub mod search;
 pub mod write;
 
@@ -30,7 +32,7 @@ pub const EDIT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 pub const READ_PAGE_BYTES: usize = 256 * 1024;
 pub const MAX_DIR_ENTRIES: usize = 2000;
-const IMAGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const IMAGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
 
 pub fn tree_event(id: SessionId) -> String {
@@ -125,6 +127,8 @@ pub struct PanelInfo {
     pub root: String,
     pub kind: String,
     pub decorated: bool,
+    pub remote: bool,
+    pub host: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -147,6 +151,27 @@ struct GutterPayload {
 struct ConflictPayload {
     path: String,
     disk_hash: Option<String>,
+}
+
+/// Emite decorações já computadas no mesmo canal do watcher local. Usado pelo
+/// backend remoto (sem watcher), que recomputa sob demanda e publica aqui.
+pub fn emit_decorations_to<R: Runtime>(
+    app: &AppHandle<R>,
+    id: SessionId,
+    decorations: Vec<Decoration>,
+) {
+    let _ = app.emit(&decorations_event(id), DecorationsPayload { decorations });
+}
+
+/// Emite marcadores de gutter já computados no canal do watcher local — o
+/// backend remoto recalcula no save e publica por aqui.
+pub fn emit_gutter_to<R: Runtime>(
+    app: &AppHandle<R>,
+    id: SessionId,
+    path: String,
+    markers: Vec<GutterMarker>,
+) {
+    let _ = app.emit(&gutter_event(id), GutterPayload { path, markers });
 }
 
 fn file_hash(root: &Path, abs: &Path) -> Option<String> {
@@ -297,7 +322,7 @@ pub fn list_dir(root: &Path, dir_rel: &str, context: &Context) -> Result<DirList
     })
 }
 
-fn image_mime(name: &str) -> Option<&'static str> {
+pub(crate) fn image_mime(name: &str) -> Option<&'static str> {
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase())?;
     Some(match ext.as_str() {
         "png" => "image/png",
@@ -386,7 +411,7 @@ fn read_capped(file: &mut std::fs::File, cap: usize) -> Result<Vec<u8>, String> 
     Ok(buf)
 }
 
-fn page_end(data: &[u8], more_ahead: bool) -> usize {
+pub(crate) fn page_end(data: &[u8], more_ahead: bool) -> usize {
     if !more_ahead {
         return data.len();
     }
