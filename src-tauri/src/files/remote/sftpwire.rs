@@ -44,6 +44,21 @@ const ATTR_PERMISSIONS: u32 = 0x0000_0004;
 const WRITE_CHUNK: usize = 32 * 1024;
 const SFTP_VERSION: u32 = 3;
 
+/// Opções de ssh para connect e exec: `BatchMode` (nunca prompt interativo, o
+/// ControlMaster já autenticou), `ConnectTimeout` (host morto não trava minutos
+/// — mesmo valor do tmux.rs) e keepalive (detecta o canal morto em ~45s em vez
+/// de pendurar para sempre).
+const SSH_LIVENESS_OPTS: &[&str] = &[
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=10",
+    "-o",
+    "ServerAliveInterval=15",
+    "-o",
+    "ServerAliveCountMax=3",
+];
+
 fn put_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_be_bytes());
 }
@@ -79,32 +94,30 @@ impl<'a> Cursor<'a> {
         Self { data, pos: 0 }
     }
 
+    fn take(&mut self, n: usize) -> RemoteResult<&'a [u8]> {
+        let end = self
+            .pos
+            .checked_add(n)
+            .filter(|e| *e <= self.data.len())
+            .ok_or_else(|| RemoteError::Protocol("leitura além do fim da frame".into()))?;
+        let out = &self.data[self.pos..end];
+        self.pos = end;
+        Ok(out)
+    }
+
     fn u32(&mut self) -> RemoteResult<u32> {
-        if self.pos + 4 > self.data.len() {
-            return Err(RemoteError::Protocol("u32 curto".into()));
-        }
-        let v = u32::from_be_bytes(self.data[self.pos..self.pos + 4].try_into().unwrap());
-        self.pos += 4;
-        Ok(v)
+        let bytes = self.take(4)?;
+        Ok(u32::from_be_bytes(bytes.try_into().unwrap()))
     }
 
     fn u64(&mut self) -> RemoteResult<u64> {
-        if self.pos + 8 > self.data.len() {
-            return Err(RemoteError::Protocol("u64 curto".into()));
-        }
-        let v = u64::from_be_bytes(self.data[self.pos..self.pos + 8].try_into().unwrap());
-        self.pos += 8;
-        Ok(v)
+        let bytes = self.take(8)?;
+        Ok(u64::from_be_bytes(bytes.try_into().unwrap()))
     }
 
     fn string(&mut self) -> RemoteResult<Vec<u8>> {
         let len = self.u32()? as usize;
-        if self.pos + len > self.data.len() {
-            return Err(RemoteError::Protocol("string curta".into()));
-        }
-        let out = self.data[self.pos..self.pos + len].to_vec();
-        self.pos += len;
-        Ok(out)
+        Ok(self.take(len)?.to_vec())
     }
 }
 
@@ -150,6 +163,11 @@ fn status_to_err(code: u32, message: String) -> RemoteError {
 /// gigabytes. Nossas maiores respostas (READ de 32 KiB, NAME de um diretório
 /// capado em 2000 entradas) cabem folgado abaixo disto.
 const MAX_FRAME: usize = 32 * 1024 * 1024;
+
+/// Teto de entradas acumuladas num readdir: um host hostil pode responder NAME
+/// pra sempre (sem EOF). Bem acima de qualquer diretório real, mas finito — o
+/// painel ainda trunca a exibição em MAX_DIR_ENTRIES por cima.
+const READDIR_CAP: usize = 65_536;
 
 /// Escreve uma frame SFTP: `uint32 length | byte type | payload`. O length cobre
 /// o byte de tipo mais o payload.
@@ -273,6 +291,115 @@ impl<R: Read, W: Write> Conn<R, W> {
         put_string(&mut p, handle);
         self.expect_status_ok(FXP_CLOSE, id, &p)
     }
+
+    /// OPENDIR + laço de READDIR até EOF, com teto `cap` no acumulado (host
+    /// hostil sem EOF é cortado) e `close_handle` garantido em todo caminho de
+    /// erro — sem vazar handle no parse malformado.
+    fn read_dir(&mut self, path: &str, cap: usize) -> RemoteResult<Vec<RemoteDirEntry>> {
+        let id = self.alloc_id();
+        let mut p = Vec::new();
+        put_u32(&mut p, id);
+        put_string(&mut p, path.as_bytes());
+        let (rty, body) = self.request(FXP_OPENDIR, id, &p)?;
+        let handle = handle_or_status(rty, &body)?;
+
+        let mut entries: Vec<RemoteDirEntry> = Vec::new();
+        loop {
+            if entries.len() >= cap {
+                break;
+            }
+            let rid = self.alloc_id();
+            let mut rp = Vec::new();
+            put_u32(&mut rp, rid);
+            put_string(&mut rp, &handle);
+            let (rty, body) = match self.request(FXP_READDIR, rid, &rp) {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = self.close_handle(&handle);
+                    return Err(e);
+                }
+            };
+            if rty == FXP_STATUS {
+                let mut cur = Cursor::new(&body);
+                let _id = cur.u32()?;
+                let code = cur.u32()?;
+                if code == FX_EOF {
+                    break;
+                }
+                let msg = cur.string().unwrap_or_default();
+                let _ = self.close_handle(&handle);
+                return Err(status_to_err(
+                    code,
+                    String::from_utf8_lossy(&msg).into_owned(),
+                ));
+            }
+            if rty != FXP_NAME {
+                let _ = self.close_handle(&handle);
+                return Err(RemoteError::Protocol("esperava NAME no readdir".into()));
+            }
+            let names = match parse_name(&body) {
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = self.close_handle(&handle);
+                    return Err(e);
+                }
+            };
+            for entry in names {
+                if entry.name == "." || entry.name == ".." {
+                    continue;
+                }
+                entries.push(entry);
+                if entries.len() >= cap {
+                    break;
+                }
+            }
+        }
+        self.close_handle(&handle)?;
+        Ok(entries)
+    }
+
+    /// Laço de READ até `len` bytes ou EOF. NÃO fecha o handle — quem abriu fecha
+    /// em todo caminho (sucesso ou erro), então um corpo malformado aqui não
+    /// vaza handle.
+    fn read_all(&mut self, handle: &[u8], offset: u64, len: usize) -> RemoteResult<Vec<u8>> {
+        let mut out = Vec::with_capacity(len);
+        let mut pos = offset;
+        while out.len() < len {
+            let want = (len - out.len()).min(WRITE_CHUNK) as u32;
+            let id = self.alloc_id();
+            let mut p = Vec::new();
+            put_u32(&mut p, id);
+            put_string(&mut p, handle);
+            put_u64(&mut p, pos);
+            put_u32(&mut p, want);
+            let (rty, body) = self.request(FXP_READ, id, &p)?;
+            if rty == FXP_STATUS {
+                let mut cur = Cursor::new(&body);
+                let _id = cur.u32()?;
+                let code = cur.u32()?;
+                if code == FX_EOF {
+                    break;
+                }
+                let msg = cur.string().unwrap_or_default();
+                return Err(status_to_err(
+                    code,
+                    String::from_utf8_lossy(&msg).into_owned(),
+                ));
+            }
+            if rty != FXP_DATA {
+                return Err(RemoteError::Protocol("esperava DATA".into()));
+            }
+            let mut cur = Cursor::new(&body);
+            let _id = cur.u32()?;
+            let chunk = cur.string()?;
+            if chunk.is_empty() {
+                break;
+            }
+            pos += chunk.len() as u64;
+            out.extend_from_slice(&chunk);
+        }
+        Ok(out)
+    }
 }
 
 pub struct SshRemote {
@@ -286,8 +413,7 @@ impl SshRemote {
     /// INIT/VERSION do protocolo v3.
     pub fn connect(alias: &str) -> RemoteResult<Self> {
         let mut child = Command::new("ssh")
-            .arg("-o")
-            .arg("BatchMode=yes")
+            .args(SSH_LIVENESS_OPTS)
             .arg(alias)
             .arg("-s")
             .arg("sftp")
@@ -338,12 +464,15 @@ fn handle_or_status(rty: u8, body: &[u8]) -> RemoteResult<Vec<u8>> {
     Err(RemoteError::Protocol("esperava HANDLE".into()))
 }
 
-/// Parseia a resposta NAME (usada por REALPATH e READDIR).
+/// Parseia a resposta NAME (usada por REALPATH e READDIR). A capacidade NUNCA é
+/// pré-dimensionada pelo `count` do servidor (um `count` mentiroso de ~4 bilhões
+/// abortaria o app no `alloc`); o teto real é o tamanho da frame (cada entrada
+/// consome bytes, e a frame já é capada em MAX_FRAME).
 fn parse_name(body: &[u8]) -> RemoteResult<Vec<RemoteDirEntry>> {
     let mut cur = Cursor::new(body);
     let _id = cur.u32()?;
     let count = cur.u32()?;
-    let mut out = Vec::with_capacity(count as usize);
+    let mut out = Vec::with_capacity((count as usize).min(READDIR_CAP));
     for _ in 0..count {
         let name = cur.string()?;
         let _longname = cur.string()?;
@@ -390,48 +519,7 @@ impl RemoteFs for SshRemote {
     }
 
     fn readdir(&self, path: &str) -> RemoteResult<Vec<RemoteDirEntry>> {
-        let mut conn = self.conn.lock();
-        let id = conn.alloc_id();
-        let mut p = Vec::new();
-        put_u32(&mut p, id);
-        put_string(&mut p, path.as_bytes());
-        let (rty, body) = conn.request(FXP_OPENDIR, id, &p)?;
-        let handle = handle_or_status(rty, &body)?;
-
-        let mut entries = Vec::new();
-        loop {
-            let rid = conn.alloc_id();
-            let mut rp = Vec::new();
-            put_u32(&mut rp, rid);
-            put_string(&mut rp, &handle);
-            let (rty, body) = conn.request(FXP_READDIR, rid, &rp)?;
-            if rty == FXP_STATUS {
-                let mut cur = Cursor::new(&body);
-                let _id = cur.u32()?;
-                let code = cur.u32()?;
-                if code == FX_EOF {
-                    break;
-                }
-                let msg = cur.string().unwrap_or_default();
-                let _ = conn.close_handle(&handle);
-                return Err(status_to_err(
-                    code,
-                    String::from_utf8_lossy(&msg).into_owned(),
-                ));
-            }
-            if rty != FXP_NAME {
-                let _ = conn.close_handle(&handle);
-                return Err(RemoteError::Protocol("esperava NAME no readdir".into()));
-            }
-            for entry in parse_name(&body)? {
-                if entry.name == "." || entry.name == ".." {
-                    continue;
-                }
-                entries.push(entry);
-            }
-        }
-        conn.close_handle(&handle)?;
-        Ok(entries)
+        self.conn.lock().read_dir(path, READDIR_CAP)
     }
 
     fn lstat(&self, path: &str) -> RemoteResult<RemoteStat> {
@@ -445,46 +533,9 @@ impl RemoteFs for SshRemote {
     fn read_chunk(&self, path: &str, offset: u64, len: usize) -> RemoteResult<Vec<u8>> {
         let mut conn = self.conn.lock();
         let handle = conn.open_handle(path, PFLAG_READ, None)?;
-        let mut out = Vec::with_capacity(len);
-        let mut pos = offset;
-        while out.len() < len {
-            let want = (len - out.len()).min(WRITE_CHUNK) as u32;
-            let id = conn.alloc_id();
-            let mut p = Vec::new();
-            put_u32(&mut p, id);
-            put_string(&mut p, &handle);
-            put_u64(&mut p, pos);
-            put_u32(&mut p, want);
-            let (rty, body) = conn.request(FXP_READ, id, &p)?;
-            if rty == FXP_STATUS {
-                let mut cur = Cursor::new(&body);
-                let _id = cur.u32()?;
-                let code = cur.u32()?;
-                if code == FX_EOF {
-                    break;
-                }
-                let msg = cur.string().unwrap_or_default();
-                let _ = conn.close_handle(&handle);
-                return Err(status_to_err(
-                    code,
-                    String::from_utf8_lossy(&msg).into_owned(),
-                ));
-            }
-            if rty != FXP_DATA {
-                let _ = conn.close_handle(&handle);
-                return Err(RemoteError::Protocol("esperava DATA".into()));
-            }
-            let mut cur = Cursor::new(&body);
-            let _id = cur.u32()?;
-            let chunk = cur.string()?;
-            if chunk.is_empty() {
-                break;
-            }
-            pos += chunk.len() as u64;
-            out.extend_from_slice(&chunk);
-        }
-        conn.close_handle(&handle)?;
-        Ok(out)
+        let result = conn.read_all(&handle, offset, len);
+        let _ = conn.close_handle(&handle);
+        result
     }
 
     fn write_new(&self, path: &str, data: &[u8], mode: u32) -> RemoteResult<()> {
@@ -563,8 +614,7 @@ impl RemoteFs for SshRemote {
             .collect::<Vec<_>>()
             .join(" ");
         let out = Command::new("ssh")
-            .arg("-o")
-            .arg("BatchMode=yes")
+            .args(SSH_LIVENESS_OPTS)
             .arg(&self.alias)
             .arg(&cmd_string)
             .stdin(Stdio::null())
@@ -895,6 +945,101 @@ mod tests {
         assert!(
             parse_attrs(&mut cur).is_err(),
             "flag que promete um campo ausente não pode ler lixo — erro de protocolo"
+        );
+    }
+
+    #[test]
+    fn parse_name_never_preallocates_by_a_giant_server_count() {
+        // count = 0xFFFFFFFF mas corpo sem entradas: `with_capacity` é capado em
+        // READDIR_CAP (não ~172 GB), e o parse erra ao esgotar o corpo. Rodar sem
+        // abortar já prova que não houve alloc gigante.
+        let mut body = Vec::new();
+        put_u32(&mut body, 1);
+        put_u32(&mut body, 0xFFFF_FFFF);
+        assert!(parse_name(&body).is_err());
+    }
+
+    #[test]
+    fn cursor_string_rejects_a_giant_length_without_overflowing() {
+        // len declarado = 0xFFFFFFFF sobre um buffer minúsculo: `checked_add` no
+        // bounds evita overflow em 32-bit; vira erro em vez de panic.
+        let data = [0xffu8, 0xff, 0xff, 0xff, 0, 0];
+        let mut cur = Cursor::new(&data);
+        assert!(cur.string().is_err());
+    }
+
+    fn handle_frame(id: u32, handle: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        put_u32(&mut body, id);
+        put_string(&mut body, handle);
+        let mut framed = Vec::new();
+        write_frame(&mut framed, FXP_HANDLE, &body).unwrap();
+        framed
+    }
+
+    fn status_frame(id: u32, code: u32) -> Vec<u8> {
+        let mut body = Vec::new();
+        put_u32(&mut body, id);
+        put_u32(&mut body, code);
+        let mut framed = Vec::new();
+        write_frame(&mut framed, FXP_STATUS, &body).unwrap();
+        framed
+    }
+
+    fn name_frame(id: u32, names: &[&str]) -> Vec<u8> {
+        let mut body = Vec::new();
+        put_u32(&mut body, id);
+        put_u32(&mut body, names.len() as u32);
+        for n in names {
+            put_string(&mut body, n.as_bytes());
+            put_string(&mut body, b"longname");
+            body.extend_from_slice(&attrs_bytes(ATTR_PERMISSIONS, None, Some(0o100644)));
+        }
+        let mut framed = Vec::new();
+        write_frame(&mut framed, FXP_NAME, &body).unwrap();
+        framed
+    }
+
+    #[test]
+    fn read_dir_caps_the_accumulated_entries_at_the_given_cap() {
+        // Um NAME hostil com mais entradas que o cap: o laço para no cap.
+        let mut stream = Vec::new();
+        stream.extend(handle_frame(1, b"H"));
+        stream.extend(name_frame(2, &["a", "b", "c", "d", "e"]));
+        stream.extend(status_frame(3, FX_OK));
+        let mut conn = Conn {
+            reader: std::io::Cursor::new(stream),
+            writer: Vec::new(),
+            next_id: 1,
+            child: None,
+        };
+        let entries = conn.read_dir("/x", 3).unwrap();
+        assert_eq!(entries.len(), 3, "o acumulado do readdir é capado em cap");
+    }
+
+    #[test]
+    fn read_dir_errors_and_closes_the_handle_on_a_malformed_name() {
+        let mut stream = Vec::new();
+        stream.extend(handle_frame(1, b"H"));
+        // NAME dizendo count=2 mas sem entradas → parse_name erra.
+        let mut malformed = Vec::new();
+        put_u32(&mut malformed, 2);
+        put_u32(&mut malformed, 2);
+        let mut nameframe = Vec::new();
+        write_frame(&mut nameframe, FXP_NAME, &malformed).unwrap();
+        stream.extend(nameframe);
+        // Resposta do CLOSE que o read_dir dispara no caminho de erro.
+        stream.extend(status_frame(3, FX_OK));
+
+        let mut conn = Conn {
+            reader: std::io::Cursor::new(stream),
+            writer: Vec::new(),
+            next_id: 1,
+            child: None,
+        };
+        assert!(
+            conn.read_dir("/x", 10).is_err(),
+            "NAME malformado vira erro; o CLOSE (id 3) é consumido do stream, provando o fechamento"
         );
     }
 }
