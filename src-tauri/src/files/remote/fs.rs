@@ -11,9 +11,14 @@ pub enum RemoteError {
 pub type RemoteResult<T> = Result<T, RemoteError>;
 
 impl RemoteError {
+    /// Texto estável do erro de conexão caída — o painel usa esta constante para
+    /// reconhecer, pela string do erro, que o canal SFTP morreu (e então derruba
+    /// o painel para a próxima operação reconstruí-lo).
+    pub const DISCONNECTED_MSG: &'static str = "a conexão SSH caiu";
+
     pub fn message(&self) -> String {
         match self {
-            RemoteError::Disconnected => "a conexão SSH caiu".into(),
+            RemoteError::Disconnected => Self::DISCONNECTED_MSG.into(),
             RemoteError::NotFound => "item inexistente no host".into(),
             RemoteError::Denied => "permissão negada no host".into(),
             RemoteError::Sftp { message, .. } => format!("falha SFTP: {message}"),

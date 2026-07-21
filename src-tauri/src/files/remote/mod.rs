@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use base64::Engine;
@@ -333,15 +334,22 @@ impl FileBackend for SftpBackend<'_> {
 }
 
 /// Remoção recursiva sem seguir symlink no topo: symlink → remove o link; dir →
-/// esvazia e remove; arquivo → remove.
+/// esvazia e remove; arquivo → remove. Não confia no servidor: cada nome de
+/// entrada passa por `valid_leaf` (um `/`/`..`/NUL vindo do host dirigiria a
+/// recursão pra fora) e o tipo do filho é re-verificado por `lstat` no-follow em
+/// vez da stat do readdir.
 fn remove_tree(fs: &dyn RemoteFs, path: &str, st: &RemoteStat) -> RemoteResult<()> {
     if st.is_symlink() {
         return fs.remove(path);
     }
     if st.is_dir() {
         for entry in fs.readdir(path)? {
+            if confine::valid_leaf(&entry.name).is_err() {
+                return Err(RemoteError::Denied);
+            }
             let child = join(path, &entry.name);
-            remove_tree(fs, &child, &entry.stat)?;
+            let child_st = fs.lstat(&child)?;
+            remove_tree(fs, &child, &child_st)?;
         }
         return fs.rmdir(path);
     }
@@ -397,6 +405,7 @@ pub struct RemotePanel {
     listing: Mutex<HashMap<String, DirListing>>,
     fuzzy: Mutex<Option<(Vec<String>, bool)>>,
     open: Mutex<Option<String>>,
+    dead: AtomicBool,
 }
 
 impl RemotePanel {
@@ -409,11 +418,28 @@ impl RemotePanel {
             listing: Mutex::new(HashMap::new()),
             fuzzy: Mutex::new(None),
             open: Mutex::new(None),
+            dead: AtomicBool::new(false),
         }
     }
 
     fn backend(&self) -> SftpBackend<'_> {
         SftpBackend::new(&*self.fs, &self.root, self.context, &self.alias)
+    }
+
+    /// Marca o painel como morto se a operação bateu numa conexão caída. O
+    /// gestor reconstrói o painel (canal SFTP novo na conexão remultiplexada) na
+    /// próxima operação — é o que faz o botão de reconexão de fato recuperar.
+    fn note<T>(&self, r: Result<T, String>) -> Result<T, String> {
+        if let Err(e) = &r {
+            if e.as_str() == RemoteError::DISCONNECTED_MSG {
+                self.dead.store(true, Ordering::Relaxed);
+            }
+        }
+        r
+    }
+
+    pub fn is_dead(&self) -> bool {
+        self.dead.load(Ordering::Relaxed)
     }
 
     pub fn host(&self) -> &str {
@@ -444,21 +470,21 @@ impl RemotePanel {
         if let Some(cached) = self.listing.lock().get(&key) {
             return Ok(cached.clone());
         }
-        let listing = self.backend().list_dir(&key)?;
+        let listing = self.note(self.backend().list_dir(&key))?;
         self.listing.lock().insert(key, listing.clone());
         Ok(listing)
     }
 
     pub fn read_file(&self, rel: &str, offset: usize) -> Result<FileContent, String> {
-        self.backend().read_file(rel, offset)
+        self.note(self.backend().read_file(rel, offset))
     }
 
     pub fn edit_begin(&self, rel: &str) -> Result<(String, String), String> {
-        self.backend().edit_begin(rel)
+        self.note(self.backend().edit_begin(rel))
     }
 
     pub fn write(&self, rel: &str, content: &str, expected: &str) -> Result<WriteResult, String> {
-        let result = self.backend().write(rel, content, expected)?;
+        let result = self.note(self.backend().write(rel, content, expected))?;
         if matches!(result, WriteResult::Written { .. }) {
             self.invalidate();
         }
@@ -466,19 +492,19 @@ impl RemotePanel {
     }
 
     pub fn create(&self, rel: &str, is_dir: bool) -> Result<(), String> {
-        self.backend().create(rel, is_dir)?;
+        self.note(self.backend().create(rel, is_dir))?;
         self.invalidate();
         Ok(())
     }
 
     pub fn rename(&self, from: &str, to: &str) -> Result<(), String> {
-        self.backend().rename(from, to)?;
+        self.note(self.backend().rename(from, to))?;
         self.invalidate();
         Ok(())
     }
 
     pub fn delete(&self, rel: &str) -> Result<(), String> {
-        self.backend().delete(rel)?;
+        self.note(self.backend().delete(rel))?;
         self.invalidate();
         Ok(())
     }
@@ -544,15 +570,16 @@ impl RemoteFilesManager {
         F: FnOnce() -> Result<Arc<RemotePanel>, String>,
     {
         if let Some(existing) = self.get(id) {
-            return Ok(existing);
+            // Painel morto (conexão caiu) → derruba e reconstrói com um canal
+            // SFTP novo na conexão remultiplexada.
+            if !existing.is_dead() {
+                return Ok(existing);
+            }
+            self.panels.lock().remove(&id);
         }
         let panel = build()?;
         self.panels.lock().insert(id, Arc::clone(&panel));
         Ok(panel)
-    }
-
-    pub fn reseed(&self, id: SessionId, panel: Arc<RemotePanel>) {
-        self.panels.lock().insert(id, panel);
     }
 }
 
@@ -585,6 +612,7 @@ mod tests {
     struct MockRemote {
         nodes: Mutex<HashMap<String, Node>>,
         toplevel: Option<String>,
+        disconnected: AtomicBool,
     }
 
     impl MockRemote {
@@ -596,6 +624,19 @@ mod tests {
             MockRemote {
                 nodes: Mutex::new(nodes),
                 toplevel: None,
+                disconnected: AtomicBool::new(false),
+            }
+        }
+
+        fn disconnect(&self) {
+            self.disconnected.store(true, Ordering::Relaxed);
+        }
+
+        fn check_conn(&self) -> RemoteResult<()> {
+            if self.disconnected.load(Ordering::Relaxed) {
+                Err(RemoteError::Disconnected)
+            } else {
+                Ok(())
             }
         }
 
@@ -656,9 +697,11 @@ mod tests {
             "mock"
         }
         fn realpath(&self, path: &str) -> RemoteResult<String> {
+            self.check_conn()?;
             Ok(self.resolve(path))
         }
         fn readdir(&self, path: &str) -> RemoteResult<Vec<RemoteDirEntry>> {
+            self.check_conn()?;
             let real = self.resolve(path);
             let prefix = format!("{real}/");
             let nodes = self.nodes.lock();
@@ -1005,5 +1048,46 @@ mod tests {
         );
         p.delete("f.txt").unwrap();
         assert!(fs.nodes.lock().get("/root/f.txt").is_none());
+    }
+
+    #[test]
+    fn a_disconnected_op_marks_the_panel_dead_and_ensure_rebuilds_it() {
+        let mgr = RemoteFilesManager::new();
+        let id = uuid::Uuid::new_v4();
+
+        let fs1 = Arc::new(MockRemote::with(&[("/root", Node::Dir)]));
+        let fs1c = Arc::clone(&fs1);
+        let p1 = mgr
+            .ensure(id, move || {
+                Ok(Arc::new(RemotePanel::new(
+                    fs1c,
+                    "mock".into(),
+                    "/root".into(),
+                    RemoteContext::OutsideRepo,
+                )))
+            })
+            .unwrap();
+        assert!(p1.list_dir("").is_ok(), "saudável antes da queda");
+
+        fs1.disconnect();
+        let err = p1.list_dir("sub").unwrap_err();
+        assert_eq!(err, RemoteError::DISCONNECTED_MSG);
+        assert!(p1.is_dead(), "op numa conexão caída marca o painel morto");
+
+        let rebuilt = mgr
+            .ensure(id, || {
+                Ok(Arc::new(RemotePanel::new(
+                    Arc::new(MockRemote::with(&[("/root", Node::Dir)])),
+                    "mock".into(),
+                    "/root".into(),
+                    RemoteContext::OutsideRepo,
+                )))
+            })
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&p1, &rebuilt),
+            "o gestor reconstrói o painel morto em vez de devolver o mesmo"
+        );
+        assert!(!rebuilt.is_dead());
     }
 }
