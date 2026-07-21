@@ -36,7 +36,8 @@ struct OpenDoc {
 }
 
 struct BootParams {
-    binary: std::path::PathBuf,
+    program: std::path::PathBuf,
+    pre_args: Vec<std::ffi::OsString>,
     spec: SandboxSpec,
     env: Vec<(String, String)>,
 }
@@ -76,7 +77,8 @@ impl LspServer {
     pub fn spawn(
         entry: &'static ServerEntry,
         root: std::path::PathBuf,
-        binary: std::path::PathBuf,
+        program: std::path::PathBuf,
+        pre_args: Vec<std::ffi::OsString>,
         spec: SandboxSpec,
         env: Vec<(String, String)>,
         emit: Arc<DiagEmitter>,
@@ -84,7 +86,12 @@ impl LspServer {
         let server = Arc::new(LspServer {
             entry,
             root,
-            boot: BootParams { binary, spec, env },
+            boot: BootParams {
+                program,
+                pre_args,
+                spec,
+                env,
+            },
             emit,
             next_id: AtomicI64::new(1),
             pending: Mutex::new(HashMap::new()),
@@ -399,7 +406,10 @@ fn to_std_command(wrapped: &CommandBuilder, env: &[(String, String)]) -> Result<
 }
 
 fn boot(server: &Arc<LspServer>) -> Result<(), String> {
-    let mut argv: Vec<std::ffi::OsString> = vec![server.boot.binary.clone().into_os_string()];
+    let mut argv: Vec<std::ffi::OsString> = vec![server.boot.program.clone().into_os_string()];
+    for arg in &server.boot.pre_args {
+        argv.push(arg.clone());
+    }
     for arg in server.entry.args {
         argv.push(arg.into());
     }

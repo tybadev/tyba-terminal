@@ -675,6 +675,45 @@ pub fn discover_interpreter(runtime: Runtime, path_dirs: &[PathBuf]) -> Option<P
     find_in_dirs(&[name], path_dirs)
 }
 
+fn colocated_node(real_binary: &Path) -> Option<PathBuf> {
+    let nm = node_modules_root(real_binary)?;
+    let mut prefix = nm.parent()?;
+    if prefix.file_name().map(|n| n == "lib").unwrap_or(false) {
+        prefix = prefix.parent()?;
+    }
+    let node = prefix.join("bin").join("node");
+    is_executable(&node).then(|| resolve_real(&node))
+}
+
+pub fn resolve_interpreter(
+    entry: &ServerEntry,
+    binary: &Path,
+    path_dirs: &[PathBuf],
+) -> Option<PathBuf> {
+    if entry.runtime == Runtime::Native {
+        return None;
+    }
+    if entry.runtime == Runtime::Node {
+        if let Some(node) = colocated_node(&resolve_real(binary)) {
+            return Some(node);
+        }
+    }
+    discover_interpreter(entry.runtime, path_dirs).map(|p| resolve_real(&p))
+}
+
+pub fn spawn_command(
+    entry: &ServerEntry,
+    binary: &Path,
+    path_dirs: &[PathBuf],
+) -> (PathBuf, Vec<PathBuf>) {
+    if entry.runtime == Runtime::Node {
+        if let Some(node) = resolve_interpreter(entry, binary, path_dirs) {
+            return (node, vec![resolve_real(binary)]);
+        }
+    }
+    (binary.to_path_buf(), Vec::new())
+}
+
 pub fn derived_read_grants(
     entry: &ServerEntry,
     binary: &Path,
@@ -698,15 +737,21 @@ pub fn derived_read_grants(
         }
     }
 
-    if let Some(interp) = discover_interpreter(entry.runtime, path_dirs) {
-        let real_interp = resolve_real(&interp);
-        if let Some(parent) = real_interp.parent() {
-            push(parent.to_path_buf(), &mut grants, &mut seen);
-        }
-        push(real_interp, &mut grants, &mut seen);
+    if let Some(interp) = resolve_interpreter(entry, binary, path_dirs) {
+        push(install_prefix(&interp), &mut grants, &mut seen);
+        push(interp, &mut grants, &mut seen);
     }
 
     grants
+}
+
+fn install_prefix(binary: &Path) -> PathBuf {
+    let parent = binary.parent().unwrap_or(binary);
+    if parent.file_name().map(|n| n == "bin").unwrap_or(false) {
+        parent.parent().unwrap_or(parent).to_path_buf()
+    } else {
+        parent.to_path_buf()
+    }
 }
 
 #[cfg(test)]

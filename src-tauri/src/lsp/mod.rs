@@ -555,6 +555,9 @@ impl LspManager {
         };
         let spec = sandbox::lsp_sandbox_spec(entry, &ctx)?;
         let env = base_env(&user_env, entry);
+        let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
+        let pre_args: Vec<std::ffi::OsString> =
+            pre.into_iter().map(|p| p.into_os_string()).collect();
 
         let app = app.clone();
         let event = diagnostics_event(id);
@@ -562,7 +565,15 @@ impl LspManager {
             let _ = app.emit(&event, batch);
         });
 
-        LspServer::spawn(entry, root.to_path_buf(), binary, spec, env, emit)
+        LspServer::spawn(
+            entry,
+            root.to_path_buf(),
+            program,
+            pre_args,
+            spec,
+            env,
+            emit,
+        )
     }
 
     pub fn change(&self, id: SessionId, rel: &str, changes: Vec<ContentChange>) {
@@ -884,11 +895,15 @@ mod tests {
         };
         let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
         assert!(!spec.allow_network);
+        let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
+        let pre_args: Vec<std::ffi::OsString> =
+            pre.into_iter().map(|p| p.into_os_string()).collect();
 
         let server = LspServer::spawn(
             entry,
             root.clone(),
-            binary,
+            program,
+            pre_args,
             spec,
             base_env(&user_env, entry),
             Arc::new(|_batch: DiagnosticsBatch| {}),
@@ -919,6 +934,97 @@ mod tests {
 
         server.shutdown();
         std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&cache).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requer typescript-language-server + typescript clássico num projeto real"]
+    fn live_typescript_language_server_boots_inside_the_jail() {
+        use crate::lsp::client::{base_env, LspServer};
+        use crate::lsp::registry::{self, entry_by_id};
+        use crate::lsp::sandbox::{lsp_sandbox_spec, LspSpecCtx};
+        use std::time::{Duration, Instant};
+
+        let user_env: HashMap<String, String> = std::env::vars().collect();
+        let home = PathBuf::from(user_env.get("HOME").cloned().unwrap());
+        let entry = entry_by_id("typescript-language-server").unwrap();
+        let path_dirs: Vec<PathBuf> =
+            std::env::split_paths(&crate::shell_path::agent_path()).collect();
+
+        let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let root = std::fs::canonicalize(&project).unwrap();
+        let rel = "src/lib/ipc.ts";
+        let tsserver = root.join("node_modules/typescript/lib/tsserver.js");
+        let file = root.join(rel);
+        if !tsserver.is_file() || !file.is_file() {
+            eprintln!("projeto sem typescript clássico ou sem {rel} — validação viva pulada");
+            return;
+        }
+        let Some(binary) = registry::discover(entry, &path_dirs, &home, &root) else {
+            eprintln!("typescript-language-server ausente — validação viva pulada");
+            return;
+        };
+
+        let cache =
+            std::env::temp_dir().join(format!("tyba-lsp-live-ts-cache-{}", SessionId::new_v4()));
+        std::fs::create_dir_all(cache.join(".rt")).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let mut exec_path_dirs = path_dirs.clone();
+        exec_path_dirs.push(binary.parent().unwrap().to_path_buf());
+        let extra_reads = registry::derived_read_grants(entry, &binary, &path_dirs);
+        let ctx = LspSpecCtx {
+            root: &root,
+            cache_dir: &cache,
+            exe: &exe,
+            env: &user_env,
+            exec_path_dirs,
+            read_allow_extra: vec![],
+            extra_reads,
+            data_dir: data_dir(&home),
+        };
+        let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
+        let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
+        let pre_args: Vec<std::ffi::OsString> =
+            pre.into_iter().map(|p| p.into_os_string()).collect();
+
+        let server = LspServer::spawn(
+            entry,
+            root.clone(),
+            program,
+            pre_args,
+            spec,
+            base_env(&user_env, entry),
+            Arc::new(|_batch: DiagnosticsBatch| {}),
+        )
+        .expect("server node enjaulado subiu");
+
+        let text = std::fs::read_to_string(&file).unwrap();
+        server.did_open(rel, "typescript", &text);
+
+        let deadline = Instant::now() + Duration::from_secs(40);
+        while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert_eq!(
+            server.state(),
+            RunState::Ready,
+            "node achou runtime, deps e o typescript do projeto dentro da jaula"
+        );
+
+        let completion = server.request(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": uri::from_path(&file)},
+                "position": {"line": 8, "character": 0},
+            }),
+        );
+        assert!(completion.is_ok(), "o server node respondeu a completion");
+
+        server.shutdown();
         std::fs::remove_dir_all(&cache).ok();
     }
 }
