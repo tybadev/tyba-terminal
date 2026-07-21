@@ -17,7 +17,7 @@ pub mod uri;
 
 use client::{base_env, DiagEmitter, LspServer};
 use document::ContentChange;
-use registry::{current_platform, entry_for_file, ServerEntry};
+use registry::{entry_for_file, ServerEntry};
 use sandbox::LspSpecCtx;
 
 use crate::session::SessionId;
@@ -103,6 +103,7 @@ pub struct FileDiagnostics {
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticsBatch {
     pub files: Vec<FileDiagnostics>,
+    pub files_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -321,14 +322,16 @@ pub struct InstallHintIpc {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum LspStatus {
     Unsupported,
+    Experimental {
+        server: String,
+    },
     Absent {
         server: String,
-        install: InstallHintIpc,
-        experimental: bool,
+        install: Option<InstallHintIpc>,
+        alternatives: Vec<InstallHintIpc>,
     },
     Available {
         server: String,
-        experimental: bool,
     },
     Starting {
         server: String,
@@ -336,17 +339,28 @@ pub enum LspStatus {
     Ready {
         server: String,
         diagnostics: usize,
+        truncated: bool,
     },
     Crashed {
         server: String,
+        reason: Option<String>,
     },
 }
 
 type ServerKey = (SessionId, &'static str);
 
+pub const MAX_COMPLETIONS: usize = 500;
+pub const MAX_LOCATIONS: usize = 100;
+pub const MAX_SIGNATURES: usize = 20;
+
+enum ServerSlot {
+    Reserving,
+    Live(Arc<LspServer>),
+}
+
 #[derive(Default)]
 pub struct LspManager {
-    servers: Mutex<HashMap<ServerKey, Arc<LspServer>>>,
+    servers: Mutex<HashMap<ServerKey, ServerSlot>>,
 }
 
 pub type SharedLsp = Arc<LspManager>;
@@ -357,54 +371,55 @@ impl LspManager {
     }
 
     fn get(&self, id: SessionId, entry: &ServerEntry) -> Option<Arc<LspServer>> {
-        self.servers.lock().get(&(id, entry.id)).cloned()
+        match self.servers.lock().get(&(id, entry.id)) {
+            Some(ServerSlot::Live(server)) => Some(Arc::clone(server)),
+            _ => None,
+        }
+    }
+
+    fn is_reserving(&self, id: SessionId, entry: &ServerEntry) -> bool {
+        matches!(
+            self.servers.lock().get(&(id, entry.id)),
+            Some(ServerSlot::Reserving)
+        )
     }
 
     pub fn status(&self, id: SessionId, rel: &str, root: &Path) -> LspStatus {
         let Some((entry, _lang)) = entry_for_file(rel) else {
             return LspStatus::Unsupported;
         };
+        let label = entry.label.to_string();
+        if !entry.default_enabled {
+            return LspStatus::Experimental { server: label };
+        }
         if let Some(server) = self.get(id, entry) {
             return match server.state() {
-                RunState::Starting => LspStatus::Starting {
-                    server: entry.label.to_string(),
-                },
+                RunState::Starting => LspStatus::Starting { server: label },
                 RunState::Ready => LspStatus::Ready {
-                    server: entry.label.to_string(),
+                    server: label,
                     diagnostics: server.diagnostic_count(rel),
+                    truncated: server.diagnostics_truncated(),
                 },
                 RunState::Crashed => LspStatus::Crashed {
-                    server: entry.label.to_string(),
+                    server: label,
+                    reason: server.last_error(),
                 },
-                RunState::Stopped => LspStatus::Available {
-                    server: entry.label.to_string(),
-                    experimental: entry.experimental,
-                },
+                RunState::Stopped => LspStatus::Available { server: label },
             };
         }
-        match self.discover(entry, root) {
-            Some(_) => LspStatus::Available {
-                server: entry.label.to_string(),
-                experimental: entry.experimental,
-            },
-            None => LspStatus::Absent {
-                server: entry.label.to_string(),
-                install: self.install_hint(entry),
-                experimental: entry.experimental,
-            },
+        if self.is_reserving(id, entry) {
+            return LspStatus::Starting { server: label };
         }
-    }
-
-    fn install_hint(&self, entry: &ServerEntry) -> InstallHintIpc {
-        match entry.install_hint(current_platform()) {
-            Some(hint) => InstallHintIpc {
-                command: hint.command.to_string(),
-                manager: hint.manager.to_string(),
-            },
-            None => InstallHintIpc {
-                command: String::new(),
-                manager: String::new(),
-            },
+        match self.discover(entry, root) {
+            Some(_) => LspStatus::Available { server: label },
+            None => {
+                let chosen = registry::choose_install(entry, &self.path_dirs());
+                LspStatus::Absent {
+                    server: label,
+                    install: chosen.chosen.map(install_ipc),
+                    alternatives: chosen.alternatives.into_iter().map(install_ipc).collect(),
+                }
+            }
         }
     }
 
@@ -436,13 +451,29 @@ impl LspManager {
         if !spawn || !entry.default_enabled {
             return self.status(id, rel, root);
         }
-        match self.spawn_server(app, id, root, entry) {
-            Ok(server) => {
-                server.did_open(rel, lang, text);
-                self.status(id, rel, root)
-            }
-            Err(_) => self.status(id, rel, root),
+        if let Ok(server) = self.spawn_server(app, id, root, entry) {
+            server.did_open(rel, lang, text);
         }
+        self.status(id, rel, root)
+    }
+
+    pub fn retry<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        id: SessionId,
+        root: &Path,
+        rel: &str,
+    ) -> LspStatus {
+        if let Some((entry, _)) = entry_for_file(rel) {
+            if entry.default_enabled {
+                if let Some(server) = self.get(id, entry) {
+                    server.retry();
+                } else {
+                    let _ = self.spawn_server(app, id, root, entry);
+                }
+            }
+        }
+        self.status(id, rel, root)
     }
 
     fn spawn_server<R: Runtime>(
@@ -452,30 +483,66 @@ impl LspManager {
         root: &Path,
         entry: &'static ServerEntry,
     ) -> Result<Arc<LspServer>, String> {
+        let key = (id, entry.id);
         {
-            let servers = self.servers.lock();
-            if let Some(existing) = servers.get(&(id, entry.id)) {
-                return Ok(Arc::clone(existing));
+            let mut servers = self.servers.lock();
+            match servers.get(&key) {
+                Some(ServerSlot::Live(server)) => return Ok(Arc::clone(server)),
+                Some(ServerSlot::Reserving) => return Err("server já subindo".into()),
+                None => {
+                    servers.insert(key, ServerSlot::Reserving);
+                }
             }
         }
+        match self.build_and_spawn(app, id, root, entry) {
+            Ok(server) => {
+                let mut servers = self.servers.lock();
+                if matches!(servers.get(&key), Some(ServerSlot::Reserving)) {
+                    servers.insert(key, ServerSlot::Live(Arc::clone(&server)));
+                    Ok(server)
+                } else {
+                    drop(servers);
+                    server.shutdown();
+                    Err("o painel fechou durante a subida do server".into())
+                }
+            }
+            Err(e) => {
+                let mut servers = self.servers.lock();
+                if matches!(servers.get(&key), Some(ServerSlot::Reserving)) {
+                    servers.remove(&key);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn build_and_spawn<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        id: SessionId,
+        root: &Path,
+        entry: &'static ServerEntry,
+    ) -> Result<Arc<LspServer>, String> {
         let user_env: HashMap<String, String> = std::env::vars().collect();
         let home = user_env
             .get("HOME")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .ok_or("HOME indisponível")?;
-        let binary = registry::discover(entry, &self.path_dirs(), &home, root)
+        let path_dirs = self.path_dirs();
+        let binary = registry::discover(entry, &path_dirs, &home, root)
             .ok_or("binário do language server não encontrado")?;
         let cache = cache_dir(id, entry);
         std::fs::create_dir_all(cache.join(".rt")).map_err(|e| format!("cache do LSP: {e}"))?;
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let mut exec_path_dirs = self.path_dirs();
+        let mut exec_path_dirs = path_dirs.clone();
         if let Some(parent) = binary.parent() {
             exec_path_dirs.push(parent.to_path_buf());
         }
         let read_allow_extra = crate::user_config::load(&home)
             .map(|c| c.sandbox_read_allow)
             .unwrap_or_default();
+        let extra_reads = registry::derived_read_grants(entry, &binary, &path_dirs);
         let ctx = LspSpecCtx {
             root,
             cache_dir: &cache,
@@ -483,10 +550,11 @@ impl LspManager {
             env: &user_env,
             exec_path_dirs,
             read_allow_extra,
+            extra_reads,
             data_dir: data_dir(&home),
         };
         let spec = sandbox::lsp_sandbox_spec(entry, &ctx)?;
-        let env = base_env(&user_env);
+        let env = base_env(&user_env, entry);
 
         let app = app.clone();
         let event = diagnostics_event(id);
@@ -494,11 +562,7 @@ impl LspManager {
             let _ = app.emit(&event, batch);
         });
 
-        let server = LspServer::spawn(entry, root.to_path_buf(), binary, spec, env, emit)?;
-        self.servers
-            .lock()
-            .insert((id, entry.id), Arc::clone(&server));
-        Ok(server)
+        LspServer::spawn(entry, root.to_path_buf(), binary, spec, env, emit)
     }
 
     pub fn change(&self, id: SessionId, rel: &str, changes: Vec<ContentChange>) {
@@ -535,7 +599,11 @@ impl LspManager {
         };
         let params = position_params(&server_uri(&server, rel), line, character);
         match server.request("textDocument/completion", params) {
-            Ok(value) => CompletionItem::list_from(&value),
+            Ok(value) => {
+                let mut items = CompletionItem::list_from(&value);
+                items.truncate(MAX_COMPLETIONS);
+                items
+            }
             Err(_) => Vec::new(),
         }
     }
@@ -559,7 +627,11 @@ impl LspManager {
         };
         let params = position_params(&server_uri(&server, rel), line, character);
         match server.request("textDocument/definition", params) {
-            Ok(value) => LocationIpc::list_from(server.root(), &value),
+            Ok(value) => {
+                let mut locs = LocationIpc::list_from(server.root(), &value);
+                locs.truncate(MAX_LOCATIONS);
+                locs
+            }
             Err(_) => Vec::new(),
         }
     }
@@ -574,7 +646,9 @@ impl LspManager {
         let server = self.ready_server(id, rel)?;
         let params = position_params(&server_uri(&server, rel), line, character);
         let value = server.request("textDocument/signatureHelp", params).ok()?;
-        SignatureHelp::from_lsp(&value)
+        let mut help = SignatureHelp::from_lsp(&value)?;
+        help.signatures.truncate(MAX_SIGNATURES);
+        Some(help)
     }
 
     pub fn close_session(&self, id: SessionId) {
@@ -586,7 +660,10 @@ impl LspManager {
                 .cloned()
                 .collect();
             keys.into_iter()
-                .filter_map(|k| servers.remove(&k).map(|s| (k, s)))
+                .filter_map(|k| match servers.remove(&k) {
+                    Some(ServerSlot::Live(server)) => Some((k, server)),
+                    _ => None,
+                })
                 .collect()
         };
         for ((_, server_id), server) in removed {
@@ -600,19 +677,32 @@ impl LspManager {
             let mut servers = self.servers.lock();
             let keys: Vec<ServerKey> = servers
                 .iter()
-                .filter(|(_, server)| {
-                    !server.has_open_docs() && server.idle_since().elapsed() >= IDLE_KILL
+                .filter(|(_, slot)| match slot {
+                    ServerSlot::Live(server) => {
+                        !server.has_open_docs() && server.idle_since().elapsed() >= IDLE_KILL
+                    }
+                    ServerSlot::Reserving => false,
                 })
                 .map(|(k, _)| *k)
                 .collect();
             keys.into_iter()
-                .filter_map(|k| servers.remove(&k).map(|s| (k, s)))
+                .filter_map(|k| match servers.remove(&k) {
+                    Some(ServerSlot::Live(server)) => Some((k, server)),
+                    _ => None,
+                })
                 .collect()
         };
         for ((session_id, server_id), server) in stale {
             server.shutdown();
             remove_cache(session_id, server_id);
         }
+    }
+}
+
+fn install_ipc(install: registry::Install) -> InstallHintIpc {
+    InstallHintIpc {
+        command: install.command.to_string(),
+        manager: install.manager.label().to_string(),
     }
 }
 
@@ -781,6 +871,7 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         let mut exec_path_dirs = path_dirs.clone();
         exec_path_dirs.push(binary.parent().unwrap().to_path_buf());
+        let extra_reads = registry::derived_read_grants(entry, &binary, &path_dirs);
         let ctx = LspSpecCtx {
             root: &root,
             cache_dir: &cache,
@@ -788,6 +879,7 @@ mod tests {
             env: &user_env,
             exec_path_dirs,
             read_allow_extra: vec![],
+            extra_reads,
             data_dir: data_dir(&home),
         };
         let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
@@ -798,7 +890,7 @@ mod tests {
             root.clone(),
             binary,
             spec,
-            base_env(&user_env),
+            base_env(&user_env, entry),
             Arc::new(|_batch: DiagnosticsBatch| {}),
         )
         .expect("server enjaulado subiu");
