@@ -1,5 +1,9 @@
 import type { HighlighterCore, ThemedToken } from "shiki/core";
 
+import monoDark from "../assets/themes/mono-dark.json";
+
+export type HighlightTheme = "vitesse-dark" | "mono-dark";
+
 let highlighterPromise: Promise<HighlighterCore> | null = null;
 
 const LOADED_LANGS = new Set<string>();
@@ -14,7 +18,7 @@ async function highlighter(): Promise<HighlighterCore> {
           import("@shikijs/themes/vitesse-dark"),
         ]);
       return createHighlighterCore({
-        themes: [theme.default],
+        themes: [theme.default, monoDark as unknown as typeof theme.default],
         langs: [],
         engine: createJavaScriptRegexEngine({ forgiving: true }),
       });
@@ -54,6 +58,7 @@ export interface TokenSpan {
 export async function highlightBlock(
   lines: string[],
   lang: string,
+  theme: HighlightTheme = "vitesse-dark",
 ): Promise<TokenSpan[][] | null> {
   const loader = LANG_LOADERS[lang];
   if (!loader) return null;
@@ -66,7 +71,7 @@ export async function highlightBlock(
     }
     const result = hl.codeToTokensBase(lines.join("\n"), {
       lang: lang as never,
-      theme: "vitesse-dark",
+      theme,
     });
     return result.map((tokens: ThemedToken[]) =>
       tokens.map((tk) => ({ text: tk.content, color: tk.color })),

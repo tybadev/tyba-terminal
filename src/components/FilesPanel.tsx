@@ -8,11 +8,11 @@ import {
   CaretDown,
   CaretRight,
   Crosshair,
-  File as FileIcon,
   Folder,
   FolderOpen,
   PlusMinus,
   ArrowSquareOut,
+  TreeStructure,
   X,
 } from "@phosphor-icons/react";
 
@@ -36,8 +36,10 @@ import {
   onFilesTree,
 } from "@/lib/ipc";
 import { langOfPath } from "@/lib/diff";
+import { fileIcon } from "@/lib/fileIcon";
 import { highlightBlock, type TokenSpan } from "@/lib/highlight";
 import { isRemoteUrl, safeMarkdownUrl } from "@/lib/markdownUrl";
+import { getEffectiveBase, onEffectiveBaseChange } from "@/theme";
 
 interface Props {
   session: Session;
@@ -118,6 +120,12 @@ export function FilesPanel({
   const [dirMeta, setDirMeta] = useState<
     Record<string, { total: number; truncated: boolean }>
   >({});
+  const [isDark, setIsDark] = useState(() => getEffectiveBase() === "dark");
+
+  useEffect(
+    () => onEffectiveBaseChange(() => setIsDark(getEffectiveBase() === "dark")),
+    [],
+  );
 
   const entriesRef = useRef(entriesByDir);
   entriesRef.current = entriesByDir;
@@ -255,7 +263,11 @@ export function FilesPanel({
     const lang = langOfPath(selected);
     if (!lang) return;
     let alive = true;
-    void highlightBlock(content.text.split("\n"), lang)
+    void highlightBlock(
+      content.text.split("\n"),
+      lang,
+      isDark ? "mono-dark" : "vitesse-dark",
+    )
       .then((result) => {
         if (alive) setTokens(result);
       })
@@ -263,7 +275,7 @@ export function FilesPanel({
     return () => {
       alive = false;
     };
-  }, [content, selected, isMarkdown, markdownSource]);
+  }, [content, selected, isMarkdown, markdownSource, isDark]);
 
   const selectedDecorated = selected ? decorations.has(selected) : false;
 
@@ -297,6 +309,7 @@ export function FilesPanel({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-tyba-bg">
       <header className="flex h-8 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
+        <TreeStructure size={14} className="shrink-0 text-tyba-text-faint" />
         <span className="min-w-0 truncate text-[12px] text-tyba-text">
           {t("filesTitle")}
         </span>
@@ -352,6 +365,7 @@ export function FilesPanel({
               const { entry, depth } = row;
               const deco = decorations.get(entry.rel_path);
               const isSelected = selected === entry.rel_path;
+              const EntryIcon = fileIcon(entry.name);
               return (
                 <div
                   key={entry.rel_path}
@@ -384,7 +398,7 @@ export function FilesPanel({
                         <Folder size={13} />
                       )
                     ) : (
-                      <FileIcon size={13} />
+                      <EntryIcon size={13} />
                     )}
                   </span>
                   <span className="min-w-0 flex-1 truncate">{entry.name}</span>
