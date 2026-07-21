@@ -33,11 +33,13 @@ percent-encoding = "2"
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 sha2 = "0.10"
+trash = "5"
 toml = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+rustix = { version = "1", features = ["fs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "0.5"

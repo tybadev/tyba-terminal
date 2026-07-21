@@ -1228,7 +1228,7 @@ export const filesOpenExternal = (
   invoke<void>("files_open_external", { id, path, editor: editor ?? null });
 
 export const filesDecorations = (id: SessionId) =>
-  invoke<void>("files_decorations", { id });
+  invoke<FileDecoration[]>("files_decorations", { id });
 
 export const filesClose = (id: SessionId) =>
   invoke<void>("files_close", { id });
@@ -1247,4 +1247,80 @@ export const onFilesDecorations = (
 ): Promise<UnlistenFn> =>
   listen<{ decorations: FileDecoration[] }>(`files://decorations/${id}`, (e) =>
     handler(e.payload.decorations),
+  );
+
+export type GutterKind = "added" | "modified" | "deleted";
+
+export interface GutterMarker {
+  line: number;
+  kind: GutterKind;
+}
+
+export type WriteResult =
+  | { status: "written"; hash: string }
+  | { status: "conflict"; disk_hash: string | null };
+
+export interface EditContent {
+  text: string;
+  hash: string;
+}
+
+export const filesWrite = (
+  id: SessionId,
+  path: string,
+  content: string,
+  expectedHash: string,
+) =>
+  invoke<WriteResult>("files_write", {
+    id,
+    path,
+    content,
+    expectedHash,
+  });
+
+export const filesCreate = (id: SessionId, path: string, isDir: boolean) =>
+  invoke<void>("files_create", { id, path, isDir });
+
+export const filesRename = (id: SessionId, from: string, to: string) =>
+  invoke<void>("files_rename", { id, from, to });
+
+export const filesDelete = (id: SessionId, path: string) =>
+  invoke<void>("files_delete", { id, path });
+
+export interface FileSearchResult {
+  paths: string[];
+  truncated: boolean;
+}
+
+export const filesSearch = (id: SessionId, query: string, limit?: number) =>
+  invoke<FileSearchResult>("files_search", { id, query, limit: limit ?? null });
+
+export const filesFocus = (id: SessionId, path: string | null) =>
+  invoke<GutterMarker[]>("files_focus", { id, path });
+
+export const filesGutter = (id: SessionId, path: string) =>
+  invoke<GutterMarker[]>("files_gutter", { id, path });
+
+export const filesEditBegin = (id: SessionId, path: string) =>
+  invoke<EditContent>("files_edit_begin", { id, path });
+
+export const filesEditEnd = (id: SessionId) =>
+  invoke<void>("files_edit_end", { id });
+
+export const onFilesGutter = (
+  id: SessionId,
+  handler: (path: string, markers: GutterMarker[]) => void,
+): Promise<UnlistenFn> =>
+  listen<{ path: string; markers: GutterMarker[] }>(
+    `files://gutter/${id}`,
+    (e) => handler(e.payload.path, e.payload.markers),
+  );
+
+export const onFilesConflict = (
+  id: SessionId,
+  handler: (path: string, diskHash: string | null) => void,
+): Promise<UnlistenFn> =>
+  listen<{ path: string; disk_hash: string | null }>(
+    `files://conflict/${id}`,
+    (e) => handler(e.payload.path, e.payload.disk_hash),
   );
