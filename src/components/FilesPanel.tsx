@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  ArrowClockwise,
   ArrowsInSimple,
   ArrowsOutSimple,
   CaretDown,
@@ -12,6 +13,7 @@ import {
   Folder,
   FolderOpen,
   FolderSimplePlus,
+  HardDrives,
   PencilSimple,
   PlusMinus,
   ArrowSquareOut,
@@ -43,6 +45,7 @@ import {
   filesPanelInfo,
   filesRead,
   filesReanchor,
+  filesRefresh,
   filesRename,
   filesUnwatchDir,
   filesWatchDir,
@@ -202,7 +205,11 @@ export function FilesPanel({
   } | null>(null);
   const [treeEdit, setTreeEdit] = useState<TreeEdit | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const editorRef = useRef<CodeEditorHandle>(null);
+
+  const remote = info?.remote ?? false;
+  const connectionDown = session.connection && session.connection !== "live";
 
   useEffect(
     () => onEffectiveBaseChange(() => setIsDark(getEffectiveBase() === "dark")),
@@ -294,13 +301,17 @@ export function FilesPanel({
         if (alive) setInfo(i);
       })
       .catch(() => {});
+    setBusy(true);
     void filesListDir(session.id, "")
       .then((listing) => {
         if (!alive) return;
         setEntriesByDir({ "": listing.entries });
         setDirMeta({ "": { total: listing.total, truncated: listing.truncated } });
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setBusy(false);
+      });
     void filesWatchDir(session.id, "").catch(() => {});
     void filesDecorations(session.id)
       .then((decos) => {
@@ -415,6 +426,43 @@ export function FilesPanel({
     },
     [session.id],
   );
+
+  const doRefresh = useCallback(async () => {
+    setBusy(true);
+    try {
+      await filesRefresh(session.id).catch(() => {});
+      const dirs = ["", ...Array.from(expandedDirs)];
+      const results = await Promise.all(
+        dirs.map((dir) =>
+          filesListDir(session.id, dir)
+            .then((listing) => ({ dir, listing }))
+            .catch(() => null),
+        ),
+      );
+      setEntriesByDir((prev) => {
+        const next = { ...prev };
+        for (const r of results) if (r) next[r.dir] = r.listing.entries;
+        return next;
+      });
+      setDirMeta((prev) => {
+        const next = { ...prev };
+        for (const r of results)
+          if (r)
+            next[r.dir] = {
+              total: r.listing.total,
+              truncated: r.listing.truncated,
+            };
+        return next;
+      });
+      await filesDecorations(session.id)
+        .then((decos) =>
+          setDecorations(new Map(decos.map((d) => [d.path, d.status]))),
+        )
+        .catch(() => {});
+    } finally {
+      setBusy(false);
+    }
+  }, [session.id, expandedDirs]);
 
   const reanchor = useCallback(async () => {
     if (!(await confirmDiscard())) return;
@@ -603,6 +651,8 @@ export function FilesPanel({
           const base = parentOf(treeEdit.rel);
           const target = base ? `${base}/${trimmed}` : trimmed;
           await filesRename(session.id, treeEdit.rel, target);
+          // Remoto não tem watcher: reflete o rename relistando o pai.
+          if (remote) relist(base);
           if (selected === treeEdit.rel) openFile(target);
         }
         setTreeEdit(null);
@@ -611,13 +661,22 @@ export function FilesPanel({
         setTreeError(String(e));
       }
     },
-    [treeEdit, session.id, relist, selected, openFile],
+    [treeEdit, session.id, relist, selected, openFile, remote],
   );
 
   const deleteEntry = useCallback(
     async (entry: FileEntry) => {
       if (entry.rel_path === selected && !(await confirmDiscard())) return;
-      if (entry.is_dir) {
+      if (remote) {
+        // Sem Lixeira remota: confirmação SEMPRE (arquivo ou pasta).
+        const ok = await requestConfirm({
+          title: t("filesDeleteRemoteTitle", { name: entry.name }),
+          detail: t("filesDeleteRemoteDetail"),
+          confirmLabel: t("filesDeleteConfirm"),
+          destructive: true,
+        });
+        if (!ok) return;
+      } else if (entry.is_dir) {
         const listing = await filesListDir(session.id, entry.rel_path).catch(
           () => null,
         );
@@ -638,11 +697,13 @@ export function FilesPanel({
           setContent(null);
           setEditing(false);
         }
+        // Remoto não tem watcher: reflete a remoção relistando o pai.
+        if (remote) relist(parentOf(entry.rel_path));
       } catch (e) {
         toastError(t("filesDeleteError"), e);
       }
     },
-    [session.id, selected, t, confirmDiscard],
+    [session.id, selected, t, confirmDiscard, remote, relist],
   );
 
   const selectedDecorated = selected ? decorations.has(selected) : false;
@@ -781,7 +842,26 @@ export function FilesPanel({
             {info.root}
           </span>
         )}
+        {remote && info?.host && (
+          <span
+            title={t("filesRemoteHost", { host: info.host })}
+            className="flex shrink-0 items-center gap-1 rounded-[3px] bg-tyba-text/[.06] px-1.5 py-0.5 text-[10px] text-tyba-text-muted"
+          >
+            <HardDrives size={11} className="text-tyba-green" />
+            <span className="max-w-[120px] truncate font-mono">{info.host}</span>
+          </span>
+        )}
         <div className="flex-1" />
+        {remote && (
+          <button
+            onClick={() => void doRefresh()}
+            aria-label={t("filesRefresh")}
+            title={t("filesRefresh")}
+            className="flex items-center gap-1 rounded-[3px] bg-tyba-green/10 px-1.5 py-0.5 text-[10px] text-tyba-green hover:bg-tyba-green/20"
+          >
+            <ArrowClockwise size={13} className={busy ? "animate-spin" : ""} />
+          </button>
+        )}
         <button
           onClick={() => void reanchor()}
           aria-label={t("filesReanchor")}
@@ -805,6 +885,20 @@ export function FilesPanel({
           <X size={14} />
         </button>
       </header>
+
+      {remote && connectionDown && (
+        <div className="flex items-center gap-2 border-b border-tyba-amber/40 bg-tyba-amber/10 px-3 py-1.5 text-[11px] text-tyba-text">
+          <span className="min-w-0 flex-1 truncate">
+            {t("filesReconnecting")}
+          </span>
+          <button
+            onClick={() => void doRefresh()}
+            className="shrink-0 rounded-[3px] px-1.5 py-0.5 text-tyba-text-muted hover:bg-tyba-text/[.08] hover:text-tyba-text"
+          >
+            {t("filesRefresh")}
+          </button>
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1">
         <div className="flex w-[240px] shrink-0 flex-col border-r border-tyba-border">
@@ -867,7 +961,12 @@ export function FilesPanel({
                 {treeError}
               </div>
             )}
-            {rows.length === 0 && !treeEdit ? (
+            {busy && rows.length === 0 ? (
+              <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-tyba-text-faint">
+                <ArrowClockwise size={12} className="animate-spin" />
+                {t("filesLoading")}
+              </div>
+            ) : rows.length === 0 && !treeEdit ? (
               <div className="px-3 py-2 text-[11px] text-tyba-text-faint">
                 {t("filesEmptyDir")}
               </div>
@@ -1046,18 +1145,22 @@ export function FilesPanel({
                         <PlusMinus size={13} />
                       </button>
                     )}
-                    <button
-                      onClick={() =>
-                        void filesOpenExternal(session.id, selected, editor).catch(
-                          (e) => setContentError(String(e)),
-                        )
-                      }
-                      aria-label={t("filesOpenExternal")}
-                      title={t("filesOpenExternal")}
-                      className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-text"
-                    >
-                      <ArrowSquareOut size={13} />
-                    </button>
+                    {!remote && (
+                      <button
+                        onClick={() =>
+                          void filesOpenExternal(
+                            session.id,
+                            selected,
+                            editor,
+                          ).catch((e) => setContentError(String(e)))
+                        }
+                        aria-label={t("filesOpenExternal")}
+                        title={t("filesOpenExternal")}
+                        className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-text"
+                      >
+                        <ArrowSquareOut size={13} />
+                      </button>
+                    )}
                   </>
                 )}
               </div>
