@@ -101,6 +101,38 @@ pub struct Install {
     pub command: &'static str,
 }
 
+pub struct EmbeddedSchema {
+    pub filename: &'static str,
+    pub content: &'static str,
+    pub globs: &'static [&'static str],
+}
+
+static YAML_SCHEMAS: &[EmbeddedSchema] = &[
+    EmbeddedSchema {
+        filename: "compose-spec.json",
+        content: include_str!("schemas/compose-spec.min.json"),
+        globs: &[
+            "**/docker-compose*.yml",
+            "**/docker-compose*.yaml",
+            "**/compose*.yml",
+            "**/compose*.yaml",
+        ],
+    },
+    EmbeddedSchema {
+        filename: "github-workflow.json",
+        content: include_str!("schemas/github-workflow.min.json"),
+        globs: &["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"],
+    },
+];
+
+pub fn embedded_schemas(entry: &ServerEntry) -> &'static [EmbeddedSchema] {
+    if entry.id == "yaml-language-server" {
+        YAML_SCHEMAS
+    } else {
+        &[]
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum BinDir {
     HomeCargoBin,
@@ -302,9 +334,7 @@ pub static REGISTRY: &[ServerEntry] = &[
             Bun: "bun add -g yaml-language-server",
             Npm: "npm install -g yaml-language-server",
         ),
-        init_options: Some(
-            r#"{"yaml":{"validate":true,"hover":true,"completion":true,"schemaStore":{"enable":false},"schemas":{"https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json":["docker-compose*.yml","docker-compose*.yaml","compose*.yml","compose*.yaml"],"https://json.schemastore.org/github-workflow.json":[".github/workflows/*.yml",".github/workflows/*.yaml"],"kubernetes":["*.k8s.yaml","*.k8s.yml"]}}}"#,
-        ),
+        init_options: None,
         reads: &[],
         writes: &[],
         experimental: false,
@@ -637,6 +667,48 @@ fn find_in_dirs(names: &[&str], dirs: &[PathBuf]) -> Option<PathBuf> {
     None
 }
 
+fn dir_children(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
+        .unwrap_or_default()
+}
+
+fn is_scope(dir: &Path) -> bool {
+    dir.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.starts_with('@'))
+        .unwrap_or(false)
+}
+
+pub fn version_manager_bin_dirs(home: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for v in dir_children(&home.join(".nvm/versions/node")) {
+        dirs.push(v.join("bin"));
+    }
+    for v in dir_children(&home.join(".vite-plus/js_runtime/node")) {
+        dirs.push(v.join("bin"));
+    }
+    for pkg in dir_children(&home.join(".vite-plus/packages")) {
+        if is_scope(&pkg) {
+            for scoped in dir_children(&pkg) {
+                dirs.push(scoped.join("bin"));
+            }
+        } else {
+            dirs.push(pkg.join("bin"));
+        }
+    }
+    dirs.push(home.join(".volta/bin"));
+    for v in dir_children(&home.join(".asdf/installs/nodejs")) {
+        dirs.push(v.join("bin"));
+    }
+    dirs.push(home.join(".asdf/shims"));
+    for v in dir_children(&home.join(".local/share/fnm/node-versions")) {
+        dirs.push(v.join("installation/bin"));
+    }
+    dirs.retain(|d| d.is_dir());
+    dirs
+}
+
 pub fn discover(
     entry: &ServerEntry,
     path_dirs: &[PathBuf],
@@ -649,6 +721,7 @@ pub fn discover(
             search.push(resolved);
         }
     }
+    search.extend(version_manager_bin_dirs(home));
     find_in_dirs(entry.binaries, &search)
 }
 
@@ -851,6 +924,26 @@ mod tests {
         let entry = entry_by_id("typescript-language-server").unwrap();
         let found = discover(entry, &[], Path::new("/nonexistent-home"), root.path());
         assert_eq!(found.as_deref(), Some(bin.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_finds_a_server_installed_under_a_node_version_manager() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let bindir = home.path().join(".nvm/versions/node/v22.22.2/bin");
+        std::fs::create_dir_all(&bindir).unwrap();
+        let bin = bindir.join("yaml-language-server");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let entry = entry_by_id("yaml-language-server").unwrap();
+        let found = discover(entry, &[], home.path(), Path::new("/nonexistent-root"));
+        assert_eq!(
+            found.as_deref(),
+            Some(bin.as_path()),
+            "server sob ~/.nvm que não está no PATH de login precisa ser achado"
+        );
     }
 
     #[test]
