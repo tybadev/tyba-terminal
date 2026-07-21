@@ -2,10 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>A program in TYBA wants to use AppleScript.</string>
-	<key>NSSystemAdministrationUsageDescription</key>
-	<string>A program in TYBA wants to administer this computer.</string>
 	<key>NSDesktopFolderUsageDescription</key>
 	<string>A program in TYBA wants to access files in your Desktop folder.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
