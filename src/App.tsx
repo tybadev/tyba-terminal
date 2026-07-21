@@ -146,6 +146,7 @@ import {
   onSessionCwd,
   onSessionStatus,
   filesSearch,
+  type FileSearchResult,
   openDiffTab,
   openFilesPanel,
   openTunnelsPanel,
@@ -696,8 +697,10 @@ export default function App() {
   );
 
   const searchFilesForPalette = useCallback(
-    (query: string): Promise<string[]> =>
-      activeId ? filesSearch(activeId, query) : Promise.resolve([]),
+    (query: string): Promise<FileSearchResult> =>
+      activeId
+        ? filesSearch(activeId, query)
+        : Promise.resolve({ paths: [], truncated: false }),
     [activeId],
   );
 

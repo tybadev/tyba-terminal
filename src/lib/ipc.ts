@@ -1287,8 +1287,13 @@ export const filesRename = (id: SessionId, from: string, to: string) =>
 export const filesDelete = (id: SessionId, path: string) =>
   invoke<void>("files_delete", { id, path });
 
+export interface FileSearchResult {
+  paths: string[];
+  truncated: boolean;
+}
+
 export const filesSearch = (id: SessionId, query: string, limit?: number) =>
-  invoke<string[]>("files_search", { id, query, limit: limit ?? null });
+  invoke<FileSearchResult>("files_search", { id, query, limit: limit ?? null });
 
 export const filesFocus = (id: SessionId, path: string | null) =>
   invoke<GutterMarker[]>("files_focus", { id, path });

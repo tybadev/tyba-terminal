@@ -1258,7 +1258,7 @@ fn files_search(
     id: SessionId,
     query: String,
     limit: Option<usize>,
-) -> Result<Vec<String>, String> {
+) -> Result<files::search::SearchOutcome, String> {
     state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;

@@ -668,7 +668,7 @@ impl FilesManager {
         self.panels.lock().remove(&id);
     }
 
-    pub fn search(&self, id: SessionId, query: &str, limit: usize) -> Vec<String> {
+    pub fn search(&self, id: SessionId, query: &str, limit: usize) -> search::SearchOutcome {
         let target = {
             let panels = self.panels.lock();
             panels
@@ -676,7 +676,10 @@ impl FilesManager {
                 .map(|p| (Arc::clone(&p.index), p.root.clone(), p.context.clone()))
         };
         let Some((index, root, context)) = target else {
-            return Vec::new();
+            return search::SearchOutcome {
+                paths: Vec::new(),
+                truncated: false,
+            };
         };
         index.search(&root, &context, query, limit)
     }

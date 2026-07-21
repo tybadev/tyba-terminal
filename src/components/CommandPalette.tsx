@@ -49,6 +49,7 @@ import {
 import {
   importThemeCmd,
   listThemes,
+  type FileSearchResult,
   type LaunchConfig,
   type LaunchConfigId,
   type Workspace,
@@ -76,7 +77,7 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   mode: PaletteMode;
   onModeChange: (mode: PaletteMode) => void;
-  searchFiles: (query: string) => Promise<string[]>;
+  searchFiles: (query: string) => Promise<FileSearchResult>;
   onOpenFile: (rel: string) => void;
   workspaces: Workspace[];
   activeWorkspace: WorkspaceId | null;
@@ -126,6 +127,7 @@ export function CommandPalette({
   const [selectableThemes, setSelectableThemes] = useState<Theme[]>([]);
   const [query, setQuery] = useState("");
   const [fileResults, setFileResults] = useState<string[]>([]);
+  const [fileTruncated, setFileTruncated] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -149,15 +151,21 @@ export function CommandPalette({
   useEffect(() => {
     if (!open || mode !== "files") return;
     let alive = true;
-    void searchFiles(query)
-      .then((results) => {
-        if (alive) setFileResults(results);
-      })
-      .catch(() => {
-        if (alive) setFileResults([]);
-      });
+    const run = () => {
+      void searchFiles(query)
+        .then((result) => {
+          if (!alive) return;
+          setFileResults(result.paths);
+          setFileTruncated(result.truncated);
+        })
+        .catch(() => {
+          if (alive) setFileResults([]);
+        });
+    };
+    const timer = setTimeout(run, query ? 120 : 0);
     return () => {
       alive = false;
+      clearTimeout(timer);
     };
   }, [open, mode, query, searchFiles]);
 
@@ -253,7 +261,13 @@ export function CommandPalette({
         <CommandEmpty>{t("noResults")}</CommandEmpty>
 
         {mode === "files" && fileResults.length > 0 && (
-          <CommandGroup heading={t("filesFinderMode")}>
+          <CommandGroup
+            heading={
+              fileTruncated
+                ? `${t("filesFinderMode")} · ${t("filesFinderTruncated")}`
+                : t("filesFinderMode")
+            }
+          >
             {fileResults.map((rel) => {
               const name = rel.slice(rel.lastIndexOf("/") + 1);
               const dir = rel.slice(0, rel.lastIndexOf("/"));

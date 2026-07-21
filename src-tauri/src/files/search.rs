@@ -4,10 +4,12 @@ use std::sync::Arc;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use parking_lot::Mutex;
+use serde::Serialize;
 
 use super::Context;
 
 const WALK_ENTRY_CAP: usize = 20_000;
+const GIT_INDEX_CAP: usize = 50_000;
 const WALK_SKIP_DIRS: &[&str] = &[
     ".git",
     "node_modules",
@@ -19,13 +21,25 @@ const WALK_SKIP_DIRS: &[&str] = &[
     "vendor",
 ];
 
+struct IndexData {
+    names: Vec<String>,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+pub struct SearchOutcome {
+    pub paths: Vec<String>,
+    pub truncated: bool,
+}
+
 /// Índice de nomes de arquivo sob a raiz do painel. Em contexto git o índice
 /// nasce do `git ls-files` (gitignorados fora, `.git` fora, sem descer em
-/// `node_modules`); fora de repo, um walk limitado com denylist. Invalidado pelo
-/// watcher — a próxima busca reconstrói.
+/// `node_modules`); fora de repo, um walk limitado com denylist. Ambos com teto
+/// nomeado e flag de truncado. Invalidado pelo watcher — a próxima busca
+/// reconstrói.
 #[derive(Default)]
 pub struct FuzzyIndex {
-    names: Mutex<Option<Arc<Vec<String>>>>,
+    data: Mutex<Option<Arc<IndexData>>>,
 }
 
 impl FuzzyIndex {
@@ -34,39 +48,52 @@ impl FuzzyIndex {
     }
 
     pub fn invalidate(&self) {
-        *self.names.lock() = None;
+        *self.data.lock() = None;
     }
 
-    fn ensure(&self, root: &Path, context: &Context) -> Arc<Vec<String>> {
-        let mut guard = self.names.lock();
-        if let Some(names) = guard.as_ref() {
-            return Arc::clone(names);
+    fn ensure(&self, root: &Path, context: &Context) -> Arc<IndexData> {
+        let mut guard = self.data.lock();
+        if let Some(data) = guard.as_ref() {
+            return Arc::clone(data);
         }
         let built = Arc::new(build(root, context));
         *guard = Some(Arc::clone(&built));
         built
     }
 
-    pub fn search(&self, root: &Path, context: &Context, query: &str, limit: usize) -> Vec<String> {
-        let names = self.ensure(root, context);
-        rank(&names, query, limit)
+    pub fn search(
+        &self,
+        root: &Path,
+        context: &Context,
+        query: &str,
+        limit: usize,
+    ) -> SearchOutcome {
+        let data = self.ensure(root, context);
+        SearchOutcome {
+            paths: rank(&data.names, query, limit),
+            truncated: data.truncated,
+        }
     }
 }
 
-fn build(root: &Path, context: &Context) -> Vec<String> {
-    let mut names = match context {
-        Context::AgentWorktree { .. } | Context::Repo => git_tracked(root).unwrap_or_default(),
-        Context::OutsideRepo => Vec::new(),
+fn build(root: &Path, context: &Context) -> IndexData {
+    let (mut names, mut truncated) = match context {
+        Context::AgentWorktree { .. } | Context::Repo => {
+            git_tracked(root).unwrap_or((Vec::new(), false))
+        }
+        Context::OutsideRepo => (Vec::new(), false),
     };
     if names.is_empty() && matches!(context, Context::OutsideRepo) {
-        names = walk(root);
+        let (walked, walked_truncated) = walk(root);
+        names = walked;
+        truncated = walked_truncated;
     }
     names.sort_unstable();
     names.dedup();
-    names
+    IndexData { names, truncated }
 }
 
-fn git_tracked(root: &Path) -> Option<Vec<String>> {
+fn git_tracked(root: &Path) -> Option<(Vec<String>, bool)> {
     let out = crate::worktree::git_in(root)
         .args([
             "ls-files",
@@ -80,21 +107,24 @@ fn git_tracked(root: &Path) -> Option<Vec<String>> {
     if !out.status.success() {
         return None;
     }
-    Some(
-        out.stdout
-            .split(|b| *b == 0)
-            .filter(|s| !s.is_empty())
-            .map(|s| String::from_utf8_lossy(s).replace('\\', "/"))
-            .collect(),
-    )
+    let mut names = Vec::new();
+    let mut truncated = false;
+    for field in out.stdout.split(|b| *b == 0).filter(|s| !s.is_empty()) {
+        if names.len() >= GIT_INDEX_CAP {
+            truncated = true;
+            break;
+        }
+        names.push(String::from_utf8_lossy(field).replace('\\', "/"));
+    }
+    Some((names, truncated))
 }
 
-fn walk(root: &Path) -> Vec<String> {
+fn walk(root: &Path) -> (Vec<String>, bool) {
     let mut out = Vec::new();
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         if out.len() >= WALK_ENTRY_CAP {
-            break;
+            return (out, true);
         }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -110,12 +140,12 @@ fn walk(root: &Path) -> Vec<String> {
             } else if let Some(rel) = super::rel_of(root, &entry.path()) {
                 out.push(rel);
                 if out.len() >= WALK_ENTRY_CAP {
-                    break;
+                    return (out, true);
                 }
             }
         }
     }
-    out
+    (out, false)
 }
 
 fn rank(names: &[String], query: &str, limit: usize) -> Vec<String> {
@@ -164,11 +194,12 @@ mod tests {
         let repo = temp_repo();
         let index = FuzzyIndex::new();
         let all = index.search(&repo, &Context::Repo, "", 100);
-        assert!(all.contains(&"main.rs".to_string()));
-        assert!(all.contains(&"src/lib.rs".to_string()));
-        assert!(all.contains(&"untracked.txt".to_string()));
+        assert!(all.paths.contains(&"main.rs".to_string()));
+        assert!(all.paths.contains(&"src/lib.rs".to_string()));
+        assert!(all.paths.contains(&"untracked.txt".to_string()));
+        assert!(!all.truncated, "repo pequeno não trunca o índice");
         assert!(
-            !all.iter().any(|f| f.ends_with("secret.log")),
+            !all.paths.iter().any(|f| f.ends_with("secret.log")),
             "gitignorado não pode entrar no índice"
         );
         std::fs::remove_dir_all(&repo).ok();
@@ -179,7 +210,7 @@ mod tests {
         let repo = temp_repo();
         let index = FuzzyIndex::new();
         let hits = index.search(&repo, &Context::Repo, "librs", 5);
-        assert_eq!(hits.first().map(String::as_str), Some("src/lib.rs"));
+        assert_eq!(hits.paths.first().map(String::as_str), Some("src/lib.rs"));
         std::fs::remove_dir_all(&repo).ok();
     }
 
@@ -187,18 +218,18 @@ mod tests {
     fn watcher_invalidation_reveals_new_files() {
         let repo = temp_repo();
         let index = FuzzyIndex::new();
-        let before = index.search(&repo, &Context::Repo, "", 100);
+        let before = index.search(&repo, &Context::Repo, "", 100).paths;
         assert!(!before.iter().any(|f| f == "nascido-depois.txt"));
 
         std::fs::write(repo.join("nascido-depois.txt"), "x").unwrap();
-        let stale = index.search(&repo, &Context::Repo, "", 100);
+        let stale = index.search(&repo, &Context::Repo, "", 100).paths;
         assert_eq!(
             before, stale,
             "sem invalidação a busca vem do índice cacheado"
         );
 
         index.invalidate();
-        let fresh = index.search(&repo, &Context::Repo, "", 100);
+        let fresh = index.search(&repo, &Context::Repo, "", 100).paths;
         assert!(
             fresh.iter().any(|f| f == "nascido-depois.txt"),
             "após invalidar, a reconstrução vê o arquivo novo"
@@ -215,7 +246,7 @@ mod tests {
         std::fs::write(dir.join("src/app.ts"), "x").unwrap();
         let root = std::fs::canonicalize(&dir).unwrap();
         let index = FuzzyIndex::new();
-        let hits = index.search(&root, &Context::OutsideRepo, "", 100);
+        let hits = index.search(&root, &Context::OutsideRepo, "", 100).paths;
         assert!(hits.contains(&"src/app.ts".to_string()));
         assert!(
             !hits.iter().any(|f| f.contains("node_modules")),
