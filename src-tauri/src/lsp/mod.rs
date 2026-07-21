@@ -552,6 +552,7 @@ impl LspManager {
             read_allow_extra,
             extra_reads,
             data_dir: data_dir(&home),
+            data_dir_reads: vec![],
         };
         let spec = sandbox::lsp_sandbox_spec(entry, &ctx)?;
         let env = base_env(&user_env, entry);
@@ -930,6 +931,7 @@ mod tests {
             read_allow_extra: vec![],
             extra_reads,
             data_dir: data_dir(&home),
+            data_dir_reads: vec![],
         };
         let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
         assert!(!spec.allow_network);
@@ -1024,6 +1026,7 @@ mod tests {
             read_allow_extra: vec![],
             extra_reads,
             data_dir: data_dir(&home),
+            data_dir_reads: vec![],
         };
         let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
         let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
@@ -1118,6 +1121,7 @@ mod tests {
             read_allow_extra: vec![],
             extra_reads,
             data_dir: data_dir(&home),
+            data_dir_reads: vec![],
         };
         let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
         let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
@@ -1238,6 +1242,7 @@ mod tests {
             read_allow_extra: vec![],
             extra_reads,
             data_dir: data_dir(&home),
+            data_dir_reads: vec![],
         };
         let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
         let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);

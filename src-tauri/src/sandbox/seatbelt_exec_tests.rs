@@ -130,6 +130,7 @@ fn fixture() -> Fixture {
         exec_path_dirs: real_git_dir().into_iter().collect(),
         agent: AgentAccess::default(),
         read_allow_extra: vec![],
+        data_dir_reads: vec![],
     };
     Fixture {
         _tmp: tmp,

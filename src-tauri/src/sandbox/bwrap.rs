@@ -384,6 +384,12 @@ pub fn build_args(spec: &SandboxSpec) -> Result<Vec<OsString>, String> {
         worktree_mounts(&mut args, spec);
     }
 
+    for carved in &spec.data_dir_reads {
+        if carved.starts_with(&spec.tyba_data_dir) && carved.is_dir() {
+            args.ro_bind(carved);
+        }
+    }
+
     args.0.push("--remount-ro".into());
     args.0.push("/".into());
     args.0.push("--seccomp".into());
@@ -560,6 +566,7 @@ mod tests {
             exec_path_dirs: vec![],
             agent: AgentAccess::default(),
             read_allow_extra: vec![],
+            data_dir_reads: vec![],
         };
         std::fs::create_dir_all(spec.tyba_exe.parent().unwrap()).unwrap();
         std::fs::write(&spec.tyba_exe, "").unwrap();
@@ -596,6 +603,7 @@ mod tests {
             exec_path_dirs: vec![],
             agent: AgentAccess::default(),
             read_allow_extra: vec![],
+            data_dir_reads: vec![],
         };
         std::fs::create_dir_all(spec.tyba_exe.parent().unwrap()).unwrap();
         std::fs::write(&spec.tyba_exe, "").unwrap();

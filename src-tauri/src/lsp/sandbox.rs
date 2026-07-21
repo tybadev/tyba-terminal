@@ -15,6 +15,7 @@ pub struct LspSpecCtx<'a> {
     pub read_allow_extra: Vec<PathBuf>,
     pub extra_reads: Vec<PathBuf>,
     pub data_dir: PathBuf,
+    pub data_dir_reads: Vec<PathBuf>,
 }
 
 fn resolve_profile_path(path: &ProfilePath, home: &Path, env: &HashMap<String, String>) -> PathBuf {
@@ -85,6 +86,7 @@ pub fn lsp_sandbox_spec(entry: &ServerEntry, ctx: &LspSpecCtx) -> Result<Sandbox
         exec_path_dirs: ctx.exec_path_dirs.clone(),
         agent,
         read_allow_extra: ctx.read_allow_extra.clone(),
+        data_dir_reads: ctx.data_dir_reads.clone(),
     })
 }
 
@@ -125,6 +127,7 @@ mod tests {
             read_allow_extra: vec![],
             extra_reads: vec![],
             data_dir: PathBuf::from("/Users/nobody/Library/Application Support/dev.tyba.app"),
+            data_dir_reads: vec![],
         }
     }
 
@@ -313,6 +316,50 @@ mod tests {
         assert!(
             !policy.lines().any(|l| l == "(allow network-outbound)"),
             "a jaula do LSP não pode abrir rede geral"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn managed_subdir_is_readable_while_the_rest_of_the_data_dir_stays_denied() {
+        let env = ctx_env();
+        let data_dir = PathBuf::from("/Users/nobody/Library/Application Support/dev.tyba.app");
+        let managed = data_dir.join("lsp/rust-analyzer/2026-07-20");
+        let mut c = ctx(
+            Path::new("/private/wt/proj"),
+            Path::new("/private/tmp/tyba-lsp-abc"),
+            Path::new("/Apps/Tyba.app/Contents/MacOS/tyba"),
+            &env,
+        );
+        c.data_dir = data_dir.clone();
+        c.data_dir_reads = vec![managed.clone()];
+        let entry = entry_by_id("rust-analyzer").unwrap();
+        let spec = lsp_sandbox_spec(entry, &c).unwrap();
+        let policy = crate::sandbox::seatbelt::build_policy(&spec);
+        let lines: Vec<&str> = policy.lines().collect();
+        let deny_idx = lines
+            .iter()
+            .position(|l| {
+                l.starts_with("(deny file-read* file-write*")
+                    && l.contains("dev.tyba.app")
+            })
+            .expect("o data dir do TYBA precisa ter deny de segredo");
+        let allow_idx = lines
+            .iter()
+            .position(|l| l.contains("(allow file-read*") && l.contains("lsp/rust-analyzer"))
+            .expect("o subdir gerenciado precisa de read-allow explícito");
+        assert!(
+            allow_idx > deny_idx,
+            "o read-allow do subdir gerenciado tem que vir DEPOIS do deny (última regra vence)"
+        );
+        let carved = crate::sandbox::policy::render_rule(&crate::sandbox::policy::Rule::Subpath(
+            data_dir.join("secrets.db"),
+        ));
+        assert!(
+            !lines[allow_idx + 1..]
+                .iter()
+                .any(|l| l.contains("(allow file-read*") && l.contains(&carved)),
+            "nada além do subdir gerenciado pode furar o deny do data dir"
         );
     }
 }

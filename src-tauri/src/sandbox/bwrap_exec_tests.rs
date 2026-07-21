@@ -100,6 +100,7 @@ fn fixture() -> Fixture {
         exec_path_dirs: vec![],
         agent: AgentAccess::default(),
         read_allow_extra: vec![],
+        data_dir_reads: vec![],
     };
     Fixture {
         _tmp: tmp,
