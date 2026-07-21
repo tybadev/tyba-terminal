@@ -7,6 +7,7 @@ import {
   ArrowsOutSimple,
   CaretDown,
   CaretRight,
+  Copy,
   Crosshair,
   FilePlus,
   Folder,
@@ -15,8 +16,10 @@ import {
   PencilSimple,
   PlusMinus,
   ArrowSquareOut,
+  Terminal,
   TrashSimple,
   TreeView,
+  Warning,
   X,
 } from "@phosphor-icons/react";
 
@@ -28,6 +31,9 @@ import type {
   FilesPanelInfo,
   GutterKind,
   GutterMarker,
+  LspDiagnostic,
+  LspLocation,
+  LspStatus,
   Session,
 } from "@/lib/ipc";
 import {
@@ -47,11 +53,22 @@ import {
   filesUnwatchDir,
   filesWatchDir,
   filesWrite,
+  lspChange,
+  lspCloseDoc,
+  lspCompletion,
+  lspDefinition,
+  lspHover,
+  lspOpen,
+  lspOpenExternal,
+  lspSignature,
+  lspStatus,
   onFilesConflict,
   onFilesDecorations,
   onFilesGutter,
   onFilesTree,
+  onLspDiagnostics,
 } from "@/lib/ipc";
+import type { LspBridge } from "@/lib/cmLsp";
 import { fileIcon } from "@/lib/fileIcon";
 import {
   highlightBlock,
@@ -75,6 +92,7 @@ interface Props {
   onToggleExpand: () => void;
   onClose: () => void;
   onJumpToDiff: () => void;
+  onRunInTerminal: (command: string) => void;
 }
 
 type TreeEdit =
@@ -167,6 +185,7 @@ export function FilesPanel({
   onToggleExpand,
   onClose,
   onJumpToDiff,
+  onRunInTerminal,
 }: Props) {
   const { t } = useTranslation();
   const [info, setInfo] = useState<FilesPanelInfo | null>(null);
@@ -202,7 +221,19 @@ export function FilesPanel({
   } | null>(null);
   const [treeEdit, setTreeEdit] = useState<TreeEdit | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
+  const [lspStat, setLspStat] = useState<LspStatus | null>(null);
+  const [diagsByPath, setDiagsByPath] = useState<Map<string, LspDiagnostic[]>>(
+    new Map(),
+  );
+  const [showInstall, setShowInstall] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const lspTimer = useRef<number | undefined>(undefined);
   const editorRef = useRef<CodeEditorHandle>(null);
+
+  const currentDiagnostics = useMemo(
+    () => (selected ? diagsByPath.get(selected) ?? [] : []),
+    [selected, diagsByPath],
+  );
 
   useEffect(
     () => onEffectiveBaseChange(() => setIsDark(getEffectiveBase() === "dark")),
@@ -244,6 +275,24 @@ export function FilesPanel({
     [session.id],
   );
 
+  const refreshLspStatus = useCallback(
+    (rel: string) => {
+      void lspStatus(session.id, rel)
+        .then((s) => {
+          if (selectedRef.current !== rel) return;
+          setLspStat(s);
+          if (s.state === "starting" || s.state === "available") {
+            window.clearTimeout(lspTimer.current);
+            lspTimer.current = window.setTimeout(() => {
+              if (selectedRef.current === rel) refreshLspStatus(rel);
+            }, 1500);
+          }
+        })
+        .catch(() => {});
+    },
+    [session.id],
+  );
+
   const openFile = useCallback(
     (rel: string) => {
       const my = ++reqId.current;
@@ -259,6 +308,10 @@ export function FilesPanel({
       setConflict(null);
       setConflictDiff(null);
       setGutter([]);
+      setLspStat(null);
+      setShowInstall(false);
+      window.clearTimeout(lspTimer.current);
+      refreshLspStatus(rel);
       void filesFocus(session.id, rel)
         .then((markers) => {
           if (reqId.current === my) setGutter(markers);
@@ -272,7 +325,7 @@ export function FilesPanel({
           if (reqId.current === my) setContentError(String(e));
         });
     },
-    [session.id],
+    [session.id, refreshLspStatus],
   );
 
   const openFileGuarded = useCallback(
@@ -329,11 +382,19 @@ export function FilesPanel({
         setConflict({ path, diskHash });
       }
     });
+    const unLsp = onLspDiagnostics(session.id, (files) => {
+      setDiagsByPath((prev) => {
+        const next = new Map(prev);
+        for (const file of files) next.set(file.path, file.diagnostics);
+        return next;
+      });
+    });
     return () => {
       void unTree.then((f) => f());
       void unDeco.then((f) => f());
       void unGutter.then((f) => f());
       void unConflict.then((f) => f());
+      void unLsp.then((f) => f());
     };
   }, [session.id, relist]);
 
@@ -365,6 +426,61 @@ export function FilesPanel({
     if (openRequest) void reveal(openRequest.path);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openRequest?.nonce]);
+
+  const handleGotoDef = useCallback(
+    async (loc: LspLocation) => {
+      if (loc.in_root) {
+        await reveal(loc.path);
+        return;
+      }
+      const ok = await requestConfirm({
+        title: t("lspGotoExternalTitle"),
+        detail: loc.path,
+        confirmLabel: t("lspGotoExternalOpen"),
+      });
+      if (ok) {
+        void lspOpenExternal(loc.path, editor).catch((e) =>
+          toastError(t("filesOpenExternal"), e),
+        );
+      }
+    },
+    [reveal, t, editor],
+  );
+
+  const lspBridge = useMemo<LspBridge | null>(() => {
+    if (!selected) return null;
+    const path = selected;
+    return {
+      completion: (line, character) =>
+        lspCompletion(session.id, path, line, character),
+      hover: (line, character) => lspHover(session.id, path, line, character),
+      signature: (line, character) =>
+        lspSignature(session.id, path, line, character),
+      definition: (line, character) =>
+        lspDefinition(session.id, path, line, character),
+      change: (changes) => {
+        void lspChange(session.id, path, changes).catch(() => {});
+      },
+      gotoDefinition: (loc) => void handleGotoDef(loc),
+    };
+  }, [session.id, selected, handleGotoDef]);
+
+  const runInstall = useCallback(() => {
+    if (lspStat?.state === "absent" && lspStat.install.command) {
+      onRunInTerminal(lspStat.install.command);
+    }
+  }, [lspStat, onRunInTerminal]);
+
+  const copyInstall = useCallback(() => {
+    if (lspStat?.state !== "absent" || !lspStat.install.command) return;
+    void navigator.clipboard
+      ?.writeText(lspStat.install.command)
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {});
+  }, [lspStat]);
 
   const toggleDir = useCallback(
     (dir: string) => {
@@ -470,13 +586,24 @@ export function FilesPanel({
       setDocVersion((v) => v + 1);
       const markers = await filesGutter(session.id, selected).catch(() => []);
       setGutter(markers);
+      const path = selected;
+      void lspOpen(session.id, path, base.text, true)
+        .then((s) => {
+          if (selectedRef.current !== path) return;
+          setLspStat(s);
+          if (s.state === "starting" || s.state === "available") {
+            refreshLspStatus(path);
+          }
+        })
+        .catch(() => {});
     } catch (e) {
       toastError(t("filesEditError"), e);
     }
-  }, [selected, session.id, t]);
+  }, [selected, session.id, t, refreshLspStatus]);
 
   const finishEdit = useCallback(() => {
     void filesEditEnd(session.id).catch(() => {});
+    if (selected) void lspCloseDoc(session.id, selected).catch(() => {});
     setEditing(false);
     setEditBaseline(null);
     setDirty(false);
@@ -531,6 +658,7 @@ export function FilesPanel({
       setConflict(null);
       setConflictDiff(null);
       setDocVersion((v) => v + 1);
+      void lspOpen(session.id, selected, base.text, true).catch(() => {});
     } catch (e) {
       toastError(t("filesEditError"), e);
     }
@@ -652,6 +780,20 @@ export function FilesPanel({
     return siblings.find((e) => e.rel_path === selected) ?? null;
   }, [selected, entriesByDir]);
   const canEdit = content?.kind === "text";
+  const lspErrors = currentDiagnostics.filter((d) => d.severity === 1).length;
+  const lspWarnings = currentDiagnostics.filter((d) => d.severity === 2).length;
+  const lspServer =
+    lspStat && lspStat.state !== "unsupported" ? lspStat.server : "";
+  const lspDot =
+    lspStat?.state === "ready"
+      ? "bg-tyba-green"
+      : lspStat?.state === "starting"
+        ? "bg-tyba-amber animate-pulse"
+        : lspStat?.state === "available"
+          ? "bg-tyba-text-faint"
+          : lspStat?.state === "crashed"
+            ? "bg-tyba-red"
+            : "";
 
   const gutterMap = useMemo(() => {
     const map = new Map<number, GutterKind>();
@@ -997,6 +1139,46 @@ export function FilesPanel({
                     className="size-1.5 shrink-0 rounded-full bg-tyba-amber"
                   />
                 )}
+                {lspStat &&
+                  lspStat.state !== "unsupported" &&
+                  (lspStat.state === "absent" ? (
+                    <button
+                      onClick={() => setShowInstall((v) => !v)}
+                      title={t("lspAbsent", { server: lspStat.server })}
+                      className="flex shrink-0 items-center gap-1 text-[10px] text-tyba-amber hover:text-tyba-text"
+                    >
+                      <Warning size={12} />
+                      <span>{t("lspInstall")}</span>
+                    </button>
+                  ) : (
+                    <span
+                      title={lspServer}
+                      className="flex shrink-0 items-center gap-1.5 text-[10px] text-tyba-text-faint"
+                    >
+                      {lspDot && (
+                        <span className={`size-1.5 rounded-full ${lspDot}`} />
+                      )}
+                      {lspStat.state === "starting" && (
+                        <span>{t("lspStarting")}</span>
+                      )}
+                      {lspStat.state === "crashed" && (
+                        <span className="text-tyba-red">{t("lspCrashed")}</span>
+                      )}
+                      {lspStat.state === "ready" &&
+                        (lspErrors > 0 || lspWarnings > 0) && (
+                          <span className="flex items-center gap-1 font-mono">
+                            {lspErrors > 0 && (
+                              <span className="text-tyba-red">{lspErrors}</span>
+                            )}
+                            {lspWarnings > 0 && (
+                              <span className="text-tyba-amber">
+                                {lspWarnings}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                    </span>
+                  ))}
                 <div className="flex-1" />
                 {editing ? (
                   <>
@@ -1062,6 +1244,48 @@ export function FilesPanel({
                 )}
               </div>
 
+              {lspStat?.state === "absent" && showInstall && (
+                <div className="flex flex-col gap-1.5 border-b border-tyba-amber/40 bg-tyba-amber/10 px-3 py-2 text-[11px] text-tyba-text">
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate">
+                      {t("lspInstallHint", { server: lspStat.server })}
+                    </span>
+                    <button
+                      onClick={() => setShowInstall(false)}
+                      aria-label={t("tunnelsClose")}
+                      className="shrink-0 text-tyba-text-faint hover:text-tyba-text"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <code className="min-w-0 flex-1 truncate rounded-[3px] bg-tyba-surface px-2 py-1 font-mono text-[11px] text-tyba-text">
+                      {lspStat.install.command}
+                    </code>
+                    <button
+                      onClick={copyInstall}
+                      title={t("lspCopy")}
+                      aria-label={t("lspCopy")}
+                      className="shrink-0 text-tyba-text-faint hover:text-tyba-text"
+                    >
+                      <Copy size={13} />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={runInstall}
+                      className="flex items-center gap-1 rounded-[3px] bg-tyba-text/[.08] px-2 py-0.5 text-tyba-text hover:bg-tyba-text/[.14]"
+                    >
+                      <Terminal size={12} />
+                      {t("lspInstallInTerminal")}
+                    </button>
+                    {copied && (
+                      <span className="text-tyba-green">{t("lspCopied")}</span>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {conflict && (
                 <div className="flex items-center gap-2 border-b border-tyba-amber/40 bg-tyba-amber/10 px-3 py-1.5 text-[11px] text-tyba-text">
                   <span className="min-w-0 flex-1 truncate">
@@ -1097,6 +1321,8 @@ export function FilesPanel({
                     filename={selected}
                     dark={isDark}
                     markers={gutter}
+                    lsp={lspBridge}
+                    diagnostics={currentDiagnostics}
                     onDirtyChange={setDirty}
                     onSave={() => void save()}
                   />

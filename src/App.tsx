@@ -194,6 +194,7 @@ import {
   appVersion,
   updateCheck,
   updateDismiss,
+  writeToSession,
   type UpdateStatus,
 } from "./lib/ipc";
 import { basename } from "@/lib/utils";
@@ -1823,6 +1824,31 @@ export default function App() {
       void disposeSession(session.id).catch(() => {});
     }
   }, [activeWorkspace, openNewSession, workspaceSshHostId]);
+
+  const runInTerminal = useCallback(
+    async (command: string) => {
+      if (!activeWorkspace) {
+        openNewSession();
+        return;
+      }
+      const session = await createSession({
+        kind: { type: "shell" },
+        cwd: activeWorkspace.repo_root ?? undefined,
+        cols: 100,
+        rows: 30,
+      });
+      setSessions((prev) => [...prev, session]);
+      try {
+        await createTab(session.id, activeWorkspace.id);
+        window.setTimeout(() => {
+          void writeToSession(session.id, `${command}\n`).catch(() => {});
+        }, 400);
+      } catch {
+        void disposeSession(session.id).catch(() => {});
+      }
+    },
+    [activeWorkspace, openNewSession],
+  );
 
   const openProjectFolder = useCallback(async () => {
     const dir = await openFileDialog({ directory: true, multiple: false });
@@ -3694,6 +3720,7 @@ export default function App() {
                             onJumpToDiff={() =>
                               void openDiffTab(filesTarget.id).catch(() => {})
                             }
+                            onRunInTerminal={runInTerminal}
                           />
                         ) : (
                           <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
