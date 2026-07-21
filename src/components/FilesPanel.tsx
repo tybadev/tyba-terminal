@@ -10,6 +10,7 @@ import {
   CaretRight,
   Copy,
   Crosshair,
+  DownloadSimple,
   FilePlus,
   Folder,
   FolderOpen,
@@ -18,6 +19,7 @@ import {
   PencilSimple,
   PlusMinus,
   ArrowSquareOut,
+  SealCheck,
   Terminal,
   TrashSimple,
   TreeView,
@@ -36,6 +38,7 @@ import type {
   GutterMarker,
   LspDiagnostic,
   LspLocation,
+  LspManagedProgress,
   LspStatus,
   Session,
 } from "@/lib/ipc";
@@ -63,6 +66,9 @@ import {
   lspDefinition,
   lspDidSave,
   lspHover,
+  lspManagedConsent,
+  lspManagedDownload,
+  lspManagedUseMine,
   lspOpen,
   lspOpenExternal,
   lspRetry,
@@ -73,6 +79,8 @@ import {
   onFilesGutter,
   onFilesTree,
   onLspDiagnostics,
+  onLspManagedError,
+  onLspManagedProgress,
 } from "@/lib/ipc";
 import type { LspBridge } from "@/lib/cmLsp";
 import { fileIcon } from "@/lib/fileIcon";
@@ -131,6 +139,24 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function pct(done: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.min(100, Math.round((done / total) * 100));
+}
+
+function managedPhaseKey(phase: LspManagedProgress["phase"]): string {
+  switch (phase) {
+    case "verifying":
+      return "lspManagedVerifying";
+    case "extracting":
+      return "lspManagedExtracting";
+    case "error":
+      return "lspManagedError";
+    default:
+      return "lspManagedPreparing";
+  }
 }
 
 function parentOf(rel: string): string {
@@ -234,6 +260,7 @@ export function FilesPanel({
     new Map(),
   );
   const [showInstall, setShowInstall] = useState(false);
+  const [showManaged, setShowManaged] = useState(true);
   const [showAlts, setShowAlts] = useState(false);
   const [copied, setCopied] = useState(false);
   const [diagsTruncated, setDiagsTruncated] = useState(false);
@@ -299,7 +326,21 @@ export function FilesPanel({
         .then((s) => {
           if (selectedRef.current !== rel) return;
           setLspStat(s);
-          if (s.state === "starting" || s.state === "available") {
+          if (
+            s.state === "installing" &&
+            s.progress.phase === "pending"
+          ) {
+            void lspManagedDownload(session.id, s.server_id, rel)
+              .then((next) => {
+                if (selectedRef.current === rel) setLspStat(next);
+              })
+              .catch(() => {});
+          }
+          if (
+            s.state === "starting" ||
+            s.state === "available" ||
+            s.state === "installing"
+          ) {
             window.clearTimeout(lspTimer.current);
             lspTimer.current = window.setTimeout(() => {
               if (selectedRef.current === rel) refreshLspStatus(rel);
@@ -342,6 +383,7 @@ export function FilesPanel({
       setGutter([]);
       setLspStat(null);
       setShowInstall(false);
+      setShowManaged(true);
       window.clearTimeout(lspTimer.current);
       refreshLspStatus(rel);
       void filesFocus(session.id, rel)
@@ -527,6 +569,85 @@ export function FilesPanel({
       })
       .catch(() => {});
   }, []);
+
+  const acceptManaged = useCallback(
+    (serverId: string) => {
+      const rel = selectedRef.current;
+      if (!rel) return;
+      void lspManagedConsent(session.id, serverId, "accept", rel)
+        .then((s) => {
+          if (selectedRef.current === rel) setLspStat(s);
+        })
+        .catch((e) => toastError(String(e)));
+    },
+    [session.id],
+  );
+
+  const useMineManaged = useCallback(
+    (label: string, serverId: string) => {
+      void lspManagedUseMine(serverId)
+        .then((hints) => {
+          setLspStat({
+            state: "absent",
+            server: label,
+            install: hints.install,
+            alternatives: hints.alternatives,
+          });
+          setShowInstall(true);
+        })
+        .catch((e) => toastError(String(e)));
+    },
+    [],
+  );
+
+  const refuseManaged = useCallback(
+    (serverId: string) => {
+      const rel = selectedRef.current;
+      if (!rel) return;
+      setShowManaged(false);
+      void lspManagedConsent(session.id, serverId, "refuse", rel).catch(
+        () => {},
+      );
+    },
+    [session.id],
+  );
+
+  const installingId =
+    lspStat?.state === "installing" ? lspStat.server_id : null;
+
+  useEffect(() => {
+    if (!installingId) return;
+    let alive = true;
+    const applyProgress = (progress: LspManagedProgress) => {
+      if (!alive) return;
+      setLspStat((prev) =>
+        prev &&
+        prev.state === "installing" &&
+        prev.server_id === installingId
+          ? { ...prev, progress }
+          : prev,
+      );
+      const rel = selectedRef.current;
+      if (!rel) return;
+      if (progress.phase === "ready") {
+        void lspRetry(session.id, rel)
+          .then((s) => {
+            if (selectedRef.current === rel) setLspStat(s);
+            if (selectedRef.current === rel) refreshLspStatus(rel);
+          })
+          .catch(() => {});
+      } else if (progress.phase === "error") {
+        refreshLspStatus(rel);
+      }
+    };
+    const unP = onLspManagedProgress(installingId, applyProgress);
+    const unE = onLspManagedError(installingId, applyProgress);
+    return () => {
+      alive = false;
+      void unP.then((f) => f());
+      void unE.then((f) => f());
+    };
+  }, [installingId, session.id, refreshLspStatus]);
 
   const toggleDir = useCallback(
     (dir: string) => {
@@ -1290,6 +1411,34 @@ export function FilesPanel({
                     <span>{t("lspInstall")}</span>
                   </button>
                 )}
+                {lspStat?.state === "managed_offer" && (
+                  <button
+                    onClick={() => setShowManaged((v) => !v)}
+                    title={t("lspManagedOffer", { server: lspStat.server })}
+                    className="flex shrink-0 items-center gap-1 text-[10px] text-tyba-blue hover:text-tyba-text"
+                  >
+                    <DownloadSimple size={12} />
+                    <span>{t("lspManagedInstall")}</span>
+                  </button>
+                )}
+                {lspStat?.state === "installing" && (
+                  <span
+                    title={lspServer}
+                    className="flex shrink-0 items-center gap-1.5 text-[10px] text-tyba-text-faint"
+                  >
+                    <span className="size-1.5 animate-pulse rounded-full bg-tyba-blue" />
+                    <span>
+                      {lspStat.progress.phase === "downloading"
+                        ? t("lspManagedDownloading", {
+                            percent: pct(
+                              lspStat.progress.downloaded,
+                              lspStat.progress.total,
+                            ),
+                          })
+                        : t(managedPhaseKey(lspStat.progress.phase))}
+                    </span>
+                  </span>
+                )}
                 {lspStat?.state === "starting" && (
                   <span
                     title={lspServer}
@@ -1417,6 +1566,108 @@ export function FilesPanel({
                   </>
                 )}
               </div>
+
+              {lspStat?.state === "managed_offer" && showManaged && (
+                <div className="flex flex-col gap-2 border-b border-tyba-blue/40 bg-tyba-blue/10 px-3 py-2.5 text-[11px] text-tyba-text">
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate font-medium">
+                          {lspStat.card.label}
+                        </span>
+                        <span className="shrink-0 font-mono text-tyba-text-faint">
+                          v{lspStat.card.version}
+                        </span>
+                        <span
+                          title={t("lspManagedVerifiedHint")}
+                          className="flex shrink-0 items-center gap-0.5 text-tyba-green"
+                        >
+                          <SealCheck size={12} weight="fill" />
+                          {t("lspManagedVerified")}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-tyba-text-muted">
+                        {t("lspManagedMeta", {
+                          size: formatBytes(lspStat.card.size),
+                          source: lspStat.card.source,
+                        })}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => refuseManaged(lspStat.card.server_id)}
+                      aria-label={t("tunnelsClose")}
+                      className="shrink-0 text-tyba-text-faint hover:text-tyba-text"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => acceptManaged(lspStat.card.server_id)}
+                      className="flex items-center gap-1 rounded-[3px] bg-tyba-blue/20 px-2 py-0.5 text-tyba-text hover:bg-tyba-blue/30"
+                    >
+                      <DownloadSimple size={12} />
+                      {t("lspManagedAccept")}
+                    </button>
+                    <button
+                      onClick={() =>
+                        useMineManaged(lspStat.card.label, lspStat.card.server_id)
+                      }
+                      className="rounded-[3px] px-2 py-0.5 text-tyba-text-muted hover:bg-tyba-text/[.08] hover:text-tyba-text"
+                    >
+                      {t("lspManagedUseMine")}
+                    </button>
+                    <button
+                      onClick={() => refuseManaged(lspStat.card.server_id)}
+                      className="ml-auto text-tyba-text-faint hover:text-tyba-text"
+                    >
+                      {t("lspManagedRefuse")}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {lspStat?.state === "installing" && (
+                <div className="flex flex-col gap-1.5 border-b border-tyba-blue/40 bg-tyba-blue/10 px-3 py-2 text-[11px] text-tyba-text">
+                  <div className="flex items-center gap-2">
+                    <DownloadSimple size={13} className="shrink-0 text-tyba-blue" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {lspStat.progress.phase === "downloading"
+                        ? t("lspManagedDownloadingOf", {
+                            server: lspStat.server,
+                            done: formatBytes(lspStat.progress.downloaded),
+                            total: formatBytes(lspStat.progress.total),
+                          })
+                        : lspStat.progress.phase === "error"
+                          ? lspStat.progress.message
+                          : t(managedPhaseKey(lspStat.progress.phase))}
+                    </span>
+                    {lspStat.progress.phase === "error" && (
+                      <button
+                        onClick={() => acceptManaged(lspStat.server_id)}
+                        title={t("lspManagedRetry")}
+                        aria-label={t("lspManagedRetry")}
+                        className="shrink-0 text-tyba-text-faint hover:text-tyba-text"
+                      >
+                        <ArrowClockwise size={12} />
+                      </button>
+                    )}
+                  </div>
+                  {lspStat.progress.phase === "downloading" && (
+                    <div className="h-1 w-full overflow-hidden rounded-full bg-tyba-text/[.1]">
+                      <div
+                        className="h-full rounded-full bg-tyba-blue transition-all"
+                        style={{
+                          width: `${pct(
+                            lspStat.progress.downloaded,
+                            lspStat.progress.total,
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
 
               {lspStat?.state === "absent" && showInstall && (
                 <div className="flex flex-col gap-1.5 border-b border-tyba-amber/40 bg-tyba-amber/10 px-3 py-2 text-[11px] text-tyba-text">
