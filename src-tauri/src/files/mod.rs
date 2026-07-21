@@ -703,6 +703,35 @@ mod tests {
         std::fs::remove_dir_all(&outside).ok();
     }
 
+    #[test]
+    fn root_is_fixed_while_open_but_reopen_after_close_re_resolves() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let mgr = FilesManager::new();
+        let id = uuid::Uuid::new_v4();
+        let first = tmp();
+        let second = tmp();
+
+        mgr.seed(&handle, id, first.clone(), Context::OutsideRepo);
+        assert_eq!(mgr.info(id).map(|(root, _)| root), Some(first.clone()));
+
+        let (fixed, _) = mgr
+            .ensure(&handle, id, || Ok((second.clone(), Context::OutsideRepo)))
+            .unwrap();
+        assert_eq!(fixed, first, "a raiz é fixa enquanto o painel está aberto");
+
+        mgr.close(id);
+        assert!(mgr.info(id).is_none(), "fechar derruba o painel no core");
+
+        let (reopened, _) = mgr
+            .ensure(&handle, id, || Ok((second.clone(), Context::OutsideRepo)))
+            .unwrap();
+        assert_eq!(reopened, second, "reabrir re-resolve a raiz");
+
+        std::fs::remove_dir_all(&first).ok();
+        std::fs::remove_dir_all(&second).ok();
+    }
+
     #[cfg(unix)]
     #[test]
     fn resolve_rejects_symlink_escaping_root() {
