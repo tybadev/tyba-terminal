@@ -788,6 +788,16 @@ impl FilesManager {
         );
     }
 
+    /// Cômputo fresco das decorações sob demanda — usado pelo command de mount,
+    /// que devolve o valor por request/response (sem depender do timing de
+    /// registro do listener do evento). Fora de repo não toca git.
+    pub fn decorations(&self, id: SessionId) -> Vec<Decoration> {
+        let Some((root, context)) = self.info(id) else {
+            return Vec::new();
+        };
+        compute_decorations(&root, &context)
+    }
+
     pub fn emit_decorations<R: Runtime>(&self, app: &AppHandle<R>, id: SessionId) {
         let Some((root, context)) = self.info(id) else {
             return;
@@ -1198,5 +1208,121 @@ mod tests {
             "o path de origem do rename não é uma decoração própria"
         );
         assert_eq!(decos.len(), 2);
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn dirty_repo() -> PathBuf {
+        let dir = tmp();
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.email", "t@t"]);
+        git(&dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("tracked.txt"), "v1\n").unwrap();
+        git(&dir, &["add", "tracked.txt"]);
+        git(&dir, &["commit", "-q", "-m", "base"]);
+        std::fs::write(dir.join("tracked.txt"), "v2\n").unwrap();
+        std::fs::write(dir.join("untracked.txt"), "novo\n").unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    fn by_path(decos: &[Decoration]) -> HashMap<String, DecoStatus> {
+        decos.iter().map(|d| (d.path.clone(), d.status)).collect()
+    }
+
+    #[test]
+    fn decorations_present_on_open_without_any_fs_event() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let mgr = FilesManager::new();
+        let id = uuid::Uuid::new_v4();
+        let repo = dirty_repo();
+
+        mgr.seed(&handle, id, repo.clone(), Context::Repo);
+        let by = by_path(&mgr.decorations(id));
+
+        assert_eq!(by.get("tracked.txt"), Some(&DecoStatus::Modified));
+        assert_eq!(by.get("untracked.txt"), Some(&DecoStatus::Untracked));
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn decorations_survive_close_and_recreate_like_returning_from_diff() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let mgr = FilesManager::new();
+        let id = uuid::Uuid::new_v4();
+        let repo = dirty_repo();
+
+        mgr.seed(&handle, id, repo.clone(), Context::Repo);
+        assert!(!mgr.decorations(id).is_empty());
+
+        // Trocar pro diff fecha o painel no core; voltar recria via ensure.
+        mgr.close(id);
+        assert!(mgr.info(id).is_none());
+        let (_root, _ctx) = mgr
+            .ensure(&handle, id, || Ok((repo.clone(), Context::Repo)))
+            .unwrap();
+
+        let by = by_path(&mgr.decorations(id));
+        assert_eq!(by.get("tracked.txt"), Some(&DecoStatus::Modified));
+        assert_eq!(by.get("untracked.txt"), Some(&DecoStatus::Untracked));
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn agent_worktree_decorations_use_frozen_base_on_open() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let mgr = FilesManager::new();
+        let id = uuid::Uuid::new_v4();
+        let dir = tmp();
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.email", "t@t"]);
+        git(&dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("a.txt"), "base\n").unwrap();
+        git(&dir, &["add", "a.txt"]);
+        git(&dir, &["commit", "-q", "-m", "base"]);
+        let base = String::from_utf8(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        std::fs::write(dir.join("a.txt"), "session change\n").unwrap();
+        git(&dir, &["commit", "-qam", "session"]);
+        let repo = std::fs::canonicalize(&dir).unwrap();
+
+        mgr.seed(
+            &handle,
+            id,
+            repo.clone(),
+            Context::AgentWorktree { base_ref: base },
+        );
+        let by = by_path(&mgr.decorations(id));
+
+        assert_eq!(
+            by.get("a.txt"),
+            Some(&DecoStatus::Modified),
+            "delta commitado da sessão contra a base congelada"
+        );
+        std::fs::remove_dir_all(&repo).ok();
     }
 }

@@ -1228,7 +1228,7 @@ export const filesOpenExternal = (
   invoke<void>("files_open_external", { id, path, editor: editor ?? null });
 
 export const filesDecorations = (id: SessionId) =>
-  invoke<void>("files_decorations", { id });
+  invoke<FileDecoration[]>("files_decorations", { id });
 
 export const filesClose = (id: SessionId) =>
   invoke<void>("files_close", { id });

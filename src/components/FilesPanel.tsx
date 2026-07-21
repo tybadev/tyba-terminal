@@ -302,7 +302,11 @@ export function FilesPanel({
       })
       .catch(() => {});
     void filesWatchDir(session.id, "").catch(() => {});
-    void filesDecorations(session.id).catch(() => {});
+    void filesDecorations(session.id)
+      .then((decos) => {
+        if (alive) setDecorations(new Map(decos.map((d) => [d.path, d.status])));
+      })
+      .catch(() => {});
     return () => {
       alive = false;
     };

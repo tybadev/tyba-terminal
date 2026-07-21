@@ -1086,7 +1086,6 @@ fn open_files_panel(
         .map_err(|e| e.to_string())?;
     close_orphaned_files_panel(&state, previous, Some(&new_view));
     emit_layout(&app, &state);
-    state.files.emit_decorations(&app, id);
     Ok(root.to_string_lossy().into_owned())
 }
 
@@ -1174,8 +1173,15 @@ fn files_reanchor(
 }
 
 #[tauri::command]
-fn files_decorations(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
-    state.files.emit_decorations(&app, id);
+fn files_decorations(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<Vec<files::Decoration>, String> {
+    state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    Ok(state.files.decorations(id))
 }
 
 #[tauri::command]
