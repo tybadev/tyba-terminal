@@ -3,6 +3,7 @@ pub mod approvals;
 pub mod docker;
 pub mod editor;
 pub mod error;
+pub mod files;
 pub mod forge;
 pub mod hook_ipc;
 pub mod launch_config;
@@ -44,6 +45,7 @@ struct AppState {
     layout: layout::SharedLayout,
     docker: docker::SharedDocker,
     repos: repo::SharedRepoWatcher,
+    files: files::SharedFiles,
     repo_reconcile: std::sync::mpsc::Sender<()>,
     rich_input_submit: parking_lot::Mutex<()>,
     worktree_files: rich_input::FilesCache,
@@ -1005,6 +1007,145 @@ fn open_tunnels_panel(
     Ok(())
 }
 
+fn resolve_files_root(
+    state: &AppState,
+    id: SessionId,
+) -> Result<(std::path::PathBuf, files::Context), String> {
+    let session = state
+        .sessions
+        .get(id)
+        .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+    if let Some(wt) = session.worktree {
+        let root = repo::canonicalize_or(&wt.path);
+        return Ok((
+            root,
+            files::Context::AgentWorktree {
+                base_ref: wt.base_ref,
+            },
+        ));
+    }
+    let pid = state
+        .pty_pool
+        .leader_pid(id)
+        .ok_or("a sessão não tem um processo ativo")?;
+    let cwd = repo::process_cwd(pid).ok_or("não foi possível ler o diretório da sessão")?;
+    match repo::toplevel(&cwd) {
+        Some(root) => Ok((repo::canonicalize_or(&root), files::Context::Repo)),
+        None => Ok((repo::canonicalize_or(&cwd), files::Context::OutsideRepo)),
+    }
+}
+
+#[tauri::command]
+fn open_files_panel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<String, String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    state
+        .layout
+        .open_workspace_side_view(id, &layout::files_view(id))
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    state.files.emit_decorations(&app, id);
+    Ok(root.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn files_panel_info(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<files::PanelInfo, String> {
+    let (root, context) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    Ok(files::PanelInfo {
+        root: root.to_string_lossy().into_owned(),
+        kind: context.kind_str().to_string(),
+        decorated: !matches!(context, files::Context::OutsideRepo),
+    })
+}
+
+#[tauri::command]
+fn files_list_dir(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<files::DirListing, String> {
+    let (root, context) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::list_dir(&root, &path, &context)
+}
+
+#[tauri::command]
+fn files_read(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    offset: Option<usize>,
+) -> Result<files::FileContent, String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::read_file(&root, &path, offset.unwrap_or(0))
+}
+
+#[tauri::command]
+fn files_watch_dir(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<(), String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    let dir = files::resolve_within(&root, &path)?;
+    if !dir.is_dir() {
+        return Err("não é um diretório".into());
+    }
+    state.files.watch_dir(id, dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn files_unwatch_dir(state: State<'_, AppState>, id: SessionId, path: String) {
+    if let Some((root, _)) = state.files.info(id) {
+        if let Ok(dir) = files::resolve_within(&root, &path) {
+            state.files.unwatch_dir(id, dir);
+        }
+    }
+}
+
+#[tauri::command]
+fn files_reanchor(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<String, String> {
+    let (root, context) = resolve_files_root(&state, id)?;
+    state.files.seed(&app, id, root.clone(), context);
+    state.files.emit_tree_reset(&app, id);
+    state.files.emit_decorations(&app, id);
+    Ok(root.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn files_decorations(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
+    state.files.emit_decorations(&app, id);
+}
+
+#[tauri::command]
+fn files_close(state: State<'_, AppState>, id: SessionId) {
+    state.files.close(id);
+}
+
 #[tauri::command]
 fn close_side_view(
     app: AppHandle,
@@ -1699,6 +1840,7 @@ fn session_mark_seen(app: AppHandle, state: State<'_, AppState>, id: SessionId) 
 fn dispose_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
     teardown_agent_session(&app, &state, id);
     state.sessions.dispose(&state.pty_pool, id);
+    state.files.close(id);
     let _ = state.layout.session_disposed(id);
     emit_layout(&app, &state);
 }
@@ -3077,6 +3219,7 @@ pub fn run() {
                 layout: Arc::clone(&layout),
                 docker: Arc::new(docker::DockerManager::new()),
                 repos,
+                files: Arc::new(files::FilesManager::new()),
                 repo_reconcile: reconcile_tx.clone(),
                 rich_input_submit: parking_lot::Mutex::new(()),
                 worktree_files: rich_input::FilesCache::default(),
@@ -3198,6 +3341,15 @@ pub fn run() {
             session_branch_hunks,
             open_diff_tab,
             open_tunnels_panel,
+            open_files_panel,
+            files_panel_info,
+            files_list_dir,
+            files_read,
+            files_watch_dir,
+            files_unwatch_dir,
+            files_reanchor,
+            files_decorations,
+            files_close,
             close_side_view,
             set_side_view_expanded,
             set_side_view_ratio,
