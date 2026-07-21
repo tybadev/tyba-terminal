@@ -1012,3 +1012,142 @@ samp {
 .xterm {
   height: 100%;
 }
+
+/* Preview de markdown do painel Arquivos: tipografia proporcional, chips de
+   código inline e blocos com fundo; herda os tokens de tema (claro/escuro). */
+.files-markdown {
+  padding: 16px 20px;
+  font-family: var(--tyba-font-sans);
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  color: var(--tyba-text);
+  overflow-wrap: anywhere;
+}
+.files-markdown > :first-child {
+  margin-top: 0;
+}
+.files-markdown > :last-child {
+  margin-bottom: 0;
+}
+.files-markdown h1,
+.files-markdown h2,
+.files-markdown h3,
+.files-markdown h4,
+.files-markdown h5,
+.files-markdown h6 {
+  font-family: var(--tyba-font-sans);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--tyba-text);
+  margin: 1.6em 0 0.6em;
+}
+.files-markdown h1 {
+  font-size: 1.6rem;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--tyba-border);
+}
+.files-markdown h2 {
+  font-size: 1.3rem;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--tyba-border);
+}
+.files-markdown h3 {
+  font-size: 1.1rem;
+}
+.files-markdown h4 {
+  font-size: 0.95rem;
+}
+.files-markdown h5,
+.files-markdown h6 {
+  font-size: 0.85rem;
+  color: var(--tyba-text-muted);
+}
+.files-markdown p {
+  margin: 0.7em 0;
+}
+.files-markdown a {
+  color: var(--tyba-green);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.files-markdown strong {
+  font-weight: 600;
+  color: var(--tyba-text);
+}
+.files-markdown em {
+  font-style: italic;
+}
+.files-markdown ul,
+.files-markdown ol {
+  margin: 0.7em 0;
+  padding-left: 1.5em;
+}
+.files-markdown li {
+  margin: 0.25em 0;
+}
+.files-markdown li > ul,
+.files-markdown li > ol {
+  margin: 0.25em 0;
+}
+.files-markdown blockquote {
+  margin: 0.9em 0;
+  padding: 0.2em 0 0.2em 1em;
+  border-left: 3px solid var(--tyba-border-strong);
+  color: var(--tyba-text-muted);
+}
+.files-markdown hr {
+  border: 0;
+  border-top: 1px solid var(--tyba-border);
+  margin: 1.5em 0;
+}
+.files-markdown img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+.files-md-inline {
+  font-family: var(--tyba-font-mono);
+  font-size: 0.85em;
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--tyba-text) 8%, transparent);
+  border: 1px solid var(--tyba-border);
+  white-space: break-spaces;
+}
+.files-md-pre {
+  margin: 0.9em 0;
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--tyba-text) 6%, transparent);
+  border: 1px solid var(--tyba-border);
+  overflow-x: auto;
+}
+.files-md-pre code {
+  font-family: var(--tyba-font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--tyba-text);
+  background: none;
+  border: 0;
+  padding: 0;
+  white-space: pre;
+}
+.files-markdown table {
+  display: block;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.8125rem;
+  overflow-x: auto;
+}
+.files-markdown th,
+.files-markdown td {
+  border: 1px solid var(--tyba-border);
+  padding: 0.4em 0.7em;
+  text-align: left;
+}
+.files-markdown th {
+  background: color-mix(in srgb, var(--tyba-text) 8%, transparent);
+  font-weight: 600;
+}
+.files-markdown tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--tyba-text) 3%, transparent);
+}

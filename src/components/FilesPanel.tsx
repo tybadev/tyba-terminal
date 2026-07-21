@@ -35,9 +35,13 @@ import {
   onFilesDecorations,
   onFilesTree,
 } from "@/lib/ipc";
-import { langOfPath } from "@/lib/diff";
 import { fileIcon } from "@/lib/fileIcon";
-import { highlightBlock, type TokenSpan } from "@/lib/highlight";
+import {
+  highlightBlock,
+  langForFence,
+  langForFile,
+  type TokenSpan,
+} from "@/lib/highlight";
 import { isRemoteUrl, safeMarkdownUrl } from "@/lib/markdownUrl";
 import { getEffectiveBase, onEffectiveBaseChange } from "@/theme";
 
@@ -72,28 +76,50 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const MD_COMPONENTS: Components = {
-  img(props) {
-    const { src, alt } = props;
-    return typeof src === "string" && src.length > 0 && !isRemoteUrl(src) ? (
-      <img src={src} alt={alt ?? ""} className="max-w-full" />
-    ) : (
-      <span className="text-tyba-text-faint">{alt ?? ""}</span>
-    );
-  },
-  a(props) {
-    const { href, children } = props;
-    return (
-      <a
-        href={href || undefined}
-        onClick={(e) => e.preventDefault()}
-        className="text-tyba-green underline"
-      >
-        {children}
-      </a>
-    );
-  },
-};
+function MarkdownCode({
+  code,
+  lang,
+  dark,
+}: {
+  code: string;
+  lang: string | null;
+  dark: boolean;
+}) {
+  const [tokens, setTokens] = useState<TokenSpan[][] | null>(null);
+  const body = code.replace(/\n+$/, "");
+  useEffect(() => {
+    setTokens(null);
+    if (!lang) return;
+    let alive = true;
+    void highlightBlock(body.split("\n"), lang, dark ? "mono-dark" : "vitesse-dark")
+      .then((r) => {
+        if (alive) setTokens(r);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [body, lang, dark]);
+  return (
+    <pre className="files-md-pre">
+      <code>
+        {tokens
+          ? tokens.map((line, i) => (
+              <div key={i}>
+                {line.length === 0
+                  ? "\n"
+                  : line.map((tk, j) => (
+                      <span key={j} style={{ color: tk.color }}>
+                        {tk.text}
+                      </span>
+                    ))}
+              </div>
+            ))
+          : body}
+      </code>
+    </pre>
+  );
+}
 
 export function FilesPanel({
   session,
@@ -254,13 +280,13 @@ export function FilesPanel({
     if (next) setInfo(next);
   }, [session.id]);
 
-  const isMarkdown = selected ? langOfPath(selected) === "markdown" : false;
+  const isMarkdown = selected ? langForFile(selected) === "markdown" : false;
 
   useEffect(() => {
     setTokens(null);
     if (!content || content.kind !== "text" || !selected) return;
     if (isMarkdown && !markdownSource) return;
-    const lang = langOfPath(selected);
+    const lang = langForFile(selected);
     if (!lang) return;
     let alive = true;
     void highlightBlock(
@@ -278,6 +304,47 @@ export function FilesPanel({
   }, [content, selected, isMarkdown, markdownSource, isDark]);
 
   const selectedDecorated = selected ? decorations.has(selected) : false;
+
+  const mdComponents = useMemo<Components>(
+    () => ({
+      img(props) {
+        const { src, alt } = props;
+        return typeof src === "string" && src.length > 0 && !isRemoteUrl(src) ? (
+          <img src={src} alt={alt ?? ""} className="max-w-full" />
+        ) : (
+          <span className="text-tyba-text-faint">{alt ?? ""}</span>
+        );
+      },
+      a(props) {
+        const { href, children } = props;
+        return (
+          <a href={href || undefined} onClick={(e) => e.preventDefault()}>
+            {children}
+          </a>
+        );
+      },
+      pre(props) {
+        return <>{props.children}</>;
+      },
+      code(props) {
+        const { className, children } = props;
+        const text = String(children ?? "");
+        const match = /language-([\w-]+)/.exec(className || "");
+        const block = !!match || text.includes("\n");
+        if (!block) {
+          return <code className="files-md-inline">{children}</code>;
+        }
+        return (
+          <MarkdownCode
+            code={text}
+            lang={match ? langForFence(match[1]) : null}
+            dark={isDark}
+          />
+        );
+      },
+    }),
+    [isDark],
+  );
 
   const rows = useMemo(() => {
     type Row =
@@ -491,11 +558,11 @@ export function FilesPanel({
                     })}
                   </div>
                 ) : isMarkdown && !markdownSource ? (
-                  <div className="files-markdown px-4 py-3 text-[13px] leading-relaxed text-tyba-text">
+                  <div className="files-markdown">
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       urlTransform={safeMarkdownUrl}
-                      components={MD_COMPONENTS}
+                      components={mdComponents}
                     >
                       {content.text}
                     </ReactMarkdown>

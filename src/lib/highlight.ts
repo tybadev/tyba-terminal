@@ -43,9 +43,102 @@ const LANG_LOADERS: Record<string, () => Promise<unknown>> = {
   yaml: () => import("@shikijs/langs/yaml"),
   python: () => import("@shikijs/langs/python"),
   go: () => import("@shikijs/langs/go"),
+  java: () => import("@shikijs/langs/java"),
   sql: () => import("@shikijs/langs/sql"),
   swift: () => import("@shikijs/langs/swift"),
+  dockerfile: () => import("@shikijs/langs/dockerfile"),
+  make: () => import("@shikijs/langs/make"),
 };
+
+const LANG_BY_NAME: Record<string, string> = {
+  dockerfile: "dockerfile",
+  "docker-compose.yml": "yaml",
+  "docker-compose.yaml": "yaml",
+  "compose.yml": "yaml",
+  "compose.yaml": "yaml",
+  makefile: "make",
+  gnumakefile: "make",
+};
+
+const LANG_BY_EXT: Record<string, string> = {
+  ts: "typescript",
+  mts: "typescript",
+  cts: "typescript",
+  tsx: "tsx",
+  js: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
+  jsx: "jsx",
+  rs: "rust",
+  py: "python",
+  go: "go",
+  java: "java",
+  sh: "shellscript",
+  bash: "shellscript",
+  zsh: "shellscript",
+  md: "markdown",
+  mdx: "markdown",
+  markdown: "markdown",
+  json: "json",
+  jsonc: "jsonc",
+  yaml: "yaml",
+  yml: "yaml",
+  toml: "toml",
+  css: "css",
+  scss: "css",
+  less: "css",
+  html: "html",
+  htm: "html",
+  sql: "sql",
+  swift: "swift",
+};
+
+const FENCE_ALIASES: Record<string, string> = {
+  typescript: "typescript",
+  ts: "typescript",
+  tsx: "tsx",
+  javascript: "javascript",
+  js: "javascript",
+  jsx: "jsx",
+  rust: "rust",
+  rs: "rust",
+  python: "python",
+  py: "python",
+  go: "go",
+  golang: "go",
+  java: "java",
+  shell: "shellscript",
+  sh: "shellscript",
+  bash: "shellscript",
+  zsh: "shellscript",
+  markdown: "markdown",
+  md: "markdown",
+  json: "json",
+  jsonc: "jsonc",
+  yaml: "yaml",
+  yml: "yaml",
+  toml: "toml",
+  css: "css",
+  html: "html",
+  sql: "sql",
+  dockerfile: "dockerfile",
+  docker: "dockerfile",
+  make: "make",
+  makefile: "make",
+};
+
+export function langForFile(name: string): string | null {
+  const lower = name.toLowerCase();
+  if (LANG_BY_NAME[lower]) return LANG_BY_NAME[lower];
+  if (lower === "dockerfile" || lower.startsWith("dockerfile.")) return "dockerfile";
+  const dot = lower.lastIndexOf(".");
+  const ext = dot > 0 ? lower.slice(dot + 1) : "";
+  return LANG_BY_EXT[ext] ?? null;
+}
+
+export function langForFence(fence: string): string | null {
+  return FENCE_ALIASES[fence.toLowerCase()] ?? null;
+}
 
 export interface TokenSpan {
   text: string;
