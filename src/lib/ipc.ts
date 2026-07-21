@@ -1324,3 +1324,131 @@ export const onFilesConflict = (
     `files://conflict/${id}`,
     (e) => handler(e.payload.path, e.payload.disk_hash),
   );
+
+export interface LspPosition {
+  line: number;
+  character: number;
+}
+
+export interface LspRange {
+  start: LspPosition;
+  end: LspPosition;
+}
+
+export interface LspContentChange {
+  range?: LspRange;
+  text: string;
+}
+
+export interface LspDiagnostic {
+  range: LspRange;
+  severity: number;
+  message: string;
+  source: string | null;
+}
+
+export interface LspCompletionItem {
+  label: string;
+  detail: string | null;
+  kind: number | null;
+  insert_text: string | null;
+  sort_text: string | null;
+  filter_text: string | null;
+}
+
+export interface LspHover {
+  contents: string;
+}
+
+export interface LspLocation {
+  path: string;
+  in_root: boolean;
+  line: number;
+  character: number;
+}
+
+export interface LspSignatureInfo {
+  label: string;
+  documentation: string | null;
+  parameters: string[];
+}
+
+export interface LspSignatureHelp {
+  signatures: LspSignatureInfo[];
+  active_signature: number;
+  active_parameter: number;
+}
+
+export interface LspInstallHint {
+  command: string;
+  manager: string;
+}
+
+export type LspStatus =
+  | { state: "unsupported" }
+  | { state: "absent"; server: string; install: LspInstallHint; experimental: boolean }
+  | { state: "available"; server: string; experimental: boolean }
+  | { state: "starting"; server: string }
+  | { state: "ready"; server: string; diagnostics: number }
+  | { state: "crashed"; server: string };
+
+export const lspStatus = (id: SessionId, path: string) =>
+  invoke<LspStatus>("lsp_status", { id, path });
+
+export const lspOpen = (
+  id: SessionId,
+  path: string,
+  text: string,
+  spawn: boolean,
+) => invoke<LspStatus>("lsp_open", { id, path, text, spawn });
+
+export const lspChange = (
+  id: SessionId,
+  path: string,
+  changes: LspContentChange[],
+) => invoke<void>("lsp_change", { id, path, changes });
+
+export const lspCloseDoc = (id: SessionId, path: string) =>
+  invoke<void>("lsp_close_doc", { id, path });
+
+export const lspCompletion = (
+  id: SessionId,
+  path: string,
+  line: number,
+  character: number,
+) =>
+  invoke<LspCompletionItem[]>("lsp_completion", { id, path, line, character });
+
+export const lspHover = (
+  id: SessionId,
+  path: string,
+  line: number,
+  character: number,
+) => invoke<LspHover | null>("lsp_hover", { id, path, line, character });
+
+export const lspDefinition = (
+  id: SessionId,
+  path: string,
+  line: number,
+  character: number,
+) => invoke<LspLocation[]>("lsp_definition", { id, path, line, character });
+
+export const lspSignature = (
+  id: SessionId,
+  path: string,
+  line: number,
+  character: number,
+) =>
+  invoke<LspSignatureHelp | null>("lsp_signature", { id, path, line, character });
+
+export const lspOpenExternal = (path: string, editor?: string) =>
+  invoke<void>("lsp_open_external", { path, editor: editor ?? null });
+
+export const onLspDiagnostics = (
+  id: SessionId,
+  handler: (files: { path: string; diagnostics: LspDiagnostic[] }[]) => void,
+): Promise<UnlistenFn> =>
+  listen<{ files: { path: string; diagnostics: LspDiagnostic[] }[] }>(
+    `lsp://diagnostics/${id}`,
+    (e) => handler(e.payload.files),
+  );
