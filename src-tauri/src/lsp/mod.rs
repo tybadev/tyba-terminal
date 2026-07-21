@@ -558,6 +558,7 @@ impl LspManager {
         let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
         let pre_args: Vec<std::ffi::OsString> =
             pre.into_iter().map(|p| p.into_os_string()).collect();
+        let init_options = embedded_init_options(entry, &cache.join(".rt"));
 
         let app = app.clone();
         let event = diagnostics_event(id);
@@ -572,6 +573,7 @@ impl LspManager {
             pre_args,
             spec,
             env,
+            init_options,
             emit,
         )
     }
@@ -723,6 +725,34 @@ fn install_ipc(install: registry::Install) -> InstallHintIpc {
         command: install.command.to_string(),
         manager: install.manager.label().to_string(),
     }
+}
+
+fn embedded_init_options(entry: &ServerEntry, schema_dir: &Path) -> Option<String> {
+    let schemas = registry::embedded_schemas(entry);
+    if schemas.is_empty() {
+        return None;
+    }
+    let mut associations = serde_json::Map::new();
+    for schema in schemas {
+        let path = schema_dir.join(schema.filename);
+        if std::fs::write(&path, schema.content).is_err() {
+            continue;
+        }
+        associations.insert(uri::from_path(&path), json!(schema.globs));
+    }
+    if associations.is_empty() {
+        return None;
+    }
+    let init = json!({
+        "yaml": {
+            "validate": true,
+            "hover": true,
+            "completion": true,
+            "schemaStore": {"enable": false},
+            "schemas": associations,
+        }
+    });
+    Some(init.to_string())
 }
 
 fn server_uri(server: &LspServer, rel: &str) -> String {
@@ -914,6 +944,7 @@ mod tests {
             pre_args,
             spec,
             base_env(&user_env, entry),
+            None,
             Arc::new(|_batch: DiagnosticsBatch| {}),
         )
         .expect("server enjaulado subiu");
@@ -1006,6 +1037,7 @@ mod tests {
             pre_args,
             spec,
             base_env(&user_env, entry),
+            None,
             Arc::new(|_batch: DiagnosticsBatch| {}),
         )
         .expect("server node enjaulado subiu");
@@ -1051,11 +1083,13 @@ mod tests {
         let entry = entry_by_id("typescript-language-server").unwrap();
         let path_dirs: Vec<PathBuf> =
             std::env::split_paths(&crate::shell_path::agent_path()).collect();
-        let root = std::fs::canonicalize(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap(),
-        )
-        .unwrap();
-        if !root.join("node_modules/typescript/lib/tsserver.js").is_file() {
+        let root =
+            std::fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
+                .unwrap();
+        if !root
+            .join("node_modules/typescript/lib/tsserver.js")
+            .is_file()
+        {
             eprintln!("projeto sem typescript clássico — pulado");
             return;
         }
@@ -1096,6 +1130,7 @@ mod tests {
             pre_args,
             spec,
             base_env(&user_env, entry),
+            None,
             Arc::new(|_b: DiagnosticsBatch| {}),
         )
         .unwrap();
@@ -1157,9 +1192,97 @@ mod tests {
         server.shutdown();
         std::fs::remove_file(&probe).ok();
         std::fs::remove_dir_all(&cache).ok();
-
-        eprintln!("SAVE-REPRO before={before} after={after}");
         assert!(before > 0, "completion funcionava antes do save");
         assert!(after > 0, "completion continua viva depois do save+edição");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requer yaml-language-server; valida descoberta + schemas embarcados offline"]
+    fn live_yaml_docker_compose_completion_offline() {
+        use crate::lsp::client::{base_env, LspServer};
+        use crate::lsp::registry::{self, entry_by_id};
+        use crate::lsp::sandbox::{lsp_sandbox_spec, LspSpecCtx};
+        use std::time::{Duration, Instant};
+
+        let user_env: HashMap<String, String> = std::env::vars().collect();
+        let home = PathBuf::from(user_env.get("HOME").cloned().unwrap());
+        let entry = entry_by_id("yaml-language-server").unwrap();
+        let path_dirs: Vec<PathBuf> =
+            std::env::split_paths(&crate::shell_path::agent_path()).collect();
+        let root = std::env::temp_dir().join(format!("tyba-lsp-yaml-{}", SessionId::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let rel = "docker-compose.yml";
+        let file = root.join(rel);
+        std::fs::write(&file, "\n").unwrap();
+
+        let Some(binary) = registry::discover(entry, &path_dirs, &home, &root) else {
+            std::fs::remove_dir_all(&root).ok();
+            eprintln!("yaml-language-server ausente (nem sob version-manager) — pulado");
+            return;
+        };
+
+        let cache =
+            std::env::temp_dir().join(format!("tyba-lsp-yaml-cache-{}", SessionId::new_v4()));
+        std::fs::create_dir_all(cache.join(".rt")).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let mut exec_path_dirs = path_dirs.clone();
+        exec_path_dirs.push(binary.parent().unwrap().to_path_buf());
+        let extra_reads = registry::derived_read_grants(entry, &binary, &path_dirs);
+        let ctx = LspSpecCtx {
+            root: &root,
+            cache_dir: &cache,
+            exe: &exe,
+            env: &user_env,
+            exec_path_dirs,
+            read_allow_extra: vec![],
+            extra_reads,
+            data_dir: data_dir(&home),
+        };
+        let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
+        let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
+        let pre_args: Vec<std::ffi::OsString> =
+            pre.into_iter().map(|p| p.into_os_string()).collect();
+        let init_options = embedded_init_options(entry, &cache.join(".rt"));
+        assert!(init_options.is_some(), "yaml-ls recebe schemas embarcados");
+
+        let server = LspServer::spawn(
+            entry,
+            root.clone(),
+            program,
+            pre_args,
+            spec,
+            base_env(&user_env, entry),
+            init_options,
+            Arc::new(|_b: DiagnosticsBatch| {}),
+        )
+        .unwrap();
+
+        server.did_open(rel, "yaml", "\n");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert_eq!(server.state(), RunState::Ready, "yaml-ls subiu enjaulado");
+        std::thread::sleep(Duration::from_millis(800));
+
+        let value = server
+            .request(
+                "textDocument/completion",
+                json!({"textDocument": {"uri": uri::from_path(&file)}, "position": {"line": 0, "character": 0}}),
+            )
+            .unwrap();
+        let labels: Vec<String> = CompletionItem::list_from(&value)
+            .into_iter()
+            .map(|c| c.label)
+            .collect();
+
+        server.shutdown();
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&cache).ok();
+        assert!(
+            labels.iter().any(|l| l == "services"),
+            "schema compose embarcado (sem rede) oferece chaves como `services`: {labels:?}"
+        );
     }
 }

@@ -45,6 +45,8 @@ struct BootParams {
 pub struct LspServer {
     pub entry: &'static ServerEntry,
     root: std::path::PathBuf,
+    init_options: Option<String>,
+    config: Value,
     boot: BootParams,
     emit: Arc<DiagEmitter>,
     next_id: AtomicI64,
@@ -74,6 +76,7 @@ impl Drop for LspServer {
 }
 
 impl LspServer {
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         entry: &'static ServerEntry,
         root: std::path::PathBuf,
@@ -81,11 +84,19 @@ impl LspServer {
         pre_args: Vec<std::ffi::OsString>,
         spec: SandboxSpec,
         env: Vec<(String, String)>,
+        init_options: Option<String>,
         emit: Arc<DiagEmitter>,
     ) -> Result<Arc<Self>, String> {
+        let config = init_options
+            .as_deref()
+            .or(entry.init_options)
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(Value::Null);
         let server = Arc::new(LspServer {
             entry,
             root,
+            init_options,
+            config,
             boot: BootParams {
                 program,
                 pre_args,
@@ -150,6 +161,20 @@ impl LspServer {
             .get(rel)
             .map(|d| d.len())
             .unwrap_or(0)
+    }
+
+    fn config_for(&self, section: Option<&str>) -> Value {
+        let Some(section) = section.filter(|s| !s.is_empty()) else {
+            return self.config.clone();
+        };
+        let mut cur = &self.config;
+        for key in section.split('.') {
+            match cur.get(key) {
+                Some(next) => cur = next,
+                None => return Value::Null,
+            }
+        }
+        cur.clone()
     }
 
     fn touch(&self) {
@@ -506,8 +531,9 @@ fn boot(server: &Arc<LspServer>) -> Result<(), String> {
 fn handshake(server: &Arc<LspServer>) {
     let root_uri = super::uri::from_path(&server.root);
     let init_options: Value = server
-        .entry
         .init_options
+        .as_deref()
+        .or(server.entry.init_options)
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(Value::Null);
     let params = json!({
@@ -648,13 +674,17 @@ fn dispatch(server: &Arc<LspServer>, body: &[u8]) {
     if let Some(id) = msg.get("id").cloned() {
         let result = match method {
             "workspace/configuration" => {
-                let count = msg
+                let items = msg
                     .get("params")
                     .and_then(|p| p.get("items"))
                     .and_then(Value::as_array)
-                    .map(|a| a.len())
-                    .unwrap_or(0);
-                Value::Array(vec![Value::Null; count])
+                    .cloned()
+                    .unwrap_or_default();
+                let values = items
+                    .iter()
+                    .map(|item| server.config_for(item.get("section").and_then(Value::as_str)))
+                    .collect();
+                Value::Array(values)
             }
             "workspace/applyEdit" => json!({"applied": false}),
             _ => Value::Null,
