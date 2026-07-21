@@ -215,6 +215,18 @@ export function FilesPanel({
   selectedRef.current = selected;
   const editingRef = useRef(false);
   editingRef.current = editing;
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+
+  const confirmDiscard = useCallback(async (): Promise<boolean> => {
+    if (!editingRef.current || !dirtyRef.current) return true;
+    return requestConfirm({
+      title: t("filesDiscardTitle"),
+      detail: t("filesDiscardDetail"),
+      confirmLabel: t("filesDiscardConfirm"),
+      destructive: true,
+    });
+  }, [t]);
 
   const relist = useCallback(
     (dir: string) => {
@@ -260,6 +272,13 @@ export function FilesPanel({
         });
     },
     [session.id],
+  );
+
+  const openFileGuarded = useCallback(
+    async (rel: string) => {
+      if (await confirmDiscard()) openFile(rel);
+    },
+    [confirmDiscard, openFile],
   );
 
   useEffect(() => {
@@ -314,7 +333,8 @@ export function FilesPanel({
   }, [session.id, relist]);
 
   const reveal = useCallback(
-    (path: string) => {
+    async (path: string) => {
+      if (!(await confirmDiscard())) return;
       const parts = path.split("/");
       const dirs: string[] = [];
       let acc = "";
@@ -333,11 +353,11 @@ export function FilesPanel({
       }
       openFile(path);
     },
-    [session.id, relist, openFile],
+    [session.id, relist, openFile, confirmDiscard],
   );
 
   useEffect(() => {
-    if (openRequest) reveal(openRequest.path);
+    if (openRequest) void reveal(openRequest.path);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openRequest?.nonce]);
 
@@ -392,6 +412,7 @@ export function FilesPanel({
   );
 
   const reanchor = useCallback(async () => {
+    if (!(await confirmDiscard())) return;
     reqId.current += 1;
     await filesReanchor(session.id).catch(() => {});
     setExpandedDirs(new Set());
@@ -407,7 +428,7 @@ export function FilesPanel({
     }
     const next = await filesPanelInfo(session.id).catch(() => null);
     if (next) setInfo(next);
-  }, [session.id]);
+  }, [session.id, confirmDiscard]);
 
   const isMarkdown = selected ? langForFile(selected) === "markdown" : false;
 
@@ -483,6 +504,7 @@ export function FilesPanel({
 
   const reloadFromDisk = useCallback(async () => {
     if (!selected) return;
+    if (!(await confirmDiscard())) return;
     try {
       const base = await filesEditBegin(session.id, selected);
       setEditBaseline(base);
@@ -493,7 +515,7 @@ export function FilesPanel({
     } catch (e) {
       toastError(t("filesEditError"), e);
     }
-  }, [selected, session.id, t]);
+  }, [selected, session.id, t, confirmDiscard]);
 
   const overwrite = useCallback(async () => {
     if (!selected || !conflict || !editorRef.current) return;
@@ -575,6 +597,7 @@ export function FilesPanel({
 
   const deleteEntry = useCallback(
     async (entry: FileEntry) => {
+      if (entry.rel_path === selected && !(await confirmDiscard())) return;
       if (entry.is_dir) {
         const listing = await filesListDir(session.id, entry.rel_path).catch(
           () => null,
@@ -600,7 +623,7 @@ export function FilesPanel({
         toastError(t("filesDeleteError"), e);
       }
     },
-    [session.id, selected, t],
+    [session.id, selected, t, confirmDiscard],
   );
 
   const selectedDecorated = selected ? decorations.has(selected) : false;
@@ -854,7 +877,7 @@ export function FilesPanel({
                     onClick={() =>
                       entry.is_dir
                         ? toggleDir(entry.rel_path)
-                        : openFile(entry.rel_path)
+                        : void openFileGuarded(entry.rel_path)
                     }
                     className={`group flex h-6 cursor-pointer items-center gap-1 pr-2 text-[12px] ${
                       isSelected
