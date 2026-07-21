@@ -40,7 +40,8 @@
     "longDescription": "Terminal opensource orientado a agentes de IA: orquestra múltiplas sessões de agentes em git worktrees isolados, com inbox de aprovações, review de diff local e sandbox real do sistema operacional.",
     "licenseFile": "../LICENSE",
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "infoPlist": "Info.plist"
     },
     "linux": {
       "deb": {
