@@ -26,6 +26,7 @@ import type {
 import {
   filesDecorations,
   filesListDir,
+  filesOpenExternal,
   filesPanelInfo,
   filesRead,
   filesReanchor,
@@ -33,7 +34,6 @@ import {
   filesWatchDir,
   onFilesDecorations,
   onFilesTree,
-  openWorktreeFile,
 } from "@/lib/ipc";
 import { langOfPath } from "@/lib/diff";
 import { highlightBlock, type TokenSpan } from "@/lib/highlight";
@@ -371,7 +371,7 @@ export function FilesPanel({
                 )}
                 <button
                   onClick={() =>
-                    void openWorktreeFile(session.id, selected, editor).catch(
+                    void filesOpenExternal(session.id, selected, editor).catch(
                       (e) => setContentError(String(e)),
                     )
                   }

@@ -1218,6 +1218,13 @@ export const filesUnwatchDir = (id: SessionId, path: string) =>
 export const filesReanchor = (id: SessionId) =>
   invoke<string>("files_reanchor", { id });
 
+export const filesOpenExternal = (
+  id: SessionId,
+  path: string,
+  editor?: string,
+) =>
+  invoke<void>("files_open_external", { id, path, editor: editor ?? null });
+
 export const filesDecorations = (id: SessionId) =>
   invoke<void>("files_decorations", { id });
 

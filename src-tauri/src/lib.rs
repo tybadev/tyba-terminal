@@ -1379,26 +1379,7 @@ async fn forge_workflow_jobs(
 /// agente no worktree com um clique; aqui só editor configurado ou
 /// visualizador de texto. Path do webview: resolve dentro do worktree
 /// e recusa qualquer coisa fora.
-#[tauri::command]
-async fn open_worktree_file(
-    state: State<'_, AppState>,
-    id: SessionId,
-    path: String,
-    editor: Option<String>,
-) -> Result<(), String> {
-    let wt = session_worktree(&state, id)?;
-    let root = wt
-        .path
-        .canonicalize()
-        .map_err(|e| format!("worktree inacessível: {e}"))?;
-    let full = root
-        .join(&path)
-        .canonicalize()
-        .map_err(|e| format!("arquivo inacessível: {e}"))?;
-    if !full.starts_with(&root) {
-        return Err("arquivo fora do worktree".into());
-    }
-
+fn open_path_in_editor(full: std::path::PathBuf, editor: Option<String>) -> Result<(), String> {
     let gui_editor = editor
         .filter(|id| !id.is_empty())
         .and_then(|id| editor::detect().into_iter().find(|e| e.id == id))
@@ -1436,6 +1417,43 @@ async fn open_worktree_file(
         })
         .ok();
     Ok(())
+}
+
+#[tauri::command]
+async fn open_worktree_file(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    editor: Option<String>,
+) -> Result<(), String> {
+    let wt = session_worktree(&state, id)?;
+    let root = wt
+        .path
+        .canonicalize()
+        .map_err(|e| format!("worktree inacessível: {e}"))?;
+    let full = root
+        .join(&path)
+        .canonicalize()
+        .map_err(|e| format!("arquivo inacessível: {e}"))?;
+    if !full.starts_with(&root) {
+        return Err("arquivo fora do worktree".into());
+    }
+    open_path_in_editor(full, editor)
+}
+
+#[tauri::command]
+async fn files_open_external(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    editor: Option<String>,
+) -> Result<(), String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    let full = files::resolve_within(&root, &path)?;
+    open_path_in_editor(full, editor)
 }
 
 #[tauri::command]
@@ -3349,6 +3367,7 @@ pub fn run() {
             files_unwatch_dir,
             files_reanchor,
             files_decorations,
+            files_open_external,
             files_close,
             close_side_view,
             set_side_view_expanded,
