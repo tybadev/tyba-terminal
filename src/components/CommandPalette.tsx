@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   Desktop,
   DownloadSimple,
+  FileMagnifyingGlass,
   FolderOpen,
   GearSix,
   Globe,
@@ -54,6 +55,8 @@ import {
   type WorkspaceId,
 } from "../lib/ipc";
 import { type Bindings } from "../lib/keys";
+import { nextPaletteMode, type PaletteMode } from "../lib/paletteMode";
+import { fileIcon } from "../lib/fileIcon";
 import { toastError } from "../lib/toast";
 
 const THEME_ICONS: Record<ThemeMode, typeof Moon> = {
@@ -71,8 +74,10 @@ const THEME_LABEL_KEYS: Record<ThemeMode, string> = {
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  mode: "actions" | "sessions";
-  onModeChange: (mode: "actions" | "sessions") => void;
+  mode: PaletteMode;
+  onModeChange: (mode: PaletteMode) => void;
+  searchFiles: (query: string) => Promise<string[]>;
+  onOpenFile: (rel: string) => void;
   workspaces: Workspace[];
   activeWorkspace: WorkspaceId | null;
   bindings: Bindings;
@@ -97,6 +102,8 @@ export function CommandPalette({
   onOpenChange,
   mode,
   onModeChange,
+  searchFiles,
+  onOpenFile,
   workspaces,
   activeWorkspace,
   bindings,
@@ -117,6 +124,8 @@ export function CommandPalette({
 }: Props) {
   const { t, i18n } = useTranslation();
   const [selectableThemes, setSelectableThemes] = useState<Theme[]>([]);
+  const [query, setQuery] = useState("");
+  const [fileResults, setFileResults] = useState<string[]>([]);
 
   useEffect(() => {
     if (!open) return;
@@ -128,6 +137,35 @@ export function CommandPalette({
       )
       .catch(() => setSelectableThemes([]));
   }, [open]);
+
+  useEffect(() => {
+    if (!open) setQuery("");
+  }, [open]);
+
+  useEffect(() => {
+    setQuery("");
+  }, [mode]);
+
+  useEffect(() => {
+    if (!open || mode !== "files") return;
+    let alive = true;
+    void searchFiles(query)
+      .then((results) => {
+        if (alive) setFileResults(results);
+      })
+      .catch(() => {
+        if (alive) setFileResults([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open, mode, query, searchFiles]);
+
+  const cycleMode = (e: KeyboardEvent) => {
+    if (e.key !== "Tab") return;
+    e.preventDefault();
+    onModeChange(nextPaletteMode(mode, e.shiftKey ? -1 : 1));
+  };
 
   const run = (fn: () => void) => () => {
     onOpenChange(false);
@@ -154,43 +192,90 @@ export function CommandPalette({
       onOpenChange={onOpenChange}
       title={t("commandPalette")}
       description={t("searchCommand")}
+      shouldFilter={mode !== "files"}
       showCloseButton={false}
       className="top-28 max-w-[560px] translate-y-0 rounded-[6px] border-tyba-border-strong bg-tyba-surface shadow-2xl"
     >
       <div className="flex items-center gap-1 border-b border-tyba-border px-2 py-1.5">
-        {(["actions", "sessions"] as const).map((m) => (
-          <button
-            key={m}
-            onClick={() => onModeChange(m)}
-            className={`flex items-center gap-1.5 rounded-[4px] px-2 py-1 text-[11px] transition-colors ${
-              mode === m
-                ? "bg-tyba-text/[.06] text-tyba-text"
-                : "text-tyba-text-faint hover:text-tyba-text-muted"
-            }`}
-          >
-            {m === "actions" ? (
-              <MagnifyingGlass size={12} />
-            ) : (
-              <TerminalWindow size={12} />
-            )}
-            {m === "actions" ? t("actions") : t("sessions")}
-            <Shortcut
-              combo={
-                m === "actions"
-                  ? bindings.paletteActions
-                  : bindings.paletteSessions
-              }
-              className="ml-1"
-            />
-          </button>
-        ))}
+        {(["actions", "files", "sessions"] as const).map((m) => {
+          const Icon =
+            m === "actions"
+              ? MagnifyingGlass
+              : m === "files"
+                ? FileMagnifyingGlass
+                : TerminalWindow;
+          const label =
+            m === "actions"
+              ? t("actions")
+              : m === "files"
+                ? t("filesFinderMode")
+                : t("sessions");
+          const combo =
+            m === "actions"
+              ? bindings.paletteActions
+              : m === "files"
+                ? bindings.filesFinder
+                : bindings.paletteSessions;
+          return (
+            <button
+              key={m}
+              onClick={() => onModeChange(m)}
+              className={`flex items-center gap-1.5 rounded-[4px] px-2 py-1 text-[11px] transition-colors ${
+                mode === m
+                  ? "bg-tyba-text/[.06] text-tyba-text"
+                  : "text-tyba-text-faint hover:text-tyba-text-muted"
+              }`}
+            >
+              <Icon size={12} />
+              {label}
+              <Shortcut combo={combo} className="ml-1" />
+            </button>
+          );
+        })}
+        <span className="ml-auto text-[10px] text-tyba-text-faint">
+          {t("paletteTabHint")}
+        </span>
       </div>
       <CommandInput
         autoFocus
-        placeholder={mode === "sessions" ? t("searchSessions") : t("searchCommand")}
+        value={query}
+        onValueChange={setQuery}
+        onKeyDown={cycleMode}
+        placeholder={
+          mode === "sessions"
+            ? t("searchSessions")
+            : mode === "files"
+              ? t("filesFinderPlaceholder")
+              : t("searchCommand")
+        }
       />
       <CommandList>
         <CommandEmpty>{t("noResults")}</CommandEmpty>
+
+        {mode === "files" && fileResults.length > 0 && (
+          <CommandGroup heading={t("filesFinderMode")}>
+            {fileResults.map((rel) => {
+              const name = rel.slice(rel.lastIndexOf("/") + 1);
+              const dir = rel.slice(0, rel.lastIndexOf("/"));
+              const Icon = fileIcon(name);
+              return (
+                <CommandItem
+                  key={rel}
+                  value={rel}
+                  onSelect={run(() => onOpenFile(rel))}
+                >
+                  <Icon size={15} />
+                  <span className="truncate">{name}</span>
+                  {dir && (
+                    <span className="ml-auto min-w-0 truncate font-mono text-[10px] text-tyba-text-faint">
+                      {dir}
+                    </span>
+                  )}
+                </CommandItem>
+              );
+            })}
+          </CommandGroup>
+        )}
 
         {mode === "actions" && (
         <CommandGroup heading={t("actions")}>

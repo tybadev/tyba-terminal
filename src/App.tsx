@@ -145,6 +145,7 @@ import {
   onSessionCommand,
   onSessionCwd,
   onSessionStatus,
+  filesSearch,
   openDiffTab,
   openFilesPanel,
   openTunnelsPanel,
@@ -245,6 +246,7 @@ import {
   captureState,
   comboOf,
   DEFAULT_BINDINGS,
+  formatCombo,
   parseBindings,
   BINDINGS_PREF_KEY,
   isTerminalAction,
@@ -253,6 +255,7 @@ import {
   type Bindings,
   type KeyAction,
 } from "./lib/keys";
+import { type PaletteMode } from "./lib/paletteMode";
 import {
   flattenPaste,
   hasUnsafeControlChars,
@@ -418,9 +421,12 @@ export default function App() {
   const [accountName, setAccountName] = useState("");
   const [sessionQuery, setSessionQuery] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [paletteMode, setPaletteMode] = useState<"actions" | "sessions">(
-    "actions",
-  );
+  const [paletteMode, setPaletteMode] = useState<PaletteMode>("actions");
+  const [fileOpenRequest, setFileOpenRequest] = useState<{
+    id: string;
+    path: string;
+    nonce: number;
+  } | null>(null);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [newSessionIsolate, setNewSessionIsolate] = useState(false);
   const [worktreeDir, setWorktreeDir] = useState<string | null>(null);
@@ -656,7 +662,7 @@ export default function App() {
     };
   }, []);
 
-  const openPalette = useCallback((mode: "actions" | "sessions") => {
+  const openPalette = useCallback((mode: PaletteMode) => {
     setPaletteMode(mode);
     setPaletteOpen(true);
   }, []);
@@ -687,6 +693,21 @@ export default function App() {
         ? paneSession(activeTab.root, activeTab.active_pane)
         : null,
     [activeTab],
+  );
+
+  const searchFilesForPalette = useCallback(
+    (query: string): Promise<string[]> =>
+      activeId ? filesSearch(activeId, query) : Promise.resolve([]),
+    [activeId],
+  );
+
+  const openFileFromFinder = useCallback(
+    (rel: string) => {
+      if (!activeId) return;
+      void openFilesPanel(activeId).catch(() => {});
+      setFileOpenRequest({ id: activeId, path: rel, nonce: Date.now() });
+    },
+    [activeId],
   );
 
   const paneLayout = useMemo(
@@ -2173,6 +2194,8 @@ export default function App() {
           toggleSidebar();
         } else if (action === "files") {
           if (activeId) void openFilesPanel(activeId).catch(() => {});
+        } else if (action === "filesFinder") {
+          openPalette("files");
         } else if (action === "newTab") {
           void newTab();
         } else if (action === "closePane") {
@@ -2700,6 +2723,8 @@ export default function App() {
         onOpenChange={setPaletteOpen}
         mode={paletteMode}
         onModeChange={setPaletteMode}
+        searchFiles={searchFilesForPalette}
+        onOpenFile={openFileFromFinder}
         workspaces={layout.workspaces}
         activeWorkspace={layout.active_workspace}
         bindings={bindings}
@@ -2923,6 +2948,36 @@ export default function App() {
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">{t("tunnelsAction")}</TooltipContent>
+            </Tooltip>
+          )}
+
+          {activeId && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={t("filesPanel")}
+                  onClick={() => {
+                    if (!activeId || !activeWorkspace) return;
+                    if (sideView === `files:${activeId}`) {
+                      void closeSideView(activeWorkspace.id).catch(() => {});
+                    } else {
+                      void openFilesPanel(activeId).catch(() => {});
+                    }
+                  }}
+                  className={`size-6 rounded-[4px] ${
+                    sideView === `files:${activeId}`
+                      ? "bg-tyba-text/[.06] text-tyba-text"
+                      : "text-tyba-text-faint hover:text-tyba-text"
+                  }`}
+                >
+                  <TreeStructure size={16} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {`${t("filesPanel")} (${formatCombo(bindings.files)})`}
+              </TooltipContent>
             </Tooltip>
           )}
 
@@ -3612,6 +3667,15 @@ export default function App() {
                             session={filesTarget}
                             editor={editorPref}
                             expanded={sideExpanded}
+                            openRequest={
+                              fileOpenRequest &&
+                              fileOpenRequest.id === filesTarget.id
+                                ? {
+                                    path: fileOpenRequest.path,
+                                    nonce: fileOpenRequest.nonce,
+                                  }
+                                : null
+                            }
                             onToggleExpand={() =>
                               void setSideViewExpanded(
                                 activeWorkspace.id,

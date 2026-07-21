@@ -1184,6 +1184,143 @@ fn files_close(state: State<'_, AppState>, id: SessionId) {
 }
 
 #[tauri::command]
+fn files_write(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    content: String,
+    expected_hash: String,
+) -> Result<files::write::WriteResult, String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    let result = files::write::write_file(&root, &path, &content, &expected_hash)?;
+    if let files::write::WriteResult::Written { hash } = &result {
+        state.files.note_written(id, &path, hash);
+        state.files.emit_gutter(&app, id, &path);
+        state.files.emit_decorations(&app, id);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn files_create(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    is_dir: bool,
+) -> Result<(), String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::write::create(&root, &path, is_dir)?;
+    state.files.invalidate_index(id);
+    Ok(())
+}
+
+#[tauri::command]
+fn files_rename(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::write::rename(&root, &from, &to)?;
+    state.files.invalidate_index(id);
+    Ok(())
+}
+
+#[tauri::command]
+fn files_delete(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<(), String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::write::delete(&root, &path)?;
+    state.files.invalidate_index(id);
+    Ok(())
+}
+
+#[tauri::command]
+fn files_search(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<String>, String> {
+    state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    Ok(state.files.search(id, &query, limit.unwrap_or(50).min(500)))
+}
+
+#[tauri::command]
+fn files_focus(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: Option<String>,
+) -> Result<Vec<files::gutter::GutterMarker>, String> {
+    state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    state.files.set_open(id, path.clone());
+    Ok(match path {
+        Some(rel) => state.files.gutter(id, &rel),
+        None => Vec::new(),
+    })
+}
+
+#[tauri::command]
+fn files_gutter(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<Vec<files::gutter::GutterMarker>, String> {
+    state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    Ok(state.files.gutter(id, &path))
+}
+
+#[derive(serde::Serialize)]
+struct EditContent {
+    text: String,
+    hash: String,
+}
+
+#[tauri::command]
+fn files_edit_begin(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<EditContent, String> {
+    state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    let (text, hash) = state.files.edit_begin(id, &path)?;
+    Ok(EditContent { text, hash })
+}
+
+#[tauri::command]
+fn files_edit_end(state: State<'_, AppState>, id: SessionId) {
+    state.files.edit_end(id);
+}
+
+#[tauri::command]
 fn close_side_view(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -3409,6 +3546,15 @@ pub fn run() {
             files_decorations,
             files_open_external,
             files_close,
+            files_write,
+            files_create,
+            files_rename,
+            files_delete,
+            files_search,
+            files_focus,
+            files_gutter,
+            files_edit_begin,
+            files_edit_end,
             close_side_view,
             set_side_view_expanded,
             set_side_view_ratio,

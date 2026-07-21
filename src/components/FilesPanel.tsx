@@ -8,31 +8,48 @@ import {
   CaretDown,
   CaretRight,
   Crosshair,
+  FilePlus,
   Folder,
   FolderOpen,
+  FolderSimplePlus,
+  PencilSimple,
   PlusMinus,
   ArrowSquareOut,
+  TrashSimple,
   TreeStructure,
   X,
 } from "@phosphor-icons/react";
 
 import type {
+  EditContent,
   FileContent,
   FileDecoStatus,
   FileEntry,
   FilesPanelInfo,
+  GutterKind,
+  GutterMarker,
   Session,
 } from "@/lib/ipc";
 import {
+  filesCreate,
   filesDecorations,
+  filesDelete,
+  filesEditBegin,
+  filesEditEnd,
+  filesFocus,
+  filesGutter,
   filesListDir,
   filesOpenExternal,
   filesPanelInfo,
   filesRead,
   filesReanchor,
+  filesRename,
   filesUnwatchDir,
   filesWatchDir,
+  filesWrite,
+  onFilesConflict,
   onFilesDecorations,
+  onFilesGutter,
   onFilesTree,
 } from "@/lib/ipc";
 import { fileIcon } from "@/lib/fileIcon";
@@ -43,16 +60,25 @@ import {
   type TokenSpan,
 } from "@/lib/highlight";
 import { isRemoteUrl, safeMarkdownUrl } from "@/lib/markdownUrl";
+import { requestConfirm } from "@/lib/confirm";
+import { lineDiff } from "@/lib/lineDiff";
+import { toastError } from "@/lib/toast";
 import { getEffectiveBase, onEffectiveBaseChange } from "@/theme";
+import { CodeEditor, type CodeEditorHandle } from "./CodeEditor";
 
 interface Props {
   session: Session;
   editor: string;
   expanded: boolean;
+  openRequest: { path: string; nonce: number } | null;
   onToggleExpand: () => void;
   onClose: () => void;
   onJumpToDiff: () => void;
 }
+
+type TreeEdit =
+  | { kind: "create"; parentDir: string; isDir: boolean }
+  | { kind: "rename"; rel: string; name: string };
 
 const DECO_LABEL: Record<FileDecoStatus, string> = {
   added: "A",
@@ -70,10 +96,21 @@ const DECO_CLASS: Record<FileDecoStatus, string> = {
   untracked: "text-tyba-text-faint",
 };
 
+const GUTTER_CLASS: Record<GutterKind, string> = {
+  added: "bg-tyba-green",
+  modified: "bg-tyba-amber",
+  deleted: "bg-tyba-red",
+};
+
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function parentOf(rel: string): string {
+  const i = rel.lastIndexOf("/");
+  return i < 0 ? "" : rel.slice(0, i);
 }
 
 function MarkdownCode({
@@ -125,6 +162,7 @@ export function FilesPanel({
   session,
   editor,
   expanded,
+  openRequest,
   onToggleExpand,
   onClose,
   onJumpToDiff,
@@ -139,6 +177,7 @@ export function FilesPanel({
     new Map(),
   );
   const [selected, setSelected] = useState<string | null>(null);
+  const [contextDir, setContextDir] = useState<string>("");
   const [content, setContent] = useState<FileContent | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
   const [markdownSource, setMarkdownSource] = useState(false);
@@ -147,6 +186,22 @@ export function FilesPanel({
     Record<string, { total: number; truncated: boolean }>
   >({});
   const [isDark, setIsDark] = useState(() => getEffectiveBase() === "dark");
+  const [gutter, setGutter] = useState<GutterMarker[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [editBaseline, setEditBaseline] = useState<EditContent | null>(null);
+  const [docVersion, setDocVersion] = useState(0);
+  const [dirty, setDirty] = useState(false);
+  const [conflict, setConflict] = useState<{
+    path: string;
+    diskHash: string | null;
+  } | null>(null);
+  const [conflictDiff, setConflictDiff] = useState<{
+    disk: string;
+    edited: string;
+  } | null>(null);
+  const [treeEdit, setTreeEdit] = useState<TreeEdit | null>(null);
+  const [treeError, setTreeError] = useState<string | null>(null);
+  const editorRef = useRef<CodeEditorHandle>(null);
 
   useEffect(
     () => onEffectiveBaseChange(() => setIsDark(getEffectiveBase() === "dark")),
@@ -156,6 +211,10 @@ export function FilesPanel({
   const entriesRef = useRef(entriesByDir);
   entriesRef.current = entriesByDir;
   const reqId = useRef(0);
+  const selectedRef = useRef<string | null>(null);
+  selectedRef.current = selected;
+  const editingRef = useRef(false);
+  editingRef.current = editing;
 
   const relist = useCallback(
     (dir: string) => {
@@ -168,6 +227,37 @@ export function FilesPanel({
           }));
         })
         .catch(() => {});
+    },
+    [session.id],
+  );
+
+  const openFile = useCallback(
+    (rel: string) => {
+      const my = ++reqId.current;
+      setSelected(rel);
+      setContextDir(parentOf(rel));
+      setContent(null);
+      setContentError(null);
+      setMarkdownSource(false);
+      setTokens(null);
+      setEditing(false);
+      setEditBaseline(null);
+      setDirty(false);
+      setConflict(null);
+      setConflictDiff(null);
+      setGutter([]);
+      void filesFocus(session.id, rel)
+        .then((markers) => {
+          if (reqId.current === my) setGutter(markers);
+        })
+        .catch(() => {});
+      void filesRead(session.id, rel, 0)
+        .then((c) => {
+          if (reqId.current === my) setContent(c);
+        })
+        .catch((e) => {
+          if (reqId.current === my) setContentError(String(e));
+        });
     },
     [session.id],
   );
@@ -207,14 +297,53 @@ export function FilesPanel({
     const unDeco = onFilesDecorations(session.id, (decos) => {
       setDecorations(new Map(decos.map((d) => [d.path, d.status])));
     });
+    const unGutter = onFilesGutter(session.id, (path, markers) => {
+      if (path === selectedRef.current) setGutter(markers);
+    });
+    const unConflict = onFilesConflict(session.id, (path, diskHash) => {
+      if (editingRef.current && path === selectedRef.current) {
+        setConflict({ path, diskHash });
+      }
+    });
     return () => {
       void unTree.then((f) => f());
       void unDeco.then((f) => f());
+      void unGutter.then((f) => f());
+      void unConflict.then((f) => f());
     };
   }, [session.id, relist]);
 
+  const reveal = useCallback(
+    (path: string) => {
+      const parts = path.split("/");
+      const dirs: string[] = [];
+      let acc = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        acc = acc ? `${acc}/${parts[i]}` : parts[i];
+        dirs.push(acc);
+      }
+      setExpandedDirs((prev) => {
+        const next = new Set(prev);
+        for (const dir of dirs) next.add(dir);
+        return next;
+      });
+      for (const dir of dirs) {
+        if (!(dir in entriesRef.current)) relist(dir);
+        void filesWatchDir(session.id, dir).catch(() => {});
+      }
+      openFile(path);
+    },
+    [session.id, relist, openFile],
+  );
+
+  useEffect(() => {
+    if (openRequest) reveal(openRequest.path);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openRequest?.nonce]);
+
   const toggleDir = useCallback(
     (dir: string) => {
+      setContextDir(dir);
       setExpandedDirs((prev) => {
         const next = new Set(prev);
         if (next.has(dir)) {
@@ -229,25 +358,6 @@ export function FilesPanel({
       });
     },
     [session.id, relist],
-  );
-
-  const openFile = useCallback(
-    (rel: string) => {
-      const my = ++reqId.current;
-      setSelected(rel);
-      setContent(null);
-      setContentError(null);
-      setMarkdownSource(false);
-      setTokens(null);
-      void filesRead(session.id, rel, 0)
-        .then((c) => {
-          if (reqId.current === my) setContent(c);
-        })
-        .catch((e) => {
-          if (reqId.current === my) setContentError(String(e));
-        });
-    },
-    [session.id],
   );
 
   const loadAll = useCallback(async () => {
@@ -265,12 +375,31 @@ export function FilesPanel({
     }
   }, [content, selected, session.id]);
 
+  const readFullDisk = useCallback(
+    async (rel: string): Promise<string> => {
+      let text = "";
+      let offset = 0;
+      for (;;) {
+        const page = await filesRead(session.id, rel, offset).catch(() => null);
+        if (!page || page.kind !== "text") break;
+        text += page.text;
+        if (!page.truncated) break;
+        offset = page.next_offset;
+      }
+      return text;
+    },
+    [session.id],
+  );
+
   const reanchor = useCallback(async () => {
     reqId.current += 1;
     await filesReanchor(session.id).catch(() => {});
     setExpandedDirs(new Set());
     setSelected(null);
     setContent(null);
+    setEditing(false);
+    setEditBaseline(null);
+    setConflict(null);
     const listing = await filesListDir(session.id, "").catch(() => null);
     if (listing) {
       setEntriesByDir({ "": listing.entries });
@@ -303,7 +432,190 @@ export function FilesPanel({
     };
   }, [content, selected, isMarkdown, markdownSource, isDark]);
 
+  const startEdit = useCallback(async () => {
+    if (!selected) return;
+    try {
+      const base = await filesEditBegin(session.id, selected);
+      setEditBaseline(base);
+      setEditing(true);
+      setDirty(false);
+      setConflict(null);
+      setConflictDiff(null);
+      setDocVersion((v) => v + 1);
+      const markers = await filesGutter(session.id, selected).catch(() => []);
+      setGutter(markers);
+    } catch (e) {
+      toastError(t("filesEditError"), e);
+    }
+  }, [selected, session.id, t]);
+
+  const finishEdit = useCallback(() => {
+    void filesEditEnd(session.id).catch(() => {});
+    setEditing(false);
+    setEditBaseline(null);
+    setDirty(false);
+    setConflict(null);
+    setConflictDiff(null);
+    if (selected) openFile(selected);
+  }, [session.id, selected, openFile]);
+
+  const save = useCallback(async () => {
+    if (!selected || !editBaseline || !editorRef.current) return;
+    const value = editorRef.current.getValue();
+    try {
+      const result = await filesWrite(
+        session.id,
+        selected,
+        value,
+        editBaseline.hash,
+      );
+      if (result.status === "written") {
+        setEditBaseline({ text: value, hash: result.hash });
+        setDirty(false);
+        setConflict(null);
+      } else {
+        setConflict({ path: selected, diskHash: result.disk_hash });
+      }
+    } catch (e) {
+      toastError(t("filesSaveError"), e);
+    }
+  }, [selected, editBaseline, session.id, t]);
+
+  const reloadFromDisk = useCallback(async () => {
+    if (!selected) return;
+    try {
+      const base = await filesEditBegin(session.id, selected);
+      setEditBaseline(base);
+      setDirty(false);
+      setConflict(null);
+      setConflictDiff(null);
+      setDocVersion((v) => v + 1);
+    } catch (e) {
+      toastError(t("filesEditError"), e);
+    }
+  }, [selected, session.id, t]);
+
+  const overwrite = useCallback(async () => {
+    if (!selected || !conflict || !editorRef.current) return;
+    const value = editorRef.current.getValue();
+    try {
+      const result = await filesWrite(
+        session.id,
+        selected,
+        value,
+        conflict.diskHash ?? "",
+      );
+      if (result.status === "written") {
+        setEditBaseline({ text: value, hash: result.hash });
+        setDirty(false);
+        setConflict(null);
+        setConflictDiff(null);
+      } else {
+        setConflict({ path: selected, diskHash: result.disk_hash });
+      }
+    } catch (e) {
+      toastError(t("filesSaveError"), e);
+    }
+  }, [selected, conflict, session.id, t]);
+
+  const viewConflictDiff = useCallback(async () => {
+    if (!selected || !editorRef.current) return;
+    const edited = editorRef.current.getValue();
+    const disk = await readFullDisk(selected);
+    setConflictDiff({ disk, edited });
+  }, [selected, readFullDisk]);
+
+  const beginCreate = useCallback(
+    (isDir: boolean) => {
+      setTreeError(null);
+      setTreeEdit({ kind: "create", parentDir: contextDir, isDir });
+    },
+    [contextDir],
+  );
+
+  const beginRename = useCallback((entry: FileEntry) => {
+    setTreeError(null);
+    setTreeEdit({ kind: "rename", rel: entry.rel_path, name: entry.name });
+  }, []);
+
+  const commitTreeEdit = useCallback(
+    async (name: string) => {
+      const trimmed = name.trim();
+      if (!treeEdit || !trimmed) {
+        setTreeEdit(null);
+        return;
+      }
+      try {
+        if (treeEdit.kind === "create") {
+          const target = treeEdit.parentDir
+            ? `${treeEdit.parentDir}/${trimmed}`
+            : trimmed;
+          await filesCreate(session.id, target, treeEdit.isDir);
+          if (treeEdit.parentDir) {
+            setExpandedDirs((prev) => new Set(prev).add(treeEdit.parentDir));
+            relist(treeEdit.parentDir);
+            void filesWatchDir(session.id, treeEdit.parentDir).catch(() => {});
+          } else {
+            relist("");
+          }
+        } else {
+          const base = parentOf(treeEdit.rel);
+          const target = base ? `${base}/${trimmed}` : trimmed;
+          await filesRename(session.id, treeEdit.rel, target);
+          if (selected === treeEdit.rel) openFile(target);
+        }
+        setTreeEdit(null);
+        setTreeError(null);
+      } catch (e) {
+        setTreeError(String(e));
+      }
+    },
+    [treeEdit, session.id, relist, selected, openFile],
+  );
+
+  const deleteEntry = useCallback(
+    async (entry: FileEntry) => {
+      if (entry.is_dir) {
+        const listing = await filesListDir(session.id, entry.rel_path).catch(
+          () => null,
+        );
+        if (listing && listing.entries.length > 0) {
+          const ok = await requestConfirm({
+            title: t("filesDeleteDirTitle", { name: entry.name }),
+            detail: t("filesDeleteDirDetail"),
+            confirmLabel: t("filesDeleteConfirm"),
+            destructive: true,
+          });
+          if (!ok) return;
+        }
+      }
+      try {
+        await filesDelete(session.id, entry.rel_path);
+        if (selected === entry.rel_path) {
+          setSelected(null);
+          setContent(null);
+          setEditing(false);
+        }
+      } catch (e) {
+        toastError(t("filesDeleteError"), e);
+      }
+    },
+    [session.id, selected, t],
+  );
+
   const selectedDecorated = selected ? decorations.has(selected) : false;
+  const selectedEntry = useMemo(() => {
+    if (!selected) return null;
+    const siblings = entriesByDir[parentOf(selected)] ?? [];
+    return siblings.find((e) => e.rel_path === selected) ?? null;
+  }, [selected, entriesByDir]);
+  const canEdit = content?.kind === "text";
+
+  const gutterMap = useMemo(() => {
+    const map = new Map<number, GutterKind>();
+    for (const marker of gutter) map.set(marker.line, marker.kind);
+    return map;
+  }, [gutter]);
 
   const mdComponents = useMemo<Components>(
     () => ({
@@ -373,6 +685,48 @@ export function FilesPanel({
     return out;
   }, [entriesByDir, expandedDirs, dirMeta]);
 
+  const sourceLines = useMemo(
+    () => (content?.kind === "text" ? content.text.split("\n") : []),
+    [content],
+  );
+
+  const renderSourceLine = (index: number) => {
+    if (tokens) {
+      const line = tokens[index];
+      if (!line || line.length === 0) return " ";
+      return line.map((tk, j) => (
+        <span key={j} style={{ color: tk.color }}>
+          {tk.text}
+        </span>
+      ));
+    }
+    const text = sourceLines[index];
+    return text === "" ? " " : text;
+  };
+
+  const inlineInput = (
+    initial: string,
+    placeholder: string,
+    onCommit: (value: string) => void,
+  ) => (
+    <input
+      autoFocus
+      defaultValue={initial}
+      placeholder={placeholder}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") onCommit((e.target as HTMLInputElement).value);
+        else if (e.key === "Escape") {
+          setTreeEdit(null);
+          setTreeError(null);
+        }
+      }}
+      onBlur={(e) => onCommit(e.target.value)}
+      className="min-w-0 flex-1 rounded-[3px] border border-tyba-border-strong bg-tyba-surface px-1 py-0.5 text-[12px] text-tyba-text outline-none focus:border-tyba-green"
+    />
+  );
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-tyba-bg">
       <header className="flex h-8 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
@@ -411,88 +765,180 @@ export function FilesPanel({
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <div className="w-[240px] shrink-0 overflow-auto border-r border-tyba-border py-1">
-          {rows.length === 0 ? (
-            <div className="px-3 py-2 text-[11px] text-tyba-text-faint">
-              {t("filesEmptyDir")}
-            </div>
-          ) : (
-            rows.map((row) => {
-              if (row.kind === "more") {
+        <div className="flex w-[240px] shrink-0 flex-col border-r border-tyba-border">
+          <div className="flex h-7 shrink-0 items-center gap-1 border-b border-tyba-border px-2">
+            <span className="min-w-0 flex-1 truncate text-[10px] uppercase tracking-wide text-tyba-text-faint">
+              {contextDir || t("filesRootLabel")}
+            </span>
+            <button
+              onClick={() => beginCreate(false)}
+              aria-label={t("filesNewFile")}
+              title={t("filesNewFile")}
+              className="text-tyba-text-faint hover:text-tyba-text"
+            >
+              <FilePlus size={14} />
+            </button>
+            <button
+              onClick={() => beginCreate(true)}
+              aria-label={t("filesNewFolder")}
+              title={t("filesNewFolder")}
+              className="text-tyba-text-faint hover:text-tyba-text"
+            >
+              <FolderSimplePlus size={14} />
+            </button>
+          </div>
+          <div
+            className="min-h-0 flex-1 overflow-auto py-1"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "F2" && selectedEntry) {
+                e.preventDefault();
+                beginRename(selectedEntry);
+              }
+            }}
+          >
+            {treeEdit?.kind === "create" && (
+              <div
+                className="flex h-6 items-center gap-1 pr-2"
+                style={{
+                  paddingLeft: `${
+                    8 +
+                    (treeEdit.parentDir
+                      ? treeEdit.parentDir.split("/").length
+                      : 0) *
+                      12
+                  }px`,
+                }}
+              >
+                <span className="flex size-4 shrink-0 items-center justify-center text-tyba-text-faint">
+                  {treeEdit.isDir ? <Folder size={13} /> : <FilePlus size={13} />}
+                </span>
+                {inlineInput(
+                  "",
+                  treeEdit.isDir ? t("filesNewFolder") : t("filesNewFile"),
+                  commitTreeEdit,
+                )}
+              </div>
+            )}
+            {treeError && (
+              <div className="px-3 py-1 text-[10px] text-tyba-red">
+                {treeError}
+              </div>
+            )}
+            {rows.length === 0 && !treeEdit ? (
+              <div className="px-3 py-2 text-[11px] text-tyba-text-faint">
+                {t("filesEmptyDir")}
+              </div>
+            ) : (
+              rows.map((row) => {
+                if (row.kind === "more") {
+                  return (
+                    <div
+                      key={`more:${row.dir}`}
+                      className="flex h-6 items-center text-[11px] italic text-tyba-text-faint"
+                      style={{ paddingLeft: `${8 + (row.depth + 1) * 12}px` }}
+                    >
+                      {t("filesMore", { count: row.hidden })}
+                    </div>
+                  );
+                }
+                const { entry, depth } = row;
+                const deco = decorations.get(entry.rel_path);
+                const isSelected = selected === entry.rel_path;
+                const EntryIcon = fileIcon(entry.name);
+                const renaming =
+                  treeEdit?.kind === "rename" && treeEdit.rel === entry.rel_path;
                 return (
                   <div
-                    key={`more:${row.dir}`}
-                    className="flex h-6 items-center text-[11px] italic text-tyba-text-faint"
-                    style={{ paddingLeft: `${8 + (row.depth + 1) * 12}px` }}
+                    key={entry.rel_path}
+                    onClick={() =>
+                      entry.is_dir
+                        ? toggleDir(entry.rel_path)
+                        : openFile(entry.rel_path)
+                    }
+                    className={`group flex h-6 cursor-pointer items-center gap-1 pr-2 text-[12px] ${
+                      isSelected
+                        ? "bg-tyba-text/[.08] text-tyba-text"
+                        : "text-tyba-text-muted hover:bg-tyba-text/[.04]"
+                    } ${entry.gitignored ? "opacity-50" : ""}`}
+                    style={{ paddingLeft: `${8 + depth * 12}px` }}
                   >
-                    {t("filesMore", { count: row.hidden })}
+                    <span className="flex size-4 shrink-0 items-center justify-center text-tyba-text-faint">
+                      {entry.is_dir ? (
+                        expandedDirs.has(entry.rel_path) ? (
+                          <CaretDown size={10} weight="bold" />
+                        ) : (
+                          <CaretRight size={10} weight="bold" />
+                        )
+                      ) : null}
+                    </span>
+                    <span className="flex size-4 shrink-0 items-center justify-center text-tyba-text-faint">
+                      {entry.is_dir ? (
+                        expandedDirs.has(entry.rel_path) ? (
+                          <FolderOpen size={13} />
+                        ) : (
+                          <Folder size={13} />
+                        )
+                      ) : (
+                        <EntryIcon size={13} />
+                      )}
+                    </span>
+                    {renaming ? (
+                      inlineInput(treeEdit.name, entry.name, commitTreeEdit)
+                    ) : (
+                      <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                    )}
+                    {!renaming && deco && (
+                      <span
+                        className={`shrink-0 font-mono text-[10px] ${DECO_CLASS[deco]} group-hover:hidden`}
+                      >
+                        {DECO_LABEL[deco]}
+                      </span>
+                    )}
+                    {!renaming && (
+                      <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+                        {deco && (
+                          <button
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              onJumpToDiff();
+                            }}
+                            aria-label={t("filesJumpToDiff")}
+                            title={t("filesJumpToDiff")}
+                            className="flex size-4 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-green"
+                          >
+                            <PlusMinus size={11} />
+                          </button>
+                        )}
+                        <button
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            beginRename(entry);
+                          }}
+                          aria-label={t("filesRenameAction")}
+                          title={t("filesRenameAction")}
+                          className="flex size-4 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-text"
+                        >
+                          <PencilSimple size={11} />
+                        </button>
+                        <button
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            void deleteEntry(entry);
+                          }}
+                          aria-label={t("filesDeleteAction")}
+                          title={t("filesDeleteAction")}
+                          className="flex size-4 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-red"
+                        >
+                          <TrashSimple size={11} />
+                        </button>
+                      </span>
+                    )}
                   </div>
                 );
-              }
-              const { entry, depth } = row;
-              const deco = decorations.get(entry.rel_path);
-              const isSelected = selected === entry.rel_path;
-              const EntryIcon = fileIcon(entry.name);
-              return (
-                <div
-                  key={entry.rel_path}
-                  onClick={() =>
-                    entry.is_dir
-                      ? toggleDir(entry.rel_path)
-                      : openFile(entry.rel_path)
-                  }
-                  className={`group flex h-6 cursor-pointer items-center gap-1 pr-2 text-[12px] ${
-                    isSelected
-                      ? "bg-tyba-text/[.08] text-tyba-text"
-                      : "text-tyba-text-muted hover:bg-tyba-text/[.04]"
-                  } ${entry.gitignored ? "opacity-50" : ""}`}
-                  style={{ paddingLeft: `${8 + depth * 12}px` }}
-                >
-                  <span className="flex size-4 shrink-0 items-center justify-center text-tyba-text-faint">
-                    {entry.is_dir ? (
-                      expandedDirs.has(entry.rel_path) ? (
-                        <CaretDown size={10} weight="bold" />
-                      ) : (
-                        <CaretRight size={10} weight="bold" />
-                      )
-                    ) : null}
-                  </span>
-                  <span className="flex size-4 shrink-0 items-center justify-center text-tyba-text-faint">
-                    {entry.is_dir ? (
-                      expandedDirs.has(entry.rel_path) ? (
-                        <FolderOpen size={13} />
-                      ) : (
-                        <Folder size={13} />
-                      )
-                    ) : (
-                      <EntryIcon size={13} />
-                    )}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-                  {deco && (
-                    <span
-                      className={`shrink-0 font-mono text-[10px] ${DECO_CLASS[deco]}`}
-                    >
-                      {DECO_LABEL[deco]}
-                    </span>
-                  )}
-                  {deco && (
-                    <button
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        onJumpToDiff();
-                      }}
-                      aria-label={t("filesJumpToDiff")}
-                      title={t("filesJumpToDiff")}
-                      className="hidden size-4 shrink-0 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-green group-hover:flex"
-                    >
-                      <PlusMinus size={11} />
-                    </button>
-                  )}
-                </div>
-              );
-            })
-          )}
+              })
+            )}
+          </div>
         </div>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -502,99 +948,228 @@ export function FilesPanel({
                 <span className="min-w-0 truncate font-mono text-[11px] text-tyba-text-muted">
                   {selected}
                 </span>
+                {editing && dirty && (
+                  <span
+                    aria-label={t("filesDirty")}
+                    title={t("filesDirty")}
+                    className="size-1.5 shrink-0 rounded-full bg-tyba-amber"
+                  />
+                )}
                 <div className="flex-1" />
-                {isMarkdown && (
-                  <button
-                    onClick={() => setMarkdownSource((v) => !v)}
-                    className="text-[11px] text-tyba-text-faint hover:text-tyba-text"
-                  >
-                    {markdownSource ? t("filesShowPreview") : t("filesShowSource")}
-                  </button>
-                )}
-                {selectedDecorated && (
-                  <button
-                    onClick={onJumpToDiff}
-                    aria-label={t("filesJumpToDiff")}
-                    title={t("filesJumpToDiff")}
-                    className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-green"
-                  >
-                    <PlusMinus size={13} />
-                  </button>
-                )}
-                <button
-                  onClick={() =>
-                    void filesOpenExternal(session.id, selected, editor).catch(
-                      (e) => setContentError(String(e)),
-                    )
-                  }
-                  aria-label={t("filesOpenExternal")}
-                  title={t("filesOpenExternal")}
-                  className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-text"
-                >
-                  <ArrowSquareOut size={13} />
-                </button>
-              </div>
-              <div className="min-h-0 flex-1 overflow-auto">
-                {contentError ? (
-                  <div className="p-4 text-[12px] text-tyba-red">
-                    {t("filesLoadError")}
-                  </div>
-                ) : !content ? (
-                  <div className="p-4 text-[12px] text-tyba-text-faint">
-                    {t("diffLoading")}
-                  </div>
-                ) : content.kind === "image" ? (
-                  <div className="flex items-center justify-center p-4">
-                    <img
-                      src={`data:${content.mime};base64,${content.data}`}
-                      alt={selected}
-                      className="max-h-full max-w-full object-contain"
-                    />
-                  </div>
-                ) : content.kind === "binary" ? (
-                  <div className="p-4 text-[12px] text-tyba-text-faint">
-                    {t("filesBinaryPlaceholder", {
-                      size: formatBytes(content.total),
-                    })}
-                  </div>
-                ) : isMarkdown && !markdownSource ? (
-                  <div className="files-markdown">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      urlTransform={safeMarkdownUrl}
-                      components={mdComponents}
-                    >
-                      {content.text}
-                    </ReactMarkdown>
-                  </div>
-                ) : (
-                  <pre className="min-w-0 px-4 py-3 font-mono text-[12px] leading-[1.5] text-tyba-text">
-                    {tokens
-                      ? tokens.map((line, i) => (
-                          <div key={i}>
-                            {line.length === 0 ? (
-                              "\n"
-                            ) : (
-                              line.map((tk, j) => (
-                                <span key={j} style={{ color: tk.color }}>
-                                  {tk.text}
-                                </span>
-                              ))
-                            )}
-                          </div>
-                        ))
-                      : content.text}
-                  </pre>
-                )}
-                {content && content.kind === "text" && content.truncated && (
-                  <div className="flex items-center gap-2 border-t border-tyba-border px-4 py-2 text-[11px] text-tyba-text-faint">
-                    <span>{t("filesTruncatedNote")}</span>
+                {editing ? (
+                  <>
                     <button
-                      onClick={() => void loadAll()}
-                      className="rounded-[3px] bg-tyba-text/[.08] px-2 py-0.5 text-tyba-text hover:bg-tyba-text/[.14]"
+                      onClick={() => void save()}
+                      disabled={!dirty}
+                      className={`text-[11px] ${
+                        dirty
+                          ? "text-tyba-text hover:text-tyba-green"
+                          : "text-tyba-text-faint"
+                      }`}
                     >
-                      {t("filesLoadAll")}
+                      {t("filesSave")}
                     </button>
+                    <button
+                      onClick={finishEdit}
+                      className="text-[11px] text-tyba-text-faint hover:text-tyba-text"
+                    >
+                      {t("filesDone")}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {isMarkdown && (
+                      <button
+                        onClick={() => setMarkdownSource((v) => !v)}
+                        className="text-[11px] text-tyba-text-faint hover:text-tyba-text"
+                      >
+                        {markdownSource ? t("filesShowPreview") : t("filesShowSource")}
+                      </button>
+                    )}
+                    {canEdit && (
+                      <button
+                        onClick={() => void startEdit()}
+                        className="text-[11px] text-tyba-text-faint hover:text-tyba-text"
+                      >
+                        {t("filesEdit")}
+                      </button>
+                    )}
+                    {selectedDecorated && (
+                      <button
+                        onClick={onJumpToDiff}
+                        aria-label={t("filesJumpToDiff")}
+                        title={t("filesJumpToDiff")}
+                        className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-green"
+                      >
+                        <PlusMinus size={13} />
+                      </button>
+                    )}
+                    <button
+                      onClick={() =>
+                        void filesOpenExternal(session.id, selected, editor).catch(
+                          (e) => setContentError(String(e)),
+                        )
+                      }
+                      aria-label={t("filesOpenExternal")}
+                      title={t("filesOpenExternal")}
+                      className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-text"
+                    >
+                      <ArrowSquareOut size={13} />
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {conflict && (
+                <div className="flex items-center gap-2 border-b border-tyba-amber/40 bg-tyba-amber/10 px-3 py-1.5 text-[11px] text-tyba-text">
+                  <span className="min-w-0 flex-1 truncate">
+                    {t("filesConflictBanner")}
+                  </span>
+                  <button
+                    onClick={() => void viewConflictDiff()}
+                    className="shrink-0 rounded-[3px] px-1.5 py-0.5 text-tyba-text-muted hover:bg-tyba-text/[.08] hover:text-tyba-text"
+                  >
+                    {t("filesConflictDiff")}
+                  </button>
+                  <button
+                    onClick={() => void reloadFromDisk()}
+                    className="shrink-0 rounded-[3px] px-1.5 py-0.5 text-tyba-text-muted hover:bg-tyba-text/[.08] hover:text-tyba-text"
+                  >
+                    {t("filesConflictReload")}
+                  </button>
+                  <button
+                    onClick={() => void overwrite()}
+                    className="shrink-0 rounded-[3px] px-1.5 py-0.5 text-tyba-red hover:bg-tyba-red/10"
+                  >
+                    {t("filesConflictOverwrite")}
+                  </button>
+                </div>
+              )}
+
+              <div className="relative min-h-0 flex-1 overflow-hidden">
+                {editing && editBaseline ? (
+                  <CodeEditor
+                    ref={editorRef}
+                    key={`${selected}:${docVersion}`}
+                    doc={editBaseline.text}
+                    filename={selected}
+                    dark={isDark}
+                    markers={gutter}
+                    onDirtyChange={setDirty}
+                    onSave={() => void save()}
+                  />
+                ) : (
+                  <div className="h-full overflow-auto">
+                    {contentError ? (
+                      <div className="p-4 text-[12px] text-tyba-red">
+                        {t("filesLoadError")}
+                      </div>
+                    ) : !content ? (
+                      <div className="p-4 text-[12px] text-tyba-text-faint">
+                        {t("diffLoading")}
+                      </div>
+                    ) : content.kind === "image" ? (
+                      <div className="flex items-center justify-center p-4">
+                        <img
+                          src={`data:${content.mime};base64,${content.data}`}
+                          alt={selected}
+                          className="max-h-full max-w-full object-contain"
+                        />
+                      </div>
+                    ) : content.kind === "binary" ? (
+                      <div className="p-4 text-[12px] text-tyba-text-faint">
+                        {t("filesBinaryPlaceholder", {
+                          size: formatBytes(content.total),
+                        })}
+                      </div>
+                    ) : isMarkdown && !markdownSource ? (
+                      <div className="files-markdown">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          urlTransform={safeMarkdownUrl}
+                          components={mdComponents}
+                        >
+                          {content.text}
+                        </ReactMarkdown>
+                      </div>
+                    ) : (
+                      <div className="min-w-0 py-3 font-mono text-[12px] leading-[1.5] text-tyba-text">
+                        {sourceLines.map((_, i) => {
+                          const kind = gutterMap.get(i + 1);
+                          return (
+                            <div key={i} className="flex">
+                              <span
+                                className={`mx-1 w-0.5 shrink-0 self-stretch ${
+                                  kind ? GUTTER_CLASS[kind] : ""
+                                }`}
+                              />
+                              <span className="min-w-0 whitespace-pre pr-4">
+                                {renderSourceLine(i)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {content && content.kind === "text" && content.truncated && (
+                      <div className="flex items-center gap-2 border-t border-tyba-border px-4 py-2 text-[11px] text-tyba-text-faint">
+                        <span>{t("filesTruncatedNote")}</span>
+                        <button
+                          onClick={() => void loadAll()}
+                          className="rounded-[3px] bg-tyba-text/[.08] px-2 py-0.5 text-tyba-text hover:bg-tyba-text/[.14]"
+                        >
+                          {t("filesLoadAll")}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {conflictDiff && (
+                  <div className="absolute inset-0 flex flex-col bg-tyba-bg">
+                    <div className="flex h-7 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
+                      <span className="min-w-0 flex-1 truncate text-[11px] text-tyba-text-muted">
+                        {t("filesConflictDiffTitle")}
+                      </span>
+                      <button
+                        onClick={() => setConflictDiff(null)}
+                        aria-label={t("tunnelsClose")}
+                        className="text-tyba-text-faint hover:text-tyba-text"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-auto py-2 font-mono text-[12px] leading-[1.5]">
+                      {lineDiff(conflictDiff.disk, conflictDiff.edited).map(
+                        (r, i) => (
+                          <div
+                            key={i}
+                            className={`whitespace-pre px-3 ${
+                              r.kind === "added"
+                                ? "bg-tyba-green/10 text-tyba-green"
+                                : r.kind === "removed"
+                                  ? "bg-tyba-red/10 text-tyba-red"
+                                  : "text-tyba-text-muted"
+                            }`}
+                          >
+                            <span className="mr-2 select-none text-tyba-text-faint">
+                              {r.kind === "added"
+                                ? "+"
+                                : r.kind === "removed"
+                                  ? "-"
+                                  : " "}
+                            </span>
+                            {r.text === "" ? " " : r.text}
+                          </div>
+                        ),
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-3 border-t border-tyba-border px-3 py-1.5 text-[10px] text-tyba-text-faint">
+                      <span className="text-tyba-red">− {t("filesConflictDisk")}</span>
+                      <span className="text-tyba-green">
+                        + {t("filesConflictEdited")}
+                      </span>
+                    </div>
                   </div>
                 )}
               </div>

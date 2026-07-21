@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,8 +14,19 @@ use tauri::{AppHandle, Emitter, Runtime};
 use crate::session::SessionId;
 use crate::worktree::diff::{FileStatus, SessionDiff};
 
+pub mod gutter;
+pub mod search;
+pub mod write;
+
+use gutter::GutterMarker;
+use search::FuzzyIndex;
+
 pub const EVENT_TREE_PREFIX: &str = "files://tree/";
 pub const EVENT_DECORATIONS_PREFIX: &str = "files://decorations/";
+pub const EVENT_CONFLICT_PREFIX: &str = "files://conflict/";
+pub const EVENT_GUTTER_PREFIX: &str = "files://gutter/";
+
+pub const EDIT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 pub const READ_PAGE_BYTES: usize = 256 * 1024;
 pub const MAX_DIR_ENTRIES: usize = 2000;
@@ -27,6 +39,14 @@ pub fn tree_event(id: SessionId) -> String {
 
 pub fn decorations_event(id: SessionId) -> String {
     format!("{EVENT_DECORATIONS_PREFIX}{id}")
+}
+
+pub fn conflict_event(id: SessionId) -> String {
+    format!("{EVENT_CONFLICT_PREFIX}{id}")
+}
+
+pub fn gutter_event(id: SessionId) -> String {
+    format!("{EVENT_GUTTER_PREFIX}{id}")
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +137,25 @@ struct DecorationsPayload {
     decorations: Vec<Decoration>,
 }
 
+#[derive(Clone, Serialize)]
+struct GutterPayload {
+    path: String,
+    markers: Vec<GutterMarker>,
+}
+
+#[derive(Clone, Serialize)]
+struct ConflictPayload {
+    path: String,
+    disk_hash: Option<String>,
+}
+
+fn file_hash(root: &Path, abs: &Path) -> Option<String> {
+    let (mut file, _real) = open_verified(root, abs).ok()?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).ok()?;
+    Some(write::hash_bytes(&buf))
+}
+
 fn join_rel(dir_rel: &str, name: &str) -> String {
     if dir_rel.is_empty() {
         name.to_string()
@@ -125,7 +164,7 @@ fn join_rel(dir_rel: &str, name: &str) -> String {
     }
 }
 
-fn rel_of(root: &Path, path: &Path) -> Option<String> {
+pub(crate) fn rel_of(root: &Path, path: &Path) -> Option<String> {
     let stripped = path.strip_prefix(root).ok()?;
     let s = stripped.to_string_lossy().replace('\\', "/");
     Some(s)
@@ -272,7 +311,7 @@ fn image_mime(name: &str) -> Option<&'static str> {
 }
 
 #[cfg(target_os = "macos")]
-fn fd_real_path(file: &std::fs::File) -> Option<PathBuf> {
+pub(crate) fn fd_real_path(file: &std::fs::File) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::io::AsRawFd;
     let mut buf = [0u8; libc::PATH_MAX as usize];
@@ -285,7 +324,7 @@ fn fd_real_path(file: &std::fs::File) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn fd_real_path(file: &std::fs::File) -> Option<PathBuf> {
+pub(crate) fn fd_real_path(file: &std::fs::File) -> Option<PathBuf> {
     use std::os::unix::io::AsRawFd;
     std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
 }
@@ -497,11 +536,35 @@ pub fn compute_decorations(root: &Path, context: &Context) -> Vec<Decoration> {
 
 type FileDebouncer = Debouncer<notify::RecommendedWatcher, NoCache>;
 
+#[derive(Debug, Clone)]
+struct OpenFile {
+    rel: String,
+    abs: PathBuf,
+    editing: bool,
+    hash: Option<String>,
+}
+
 struct Panel {
     root: PathBuf,
     context: Context,
     watched: Arc<Mutex<HashSet<PathBuf>>>,
     debouncer: Option<FileDebouncer>,
+    index: Arc<FuzzyIndex>,
+    open: Arc<Mutex<Option<OpenFile>>>,
+}
+
+impl Panel {
+    fn watch_parent(&mut self, abs: &Path) {
+        let Some(parent) = abs.parent() else {
+            return;
+        };
+        let parent = parent.to_path_buf();
+        if self.watched.lock().insert(parent.clone()) {
+            if let Some(debouncer) = self.debouncer.as_mut() {
+                let _ = debouncer.watch(&parent, RecursiveMode::NonRecursive);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -531,7 +594,17 @@ impl FilesManager {
         context: Context,
     ) {
         let watched = Arc::new(Mutex::new(HashSet::new()));
-        let debouncer = spawn_watcher(app.clone(), id, root.clone(), context.clone(), &watched);
+        let index = Arc::new(FuzzyIndex::new());
+        let open = Arc::new(Mutex::new(None));
+        let debouncer = spawn_watcher(
+            app.clone(),
+            id,
+            root.clone(),
+            context.clone(),
+            &watched,
+            &index,
+            &open,
+        );
         self.panels.lock().insert(
             id,
             Panel {
@@ -539,6 +612,8 @@ impl FilesManager {
                 context,
                 watched,
                 debouncer,
+                index,
+                open,
             },
         );
     }
@@ -589,6 +664,123 @@ impl FilesManager {
         self.panels.lock().remove(&id);
     }
 
+    pub fn search(&self, id: SessionId, query: &str, limit: usize) -> Vec<String> {
+        let target = {
+            let panels = self.panels.lock();
+            panels
+                .get(&id)
+                .map(|p| (Arc::clone(&p.index), p.root.clone(), p.context.clone()))
+        };
+        let Some((index, root, context)) = target else {
+            return Vec::new();
+        };
+        index.search(&root, &context, query, limit)
+    }
+
+    pub fn invalidate_index(&self, id: SessionId) {
+        if let Some(panel) = self.panels.lock().get(&id) {
+            panel.index.invalidate();
+        }
+    }
+
+    pub fn gutter(&self, id: SessionId, rel: &str) -> Vec<GutterMarker> {
+        let Some((root, context)) = self.info(id) else {
+            return Vec::new();
+        };
+        gutter::compute(&root, &context, rel)
+    }
+
+    pub fn set_open(&self, id: SessionId, rel: Option<String>) {
+        let mut panels = self.panels.lock();
+        let Some(panel) = panels.get_mut(&id) else {
+            return;
+        };
+        match rel {
+            None => {
+                *panel.open.lock() = None;
+            }
+            Some(rel) => {
+                let Ok(abs) = resolve_within(&panel.root, &rel) else {
+                    return;
+                };
+                panel.watch_parent(&abs);
+                *panel.open.lock() = Some(OpenFile {
+                    rel,
+                    abs,
+                    editing: false,
+                    hash: None,
+                });
+            }
+        }
+    }
+
+    pub fn edit_begin(&self, id: SessionId, rel: &str) -> Result<(String, String), String> {
+        let (root, _) = self.info(id).ok_or("painel não encontrado")?;
+        let full = resolve_within(&root, rel)?;
+        let (mut file, real) = open_verified(&root, &full)?;
+        let meta = file
+            .metadata()
+            .map_err(|e| format!("arquivo inacessível: {e}"))?;
+        if !meta.is_file() {
+            return Err("não é um arquivo".into());
+        }
+        if meta.len() > EDIT_MAX_BYTES {
+            return Err("arquivo grande demais para editar no painel".into());
+        }
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)
+            .map_err(|e| format!("falha ao ler: {e}"))?;
+        if buf.contains(&0) {
+            return Err("arquivo binário não é editável".into());
+        }
+        let hash = write::hash_bytes(&buf);
+        let text = String::from_utf8(buf).map_err(|_| "arquivo não é UTF-8 válido")?;
+
+        let mut panels = self.panels.lock();
+        if let Some(panel) = panels.get_mut(&id) {
+            panel.watch_parent(&real);
+            *panel.open.lock() = Some(OpenFile {
+                rel: rel.to_string(),
+                abs: real,
+                editing: true,
+                hash: Some(hash.clone()),
+            });
+        }
+        Ok((text, hash))
+    }
+
+    pub fn edit_end(&self, id: SessionId) {
+        if let Some(panel) = self.panels.lock().get(&id) {
+            if let Some(open) = panel.open.lock().as_mut() {
+                open.editing = false;
+                open.hash = None;
+            }
+        }
+    }
+
+    /// Após um save bem-sucedido: re-captura o hash do conteúdo escrito para que
+    /// o evento do watcher gerado pelo próprio write não vire falso conflito.
+    pub fn note_written(&self, id: SessionId, rel: &str, hash: &str) {
+        if let Some(panel) = self.panels.lock().get(&id) {
+            if let Some(open) = panel.open.lock().as_mut() {
+                if open.rel == rel && open.editing {
+                    open.hash = Some(hash.to_string());
+                }
+            }
+        }
+    }
+
+    pub fn emit_gutter<R: Runtime>(&self, app: &AppHandle<R>, id: SessionId, rel: &str) {
+        let markers = self.gutter(id, rel);
+        let _ = app.emit(
+            &gutter_event(id),
+            GutterPayload {
+                path: rel.to_string(),
+                markers,
+            },
+        );
+    }
+
     pub fn emit_decorations<R: Runtime>(&self, app: &AppHandle<R>, id: SessionId) {
         let Some((root, context)) = self.info(id) else {
             return;
@@ -607,18 +799,25 @@ impl FilesManager {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_watcher<R: Runtime>(
     app: AppHandle<R>,
     id: SessionId,
     root: PathBuf,
     context: Context,
     watched: &Arc<Mutex<HashSet<PathBuf>>>,
+    index: &Arc<FuzzyIndex>,
+    open: &Arc<Mutex<Option<OpenFile>>>,
 ) -> Option<FileDebouncer> {
     let tree_ev = tree_event(id);
     let deco_ev = decorations_event(id);
+    let gutter_ev = gutter_event(id);
+    let conflict_ev = conflict_event(id);
     let cb_root = root.clone();
     let cb_context = context.clone();
     let cb_watched = Arc::clone(watched);
+    let cb_index = Arc::clone(index);
+    let cb_open = Arc::clone(open);
 
     let mut debouncer = new_debouncer_opt::<_, notify::RecommendedWatcher, NoCache>(
         WATCH_DEBOUNCE,
@@ -627,7 +826,9 @@ fn spawn_watcher<R: Runtime>(
             let Ok(events) = result else {
                 return;
             };
+            let open_snapshot = cb_open.lock().clone();
             let mut touched_git = false;
+            let mut open_touched = false;
             let mut affected: HashSet<PathBuf> = HashSet::new();
             {
                 let live = cb_watched.lock();
@@ -635,6 +836,11 @@ fn spawn_watcher<R: Runtime>(
                     for path in &event.paths {
                         if crate::repo::is_watched_event_path(path) {
                             touched_git = true;
+                        }
+                        if let Some(of) = &open_snapshot {
+                            if path == &of.abs {
+                                open_touched = true;
+                            }
                         }
                         if live.contains(path.as_path()) {
                             affected.insert(path.clone());
@@ -647,6 +853,9 @@ fn spawn_watcher<R: Runtime>(
                     }
                 }
             }
+            if touched_git || !affected.is_empty() || open_touched {
+                cb_index.invalidate();
+            }
             if !affected.is_empty() {
                 let dirs: Vec<String> = affected
                     .iter()
@@ -657,6 +866,32 @@ fn spawn_watcher<R: Runtime>(
             if touched_git || !affected.is_empty() {
                 let decorations = compute_decorations(&cb_root, &cb_context);
                 let _ = app.emit(&deco_ev, DecorationsPayload { decorations });
+            }
+            if let Some(of) = &open_snapshot {
+                if open_touched || touched_git {
+                    let markers = gutter::compute(&cb_root, &cb_context, &of.rel);
+                    let _ = app.emit(
+                        &gutter_ev,
+                        GutterPayload {
+                            path: of.rel.clone(),
+                            markers,
+                        },
+                    );
+                }
+                if open_touched && of.editing {
+                    if let Some(expected) = &of.hash {
+                        let disk = file_hash(&cb_root, &of.abs);
+                        if disk.as_deref() != Some(expected.as_str()) {
+                            let _ = app.emit(
+                                &conflict_ev,
+                                ConflictPayload {
+                                    path: of.rel.clone(),
+                                    disk_hash: disk,
+                                },
+                            );
+                        }
+                    }
+                }
             }
         },
         NoCache,
