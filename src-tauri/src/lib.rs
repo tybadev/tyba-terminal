@@ -560,7 +560,11 @@ fn store_err(e: session::store::StoreError) -> crate::error::AppError {
 }
 
 fn validate_alias(alias: &str) -> Result<(), crate::error::AppError> {
-    if alias.trim().is_empty() || alias.chars().any(|c| c.is_whitespace()) {
+    // `-` inicial faria o alias ser interpretado como opção do `ssh`
+    // (`-oProxyCommand=...` = exec local): recusado na entrada, o que protege de
+    // graça os sites que passam o alias pro ssh (tmux, túneis, SFTP).
+    if alias.trim().is_empty() || alias.chars().any(|c| c.is_whitespace()) || alias.starts_with('-')
+    {
         return Err(
             crate::error::AppError::new("ssh.alias_invalid").with("alias", alias.to_string())
         );
@@ -1055,25 +1059,49 @@ fn ssh_alias_tmux(state: &AppState, id: SessionId) -> Option<(String, String)> {
     Some((alias, name))
 }
 
-/// Despacho por tipo de sessão: `None` = sessão local (segue o `FilesManager`
-/// existente); `Some(Ok)` = painel SFTP pronto (montado sob demanda, reusando a
-/// conexão viva); `Some(Err)` = sessão SSH cujo host não resolveu.
-fn remote_files_panel(
-    state: &AppState,
-    id: SessionId,
-) -> Option<Result<std::sync::Arc<files::remote::RemotePanel>, String>> {
+type RemoteTarget = (files::remote::SharedRemoteFiles, String, String);
+
+/// Despacho por tipo de sessão, SÍNCRONO e sem rede: `None` = sessão local
+/// (segue o `FilesManager`); `Some(Ok((gestor, alias, tmux)))` = alvo remoto
+/// (o painel é montado depois, fora da thread do executor); `Some(Err)` = SSH
+/// cujo host não resolveu. Extrai só dados `Send` para que nada de `State` seja
+/// segurado através do `.await` do build.
+fn remote_target(state: &AppState, id: SessionId) -> Option<Result<RemoteTarget, String>> {
     let session = state.sessions.get(id)?;
     if !matches!(session.kind, SessionKind::Ssh { .. }) {
         return None;
     }
-    let Some((alias, tmux_name)) = ssh_alias_tmux(state, id) else {
-        return Some(Err("host da sessão SSH não encontrado".to_string()));
-    };
-    Some(
-        state
-            .remote_files
-            .ensure(id, || files::remote::build_panel(&alias, Some(&tmux_name))),
-    )
+    match ssh_alias_tmux(state, id) {
+        Some((alias, tmux)) => Some(Ok((
+            std::sync::Arc::clone(&state.remote_files),
+            alias,
+            tmux,
+        ))),
+        None => Some(Err("host da sessão SSH não encontrado".to_string())),
+    }
+}
+
+/// Monta (ou reusa) o painel remoto FORA da thread do command: `build_panel`
+/// abre o canal SFTP e faz o handshake — rede pura, que não pode congelar um
+/// worker do Tokio. `spawn_blocking` + `ConnectTimeout` no ssh cobrem host morto.
+async fn open_remote_panel(
+    remote_files: files::remote::SharedRemoteFiles,
+    id: SessionId,
+    alias: String,
+    tmux: String,
+) -> Result<std::sync::Arc<files::remote::RemotePanel>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        remote_files.ensure(id, || files::remote::build_panel(&alias, Some(&tmux)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Teardown único do painel de arquivos: derruba tanto o local quanto o remoto.
+/// Chamado por todos os sites que encerram um painel — a lição do watcher órfão.
+fn close_files_panel(state: &AppState, id: SessionId) {
+    state.files.close(id);
+    state.remote_files.close(id);
 }
 
 /// Roda uma operação do painel remoto fora da thread do command (as chamadas
@@ -1125,8 +1153,7 @@ fn close_orphaned_files_panel(state: &AppState, previous: Option<String>, keep: 
         .strip_prefix(layout::VIEW_FILES_PREFIX)
         .and_then(|s| s.parse::<SessionId>().ok())
     {
-        state.files.close(id);
-        state.remote_files.close(id);
+        close_files_panel(state, id);
     }
 }
 
@@ -1136,8 +1163,11 @@ async fn open_files_panel(
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<String, String> {
-    let root = match remote_files_panel(&state, id) {
-        Some(panel) => panel?.info().root,
+    let root = match remote_target(&state, id) {
+        Some(t) => {
+            let (rf, alias, tmux) = t?;
+            open_remote_panel(rf, id, alias, tmux).await?.info().root
+        }
         None => {
             let (root, _ctx) = state
                 .files
@@ -1162,8 +1192,9 @@ async fn files_panel_info(
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<files::PanelInfo, String> {
-    if let Some(panel) = remote_files_panel(&state, id) {
-        return Ok(panel?.info());
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        return Ok(open_remote_panel(rf, id, alias, tmux).await?.info());
     }
     let (root, context) = state
         .files
@@ -1184,8 +1215,9 @@ async fn files_list_dir(
     id: SessionId,
     path: String,
 ) -> Result<files::DirListing, String> {
-    if let Some(panel) = remote_files_panel(&state, id) {
-        let panel = panel?;
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
         return on_remote(panel, move |p| p.list_dir(&path)).await?;
     }
     let (root, context) = state
@@ -1202,8 +1234,9 @@ async fn files_read(
     path: String,
     offset: Option<usize>,
 ) -> Result<files::FileContent, String> {
-    if let Some(panel) = remote_files_panel(&state, id) {
-        let panel = panel?;
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
         let off = offset.unwrap_or(0);
         return on_remote(panel, move |p| p.read_file(&path, off)).await?;
     }
@@ -1253,7 +1286,13 @@ fn files_unwatch_dir(state: State<'_, AppState>, id: SessionId, path: String) {
 #[tauri::command]
 fn files_refresh(state: State<'_, AppState>, id: SessionId) {
     if let Some(panel) = state.remote_files.get(id) {
-        panel.refresh();
+        if panel.is_dead() {
+            // Canal SFTP morto: derruba o painel para a próxima op reconstruir
+            // sobre a conexão remultiplexada — o botão "Atualizar" recupera de fato.
+            state.remote_files.close(id);
+        } else {
+            panel.refresh();
+        }
     }
 }
 
@@ -1264,11 +1303,12 @@ async fn files_reanchor(
     id: SessionId,
 ) -> Result<String, String> {
     if is_ssh_session(&state, id) {
-        state.remote_files.close(id);
-        let panel = match remote_files_panel(&state, id) {
-            Some(res) => res?,
+        let (rf, alias, tmux) = match remote_target(&state, id) {
+            Some(t) => t?,
             None => return Err("host da sessão SSH não encontrado".into()),
         };
+        rf.close(id);
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
         let root = panel.info().root;
         state.files.emit_tree_reset(&app, id);
         let decos = on_remote(std::sync::Arc::clone(&panel), |p| p.decorations()).await?;
@@ -1288,8 +1328,9 @@ async fn files_decorations(
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<Vec<files::Decoration>, String> {
-    if let Some(panel) = remote_files_panel(&state, id) {
-        let panel = panel?;
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
         return on_remote(panel, |p| p.decorations()).await;
     }
     state
@@ -1300,8 +1341,7 @@ async fn files_decorations(
 
 #[tauri::command]
 fn files_close(state: State<'_, AppState>, id: SessionId) {
-    state.files.close(id);
-    state.remote_files.close(id);
+    close_files_panel(&state, id);
 }
 
 #[tauri::command]
@@ -1313,8 +1353,9 @@ async fn files_write(
     content: String,
     expected_hash: String,
 ) -> Result<files::write::WriteResult, String> {
-    if let Some(panel) = remote_files_panel(&state, id) {
-        let panel = panel?;
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
         let rel = path.clone();
         let result = on_remote(std::sync::Arc::clone(&panel), move |p| {
             p.write(&rel, &content, &expected_hash)
@@ -1349,8 +1390,9 @@ async fn files_create(
     path: String,
     is_dir: bool,
 ) -> Result<(), String> {
-    if let Some(panel) = remote_files_panel(&state, id) {
-        let panel = panel?;
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
         return on_remote(panel, move |p| p.create(&path, is_dir)).await?;
     }
     let (root, _ctx) = state
@@ -1369,8 +1411,9 @@ async fn files_rename(
     from: String,
     to: String,
 ) -> Result<(), String> {
-    if let Some(panel) = remote_files_panel(&state, id) {
-        let panel = panel?;
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
         return on_remote(panel, move |p| p.rename(&from, &to)).await?;
     }
     let (root, _ctx) = state
@@ -1388,8 +1431,9 @@ async fn files_delete(
     id: SessionId,
     path: String,
 ) -> Result<(), String> {
-    if let Some(panel) = remote_files_panel(&state, id) {
-        let panel = panel?;
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
         return on_remote(panel, move |p| p.delete(&path)).await?;
     }
     let (root, _ctx) = state
@@ -1409,8 +1453,9 @@ async fn files_search(
     limit: Option<usize>,
 ) -> Result<files::search::SearchOutcome, String> {
     let cap = limit.unwrap_or(50).min(500);
-    if let Some(panel) = remote_files_panel(&state, id) {
-        let panel = panel?;
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
         return on_remote(panel, move |p| p.search(&query, cap)).await;
     }
     state
@@ -1426,8 +1471,9 @@ async fn files_focus(
     id: SessionId,
     path: Option<String>,
 ) -> Result<Vec<files::gutter::GutterMarker>, String> {
-    if let Some(panel) = remote_files_panel(&state, id) {
-        let panel = panel?;
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
         panel.set_open(path.clone());
         return Ok(match path {
             Some(rel) => on_remote(panel, move |p| p.gutter(&rel)).await?,
@@ -1451,8 +1497,9 @@ async fn files_gutter(
     id: SessionId,
     path: String,
 ) -> Result<Vec<files::gutter::GutterMarker>, String> {
-    if let Some(panel) = remote_files_panel(&state, id) {
-        let panel = panel?;
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
         return on_remote(panel, move |p| p.gutter(&path)).await;
     }
     state
@@ -1474,8 +1521,9 @@ async fn files_edit_begin(
     id: SessionId,
     path: String,
 ) -> Result<EditContent, String> {
-    if let Some(panel) = remote_files_panel(&state, id) {
-        let panel = panel?;
+    if let Some(t) = remote_target(&state, id) {
+        let (rf, alias, tmux) = t?;
+        let panel = open_remote_panel(rf, id, alias, tmux).await?;
         let (text, hash) = on_remote(panel, move |p| p.edit_begin(&path)).await??;
         return Ok(EditContent { text, hash });
     }
@@ -2215,7 +2263,7 @@ fn session_mark_seen(app: AppHandle, state: State<'_, AppState>, id: SessionId) 
 fn dispose_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
     teardown_agent_session(&app, &state, id);
     state.sessions.dispose(&state.pty_pool, id);
-    state.files.close(id);
+    close_files_panel(&state, id);
     let _ = state.layout.session_disposed(id);
     emit_layout(&app, &state);
 }
@@ -2707,6 +2755,9 @@ fn reconnect_ssh(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> R
     if !matches!(session.kind, SessionKind::Ssh { .. }) {
         return Err(crate::error::AppError::new("ssh.not_an_ssh_session").to_string());
     }
+    // O canal SFTP do painel morreu com a conexão anterior; derruba o painel para
+    // a próxima operação reconstruí-lo sobre a conexão remultiplexada.
+    state.remote_files.close(id);
     reattach_or_finish(app, id);
     Ok(())
 }
