@@ -611,11 +611,17 @@ mod tests {
                     }
                     _ => {
                         let cand = format!("{acc}/{seg}");
-                        if let Some(Node::Symlink { target }) = self.nodes.lock().get(&cand) {
-                            acc = self.resolve(&target.clone());
-                        } else {
-                            acc = cand;
-                        }
+                        // Extrai o alvo e SOLTA o lock antes de recorrer: o Mutex
+                        // do parking_lot não é reentrante, então segurar o guard
+                        // durante a recursão trava.
+                        let target = match self.nodes.lock().get(&cand) {
+                            Some(Node::Symlink { target }) => Some(target.clone()),
+                            _ => None,
+                        };
+                        acc = match target {
+                            Some(target) => self.resolve(&target),
+                            None => cand,
+                        };
                     }
                 }
             }
