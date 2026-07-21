@@ -1356,7 +1356,22 @@ fn lsp_open(
     let (root, _ctx) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::resolve_within(&root, &path)?;
     Ok(state.lsp.open(&app, id, &root, &path, &text, spawn))
+}
+
+#[tauri::command]
+fn lsp_retry(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<lsp::LspStatus, String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::resolve_within(&root, &path)?;
+    Ok(state.lsp.retry(&app, id, &root, &path))
 }
 
 #[tauri::command]
@@ -1365,8 +1380,12 @@ fn lsp_change(
     id: SessionId,
     path: String,
     changes: Vec<lsp::document::ContentChange>,
-) {
+) -> Result<(), String> {
+    if let Some((root, _)) = state.files.info(id) {
+        files::resolve_within(&root, &path)?;
+    }
     state.lsp.change(id, &path, changes);
+    Ok(())
 }
 
 #[tauri::command]
@@ -3672,6 +3691,7 @@ pub fn run() {
             files_edit_end,
             lsp_status,
             lsp_open,
+            lsp_retry,
             lsp_change,
             lsp_close_doc,
             lsp_completion,

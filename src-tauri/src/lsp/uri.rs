@@ -45,6 +45,12 @@ pub fn to_rel(root: &Path, uri: &str) -> Option<String> {
     let canon_path = std::fs::canonicalize(&path).unwrap_or(path);
     let canon_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let stripped = canon_path.strip_prefix(&canon_root).ok()?;
+    if stripped
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
     Some(stripped.to_string_lossy().replace('\\', "/"))
 }
 
@@ -73,5 +79,22 @@ mod tests {
     fn keeps_utf8_segments_readable_after_decode() {
         let uri = from_path(Path::new("/café/αβγ.py"));
         assert_eq!(to_path(&uri).unwrap(), PathBuf::from("/café/αβγ.py"));
+    }
+
+    #[test]
+    fn to_rel_rejects_a_parent_traversal_that_escapes_the_root() {
+        let root = Path::new("/nonexistent-root/panel");
+        let uri = from_path(Path::new("/nonexistent-root/panel/../secret.rs"));
+        assert!(
+            to_rel(root, &uri).is_none(),
+            "um resultado com `..` não é in-root"
+        );
+    }
+
+    #[test]
+    fn to_rel_accepts_a_plain_child() {
+        let root = Path::new("/nonexistent-root/panel");
+        let uri = from_path(Path::new("/nonexistent-root/panel/src/main.rs"));
+        assert_eq!(to_rel(root, &uri).as_deref(), Some("src/main.rs"));
     }
 }
