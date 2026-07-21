@@ -999,10 +999,10 @@ mod tests {
         assert!(matches!(status, LspStatus::Unsupported));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[ignore = "requer rust-analyzer instalado; sobe um server real dentro da jaula"]
-    fn live_rust_analyzer_boots_inside_the_seatbelt_jail() {
+    fn live_rust_analyzer_boots_inside_the_jail() {
         use crate::lsp::client::{base_env, LspServer};
         use crate::lsp::registry::{self, entry_by_id};
         use crate::lsp::sandbox::{lsp_sandbox_spec, LspSpecCtx};
@@ -1073,7 +1073,7 @@ mod tests {
         assert_eq!(
             server.state(),
             RunState::Ready,
-            "o handshake initialize/initialized rodou dentro do sandbox-exec"
+            "o handshake initialize/initialized rodou dentro da jaula"
         );
 
         let hover = server.request(
@@ -1090,7 +1090,7 @@ mod tests {
         std::fs::remove_dir_all(&cache).ok();
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[ignore = "requer typescript-language-server + typescript clássico num projeto real"]
     fn live_typescript_language_server_boots_inside_the_jail() {
@@ -1183,7 +1183,7 @@ mod tests {
         std::fs::remove_dir_all(&cache).ok();
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[ignore = "reproduz completion depois do save com ts-ls real"]
     fn live_ts_completion_survives_save() {
@@ -1312,7 +1312,7 @@ mod tests {
         assert!(after > 0, "completion continua viva depois do save+edição");
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[ignore = "requer yaml-language-server; valida descoberta + schemas embarcados offline"]
     fn live_yaml_docker_compose_completion_offline() {

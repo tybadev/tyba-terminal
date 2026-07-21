@@ -234,6 +234,19 @@ impl ManagedManager {
         Ok(())
     }
 
+    pub fn install_blocking(&self, server_id: &str) -> Result<(), String> {
+        let m = registry::managed_for(server_id).ok_or("server não é gerenciado")?;
+        let plat = Platform::current().ok_or("plataforma sem pins gerenciados")?;
+        let noop: Arc<ProgressEmit> = Arc::new(|_, _| {});
+        let tmp_root = storage::lsp_dir(&self.data_dir)
+            .join(".tmp")
+            .join(format!("{server_id}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp_root).map_err(|e| format!("storage: {e}"))?;
+        let result = self.download_and_install(m, plat, server_id, &noop, &tmp_root);
+        let _ = std::fs::remove_dir_all(&tmp_root);
+        result
+    }
+
     fn run_install(
         &self,
         m: &Managed,
@@ -413,5 +426,140 @@ mod tests {
             matches!(mgr.outcome(ra), Outcome::Offer(_)),
             "recusa não persiste: o card volta"
         );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn boot_managed_in_jail(
+        mgr: &ManagedManager,
+        server_id: &str,
+        root: &std::path::Path,
+    ) -> std::sync::Arc<crate::lsp::client::LspServer> {
+        use crate::lsp::client::{base_env, LspServer};
+        use crate::lsp::sandbox::{lsp_sandbox_spec, LspSpecCtx};
+        use crate::lsp::DiagnosticsBatch;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let entry = crate::lsp::registry::entry_by_id(server_id).unwrap();
+        let plan = mgr.plan(entry).expect("server gerenciado instalado tem plano");
+        let user_env: HashMap<String, String> = std::env::vars().collect();
+        let cache = std::env::temp_dir().join(format!(
+            "tyba-managed-live-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(cache.join(".rt")).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let mut exec_path_dirs: Vec<PathBuf> =
+            std::env::split_paths(&crate::shell_path::agent_path()).collect();
+        exec_path_dirs.extend(plan.exec_dirs.clone());
+        let ctx = LspSpecCtx {
+            root,
+            cache_dir: &cache,
+            exe: &exe,
+            env: &user_env,
+            exec_path_dirs,
+            read_allow_extra: vec![],
+            extra_reads: vec![],
+            data_dir: mgr.data_dir().to_path_buf(),
+            data_dir_reads: plan.reads.clone(),
+        };
+        let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
+        assert!(!spec.allow_network, "LSP gerenciado nunca recebe rede");
+        let pre_args: Vec<std::ffi::OsString> =
+            plan.pre_args.iter().map(|p| p.clone().into_os_string()).collect();
+        LspServer::spawn(
+            entry,
+            root.to_path_buf(),
+            plan.program.clone(),
+            pre_args,
+            spec,
+            base_env(&user_env, entry),
+            None,
+            std::sync::Arc::new(|_b: DiagnosticsBatch| {}),
+        )
+        .expect("server gerenciado sobe na jaula")
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[ignore = "baixa o pin real do rust-analyzer, verifica sha256 e sobe na jaula"]
+    fn live_managed_rust_analyzer_downloads_and_boots_in_jail() {
+        use crate::lsp::RunState;
+        use std::time::{Duration, Instant};
+
+        if Platform::current().is_none() {
+            return;
+        }
+        let mgr = manager();
+        mgr.install_blocking("rust-analyzer")
+            .expect("download + verificação sha256 + instalação do rust-analyzer");
+        assert!(storage::is_installed(
+            mgr.data_dir(),
+            registry::managed_for("rust-analyzer").unwrap()
+        ));
+
+        let root = std::env::temp_dir().join(format!("tyba-ra-live-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"live\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() { let x = 1; }\n").unwrap();
+
+        let server = boot_managed_in_jail(&mgr, "rust-analyzer", &root);
+        let text = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
+        server.did_open("src/main.rs", "rust", &text);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert_eq!(
+            server.state(),
+            RunState::Ready,
+            "rust-analyzer gerenciado fez o handshake dentro da jaula lendo o próprio binário no data dir"
+        );
+        server.shutdown();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[ignore = "baixa runtime node + pins do typescript-language-server e sobe na jaula"]
+    fn live_managed_typescript_language_server_downloads_and_boots_in_jail() {
+        use crate::lsp::RunState;
+        use std::time::{Duration, Instant};
+
+        if Platform::current().is_none() {
+            return;
+        }
+        let mgr = manager();
+        mgr.install_blocking("typescript-language-server")
+            .expect("download node + tsls + typescript, verificação e instalação");
+        assert!(storage::is_installed(
+            mgr.data_dir(),
+            registry::managed_for("typescript-language-server").unwrap()
+        ));
+
+        let root = std::env::temp_dir().join(format!("tyba-tsls-live-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("tsconfig.json"), "{\n  \"compilerOptions\": {}\n}\n").unwrap();
+        let rel = "index.ts";
+        std::fs::write(root.join(rel), "const soma = (a: number) => a;\n").unwrap();
+
+        let server = boot_managed_in_jail(&mgr, "typescript-language-server", &root);
+        let text = std::fs::read_to_string(root.join(rel)).unwrap();
+        server.did_open(rel, "typescript", &text);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert_eq!(
+            server.state(),
+            RunState::Ready,
+            "o node gerenciado achou runtime, deps e o typescript pinado dentro da jaula"
+        );
+        server.shutdown();
+        std::fs::remove_dir_all(&root).ok();
     }
 }
