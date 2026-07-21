@@ -49,6 +49,7 @@ import { applyLspDiagnostics, lspExtensions, type LspBridge } from "@/lib/cmLsp"
 
 export interface CodeEditorHandle {
   getValue: () => string;
+  markSaved: () => void;
 }
 
 interface Props {
@@ -142,6 +143,11 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
 
   useImperativeHandle(ref, () => ({
     getValue: () => viewRef.current?.state.doc.toString() ?? "",
+    markSaved: () => {
+      const current = viewRef.current?.state.doc.toString() ?? "";
+      baselineRef.current = current;
+      dirtyRef.current(false);
+    },
   }));
 
   useEffect(() => {
