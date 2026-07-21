@@ -8,6 +8,7 @@ pub mod forge;
 pub mod hook_ipc;
 pub mod launch_config;
 pub mod layout;
+pub mod lsp;
 pub mod pty;
 pub mod repo;
 pub mod repo_config;
@@ -46,6 +47,7 @@ struct AppState {
     docker: docker::SharedDocker,
     repos: repo::SharedRepoWatcher,
     files: files::SharedFiles,
+    lsp: lsp::SharedLsp,
     repo_reconcile: std::sync::mpsc::Sender<()>,
     rich_input_submit: parking_lot::Mutex<()>,
     worktree_files: rich_input::FilesCache,
@@ -1066,6 +1068,7 @@ fn close_orphaned_files_panel(state: &AppState, previous: Option<String>, keep: 
         .and_then(|s| s.parse::<SessionId>().ok())
     {
         state.files.close(id);
+        state.lsp.close_session(id);
     }
 }
 
@@ -1166,6 +1169,7 @@ fn files_reanchor(
     id: SessionId,
 ) -> Result<String, String> {
     let (root, context) = resolve_files_root(&state, id)?;
+    state.lsp.close_session(id);
     state.files.seed(&app, id, root.clone(), context);
     state.files.emit_tree_reset(&app, id);
     state.files.emit_decorations(&app, id);
@@ -1187,6 +1191,7 @@ fn files_decorations(
 #[tauri::command]
 fn files_close(state: State<'_, AppState>, id: SessionId) {
     state.files.close(id);
+    state.lsp.close_session(id);
 }
 
 #[tauri::command]
@@ -1324,6 +1329,117 @@ fn files_edit_begin(
 #[tauri::command]
 fn files_edit_end(state: State<'_, AppState>, id: SessionId) {
     state.files.edit_end(id);
+}
+
+#[tauri::command]
+fn lsp_status(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<lsp::LspStatus, String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    Ok(state.lsp.status(id, &path, &root))
+}
+
+#[tauri::command]
+fn lsp_open(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    text: String,
+    spawn: bool,
+) -> Result<lsp::LspStatus, String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::resolve_within(&root, &path)?;
+    Ok(state.lsp.open(&app, id, &root, &path, &text, spawn))
+}
+
+#[tauri::command]
+fn lsp_retry(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<lsp::LspStatus, String> {
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::resolve_within(&root, &path)?;
+    Ok(state.lsp.retry(&app, id, &root, &path))
+}
+
+#[tauri::command]
+fn lsp_change(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    changes: Vec<lsp::document::ContentChange>,
+) -> Result<(), String> {
+    if let Some((root, _)) = state.files.info(id) {
+        files::resolve_within(&root, &path)?;
+    }
+    state.lsp.change(id, &path, changes);
+    Ok(())
+}
+
+#[tauri::command]
+fn lsp_did_save(state: State<'_, AppState>, id: SessionId, path: String) {
+    state.lsp.did_save(id, &path);
+}
+
+#[tauri::command]
+fn lsp_close_doc(state: State<'_, AppState>, id: SessionId, path: String) {
+    state.lsp.close_doc(id, &path);
+}
+
+#[tauri::command]
+fn lsp_completion(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    line: u32,
+    character: u32,
+) -> Vec<lsp::CompletionItem> {
+    state.lsp.completion(id, &path, line, character)
+}
+
+#[tauri::command]
+fn lsp_hover(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    line: u32,
+    character: u32,
+) -> Option<lsp::Hover> {
+    state.lsp.hover(id, &path, line, character)
+}
+
+#[tauri::command]
+fn lsp_definition(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    line: u32,
+    character: u32,
+) -> Vec<lsp::LocationIpc> {
+    state.lsp.definition(id, &path, line, character)
+}
+
+#[tauri::command]
+fn lsp_signature(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    line: u32,
+    character: u32,
+) -> Option<lsp::SignatureHelp> {
+    state.lsp.signature(id, &path, line, character)
 }
 
 #[tauri::command]
@@ -1636,6 +1752,18 @@ async fn files_open_external(
         .ensure(&app, id, || resolve_files_root(&state, id))?;
     let full = files::resolve_within(&root, &path)?;
     let (_file, real) = files::open_verified(&root, &full)?;
+    open_path_in_editor(real, editor)
+}
+
+#[tauri::command]
+async fn lsp_open_external(path: String, editor: Option<String>) -> Result<(), String> {
+    let full = std::path::PathBuf::from(&path);
+    if !full.is_absolute() {
+        return Err("caminho de goto-def não é absoluto".into());
+    }
+    let real = full
+        .canonicalize()
+        .map_err(|e| format!("arquivo inacessível: {e}"))?;
     open_path_in_editor(real, editor)
 }
 
@@ -2042,6 +2170,7 @@ fn dispose_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
     teardown_agent_session(&app, &state, id);
     state.sessions.dispose(&state.pty_pool, id);
     state.files.close(id);
+    state.lsp.close_session(id);
     let _ = state.layout.session_disposed(id);
     emit_layout(&app, &state);
 }
@@ -3411,6 +3540,9 @@ pub fn run() {
             let repos: repo::SharedRepoWatcher = Arc::new(repo::RepoWatcher::new());
             let (reconcile_tx, reconcile_rx) = std::sync::mpsc::channel::<()>();
 
+            let lsp: lsp::SharedLsp = Arc::new(lsp::LspManager::new());
+            lsp::spawn_reaper(Arc::clone(&lsp));
+
             app.manage(AppState {
                 store: Arc::clone(&store),
                 pty_pool: Arc::clone(&pty_pool),
@@ -3421,6 +3553,7 @@ pub fn run() {
                 docker: Arc::new(docker::DockerManager::new()),
                 repos,
                 files: Arc::new(files::FilesManager::new()),
+                lsp,
                 repo_reconcile: reconcile_tx.clone(),
                 rich_input_submit: parking_lot::Mutex::new(()),
                 worktree_files: rich_input::FilesCache::default(),
@@ -3561,6 +3694,17 @@ pub fn run() {
             files_gutter,
             files_edit_begin,
             files_edit_end,
+            lsp_status,
+            lsp_open,
+            lsp_retry,
+            lsp_change,
+            lsp_did_save,
+            lsp_close_doc,
+            lsp_completion,
+            lsp_hover,
+            lsp_definition,
+            lsp_signature,
+            lsp_open_external,
             close_side_view,
             set_side_view_expanded,
             set_side_view_ratio,
