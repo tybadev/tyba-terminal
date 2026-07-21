@@ -4,6 +4,7 @@ export type KeyAction =
   | "paletteActions"
   | "paletteSessions"
   | "panel"
+  | "files"
   | "settings"
   | "newSession"
   | "newWorktreeSession"
@@ -32,6 +33,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   "paletteActions",
   "paletteSessions",
   "panel",
+  "files",
   "settings",
   "newSession",
   "newWorktreeSession",
@@ -78,6 +80,7 @@ export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
   paletteActions: "general",
   paletteSessions: "general",
   panel: "general",
+  files: "general",
   settings: "general",
   newSession: "sessions",
   newWorktreeSession: "sessions",
@@ -107,6 +110,7 @@ export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   paletteActions: "paletteActions",
   paletteSessions: "paletteSessions",
   panel: "togglePanel",
+  files: "filesPanel",
   settings: "settings",
   newSession: "newSession",
   newWorktreeSession: "worktreeNewSession",
@@ -158,6 +162,7 @@ export const MAC_BINDINGS: Bindings = {
   paletteActions: "meta+p",
   paletteSessions: "meta+shift+p",
   panel: "meta+b",
+  files: "meta+shift+e",
   settings: "meta+,",
   newSession: "meta+n",
   newWorktreeSession: "meta+shift+t",
@@ -187,6 +192,7 @@ export const PC_BINDINGS: Bindings = {
   paletteActions: "ctrl+shift+p",
   paletteSessions: "ctrl+alt+shift+p",
   panel: "ctrl+shift+b",
+  files: "ctrl+shift+e",
   settings: "ctrl+,",
   newSession: "ctrl+shift+n",
   newWorktreeSession: "ctrl+alt+shift+t",
@@ -198,7 +204,7 @@ export const PC_BINDINGS: Bindings = {
   nextSession: "ctrl+shift+arrowdown",
   prevTab: "ctrl+pageup",
   nextTab: "ctrl+pagedown",
-  splitRight: "ctrl+shift+e",
+  splitRight: "ctrl+alt+d",
   splitDown: "ctrl+shift+d",
   nextPane: "ctrl+tab",
   paneLeft: "ctrl+alt+arrowleft",

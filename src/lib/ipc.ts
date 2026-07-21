@@ -1151,3 +1151,91 @@ export const updateCheck = () => invoke<UpdateStatus | null>("update_check");
 
 export const updateDismiss = (version: string) =>
   invoke<void>("update_dismiss", { version });
+
+export type FilesKind = "agent_worktree" | "repo" | "outside_repo";
+
+export interface FileEntry {
+  name: string;
+  rel_path: string;
+  is_dir: boolean;
+  is_symlink: boolean;
+  gitignored: boolean;
+}
+
+export interface DirListing {
+  dir: string;
+  entries: FileEntry[];
+}
+
+export type FileDecoStatus =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "untracked";
+
+export interface FileDecoration {
+  path: string;
+  status: FileDecoStatus;
+}
+
+export type FileContent =
+  | {
+      kind: "text";
+      text: string;
+      offset: number;
+      next_offset: number;
+      total: number;
+      truncated: boolean;
+    }
+  | { kind: "image"; data: string; mime: string; total: number }
+  | { kind: "binary"; total: number; mime: string | null };
+
+export interface FilesPanelInfo {
+  root: string;
+  kind: FilesKind;
+  decorated: boolean;
+}
+
+export const openFilesPanel = (id: SessionId) =>
+  invoke<string>("open_files_panel", { id });
+
+export const filesPanelInfo = (id: SessionId) =>
+  invoke<FilesPanelInfo>("files_panel_info", { id });
+
+export const filesListDir = (id: SessionId, path: string) =>
+  invoke<DirListing>("files_list_dir", { id, path });
+
+export const filesRead = (id: SessionId, path: string, offset?: number) =>
+  invoke<FileContent>("files_read", { id, path, offset: offset ?? null });
+
+export const filesWatchDir = (id: SessionId, path: string) =>
+  invoke<void>("files_watch_dir", { id, path });
+
+export const filesUnwatchDir = (id: SessionId, path: string) =>
+  invoke<void>("files_unwatch_dir", { id, path });
+
+export const filesReanchor = (id: SessionId) =>
+  invoke<string>("files_reanchor", { id });
+
+export const filesDecorations = (id: SessionId) =>
+  invoke<void>("files_decorations", { id });
+
+export const filesClose = (id: SessionId) =>
+  invoke<void>("files_close", { id });
+
+export const onFilesTree = (
+  id: SessionId,
+  handler: (dirs: string[]) => void,
+): Promise<UnlistenFn> =>
+  listen<{ dirs: string[] }>(`files://tree/${id}`, (e) =>
+    handler(e.payload.dirs),
+  );
+
+export const onFilesDecorations = (
+  id: SessionId,
+  handler: (decorations: FileDecoration[]) => void,
+): Promise<UnlistenFn> =>
+  listen<{ decorations: FileDecoration[] }>(`files://decorations/${id}`, (e) =>
+    handler(e.payload.decorations),
+  );
