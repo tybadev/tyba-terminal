@@ -146,41 +146,74 @@ fn status_to_err(code: u32, message: String) -> RemoteError {
     }
 }
 
-struct Conn {
-    reader: BufReader<ChildStdout>,
-    writer: ChildStdin,
-    next_id: u32,
-    child: Child,
+/// Teto de frame: um `length` mentiroso do servidor não pode nos fazer alocar
+/// gigabytes. Nossas maiores respostas (READ de 32 KiB, NAME de um diretório
+/// capado em 2000 entradas) cabem folgado abaixo disto.
+const MAX_FRAME: usize = 32 * 1024 * 1024;
+
+/// Escreve uma frame SFTP: `uint32 length | byte type | payload`. O length cobre
+/// o byte de tipo mais o payload.
+fn write_frame<W: Write>(w: &mut W, ty: u8, payload: &[u8]) -> RemoteResult<()> {
+    let mut frame = Vec::with_capacity(5 + payload.len());
+    put_u32(&mut frame, 1 + payload.len() as u32);
+    frame.push(ty);
+    frame.extend_from_slice(payload);
+    w.write_all(&frame).map_err(|_| RemoteError::Disconnected)?;
+    w.flush().map_err(|_| RemoteError::Disconnected)?;
+    Ok(())
 }
 
-impl Conn {
+/// Lê uma frame SFTP inteira. `read_exact` remonta a frame mesmo quando o stream
+/// entrega os bytes picados; frames coladas na mesma leitura ficam para a leitura
+/// seguinte (o length delimita cada uma). O teto barra um `length` mentiroso
+/// antes de qualquer alocação; um corte no meio da frame vira `Disconnected`.
+fn read_frame<R: Read>(r: &mut R) -> RemoteResult<(u8, Vec<u8>)> {
+    let mut len_buf = [0u8; 4];
+    r.read_exact(&mut len_buf)
+        .map_err(|_| RemoteError::Disconnected)?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len == 0 {
+        return Err(RemoteError::Protocol("frame de tamanho zero".into()));
+    }
+    if len > MAX_FRAME {
+        return Err(RemoteError::Protocol(format!(
+            "frame de {len} bytes acima do teto de {MAX_FRAME}"
+        )));
+    }
+    let mut body = vec![0u8; len];
+    r.read_exact(&mut body)
+        .map_err(|_| RemoteError::Disconnected)?;
+    let ty = body[0];
+    Ok((ty, body[1..].to_vec()))
+}
+
+/// Versão negociada no VERSION: só falamos v3, então qualquer outra é recusada
+/// explicitamente em vez de tolerada.
+fn check_version(body: &[u8]) -> RemoteResult<u32> {
+    let mut cur = Cursor::new(body);
+    let version = cur.u32()?;
+    if version != SFTP_VERSION {
+        return Err(RemoteError::Protocol(format!(
+            "versão SFTP {version} != {SFTP_VERSION} (só falamos v3)"
+        )));
+    }
+    Ok(version)
+}
+
+struct Conn<R: Read, W: Write> {
+    reader: R,
+    writer: W,
+    next_id: u32,
+    child: Option<Child>,
+}
+
+impl<R: Read, W: Write> Conn<R, W> {
     fn send(&mut self, ty: u8, payload: &[u8]) -> RemoteResult<()> {
-        let mut frame = Vec::with_capacity(5 + payload.len());
-        put_u32(&mut frame, 1 + payload.len() as u32);
-        frame.push(ty);
-        frame.extend_from_slice(payload);
-        self.writer
-            .write_all(&frame)
-            .map_err(|_| RemoteError::Disconnected)?;
-        self.writer.flush().map_err(|_| RemoteError::Disconnected)?;
-        Ok(())
+        write_frame(&mut self.writer, ty, payload)
     }
 
     fn recv(&mut self) -> RemoteResult<(u8, Vec<u8>)> {
-        let mut len_buf = [0u8; 4];
-        self.reader
-            .read_exact(&mut len_buf)
-            .map_err(|_| RemoteError::Disconnected)?;
-        let len = u32::from_be_bytes(len_buf) as usize;
-        if len == 0 || len > 512 * 1024 * 1024 {
-            return Err(RemoteError::Protocol("frame com tamanho inválido".into()));
-        }
-        let mut body = vec![0u8; len];
-        self.reader
-            .read_exact(&mut body)
-            .map_err(|_| RemoteError::Disconnected)?;
-        let ty = body[0];
-        Ok((ty, body[1..].to_vec()))
+        read_frame(&mut self.reader)
     }
 
     fn alloc_id(&mut self) -> u32 {
@@ -244,7 +277,7 @@ impl Conn {
 
 pub struct SshRemote {
     alias: String,
-    conn: Mutex<Conn>,
+    conn: Mutex<Conn<BufReader<ChildStdout>, ChildStdin>>,
 }
 
 impl SshRemote {
@@ -270,7 +303,7 @@ impl SshRemote {
             reader,
             writer,
             next_id: 1,
-            child,
+            child: Some(child),
         };
 
         let mut init = Vec::new();
@@ -280,13 +313,7 @@ impl SshRemote {
         if ty != FXP_VERSION {
             return Err(RemoteError::Protocol("esperava VERSION".into()));
         }
-        let mut cur = Cursor::new(&body);
-        let version = cur.u32()?;
-        if version < 3 {
-            return Err(RemoteError::Protocol(format!(
-                "versão SFTP {version} sem suporte"
-            )));
-        }
+        check_version(&body)?;
         Ok(Self {
             alias: alias.to_string(),
             conn: Mutex::new(conn),
@@ -557,8 +584,10 @@ impl Drop for SshRemote {
     fn drop(&mut self) {
         let mut conn = self.conn.lock();
         let _ = conn.writer.flush();
-        let _ = conn.child.kill();
-        let _ = conn.child.wait();
+        if let Some(child) = conn.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -689,5 +718,183 @@ mod tests {
         assert_eq!(sh_quote("a b"), "'a b'");
         assert_eq!(sh_quote("it's"), "'it'\\''s'");
         assert_eq!(sh_quote("/root"), "'/root'");
+    }
+
+    /// Reader que entrega no máximo `step` bytes por chamada — simula o stream
+    /// picando uma frame em pedaços (o caso real de rede).
+    struct ChunkyReader {
+        data: Vec<u8>,
+        pos: usize,
+        step: usize,
+    }
+
+    impl std::io::Read for ChunkyReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.data.len() {
+                return Ok(0);
+            }
+            let n = self.step.min(buf.len()).min(self.data.len() - self.pos);
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn read_frame_reassembles_a_frame_delivered_one_byte_at_a_time() {
+        let mut payload = Vec::new();
+        put_u32(&mut payload, 7);
+        put_string(&mut payload, b"hi");
+        let mut framed = Vec::new();
+        write_frame(&mut framed, FXP_STATUS, &payload).unwrap();
+
+        let mut r = ChunkyReader {
+            data: framed,
+            pos: 0,
+            step: 1,
+        };
+        let (ty, body) = read_frame(&mut r).unwrap();
+        assert_eq!(ty, FXP_STATUS);
+        assert_eq!(
+            body, payload,
+            "read_exact remonta a frame mesmo picada em 1 byte por leitura"
+        );
+    }
+
+    #[test]
+    fn read_frame_keeps_glued_frames_separate() {
+        let mut pl1 = Vec::new();
+        put_u32(&mut pl1, 1);
+        let mut pl2 = Vec::new();
+        put_u32(&mut pl2, 2);
+        put_string(&mut pl2, b"payload dois");
+        let mut framed = Vec::new();
+        write_frame(&mut framed, FXP_STATUS, &pl1).unwrap();
+        write_frame(&mut framed, FXP_DATA, &pl2).unwrap();
+
+        let mut r = std::io::Cursor::new(framed);
+        let (t1, b1) = read_frame(&mut r).unwrap();
+        let (t2, b2) = read_frame(&mut r).unwrap();
+        assert_eq!((t1, &b1), (FXP_STATUS, &pl1));
+        assert_eq!(
+            (t2, &b2),
+            (FXP_DATA, &pl2),
+            "a segunda frame colada não pode ser contaminada pela primeira"
+        );
+    }
+
+    #[test]
+    fn read_frame_rejects_a_lying_oversize_length_before_allocating() {
+        let mut hdr = Vec::new();
+        put_u32(&mut hdr, (MAX_FRAME + 1) as u32);
+        let mut r = std::io::Cursor::new(hdr);
+        match read_frame(&mut r) {
+            Err(RemoteError::Protocol(_)) => {}
+            other => panic!("length mentiroso acima do teto tem que ser recusado; veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_frame_rejects_a_zero_length_frame() {
+        let mut hdr = Vec::new();
+        put_u32(&mut hdr, 0);
+        let mut r = std::io::Cursor::new(hdr);
+        assert!(matches!(read_frame(&mut r), Err(RemoteError::Protocol(_))));
+    }
+
+    #[test]
+    fn read_frame_on_a_truncated_body_reports_disconnected() {
+        // length diz 100, mas só há 11 bytes no stream.
+        let mut framed = Vec::new();
+        put_u32(&mut framed, 100);
+        framed.push(FXP_STATUS);
+        framed.extend_from_slice(&[0u8; 10]);
+        let mut r = std::io::Cursor::new(framed);
+        assert_eq!(read_frame(&mut r), Err(RemoteError::Disconnected));
+    }
+
+    #[test]
+    fn request_rejects_a_response_with_a_mismatched_id() {
+        let mut resp = Vec::new();
+        put_u32(&mut resp, 99);
+        put_u32(&mut resp, FX_OK);
+        let mut framed = Vec::new();
+        write_frame(&mut framed, FXP_STATUS, &resp).unwrap();
+
+        let mut conn = Conn {
+            reader: std::io::Cursor::new(framed),
+            writer: Vec::new(),
+            next_id: 1,
+            child: None,
+        };
+        match conn.request(FXP_STAT, 1, &[]) {
+            Err(RemoteError::Protocol(_)) => {}
+            other => panic!("resposta com id fora de ordem tem que ser recusada; veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_accepts_a_response_with_the_matching_id() {
+        let mut resp = Vec::new();
+        put_u32(&mut resp, 5);
+        put_u32(&mut resp, FX_OK);
+        let mut framed = Vec::new();
+        write_frame(&mut framed, FXP_STATUS, &resp).unwrap();
+
+        let mut conn = Conn {
+            reader: std::io::Cursor::new(framed),
+            writer: Vec::new(),
+            next_id: 1,
+            child: None,
+        };
+        let (ty, body) = conn.request(FXP_STAT, 5, &[]).unwrap();
+        assert_eq!(ty, FXP_STATUS);
+        let mut cur = Cursor::new(&body);
+        assert_eq!(cur.u32().unwrap(), 5);
+    }
+
+    #[test]
+    fn check_version_accepts_only_v3() {
+        let mut v3 = Vec::new();
+        put_u32(&mut v3, 3);
+        assert_eq!(check_version(&v3).unwrap(), 3);
+        for bad in [2u32, 4, 6] {
+            let mut b = Vec::new();
+            put_u32(&mut b, bad);
+            assert!(
+                check_version(&b).is_err(),
+                "versão {bad} tem que ser recusada — só falamos v3"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_name_tolerates_nul_and_invalid_utf8_in_a_filename() {
+        let mut body = Vec::new();
+        put_u32(&mut body, 1);
+        put_u32(&mut body, 1);
+        put_string(&mut body, b"na\x00me\xffx.txt");
+        put_string(&mut body, b"longname");
+        body.extend_from_slice(&attrs_bytes(ATTR_PERMISSIONS, None, Some(0o100644)));
+
+        let entries = parse_name(&body).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].name.contains('\u{0}'),
+            "o NUL do nome hostil é preservado (lossy), sem panic"
+        );
+        assert!(entries[0].stat.is_file());
+    }
+
+    #[test]
+    fn parse_attrs_errors_on_flags_that_lie_about_present_fields() {
+        // Flag ATTR_SIZE ligada, mas sem os 8 bytes de size.
+        let mut b = Vec::new();
+        put_u32(&mut b, ATTR_SIZE);
+        let mut cur = Cursor::new(&b);
+        assert!(
+            parse_attrs(&mut cur).is_err(),
+            "flag que promete um campo ausente não pode ler lixo — erro de protocolo"
+        );
     }
 }
