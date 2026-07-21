@@ -10,6 +10,7 @@ import {
   GearSix,
   GitBranch,
   TreeStructure,
+  TreeView,
   GitDiff,
   HardDrives,
   Keyboard,
@@ -2975,7 +2976,7 @@ export default function App() {
                       : "text-tyba-text-faint hover:text-tyba-text"
                   }`}
                 >
-                  <TreeStructure size={16} />
+                  <TreeView size={16} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">

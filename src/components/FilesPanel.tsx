@@ -16,7 +16,7 @@ import {
   PlusMinus,
   ArrowSquareOut,
   TrashSimple,
-  TreeStructure,
+  TreeView,
   X,
 } from "@phosphor-icons/react";
 
@@ -61,6 +61,7 @@ import {
 } from "@/lib/highlight";
 import { isRemoteUrl, safeMarkdownUrl } from "@/lib/markdownUrl";
 import { requestConfirm } from "@/lib/confirm";
+import { IS_MAC } from "@/lib/platform";
 import { lineDiff } from "@/lib/lineDiff";
 import { toastError } from "@/lib/toast";
 import { getEffectiveBase, onEffectiveBaseChange } from "@/theme";
@@ -502,6 +503,20 @@ export function FilesPanel({
     }
   }, [selected, editBaseline, session.id, t]);
 
+  useEffect(() => {
+    if (!editing) return;
+    const onKey = (e: KeyboardEvent) => {
+      const chord = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      if (!chord || e.altKey || e.shiftKey || e.key.toLowerCase() !== "s") return;
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void save();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editing, save]);
+
   const reloadFromDisk = useCallback(async () => {
     if (!selected) return;
     if (!(await confirmDiscard())) return;
@@ -753,7 +768,7 @@ export function FilesPanel({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-tyba-bg">
       <header className="flex h-8 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
-        <TreeStructure size={14} className="shrink-0 text-tyba-text-faint" />
+        <TreeView size={14} className="shrink-0 text-tyba-text-faint" />
         <span className="min-w-0 truncate text-[12px] text-tyba-text">
           {t("filesTitle")}
         </span>
