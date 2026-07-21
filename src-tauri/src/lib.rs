@@ -8,6 +8,7 @@ pub mod forge;
 pub mod hook_ipc;
 pub mod launch_config;
 pub mod layout;
+pub mod lsp;
 pub mod pty;
 pub mod repo;
 pub mod repo_config;
@@ -47,6 +48,7 @@ struct AppState {
     repos: repo::SharedRepoWatcher,
     files: files::SharedFiles,
     remote_files: files::remote::SharedRemoteFiles,
+    lsp: lsp::SharedLsp,
     repo_reconcile: std::sync::mpsc::Sender<()>,
     rich_input_submit: parking_lot::Mutex<()>,
     worktree_files: rich_input::FilesCache,
@@ -1097,11 +1099,13 @@ async fn open_remote_panel(
     .map_err(|e| e.to_string())?
 }
 
-/// Teardown único do painel de arquivos: derruba tanto o local quanto o remoto.
-/// Chamado por todos os sites que encerram um painel — a lição do watcher órfão.
+/// Teardown único do painel de arquivos: derruba o painel local, o remoto (SFTP)
+/// e a sessão de LSP da fatia 3, num só lugar. Chamado por todos os sites que
+/// encerram um painel — a lição do watcher órfão, terceira aparição.
 fn close_files_panel(state: &AppState, id: SessionId) {
     state.files.close(id);
     state.remote_files.close(id);
+    state.lsp.close_session(id);
 }
 
 /// Roda uma operação do painel remoto fora da thread do command (as chamadas
@@ -1302,12 +1306,14 @@ async fn files_reanchor(
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<String, String> {
+    // Re-ancorar troca a raiz: derruba tudo da raiz antiga (local + remoto + LSP)
+    // e reconstrói na nova. Teardown unificado.
+    close_files_panel(&state, id);
     if is_ssh_session(&state, id) {
         let (rf, alias, tmux) = match remote_target(&state, id) {
             Some(t) => t?,
             None => return Err("host da sessão SSH não encontrado".into()),
         };
-        rf.close(id);
         let panel = open_remote_panel(rf, id, alias, tmux).await?;
         let root = panel.info().root;
         state.files.emit_tree_reset(&app, id);
@@ -1541,6 +1547,128 @@ fn files_edit_end(state: State<'_, AppState>, id: SessionId) {
         return;
     }
     state.files.edit_end(id);
+}
+
+#[tauri::command]
+fn lsp_status(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<lsp::LspStatus, String> {
+    // LSP é local-only (fatia 3): sessão SSH nunca sobe server (o LSP remoto é a
+    // fatia 4b). Guarda no core — não resolve raiz local nem spawna. UI espelha.
+    if is_ssh_session(&state, id) {
+        return Ok(lsp::LspStatus::Unsupported);
+    }
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    Ok(state.lsp.status(id, &path, &root))
+}
+
+#[tauri::command]
+fn lsp_open(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    text: String,
+    spawn: bool,
+) -> Result<lsp::LspStatus, String> {
+    if is_ssh_session(&state, id) {
+        return Ok(lsp::LspStatus::Unsupported);
+    }
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::resolve_within(&root, &path)?;
+    Ok(state.lsp.open(&app, id, &root, &path, &text, spawn))
+}
+
+#[tauri::command]
+fn lsp_retry(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+) -> Result<lsp::LspStatus, String> {
+    if is_ssh_session(&state, id) {
+        return Ok(lsp::LspStatus::Unsupported);
+    }
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    files::resolve_within(&root, &path)?;
+    Ok(state.lsp.retry(&app, id, &root, &path))
+}
+
+#[tauri::command]
+fn lsp_change(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    changes: Vec<lsp::document::ContentChange>,
+) -> Result<(), String> {
+    if let Some((root, _)) = state.files.info(id) {
+        files::resolve_within(&root, &path)?;
+    }
+    state.lsp.change(id, &path, changes);
+    Ok(())
+}
+
+#[tauri::command]
+fn lsp_did_save(state: State<'_, AppState>, id: SessionId, path: String) {
+    state.lsp.did_save(id, &path);
+}
+
+#[tauri::command]
+fn lsp_close_doc(state: State<'_, AppState>, id: SessionId, path: String) {
+    state.lsp.close_doc(id, &path);
+}
+
+#[tauri::command]
+fn lsp_completion(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    line: u32,
+    character: u32,
+) -> Vec<lsp::CompletionItem> {
+    state.lsp.completion(id, &path, line, character)
+}
+
+#[tauri::command]
+fn lsp_hover(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    line: u32,
+    character: u32,
+) -> Option<lsp::Hover> {
+    state.lsp.hover(id, &path, line, character)
+}
+
+#[tauri::command]
+fn lsp_definition(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    line: u32,
+    character: u32,
+) -> Vec<lsp::LocationIpc> {
+    state.lsp.definition(id, &path, line, character)
+}
+
+#[tauri::command]
+fn lsp_signature(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    line: u32,
+    character: u32,
+) -> Option<lsp::SignatureHelp> {
+    state.lsp.signature(id, &path, line, character)
 }
 
 #[tauri::command]
@@ -1858,6 +1986,18 @@ async fn files_open_external(
         .ensure(&app, id, || resolve_files_root(&state, id))?;
     let full = files::resolve_within(&root, &path)?;
     let (_file, real) = files::open_verified(&root, &full)?;
+    open_path_in_editor(real, editor)
+}
+
+#[tauri::command]
+async fn lsp_open_external(path: String, editor: Option<String>) -> Result<(), String> {
+    let full = std::path::PathBuf::from(&path);
+    if !full.is_absolute() {
+        return Err("caminho de goto-def não é absoluto".into());
+    }
+    let real = full
+        .canonicalize()
+        .map_err(|e| format!("arquivo inacessível: {e}"))?;
     open_path_in_editor(real, editor)
 }
 
@@ -2755,9 +2895,10 @@ fn reconnect_ssh(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> R
     if !matches!(session.kind, SessionKind::Ssh { .. }) {
         return Err(crate::error::AppError::new("ssh.not_an_ssh_session").to_string());
     }
-    // O canal SFTP do painel morreu com a conexão anterior; derruba o painel para
-    // a próxima operação reconstruí-lo sobre a conexão remultiplexada.
-    state.remote_files.close(id);
+    // O canal SFTP do painel morreu com a conexão anterior; derruba o painel
+    // (teardown unificado) para a próxima operação reconstruí-lo sobre a conexão
+    // remultiplexada.
+    close_files_panel(&state, id);
     reattach_or_finish(app, id);
     Ok(())
 }
@@ -3636,6 +3777,9 @@ pub fn run() {
             let repos: repo::SharedRepoWatcher = Arc::new(repo::RepoWatcher::new());
             let (reconcile_tx, reconcile_rx) = std::sync::mpsc::channel::<()>();
 
+            let lsp: lsp::SharedLsp = Arc::new(lsp::LspManager::new());
+            lsp::spawn_reaper(Arc::clone(&lsp));
+
             app.manage(AppState {
                 store: Arc::clone(&store),
                 pty_pool: Arc::clone(&pty_pool),
@@ -3647,6 +3791,7 @@ pub fn run() {
                 repos,
                 files: Arc::new(files::FilesManager::new()),
                 remote_files: Arc::new(files::remote::RemoteFilesManager::new()),
+                lsp,
                 repo_reconcile: reconcile_tx.clone(),
                 rich_input_submit: parking_lot::Mutex::new(()),
                 worktree_files: rich_input::FilesCache::default(),
@@ -3788,6 +3933,17 @@ pub fn run() {
             files_gutter,
             files_edit_begin,
             files_edit_end,
+            lsp_status,
+            lsp_open,
+            lsp_retry,
+            lsp_change,
+            lsp_did_save,
+            lsp_close_doc,
+            lsp_completion,
+            lsp_hover,
+            lsp_definition,
+            lsp_signature,
+            lsp_open_external,
             close_side_view,
             set_side_view_expanded,
             set_side_view_ratio,

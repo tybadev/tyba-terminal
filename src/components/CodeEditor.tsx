@@ -42,12 +42,14 @@ import {
   searchKeymap,
 } from "@codemirror/search";
 
-import type { GutterMarker } from "@/lib/ipc";
+import type { GutterMarker, LspDiagnostic } from "@/lib/ipc";
 import { cmEditorTheme, cmHighlightStyle } from "@/lib/cmTheme";
 import { langExtension } from "@/lib/cmLang";
+import { applyLspDiagnostics, lspExtensions, type LspBridge } from "@/lib/cmLsp";
 
 export interface CodeEditorHandle {
   getValue: () => string;
+  markSaved: () => void;
 }
 
 interface Props {
@@ -55,6 +57,8 @@ interface Props {
   filename: string;
   dark: boolean;
   markers: GutterMarker[];
+  lsp?: LspBridge | null;
+  diagnostics?: LspDiagnostic[];
   onDirtyChange: (dirty: boolean) => void;
   onSave: () => void;
 }
@@ -111,7 +115,7 @@ const diffGutter = gutter({
 });
 
 export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
-  { doc, filename, dark, markers, onDirtyChange, onSave },
+  { doc, filename, dark, markers, lsp, diagnostics, onDirtyChange, onSave },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -121,12 +125,38 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
   const baselineRef = useRef(doc);
   const themeCompartment = useRef(new Compartment());
   const langCompartment = useRef(new Compartment());
+  const lspRef = useRef<LspBridge | null | undefined>(lsp);
+  const hasLsp = useRef<boolean>(!!lsp);
+  const lspCompartment = useRef(new Compartment());
 
   saveRef.current = onSave;
   dirtyRef.current = onDirtyChange;
+  lspRef.current = lsp;
+
+  const stableBridge = useRef<LspBridge>({
+    completion: (l, c) => lspRef.current?.completion(l, c) ?? Promise.resolve([]),
+    hover: (l, c) => lspRef.current?.hover(l, c) ?? Promise.resolve(null),
+    signature: (l, c) => lspRef.current?.signature(l, c) ?? Promise.resolve(null),
+    definition: (l, c) => lspRef.current?.definition(l, c) ?? Promise.resolve([]),
+    change: (changes) => lspRef.current?.change(changes),
+    gotoDefinition: (loc) => lspRef.current?.gotoDefinition(loc),
+  });
 
   useImperativeHandle(ref, () => ({
     getValue: () => viewRef.current?.state.doc.toString() ?? "",
+    markSaved: () => {
+      const view = viewRef.current;
+      if (!view) return;
+      baselineRef.current = view.state.doc.toString();
+      dirtyRef.current(false);
+      if (hasLsp.current) {
+        view.dispatch({
+          effects: lspCompartment.current.reconfigure(
+            lspExtensions(stableBridge.current),
+          ),
+        });
+      }
+    },
   }));
 
   useEffect(() => {
@@ -170,6 +200,9 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
         ]),
         themeCompartment.current.of(themeExt),
         langCompartment.current.of([]),
+        lspCompartment.current.of(
+          hasLsp.current ? lspExtensions(stableBridge.current) : [],
+        ),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             dirtyRef.current(
@@ -218,6 +251,12 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
     if (!view) return;
     view.dispatch({ effects: setMarkers.of(markers) });
   }, [markers]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || !hasLsp.current) return;
+    applyLspDiagnostics(view, diagnostics ?? []);
+  }, [diagnostics]);
 
   return <div ref={hostRef} className="h-full min-h-0 overflow-hidden" />;
 });

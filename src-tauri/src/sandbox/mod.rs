@@ -27,6 +27,7 @@ pub(crate) const TOOLCHAIN_HOME_DIRS: [&str; 4] = [".cargo", ".npm", ".bun", ".r
 /// área gravável.
 pub(crate) const PROTECTED_BRANCHES: [&str; 2] = ["main", "master"];
 
+#[derive(Clone)]
 pub struct SandboxSpec {
     pub writable_root: PathBuf,
     pub readable_root: PathBuf,

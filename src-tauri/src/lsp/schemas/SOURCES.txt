@@ -1,0 +1,14 @@
+Vendored JSON schemas for the offline yaml-language-server jail.
+Both are minified verbatim copies; associations are wired via file:// in init_options.
+
+compose-spec.min.json
+  origin: https://github.com/compose-spec/compose-spec (schema/compose-spec.json)
+  license: Apache-2.0
+
+github-workflow.min.json
+  origin: https://github.com/SchemaStore/schemastore (src/schemas/json/github-workflow.json)
+  license: Apache-2.0 (SchemaStore)
+
+kubernetes: intentionally not vendored. A self-contained k8s schema (definitions
+inlined) is multiple megabytes; embedding it would bloat the binary. k8s YAML keeps
+structural validation only. Revisit if a compact self-contained schema is needed.
