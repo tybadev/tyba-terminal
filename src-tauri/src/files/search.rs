@@ -148,7 +148,7 @@ fn walk(root: &Path) -> (Vec<String>, bool) {
     (out, false)
 }
 
-fn rank(names: &[String], query: &str, limit: usize) -> Vec<String> {
+pub(crate) fn rank(names: &[String], query: &str, limit: usize) -> Vec<String> {
     if query.is_empty() {
         return names.iter().take(limit).cloned().collect();
     }
