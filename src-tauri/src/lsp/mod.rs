@@ -584,6 +584,14 @@ impl LspManager {
         }
     }
 
+    pub fn did_save(&self, id: SessionId, rel: &str) {
+        if let Some((entry, _)) = entry_for_file(rel) {
+            if let Some(server) = self.get(id, entry) {
+                server.did_save(rel);
+            }
+        }
+    }
+
     pub fn close_doc(&self, id: SessionId, rel: &str) {
         if let Some((entry, _)) = entry_for_file(rel) {
             if let Some(server) = self.get(id, entry) {
@@ -1026,5 +1034,132 @@ mod tests {
 
         server.shutdown();
         std::fs::remove_dir_all(&cache).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "reproduz completion depois do save com ts-ls real"]
+    fn live_ts_completion_survives_save() {
+        use crate::lsp::client::{base_env, LspServer};
+        use crate::lsp::document::ContentChange;
+        use crate::lsp::registry::{self, entry_by_id};
+        use crate::lsp::sandbox::{lsp_sandbox_spec, LspSpecCtx};
+        use std::time::{Duration, Instant};
+
+        let user_env: HashMap<String, String> = std::env::vars().collect();
+        let home = PathBuf::from(user_env.get("HOME").cloned().unwrap());
+        let entry = entry_by_id("typescript-language-server").unwrap();
+        let path_dirs: Vec<PathBuf> =
+            std::env::split_paths(&crate::shell_path::agent_path()).collect();
+        let root = std::fs::canonicalize(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap(),
+        )
+        .unwrap();
+        if !root.join("node_modules/typescript/lib/tsserver.js").is_file() {
+            eprintln!("projeto sem typescript clássico — pulado");
+            return;
+        }
+        let Some(binary) = registry::discover(entry, &path_dirs, &home, &root) else {
+            eprintln!("ts-ls ausente — pulado");
+            return;
+        };
+        let rel = "tyba_lsp_probe.ts";
+        let probe = root.join(rel);
+        let uri = uri::from_path(&probe);
+        std::fs::write(&probe, "const s = \"hello\";\n").unwrap();
+
+        let cache =
+            std::env::temp_dir().join(format!("tyba-lsp-save-cache-{}", SessionId::new_v4()));
+        std::fs::create_dir_all(cache.join(".rt")).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let mut exec_path_dirs = path_dirs.clone();
+        exec_path_dirs.push(binary.parent().unwrap().to_path_buf());
+        let extra_reads = registry::derived_read_grants(entry, &binary, &path_dirs);
+        let ctx = LspSpecCtx {
+            root: &root,
+            cache_dir: &cache,
+            exe: &exe,
+            env: &user_env,
+            exec_path_dirs,
+            read_allow_extra: vec![],
+            extra_reads,
+            data_dir: data_dir(&home),
+        };
+        let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
+        let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
+        let pre_args: Vec<std::ffi::OsString> =
+            pre.into_iter().map(|p| p.into_os_string()).collect();
+        let server = LspServer::spawn(
+            entry,
+            root.clone(),
+            program,
+            pre_args,
+            spec,
+            base_env(&user_env, entry),
+            Arc::new(|_b: DiagnosticsBatch| {}),
+        )
+        .unwrap();
+
+        use crate::lsp::document::{Position, Range};
+        let type_char = |line: u32, col: u32, c: &str| {
+            server.did_change(
+                rel,
+                vec![ContentChange {
+                    range: Some(Range {
+                        start: Position {
+                            line,
+                            character: col,
+                        },
+                        end: Position {
+                            line,
+                            character: col,
+                        },
+                    }),
+                    text: c.to_string(),
+                }],
+            );
+        };
+        let complete = |line: u32, ch: u32| -> usize {
+            server
+                .request(
+                    "textDocument/completion",
+                    json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": ch}}),
+                )
+                .map(|v| CompletionItem::list_from(&v).len())
+                .unwrap_or(0)
+        };
+
+        let seed = "const soma = (a: number) => a;\n\n";
+        server.did_open(rel, "typescript", seed);
+        let deadline = Instant::now() + Duration::from_secs(40);
+        while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert_eq!(server.state(), RunState::Ready);
+        std::thread::sleep(Duration::from_secs(2));
+
+        for (i, c) in "som".chars().enumerate() {
+            type_char(1, i as u32, &c.to_string());
+        }
+        std::thread::sleep(Duration::from_millis(700));
+        let before = complete(1, 3);
+
+        std::fs::write(root.join(".probe.tmp"), format!("{seed}som")).unwrap();
+        std::fs::rename(root.join(".probe.tmp"), &probe).unwrap();
+        server.did_save(rel);
+        std::thread::sleep(Duration::from_millis(1500));
+
+        type_char(1, 3, "a");
+        type_char(1, 4, "(");
+        std::thread::sleep(Duration::from_millis(700));
+        let after = complete(1, 4);
+
+        server.shutdown();
+        std::fs::remove_file(&probe).ok();
+        std::fs::remove_dir_all(&cache).ok();
+
+        eprintln!("SAVE-REPRO before={before} after={after}");
+        assert!(before > 0, "completion funcionava antes do save");
+        assert!(after > 0, "completion continua viva depois do save+edição");
     }
 }

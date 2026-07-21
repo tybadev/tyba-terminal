@@ -1417,6 +1417,9 @@ export const lspChange = (
   changes: LspContentChange[],
 ) => invoke<void>("lsp_change", { id, path, changes });
 
+export const lspDidSave = (id: SessionId, path: string) =>
+  invoke<void>("lsp_did_save", { id, path });
+
 export const lspCloseDoc = (id: SessionId, path: string) =>
   invoke<void>("lsp_close_doc", { id, path });
 

@@ -242,6 +242,19 @@ impl LspServer {
         );
     }
 
+    pub fn did_save(&self, rel: &str) {
+        self.touch();
+        let uri = self.open_docs.lock().get(rel).map(|d| d.uri.clone());
+        if let Some(uri) = uri {
+            if matches!(self.state(), RunState::Ready) {
+                self.notify(
+                    "textDocument/didSave",
+                    json!({ "textDocument": {"uri": uri} }),
+                );
+            }
+        }
+    }
+
     pub fn did_close(&self, rel: &str) {
         let removed = self.open_docs.lock().remove(rel);
         let had_diags = self.diagnostics.lock().remove(rel).is_some();
@@ -721,7 +734,7 @@ fn admit_file(map_len: usize, known: bool, empty: bool) -> Admit {
 fn client_capabilities() -> Value {
     json!({
         "textDocument": {
-            "synchronization": {"didSave": false, "dynamicRegistration": false},
+            "synchronization": {"didSave": true, "willSave": false, "dynamicRegistration": false},
             "completion": {
                 "completionItem": {
                     "snippetSupport": false,

@@ -59,6 +59,7 @@ import {
   lspCloseDoc,
   lspCompletion,
   lspDefinition,
+  lspDidSave,
   lspHover,
   lspOpen,
   lspOpenExternal,
@@ -651,6 +652,7 @@ export function FilesPanel({
         setSavedHash(result.hash);
         setDirty(false);
         setConflict(null);
+        void lspDidSave(session.id, selected).catch(() => {});
       } else {
         setConflict({ path: selected, diskHash: result.disk_hash });
       }
@@ -706,6 +708,7 @@ export function FilesPanel({
         setDirty(false);
         setConflict(null);
         setConflictDiff(null);
+        void lspDidSave(session.id, selected).catch(() => {});
       } else {
         setConflict({ path: selected, diskHash: result.disk_hash });
       }

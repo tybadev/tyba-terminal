@@ -127,6 +127,7 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
   const langCompartment = useRef(new Compartment());
   const lspRef = useRef<LspBridge | null | undefined>(lsp);
   const hasLsp = useRef<boolean>(!!lsp);
+  const lspCompartment = useRef(new Compartment());
 
   saveRef.current = onSave;
   dirtyRef.current = onDirtyChange;
@@ -144,9 +145,17 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
   useImperativeHandle(ref, () => ({
     getValue: () => viewRef.current?.state.doc.toString() ?? "",
     markSaved: () => {
-      const current = viewRef.current?.state.doc.toString() ?? "";
-      baselineRef.current = current;
+      const view = viewRef.current;
+      if (!view) return;
+      baselineRef.current = view.state.doc.toString();
       dirtyRef.current(false);
+      if (hasLsp.current) {
+        view.dispatch({
+          effects: lspCompartment.current.reconfigure(
+            lspExtensions(stableBridge.current),
+          ),
+        });
+      }
     },
   }));
 
@@ -191,7 +200,9 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
         ]),
         themeCompartment.current.of(themeExt),
         langCompartment.current.of([]),
-        ...(hasLsp.current ? [lspExtensions(stableBridge.current)] : []),
+        lspCompartment.current.of(
+          hasLsp.current ? lspExtensions(stableBridge.current) : [],
+        ),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             dirtyRef.current(

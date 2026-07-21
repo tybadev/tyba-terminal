@@ -1389,6 +1389,11 @@ fn lsp_change(
 }
 
 #[tauri::command]
+fn lsp_did_save(state: State<'_, AppState>, id: SessionId, path: String) {
+    state.lsp.did_save(id, &path);
+}
+
+#[tauri::command]
 fn lsp_close_doc(state: State<'_, AppState>, id: SessionId, path: String) {
     state.lsp.close_doc(id, &path);
 }
@@ -3693,6 +3698,7 @@ pub fn run() {
             lsp_open,
             lsp_retry,
             lsp_change,
+            lsp_did_save,
             lsp_close_doc,
             lsp_completion,
             lsp_hover,
