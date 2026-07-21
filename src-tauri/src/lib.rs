@@ -1732,6 +1732,18 @@ async fn files_open_external(
 }
 
 #[tauri::command]
+async fn lsp_open_external(path: String, editor: Option<String>) -> Result<(), String> {
+    let full = std::path::PathBuf::from(&path);
+    if !full.is_absolute() {
+        return Err("caminho de goto-def não é absoluto".into());
+    }
+    let real = full
+        .canonicalize()
+        .map_err(|e| format!("arquivo inacessível: {e}"))?;
+    open_path_in_editor(real, editor)
+}
+
+#[tauri::command]
 async fn session_diff(
     state: State<'_, AppState>,
     id: SessionId,
@@ -3666,6 +3678,7 @@ pub fn run() {
             lsp_hover,
             lsp_definition,
             lsp_signature,
+            lsp_open_external,
             close_side_view,
             set_side_view_expanded,
             set_side_view_ratio,

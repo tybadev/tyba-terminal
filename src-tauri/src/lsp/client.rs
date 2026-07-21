@@ -95,24 +95,12 @@ impl LspServer {
         &self.root
     }
 
-    pub fn is_experimental(&self) -> bool {
-        self.entry.experimental
-    }
-
     pub fn diagnostic_count(&self, rel: &str) -> usize {
         self.diagnostics
             .lock()
             .get(rel)
             .map(|d| d.len())
             .unwrap_or(0)
-    }
-
-    pub fn diagnostics_for(&self, rel: &str) -> Vec<DiagnosticIpc> {
-        self.diagnostics
-            .lock()
-            .get(rel)
-            .cloned()
-            .unwrap_or_default()
     }
 
     fn touch(&self) {
@@ -401,6 +389,7 @@ fn boot(server: &Arc<LspServer>) -> Result<(), String> {
     spawn_diag_thread(Arc::clone(server), diag_rx);
 
     if let Some(stderr) = stderr {
+        let debug = std::env::var_os("TYBA_LSP_STDERR").is_some();
         std::thread::spawn(move || {
             use std::io::Read;
             let mut sink = [0u8; 4096];
@@ -408,6 +397,9 @@ fn boot(server: &Arc<LspServer>) -> Result<(), String> {
             while let Ok(n) = stderr.read(&mut sink) {
                 if n == 0 {
                     break;
+                }
+                if debug {
+                    eprint!("{}", String::from_utf8_lossy(&sink[..n]));
                 }
             }
         });

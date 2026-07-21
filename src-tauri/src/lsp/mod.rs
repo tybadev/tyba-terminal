@@ -746,4 +746,87 @@ mod tests {
         let status = mgr.status(SessionId::new_v4(), "notes.xyz", Path::new("/tmp"));
         assert!(matches!(status, LspStatus::Unsupported));
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requer rust-analyzer instalado; sobe um server real dentro da jaula"]
+    fn live_rust_analyzer_boots_inside_the_seatbelt_jail() {
+        use crate::lsp::client::{base_env, LspServer};
+        use crate::lsp::registry::{self, entry_by_id};
+        use crate::lsp::sandbox::{lsp_sandbox_spec, LspSpecCtx};
+        use std::time::{Duration, Instant};
+
+        let user_env: HashMap<String, String> = std::env::vars().collect();
+        let home = PathBuf::from(user_env.get("HOME").cloned().unwrap());
+        let entry = entry_by_id("rust-analyzer").unwrap();
+        let path_dirs: Vec<PathBuf> =
+            std::env::split_paths(&crate::shell_path::agent_path()).collect();
+        let root = std::env::temp_dir().join(format!("tyba-lsp-live-{}", SessionId::new_v4()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"live\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() { let x = 1; }\n").unwrap();
+        let Some(binary) = registry::discover(entry, &path_dirs, &home, &root) else {
+            std::fs::remove_dir_all(&root).ok();
+            eprintln!("rust-analyzer ausente — validação viva pulada");
+            return;
+        };
+
+        let cache =
+            std::env::temp_dir().join(format!("tyba-lsp-live-cache-{}", SessionId::new_v4()));
+        std::fs::create_dir_all(cache.join(".rt")).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let mut exec_path_dirs = path_dirs.clone();
+        exec_path_dirs.push(binary.parent().unwrap().to_path_buf());
+        let ctx = LspSpecCtx {
+            root: &root,
+            cache_dir: &cache,
+            exe: &exe,
+            env: &user_env,
+            exec_path_dirs,
+            read_allow_extra: vec![],
+            data_dir: data_dir(&home),
+        };
+        let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
+        assert!(!spec.allow_network);
+
+        let server = LspServer::spawn(
+            entry,
+            root.clone(),
+            binary,
+            spec,
+            base_env(&user_env),
+            Arc::new(|_batch: DiagnosticsBatch| {}),
+        )
+        .expect("server enjaulado subiu");
+
+        let text = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
+        server.did_open("src/main.rs", "rust", &text);
+
+        let deadline = Instant::now() + Duration::from_secs(40);
+        while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert_eq!(
+            server.state(),
+            RunState::Ready,
+            "o handshake initialize/initialized rodou dentro do sandbox-exec"
+        );
+
+        let hover = server.request(
+            "textDocument/hover",
+            json!({
+                "textDocument": {"uri": uri::from_path(&root.join("src/main.rs"))},
+                "position": {"line": 0, "character": 16},
+            }),
+        );
+        assert!(hover.is_ok(), "o server enjaulado respondeu a um request");
+
+        server.shutdown();
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&cache).ok();
+    }
 }
