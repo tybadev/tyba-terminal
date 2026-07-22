@@ -547,7 +547,9 @@ mod tests {
         assert_eq!(
             server.state(),
             RunState::Ready,
-            "rust-analyzer gerenciado fez o handshake dentro da jaula lendo o próprio binário no data dir"
+            "rust-analyzer gerenciado não chegou a Ready na jaula (state={:?}, last_error={:?})",
+            server.state(),
+            server.last_error()
         );
         server.shutdown();
         std::fs::remove_dir_all(&root).ok();
@@ -591,7 +593,9 @@ mod tests {
         assert_eq!(
             server.state(),
             RunState::Ready,
-            "o node gerenciado achou runtime, deps e o typescript pinado dentro da jaula"
+            "o node gerenciado não chegou a Ready na jaula (state={:?}, last_error={:?})",
+            server.state(),
+            server.last_error()
         );
         server.shutdown();
         std::fs::remove_dir_all(&root).ok();
