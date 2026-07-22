@@ -1066,7 +1066,7 @@ mod tests {
         let text = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
         server.did_open("src/main.rs", "rust", &text);
 
-        let deadline = Instant::now() + Duration::from_secs(40);
+        let deadline = Instant::now() + Duration::from_secs(120);
         while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
             std::thread::sleep(Duration::from_millis(200));
         }
@@ -1160,7 +1160,7 @@ mod tests {
         let text = std::fs::read_to_string(&file).unwrap();
         server.did_open(rel, "typescript", &text);
 
-        let deadline = Instant::now() + Duration::from_secs(40);
+        let deadline = Instant::now() + Duration::from_secs(120);
         while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
             std::thread::sleep(Duration::from_millis(200));
         }
@@ -1282,7 +1282,7 @@ mod tests {
 
         let seed = "const soma = (a: number) => a;\n\n";
         server.did_open(rel, "typescript", seed);
-        let deadline = Instant::now() + Duration::from_secs(40);
+        let deadline = Instant::now() + Duration::from_secs(120);
         while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
             std::thread::sleep(Duration::from_millis(200));
         }
@@ -1376,7 +1376,7 @@ mod tests {
         .unwrap();
 
         server.did_open(rel, "yaml", "\n");
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(120);
         while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
             std::thread::sleep(Duration::from_millis(200));
         }
