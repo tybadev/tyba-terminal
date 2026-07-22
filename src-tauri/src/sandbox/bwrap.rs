@@ -359,7 +359,9 @@ pub fn build_args(spec: &SandboxSpec) -> Result<Vec<OsString>, String> {
     worktree_git(&mut args, spec)?;
 
     args.ro_bind(&spec.runtime_dir);
-    args.op("--bind", &spec.hook_socket, &spec.hook_socket);
+    if spec.hook_socket.exists() {
+        args.op("--bind", &spec.hook_socket, &spec.hook_socket);
+    }
 
     for extra in &spec.read_allow_extra {
         args.ro_bind_try(extra);
@@ -574,6 +576,7 @@ mod tests {
         };
         std::fs::create_dir_all(spec.tyba_exe.parent().unwrap()).unwrap();
         std::fs::write(&spec.tyba_exe, "").unwrap();
+        std::fs::write(&spec.hook_socket, "").unwrap();
         (tmp, spec)
     }
 
@@ -611,6 +614,7 @@ mod tests {
         };
         std::fs::create_dir_all(spec.tyba_exe.parent().unwrap()).unwrap();
         std::fs::write(&spec.tyba_exe, "").unwrap();
+        std::fs::write(&spec.hook_socket, "").unwrap();
         (tmp, spec)
     }
 
@@ -831,6 +835,17 @@ mod tests {
         let argv = strs(&build_args(&spec).unwrap());
         assert!(has_triple(&argv, "--ro-bind", &spec.runtime_dir));
         assert!(has_triple(&argv, "--bind", &spec.hook_socket));
+    }
+
+    #[test]
+    fn absent_hook_socket_is_not_bound() {
+        let (_tmp, mut spec) = fixture();
+        spec.hook_socket = spec.runtime_dir.join(".no-hook.sock");
+        let argv = strs(&build_args(&spec).unwrap());
+        assert!(
+            !has_triple(&argv, "--bind", &spec.hook_socket),
+            "socket inexistente (jaula do LSP) viraria --bind e o bwrap abortaria: {argv:?}"
+        );
     }
 
     #[test]
