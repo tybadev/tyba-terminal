@@ -295,10 +295,11 @@ pub fn build_policy(spec: &SandboxSpec) -> String {
     lines.push(format!("(deny file-write* {immutable})"));
 
     if !spec.data_dir_reads.is_empty() {
+        let lsp_root = spec.tyba_data_dir.join("lsp");
         let carved: Vec<Rule> = spec
             .data_dir_reads
             .iter()
-            .filter(|p| p.starts_with(&spec.tyba_data_dir))
+            .filter(|p| p.starts_with(&lsp_root))
             .map(|p| Rule::Subpath(p.clone()))
             .collect();
         if let Some(line) = render_ruleset(READ_OPS, &RuleSet::allow(carved)) {

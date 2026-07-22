@@ -384,8 +384,12 @@ pub fn build_args(spec: &SandboxSpec) -> Result<Vec<OsString>, String> {
         worktree_mounts(&mut args, spec);
     }
 
+    let lsp_root = spec.tyba_data_dir.join("lsp");
     for carved in &spec.data_dir_reads {
-        if carved.starts_with(&spec.tyba_data_dir) && carved.is_dir() {
+        let is_real_dir = std::fs::symlink_metadata(carved)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+        if carved.starts_with(&lsp_root) && is_real_dir {
             args.ro_bind(carved);
         }
     }

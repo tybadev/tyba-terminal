@@ -331,12 +331,20 @@ mod tests {
             Path::new("/Apps/Tyba.app/Contents/MacOS/tyba"),
             &env,
         );
+        let outside_lsp = data_dir.join("credentials");
         c.data_dir = data_dir.clone();
-        c.data_dir_reads = vec![managed.clone()];
+        c.data_dir_reads = vec![managed.clone(), outside_lsp.clone()];
         let entry = entry_by_id("rust-analyzer").unwrap();
         let spec = lsp_sandbox_spec(entry, &c).unwrap();
         let policy = crate::sandbox::seatbelt::build_policy(&spec);
         let lines: Vec<&str> = policy.lines().collect();
+        let outside_rendered = crate::sandbox::policy::render_rule(
+            &crate::sandbox::policy::Rule::Subpath(outside_lsp),
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains(&outside_rendered)),
+            "só o subdir lsp/ é liberado; um data_dir_reads fora de lsp/ não fura o deny"
+        );
         let deny_idx = lines
             .iter()
             .position(|l| {
