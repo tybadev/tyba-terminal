@@ -1,0 +1,49 @@
+---
+title: "Language server"
+description: "Completion, erros e goto-def no painel — com o language server rodando isolado."
+---
+
+Editar sem inteligência de linguagem é editar às cegas. O painel liga um language server (LSP) por trás do editor, então você ganha o que espera de uma IDE — só que dentro do TYBA, e com o server rodando isolado.
+
+## O que você ganha
+
+Para cerca de 15 linguagens (Rust, TypeScript, Python, Go, e por aí vai), enquanto você edita:
+
+- **Completion** — sugestões enquanto digita, ou forçadas com `⌃Space`.
+- **Diagnostics** — os erros e avisos aparecem como sublinhado ondulado na linha, com um contador no header do painel. Não tem um painel de "Problems" separado; o erro fica onde ele acontece.
+- **Hover** — passe o cursor num símbolo e veja o tipo e a doc.
+- **Goto-def** — pule pra definição de uma função ou tipo. Se ela está dentro da raiz do painel, o painel navega até lá; se está fora, o TYBA te diz onde.
+
+## Quando o server não está instalado
+
+Aqui está a parte que você vê acontecer. Cada linguagem precisa do seu language server (o `rust-analyzer`, o `typescript-language-server`, etc.). O TYBA lida com isso assim:
+
+<Steps>
+  <Step title="Se você já tem o server no PATH, ele usa o seu">
+    Nada a fazer. O que está no seu `PATH` sempre ganha.
+  </Step>
+  <Step title="Se não tem, o TYBA se oferece pra baixar">
+    Aparece um card com o nome do server, a versão, o tamanho e a fonte (o domínio oficial), com um selo dizendo que o download é conferido por checksum. Você não precisa instalar nada na mão.
+  </Step>
+  <Step title="Você aceita, ele baixa e sobe">
+    Uma barra mostra o progresso; quando termina, o indicador no header vai de *ausente* para *instalando* e então para *vivo*, e a completion começa a funcionar. Se preferir usar o seu, o card também te dá o comando de instalação pra rodar você mesmo.
+  </Step>
+</Steps>
+
+O download é **pinado**: a versão e o checksum vêm amarrados a cada release do TYBA e conferidos byte a byte antes de rodar. Se o que baixou não bate com o esperado, o TYBA recusa e te mostra o erro — ele nunca executa um binário que não confere.
+
+## Por que ele roda isolado
+
+Um language server não é passivo: ele executa código do projeto que indexa. O `rust-analyzer` roda `build.rs` e proc macros; o `tsserver` carrega plugins do `package.json`. Num worktree de agente, esse "código do projeto" é código que o agente escreveu — possivelmente sob prompt injection.
+
+Por isso o server sobe **dentro da mesma jaula** que o resto do TYBA usa pros agentes: sem rede, sem escrever fora do workspace. Você percebe isso em duas coisas — foi por segurança que ele pediu consentimento pra baixar (o download acontece no core, não no server enjaulado), e é por isso que o server não alcança a internet. Nenhum editor do mercado enjaula o language server que roda; aqui ele roda contido.
+
+<Note>
+**No Windows, o LSP não sobe nesta versão.** O resto do painel — árvore, viewer, edição, git, fuzzy finder — funciona normalmente; só a inteligência de linguagem fica de fora no Windows por enquanto. No macOS e no Linux ela funciona.
+</Note>
+
+## Próximo
+
+<Card title="Arquivos remotos" icon="cloud" href="/pt-br/arquivos/remoto">
+  O mesmo painel num host por SSH, sem instalar nada no servidor.
+</Card>

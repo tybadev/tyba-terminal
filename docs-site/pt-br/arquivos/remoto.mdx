@@ -1,0 +1,33 @@
+---
+title: "Arquivos remotos"
+description: "O mesmo painel num host por SSH, sem instalar nada no servidor."
+---
+
+Quando você está numa sessão SSH, o painel de Arquivos funciona no host remoto — sem mudar de ferramenta e sem instalar nada no servidor. Aqui o painel vale ainda mais que no local: num servidor você não tem o VSCode do lado pra onde escapar.
+
+## Como funciona
+
+Abra o painel numa sessão SSH e ele mostra os arquivos do host, não os da sua máquina. Navegar, ler, editar, salvar, criar, renomear, deletar — tudo igual ao local, do mesmo jeito que você já aprendeu.
+
+Por baixo, ele viaja pela **conexão SSH que já está aberta** — a mesma da sua sessão. Não abre conexão nova, não sobe daemon nem helper no servidor. Cada ação é uma operação pontual na conexão que já existe. O servidor não fica com nada residente do TYBA.
+
+## O que muda em relação ao local
+
+A UX é a mesma, mas o protocolo remoto não dá todas as garantias do disco local, e o painel é honesto sobre isso:
+
+- **Deletar sempre pede confirmação.** No seu computador, deletar manda pra Lixeira e dá pra recuperar. No host remoto não existe uma Lixeira padrão, então o painel confirma antes de todo delete — apagou, foi.
+- **A guarda de conflito continua valendo.** Salvar confere se o arquivo mudou no host desde que você começou a editar, e avisa em vez de sobrescrever — igual ao local.
+- **Não há atualização automática.** No local, o painel percebe mudança de arquivo sozinho. No remoto isso custaria rede o tempo todo, então a árvore atualiza nos momentos naturais: quando você expande uma pasta, foca o painel, faz uma ação (salvar, criar, renomear, deletar), ou clica em atualizar.
+- **As decorações de git vêm do host.** O status de git que aparece na árvore é o do repositório no servidor, calculado a cada atualização.
+
+## O que fica de fora no remoto
+
+<Note>
+O **language server é local-only**: numa sessão remota o painel não sobe LSP, então não tem completion, diagnostics nem goto-def no host. Você edita, salva e vê o git — a inteligência de linguagem fica para as sessões locais.
+</Note>
+
+O fuzzy finder por nome funciona dentro de um repositório git remoto (ele usa o índice do git do host). Fora de um repositório, ele fica desabilitado no remoto.
+
+## Antes de usar
+
+Isso depende de você já ter uma sessão SSH de pé no TYBA. O cadastro do host, a conexão e a persistência da sessão estão em [SSH](/pt-br/ssh/hosts-e-grupos) — configure lá primeiro, e o painel de Arquivos passa a funcionar no host sem nenhum passo a mais.

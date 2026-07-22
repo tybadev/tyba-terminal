@@ -1,7 +1,7 @@
 ---
 title: "TYBA"
 sidebarTitle: "Introduction"
-description: "Open-source, AI-agent-oriented terminal — many agents in parallel, each in its own jail, behind an approvals inbox."
+description: "Open-source terminal to let many AI agents work loose without losing control — each isolated in the OS, and nothing ships without your approval."
 ---
 
 TYBA runs several coding agents at once — Claude Code, Codex — each in an isolated git worktree, inside an OS sandbox, behind an approvals inbox.
@@ -11,10 +11,10 @@ It exists because running agents in parallel has two problems nobody solves toge
 ## What it guarantees
 
 <CardGroup cols={2}>
-  <Card title="Real isolation" icon="lock">
+  <Card title="The system enforces the jail" icon="lock">
     The jail is enforced by the kernel, not asked for in a prompt. A `bash -c` the agent spawns inherits the same jail.
   </Card>
-  <Card title="Parallel without collisions" icon="git-branch">
+  <Card title="Many at once, no trampling" icon="git-branch">
     One worktree per session. Agent A can't see or clobber B's tree, and neither touches your working copy.
   </Card>
   <Card title="Review before anything leaves" icon="eye">
@@ -31,7 +31,7 @@ It exists because running agents in parallel has two problems nobody solves toge
 
 <CardGroup cols={2}>
   <Card title="Installation" icon="download" href="/en/installation">
-    macOS, Linux and Windows — and the prerequisites that don't come in the box.
+    macOS, Linux and Windows — plus the two things you install yourself: an agent and a git repo.
   </Card>
   <Card title="First session" icon="play" href="/en/first-session">
     What happens between describing the task and the code existing.
@@ -54,6 +54,6 @@ It's all in [Platforms](/en/security/platforms). Read it before, not after.
 
 ## About this documentation
 
-It describes what runs today, in **0.1.3**. What doesn't exist yet doesn't show up here as if it did — same rule as the site: nothing here is a promise.
+It describes what runs today, in **0.2.0**. What doesn't exist yet doesn't show up here as if it did — same rule as the site: nothing here is a promise.
 
 The name comes from Tupi: *tyba* is the suffix of abundance, the place where things gather.

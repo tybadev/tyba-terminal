@@ -1,0 +1,60 @@
+---
+title: "Files panel"
+description: "Browse, read, and review the agent's work without leaving TYBA."
+---
+
+The Files panel exists for a practical reason: reviewing what the agent did without dropping TYBA and opening VSCode on the side. You open the file, read it, compare against the diff, and adjust — all in the same window where the session is running. In an SSH session the payoff is even bigger, because there's no external editor over there to escape to.
+
+It **isn't an IDE** and doesn't try to be. It's the surface for seeing and touching the project files the session is working on, with git in plain view.
+
+## Opening the panel
+
+<Steps>
+  <Step title="Hit the shortcut">
+    `⌘⇧E` on macOS, `Ctrl+Shift+E` on Windows and Linux — the same key as VSCode. You can change it in **Settings → Shortcuts**.
+  </Step>
+  <Step title="The panel opens on the current session">
+    It shows up next to the terminal, split in two: the file tree on the left, the content on the right.
+  </Step>
+</Steps>
+
+The tree's root isn't picked on the spot: it comes from the session's context. In an agent session, the root is that session's worktree. In a session inside a repository, it's the repo root. Outside a repository, it's the folder the session was in when you opened the panel.
+
+It **doesn't follow** any `cd` you run afterward — it stays pinned to what it was when you opened it. If you need to realign, there's a button to re-anchor on the current directory. And closing the panel ends that state: when you reopen it, the root is resolved again, in that moment's context.
+
+## The tree
+
+The tree loads on demand: it only reads what you expand, so opening a large project doesn't stall anything.
+
+- **Dotfiles show up.** In a terminal you expect to see `.env` and `.github/`, so they're there.
+- **Files in `.gitignore` show up dimmed** and always start collapsed. `node_modules/` and `target/` don't cost CPU until you expand them on purpose — the core is competing with the agents for the processor, and it won't spend that for nothing.
+- **`.git/` stays hidden.**
+- Every file has an icon by extension, and a very large directory shows a "+N items" line instead of dumping everything at once.
+
+## Reading a file
+
+Click any file and its content opens in the viewer on the right. It's always the same gesture — clicking opens it to read.
+
+- **Code comes with syntax highlighting.**
+- **Markdown opens rendered by default**, with a toggle to see the raw source.
+- **Images show up.** SVG and HTML don't: they open as text, on purpose — rendering SVG or HTML from a file an agent wrote is opening a door that doesn't need to be open. For the same reason, a remote image inside a markdown file isn't fetched (the `alt` becomes text) and links don't navigate on their own.
+- **Large files come paginated**, in chunks, with a button to load the rest. The panel never throws tens of MB onto the screen at once.
+
+<Note>
+The content you open in the viewer is **not written** anywhere — not to a database, not to a log. The viewer is transient: it shows and forgets.
+</Note>
+
+## Git in plain view
+
+Every file in the tree carries its git state next to it: modified, new, untracked, staged. What the mark means depends on where you are:
+
+- **In an agent session**, the mark is what *that session* touched — the difference since it started. A file the agent changed and already committed stays marked, because the question the tree answers is "what did this session touch."
+- **In a normal repository**, it's the usual working-tree state, same as the git panel.
+
+Next to a modified file there's a `±` icon. Clicking it jumps straight to that file's diff, without reopening anything. And the viewer header always has a button to open the file in your external editor, if you want to leave TYBA on purpose.
+
+## Next
+
+<Card title="Editing files" icon="pen" href="/en/files/editing">
+  Edit, save without clobbering the agent, and find files by name.
+</Card>

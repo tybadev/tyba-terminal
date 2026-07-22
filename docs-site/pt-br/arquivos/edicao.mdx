@@ -1,0 +1,68 @@
+---
+title: "Editar arquivos"
+description: "Editar e salvar direto no painel, sem sobrescrever o que o agente mexeu."
+---
+
+Ler o arquivo é metade do loop; a outra metade é o ajuste cirúrgico — trocar uma linha, corrigir um nome, tirar um `console.log` que o agente deixou. Isso você faz direto no painel, sem abrir editor nenhum.
+
+## Editar e salvar
+
+O viewer abre pra leitura. Pra mexer, você entra em modo de edição de propósito.
+
+<Steps>
+  <Step title="Clique em Editar">
+    O botão fica no header do viewer. O arquivo vira um editor de código de verdade — com highlight, seleção múltipla, o que você espera.
+  </Step>
+  <Step title="Faça a mudança">
+    Markdown continua abrindo renderizado por padrão; entrar em edição é uma escolha sua, não acontece sozinho quando você clica no arquivo.
+  </Step>
+  <Step title="Salve com ⌘S">
+    O conteúdo vai pro disco na hora.
+  </Step>
+</Steps>
+
+## O save não sobrescreve o agente
+
+Aqui está a parte que importa, porque você está editando arquivos que um agente também pode estar mexendo ao mesmo tempo.
+
+Quando você salva, o TYBA confere se o arquivo no disco ainda é o mesmo que você começou a editar. Se o agente mexeu nele nesse meio-tempo, o save **para e te avisa**, em vez de passar por cima do que o agente escreveu. Você decide o que fazer com as duas versões — nada é perdido em silêncio.
+
+<Note>
+Sem essa guarda, dois de vocês (você e o agente) escrevendo no mesmo arquivo terminaria com um apagando o outro sem ninguém perceber. O aviso é chato de propósito: é ele que impede a perda.
+</Note>
+
+## Criar, renomear, deletar
+
+As operações de arquivo estão no menu de contexto da árvore (clique direito) e nos atalhos:
+
+- **Criar** arquivo ou pasta.
+- **Renomear.**
+- **Deletar** — no seu computador, o arquivo vai pra Lixeira do sistema, não some pra sempre. Dá pra recuperar se você errou.
+
+## Achar arquivo pelo nome
+
+Em projeto grande, navegar a árvore clicando é lento. O fuzzy finder resolve: você digita um pedaço do nome e ele acha.
+
+<Steps>
+  <Step title="Abra com ⌘P (ou ⌘E)">
+    Um campo de busca abre por cima do painel.
+  </Step>
+  <Step title="Digite parte do nome">
+    Não precisa ser o começo nem estar certo: `usrctrl` acha `UserController.ts`. Os resultados filtram enquanto você digita.
+  </Step>
+  <Step title="Enter abre no viewer">
+    O arquivo escolhido abre à direita, como se você tivesse clicado nele na árvore.
+  </Step>
+</Steps>
+
+A busca é **por nome de arquivo**, não por conteúdo. Procurar dentro dos arquivos é trabalho do `grep` no terminal — o terminal é o produto, e o painel não duplica isso.
+
+## O gutter de diff
+
+Enquanto você edita um arquivo versionado, uma faixa fina na margem esquerda marca, linha a linha, o que mudou em relação ao git: adicionado, alterado, removido. É o mesmo diff que o `±` abre em tela cheia, só que inline, do lado da linha que você está mexendo — pra você ver o tamanho do seu ajuste sem sair do editor.
+
+## Próximo
+
+<Card title="Language server" icon="code" href="/pt-br/arquivos/language-server">
+  Completion, erros e goto-def no painel — com o server rodando isolado.
+</Card>

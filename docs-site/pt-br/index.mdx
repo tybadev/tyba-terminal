@@ -1,7 +1,7 @@
 ---
 title: "TYBA"
 sidebarTitle: "Introdução"
-description: "Terminal opensource orientado a agentes de IA — muitos agentes em paralelo, cada um na sua jaula, atrás de um inbox de aprovações."
+description: "Terminal opensource pra deixar vários agentes de IA trabalharem soltos sem você perder o controle — cada um isolado no sistema, e nada sai sem você aprovar."
 ---
 
 O TYBA roda vários agentes de codificação ao mesmo tempo — Claude Code, Codex — cada um num worktree git isolado, dentro de um sandbox do sistema operacional, atrás de um inbox de aprovações.
@@ -11,10 +11,10 @@ Ele existe porque rodar agente em paralelo tem dois problemas que ninguém resol
 ## O que ele garante
 
 <CardGroup cols={2}>
-  <Card title="Isolamento de verdade" icon="lock">
+  <Card title="A jaula quem impõe é o sistema" icon="lock">
     A jaula é imposta pelo kernel, não pedida no prompt. Um `bash -c` que o agente cria herda a mesma jaula.
   </Card>
-  <Card title="Paralelo sem colisão" icon="git-branch">
+  <Card title="Vários ao mesmo tempo sem se atropelar" icon="git-branch">
     Um worktree por sessão. O agente A não vê nem atropela a árvore do B, e nenhum toca sua cópia de trabalho.
   </Card>
   <Card title="Revisão antes da saída" icon="eye">
@@ -31,7 +31,7 @@ Ele existe porque rodar agente em paralelo tem dois problemas que ninguém resol
 
 <CardGroup cols={2}>
   <Card title="Instalação" icon="download" href="/pt-br/instalacao">
-    macOS, Linux e Windows — e os pré-requisitos que não vêm na caixa.
+    macOS, Linux e Windows — e as duas coisas que você instala por fora: um agente e um repositório git.
   </Card>
   <Card title="Primeira sessão" icon="play" href="/pt-br/primeira-sessao">
     O que acontece entre descrever a tarefa e o código existir.
@@ -54,6 +54,6 @@ Está tudo em [Plataformas](/pt-br/seguranca/plataformas). Leia antes, não depo
 
 ## Sobre esta documentação
 
-Ela descreve o que roda hoje, na **0.1.3**. O que ainda não existe não aparece aqui como se existisse — a mesma regra do site: nada aqui é promessa.
+Ela descreve o que roda hoje, na **0.2.0**. O que ainda não existe não aparece aqui como se existisse — a mesma regra do site: nada aqui é promessa.
 
 O nome vem do tupi: *tyba* é o sufixo de abundância, o lugar onde as coisas se reúnem.
