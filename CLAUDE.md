@@ -35,7 +35,7 @@ tyba/
 │   ├── worktree/   # git ops (add, diff, merge, gc de órfãos)
 │   ├── agent/      # trait AgentRunner + claude_code.rs, codex.rs
 │   ├── status/     # StatusDetector (stream-json + OSC 133 + heurística)
-│   └── sandbox/    # trait Sandbox — Seatbelt (macOS) real; Linux (bwrap/seccomp) pendente
+│   └── sandbox/    # trait Sandbox — Seatbelt (macOS) + bwrap/seccomp (Linux) reais; Windows Camada A (token restrito + ConPTY)
 ├── src/            # React: Terminal.tsx, Inbox.tsx, DiffView.tsx
 └── docs/           # ARCHITECTURE.md, SECURITY.md, ROADMAP.md
 ```
