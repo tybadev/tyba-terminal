@@ -1,0 +1,68 @@
+---
+title: "Editing files"
+description: "Edit and save right in the panel, without clobbering what the agent touched."
+---
+
+Reading the file is half the loop; the other half is the surgical fix — swap a line, correct a name, drop a `console.log` the agent left behind. You do that right in the panel, without opening any editor.
+
+## Edit and save
+
+The viewer opens for reading. To change something, you enter edit mode on purpose.
+
+<Steps>
+  <Step title="Click Edit">
+    The button is in the viewer header. The file turns into a real code editor — highlighting, multiple selection, what you'd expect.
+  </Step>
+  <Step title="Make the change">
+    Markdown still opens rendered by default; entering edit mode is your choice, it doesn't happen on its own when you click the file.
+  </Step>
+  <Step title="Save with ⌘S">
+    The content hits disk right away.
+  </Step>
+</Steps>
+
+## Saving doesn't clobber the agent
+
+Here's the part that matters, because you're editing files an agent might be touching at the same time.
+
+When you save, TYBA checks whether the file on disk is still the same one you started editing. If the agent changed it in the meantime, the save **stops and warns you**, instead of running over what the agent wrote. You decide what to do with the two versions — nothing is lost silently.
+
+<Note>
+Without this guard, the two of you (you and the agent) writing to the same file would end with one erasing the other and no one noticing. The warning is annoying on purpose: it's what prevents the loss.
+</Note>
+
+## Create, rename, delete
+
+File operations live in the tree's context menu (right-click) and in the shortcuts:
+
+- **Create** a file or folder.
+- **Rename.**
+- **Delete** — on your computer, the file goes to the system Trash, it doesn't vanish for good. You can get it back if you slipped.
+
+## Finding files by name
+
+In a large project, navigating the tree by clicking is slow. The fuzzy finder fixes that: you type part of the name and it finds it.
+
+<Steps>
+  <Step title="Open with ⌘P (or ⌘E)">
+    A search field opens over the panel.
+  </Step>
+  <Step title="Type part of the name">
+    It doesn't have to be the start or spelled right: `usrctrl` finds `UserController.ts`. Results filter as you type.
+  </Step>
+  <Step title="Enter opens it in the viewer">
+    The chosen file opens on the right, as if you'd clicked it in the tree.
+  </Step>
+</Steps>
+
+The search is **by file name**, not by content. Searching inside files is the terminal's `grep` job — the terminal is the product, and the panel doesn't duplicate it.
+
+## The diff gutter
+
+While you edit a versioned file, a thin strip on the left margin marks, line by line, what changed against git: added, changed, removed. It's the same diff the `±` opens full-screen, just inline, next to the line you're touching — so you can see the size of your change without leaving the editor.
+
+## Next
+
+<Card title="Language server" icon="code" href="/en/files/language-server">
+  Completion, errors, and goto-def in the panel — with the server running jailed.
+</Card>

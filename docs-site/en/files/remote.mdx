@@ -1,0 +1,33 @@
+---
+title: "Remote files"
+description: "The same panel on a host over SSH, without installing anything on the server."
+---
+
+When you're in an SSH session, the Files panel works on the remote host — without switching tools and without installing anything on the server. Here the panel is worth even more than locally: on a server you don't have VSCode on the side to escape to.
+
+## How it works
+
+Open the panel in an SSH session and it shows the host's files, not your machine's. Browse, read, edit, save, create, rename, delete — all the same as local, exactly the way you already learned.
+
+Under the hood, it travels over the **SSH connection that's already open** — the same one as your session. It doesn't open a new connection, doesn't spin up a daemon or helper on the server. Each action is a one-off operation over the connection that already exists. The server keeps nothing of TYBA's resident on it.
+
+## What changes from local
+
+The UX is the same, but the remote protocol doesn't give every guarantee of the local disk, and the panel is honest about that:
+
+- **Delete always asks for confirmation.** On your computer, deleting sends to the Trash and can be undone. On the remote host there's no standard Trash, so the panel confirms before every delete — once it's gone, it's gone.
+- **The conflict guard still holds.** Saving checks whether the file changed on the host since you started editing, and warns instead of overwriting — same as local.
+- **There's no automatic refresh.** Locally, the panel notices a file change on its own. Remotely that would cost network all the time, so the tree refreshes at the natural moments: when you expand a folder, focus the panel, take an action (save, create, rename, delete), or click refresh.
+- **Git decorations come from the host.** The git status shown in the tree is the one from the repository on the server, computed on each refresh.
+
+## What's left out remotely
+
+<Note>
+The **language server is local-only**: in a remote session the panel doesn't boot an LSP, so there's no completion, diagnostics, or goto-def on the host. You edit, save, and see git — the language intelligence stays with local sessions.
+</Note>
+
+The name fuzzy finder works inside a remote git repository (it uses the host's git index). Outside a repository, it's disabled remotely.
+
+## Before you use it
+
+This assumes you already have an SSH session up in TYBA. Registering the host, the connection, and session persistence are covered in [SSH](/en/ssh/hosts-and-groups) — set that up first, and the Files panel starts working on the host with no extra step.

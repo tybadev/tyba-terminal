@@ -1,7 +1,7 @@
 ---
 title: "TYBA"
 sidebarTitle: "Introducción"
-description: "Terminal open source orientada a agentes de IA — muchos agentes en paralelo, cada uno en su propia jaula, detrás de un inbox de aprobaciones."
+description: "Terminal open source para dejar que varios agentes de IA trabajen sueltos sin perder el control — cada uno aislado en el sistema, y nada sale sin tu aprobación."
 ---
 
 TYBA ejecuta varios agentes de codificación a la vez — Claude Code, Codex — cada uno en un worktree de git aislado, dentro de un sandbox del sistema operativo, detrás de un inbox de aprobaciones.
@@ -11,10 +11,10 @@ Existe porque ejecutar agentes en paralelo tiene dos problemas que nadie resuelv
 ## Lo que garantiza
 
 <CardGroup cols={2}>
-  <Card title="Aislamiento de verdad" icon="lock">
+  <Card title="La jaula la impone el sistema" icon="lock">
     La jaula la impone el kernel, no se pide en un prompt. Un `bash -c` que el agente cree hereda la misma jaula.
   </Card>
-  <Card title="Paralelo sin colisiones" icon="git-branch">
+  <Card title="Varios a la vez sin atropellarse" icon="git-branch">
     Un worktree por sesión. El agente A no ve ni pisa el árbol de B, y ninguno toca tu copia de trabajo.
   </Card>
   <Card title="Revisión antes de que algo salga" icon="eye">
@@ -31,7 +31,7 @@ Existe porque ejecutar agentes en paralelo tiene dos problemas que nadie resuelv
 
 <CardGroup cols={2}>
   <Card title="Instalación" icon="download" href="/es/instalacion">
-    macOS, Linux y Windows — y los prerrequisitos que no vienen en la caja.
+    macOS, Linux y Windows — y las dos cosas que instalas por tu cuenta: un agente y un repositorio git.
   </Card>
   <Card title="Primera sesión" icon="play" href="/es/primera-sesion">
     Lo que pasa entre describir la tarea y que el código exista.
@@ -54,6 +54,6 @@ Está todo en [Plataformas](/es/seguridad/plataformas). Léelo antes, no despué
 
 ## Sobre esta documentación
 
-Describe lo que corre hoy, en la **0.1.3**. Lo que todavía no existe no aparece aquí como si existiera — la misma regla del sitio: nada aquí es una promesa.
+Describe lo que corre hoy, en la **0.2.0**. Lo que todavía no existe no aparece aquí como si existiera — la misma regla del sitio: nada aquí es una promesa.
 
 El nombre viene del tupí: *tyba* es el sufijo de abundancia, el lugar donde las cosas se reúnen.

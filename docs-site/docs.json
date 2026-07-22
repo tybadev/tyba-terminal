@@ -47,6 +47,15 @@
             ]
           },
           {
+            "group": "Arquivos",
+            "pages": [
+              "pt-br/arquivos/painel",
+              "pt-br/arquivos/edicao",
+              "pt-br/arquivos/language-server",
+              "pt-br/arquivos/remoto"
+            ]
+          },
+          {
             "group": "Temas",
             "pages": [
               "pt-br/temas/modo-e-slots",
@@ -159,6 +168,15 @@
             ]
           },
           {
+            "group": "Files",
+            "pages": [
+              "en/files/panel",
+              "en/files/editing",
+              "en/files/language-server",
+              "en/files/remote"
+            ]
+          },
+          {
             "group": "Themes",
             "pages": [
               "en/themes/light-and-dark",
@@ -268,6 +286,15 @@
               "es/interfaz/division-de-paneles",
               "es/interfaz/paleta-de-comandos",
               "es/interfaz/atajos"
+            ]
+          },
+          {
+            "group": "Archivos",
+            "pages": [
+              "es/archivos/panel",
+              "es/archivos/edicion",
+              "es/archivos/language-server",
+              "es/archivos/remoto"
             ]
           },
           {

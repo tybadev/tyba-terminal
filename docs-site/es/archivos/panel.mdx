@@ -1,0 +1,60 @@
+---
+title: "Panel de Archivos"
+description: "Navegar, leer y revisar el trabajo del agente sin salir de TYBA."
+---
+
+El panel de Archivos existe por un motivo práctico: revisar lo que hizo el agente sin soltar TYBA y abrir VSCode al lado. Abrís el archivo, lo leés, lo comparás con el diff y lo ajustás — todo en la misma ventana donde corre la sesión. En una sesión SSH la ganancia es todavía mayor, porque ahí no hay editor externo al que escaparse.
+
+**No es un IDE** y no intenta serlo. Es la superficie para ver y tocar los archivos del proyecto que la sesión está trabajando, con git a la vista.
+
+## Abrir el panel
+
+<Steps>
+  <Step title="Apretá el atajo">
+    `⌘⇧E` en macOS, `Ctrl+Shift+E` en Windows y Linux — la misma tecla que VSCode. Se puede cambiar en **Configuración → Atajos**.
+  </Step>
+  <Step title="El panel abre sobre la sesión actual">
+    Aparece al lado de la terminal, dividido en dos: el árbol de archivos a la izquierda, el contenido a la derecha.
+  </Step>
+</Steps>
+
+La raíz del árbol no se elige en el momento: viene del contexto de la sesión. En una sesión de agente, la raíz es el worktree de esa sesión. En una sesión dentro de un repositorio, es la raíz del repo. Fuera de un repositorio, es la carpeta donde estaba la sesión cuando abriste el panel.
+
+**No sigue** ningún `cd` que hagas después — queda fija en lo que era cuando la abriste. Si necesitás realinear, hay un botón para volver a anclar en el directorio actual. Y cerrar el panel termina ese estado: cuando lo reabrís, la raíz se resuelve de nuevo, en el contexto de ese momento.
+
+## El árbol
+
+El árbol carga bajo demanda: solo lee lo que expandís, así que abrir un proyecto grande no traba nada.
+
+- **Los dotfiles aparecen.** En una terminal esperás ver `.env` y `.github/`, así que están.
+- **Los archivos en `.gitignore` aparecen atenuados** y siempre arrancan cerrados. `node_modules/` y `target/` no cuestan CPU hasta que los expandís a propósito — el core está compitiendo con los agentes por el procesador, y no lo va a gastar al pedo.
+- **El `.git/` queda oculto.**
+- Cada archivo tiene un ícono por extensión, y un directorio muy grande muestra una línea "+N ítems" en vez de volcar todo de una.
+
+## Leer un archivo
+
+Hacé clic en cualquier archivo y su contenido abre en el viewer de la derecha. Siempre es el mismo gesto — clic para leer.
+
+- **El código viene con syntax highlighting.**
+- **El markdown abre renderizado por defecto**, con un toggle para ver la fuente cruda.
+- **Las imágenes aparecen.** SVG y HTML no: abren como texto, a propósito — renderizar SVG o HTML de un archivo que escribió un agente es abrir una puerta que no necesita estar abierta. Por lo mismo, una imagen remota dentro de un markdown no se descarga (el `alt` queda como texto) y los links no navegan solos.
+- **Los archivos grandes vienen paginados**, en bloques, con un botón para cargar el resto. El panel nunca tira decenas de MB a la pantalla de una vez.
+
+<Note>
+El contenido que abrís en el viewer **no se guarda** en ningún lado — ni en base de datos, ni en log. El viewer es pasajero: muestra y olvida.
+</Note>
+
+## Git a la vista
+
+Cada archivo del árbol lleva su estado de git al lado: modificado, nuevo, sin trackear, staged. Lo que significa la marca depende de dónde estés:
+
+- **En una sesión de agente**, la marca es lo que *esa sesión* tocó — la diferencia desde que arrancó. Un archivo que el agente cambió y ya commiteó sigue marcado, porque la pregunta que responde el árbol es "qué tocó esta sesión".
+- **En un repositorio normal**, es el estado de working tree de siempre, igual que el panel de git.
+
+Al lado de un archivo modificado hay un ícono `±`. Al hacer clic saltás directo al diff de ese archivo, sin reabrir nada. Y el header del viewer siempre tiene un botón para abrir el archivo en tu editor externo, si querés salir de TYBA a propósito.
+
+## Siguiente
+
+<Card title="Editar archivos" icon="pen" href="/es/archivos/edicion">
+  Editar, guardar sin pisar al agente, y encontrar archivos por nombre.
+</Card>

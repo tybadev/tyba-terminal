@@ -1,0 +1,49 @@
+---
+title: "Language server"
+description: "Completion, errors, and goto-def in the panel — with the language server running jailed."
+---
+
+Editing without language intelligence is editing blind. The panel wires up a language server (LSP) behind the editor, so you get what you'd expect from an IDE — except inside TYBA, and with the server running jailed.
+
+## What you get
+
+For around 15 languages (Rust, TypeScript, Python, Go, and so on), while you edit:
+
+- **Completion** — suggestions as you type, or forced with `⌃Space`.
+- **Diagnostics** — errors and warnings show up as a squiggle on the line, with a counter in the panel header. There's no separate "Problems" pane; the error stays where it happens.
+- **Hover** — put the cursor on a symbol and see its type and docs.
+- **Goto-def** — jump to a function's or type's definition. If it's inside the panel's root, the panel navigates there; if it's outside, TYBA tells you where.
+
+## When the server isn't installed
+
+Here's the part you watch happen. Each language needs its own language server (`rust-analyzer`, `typescript-language-server`, and so on). TYBA handles that like this:
+
+<Steps>
+  <Step title="If you already have the server on your PATH, it uses yours">
+    Nothing to do. What's on your `PATH` always wins.
+  </Step>
+  <Step title="If you don't, TYBA offers to download it">
+    A card shows up with the server's name, version, size, and source (the official domain), plus a badge saying the download is checksum-verified. You don't have to install anything by hand.
+  </Step>
+  <Step title="You accept, it downloads and boots">
+    A bar shows the progress; when it's done, the header indicator goes from *missing* to *installing* and then to *live*, and completion starts working. If you'd rather use your own, the card also gives you the install command to run yourself.
+  </Step>
+</Steps>
+
+The download is **pinned**: the version and checksum are tied to each TYBA release and verified byte for byte before it runs. If what downloaded doesn't match what's expected, TYBA refuses and shows you the error — it never runs a binary that doesn't check out.
+
+## Why it runs jailed
+
+A language server isn't passive: it executes code from the project it indexes. `rust-analyzer` runs `build.rs` and proc macros; `tsserver` loads plugins declared in `package.json`. In an agent worktree, that "project code" is code the agent wrote — possibly under prompt injection.
+
+So the server boots **inside the same jail** the rest of TYBA uses for agents: no network, no writing outside the workspace. You notice this in two things — it asked for consent to download for safety (the download happens in the core, not in the jailed server), and it's why the server can't reach the internet. No editor on the market jails the language server it runs; here it runs contained.
+
+<Note>
+**On Windows, the LSP doesn't boot in this version.** The rest of the panel — tree, viewer, editing, git, fuzzy finder — works normally; only the language intelligence is left out on Windows for now. On macOS and Linux it works.
+</Note>
+
+## Next
+
+<Card title="Remote files" icon="cloud" href="/en/files/remote">
+  The same panel on a host over SSH, without installing anything on the server.
+</Card>
