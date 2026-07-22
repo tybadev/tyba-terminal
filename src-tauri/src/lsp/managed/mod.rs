@@ -374,6 +374,50 @@ impl ManagedManager {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[ctor::ctor]
+fn seccomp_exec_shim() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::AsRawFd;
+    use std::os::unix::process::CommandExt;
+
+    let raw = match std::fs::read("/proc/self/cmdline") {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let argv: Vec<&[u8]> = raw.split(|&b| b == 0).filter(|s| !s.is_empty()).collect();
+    if argv.get(1).copied() != Some(b"_seccomp-exec".as_slice()) {
+        return;
+    }
+    let (Some(bpf), Some(sep)) = (argv.get(2), argv.get(3)) else {
+        std::process::exit(126);
+    };
+    if *sep != b"--".as_slice() || argv.len() < 5 {
+        std::process::exit(126);
+    }
+    let file = match std::fs::File::open(std::ffi::OsStr::from_bytes(bpf)) {
+        Ok(f) => f,
+        Err(_) => std::process::exit(126),
+    };
+    let fd = file.as_raw_fd();
+    let rc = if fd == 3 {
+        unsafe { libc::fcntl(3, libc::F_SETFD, 0) }
+    } else {
+        unsafe { libc::dup2(fd, 3) }
+    };
+    if rc < 0 {
+        std::process::exit(126);
+    }
+    std::mem::forget(file);
+    let prog = std::ffi::OsStr::from_bytes(argv[4]);
+    let rest: Vec<&std::ffi::OsStr> = argv[5..]
+        .iter()
+        .map(|a| std::ffi::OsStr::from_bytes(a))
+        .collect();
+    let _ = std::process::Command::new(prog).args(&rest).exec();
+    std::process::exit(126);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
