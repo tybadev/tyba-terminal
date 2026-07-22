@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 
 const CHUNK: usize = 64 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const TRANSFER_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_REDIRECTS: usize = 5;
 
 const ALLOWED_HOSTS: &[&str] = &[
@@ -141,6 +142,7 @@ pub fn fetch_to_file<P: FnMut(u64)>(
     });
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(TRANSFER_TIMEOUT)
         .redirect(redirect)
         .user_agent(concat!("tyba/", env!("CARGO_PKG_VERSION")))
         .build()
