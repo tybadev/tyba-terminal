@@ -126,3 +126,5 @@ jobs:
       - name: Baixar pins, verificar sha256 e subir na jaula
         run: cargo test --lib live_managed_ -- --ignored --nocapture
         working-directory: src-tauri
+        env:
+          TYBA_LSP_STDERR: "1"
