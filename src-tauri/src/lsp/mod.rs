@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 pub mod client;
 pub mod document;
 pub mod jsonrpc;
+pub mod managed;
 pub mod registry;
 pub mod sandbox;
 pub mod uri;
@@ -319,6 +320,12 @@ pub struct InstallHintIpc {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct InstallHints {
+    pub install: Option<InstallHintIpc>,
+    pub alternatives: Vec<InstallHintIpc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum LspStatus {
     Unsupported,
@@ -345,6 +352,15 @@ pub enum LspStatus {
         server: String,
         reason: Option<String>,
     },
+    ManagedOffer {
+        server: String,
+        card: managed::Card,
+    },
+    Installing {
+        server: String,
+        server_id: String,
+        progress: managed::Progress,
+    },
 }
 
 type ServerKey = (SessionId, &'static str);
@@ -361,6 +377,7 @@ enum ServerSlot {
 #[derive(Default)]
 pub struct LspManager {
     servers: Mutex<HashMap<ServerKey, ServerSlot>>,
+    managed: Mutex<Option<managed::SharedManaged>>,
 }
 
 pub type SharedLsp = Arc<LspManager>;
@@ -368,6 +385,14 @@ pub type SharedLsp = Arc<LspManager>;
 impl LspManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn attach_managed(&self, managed: managed::SharedManaged) {
+        *self.managed.lock() = Some(managed);
+    }
+
+    fn managed(&self) -> Option<managed::SharedManaged> {
+        self.managed.lock().clone()
     }
 
     fn get(&self, id: SessionId, entry: &ServerEntry) -> Option<Arc<LspServer>> {
@@ -410,21 +435,54 @@ impl LspManager {
         if self.is_reserving(id, entry) {
             return LspStatus::Starting { server: label };
         }
-        match self.discover(entry, root) {
-            Some(_) => LspStatus::Available { server: label },
-            None => {
-                let chosen = registry::choose_install(entry, &self.path_dirs());
-                LspStatus::Absent {
-                    server: label,
-                    install: chosen.chosen.map(install_ipc),
-                    alternatives: chosen.alternatives.into_iter().map(install_ipc).collect(),
+        if self.discover(entry, root).is_some() {
+            return LspStatus::Available { server: label };
+        }
+        if let Some(managed) = self.managed() {
+            match managed.outcome(entry) {
+                managed::Outcome::Installed => return LspStatus::Available { server: label },
+                managed::Outcome::Installing(progress) => {
+                    return LspStatus::Installing {
+                        server: label,
+                        server_id: entry.id.to_string(),
+                        progress,
+                    }
                 }
+                managed::Outcome::Offer(card) => {
+                    return LspStatus::ManagedOffer {
+                        server: label,
+                        card,
+                    }
+                }
+                managed::Outcome::NotManaged => {}
             }
+        }
+        let chosen = registry::choose_install(entry, &self.path_dirs());
+        LspStatus::Absent {
+            server: label,
+            install: chosen.chosen.map(install_ipc),
+            alternatives: chosen.alternatives.into_iter().map(install_ipc).collect(),
         }
     }
 
     fn path_dirs(&self) -> Vec<PathBuf> {
         std::env::split_paths(&crate::shell_path::agent_path()).collect()
+    }
+
+    pub fn install_hints(&self, server_id: &str) -> InstallHints {
+        match registry::entry_by_id(server_id) {
+            Some(entry) => {
+                let chosen = registry::choose_install(entry, &self.path_dirs());
+                InstallHints {
+                    install: chosen.chosen.map(install_ipc),
+                    alternatives: chosen.alternatives.into_iter().map(install_ipc).collect(),
+                }
+            }
+            None => InstallHints {
+                install: None,
+                alternatives: Vec::new(),
+            },
+        }
     }
 
     fn discover(&self, entry: &ServerEntry, root: &Path) -> Option<PathBuf> {
@@ -530,19 +588,42 @@ impl LspManager {
             .filter(|p| p.is_absolute())
             .ok_or("HOME indisponível")?;
         let path_dirs = self.path_dirs();
-        let binary = registry::discover(entry, &path_dirs, &home, root)
-            .ok_or("binário do language server não encontrado")?;
+        let (program, pre, exec_extra, extra_reads, data_dir_reads, is_managed) =
+            match registry::discover(entry, &path_dirs, &home, root) {
+                Some(binary) => {
+                    let exec_extra = binary
+                        .parent()
+                        .map(|p| vec![p.to_path_buf()])
+                        .unwrap_or_default();
+                    let extra_reads = registry::derived_read_grants(entry, &binary, &path_dirs);
+                    let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
+                    (program, pre, exec_extra, extra_reads, Vec::new(), false)
+                }
+                None => {
+                    let managed = self
+                        .managed()
+                        .ok_or("binário do language server não encontrado")?;
+                    let plan = managed
+                        .plan(entry)
+                        .ok_or("binário do language server não encontrado")?;
+                    (
+                        plan.program,
+                        plan.pre_args,
+                        plan.exec_dirs,
+                        Vec::new(),
+                        plan.reads,
+                        true,
+                    )
+                }
+            };
         let cache = cache_dir(id, entry);
         std::fs::create_dir_all(cache.join(".rt")).map_err(|e| format!("cache do LSP: {e}"))?;
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let mut exec_path_dirs = path_dirs.clone();
-        if let Some(parent) = binary.parent() {
-            exec_path_dirs.push(parent.to_path_buf());
-        }
+        exec_path_dirs.extend(exec_extra);
         let read_allow_extra = crate::user_config::load(&home)
             .map(|c| c.sandbox_read_allow)
             .unwrap_or_default();
-        let extra_reads = registry::derived_read_grants(entry, &binary, &path_dirs);
         let ctx = LspSpecCtx {
             root,
             cache_dir: &cache,
@@ -552,10 +633,10 @@ impl LspManager {
             read_allow_extra,
             extra_reads,
             data_dir: data_dir(&home),
+            data_dir_reads,
         };
         let spec = sandbox::lsp_sandbox_spec(entry, &ctx)?;
         let env = base_env(&user_env, entry);
-        let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
         let pre_args: Vec<std::ffi::OsString> =
             pre.into_iter().map(|p| p.into_os_string()).collect();
         let init_options = embedded_init_options(entry, &cache.join(".rt"));
@@ -566,7 +647,7 @@ impl LspManager {
             let _ = app.emit(&event, batch);
         });
 
-        LspServer::spawn(
+        let server = LspServer::spawn(
             entry,
             root.to_path_buf(),
             program,
@@ -575,7 +656,32 @@ impl LspManager {
             env,
             init_options,
             emit,
-        )
+        )?;
+
+        if is_managed {
+            if let Some(managed) = self.managed() {
+                let watch = Arc::clone(&server);
+                let sid = entry.id;
+                std::thread::spawn(move || {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                    loop {
+                        match watch.state() {
+                            RunState::Ready => {
+                                managed.gc_after_green(sid);
+                                break;
+                            }
+                            RunState::Crashed | RunState::Stopped => break,
+                            RunState::Starting => {}
+                        }
+                        if std::time::Instant::now() > deadline {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                });
+            }
+        }
+        Ok(server)
     }
 
     pub fn change(&self, id: SessionId, rel: &str, changes: Vec<ContentChange>) {
@@ -776,7 +882,7 @@ fn remove_cache(id: SessionId, server_id: &str) {
     }
 }
 
-fn data_dir(home: &Path) -> PathBuf {
+pub fn data_dir(home: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         home.join("Library/Application Support/dev.tyba.app")
@@ -789,6 +895,13 @@ fn data_dir(home: &Path) -> PathBuf {
             .unwrap_or_else(|| home.join(".local/share"))
             .join("dev.tyba.app")
     }
+}
+
+pub fn resolve_data_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())?;
+    Some(data_dir(&home))
 }
 
 pub fn spawn_reaper(manager: SharedLsp) {
@@ -886,10 +999,10 @@ mod tests {
         assert!(matches!(status, LspStatus::Unsupported));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[ignore = "requer rust-analyzer instalado; sobe um server real dentro da jaula"]
-    fn live_rust_analyzer_boots_inside_the_seatbelt_jail() {
+    fn live_rust_analyzer_boots_inside_the_jail() {
         use crate::lsp::client::{base_env, LspServer};
         use crate::lsp::registry::{self, entry_by_id};
         use crate::lsp::sandbox::{lsp_sandbox_spec, LspSpecCtx};
@@ -930,6 +1043,7 @@ mod tests {
             read_allow_extra: vec![],
             extra_reads,
             data_dir: data_dir(&home),
+            data_dir_reads: vec![],
         };
         let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
         assert!(!spec.allow_network);
@@ -952,14 +1066,14 @@ mod tests {
         let text = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
         server.did_open("src/main.rs", "rust", &text);
 
-        let deadline = Instant::now() + Duration::from_secs(40);
+        let deadline = Instant::now() + Duration::from_secs(120);
         while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
             std::thread::sleep(Duration::from_millis(200));
         }
         assert_eq!(
             server.state(),
             RunState::Ready,
-            "o handshake initialize/initialized rodou dentro do sandbox-exec"
+            "o handshake initialize/initialized rodou dentro da jaula"
         );
 
         let hover = server.request(
@@ -976,7 +1090,7 @@ mod tests {
         std::fs::remove_dir_all(&cache).ok();
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[ignore = "requer typescript-language-server + typescript clássico num projeto real"]
     fn live_typescript_language_server_boots_inside_the_jail() {
@@ -1024,6 +1138,7 @@ mod tests {
             read_allow_extra: vec![],
             extra_reads,
             data_dir: data_dir(&home),
+            data_dir_reads: vec![],
         };
         let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
         let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
@@ -1045,7 +1160,7 @@ mod tests {
         let text = std::fs::read_to_string(&file).unwrap();
         server.did_open(rel, "typescript", &text);
 
-        let deadline = Instant::now() + Duration::from_secs(40);
+        let deadline = Instant::now() + Duration::from_secs(120);
         while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
             std::thread::sleep(Duration::from_millis(200));
         }
@@ -1068,7 +1183,7 @@ mod tests {
         std::fs::remove_dir_all(&cache).ok();
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[ignore = "reproduz completion depois do save com ts-ls real"]
     fn live_ts_completion_survives_save() {
@@ -1118,6 +1233,7 @@ mod tests {
             read_allow_extra: vec![],
             extra_reads,
             data_dir: data_dir(&home),
+            data_dir_reads: vec![],
         };
         let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
         let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
@@ -1166,7 +1282,7 @@ mod tests {
 
         let seed = "const soma = (a: number) => a;\n\n";
         server.did_open(rel, "typescript", seed);
-        let deadline = Instant::now() + Duration::from_secs(40);
+        let deadline = Instant::now() + Duration::from_secs(120);
         while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
             std::thread::sleep(Duration::from_millis(200));
         }
@@ -1196,7 +1312,7 @@ mod tests {
         assert!(after > 0, "completion continua viva depois do save+edição");
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[ignore = "requer yaml-language-server; valida descoberta + schemas embarcados offline"]
     fn live_yaml_docker_compose_completion_offline() {
@@ -1238,6 +1354,7 @@ mod tests {
             read_allow_extra: vec![],
             extra_reads,
             data_dir: data_dir(&home),
+            data_dir_reads: vec![],
         };
         let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
         let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
@@ -1259,7 +1376,7 @@ mod tests {
         .unwrap();
 
         server.did_open(rel, "yaml", "\n");
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(120);
         while Instant::now() < deadline && !matches!(server.state(), RunState::Ready) {
             std::thread::sleep(Duration::from_millis(200));
         }

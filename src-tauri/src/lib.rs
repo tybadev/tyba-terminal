@@ -49,6 +49,7 @@ struct AppState {
     files: files::SharedFiles,
     remote_files: files::remote::SharedRemoteFiles,
     lsp: lsp::SharedLsp,
+    managed_lsp: lsp::managed::SharedManaged,
     repo_reconcile: std::sync::mpsc::Sender<()>,
     rich_input_submit: parking_lot::Mutex<()>,
     worktree_files: rich_input::FilesCache,
@@ -1601,6 +1602,87 @@ fn lsp_retry(
         .ensure(&app, id, || resolve_files_root(&state, id))?;
     files::resolve_within(&root, &path)?;
     Ok(state.lsp.retry(&app, id, &root, &path))
+}
+
+fn managed_progress_emitter(app: &AppHandle) -> Arc<lsp::managed::ProgressEmit> {
+    let app = app.clone();
+    Arc::new(move |server_id: &str, progress: &lsp::managed::Progress| {
+        let event = match progress {
+            lsp::managed::Progress::Error { .. } => format!("lsp://managed/error/{server_id}"),
+            _ => format!("lsp://managed/progress/{server_id}"),
+        };
+        let _ = app.emit(&event, progress);
+    })
+}
+
+#[tauri::command]
+fn lsp_managed_registry(state: State<'_, AppState>) -> Vec<lsp::managed::Card> {
+    state.managed_lsp.registry_cards()
+}
+
+#[tauri::command]
+fn lsp_managed_consent(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    server_id: String,
+    decision: lsp::managed::consent::Decision,
+    path: String,
+) -> Result<lsp::LspStatus, String> {
+    if is_ssh_session(&state, id) {
+        return Ok(lsp::LspStatus::Unsupported);
+    }
+    state.managed_lsp.record_decision(&server_id, decision)?;
+    if decision == lsp::managed::consent::Decision::Accept {
+        state
+            .managed_lsp
+            .start_download(&server_id, managed_progress_emitter(&app))?;
+    }
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    Ok(state.lsp.status(id, &path, &root))
+}
+
+#[tauri::command]
+fn lsp_managed_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    server_id: String,
+    path: String,
+) -> Result<lsp::LspStatus, String> {
+    if is_ssh_session(&state, id) {
+        return Ok(lsp::LspStatus::Unsupported);
+    }
+    if state.managed_lsp.is_consented(&server_id) {
+        state
+            .managed_lsp
+            .start_download(&server_id, managed_progress_emitter(&app))?;
+    }
+    let (root, _ctx) = state
+        .files
+        .ensure(&app, id, || resolve_files_root(&state, id))?;
+    Ok(state.lsp.status(id, &path, &root))
+}
+
+#[tauri::command]
+fn lsp_managed_use_mine(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<lsp::InstallHints, String> {
+    state
+        .managed_lsp
+        .record_decision(&server_id, lsp::managed::consent::Decision::UseMine)?;
+    Ok(state.lsp.install_hints(&server_id))
+}
+
+#[tauri::command]
+fn lsp_managed_download_status(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Option<lsp::managed::Progress> {
+    state.managed_lsp.progress(&server_id)
 }
 
 #[tauri::command]
@@ -3780,6 +3862,13 @@ pub fn run() {
             let lsp: lsp::SharedLsp = Arc::new(lsp::LspManager::new());
             lsp::spawn_reaper(Arc::clone(&lsp));
 
+            let managed_data_dir = lsp::resolve_data_dir()
+                .unwrap_or_else(|| std::env::temp_dir().join("dev.tyba.app"));
+            let managed_lsp: lsp::managed::SharedManaged = Arc::new(
+                lsp::managed::ManagedManager::new(Arc::clone(&store), managed_data_dir),
+            );
+            lsp.attach_managed(Arc::clone(&managed_lsp));
+
             app.manage(AppState {
                 store: Arc::clone(&store),
                 pty_pool: Arc::clone(&pty_pool),
@@ -3792,6 +3881,7 @@ pub fn run() {
                 files: Arc::new(files::FilesManager::new()),
                 remote_files: Arc::new(files::remote::RemoteFilesManager::new()),
                 lsp,
+                managed_lsp,
                 repo_reconcile: reconcile_tx.clone(),
                 rich_input_submit: parking_lot::Mutex::new(()),
                 worktree_files: rich_input::FilesCache::default(),
@@ -3936,6 +4026,11 @@ pub fn run() {
             lsp_status,
             lsp_open,
             lsp_retry,
+            lsp_managed_registry,
+            lsp_managed_consent,
+            lsp_managed_download,
+            lsp_managed_use_mine,
+            lsp_managed_download_status,
             lsp_change,
             lsp_did_save,
             lsp_close_doc,

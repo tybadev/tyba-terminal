@@ -1,0 +1,50 @@
+name: Bump LSP pins
+
+# Estilo Dependabot: uma vez por semana (e sob demanda) resolve as releases
+# upstream dos language servers gerenciados, baixa os artefatos, confere o
+# sha256 de cada byte (node também contra o SHASUMS256.txt oficial) e reescreve
+# os pins. Abre um PR — o gate lsp-pins do gates.yml sobe cada server na jaula
+# contra os artefatos novos. Humano só mergeia PR verde.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt
+      - name: Resolver e reescrever os pins
+        run: python3 scripts/bump-lsp-pins.py
+      - name: Normalizar formatação
+        run: cargo fmt
+        working-directory: src-tauri
+      - name: Abrir PR se houver bump
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- src-tauri/src/lsp/managed/pins.rs; then
+            echo "nenhum upstream novo — nada a fazer"
+            exit 0
+          fi
+          branch="lsp-pins/bump-$(date -u +%Y%m%d)"
+          git config user.name "tyba-bot"
+          git config user.email "bot@tyba.dev"
+          git checkout -b "$branch"
+          git add src-tauri/src/lsp/managed/pins.rs
+          git commit -m "chore(lsp): bump pins de language server gerenciado"
+          git push --force-with-lease origin "$branch"
+          gh pr create \
+            --title "chore(lsp): bump pins de language server gerenciado" \
+            --body "Bump automático dos pins de LSP gerenciado (url + sha256 + version + size). O gate lsp-pins baixa os artefatos novos, confere o sha256 e sobe cada server na jaula. Mergear só com o gate verde." \
+            --base main \
+            --head "$branch"

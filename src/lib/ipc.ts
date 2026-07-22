@@ -1393,6 +1393,26 @@ export interface LspInstallHint {
   manager: string;
 }
 
+export interface LspManagedCard {
+  server_id: string;
+  label: string;
+  version: string;
+  size: number;
+  source: string;
+  platform: string;
+  verified: boolean;
+}
+
+export type LspManagedProgress =
+  | { phase: "pending" }
+  | { phase: "downloading"; downloaded: number; total: number }
+  | { phase: "verifying" }
+  | { phase: "extracting" }
+  | { phase: "ready" }
+  | { phase: "error"; message: string };
+
+export type LspManagedDecision = "accept" | "use_mine" | "refuse";
+
 export type LspStatus =
   | { state: "unsupported" }
   | { state: "experimental"; server: string }
@@ -1405,7 +1425,14 @@ export type LspStatus =
   | { state: "available"; server: string }
   | { state: "starting"; server: string }
   | { state: "ready"; server: string; diagnostics: number; truncated: boolean }
-  | { state: "crashed"; server: string; reason: string | null };
+  | { state: "crashed"; server: string; reason: string | null }
+  | { state: "managed_offer"; server: string; card: LspManagedCard }
+  | {
+      state: "installing";
+      server: string;
+      server_id: string;
+      progress: LspManagedProgress;
+    };
 
 export const lspStatus = (id: SessionId, path: string) =>
   invoke<LspStatus>("lsp_status", { id, path });
@@ -1464,6 +1491,54 @@ export const lspSignature = (
 
 export const lspOpenExternal = (path: string, editor?: string) =>
   invoke<void>("lsp_open_external", { path, editor: editor ?? null });
+
+export const lspManagedRegistry = () =>
+  invoke<LspManagedCard[]>("lsp_managed_registry", {});
+
+export const lspManagedConsent = (
+  id: SessionId,
+  serverId: string,
+  decision: LspManagedDecision,
+  path: string,
+) =>
+  invoke<LspStatus>("lsp_managed_consent", {
+    id,
+    serverId,
+    decision,
+    path,
+  });
+
+export const lspManagedDownload = (
+  id: SessionId,
+  serverId: string,
+  path: string,
+) => invoke<LspStatus>("lsp_managed_download", { id, serverId, path });
+
+export const lspManagedUseMine = (serverId: string) =>
+  invoke<{ install: LspInstallHint | null; alternatives: LspInstallHint[] }>(
+    "lsp_managed_use_mine",
+    { serverId },
+  );
+
+export const lspManagedDownloadStatus = (serverId: string) =>
+  invoke<LspManagedProgress | null>("lsp_managed_download_status", {
+    serverId,
+  });
+
+export const onLspManagedProgress = (
+  serverId: string,
+  cb: (p: LspManagedProgress) => void,
+) => listen<LspManagedProgress>(`lsp://managed/progress/${serverId}`, (e) =>
+  cb(e.payload),
+);
+
+export const onLspManagedError = (
+  serverId: string,
+  cb: (p: LspManagedProgress) => void,
+) =>
+  listen<LspManagedProgress>(`lsp://managed/error/${serverId}`, (e) =>
+    cb(e.payload),
+  );
 
 export const onLspDiagnostics = (
   id: SessionId,

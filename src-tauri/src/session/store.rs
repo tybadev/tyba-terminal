@@ -158,6 +158,11 @@ CREATE TABLE IF NOT EXISTS session_tunnel (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS session_tunnel_by_session ON session_tunnel (session_id);
+CREATE TABLE IF NOT EXISTS lsp_managed_consents (
+    server_id TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    decided_at TEXT NOT NULL
+);
 ";
 
 #[derive(Debug, thiserror::Error)]
@@ -562,6 +567,34 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(repo_root, config_hash) DO UPDATE SET allowed = ?3, decided_at = ?4",
             params![repo_root, config_hash, allowed, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn lsp_managed_consent(&self, server_id: &str) -> Result<bool, StoreError> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        let found: Option<String> = conn
+            .query_row(
+                "SELECT version FROM lsp_managed_consents WHERE server_id = ?1",
+                params![server_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    pub fn set_lsp_managed_consent(
+        &self,
+        server_id: &str,
+        version: &str,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO lsp_managed_consents (server_id, version, decided_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(server_id) DO UPDATE SET version = ?2, decided_at = ?3",
+            params![server_id, version, Utc::now().to_rfc3339()],
         )?;
         Ok(())
     }
@@ -1394,6 +1427,28 @@ mod tests {
 
         store.set_config_consent("/repo", "abc", false).unwrap();
         assert_eq!(store.config_consent("/repo", "abc").unwrap(), Some(false));
+    }
+
+    #[test]
+    fn lsp_managed_consent_persists_per_server_and_survives_a_version_bump() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(!store.lsp_managed_consent("rust-analyzer").unwrap());
+
+        store
+            .set_lsp_managed_consent("rust-analyzer", "2026-07-20")
+            .unwrap();
+        assert!(store.lsp_managed_consent("rust-analyzer").unwrap());
+        assert!(
+            !store.lsp_managed_consent("taplo").unwrap(),
+            "consent é por server"
+        );
+
+        // Bump de versão numa release nova do TYBA não reperguntar: o lookup é por
+        // server, não por versão.
+        store
+            .set_lsp_managed_consent("rust-analyzer", "2026-09-01")
+            .unwrap();
+        assert!(store.lsp_managed_consent("rust-analyzer").unwrap());
     }
 
     fn approval(session_id: &str, command: &str, requested_at_ms: u64) -> ApprovalHistoryEntry {

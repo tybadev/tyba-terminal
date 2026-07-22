@@ -43,6 +43,7 @@ pub struct SandboxSpec {
     pub exec_path_dirs: Vec<PathBuf>,
     pub agent: AgentAccess,
     pub read_allow_extra: Vec<PathBuf>,
+    pub data_dir_reads: Vec<PathBuf>,
 }
 
 pub trait Sandbox: Send + Sync {

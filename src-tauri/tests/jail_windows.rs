@@ -105,6 +105,7 @@ fn spec_at(base: &std::path::Path, worktree: &std::path::Path) -> SandboxSpec {
         exec_path_dirs: vec![],
         agent: AgentAccess::default(),
         read_allow_extra: vec![],
+        data_dir_reads: vec![],
     }
 }
 

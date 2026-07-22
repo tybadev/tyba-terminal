@@ -528,6 +528,7 @@ pub(crate) fn sandbox_spec(
         exec_path_dirs,
         agent,
         read_allow_extra,
+        data_dir_reads: vec![],
     })
 }
 

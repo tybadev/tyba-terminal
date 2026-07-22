@@ -294,6 +294,19 @@ pub fn build_policy(spec: &SandboxSpec) -> String {
     let immutable = render_rules(&immutable_denies(spec));
     lines.push(format!("(deny file-write* {immutable})"));
 
+    if !spec.data_dir_reads.is_empty() {
+        let lsp_root = spec.tyba_data_dir.join("lsp");
+        let carved: Vec<Rule> = spec
+            .data_dir_reads
+            .iter()
+            .filter(|p| p.starts_with(&lsp_root))
+            .map(|p| Rule::Subpath(p.clone()))
+            .collect();
+        if let Some(line) = render_ruleset(READ_OPS, &RuleSet::allow(carved)) {
+            lines.push(line);
+        }
+    }
+
     lines.join("\n")
 }
 
@@ -393,6 +406,7 @@ mod tests {
             exec_path_dirs: vec![PathBuf::from("/Users/nobody/.local/bin")],
             agent: AgentAccess::default(),
             read_allow_extra: vec![],
+            data_dir_reads: vec![],
         }
     }
 
