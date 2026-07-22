@@ -293,6 +293,15 @@ impl ManagedManager {
         let last = Arc::new(Mutex::new(Instant::now() - PROGRESS_FLUSH));
         let mut verified: Vec<(String, PathBuf)> = Vec::new();
 
+        let inflight = &self.inflight;
+        inflight.lock().insert(
+            id.to_string(),
+            Progress::Downloading {
+                downloaded: 0,
+                total,
+            },
+        );
+
         for (name, pin) in &jobs {
             let dest = tmp_root.join(format!("{name}.artifact"));
             let base_before = *base.lock();
@@ -307,13 +316,12 @@ impl ManagedManager {
                 if last.elapsed() >= PROGRESS_FLUSH || current == total {
                     *last = Instant::now();
                     drop(last);
-                    emit_c(
-                        &id_c,
-                        &Progress::Downloading {
-                            downloaded: current,
-                            total,
-                        },
-                    );
+                    let p = Progress::Downloading {
+                        downloaded: current,
+                        total,
+                    };
+                    inflight.lock().insert(id_c.clone(), p.clone());
+                    emit_c(&id_c, &p);
                 }
             };
             download::fetch_to_file(pin.url, &dest, pin.sha256, pin.size, progress)
