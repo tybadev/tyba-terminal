@@ -411,12 +411,10 @@ mod tests {
 
     #[test]
     fn gc_never_touches_the_previous_version_before_a_green_boot() {
-        // Boot falho => GC não é chamado, então as duas versões coexistem.
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path();
         std::fs::create_dir_all(version_dir(d, "taplo", "0.9")).unwrap();
         std::fs::create_dir_all(version_dir(d, "taplo", "0.10")).unwrap();
-        // sem chamar gc_previous_versions
         assert!(version_dir(d, "taplo", "0.9").exists());
         assert!(version_dir(d, "taplo", "0.10").exists());
     }

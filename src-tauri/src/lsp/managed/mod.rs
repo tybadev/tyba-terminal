@@ -378,9 +378,6 @@ mod tests {
 
     #[test]
     fn path_first_never_manages_a_server_present_on_path() {
-        // A resolução gerenciada só é consultada quando registry::discover (PATH +
-        // locais canônicos) falha — provado no LspManager. Aqui: um server sem pin
-        // gerenciado nunca vira Outcome::Offer.
         let mgr = manager();
         let gopls = crate::lsp::registry::entry_by_id("gopls").unwrap();
         assert!(matches!(mgr.outcome(gopls), Outcome::NotManaged));
