@@ -1,11 +1,51 @@
-use super::registry::{Archive, NpmPin, Pin, PlatformPin};
 use super::registry::Platform;
+use super::registry::{Archive, NpmPin, Pin, PlatformPin};
 
 pub(super) static NODE_RUNTIME: &[PlatformPin] = &[
-    PlatformPin { platform: Platform::LinuxX86_64, pin: Pin { version: "24.18.0", url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.gz", sha256: "783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8", size: 57224421, archive: Archive::TarGz, member: "bin/node" } },
-    PlatformPin { platform: Platform::LinuxAarch64, pin: Pin { version: "24.18.0", url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-arm64.tar.gz", sha256: "6b4484c2190274175df9aa8f28e2d758a819cb1c1fe6ab481e2f95b463ab8508", size: 56979089, archive: Archive::TarGz, member: "bin/node" } },
-    PlatformPin { platform: Platform::MacosAarch64, pin: Pin { version: "24.18.0", url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-darwin-arm64.tar.gz", sha256: "e1a97e14c99c803e96c7339403282ea05a499c32f8d83defe9ef5ec66f979ed1", size: 52087559, archive: Archive::TarGz, member: "bin/node" } },
-    PlatformPin { platform: Platform::MacosX86_64, pin: Pin { version: "24.18.0", url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-darwin-x64.tar.gz", sha256: "dfd0dbd3e721503434df7b7205e719f61b3a3a31b2bcf9729b8b91fea240f080", size: 53282687, archive: Archive::TarGz, member: "bin/node" } },
+    PlatformPin {
+        platform: Platform::LinuxX86_64,
+        pin: Pin {
+            version: "24.18.0",
+            url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.gz",
+            sha256: "783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8",
+            size: 57224421,
+            archive: Archive::TarGz,
+            member: "bin/node",
+        },
+    },
+    PlatformPin {
+        platform: Platform::LinuxAarch64,
+        pin: Pin {
+            version: "24.18.0",
+            url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-arm64.tar.gz",
+            sha256: "6b4484c2190274175df9aa8f28e2d758a819cb1c1fe6ab481e2f95b463ab8508",
+            size: 56979089,
+            archive: Archive::TarGz,
+            member: "bin/node",
+        },
+    },
+    PlatformPin {
+        platform: Platform::MacosAarch64,
+        pin: Pin {
+            version: "24.18.0",
+            url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-darwin-arm64.tar.gz",
+            sha256: "e1a97e14c99c803e96c7339403282ea05a499c32f8d83defe9ef5ec66f979ed1",
+            size: 52087559,
+            archive: Archive::TarGz,
+            member: "bin/node",
+        },
+    },
+    PlatformPin {
+        platform: Platform::MacosX86_64,
+        pin: Pin {
+            version: "24.18.0",
+            url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-darwin-x64.tar.gz",
+            sha256: "dfd0dbd3e721503434df7b7205e719f61b3a3a31b2bcf9729b8b91fea240f080",
+            size: 53282687,
+            archive: Archive::TarGz,
+            member: "bin/node",
+        },
+    },
 ];
 
 pub(super) static RUST_ANALYZER: &[PlatformPin] = &[
@@ -16,10 +56,51 @@ pub(super) static RUST_ANALYZER: &[PlatformPin] = &[
 ];
 
 pub(super) static TAPLO: &[PlatformPin] = &[
-    PlatformPin { platform: Platform::LinuxX86_64, pin: Pin { version: "0.10.0", url: "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-linux-x86_64.gz", sha256: "8fe196b894ccf9072f98d4e1013a180306e17d244830b03986ee5e8eabeb6156", size: 5116068, archive: Archive::Gzip, member: "taplo" } },
-    PlatformPin { platform: Platform::LinuxAarch64, pin: Pin { version: "0.10.0", url: "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-linux-aarch64.gz", sha256: "033681d01eec8376c3fd38fa3703c79316f5e14bb013d859943b60a07bccdcc3", size: 4631779, archive: Archive::Gzip, member: "taplo" } },
-    PlatformPin { platform: Platform::MacosAarch64, pin: Pin { version: "0.10.0", url: "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-darwin-aarch64.gz", sha256: "713734314c3e71894b9e77513c5349835eefbd52908445a0d73b0c7dc469347d", size: 4616415, archive: Archive::Gzip, member: "taplo" } },
-    PlatformPin { platform: Platform::MacosX86_64, pin: Pin { version: "0.10.0", url: "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-darwin-x86_64.gz", sha256: "898122cde3a0b1cd1cbc2d52d3624f23338218c91b5ddb71518236a4c2c10ef2", size: 4921954, archive: Archive::Gzip, member: "taplo" } },
+    PlatformPin {
+        platform: Platform::LinuxX86_64,
+        pin: Pin {
+            version: "0.10.0",
+            url: "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-linux-x86_64.gz",
+            sha256: "8fe196b894ccf9072f98d4e1013a180306e17d244830b03986ee5e8eabeb6156",
+            size: 5116068,
+            archive: Archive::Gzip,
+            member: "taplo",
+        },
+    },
+    PlatformPin {
+        platform: Platform::LinuxAarch64,
+        pin: Pin {
+            version: "0.10.0",
+            url: "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-linux-aarch64.gz",
+            sha256: "033681d01eec8376c3fd38fa3703c79316f5e14bb013d859943b60a07bccdcc3",
+            size: 4631779,
+            archive: Archive::Gzip,
+            member: "taplo",
+        },
+    },
+    PlatformPin {
+        platform: Platform::MacosAarch64,
+        pin: Pin {
+            version: "0.10.0",
+            url:
+                "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-darwin-aarch64.gz",
+            sha256: "713734314c3e71894b9e77513c5349835eefbd52908445a0d73b0c7dc469347d",
+            size: 4616415,
+            archive: Archive::Gzip,
+            member: "taplo",
+        },
+    },
+    PlatformPin {
+        platform: Platform::MacosX86_64,
+        pin: Pin {
+            version: "0.10.0",
+            url: "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-darwin-x86_64.gz",
+            sha256: "898122cde3a0b1cd1cbc2d52d3624f23338218c91b5ddb71518236a4c2c10ef2",
+            size: 4921954,
+            archive: Archive::Gzip,
+            member: "taplo",
+        },
+    },
 ];
 
 pub(super) static MARKSMAN: &[PlatformPin] = &[
@@ -48,7 +129,14 @@ pub(super) static TYPESCRIPT_LANGUAGE_SERVER: &[NpmPin] = &[
     NpmPin { package: "typescript", pin: Pin { version: "5.9.3", url: "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz", sha256: "10e108c9cf7d5f2879053dff18515fb405abf2ccef63eaaf017d9c571687a1d3", size: 4377468, archive: Archive::TarGz, member: "" } },
 ];
 
-pub(super) static PYRIGHT: &[NpmPin] = &[
-    NpmPin { package: "pyright", pin: Pin { version: "1.1.411", url: "https://registry.npmjs.org/pyright/-/pyright-1.1.411.tgz", sha256: "bd5c488fc20fa237a944279bf32cae2f986cf10d5d5d9e8705819859daeb2f4a", size: 4139958, archive: Archive::TarGz, member: "" } },
-];
-
+pub(super) static PYRIGHT: &[NpmPin] = &[NpmPin {
+    package: "pyright",
+    pin: Pin {
+        version: "1.1.411",
+        url: "https://registry.npmjs.org/pyright/-/pyright-1.1.411.tgz",
+        sha256: "bd5c488fc20fa237a944279bf32cae2f986cf10d5d5d9e8705819859daeb2f4a",
+        size: 4139958,
+        archive: Archive::TarGz,
+        member: "",
+    },
+}];

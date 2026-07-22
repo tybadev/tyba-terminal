@@ -185,14 +185,8 @@ mod tests {
         let data = b"conteudo maior que o pin declarava";
         let sha = sha256_hex(data);
         let mut sink = Vec::new();
-        let err = verify_stream(
-            Cursor::new(data.to_vec()),
-            &mut sink,
-            &sha,
-            5,
-            |_| {},
-        )
-        .unwrap_err();
+        let err =
+            verify_stream(Cursor::new(data.to_vec()), &mut sink, &sha, 5, |_| {}).unwrap_err();
         assert!(matches!(err, DownloadError::Size { .. }));
     }
 

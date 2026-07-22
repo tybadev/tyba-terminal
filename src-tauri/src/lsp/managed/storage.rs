@@ -29,7 +29,11 @@ pub fn node_binary(data_dir: &Path, version: &str) -> PathBuf {
 
 pub fn server_entry_js(data_dir: &Path, managed: &Managed) -> Option<PathBuf> {
     let entry = managed.node_entry()?;
-    Some(version_dir(data_dir, managed.id, managed.version()).join("node_modules").join(entry))
+    Some(
+        version_dir(data_dir, managed.id, managed.version())
+            .join("node_modules")
+            .join(entry),
+    )
 }
 
 pub fn is_installed(data_dir: &Path, managed: &Managed) -> bool {
@@ -156,9 +160,15 @@ fn untar_gz<R: Read>(reader: R, dest_dir: &Path, strip: usize) -> Result<(), Str
     let mut archive = tar::Archive::new(decoder);
     archive.set_preserve_permissions(true);
     archive.set_overwrite(true);
-    for entry in archive.entries().map_err(|e| format!("storage: tar: {e}"))? {
+    for entry in archive
+        .entries()
+        .map_err(|e| format!("storage: tar: {e}"))?
+    {
         let mut entry = entry.map_err(|e| format!("storage: tar: {e}"))?;
-        let path = entry.path().map_err(|e| format!("storage: tar: {e}"))?.into_owned();
+        let path = entry
+            .path()
+            .map_err(|e| format!("storage: tar: {e}"))?
+            .into_owned();
         let stripped: PathBuf = path.components().skip(strip).collect();
         if stripped.as_os_str().is_empty() {
             continue;
@@ -354,7 +364,10 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&bin).unwrap().permissions().mode();
-            assert!(mode & 0o111 != 0, "binário instalado precisa ser executável");
+            assert!(
+                mode & 0o111 != 0,
+                "binário instalado precisa ser executável"
+            );
         }
     }
 
@@ -386,7 +399,10 @@ mod tests {
         std::fs::write(version_dir(d, "taplo", "0.9").join("taplo"), "old").unwrap();
         std::fs::write(version_dir(d, "taplo", "0.10").join("taplo"), "new").unwrap();
         gc_previous_versions(d, "taplo", "0.10");
-        assert!(!version_dir(d, "taplo", "0.9").exists(), "versão anterior sai");
+        assert!(
+            !version_dir(d, "taplo", "0.9").exists(),
+            "versão anterior sai"
+        );
         assert!(
             version_dir(d, "taplo", "0.10").join("taplo").is_file(),
             "a versão verde permanece"
@@ -413,7 +429,10 @@ mod tests {
         std::fs::create_dir_all(server.join("0.10")).unwrap();
         std::fs::create_dir_all(server.join(".staging-0.11-abc")).unwrap();
         gc_previous_versions(d, "taplo", "0.10");
-        assert!(server.join(".staging-0.11-abc").exists(), "staging em voo não é lixo");
+        assert!(
+            server.join(".staging-0.11-abc").exists(),
+            "staging em voo não é lixo"
+        );
     }
 
     #[test]

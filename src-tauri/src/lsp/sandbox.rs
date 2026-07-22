@@ -340,8 +340,7 @@ mod tests {
         let deny_idx = lines
             .iter()
             .position(|l| {
-                l.starts_with("(deny file-read* file-write*")
-                    && l.contains("dev.tyba.app")
+                l.starts_with("(deny file-read* file-write*") && l.contains("dev.tyba.app")
             })
             .expect("o data dir do TYBA precisa ter deny de segredo");
         let allow_idx = lines

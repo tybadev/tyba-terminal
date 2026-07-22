@@ -23,12 +23,7 @@ impl Consent {
         self.store.lsp_managed_consent(server_id).unwrap_or(false)
     }
 
-    pub fn record(
-        &self,
-        server_id: &str,
-        version: &str,
-        decision: Decision,
-    ) -> Result<(), String> {
+    pub fn record(&self, server_id: &str, version: &str, decision: Decision) -> Result<(), String> {
         match decision {
             Decision::Accept => self
                 .store

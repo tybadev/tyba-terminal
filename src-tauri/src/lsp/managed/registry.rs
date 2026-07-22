@@ -157,10 +157,7 @@ impl Managed {
 
     pub fn native_pin(&self, platform: Platform) -> Option<&'static Pin> {
         match &self.source {
-            Source::Native { pins } => pins
-                .iter()
-                .find(|p| p.platform == platform)
-                .map(|p| &p.pin),
+            Source::Native { pins } => pins.iter().find(|p| p.platform == platform).map(|p| &p.pin),
             Source::Node { .. } => None,
         }
     }
@@ -221,7 +218,9 @@ pub fn node_runtime_version() -> &'static str {
 }
 
 fn url_host(url: &str) -> &str {
-    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"));
     match rest {
         Some(rest) => rest.split('/').next().unwrap_or(rest),
         None => url,
@@ -244,7 +243,10 @@ mod tests {
             .filter(|m| matches!(m.source, Source::Node { .. }))
             .count();
         assert_eq!(native, 5, "5 servers nativos gerenciados");
-        assert_eq!(node, 2, "typescript-language-server e pyright são self-contained");
+        assert_eq!(
+            node, 2,
+            "typescript-language-server e pyright são self-contained"
+        );
     }
 
     #[test]
@@ -276,7 +278,11 @@ mod tests {
             Platform::MacosAarch64,
             Platform::MacosX86_64,
         ] {
-            assert!(node_runtime_pin(platform).is_some(), "node sem pin {}", platform.id());
+            assert!(
+                node_runtime_pin(platform).is_some(),
+                "node sem pin {}",
+                platform.id()
+            );
         }
     }
 
@@ -296,7 +302,10 @@ mod tests {
         let tsls = managed_for("typescript-language-server").unwrap();
         let pkgs: Vec<&str> = tsls.npm_packages().iter().map(|p| p.package).collect();
         assert!(pkgs.contains(&"typescript-language-server"));
-        assert!(pkgs.contains(&"typescript"), "tsserver vem do pacote typescript");
+        assert!(
+            pkgs.contains(&"typescript"),
+            "tsserver vem do pacote typescript"
+        );
     }
 
     #[test]
@@ -324,9 +333,14 @@ mod tests {
             managed_for("rust-analyzer").unwrap().source_host(),
             "github.com"
         );
-        assert_eq!(managed_for("terraform-ls").unwrap().source_host(), "releases.hashicorp.com");
         assert_eq!(
-            managed_for("typescript-language-server").unwrap().source_host(),
+            managed_for("terraform-ls").unwrap().source_host(),
+            "releases.hashicorp.com"
+        );
+        assert_eq!(
+            managed_for("typescript-language-server")
+                .unwrap()
+                .source_host(),
             "registry.npmjs.org"
         );
     }

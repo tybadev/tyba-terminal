@@ -186,11 +186,7 @@ impl ManagedManager {
         }
     }
 
-    pub fn record_decision(
-        &self,
-        server_id: &str,
-        decision: Decision,
-    ) -> Result<(), String> {
+    pub fn record_decision(&self, server_id: &str, decision: Decision) -> Result<(), String> {
         let version = registry::managed_for(server_id)
             .map(|m| m.version())
             .unwrap_or("");
@@ -200,7 +196,12 @@ impl ManagedManager {
     fn is_running(&self, server_id: &str) -> bool {
         matches!(
             self.inflight.lock().get(server_id),
-            Some(Progress::Pending | Progress::Downloading { .. } | Progress::Verifying | Progress::Extracting)
+            Some(
+                Progress::Pending
+                    | Progress::Downloading { .. }
+                    | Progress::Verifying
+                    | Progress::Extracting
+            )
         )
     }
 
@@ -409,7 +410,8 @@ mod tests {
         if Platform::current().is_none() {
             return;
         }
-        mgr.record_decision("rust-analyzer", Decision::Accept).unwrap();
+        mgr.record_decision("rust-analyzer", Decision::Accept)
+            .unwrap();
         let ra = crate::lsp::registry::entry_by_id("rust-analyzer").unwrap();
         assert!(matches!(mgr.outcome(ra), Outcome::Installing(_)));
     }
@@ -420,7 +422,8 @@ mod tests {
         if Platform::current().is_none() {
             return;
         }
-        mgr.record_decision("rust-analyzer", Decision::Refuse).unwrap();
+        mgr.record_decision("rust-analyzer", Decision::Refuse)
+            .unwrap();
         let ra = crate::lsp::registry::entry_by_id("rust-analyzer").unwrap();
         assert!(
             matches!(mgr.outcome(ra), Outcome::Offer(_)),
@@ -441,12 +444,12 @@ mod tests {
         use std::path::PathBuf;
 
         let entry = crate::lsp::registry::entry_by_id(server_id).unwrap();
-        let plan = mgr.plan(entry).expect("server gerenciado instalado tem plano");
+        let plan = mgr
+            .plan(entry)
+            .expect("server gerenciado instalado tem plano");
         let user_env: HashMap<String, String> = std::env::vars().collect();
-        let cache = std::env::temp_dir().join(format!(
-            "tyba-managed-live-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let cache =
+            std::env::temp_dir().join(format!("tyba-managed-live-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(cache.join(".rt")).unwrap();
         let exe = std::env::current_exe().unwrap();
         let mut exec_path_dirs: Vec<PathBuf> =
@@ -465,8 +468,11 @@ mod tests {
         };
         let spec = lsp_sandbox_spec(entry, &ctx).unwrap();
         assert!(!spec.allow_network, "LSP gerenciado nunca recebe rede");
-        let pre_args: Vec<std::ffi::OsString> =
-            plan.pre_args.iter().map(|p| p.clone().into_os_string()).collect();
+        let pre_args: Vec<std::ffi::OsString> = plan
+            .pre_args
+            .iter()
+            .map(|p| p.clone().into_os_string())
+            .collect();
         LspServer::spawn(
             entry,
             root.to_path_buf(),
@@ -478,6 +484,25 @@ mod tests {
             std::sync::Arc::new(|_b: DiagnosticsBatch| {}),
         )
         .expect("server gerenciado sobe na jaula")
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[ignore = "baixa TODOS os pins gerenciados da plataforma e verifica o sha256 de cada byte"]
+    fn live_managed_all_pins_download_and_verify() {
+        if Platform::current().is_none() {
+            return;
+        }
+        let mgr = manager();
+        for m in registry::MANAGED {
+            mgr.install_blocking(m.id)
+                .unwrap_or_else(|e| panic!("pin de {} não bate/instala: {e}", m.id));
+            assert!(
+                storage::is_installed(mgr.data_dir(), m),
+                "{} não ficou instalado após o download verificado",
+                m.id
+            );
+        }
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -543,7 +568,11 @@ mod tests {
 
         let root = std::env::temp_dir().join(format!("tyba-tsls-live-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("tsconfig.json"), "{\n  \"compilerOptions\": {}\n}\n").unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            "{\n  \"compilerOptions\": {}\n}\n",
+        )
+        .unwrap();
         let rel = "index.ts";
         std::fs::write(root.join(rel), "const soma = (a: number) => a;\n").unwrap();
 
