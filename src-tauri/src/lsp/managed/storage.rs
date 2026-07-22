@@ -155,33 +155,142 @@ pub fn extract_zip(src: &Path, dest_dir: &Path, member: &str) -> Result<(), Stri
     make_executable(&bin)
 }
 
-fn untar_gz<R: Read>(reader: R, dest_dir: &Path, strip: usize) -> Result<(), String> {
+fn hardlink_target_escapes(link: &Path) -> bool {
+    if link.is_absolute() {
+        return true;
+    }
+    let mut depth: isize = 0;
+    for comp in link.components() {
+        match comp {
+            Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    return true;
+                }
+            }
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            _ => return true,
+        }
+    }
+    false
+}
+
+fn unpack_validated<R: Read>(reader: R, dest: &Path) -> Result<(), String> {
     let decoder = flate2::read::GzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
-    archive.set_preserve_permissions(true);
+    archive.set_preserve_permissions(false);
+    archive.set_preserve_mtime(false);
     archive.set_overwrite(true);
     for entry in archive
         .entries()
         .map_err(|e| format!("storage: tar: {e}"))?
     {
         let mut entry = entry.map_err(|e| format!("storage: tar: {e}"))?;
-        let path = entry
-            .path()
-            .map_err(|e| format!("storage: tar: {e}"))?
-            .into_owned();
-        let stripped: PathBuf = path.components().skip(strip).collect();
-        if stripped.as_os_str().is_empty() {
-            continue;
+        if entry.header().entry_type() == tar::EntryType::Link {
+            let link = entry
+                .link_name()
+                .map_err(|e| format!("storage: tar: {e}"))?
+                .ok_or("storage: hardlink sem alvo")?
+                .into_owned();
+            if hardlink_target_escapes(&link) {
+                return Err("storage: hardlink do artefato escapa do destino".into());
+            }
         }
-        let Some(target) = safe_join(dest_dir, &stripped) else {
-            return Err("storage: tar com caminho hostil".into());
-        };
-        ensure_parent(&target)?;
         entry
-            .unpack(&target)
+            .unpack_in(dest)
             .map_err(|e| format!("storage: tar unpack: {e}"))?;
     }
     Ok(())
+}
+
+fn symlink_target_escapes(root: &Path, link_path: &Path, target: &Path) -> bool {
+    if target.is_absolute() {
+        return true;
+    }
+    let Some(rel_dir) = link_path.parent().and_then(|p| p.strip_prefix(root).ok()) else {
+        return true;
+    };
+    let mut depth = rel_dir
+        .components()
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .count() as isize;
+    for comp in target.components() {
+        match comp {
+            Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    return true;
+                }
+            }
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            _ => return true,
+        }
+    }
+    false
+}
+
+fn reject_escaping_symlinks(root: &Path) -> Result<(), String> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("storage: {e}"))?;
+            let ft = meta.file_type();
+            if ft.is_symlink() {
+                let target = std::fs::read_link(&path).map_err(|e| format!("storage: {e}"))?;
+                if symlink_target_escapes(root, &path, &target) {
+                    return Err("storage: symlink do artefato escapa do destino".into());
+                }
+            } else if ft.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lift_one_level(staging: &Path, dest: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dest).map_err(|e| format!("storage: {e}"))?;
+    let entries = std::fs::read_dir(staging).map_err(|e| format!("storage: {e}"))?;
+    for top in entries.flatten() {
+        if !top.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let inner = std::fs::read_dir(top.path()).map_err(|e| format!("storage: {e}"))?;
+        for child in inner.flatten() {
+            let to = dest.join(child.file_name());
+            std::fs::rename(child.path(), &to)
+                .map_err(|e| format!("storage: mover conteúdo extraído: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn untar_gz<R: Read>(reader: R, dest_dir: &Path, strip: usize) -> Result<(), String> {
+    if strip == 0 {
+        std::fs::create_dir_all(dest_dir).map_err(|e| format!("storage: {e}"))?;
+        unpack_validated(reader, dest_dir)?;
+        return reject_escaping_symlinks(dest_dir);
+    }
+    if strip != 1 {
+        return Err("storage: strip de tar não suportado".into());
+    }
+    std::fs::create_dir_all(dest_dir).map_err(|e| format!("storage: {e}"))?;
+    let staging = dest_dir.join(format!(".untar-{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(|e| format!("storage: {e}"))?;
+    let result = (|| {
+        unpack_validated(reader, &staging)?;
+        reject_escaping_symlinks(&staging)?;
+        lift_one_level(&staging, dest_dir)
+    })();
+    let _ = std::fs::remove_dir_all(&staging);
+    result
 }
 
 pub fn extract_tar_gz(src: &Path, dest_dir: &Path, strip: usize) -> Result<(), String> {
@@ -248,9 +357,14 @@ pub fn install_node_runtime(
         let _ = std::fs::remove_dir_all(&stage);
         return Err(e);
     }
-    if !stage.join("bin/node").is_file() {
+    let staged_node = stage.join("bin/node");
+    if !staged_node.is_file() {
         let _ = std::fs::remove_dir_all(&stage);
         return Err("storage: runtime node sem bin/node após extração".into());
+    }
+    if let Err(e) = make_executable(&staged_node) {
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err(e);
     }
     promote(&stage, &final_dir)?;
     Ok(node)
@@ -449,6 +563,114 @@ mod tests {
         let err = extract_zip(&zip_path, &dest, "whatever").unwrap_err();
         assert!(err.contains("zip-slip") || err.contains("binário esperado"));
         assert!(!tmp.path().join("escape.txt").exists());
+    }
+
+    fn write_targz(path: &Path, build: impl FnOnce(&mut tar::Builder<GzEncoder<std::fs::File>>)) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut builder = tar::Builder::new(GzEncoder::new(file, Compression::fast()));
+        build(&mut builder);
+        builder.into_inner().unwrap().finish().unwrap();
+    }
+
+    fn add_regular(b: &mut tar::Builder<GzEncoder<std::fs::File>>, path: &str, data: &[u8]) {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(tar::EntryType::Regular);
+        h.set_size(data.len() as u64);
+        h.set_mode(0o644);
+        h.set_cksum();
+        b.append_data(&mut h, path, data).unwrap();
+    }
+
+    fn add_symlink(b: &mut tar::Builder<GzEncoder<std::fs::File>>, path: &str, target: &str) {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(tar::EntryType::Symlink);
+        h.set_size(0);
+        h.set_mode(0o777);
+        b.append_link(&mut h, path, target).unwrap();
+    }
+
+    fn add_hardlink(b: &mut tar::Builder<GzEncoder<std::fs::File>>, path: &str, target: &str) {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(tar::EntryType::Link);
+        h.set_size(0);
+        h.set_mode(0o644);
+        b.append_link(&mut h, path, target).unwrap();
+    }
+
+    #[test]
+    fn tar_extraction_rejects_symlink_and_hardlink_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        let secret = victim.join("secret");
+        std::fs::write(&secret, "chave-privada").unwrap();
+        let escape = victim.join("planted");
+
+        let abs_symlink = tmp.path().join("a.tar.gz");
+        write_targz(&abs_symlink, |b| {
+            add_symlink(b, "package/evil", victim.to_str().unwrap());
+        });
+
+        let dotdot_symlink = tmp.path().join("b.tar.gz");
+        write_targz(&dotdot_symlink, |b| {
+            add_symlink(b, "package/up", "../../../../../../../../tmp");
+        });
+
+        let write_through = tmp.path().join("c.tar.gz");
+        write_targz(&write_through, |b| {
+            add_symlink(b, "package/pwn", victim.to_str().unwrap());
+            add_regular(b, "package/pwn/planted", b"rce");
+        });
+
+        let hardlink_escape = tmp.path().join("d.tar.gz");
+        write_targz(&hardlink_escape, |b| {
+            add_hardlink(b, "package/leak", secret.to_str().unwrap());
+        });
+
+        for (name, tar) in [
+            ("symlink absoluto", &abs_symlink),
+            ("symlink ..", &dotdot_symlink),
+            ("write-through", &write_through),
+            ("hardlink", &hardlink_escape),
+        ] {
+            let dest = tmp.path().join(format!(
+                "out-{}",
+                tar.file_name().unwrap().to_string_lossy()
+            ));
+            let r = extract_tar_gz(tar, &dest, 1);
+            assert!(r.is_err(), "{name} tinha que ser recusado");
+            assert!(!escape.exists(), "{name} não pode escrever fora do destino");
+            let leaked = dest.join("leak");
+            assert!(
+                !leaked.exists(),
+                "{name} não pode plantar hardlink pro segredo no destino"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "chave-privada");
+    }
+
+    #[test]
+    fn tar_extraction_keeps_a_relative_internal_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tar = tmp.path().join("node.tar.gz");
+        write_targz(&tar, |b| {
+            add_regular(b, "node-v1/lib/real.js", b"module.exports = 1;\n");
+            add_symlink(b, "node-v1/bin/link", "../lib/real.js");
+            add_regular(b, "node-v1/bin/node", b"#!/bin/sh\n");
+        });
+        let dest = tmp.path().join("rt");
+        extract_tar_gz(&tar, &dest, 1).unwrap();
+        assert!(dest.join("lib/real.js").is_file());
+        let link = dest.join("bin/link");
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&link).unwrap(),
+            "module.exports = 1;\n",
+            "symlink relativo interno continua resolvendo após o strip"
+        );
     }
 
     #[test]
