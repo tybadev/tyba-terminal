@@ -6,6 +6,28 @@ use sha2::{Digest, Sha256};
 
 const CHUNK: usize = 64 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_REDIRECTS: usize = 5;
+
+const ALLOWED_HOSTS: &[&str] = &[
+    "github.com",
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "releases.hashicorp.com",
+    "registry.npmjs.org",
+    "nodejs.org",
+];
+
+pub fn host_allowed(url: &str) -> bool {
+    match reqwest::Url::parse(url) {
+        Ok(u) => {
+            u.scheme() == "https"
+                && u.host_str()
+                    .map(|h| ALLOWED_HOSTS.contains(&h))
+                    .unwrap_or(false)
+        }
+        Err(_) => false,
+    }
+}
 
 #[derive(Debug)]
 pub enum DownloadError {
@@ -94,11 +116,32 @@ pub fn fetch_to_file<P: FnMut(u64)>(
     expected_size: u64,
     progress: P,
 ) -> Result<(), DownloadError> {
-    if !url.starts_with("https://") {
-        return Err(DownloadError::Network("URL do pin não é HTTPS".into()));
+    if !host_allowed(url) {
+        return Err(DownloadError::Network(format!(
+            "URL do pin fora da allowlist de hosts oficiais: {url}"
+        )));
     }
+    let redirect = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_REDIRECTS {
+            return attempt.error(std::io::Error::other("redirects demais"));
+        }
+        let ok = attempt.url().scheme() == "https"
+            && attempt
+                .url()
+                .host_str()
+                .map(|h| ALLOWED_HOSTS.contains(&h))
+                .unwrap_or(false);
+        if ok {
+            attempt.follow()
+        } else {
+            attempt.error(std::io::Error::other(
+                "redirect para host fora da allowlist",
+            ))
+        }
+    });
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(redirect)
         .user_agent(concat!("tyba/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| DownloadError::Network(e.to_string()))?;
@@ -193,5 +236,27 @@ mod tests {
     #[test]
     fn hex_is_lowercase_and_zero_padded() {
         assert_eq!(hex(&[0x0a, 0xff, 0x00]), "0aff00");
+    }
+
+    #[test]
+    fn host_allowlist_accepts_official_hosts_and_rejects_the_rest() {
+        assert!(host_allowed(
+            "https://github.com/rust-lang/rust-analyzer/releases/download/x/y.gz"
+        ));
+        assert!(host_allowed(
+            "https://registry.npmjs.org/pyright/-/pyright-1.tgz"
+        ));
+        assert!(host_allowed(
+            "https://release-assets.githubusercontent.com/abc"
+        ));
+        assert!(!host_allowed("http://github.com/x"), "HTTP nunca");
+        assert!(
+            !host_allowed("https://evil.example.com/rust-analyzer.gz"),
+            "host arbitrário com sha casando ainda é recusado"
+        );
+        assert!(
+            !host_allowed("https://github.com.evil.com/x"),
+            "sufixo enganoso não é o host oficial"
+        );
     }
 }

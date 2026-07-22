@@ -328,6 +328,24 @@ mod tests {
     }
 
     #[test]
+    fn every_pin_url_is_on_the_download_host_allowlist() {
+        let mut urls: Vec<&str> = Vec::new();
+        for m in MANAGED {
+            match &m.source {
+                Source::Native { pins } => urls.extend(pins.iter().map(|p| p.pin.url)),
+                Source::Node { packages, .. } => urls.extend(packages.iter().map(|p| p.pin.url)),
+            }
+        }
+        urls.extend(pins::NODE_RUNTIME.iter().map(|p| p.pin.url));
+        for url in urls {
+            assert!(
+                crate::lsp::managed::download::host_allowed(url),
+                "pin fora da allowlist de hosts: {url}"
+            );
+        }
+    }
+
+    #[test]
     fn source_host_is_the_official_domain() {
         assert_eq!(
             managed_for("rust-analyzer").unwrap().source_host(),
