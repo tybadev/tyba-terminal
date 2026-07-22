@@ -20,7 +20,8 @@ Daí decorrem as duas travas que **não** devem ser afrouxadas:
 
 1. **A versão bate nos três manifestos?** `src-tauri/tauri.conf.json`, `package.json`, `src-tauri/Cargo.toml`. O job `version` recusa a tag se divergir — e é ele que impede publicar um `Tyba_0.1.0.dmg` dentro de um release `v0.2.0`.
 2. **O changelog do site já tem essa versão?** O toast de versão nova da app e a página de download **apontam para `tyba.dev/{locale}/changelog`**. Publicar sem o changelog deixa o usuário num link que não tem a versão dele. Use a skill `release-changelog`.
-3. **`vars.RELEASE_PLATFORMS` está certo?** (`gh variable list`)
+3. **A doc de produto do Mintlify cobre o que essa versão liga?** As features com superfície de usuário que entraram desde a última tag têm página em `docs-site/` (pt-BR/en/es)? Um release que liga uma feature sem doc entrega ao usuário algo que ele não sabe usar nem descobre existir — foi o que aconteceu com o file explorer inteiro (quatro fatias invisíveis na doc). Use a skill `release-docs`.
+4. **`vars.RELEASE_PLATFORMS` está certo?** (`gh variable list`)
    - `linux` → a tag publica só Linux. É o valor correto **enquanto o certificado da Apple não existir**.
    - `all` → Linux + macOS (Apple Silicon e Intel). Só depois que os secrets da Apple estiverem no Environment `release`.
 
