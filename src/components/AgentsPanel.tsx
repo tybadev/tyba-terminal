@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowsInSimple, ArrowsOutSimple, TreeStructure, X } from "@phosphor-icons/react";
 
 import type { Session, SubagentRun, SubagentSnapshot } from "@/lib/ipc";
-import { statusVisual } from "@/lib/sessionStatus";
+import { orchestratorVisual } from "@/lib/agentsPanel";
 import { AgentIcon } from "./icons/AgentIcon";
 
 interface Props {
@@ -53,7 +53,7 @@ export function AgentsPanel({
     return () => window.clearInterval(timer);
   }, [anyRunning]);
 
-  const visual = statusVisual(session.status, true);
+  const visual = orchestratorVisual(session.status, session.attention, subagents);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-tyba-bg">
