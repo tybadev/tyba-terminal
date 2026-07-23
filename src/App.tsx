@@ -70,6 +70,11 @@ import { CommandPalette } from "./components/CommandPalette";
 import { ConfirmHost } from "./components/ConfirmHost";
 import { ToastHost } from "./components/ToastHost";
 import { requestConfirm } from "./lib/confirm";
+import {
+  paneRunningAgent,
+  tabRunningAgent,
+  workspaceRunningAgent,
+} from "./lib/closeGuard";
 import { pushToast, toastError } from "./lib/toast";
 import {
   LaunchConfigDialog,
@@ -1921,30 +1926,60 @@ export default function App() {
     await newSession(dir, basename(dir));
   }, [newSession]);
 
+  const confirmCloseWithRunningAgent = useCallback(
+    async (running: Session | null): Promise<boolean> => {
+      if (!running) return true;
+      const proceed = await requestConfirm({
+        title: t("closeAgentRunningTitle"),
+        detail: t("closeAgentRunningDetail", { title: running.title }),
+        confirmLabel: t("closeAnyway"),
+        cancelLabel: t("showRunning"),
+        destructive: true,
+      });
+      if (!proceed) goToSession(running.id);
+      return proceed;
+    },
+    [t, goToSession],
+  );
+
   const killWorkspace = useCallback(
     async (id: string) => {
+      const ws = layout.workspaces.find((w) => w.id === id);
+      const running = ws ? workspaceRunningAgent(ws, sessionById) : null;
+      if (!(await confirmCloseWithRunningAgent(running))) return;
       await closeWorkspace(id);
       await refreshSessions();
     },
-    [refreshSessions],
+    [layout.workspaces, sessionById, confirmCloseWithRunningAgent, refreshSessions],
   );
 
   const closeActivePane = useCallback(async () => {
     if (!activeTab) return;
     if (activeTab.active_pane) {
+      const running = activeTab.root
+        ? paneRunningAgent(activeTab.root, activeTab.active_pane, sessionById)
+        : null;
+      if (!(await confirmCloseWithRunningAgent(running))) return;
       await closePane(activeTab.active_pane);
     } else {
+      const running = tabRunningAgent(activeTab, sessionById);
+      if (!(await confirmCloseWithRunningAgent(running))) return;
       await closeTab(activeTab.id);
     }
     await refreshSessions();
-  }, [activeTab, refreshSessions]);
+  }, [activeTab, sessionById, confirmCloseWithRunningAgent, refreshSessions]);
 
   const closeTabAndRefresh = useCallback(
     async (id: string) => {
+      const tab = layout.workspaces
+        .flatMap((w) => w.tabs)
+        .find((tt) => tt.id === id);
+      const running = tab ? tabRunningAgent(tab, sessionById) : null;
+      if (!(await confirmCloseWithRunningAgent(running))) return;
       await closeTab(id);
       await refreshSessions();
     },
-    [refreshSessions],
+    [layout.workspaces, sessionById, confirmCloseWithRunningAgent, refreshSessions],
   );
 
   const toggleSettings = useCallback(() => {

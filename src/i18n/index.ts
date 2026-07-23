@@ -460,6 +460,11 @@ const resources = {
       pasteAsSingleLine: "Colar como uma linha",
       cancel: "Cancelar",
       confirm: "Confirmar",
+      closeAgentRunningTitle: "Fechar sessão de agente em execução?",
+      closeAgentRunningDetail:
+        "“{{title}}” está rodando. Fechar agora encerra o process group e o trabalho em andamento pode se perder.",
+      closeAnyway: "Fechar mesmo assim",
+      showRunning: "Mostrar o que está rodando",
       launchConfigNew: "Nova launch config",
       launchConfigEdit: "Editar launch config",
       launchConfigHelp:
@@ -1303,6 +1308,11 @@ const resources = {
       pasteAsSingleLine: "Paste as a single line",
       cancel: "Cancel",
       confirm: "Confirm",
+      closeAgentRunningTitle: "Close running agent session?",
+      closeAgentRunningDetail:
+        "“{{title}}” is running. Closing now ends the process group and work in progress may be lost.",
+      closeAnyway: "Close anyway",
+      showRunning: "Show what's running",
       launchConfigNew: "New launch config",
       launchConfigEdit: "Edit launch config",
       launchConfigHelp:
