@@ -3728,6 +3728,36 @@ fn focus_subagent(
 }
 
 #[derive(serde::Serialize)]
+struct SubagentTranscript {
+    entries: Vec<status::subagent_transcript::TranscriptEntry>,
+    cursor: u64,
+    complete: bool,
+}
+
+#[tauri::command]
+fn subagent_transcript(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    agent_id: String,
+    cursor: Option<u64>,
+) -> Result<SubagentTranscript, String> {
+    let path = state
+        .subagents
+        .resolve_transcript_path(session_id, &agent_id)
+        .ok_or("subagente sem transcript disponível")?;
+    let (entries, cursor, complete) = status::subagent_transcript::read_entries(
+        &path,
+        cursor,
+        status::subagent_transcript::TAIL_ENTRIES,
+    );
+    Ok(SubagentTranscript {
+        entries,
+        cursor,
+        complete,
+    })
+}
+
+#[derive(serde::Serialize)]
 struct AgentConfigInfo {
     hash: String,
     default_agent: Option<String>,
@@ -4093,6 +4123,7 @@ pub fn run() {
             resolve_approval,
             list_subagents,
             focus_subagent,
+            subagent_transcript,
             agent_repo_config,
             set_agent_config_consent,
             list_themes,

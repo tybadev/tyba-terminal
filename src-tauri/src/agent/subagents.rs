@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 use crate::approvals::now_ms;
 use crate::session::redact::redact;
 use crate::session::SessionId;
+use crate::status::subagent_transcript::{TranscriptWatchers, WatchSpec};
 use crate::status::transcript::clean_summary;
 
 pub type SharedSubagents = Arc<SubagentTracker>;
@@ -35,6 +36,7 @@ pub struct SubagentRun {
     pub ended_at_ms: Option<u64>,
     pub summary: Option<String>,
     pub transcript_path: Option<PathBuf>,
+    pub parent_transcript_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +94,7 @@ impl SessionSubagents {
             ended_at_ms: None,
             summary: None,
             transcript_path: None,
+            parent_transcript_path: None,
         });
     }
 
@@ -108,6 +111,7 @@ impl SessionSubagents {
         agent_id: String,
         agent_type: String,
         transcript_path: Option<PathBuf>,
+        parent_transcript_path: Option<&Path>,
         now: u64,
     ) {
         let slot = self
@@ -120,6 +124,7 @@ impl SessionSubagents {
                 run.agent_id = Some(agent_id.clone());
                 run.status = SubagentStatus::Running;
                 run.transcript_path = transcript_path;
+                run.parent_transcript_path = parent_transcript_path.map(Path::to_path_buf);
             }
             None => {
                 self.runs.push(SubagentRun {
@@ -131,6 +136,7 @@ impl SessionSubagents {
                     ended_at_ms: None,
                     summary: None,
                     transcript_path,
+                    parent_transcript_path: parent_transcript_path.map(Path::to_path_buf),
                 });
             }
         }
@@ -196,6 +202,7 @@ impl SessionSubagents {
             ended_at_ms: Some(now),
             summary,
             transcript_path: None,
+            parent_transcript_path: None,
         });
         true
     }
@@ -229,11 +236,28 @@ impl SessionSubagents {
             subagents: ordered.into_iter().map(SubagentRunDto::redacted).collect(),
         }
     }
+
+    fn running_targets(&self) -> Vec<WatchSpec> {
+        self.runs
+            .iter()
+            .filter(|run| run.status == SubagentStatus::Running)
+            .filter_map(|run| {
+                Some(WatchSpec {
+                    agent_id: run.agent_id.clone()?,
+                    agent_type: run.agent_type.clone(),
+                    description: (!run.description.is_empty()).then(|| run.description.clone()),
+                    parent_path: run.parent_transcript_path.clone(),
+                    path: run.transcript_path.clone(),
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Default)]
 pub struct SubagentTracker {
     sessions: Mutex<HashMap<SessionId, SessionSubagents>>,
+    watchers: TranscriptWatchers,
 }
 
 impl SubagentTracker {
@@ -296,13 +320,20 @@ impl SubagentTracker {
             &agent_type,
             hint.as_deref(),
         );
-        let payload = {
+        let (payload, targets) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let entry = sessions.entry(session).or_default();
-            entry.promote(agent_id, agent_type, transcript_path, now_ms());
-            changed_payload(session, entry)
+            entry.promote(
+                agent_id,
+                agent_type,
+                transcript_path,
+                parent_transcript_path,
+                now_ms(),
+            );
+            (changed_payload(session, entry), entry.running_targets())
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
+        self.watchers.sync(app, session, targets);
     }
 
     pub fn on_subagent_stopped<R: Runtime>(
@@ -313,27 +344,29 @@ impl SubagentTracker {
         last_assistant_message: Option<String>,
     ) {
         let agent_id = strip_agent_prefix(&agent_id);
-        let payload = {
+        let (payload, targets) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let entry = sessions.entry(session).or_default();
             if !entry.mark_stopped(agent_id, last_assistant_message, now_ms()) {
                 return;
             }
-            changed_payload(session, entry)
+            (changed_payload(session, entry), entry.running_targets())
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
+        self.watchers.sync(app, session, targets);
     }
 
     pub fn on_session_ended<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId) {
-        let payload = {
+        let (payload, targets) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let Some(entry) = sessions.get_mut(&session) else {
                 return;
             };
             entry.end_all(now_ms());
-            changed_payload(session, entry)
+            (changed_payload(session, entry), entry.running_targets())
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
+        self.watchers.sync(app, session, targets);
     }
 
     pub fn focus<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId, agent_id: String) {
@@ -350,6 +383,7 @@ impl SubagentTracker {
     }
 
     pub fn remove_session<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId) {
+        self.watchers.stop_session(app, session);
         let payload = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let Some(mut entry) = sessions.remove(&session) else {
@@ -359,6 +393,25 @@ impl SubagentTracker {
             changed_payload(session, &entry)
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
+    }
+
+    pub fn resolve_transcript_path(&self, session: SessionId, agent_id: &str) -> Option<PathBuf> {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        let run = sessions
+            .get_mut(&session)?
+            .runs
+            .iter_mut()
+            .find(|run| run.agent_id.as_deref() == Some(agent_id))?;
+        if run.transcript_path.is_none() {
+            let hint = (!run.description.is_empty()).then_some(run.description.as_str());
+            run.transcript_path = resolve_transcript(
+                run.parent_transcript_path.as_deref(),
+                agent_id,
+                &run.agent_type,
+                hint,
+            );
+        }
+        run.transcript_path.clone()
     }
 
     pub fn snapshot(&self, session: SessionId) -> SubagentSnapshot {
@@ -465,7 +518,7 @@ fn transcript_by_meta_scan(
         .map(|m| m.jsonl.clone())
 }
 
-fn resolve_transcript(
+pub(crate) fn resolve_transcript(
     parent_transcript_path: Option<&Path>,
     agent_id: &str,
     agent_type: &str,
@@ -508,7 +561,7 @@ mod tests {
         session.push_pending(Some("reviewer".into()), Some("segundo".into()), 20);
         session.push_pending(Some("explorer".into()), Some("outro tipo".into()), 30);
 
-        session.promote("a1".into(), "reviewer".into(), None, 40);
+        session.promote("a1".into(), "reviewer".into(), None, None, 40);
 
         let promoted = session
             .runs
@@ -529,7 +582,7 @@ mod tests {
     fn start_without_matching_pending_creates_running_run() {
         let mut session = SessionSubagents::default();
         session.push_pending(Some("reviewer".into()), None, 10);
-        session.promote("a9".into(), "explorer".into(), None, 20);
+        session.promote("a9".into(), "explorer".into(), None, None, 20);
         assert_eq!(status_of(&session, "a9"), Some(SubagentStatus::Running));
         assert_eq!(
             session
@@ -544,17 +597,17 @@ mod tests {
     #[test]
     fn first_running_becomes_default_focus() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, 10);
+        session.promote("a1".into(), "reviewer".into(), None, None, 10);
         assert_eq!(session.focused.as_deref(), Some("a1"));
-        session.promote("a2".into(), "explorer".into(), None, 20);
+        session.promote("a2".into(), "explorer".into(), None, None, 20);
         assert_eq!(session.focused.as_deref(), Some("a1"));
     }
 
     #[test]
     fn focus_stays_on_agent_after_it_finishes() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, 10);
-        session.promote("a2".into(), "explorer".into(), None, 20);
+        session.promote("a1".into(), "reviewer".into(), None, None, 10);
+        session.promote("a2".into(), "explorer".into(), None, None, 20);
         session.set_focus("a2".into());
         session.mark_stopped("a2".into(), Some("pronto".into()), 30);
         assert_eq!(session.focused.as_deref(), Some("a2"));
@@ -564,7 +617,7 @@ mod tests {
     #[test]
     fn focus_ignores_unknown_agent() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, 10);
+        session.promote("a1".into(), "reviewer".into(), None, None, 10);
         session.set_focus("ghost".into());
         assert_eq!(session.focused.as_deref(), Some("a1"));
     }
@@ -572,7 +625,7 @@ mod tests {
     #[test]
     fn stop_sets_summary_from_last_assistant_message() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, 10);
+        session.promote("a1".into(), "reviewer".into(), None, None, 10);
         session.mark_stopped("a1".into(), Some("  achei   dois bugs ".into()), 20);
         let run = &session.runs[0];
         assert_eq!(run.status, SubagentStatus::Done);
@@ -583,7 +636,7 @@ mod tests {
     #[test]
     fn stop_summary_truncates_at_280_chars() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, 10);
+        session.promote("a1".into(), "reviewer".into(), None, None, 10);
         session.mark_stopped("a1".into(), Some("x".repeat(400)), 20);
         assert!(session.runs[0].summary.as_ref().unwrap().chars().count() <= 280);
     }
@@ -603,7 +656,7 @@ mod tests {
     #[test]
     fn session_end_marks_running_as_done_and_discards_starting() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, 10);
+        session.promote("a1".into(), "reviewer".into(), None, None, 10);
         session.push_pending(Some("explorer".into()), None, 20);
         session.end_all(99);
         let running_done = session
@@ -661,7 +714,7 @@ mod tests {
     #[test]
     fn duplicate_stop_does_not_change_runs() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, 10);
+        session.promote("a1".into(), "reviewer".into(), None, None, 10);
         assert!(session.mark_stopped("a1".into(), Some("pronto".into()), 20));
         let len_after_first = session.runs.len();
         assert!(!session.mark_stopped("a1".into(), Some("de novo".into()), 30));
@@ -781,7 +834,7 @@ mod tests {
         session.push_pending(Some("reviewer".into()), Some("revisar".into()), 10);
         let hint = session.pending_hint("reviewer");
         let path = resolve_transcript(Some(&parent), "a1", "reviewer", hint.as_deref());
-        session.promote("a1".into(), "reviewer".into(), path, 20);
+        session.promote("a1".into(), "reviewer".into(), path, None, 20);
         assert_eq!(session.runs[0].transcript_path, Some(jsonl));
     }
 
@@ -882,5 +935,33 @@ mod tests {
             .subagents
             .iter()
             .all(|run| run.status == SubagentStatus::Done));
+    }
+
+    #[test]
+    fn transcript_path_is_re_resolved_when_sidecar_appears_late() {
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("session.jsonl");
+        write(&parent, "{}");
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+
+        tracker.on_subagent_started(
+            &handle,
+            session,
+            "a1".into(),
+            "reviewer".into(),
+            Some(&parent),
+        );
+        assert!(tracker.resolve_transcript_path(session, "a1").is_none());
+
+        let sidecar = dir.path().join("session").join("subagents");
+        fs::create_dir_all(&sidecar).unwrap();
+        let jsonl = sidecar.join("agent-a1.jsonl");
+        write(&jsonl, "{}");
+
+        assert_eq!(tracker.resolve_transcript_path(session, "a1"), Some(jsonl));
+        tracker.remove_session(&handle, session);
     }
 }
