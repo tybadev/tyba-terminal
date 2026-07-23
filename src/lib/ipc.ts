@@ -651,6 +651,7 @@ export type SplitKind = "h" | "v";
 
 export type PaneNode =
   | { type: "leaf"; id: PaneId; session_id: SessionId }
+  | { type: "agentviewer"; id: PaneId; session_id: SessionId }
   | {
       type: "split";
       id: PaneId;
@@ -916,6 +917,91 @@ export const onLayoutChanged = (
 ): Promise<UnlistenFn> =>
   listen<LayoutState>("layout://changed", (e) => handler(e.payload));
 
+export type SubagentStatus = "starting" | "running" | "done";
+
+export interface SubagentRun {
+  agent_id: string | null;
+  agent_type: string;
+  description: string;
+  status: SubagentStatus;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  summary: string | null;
+}
+
+export interface SubagentSnapshot {
+  focused: string | null;
+  subagents: SubagentRun[];
+}
+
+export interface SubagentsChanged {
+  session_id: SessionId;
+  focused: string | null;
+  subagents: SubagentRun[];
+}
+
+export type TranscriptKind =
+  | "assistant_text"
+  | "tool_use"
+  | "tool_result"
+  | "user_text";
+
+export interface TranscriptEntry {
+  seq: number;
+  kind: TranscriptKind;
+  text: string;
+  tool_name?: string | null;
+  ts?: string | null;
+}
+
+export interface SubagentTranscript {
+  entries: TranscriptEntry[];
+  cursor: number;
+  complete: boolean;
+}
+
+export interface SubagentTranscriptEvent {
+  session_id: SessionId;
+  agent_id: string;
+  entries: TranscriptEntry[];
+  cursor: number;
+}
+
+export const listSubagents = (sessionId: SessionId) =>
+  invoke<SubagentSnapshot>("list_subagents", { sessionId });
+
+export const focusSubagent = (sessionId: SessionId, agentId: string) =>
+  invoke<SubagentSnapshot>("focus_subagent", { sessionId, agentId });
+
+export const openAgentsPanel = (id: SessionId) =>
+  invoke<void>("open_agents_panel", { id });
+
+export const openSubagentViewer = (sessionId: SessionId) =>
+  invoke<void>("open_subagent_viewer", { sessionId });
+
+export const subagentTranscript = (
+  sessionId: SessionId,
+  agentId: string,
+  cursor: number | null,
+) =>
+  invoke<SubagentTranscript>("subagent_transcript", {
+    sessionId,
+    agentId,
+    cursor,
+  });
+
+export const onSubagentsChanged = (
+  handler: (p: SubagentsChanged) => void,
+): Promise<UnlistenFn> =>
+  listen<SubagentsChanged>("subagents://changed", (e) => handler(e.payload));
+
+export const onSubagentTranscript = (
+  handler: (p: SubagentTranscriptEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<SubagentTranscriptEvent>("subagents://transcript", (e) =>
+    handler(e.payload),
+  );
+
 export interface RepoSnapshot {
   ahead: number | null;
   behind: number | null;
@@ -941,12 +1027,14 @@ export const onRepoChanged = (
   listen<RepoSnapshot>("repo://changed", (e) => handler(e.payload));
 
 export function paneSession(node: PaneNode, pane: PaneId): SessionId | null {
-  if (node.type === "leaf") return node.id === pane ? node.session_id : null;
+  if (node.type === "leaf" || node.type === "agentviewer")
+    return node.id === pane ? node.session_id : null;
   return paneSession(node.first, pane) ?? paneSession(node.second, pane);
 }
 
 export function leafSessions(node: PaneNode): SessionId[] {
   if (node.type === "leaf") return [node.session_id];
+  if (node.type === "agentviewer") return [];
   return [...leafSessions(node.first), ...leafSessions(node.second)];
 }
 

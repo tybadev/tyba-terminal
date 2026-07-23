@@ -93,6 +93,8 @@ import { WorktreesView } from "./components/WorktreesView";
 import { DiffView } from "./components/DiffView";
 import { TunnelsView } from "./components/TunnelsView";
 import { FilesPanel } from "./components/FilesPanel";
+import { AgentsPanel } from "./components/AgentsPanel";
+import { SubagentViewer } from "./components/SubagentViewer";
 import { ForgePanel } from "./components/ForgePanel";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
 import { DiffStat } from "./components/DiffStat";
@@ -151,8 +153,14 @@ import {
   openDiffTab,
   openFilesPanel,
   openTunnelsPanel,
+  openAgentsPanel,
+  openSubagentViewer,
   openViewTab,
   paneSession,
+  listSubagents,
+  focusSubagent,
+  onSubagentsChanged,
+  type SubagentSnapshot,
   renameWorkspace,
   onRepoChanged,
   onRepoReconciled,
@@ -414,6 +422,9 @@ export default function App() {
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [layout, setLayout] = useState<LayoutState>(EMPTY_LAYOUT);
+  const [subagentsBySession, setSubagentsBySession] = useState<
+    Map<SessionId, SubagentSnapshot>
+  >(() => new Map());
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
   const [togglePref, setTogglePref] = useState<SidebarTogglePref>("hidden");
   const [detailsPref, setDetailsPref] = useState<DetailsPref>("on");
@@ -775,6 +786,13 @@ export default function App() {
         : null,
     [sideView, sessionById],
   );
+  const agentsTarget = useMemo(
+    () =>
+      sideView?.startsWith("agents:")
+        ? (sessionById.get(sideView.slice(7)) ?? null)
+        : null,
+    [sideView, sessionById],
+  );
   const tunnelsHostAlias = useMemo(() => {
     const kind = tunnelsTarget?.kind;
     if (kind?.type !== "ssh") return "";
@@ -822,6 +840,52 @@ export default function App() {
   const sessionIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     sessionIdsRef.current = new Set(sessions.map((s) => s.id));
+  }, [sessions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    void onSubagentsChanged((p) => {
+      if (cancelled) return;
+      setSubagentsBySession((prev) => {
+        const next = new Map(prev);
+        next.set(p.session_id, { focused: p.focused, subagents: p.subagents });
+        return next;
+      });
+    }).then((un) => {
+      if (cancelled) un();
+      else unlisten = un;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const live = new Set(sessions.map((s) => s.id));
+    setSubagentsBySession((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const key of [...next.keys()]) {
+        if (!live.has(key)) {
+          next.delete(key);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    for (const s of sessions) {
+      if (s.kind.type !== "agent") continue;
+      void listSubagents(s.id)
+        .then((snap) => {
+          if (snap.subagents.length === 0) return;
+          setSubagentsBySession((prev) =>
+            prev.has(s.id) ? prev : new Map(prev).set(s.id, snap),
+          );
+        })
+        .catch(() => {});
+    }
   }, [sessions]);
 
   const worktreeRepoRoots = useMemo(() => {
@@ -2981,6 +3045,34 @@ export default function App() {
             </Tooltip>
           )}
 
+          {activeId && activeSession?.kind.type === "agent" && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={t("agentsAction")}
+                  onClick={() => {
+                    if (!activeId || !activeWorkspace) return;
+                    if (sideView === `agents:${activeId}`) {
+                      void closeSideView(activeWorkspace.id).catch(() => {});
+                    } else {
+                      void openAgentsPanel(activeId).catch(() => {});
+                    }
+                  }}
+                  className={`size-6 rounded-[4px] ${
+                    sideView === `agents:${activeId}`
+                      ? "bg-tyba-text/[.06] text-tyba-text"
+                      : "text-tyba-text-faint hover:text-tyba-text"
+                  }`}
+                >
+                  <TreeStructure size={16} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{t("agentsAction")}</TooltipContent>
+            </Tooltip>
+          )}
+
           {activeId && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -3504,6 +3596,27 @@ export default function App() {
                       />
                     );
                   })}
+                  {paneLayout?.agentViewers.map((v) => {
+                    const owner = sessionById.get(v.session);
+                    return (
+                      <SubagentViewer
+                        key={v.pane}
+                        sessionId={v.session}
+                        snapshot={subagentsBySession.get(v.session) ?? null}
+                        sessionEnded={
+                          owner ? isFinishedStatus(owner.status) : true
+                        }
+                        rect={{
+                          left: v.x,
+                          top: v.y,
+                          width: v.w,
+                          height: v.h,
+                        }}
+                        onClose={() => void closePane(v.pane).catch(() => {})}
+                        onFocus={() => void focusPane(v.pane).catch(() => {})}
+                      />
+                    );
+                  })}
                   {paneLayout?.dividers.map((d) => (
                     <div
                       key={d.split}
@@ -3666,7 +3779,42 @@ export default function App() {
                       </div>
                     )}
                     <div className="flex min-h-0 min-w-0 flex-1">
-                      {sideView.startsWith("tunnels:") ? (
+                      {sideView.startsWith("agents:") ? (
+                        agentsTarget ? (
+                          <AgentsPanel
+                            key={agentsTarget.id}
+                            session={agentsTarget}
+                            snapshot={
+                              subagentsBySession.get(agentsTarget.id) ?? null
+                            }
+                            expanded={sideExpanded}
+                            onToggleExpand={() =>
+                              void setSideViewExpanded(
+                                activeWorkspace.id,
+                                !sideExpanded,
+                              ).catch(() => {})
+                            }
+                            onClose={() =>
+                              void closeSideView(activeWorkspace.id).catch(
+                                () => {},
+                              )
+                            }
+                            onSelect={(agentId) => {
+                              void focusSubagent(
+                                agentsTarget.id,
+                                agentId,
+                              ).catch(() => {});
+                              void openSubagentViewer(agentsTarget.id).catch(
+                                () => {},
+                              );
+                            }}
+                          />
+                        ) : (
+                          <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
+                            {t("agentsSessionGone")}
+                          </div>
+                        )
+                      ) : sideView.startsWith("tunnels:") ? (
                         tunnelsTarget ? (
                           <TunnelsView
                             key={tunnelsTarget.id}

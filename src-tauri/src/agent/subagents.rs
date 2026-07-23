@@ -77,10 +77,18 @@ impl SubagentRunDto {
     }
 }
 
+pub struct Coordination {
+    pub viewer_disarmed: bool,
+    pub panel_disarmed: bool,
+}
+
 #[derive(Default)]
 struct SessionSubagents {
     runs: Vec<SubagentRun>,
     focused: Option<String>,
+    coordinated: bool,
+    viewer_disarmed: bool,
+    panel_disarmed: bool,
 }
 
 impl SessionSubagents {
@@ -306,7 +314,7 @@ impl SubagentTracker {
         agent_id: String,
         agent_type: String,
         parent_transcript_path: Option<&Path>,
-    ) {
+    ) -> Option<Coordination> {
         let agent_id = strip_agent_prefix(&agent_id);
         let hint = {
             let sessions = self.sessions.lock().expect("subagents lock");
@@ -320,7 +328,7 @@ impl SubagentTracker {
             &agent_type,
             hint.as_deref(),
         );
-        let (payload, targets) = {
+        let (payload, targets, coordination) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let entry = sessions.entry(session).or_default();
             entry.promote(
@@ -330,10 +338,32 @@ impl SubagentTracker {
                 parent_transcript_path,
                 now_ms(),
             );
-            (changed_payload(session, entry), entry.running_targets())
+            let coordination = (!entry.coordinated).then(|| {
+                entry.coordinated = true;
+                Coordination {
+                    viewer_disarmed: entry.viewer_disarmed,
+                    panel_disarmed: entry.panel_disarmed,
+                }
+            });
+            (
+                changed_payload(session, entry),
+                entry.running_targets(),
+                coordination,
+            )
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
         self.watchers.sync(app, session, targets);
+        coordination
+    }
+
+    pub fn disarm_viewer(&self, session: SessionId) {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        sessions.entry(session).or_default().viewer_disarmed = true;
+    }
+
+    pub fn disarm_panel(&self, session: SessionId) {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        sessions.entry(session).or_default().panel_disarmed = true;
     }
 
     pub fn on_subagent_stopped<R: Runtime>(
