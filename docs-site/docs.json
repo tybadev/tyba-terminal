@@ -68,6 +68,7 @@
             "pages": [
               "pt-br/agente/claude-code-e-codex",
               "pt-br/agente/composer",
+              "pt-br/agente/subagentes",
               "pt-br/agente/hooks",
               "pt-br/agente/notificacoes"
             ]
@@ -189,6 +190,7 @@
             "pages": [
               "en/agent/claude-code-and-codex",
               "en/agent/composer",
+              "en/agent/subagents",
               "en/agent/hooks",
               "en/agent/notifications"
             ]
@@ -310,6 +312,7 @@
             "pages": [
               "es/agente/claude-code-y-codex",
               "es/agente/composer",
+              "es/agente/subagentes",
               "es/agente/hooks",
               "es/agente/notificaciones"
             ]

@@ -1,0 +1,61 @@
+---
+title: "Subagentes"
+sidebarTitle: "Subagentes"
+description: "Ver a árvore de subagentes de uma sessão do Claude Code em tempo real."
+---
+
+Quando o Claude Code delega trabalho a um subagente, o TUI dele mostra só um spinner girando — algo está rodando, mas não dá para saber o quê. No TYBA a sessão mostra o que está por trás: o painel **Agentes** lista cada subagente assim que ele nasce, e um split abre com o transcript de quem está trabalhando, ao vivo.
+
+## O painel Agentes
+
+Ele abre sozinho quando o **primeiro subagente da sessão** começa a trabalhar — desde que a sessão esteja no workspace ativo. Se você perdeu esse momento ou fechou o painel, o botão **Agentes** na toolbar de uma sessão de agente abre na mão.
+
+Na raiz da árvore está o **orquestrador** — a própria sessão. Abaixo dele, cada subagente aparece com:
+
+| Campo | O que mostra |
+| --- | --- |
+| Tipo | Que subagente é |
+| Tarefa | O que foi pedido a ele |
+| Status | **Rodando** (com um pulso) ou **concluído** |
+| Duração | Quanto tempo está levando — ou levou |
+| Resumo | Só ao concluir: o que ele fez |
+
+Clicar num subagente foca o transcript dele no split — e reabre o split, se você o tiver fechado.
+
+## O split com o transcript
+
+<Steps>
+<Step title="Abre no primeiro subagente">
+O pane da sessão se divide: de um lado o terminal de sempre, do outro o viewer do transcript.
+</Step>
+<Step title="Mostra o trabalho ao vivo">
+O texto que o subagente escreve, cada tool que ele chama — uma linha compacta, com o nome da tool e o alvo — e o resultado de cada chamada.
+</Step>
+<Step title="O scroll acompanha o fim">
+Como um `tail -f`: novidade empurra a tela para baixo. Role para cima para ler algo que passou, e ele para de seguir — até você voltar ao fim, aí o auto-scroll reata sozinho.
+</Step>
+<Step title="O resumo fica destacado ao concluir">
+Quando o subagente termina, o que ele fez aparece em destaque no próprio transcript.
+</Step>
+</Steps>
+
+Fechar o split — ou fechar o painel Agentes — desarma esse automatismo **naquela sessão**: o TYBA não reabre nada sozinho depois disso. O caminho de volta é o de sempre: o botão **Agentes** na toolbar, e o clique num subagente da lista.
+
+<Note>
+**Disparar um subagente não pede aprovação.** É o que ele faz depois que pede: cada comando que o subagente executa passa pelo mesmo inbox de aprovações da sessão, com a mesma [classificação de risco](/pt-br/seguranca/classificacao-de-risco) — verde passa sozinho, amarelo e vermelho esperam você.
+</Note>
+
+<Note>
+**Subagentes existem em sessões Claude Code.** Sessões Codex não disparam subagentes — o painel Agentes fica vazio nelas.
+</Note>
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Claude Code e Codex" icon="robot" href="/pt-br/agente/claude-code-e-codex">
+    Onde a sessão de agente nasce.
+  </Card>
+  <Card title="Classificação de risco" icon="shield" href="/pt-br/seguranca/classificacao-de-risco">
+    O que cai em cada cor do inbox.
+  </Card>
+</CardGroup>
