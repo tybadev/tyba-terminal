@@ -149,7 +149,8 @@ fn normalize_claude(tool_name: &str, tool_input: Option<&Value>) -> NormalizedTo
     }
     if CLAUDE_SUBAGENT_TOOLS.contains(&tool_name) {
         let agent_type = str_field(tool_input, "subagent_type").map(str::to_string);
-        let description = str_field(tool_input, "description").map(str::to_string);
+        let description = str_field(tool_input, "description")
+            .map(|d| truncate_chars(d.to_string(), DESCRIPTION_MAX_CHARS));
         let label = subagent_label(agent_type.as_deref(), description.as_deref());
         return NormalizedToolUse {
             action: ToolAction::Subagent {
@@ -451,6 +452,21 @@ mod tests {
             Some(json!({"subagent_type": "explorer", "description": long})),
         );
         assert_eq!(n.description.chars().count(), 500);
+    }
+
+    #[test]
+    fn subagent_action_description_caps_at_500_chars() {
+        let long = "z".repeat(600);
+        let n = claude(
+            "Agent",
+            Some(json!({"subagent_type": "explorer", "description": long})),
+        );
+        match n.action {
+            ToolAction::Subagent { description, .. } => {
+                assert_eq!(description.unwrap().chars().count(), 500);
+            }
+            other => panic!("esperava Subagent, veio {other:?}"),
+        }
     }
 
     fn codex(tool: &str, input: Option<Value>) -> NormalizedToolUse {

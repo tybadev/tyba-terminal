@@ -65,7 +65,7 @@ impl SubagentRunDto {
     fn redacted(run: &SubagentRun) -> Self {
         Self {
             agent_id: run.agent_id.clone(),
-            agent_type: run.agent_type.clone(),
+            agent_type: redact(&run.agent_type).into_owned(),
             description: redact(&run.description).into_owned(),
             status: run.status,
             started_at_ms: run.started_at_ms,
@@ -95,11 +95,19 @@ impl SessionSubagents {
         });
     }
 
+    fn pending_hint(&self, agent_type: &str) -> Option<String> {
+        self.runs
+            .iter()
+            .find(|run| run.status == SubagentStatus::Starting && run.agent_type == agent_type)
+            .map(|run| run.description.clone())
+            .filter(|description| !description.is_empty())
+    }
+
     fn promote(
         &mut self,
         agent_id: String,
         agent_type: String,
-        parent_transcript_path: Option<&Path>,
+        transcript_path: Option<PathBuf>,
         now: u64,
     ) {
         let slot = self
@@ -108,18 +116,12 @@ impl SessionSubagents {
             .position(|run| run.status == SubagentStatus::Starting && run.agent_type == agent_type);
         match slot {
             Some(index) => {
-                let wanted_description = self.runs[index].description.clone();
-                let hint = (!wanted_description.is_empty()).then_some(wanted_description.as_str());
-                let transcript_path =
-                    resolve_transcript(parent_transcript_path, &agent_id, &agent_type, hint);
                 let run = &mut self.runs[index];
                 run.agent_id = Some(agent_id.clone());
                 run.status = SubagentStatus::Running;
                 run.transcript_path = transcript_path;
             }
             None => {
-                let transcript_path =
-                    resolve_transcript(parent_transcript_path, &agent_id, &agent_type, None);
                 self.runs.push(SubagentRun {
                     agent_id: Some(agent_id.clone()),
                     agent_type,
@@ -137,36 +139,70 @@ impl SessionSubagents {
         }
     }
 
-    fn mark_stopped(&mut self, agent_id: String, last_assistant_message: Option<String>, now: u64) {
-        let summary = last_assistant_message
-            .as_deref()
-            .and_then(|message| clean_summary(message, SUMMARY_MAX_CHARS));
-        let slot = self.runs.iter().position(|run| {
-            run.agent_id.as_deref() == Some(agent_id.as_str()) && run.status != SubagentStatus::Done
+    fn remove_pending(&mut self, agent_type: Option<String>, description: Option<String>) {
+        let wanted_type = agent_type.unwrap_or_default();
+        let wanted_description = description.unwrap_or_default();
+        let exact = (!wanted_description.is_empty())
+            .then(|| {
+                self.runs.iter().rposition(|run| {
+                    run.status == SubagentStatus::Starting
+                        && run.agent_type == wanted_type
+                        && run.description == wanted_description
+                })
+            })
+            .flatten();
+        let slot = exact.or_else(|| {
+            self.runs.iter().rposition(|run| {
+                run.status == SubagentStatus::Starting && run.agent_type == wanted_type
+            })
         });
-        match slot {
-            Some(index) => {
-                let run = &mut self.runs[index];
-                run.status = SubagentStatus::Done;
-                run.ended_at_ms = Some(now);
-                run.summary = summary;
-            }
-            None => {
-                self.runs.push(SubagentRun {
-                    agent_id: Some(agent_id),
-                    agent_type: String::new(),
-                    description: String::new(),
-                    status: SubagentStatus::Done,
-                    started_at_ms: now,
-                    ended_at_ms: Some(now),
-                    summary,
-                    transcript_path: None,
-                });
-            }
+        if let Some(index) = slot {
+            self.runs.remove(index);
         }
     }
 
+    fn mark_stopped(
+        &mut self,
+        agent_id: String,
+        last_assistant_message: Option<String>,
+        now: u64,
+    ) -> bool {
+        let summary = last_assistant_message
+            .as_deref()
+            .and_then(|message| clean_summary(message, SUMMARY_MAX_CHARS));
+        let active = self.runs.iter().position(|run| {
+            run.agent_id.as_deref() == Some(agent_id.as_str()) && run.status != SubagentStatus::Done
+        });
+        if let Some(index) = active {
+            let run = &mut self.runs[index];
+            run.status = SubagentStatus::Done;
+            run.ended_at_ms = Some(now);
+            run.summary = summary;
+            return true;
+        }
+        let known = self
+            .runs
+            .iter()
+            .any(|run| run.agent_id.as_deref() == Some(agent_id.as_str()));
+        if known {
+            return false;
+        }
+        self.runs.push(SubagentRun {
+            agent_id: Some(agent_id),
+            agent_type: String::new(),
+            description: String::new(),
+            status: SubagentStatus::Done,
+            started_at_ms: now,
+            ended_at_ms: Some(now),
+            summary,
+            transcript_path: None,
+        });
+        true
+    }
+
     fn end_all(&mut self, now: u64) {
+        self.runs
+            .retain(|run| run.status != SubagentStatus::Starting);
         for run in &mut self.runs {
             if run.status == SubagentStatus::Running {
                 run.status = SubagentStatus::Done;
@@ -221,6 +257,24 @@ impl SubagentTracker {
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
     }
 
+    pub fn on_spawn_denied<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session: SessionId,
+        agent_type: Option<String>,
+        description: Option<String>,
+    ) {
+        let payload = {
+            let mut sessions = self.sessions.lock().expect("subagents lock");
+            let Some(entry) = sessions.get_mut(&session) else {
+                return;
+            };
+            entry.remove_pending(agent_type, description);
+            changed_payload(session, entry)
+        };
+        let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
+    }
+
     pub fn on_subagent_started<R: Runtime>(
         &self,
         app: &AppHandle<R>,
@@ -229,10 +283,23 @@ impl SubagentTracker {
         agent_type: String,
         parent_transcript_path: Option<&Path>,
     ) {
+        let agent_id = strip_agent_prefix(&agent_id);
+        let hint = {
+            let sessions = self.sessions.lock().expect("subagents lock");
+            sessions
+                .get(&session)
+                .and_then(|entry| entry.pending_hint(&agent_type))
+        };
+        let transcript_path = resolve_transcript(
+            parent_transcript_path,
+            &agent_id,
+            &agent_type,
+            hint.as_deref(),
+        );
         let payload = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let entry = sessions.entry(session).or_default();
-            entry.promote(agent_id, agent_type, parent_transcript_path, now_ms());
+            entry.promote(agent_id, agent_type, transcript_path, now_ms());
             changed_payload(session, entry)
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
@@ -245,10 +312,13 @@ impl SubagentTracker {
         agent_id: String,
         last_assistant_message: Option<String>,
     ) {
+        let agent_id = strip_agent_prefix(&agent_id);
         let payload = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let entry = sessions.entry(session).or_default();
-            entry.mark_stopped(agent_id, last_assistant_message, now_ms());
+            if !entry.mark_stopped(agent_id, last_assistant_message, now_ms()) {
+                return;
+            }
             changed_payload(session, entry)
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
@@ -267,6 +337,7 @@ impl SubagentTracker {
     }
 
     pub fn focus<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId, agent_id: String) {
+        let agent_id = strip_agent_prefix(&agent_id);
         let payload = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let Some(entry) = sessions.get_mut(&session) else {
@@ -278,11 +349,16 @@ impl SubagentTracker {
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
     }
 
-    pub fn remove_session(&self, session: SessionId) {
-        self.sessions
-            .lock()
-            .expect("subagents lock")
-            .remove(&session);
+    pub fn remove_session<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId) {
+        let payload = {
+            let mut sessions = self.sessions.lock().expect("subagents lock");
+            let Some(mut entry) = sessions.remove(&session) else {
+                return;
+            };
+            entry.end_all(now_ms());
+            changed_payload(session, &entry)
+        };
+        let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
     }
 
     pub fn snapshot(&self, session: SessionId) -> SubagentSnapshot {
@@ -305,6 +381,13 @@ fn changed_payload(session: SessionId, entry: &SessionSubagents) -> SubagentsCha
         focused: snapshot.focused,
         subagents: snapshot.subagents,
     }
+}
+
+fn strip_agent_prefix(agent_id: &str) -> String {
+    agent_id
+        .strip_prefix("agent-")
+        .unwrap_or(agent_id)
+        .to_string()
 }
 
 fn sidecar_dir(parent_transcript_path: &Path) -> PathBuf {
@@ -518,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn session_end_marks_running_as_done_without_summary() {
+    fn session_end_marks_running_as_done_and_discards_starting() {
         let mut session = SessionSubagents::default();
         session.promote("a1".into(), "reviewer".into(), None, 10);
         session.push_pending(Some("explorer".into()), None, 20);
@@ -531,10 +614,60 @@ mod tests {
         assert_eq!(running_done.status, SubagentStatus::Done);
         assert_eq!(running_done.ended_at_ms, Some(99));
         assert!(running_done.summary.is_none());
-        assert!(session
+        assert!(!session
             .runs
             .iter()
             .any(|run| run.status == SubagentStatus::Starting));
+    }
+
+    #[test]
+    fn deny_removes_newest_compatible_pending_among_many() {
+        let mut session = SessionSubagents::default();
+        session.push_pending(Some("reviewer".into()), Some("primeiro".into()), 10);
+        session.push_pending(Some("reviewer".into()), Some("segundo".into()), 20);
+        session.push_pending(Some("explorer".into()), Some("outro".into()), 30);
+
+        session.remove_pending(Some("reviewer".into()), Some("segundo".into()));
+
+        assert_eq!(session.runs.len(), 2);
+        assert!(session.runs.iter().any(|run| run.description == "primeiro"));
+        assert!(session.runs.iter().any(|run| run.description == "outro"));
+        assert!(!session.runs.iter().any(|run| run.description == "segundo"));
+    }
+
+    #[test]
+    fn deny_without_description_removes_newest_of_type() {
+        let mut session = SessionSubagents::default();
+        session.push_pending(Some("reviewer".into()), Some("primeiro".into()), 10);
+        session.push_pending(Some("reviewer".into()), Some("segundo".into()), 20);
+
+        session.remove_pending(Some("reviewer".into()), None);
+
+        assert_eq!(session.runs.len(), 1);
+        assert_eq!(session.runs[0].description, "primeiro");
+    }
+
+    #[test]
+    fn deny_without_matching_pending_is_noop() {
+        let mut session = SessionSubagents::default();
+        session.push_pending(Some("reviewer".into()), Some("primeiro".into()), 10);
+
+        session.remove_pending(Some("explorer".into()), None);
+
+        assert_eq!(session.runs.len(), 1);
+        assert_eq!(session.runs[0].status, SubagentStatus::Starting);
+    }
+
+    #[test]
+    fn duplicate_stop_does_not_change_runs() {
+        let mut session = SessionSubagents::default();
+        session.promote("a1".into(), "reviewer".into(), None, 10);
+        assert!(session.mark_stopped("a1".into(), Some("pronto".into()), 20));
+        let len_after_first = session.runs.len();
+        assert!(!session.mark_stopped("a1".into(), Some("de novo".into()), 30));
+        assert_eq!(session.runs.len(), len_after_first);
+        assert_eq!(session.runs[0].summary.as_deref(), Some("pronto"));
+        assert_eq!(session.runs[0].ended_at_ms, Some(20));
     }
 
     #[test]
@@ -646,7 +779,9 @@ mod tests {
 
         let mut session = SessionSubagents::default();
         session.push_pending(Some("reviewer".into()), Some("revisar".into()), 10);
-        session.promote("a1".into(), "reviewer".into(), Some(&parent), 20);
+        let hint = session.pending_hint("reviewer");
+        let path = resolve_transcript(Some(&parent), "a1", "reviewer", hint.as_deref());
+        session.promote("a1".into(), "reviewer".into(), path, 20);
         assert_eq!(session.runs[0].transcript_path, Some(jsonl));
     }
 
@@ -675,7 +810,77 @@ mod tests {
             SubagentStatus::Done
         );
 
-        tracker.remove_session(session);
+        tracker.remove_session(&handle, session);
         assert!(tracker.snapshot(session).subagents.is_empty());
+    }
+
+    #[test]
+    fn start_and_stop_correlate_across_agent_prefix() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+
+        tracker.on_subagent_started(
+            &handle,
+            session,
+            "agent-abc".into(),
+            "reviewer".into(),
+            None,
+        );
+        tracker.on_subagent_stopped(&handle, session, "abc".into(), Some("pronto".into()));
+
+        let snapshot = tracker.snapshot(session);
+        assert_eq!(snapshot.subagents.len(), 1);
+        assert_eq!(snapshot.subagents[0].status, SubagentStatus::Done);
+        assert_eq!(snapshot.subagents[0].agent_id.as_deref(), Some("abc"));
+        assert_eq!(snapshot.subagents[0].summary.as_deref(), Some("pronto"));
+    }
+
+    #[test]
+    fn spawn_denied_removes_pending_and_reemits() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+
+        tracker.on_spawn_requested(
+            &handle,
+            session,
+            Some("reviewer".into()),
+            Some("revisar".into()),
+        );
+        assert_eq!(tracker.snapshot(session).subagents.len(), 1);
+
+        tracker.on_spawn_denied(
+            &handle,
+            session,
+            Some("reviewer".into()),
+            Some("revisar".into()),
+        );
+        assert!(tracker.snapshot(session).subagents.is_empty());
+    }
+
+    #[test]
+    fn session_end_leaves_no_running_or_starting() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+
+        tracker.on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None);
+        tracker.on_spawn_requested(
+            &handle,
+            session,
+            Some("explorer".into()),
+            Some("mapear".into()),
+        );
+        tracker.on_session_ended(&handle, session);
+
+        let snapshot = tracker.snapshot(session);
+        assert!(snapshot
+            .subagents
+            .iter()
+            .all(|run| run.status == SubagentStatus::Done));
     }
 }

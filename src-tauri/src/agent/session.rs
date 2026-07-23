@@ -231,7 +231,7 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     let tool = event.tool_name.as_deref().unwrap_or("");
     let input = event.tool_input.as_ref();
     let normalized = normalize_tool_use(&ctx.runner_kind, tool, input);
-    if let ToolAction::Subagent {
+    let subagent_spawn = if let ToolAction::Subagent {
         agent_type,
         description,
     } = &normalized.action
@@ -242,7 +242,10 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
             agent_type.clone(),
             description.clone(),
         );
-    }
+        Some((agent_type.clone(), description.clone()))
+    } else {
+        None
+    };
     let command = normalized.description;
     let cwd = event.cwd.clone();
 
@@ -297,6 +300,7 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
                     if resolution.decision.is_approval() {
                         HookAction::Allow { reason: None }
                     } else {
+                        deny_subagent_spawn(ctx, &subagent_spawn);
                         HookAction::Deny {
                             reason: resolution
                                 .feedback
@@ -314,10 +318,22 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
                         "refused",
                         now_ms(),
                     );
+                    deny_subagent_spawn(ctx, &subagent_spawn);
                     HookAction::Deny { reason }
                 }
             }
         }
+    }
+}
+
+fn deny_subagent_spawn(ctx: &HandlerCtx, spawn: &Option<(Option<String>, Option<String>)>) {
+    if let Some((agent_type, description)) = spawn {
+        ctx.subagents.on_spawn_denied(
+            &ctx.app,
+            ctx.session_id,
+            agent_type.clone(),
+            description.clone(),
+        );
     }
 }
 
