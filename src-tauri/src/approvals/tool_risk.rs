@@ -427,11 +427,37 @@ mod tests {
             "TodoRead",
             "TodoWrite",
             "AskUserQuestion",
+            "ToolSearch",
+            "BashOutput",
         ] {
             assert_eq!(
                 classify_tool_use(tool, None, &root()),
                 RiskLevel::Green,
                 "{tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn bash_trivial_sozinho_e_green() {
+        let wt = real_root();
+        for command in ["sleep 15", "echo oi", "pwd", "true", "whoami"] {
+            assert_eq!(
+                classify_tool_use("Bash", Some(&json!({ "command": command })), wt.path()),
+                RiskLevel::Green,
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn bash_trivial_com_operador_nao_e_green() {
+        let wt = real_root();
+        for command in ["sleep 15; rm x", "echo x > out.txt", "echo x | sh"] {
+            assert_ne!(
+                classify_tool_use("Bash", Some(&json!({ "command": command })), wt.path()),
+                RiskLevel::Green,
+                "{command}"
             );
         }
     }
