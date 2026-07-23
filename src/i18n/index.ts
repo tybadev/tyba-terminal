@@ -463,7 +463,7 @@ const resources = {
       confirm: "Confirmar",
       closeAgentRunningTitle: "Fechar sessão de agente em execução?",
       closeAgentRunningDetail:
-        "“{{title}}” está rodando. Fechar agora encerra o process group e o trabalho em andamento pode se perder.",
+        "“{{title}}” está trabalhando. Fechar agora interrompe o agente na hora e o trabalho em andamento pode se perder.",
       closeAnyway: "Fechar mesmo assim",
       showRunning: "Mostrar o que está rodando",
       launchConfigNew: "Nova launch config",
@@ -1312,7 +1312,7 @@ const resources = {
       confirm: "Confirm",
       closeAgentRunningTitle: "Close running agent session?",
       closeAgentRunningDetail:
-        "“{{title}}” is running. Closing now ends the process group and work in progress may be lost.",
+        "“{{title}}” is working. Closing now stops the agent immediately and work in progress may be lost.",
       closeAnyway: "Close anyway",
       showRunning: "Show what's running",
       launchConfigNew: "New launch config",
