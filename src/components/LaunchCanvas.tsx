@@ -1,9 +1,10 @@
 import {
   CloudArrowUp,
-  Robot,
   TerminalWindow,
   TreeStructure,
 } from "@phosphor-icons/react";
+
+import { AgentIcon } from "./icons/AgentIcon";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -108,9 +109,8 @@ export function LaunchCanvas({
           >
             <span className="flex items-center gap-1.5 truncate">
               {kind === "agent" ? (
-                <Robot
+                <AgentIcon
                   size={13}
-                  weight="fill"
                   className={isSelected ? "text-tyba-green" : "text-tyba-violet"}
                 />
               ) : kind === "ssh" ? (

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleNotch, Gear, Robot, X } from "@phosphor-icons/react";
+import { CircleNotch, Gear, X } from "@phosphor-icons/react";
+
+import { AgentIcon } from "./icons/AgentIcon";
 
 import type {
   SessionId,
@@ -226,8 +228,10 @@ export function SubagentViewer({
     >
       <div className="flex h-full min-h-0 flex-col">
         <header className="flex h-8 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
-          <Robot size={13} className="shrink-0 text-tyba-text-faint" />
-          <span className="shrink-0 truncate text-[12px] text-tyba-text">
+          <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-tyba-amber/[.1] text-tyba-amber">
+            <AgentIcon size={11} />
+          </span>
+          <span className="shrink-0 truncate text-[12px] font-medium text-tyba-text">
             {focused?.agent_type || t("subagentsTitle")}
           </span>
           {focused?.description && (

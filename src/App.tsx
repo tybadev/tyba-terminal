@@ -17,7 +17,6 @@ import {
   MagnifyingGlass,
   Plus,
   Prohibit,
-  Robot,
   SidebarSimple,
   SquaresFour,
   TerminalWindow,
@@ -63,6 +62,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { WindowControls, WindowResizeEdges } from "./components/WindowChrome";
 import { UpdateToast } from "./components/UpdateToast";
 import { IS_MAC } from "./lib/platform";
+import { AgentIcon } from "./components/icons/AgentIcon";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { Clock } from "./components/Clock";
@@ -366,7 +366,7 @@ function agentGlyph(label: string, size = 16): React.ReactNode {
     );
   if (label === "codex")
     return <OpenAIIcon size={size} className="shrink-0 text-tyba-text" />;
-  return <Robot size={size} className="shrink-0" />;
+  return <AgentIcon size={size} className="shrink-0" />;
 }
 
 const SESSION_COLORS = [

@@ -1,12 +1,13 @@
 import { useTranslation } from "react-i18next";
 import {
   Plus,
-  Robot,
   ShippingContainer,
   SlidersHorizontal,
   TerminalWindow,
   X,
 } from "@phosphor-icons/react";
+
+import { AgentIcon } from "./icons/AgentIcon";
 
 import i18n from "../i18n";
 import { formatCombo, tabDigitCombo } from "@/lib/keys";
@@ -42,7 +43,7 @@ function runnerLabel(kind: Session["kind"]): string | null {
 function agentGlyph(label: string): React.ReactNode {
   if (label === "claude") return <ClaudeIcon size={12} />;
   if (label === "codex") return <OpenAIIcon size={12} />;
-  return <Robot size={12} />;
+  return <AgentIcon size={12} />;
 }
 
 function tabIcon(tab: Tab, sessions: Map<SessionId, Session>): React.ReactNode {

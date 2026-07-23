@@ -4,13 +4,14 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   FolderOpen,
   Plus,
-  Robot,
   SplitHorizontal,
   SplitVertical,
   Trash,
   Warning,
   X,
 } from "@phosphor-icons/react";
+
+import { AgentIcon } from "./icons/AgentIcon";
 
 import {
   Dialog,
@@ -344,7 +345,7 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
                         })
                       }
                     >
-                      <Robot size={14} />
+                      <AgentIcon size={14} />
                       claude
                     </Button>
                     <Button
