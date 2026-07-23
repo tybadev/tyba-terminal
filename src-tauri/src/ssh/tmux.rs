@@ -22,15 +22,31 @@ pub fn session_name(install_id: &str, session_id: Uuid) -> String {
     format!("tyba-{install_id}-{}", session_id.simple())
 }
 
+fn sh_c(script: &str) -> String {
+    assert!(
+        !script.contains('\''),
+        "aspas simples fecham o envelope: {script}"
+    );
+    format!("sh -c '{script}'")
+}
+
 pub fn wrap_command(name: &str) -> String {
-    format!(
+    sh_c(&format!(
         "command -v tmux >/dev/null 2>&1 && \
-         exec tmux new-session -A -s {name} 'exec env -u TMUX \"${{SHELL:-/bin/sh}}\" -l' \\; \
+         exec tmux new-session -A -s {name} \"exec env -u TMUX \\\"${{SHELL:-/bin/sh}}\\\" -l\" \\; \
          set-option -t {name} status off \\; \
          set-option -t {name} prefix None \\; \
          set-option -t {name} history-limit 5000 || \
          exec \"${{SHELL:-/bin/sh}}\" -l"
-    )
+    ))
+}
+
+pub fn has_session_command(name: &str) -> String {
+    sh_c(&format!("tmux has-session -t {name}"))
+}
+
+pub fn list_sessions_command() -> String {
+    sh_c("tmux ls -F \"#{session_name}\" 2>/dev/null; true")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +103,7 @@ pub fn orphans(listed: &[String], install_id: &str, known: &HashSet<Uuid>) -> Ve
 pub fn probe(alias: &str, name: &str) -> Probe {
     let status = std::process::Command::new("ssh")
         .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias])
-        .arg(format!("tmux has-session -t {name}"))
+        .arg(has_session_command(name))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -111,7 +127,7 @@ pub fn kill_remote(alias: &str, name: &str) -> std::io::Result<std::process::Exi
 pub fn list_sessions(alias: &str) -> Vec<String> {
     let out = std::process::Command::new("ssh")
         .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias])
-        .arg("tmux ls -F '#{session_name}' 2>/dev/null; true")
+        .arg(list_sessions_command())
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output();
@@ -136,11 +152,11 @@ pub fn collect_orphans(alias: &str, install_id: &str, known: &HashSet<Uuid>) -> 
 }
 
 pub fn kill_command(name: &str) -> String {
-    format!(
+    sh_c(&format!(
         "tmux kill-session -t {name} 2>/dev/null; \
-         pkill -f '[t]mux new-session -A -s {name}' 2>/dev/null; \
+         pkill -f \"[t]mux new-session -A -s {name}\" 2>/dev/null; \
          true"
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -160,12 +176,12 @@ mod tests {
             "got: {cmd}"
         );
         assert!(
-            cmd.contains(&format!("pkill -f '[t]mux new-session -A -s {name}'")),
+            cmd.contains(&format!("pkill -f \"[t]mux new-session -A -s {name}\"")),
             "o cliente vira órfão do init quando o cano morre; kill-session sozinho \
              não o alcança se ele já ficou pendurado antes: {cmd}"
         );
         assert!(
-            cmd.ends_with("true"),
+            cmd.ends_with("true'"),
             "não achar o que matar é sucesso, não erro: {cmd}"
         );
     }
@@ -183,11 +199,11 @@ mod tests {
     fn kill_nao_pode_matar_o_shell_que_o_executa() {
         let cmd = kill_command(&session_name("a3f", uuid(0x9f3a)));
         assert!(
-            !cmd.contains("pkill -f 'tmux"),
+            !cmd.contains("pkill -f \"tmux"),
             "medido na VPS: sem o [t] o pkill casa a linha do bash -c que o roda, \
              mata o próprio pai, o true não executa e o ssh volta 255: {cmd}"
         );
-        assert!(cmd.contains("pkill -f '[t]mux"), "got: {cmd}");
+        assert!(cmd.contains("pkill -f \"[t]mux"), "got: {cmd}");
     }
 
     #[test]
@@ -222,7 +238,7 @@ mod tests {
         let cmd = wrap_command("tyba-a3f-9f3a");
         assert!(cmd.contains("command -v tmux"), "got: {cmd}");
         assert!(
-            cmd.ends_with("|| exec \"${SHELL:-/bin/sh}\" -l"),
+            cmd.ends_with("|| exec \"${SHELL:-/bin/sh}\" -l'"),
             "sem tmux o dono recebe o login shell dele, e mais nada: {cmd}"
         );
     }
@@ -241,7 +257,7 @@ mod tests {
     fn wrap_limpa_tmux_no_shell_dentro_do_nosso_tmux() {
         let cmd = wrap_command("tyba-a3f-9f3a");
         assert!(
-            cmd.contains("new-session -A -s tyba-a3f-9f3a 'exec env -u TMUX "),
+            cmd.contains("new-session -A -s tyba-a3f-9f3a \"exec env -u TMUX "),
             "verificado na VPS: o env tem que ser o comando do pane, porque é o \
              tmux que seta $TMUX; no fallback não há tmux para setar nada: {cmd}"
         );
@@ -365,5 +381,145 @@ mod tests {
             orphans(&listed, "a3f", &HashSet::new()).is_empty(),
             "na dúvida sobre o que é o nome, não matar"
         );
+    }
+
+    fn remote_commands() -> Vec<(&'static str, String)> {
+        let name = session_name("a3f", uuid(0x9f3a));
+        vec![
+            ("wrap", wrap_command(&name)),
+            ("has_session", has_session_command(&name)),
+            ("list", list_sessions_command()),
+            ("kill", kill_command(&name)),
+        ]
+    }
+
+    #[test]
+    fn comando_remoto_e_sh_c_sem_aspas_simples_no_script() {
+        for (label, cmd) in remote_commands() {
+            assert!(
+                cmd.starts_with("sh -c '") && cmd.ends_with('\''),
+                "{label}: o login shell remoto (fish, csh, o que for) só pode ver \
+                 `sh -c '...'` — qualquer sintaxe além disso é POSIX que ele pode \
+                 não falar: {cmd}"
+            );
+            let script = &cmd["sh -c '".len()..cmd.len() - 1];
+            assert!(
+                !script.contains('\''),
+                "{label}: aspas simples dentro do script fecham o envelope no meio \
+                 e devolvem o resto para o login shell: {cmd}"
+            );
+            assert!(
+                !cmd.contains('\n') && !cmd.contains('!') && !cmd.contains("\\\\"),
+                "{label}: newline quebra csh, `!` liga history expansion, `\\\\` é \
+                 escape especial dentro de aspas simples no fish: {cmd}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    mod login_shells {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
+
+        fn run_as_login_shell(login_shell: &str, cmd: &str) -> Option<i32> {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            std::os::unix::fs::symlink("/bin/sh", bin.join("sh")).unwrap();
+            let fake = dir.path().join("login-shell");
+            std::fs::write(&fake, "#!/bin/sh\nexit 42\n").unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Command::new(login_shell)
+                .arg("-c")
+                .arg(cmd)
+                .env_clear()
+                .env("PATH", &bin)
+                .env("SHELL", &fake)
+                .env("HOME", dir.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .ok()?
+                .code()
+        }
+
+        fn installed_login_shells() -> Vec<String> {
+            let mut found = vec!["/bin/sh".to_string()];
+            for shell in ["bash", "zsh", "dash", "fish", "csh", "tcsh"] {
+                let out = Command::new("/bin/sh")
+                    .arg("-c")
+                    .arg(format!("command -v {shell}"))
+                    .output();
+                if let Ok(o) = out {
+                    let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if o.status.success() && !path.is_empty() {
+                        found.push(path);
+                    }
+                }
+            }
+            found
+        }
+
+        #[test]
+        #[cfg(target_os = "macos")]
+        fn cobertura_inclui_login_shell_nao_posix() {
+            let shells = installed_login_shells();
+            assert!(
+                shells
+                    .iter()
+                    .any(|s| s.ends_with("/csh") || s.ends_with("/tcsh") || s.ends_with("/fish")),
+                "csh e tcsh vêm com o macOS: sem nenhum shell não-POSIX na lista, \
+                 estes testes ficam verdes exercitando só os shells onde o bug \
+                 nunca aparecia; got {shells:?}"
+            );
+        }
+
+        #[test]
+        fn wrap_abre_o_shell_sob_qualquer_login_shell_sem_tmux() {
+            let name = session_name("a3f", uuid(0x9f3a));
+            for shell in installed_login_shells() {
+                assert_eq!(
+                    run_as_login_shell(&shell, &wrap_command(&name)),
+                    Some(42),
+                    "medido no Arch do usuário: com login shell fish o wrap morria \
+                     no parse (`${{` não é fish) e a sessão sumia — o shell do host \
+                     nunca abria; sob {shell} o fallback tem que chegar ao $SHELL"
+                );
+            }
+        }
+
+        #[test]
+        fn probe_ve_127_sob_qualquer_login_shell_sem_tmux() {
+            let name = session_name("a3f", uuid(0x9f3a));
+            for shell in installed_login_shells() {
+                let code = run_as_login_shell(&shell, &has_session_command(&name));
+                assert_eq!(
+                    interpret_has_session(code),
+                    Probe::NoTmux,
+                    "csh devolve 1 para comando inexistente, não 127 — sem o sh -c \
+                     o probe classificaria NoTmux como Gone; got {code:?} sob {shell}"
+                );
+            }
+        }
+
+        #[test]
+        fn gc_e_kill_degradam_para_sucesso_sob_qualquer_login_shell_sem_tmux() {
+            let name = session_name("a3f", uuid(0x9f3a));
+            for shell in installed_login_shells() {
+                for (label, cmd) in [
+                    ("kill", kill_command(&name)),
+                    ("list", list_sessions_command()),
+                ] {
+                    assert_eq!(
+                        run_as_login_shell(&shell, &cmd),
+                        Some(0),
+                        "{label}: sem tmux não há o que recolher — csh quebrava no \
+                         `2>/dev/null` antes do `; true` final; got sob {shell}"
+                    );
+                }
+            }
+        }
     }
 }
