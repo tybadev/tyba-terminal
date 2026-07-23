@@ -80,7 +80,7 @@ export function AgentsPanel({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2.5">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 motion-safe:animate-tyba-node-in">
           <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-tyba-amber/[.1] text-tyba-amber">
             <AgentIcon size={13} />
           </span>
@@ -111,7 +111,11 @@ export function AgentsPanel({
                 (run.ended_at_ms ?? now) - run.started_at_ms,
               );
               return (
-                <li key={run.agent_id ?? `pending-${i}`} className="flex gap-2.5">
+                <li
+                  key={run.agent_id ?? `pending-${i}`}
+                  className="flex gap-2.5 motion-safe:animate-tyba-node-in"
+                  style={{ animationDelay: `${Math.min(i + 1, 8) * 45}ms` }}
+                >
                   <div className="relative flex w-6 shrink-0 justify-center">
                     <span
                       className="absolute top-0 w-px bg-tyba-border"
@@ -147,7 +151,7 @@ export function AgentsPanel({
                       </span>
                     </div>
                     {run.status === "done" && run.summary && (
-                      <p className="mt-1 line-clamp-2 border-l border-tyba-border pl-2 text-[11px] leading-snug text-tyba-text-muted">
+                      <p className="mt-0.5 truncate text-[11px] leading-snug text-tyba-text-faint">
                         {run.summary}
                       </p>
                     )}

@@ -820,7 +820,8 @@
   --color-tyba-neutral-tint: var(--tyba-neutral-tint);
 
   --animate-tyba-pop-in: tyba-pop-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
-  --animate-tyba-panel-in: tyba-panel-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-tyba-panel-in: tyba-panel-in 360ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-tyba-node-in: tyba-node-in 440ms cubic-bezier(0.16, 1, 0.3, 1) both;
 
   /* shadcn */
   --color-background: var(--background);
@@ -1014,11 +1015,11 @@ samp {
 @keyframes tyba-panel-in {
   from {
     opacity: 0;
-    transform: translateX(10px);
+    transform: translateX(20px) scale(0.985);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateX(0) scale(1);
   }
 }
 
@@ -1029,9 +1030,24 @@ samp {
 @keyframes tyba-panel-out {
   from {
     opacity: 1;
+    transform: translateX(0);
   }
   to {
     opacity: 0;
+    transform: translateX(12px);
+  }
+}
+
+@keyframes tyba-node-in {
+  from {
+    opacity: 0;
+    transform: translateY(9px);
+    filter: blur(1px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
   }
 }
 
