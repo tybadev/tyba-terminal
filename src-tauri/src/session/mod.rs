@@ -40,7 +40,7 @@ pub enum SessionKind {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunnerKind {
     ClaudeCode,
@@ -454,6 +454,17 @@ impl SessionManager {
 
     pub fn get(&self, id: SessionId) -> Option<Session> {
         self.sessions.read().get(&id).cloned()
+    }
+
+    /// Ids das sessões de shell locais, sem clonar as `Session` inteiras: é o que
+    /// o poll de detecção de agente varre a cada tick, então precisa ser barato.
+    pub fn shell_ids(&self) -> Vec<SessionId> {
+        self.sessions
+            .read()
+            .iter()
+            .filter(|(_, s)| matches!(s.kind, SessionKind::Shell))
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     pub fn set_status(&self, app: &AppHandle, id: SessionId, status: SessionStatus) {

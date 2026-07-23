@@ -55,6 +55,7 @@ struct AppState {
     worktree_files: rich_input::FilesCache,
     hook_servers: Arc<agent::session::HookServerRegistry>,
     subagents: agent::subagents::SharedSubagents,
+    agent_prober: agent::process_probe::SharedAgentProber,
     tunnel_states: crate::ssh::tunnel::SharedTunnelStates,
 }
 
@@ -91,6 +92,34 @@ fn reconcile_repo_watchers(app: &AppHandle) {
     let roots = watched_repo_roots(&state);
     state.repos.set_roots(app, roots);
     let _ = app.emit(repo::EVENT_RECONCILED, state.repos.snapshots());
+}
+
+/// Um tick do poll de detecção de agente: monta a lista de shells vivos com seu
+/// `leader_pid`, sonda a árvore de processos e emite só as sessões que mudaram.
+/// Quando não há shell aberto, nem varre os processos — custo zero (só um par de
+/// locks curtos), como manda o performance-first.
+fn poll_agent_probers(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let shells: Vec<(SessionId, u32)> = state
+        .sessions
+        .shell_ids()
+        .into_iter()
+        .filter_map(|id| state.pty_pool.leader_pid(id).map(|pid| (id, pid)))
+        .collect();
+    let rows = if shells.is_empty() {
+        Vec::new()
+    } else {
+        agent::process_probe::snapshot()
+    };
+    for (session_id, detected) in state.agent_prober.reconcile(&shells, &rows) {
+        let _ = app.emit(
+            agent::process_probe::EVENT_CHANGED,
+            agent::process_probe::AgentDetectedPayload {
+                session_id,
+                detected,
+            },
+        );
+    }
 }
 
 fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
@@ -3830,6 +3859,16 @@ fn agent_binary_available(runner: crate::session::AgentRunnerKind) -> bool {
     agent::binary_available(&runner)
 }
 
+/// Agente (claude/codex) detectado rodando na sessão de shell `session_id`, se
+/// houver. Estado alimentado pelo poll de [`poll_agent_probers`].
+#[tauri::command]
+fn detected_agent(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+) -> Option<agent::process_probe::DetectedAgent> {
+    state.agent_prober.detected(session_id)
+}
+
 #[tauri::command]
 fn agent_repo_config(
     state: State<'_, AppState>,
@@ -3999,6 +4038,7 @@ pub fn run() {
                 worktree_files: rich_input::FilesCache::default(),
                 hook_servers: Arc::new(agent::session::HookServerRegistry::default()),
                 subagents: Arc::new(agent::subagents::SubagentTracker::new()),
+                agent_prober: Arc::new(agent::process_probe::AgentProber::default()),
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
             });
 
@@ -4082,6 +4122,15 @@ pub fn run() {
 
             let _ = reconcile_tx.send(());
 
+            let probe_handle = app.handle().clone();
+            std::thread::Builder::new()
+                .name("agent-probe".into())
+                .spawn(move || loop {
+                    std::thread::sleep(agent::process_probe::POLL_INTERVAL);
+                    poll_agent_probers(&probe_handle);
+                })
+                .expect("failed to spawn agent probe thread");
+
             if let Some(window) = app.get_webview_window("main") {
                 let hidden = window.clone();
                 window.on_window_event(move |event| {
@@ -4096,6 +4145,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             agent_binary_available,
+            detected_agent,
             create_session,
             broadcast_write,
             broadcast_submit,

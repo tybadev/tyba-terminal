@@ -87,7 +87,7 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn proc_pidinfo_struct<T>(pid: u32, flavor: libc::c_int) -> Option<T> {
+pub(crate) fn proc_pidinfo_struct<T>(pid: u32, flavor: libc::c_int) -> Option<T> {
     let mut info: T = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<T>() as libc::c_int;
     let written = unsafe {
