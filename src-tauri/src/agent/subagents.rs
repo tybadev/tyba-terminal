@@ -273,6 +273,14 @@ impl SubagentTracker {
         Self::default()
     }
 
+    pub fn register_session(&self, session: SessionId) {
+        self.sessions
+            .lock()
+            .expect("subagents lock")
+            .entry(session)
+            .or_default();
+    }
+
     pub fn on_spawn_requested<R: Runtime>(
         &self,
         app: &AppHandle<R>,
@@ -282,7 +290,9 @@ impl SubagentTracker {
     ) {
         let payload = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
-            let entry = sessions.entry(session).or_default();
+            let Some(entry) = sessions.get_mut(&session) else {
+                return;
+            };
             entry.push_pending(agent_type, description, now_ms());
             changed_payload(session, entry)
         };
@@ -330,7 +340,7 @@ impl SubagentTracker {
         );
         let (payload, targets, coordination) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
-            let entry = sessions.entry(session).or_default();
+            let entry = sessions.get_mut(&session)?;
             entry.promote(
                 agent_id,
                 agent_type,
@@ -360,12 +370,16 @@ impl SubagentTracker {
 
     pub fn disarm_viewer(&self, session: SessionId) {
         let mut sessions = self.sessions.lock().expect("subagents lock");
-        sessions.entry(session).or_default().viewer_disarmed = true;
+        if let Some(entry) = sessions.get_mut(&session) {
+            entry.viewer_disarmed = true;
+        }
     }
 
     pub fn disarm_panel(&self, session: SessionId) {
         let mut sessions = self.sessions.lock().expect("subagents lock");
-        sessions.entry(session).or_default().panel_disarmed = true;
+        if let Some(entry) = sessions.get_mut(&session) {
+            entry.panel_disarmed = true;
+        }
     }
 
     pub fn on_subagent_stopped<R: Runtime>(
@@ -378,7 +392,9 @@ impl SubagentTracker {
         let agent_id = strip_agent_prefix(&agent_id);
         let (payload, targets) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
-            let entry = sessions.entry(session).or_default();
+            let Some(entry) = sessions.get_mut(&session) else {
+                return;
+            };
             if !entry.mark_stopped(agent_id, last_assistant_message, now_ms()) {
                 return;
             }
@@ -877,6 +893,7 @@ mod tests {
         let tracker = SubagentTracker::new();
         let session = SessionId::new_v4();
 
+        tracker.register_session(session);
         tracker.on_spawn_requested(
             &handle,
             session,
@@ -900,12 +917,38 @@ mod tests {
     }
 
     #[test]
+    fn events_after_remove_session_are_noop() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+
+        tracker.register_session(session);
+        tracker.on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None);
+        tracker.remove_session(&handle, session);
+
+        let restarted =
+            tracker.on_subagent_started(&handle, session, "a2".into(), "reviewer".into(), None);
+        assert!(restarted.is_none());
+        tracker.on_subagent_stopped(&handle, session, "a2".into(), Some("pronto".into()));
+        tracker.on_spawn_requested(&handle, session, Some("explorer".into()), None);
+
+        assert!(tracker.snapshot(session).subagents.is_empty());
+        assert!(!tracker
+            .sessions
+            .lock()
+            .expect("subagents lock")
+            .contains_key(&session));
+    }
+
+    #[test]
     fn start_and_stop_correlate_across_agent_prefix() {
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
         let tracker = SubagentTracker::new();
         let session = SessionId::new_v4();
 
+        tracker.register_session(session);
         tracker.on_subagent_started(
             &handle,
             session,
@@ -929,6 +972,7 @@ mod tests {
         let tracker = SubagentTracker::new();
         let session = SessionId::new_v4();
 
+        tracker.register_session(session);
         let first =
             tracker.on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None);
         assert!(first.is_some());
@@ -951,6 +995,7 @@ mod tests {
         let tracker = SubagentTracker::new();
         let session = SessionId::new_v4();
 
+        tracker.register_session(session);
         tracker.disarm_viewer(session);
         let coordination = tracker
             .on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None)
@@ -966,6 +1011,7 @@ mod tests {
         let tracker = SubagentTracker::new();
         let session = SessionId::new_v4();
 
+        tracker.register_session(session);
         tracker.on_spawn_requested(
             &handle,
             session,
@@ -990,6 +1036,7 @@ mod tests {
         let tracker = SubagentTracker::new();
         let session = SessionId::new_v4();
 
+        tracker.register_session(session);
         tracker.on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None);
         tracker.on_spawn_requested(
             &handle,
@@ -1016,6 +1063,7 @@ mod tests {
         let tracker = SubagentTracker::new();
         let session = SessionId::new_v4();
 
+        tracker.register_session(session);
         tracker.on_subagent_started(
             &handle,
             session,

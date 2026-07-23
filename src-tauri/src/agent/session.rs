@@ -660,6 +660,7 @@ fn spawn_prepared(
         }
     };
 
+    ctx.subagents.register_session(id);
     let handler_ctx = HandlerCtx {
         app: ctx.app.clone(),
         sessions: ctx.sessions.clone(),
