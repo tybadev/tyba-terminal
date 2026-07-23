@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 use crate::approvals::now_ms;
 use crate::session::redact::redact;
 use crate::session::SessionId;
+use crate::status::subagent_transcript::TranscriptWatchers;
 use crate::status::transcript::clean_summary;
 
 pub type SharedSubagents = Arc<SubagentTracker>;
@@ -193,11 +194,20 @@ impl SessionSubagents {
             subagents: ordered.into_iter().map(SubagentRunDto::redacted).collect(),
         }
     }
+
+    fn running_targets(&self) -> Vec<(String, PathBuf)> {
+        self.runs
+            .iter()
+            .filter(|run| run.status == SubagentStatus::Running)
+            .filter_map(|run| Some((run.agent_id.clone()?, run.transcript_path.clone()?)))
+            .collect()
+    }
 }
 
 #[derive(Default)]
 pub struct SubagentTracker {
     sessions: Mutex<HashMap<SessionId, SessionSubagents>>,
+    watchers: TranscriptWatchers,
 }
 
 impl SubagentTracker {
@@ -229,13 +239,14 @@ impl SubagentTracker {
         agent_type: String,
         parent_transcript_path: Option<&Path>,
     ) {
-        let payload = {
+        let (payload, targets) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let entry = sessions.entry(session).or_default();
             entry.promote(agent_id, agent_type, parent_transcript_path, now_ms());
-            changed_payload(session, entry)
+            (changed_payload(session, entry), entry.running_targets())
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
+        self.watchers.sync(app, session, targets);
     }
 
     pub fn on_subagent_stopped<R: Runtime>(
@@ -245,25 +256,27 @@ impl SubagentTracker {
         agent_id: String,
         last_assistant_message: Option<String>,
     ) {
-        let payload = {
+        let (payload, targets) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let entry = sessions.entry(session).or_default();
             entry.mark_stopped(agent_id, last_assistant_message, now_ms());
-            changed_payload(session, entry)
+            (changed_payload(session, entry), entry.running_targets())
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
+        self.watchers.sync(app, session, targets);
     }
 
     pub fn on_session_ended<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId) {
-        let payload = {
+        let (payload, targets) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let Some(entry) = sessions.get_mut(&session) else {
                 return;
             };
             entry.end_all(now_ms());
-            changed_payload(session, entry)
+            (changed_payload(session, entry), entry.running_targets())
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
+        self.watchers.sync(app, session, targets);
     }
 
     pub fn focus<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId, agent_id: String) {
@@ -279,10 +292,22 @@ impl SubagentTracker {
     }
 
     pub fn remove_session(&self, session: SessionId) {
+        self.watchers.stop_session(session);
         self.sessions
             .lock()
             .expect("subagents lock")
             .remove(&session);
+    }
+
+    pub fn transcript_path(&self, session: SessionId, agent_id: &str) -> Option<PathBuf> {
+        self.sessions
+            .lock()
+            .expect("subagents lock")
+            .get(&session)?
+            .runs
+            .iter()
+            .find(|run| run.agent_id.as_deref() == Some(agent_id))
+            .and_then(|run| run.transcript_path.clone())
     }
 
     pub fn snapshot(&self, session: SessionId) -> SubagentSnapshot {
