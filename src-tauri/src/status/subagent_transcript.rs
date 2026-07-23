@@ -323,10 +323,44 @@ struct TranscriptPayload {
     cursor: u64,
 }
 
+pub struct WatchSpec {
+    pub agent_id: String,
+    pub agent_type: String,
+    pub description: Option<String>,
+    pub parent_path: Option<PathBuf>,
+    pub path: Option<PathBuf>,
+}
+
+#[derive(Clone)]
 struct WatchTarget {
     agent_id: String,
-    path: PathBuf,
+    agent_type: String,
+    description: Option<String>,
+    parent_path: Option<PathBuf>,
+    path: Option<PathBuf>,
     cursor: Option<u64>,
+}
+
+impl WatchTarget {
+    fn from_spec(spec: &WatchSpec) -> Self {
+        Self {
+            agent_id: spec.agent_id.clone(),
+            agent_type: spec.agent_type.clone(),
+            description: spec.description.clone(),
+            parent_path: spec.parent_path.clone(),
+            path: spec.path.clone(),
+            cursor: None,
+        }
+    }
+
+    fn resolve(&self) -> Option<PathBuf> {
+        crate::agent::subagents::resolve_transcript(
+            self.parent_path.as_deref(),
+            &self.agent_id,
+            &self.agent_type,
+            self.description.as_deref(),
+        )
+    }
 }
 
 struct WatchState {
@@ -339,18 +373,24 @@ struct WatcherSlot {
     running: Arc<AtomicBool>,
 }
 
+struct PollResult {
+    agent_id: String,
+    path: PathBuf,
+    cursor: u64,
+    entries: Vec<TranscriptEntry>,
+}
+
 #[derive(Default)]
 pub struct TranscriptWatchers {
     sessions: Mutex<std::collections::HashMap<SessionId, WatcherSlot>>,
 }
 
 impl TranscriptWatchers {
-    pub fn sync<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-        session: SessionId,
-        active: Vec<(String, PathBuf)>,
-    ) {
+    pub fn sync<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId, active: Vec<WatchSpec>) {
+        if active.is_empty() {
+            self.stop_session(app, session);
+            return;
+        }
         let state = {
             let mut map = self.sessions.lock().expect("watchers lock");
             if map
@@ -360,13 +400,7 @@ impl TranscriptWatchers {
             {
                 map.remove(&session);
             }
-            if active.is_empty() {
-                let Some(slot) = map.remove(&session) else {
-                    return;
-                };
-                slot.stop.store(true, Ordering::SeqCst);
-                slot.state
-            } else if let Some(slot) = map.get(&session) {
+            if let Some(slot) = map.get(&session) {
                 Arc::clone(&slot.state)
             } else {
                 let slot = spawn_slot(app, session, &active);
@@ -374,24 +408,22 @@ impl TranscriptWatchers {
                 return;
             }
         };
-        if active.is_empty() {
-            let targets = std::mem::take(&mut state.lock().expect("watch state").targets);
-            for target in targets {
-                emit_final(app, session, target);
-            }
-        } else {
-            reconcile(app, session, &state, &active);
-        }
+        reconcile(app, session, &state, &active);
     }
 
-    pub fn stop_session(&self, session: SessionId) {
-        if let Some(slot) = self
+    pub fn stop_session<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId) {
+        let Some(slot) = self
             .sessions
             .lock()
             .expect("watchers lock")
             .remove(&session)
-        {
-            slot.stop.store(true, Ordering::SeqCst);
+        else {
+            return;
+        };
+        slot.stop.store(true, Ordering::SeqCst);
+        let targets = std::mem::take(&mut slot.state.lock().expect("watch state").targets);
+        for target in targets {
+            emit_final(app, session, target);
         }
     }
 
@@ -405,23 +437,19 @@ fn reconcile<R: Runtime>(
     app: &AppHandle<R>,
     session: SessionId,
     state: &Arc<Mutex<WatchState>>,
-    active: &[(String, PathBuf)],
+    active: &[WatchSpec],
 ) {
     let removed = {
         let mut guard = state.lock().expect("watch state");
-        let active_ids: HashSet<&str> = active.iter().map(|(id, _)| id.as_str()).collect();
+        let active_ids: HashSet<&str> = active.iter().map(|spec| spec.agent_id.as_str()).collect();
         let (kept, removed): (Vec<WatchTarget>, Vec<WatchTarget>) =
             std::mem::take(&mut guard.targets)
                 .into_iter()
                 .partition(|target| active_ids.contains(target.agent_id.as_str()));
         guard.targets = kept;
-        for (agent_id, path) in active {
-            if !guard.targets.iter().any(|t| &t.agent_id == agent_id) {
-                guard.targets.push(WatchTarget {
-                    agent_id: agent_id.clone(),
-                    path: path.clone(),
-                    cursor: None,
-                });
+        for spec in active {
+            if !guard.targets.iter().any(|t| t.agent_id == spec.agent_id) {
+                guard.targets.push(WatchTarget::from_spec(spec));
             }
         }
         removed
@@ -434,17 +462,10 @@ fn reconcile<R: Runtime>(
 fn spawn_slot<R: Runtime>(
     app: &AppHandle<R>,
     session: SessionId,
-    active: &[(String, PathBuf)],
+    active: &[WatchSpec],
 ) -> WatcherSlot {
     let state = Arc::new(Mutex::new(WatchState {
-        targets: active
-            .iter()
-            .map(|(agent_id, path)| WatchTarget {
-                agent_id: agent_id.clone(),
-                path: path.clone(),
-                cursor: None,
-            })
-            .collect(),
+        targets: active.iter().map(WatchTarget::from_spec).collect(),
     }));
     let stop = Arc::new(AtomicBool::new(false));
     let running = Arc::new(AtomicBool::new(true));
@@ -480,35 +501,69 @@ fn watch_loop<R: Runtime>(
         if stop.load(Ordering::SeqCst) {
             break;
         }
-        let batch = {
-            let Ok(mut guard) = state.lock() else {
+        let polls: Vec<WatchTarget> = {
+            let Ok(guard) = state.lock() else {
                 break;
             };
             if guard.targets.is_empty() {
                 break;
             }
-            let mut batch: Vec<(String, Vec<TranscriptEntry>, u64)> = Vec::new();
-            for target in guard.targets.iter_mut() {
-                let (entries, next, _complete) =
-                    read_entries(&target.path, target.cursor, TAIL_ENTRIES);
-                target.cursor = Some(next);
-                if !entries.is_empty() {
-                    batch.push((target.agent_id.clone(), entries, next));
-                }
-            }
-            batch
+            guard.targets.clone()
         };
-        for (agent_id, entries, cursor) in batch {
-            emit_transcript(app, session, &agent_id, entries, cursor);
+        let mut results: Vec<PollResult> = Vec::new();
+        for poll in &polls {
+            let Some(path) = poll.path.clone().or_else(|| poll.resolve()) else {
+                continue;
+            };
+            let (entries, next, _complete) = read_entries(&path, poll.cursor, TAIL_ENTRIES);
+            results.push(PollResult {
+                agent_id: poll.agent_id.clone(),
+                path,
+                cursor: next,
+                entries,
+            });
+        }
+        let to_emit: Vec<PollResult> = {
+            let Ok(mut guard) = state.lock() else {
+                break;
+            };
+            results
+                .into_iter()
+                .filter_map(|result| {
+                    let target = guard
+                        .targets
+                        .iter_mut()
+                        .find(|t| t.agent_id == result.agent_id)?;
+                    if target.path.is_none() {
+                        target.path = Some(result.path.clone());
+                    }
+                    target.cursor = Some(result.cursor);
+                    Some(result)
+                })
+                .collect()
+        };
+        for result in to_emit {
+            if !result.entries.is_empty() {
+                emit_transcript(
+                    app,
+                    session,
+                    &result.agent_id,
+                    result.entries,
+                    result.cursor,
+                );
+            }
         }
         std::thread::sleep(POLL_INTERVAL);
     }
 }
 
 fn emit_final<R: Runtime>(app: &AppHandle<R>, session: SessionId, target: WatchTarget) {
+    let Some(path) = target.path.clone().or_else(|| target.resolve()) else {
+        return;
+    };
     let mut cursor = target.cursor;
     loop {
-        let (entries, next, complete) = read_entries(&target.path, cursor, TAIL_ENTRIES);
+        let (entries, next, complete) = read_entries(&path, cursor, TAIL_ENTRIES);
         let progressed = Some(next) != cursor || !entries.is_empty();
         if !entries.is_empty() {
             emit_transcript(app, session, &target.agent_id, entries, next);
@@ -827,9 +882,19 @@ mod tests {
             "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"oi\"}]}}\n",
         );
 
-        watchers.sync(&handle, session, vec![("a1".into(), path)]);
+        watchers.sync(
+            &handle,
+            session,
+            vec![WatchSpec {
+                agent_id: "a1".into(),
+                agent_type: "reviewer".into(),
+                description: None,
+                parent_path: None,
+                path: Some(path),
+            }],
+        );
         assert_eq!(watchers.active_sessions(), 1);
-        watchers.stop_session(session);
+        watchers.stop_session(&handle, session);
         assert_eq!(watchers.active_sessions(), 0);
     }
 }

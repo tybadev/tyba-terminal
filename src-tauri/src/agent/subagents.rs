@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 use crate::approvals::now_ms;
 use crate::session::redact::redact;
 use crate::session::SessionId;
-use crate::status::subagent_transcript::TranscriptWatchers;
+use crate::status::subagent_transcript::{TranscriptWatchers, WatchSpec};
 use crate::status::transcript::clean_summary;
 
 pub type SharedSubagents = Arc<SubagentTracker>;
@@ -36,6 +36,7 @@ pub struct SubagentRun {
     pub ended_at_ms: Option<u64>,
     pub summary: Option<String>,
     pub transcript_path: Option<PathBuf>,
+    pub parent_transcript_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -93,6 +94,7 @@ impl SessionSubagents {
             ended_at_ms: None,
             summary: None,
             transcript_path: None,
+            parent_transcript_path: None,
         });
     }
 
@@ -117,6 +119,7 @@ impl SessionSubagents {
                 run.agent_id = Some(agent_id.clone());
                 run.status = SubagentStatus::Running;
                 run.transcript_path = transcript_path;
+                run.parent_transcript_path = parent_transcript_path.map(Path::to_path_buf);
             }
             None => {
                 let transcript_path =
@@ -130,6 +133,7 @@ impl SessionSubagents {
                     ended_at_ms: None,
                     summary: None,
                     transcript_path,
+                    parent_transcript_path: parent_transcript_path.map(Path::to_path_buf),
                 });
             }
         }
@@ -162,6 +166,7 @@ impl SessionSubagents {
                     ended_at_ms: Some(now),
                     summary,
                     transcript_path: None,
+                    parent_transcript_path: None,
                 });
             }
         }
@@ -195,11 +200,19 @@ impl SessionSubagents {
         }
     }
 
-    fn running_targets(&self) -> Vec<(String, PathBuf)> {
+    fn running_targets(&self) -> Vec<WatchSpec> {
         self.runs
             .iter()
             .filter(|run| run.status == SubagentStatus::Running)
-            .filter_map(|run| Some((run.agent_id.clone()?, run.transcript_path.clone()?)))
+            .filter_map(|run| {
+                Some(WatchSpec {
+                    agent_id: run.agent_id.clone()?,
+                    agent_type: run.agent_type.clone(),
+                    description: (!run.description.is_empty()).then(|| run.description.clone()),
+                    parent_path: run.parent_transcript_path.clone(),
+                    path: run.transcript_path.clone(),
+                })
+            })
             .collect()
     }
 }
@@ -291,23 +304,31 @@ impl SubagentTracker {
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
     }
 
-    pub fn remove_session(&self, session: SessionId) {
-        self.watchers.stop_session(session);
+    pub fn remove_session<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId) {
+        self.watchers.stop_session(app, session);
         self.sessions
             .lock()
             .expect("subagents lock")
             .remove(&session);
     }
 
-    pub fn transcript_path(&self, session: SessionId, agent_id: &str) -> Option<PathBuf> {
-        self.sessions
-            .lock()
-            .expect("subagents lock")
-            .get(&session)?
+    pub fn resolve_transcript_path(&self, session: SessionId, agent_id: &str) -> Option<PathBuf> {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        let run = sessions
+            .get_mut(&session)?
             .runs
-            .iter()
-            .find(|run| run.agent_id.as_deref() == Some(agent_id))
-            .and_then(|run| run.transcript_path.clone())
+            .iter_mut()
+            .find(|run| run.agent_id.as_deref() == Some(agent_id))?;
+        if run.transcript_path.is_none() {
+            let hint = (!run.description.is_empty()).then_some(run.description.as_str());
+            run.transcript_path = resolve_transcript(
+                run.parent_transcript_path.as_deref(),
+                agent_id,
+                &run.agent_type,
+                hint,
+            );
+        }
+        run.transcript_path.clone()
     }
 
     pub fn snapshot(&self, session: SessionId) -> SubagentSnapshot {
@@ -407,7 +428,7 @@ fn transcript_by_meta_scan(
         .map(|m| m.jsonl.clone())
 }
 
-fn resolve_transcript(
+pub(crate) fn resolve_transcript(
     parent_transcript_path: Option<&Path>,
     agent_id: &str,
     agent_type: &str,
@@ -700,7 +721,35 @@ mod tests {
             SubagentStatus::Done
         );
 
-        tracker.remove_session(session);
+        tracker.remove_session(&handle, session);
         assert!(tracker.snapshot(session).subagents.is_empty());
+    }
+
+    #[test]
+    fn transcript_path_is_re_resolved_when_sidecar_appears_late() {
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("session.jsonl");
+        write(&parent, "{}");
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+
+        tracker.on_subagent_started(
+            &handle,
+            session,
+            "a1".into(),
+            "reviewer".into(),
+            Some(&parent),
+        );
+        assert!(tracker.resolve_transcript_path(session, "a1").is_none());
+
+        let sidecar = dir.path().join("session").join("subagents");
+        fs::create_dir_all(&sidecar).unwrap();
+        let jsonl = sidecar.join("agent-a1.jsonl");
+        write(&jsonl, "{}");
+
+        assert_eq!(tracker.resolve_transcript_path(session, "a1"), Some(jsonl));
+        tracker.remove_session(&handle, session);
     }
 }

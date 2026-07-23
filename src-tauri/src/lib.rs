@@ -368,7 +368,7 @@ fn run_setup_if_consented(app: &AppHandle, state: &AppState, session: &Session) 
 
 fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
     state.hook_servers.shutdown(id);
-    state.subagents.remove_session(id);
+    state.subagents.remove_session(app, id);
     for request in state.approvals.expire_session(app, id) {
         agent::session::record_history(
             &state.store,
@@ -3743,7 +3743,7 @@ fn subagent_transcript(
 ) -> Result<SubagentTranscript, String> {
     let path = state
         .subagents
-        .transcript_path(session_id, &agent_id)
+        .resolve_transcript_path(session_id, &agent_id)
         .ok_or("subagente sem transcript disponível")?;
     let (entries, cursor, complete) = status::subagent_transcript::read_entries(
         &path,
