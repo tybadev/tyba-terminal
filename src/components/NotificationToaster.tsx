@@ -291,8 +291,6 @@ export function NotificationToaster({
     track(
       onApprovalRequested((request) => {
         setToasts((prev) => addApprovalToast(prev, request));
-        const timer = setTimeout(() => dismiss(request.id), AUTO_DISMISS_MS);
-        timers.current.set(request.id, timer);
       }),
     );
     track(onApprovalResolved(({ id }) => dismiss(id)));
