@@ -1,0 +1,61 @@
+---
+title: "Subagents"
+sidebarTitle: "Subagents"
+description: "Watch a Claude Code session's subagent tree unfold live."
+---
+
+When Claude Code hands work off to a subagent, its TUI shows a spinner and nothing else — something is running, but not what. TYBA opens that up: the **Agents** panel lists every subagent the moment it starts, and a split shows the transcript of whoever is working, live.
+
+## The Agents panel
+
+It opens on its own the moment the session's **first subagent** starts — as long as the session is in the active workspace. Missed that, or closed it since? The **Agents** button in an agent session's toolbar opens it by hand.
+
+The **orchestrator** — the session itself — sits at the root of the tree. Under it, each subagent shows:
+
+| Field | What it shows |
+| --- | --- |
+| Type | Which subagent it is |
+| Task | What it was asked to do |
+| Status | **Running** (pulsing) or **done** |
+| Duration | How long it has been running — or took |
+| Summary | Only once it's done: what it did |
+
+Clicking a subagent focuses its transcript in the split — reopening the split too, if you had closed it.
+
+## The transcript split
+
+<Steps>
+<Step title="Opens on the first subagent">
+The session pane splits: the terminal on one side, the transcript viewer on the other.
+</Step>
+<Step title="Streams the work live">
+The subagent's own text, every tool it calls — one compact line, with the tool's name and target — and each call's result.
+</Step>
+<Step title="Scroll follows the tail">
+Like `tail -f`: new output pushes the view down. Scroll up to read something that passed, and it stops following — until you're back at the bottom, where auto-scroll picks up again on its own.
+</Step>
+<Step title="The summary gets highlighted on completion">
+When the subagent finishes, what it did shows up highlighted right in the transcript.
+</Step>
+</Steps>
+
+Closing the split — or closing the Agents panel — disarms that automatic behavior **for that session**: TYBA won't reopen anything on its own after that. Getting back is the same path as always: the **Agents** button in the toolbar, then a click on a subagent in the list.
+
+<Note>
+**Firing off a subagent doesn't ask for approval.** What it does afterward is what counts: every command the subagent runs goes through the same approvals inbox as the session, with the same [risk classification](/en/security/risk-classification) — green passes on its own, yellow and red wait for you.
+</Note>
+
+<Note>
+**Subagents exist in Claude Code sessions.** Codex sessions don't spawn subagents — the Agents panel stays empty in them.
+</Note>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Claude Code and Codex" icon="robot" href="/en/agent/claude-code-and-codex">
+    Where an agent session is born.
+  </Card>
+  <Card title="Risk classification" icon="shield" href="/en/security/risk-classification">
+    What lands in each inbox color.
+  </Card>
+</CardGroup>
