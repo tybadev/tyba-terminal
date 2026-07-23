@@ -8,7 +8,7 @@ use crate::session::AgentRunnerKind;
 
 const DESCRIPTION_MAX_CHARS: usize = 500;
 
-const SUBAGENT_SPAWN_RISK_UNTIL_E2E_PROOF: RiskLevel = RiskLevel::Yellow;
+const SUBAGENT_SPAWN_RISK_TOOLS_GATED_BY_PRETOOLUSE: RiskLevel = RiskLevel::Green;
 
 const CLAUDE_WRITE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit"];
 const CLAUDE_READ_ONLY_TOOLS: &[&str] = &[
@@ -65,7 +65,7 @@ impl ToolAction {
             }
             ToolAction::ReadOnly => RiskLevel::Green,
             ToolAction::Network => RiskLevel::Red,
-            ToolAction::Subagent { .. } => SUBAGENT_SPAWN_RISK_UNTIL_E2E_PROOF,
+            ToolAction::Subagent { .. } => SUBAGENT_SPAWN_RISK_TOOLS_GATED_BY_PRETOOLUSE,
             ToolAction::Unknown => RiskLevel::Yellow,
         }
     }
@@ -435,13 +435,13 @@ mod tests {
     }
 
     #[test]
-    fn subagent_spawn_is_yellow_until_e2e_proof() {
+    fn subagent_spawn_is_green_with_tools_gated_by_pretooluse() {
         let root = PathBuf::from("/wt");
         let action = ToolAction::Subagent {
             agent_type: Some("x".into()),
             description: None,
         };
-        assert_eq!(action.classify(&root), RiskLevel::Yellow);
+        assert_eq!(action.classify(&root), RiskLevel::Green);
     }
 
     #[test]
