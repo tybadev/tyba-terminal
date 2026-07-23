@@ -109,6 +109,30 @@ fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
     }
 }
 
+pub(crate) fn coordinate_subagent_viewer(
+    app: &AppHandle,
+    session: SessionId,
+    coordination: agent::subagents::Coordination,
+) {
+    let state = app.state::<AppState>();
+    let mut changed = false;
+    if !coordination.viewer_disarmed {
+        changed |= state.layout.ensure_agent_viewer(session);
+    }
+    if !coordination.panel_disarmed
+        && session_side_view(&state, session).is_none()
+        && state
+            .layout
+            .open_workspace_side_view(session, &layout::agents_view(session))
+            .is_ok()
+    {
+        changed = true;
+    }
+    if changed {
+        emit_layout(app, &state);
+    }
+}
+
 fn gc_host(state: &State<'_, AppState>, alias: &str) {
     let Ok(install) = crate::ssh::tmux::install_id(&state.store) else {
         return;
@@ -1767,6 +1791,13 @@ fn close_side_view(
         .layout
         .close_side_view(workspace_id)
         .map_err(|e| e.to_string())?;
+    if let Some(session) = previous
+        .as_deref()
+        .and_then(|v| v.strip_prefix(layout::VIEW_AGENTS_PREFIX))
+        .and_then(|s| s.parse::<SessionId>().ok())
+    {
+        state.subagents.disarm_panel(session);
+    }
     close_orphaned_files_panel(&state, previous, None);
     emit_layout(&app, &state);
     Ok(())
@@ -3156,11 +3187,15 @@ fn close_pane(
     state: State<'_, AppState>,
     pane_id: layout::PaneId,
 ) -> Result<(), String> {
+    let viewer_session = state.layout.agent_viewer_session(pane_id);
     let unbound = state
         .layout
         .close_pane(pane_id)
         .map_err(|e| e.to_string())?;
-    dispose_shells(&state, &unbound);
+    match viewer_session {
+        Some(session) => state.subagents.disarm_viewer(session),
+        None => dispose_shells(&state, &unbound),
+    }
     emit_layout(&app, &state);
     Ok(())
 }
@@ -3727,6 +3762,36 @@ fn focus_subagent(
     state.subagents.snapshot(session_id)
 }
 
+#[tauri::command]
+fn open_agents_panel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), String> {
+    let previous = session_side_view(&state, id);
+    state
+        .layout
+        .open_workspace_side_view(id, &layout::agents_view(id))
+        .map_err(|e| e.to_string())?;
+    close_orphaned_files_panel(&state, previous, None);
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn open_subagent_viewer(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+) -> Result<(), String> {
+    state
+        .layout
+        .open_agent_viewer(session_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
 #[derive(serde::Serialize)]
 struct AgentConfigInfo {
     hash: String,
@@ -4093,6 +4158,8 @@ pub fn run() {
             resolve_approval,
             list_subagents,
             focus_subagent,
+            open_agents_panel,
+            open_subagent_viewer,
             agent_repo_config,
             set_agent_config_consent,
             list_themes,

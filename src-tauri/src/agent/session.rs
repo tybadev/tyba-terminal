@@ -339,13 +339,16 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     .get("transcript_path")
                     .and_then(|p| p.as_str())
                     .map(PathBuf::from);
-                ctx.subagents.on_subagent_started(
+                let coordination = ctx.subagents.on_subagent_started(
                     &ctx.app,
                     ctx.session_id,
                     agent_id,
                     agent_type,
                     parent.as_deref(),
                 );
+                if let Some(coordination) = coordination {
+                    crate::coordinate_subagent_viewer(&ctx.app, ctx.session_id, coordination);
+                }
             }
         }
         Some(AgentSignal::SubagentEnded) => {
