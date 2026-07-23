@@ -338,12 +338,9 @@ impl SubagentTracker {
                 parent_transcript_path,
                 now_ms(),
             );
-            let coordination = (!entry.coordinated).then(|| {
-                entry.coordinated = true;
-                Coordination {
-                    viewer_disarmed: entry.viewer_disarmed,
-                    panel_disarmed: entry.panel_disarmed,
-                }
+            let coordination = (!entry.coordinated).then_some(Coordination {
+                viewer_disarmed: entry.viewer_disarmed,
+                panel_disarmed: entry.panel_disarmed,
             });
             (
                 changed_payload(session, entry),
@@ -354,6 +351,11 @@ impl SubagentTracker {
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
         self.watchers.sync(app, session, targets);
         coordination
+    }
+
+    pub fn mark_coordinated(&self, session: SessionId) {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        sessions.entry(session).or_default().coordinated = true;
     }
 
     pub fn disarm_viewer(&self, session: SessionId) {
@@ -918,6 +920,43 @@ mod tests {
         assert_eq!(snapshot.subagents[0].status, SubagentStatus::Done);
         assert_eq!(snapshot.subagents[0].agent_id.as_deref(), Some("abc"));
         assert_eq!(snapshot.subagents[0].summary.as_deref(), Some("pronto"));
+    }
+
+    #[test]
+    fn coordination_retries_until_marked() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+
+        let first =
+            tracker.on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None);
+        assert!(first.is_some());
+
+        let retry =
+            tracker.on_subagent_started(&handle, session, "a2".into(), "reviewer".into(), None);
+        assert!(retry.is_some());
+
+        tracker.mark_coordinated(session);
+
+        let after =
+            tracker.on_subagent_started(&handle, session, "a3".into(), "reviewer".into(), None);
+        assert!(after.is_none());
+    }
+
+    #[test]
+    fn coordination_carries_disarm_flags() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+
+        tracker.disarm_viewer(session);
+        let coordination = tracker
+            .on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None)
+            .unwrap();
+        assert!(coordination.viewer_disarmed);
+        assert!(!coordination.panel_disarmed);
     }
 
     #[test]

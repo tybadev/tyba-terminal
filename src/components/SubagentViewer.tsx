@@ -10,6 +10,8 @@ import type {
 } from "@/lib/ipc";
 import { onSubagentTranscript, subagentTranscript } from "@/lib/ipc";
 
+const MAX_ENTRIES = 1000;
+
 interface RectStyle {
   left: number;
   top: number;
@@ -115,7 +117,9 @@ export function SubagentViewer({
 
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [trimmed, setTrimmed] = useState(false);
   const cursorRef = useRef(0);
+  const receivedRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
 
@@ -134,13 +138,22 @@ export function SubagentViewer({
     let cancelled = false;
     setLoading(true);
     setEntries([]);
+    setTrimmed(false);
     cursorRef.current = 0;
+    receivedRef.current = 0;
     stickRef.current = true;
     void subagentTranscript(sessionId, focusedId, null)
       .then((res) => {
         if (cancelled) return;
+        if (res.cursor < cursorRef.current) return;
         cursorRef.current = res.cursor;
-        setEntries(res.entries);
+        receivedRef.current = res.entries.length;
+        setTrimmed(res.entries.length > MAX_ENTRIES);
+        setEntries(
+          res.entries.length > MAX_ENTRIES
+            ? res.entries.slice(res.entries.length - MAX_ENTRIES)
+            : res.entries,
+        );
       })
       .catch(() => {})
       .finally(() => {
@@ -159,7 +172,14 @@ export function SubagentViewer({
       if (p.session_id !== sessionId || p.agent_id !== focusedId) return;
       if (p.cursor <= cursorRef.current) return;
       cursorRef.current = p.cursor;
-      setEntries((prev) => [...prev, ...p.entries]);
+      receivedRef.current += p.entries.length;
+      if (receivedRef.current > MAX_ENTRIES) setTrimmed(true);
+      setEntries((prev) => {
+        const merged = [...prev, ...p.entries];
+        return merged.length > MAX_ENTRIES
+          ? merged.slice(merged.length - MAX_ENTRIES)
+          : merged;
+      });
     }).then((un) => {
       if (cancelled) un();
       else unlisten = un;
@@ -268,9 +288,14 @@ export function SubagentViewer({
                   {t("subagentsViewerNoTranscript")}
                 </p>
               )}
+              {trimmed && (
+                <p className="pb-1.5 text-center text-[10px] text-tyba-text-faint">
+                  {t("subagentsViewerTrimmed")}
+                </p>
+              )}
               <div className="flex flex-col gap-1.5">
                 {entries.map((entry) => (
-                  <EntryRow key={entry.seq} entry={entry} />
+                  <EntryRow key={`${focusedId}-${entry.seq}`} entry={entry} />
                 ))}
               </div>
             </>

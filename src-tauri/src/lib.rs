@@ -119,16 +119,11 @@ pub(crate) fn coordinate_subagent_viewer(
     if !coordination.viewer_disarmed {
         changed |= state.layout.ensure_agent_viewer(session);
     }
-    if !coordination.panel_disarmed
-        && session_side_view(&state, session).is_none()
-        && state
-            .layout
-            .open_workspace_side_view(session, &layout::agents_view(session))
-            .is_ok()
-    {
-        changed = true;
+    if !coordination.panel_disarmed {
+        changed |= state.layout.ensure_agents_panel(session);
     }
     if changed {
+        state.subagents.mark_coordinated(session);
         emit_layout(app, &state);
     }
 }

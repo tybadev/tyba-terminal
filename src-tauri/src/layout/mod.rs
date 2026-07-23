@@ -1162,18 +1162,40 @@ impl LayoutManager {
         if has_agent_viewer(&inner.workspaces, session) {
             return false;
         }
-        let Some((wi, ti, leaf)) = find_session_leaf_in_active_tab(&inner.workspaces, session)
+        let Some(active_ws) = inner.active else {
+            return false;
+        };
+        let Some((wi, ti, leaf)) =
+            find_session_leaf_in_active_tab_of(&inner.workspaces, active_ws, session)
         else {
             return false;
         };
-        let ws_id = inner.workspaces[wi].id;
         let Some(root) = inner.workspaces[wi].tabs[ti].root.as_mut() else {
             return false;
         };
         if split_leaf_with_viewer(root, leaf, session, AGENT_VIEWER_RATIO).is_none() {
             return false;
         }
-        inner.active = Some(ws_id);
+        drop(inner);
+        let _ = self.persist();
+        true
+    }
+
+    pub fn ensure_agents_panel(&self, session: SessionId) -> bool {
+        let mut inner = self.inner.write();
+        let Some(active_ws) = inner.active else {
+            return false;
+        };
+        let Ok(idx) = ws_index(&inner.workspaces, active_ws) else {
+            return false;
+        };
+        if !session_in_workspace(&inner.workspaces[idx], session) {
+            return false;
+        }
+        if inner.workspaces[idx].side_view.is_some() {
+            return false;
+        }
+        inner.workspaces[idx].side_view = Some(agents_view(session));
         drop(inner);
         let _ = self.persist();
         true
@@ -1294,26 +1316,32 @@ fn has_agent_viewer(workspaces: &[Workspace], session: SessionId) -> bool {
     })
 }
 
-fn find_session_leaf_in_active_tab(
+fn find_session_leaf_in_active_tab_of(
     workspaces: &[Workspace],
+    workspace: WorkspaceId,
     session: SessionId,
 ) -> Option<(usize, usize, PaneId)> {
-    for (wi, ws) in workspaces.iter().enumerate() {
-        let Some(active_tab) = ws.active_tab else {
-            continue;
-        };
-        let Some((ti, tab)) = ws.tabs.iter().enumerate().find(|(_, t)| t.id == active_tab) else {
-            continue;
-        };
-        if let Some(pane) = tab
-            .root
+    let wi = workspaces.iter().position(|w| w.id == workspace)?;
+    let ws = &workspaces[wi];
+    let active_tab = ws.active_tab?;
+    let (ti, tab) = ws
+        .tabs
+        .iter()
+        .enumerate()
+        .find(|(_, t)| t.id == active_tab)?;
+    let pane = tab
+        .root
+        .as_ref()
+        .and_then(|r| r.find_leaf_by_session(session))?;
+    Some((wi, ti, pane))
+}
+
+fn session_in_workspace(ws: &Workspace, session: SessionId) -> bool {
+    ws.tabs.iter().any(|t| {
+        t.root
             .as_ref()
-            .and_then(|r| r.find_leaf_by_session(session))
-        {
-            return Some((wi, ti, pane));
-        }
-    }
-    None
+            .is_some_and(|r| r.find_leaf_by_session(session).is_some())
+    })
 }
 
 fn split_leaf_with_viewer(
@@ -2411,6 +2439,51 @@ mod tests {
                 assert_eq!(count_agent_viewers(root), 0);
             }
         }
+    }
+
+    #[test]
+    fn coordination_skips_session_in_inactive_workspace() {
+        let mgr = manager();
+        let background = sid();
+        let foreground = sid();
+        mgr.create_workspace("bg", None, background).unwrap();
+        let bg_ws = mgr.state().active_workspace.unwrap();
+        mgr.create_workspace("fg", None, foreground).unwrap();
+        let fg_ws = mgr.state().active_workspace.unwrap();
+
+        assert!(!mgr.ensure_agent_viewer(background));
+        assert!(!mgr.ensure_agents_panel(background));
+
+        let state = mgr.state();
+        assert_eq!(state.active_workspace, Some(fg_ws));
+        assert!(!has_agent_viewer(&state.workspaces, background));
+        let bg = state.workspaces.iter().find(|w| w.id == bg_ws).unwrap();
+        assert!(bg.side_view.is_none());
+    }
+
+    #[test]
+    fn ensure_agents_panel_opens_only_in_active_workspace() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+
+        assert!(mgr.ensure_agents_panel(s));
+        assert_eq!(
+            mgr.state().workspaces[0].side_view.as_deref(),
+            Some(agents_view(s).as_str())
+        );
+        assert!(!mgr.ensure_agents_panel(s));
+    }
+
+    #[test]
+    fn ensure_agent_viewer_does_not_change_active_workspace() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let active_before = mgr.state().active_workspace;
+
+        assert!(mgr.ensure_agent_viewer(s));
+        assert_eq!(mgr.state().active_workspace, active_before);
     }
 
     #[test]
