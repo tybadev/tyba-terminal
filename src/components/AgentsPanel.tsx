@@ -147,7 +147,7 @@ export function AgentsPanel({
                       </span>
                     </div>
                     {run.status === "done" && run.summary && (
-                      <p className="mt-1 line-clamp-2 border-l border-tyba-border pl-2 text-[11px] leading-snug text-tyba-text-muted">
+                      <p className="mt-0.5 truncate text-[11px] leading-snug text-tyba-text-faint">
                         {run.summary}
                       </p>
                     )}
