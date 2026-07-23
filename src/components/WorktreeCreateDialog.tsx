@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { GitBranch, Robot, ShieldCheck } from "@phosphor-icons/react";
+import { GitBranch, ShieldCheck } from "@phosphor-icons/react";
+
+import { AgentIcon } from "./icons/AgentIcon";
 
 import {
   Dialog,
@@ -176,7 +178,7 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
 
         <label className="flex items-center justify-between gap-3 rounded-[6px] border border-tyba-border p-3 text-[12px] text-tyba-text">
           <span className="flex items-center gap-2">
-            <Robot size={15} className="text-tyba-amber" />
+            <AgentIcon size={15} className="text-tyba-amber" />
             {t("worktreeAgentMode")}
           </span>
           <Switch checked={agentMode} onCheckedChange={setAgentMode} />
