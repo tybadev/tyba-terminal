@@ -660,6 +660,63 @@ fn tyba_hook_crosses_the_sandbox_and_gets_a_real_decision() {
     );
 }
 
+#[test]
+fn own_keychain_item_is_readable_but_writes_are_denied() {
+    require_seatbelt!();
+    let svc = format!("tyba-sandbox-selftest-{}", std::process::id());
+    let added = format!("tyba-sandbox-added-{}", std::process::id());
+    let created = Command::new("/usr/bin/security")
+        .args([
+            "add-generic-password",
+            "-a",
+            "tyba",
+            "-s",
+            &svc,
+            "-w",
+            "disposable",
+            "-U",
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !created {
+        eprintln!("pulando: keychain de login indisponível/bloqueado pra criar item disposable");
+        return;
+    }
+
+    let mut f = fixture();
+    f.spec.home = PathBuf::from(std::env::var("HOME").unwrap());
+    f.spec.allow_network = true;
+
+    let read = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!("security find-generic-password -s '{svc}' -w > /dev/null"),
+    );
+    let add = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!("security add-generic-password -a x -s '{added}' -w dummy > /dev/null 2>&1"),
+    );
+
+    let _ = Command::new("/usr/bin/security")
+        .args(["delete-generic-password", "-s", &svc])
+        .output();
+    let _ = Command::new("/usr/bin/security")
+        .args(["delete-generic-password", "-s", &added])
+        .output();
+
+    assert!(
+        read.status.success(),
+        "o agente precisa ler a própria credencial do keychain: {}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    assert!(
+        !add.status.success(),
+        "o agente não pode gravar/injetar itens no keychain"
+    );
+}
+
 fn real_agent_boots_under_production_policy(runner: &dyn AgentRunner, binary: &str) {
     if crate::agent::resolved_binary(&runner.kind()).is_none() {
         eprintln!("pulando: binário `{binary}` não está no PATH do shell");

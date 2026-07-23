@@ -294,6 +294,15 @@ pub fn build_policy(spec: &SandboxSpec) -> String {
     let immutable = render_rules(&immutable_denies(spec));
     lines.push(format!("(deny file-write* {immutable})"));
 
+    if spec.allow_network {
+        lines.push(format!(
+            "(allow file-read* {})",
+            render_rule(&Rule::Prefix(
+                spec.home.join("Library/Keychains/login.keychain-db")
+            ))
+        ));
+    }
+
     if !spec.data_dir_reads.is_empty() {
         let lsp_root = spec.tyba_data_dir.join("lsp");
         let carved: Vec<Rule> = spec
@@ -537,7 +546,7 @@ mod tests {
             .unwrap();
         let last_allow = lines
             .iter()
-            .rposition(|l| l.starts_with("(allow file-read*"))
+            .rposition(|l| l.starts_with("(allow file-read*") && !l.contains("login\\.keychain-db"))
             .unwrap();
         assert!(
             secret_deny > last_allow,
@@ -586,6 +595,37 @@ mod tests {
         assert!(
             !line.contains(r#"(subpath "/private/repo/.git/refs/heads")"#),
             "negar refs/heads inteiro tira o commit de qualquer branch — o agente pararia de funcionar"
+        );
+    }
+
+    #[test]
+    fn keychain_login_db_readable_only_with_network_and_never_writable() {
+        let policy = build_policy(&spec());
+        let lines: Vec<&str> = policy.lines().collect();
+        let secret_deny = lines
+            .iter()
+            .position(|l| l.starts_with("(deny file-read* file-write*"))
+            .unwrap();
+        let kc_read = lines
+            .iter()
+            .position(|l| l.starts_with("(allow file-read*") && l.contains("login\\.keychain-db"))
+            .expect("faltou o allow de leitura do login.keychain-db");
+        assert!(
+            kc_read > secret_deny,
+            "o allow do keychain precisa vencer o deny de segredo pra reabrir só a leitura"
+        );
+        assert!(lines[secret_deny].contains(r#"(subpath "/Users/nobody/Library/Keychains")"#));
+        for line in lines.iter().filter(|l| l.starts_with("(allow file-write*")) {
+            assert!(!line.contains("Keychains"), "keychain gravável: {line}");
+        }
+
+        let mut offline = spec();
+        offline.allow_network = false;
+        assert!(
+            !build_policy(&offline)
+                .lines()
+                .any(|l| l.contains("login\\.keychain-db")),
+            "sem rede não há SecurityServer; não abrir o arquivo do keychain"
         );
     }
 
