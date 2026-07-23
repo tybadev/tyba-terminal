@@ -103,6 +103,23 @@ pub fn is_refused_by_core(command: &str) -> bool {
     })
 }
 
+/// Binários triviais sem efeito colateral: só leem ou esperam e não têm modo
+/// de escrita/rede alcançável por argumento. Verde apenas quando é exatamente
+/// o binário — qualquer operador de shell tira do fast-path (ver
+/// `has_shell_operator`). `date`/`hostname` ficam de fora: têm modo de escrita
+/// (`date -s`, `hostname NAME`), então não são comprovadamente sem efeito.
+const TRIVIAL_COMMANDS: &[&str] = &["sleep", "echo", "true", "false", "whoami", "uname", "id"];
+
+/// Metacaracteres que habilitam encadeamento, redirecionamento ou substituição.
+/// Presença de qualquer um desqualifica o comando do fast-path verde: fail-closed.
+const SHELL_METACHARACTERS: &[char] = &[
+    ';', '&', '|', '<', '>', '`', '$', '(', ')', '{', '}', '\\', '\n', '\r',
+];
+
+fn has_shell_operator(command: &str) -> bool {
+    command.chars().any(|c| SHELL_METACHARACTERS.contains(&c))
+}
+
 /// Classificação por padrões. Conservadora: na dúvida, amarelo.
 pub fn classify_risk(command: &str) -> RiskLevel {
     let cmd = command.trim();
@@ -165,6 +182,10 @@ pub fn classify_risk(command: &str) -> RiskLevel {
             Some("status") | Some("log") | Some("diff") | Some("show")
         )
     {
+        return RiskLevel::Green;
+    }
+    // triviais só quando é exatamente o binário: operador de shell cai no default
+    if TRIVIAL_COMMANDS.contains(&first) && !has_shell_operator(cmd) {
         return RiskLevel::Green;
     }
 
@@ -386,6 +407,39 @@ mod tests {
         assert_eq!(classify_risk("git commit -m 'x'"), RiskLevel::Yellow);
         assert_eq!(classify_risk("cargo build"), RiskLevel::Yellow);
         assert_eq!(classify_risk(""), RiskLevel::Yellow);
+    }
+
+    #[test]
+    fn verde_comandos_triviais_sozinhos() {
+        assert_eq!(classify_risk("sleep 15"), RiskLevel::Green);
+        assert_eq!(classify_risk("echo hello world"), RiskLevel::Green);
+        assert_eq!(classify_risk("pwd"), RiskLevel::Green);
+        assert_eq!(classify_risk("true"), RiskLevel::Green);
+        assert_eq!(classify_risk("false"), RiskLevel::Green);
+        assert_eq!(classify_risk("whoami"), RiskLevel::Green);
+        assert_eq!(classify_risk("uname -a"), RiskLevel::Green);
+        assert_eq!(classify_risk("id -u"), RiskLevel::Green);
+    }
+
+    #[test]
+    fn trivial_com_operador_de_shell_nao_e_verde() {
+        assert_ne!(classify_risk("sleep 15; rm x"), RiskLevel::Green);
+        assert_ne!(classify_risk("sleep 1 && rm x"), RiskLevel::Green);
+        assert_ne!(classify_risk("echo x > file"), RiskLevel::Green);
+        assert_ne!(classify_risk("echo x | grep y"), RiskLevel::Green);
+        assert_ne!(classify_risk("echo $(whoami)"), RiskLevel::Green);
+        assert_ne!(classify_risk("echo `id`"), RiskLevel::Green);
+        assert_ne!(classify_risk("echo a > b < c"), RiskLevel::Green);
+    }
+
+    #[test]
+    fn comando_com_efeito_ou_desconhecido_nao_e_trivial() {
+        assert_eq!(classify_risk("date -s 2020-01-01"), RiskLevel::Yellow);
+        assert_eq!(classify_risk("hostname new-name"), RiskLevel::Yellow);
+        assert_eq!(
+            classify_risk("some-random-binary --flag"),
+            RiskLevel::Yellow
+        );
     }
 
     #[test]

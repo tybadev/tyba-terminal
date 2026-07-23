@@ -20,6 +20,11 @@ const CLAUDE_READ_ONLY_TOOLS: &[&str] = &[
     "TodoRead",
     "TodoWrite",
     "AskUserQuestion",
+    // Claude Code 2.1.x: leitura/consulta pura, sem fs/rede/exec.
+    // BashOutput só lê o buffer de um shell em background; ToolSearch só
+    // consulta schemas de tools. KillShell/KillBash matam processo — ficam de fora.
+    "ToolSearch",
+    "BashOutput",
 ];
 const CLAUDE_NETWORK_TOOLS: &[&str] = &["WebFetch", "WebSearch"];
 const CLAUDE_SUBAGENT_TOOLS: &[&str] = &["Agent", "Task"];
@@ -344,6 +349,18 @@ mod tests {
         for tool in CLAUDE_READ_ONLY_TOOLS {
             assert_eq!(claude(tool, None).action, ToolAction::ReadOnly);
         }
+    }
+
+    #[test]
+    fn tool_search_and_bash_output_are_read_only() {
+        assert_eq!(claude("ToolSearch", None).action, ToolAction::ReadOnly);
+        assert_eq!(claude("BashOutput", None).action, ToolAction::ReadOnly);
+    }
+
+    #[test]
+    fn kill_shell_is_not_read_only() {
+        assert_eq!(claude("KillShell", None).action, ToolAction::Unknown);
+        assert_eq!(claude("KillBash", None).action, ToolAction::Unknown);
     }
 
     #[test]
