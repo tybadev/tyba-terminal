@@ -10,7 +10,10 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Runtime};
 
-use crate::agent::subagents::{finish_by_file, SharedCoordinator, SharedSessions};
+use crate::agent::subagents::{
+    finish_by_file, finish_by_file_interrupted, session_orchestrator_idle, SharedCoordinator,
+    SharedSessions,
+};
 use crate::approvals::now_ms;
 use crate::session::redact::redact;
 use crate::session::SessionId;
@@ -30,6 +33,12 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const STABLE_CYCLES: u32 = 2;
 const FINISH_SUMMARY_MAX: usize = 280;
 const FINAL_TAIL_BYTES: u64 = 256 * 1024;
+
+/// Salvaguarda para subagente parado/morto pelo Claude sem `SubagentStop` nem
+/// resposta final: transcript congelado por ~120s (240 ciclos de 500ms) com o
+/// orquestrador ocioso ⇒ `Done` interrompido. Longo de propósito — tool demorado
+/// congela o arquivo por minutos; o gate de ocioso cobre o subagente síncrono.
+const DEAD_SUBAGENT_STALL_CYCLES: u32 = 240;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -589,6 +598,23 @@ fn spawn_slot<R: Runtime>(
 struct Completion {
     agent_id: String,
     summary: Option<String>,
+    interrupted: bool,
+}
+
+fn advance_stable_cycles(
+    prev: u32,
+    last_len: Option<u64>,
+    file_len: Option<u64>,
+) -> (u32, Option<u64>) {
+    if file_len.is_some() && file_len == last_len {
+        (prev.saturating_add(1), last_len)
+    } else {
+        (0, file_len)
+    }
+}
+
+fn stall_is_dead(stable_cycles: u32, orchestrator_idle: bool) -> bool {
+    orchestrator_idle && stable_cycles >= DEAD_SUBAGENT_STALL_CYCLES
 }
 
 fn watch_loop<R: Runtime>(
@@ -632,6 +658,7 @@ fn watch_loop<R: Runtime>(
                 file_len,
             });
         }
+        let orchestrator_idle = session_orchestrator_idle(sessions, session);
         let (to_emit, completions) = {
             let Ok(mut guard) = state.lock() else {
                 break;
@@ -650,18 +677,24 @@ fn watch_loop<R: Runtime>(
                     target.path = Some(result.path.clone());
                 }
                 target.cursor = Some(result.cursor);
-                if result.file_len.is_some() && result.file_len == target.last_len {
-                    target.stable_cycles = target.stable_cycles.saturating_add(1);
-                } else {
-                    target.last_len = result.file_len;
-                    target.stable_cycles = 0;
-                }
+                let (cycles, last_len) =
+                    advance_stable_cycles(target.stable_cycles, target.last_len, result.file_len);
+                target.stable_cycles = cycles;
+                target.last_len = last_len;
                 if !target.finished && target.stable_cycles >= STABLE_CYCLES {
                     if let Some(summary) = final_assistant_summary(&result.path) {
                         target.finished = true;
                         done.push(Completion {
                             agent_id: target.agent_id.clone(),
                             summary: Some(summary),
+                            interrupted: false,
+                        });
+                    } else if stall_is_dead(target.stable_cycles, orchestrator_idle) {
+                        target.finished = true;
+                        done.push(Completion {
+                            agent_id: target.agent_id.clone(),
+                            summary: None,
+                            interrupted: true,
                         });
                     }
                 }
@@ -703,13 +736,18 @@ fn finish_target<R: Runtime>(
     coordinator: &SharedCoordinator,
     completion: Completion,
 ) {
-    let Some((snapshot, idle)) = finish_by_file(
-        sessions,
-        session,
-        &completion.agent_id,
-        completion.summary,
-        now_ms(),
-    ) else {
+    let outcome = if completion.interrupted {
+        finish_by_file_interrupted(sessions, session, &completion.agent_id, now_ms())
+    } else {
+        finish_by_file(
+            sessions,
+            session,
+            &completion.agent_id,
+            completion.summary,
+            now_ms(),
+        )
+    };
+    let Some((snapshot, idle)) = outcome else {
         return;
     };
     crate::agent::subagents::emit_snapshot(app, session, snapshot);
@@ -1034,6 +1072,52 @@ mod tests {
         assert!(entries.is_empty());
         assert_eq!(cursor, 42);
         assert!(complete);
+    }
+
+    #[test]
+    fn stable_cycles_increment_only_while_len_is_frozen() {
+        let (cycles, last) = advance_stable_cycles(0, None, Some(100));
+        assert_eq!((cycles, last), (0, Some(100)));
+        let (cycles, last) = advance_stable_cycles(cycles, last, Some(100));
+        assert_eq!((cycles, last), (1, Some(100)));
+        let (cycles, last) = advance_stable_cycles(cycles, last, Some(100));
+        assert_eq!((cycles, last), (2, Some(100)));
+    }
+
+    #[test]
+    fn stable_cycles_reset_when_file_grows_again() {
+        let (cycles, last) = advance_stable_cycles(200, Some(100), Some(100));
+        assert_eq!(cycles, 201);
+        let (cycles, last) = advance_stable_cycles(cycles, last, Some(180));
+        assert_eq!((cycles, last), (0, Some(180)));
+    }
+
+    #[test]
+    fn stable_cycles_reset_when_file_missing() {
+        let (cycles, last) = advance_stable_cycles(50, Some(100), None);
+        assert_eq!((cycles, last), (0, None));
+    }
+
+    #[test]
+    fn stall_is_dead_needs_long_freeze_and_idle_orchestrator() {
+        assert!(stall_is_dead(DEAD_SUBAGENT_STALL_CYCLES, true));
+        assert!(stall_is_dead(DEAD_SUBAGENT_STALL_CYCLES + 5, true));
+        assert!(!stall_is_dead(DEAD_SUBAGENT_STALL_CYCLES - 1, true));
+        assert!(!stall_is_dead(DEAD_SUBAGENT_STALL_CYCLES, false));
+        assert!(!stall_is_dead(STABLE_CYCLES, true));
+    }
+
+    #[test]
+    fn brief_pause_then_resume_never_reaches_dead_threshold() {
+        let mut cycles = 0u32;
+        let mut last = None;
+        for _ in 0..10 {
+            (cycles, last) = advance_stable_cycles(cycles, last, Some(100));
+        }
+        assert!(!stall_is_dead(cycles, true));
+        let (resumed, _) = advance_stable_cycles(cycles, last, Some(220));
+        assert_eq!(resumed, 0);
+        assert!(!stall_is_dead(resumed, true));
     }
 
     #[test]
