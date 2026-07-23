@@ -4,7 +4,6 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
@@ -37,6 +36,10 @@ import {
   registerTerm,
   unregisterTerm,
 } from "../lib/termRegistry";
+import {
+  createTerminalLinkProvider,
+  hasOpenModifier,
+} from "../lib/terminalLinks";
 import { IS_MAC } from "../lib/platform";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
@@ -159,12 +162,27 @@ export function TerminalView({
   const showExitBannerRef = useRef<(() => void) | null>(null);
   const reattachesRef = useRef(false);
   reattachesRef.current = Boolean(reattaches);
+  const hoveredLinkRef = useRef<string | null>(null);
   const [menuHasSelection, setMenuHasSelection] = useState(false);
   const [menuMouseMode, setMenuMouseMode] = useState(false);
+  const [menuLink, setMenuLink] = useState<string | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+
+    const revealLink = (uri: string) => {
+      hoveredLinkRef.current = uri;
+      el.title = uri;
+    };
+    const clearLink = () => {
+      hoveredLinkRef.current = null;
+      if (el.title) el.removeAttribute("title");
+    };
+    const activateLink = (event: MouseEvent, uri: string) => {
+      if (!hasOpenModifier(event, IS_MAC)) return;
+      void openExternalUrl(uri);
+    };
 
     const theme = getTerminalTheme();
     const term = new Terminal({
@@ -181,9 +199,10 @@ export function TerminalView({
       macOptionIsMeta: false,
       ...(IS_WINDOWS ? { windowsPty: WINDOWS_PTY } : {}),
       linkHandler: {
-        activate: (_event, uri) => {
-          void openExternalUrl(uri);
-        },
+        activate: (event, uri) => activateLink(event, uri),
+        hover: (_event, uri) => revealLink(uri),
+        leave: () => clearLink(),
+        allowNonHttpProtocols: false,
       },
     });
     const fit = new FitAddon();
@@ -196,10 +215,13 @@ export function TerminalView({
     const search = new SearchAddon();
     term.loadAddon(search);
 
-    const webLinks = new WebLinksAddon((_event, uri) => {
-      void openExternalUrl(uri);
-    });
-    term.loadAddon(webLinks);
+    const linkProvider = term.registerLinkProvider(
+      createTerminalLinkProvider(term, {
+        activate: activateLink,
+        hover: (_event, uri) => revealLink(uri),
+        leave: () => clearLink(),
+      }),
+    );
 
     let disposed = false;
     let opened = false;
@@ -347,6 +369,7 @@ export function TerminalView({
       el.removeEventListener("mousedown", onMouseDown);
       el.removeEventListener("paste", onNativePaste, true);
       offTheme();
+      linkProvider.dispose();
       dataSub.dispose();
       unlisteners.forEach((un) => un());
       unregisterTerm(sessionId);
@@ -503,6 +526,7 @@ export function TerminalView({
         setMenuMouseMode(
           (term?.modes.mouseTrackingMode ?? "none") !== "none",
         );
+        setMenuLink(hoveredLinkRef.current);
       }}
     >
       <ContextMenuTrigger asChild disabled={!visible}>
@@ -524,6 +548,18 @@ export function TerminalView({
         />
       </ContextMenuTrigger>
       <ContextMenuContent>
+        {menuLink && (
+          <>
+            <ContextMenuItem
+              onSelect={() =>
+                void writeClipboardText(menuLink).catch(() => {})
+              }
+            >
+              {i18n.t("copyLink")}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        )}
         {menuMouseMode && !menuHasSelection ? (
           <ContextMenuItem disabled>
             {i18n.t(IS_MAC ? "selectionHintMac" : "selectionHintOther")}

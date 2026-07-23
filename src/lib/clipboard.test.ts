@@ -15,6 +15,15 @@ describe("isSafeExternalUrl", () => {
     expect(isSafeExternalUrl("https://example.com/path?x=1")).toBe(true);
   });
 
+  test("accepts mailto with an address", () => {
+    expect(isSafeExternalUrl("mailto:dev@example.com")).toBe(true);
+    expect(isSafeExternalUrl("mailto:dev@example.com?subject=hi")).toBe(true);
+  });
+
+  test("rejects mailto without an address", () => {
+    expect(isSafeExternalUrl("mailto:")).toBe(false);
+  });
+
   test("rejects file protocol", () => {
     expect(isSafeExternalUrl("file:///etc/passwd")).toBe(false);
   });

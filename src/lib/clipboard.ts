@@ -45,12 +45,13 @@ export function flattenPaste(text: string): string {
     .replace(UNSAFE_CONTROL_GLOBAL, "");
 }
 
-const SAFE_URL_PROTOCOLS = new Set(["http:", "https:"]);
+const SAFE_URL_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
 export function isSafeExternalUrl(raw: string): boolean {
   try {
     const url = new URL(raw);
     if (!SAFE_URL_PROTOCOLS.has(url.protocol)) return false;
+    if (url.protocol === "mailto:") return url.pathname.length > 0;
     if (url.hostname.length === 0) return false;
     if (url.username.length > 0 || url.password.length > 0) return false;
     return true;
