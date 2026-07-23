@@ -601,6 +601,22 @@ fn claude_agent_dirs_follow_the_granular_rules() {
         std::fs::read_to_string(claude.join("settings.json")).unwrap(),
         "{}"
     );
+
+    let session_env = claude.join("session-env/00000000-fake-uuid");
+    let hook_env = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!(
+            "mkdir -p {d} && echo 'export X=1' > {d}/env.sh",
+            d = session_env.display()
+        ),
+    );
+    assert!(
+        hook_env.status.success(),
+        "hook SessionStart precisa criar seu session-env: {}",
+        String::from_utf8_lossy(&hook_env.stderr)
+    );
+    assert!(session_env.join("env.sh").exists());
 }
 
 #[test]
