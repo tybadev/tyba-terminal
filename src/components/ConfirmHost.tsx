@@ -45,7 +45,7 @@ export function ConfirmHost() {
             variant="ghost"
             onClick={() => answerConfirm(request.id, false)}
           >
-            {t("cancel")}
+            {request.cancelLabel ?? t("cancel")}
           </Button>
           <Button
             autoFocus
