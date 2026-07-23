@@ -1,6 +1,7 @@
 pub mod codex_hooks;
 pub mod hooks_settings;
 pub mod session;
+pub mod subagents;
 pub mod suggest;
 
 #[cfg(test)]

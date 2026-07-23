@@ -22,15 +22,21 @@ export interface DividerRect {
 export interface PaneLayout {
   panes: PaneRect[];
   dividers: DividerRect[];
+  agentViewers: PaneRect[];
 }
 
 export function computeRects(root: PaneNode): PaneLayout {
   const panes: PaneRect[] = [];
   const dividers: DividerRect[] = [];
+  const agentViewers: PaneRect[] = [];
 
   const walk = (n: PaneNode, x: number, y: number, w: number, h: number) => {
     if (n.type === "leaf") {
       panes.push({ pane: n.id, session: n.session_id, x, y, w, h });
+      return;
+    }
+    if (n.type === "agentviewer") {
+      agentViewers.push({ pane: n.id, session: n.session_id, x, y, w, h });
       return;
     }
     if (n.split === "v") {
@@ -63,7 +69,7 @@ export function computeRects(root: PaneNode): PaneLayout {
   };
 
   walk(root, 0, 0, 100, 100);
-  return { panes, dividers };
+  return { panes, dividers, agentViewers };
 }
 
 export function findAncestorSplit(
@@ -74,7 +80,7 @@ export function findAncestorSplit(
   let found: { id: PaneId; ratio: number } | null = null;
 
   const contains = (n: PaneNode): boolean => {
-    if (n.type === "leaf") return n.id === pane;
+    if (n.type === "leaf" || n.type === "agentviewer") return n.id === pane;
     const inside = n.id === pane || contains(n.first) || contains(n.second);
     if (inside && n.split === kind && !found) {
       found = { id: n.id, ratio: n.ratio };

@@ -54,6 +54,7 @@ struct AppState {
     rich_input_submit: parking_lot::Mutex<()>,
     worktree_files: rich_input::FilesCache,
     hook_servers: Arc<agent::session::HookServerRegistry>,
+    subagents: agent::subagents::SharedSubagents,
     tunnel_states: crate::ssh::tunnel::SharedTunnelStates,
 }
 
@@ -105,6 +106,25 @@ fn dispose_shells(state: &State<'_, AppState>, ids: &[SessionId]) {
                 state.sessions.dispose(&state.pty_pool, *id);
             }
         }
+    }
+}
+
+pub(crate) fn coordinate_subagent_viewer(
+    app: &AppHandle,
+    session: SessionId,
+    coordination: agent::subagents::Coordination,
+) {
+    let state = app.state::<AppState>();
+    let mut changed = false;
+    if !coordination.viewer_disarmed {
+        changed |= state.layout.ensure_agent_viewer(session);
+    }
+    if !coordination.panel_disarmed {
+        changed |= state.layout.ensure_agents_panel(session);
+    }
+    if changed {
+        state.subagents.mark_coordinated(session);
+        emit_layout(app, &state);
     }
 }
 
@@ -367,6 +387,7 @@ fn run_setup_if_consented(app: &AppHandle, state: &AppState, session: &Session) 
 
 fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
     state.hook_servers.shutdown(id);
+    state.subagents.remove_session(app, id);
     for request in state.approvals.expire_session(app, id) {
         agent::session::record_history(
             &state.store,
@@ -503,6 +524,7 @@ fn create_session(
                 approvals: Arc::clone(&state.approvals),
                 store: Arc::clone(&state.store),
                 servers: Arc::clone(&state.hook_servers),
+                subagents: Arc::clone(&state.subagents),
             };
             let spawn = if opts.attach_existing {
                 agent::session::attach_agent_session
@@ -1764,6 +1786,13 @@ fn close_side_view(
         .layout
         .close_side_view(workspace_id)
         .map_err(|e| e.to_string())?;
+    if let Some(session) = previous
+        .as_deref()
+        .and_then(|v| v.strip_prefix(layout::VIEW_AGENTS_PREFIX))
+        .and_then(|s| s.parse::<SessionId>().ok())
+    {
+        state.subagents.disarm_panel(session);
+    }
     close_orphaned_files_panel(&state, previous, None);
     emit_layout(&app, &state);
     Ok(())
@@ -3153,11 +3182,15 @@ fn close_pane(
     state: State<'_, AppState>,
     pane_id: layout::PaneId,
 ) -> Result<(), String> {
+    let viewer_session = state.layout.agent_viewer_session(pane_id);
     let unbound = state
         .layout
         .close_pane(pane_id)
         .map_err(|e| e.to_string())?;
-    dispose_shells(&state, &unbound);
+    match viewer_session {
+        Some(session) => state.subagents.disarm_viewer(session),
+        None => dispose_shells(&state, &unbound),
+    }
     emit_layout(&app, &state);
     Ok(())
 }
@@ -3705,6 +3738,85 @@ fn resolve_approval(
     Ok(())
 }
 
+#[tauri::command]
+fn list_subagents(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+) -> agent::subagents::SubagentSnapshot {
+    state.subagents.snapshot(session_id)
+}
+
+#[tauri::command]
+fn focus_subagent(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    agent_id: String,
+) -> agent::subagents::SubagentSnapshot {
+    state.subagents.focus(&app, session_id, agent_id);
+    state.subagents.snapshot(session_id)
+}
+
+#[tauri::command]
+fn open_agents_panel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), String> {
+    let previous = session_side_view(&state, id);
+    state
+        .layout
+        .open_workspace_side_view(id, &layout::agents_view(id))
+        .map_err(|e| e.to_string())?;
+    close_orphaned_files_panel(&state, previous, None);
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn open_subagent_viewer(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+) -> Result<(), String> {
+    state
+        .layout
+        .open_agent_viewer(session_id)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct SubagentTranscript {
+    entries: Vec<status::subagent_transcript::TranscriptEntry>,
+    cursor: u64,
+    complete: bool,
+}
+
+#[tauri::command]
+fn subagent_transcript(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    agent_id: String,
+    cursor: Option<u64>,
+) -> Result<SubagentTranscript, String> {
+    let path = state
+        .subagents
+        .resolve_transcript_path(session_id, &agent_id)
+        .ok_or("subagente sem transcript disponível")?;
+    let (entries, cursor, complete) = status::subagent_transcript::read_entries(
+        &path,
+        cursor,
+        status::subagent_transcript::TAIL_ENTRIES,
+    );
+    Ok(SubagentTranscript {
+        entries,
+        cursor,
+        complete,
+    })
+}
+
 #[derive(serde::Serialize)]
 struct AgentConfigInfo {
     hash: String,
@@ -3886,6 +3998,7 @@ pub fn run() {
                 rich_input_submit: parking_lot::Mutex::new(()),
                 worktree_files: rich_input::FilesCache::default(),
                 hook_servers: Arc::new(agent::session::HookServerRegistry::default()),
+                subagents: Arc::new(agent::subagents::SubagentTracker::new()),
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
             });
 
@@ -4068,6 +4181,11 @@ pub fn run() {
             request_approval,
             list_approvals,
             resolve_approval,
+            list_subagents,
+            focus_subagent,
+            subagent_transcript,
+            open_agents_panel,
+            open_subagent_viewer,
             agent_repo_config,
             set_agent_config_consent,
             list_themes,

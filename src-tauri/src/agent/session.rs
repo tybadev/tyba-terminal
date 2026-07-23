@@ -6,8 +6,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
 use crate::agent::hooks_settings::{hook_command, hooks_settings_json};
+use crate::agent::subagents::SharedSubagents;
 use crate::agent::{AgentRunner, ClaudeCodeRunner, CodexRunner, HookSetup};
-use crate::approvals::tool_action::normalize_tool_use;
+use crate::approvals::tool_action::{normalize_tool_use, ToolAction};
 use crate::approvals::{now_ms, Decision, RiskLevel, SharedApprovals};
 use crate::hook_ipc::{HookAction, HookEvent, HookServer};
 use crate::pty::SharedPtyPool;
@@ -60,6 +61,7 @@ pub struct AgentSessionCtx {
     pub approvals: SharedApprovals,
     pub store: Arc<Store>,
     pub servers: Arc<HookServerRegistry>,
+    pub subagents: SharedSubagents,
 }
 
 pub(crate) fn decision_label(decision: Decision) -> &'static str {
@@ -105,6 +107,7 @@ struct HandlerCtx {
     sessions: SharedSessionManager,
     approvals: SharedApprovals,
     store: Arc<Store>,
+    subagents: SharedSubagents,
     session_id: SessionId,
     runner_kind: AgentRunnerKind,
     worktree_root: PathBuf,
@@ -228,6 +231,21 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     let tool = event.tool_name.as_deref().unwrap_or("");
     let input = event.tool_input.as_ref();
     let normalized = normalize_tool_use(&ctx.runner_kind, tool, input);
+    let subagent_spawn = if let ToolAction::Subagent {
+        agent_type,
+        description,
+    } = &normalized.action
+    {
+        ctx.subagents.on_spawn_requested(
+            &ctx.app,
+            ctx.session_id,
+            agent_type.clone(),
+            description.clone(),
+        );
+        Some((agent_type.clone(), description.clone()))
+    } else {
+        None
+    };
     let command = normalized.description;
     let cwd = event.cwd.clone();
 
@@ -282,6 +300,7 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
                     if resolution.decision.is_approval() {
                         HookAction::Allow { reason: None }
                     } else {
+                        deny_subagent_spawn(ctx, &subagent_spawn);
                         HookAction::Deny {
                             reason: resolution
                                 .feedback
@@ -299,10 +318,22 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
                         "refused",
                         now_ms(),
                     );
+                    deny_subagent_spawn(ctx, &subagent_spawn);
                     HookAction::Deny { reason }
                 }
             }
         }
+    }
+}
+
+fn deny_subagent_spawn(ctx: &HandlerCtx, spawn: &Option<(Option<String>, Option<String>)>) {
+    if let Some((agent_type, description)) = spawn {
+        ctx.subagents.on_spawn_denied(
+            &ctx.app,
+            ctx.session_id,
+            agent_type.clone(),
+            description.clone(),
+        );
     }
 }
 
@@ -315,6 +346,44 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     session_id: ctx.session_id,
                 },
             );
+        }
+        Some(AgentSignal::SubagentStarted) => {
+            if let Some(agent_id) = event.agent_id.clone() {
+                let agent_type = event.agent_type.clone().unwrap_or_default();
+                let parent = event
+                    .raw
+                    .get("transcript_path")
+                    .and_then(|p| p.as_str())
+                    .map(PathBuf::from);
+                let coordination = ctx.subagents.on_subagent_started(
+                    &ctx.app,
+                    ctx.session_id,
+                    agent_id,
+                    agent_type,
+                    parent.as_deref(),
+                );
+                if let Some(coordination) = coordination {
+                    crate::coordinate_subagent_viewer(&ctx.app, ctx.session_id, coordination);
+                }
+            }
+        }
+        Some(AgentSignal::SubagentEnded) => {
+            if let Some(agent_id) = event.agent_id.clone() {
+                let last_assistant_message = event
+                    .raw
+                    .get("last_assistant_message")
+                    .and_then(|m| m.as_str())
+                    .map(str::to_string);
+                ctx.subagents.on_subagent_stopped(
+                    &ctx.app,
+                    ctx.session_id,
+                    agent_id,
+                    last_assistant_message,
+                );
+            }
+        }
+        Some(AgentSignal::Ended) => {
+            ctx.subagents.on_session_ended(&ctx.app, ctx.session_id);
         }
         Some(signal) => {
             if let Some(mut status) = status_for(&signal) {
@@ -591,11 +660,13 @@ fn spawn_prepared(
         }
     };
 
+    ctx.subagents.register_session(id);
     let handler_ctx = HandlerCtx {
         app: ctx.app.clone(),
         sessions: ctx.sessions.clone(),
         approvals: ctx.approvals.clone(),
         store: ctx.store.clone(),
+        subagents: ctx.subagents.clone(),
         session_id: id,
         runner_kind: runner.kind(),
         worktree_root: worktree.path.clone(),

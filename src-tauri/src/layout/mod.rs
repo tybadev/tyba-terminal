@@ -33,6 +33,8 @@ pub enum LayoutError {
     NotASplit(PaneId),
     #[error("processo já aberto em um pane: {0}")]
     SessionAlreadyBound(SessionId),
+    #[error("sessão sem pane no workspace ativo: {0}")]
+    SessionNotVisible(SessionId),
     #[error("store: {0}")]
     Store(#[from] crate::session::store::StoreError),
 }
@@ -68,6 +70,10 @@ pub enum PaneNode {
         id: PaneId,
         session_id: SessionId,
     },
+    AgentViewer {
+        id: PaneId,
+        session_id: SessionId,
+    },
     Split {
         id: PaneId,
         split: SplitKind,
@@ -80,20 +86,22 @@ pub enum PaneNode {
 impl PaneNode {
     fn id(&self) -> PaneId {
         match self {
-            PaneNode::Leaf { id, .. } | PaneNode::Split { id, .. } => *id,
+            PaneNode::Leaf { id, .. }
+            | PaneNode::AgentViewer { id, .. }
+            | PaneNode::Split { id, .. } => *id,
         }
     }
 
     fn first_leaf(&self) -> PaneId {
         match self {
-            PaneNode::Leaf { id, .. } => *id,
+            PaneNode::Leaf { id, .. } | PaneNode::AgentViewer { id, .. } => *id,
             PaneNode::Split { first, .. } => first.first_leaf(),
         }
     }
 
     fn contains(&self, pane: PaneId) -> bool {
         match self {
-            PaneNode::Leaf { id, .. } => *id == pane,
+            PaneNode::Leaf { id, .. } | PaneNode::AgentViewer { id, .. } => *id == pane,
             PaneNode::Split {
                 id, first, second, ..
             } => *id == pane || first.contains(pane) || second.contains(pane),
@@ -103,17 +111,55 @@ impl PaneNode {
     fn find_leaf_by_session(&self, session: SessionId) -> Option<PaneId> {
         match self {
             PaneNode::Leaf { id, session_id } if *session_id == session => Some(*id),
-            PaneNode::Leaf { .. } => None,
+            PaneNode::Leaf { .. } | PaneNode::AgentViewer { .. } => None,
             PaneNode::Split { first, second, .. } => first
                 .find_leaf_by_session(session)
                 .or_else(|| second.find_leaf_by_session(session)),
         }
     }
 
+    fn find_pane_of_session(&self, session: SessionId) -> Option<PaneId> {
+        match self {
+            PaneNode::Leaf { id, session_id } | PaneNode::AgentViewer { id, session_id }
+                if *session_id == session =>
+            {
+                Some(*id)
+            }
+            PaneNode::Leaf { .. } | PaneNode::AgentViewer { .. } => None,
+            PaneNode::Split { first, second, .. } => first
+                .find_pane_of_session(session)
+                .or_else(|| second.find_pane_of_session(session)),
+        }
+    }
+
+    fn contains_agent_viewer(&self, session: SessionId) -> bool {
+        match self {
+            PaneNode::AgentViewer { session_id, .. } => *session_id == session,
+            PaneNode::Leaf { .. } => false,
+            PaneNode::Split { first, second, .. } => {
+                first.contains_agent_viewer(session) || second.contains_agent_viewer(session)
+            }
+        }
+    }
+
+    fn agent_viewer_session(&self, pane: PaneId) -> Option<SessionId> {
+        match self {
+            PaneNode::AgentViewer { id, session_id } if *id == pane => Some(*session_id),
+            PaneNode::Leaf { .. } | PaneNode::AgentViewer { .. } => None,
+            PaneNode::Split { first, second, .. } => first
+                .agent_viewer_session(pane)
+                .or_else(|| second.agent_viewer_session(pane)),
+        }
+    }
+
     fn leaf_session(&self, pane: PaneId) -> Option<SessionId> {
         match self {
-            PaneNode::Leaf { id, session_id } if *id == pane => Some(*session_id),
-            PaneNode::Leaf { .. } => None,
+            PaneNode::Leaf { id, session_id } | PaneNode::AgentViewer { id, session_id }
+                if *id == pane =>
+            {
+                Some(*session_id)
+            }
+            PaneNode::Leaf { .. } | PaneNode::AgentViewer { .. } => None,
             PaneNode::Split { first, second, .. } => first
                 .leaf_session(pane)
                 .or_else(|| second.leaf_session(pane)),
@@ -149,7 +195,7 @@ impl PaneNode {
                 };
                 Some(new_id)
             }
-            PaneNode::Leaf { .. } => None,
+            PaneNode::Leaf { .. } | PaneNode::AgentViewer { .. } => None,
             PaneNode::Split { first, second, .. } => first
                 .split_leaf(target, kind, session)
                 .or_else(|| second.split_leaf(target, kind, session)),
@@ -158,8 +204,8 @@ impl PaneNode {
 
     fn remove_leaf(self, target: PaneId) -> Option<PaneNode> {
         match self {
-            PaneNode::Leaf { id, .. } if id == target => None,
-            leaf @ PaneNode::Leaf { .. } => Some(leaf),
+            PaneNode::Leaf { id, .. } | PaneNode::AgentViewer { id, .. } if id == target => None,
+            leaf @ (PaneNode::Leaf { .. } | PaneNode::AgentViewer { .. }) => Some(leaf),
             PaneNode::Split {
                 id,
                 split,
@@ -186,7 +232,7 @@ impl PaneNode {
 
     fn set_ratio(&mut self, target: PaneId, value: f64) -> bool {
         match self {
-            PaneNode::Leaf { .. } => false,
+            PaneNode::Leaf { .. } | PaneNode::AgentViewer { .. } => false,
             PaneNode::Split {
                 id,
                 ratio,
@@ -207,6 +253,7 @@ impl PaneNode {
     fn leaf_sessions(&self, out: &mut Vec<SessionId>) {
         match self {
             PaneNode::Leaf { session_id, .. } => out.push(*session_id),
+            PaneNode::AgentViewer { .. } => {}
             PaneNode::Split { first, second, .. } => {
                 first.leaf_sessions(out);
                 second.leaf_sessions(out);
@@ -216,8 +263,12 @@ impl PaneNode {
 
     fn retain_sessions(self, valid: &HashSet<SessionId>) -> Option<PaneNode> {
         match self {
-            PaneNode::Leaf { session_id, .. } if !valid.contains(&session_id) => None,
-            leaf @ PaneNode::Leaf { .. } => Some(leaf),
+            PaneNode::Leaf { session_id, .. } | PaneNode::AgentViewer { session_id, .. }
+                if !valid.contains(&session_id) =>
+            {
+                None
+            }
+            leaf @ (PaneNode::Leaf { .. } | PaneNode::AgentViewer { .. }) => Some(leaf),
             PaneNode::Split {
                 id,
                 split,
@@ -259,10 +310,13 @@ pub const VIEW_CONNECTIONS: &str = "connections";
 pub const VIEW_DIFF_PREFIX: &str = "diff:";
 pub const VIEW_TUNNELS_PREFIX: &str = "tunnels:";
 pub const VIEW_FILES_PREFIX: &str = "files:";
+pub const VIEW_AGENTS_PREFIX: &str = "agents:";
 pub const DOCKER_WORKSPACE_NAME: &str = "Docker";
 pub const FALLBACK_WORKSPACE_NAME: &str = "tyba";
 
 const DEFAULT_SIDE_RATIO: f64 = 0.5;
+const AGENT_VIEWER_RATIO: f64 = 0.62;
+const AGENT_VIEWER_ROW: &str = "agent";
 
 pub fn diff_view(session: SessionId) -> String {
     format!("{VIEW_DIFF_PREFIX}{session}")
@@ -276,6 +330,10 @@ pub fn files_view(session: SessionId) -> String {
     format!("{VIEW_FILES_PREFIX}{session}")
 }
 
+pub fn agents_view(session: SessionId) -> String {
+    format!("{VIEW_AGENTS_PREFIX}{session}")
+}
+
 fn diff_view_session(view: &str) -> Option<SessionId> {
     view.strip_prefix(VIEW_DIFF_PREFIX)
         .and_then(|s| Uuid::parse_str(s).ok())
@@ -285,6 +343,7 @@ fn side_view_session(view: &str) -> Option<SessionId> {
     view.strip_prefix(VIEW_DIFF_PREFIX)
         .or_else(|| view.strip_prefix(VIEW_TUNNELS_PREFIX))
         .or_else(|| view.strip_prefix(VIEW_FILES_PREFIX))
+        .or_else(|| view.strip_prefix(VIEW_AGENTS_PREFIX))
         .and_then(|s| Uuid::parse_str(s).ok())
 }
 
@@ -1057,7 +1116,7 @@ impl LayoutManager {
         loop {
             let target = {
                 let inner = self.inner.read();
-                find_session_pane(&inner.workspaces, session).map(|(_, _, pane)| pane)
+                find_session_any_pane(&inner.workspaces, session)
             };
             match target {
                 Some(pane) => {
@@ -1066,14 +1125,16 @@ impl LayoutManager {
                 None => break,
             }
         }
-        // O painel de diff/arquivos referencia a sessão; sem ela vira casca órfã.
+        // O painel de diff/arquivos/agentes referencia a sessão; sem ela vira casca órfã.
         let diff = diff_view(session);
         let files = files_view(session);
+        let agents = agents_view(session);
         let mut inner = self.inner.write();
         let mut changed = false;
         for ws in inner.workspaces.iter_mut() {
             if ws.side_view.as_deref() == Some(diff.as_str())
                 || ws.side_view.as_deref() == Some(files.as_str())
+                || ws.side_view.as_deref() == Some(agents.as_str())
             {
                 ws.side_view = None;
                 ws.side_expanded = false;
@@ -1085,6 +1146,94 @@ impl LayoutManager {
             self.persist()?;
         }
         Ok(())
+    }
+
+    pub fn agent_viewer_session(&self, pane: PaneId) -> Option<SessionId> {
+        let inner = self.inner.read();
+        inner
+            .workspaces
+            .iter()
+            .flat_map(|w| w.tabs.iter())
+            .find_map(|t| t.root.as_ref().and_then(|r| r.agent_viewer_session(pane)))
+    }
+
+    pub fn ensure_agent_viewer(&self, session: SessionId) -> bool {
+        let mut inner = self.inner.write();
+        if has_agent_viewer(&inner.workspaces, session) {
+            return false;
+        }
+        let Some(active_ws) = inner.active else {
+            return false;
+        };
+        let Some((wi, ti, leaf)) =
+            find_session_leaf_in_active_tab_of(&inner.workspaces, active_ws, session)
+        else {
+            return false;
+        };
+        let Some(root) = inner.workspaces[wi].tabs[ti].root.as_mut() else {
+            return false;
+        };
+        if split_leaf_with_viewer(root, leaf, session, AGENT_VIEWER_RATIO).is_none() {
+            return false;
+        }
+        drop(inner);
+        let _ = self.persist();
+        true
+    }
+
+    pub fn ensure_agents_panel(&self, session: SessionId) -> bool {
+        let mut inner = self.inner.write();
+        let Some(active_ws) = inner.active else {
+            return false;
+        };
+        let Ok(idx) = ws_index(&inner.workspaces, active_ws) else {
+            return false;
+        };
+        if !session_in_workspace(&inner.workspaces[idx], session) {
+            return false;
+        }
+        if inner.workspaces[idx].side_view.is_some() {
+            return false;
+        }
+        inner.workspaces[idx].side_view = Some(agents_view(session));
+        drop(inner);
+        let _ = self.persist();
+        true
+    }
+
+    pub fn open_agent_viewer(&self, session: SessionId) -> Result<bool, LayoutError> {
+        let mut inner = self.inner.write();
+        let active_ws = inner.active.ok_or(LayoutError::NoActiveWorkspace)?;
+        let wi = ws_index(&inner.workspaces, active_ws)?;
+        let found = inner.workspaces[wi]
+            .tabs
+            .iter()
+            .enumerate()
+            .find_map(|(ti, tab)| {
+                tab.root
+                    .as_ref()
+                    .and_then(|r| r.find_leaf_by_session(session))
+                    .map(|pane| (ti, tab.id, pane))
+            });
+        let Some((ti, tab_id, leaf)) = found else {
+            return Err(LayoutError::SessionNotVisible(session));
+        };
+        if has_agent_viewer(&inner.workspaces, session) {
+            inner.workspaces[wi].active_tab = Some(tab_id);
+            drop(inner);
+            self.persist()?;
+            return Ok(false);
+        }
+        let Some(root) = inner.workspaces[wi].tabs[ti].root.as_mut() else {
+            return Err(LayoutError::SessionNotVisible(session));
+        };
+        split_leaf_with_viewer(root, leaf, session, AGENT_VIEWER_RATIO)
+            .ok_or(LayoutError::SessionNotVisible(session))?;
+        inner.workspaces[wi].active_tab = Some(tab_id);
+        inner.active = Some(active_ws);
+        drop(inner);
+        self.persist()?;
+        Ok(true)
     }
 
     fn persist(&self) -> Result<(), LayoutError> {
@@ -1147,6 +1296,91 @@ fn find_session_pane(
     })
 }
 
+fn find_session_any_pane(workspaces: &[Workspace], session: SessionId) -> Option<PaneId> {
+    workspaces.iter().find_map(|w| {
+        w.tabs.iter().find_map(|t| {
+            t.root
+                .as_ref()
+                .and_then(|r| r.find_pane_of_session(session))
+        })
+    })
+}
+
+fn has_agent_viewer(workspaces: &[Workspace], session: SessionId) -> bool {
+    workspaces.iter().any(|w| {
+        w.tabs.iter().any(|t| {
+            t.root
+                .as_ref()
+                .is_some_and(|r| r.contains_agent_viewer(session))
+        })
+    })
+}
+
+fn find_session_leaf_in_active_tab_of(
+    workspaces: &[Workspace],
+    workspace: WorkspaceId,
+    session: SessionId,
+) -> Option<(usize, usize, PaneId)> {
+    let wi = workspaces.iter().position(|w| w.id == workspace)?;
+    let ws = &workspaces[wi];
+    let active_tab = ws.active_tab?;
+    let (ti, tab) = ws
+        .tabs
+        .iter()
+        .enumerate()
+        .find(|(_, t)| t.id == active_tab)?;
+    let pane = tab
+        .root
+        .as_ref()
+        .and_then(|r| r.find_leaf_by_session(session))?;
+    Some((wi, ti, pane))
+}
+
+fn session_in_workspace(ws: &Workspace, session: SessionId) -> bool {
+    ws.tabs.iter().any(|t| {
+        t.root
+            .as_ref()
+            .is_some_and(|r| r.find_leaf_by_session(session).is_some())
+    })
+}
+
+fn split_leaf_with_viewer(
+    node: &mut PaneNode,
+    target: PaneId,
+    session: SessionId,
+    ratio: f64,
+) -> Option<PaneId> {
+    match node {
+        PaneNode::Leaf { id, .. } if *id == target => {
+            let viewer = PaneNode::AgentViewer {
+                id: Uuid::new_v4(),
+                session_id: session,
+            };
+            let viewer_id = viewer.id();
+            let old = std::mem::replace(
+                node,
+                PaneNode::Leaf {
+                    id: Uuid::new_v4(),
+                    session_id: session,
+                },
+            );
+            *node = PaneNode::Split {
+                id: Uuid::new_v4(),
+                split: SplitKind::V,
+                ratio,
+                first: Box::new(old),
+                second: Box::new(viewer),
+            };
+            Some(viewer_id)
+        }
+        PaneNode::Leaf { .. } | PaneNode::AgentViewer { .. } => None,
+        PaneNode::Split { first, second, .. } => {
+            split_leaf_with_viewer(first, target, session, ratio)
+                .or_else(|| split_leaf_with_viewer(second, target, session, ratio))
+        }
+    }
+}
+
 fn ensure_docker_workspace(inner: &mut Inner) -> WorkspaceId {
     if let Some(idx) = inner
         .workspaces
@@ -1203,6 +1437,15 @@ fn push_pane_rows(
             tab_id: tab_id.to_string(),
             parent_id: parent,
             split: None,
+            ratio: None,
+            position,
+            session_id: Some(session_id.to_string()),
+        }),
+        PaneNode::AgentViewer { id, session_id } => out.push(PaneRow {
+            id: id.to_string(),
+            tab_id: tab_id.to_string(),
+            parent_id: parent,
+            split: Some(AGENT_VIEWER_ROW.to_string()),
             ratio: None,
             position,
             session_id: Some(session_id.to_string()),
@@ -1278,10 +1521,17 @@ pub fn workspaces_to_rows(workspaces: &[Workspace]) -> LayoutRows {
 fn build_node(id: &str, panes: &[PaneRow]) -> Option<PaneNode> {
     let row = panes.iter().find(|p| p.id == id)?;
     let pane_id = Uuid::parse_str(&row.id).ok()?;
-    match &row.split {
+    match row.split.as_deref() {
         None => {
             let session = row.session_id.as_deref()?;
             Some(PaneNode::Leaf {
+                id: pane_id,
+                session_id: Uuid::parse_str(session).ok()?,
+            })
+        }
+        Some(AGENT_VIEWER_ROW) => {
+            let session = row.session_id.as_deref()?;
+            Some(PaneNode::AgentViewer {
                 id: pane_id,
                 session_id: Uuid::parse_str(session).ok()?,
             })
@@ -2116,5 +2366,250 @@ mod tests {
             ),
             other => panic!("esperava leaf com a sessão reaberta, veio {other:?}"),
         }
+    }
+
+    fn active_root(mgr: &LayoutManager) -> PaneNode {
+        let state = mgr.state();
+        let ws = &state.workspaces[0];
+        let tab = ws
+            .tabs
+            .iter()
+            .find(|t| Some(t.id) == ws.active_tab)
+            .unwrap();
+        tab.root.clone().unwrap()
+    }
+
+    fn count_agent_viewers(node: &PaneNode) -> usize {
+        match node {
+            PaneNode::AgentViewer { .. } => 1,
+            PaneNode::Leaf { .. } => 0,
+            PaneNode::Split { first, second, .. } => {
+                count_agent_viewers(first) + count_agent_viewers(second)
+            }
+        }
+    }
+
+    #[test]
+    fn ensure_agent_viewer_splits_active_pane_with_viewer_in_second() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+
+        assert!(mgr.ensure_agent_viewer(s));
+
+        match active_root(&mgr) {
+            PaneNode::Split {
+                split,
+                ratio,
+                first,
+                second,
+                ..
+            } => {
+                assert_eq!(split, SplitKind::V);
+                assert!((ratio - 0.62).abs() < 1e-9);
+                assert!(matches!(*first, PaneNode::Leaf { session_id, .. } if session_id == s));
+                assert!(
+                    matches!(*second, PaneNode::AgentViewer { session_id, .. } if session_id == s)
+                );
+            }
+            other => panic!("esperava split, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ensure_agent_viewer_is_idempotent_per_session() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        assert!(mgr.ensure_agent_viewer(s));
+        assert!(!mgr.ensure_agent_viewer(s));
+        assert_eq!(count_agent_viewers(&active_root(&mgr)), 1);
+    }
+
+    #[test]
+    fn ensure_agent_viewer_skips_session_outside_active_tab() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        mgr.create_tab(sid(), None).unwrap();
+
+        assert!(!mgr.ensure_agent_viewer(s));
+        for tab in &mgr.state().workspaces[0].tabs {
+            if let Some(root) = &tab.root {
+                assert_eq!(count_agent_viewers(root), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn coordination_skips_session_in_inactive_workspace() {
+        let mgr = manager();
+        let background = sid();
+        let foreground = sid();
+        mgr.create_workspace("bg", None, background).unwrap();
+        let bg_ws = mgr.state().active_workspace.unwrap();
+        mgr.create_workspace("fg", None, foreground).unwrap();
+        let fg_ws = mgr.state().active_workspace.unwrap();
+
+        assert!(!mgr.ensure_agent_viewer(background));
+        assert!(!mgr.ensure_agents_panel(background));
+
+        let state = mgr.state();
+        assert_eq!(state.active_workspace, Some(fg_ws));
+        assert!(!has_agent_viewer(&state.workspaces, background));
+        let bg = state.workspaces.iter().find(|w| w.id == bg_ws).unwrap();
+        assert!(bg.side_view.is_none());
+    }
+
+    #[test]
+    fn ensure_agents_panel_opens_only_in_active_workspace() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+
+        assert!(mgr.ensure_agents_panel(s));
+        assert_eq!(
+            mgr.state().workspaces[0].side_view.as_deref(),
+            Some(agents_view(s).as_str())
+        );
+        assert!(!mgr.ensure_agents_panel(s));
+    }
+
+    #[test]
+    fn ensure_agent_viewer_does_not_change_active_workspace() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let active_before = mgr.state().active_workspace;
+
+        assert!(mgr.ensure_agent_viewer(s));
+        assert_eq!(mgr.state().active_workspace, active_before);
+    }
+
+    #[test]
+    fn closing_the_agent_viewer_keeps_the_terminal_leaf() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        mgr.ensure_agent_viewer(s);
+        let viewer_pane = match active_root(&mgr) {
+            PaneNode::Split { second, .. } => second.id(),
+            other => panic!("esperava split, veio {other:?}"),
+        };
+
+        assert_eq!(mgr.close_pane(viewer_pane).unwrap(), vec![s]);
+        match active_root(&mgr) {
+            PaneNode::Leaf { session_id, .. } => assert_eq!(session_id, s),
+            other => panic!("esperava leaf colapsado, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_viewer_session_resolves_only_the_viewer_pane() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        mgr.ensure_agent_viewer(s);
+        let (leaf_pane, viewer_pane) = match active_root(&mgr) {
+            PaneNode::Split { first, second, .. } => (first.id(), second.id()),
+            other => panic!("esperava split, veio {other:?}"),
+        };
+        assert_eq!(mgr.agent_viewer_session(viewer_pane), Some(s));
+        assert_eq!(mgr.agent_viewer_session(leaf_pane), None);
+    }
+
+    #[test]
+    fn agent_viewer_round_trips_through_store() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let alive = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("api", None, alive).unwrap();
+            assert!(mgr.ensure_agent_viewer(alive));
+        }
+        let mgr = LayoutManager::new(store);
+        mgr.load(&HashSet::from([alive]));
+        match active_root(&mgr) {
+            PaneNode::Split { split, second, .. } => {
+                assert_eq!(split, SplitKind::V);
+                assert!(
+                    matches!(*second, PaneNode::AgentViewer { session_id, .. } if session_id == alive)
+                );
+            }
+            other => panic!("esperava split preservado, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_viewer_is_dropped_on_load_when_its_session_is_dead() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let dead = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("api", None, dead).unwrap();
+            assert!(mgr.ensure_agent_viewer(dead));
+        }
+        let mgr = LayoutManager::new(store);
+        mgr.load(&HashSet::new());
+        assert!(mgr.state().workspaces[0].tabs.is_empty());
+    }
+
+    #[test]
+    fn session_disposed_removes_agent_viewer_and_agents_panel() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        assert!(mgr.ensure_agent_viewer(s));
+        mgr.open_workspace_side_view(s, &agents_view(s)).unwrap();
+
+        mgr.session_disposed(s).unwrap();
+
+        assert!(mgr.state().workspaces.is_empty());
+    }
+
+    #[test]
+    fn open_agent_viewer_errors_when_session_not_in_active_workspace() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        mgr.create_workspace("other", None, sid()).unwrap();
+
+        let err = mgr.open_agent_viewer(s).unwrap_err();
+        assert!(matches!(err, LayoutError::SessionNotVisible(id) if id == s));
+    }
+
+    #[test]
+    fn open_agent_viewer_works_from_inactive_tab_of_active_workspace() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        mgr.create_tab(sid(), None).unwrap();
+
+        assert!(!mgr.ensure_agent_viewer(s));
+        assert!(mgr.open_agent_viewer(s).unwrap());
+
+        let root = active_root(&mgr);
+        assert_eq!(count_agent_viewers(&root), 1);
+    }
+
+    #[test]
+    fn leaf_sessions_ignores_agent_viewer() {
+        let term = sid();
+        let node = PaneNode::Split {
+            id: Uuid::new_v4(),
+            split: SplitKind::V,
+            ratio: 0.62,
+            first: Box::new(PaneNode::Leaf {
+                id: Uuid::new_v4(),
+                session_id: term,
+            }),
+            second: Box::new(PaneNode::AgentViewer {
+                id: Uuid::new_v4(),
+                session_id: term,
+            }),
+        };
+        let mut out = Vec::new();
+        node.leaf_sessions(&mut out);
+        assert_eq!(out, vec![term]);
     }
 }

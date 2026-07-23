@@ -48,6 +48,20 @@ pub fn hooks_settings_json(hook_cmd: &str) -> Value {
                     "command": hook_cmd,
                     "timeout": 60
                 }]
+            }],
+            "SubagentStart": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": hook_cmd,
+                    "timeout": 60
+                }]
+            }],
+            "SubagentStop": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": hook_cmd,
+                    "timeout": 60
+                }]
             }]
         }
     })
@@ -90,16 +104,18 @@ mod tests {
     }
 
     #[test]
-    fn all_five_events_present() {
+    fn all_seven_events_present() {
         let v = hooks_settings_json("x _hook");
         let hooks = v["hooks"].as_object().unwrap();
-        assert_eq!(hooks.len(), 5);
+        assert_eq!(hooks.len(), 7);
         for name in [
             "PreToolUse",
             "SessionStart",
             "Stop",
             "SessionEnd",
             "Notification",
+            "SubagentStart",
+            "SubagentStop",
         ] {
             assert!(hooks.contains_key(name), "missing {name}");
         }
@@ -122,7 +138,14 @@ mod tests {
     fn timeout_86400_only_on_pretooluse() {
         let v = hooks_settings_json("x _hook");
         assert_eq!(v["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 86400);
-        for name in ["SessionStart", "Stop", "SessionEnd", "Notification"] {
+        for name in [
+            "SessionStart",
+            "Stop",
+            "SessionEnd",
+            "Notification",
+            "SubagentStart",
+            "SubagentStop",
+        ] {
             assert_eq!(
                 v["hooks"][name][0]["hooks"][0]["timeout"], 60,
                 "wrong timeout on {name}"
@@ -135,7 +158,13 @@ mod tests {
         let v = hooks_settings_json("x _hook");
         assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "*");
         assert_eq!(v["hooks"]["Notification"][0]["matcher"], "idle_prompt");
-        for name in ["SessionStart", "Stop", "SessionEnd"] {
+        for name in [
+            "SessionStart",
+            "Stop",
+            "SessionEnd",
+            "SubagentStart",
+            "SubagentStop",
+        ] {
             assert!(
                 v["hooks"][name][0].get("matcher").is_none(),
                 "{name} should have no matcher"
@@ -147,7 +176,13 @@ mod tests {
     fn matcherless_events_shape() {
         let cmd = "x _hook";
         let v = hooks_settings_json(cmd);
-        for name in ["SessionStart", "Stop", "SessionEnd"] {
+        for name in [
+            "SessionStart",
+            "Stop",
+            "SessionEnd",
+            "SubagentStart",
+            "SubagentStop",
+        ] {
             let hook = &v["hooks"][name][0]["hooks"][0];
             assert_eq!(hook["type"], "command", "{name}");
             assert_eq!(hook["command"], cmd, "{name}");
@@ -170,7 +205,14 @@ mod tests {
     #[test]
     fn status_message_only_on_pretooluse() {
         let v = hooks_settings_json("x _hook");
-        for name in ["SessionStart", "Stop", "SessionEnd", "Notification"] {
+        for name in [
+            "SessionStart",
+            "Stop",
+            "SessionEnd",
+            "Notification",
+            "SubagentStart",
+            "SubagentStop",
+        ] {
             assert!(
                 v["hooks"][name][0]["hooks"][0]
                     .get("statusMessage")
