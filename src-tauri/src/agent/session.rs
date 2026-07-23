@@ -374,43 +374,66 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     .get("last_assistant_message")
                     .and_then(|m| m.as_str())
                     .map(str::to_string);
-                ctx.subagents.on_subagent_stopped(
+                let idle = ctx.subagents.on_subagent_stopped(
                     &ctx.app,
                     ctx.session_id,
                     agent_id,
+                    event.agent_type.clone(),
                     last_assistant_message,
                 );
+                if let Some(summary) = idle {
+                    ctx.sessions.set_status(
+                        &ctx.app,
+                        ctx.session_id,
+                        SessionStatus::Idle { summary },
+                    );
+                }
             }
         }
         Some(AgentSignal::Ended) => {
             ctx.subagents.on_session_ended(&ctx.app, ctx.session_id);
         }
         Some(signal) => {
-            if let Some(mut status) = status_for(&signal) {
-                let mut needs_settle = false;
-                if let SessionStatus::Idle { summary } = &mut status {
-                    let turn = turn_summary(&event);
-                    *summary = turn.text;
-                    needs_settle = !turn.settled;
+            use std::sync::atomic::Ordering;
+            match status_for(&signal) {
+                Some(SessionStatus::Running) => {
+                    ctx.subagents.note_orchestrator_working(ctx.session_id);
+                    ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+                    ctx.sessions
+                        .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
                 }
-                let awaiting = matches!(status, SessionStatus::AwaitingInput { .. });
-                let turn_ended = matches!(status, SessionStatus::Idle { .. });
-                if matches!(status, SessionStatus::Running) {
-                    ctx.turn_settle
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                }
-                ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
-                if awaiting {
+                Some(status @ SessionStatus::AwaitingInput { .. }) => {
+                    ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
                     notify_awaiting_input(ctx, "Agente aguardando sua resposta");
                 }
-                if turn_ended {
-                    let transcript_path = event
-                        .raw
-                        .get("transcript_path")
-                        .and_then(|p| p.as_str())
-                        .map(str::to_string);
-                    notify_turn_ended(ctx, transcript_path, needs_settle);
+                Some(SessionStatus::Idle { .. }) => {
+                    let turn = turn_summary(&event);
+                    let summary = turn.text;
+                    let needs_settle = !turn.settled;
+                    ctx.subagents
+                        .note_orchestrator_idle(ctx.session_id, summary.clone());
+                    // Subagente async ativo segura a sessão em Running mesmo com o
+                    // turno do orquestrador encerrado — só desce a Idle quando o
+                    // último subagente termina (via hook ou fim por arquivo).
+                    if ctx.subagents.has_active(ctx.session_id) {
+                        ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+                        ctx.sessions
+                            .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
+                    } else {
+                        ctx.sessions.set_status(
+                            &ctx.app,
+                            ctx.session_id,
+                            SessionStatus::Idle { summary },
+                        );
+                        let transcript_path = event
+                            .raw
+                            .get("transcript_path")
+                            .and_then(|p| p.as_str())
+                            .map(str::to_string);
+                        notify_turn_ended(ctx, transcript_path, needs_settle);
+                    }
                 }
+                _ => {}
             }
         }
         None => {}

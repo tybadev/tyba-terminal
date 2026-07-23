@@ -4002,6 +4002,29 @@ pub fn run() {
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
             });
 
+            // Fim de subagente async detectado por arquivo desce a sessão a Idle
+            // — mas só se ela ainda estiver segurada em Running (não pisa em
+            // AwaitingInput/Exited nem em turno novo já iniciado).
+            {
+                let state = app.state::<AppState>();
+                let coord_sessions = Arc::clone(&state.sessions);
+                let coord_app = app.handle().clone();
+                state
+                    .subagents
+                    .set_idle_coordinator(Arc::new(move |session, summary| {
+                        if coord_sessions
+                            .get(session)
+                            .is_some_and(|s| matches!(s.status, SessionStatus::Running))
+                        {
+                            coord_sessions.set_status(
+                                &coord_app,
+                                session,
+                                SessionStatus::Idle { summary },
+                            );
+                        }
+                    }));
+            }
+
             // O tyba.conf é derivado do banco, então se regenera no boot: quem
             // cadastrou host numa versão antiga recebe o que mudou no formato
             // (multiplexing, p.ex.) sem ter que reeditar host por host.

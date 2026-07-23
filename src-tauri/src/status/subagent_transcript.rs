@@ -10,8 +10,11 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Runtime};
 
+use crate::agent::subagents::{finish_by_file, SharedCoordinator, SharedSessions};
+use crate::approvals::now_ms;
 use crate::session::redact::redact;
 use crate::session::SessionId;
+use crate::status::transcript::clean_summary;
 
 pub const EVENT_SUBAGENT_TRANSCRIPT: &str = "subagents://transcript";
 
@@ -20,6 +23,13 @@ pub const TAIL_ENTRIES: usize = 500;
 const TOOL_SUMMARY_MAX: usize = 200;
 const TOOL_RESULT_MAX: usize = 500;
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Fim de subagente async: arquivo sem crescer por estes ciclos de poll E última
+/// fala sendo a resposta final assistant. Pausa entre tool calls não conta —
+/// exige a resposta final, não só estabilidade.
+const STABLE_CYCLES: u32 = 2;
+const FINISH_SUMMARY_MAX: usize = 280;
+const FINAL_TAIL_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -339,6 +349,9 @@ struct WatchTarget {
     parent_path: Option<PathBuf>,
     path: Option<PathBuf>,
     cursor: Option<u64>,
+    last_len: Option<u64>,
+    stable_cycles: u32,
+    finished: bool,
 }
 
 impl WatchTarget {
@@ -350,6 +363,9 @@ impl WatchTarget {
             parent_path: spec.parent_path.clone(),
             path: spec.path.clone(),
             cursor: None,
+            last_len: None,
+            stable_cycles: 0,
+            finished: false,
         }
     }
 
@@ -361,6 +377,75 @@ impl WatchTarget {
             self.description.as_deref(),
         )
     }
+}
+
+/// Lê a cauda do `agent-<id>.jsonl` e devolve `Some(resumo)` só quando a última
+/// entrada relevante (assistant/user) é a **resposta final** do subagente: um
+/// `assistant` com texto e sem `tool_use` pendente. `user` no fim (tool_result
+/// ou interrupção) ou `assistant` de tool_use ⇒ `None` — ainda não terminou.
+/// Parser tolerante: formato inesperado degrada para `None`, nunca panica.
+pub(crate) fn final_assistant_summary(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(FINAL_TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return None;
+    }
+    let mut buf = Vec::new();
+    if file.read_to_end(&mut buf).is_err() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let tail = if start > 0 {
+        text.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
+    } else {
+        text.as_ref()
+    };
+    for line in tail.lines().rev() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        match v.get("type").and_then(Value::as_str) {
+            Some("assistant") => return final_assistant_text(&v),
+            Some("user") => return None,
+            _ => continue,
+        }
+    }
+    None
+}
+
+fn final_assistant_text(v: &Value) -> Option<String> {
+    if v.get("message")
+        .and_then(|m| m.get("stop_reason"))
+        .and_then(Value::as_str)
+        == Some("tool_use")
+    {
+        return None;
+    }
+    let content = v.get("message").and_then(|m| m.get("content"))?;
+    if let Some(text) = content.as_str() {
+        return clean_summary(text, FINISH_SUMMARY_MAX);
+    }
+    let blocks = content.as_array()?;
+    if blocks
+        .iter()
+        .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+    {
+        return None;
+    }
+    let mut combined = String::new();
+    for block in blocks {
+        if block.get("type").and_then(Value::as_str) == Some("text") {
+            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                combined.push_str(text);
+            }
+        }
+    }
+    clean_summary(&combined, FINISH_SUMMARY_MAX)
 }
 
 struct WatchState {
@@ -378,15 +463,23 @@ struct PollResult {
     path: PathBuf,
     cursor: u64,
     entries: Vec<TranscriptEntry>,
+    file_len: Option<u64>,
 }
 
 #[derive(Default)]
-pub struct TranscriptWatchers {
+pub(crate) struct TranscriptWatchers {
     sessions: Mutex<std::collections::HashMap<SessionId, WatcherSlot>>,
 }
 
 impl TranscriptWatchers {
-    pub fn sync<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId, active: Vec<WatchSpec>) {
+    pub(crate) fn sync<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session: SessionId,
+        active: Vec<WatchSpec>,
+        sessions: SharedSessions,
+        coordinator: SharedCoordinator,
+    ) {
         if active.is_empty() {
             self.stop_session(app, session);
             return;
@@ -403,7 +496,7 @@ impl TranscriptWatchers {
             if let Some(slot) = map.get(&session) {
                 Arc::clone(&slot.state)
             } else {
-                let slot = spawn_slot(app, session, &active);
+                let slot = spawn_slot(app, session, &active, sessions, coordinator);
                 map.insert(session, slot);
                 return;
             }
@@ -411,7 +504,7 @@ impl TranscriptWatchers {
         reconcile(app, session, &state, &active);
     }
 
-    pub fn stop_session<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId) {
+    pub(crate) fn stop_session<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId) {
         let Some(slot) = self
             .sessions
             .lock()
@@ -463,6 +556,8 @@ fn spawn_slot<R: Runtime>(
     app: &AppHandle<R>,
     session: SessionId,
     active: &[WatchSpec],
+    sessions: SharedSessions,
+    coordinator: SharedCoordinator,
 ) -> WatcherSlot {
     let state = Arc::new(Mutex::new(WatchState {
         targets: active.iter().map(WatchTarget::from_spec).collect(),
@@ -477,7 +572,7 @@ fn spawn_slot<R: Runtime>(
         std::thread::Builder::new()
             .name("subagent-transcript".into())
             .spawn(move || {
-                watch_loop(&app, session, &state, &stop);
+                watch_loop(&app, session, &state, &stop, &sessions, &coordinator);
                 running.store(false, Ordering::SeqCst);
             })
     };
@@ -491,11 +586,18 @@ fn spawn_slot<R: Runtime>(
     }
 }
 
+struct Completion {
+    agent_id: String,
+    summary: Option<String>,
+}
+
 fn watch_loop<R: Runtime>(
     app: &AppHandle<R>,
     session: SessionId,
     state: &Arc<Mutex<WatchState>>,
     stop: &Arc<AtomicBool>,
+    sessions: &SharedSessions,
+    coordinator: &SharedCoordinator,
 ) {
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -508,7 +610,12 @@ fn watch_loop<R: Runtime>(
             if guard.targets.is_empty() {
                 break;
             }
-            guard.targets.clone()
+            guard
+                .targets
+                .iter()
+                .filter(|t| !t.finished)
+                .cloned()
+                .collect()
         };
         let mut results: Vec<PollResult> = Vec::new();
         for poll in &polls {
@@ -516,31 +623,51 @@ fn watch_loop<R: Runtime>(
                 continue;
             };
             let (entries, next, _complete) = read_entries(&path, poll.cursor, TAIL_ENTRIES);
+            let file_len = std::fs::metadata(&path).map(|m| m.len()).ok();
             results.push(PollResult {
                 agent_id: poll.agent_id.clone(),
                 path,
                 cursor: next,
                 entries,
+                file_len,
             });
         }
-        let to_emit: Vec<PollResult> = {
+        let (to_emit, completions) = {
             let Ok(mut guard) = state.lock() else {
                 break;
             };
-            results
-                .into_iter()
-                .filter_map(|result| {
-                    let target = guard
-                        .targets
-                        .iter_mut()
-                        .find(|t| t.agent_id == result.agent_id)?;
-                    if target.path.is_none() {
-                        target.path = Some(result.path.clone());
+            let mut emit = Vec::new();
+            let mut done = Vec::new();
+            for result in results {
+                let Some(target) = guard
+                    .targets
+                    .iter_mut()
+                    .find(|t| t.agent_id == result.agent_id)
+                else {
+                    continue;
+                };
+                if target.path.is_none() {
+                    target.path = Some(result.path.clone());
+                }
+                target.cursor = Some(result.cursor);
+                if result.file_len.is_some() && result.file_len == target.last_len {
+                    target.stable_cycles = target.stable_cycles.saturating_add(1);
+                } else {
+                    target.last_len = result.file_len;
+                    target.stable_cycles = 0;
+                }
+                if !target.finished && target.stable_cycles >= STABLE_CYCLES {
+                    if let Some(summary) = final_assistant_summary(&result.path) {
+                        target.finished = true;
+                        done.push(Completion {
+                            agent_id: target.agent_id.clone(),
+                            summary: Some(summary),
+                        });
                     }
-                    target.cursor = Some(result.cursor);
-                    Some(result)
-                })
-                .collect()
+                }
+                emit.push(result);
+            }
+            (emit, done)
         };
         for result in to_emit {
             if !result.entries.is_empty() {
@@ -553,7 +680,47 @@ fn watch_loop<R: Runtime>(
                 );
             }
         }
+        for completion in completions {
+            finish_target(app, session, sessions, coordinator, completion);
+        }
+        let all_finished = {
+            match state.lock() {
+                Ok(guard) => !guard.targets.is_empty() && guard.targets.iter().all(|t| t.finished),
+                Err(_) => break,
+            }
+        };
+        if all_finished {
+            break;
+        }
         std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn finish_target<R: Runtime>(
+    app: &AppHandle<R>,
+    session: SessionId,
+    sessions: &SharedSessions,
+    coordinator: &SharedCoordinator,
+    completion: Completion,
+) {
+    let Some((snapshot, idle)) = finish_by_file(
+        sessions,
+        session,
+        &completion.agent_id,
+        completion.summary,
+        now_ms(),
+    ) else {
+        return;
+    };
+    crate::agent::subagents::emit_snapshot(app, session, snapshot);
+    if let Some(summary) = idle {
+        let coordinator = coordinator
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned());
+        if let Some(coordinator) = coordinator {
+            coordinator(session, summary);
+        }
     }
 }
 
@@ -892,6 +1059,8 @@ mod tests {
                 parent_path: None,
                 path: Some(path),
             }],
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
+            Arc::new(Mutex::new(None)),
         );
         assert_eq!(watchers.active_sessions(), 1);
         watchers.stop_session(&handle, session);
