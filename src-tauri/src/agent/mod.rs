@@ -178,6 +178,7 @@ impl AgentRunner for ClaudeCodeRunner {
                 Rule::Node(project),
                 Rule::Node(claude.join("todos")),
                 Rule::Node(claude.join("shell-snapshots")),
+                Rule::Node(claude.join("session-env")),
                 Rule::Node(claude.join("statsig")),
                 Rule::Node(claude.join("debug")),
                 Rule::Node(claude.join("ide")),
@@ -459,6 +460,33 @@ mod tests {
         ))));
     }
 
+    fn rule_matches(rule: &Rule, candidate: &Path) -> bool {
+        let p = rule.path();
+        match rule {
+            Rule::Literal(_) => candidate == p,
+            Rule::Subpath(_) | Rule::Node(_) => candidate.starts_with(p),
+            Rule::Prefix(_) => candidate
+                .to_string_lossy()
+                .starts_with(&*p.to_string_lossy()),
+            Rule::Family(_) => {
+                let cs = candidate.to_string_lossy();
+                let ps = p.to_string_lossy();
+                cs == ps
+                    || cs
+                        .strip_prefix(&*ps)
+                        .and_then(|rest| rest.chars().next())
+                        .is_some_and(|c| matches!(c, '-' | '.' | '~'))
+            }
+        }
+    }
+
+    fn write_grants(access: &AgentAccess, candidate: &Path) -> bool {
+        access.write.iter().any(|set| {
+            set.allow.iter().any(|r| rule_matches(r, candidate))
+                && !set.except.iter().any(|r| rule_matches(r, candidate))
+        })
+    }
+
     #[test]
     fn claude_sandbox_access_never_writes_settings_or_plugins() {
         let access =
@@ -474,6 +502,35 @@ mod tests {
                     "escrita recursiva em ~/.claude: {s}"
                 );
             }
+        }
+
+        let claude = Path::new("/Users/x/.claude");
+        assert!(
+            write_grants(&access, &claude.join("session-env")),
+            "session-env é estado nativo do Claude Code; hooks SessionStart precisam criá-lo"
+        );
+        assert!(
+            write_grants(&access, &claude.join("session-env/8f3-uuid")),
+            "cada sessão cria seu próprio subdir sob session-env"
+        );
+        assert!(
+            !write_grants(&access, &claude.join("session-env-evil")),
+            "o node session-env é ancorado: não vaza pra irmãos com prefixo comum"
+        );
+        for forbidden in [
+            "settings.json",
+            "settings.local.json",
+            "plugins",
+            "plugins/x/hook.sh",
+            "hooks",
+            "mcp.json",
+            "unknown-dir",
+            "unknown-dir/deep/file",
+        ] {
+            assert!(
+                !write_grants(&access, &claude.join(forbidden)),
+                "config/hook e subpath genérico de ~/.claude nunca graváveis: {forbidden}"
+            );
         }
     }
 

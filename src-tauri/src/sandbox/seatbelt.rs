@@ -488,6 +488,34 @@ mod tests {
     }
 
     #[test]
+    fn policy_write_grants_claude_session_env_as_anchored_node_only() {
+        use crate::agent::{AgentRunner, ClaudeCodeRunner};
+        let mut s = spec();
+        s.agent = ClaudeCodeRunner.sandbox_access(&s.home, &s.writable_root);
+        let policy = build_policy(&s);
+        let write_lines: Vec<&str> = policy
+            .lines()
+            .filter(|l| l.starts_with("(allow file-write*"))
+            .collect();
+        let joined = write_lines.join("\n");
+        assert!(
+            joined.contains(r#"(regex #"^/Users/nobody/\.claude/session-env(/.*)?$")"#),
+            "session-env precisa entrar como node ancorado gravável"
+        );
+        for line in &write_lines {
+            assert!(
+                !line.contains(r#"(subpath "/Users/nobody/.claude")"#),
+                "session-env não pode abrir ~/.claude inteiro pra escrita: {line}"
+            );
+            assert!(
+                !line.contains("settings"),
+                "settings nunca gravável: {line}"
+            );
+            assert!(!line.contains("plugins"), "plugins nunca gravável: {line}");
+        }
+    }
+
+    #[test]
     fn policy_hook_socket_allowed_even_without_network() {
         let mut s = spec();
         s.allow_network = false;
