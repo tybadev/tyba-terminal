@@ -51,6 +51,7 @@ pub struct SubagentRun {
     pub started_at_ms: u64,
     pub ended_at_ms: Option<u64>,
     pub summary: Option<String>,
+    pub interrupted: bool,
     pub transcript_path: Option<PathBuf>,
     pub parent_transcript_path: Option<PathBuf>,
 }
@@ -64,6 +65,7 @@ pub struct SubagentRunDto {
     pub started_at_ms: u64,
     pub ended_at_ms: Option<u64>,
     pub summary: Option<String>,
+    pub interrupted: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -89,6 +91,7 @@ impl SubagentRunDto {
             started_at_ms: run.started_at_ms,
             ended_at_ms: run.ended_at_ms,
             summary: run.summary.as_deref().map(|s| redact(s).into_owned()),
+            interrupted: run.interrupted,
         }
     }
 }
@@ -119,6 +122,7 @@ impl SessionSubagents {
             started_at_ms: now,
             ended_at_ms: None,
             summary: None,
+            interrupted: false,
             transcript_path: None,
             parent_transcript_path: None,
         });
@@ -161,6 +165,7 @@ impl SessionSubagents {
                     started_at_ms: now,
                     ended_at_ms: None,
                     summary: None,
+                    interrupted: false,
                     transcript_path,
                     parent_transcript_path: parent_transcript_path.map(Path::to_path_buf),
                 });
@@ -235,6 +240,7 @@ impl SessionSubagents {
             started_at_ms: now,
             ended_at_ms: Some(now),
             summary,
+            interrupted: false,
             transcript_path: None,
             parent_transcript_path: None,
         });
@@ -272,6 +278,20 @@ impl SessionSubagents {
         run.status = SubagentStatus::Done;
         run.ended_at_ms = Some(now);
         run.summary = summary.and_then(|s| clean_summary(&s, SUMMARY_MAX_CHARS));
+        true
+    }
+
+    fn finish_running_interrupted(&mut self, agent_id: &str, now: u64) -> bool {
+        let slot = self.runs.iter().position(|run| {
+            run.agent_id.as_deref() == Some(agent_id) && run.status == SubagentStatus::Running
+        });
+        let Some(index) = slot else {
+            return false;
+        };
+        let run = &mut self.runs[index];
+        run.status = SubagentStatus::Done;
+        run.ended_at_ms = Some(now);
+        run.interrupted = true;
         true
     }
 
@@ -619,6 +639,29 @@ pub(crate) fn finish_by_file(
     let mut map = sessions.lock().ok()?;
     let entry = map.get_mut(&session)?;
     if !entry.finish_running_by_file(agent_id, summary, now) {
+        return None;
+    }
+    let idle = entry.idle_transition();
+    Some((entry.to_snapshot(), idle))
+}
+
+pub(crate) fn session_orchestrator_idle(sessions: &SharedSessions, session: SessionId) -> bool {
+    sessions
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&session).map(|entry| entry.orchestrator_idle))
+        .unwrap_or(false)
+}
+
+pub(crate) fn finish_by_file_interrupted(
+    sessions: &SharedSessions,
+    session: SessionId,
+    agent_id: &str,
+    now: u64,
+) -> Option<(SubagentSnapshot, Option<Option<String>>)> {
+    let mut map = sessions.lock().ok()?;
+    let entry = map.get_mut(&session)?;
+    if !entry.finish_running_interrupted(agent_id, now) {
         return None;
     }
     let idle = entry.idle_transition();
@@ -1302,6 +1345,66 @@ mod tests {
         assert!(!session.finish_running_by_file("a1", Some("de novo".into()), 50));
         assert_eq!(session.runs[0].status, SubagentStatus::Done);
         assert_eq!(session.runs[0].ended_at_ms, Some(40));
+    }
+
+    #[test]
+    fn finish_running_interrupted_marks_running_done_without_summary() {
+        let mut session = SessionSubagents::default();
+        session.promote("a1".into(), "explorer".into(), None, None, 10);
+        assert!(session.finish_running_interrupted("a1", 40));
+        let run = &session.runs[0];
+        assert_eq!(run.status, SubagentStatus::Done);
+        assert_eq!(run.ended_at_ms, Some(40));
+        assert!(run.interrupted);
+        assert!(run.summary.is_none());
+    }
+
+    #[test]
+    fn finish_running_interrupted_ignores_starting_and_done() {
+        let mut session = SessionSubagents::default();
+        session.push_pending(Some("reviewer".into()), None, 10);
+        assert!(!session.finish_running_interrupted("a1", 40));
+        session.promote("a1".into(), "reviewer".into(), None, None, 20);
+        assert!(session.finish_running_interrupted("a1", 40));
+        assert!(!session.finish_running_interrupted("a1", 50));
+        assert_eq!(session.runs[0].ended_at_ms, Some(40));
+    }
+
+    #[test]
+    fn interrupted_run_is_serialized_in_snapshot() {
+        let mut session = SessionSubagents::default();
+        session.promote("a1".into(), "explorer".into(), None, None, 10);
+        session.finish_running_interrupted("a1", 40);
+        let snapshot = session.to_snapshot();
+        assert!(snapshot.subagents[0].interrupted);
+        assert_eq!(snapshot.subagents[0].status, SubagentStatus::Done);
+    }
+
+    #[test]
+    fn finish_by_file_interrupted_flips_last_active_to_idle() {
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        {
+            let mut sessions = tracker.sessions.lock().unwrap();
+            let entry = sessions.get_mut(&session).unwrap();
+            entry.promote("a1".into(), "explorer".into(), None, None, 10);
+            entry.orchestrator_idle = true;
+            entry.orchestrator_idle_summary = Some("turno".into());
+        }
+        assert!(session_orchestrator_idle(&tracker.sessions, session));
+        let (snapshot, idle) =
+            finish_by_file_interrupted(&tracker.sessions, session, "a1", 99).unwrap();
+        assert!(snapshot.subagents[0].interrupted);
+        assert_eq!(idle, Some(Some("turno".into())));
+    }
+
+    #[test]
+    fn session_orchestrator_idle_defaults_false_without_signal() {
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        assert!(!session_orchestrator_idle(&tracker.sessions, session));
     }
 
     #[test]

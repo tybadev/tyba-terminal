@@ -218,6 +218,8 @@ import {
   statusVisual,
   type StatusVisual,
 } from "./lib/sessionStatus";
+import { deadAgentsPanels } from "./lib/agentsPanel";
+import { usePresence } from "./lib/usePresence";
 import {
   SPINNER_FRAMES,
   SPINNER_INTERVAL_MS,
@@ -791,13 +793,6 @@ export default function App() {
         : null,
     [sideView, sessionById],
   );
-  const agentsTarget = useMemo(
-    () =>
-      sideView?.startsWith("agents:")
-        ? (sessionById.get(sideView.slice(7)) ?? null)
-        : null,
-    [sideView, sessionById],
-  );
   const tunnelsHostAlias = useMemo(() => {
     const kind = tunnelsTarget?.kind;
     if (kind?.type !== "ssh") return "";
@@ -805,6 +800,56 @@ export default function App() {
   }, [tunnelsTarget, sshHosts]);
   const sideExpanded = Boolean(sideView && activeWorkspace?.side_expanded);
   const sideRatio = activeWorkspace?.side_ratio ?? 0.5;
+
+  const reducedMotion = useMemo(
+    () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    [],
+  );
+  const agentsSideActive = Boolean(sideView?.startsWith("agents:"));
+  const agentsMotion = usePresence(agentsSideActive, reducedMotion ? 0 : 150);
+  const lastAgentsSessionRef = useRef<SessionId | null>(null);
+  useEffect(() => {
+    if (sideView?.startsWith("agents:")) {
+      lastAgentsSessionRef.current = sideView.slice(7);
+    }
+  }, [sideView]);
+
+  // O painel Agentes continua montado durante o fade de saída (agentsMotion):
+  // renderSideView guarda a sessão que estava aberta para desenhar o último
+  // quadro enquanto ela sai, sem que a coluna principal reflua na hora.
+  const sideVisible = Boolean(sideView) || agentsMotion.mounted;
+  const renderSideView =
+    sideView ??
+    (agentsMotion.mounted && lastAgentsSessionRef.current
+      ? `agents:${lastAgentsSessionRef.current}`
+      : null);
+  const agentsTarget = useMemo(() => {
+    const sid = renderSideView?.startsWith("agents:")
+      ? renderSideView.slice(7)
+      : null;
+    return sid ? (sessionById.get(sid) ?? null) : null;
+  }, [renderSideView, sessionById]);
+
+  // Sessão dona do painel Agentes morreu (exited/failed) ou sumiu → nada vivo
+  // pra ver, fecha o side view. Não fecha quando só os subagentes terminam.
+  const closingAgentsPanels = useRef<Set<string>>(new Set());
+  const seenAgentSessions = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const s of sessions) seenAgentSessions.current.add(s.id);
+    const dead = new Set(
+      deadAgentsPanels(layout.workspaces, sessions, seenAgentSessions.current),
+    );
+    for (const id of [...closingAgentsPanels.current]) {
+      if (!dead.has(id)) closingAgentsPanels.current.delete(id);
+    }
+    for (const wsId of dead) {
+      if (closingAgentsPanels.current.has(wsId)) continue;
+      closingAgentsPanels.current.add(wsId);
+      void closeSideView(wsId).catch(() =>
+        closingAgentsPanels.current.delete(wsId),
+      );
+    }
+  }, [layout.workspaces, sessions]);
 
   useEffect(() => {
     requestTerminalRelayout();
@@ -3459,14 +3504,14 @@ export default function App() {
               <main ref={mainAreaRef} className="flex min-h-0 min-w-0 flex-1">
                 <div
                   className={`min-h-0 min-w-0 flex-col ${
-                    sideView
+                    sideVisible
                       ? sideExpanded
                         ? "hidden"
                         : "flex shrink-0"
                       : "flex flex-1"
                   }`}
                   style={
-                    sideView && !sideExpanded
+                    sideVisible && !sideExpanded
                       ? { width: `${(1 - sideRatio) * 100}%` }
                       : undefined
                   }
@@ -3803,7 +3848,7 @@ export default function App() {
                   />
                 )}
                 </div>
-                {sideView && activeWorkspace && (
+                {sideVisible && activeWorkspace && (
                   <>
                     {!sideExpanded && (
                       <div
@@ -3813,8 +3858,16 @@ export default function App() {
                         <span className="w-px bg-tyba-border-strong transition-colors hover:bg-tyba-green/70" />
                       </div>
                     )}
-                    <div className="flex min-h-0 min-w-0 flex-1">
-                      {sideView.startsWith("agents:") ? (
+                    <div
+                      className={`flex min-h-0 min-w-0 flex-1${
+                        renderSideView?.startsWith("agents:")
+                          ? agentsMotion.exiting
+                            ? " tyba-panel-exit"
+                            : " motion-safe:animate-tyba-panel-in"
+                          : ""
+                      }`}
+                    >
+                      {renderSideView?.startsWith("agents:") ? (
                         agentsTarget ? (
                           <AgentsPanel
                             key={agentsTarget.id}
@@ -3849,7 +3902,7 @@ export default function App() {
                             {t("agentsSessionGone")}
                           </div>
                         )
-                      ) : sideView.startsWith("tunnels:") ? (
+                      ) : renderSideView?.startsWith("tunnels:") ? (
                         tunnelsTarget ? (
                           <TunnelsView
                             key={tunnelsTarget.id}
@@ -3873,7 +3926,7 @@ export default function App() {
                             {t("tunnelsSessionGone")}
                           </div>
                         )
-                      ) : sideView.startsWith("files:") ? (
+                      ) : renderSideView?.startsWith("files:") ? (
                         filesTarget ? (
                           <FilesPanel
                             key={filesTarget.id}

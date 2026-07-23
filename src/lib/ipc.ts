@@ -927,6 +927,7 @@ export interface SubagentRun {
   started_at_ms: number;
   ended_at_ms: number | null;
   summary: string | null;
+  interrupted: boolean;
 }
 
 export interface SubagentSnapshot {
