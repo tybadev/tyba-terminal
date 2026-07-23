@@ -7,6 +7,8 @@ pub enum AgentSignal {
     TurnEnded,
     AwaitingInput,
     Ended,
+    SubagentStarted,
+    SubagentEnded,
 }
 
 pub fn signal_for(hook_event_name: &str, notification_type: Option<&str>) -> Option<AgentSignal> {
@@ -15,6 +17,8 @@ pub fn signal_for(hook_event_name: &str, notification_type: Option<&str>) -> Opt
         "PreToolUse" => Some(AgentSignal::Working),
         "Stop" => Some(AgentSignal::TurnEnded),
         "SessionEnd" => Some(AgentSignal::Ended),
+        "SubagentStart" => Some(AgentSignal::SubagentStarted),
+        "SubagentStop" => Some(AgentSignal::SubagentEnded),
         "Notification" => match notification_type {
             Some("idle_prompt") => Some(AgentSignal::AwaitingInput),
             _ => None,
@@ -33,6 +37,8 @@ pub fn status_for(signal: &AgentSignal) -> Option<SessionStatus> {
         }),
         AgentSignal::Ready => None,
         AgentSignal::Ended => None,
+        AgentSignal::SubagentStarted => None,
+        AgentSignal::SubagentEnded => None,
     }
 }
 
@@ -58,6 +64,22 @@ mod tests {
     #[test]
     fn signal_session_end_is_ended() {
         assert_eq!(signal_for("SessionEnd", None), Some(AgentSignal::Ended));
+    }
+
+    #[test]
+    fn signal_subagent_start_is_subagent_started() {
+        assert_eq!(
+            signal_for("SubagentStart", None),
+            Some(AgentSignal::SubagentStarted)
+        );
+    }
+
+    #[test]
+    fn signal_subagent_stop_is_subagent_ended() {
+        assert_eq!(
+            signal_for("SubagentStop", None),
+            Some(AgentSignal::SubagentEnded)
+        );
     }
 
     #[test]
@@ -125,5 +147,11 @@ mod tests {
     #[test]
     fn status_ended_is_none() {
         assert!(status_for(&AgentSignal::Ended).is_none());
+    }
+
+    #[test]
+    fn status_subagent_signals_never_change_session_status() {
+        assert!(status_for(&AgentSignal::SubagentStarted).is_none());
+        assert!(status_for(&AgentSignal::SubagentEnded).is_none());
     }
 }

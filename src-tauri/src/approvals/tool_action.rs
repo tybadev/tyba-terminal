@@ -8,6 +8,8 @@ use crate::session::AgentRunnerKind;
 
 const DESCRIPTION_MAX_CHARS: usize = 500;
 
+const SUBAGENT_SPAWN_RISK_UNTIL_E2E_PROOF: RiskLevel = RiskLevel::Yellow;
+
 const CLAUDE_WRITE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit"];
 const CLAUDE_READ_ONLY_TOOLS: &[&str] = &[
     "Read",
@@ -20,14 +22,25 @@ const CLAUDE_READ_ONLY_TOOLS: &[&str] = &[
     "AskUserQuestion",
 ];
 const CLAUDE_NETWORK_TOOLS: &[&str] = &["WebFetch", "WebSearch"];
+const CLAUDE_SUBAGENT_TOOLS: &[&str] = &["Agent", "Task"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolAction {
-    RunCommand { command: String },
-    WriteFile { path: String },
-    WriteFiles { paths: Vec<String> },
+    RunCommand {
+        command: String,
+    },
+    WriteFile {
+        path: String,
+    },
+    WriteFiles {
+        paths: Vec<String>,
+    },
     ReadOnly,
     Network,
+    Subagent {
+        agent_type: Option<String>,
+        description: Option<String>,
+    },
     Unknown,
 }
 
@@ -52,6 +65,7 @@ impl ToolAction {
             }
             ToolAction::ReadOnly => RiskLevel::Green,
             ToolAction::Network => RiskLevel::Red,
+            ToolAction::Subagent { .. } => SUBAGENT_SPAWN_RISK_UNTIL_E2E_PROOF,
             ToolAction::Unknown => RiskLevel::Yellow,
         }
     }
@@ -133,9 +147,32 @@ fn normalize_claude(tool_name: &str, tool_input: Option<&Value>) -> NormalizedTo
             description,
         };
     }
+    if CLAUDE_SUBAGENT_TOOLS.contains(&tool_name) {
+        let agent_type = str_field(tool_input, "subagent_type").map(str::to_string);
+        let description = str_field(tool_input, "description").map(str::to_string);
+        let label = subagent_label(agent_type.as_deref(), description.as_deref());
+        return NormalizedToolUse {
+            action: ToolAction::Subagent {
+                agent_type,
+                description,
+            },
+            description: label,
+        };
+    }
     NormalizedToolUse {
         action: ToolAction::Unknown,
         description: tool_name.to_string(),
+    }
+}
+
+fn subagent_label(agent_type: Option<&str>, description: Option<&str>) -> String {
+    let kind = agent_type
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("desconhecido");
+    match description.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(what) => format!("Subagente {kind}: {what}"),
+        None => format!("Subagente {kind}"),
     }
 }
 
@@ -323,6 +360,97 @@ mod tests {
         let n = claude("SomethingNew", None);
         assert_eq!(n.action, ToolAction::Unknown);
         assert_eq!(n.description, "SomethingNew");
+    }
+
+    #[test]
+    fn agent_tool_becomes_subagent_with_fields() {
+        let n = claude(
+            "Agent",
+            Some(json!({"subagent_type": "code-reviewer", "description": "revisar diff"})),
+        );
+        assert_eq!(
+            n.action,
+            ToolAction::Subagent {
+                agent_type: Some("code-reviewer".into()),
+                description: Some("revisar diff".into()),
+            }
+        );
+        assert_eq!(n.description, "Subagente code-reviewer: revisar diff");
+    }
+
+    #[test]
+    fn task_tool_is_also_a_subagent() {
+        let n = claude(
+            "Task",
+            Some(json!({"subagent_type": "explorer", "description": "mapear repo"})),
+        );
+        assert_eq!(
+            n.action,
+            ToolAction::Subagent {
+                agent_type: Some("explorer".into()),
+                description: Some("mapear repo".into()),
+            }
+        );
+        assert_eq!(n.description, "Subagente explorer: mapear repo");
+    }
+
+    #[test]
+    fn subagent_without_description_falls_back_to_type_only() {
+        let n = claude("Agent", Some(json!({"subagent_type": "explorer"})));
+        assert_eq!(
+            n.action,
+            ToolAction::Subagent {
+                agent_type: Some("explorer".into()),
+                description: None,
+            }
+        );
+        assert_eq!(n.description, "Subagente explorer");
+    }
+
+    #[test]
+    fn subagent_without_type_uses_unknown_placeholder() {
+        let n = claude("Agent", Some(json!({"description": "fazer algo"})));
+        assert_eq!(
+            n.action,
+            ToolAction::Subagent {
+                agent_type: None,
+                description: Some("fazer algo".into()),
+            }
+        );
+        assert_eq!(n.description, "Subagente desconhecido: fazer algo");
+    }
+
+    #[test]
+    fn subagent_without_any_input_is_still_subagent() {
+        let n = claude("Agent", None);
+        assert_eq!(
+            n.action,
+            ToolAction::Subagent {
+                agent_type: None,
+                description: None,
+            }
+        );
+        assert_eq!(n.description, "Subagente desconhecido");
+    }
+
+    #[test]
+    fn subagent_spawn_is_yellow_until_e2e_proof() {
+        let root = PathBuf::from("/wt");
+        let action = ToolAction::Subagent {
+            agent_type: Some("x".into()),
+            description: None,
+        };
+        assert_eq!(action.classify(&root), RiskLevel::Yellow);
+    }
+
+    #[test]
+    fn subagent_description_truncates_at_500_chars() {
+        let long = "z".repeat(600);
+        let n = claude(
+            "Agent",
+            Some(json!({"subagent_type": "explorer", "description": long})),
+        );
+        assert_eq!(n.description.chars().count(), 500);
     }
 
     fn codex(tool: &str, input: Option<Value>) -> NormalizedToolUse {

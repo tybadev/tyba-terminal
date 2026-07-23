@@ -19,6 +19,8 @@ pub struct HookEvent {
     pub tool_input: Option<serde_json::Value>,
     pub notification_type: Option<String>,
     pub cwd: Option<String>,
+    pub agent_id: Option<String>,
+    pub agent_type: Option<String>,
     pub raw: serde_json::Value,
 }
 

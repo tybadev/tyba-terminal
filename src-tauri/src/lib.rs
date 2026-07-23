@@ -54,6 +54,7 @@ struct AppState {
     rich_input_submit: parking_lot::Mutex<()>,
     worktree_files: rich_input::FilesCache,
     hook_servers: Arc<agent::session::HookServerRegistry>,
+    subagents: agent::subagents::SharedSubagents,
     tunnel_states: crate::ssh::tunnel::SharedTunnelStates,
 }
 
@@ -367,6 +368,7 @@ fn run_setup_if_consented(app: &AppHandle, state: &AppState, session: &Session) 
 
 fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
     state.hook_servers.shutdown(id);
+    state.subagents.remove_session(id);
     for request in state.approvals.expire_session(app, id) {
         agent::session::record_history(
             &state.store,
@@ -503,6 +505,7 @@ fn create_session(
                 approvals: Arc::clone(&state.approvals),
                 store: Arc::clone(&state.store),
                 servers: Arc::clone(&state.hook_servers),
+                subagents: Arc::clone(&state.subagents),
             };
             let spawn = if opts.attach_existing {
                 agent::session::attach_agent_session
@@ -3705,6 +3708,25 @@ fn resolve_approval(
     Ok(())
 }
 
+#[tauri::command]
+fn list_subagents(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+) -> agent::subagents::SubagentSnapshot {
+    state.subagents.snapshot(session_id)
+}
+
+#[tauri::command]
+fn focus_subagent(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    agent_id: String,
+) -> agent::subagents::SubagentSnapshot {
+    state.subagents.focus(&app, session_id, agent_id);
+    state.subagents.snapshot(session_id)
+}
+
 #[derive(serde::Serialize)]
 struct AgentConfigInfo {
     hash: String,
@@ -3886,6 +3908,7 @@ pub fn run() {
                 rich_input_submit: parking_lot::Mutex::new(()),
                 worktree_files: rich_input::FilesCache::default(),
                 hook_servers: Arc::new(agent::session::HookServerRegistry::default()),
+                subagents: Arc::new(agent::subagents::SubagentTracker::new()),
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
             });
 
@@ -4068,6 +4091,8 @@ pub fn run() {
             request_approval,
             list_approvals,
             resolve_approval,
+            list_subagents,
+            focus_subagent,
             agent_repo_config,
             set_agent_config_consent,
             list_themes,
