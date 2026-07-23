@@ -451,7 +451,7 @@ pub fn range_file_hunks(
     Ok(parse_unified_hunks(&String::from_utf8_lossy(&out)))
 }
 
-fn head_is_unborn(worktree: &Path) -> bool {
+pub(crate) fn head_is_unborn(worktree: &Path) -> bool {
     run_git(
         {
             let mut c = git_in(worktree);

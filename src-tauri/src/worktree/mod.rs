@@ -231,12 +231,17 @@ pub fn ahead_count(worktree: &Path, upstream: &str) -> Result<u32, String> {
     .map_err(|e| format!("rev-list count: {e}"))
 }
 
+const UNBORN_HEAD_MSG: &str = "Este repositório ainda não tem nenhum commit. O worktree precisa de um commit base para congelar o diff — faça um commit inicial e tente de novo.";
+
 pub fn create(repo_root: &Path, title: &str) -> Result<Worktree, String> {
     create_in(&managed_root()?, repo_root, title)
 }
 
 fn create_in(managed: &Path, repo_root: &Path, title: &str) -> Result<Worktree, String> {
     let repo_root = crate::repo::canonicalize_or(repo_root);
+    if diff::head_is_unborn(&repo_root) {
+        return Err(UNBORN_HEAD_MSG.into());
+    }
     let base_ref = head_sha(&repo_root)?;
     let slug = slugify(title);
     let suffix = short_suffix();
@@ -287,6 +292,9 @@ pub fn create_named(repo_root: &Path, branch: &str) -> Result<Worktree, String> 
 
 fn create_named_in(managed: &Path, repo_root: &Path, branch: &str) -> Result<Worktree, String> {
     let repo_root = crate::repo::canonicalize_or(repo_root);
+    if diff::head_is_unborn(&repo_root) {
+        return Err(UNBORN_HEAD_MSG.into());
+    }
     let base_ref = head_sha(&repo_root)?;
     let repo_name = repo_root
         .file_name()
@@ -893,6 +901,34 @@ mod lifecycle_tests {
             main_repo_of(&wt.path).unwrap(),
             crate::repo::canonicalize_or(&repo)
         );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    fn temp_repo_unborn(base: &Path) -> PathBuf {
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "t@t.com"]);
+        git(&repo, &["config", "user.name", "t"]);
+        repo
+    }
+
+    #[test]
+    fn create_on_unborn_head_returns_ptbr_message_not_git_stderr() {
+        let base = temp_base("unborn");
+        let repo = temp_repo_unborn(&base);
+        let managed = base.join("managed");
+
+        let err = create_in(&managed, &repo, "Minha Task").unwrap_err();
+
+        assert_eq!(err, UNBORN_HEAD_MSG);
+        assert!(!err.contains("fatal"), "{err}");
+        assert!(!err.contains("ambiguous"), "{err}");
+        assert!(!err.contains("HEAD"), "{err}");
+
+        let ok = create_in(&managed, &temp_repo(&base.join("with-commit")), "ok").expect("create");
+        assert!(ok.path.starts_with(&managed));
 
         std::fs::remove_dir_all(&base).ok();
     }
