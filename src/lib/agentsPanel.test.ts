@@ -46,6 +46,7 @@ const sub = (status: SubagentRun["status"]): SubagentRun => ({
   started_at_ms: 0,
   ended_at_ms: status === "done" ? 1 : null,
   summary: status === "done" ? "fez X" : null,
+  interrupted: false,
 });
 
 describe("agentsPanelSession", () => {
@@ -57,11 +58,14 @@ describe("agentsPanelSession", () => {
 });
 
 describe("deadAgentsPanels", () => {
+  const seen = (...ids: string[]) => new Set(ids);
+
   test("fecha quando a sessão dona saiu (exited)", () => {
     const ws = workspace({ id: "w1", side_view: "agents:s-1" });
     const dead = deadAgentsPanels(
       [ws],
       [session("s-1", { state: "exited", code: 0 })],
+      seen("s-1"),
     );
     expect(dead).toEqual(["w1"]);
   });
@@ -71,28 +75,38 @@ describe("deadAgentsPanels", () => {
     const dead = deadAgentsPanels(
       [ws],
       [session("s-1", { state: "failed", reason: "x" })],
+      seen("s-1"),
     );
     expect(dead).toEqual(["w1"]);
   });
 
-  test("fecha quando a sessão dona sumiu da lista", () => {
+  test("fecha quando a sessão dona (já vista) sumiu da lista", () => {
     const ws = workspace({ id: "w1", side_view: "agents:s-1" });
-    expect(deadAgentsPanels([ws], [])).toEqual(["w1"]);
+    expect(deadAgentsPanels([ws], [], seen("s-1"))).toEqual(["w1"]);
+  });
+
+  test("NÃO fecha sessão ausente que nunca foi vista (ainda carregando)", () => {
+    const ws = workspace({ id: "w1", side_view: "agents:s-1" });
+    expect(deadAgentsPanels([ws], [], seen())).toEqual([]);
   });
 
   test("NÃO fecha com a sessão viva (só subagentes terminaram)", () => {
     const ws = workspace({ id: "w1", side_view: "agents:s-1" });
     expect(
-      deadAgentsPanels([ws], [session("s-1", { state: "idle", summary: null })]),
+      deadAgentsPanels(
+        [ws],
+        [session("s-1", { state: "idle", summary: null })],
+        seen("s-1"),
+      ),
     ).toEqual([]);
     expect(
-      deadAgentsPanels([ws], [session("s-1", { state: "running" })]),
+      deadAgentsPanels([ws], [session("s-1", { state: "running" })], seen("s-1")),
     ).toEqual([]);
   });
 
   test("ignora side views que não são de agentes", () => {
     const ws = workspace({ id: "w1", side_view: "diff:s-1" });
-    expect(deadAgentsPanels([ws], [])).toEqual([]);
+    expect(deadAgentsPanels([ws], [], seen("s-1"))).toEqual([]);
   });
 
   test("varre múltiplos workspaces", () => {
@@ -104,6 +118,7 @@ describe("deadAgentsPanels", () => {
         session("s-1", { state: "running" }),
         session("s-2", { state: "exited", code: 1 }),
       ],
+      seen("s-1", "s-2"),
     );
     expect(dead).toEqual(["w2"]);
   });

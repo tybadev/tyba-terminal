@@ -833,8 +833,12 @@ export default function App() {
   // Sessão dona do painel Agentes morreu (exited/failed) ou sumiu → nada vivo
   // pra ver, fecha o side view. Não fecha quando só os subagentes terminam.
   const closingAgentsPanels = useRef<Set<string>>(new Set());
+  const seenAgentSessions = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const dead = new Set(deadAgentsPanels(layout.workspaces, sessions));
+    for (const s of sessions) seenAgentSessions.current.add(s.id);
+    const dead = new Set(
+      deadAgentsPanels(layout.workspaces, sessions, seenAgentSessions.current),
+    );
     for (const id of [...closingAgentsPanels.current]) {
       if (!dead.has(id)) closingAgentsPanels.current.delete(id);
     }

@@ -18,6 +18,7 @@ export const agentsPanelSession = (sideView: string | null): SessionId | null =>
 export const deadAgentsPanels = (
   workspaces: Workspace[],
   sessions: Session[],
+  seenSessions: Set<SessionId>,
 ): WorkspaceId[] => {
   const alive = new Map(sessions.map((s) => [s.id, s]));
   const out: WorkspaceId[] = [];
@@ -25,7 +26,11 @@ export const deadAgentsPanels = (
     const sessionId = agentsPanelSession(ws.side_view);
     if (!sessionId) continue;
     const session = alive.get(sessionId);
-    if (!session || isFinishedStatus(session.status)) out.push(ws.id);
+    if (session) {
+      if (isFinishedStatus(session.status)) out.push(ws.id);
+    } else if (seenSessions.has(sessionId)) {
+      out.push(ws.id);
+    }
   }
   return out;
 };
