@@ -14,9 +14,25 @@ use crate::status::transcript::clean_summary;
 
 pub type SharedSubagents = Arc<SubagentTracker>;
 
+/// Fecha o turno da sessão em `Idle` quando o último subagente async termina fora
+/// do fluxo de hooks. Recebe a sessão e o resumo do turno do orquestrador.
+pub type IdleCoordinator = Arc<dyn Fn(SessionId, Option<String>) + Send + Sync>;
+
+pub(crate) type SharedSessions = Arc<Mutex<HashMap<SessionId, SessionSubagents>>>;
+pub(crate) type SharedCoordinator = Arc<Mutex<Option<IdleCoordinator>>>;
+
 pub const EVENT_SUBAGENTS_CHANGED: &str = "subagents://changed";
 
 const SUMMARY_MAX_CHARS: usize = 280;
+
+const MIN_SUBAGENT_ID_LEN: usize = 8;
+
+/// Um `agent_id` real de subagente do Claude Code é hexadecimal (17 chars nesta
+/// máquina). Item de fila / prompt enfileirado não carrega um id assim — o gate
+/// evita transformar stop espúrio em entrada fantasma no painel.
+fn is_plausible_subagent_id(agent_id: &str) -> bool {
+    agent_id.len() >= MIN_SUBAGENT_ID_LEN && agent_id.chars().all(|c| c.is_ascii_hexdigit())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -83,12 +99,14 @@ pub struct Coordination {
 }
 
 #[derive(Default)]
-struct SessionSubagents {
+pub(crate) struct SessionSubagents {
     runs: Vec<SubagentRun>,
     focused: Option<String>,
     coordinated: bool,
     viewer_disarmed: bool,
     panel_disarmed: bool,
+    orchestrator_idle: bool,
+    orchestrator_idle_summary: Option<String>,
 }
 
 impl SessionSubagents {
@@ -178,6 +196,7 @@ impl SessionSubagents {
     fn mark_stopped(
         &mut self,
         agent_id: String,
+        agent_type: Option<String>,
         last_assistant_message: Option<String>,
         now: u64,
     ) -> bool {
@@ -201,9 +220,16 @@ impl SessionSubagents {
         if known {
             return false;
         }
+        let plausible_type = agent_type
+            .as_deref()
+            .map(|t| !t.trim().is_empty())
+            .unwrap_or(false);
+        if !is_plausible_subagent_id(&agent_id) || !plausible_type {
+            return false;
+        }
         self.runs.push(SubagentRun {
             agent_id: Some(agent_id),
-            agent_type: String::new(),
+            agent_type: agent_type.unwrap_or_default(),
             description: String::new(),
             status: SubagentStatus::Done,
             started_at_ms: now,
@@ -213,6 +239,48 @@ impl SessionSubagents {
             parent_transcript_path: None,
         });
         true
+    }
+
+    fn active_count(&self) -> usize {
+        self.runs
+            .iter()
+            .filter(|run| {
+                matches!(
+                    run.status,
+                    SubagentStatus::Starting | SubagentStatus::Running
+                )
+            })
+            .count()
+    }
+
+    /// Marca `Done` um subagente `Running` cuja conclusão foi detectada pelo
+    /// arquivo (EOF estável + última fala assistant). Não toca em `Starting`
+    /// (ainda sem `agent_id`) nem em runs já `Done`.
+    fn finish_running_by_file(
+        &mut self,
+        agent_id: &str,
+        summary: Option<String>,
+        now: u64,
+    ) -> bool {
+        let slot = self.runs.iter().position(|run| {
+            run.agent_id.as_deref() == Some(agent_id) && run.status == SubagentStatus::Running
+        });
+        let Some(index) = slot else {
+            return false;
+        };
+        let run = &mut self.runs[index];
+        run.status = SubagentStatus::Done;
+        run.ended_at_ms = Some(now);
+        run.summary = summary.and_then(|s| clean_summary(&s, SUMMARY_MAX_CHARS));
+        true
+    }
+
+    /// `Some(summary)` quando o orquestrador já fechou o turno e não há mais
+    /// subagente ativo — a sessão pode descer para `Idle`. `None` mantém como
+    /// está.
+    fn idle_transition(&self) -> Option<Option<String>> {
+        (self.orchestrator_idle && self.active_count() == 0)
+            .then(|| self.orchestrator_idle_summary.clone())
     }
 
     fn end_all(&mut self, now: u64) {
@@ -264,13 +332,18 @@ impl SessionSubagents {
 
 #[derive(Default)]
 pub struct SubagentTracker {
-    sessions: Mutex<HashMap<SessionId, SessionSubagents>>,
+    sessions: SharedSessions,
     watchers: TranscriptWatchers,
+    coordinator: SharedCoordinator,
 }
 
 impl SubagentTracker {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_idle_coordinator(&self, coordinator: IdleCoordinator) {
+        *self.coordinator.lock().expect("subagents coordinator lock") = Some(coordinator);
     }
 
     pub fn register_session(&self, session: SessionId) {
@@ -279,6 +352,31 @@ impl SubagentTracker {
             .expect("subagents lock")
             .entry(session)
             .or_default();
+    }
+
+    pub fn note_orchestrator_working(&self, session: SessionId) {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        if let Some(entry) = sessions.get_mut(&session) {
+            entry.orchestrator_idle = false;
+            entry.orchestrator_idle_summary = None;
+        }
+    }
+
+    pub fn note_orchestrator_idle(&self, session: SessionId, summary: Option<String>) {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        if let Some(entry) = sessions.get_mut(&session) {
+            entry.orchestrator_idle = true;
+            entry.orchestrator_idle_summary = summary;
+        }
+    }
+
+    pub fn has_active(&self, session: SessionId) -> bool {
+        self.sessions
+            .lock()
+            .expect("subagents lock")
+            .get(&session)
+            .map(|entry| entry.active_count() > 0)
+            .unwrap_or(false)
     }
 
     pub fn on_spawn_requested<R: Runtime>(
@@ -359,7 +457,7 @@ impl SubagentTracker {
             )
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
-        self.watchers.sync(app, session, targets);
+        self.sync_watchers(app, session, targets);
         coordination
     }
 
@@ -382,26 +480,34 @@ impl SubagentTracker {
         }
     }
 
+    /// Devolve `Some(summary)` quando o stop deste subagente deixou a sessão
+    /// pronta para descer a `Idle` (orquestrador já ocioso, zero subagente
+    /// ativo). O chamador (que possui o `SessionManager`) aplica o status.
     pub fn on_subagent_stopped<R: Runtime>(
         &self,
         app: &AppHandle<R>,
         session: SessionId,
         agent_id: String,
+        agent_type: Option<String>,
         last_assistant_message: Option<String>,
-    ) {
+    ) -> Option<Option<String>> {
         let agent_id = strip_agent_prefix(&agent_id);
-        let (payload, targets) = {
+        let (payload, targets, idle) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
-            let Some(entry) = sessions.get_mut(&session) else {
-                return;
-            };
-            if !entry.mark_stopped(agent_id, last_assistant_message, now_ms()) {
-                return;
+            let entry = sessions.get_mut(&session)?;
+            if !entry.mark_stopped(agent_id, agent_type, last_assistant_message, now_ms()) {
+                return None;
             }
-            (changed_payload(session, entry), entry.running_targets())
+            let idle = entry.idle_transition();
+            (
+                changed_payload(session, entry),
+                entry.running_targets(),
+                idle,
+            )
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
-        self.watchers.sync(app, session, targets);
+        self.sync_watchers(app, session, targets);
+        idle
     }
 
     pub fn on_session_ended<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId) {
@@ -414,7 +520,22 @@ impl SubagentTracker {
             (changed_payload(session, entry), entry.running_targets())
         };
         let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
-        self.watchers.sync(app, session, targets);
+        self.sync_watchers(app, session, targets);
+    }
+
+    fn sync_watchers<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session: SessionId,
+        targets: Vec<WatchSpec>,
+    ) {
+        self.watchers.sync(
+            app,
+            session,
+            targets,
+            Arc::clone(&self.sessions),
+            Arc::clone(&self.coordinator),
+        );
     }
 
     pub fn focus<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId, agent_id: String) {
@@ -482,6 +603,41 @@ fn changed_payload(session: SessionId, entry: &SessionSubagents) -> SubagentsCha
         focused: snapshot.focused,
         subagents: snapshot.subagents,
     }
+}
+
+/// Chamado pelo watcher quando um subagente async termina por arquivo. Marca o
+/// run `Done` e devolve o snapshot para reemitir e a transição de status
+/// pendente (se houver). Roda sob o lock de `sessions`, que é solto antes de
+/// tocar em status/app — sem lock aninhado.
+pub(crate) fn finish_by_file(
+    sessions: &SharedSessions,
+    session: SessionId,
+    agent_id: &str,
+    summary: Option<String>,
+    now: u64,
+) -> Option<(SubagentSnapshot, Option<Option<String>>)> {
+    let mut map = sessions.lock().ok()?;
+    let entry = map.get_mut(&session)?;
+    if !entry.finish_running_by_file(agent_id, summary, now) {
+        return None;
+    }
+    let idle = entry.idle_transition();
+    Some((entry.to_snapshot(), idle))
+}
+
+pub(crate) fn emit_snapshot<R: Runtime>(
+    app: &AppHandle<R>,
+    session: SessionId,
+    snapshot: SubagentSnapshot,
+) {
+    let _ = app.emit(
+        EVENT_SUBAGENTS_CHANGED,
+        SubagentsChangedPayload {
+            session_id: session,
+            focused: snapshot.focused,
+            subagents: snapshot.subagents,
+        },
+    );
 }
 
 fn strip_agent_prefix(agent_id: &str) -> String {
@@ -657,7 +813,7 @@ mod tests {
         session.promote("a1".into(), "reviewer".into(), None, None, 10);
         session.promote("a2".into(), "explorer".into(), None, None, 20);
         session.set_focus("a2".into());
-        session.mark_stopped("a2".into(), Some("pronto".into()), 30);
+        session.mark_stopped("a2".into(), None, Some("pronto".into()), 30);
         assert_eq!(session.focused.as_deref(), Some("a2"));
         assert_eq!(status_of(&session, "a2"), Some(SubagentStatus::Done));
     }
@@ -674,7 +830,7 @@ mod tests {
     fn stop_sets_summary_from_last_assistant_message() {
         let mut session = SessionSubagents::default();
         session.promote("a1".into(), "reviewer".into(), None, None, 10);
-        session.mark_stopped("a1".into(), Some("  achei   dois bugs ".into()), 20);
+        session.mark_stopped("a1".into(), None, Some("  achei   dois bugs ".into()), 20);
         let run = &session.runs[0];
         assert_eq!(run.status, SubagentStatus::Done);
         assert_eq!(run.ended_at_ms, Some(20));
@@ -685,20 +841,51 @@ mod tests {
     fn stop_summary_truncates_at_280_chars() {
         let mut session = SessionSubagents::default();
         session.promote("a1".into(), "reviewer".into(), None, None, 10);
-        session.mark_stopped("a1".into(), Some("x".repeat(400)), 20);
+        session.mark_stopped("a1".into(), None, Some("x".repeat(400)), 20);
         assert!(session.runs[0].summary.as_ref().unwrap().chars().count() <= 280);
     }
 
     #[test]
-    fn stop_of_unknown_agent_creates_orphan_done_run() {
+    fn stop_of_unknown_plausible_agent_creates_orphan_done_run() {
         let mut session = SessionSubagents::default();
-        session.mark_stopped("aX".into(), Some("resumo".into()), 50);
+        let created = session.mark_stopped(
+            "a51505d91f9ef581f".into(),
+            Some("general-purpose".into()),
+            Some("resumo".into()),
+            50,
+        );
+        assert!(created);
         assert_eq!(session.runs.len(), 1);
         let run = &session.runs[0];
-        assert_eq!(run.agent_id.as_deref(), Some("aX"));
+        assert_eq!(run.agent_id.as_deref(), Some("a51505d91f9ef581f"));
+        assert_eq!(run.agent_type, "general-purpose");
         assert_eq!(run.status, SubagentStatus::Done);
         assert_eq!(run.summary.as_deref(), Some("resumo"));
         assert!(session.focused.is_none());
+    }
+
+    #[test]
+    fn stop_without_plausible_id_creates_no_phantom() {
+        let mut session = SessionSubagents::default();
+        let created = session.mark_stopped("aX".into(), Some("general-purpose".into()), None, 50);
+        assert!(!created);
+        assert!(session.runs.is_empty());
+    }
+
+    #[test]
+    fn stop_without_agent_type_creates_no_phantom() {
+        let mut session = SessionSubagents::default();
+        let created = session.mark_stopped("a51505d91f9ef581f".into(), None, None, 50);
+        assert!(!created);
+        assert!(session.runs.is_empty());
+        let blank = session.mark_stopped(
+            "a51505d91f9ef581f".into(),
+            Some("   ".into()),
+            Some("resumo".into()),
+            50,
+        );
+        assert!(!blank);
+        assert!(session.runs.is_empty());
     }
 
     #[test]
@@ -763,9 +950,9 @@ mod tests {
     fn duplicate_stop_does_not_change_runs() {
         let mut session = SessionSubagents::default();
         session.promote("a1".into(), "reviewer".into(), None, None, 10);
-        assert!(session.mark_stopped("a1".into(), Some("pronto".into()), 20));
+        assert!(session.mark_stopped("a1".into(), None, Some("pronto".into()), 20));
         let len_after_first = session.runs.len();
-        assert!(!session.mark_stopped("a1".into(), Some("de novo".into()), 30));
+        assert!(!session.mark_stopped("a1".into(), None, Some("de novo".into()), 30));
         assert_eq!(session.runs.len(), len_after_first);
         assert_eq!(session.runs[0].summary.as_deref(), Some("pronto"));
         assert_eq!(session.runs[0].ended_at_ms, Some(20));
@@ -930,7 +1117,7 @@ mod tests {
         let restarted =
             tracker.on_subagent_started(&handle, session, "a2".into(), "reviewer".into(), None);
         assert!(restarted.is_none());
-        tracker.on_subagent_stopped(&handle, session, "a2".into(), Some("pronto".into()));
+        tracker.on_subagent_stopped(&handle, session, "a2".into(), None, Some("pronto".into()));
         tracker.on_spawn_requested(&handle, session, Some("explorer".into()), None);
 
         assert!(tracker.snapshot(session).subagents.is_empty());
@@ -956,7 +1143,7 @@ mod tests {
             "reviewer".into(),
             None,
         );
-        tracker.on_subagent_stopped(&handle, session, "abc".into(), Some("pronto".into()));
+        tracker.on_subagent_stopped(&handle, session, "abc".into(), None, Some("pronto".into()));
 
         let snapshot = tracker.snapshot(session);
         assert_eq!(snapshot.subagents.len(), 1);
@@ -1080,5 +1267,192 @@ mod tests {
 
         assert_eq!(tracker.resolve_transcript_path(session, "a1"), Some(jsonl));
         tracker.remove_session(&handle, session);
+    }
+
+    #[test]
+    fn active_count_reflects_starting_and_running() {
+        let mut session = SessionSubagents::default();
+        assert_eq!(session.active_count(), 0);
+        session.push_pending(Some("reviewer".into()), None, 10);
+        assert_eq!(session.active_count(), 1);
+        session.promote("a1".into(), "explorer".into(), None, None, 20);
+        assert_eq!(session.active_count(), 2);
+        session.mark_stopped("a1".into(), None, Some("pronto".into()), 30);
+        assert_eq!(session.active_count(), 1);
+    }
+
+    #[test]
+    fn finish_by_file_marks_running_done_with_summary() {
+        let mut session = SessionSubagents::default();
+        session.promote("a1".into(), "explorer".into(), None, None, 10);
+        assert!(session.finish_running_by_file("a1", Some("  fim  do  turno ".into()), 40));
+        let run = &session.runs[0];
+        assert_eq!(run.status, SubagentStatus::Done);
+        assert_eq!(run.ended_at_ms, Some(40));
+        assert_eq!(run.summary.as_deref(), Some("fim do turno"));
+    }
+
+    #[test]
+    fn finish_by_file_ignores_starting_and_done() {
+        let mut session = SessionSubagents::default();
+        session.push_pending(Some("reviewer".into()), None, 10);
+        assert!(!session.finish_running_by_file("a1", Some("x".into()), 40));
+        session.promote("a1".into(), "reviewer".into(), None, None, 20);
+        assert!(session.finish_running_by_file("a1", None, 40));
+        assert!(!session.finish_running_by_file("a1", Some("de novo".into()), 50));
+        assert_eq!(session.runs[0].status, SubagentStatus::Done);
+        assert_eq!(session.runs[0].ended_at_ms, Some(40));
+    }
+
+    #[test]
+    fn idle_transition_only_when_orchestrator_idle_and_no_active() {
+        let mut session = SessionSubagents::default();
+        session.promote("a1".into(), "explorer".into(), None, None, 10);
+        assert!(session.idle_transition().is_none());
+        session.orchestrator_idle = true;
+        session.orchestrator_idle_summary = Some("resumo do turno".into());
+        assert!(session.idle_transition().is_none());
+        session.finish_running_by_file("a1", None, 20);
+        assert_eq!(
+            session.idle_transition(),
+            Some(Some("resumo do turno".into()))
+        );
+    }
+
+    #[test]
+    fn has_active_true_with_running_subagent() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        assert!(!tracker.has_active(session));
+        tracker.on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None);
+        assert!(tracker.has_active(session));
+    }
+
+    #[test]
+    fn file_finish_flips_session_to_idle_when_orchestrator_idle() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        tracker.on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None);
+
+        type Flips = Arc<Mutex<Vec<(SessionId, Option<String>)>>>;
+        let flips: Flips = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&flips);
+        tracker.set_idle_coordinator(Arc::new(move |s, summary| {
+            sink.lock().unwrap().push((s, summary));
+        }));
+
+        // Orquestrador ocioso, mas subagente ainda ativo: nada acontece ainda.
+        tracker.note_orchestrator_idle(session, Some("turno pronto".into()));
+
+        let (snapshot, idle) =
+            finish_by_file(&tracker.sessions, session, "a1", Some("fim".into()), 99).unwrap();
+        assert_eq!(snapshot.subagents[0].status, SubagentStatus::Done);
+        // simula o watcher aplicando a transição via coordinator
+        if let Some(summary) = idle {
+            if let Some(coordinator) = tracker.coordinator.lock().unwrap().clone() {
+                coordinator(session, summary);
+            }
+        }
+        let recorded = flips.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, session);
+        assert_eq!(recorded[0].1.as_deref(), Some("turno pronto"));
+    }
+
+    #[test]
+    fn subagent_stop_returns_idle_transition_when_last_one_ends() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        tracker.on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None);
+        tracker.note_orchestrator_idle(session, Some("turno".into()));
+
+        let idle = tracker.on_subagent_stopped(
+            &handle,
+            session,
+            "a1".into(),
+            Some("explorer".into()),
+            Some("achei".into()),
+        );
+        assert_eq!(idle, Some(Some("turno".into())));
+    }
+
+    #[test]
+    fn subagent_stop_holds_running_while_another_active() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        tracker.on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None);
+        tracker.on_subagent_started(&handle, session, "a2".into(), "reviewer".into(), None);
+        tracker.note_orchestrator_idle(session, Some("turno".into()));
+
+        let idle = tracker.on_subagent_stopped(
+            &handle,
+            session,
+            "a1".into(),
+            Some("explorer".into()),
+            Some("achei".into()),
+        );
+        assert!(idle.is_none());
+        assert!(tracker.has_active(session));
+    }
+
+    #[test]
+    fn working_signal_clears_orchestrator_idle() {
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        tracker.note_orchestrator_idle(session, Some("turno".into()));
+        tracker.note_orchestrator_working(session);
+        let sessions = tracker.sessions.lock().unwrap();
+        let entry = sessions.get(&session).unwrap();
+        assert!(!entry.orchestrator_idle);
+        assert!(entry.orchestrator_idle_summary.is_none());
+    }
+
+    #[test]
+    fn session_end_freezes_active_subagent_as_done_without_phantom() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        // subagente async ainda aberto no tracker
+        tracker.on_subagent_started(
+            &handle,
+            session,
+            "a51505d91f9ef581f".into(),
+            "general-purpose".into(),
+            None,
+        );
+        // item de fila / stop espúrio não vira entrada
+        tracker.on_subagent_stopped(
+            &handle,
+            session,
+            "queued".into(),
+            None,
+            Some("prompt".into()),
+        );
+
+        tracker.on_session_ended(&handle, session);
+
+        let snapshot = tracker.snapshot(session);
+        assert_eq!(snapshot.subagents.len(), 1);
+        assert_eq!(snapshot.subagents[0].status, SubagentStatus::Done);
+        assert!(snapshot.subagents[0].ended_at_ms.is_some());
+        assert!(!snapshot.subagents.iter().any(|run| matches!(
+            run.status,
+            SubagentStatus::Running | SubagentStatus::Starting
+        )));
     }
 }
