@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowsInSimple, ArrowsOutSimple, TreeStructure, X } from "@phosphor-icons/react";
+import {
+  ArrowsInSimple,
+  ArrowsOutSimple,
+  ShieldSlash,
+  TreeStructure,
+  X,
+} from "@phosphor-icons/react";
 
 import type { Session, SubagentRun, SubagentSnapshot } from "@/lib/ipc";
 import { orchestratorVisual } from "@/lib/agentsPanel";
@@ -9,6 +15,7 @@ import { AgentIcon } from "./icons/AgentIcon";
 interface Props {
   session: Session;
   snapshot: SubagentSnapshot | null;
+  ungated: boolean;
   expanded: boolean;
   onToggleExpand: () => void;
   onClose: () => void;
@@ -34,6 +41,7 @@ function nodeClass(status: SubagentRun["status"], active: boolean): string {
 export function AgentsPanel({
   session,
   snapshot,
+  ungated,
   expanded,
   onToggleExpand,
   onClose,
@@ -78,6 +86,19 @@ export function AgentsPanel({
           <X size={13} />
         </button>
       </header>
+
+      {ungated && (
+        <div className="flex shrink-0 items-start gap-1.5 border-b border-tyba-border bg-tyba-amber/[.06] px-3 py-1.5">
+          <ShieldSlash
+            size={12}
+            weight="fill"
+            className="mt-px shrink-0 text-tyba-amber"
+          />
+          <span className="min-w-0 text-[11px] leading-snug text-tyba-text-muted">
+            {t("agentsNoGate")}
+          </span>
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2.5">
         <div className="flex items-center gap-2.5 motion-safe:animate-tyba-node-in">

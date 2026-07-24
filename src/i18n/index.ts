@@ -142,6 +142,7 @@ const resources = {
       agentsEmpty:
         "Nenhum subagente ainda. Quando o agente disparar um subagente, ele aparece aqui.",
       agentsUnknownType: "subagente",
+      agentsNoGate: "sem gate — comandos não passam pela aprovação",
       agentsSessionGone: "A sessão destes agentes não existe mais.",
       subagentsTitle: "Subagente",
       subagentsSummary: "Resumo",
@@ -993,6 +994,7 @@ const resources = {
       agentsEmpty:
         "No subagents yet. When the agent spawns one, it shows up here.",
       agentsUnknownType: "subagent",
+      agentsNoGate: "no gate — commands bypass approval",
       agentsSessionGone: "The session for these agents no longer exists.",
       subagentsTitle: "Subagent",
       subagentsSummary: "Summary",
