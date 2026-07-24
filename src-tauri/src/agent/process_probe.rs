@@ -56,8 +56,9 @@ fn looks_like_version(name: &str) -> bool {
 /// arquivo executado, e o launcher nativo do Claude Code executa
 /// `.../claude/versions/2.1.218`, então o comm vira `2.1.218` e o casamento
 /// por nome falha (foi exatamente o furo do E2E de 2026-07-24). Regras:
-/// basename igual ao binário do runner, ou basename versão-like com um
-/// diretório ancestral com o nome do runner.
+/// basename igual ao binário do runner, ou o layout exato do instalador
+/// nativo — `.../<runner>/versions/<versão>` — pra não promover a agente
+/// qualquer binário versionado sob uma pasta chamada `claude`.
 fn kind_from_exec_path(path: &std::path::Path) -> Option<AgentRunnerKind> {
     let file = path.file_name()?.to_str()?;
     if let Some(kind) = agent_kind_for_comm(file) {
@@ -66,17 +67,12 @@ fn kind_from_exec_path(path: &std::path::Path) -> Option<AgentRunnerKind> {
     if !looks_like_version(file) {
         return None;
     }
-    let parent = path.parent()?;
-    [AgentRunnerKind::ClaudeCode, AgentRunnerKind::Codex]
-        .into_iter()
-        .find(|kind| {
-            runner_binary(kind).is_some_and(|bin| {
-                parent
-                    .components()
-                    .filter_map(|c| c.as_os_str().to_str())
-                    .any(|seg| seg == bin)
-            })
-        })
+    let versions = path.parent()?;
+    if versions.file_name()?.to_str()? != "versions" {
+        return None;
+    }
+    let runner_dir = versions.parent()?.file_name()?.to_str()?;
+    agent_kind_for_comm(runner_dir)
 }
 
 #[cfg(target_os = "macos")]
@@ -107,12 +103,17 @@ fn exec_path(_pid: u32) -> Option<std::path::PathBuf> {
     None
 }
 
-/// Resolver de produção: comm primeiro (barato, cobre binário direto), caminho
-/// do executável como reserva (uma syscall, e só pra processo da árvore do
-/// shell que não casou por comm — nunca pro snapshot inteiro).
+/// Resolver de produção: comm primeiro (barato, cobre binário direto); o
+/// caminho do executável (uma syscall) só entra quando o comm parece VERSÃO —
+/// a assinatura do launcher nativo. Filho comum de build (node, cc, rustc…)
+/// nunca paga a syscall, então uma árvore com centenas de processos custa
+/// ~zero por tick (performance-first).
 pub fn detect_kind(row: &ProcRow) -> Option<AgentRunnerKind> {
-    agent_kind_for_comm(&row.comm)
-        .or_else(|| exec_path(row.pid).and_then(|p| kind_from_exec_path(&p)))
+    agent_kind_for_comm(&row.comm).or_else(|| {
+        looks_like_version(&row.comm)
+            .then(|| exec_path(row.pid).and_then(|p| kind_from_exec_path(&p)))
+            .flatten()
+    })
 }
 
 /// Anda a árvore de processos a partir do `leader_pid` do shell (BFS pelos
@@ -145,7 +146,13 @@ pub fn find_agent(
             if !visited.insert(child.pid) {
                 continue;
             }
+            // Poda: um nó mais fundo que o melhor achado nunca vence (empate
+            // só no MESMO nível), então nem se sonda nem se desce nele — sem
+            // isso a BFS varreria a subárvore inteira do agente já detectado.
             let child_depth = depth + 1;
+            if child_depth > best_depth {
+                continue;
+            }
             if let Some(kind) = kind_of(child) {
                 let better = match &best {
                     None => true,
@@ -163,7 +170,9 @@ pub fn find_agent(
                     best_depth = child_depth;
                 }
             }
-            queue.push_back((child.pid, child_depth));
+            if child_depth < best_depth {
+                queue.push_back((child.pid, child_depth));
+            }
         }
     }
 
@@ -502,6 +511,16 @@ mod tests {
             kind_from_exec_path(std::path::Path::new(
                 "/Users/x/.local/share/claude/versions/beta"
             )),
+            None
+        );
+        // Binário versionado sob uma pasta chamada `claude` que NÃO é o layout
+        // do instalador (`<runner>/versions/<versão>`) não vira agente.
+        assert_eq!(
+            kind_from_exec_path(std::path::Path::new("/Users/x/claude/1.2.3")),
+            None
+        );
+        assert_eq!(
+            kind_from_exec_path(std::path::Path::new("/home/claude/apps/versions/1.2.3")),
             None
         );
     }

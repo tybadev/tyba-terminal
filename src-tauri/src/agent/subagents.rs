@@ -131,6 +131,8 @@ impl SessionSubagents {
             self.coordinated = false;
             self.viewer_disarmed = false;
             self.panel_disarmed = false;
+            self.orchestrator_idle = false;
+            self.orchestrator_idle_summary = None;
         }
     }
 
