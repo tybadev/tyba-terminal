@@ -30,7 +30,7 @@ const MIN_SUBAGENT_ID_LEN: usize = 8;
 /// Um `agent_id` real de subagente do Claude Code é hexadecimal (17 chars nesta
 /// máquina). Item de fila / prompt enfileirado não carrega um id assim — o gate
 /// evita transformar stop espúrio em entrada fantasma no painel.
-fn is_plausible_subagent_id(agent_id: &str) -> bool {
+pub(crate) fn is_plausible_subagent_id(agent_id: &str) -> bool {
     agent_id.len() >= MIN_SUBAGENT_ID_LEN && agent_id.chars().all(|c| c.is_ascii_hexdigit())
 }
 
@@ -690,7 +690,7 @@ fn strip_agent_prefix(agent_id: &str) -> String {
         .to_string()
 }
 
-fn sidecar_dir(parent_transcript_path: &Path) -> PathBuf {
+pub(crate) fn sidecar_dir(parent_transcript_path: &Path) -> PathBuf {
     parent_transcript_path.with_extension("").join("subagents")
 }
 

@@ -1,4 +1,5 @@
 pub mod codex_hooks;
+pub mod disk_observer;
 pub mod hooks_settings;
 pub mod process_probe;
 pub mod session;

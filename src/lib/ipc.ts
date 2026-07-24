@@ -410,6 +410,28 @@ export const onAnyAgentReady = (
     handler(e.payload.session_id),
   );
 
+export type AgentRunner = "claude_code" | "codex" | { custom: string };
+
+export interface DetectedAgent {
+  pid: number;
+  start_ms: number;
+  kind: AgentRunner;
+}
+
+export const detectedAgent = (sessionId: SessionId) =>
+  invoke<DetectedAgent | null>("detected_agent", { sessionId });
+
+export const onAgentDetected = (
+  handler: (p: {
+    session_id: SessionId;
+    detected: DetectedAgent | null;
+  }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ session_id: SessionId; detected: DetectedAgent | null }>(
+    "agent-detected://changed",
+    (e) => handler(e.payload),
+  );
+
 // --- base64 <-> bytes (chunks de PTY podem quebrar UTF-8 no meio) ---
 
 const decodeBase64 = (data: string): Uint8Array =>

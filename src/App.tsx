@@ -165,6 +165,9 @@ import {
   listSubagents,
   focusSubagent,
   onSubagentsChanged,
+  detectedAgent,
+  onAgentDetected,
+  type DetectedAgent,
   type SubagentSnapshot,
   renameWorkspace,
   onRepoChanged,
@@ -218,7 +221,11 @@ import {
   statusVisual,
   type StatusVisual,
 } from "./lib/sessionStatus";
-import { deadAgentsPanels } from "./lib/agentsPanel";
+import {
+  agentsPanelUngated,
+  deadAgentsPanels,
+  showAgentsButton,
+} from "./lib/agentsPanel";
 import { usePresence } from "./lib/usePresence";
 import {
   SPINNER_FRAMES,
@@ -431,6 +438,9 @@ export default function App() {
   const [layout, setLayout] = useState<LayoutState>(EMPTY_LAYOUT);
   const [subagentsBySession, setSubagentsBySession] = useState<
     Map<SessionId, SubagentSnapshot>
+  >(() => new Map());
+  const [detectedBySession, setDetectedBySession] = useState<
+    Map<SessionId, DetectedAgent>
   >(() => new Map());
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
   const [togglePref, setTogglePref] = useState<SidebarTogglePref>("hidden");
@@ -938,6 +948,59 @@ export default function App() {
     }
   }, [sessions]);
 
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    void onAgentDetected((p) => {
+      if (cancelled) return;
+      setDetectedBySession((prev) => {
+        if (p.detected) return new Map(prev).set(p.session_id, p.detected);
+        if (!prev.has(p.session_id)) return prev;
+        const next = new Map(prev);
+        next.delete(p.session_id);
+        return next;
+      });
+    }).then((un) => {
+      if (cancelled) un();
+      else unlisten = un;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const probedDetection = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const live = new Set(sessions.map((s) => s.id));
+    setDetectedBySession((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const key of [...next.keys()]) {
+        if (!live.has(key)) {
+          next.delete(key);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    for (const id of [...probedDetection.current]) {
+      if (!live.has(id)) probedDetection.current.delete(id);
+    }
+    for (const s of sessions) {
+      if (s.kind.type !== "shell" || probedDetection.current.has(s.id)) continue;
+      probedDetection.current.add(s.id);
+      void detectedAgent(s.id)
+        .then((d) => {
+          if (!d) return;
+          setDetectedBySession((prev) =>
+            prev.has(s.id) ? prev : new Map(prev).set(s.id, d),
+          );
+        })
+        .catch(() => probedDetection.current.delete(s.id));
+    }
+  }, [sessions]);
+
   const worktreeRepoRoots = useMemo(() => {
     const roots = new Set<string>();
     for (const w of layout.workspaces) {
@@ -1180,6 +1243,12 @@ export default function App() {
 
   const activeSession = activeId ? sessionById.get(activeId) : undefined;
   const activeCommand = activeId ? sessionCommands[activeId] : undefined;
+  const agentsButtonVisible =
+    activeSession != null &&
+    showAgentsButton(
+      activeSession.kind,
+      activeId != null && detectedBySession.has(activeId),
+    );
 
   useEffect(() => {
     const markSeen = () => {
@@ -3125,7 +3194,7 @@ export default function App() {
             </Tooltip>
           )}
 
-          {activeId && activeSession?.kind.type === "agent" && (
+          {activeId && agentsButtonVisible && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -3875,6 +3944,7 @@ export default function App() {
                             snapshot={
                               subagentsBySession.get(agentsTarget.id) ?? null
                             }
+                            ungated={agentsPanelUngated(agentsTarget.kind)}
                             expanded={sideExpanded}
                             onToggleExpand={() =>
                               void setSideViewExpanded(

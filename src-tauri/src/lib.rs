@@ -56,6 +56,7 @@ struct AppState {
     hook_servers: Arc<agent::session::HookServerRegistry>,
     subagents: agent::subagents::SharedSubagents,
     agent_prober: agent::process_probe::SharedAgentProber,
+    disk_observer: agent::disk_observer::SharedDiskObserver,
     tunnel_states: crate::ssh::tunnel::SharedTunnelStates,
 }
 
@@ -111,7 +112,35 @@ fn poll_agent_probers(app: &AppHandle) {
     } else {
         agent::process_probe::snapshot()
     };
-    for (session_id, detected) in state.agent_prober.reconcile(&shells, &rows) {
+    let changes = state.agent_prober.reconcile(&shells, &rows);
+    let leader_by_session: std::collections::HashMap<SessionId, u32> =
+        shells.iter().copied().collect();
+    let changed: std::collections::HashSet<SessionId> = changes.iter().map(|(id, _)| *id).collect();
+    for (session_id, detected) in &changes {
+        drive_disk_observer(
+            app,
+            &state,
+            &leader_by_session,
+            *session_id,
+            detected.as_ref(),
+        );
+    }
+    // Detecção estável não re-emite: uma sessão cujo transcript ainda não existia
+    // na transição da F1 (janela de startup do claude) jamais ganharia observer.
+    // Re-tenta a cada poll enquanto o agente segue detectado e sem thread viva.
+    for session_id in leader_by_session.keys().copied() {
+        if changed.contains(&session_id) || state.disk_observer.is_observing(session_id) {
+            continue;
+        }
+        if let Some(detected) = state.agent_prober.detected(session_id) {
+            drive_disk_observer(app, &state, &leader_by_session, session_id, Some(&detected));
+        }
+    }
+    let live: std::collections::HashSet<SessionId> = leader_by_session.keys().copied().collect();
+    state
+        .disk_observer
+        .retain_live(app, &state.subagents, &live);
+    for (session_id, detected) in changes {
         let _ = app.emit(
             agent::process_probe::EVENT_CHANGED,
             agent::process_probe::AgentDetectedPayload {
@@ -119,6 +148,38 @@ fn poll_agent_probers(app: &AppHandle) {
                 detected,
             },
         );
+    }
+}
+
+/// Liga a detecção de processo da F1 ao disk observer da F2. Claude cru num shell
+/// ganha captura de subagentes por disco; agente sumido congela o painel. Só
+/// Claude Code por ora (Codex disk-driven fica para depois). O cwd do transcript
+/// é o do próprio processo do agente, com o líder do shell como reserva.
+fn drive_disk_observer(
+    app: &AppHandle,
+    state: &AppState,
+    leader_by_session: &std::collections::HashMap<SessionId, u32>,
+    session_id: SessionId,
+    detected: Option<&agent::process_probe::DetectedAgent>,
+) {
+    match detected {
+        Some(agent) if matches!(agent.kind, crate::session::AgentRunnerKind::ClaudeCode) => {
+            let cwd = repo::process_cwd(agent.pid).or_else(|| {
+                leader_by_session
+                    .get(&session_id)
+                    .and_then(|pid| repo::process_cwd(*pid))
+            });
+            if let Some(cwd) = cwd {
+                state.disk_observer.observe(
+                    app,
+                    &state.subagents,
+                    session_id,
+                    &cwd,
+                    agent.start_ms,
+                );
+            }
+        }
+        _ => state.disk_observer.stop(app, &state.subagents, session_id),
     }
 }
 
@@ -4039,6 +4100,7 @@ pub fn run() {
                 hook_servers: Arc::new(agent::session::HookServerRegistry::default()),
                 subagents: Arc::new(agent::subagents::SubagentTracker::new()),
                 agent_prober: Arc::new(agent::process_probe::AgentProber::default()),
+                disk_observer: Arc::new(agent::disk_observer::DiskObserver::new()),
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
             });
 
