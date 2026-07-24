@@ -8,11 +8,14 @@ import type {
   Workspace,
 } from "./ipc";
 import {
+  agentsPanelRunConcluded,
   agentsPanelSession,
   agentsPanelUngated,
   deadAgentsPanels,
   orchestratorVisual,
   showAgentsButton,
+  trackPanelRun,
+  type PanelRunEntry,
 } from "./agentsPanel";
 
 const workspace = (over: Partial<Workspace> = {}): Workspace =>
@@ -212,5 +215,97 @@ describe("orchestratorVisual", () => {
       orchestratorVisual({ state: "running" }, false, [])?.labelKey,
     ).toBe("sessionInProgress");
     expect(orchestratorVisual({ state: "idle", summary: null }, false, [])).toBeNull();
+  });
+});
+
+describe("agentsPanelRunConcluded", () => {
+  const agentKind: SessionKind = { type: "agent", runner: "claude_code" };
+  const shellKind: SessionKind = { type: "shell" };
+  const idle: SessionStatus = { state: "idle", summary: "resumo" };
+
+  test("gerenciada: turno encerrado com todos os subagentes Done conclui", () => {
+    expect(agentsPanelRunConcluded(agentKind, idle, [sub("done")])).toBe(true);
+    expect(
+      agentsPanelRunConcluded(agentKind, { state: "exited", code: 0 }, [
+        sub("done"),
+      ]),
+    ).toBe(true);
+  });
+
+  test("gerenciada: turno ainda rodando não conclui, mesmo com subagentes Done", () => {
+    expect(
+      agentsPanelRunConcluded(agentKind, { state: "running" }, [sub("done")]),
+    ).toBe(false);
+    expect(
+      agentsPanelRunConcluded(
+        agentKind,
+        { state: "awaiting_input", hint: null, reason: "approval" },
+        [sub("done")],
+      ),
+    ).toBe(false);
+  });
+
+  test("subagente ativo nunca conclui", () => {
+    expect(agentsPanelRunConcluded(agentKind, idle, [sub("running")])).toBe(
+      false,
+    );
+    expect(
+      agentsPanelRunConcluded(shellKind, { state: "running" }, [
+        sub("done"),
+        sub("starting"),
+      ]),
+    ).toBe(false);
+  });
+
+  test("painel sem rodada (zero subagentes) nunca conclui", () => {
+    expect(agentsPanelRunConcluded(agentKind, idle, [])).toBe(false);
+    expect(agentsPanelRunConcluded(shellKind, { state: "running" }, [])).toBe(
+      false,
+    );
+  });
+
+  test("shell: todos Done conclui independente do status da sessão", () => {
+    expect(
+      agentsPanelRunConcluded(shellKind, { state: "running" }, [sub("done")]),
+    ).toBe(true);
+  });
+});
+
+describe("trackPanelRun", () => {
+  test("painel abrindo no meio da rodada arma e fecha na conclusão", () => {
+    const opened = trackPanelRun(undefined, "s1", false);
+    expect(opened.entry).toEqual({ session: "s1", armed: true });
+    expect(opened.action).toBe("cancel");
+
+    const running = trackPanelRun(opened.entry, "s1", false);
+    expect(running.action).toBe("cancel");
+
+    const concluded = trackPanelRun(running.entry, "s1", true);
+    expect(concluded.action).toBe("schedule");
+    expect(concluded.entry.armed).toBe(false);
+
+    const after = trackPanelRun(concluded.entry, "s1", true);
+    expect(after.action).toBe("none");
+  });
+
+  test("painel reaberto depois da conclusão não agenda fechamento", () => {
+    const reopened = trackPanelRun(undefined, "s1", true);
+    expect(reopened.entry).toEqual({ session: "s1", armed: false });
+    expect(reopened.action).toBe("cancel");
+    expect(trackPanelRun(reopened.entry, "s1", true).action).toBe("none");
+  });
+
+  test("rodada nova depois da conclusão re-arma e fecha de novo no fim", () => {
+    const handled: PanelRunEntry = { session: "s1", armed: false };
+    const rearmed = trackPanelRun(handled, "s1", false);
+    expect(rearmed.entry.armed).toBe(true);
+    expect(trackPanelRun(rearmed.entry, "s1", true).action).toBe("schedule");
+  });
+
+  test("painel trocando de sessão recomeça o rastreio", () => {
+    const s1: PanelRunEntry = { session: "s1", armed: false };
+    const swapped = trackPanelRun(s1, "s2", false);
+    expect(swapped.entry).toEqual({ session: "s2", armed: true });
+    expect(swapped.action).toBe("cancel");
   });
 });

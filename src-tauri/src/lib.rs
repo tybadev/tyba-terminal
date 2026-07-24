@@ -127,9 +127,11 @@ fn poll_agent_probers(app: &AppHandle) {
     }
     // Detecção estável não re-emite: uma sessão cujo transcript ainda não existia
     // na transição da F1 (janela de startup do claude) jamais ganharia observer.
-    // Re-tenta a cada poll enquanto o agente segue detectado e sem thread viva.
+    // Re-tenta a cada poll enquanto o agente segue detectado e o bind não é
+    // forte — sem thread viva OU bind provisório (melhor-esforço por mtime),
+    // que re-resolve até aparecer candidato datado pós-agente.
     for session_id in leader_by_session.keys().copied() {
-        if changed.contains(&session_id) || state.disk_observer.is_observing(session_id) {
+        if changed.contains(&session_id) || state.disk_observer.is_settled(session_id) {
             continue;
         }
         if let Some(detected) = state.agent_prober.detected(session_id) {
@@ -4100,7 +4102,12 @@ pub fn run() {
                 hook_servers: Arc::new(agent::session::HookServerRegistry::default()),
                 subagents: Arc::new(agent::subagents::SubagentTracker::new()),
                 agent_prober: Arc::new(agent::process_probe::AgentProber::default()),
-                disk_observer: Arc::new(agent::disk_observer::DiskObserver::new()),
+                disk_observer: Arc::new(agent::disk_observer::DiskObserver::with_coordinator({
+                    let coordinate_app = app.handle().clone();
+                    Arc::new(move |session, coordination| {
+                        coordinate_subagent_viewer(&coordinate_app, session, coordination);
+                    })
+                })),
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
             });
 

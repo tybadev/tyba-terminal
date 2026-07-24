@@ -11,6 +11,8 @@ import { isFinishedStatus, statusVisual, type StatusVisual } from "./sessionStat
 
 const AGENTS_VIEW_PREFIX = "agents:";
 
+export const AGENTS_PANEL_LINGER_MS = 2_500;
+
 export const agentsPanelSession = (sideView: string | null): SessionId | null => {
   if (!sideView?.startsWith(AGENTS_VIEW_PREFIX)) return null;
   return sideView.slice(AGENTS_VIEW_PREFIX.length);
@@ -50,6 +52,41 @@ export const agentsPanelUngated = (kind: SessionKind): boolean =>
 
 const anyActive = (subagents: SubagentRun[]): boolean =>
   subagents.some((s) => s.status === "running" || s.status === "starting");
+
+export const agentsPanelRunConcluded = (
+  kind: SessionKind,
+  status: SessionStatus,
+  subagents: SubagentRun[],
+): boolean => {
+  if (subagents.length === 0 || anyActive(subagents)) return false;
+  if (kind.type === "agent") {
+    return (
+      status.state === "idle" ||
+      status.state === "exited" ||
+      status.state === "failed"
+    );
+  }
+  return true;
+};
+
+export type PanelRunEntry = { session: SessionId; armed: boolean };
+
+export const trackPanelRun = (
+  entry: PanelRunEntry | undefined,
+  session: SessionId,
+  concluded: boolean,
+): { entry: PanelRunEntry; action: "cancel" | "schedule" | "none" } => {
+  if (!entry || entry.session !== session) {
+    return { entry: { session, armed: !concluded }, action: "cancel" };
+  }
+  if (!concluded) {
+    return { entry: { session, armed: true }, action: "cancel" };
+  }
+  if (entry.armed) {
+    return { entry: { session, armed: false }, action: "schedule" };
+  }
+  return { entry, action: "none" };
+};
 
 export const orchestratorVisual = (
   status: SessionStatus,
