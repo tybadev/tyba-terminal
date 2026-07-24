@@ -3849,6 +3849,40 @@ fn focus_subagent(
     state.subagents.snapshot(session_id)
 }
 
+/// Mata o agente cru detectado numa sessão de shell (F3 do
+/// detectar-agente-no-shell) e devolve o cwd do agente pro front encadear o
+/// attach gerenciado. Valida ANTES de matar que a pasta é um repo git — nunca
+/// derruba o agente pra depois falhar o reopen. O shell da sessão sobrevive.
+#[tauri::command]
+async fn kill_shell_agent(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+) -> Result<String, crate::error::AppError> {
+    let agent = state
+        .agent_prober
+        .detected(session_id)
+        .ok_or_else(|| crate::error::AppError::new("agent.reopen_not_detected"))?;
+    let leader = state.pty_pool.leader_pid(session_id);
+    let cwd = repo::process_cwd(agent.pid)
+        .or_else(|| leader.and_then(repo::process_cwd))
+        .ok_or_else(|| crate::error::AppError::new("agent.reopen_no_cwd"))?;
+    if repo::toplevel(&cwd).is_none() {
+        return Err(
+            crate::error::AppError::new("agent.reopen_not_git").with("path", cwd.to_string_lossy())
+        );
+    }
+    // O grace do SIGTERM (~1,5s) roda fora da thread do command — mesmo padrão
+    // do painel remoto: worker do Tokio nunca dorme.
+    tauri::async_runtime::spawn_blocking(move || {
+        agent::process_probe::terminate_detected(agent.pid, agent.start_ms, leader)
+    })
+    .await
+    .map_err(|e| {
+        crate::error::AppError::new("agent.reopen_kill_failed").with("detail", e.to_string())
+    })??;
+    Ok(cwd.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 fn open_agents_panel(
     app: AppHandle,
@@ -4327,6 +4361,7 @@ pub fn run() {
             focus_subagent,
             subagent_transcript,
             open_agents_panel,
+            kill_shell_agent,
             open_subagent_viewer,
             agent_repo_config,
             set_agent_config_consent,

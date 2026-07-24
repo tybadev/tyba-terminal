@@ -421,6 +421,9 @@ export interface DetectedAgent {
 export const detectedAgent = (sessionId: SessionId) =>
   invoke<DetectedAgent | null>("detected_agent", { sessionId });
 
+export const killShellAgent = (sessionId: SessionId) =>
+  invoke<string>("kill_shell_agent", { sessionId });
+
 export const onAgentDetected = (
   handler: (p: {
     session_id: SessionId;

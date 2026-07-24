@@ -70,6 +70,12 @@ import { CommandPalette } from "./components/CommandPalette";
 import { ConfirmHost } from "./components/ConfirmHost";
 import { ToastHost } from "./components/ToastHost";
 import { requestConfirm } from "./lib/confirm";
+import { translateError } from "./lib/errors";
+import {
+  agentBinaryName,
+  noticeKey,
+  showShellAgentNotice,
+} from "./lib/shellAgentNotice";
 import {
   paneRunningAgent,
   tabRunningAgent,
@@ -166,6 +172,8 @@ import {
   focusSubagent,
   onSubagentsChanged,
   detectedAgent,
+  killShellAgent,
+  type AgentRunner,
   onAgentDetected,
   type DetectedAgent,
   type SubagentSnapshot,
@@ -446,6 +454,11 @@ export default function App() {
   >(() => new Map());
   const [detectedBySession, setDetectedBySession] = useState<
     Map<SessionId, DetectedAgent>
+  >(() => new Map());
+  // F2/F3 do detectar-agente-no-shell: "Ignorar" esconde o aviso só pra
+  // aquela instância de processo (pid+start) — um agente novo re-avisa.
+  const [dismissedShellNotices, setDismissedShellNotices] = useState<
+    Map<SessionId, string>
   >(() => new Map());
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
   const [togglePref, setTogglePref] = useState<SidebarTogglePref>("hidden");
@@ -1045,6 +1058,17 @@ export default function App() {
       }
       return changed ? next : prev;
     });
+    setDismissedShellNotices((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const key of [...next.keys()]) {
+        if (!live.has(key)) {
+          next.delete(key);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
     for (const id of [...probedDetection.current]) {
       if (!live.has(id)) probedDetection.current.delete(id);
     }
@@ -1102,9 +1126,9 @@ export default function App() {
   // sandbox, com o env inteiro do usuário e, sobretudo, sem os hooks: sem
   // PreToolUse não há gate, e um agente fora do inbox faz o que quiser.
   const spawnAgentSession = useCallback(
-    async (title: string, cwd: string) => {
+    async (title: string, cwd: string, runner?: AgentRunner) => {
       const fresh = await createSession({
-        kind: { type: "agent", runner: runnerFromCommand(reviewAgent) },
+        kind: { type: "agent", runner: runner ?? runnerFromCommand(reviewAgent) },
         cwd,
         title,
         attach_existing: true,
@@ -1149,6 +1173,53 @@ export default function App() {
       goToSession(sid);
     },
     [sessions, goToSession, spawnAgentSession, typeIntoSession],
+  );
+
+  const dismissShellAgentNotice = useCallback(
+    (sessionId: SessionId) => {
+      const detected = detectedBySession.get(sessionId);
+      if (!detected) return;
+      setDismissedShellNotices((prev) =>
+        new Map(prev).set(sessionId, noticeKey(detected)),
+      );
+    },
+    [detectedBySession],
+  );
+
+  const reopeningShellAgents = useRef<Set<SessionId>>(new Set());
+  const reopenShellAgentManaged = useCallback(
+    async (sessionId: SessionId) => {
+      const detected = detectedBySession.get(sessionId);
+      if (!detected || reopeningShellAgents.current.has(sessionId)) return;
+      reopeningShellAgents.current.add(sessionId);
+      try {
+        const binary = agentBinaryName(detected.kind);
+        const proceed = await requestConfirm({
+          title: t("shellAgentReopenTitle"),
+          detail: t("shellAgentReopenDetail", { binary }),
+          confirmLabel: t("shellAgentReopen"),
+          destructive: true,
+        });
+        if (!proceed) return;
+        let cwd: string;
+        try {
+          cwd = await killShellAgent(sessionId);
+        } catch (e) {
+          toastError(t("shellAgentReopenFailed"), translateError(e, t));
+          return;
+        }
+        try {
+          const title = cwd.split("/").filter(Boolean).pop() ?? binary;
+          const sid = await spawnAgentSession(title, cwd, detected.kind);
+          goToSession(sid);
+        } catch (e) {
+          toastError(t("shellAgentReopenSpawnFailed"), translateError(e, t));
+        }
+      } finally {
+        reopeningShellAgents.current.delete(sessionId);
+      }
+    },
+    [detectedBySession, spawnAgentSession, goToSession, t],
   );
 
   // Sessão com agente vivo recebe o prompt direto; sessão plain (ou morta)
@@ -3761,10 +3832,25 @@ export default function App() {
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ??
                       null;
+                    const detected = detectedBySession.get(s.id) ?? null;
+                    const notice = showShellAgentNotice(
+                      s.kind,
+                      detected,
+                      dismissedShellNotices.get(s.id),
+                    );
                     return (
                       <TerminalView
                         key={s.id}
                         sessionId={s.id}
+                        agentNotice={
+                          notice && detected
+                            ? { binary: agentBinaryName(detected.kind) }
+                            : null
+                        }
+                        onReopenManaged={() =>
+                          void reopenShellAgentManaged(s.id)
+                        }
+                        onDismissNotice={() => dismissShellAgentNotice(s.id)}
                         onPaste={deliverPaste}
                         onSearch={() => setSearchOpen(true)}
                         onSplit={(kind) => void splitActive(kind)}
