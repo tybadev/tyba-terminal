@@ -36,6 +36,7 @@ pub struct TranscriptCandidate {
 pub struct DiscoveredSubagent {
     pub agent_id: String,
     pub agent_type: String,
+    pub description: Option<String>,
 }
 
 /// Resolução do transcript ativo. `provisional` marca o melhor-esforço por
@@ -201,27 +202,35 @@ pub fn scan_new_subagents(sidecar: &Path, known: &HashSet<String>) -> Vec<Discov
         if !is_plausible_subagent_id(agent_id) || known.contains(agent_id) {
             continue;
         }
-        let Some(agent_type) = read_agent_type(sidecar, agent_id) else {
+        let Some((agent_type, description)) = read_agent_meta(sidecar, agent_id) else {
             continue;
         };
         out.push(DiscoveredSubagent {
             agent_id: agent_id.to_string(),
             agent_type,
+            description,
         });
     }
     out
 }
 
-fn read_agent_type(sidecar: &Path, agent_id: &str) -> Option<String> {
+fn read_agent_meta(sidecar: &Path, agent_id: &str) -> Option<(String, Option<String>)> {
     let meta = sidecar.join(format!("agent-{agent_id}.meta.json"));
     let body = std::fs::read_to_string(meta).ok()?;
-    serde_json::from_str::<Value>(&body)
-        .ok()?
+    let value = serde_json::from_str::<Value>(&body).ok()?;
+    let agent_type = value
         .get("agentType")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|t| !t.is_empty())
-        .map(str::to_string)
+        .map(str::to_string)?;
+    let description = value
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string);
+    Some((agent_type, description))
 }
 
 /// Bind provisório re-resolve por ~90s (45 ticks × 2s da F1) e então assenta:
@@ -476,6 +485,7 @@ fn poll_once<R: Runtime>(
             session,
             found.agent_id,
             found.agent_type,
+            found.description,
             Some(parent),
         ) {
             coordinations.push(coordination);
@@ -671,6 +681,7 @@ mod tests {
             vec![DiscoveredSubagent {
                 agent_id: "a1b2c3d4e5".into(),
                 agent_type: "reviewer".into(),
+                description: Some("revisar diff".into()),
             }]
         );
     }
@@ -800,6 +811,7 @@ mod tests {
             session,
             "a1b2c3d4e5".into(),
             "explorer".into(),
+            None,
             Some(&parent),
         );
         assert!(tracker.has_active(session));
@@ -886,6 +898,87 @@ mod tests {
 
         observer.retain_live(&handle, &tracker, &HashSet::new());
         assert!(!observer.is_observing(session));
+    }
+
+    #[test]
+    fn resumed_session_end_to_end_binds_provisionally_and_captures_new_sidecars() {
+        // O cenário do E2E de 2026-07-24: `claude --continue` numa sessão de
+        // ONTEM. O slug só tem transcripts frios; o retomado volta a ser
+        // escrito (mtime fresco, timestamps antigos) e os sidecars novos caem
+        // no diretório ANTIGO. O fluxo real: resolve → None (tudo frio) →
+        // retry → bind provisório no retomado → thread captura os sidecars.
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let observer = DiskObserver::new();
+        let session = SessionId::new_v4();
+        let slug = TempDir::new().unwrap();
+        let resumed = slug.path().join("resumed.jsonl");
+        let cold = slug.path().join("cold.jsonl");
+        write(
+            &resumed,
+            "{\"type\":\"user\",\"timestamp\":\"2026-07-23T18:28:00.000Z\",\"message\":{}}\n",
+        );
+        write(
+            &cold,
+            "{\"type\":\"user\",\"timestamp\":\"2026-07-23T01:18:00.000Z\",\"message\":{}}\n",
+        );
+        let old = "202607231528";
+        for path in [&resumed, &cold] {
+            let status = std::process::Command::new("touch")
+                .args(["-t", old])
+                .arg(path)
+                .status()
+                .expect("touch");
+            assert!(status.success());
+        }
+        let sidecar = resumed.with_extension("").join("subagents");
+        fs::create_dir_all(&sidecar).unwrap();
+        write(&sidecar.join("agent-a13c17fb51.jsonl"), "{}");
+        write(
+            &sidecar.join("agent-a13c17fb51.meta.json"),
+            r#"{"agentType":"explorer"}"#,
+        );
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Tick 1: agente acabou de nascer, nada foi escrito ainda — todos os
+        // candidatos são frios ⇒ nenhum bind, o retry fica armado.
+        let candidates = list_transcript_candidates(slug.path());
+        observer.observe_with(&handle, &tracker, session, || {
+            choose_active_transcript(&candidates, now_ms)
+        });
+        assert!(!observer.is_observing(session));
+
+        // O claude retomado escreve: mtime do transcript fica fresco.
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&resumed)
+            .unwrap();
+        writeln!(file, "{}", "{\"type\":\"assistant\",\"message\":{}}").unwrap();
+        drop(file);
+
+        // Tick 2: o retomado vira o único plausível ⇒ bind provisório, e a
+        // thread captura o sidecar novo do diretório antigo.
+        let candidates = list_transcript_candidates(slug.path());
+        let chosen = choose_active_transcript(&candidates, now_ms);
+        assert_eq!(
+            chosen,
+            Some(ActiveTranscript {
+                path: resumed.clone(),
+                provisional: true
+            })
+        );
+        observer.observe_with(&handle, &tracker, session, || chosen.clone());
+        assert!(observer.is_observing(session));
+        assert!(!observer.is_settled(session));
+        assert!(wait_for_subagent(&tracker, session, "a13c17fb51"));
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
     }
 
     #[test]

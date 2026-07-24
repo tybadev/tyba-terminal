@@ -4092,6 +4092,16 @@ export default function App() {
                               subagentsBySession.get(agentsTarget.id) ?? null
                             }
                             ungated={agentsPanelUngated(agentsTarget.kind)}
+                            orchestratorTitle={
+                              agentsTarget.kind.type === "shell"
+                                ? (() => {
+                                    const d = detectedBySession.get(
+                                      agentsTarget.id,
+                                    );
+                                    return d ? agentBinaryName(d.kind) : null;
+                                  })()
+                                : null
+                            }
                             expanded={sideExpanded}
                             onToggleExpand={() =>
                               void setSideViewExpanded(

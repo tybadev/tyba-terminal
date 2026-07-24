@@ -16,6 +16,9 @@ interface Props {
   session: Session;
   snapshot: SubagentSnapshot | null;
   ungated: boolean;
+  /** Nome do orquestrador no topo da cascata: em sessão de shell é o binário
+   * detectado (`claude`), não o título da sessão (que seria o shell). */
+  orchestratorTitle?: string | null;
   expanded: boolean;
   onToggleExpand: () => void;
   onClose: () => void;
@@ -42,6 +45,7 @@ export function AgentsPanel({
   session,
   snapshot,
   ungated,
+  orchestratorTitle,
   expanded,
   onToggleExpand,
   onClose,
@@ -106,7 +110,7 @@ export function AgentsPanel({
             <AgentIcon size={13} />
           </span>
           <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-tyba-text">
-            {session.title}
+            {orchestratorTitle ?? session.title}
           </span>
           {visual && (
             <span className="flex shrink-0 items-center gap-1.5">

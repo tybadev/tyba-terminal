@@ -360,6 +360,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     ctx.session_id,
                     agent_id,
                     agent_type,
+                    None,
                     parent.as_deref(),
                 );
                 if let Some(coordination) = coordination {
