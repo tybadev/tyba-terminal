@@ -3899,6 +3899,21 @@ fn open_agents_panel(
     Ok(())
 }
 
+/// Fecha os splits de viewer de subagente da sessão — o par do auto-fechar do
+/// painel Agentes no fim da rodada: viewer e painel são uma feature só.
+#[tauri::command]
+fn close_agent_viewers(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+) -> Result<(), String> {
+    for pane in state.layout.agent_viewer_panes(session_id) {
+        let _ = state.layout.close_pane(pane);
+    }
+    emit_layout(&app, &state);
+    Ok(())
+}
+
 #[tauri::command]
 fn open_subagent_viewer(
     app: AppHandle,
@@ -4363,6 +4378,7 @@ pub fn run() {
             open_agents_panel,
             kill_shell_agent,
             open_subagent_viewer,
+            close_agent_viewers,
             agent_repo_config,
             set_agent_config_consent,
             list_themes,
