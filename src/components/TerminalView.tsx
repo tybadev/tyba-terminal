@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CircleNotch } from "@phosphor-icons/react";
+import { CircleNotch, ShieldSlash } from "@phosphor-icons/react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -126,6 +126,10 @@ interface Props {
   onPaste?: (sessionId: SessionId, text: string) => void;
   onSearch?: () => void;
   onSplit?: (kind: "v" | "h") => void;
+  /** Agente cru detectado no shell (F2 do detectar-agente-no-shell). */
+  agentNotice?: { binary: string } | null;
+  onReopenManaged?: () => void;
+  onDismissNotice?: () => void;
 }
 
 export function TerminalView({
@@ -145,6 +149,9 @@ export function TerminalView({
   onPaste,
   onSearch,
   onSplit,
+  agentNotice,
+  onReopenManaged,
+  onDismissNotice,
 }: Props) {
   const [gotOutput, setGotOutput] = useState(false);
   // O onData é assinado uma vez no mount: sem ref, a rajada ficaria presa no
@@ -462,6 +469,40 @@ export function TerminalView({
 
   return (
     <>
+    {agentNotice && rect && visible && !exited && (
+      <div
+        className="z-10 flex items-center gap-2 border-b border-tyba-amber/30 bg-tyba-sunken px-2 py-1"
+        style={{
+          position: "absolute",
+          left: `${rect.left}%`,
+          top: `${rect.top}%`,
+          width: `${rect.width}%`,
+        }}
+      >
+        <ShieldSlash size={12} weight="fill" className="shrink-0 text-tyba-amber" />
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-tyba-text-muted">
+          {i18n.t("shellAgentNotice", { binary: agentNotice.binary })}
+        </span>
+        {onReopenManaged && (
+          <button
+            type="button"
+            onClick={onReopenManaged}
+            className="shrink-0 rounded-[3px] border border-tyba-amber/40 px-2 py-0.5 font-mono text-[10px] text-tyba-amber hover:bg-tyba-amber/10"
+          >
+            {i18n.t("shellAgentReopen")}
+          </button>
+        )}
+        {onDismissNotice && (
+          <button
+            type="button"
+            onClick={onDismissNotice}
+            className="shrink-0 rounded-[3px] px-1.5 py-0.5 font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
+          >
+            {i18n.t("shellAgentIgnore")}
+          </button>
+        )}
+      </div>
+    )}
     {showPipe && rect && (
       <div
         className="z-10 flex flex-col items-center justify-center gap-2 rounded-[4px] bg-tyba-sunken/90"

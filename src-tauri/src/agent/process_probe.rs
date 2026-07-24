@@ -142,6 +142,76 @@ impl AgentProber {
     }
 }
 
+#[cfg(unix)]
+const TERMINATE_GRACE: Duration = Duration::from_millis(1500);
+#[cfg(unix)]
+const TERMINATE_POLL: Duration = Duration::from_millis(100);
+
+/// Encerra o agente detectado numa sessão de shell, cirurgicamente:
+/// - re-verifica a identidade num snapshot fresco (pid + start_ms) — um pid
+///   reciclado ou um agente que já saiu nunca é morto, e ambos contam como
+///   sucesso (o objetivo é "não está mais rodando");
+/// - mata o process group DO AGENTE (`getpgid`), nunca o do shell nem o
+///   nosso: se o agente compartilha grupo com o líder do shell (shell sem job
+///   control) ou com o próprio TYBA, mata só o pid;
+/// - SIGTERM, grace de ~1,5s com poll de liveness, SIGKILL no que sobrar.
+///
+/// O princípio 9 (killpg da sessão inteira) vale pro kill de SESSÃO; aqui o
+/// shell sobrevive de propósito — só o agente cru sai.
+#[cfg(unix)]
+pub fn terminate_detected(
+    pid: u32,
+    start_ms: u64,
+    shell_leader_pid: Option<u32>,
+) -> Result<(), crate::error::AppError> {
+    let rows = snapshot();
+    let Some(row) = rows.iter().find(|r| r.pid == pid) else {
+        return Ok(());
+    };
+    if row.start_ms != start_ms {
+        return Ok(());
+    }
+    let pid_i = pid as i32;
+    let pgid = unsafe { libc::getpgid(pid_i) };
+    let shell_pgid = shell_leader_pid.map(|lp| unsafe { libc::getpgid(lp as i32) });
+    let own_pgid = unsafe { libc::getpgid(0) };
+    let group_kill = pgid > 0 && Some(pgid) != shell_pgid && pgid != own_pgid;
+    let send = |sig: i32| {
+        if group_kill {
+            unsafe { libc::killpg(pgid, sig) }
+        } else {
+            unsafe { libc::kill(pid_i, sig) }
+        }
+    };
+    if send(libc::SIGTERM) != 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        return Err(
+            crate::error::AppError::new("agent.reopen_kill_failed").with("detail", err.to_string())
+        );
+    }
+    let deadline = std::time::Instant::now() + TERMINATE_GRACE;
+    while std::time::Instant::now() < deadline {
+        if unsafe { libc::kill(pid_i, 0) } != 0 {
+            return Ok(());
+        }
+        std::thread::sleep(TERMINATE_POLL);
+    }
+    let _ = send(libc::SIGKILL);
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn terminate_detected(
+    _pid: u32,
+    _start_ms: u64,
+    _shell_leader_pid: Option<u32>,
+) -> Result<(), crate::error::AppError> {
+    Err(crate::error::AppError::new("agent.reopen_unsupported"))
+}
+
 /// Snapshot de todos os processos vivos (pid, ppid, comm, start_ms). macOS via
 /// libproc, Linux via `/proc`, demais plataformas vazio (ver stubs abaixo).
 #[cfg(target_os = "macos")]
@@ -458,5 +528,114 @@ mod tests {
         let changes = prober.reconcile(&[], &[]);
         assert!(changes.is_empty(), "sessão morta não gera evento");
         assert_eq!(prober.detected(s), None, "estado da sessão morta é limpo");
+    }
+
+    #[cfg(unix)]
+    fn spawn_sleeper_in_own_group() -> std::process::Child {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30");
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        cmd.spawn().expect("spawn sleep")
+    }
+
+    #[cfg(unix)]
+    fn snapshot_start_ms(pid: u32) -> Option<u64> {
+        for _ in 0..50 {
+            if let Some(row) = snapshot().into_iter().find(|r| r.pid == pid) {
+                return Some(row.start_ms);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    #[cfg(unix)]
+    fn wait_gone(child: &mut std::process::Child) -> bool {
+        for _ in 0..100 {
+            if let Ok(Some(_)) = child.try_wait() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_kills_the_verified_agent() {
+        let mut child = spawn_sleeper_in_own_group();
+        let pid = child.id();
+        let start_ms = snapshot_start_ms(pid).expect("sleeper no snapshot");
+
+        terminate_detected(pid, start_ms, None).expect("terminate");
+        assert!(wait_gone(&mut child), "sleeper deveria morrer no TERM");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_refuses_a_recycled_pid() {
+        // start_ms divergente = o pid não é mais o agente detectado; nada morre
+        // e a chamada é sucesso (o agente detectado já não existe).
+        let mut child = spawn_sleeper_in_own_group();
+        let pid = child.id();
+        let start_ms = snapshot_start_ms(pid).expect("sleeper no snapshot");
+
+        terminate_detected(pid, start_ms + 999_999, None).expect("mismatch é ok");
+        assert!(
+            matches!(child.try_wait(), Ok(None)),
+            "sleeper deveria seguir vivo"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_spares_the_group_when_the_agent_shares_it_with_the_shell() {
+        // Shell sem job control: o agente herda o pgid do líder. killpg aqui
+        // levaria o shell (e o grupo inteiro) junto — o kill degrada pra pid
+        // único. O espectador no mesmo grupo prova que não houve killpg: se
+        // houvesse, ele (e o próprio runner de teste) morreria no TERM.
+        let mut agent = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn agente");
+        let mut bystander = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn espectador");
+        let pid = agent.id();
+        let start_ms = snapshot_start_ms(pid).expect("agente no snapshot");
+
+        terminate_detected(pid, start_ms, Some(std::process::id())).expect("terminate");
+        assert!(wait_gone(&mut agent), "agente deveria morrer no TERM");
+        assert!(
+            matches!(bystander.try_wait(), Ok(None)),
+            "irmão de grupo deveria sobreviver — killpg teria levado o grupo"
+        );
+
+        let _ = bystander.kill();
+        let _ = bystander.wait();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_of_a_dead_pid_is_success() {
+        let mut child = spawn_sleeper_in_own_group();
+        let pid = child.id();
+        let start_ms = snapshot_start_ms(pid).expect("sleeper no snapshot");
+        child.kill().expect("kill");
+        child.wait().expect("wait");
+
+        terminate_detected(pid, start_ms, None).expect("morto é sucesso");
     }
 }

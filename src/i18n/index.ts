@@ -144,6 +144,26 @@ const resources = {
       agentsUnknownType: "subagente",
       agentsNoGate: "sem gate — comandos não passam pela aprovação",
       agentsSessionGone: "A sessão destes agentes não existe mais.",
+      shellAgentNotice:
+        "{{binary}} rodando sem o gate do TYBA — sem inbox de aprovações, sem sandbox",
+      shellAgentReopen: "Reabrir gerenciado",
+      shellAgentIgnore: "Ignorar",
+      shellAgentReopenTitle: "Reabrir gerenciado?",
+      shellAgentReopenDetail:
+        "O {{binary}} atual vai ser encerrado e uma sessão gerenciada — com inbox de aprovações e sandbox — abre na mesma pasta. A conversa fica no disco; retome com /resume no agente novo.",
+      shellAgentReopenFailed: "Não deu pra reabrir gerenciado",
+      shellAgentReopenSpawnFailed:
+        "O agente foi encerrado, mas a sessão gerenciada não abriu",
+      "error.agent.reopen_not_detected":
+        "Nenhum agente detectado nesta sessão.",
+      "error.agent.reopen_no_cwd":
+        "Não deu pra descobrir a pasta do agente.",
+      "error.agent.reopen_not_git":
+        "{{path}} não é um repositório git — sessão gerenciada precisa de um repo.",
+      "error.agent.reopen_kill_failed":
+        "Não deu pra encerrar o agente: {{detail}}",
+      "error.agent.reopen_unsupported":
+        "Reabrir gerenciado ainda não está disponível nesta plataforma.",
       subagentsTitle: "Subagente",
       subagentsSummary: "Resumo",
       subagentsViewerEmpty: "Nenhum subagente em foco.",
@@ -996,6 +1016,24 @@ const resources = {
       agentsUnknownType: "subagent",
       agentsNoGate: "no gate — commands bypass approval",
       agentsSessionGone: "The session for these agents no longer exists.",
+      shellAgentNotice:
+        "{{binary}} running without TYBA's gate — no approval inbox, no sandbox",
+      shellAgentReopen: "Reopen managed",
+      shellAgentIgnore: "Ignore",
+      shellAgentReopenTitle: "Reopen managed?",
+      shellAgentReopenDetail:
+        "The current {{binary}} will be terminated and a managed session — with approval inbox and sandbox — opens in the same folder. The conversation stays on disk; resume it with /resume in the new agent.",
+      shellAgentReopenFailed: "Could not reopen managed",
+      shellAgentReopenSpawnFailed:
+        "The agent was terminated, but the managed session did not open",
+      "error.agent.reopen_not_detected": "No agent detected in this session.",
+      "error.agent.reopen_no_cwd": "Could not resolve the agent's folder.",
+      "error.agent.reopen_not_git":
+        "{{path}} is not a git repository — managed sessions require a repo.",
+      "error.agent.reopen_kill_failed":
+        "Could not terminate the agent: {{detail}}",
+      "error.agent.reopen_unsupported":
+        "Reopen managed is not available on this platform yet.",
       subagentsTitle: "Subagent",
       subagentsSummary: "Summary",
       subagentsViewerEmpty: "No subagent in focus.",
