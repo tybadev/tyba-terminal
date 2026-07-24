@@ -132,6 +132,17 @@ impl PaneNode {
         }
     }
 
+    fn collect_agent_viewer_panes(&self, session: SessionId, out: &mut Vec<PaneId>) {
+        match self {
+            PaneNode::AgentViewer { id, session_id } if *session_id == session => out.push(*id),
+            PaneNode::Leaf { .. } | PaneNode::AgentViewer { .. } => {}
+            PaneNode::Split { first, second, .. } => {
+                first.collect_agent_viewer_panes(session, out);
+                second.collect_agent_viewer_panes(session, out);
+            }
+        }
+    }
+
     fn contains_agent_viewer(&self, session: SessionId) -> bool {
         match self {
             PaneNode::AgentViewer { session_id, .. } => *session_id == session,
@@ -1155,6 +1166,22 @@ impl LayoutManager {
             .iter()
             .flat_map(|w| w.tabs.iter())
             .find_map(|t| t.root.as_ref().and_then(|r| r.agent_viewer_session(pane)))
+    }
+
+    /// Panes de viewer de subagente da sessão, em qualquer workspace/tab —
+    /// viewer e painel Agentes são UMA feature: quem fecha a rodada fecha os
+    /// dois.
+    pub fn agent_viewer_panes(&self, session: SessionId) -> Vec<PaneId> {
+        let inner = self.inner.read();
+        let mut out = Vec::new();
+        for ws in &inner.workspaces {
+            for tab in &ws.tabs {
+                if let Some(root) = &tab.root {
+                    root.collect_agent_viewer_panes(session, &mut out);
+                }
+            }
+        }
+        out
     }
 
     pub fn ensure_agent_viewer(&self, session: SessionId) -> bool {

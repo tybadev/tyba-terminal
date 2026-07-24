@@ -127,6 +127,7 @@ import {
 import {
   activateTab,
   activateWorkspace,
+  closeAgentViewers,
   closePane,
   closeSideView,
   closeTab,
@@ -924,6 +925,9 @@ export default function App() {
         );
         if (current && agentsPanelSession(current.side_view) === sessionId) {
           void closeSideView(ws.id).catch(() => {});
+          // Viewer e painel são uma feature: o fim da rodada fecha os dois —
+          // o split do viewer não pode ficar órfão na tela.
+          void closeAgentViewers(sessionId).catch(() => {});
         }
       }, AGENTS_PANEL_LINGER_MS);
       panelCloseTimers.current.set(ws.id, timer);
@@ -4092,6 +4096,16 @@ export default function App() {
                               subagentsBySession.get(agentsTarget.id) ?? null
                             }
                             ungated={agentsPanelUngated(agentsTarget.kind)}
+                            orchestratorTitle={
+                              agentsTarget.kind.type === "shell"
+                                ? (() => {
+                                    const d = detectedBySession.get(
+                                      agentsTarget.id,
+                                    );
+                                    return d ? agentBinaryName(d.kind) : null;
+                                  })()
+                                : null
+                            }
                             expanded={sideExpanded}
                             onToggleExpand={() =>
                               void setSideViewExpanded(

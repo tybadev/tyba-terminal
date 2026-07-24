@@ -113,7 +113,31 @@ pub(crate) struct SessionSubagents {
 }
 
 impl SessionSubagents {
+    /// Rodada nova (primeiro subagente chegando com TODOS os anteriores Done)
+    /// re-arma a coordenação — o painel/viewer voltam a auto-abrir — e limpa os
+    /// nós da rodada anterior: o painel representa A RODADA, não o histórico
+    /// (que vive no transcript). Sem o re-arm, o coordinate-once valia pra
+    /// sessão inteira e as rodadas seguintes rodavam às cegas; sem a limpeza,
+    /// as rodadas se empilhavam numa lista confusa (E2E de 2026-07-24).
+    fn rearm_for_new_round(&mut self) {
+        let round_settled = !self.runs.is_empty()
+            && self
+                .runs
+                .iter()
+                .all(|run| run.status == SubagentStatus::Done);
+        if round_settled {
+            self.runs.clear();
+            self.focused = None;
+            self.coordinated = false;
+            self.viewer_disarmed = false;
+            self.panel_disarmed = false;
+            self.orchestrator_idle = false;
+            self.orchestrator_idle_summary = None;
+        }
+    }
+
     fn push_pending(&mut self, agent_type: Option<String>, description: Option<String>, now: u64) {
+        self.rearm_for_new_round();
         self.runs.push(SubagentRun {
             agent_id: None,
             agent_type: agent_type.unwrap_or_default(),
@@ -140,10 +164,12 @@ impl SessionSubagents {
         &mut self,
         agent_id: String,
         agent_type: String,
+        description: Option<String>,
         transcript_path: Option<PathBuf>,
         parent_transcript_path: Option<&Path>,
         now: u64,
     ) {
+        self.rearm_for_new_round();
         let slot = self
             .runs
             .iter()
@@ -160,7 +186,7 @@ impl SessionSubagents {
                 self.runs.push(SubagentRun {
                     agent_id: Some(agent_id.clone()),
                     agent_type,
-                    description: String::new(),
+                    description: description.unwrap_or_default(),
                     status: SubagentStatus::Running,
                     started_at_ms: now,
                     ended_at_ms: None,
@@ -441,6 +467,7 @@ impl SubagentTracker {
         session: SessionId,
         agent_id: String,
         agent_type: String,
+        description: Option<String>,
         parent_transcript_path: Option<&Path>,
     ) -> Option<Coordination> {
         let agent_id = strip_agent_prefix(&agent_id);
@@ -449,6 +476,7 @@ impl SubagentTracker {
             sessions
                 .get(&session)
                 .and_then(|entry| entry.pending_hint(&agent_type))
+                .or_else(|| description.clone())
         };
         let transcript_path = resolve_transcript(
             parent_transcript_path,
@@ -462,6 +490,7 @@ impl SubagentTracker {
             entry.promote(
                 agent_id,
                 agent_type,
+                description,
                 transcript_path,
                 parent_transcript_path,
                 now_ms(),
@@ -808,7 +837,7 @@ mod tests {
         session.push_pending(Some("reviewer".into()), Some("segundo".into()), 20);
         session.push_pending(Some("explorer".into()), Some("outro tipo".into()), 30);
 
-        session.promote("a1".into(), "reviewer".into(), None, None, 40);
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 40);
 
         let promoted = session
             .runs
@@ -829,7 +858,7 @@ mod tests {
     fn start_without_matching_pending_creates_running_run() {
         let mut session = SessionSubagents::default();
         session.push_pending(Some("reviewer".into()), None, 10);
-        session.promote("a9".into(), "explorer".into(), None, None, 20);
+        session.promote("a9".into(), "explorer".into(), None, None, None, 20);
         assert_eq!(status_of(&session, "a9"), Some(SubagentStatus::Running));
         assert_eq!(
             session
@@ -844,17 +873,17 @@ mod tests {
     #[test]
     fn first_running_becomes_default_focus() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, None, 10);
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 10);
         assert_eq!(session.focused.as_deref(), Some("a1"));
-        session.promote("a2".into(), "explorer".into(), None, None, 20);
+        session.promote("a2".into(), "explorer".into(), None, None, None, 20);
         assert_eq!(session.focused.as_deref(), Some("a1"));
     }
 
     #[test]
     fn focus_stays_on_agent_after_it_finishes() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, None, 10);
-        session.promote("a2".into(), "explorer".into(), None, None, 20);
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 10);
+        session.promote("a2".into(), "explorer".into(), None, None, None, 20);
         session.set_focus("a2".into());
         session.mark_stopped("a2".into(), None, Some("pronto".into()), 30);
         assert_eq!(session.focused.as_deref(), Some("a2"));
@@ -864,7 +893,7 @@ mod tests {
     #[test]
     fn focus_ignores_unknown_agent() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, None, 10);
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 10);
         session.set_focus("ghost".into());
         assert_eq!(session.focused.as_deref(), Some("a1"));
     }
@@ -872,7 +901,7 @@ mod tests {
     #[test]
     fn stop_sets_summary_from_last_assistant_message() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, None, 10);
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 10);
         session.mark_stopped("a1".into(), None, Some("  achei   dois bugs ".into()), 20);
         let run = &session.runs[0];
         assert_eq!(run.status, SubagentStatus::Done);
@@ -883,7 +912,7 @@ mod tests {
     #[test]
     fn stop_summary_truncates_at_280_chars() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, None, 10);
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 10);
         session.mark_stopped("a1".into(), None, Some("x".repeat(400)), 20);
         assert!(session.runs[0].summary.as_ref().unwrap().chars().count() <= 280);
     }
@@ -934,7 +963,7 @@ mod tests {
     #[test]
     fn session_end_marks_running_as_done_and_discards_starting() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, None, 10);
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 10);
         session.push_pending(Some("explorer".into()), None, 20);
         session.end_all(99);
         let running_done = session
@@ -992,7 +1021,7 @@ mod tests {
     #[test]
     fn duplicate_stop_does_not_change_runs() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "reviewer".into(), None, None, 10);
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 10);
         assert!(session.mark_stopped("a1".into(), None, Some("pronto".into()), 20));
         let len_after_first = session.runs.len();
         assert!(!session.mark_stopped("a1".into(), None, Some("de novo".into()), 30));
@@ -1112,7 +1141,7 @@ mod tests {
         session.push_pending(Some("reviewer".into()), Some("revisar".into()), 10);
         let hint = session.pending_hint("reviewer");
         let path = resolve_transcript(Some(&parent), "a1", "reviewer", hint.as_deref());
-        session.promote("a1".into(), "reviewer".into(), path, None, 20);
+        session.promote("a1".into(), "reviewer".into(), None, path, None, 20);
         assert_eq!(session.runs[0].transcript_path, Some(jsonl));
     }
 
@@ -1130,7 +1159,7 @@ mod tests {
             Some("reviewer".into()),
             Some("revisar".into()),
         );
-        tracker.on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None);
+        tracker.on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None, None);
         let snapshot = tracker.snapshot(session);
         assert_eq!(snapshot.focused.as_deref(), Some("a1"));
         assert_eq!(snapshot.subagents.len(), 1);
@@ -1154,11 +1183,17 @@ mod tests {
         let session = SessionId::new_v4();
 
         tracker.register_session(session);
-        tracker.on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None);
+        tracker.on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None, None);
         tracker.remove_session(&handle, session);
 
-        let restarted =
-            tracker.on_subagent_started(&handle, session, "a2".into(), "reviewer".into(), None);
+        let restarted = tracker.on_subagent_started(
+            &handle,
+            session,
+            "a2".into(),
+            "reviewer".into(),
+            None,
+            None,
+        );
         assert!(restarted.is_none());
         tracker.on_subagent_stopped(&handle, session, "a2".into(), None, Some("pronto".into()));
         tracker.on_spawn_requested(&handle, session, Some("explorer".into()), None);
@@ -1185,6 +1220,7 @@ mod tests {
             "agent-abc".into(),
             "reviewer".into(),
             None,
+            None,
         );
         tracker.on_subagent_stopped(&handle, session, "abc".into(), None, Some("pronto".into()));
 
@@ -1203,19 +1239,74 @@ mod tests {
         let session = SessionId::new_v4();
 
         tracker.register_session(session);
-        let first =
-            tracker.on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None);
+        let first = tracker.on_subagent_started(
+            &handle,
+            session,
+            "a1".into(),
+            "reviewer".into(),
+            None,
+            None,
+        );
         assert!(first.is_some());
 
-        let retry =
-            tracker.on_subagent_started(&handle, session, "a2".into(), "reviewer".into(), None);
+        let retry = tracker.on_subagent_started(
+            &handle,
+            session,
+            "a2".into(),
+            "reviewer".into(),
+            None,
+            None,
+        );
         assert!(retry.is_some());
 
         tracker.mark_coordinated(session);
 
-        let after =
-            tracker.on_subagent_started(&handle, session, "a3".into(), "reviewer".into(), None);
+        let after = tracker.on_subagent_started(
+            &handle,
+            session,
+            "a3".into(),
+            "reviewer".into(),
+            None,
+            None,
+        );
         assert!(after.is_none());
+    }
+
+    #[test]
+    fn new_round_rearms_coordination_and_disarms() {
+        // Rodada 1 abre o painel (coordination), conclui, e o usuário pode até
+        // ter fechado o painel (disarm). Rodada 2 é contexto novo: coordena de
+        // novo — sem isso a segunda rodada roda às cegas.
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+
+        tracker.register_session(session);
+        let first = tracker
+            .on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None, None)
+            .expect("rodada 1 coordena");
+        assert!(!first.panel_disarmed);
+        tracker.mark_coordinated(session);
+        tracker.disarm_panel(session);
+        tracker.on_subagent_stopped(&handle, session, "a1".into(), None, None);
+
+        let second = tracker
+            .on_subagent_started(&handle, session, "b2".into(), "reviewer".into(), None, None)
+            .expect("rodada 2 re-coordena");
+        assert!(!second.panel_disarmed);
+        assert!(!second.viewer_disarmed);
+        tracker.mark_coordinated(session);
+
+        let same_round = tracker.on_subagent_started(
+            &handle,
+            session,
+            "c3".into(),
+            "explorer".into(),
+            None,
+            None,
+        );
+        assert!(same_round.is_none(), "coordenação continua once POR RODADA");
     }
 
     #[test]
@@ -1228,7 +1319,7 @@ mod tests {
         tracker.register_session(session);
         tracker.disarm_viewer(session);
         let coordination = tracker
-            .on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None)
+            .on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None, None)
             .unwrap();
         assert!(coordination.viewer_disarmed);
         assert!(!coordination.panel_disarmed);
@@ -1267,7 +1358,7 @@ mod tests {
         let session = SessionId::new_v4();
 
         tracker.register_session(session);
-        tracker.on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None);
+        tracker.on_subagent_started(&handle, session, "a1".into(), "reviewer".into(), None, None);
         tracker.on_spawn_requested(
             &handle,
             session,
@@ -1299,6 +1390,7 @@ mod tests {
             session,
             "a1".into(),
             "reviewer".into(),
+            None,
             Some(&parent),
         );
         assert!(tracker.resolve_transcript_path(session, "a1").is_none());
@@ -1318,7 +1410,7 @@ mod tests {
         assert_eq!(session.active_count(), 0);
         session.push_pending(Some("reviewer".into()), None, 10);
         assert_eq!(session.active_count(), 1);
-        session.promote("a1".into(), "explorer".into(), None, None, 20);
+        session.promote("a1".into(), "explorer".into(), None, None, None, 20);
         assert_eq!(session.active_count(), 2);
         session.mark_stopped("a1".into(), None, Some("pronto".into()), 30);
         assert_eq!(session.active_count(), 1);
@@ -1327,7 +1419,7 @@ mod tests {
     #[test]
     fn finish_by_file_marks_running_done_with_summary() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "explorer".into(), None, None, 10);
+        session.promote("a1".into(), "explorer".into(), None, None, None, 10);
         assert!(session.finish_running_by_file("a1", Some("  fim  do  turno ".into()), 40));
         let run = &session.runs[0];
         assert_eq!(run.status, SubagentStatus::Done);
@@ -1340,7 +1432,7 @@ mod tests {
         let mut session = SessionSubagents::default();
         session.push_pending(Some("reviewer".into()), None, 10);
         assert!(!session.finish_running_by_file("a1", Some("x".into()), 40));
-        session.promote("a1".into(), "reviewer".into(), None, None, 20);
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 20);
         assert!(session.finish_running_by_file("a1", None, 40));
         assert!(!session.finish_running_by_file("a1", Some("de novo".into()), 50));
         assert_eq!(session.runs[0].status, SubagentStatus::Done);
@@ -1350,7 +1442,7 @@ mod tests {
     #[test]
     fn finish_running_interrupted_marks_running_done_without_summary() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "explorer".into(), None, None, 10);
+        session.promote("a1".into(), "explorer".into(), None, None, None, 10);
         assert!(session.finish_running_interrupted("a1", 40));
         let run = &session.runs[0];
         assert_eq!(run.status, SubagentStatus::Done);
@@ -1364,7 +1456,7 @@ mod tests {
         let mut session = SessionSubagents::default();
         session.push_pending(Some("reviewer".into()), None, 10);
         assert!(!session.finish_running_interrupted("a1", 40));
-        session.promote("a1".into(), "reviewer".into(), None, None, 20);
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 20);
         assert!(session.finish_running_interrupted("a1", 40));
         assert!(!session.finish_running_interrupted("a1", 50));
         assert_eq!(session.runs[0].ended_at_ms, Some(40));
@@ -1373,7 +1465,7 @@ mod tests {
     #[test]
     fn interrupted_run_is_serialized_in_snapshot() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "explorer".into(), None, None, 10);
+        session.promote("a1".into(), "explorer".into(), None, None, None, 10);
         session.finish_running_interrupted("a1", 40);
         let snapshot = session.to_snapshot();
         assert!(snapshot.subagents[0].interrupted);
@@ -1388,7 +1480,7 @@ mod tests {
         {
             let mut sessions = tracker.sessions.lock().unwrap();
             let entry = sessions.get_mut(&session).unwrap();
-            entry.promote("a1".into(), "explorer".into(), None, None, 10);
+            entry.promote("a1".into(), "explorer".into(), None, None, None, 10);
             entry.orchestrator_idle = true;
             entry.orchestrator_idle_summary = Some("turno".into());
         }
@@ -1410,7 +1502,7 @@ mod tests {
     #[test]
     fn idle_transition_only_when_orchestrator_idle_and_no_active() {
         let mut session = SessionSubagents::default();
-        session.promote("a1".into(), "explorer".into(), None, None, 10);
+        session.promote("a1".into(), "explorer".into(), None, None, None, 10);
         assert!(session.idle_transition().is_none());
         session.orchestrator_idle = true;
         session.orchestrator_idle_summary = Some("resumo do turno".into());
@@ -1430,7 +1522,7 @@ mod tests {
         let session = SessionId::new_v4();
         tracker.register_session(session);
         assert!(!tracker.has_active(session));
-        tracker.on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None);
+        tracker.on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None, None);
         assert!(tracker.has_active(session));
     }
 
@@ -1441,7 +1533,7 @@ mod tests {
         let tracker = SubagentTracker::new();
         let session = SessionId::new_v4();
         tracker.register_session(session);
-        tracker.on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None);
+        tracker.on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None, None);
 
         type Flips = Arc<Mutex<Vec<(SessionId, Option<String>)>>>;
         let flips: Flips = Arc::new(Mutex::new(Vec::new()));
@@ -1475,7 +1567,7 @@ mod tests {
         let tracker = SubagentTracker::new();
         let session = SessionId::new_v4();
         tracker.register_session(session);
-        tracker.on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None);
+        tracker.on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None, None);
         tracker.note_orchestrator_idle(session, Some("turno".into()));
 
         let idle = tracker.on_subagent_stopped(
@@ -1495,8 +1587,8 @@ mod tests {
         let tracker = SubagentTracker::new();
         let session = SessionId::new_v4();
         tracker.register_session(session);
-        tracker.on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None);
-        tracker.on_subagent_started(&handle, session, "a2".into(), "reviewer".into(), None);
+        tracker.on_subagent_started(&handle, session, "a1".into(), "explorer".into(), None, None);
+        tracker.on_subagent_started(&handle, session, "a2".into(), "reviewer".into(), None, None);
         tracker.note_orchestrator_idle(session, Some("turno".into()));
 
         let idle = tracker.on_subagent_stopped(
@@ -1536,6 +1628,7 @@ mod tests {
             session,
             "a51505d91f9ef581f".into(),
             "general-purpose".into(),
+            None,
             None,
         );
         // item de fila / stop espúrio não vira entrada

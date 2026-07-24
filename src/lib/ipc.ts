@@ -1005,6 +1005,9 @@ export const openAgentsPanel = (id: SessionId) =>
 export const openSubagentViewer = (sessionId: SessionId) =>
   invoke<void>("open_subagent_viewer", { sessionId });
 
+export const closeAgentViewers = (sessionId: SessionId) =>
+  invoke<void>("close_agent_viewers", { sessionId });
+
 export const subagentTranscript = (
   sessionId: SessionId,
   agentId: string,

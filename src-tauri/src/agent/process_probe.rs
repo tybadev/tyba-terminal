@@ -45,13 +45,89 @@ fn agent_kind_for_comm(comm: &str) -> Option<AgentRunnerKind> {
         .find(|kind| runner_binary(kind) == Some(comm))
 }
 
+/// Nome de arquivo que parece versão (`2.1.218`): só dígitos e pontos, com
+/// pelo menos um ponto. É a cara do binário real do instalador nativo do
+/// Claude Code (`~/.local/share/claude/versions/<versão>`).
+fn looks_like_version(name: &str) -> bool {
+    name.contains('.') && !name.is_empty() && name.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// Resolve o runner pelo CAMINHO do executável — o comm do kernel é o nome do
+/// arquivo executado, e o launcher nativo do Claude Code executa
+/// `.../claude/versions/2.1.218`, então o comm vira `2.1.218` e o casamento
+/// por nome falha (foi exatamente o furo do E2E de 2026-07-24). Regras:
+/// basename igual ao binário do runner, ou o layout exato do instalador
+/// nativo — `.../<runner>/versions/<versão>` — pra não promover a agente
+/// qualquer binário versionado sob uma pasta chamada `claude`.
+fn kind_from_exec_path(path: &std::path::Path) -> Option<AgentRunnerKind> {
+    let file = path.file_name()?.to_str()?;
+    if let Some(kind) = agent_kind_for_comm(file) {
+        return Some(kind);
+    }
+    if !looks_like_version(file) {
+        return None;
+    }
+    let versions = path.parent()?;
+    if versions.file_name()?.to_str()? != "versions" {
+        return None;
+    }
+    let runner_dir = versions.parent()?.file_name()?.to_str()?;
+    agent_kind_for_comm(runner_dir)
+}
+
+#[cfg(target_os = "macos")]
+fn exec_path(pid: u32) -> Option<std::path::PathBuf> {
+    let mut buf = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let len = unsafe {
+        libc::proc_pidpath(
+            pid as libc::c_int,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.len() as u32,
+        )
+    };
+    if len <= 0 {
+        return None;
+    }
+    std::str::from_utf8(&buf[..len as usize])
+        .ok()
+        .map(std::path::PathBuf::from)
+}
+
+#[cfg(target_os = "linux")]
+fn exec_path(pid: u32) -> Option<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn exec_path(_pid: u32) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Resolver de produção: comm primeiro (barato, cobre binário direto); o
+/// caminho do executável (uma syscall) só entra quando o comm parece VERSÃO —
+/// a assinatura do launcher nativo. Filho comum de build (node, cc, rustc…)
+/// nunca paga a syscall, então uma árvore com centenas de processos custa
+/// ~zero por tick (performance-first).
+pub fn detect_kind(row: &ProcRow) -> Option<AgentRunnerKind> {
+    agent_kind_for_comm(&row.comm).or_else(|| {
+        looks_like_version(&row.comm)
+            .then(|| exec_path(row.pid).and_then(|p| kind_from_exec_path(&p)))
+            .flatten()
+    })
+}
+
 /// Anda a árvore de processos a partir do `leader_pid` do shell (BFS pelos
 /// filhos) e devolve o agente mais relevante: menor profundidade vence; empate
 /// de profundidade é desempatado pelo mais recente (`start_ms`). O próprio líder
-/// é o shell, nunca o agente. Pura e sem I/O — opera sobre um snapshot já
-/// colhido, então um processo que sumiu no meio da varredura simplesmente não
-/// aparece nas linhas; nunca causa panic.
-pub fn find_agent(leader_pid: u32, rows: &[ProcRow]) -> Option<DetectedAgent> {
+/// é o shell, nunca o agente. Pura sobre o resolver injetado — opera sobre um
+/// snapshot já colhido, então um processo que sumiu no meio da varredura
+/// simplesmente não aparece nas linhas; nunca causa panic. Em produção o
+/// resolver é [`detect_kind`] (comm + caminho do executável).
+pub fn find_agent(
+    leader_pid: u32,
+    rows: &[ProcRow],
+    kind_of: &dyn Fn(&ProcRow) -> Option<AgentRunnerKind>,
+) -> Option<DetectedAgent> {
     let mut children: HashMap<u32, Vec<&ProcRow>> = HashMap::new();
     for row in rows {
         children.entry(row.ppid).or_default().push(row);
@@ -70,8 +146,14 @@ pub fn find_agent(leader_pid: u32, rows: &[ProcRow]) -> Option<DetectedAgent> {
             if !visited.insert(child.pid) {
                 continue;
             }
+            // Poda: um nó mais fundo que o melhor achado nunca vence (empate
+            // só no MESMO nível), então nem se sonda nem se desce nele — sem
+            // isso a BFS varreria a subárvore inteira do agente já detectado.
             let child_depth = depth + 1;
-            if let Some(kind) = agent_kind_for_comm(&child.comm) {
+            if child_depth > best_depth {
+                continue;
+            }
+            if let Some(kind) = kind_of(child) {
                 let better = match &best {
                     None => true,
                     Some(cur) => {
@@ -88,7 +170,9 @@ pub fn find_agent(leader_pid: u32, rows: &[ProcRow]) -> Option<DetectedAgent> {
                     best_depth = child_depth;
                 }
             }
-            queue.push_back((child.pid, child_depth));
+            if child_depth < best_depth {
+                queue.push_back((child.pid, child_depth));
+            }
         }
     }
 
@@ -124,7 +208,7 @@ impl AgentProber {
 
         let mut changes = Vec::new();
         for (session, leader_pid) in shells {
-            let next = find_agent(*leader_pid, rows);
+            let next = find_agent(*leader_pid, rows, &detect_kind);
             if state.get(session) == next.as_ref() {
                 continue;
             }
@@ -381,6 +465,78 @@ mod tests {
         }
     }
 
+    fn comm_only(row: &ProcRow) -> Option<AgentRunnerKind> {
+        agent_kind_for_comm(&row.comm)
+    }
+
+    #[test]
+    fn version_like_names() {
+        assert!(looks_like_version("2.1.218"));
+        assert!(looks_like_version("0.4"));
+        assert!(!looks_like_version("claude"));
+        assert!(!looks_like_version("2-1-218"));
+        assert!(!looks_like_version("v2.1.218"));
+        assert!(!looks_like_version(""));
+    }
+
+    #[test]
+    fn exec_path_resolves_the_native_installer_layout() {
+        // O launcher nativo executa `.../claude/versions/2.1.218`: o comm vira
+        // "2.1.218" e só o caminho denuncia o runner.
+        let kind = kind_from_exec_path(std::path::Path::new(
+            "/Users/x/.local/share/claude/versions/2.1.218",
+        ));
+        assert_eq!(kind, Some(AgentRunnerKind::ClaudeCode));
+        let codex = kind_from_exec_path(std::path::Path::new(
+            "/Users/x/.local/share/codex/versions/1.2.3",
+        ));
+        assert_eq!(codex, Some(AgentRunnerKind::Codex));
+    }
+
+    #[test]
+    fn exec_path_matches_plain_binary_name_too() {
+        assert_eq!(
+            kind_from_exec_path(std::path::Path::new("/usr/local/bin/claude")),
+            Some(AgentRunnerKind::ClaudeCode)
+        );
+    }
+
+    #[test]
+    fn exec_path_rejects_version_without_runner_ancestor_and_non_versions() {
+        assert_eq!(
+            kind_from_exec_path(std::path::Path::new("/opt/tools/2.1.218")),
+            None
+        );
+        assert_eq!(
+            kind_from_exec_path(std::path::Path::new(
+                "/Users/x/.local/share/claude/versions/beta"
+            )),
+            None
+        );
+        // Binário versionado sob uma pasta chamada `claude` que NÃO é o layout
+        // do instalador (`<runner>/versions/<versão>`) não vira agente.
+        assert_eq!(
+            kind_from_exec_path(std::path::Path::new("/Users/x/claude/1.2.3")),
+            None
+        );
+        assert_eq!(
+            kind_from_exec_path(std::path::Path::new("/home/claude/apps/versions/1.2.3")),
+            None
+        );
+    }
+
+    #[test]
+    fn find_agent_uses_the_injected_resolver_for_versioned_comm() {
+        // O caso real do E2E: comm "2.1.218" não casa por nome; o resolver de
+        // produção resolve pelo caminho do executável — aqui simulado.
+        let rows = vec![row(100, 1, "zsh", 10), row(200, 100, "2.1.218", 20)];
+        let resolver = |r: &ProcRow| (r.comm == "2.1.218").then_some(AgentRunnerKind::ClaudeCode);
+        let found = find_agent(100, &rows, &resolver).expect("agente versionado");
+        assert_eq!(found.pid, 200);
+        assert_eq!(found.kind, AgentRunnerKind::ClaudeCode);
+        assert_eq!(find_agent(100, &rows, &comm_only), None);
+    }
+
     #[test]
     fn agent_kind_for_comm_maps_known_binaries_only() {
         assert_eq!(
@@ -400,7 +556,7 @@ mod tests {
             row(200, 100, "claude", 20),
             row(300, 200, "node", 30),
         ];
-        let found = find_agent(100, &rows).expect("agente detectado");
+        let found = find_agent(100, &rows, &comm_only).expect("agente detectado");
         assert_eq!(found.pid, 200);
         assert_eq!(found.kind, AgentRunnerKind::ClaudeCode);
         assert_eq!(found.start_ms, 20);
@@ -414,13 +570,13 @@ mod tests {
             row(300, 100, "node", 30),
             row(400, 300, "esbuild", 40),
         ];
-        assert_eq!(find_agent(100, &rows), None);
+        assert_eq!(find_agent(100, &rows, &comm_only), None);
     }
 
     #[test]
     fn a_tree_without_any_agent_is_none() {
         let rows = vec![row(100, 1, "bash", 10), row(200, 100, "git", 20)];
-        assert_eq!(find_agent(100, &rows), None);
+        assert_eq!(find_agent(100, &rows, &comm_only), None);
     }
 
     #[test]
@@ -431,7 +587,7 @@ mod tests {
             row(300, 100, "npm", 25),
             row(400, 300, "codex", 30),
         ];
-        let found = find_agent(100, &rows).expect("agente");
+        let found = find_agent(100, &rows, &comm_only).expect("agente");
         assert_eq!(found.pid, 200, "claude a 1 salto vence o codex a 2 saltos");
         assert_eq!(found.kind, AgentRunnerKind::ClaudeCode);
     }
@@ -443,7 +599,7 @@ mod tests {
             row(200, 100, "claude", 20),
             row(300, 100, "codex", 40),
         ];
-        let found = find_agent(100, &rows).expect("agente");
+        let found = find_agent(100, &rows, &comm_only).expect("agente");
         assert_eq!(
             found.pid, 300,
             "no empate de profundidade vence o mais recente"
@@ -454,7 +610,7 @@ mod tests {
     #[test]
     fn a_leader_absent_from_the_snapshot_yields_none_without_panicking() {
         let rows = vec![row(200, 100, "claude", 20)];
-        assert_eq!(find_agent(999, &rows), None);
+        assert_eq!(find_agent(999, &rows, &comm_only), None);
     }
 
     #[test]
@@ -465,7 +621,7 @@ mod tests {
             row(200, 100, "sh", 15),
             row(300, 200, "codex", 20),
         ];
-        let found = find_agent(100, &rows).expect("agente sob o líder");
+        let found = find_agent(100, &rows, &comm_only).expect("agente sob o líder");
         assert_eq!(found.pid, 300);
         assert_eq!(found.kind, AgentRunnerKind::Codex);
     }
