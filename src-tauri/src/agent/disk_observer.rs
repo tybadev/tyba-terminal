@@ -9,7 +9,9 @@ use std::time::{Duration, SystemTime};
 use serde_json::Value;
 use tauri::{AppHandle, Runtime};
 
-use crate::agent::subagents::{is_plausible_subagent_id, sidecar_dir, SharedSubagents};
+use crate::agent::subagents::{
+    is_plausible_subagent_id, sidecar_dir, Coordination, SharedSubagents,
+};
 use crate::session::SessionId;
 
 use super::claude_project_dir_name;
@@ -36,20 +38,40 @@ pub struct DiscoveredSubagent {
     pub agent_type: String,
 }
 
+/// Resolução do transcript ativo. `provisional` marca o melhor-esforço por
+/// mtime sem nenhum candidato datado pós-agente: o bind vale, mas o poll da F1
+/// continua re-resolvendo — se um candidato forte aparecer (o transcript do
+/// agente ganhou a primeira mensagem datada), o observer rebinda pra ele.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveTranscript {
+    pub path: PathBuf,
+    pub provisional: bool,
+}
+
 /// Escolhe o transcript ativo da sessão de shell entre os candidatos do slug.
-/// Heurística de janela de tempo (decisão 5): o transcript certo tem a primeira
-/// mensagem surgindo logo após o nascimento do agente, então filtra os que
-/// começaram antes do `agent_start_ms` (dono anterior do cwd) e prefere o mais
-/// próximo. Dois candidatos igualmente próximos do start são indistinguíveis
-/// (dois claude quase simultâneos no mesmo cwd) e caem no melhor-esforço: o
-/// mtime mais novo. Sem candidato datável, idem.
+/// Só concorre candidato plausível: mtime fresco relativo ao nascimento do
+/// agente — um transcript frio de sessão anterior nunca é o ativo, mesmo sendo
+/// o mais novo do slug (devolvê-lo travaria o observer no transcript errado
+/// pra sempre, já que a detecção estável não re-resolve). Entre os plausíveis,
+/// a heurística de janela de tempo (decisão 5) prefere o que tem a primeira
+/// mensagem mais próxima do `agent_start_ms`; dois igualmente próximos são
+/// indistinguíveis (dois claude quase simultâneos no mesmo cwd) e caem no
+/// melhor-esforço por mtime, restrito aos pós-agente. Plausível sem timestamp
+/// datável — recém-nascido só com headers, ou `--resume` que preserva
+/// timestamps antigos mas volta a ser escrito — cai no melhor-esforço por
+/// mtime. Sem candidato plausível (janela de startup: o transcript ainda não
+/// nasceu) devolve `None` e o poll da F1 re-tenta até ele existir.
 pub fn choose_active_transcript(
     candidates: &[TranscriptCandidate],
     agent_start_ms: u64,
-) -> Option<PathBuf> {
-    let mut timed: Vec<(&TranscriptCandidate, u64)> = candidates
+) -> Option<ActiveTranscript> {
+    let plausible: Vec<&TranscriptCandidate> = candidates
         .iter()
-        .filter_map(|c| c.first_msg_ms.map(|ts| (c, ts)))
+        .filter(|c| c.mtime_ms.saturating_add(HEURISTIC_SLACK_MS) >= agent_start_ms)
+        .collect();
+    let mut timed: Vec<(&TranscriptCandidate, u64)> = plausible
+        .iter()
+        .filter_map(|c| c.first_msg_ms.map(|ts| (*c, ts)))
         .filter(|(_, ts)| ts.saturating_add(HEURISTIC_SLACK_MS) >= agent_start_ms)
         .map(|(c, ts)| (c, ts.abs_diff(agent_start_ms)))
         .collect();
@@ -59,19 +81,28 @@ pub fn choose_active_transcript(
             .iter()
             .map(|(c, _)| *c)
             .max_by_key(|c| c.mtime_ms)
-            .map(|c| c.path.clone()),
-        (Some((best, _)), _) => Some(best.path.clone()),
-        (None, _) => candidates
+            .map(|c| ActiveTranscript {
+                path: c.path.clone(),
+                provisional: false,
+            }),
+        (Some((best, _)), _) => Some(ActiveTranscript {
+            path: best.path.clone(),
+            provisional: false,
+        }),
+        (None, _) => plausible
             .iter()
             .max_by_key(|c| c.mtime_ms)
-            .map(|c| c.path.clone()),
+            .map(|c| ActiveTranscript {
+                path: c.path.clone(),
+                provisional: true,
+            }),
     }
 }
 
 /// Lista `~/.claude/projects/<slug>/<sessionId>.jsonl` e escolhe o ativo pelo
 /// `agent_start_ms` do agente detectado pela F1. `None` quando o slug não existe
 /// ou está vazio — tolerante, nunca panica.
-pub fn active_transcript_for_cwd(cwd: &Path, agent_start_ms: u64) -> Option<PathBuf> {
+pub fn active_transcript_for_cwd(cwd: &Path, agent_start_ms: u64) -> Option<ActiveTranscript> {
     let dir = claude_projects_dir()?.join(claude_project_dir_name(cwd));
     let candidates = list_transcript_candidates(&dir);
     choose_active_transcript(&candidates, agent_start_ms)
@@ -193,18 +224,48 @@ fn read_agent_type(sidecar: &Path, agent_id: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Bind provisório re-resolve por ~90s (45 ticks × 2s da F1) e então assenta:
+/// o candidato forte, quando existe, nasce nos primeiros segundos (primeiro
+/// prompt do claude); depois disso re-resolver é só I/O perpétuo no slug
+/// (`--resume` nunca ganha candidato forte). Melhor-esforço documentado da
+/// decisão 5.
+const PROVISIONAL_SETTLE_TICKS: u32 = 45;
+
 struct SessionObserver {
     parent: PathBuf,
     poll_stop: Arc<AtomicBool>,
+    provisional: bool,
+    stable_ticks: u32,
 }
+
+impl SessionObserver {
+    fn tick_provisional(&mut self) {
+        self.stable_ticks = self.stable_ticks.saturating_add(1);
+        if self.stable_ticks >= PROVISIONAL_SETTLE_TICKS {
+            self.provisional = false;
+        }
+    }
+}
+
+/// Callback que leva a [`Coordination`] devolvida pelo tracker de volta ao
+/// layout — o mesmo auto-abrir de painel do caminho hook-driven.
+pub type CoordinateFn = Arc<dyn Fn(SessionId, Coordination) + Send + Sync>;
 
 /// Ponte disco→tracker por sessão de shell. Enquanto a F1 reporta um agente
 /// numa sessão de shell, mantém uma thread que descobre subagentes por arquivo
-/// e os sintetiza no [`SubagentTracker`] com os MESMOS métodos dos hooks. Sem
-/// sessão observada não há thread nem varredura — custo zero.
-#[derive(Default)]
+/// e os sintetiza no [`SubagentTracker`] com os MESMOS métodos dos hooks — a
+/// `Coordination` devolvida aciona o mesmo auto-abrir de painel via
+/// [`CoordinateFn`]. Sem sessão observada não há thread nem varredura — custo
+/// zero.
 pub struct DiskObserver {
     sessions: Mutex<HashMap<SessionId, SessionObserver>>,
+    coordinate: CoordinateFn,
+}
+
+impl Default for DiskObserver {
+    fn default() -> Self {
+        Self::with_coordinator(Arc::new(|_, _| {}))
+    }
 }
 
 impl DiskObserver {
@@ -212,10 +273,21 @@ impl DiskObserver {
         Self::default()
     }
 
+    pub fn with_coordinator(coordinate: CoordinateFn) -> Self {
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            coordinate,
+        }
+    }
+
     /// A F1 reporta um agente Claude na sessão de shell: resolve o transcript
     /// ativo e passa a observar seu sidecar. Idempotente enquanto o transcript
     /// for o mesmo; um transcript novo (ou reinício após o agente sumir)
-    /// recomeça do zero com o painel limpo.
+    /// recomeça do zero com o painel limpo. Bind provisório é pegajoso: outra
+    /// resolução provisória não o desaloja (senão dois candidatos vivos fariam
+    /// o painel zerar em flapping) — só uma resolução forte rebinda, e depois
+    /// de [`PROVISIONAL_SETTLE_TICKS`] re-resoluções estáveis o bind assenta
+    /// sozinho, encerrando o I/O de re-resolução (caso `--resume`).
     pub fn observe<R: Runtime>(
         &self,
         app: &AppHandle<R>,
@@ -230,8 +302,7 @@ impl DiskObserver {
     }
 
     /// `true` enquanto uma thread de varredura está viva para a sessão. `false`
-    /// tanto para sessão nunca observada quanto para uma congelada — é o gancho
-    /// que o poll da F1 usa para re-tentar `observe` até o transcript resolver.
+    /// tanto para sessão nunca observada quanto para uma congelada.
     pub fn is_observing(&self, session: SessionId) -> bool {
         self.sessions
             .lock()
@@ -241,23 +312,48 @@ impl DiskObserver {
             .unwrap_or(false)
     }
 
+    /// `true` só com uma thread viva num bind forte — é o gancho que o poll da
+    /// F1 usa para re-tentar `observe`: sessão não observada re-tenta até o
+    /// transcript nascer, e bind provisório re-resolve até um candidato forte
+    /// aparecer (ou o agente sumir).
+    pub fn is_settled(&self, session: SessionId) -> bool {
+        self.sessions
+            .lock()
+            .expect("disk observer lock")
+            .get(&session)
+            .map(|observer| !observer.poll_stop.load(Ordering::SeqCst) && !observer.provisional)
+            .unwrap_or(false)
+    }
+
     fn observe_with<R: Runtime>(
         &self,
         app: &AppHandle<R>,
         tracker: &SharedSubagents,
         session: SessionId,
-        resolve: impl FnOnce() -> Option<PathBuf>,
+        resolve: impl FnOnce() -> Option<ActiveTranscript>,
     ) {
-        let Some(parent) = resolve() else {
+        let Some(active) = resolve() else {
             return;
         };
         {
-            let map = self.sessions.lock().expect("disk observer lock");
-            match map.get(&session) {
-                Some(observer)
-                    if !observer.poll_stop.load(Ordering::SeqCst) && observer.parent == parent =>
-                {
-                    return;
+            let mut map = self.sessions.lock().expect("disk observer lock");
+            match map.get_mut(&session) {
+                Some(observer) if !observer.poll_stop.load(Ordering::SeqCst) => {
+                    if observer.parent == active.path {
+                        if !active.provisional {
+                            observer.provisional = false;
+                        } else if observer.provisional {
+                            observer.tick_provisional();
+                        }
+                        return;
+                    }
+                    if active.provisional {
+                        if observer.provisional {
+                            observer.tick_provisional();
+                        }
+                        return;
+                    }
+                    observer.poll_stop.store(true, Ordering::SeqCst);
                 }
                 Some(observer) => observer.poll_stop.store(true, Ordering::SeqCst),
                 None => {}
@@ -270,13 +366,19 @@ impl DiskObserver {
             app.clone(),
             Arc::clone(tracker),
             session,
-            parent.clone(),
+            active.path.clone(),
             Arc::clone(&poll_stop),
+            Arc::clone(&self.coordinate),
         );
-        self.sessions
-            .lock()
-            .expect("disk observer lock")
-            .insert(session, SessionObserver { parent, poll_stop });
+        self.sessions.lock().expect("disk observer lock").insert(
+            session,
+            SessionObserver {
+                parent: active.path,
+                poll_stop,
+                provisional: active.provisional,
+                stable_ticks: 0,
+            },
+        );
     }
 
     /// A F1 reporta que o agente sumiu (a sessão de shell continua viva): para a
@@ -337,6 +439,7 @@ fn spawn_sidecar_poll<R: Runtime>(
     session: SessionId,
     parent: PathBuf,
     poll_stop: Arc<AtomicBool>,
+    coordinate: CoordinateFn,
 ) {
     let sidecar = sidecar_dir(&parent);
     let spawned = std::thread::Builder::new()
@@ -344,7 +447,11 @@ fn spawn_sidecar_poll<R: Runtime>(
         .spawn(move || {
             let mut known: HashSet<String> = HashSet::new();
             while !poll_stop.load(Ordering::SeqCst) {
-                poll_once(&app, &tracker, session, &sidecar, &parent, &mut known);
+                for coordination in
+                    poll_once(&app, &tracker, session, &sidecar, &parent, &mut known)
+                {
+                    coordinate(session, coordination);
+                }
                 std::thread::sleep(SIDECAR_POLL_INTERVAL);
             }
         });
@@ -360,11 +467,21 @@ fn poll_once<R: Runtime>(
     sidecar: &Path,
     parent: &Path,
     known: &mut HashSet<String>,
-) {
+) -> Vec<Coordination> {
+    let mut coordinations = Vec::new();
     for found in scan_new_subagents(sidecar, known) {
         known.insert(found.agent_id.clone());
-        tracker.on_subagent_started(app, session, found.agent_id, found.agent_type, Some(parent));
+        if let Some(coordination) = tracker.on_subagent_started(
+            app,
+            session,
+            found.agent_id,
+            found.agent_type,
+            Some(parent),
+        ) {
+            coordinations.push(coordination);
+        }
     }
+    coordinations
 }
 
 #[cfg(test)]
@@ -382,8 +499,22 @@ mod tests {
         }
     }
 
+    fn strong(path: &str) -> Option<ActiveTranscript> {
+        Some(ActiveTranscript {
+            path: PathBuf::from(path),
+            provisional: false,
+        })
+    }
+
+    fn provisional(path: &str) -> Option<ActiveTranscript> {
+        Some(ActiveTranscript {
+            path: PathBuf::from(path),
+            provisional: true,
+        })
+    }
+
     #[test]
-    fn choose_without_usable_timestamps_falls_back_to_newest_mtime() {
+    fn choose_without_usable_timestamps_falls_back_to_newest_mtime_as_provisional() {
         let candidates = vec![
             candidate("/a.jsonl", 100, None),
             candidate("/b.jsonl", 300, None),
@@ -391,22 +522,23 @@ mod tests {
         ];
         assert_eq!(
             choose_active_transcript(&candidates, 1_000),
-            Some(PathBuf::from("/b.jsonl"))
+            provisional("/b.jsonl")
         );
     }
 
     #[test]
     fn time_heuristic_picks_the_transcript_born_just_after_the_agent() {
-        // O dono anterior do cwd (a.jsonl) tem o mtime mais novo, mas a primeira
-        // mensagem é bem antes do agente nascer; o transcript certo (b.jsonl)
-        // surge logo após o start e vence, mesmo com mtime mais velho.
+        // O dono anterior do cwd (old.jsonl) tem o mtime mais novo, mas a
+        // primeira mensagem é bem antes do agente nascer; o transcript certo
+        // (new.jsonl) surge logo após o start e vence, mesmo com mtime mais
+        // velho.
         let candidates = vec![
             candidate("/old.jsonl", 9_999, Some(1_000)),
             candidate("/new.jsonl", 5_000, Some(10_500)),
         ];
         assert_eq!(
             choose_active_transcript(&candidates, 10_000),
-            Some(PathBuf::from("/new.jsonl"))
+            strong("/new.jsonl")
         );
     }
 
@@ -415,12 +547,12 @@ mod tests {
         // Dois claude quase simultâneos no mesmo cwd: os dois começam logo após o
         // start e são indistinguíveis pela heurística ⇒ melhor-esforço (mtime).
         let candidates = vec![
-            candidate("/one.jsonl", 4_000, Some(10_300)),
-            candidate("/two.jsonl", 7_000, Some(10_600)),
+            candidate("/one.jsonl", 14_000, Some(10_300)),
+            candidate("/two.jsonl", 17_000, Some(10_600)),
         ];
         assert_eq!(
             choose_active_transcript(&candidates, 10_000),
-            Some(PathBuf::from("/two.jsonl"))
+            strong("/two.jsonl")
         );
     }
 
@@ -431,12 +563,12 @@ mod tests {
         // ambíguo não pode escolhê-lo — fica entre os que passaram o filtro.
         let candidates = vec![
             candidate("/stale.jsonl", 99_999, Some(1_000)),
-            candidate("/one.jsonl", 4_000, Some(10_300)),
-            candidate("/two.jsonl", 7_000, Some(10_600)),
+            candidate("/one.jsonl", 14_000, Some(10_300)),
+            candidate("/two.jsonl", 17_000, Some(10_600)),
         ];
         assert_eq!(
             choose_active_transcript(&candidates, 10_000),
-            Some(PathBuf::from("/two.jsonl"))
+            strong("/two.jsonl")
         );
     }
 
@@ -447,13 +579,44 @@ mod tests {
 
     #[test]
     fn transcripts_started_before_the_agent_are_ignored_by_the_heuristic() {
+        // O dono anterior do cwd segue vivo (mtime fresco), mas a primeira
+        // mensagem dele é pré-agente: a heurística fica com o transcript datado
+        // pós-agente, mesmo com mtime mais velho.
         let candidates = vec![
-            candidate("/stale.jsonl", 1, Some(2_000)),
-            candidate("/live.jsonl", 2, Some(50_100)),
+            candidate("/stale.jsonl", 50_900, Some(2_000)),
+            candidate("/live.jsonl", 50_200, Some(50_100)),
         ];
         assert_eq!(
             choose_active_transcript(&candidates, 50_000),
-            Some(PathBuf::from("/live.jsonl"))
+            strong("/live.jsonl")
+        );
+    }
+
+    #[test]
+    fn startup_window_with_only_stale_candidates_resolves_none() {
+        // Claude nasceu e ainda não gravou o transcript: o slug só tem sessões
+        // frias de outros claude. Devolver a mais nova travaria o observer no
+        // transcript errado — a resposta certa é None, e o poll da F1 re-tenta
+        // até o transcript novo existir.
+        let candidates = vec![
+            candidate("/old-timed.jsonl", 20_000, Some(19_000)),
+            candidate("/old-untimed.jsonl", 30_000, None),
+        ];
+        assert_eq!(choose_active_transcript(&candidates, 100_000), None);
+    }
+
+    #[test]
+    fn resumed_transcript_with_old_timestamps_but_fresh_mtime_wins_as_provisional() {
+        // `claude --resume`: as linhas preservam timestamps antigos, mas o
+        // arquivo volta a ser escrito agora — o mtime fresco o mantém elegível
+        // no melhor-esforço, marcado provisório para re-resolução.
+        let candidates = vec![
+            candidate("/resumed.jsonl", 100_800, Some(1_000)),
+            candidate("/cold.jsonl", 20_000, Some(19_000)),
+        ];
+        assert_eq!(
+            choose_active_transcript(&candidates, 100_000),
+            provisional("/resumed.jsonl")
         );
     }
 
@@ -586,7 +749,7 @@ mod tests {
         let parent = sidecar.path().join("parent.jsonl");
         let mut known = HashSet::new();
 
-        poll_once(
+        let coordinations = poll_once(
             &handle,
             &tracker,
             session,
@@ -594,6 +757,8 @@ mod tests {
             &parent,
             &mut known,
         );
+        assert_eq!(coordinations.len(), 1);
+        assert!(!coordinations[0].panel_disarmed);
 
         let snapshot = tracker.snapshot(session);
         assert_eq!(snapshot.subagents.len(), 1);
@@ -713,13 +878,147 @@ mod tests {
             r#"{"agentType":"explorer"}"#,
         );
 
-        let resolved = parent.clone();
+        let resolved = strong_transcript(&parent);
         observer.observe_with(&handle, &tracker, session, move || Some(resolved));
         assert!(observer.is_observing(session));
+        assert!(observer.is_settled(session));
         assert!(wait_for_subagent(&tracker, session, "a1b2c3d4e5"));
 
         observer.retain_live(&handle, &tracker, &HashSet::new());
         assert!(!observer.is_observing(session));
+    }
+
+    #[test]
+    fn provisional_bind_is_sticky_until_a_strong_resolution() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let observer = DiskObserver::new();
+        let session = SessionId::new_v4();
+        let dir = TempDir::new().unwrap();
+        let first = dir.path().join("first.jsonl");
+        let second = dir.path().join("second.jsonl");
+        write(&first, "{}");
+        write(&second, "{}");
+
+        let bind = provisional_transcript(&first);
+        observer.observe_with(&handle, &tracker, session, move || Some(bind));
+        assert!(observer.is_observing(session));
+        assert!(!observer.is_settled(session));
+
+        // Outra resolução provisória (candidato vivo concorrente) não desaloja
+        // o bind — senão o painel zeraria em flapping a cada poll.
+        let rival = provisional_transcript(&second);
+        observer.observe_with(&handle, &tracker, session, move || Some(rival));
+        assert_eq!(observer.bound_parent(session), Some(first.clone()));
+
+        // Uma resolução forte rebinda.
+        let settled = strong_transcript(&second);
+        observer.observe_with(&handle, &tracker, session, move || Some(settled));
+        assert_eq!(observer.bound_parent(session), Some(second));
+        assert!(observer.is_settled(session));
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
+    }
+
+    #[test]
+    fn provisional_bind_settles_after_stable_reresolutions() {
+        // `--resume` nunca ganha candidato forte: depois da janela de
+        // assentamento o bind vira definitivo e o re-resolve (I/O no slug)
+        // para — performance-first.
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let observer = DiskObserver::new();
+        let session = SessionId::new_v4();
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("session.jsonl");
+        write(&parent, "{}");
+
+        let bind = provisional_transcript(&parent);
+        observer.observe_with(&handle, &tracker, session, move || Some(bind));
+        for _ in 0..PROVISIONAL_SETTLE_TICKS {
+            assert!(!observer.is_settled(session));
+            let again = provisional_transcript(&parent);
+            observer.observe_with(&handle, &tracker, session, move || Some(again));
+        }
+        assert!(observer.is_settled(session));
+        assert_eq!(observer.bound_parent(session), Some(parent));
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
+    }
+
+    #[test]
+    fn provisional_bind_upgrades_in_place_when_the_same_path_resolves_strong() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let observer = DiskObserver::new();
+        let session = SessionId::new_v4();
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("session.jsonl");
+        write(&parent, "{}");
+
+        let bind = provisional_transcript(&parent);
+        observer.observe_with(&handle, &tracker, session, move || Some(bind));
+        assert!(!observer.is_settled(session));
+
+        let upgraded = strong_transcript(&parent);
+        observer.observe_with(&handle, &tracker, session, move || Some(upgraded));
+        assert!(observer.is_settled(session));
+        assert_eq!(observer.bound_parent(session), Some(parent));
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
+    }
+
+    #[test]
+    fn observe_coordinates_the_panel_when_a_subagent_appears() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let fired: Arc<Mutex<Vec<SessionId>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&fired);
+        let observer = DiskObserver::with_coordinator(Arc::new(move |session, _| {
+            sink.lock().unwrap().push(session);
+        }));
+        let session = SessionId::new_v4();
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("session.jsonl");
+        write(&parent, "{}");
+        let sidecar = parent.with_extension("").join("subagents");
+        fs::create_dir_all(&sidecar).unwrap();
+        write(&sidecar.join("agent-a1b2c3d4e5.jsonl"), "{}");
+        write(
+            &sidecar.join("agent-a1b2c3d4e5.meta.json"),
+            r#"{"agentType":"explorer"}"#,
+        );
+
+        observer.begin(&handle, &tracker, session, parent);
+        assert!(wait_for_subagent(&tracker, session, "a1b2c3d4e5"));
+        let coordinated = (0..200).any(|_| {
+            if fired.lock().unwrap().contains(&session) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            false
+        });
+        assert!(coordinated);
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
+    }
+
+    fn strong_transcript(path: &Path) -> ActiveTranscript {
+        ActiveTranscript {
+            path: path.to_path_buf(),
+            provisional: false,
+        }
+    }
+
+    fn provisional_transcript(path: &Path) -> ActiveTranscript {
+        ActiveTranscript {
+            path: path.to_path_buf(),
+            provisional: true,
+        }
     }
 
     impl DiskObserver {
@@ -730,7 +1029,8 @@ mod tests {
             session: SessionId,
             parent: PathBuf,
         ) {
-            self.observe_with(app, tracker, session, || Some(parent));
+            let bind = strong_transcript(&parent);
+            self.observe_with(app, tracker, session, move || Some(bind));
         }
 
         fn is_frozen(&self, session: SessionId) -> bool {
@@ -744,6 +1044,14 @@ mod tests {
 
         fn contains(&self, session: SessionId) -> bool {
             self.sessions.lock().unwrap().contains_key(&session)
+        }
+
+        fn bound_parent(&self, session: SessionId) -> Option<PathBuf> {
+            self.sessions
+                .lock()
+                .unwrap()
+                .get(&session)
+                .map(|o| o.parent.clone())
         }
     }
 }
