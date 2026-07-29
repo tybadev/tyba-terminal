@@ -1264,6 +1264,17 @@ export interface UpdateStatus {
 
 export const appVersion = () => invoke<string>("app_version");
 
+export interface BuildInfo {
+  version: string;
+  commit: string;
+  commit_date: string;
+  os: string;
+  arch: string;
+  webview: string;
+}
+
+export const appBuildInfo = () => invoke<BuildInfo>("app_build_info");
+
 export const updateCheck = () => invoke<UpdateStatus | null>("update_check");
 
 export const updateDismiss = (version: string) =>
