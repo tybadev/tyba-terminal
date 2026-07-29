@@ -43,7 +43,8 @@
               "pt-br/interface/abas-e-workspaces",
               "pt-br/interface/split-de-paineis",
               "pt-br/interface/paleta-de-comandos",
-              "pt-br/interface/atalhos"
+              "pt-br/interface/atalhos",
+              "pt-br/interface/versao-e-diagnostico"
             ]
           },
           {
@@ -165,7 +166,8 @@
               "en/interface/tabs-and-workspaces",
               "en/interface/split-panes",
               "en/interface/command-palette",
-              "en/interface/shortcuts"
+              "en/interface/shortcuts",
+              "en/interface/version-and-diagnostics"
             ]
           },
           {
@@ -287,7 +289,8 @@
               "es/interfaz/pestanas-y-workspaces",
               "es/interfaz/division-de-paneles",
               "es/interfaz/paleta-de-comandos",
-              "es/interfaz/atajos"
+              "es/interfaz/atajos",
+              "es/interfaz/version-y-diagnostico"
             ]
           },
           {
