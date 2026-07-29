@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { changelogUrl } from "@/lib/changelog";
 import {
+  ArrowSquareOut,
   Check,
   Code,
+  Copy,
   DownloadSimple,
   FolderOpen,
+  Info,
   Keyboard,
   Palette,
   Plus,
@@ -16,6 +18,8 @@ import {
   TerminalWindow,
   User,
 } from "@phosphor-icons/react";
+
+import appIcon from "../../src-tauri/icons/128x128.png";
 
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
@@ -42,6 +46,7 @@ import {
   type ThemeMode,
 } from "../theme";
 import {
+  appBuildInfo,
   getPref,
   getThemeState,
   importThemeCmd,
@@ -49,12 +54,26 @@ import {
   listThemes,
   onThemeChanged,
   setPref,
+  type BuildInfo,
   type EditorInfo,
   type ThemeState,
   type UpdateStatus,
   type LaunchConfig,
   type LaunchConfigId,
 } from "../lib/ipc";
+import {
+  formatDiagnostics,
+  platformLabel,
+  shortCommitDate,
+} from "../lib/diagnostics";
+import { openExternalUrl, writeClipboardText } from "../lib/clipboard";
+import {
+  commitUrl,
+  docsUrl,
+  LICENSE_NAME,
+  LICENSE_URL,
+  REPO_URL,
+} from "../lib/links";
 import {
   actionsByCategory,
   ACTION_LABEL_KEYS,
@@ -85,7 +104,8 @@ type Section =
   | "code"
   | "launch"
   | "shortcuts"
-  | "preferences";
+  | "preferences"
+  | "about";
 
 interface Props {
   launchConfigs: LaunchConfig[];
@@ -268,6 +288,192 @@ function SettingRow({
       </div>
       <div className="shrink-0">{children}</div>
     </div>
+  );
+}
+
+function ExternalRow({
+  label,
+  value,
+  href,
+  mono,
+}: {
+  label: string;
+  value: string;
+  href: string;
+  mono?: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <SettingRow label={label}>
+      <button
+        onClick={() => void openExternalUrl(href).catch(() => {})}
+        aria-label={t("aboutOpenLink", { target: value })}
+        className="flex items-center gap-1.5 text-[12px] text-tyba-text-muted transition-colors hover:text-tyba-text"
+      >
+        <span className={mono ? "font-mono" : undefined}>{value}</span>
+        <ArrowSquareOut size={12} />
+      </button>
+    </SettingRow>
+  );
+}
+
+function AboutSection({
+  version,
+  update,
+}: {
+  version: string;
+  update: UpdateStatus | null;
+}) {
+  const { t, i18n } = useTranslation();
+  const [info, setInfo] = useState<BuildInfo | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void appBuildInfo()
+      .then((value) => {
+        if (alive) setInfo(value);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  const copy = () => {
+    if (!info) return;
+    void writeClipboardText(formatDiagnostics(info, i18n.language))
+      .then(() => setCopied(true))
+      .catch(() => {});
+  };
+
+  const commitDate = info ? shortCommitDate(info.commit_date, i18n.language) : "";
+
+  return (
+    <section className="mx-auto w-full max-w-lg">
+      <SectionHeader title={t("settingsAbout")} hint={t("aboutHint")} />
+
+      <div className="mb-6 flex items-center gap-3">
+        <img
+          src={appIcon}
+          alt=""
+          className="size-11 rounded-[10px]"
+          draggable={false}
+        />
+        <div className="min-w-0">
+          <p className="text-[15px] font-medium text-tyba-text">TYBA</p>
+          <p className="pt-0.5 text-[12px] text-tyba-text-faint">
+            {t("aboutTagline")}
+          </p>
+        </div>
+      </div>
+
+      <span className="tyba-label">{t("version")}</span>
+      <div className="mt-2 mb-6 flex items-center gap-3 rounded-[6px] border border-tyba-border px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <p className="font-mono text-[13px] text-tyba-text">
+            {version || "—"}
+          </p>
+          <p className="pt-0.5 text-[11px] text-tyba-text-faint">
+            {update
+              ? t("updateAvailable", { version: update.info.version })
+              : t("updateUpToDate")}
+          </p>
+        </div>
+        {update && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 shrink-0 gap-1.5 px-2.5 text-[11px] text-tyba-violet"
+            onClick={() =>
+              void openExternalUrl(changelogUrl(i18n.language)).catch(() => {})
+            }
+          >
+            <DownloadSimple size={13} />
+            {t("updateOpenChangelog")}
+          </Button>
+        )}
+      </div>
+
+      <span className="tyba-label">{t("aboutBuild")}</span>
+      <div className="mt-2 divide-y divide-tyba-border overflow-hidden rounded-[6px] border border-tyba-border">
+        {info?.commit ? (
+          <ExternalRow
+            label={t("aboutCommit")}
+            value={info.commit}
+            href={commitUrl(info.commit)}
+            mono
+          />
+        ) : (
+          <SettingRow label={t("aboutCommit")}>
+            <span className="font-mono text-[12px] text-tyba-text-faint">—</span>
+          </SettingRow>
+        )}
+        <SettingRow label={t("aboutCommitDate")}>
+          <span className="text-[12px] text-tyba-text-muted">
+            {commitDate || "—"}
+          </span>
+        </SettingRow>
+        <SettingRow label={t("aboutPlatform")}>
+          <span className="text-[12px] text-tyba-text-muted">
+            {info ? platformLabel(info) : "—"}
+          </span>
+        </SettingRow>
+        <SettingRow label={t("aboutWebview")}>
+          <span className="text-[12px] text-tyba-text-muted">
+            {info?.webview || "—"}
+          </span>
+        </SettingRow>
+      </div>
+      <div className="mt-2 mb-6 flex items-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={!info}
+          aria-label={t("aboutCopyDiagnostics")}
+          className="h-7 gap-1.5 px-2.5 text-[11px] text-tyba-text-muted hover:text-tyba-text"
+          onClick={copy}
+        >
+          <Copy size={13} />
+          {t("aboutCopyDiagnostics")}
+        </Button>
+        {copied && (
+          <span role="status" className="text-[11px] text-tyba-green">
+            {t("aboutCopied")}
+          </span>
+        )}
+      </div>
+
+      <span className="tyba-label">{t("aboutLinks")}</span>
+      <div className="mt-2 divide-y divide-tyba-border overflow-hidden rounded-[6px] border border-tyba-border">
+        <ExternalRow
+          label={t("aboutRepo")}
+          value="github.com/tybadev/tyba-terminal"
+          href={REPO_URL}
+        />
+        <ExternalRow
+          label={t("aboutDocs")}
+          value="docs.tyba.dev"
+          href={docsUrl(i18n.language)}
+        />
+        <ExternalRow
+          label={t("aboutChangelog")}
+          value="tyba.dev/changelog"
+          href={changelogUrl(i18n.language)}
+        />
+        <ExternalRow
+          label={t("aboutLicense")}
+          value={LICENSE_NAME}
+          href={LICENSE_URL}
+        />
+      </div>
+    </section>
   );
 }
 
@@ -515,6 +721,12 @@ export function SettingsView({
           label={t("settingsPreferences")}
           onClick={() => setSection("preferences")}
         />
+        <NavItem
+          active={section === "about"}
+          icon={<Info size={15} />}
+          label={t("settingsAbout")}
+          onClick={() => setSection("about")}
+        />
       </aside>
 
       <div className="min-w-0 flex-1 overflow-y-auto px-8 pt-4 pb-8">
@@ -524,32 +736,6 @@ export function SettingsView({
               title={t("settingsGeneral")}
               hint={t("generalHint")}
             />
-            <span className="tyba-label">{t("version")}</span>
-            <div className="mt-2 mb-6 flex items-center gap-3 rounded-[6px] border border-tyba-border px-4 py-3">
-              <div className="min-w-0 flex-1">
-                <p className="font-mono text-[13px] text-tyba-text">
-                  {version || "—"}
-                </p>
-                <p className="pt-0.5 text-[11px] text-tyba-text-faint">
-                  {update
-                    ? t("updateAvailable", { version: update.info.version })
-                    : t("updateUpToDate")}
-                </p>
-              </div>
-              {update && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 shrink-0 gap-1.5 px-2.5 text-[11px] text-tyba-violet"
-                  onClick={() =>
-                    void openUrl(changelogUrl(i18n.language)).catch(() => {})
-                  }
-                >
-                  <DownloadSimple size={13} />
-                  {t("updateOpenChangelog")}
-                </Button>
-              )}
-            </div>
             <span className="tyba-label">{t("account")}</span>
             <div className="mt-2 mb-6 flex items-center gap-3 rounded-[6px] border border-tyba-border px-4 py-3">
               <span
@@ -1031,6 +1217,10 @@ export function SettingsView({
               <ToolbarChipsEditor pref={toolbarPref} onChange={onToolbarPrefChange} />
             )}
           </section>
+        )}
+
+        {section === "about" && (
+          <AboutSection version={version} update={update} />
         )}
       </div>
     </div>

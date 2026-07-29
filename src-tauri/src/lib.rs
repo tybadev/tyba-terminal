@@ -3204,6 +3204,34 @@ fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BuildInfo {
+    pub version: String,
+    pub commit: String,
+    pub commit_date: String,
+    pub os: String,
+    pub arch: String,
+    pub webview: String,
+}
+
+fn build_info() -> BuildInfo {
+    BuildInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        commit: option_env!("TYBA_COMMIT").unwrap_or_default().to_string(),
+        commit_date: option_env!("TYBA_COMMIT_DATE")
+            .unwrap_or_default()
+            .to_string(),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        webview: tauri::webview_version().unwrap_or_default(),
+    }
+}
+
+#[tauri::command]
+fn app_build_info() -> BuildInfo {
+    build_info()
+}
+
 #[tauri::command]
 async fn update_check(state: State<'_, AppState>) -> Result<Option<update::UpdateStatus>, String> {
     let now = chrono::Utc::now().timestamp();
@@ -4411,6 +4439,7 @@ pub fn run() {
             set_split_ratio,
             get_pref,
             app_version,
+            app_build_info,
             update_check,
             update_dismiss,
             set_pref,
@@ -4439,4 +4468,32 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_info_carries_version_and_platform() {
+        let info = build_info();
+        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+        assert!(!info.os.is_empty());
+        assert!(!info.arch.is_empty());
+    }
+
+    #[test]
+    fn build_info_serializes_without_git() {
+        let info = BuildInfo {
+            version: "0.3.0".into(),
+            commit: String::new(),
+            commit_date: String::new(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+            webview: String::new(),
+        };
+        let json = serde_json::to_string(&info).expect("serializa sem git");
+        assert!(json.contains("\"commit\":\"\""));
+        assert!(json.contains("\"commit_date\":\"\""));
+    }
 }
