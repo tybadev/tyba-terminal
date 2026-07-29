@@ -1,0 +1,72 @@
+---
+title: "Agent started in a shell"
+description: "Typing `claude` in a plain terminal runs the agent with none of TYBA's protections — and what the app does when it notices."
+---
+
+There are two ways an agent can start inside TYBA, and they are not equivalent:
+
+| How it starts | What you get |
+| --- | --- |
+| **TYBA runs it** — agent session, launch config, reopen managed | Approval inbox, sandbox, filtered env, subagent capture |
+| **You type `claude` in a shell** | None of that. The shell started the process, not TYBA |
+
+<Warning>
+An agent typed into a shell runs **with no gate**: no approval for risky commands, no jail limiting what it reads and writes, no subagent capture. It has exactly the powers your shell has.
+</Warning>
+
+This is not a hole — it follows from where the protections live. The approval hooks and the jail are set up **at the moment the process is born**, and only TYBA knows how to set them up. A `claude` the shell started was already born without them.
+
+## TYBA notices and warns you
+
+When a known agent (`claude`, `codex`) starts running inside a shell session, an **amber strip appears at the top of that session**:
+
+> ⚠ Agent running without TYBA's gate — no inbox, no sandbox, no subagent capture.
+> **[Reopen managed]** **[Ignore]**
+
+The strip is **per session**, not per window: if you have a split with two shells, only the one running the agent shows the warning.
+
+<Note>
+Detection watches the terminal's processes — it **does not depend on shell integration**. It works with zsh, bash, fish, and with `claude` installed through any path.
+</Note>
+
+## Reopen managed
+
+The button takes the only path that exists for gating an already-running agent: it **ends the raw process and starts a new one, managed, in the same folder**. There is no way to inject the protections into a process that already started — the hooks are read when the agent boots.
+
+That is why it asks first. What happens:
+
+<Steps>
+<Step title="Confirmation">
+TYBA tells you it is about to end the current agent. Nothing happens without your **ok**.
+</Step>
+<Step title="Surgical shutdown">
+Only the agent dies — `SIGTERM`, a moment of grace, `SIGKILL` for whatever is left. **Your shell survives** and returns to the prompt.
+</Step>
+<Step title="Managed session">
+A new session starts in the **same folder**, with inbox, sandbox and subagent capture.
+</Step>
+</Steps>
+
+<Warning>
+**The new session starts with no history.** The raw agent's conversation is not carried over. The transcript stays on disk: inside the new agent, use `/resume` to pick up where you left off.
+</Warning>
+
+### When it can't
+
+The folder has to be a **git repository**. A managed session is repo-centric — that is what gives you the git panel, the diff and the jail's reach. `claude` running in a folder with no git shows a clear error, and the warning stays put.
+
+## Ignore
+
+Hides the warning **for that process**. A new agent in the same shell warns again — and reloading the window brings the warning back, deliberately: the session is still ungated, and TYBA will not pretend otherwise.
+
+What does **not** go away is the **no gate** badge in the session panel. As long as that agent runs unprotected, the badge stays.
+
+## The Agents panel works here too
+
+Even with no gate, subagents of a `claude` typed into a shell show up in the **Agents** panel — TYBA reads the transcript from disk instead of relying on the hooks. It is the one protection that survives the raw path, and it is read-only: it shows what is happening, it does not intercept anything.
+
+## See also
+
+- [Claude Code and Codex](/en/agent/claude-code-and-codex) — how TYBA starts a managed agent
+- [Subagents](/en/agent/subagents) — the Agents panel and the execution tree
+- [Risk classification](/en/security/risk-classification) — what the approval gate holds back

@@ -41,6 +41,10 @@ The **`X`** that appears when you hover the tab.
 `⌘W` / `Ctrl+Shift+W` closes the **pane**, not the tab. The tab closes along with it when it was the last pane — see [split panes](/en/interface/split-panes#closing).
 </Note>
 
+Closing something with a **running agent** opens a confirmation, with **Close anyway** and **Show what is running**. The agent does not die until you choose: closing mid-commit or mid-write used to lose work with no warning.
+
+The confirmation only shows up when there is a reason for it. Plain shells and idle agents close right away, no friction.
+
 ### Switching
 
 By clicking, or:

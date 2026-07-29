@@ -70,6 +70,7 @@
               "pt-br/agente/claude-code-e-codex",
               "pt-br/agente/composer",
               "pt-br/agente/subagentes",
+              "pt-br/agente/agente-no-shell",
               "pt-br/agente/hooks",
               "pt-br/agente/notificacoes"
             ]
@@ -193,6 +194,7 @@
               "en/agent/claude-code-and-codex",
               "en/agent/composer",
               "en/agent/subagents",
+              "en/agent/agent-in-a-shell",
               "en/agent/hooks",
               "en/agent/notifications"
             ]
@@ -316,6 +318,7 @@
               "es/agente/claude-code-y-codex",
               "es/agente/composer",
               "es/agente/subagentes",
+              "es/agente/agente-en-el-shell",
               "es/agente/hooks",
               "es/agente/notificaciones"
             ]
