@@ -58,11 +58,43 @@ Disso decorre:
 5. **Rode os gates do site** antes de abrir PR (veja `docs-site/` — tipicamente lint de MDX / `mintlify broken-links` se disponível; no mínimo confira que todo path do `docs.json` existe nos três idiomas).
 6. **Abra PR no `tyba-terminal`** (a doc vive no mesmo repo do app) — conventional commit `docs(...)`, mensagem em pt-BR, sem atribuição a IA. A doc entra junto com o código da feature quando possível; num release que documenta feature já mergeada, é um PR de doc próprio.
 
+## O número da versão cravado no texto
+
+Cobertura de feature não é a única forma de a doc envelhecer. Ela também **afirma
+um número**, e esse número apodrece em silêncio: `docs.tyba.dev` anunciou
+`0.2.0` durante as versões 0.3.0 **e** 0.4.0, porque nada na revisão mandava
+olhar. Uma doc que diz ao leitor qual versão ela descreve, e mente, corrói a
+confiança em tudo o mais que ela afirma.
+
+O número mora em **dois snippets**, e é só neles que se mexe:
+
+| Arquivo | O que carrega | Quem consome |
+| --- | --- | --- |
+| `docs-site/snippets/version.mdx` | `export const VERSION` | os três `index.mdx`, na frase *"descreve o que roda hoje, na X"* |
+| `docs-site/snippets/linux-install.mdx` | o bloco `bash` com `Tyba_X_amd64.deb` e o `.rpm` | os três arquivos de instalação |
+
+Foram extraídos justamente porque as seis cópias à mão apodreceram sem ninguém
+ver. **Não volte a escrever o número direto na página**: o bloco de instalação
+mora inteiro no snippet porque interpolação não funciona dentro de code fence
+em MDX.
+
+Depois de editar, confirme que não sobrou cópia solta:
+
+```bash
+grep -rn "<versão-anterior>" docs-site/
+```
+
+E confira as afirmações **presas à versão** (`grep -rn "nesta versão\|this
+version\|en esta versión"`): elas descrevem o que ainda não roda, e o que não
+rodava pode ter passado a rodar.
+
 ## Antes de dar por pronto
 
 - Toda feature de usuário que esta versão liga tem página? (cruze a lista de PRs com a navegação)
 - As páginas existem nos **três** idiomas e estão nos **três** blocos de `docs.json`?
 - Algum path no `docs.json` aponta pra arquivo que não existe? (404 na navegação)
+- **Os dois snippets de versão foram bumpados** e `grep -rn "<versão-anterior>" docs-site/` volta vazio?
+- As afirmações de "nesta versão" ainda são verdade?
 - Alguma página descreve arquitetura em vez de tarefa? Fala de algo que **não roda** nesta versão?
 - O grupo novo (se houve) entrou na mesma posição nos três idiomas?
 
