@@ -58,11 +58,40 @@ Disso decorre:
 5. **Rode os gates do site** antes de abrir PR (veja `docs-site/` — tipicamente lint de MDX / `mintlify broken-links` se disponível; no mínimo confira que todo path do `docs.json` existe nos três idiomas).
 6. **Abra PR no `tyba-terminal`** (a doc vive no mesmo repo do app) — conventional commit `docs(...)`, mensagem em pt-BR, sem atribuição a IA. A doc entra junto com o código da feature quando possível; num release que documenta feature já mergeada, é um PR de doc próprio.
 
+## O número da versão cravado no texto
+
+Cobertura de feature não é a única forma de a doc envelhecer. Ela também **afirma
+um número**, e esse número apodrece em silêncio: `docs.tyba.dev` anunciou
+`0.2.0` durante as versões 0.3.0 **e** 0.4.0, porque nada na revisão mandava
+olhar. Uma doc que diz ao leitor qual versão ela descreve, e mente, corrói a
+confiança em tudo o mais que ela afirma.
+
+Rode isto **todo release**, antes de fechar:
+
+```bash
+grep -rn "<versão-anterior>" docs-site/
+```
+
+Os dois lugares que sempre aparecem:
+
+- **`index.mdx` (×3)** — *"descreve o que roda hoje, na X"*. É uma promessa
+  explícita ao leitor; tem que bater com a tag.
+- **`instalacao.mdx` / `installation.mdx` / `instalacion.mdx` (×3)** — os
+  comandos de exemplo trazem o nome do arquivo (`Tyba_X_amd64.deb`,
+  `Tyba-X-1.x86_64.rpm`). Comando que o usuário copia e não funciona é pior que
+  comando ausente.
+
+E confira as afirmações **presas à versão** (`grep -rn "nesta versão\|this
+version\|en esta versión"`): elas descrevem o que ainda não roda, e o que não
+rodava pode ter passado a rodar.
+
 ## Antes de dar por pronto
 
 - Toda feature de usuário que esta versão liga tem página? (cruze a lista de PRs com a navegação)
 - As páginas existem nos **três** idiomas e estão nos **três** blocos de `docs.json`?
 - Algum path no `docs.json` aponta pra arquivo que não existe? (404 na navegação)
+- **`grep -rn "<versão-anterior>" docs-site/` volta vazio?** (índice e instalação, nos três idiomas)
+- As afirmações de "nesta versão" ainda são verdade?
 - Alguma página descreve arquitetura em vez de tarefa? Fala de algo que **não roda** nesta versão?
 - O grupo novo (se houve) entrou na mesma posição nos três idiomas?
 
