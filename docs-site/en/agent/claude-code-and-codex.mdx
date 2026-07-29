@@ -42,7 +42,7 @@ With the preference on, both shortcuts do the same thing.
 <Note>
 **An agent session is always a worktree session.** This is not accidental coupling: worktree, jail, env by allowlist and inbox are born together, in the same step. The whole path is in [First session](/en/first-session).
 
-Running `claude` by typing its name into a shell is a different thing — and what you lose is described in [Agent over SSH](/en/ssh/agent-over-ssh).
+Running `claude` by typing its name into a shell is a different thing: the agent starts with no gate at all. TYBA notices and offers to reopen it managed — see [Agent started in a shell](/en/agent/agent-in-a-shell).
 </Note>
 
 The **"Default folder for new sessions"** preference (Settings → General) puts a folder as the **first option** in the list, marked with the `default folder` label. Empty = no default.

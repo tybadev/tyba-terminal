@@ -1,0 +1,72 @@
+---
+title: "Agente iniciado no shell"
+description: "Digitar `claude` num terminal comum roda o agente sem nenhuma das proteções do TYBA — e o que o app faz quando percebe isso."
+---
+
+Há duas formas de um agente subir dentro do TYBA, e elas não são equivalentes:
+
+| Como sobe | O que você tem |
+| --- | --- |
+| **O TYBA executa** — sessão de agente, launch config, reabrir gerenciado | Inbox de aprovações, sandbox, env filtrado, captura de subagentes |
+| **Você digita `claude` num shell** | Nada disso. É o shell que subiu o processo, não o TYBA |
+
+<Warning>
+Um agente digitado no shell roda **sem gate**: sem aprovação para comando de risco, sem jaula limitando o que ele lê e escreve, sem captura de subagentes. Ele tem exatamente os poderes que o seu shell tem.
+</Warning>
+
+Isso não é um furo — é uma consequência de onde as proteções moram. Os hooks de aprovação e a jaula são montados **no momento em que o processo nasce**, e só o TYBA sabe montá-los. Um `claude` que o shell subiu já nasceu sem eles.
+
+## O TYBA percebe e avisa
+
+Quando um agente conhecido (`claude`, `codex`) começa a rodar dentro de uma sessão de shell, aparece uma **tarja âmbar no topo daquela sessão**:
+
+> ⚠ Agente rodando sem o gate do TYBA — sem inbox, sem sandbox, sem captura de subagentes.
+> **[Reabrir gerenciado]** **[Ignorar]**
+
+A tarja é **por sessão**, não por janela: se você tem um split com dois shells, só o que está rodando o agente mostra o aviso.
+
+<Note>
+A detecção observa os processos do terminal — **não depende de shell integration**. Funciona com zsh, bash, fish, e com o `claude` instalado por qualquer caminho.
+</Note>
+
+## Reabrir gerenciado
+
+O botão faz o único caminho que existe para dar gate a um agente já rodando: **encerra o processo cru e sobe um novo, gerenciado, na mesma pasta**. Não há como injetar as proteções num processo que já nasceu — os hooks são lidos no boot do agente.
+
+Por isso ele pede confirmação antes. O que acontece:
+
+<Steps>
+<Step title="Confirmação">
+O TYBA avisa que vai encerrar o agente atual. Nada acontece sem o seu **ok**.
+</Step>
+<Step title="Encerramento cirúrgico">
+Só o agente morre — `SIGTERM`, um instante de espera, `SIGKILL` no que sobrar. **O seu shell sobrevive** e volta para o prompt.
+</Step>
+<Step title="Sessão gerenciada">
+Uma sessão nova sobe na **mesma pasta**, com inbox, sandbox e captura de subagentes.
+</Step>
+</Steps>
+
+<Warning>
+**A sessão nova começa sem histórico.** A conversa do agente cru não é transportada. O transcript continua no disco: dentro do agente novo, use `/resume` para retomar de onde parou.
+</Warning>
+
+### Quando não dá
+
+A pasta precisa ser um **repositório git**. Sessão gerenciada é repo-centrada — é o que dá o painel de git, o diff e o alcance da jaula. `claude` rodando numa pasta sem git mostra erro claro, e o aviso continua ali.
+
+## Ignorar
+
+Esconde o aviso **para aquele processo**. Um agente novo no mesmo shell avisa de novo — e recarregar a janela traz o aviso de volta, de propósito: a sessão continua sem gate, e o TYBA não finge o contrário.
+
+O que **não** some é o selo **sem gate** no painel de sessões. Enquanto aquele agente estiver rodando sem proteção, o selo fica.
+
+## O painel Agentes funciona aqui também
+
+Mesmo sem gate, os subagentes de um `claude` digitado no shell aparecem no painel **Agentes** — o TYBA lê o transcript no disco em vez de depender dos hooks. É a única proteção que sobrevive ao caminho cru, e ela é só de leitura: mostra o que está acontecendo, não intercepta nada.
+
+## Veja também
+
+- [Claude Code e Codex](/pt-br/agente/claude-code-e-codex) — como o TYBA sobe um agente gerenciado
+- [Subagentes](/pt-br/agente/subagentes) — o painel Agentes e a árvore de execução
+- [Classificação de risco](/pt-br/seguranca/classificacao-de-risco) — o que o gate de aprovação segura
