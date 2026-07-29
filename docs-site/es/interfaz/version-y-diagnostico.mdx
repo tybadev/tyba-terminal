@@ -1,0 +1,72 @@
+---
+title: "Versión y diagnóstico"
+description: "Dónde ver la versión que estás ejecutando y cómo generar el bloque que se pega en una issue."
+---
+
+## Dónde está
+
+Abrí **Configuración** y andá a **Acerca de** — último ítem de la lista de la izquierda.
+
+<Tabs>
+<Tab title="macOS">
+| Acción | Atajo |
+| --- | --- |
+| Abrir Configuración | `⌘,` |
+</Tab>
+<Tab title="Windows y Linux">
+| Acción | Atajo |
+| --- | --- |
+| Abrir Configuración | `Ctrl+,` |
+</Tab>
+</Tabs>
+
+La paleta de acciones (`⌘P` / `Ctrl+Shift+P`) y el menú de la cuenta, en el avatar, llevan al mismo lugar.
+
+## Qué muestra la pantalla
+
+| Campo | Qué es |
+| --- | --- |
+| **Versión** | La versión de TYBA que estás ejecutando. Debajo, si ya existe una más nueva |
+| **Commit** | El commit exacto desde el que se compiló este binario. Hacé clic y se abre en GitHub |
+| **Fecha del commit** | Cuándo se hizo ese commit — no cuándo instalaste |
+| **Plataforma** | Sistema y arquitectura (`macOS · aarch64`, `Linux · x86_64`) |
+| **Webview** | Versión del motor que dibuja la interfaz |
+
+El commit es el campo que más resuelve reportes de bugs. **Entre una versión y otra el número no cambia**: todo build hecho durante el ciclo de la `0.3.0` se llama `0.3.0`. El commit es lo que los separa — y si compilaste desde el código fuente, es lo único que identifica lo que tenés en la máquina.
+
+<Note>
+Si TYBA se compiló desde un paquete de código sin historial git, **Commit** y **Fecha del commit** aparecen como `—`. No es un error: ese build no tiene esa información para dar.
+</Note>
+
+## Copiar diagnóstico
+
+El botón **Copiar diagnóstico** deja en el portapapeles un bloque listo para pegar:
+
+```
+TYBA 0.3.0
+commit 710d7f1 (24/07/2026)
+macOS · aarch64
+webview 21624.2.5.11.4
+locale es
+```
+
+<Note>
+**Eso es todo lo que lleva.** No van rutas de carpeta, ni el nombre de tu cuenta local, ni nombres de repositorio o branch, ni sesiones abiertas, ni variables de entorno. El bloque está hecho para pegarse en una issue pública sin que tengas que releerlo línea por línea antes.
+</Note>
+
+## Cuando sale una versión nueva
+
+La tarjeta de versión cambia la línea de abajo por *Salió la versión X* y aparece un botón **Ver qué cambió**, que abre el changelog en el navegador.
+
+<Warning>
+TYBA **no descarga ni instala actualizaciones solo**. Avisa y abre el changelog; descargar la versión nueva es decisión tuya, en la [página de descarga](https://www.tyba.dev/download).
+</Warning>
+
+## Enlaces
+
+La última tarjeta lleva al repositorio, la documentación, el changelog y la licencia — TYBA es Apache-2.0.
+
+## Ver también
+
+- [Atajos](/es/interfaz/atajos) — todos los atajos y cómo cambiarlos
+- [Instalación](/es/instalacion) — cómo actualizar en cada sistema
