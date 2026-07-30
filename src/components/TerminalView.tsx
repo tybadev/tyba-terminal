@@ -169,6 +169,9 @@ export function TerminalView({
   const showExitBannerRef = useRef<(() => void) | null>(null);
   const reattachesRef = useRef(false);
   reattachesRef.current = Boolean(reattaches);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const syncWebglRef = useRef<(() => void) | null>(null);
   const hoveredLinkRef = useRef<string | null>(null);
   const [menuHasSelection, setMenuHasSelection] = useState(false);
   const [menuMouseMode, setMenuMouseMode] = useState(false);
@@ -246,6 +249,7 @@ export function TerminalView({
       if (disposed) return;
       term.open(el);
       opened = true;
+      syncWebglRef.current?.();
       if (el.offsetWidth > 0 && el.offsetHeight > 0) {
         try {
           fit.fit();
@@ -342,6 +346,21 @@ export function TerminalView({
       if (timer !== null) window.clearTimeout(timer);
       timer = window.setTimeout(refit, 80);
     };
+    const syncWebgl = () => {
+      if (disposed || !opened) return;
+      if (visibleRef.current) {
+        if (webglRef.current) return;
+        webglRef.current = loadWebgl(term, () => {
+          webglRef.current = null;
+          refit();
+        });
+        if (webglRef.current) refit();
+      } else if (webglRef.current) {
+        disposeWebgl(webglRef.current);
+        webglRef.current = null;
+      }
+    };
+    syncWebglRef.current = syncWebgl;
     const ro = new ResizeObserver(schedule);
     ro.observe(el);
     const onRelayout = () => schedule();
@@ -381,6 +400,7 @@ export function TerminalView({
       unlisteners.forEach((un) => un());
       unregisterTerm(sessionId);
       showExitBannerRef.current = null;
+      syncWebglRef.current = null;
       disposeWebgl(webglRef.current);
       webglRef.current = null;
       term.dispose();
@@ -401,17 +421,8 @@ export function TerminalView({
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    if (focused && visible) {
-      term.focus();
-      if (!webglRef.current) {
-        webglRef.current = loadWebgl(term, () => {
-          webglRef.current = null;
-        });
-      }
-    } else if (webglRef.current) {
-      disposeWebgl(webglRef.current);
-      webglRef.current = null;
-    }
+    if (focused && visible) term.focus();
+    syncWebglRef.current?.();
   }, [focused, visible]);
 
   // Ao ficar visível (troca de aba), o container sai de `display:none` e ganha
