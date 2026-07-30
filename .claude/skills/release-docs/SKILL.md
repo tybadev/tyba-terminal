@@ -66,23 +66,33 @@ um número**, e esse número apodrece em silêncio: `docs.tyba.dev` anunciou
 olhar. Uma doc que diz ao leitor qual versão ela descreve, e mente, corrói a
 confiança em tudo o mais que ela afirma.
 
-O número mora em **dois snippets**, e é só neles que se mexe:
-
-| Arquivo | O que carrega | Quem consome |
-| --- | --- | --- |
-| `docs-site/snippets/version.mdx` | `export const VERSION` | os três `index.mdx`, na frase *"descreve o que roda hoje, na X"* |
-| `docs-site/snippets/linux-install.mdx` | o bloco `bash` com `Tyba_X_amd64.deb` e o `.rpm` | os três arquivos de instalação |
-
-Foram extraídos justamente porque as seis cópias à mão apodreceram sem ninguém
-ver. **Não volte a escrever o número direto na página**: o bloco de instalação
-mora inteiro no snippet porque interpolação não funciona dentro de code fence
-em MDX.
-
-Depois de editar, confirme que não sobrou cópia solta:
+Rode isto **todo release**, antes de fechar:
 
 ```bash
 grep -rn "<versão-anterior>" docs-site/
 ```
+
+Os seis lugares que sempre aparecem:
+
+- **`index.mdx` (×3)** — *"descreve o que roda hoje, na X"*. É uma promessa
+  explícita ao leitor; tem que bater com a tag.
+- **`instalacao.mdx` / `installation.mdx` / `instalacion.mdx` (×3)** — os
+  comandos de exemplo trazem o nome do arquivo (`Tyba_X_amd64.deb`,
+  `Tyba-X-1.x86_64.rpm`). Comando que o usuário copia e não funciona é pior que
+  comando ausente.
+
+> [!danger] Não tente consolidar isso em snippets sem provar no site publicado
+> Em 2026-07-29 as seis cópias foram extraídas para `docs-site/snippets/`
+> (`export const VERSION` + um snippet com o bloco `bash`). O `mint dev` local
+> renderizou os dois. **Em produção, os dois sumiram**: o HTML servido trazia
+> `const VERSION=undefined` e a frase virou *"runs today, in ."*, e o bloco de
+> instalação simplesmente não apareceu. Seis páginas quebradas — índice e
+> instalação, nos três idiomas.
+>
+> A lição não é "snippet não funciona": é que **o `mint dev` não prova o que o
+> Mintlify publica**. Se for tentar de novo, valide extraindo o texto do HTML
+> servido (`curl` + remover `<script>` + remover tags), não o payload de JS —
+> o bundle contém os dois chunks e mostra o que você quer ver.
 
 E confira as afirmações **presas à versão** (`grep -rn "nesta versão\|this
 version\|en esta versión"`): elas descrevem o que ainda não roda, e o que não
@@ -93,7 +103,7 @@ rodava pode ter passado a rodar.
 - Toda feature de usuário que esta versão liga tem página? (cruze a lista de PRs com a navegação)
 - As páginas existem nos **três** idiomas e estão nos **três** blocos de `docs.json`?
 - Algum path no `docs.json` aponta pra arquivo que não existe? (404 na navegação)
-- **Os dois snippets de versão foram bumpados** e `grep -rn "<versão-anterior>" docs-site/` volta vazio?
+- **`grep -rn "<versão-anterior>" docs-site/` volta vazio?** (índice e instalação, nos três idiomas)
 - As afirmações de "nesta versão" ainda são verdade?
 - Alguma página descreve arquitetura em vez de tarefa? Fala de algo que **não roda** nesta versão?
 - O grupo novo (se houve) entrou na mesma posição nos três idiomas?

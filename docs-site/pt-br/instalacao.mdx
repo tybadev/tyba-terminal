@@ -3,8 +3,6 @@ title: "Instalação"
 description: "macOS, Linux e Windows — e o que você instala por fora: um agente e um repositório git."
 ---
 
-import LinuxInstall from '/snippets/linux-install.mdx';
-
 Os binários da versão atual estão na [página de download](https://www.tyba.dev/pt-br/download).
 
 <Tabs>
@@ -17,7 +15,11 @@ Assinado e notarizado: abre sem aviso do Gatekeeper.
 <Tab title="Linux">
 Baixe o `.deb`, `.rpm` ou `.AppImage`:
 
-<LinuxInstall />
+```bash
+sudo apt install ./Tyba_0.4.0_amd64.deb     # Debian / Ubuntu
+sudo dnf install ./Tyba-0.4.0-1.x86_64.rpm  # Fedora
+yay -S tyba-bin                             # Arch (AUR)
+```
 
 <Warning>
 **`bubblewrap` é obrigatório, não sugerido.** Sem ele o core recusa criar sessões de agente e o TYBA vira só um terminal.
