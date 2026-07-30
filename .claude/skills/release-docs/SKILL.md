@@ -81,18 +81,30 @@ Os seis lugares que sempre aparecem:
   `Tyba-X-1.x86_64.rpm`). Comando que o usuário copia e não funciona é pior que
   comando ausente.
 
-> [!danger] Não tente consolidar isso em snippets sem provar no site publicado
-> Em 2026-07-29 as seis cópias foram extraídas para `docs-site/snippets/`
-> (`export const VERSION` + um snippet com o bloco `bash`). O `mint dev` local
-> renderizou os dois. **Em produção, os dois sumiram**: o HTML servido trazia
-> `const VERSION=undefined` e a frase virou *"runs today, in ."*, e o bloco de
-> instalação simplesmente não apareceu. Seis páginas quebradas — índice e
-> instalação, nos três idiomas.
+> [!danger] `export const` em snippet NÃO sobrevive à publicação
+> Em 2026-07-29 as três páginas de índice passaram a importar
+> `export const VERSION` de `docs-site/snippets/version.mdx`. O `mint dev`
+> local renderizou. **Em produção não**: o HTML servido trazia
+> `const VERSION=undefined` e a frase saiu *"runs today, in ."* — sem versão,
+> nos três idiomas. Revertido no #221.
 >
-> A lição não é "snippet não funciona": é que **o `mint dev` não prova o que o
-> Mintlify publica**. Se for tentar de novo, valide extraindo o texto do HTML
-> servido (`curl` + remover `<script>` + remover tags), não o payload de JS —
-> o bundle contém os dois chunks e mostra o que você quer ver.
+> Duas lições, e a segunda é sobre como verificar:
+>
+> 1. **`mint dev` não prova o que o Mintlify publica.** Validar no dev local e
+>    dar por bom é como esse bug foi ao ar.
+> 2. **Payload de JS engana.** O bundle publicado carrega mais de um chunk — o
+>    que resolve e o que não. Grep nele mostra o que você quer ver. O que decide
+>    é o **texto do HTML servido**: `curl`, remover `<script>`/`<style>`,
+>    remover tags, ler o texto.
+>
+> **Onde esse método é cego:** conteúdo dentro de `<Tab>` que não é a primeira
+> aba pode não aparecer no HTML servido mesmo estando correto — na página de
+> instalação, macOS e Windows aparecem e Linux não, com markdown literal. Não
+> conclua que sumiu; ali o método não responde.
+>
+> Um snippet de **conteúdo** (`import X from '...'` + `<X />`) não foi
+> desqualificado por este episódio — só o `export const` foi. Se for tentar
+> consolidar de novo, comece por ele, e prove no publicado.
 
 E confira as afirmações **presas à versão** (`grep -rn "nesta versão\|this
 version\|en esta versión"`): elas descrevem o que ainda não roda, e o que não
