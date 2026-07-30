@@ -1,6 +1,6 @@
 pkgname=tyba-bin
 _pkgname=tyba
-pkgver=0.4.0
+pkgver=0.4.1
 pkgrel=1
 pkgdesc="Terminal orientado a agentes de IA — sessões em worktrees isolados, inbox de aprovações e sandbox real do SO"
 arch=('x86_64')
@@ -22,7 +22,7 @@ source=("${_pkgname}-${pkgver}.deb::${url}/releases/download/v${pkgver}/Tyba_${p
 # usuário instala ao que nós publicamos. O placeholder é preenchido no release
 # (skill `cut-release`) com o hash do artefato publicado — e falha alto se
 # alguém esquecer, em vez de instalar sem verificar nada.
-sha256sums=('bdc551119f797a1d38fd7319d793e67f012c7b78a6a7b511dcc7770c397efc15')
+sha256sums=('eccf5a3343a92f15cd4768b97247025aed7be8a5d9c75c36ec07f71bc821e1df')
 
 package() {
   bsdtar -xf "${srcdir}/${_pkgname}-${pkgver}.deb" -C "${srcdir}" data.tar.gz
