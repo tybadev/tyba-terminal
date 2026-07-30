@@ -4277,6 +4277,7 @@ pub fn run() {
                 })
                 .expect("failed to spawn agent probe thread");
 
+            #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 let hidden = window.clone();
                 window.on_window_event(move |event| {
@@ -4459,12 +4460,17 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tyba")
-        .run(|_app_handle, _event| {
+        .run(|app_handle, event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = _event {
-                if let Some(window) = _app_handle.get_webview_window("main") {
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(window) = app_handle.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
+                }
+            }
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    state.pty_pool.kill_all();
                 }
             }
         });

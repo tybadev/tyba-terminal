@@ -496,15 +496,19 @@ impl PtyPool {
     }
 
     pub fn kill(&self, id: PtyId) -> Result<(), PtyError> {
-        let mut handle = {
+        let handle = {
             let mut ptys = self.ptys.lock();
             ptys.remove(&id).ok_or(PtyError::NotFound(id))?
         };
-        if let Some(pid) = handle.leader_pid {
-            let _ = kill_process_group(pid);
-        }
-        let _ = handle.child.kill();
+        kill_handle(handle);
         Ok(())
+    }
+
+    pub fn kill_all(&self) {
+        let handles: Vec<PtyHandle> = self.ptys.lock().drain().map(|(_, h)| h).collect();
+        for handle in handles {
+            kill_handle(handle);
+        }
     }
 
     /// Pid do líder da sessão, só se o processo por trás dele ainda é o
@@ -524,6 +528,13 @@ impl PtyPool {
     pub fn is_alive(&self, id: PtyId) -> bool {
         self.ptys.lock().contains_key(&id)
     }
+}
+
+fn kill_handle(mut handle: PtyHandle) {
+    if let Some(pid) = handle.leader_pid {
+        let _ = kill_process_group(pid);
+    }
+    let _ = handle.child.kill();
 }
 
 #[cfg(unix)]
@@ -727,6 +738,71 @@ mod tests {
             status.signal(),
             Some(libc::SIGKILL),
             "leader not killed by SIGKILL"
+        );
+    }
+
+    fn pooled_session(pool: &super::PtyPool) -> (i32, i32) {
+        use portable_pty::native_pty_system;
+        use std::sync::Arc;
+
+        let pair = native_pty_system()
+            .openpty(super::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+
+        let mut cmd = super::CommandBuilder::new("sh");
+        cmd.arg("-c");
+        cmd.arg(r#"(trap "" HUP; sleep 60) & echo $$ $!; wait"#);
+        let child = pair.slave.spawn_command(cmd).expect("spawn in pty");
+        drop(pair.slave);
+
+        let reader = pair.master.try_clone_reader().expect("reader");
+        let mut line = String::new();
+        BufReader::new(reader).read_line(&mut line).expect("pids");
+        let mut ids = line.split_whitespace();
+        let leader_pid: i32 = ids.next().unwrap().parse().unwrap();
+        let child_pid: i32 = ids.next().unwrap().parse().unwrap();
+
+        let writer = pair.master.take_writer().expect("writer");
+        let handle = super::PtyHandle {
+            master: pair.master,
+            writer,
+            leader_pid: child.process_id(),
+            child,
+            leader_start: None,
+            screen: Arc::new(parking_lot::Mutex::new(super::ScreenState::new(24, 80))),
+            size: (80, 24),
+        };
+        pool.ptys.lock().insert(uuid::Uuid::new_v4(), handle);
+
+        (leader_pid, child_pid)
+    }
+
+    #[test]
+    fn kill_all_takes_every_session_tree_down() {
+        let pool = super::PtyPool::new();
+        let (first_leader, first_child) = pooled_session(&pool);
+        let (second_leader, second_child) = pooled_session(&pool);
+
+        for pid in [first_leader, first_child, second_leader, second_child] {
+            assert!(is_alive(pid), "session {pid} not alive before kill_all");
+        }
+
+        pool.kill_all();
+
+        for pid in [first_child, second_child] {
+            assert!(
+                wait_dead(pid, Duration::from_secs(2)),
+                "agent tree survived kill_all: {pid}"
+            );
+        }
+        assert!(
+            pool.ptys.lock().is_empty(),
+            "pool kept handles after kill_all"
         );
     }
 }
