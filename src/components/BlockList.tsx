@@ -101,7 +101,7 @@ function BlockCard({ block }: { block: Block }) {
         )}
       </div>
       {block.lines.length > 0 && (
-        <div className="px-2.5 py-1 font-mono text-[12px] leading-[1.35] text-tyba-text-muted">
+        <div className="px-2.5 py-1 font-mono text-[13px] leading-[1.35] text-tyba-text-muted">
           {block.lines.map((line, i) => (
             <Line key={i} line={line} />
           ))}
@@ -117,7 +117,8 @@ function BlockCard({ block }: { block: Block }) {
 }
 
 /** Métricas do cartão, para a estimativa nascer perto do valor medido. */
-const LINE_PX = 17;
+/// 13px × 1.35, a mesma métrica do xterm.
+const LINE_PX = 18;
 const HEADER_PX = 27;
 const BLOCK_GAP_PX = 16;
 

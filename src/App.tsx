@@ -1,5 +1,7 @@
 import type { ElementType } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState,
+  Fragment,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   CaretDown,
@@ -285,6 +287,11 @@ import {
   type ToolbarPref,
 } from "./lib/repoSnapshots";
 import { Toolbar } from "./components/Toolbar";
+import {
+  ActiveBlockHeader,
+  blocksRect,
+  liveRect,
+} from "./components/ActiveBlock";
 import { BlockList } from "./components/BlockList";
 import { CommandLine } from "./components/CommandLine";
 import { RichInput } from "./components/RichInput";
@@ -4118,6 +4125,23 @@ export default function App() {
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ??
                       null;
+                    const pane = paneRect
+                      ? {
+                          left: paneRect.x,
+                          top: paneRect.y,
+                          width: paneRect.w,
+                          height: paneRect.h,
+                        }
+                      : null;
+                    // Em modo prompt o terminal ocupa uma faixa FIXA embaixo: a
+                    // lista de blocos a cobre quando ocioso e a revela quando um
+                    // comando roda, sem nunca redimensionar o PTY. Alt-screen é
+                    // a exceção — `vim` precisa do painel inteiro.
+                    const blocked =
+                      (promptModes[s.id] ?? false) &&
+                      !(altScreens[s.id] ?? false);
+                    const termRect =
+                      pane && blocked ? liveRect(pane) : pane;
                     const detected = detectedBySession.get(s.id) ?? null;
                     const notice = showShellAgentNotice(
                       s.kind,
@@ -4168,16 +4192,7 @@ export default function App() {
                             : undefined
                         }
                         exited={isFinishedStatus(s.status)}
-                        rect={
-                          paneRect
-                            ? {
-                                left: paneRect.x,
-                                top: paneRect.y,
-                                width: paneRect.w,
-                                height: paneRect.h,
-                              }
-                            : null
-                        }
+                        rect={termRect}
                         onFocus={
                           paneRect
                             ? () => void focusPane(paneRect.pane)
@@ -4191,28 +4206,35 @@ export default function App() {
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ?? null;
                     const list = blocks[s.id] ?? [];
-                    // O xterm continua montado por baixo (a sessão é dele); a
-                    // lista só o cobre enquanto o shell está ocioso, senão a
-                    // saída apareceria duas vezes.
-                    const showBlocks =
+                    const running = sessionCommands[s.id];
+                    const blocked =
                       paneRect !== null &&
-                      list.length > 0 &&
                       (promptModes[s.id] ?? false) &&
-                      !sessionCommands[s.id]?.running &&
                       !(altScreens[s.id] ?? false);
-                    if (!showBlocks || !paneRect) return null;
+                    if (!blocked || !paneRect) return null;
+                    const pane = {
+                      left: paneRect.x,
+                      top: paneRect.y,
+                      width: paneRect.w,
+                      height: paneRect.h,
+                    };
+                    const live = Boolean(running?.running);
                     return (
-                      <BlockList
-                        key={`blocks-${s.id}`}
-                        blocks={list}
-                        framed={(paneLayout?.panes.length ?? 0) > 1}
-                        rect={{
-                          left: paneRect.x,
-                          top: paneRect.y,
-                          width: paneRect.w,
-                          height: paneRect.h,
-                        }}
-                      />
+                      <Fragment key={`blocks-${s.id}`}>
+                        {list.length > 0 && (
+                          <BlockList
+                            blocks={list}
+                            framed={(paneLayout?.panes.length ?? 0) > 1}
+                            rect={blocksRect(pane, live)}
+                          />
+                        )}
+                        {live && (
+                          <ActiveBlockHeader
+                            command={running?.command ?? ""}
+                            rect={liveRect(pane)}
+                          />
+                        )}
+                      </Fragment>
                     );
                   })}
                   {paneLayout?.agentViewers.map((v) => {
