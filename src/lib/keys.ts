@@ -30,7 +30,8 @@ export type KeyAction =
   | "paste"
   | "search"
   | "selectAll"
-  | "richInput";
+  | "richInput"
+  | "promptLine";
 
 export const KEY_ACTIONS: KeyAction[] = [
   "paletteActions",
@@ -63,6 +64,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   "search",
   "selectAll",
   "richInput",
+  "promptLine",
 ];
 
 export type KeyCategory =
@@ -113,6 +115,7 @@ export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
   search: "terminal",
   selectAll: "terminal",
   richInput: "general",
+  promptLine: "general",
 };
 
 export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
@@ -146,6 +149,7 @@ export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   search: "searchTerminal",
   selectAll: "selectAllTerminal",
   richInput: "richInputToggle",
+  promptLine: "promptModeEnabled",
 };
 
 export const KEY_CATEGORY_LABEL_KEYS: Record<KeyCategory, string> = {
@@ -201,6 +205,7 @@ export const MAC_BINDINGS: Bindings = {
   search: "meta+f",
   selectAll: "meta+a",
   richInput: "meta+shift+g",
+  promptLine: "meta+shift+l",
 };
 
 export const PC_BINDINGS: Bindings = {
@@ -234,6 +239,7 @@ export const PC_BINDINGS: Bindings = {
   search: "ctrl+shift+f",
   selectAll: "ctrl+shift+a",
   richInput: "ctrl+shift+g",
+  promptLine: "ctrl+shift+l",
 };
 
 export const DEFAULT_BINDINGS: Bindings = IS_MAC ? MAC_BINDINGS : PC_BINDINGS;

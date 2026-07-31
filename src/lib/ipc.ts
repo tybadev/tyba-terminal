@@ -1186,6 +1186,18 @@ export const submitShellLine = (id: SessionId, text: string) =>
 export const writeControl = (id: SessionId, bytes: string) =>
   invoke<void>("write_control", { id, bytes });
 
+export interface CommandSuggestion {
+  command: string;
+  kind: "history" | "snippet";
+  label: string | null;
+}
+
+export const suggestCommands = (
+  query: string,
+  cwd: string | null,
+  repoRoot: string | null,
+) => invoke<CommandSuggestion[]>("suggest_commands", { query, cwd, repoRoot });
+
 export const togglePromptMode = (id: SessionId) =>
   invoke<void>("toggle_prompt_mode", { id });
 

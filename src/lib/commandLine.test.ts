@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   clearsDraft,
   controlBytes,
+  ghostFor,
   keyboardOwner,
   type OwnerInput,
 } from "./commandLine";
@@ -63,6 +64,34 @@ describe("keyboardOwner", () => {
 
   it("respeita a válvula de escape do usuário", () => {
     expect(keyboardOwner({ ...atPrompt, promptMode: false })).toBe("terminal");
+  });
+});
+
+describe("ghostFor", () => {
+  const hits = [
+    { command: "cargo test --lib" },
+    { command: "cargo clippy" },
+    { command: "git status" },
+  ];
+
+  it("completa com a primeira sugestão que é prefixo", () => {
+    expect(ghostFor("cargo t", hits)).toBe("est --lib");
+  });
+
+  it("pula sugestão que não começa com o digitado", () => {
+    // "git status" está na lista, mas o ghost tem de casar o prefixo — senão o
+    // cinza mentiria sobre o que a seta vai completar.
+    expect(ghostFor("gi", hits)).toBe("t status");
+    expect(ghostFor("zzz", hits)).toBe("");
+  });
+
+  it("não sugere nada com a linha vazia ou só espaço", () => {
+    expect(ghostFor("", hits)).toBe("");
+    expect(ghostFor("   ", hits)).toBe("");
+  });
+
+  it("não sugere quando o digitado já é o comando inteiro", () => {
+    expect(ghostFor("cargo clippy", hits)).toBe("");
   });
 });
 

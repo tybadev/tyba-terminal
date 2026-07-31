@@ -4184,6 +4184,69 @@ fn search_command_history(
         .collect())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommandSuggestion {
+    command: String,
+    /// `history` ou `snippet` — a UI marca a origem; o usuário precisa saber que
+    /// aquele comando é um snippet, não algo que ele já rodou.
+    kind: &'static str,
+    label: Option<String>,
+}
+
+const SUGGEST_LIMIT: usize = 8;
+
+/// O que aparece embaixo da linha de comando: histórico ranqueado por frecência
+/// e snippets, numa lista só. O ranking fica no core (princípio #1) — o webview
+/// recebe pronto e só desenha.
+#[tauri::command]
+fn suggest_commands(
+    state: State<'_, AppState>,
+    query: String,
+    cwd: Option<String>,
+    repo_root: Option<String>,
+) -> Result<Vec<CommandSuggestion>, String> {
+    use fuzzy_matcher::skim::SkimMatcherV2;
+    use fuzzy_matcher::FuzzyMatcher;
+
+    let query = query.trim();
+    let matcher = SkimMatcherV2::default();
+    let mut out: Vec<CommandSuggestion> = Vec::new();
+
+    // Snippet primeiro quando o nome casa: foi o usuário que o nomeou, então é
+    // mais intencional do que um comando que ele rodou uma vez sem querer.
+    if !query.is_empty() {
+        for snippet in state.store.list_snippets().unwrap_or_default() {
+            if matcher.fuzzy_match(&snippet.name, query).is_some()
+                || snippet.command.starts_with(query)
+            {
+                out.push(CommandSuggestion {
+                    command: snippet.command,
+                    kind: "snippet",
+                    label: Some(snippet.name),
+                });
+            }
+            if out.len() >= 3 {
+                break;
+            }
+        }
+    }
+
+    let hits = search_command_history(state, query.to_string(), cwd, repo_root, SUGGEST_LIMIT)?;
+    for hit in hits {
+        if out.iter().any(|s| s.command == hit.command) {
+            continue;
+        }
+        out.push(CommandSuggestion {
+            command: hit.command,
+            kind: "history",
+            label: None,
+        });
+    }
+    out.truncate(SUGGEST_LIMIT);
+    Ok(out)
+}
+
 #[tauri::command]
 fn clear_command_history(
     state: State<'_, AppState>,
@@ -4663,6 +4726,7 @@ pub fn run() {
             write_control,
             toggle_prompt_mode,
             search_command_history,
+            suggest_commands,
             clear_command_history,
             set_history_enabled,
             list_snippets,

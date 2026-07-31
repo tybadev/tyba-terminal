@@ -63,3 +63,24 @@ export function controlBytes(chord: ControlChord): string | null {
 export function clearsDraft(chord: ControlChord): boolean {
   return controlBytes(chord) === "\x03";
 }
+
+export const SUGGEST_DEBOUNCE_MS = 70;
+
+export interface Suggestion {
+  command: string;
+}
+
+/**
+ * O resto do comando que aparece em cinza. Só a primeira sugestão que
+ * **começa** com o que já foi digitado serve — ghost text que não é prefixo
+ * mentiria sobre o que o `→` vai completar.
+ */
+export function ghostFor(text: string, hits: Suggestion[]): string {
+  if (!text.trim()) return "";
+  const hit = hits.find(
+    (candidate) =>
+      candidate.command.length > text.length &&
+      candidate.command.startsWith(text),
+  );
+  return hit ? hit.command.slice(text.length) : "";
+}

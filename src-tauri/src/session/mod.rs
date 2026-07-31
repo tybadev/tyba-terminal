@@ -286,6 +286,9 @@ impl SessionManager {
         // `PS1` não sai da tela e a linha do app não pode assumir nada.
         if integration && self.prompt_mode_enabled() {
             cmd.env("TYBA_PROMPT_MODE", "1");
+            for (key, value) in PROMPT_FRAMEWORK_SYNC {
+                cmd.env(key, value);
+            }
         }
 
         let title = opts
@@ -774,6 +777,18 @@ fn zsh_chain(file: &str) -> String {
          ZDOTDIR=\"$__tyba_self_zdotdir\"\nfi\n"
     )
 }
+
+/// Frameworks de prompt que repintam de forma **assíncrona** desfazem o `PS1`
+/// vazio que o nosso `precmd` acabou de aplicar: eles recalculam em background e
+/// chamam `zle reset-prompt` depois, com o prompt deles de volta.
+///
+/// Verificado em pty real (2026-07-31) com Spaceship: sem esta variável o bloco
+/// completo do prompt reaparece logo após o `633;P`; com ela, a saída termina
+/// limpa no `133;B`. As variáveis vão no env do processo, não no rc, porque o
+/// framework as lê no carregamento — antes de qualquer hook nosso rodar.
+///
+/// starship é síncrono e não precisa de nada. p10k ainda não foi verificado.
+const PROMPT_FRAMEWORK_SYNC: &[(&str, &str)] = &[("SPACESHIP_PROMPT_ASYNC", "false")];
 
 const TYBA_ZSH_RC: &str = include_str!("tyba-zsh-rc.sh");
 

@@ -222,6 +222,7 @@ import {
   setAppMenu,
   onMenuAction,
   onSessionPromptMode,
+  togglePromptMode,
   renderSnippet,
   snippetPlaceholders,
   type Snippet,
@@ -2604,6 +2605,10 @@ export default function App() {
         // Só o menu chega aqui: pelo teclado o ⌘F passa pelo caminho de cima,
         // que exige o terminal em foco.
         if (getTerm(activeId)) setSearchOpen((v) => !v);
+      } else if (action === "promptLine" && activeId) {
+        // Alterna na sessão VIVA: a preferência só entra por env no spawn, e
+        // pedir sessão nova para experimentar é atrito demais.
+        void togglePromptMode(activeId).catch(() => {});
       } else if (action === "richInput" && activeId) {
         if (richInputFocused.current) {
           richInputFocused.current = false;
@@ -4231,6 +4236,7 @@ export default function App() {
                     sessionId={activeSession.id}
                     pref={richInputPref}
                     shellLine={ownsCommandLine}
+                    scope={historyScope}
                     focusNonce={
                       ownsCommandLine
                         ? commandLineNonce
