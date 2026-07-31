@@ -218,6 +218,8 @@ import {
   tagWorkspace,
   appVersion,
   updateCheck,
+  setAppMenu,
+  onMenuAction,
   updateDismiss,
   writeToSession,
   type UpdateStatus,
@@ -285,6 +287,7 @@ import {
   captureState,
   comboOf,
   DEFAULT_BINDINGS,
+  KEY_ACTIONS,
   formatCombo,
   parseBindings,
   BINDINGS_PREF_KEY,
@@ -296,9 +299,17 @@ import {
 } from "./lib/keys";
 import { type PaletteMode } from "./lib/paletteMode";
 import {
+  buildMenuSpec,
+  isMenuExtraId,
+  type MenuExtraId,
+} from "./lib/appMenu";
+import { changelogUrl } from "./lib/changelog";
+import { docsUrl, REPO_URL } from "./lib/links";
+import {
   flattenPaste,
   hasUnsafeControlChars,
   isMultilinePaste,
+  openExternalUrl,
   readClipboardText,
   sanitizePaste,
   writeClipboardText,
@@ -447,7 +458,7 @@ function IconAction({
 }
 
 export default function App() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [layout, setLayout] = useState<LayoutState>(EMPTY_LAYOUT);
   const [subagentsBySession, setSubagentsBySession] = useState<
@@ -2522,6 +2533,132 @@ export default function App() {
     [pastePrompt],
   );
 
+  // Despacho único das ações: o teclado e o menu nativo do macOS entram por
+  // aqui. Duas cópias desta lista divergiriam no primeiro atalho novo.
+  const runAction = useCallback(
+    (action: KeyAction) => {
+      if (action === "paletteActions") {
+        openPalette("actions");
+      } else if (action === "paletteSessions") {
+        openPalette("sessions");
+      } else if (action === "panel") {
+        toggleSidebar();
+      } else if (action === "files") {
+        if (activeId) void openFilesPanel(activeId).catch(() => {});
+      } else if (action === "filesFinder") {
+        openPalette("files");
+      } else if (action === "newTab") {
+        void newTab();
+      } else if (action === "closePane") {
+        void closeActivePane();
+      } else if (action === "openFolder") {
+        void openProjectFolder();
+      } else if (action === "newSession") {
+        openNewSession();
+      } else if (action === "newWorktreeSession") {
+        openNewSession(true);
+      } else if (action === "newWindow") {
+        void newWindow().catch(() => {});
+      } else if (action === "prevSession") {
+        cycleWorkspace(-1);
+      } else if (action === "nextSession") {
+        cycleWorkspace(1);
+      } else if (action === "prevTab") {
+        cycleTab(-1);
+      } else if (action === "nextTab") {
+        cycleTab(1);
+      } else if (action === "paneLeft") {
+        focusPaneInDirection("left");
+      } else if (action === "paneRight") {
+        focusPaneInDirection("right");
+      } else if (action === "paneUp") {
+        focusPaneInDirection("up");
+      } else if (action === "paneDown") {
+        focusPaneInDirection("down");
+      } else if (action === "settings") {
+        toggleSettings();
+      } else if (action === "splitRight") {
+        void splitActive("v");
+      } else if (action === "splitDown") {
+        void splitActive("h");
+      } else if (action === "nextPane") {
+        cyclePane();
+      } else if (action === "search") {
+        // Só o menu chega aqui: pelo teclado o ⌘F passa pelo caminho de cima,
+        // que exige o terminal em foco.
+        if (getTerm(activeId)) setSearchOpen((v) => !v);
+      } else if (action === "richInput" && activeId) {
+        if (richInputFocused.current) {
+          richInputFocused.current = false;
+          getTerm(activeId)?.term.focus();
+        } else {
+          openRichInput(activeId);
+        }
+      }
+    },
+    [
+      activeId,
+      openPalette,
+      toggleSidebar,
+      newTab,
+      closeActivePane,
+      openProjectFolder,
+      newWindow,
+      cycleWorkspace,
+      cycleTab,
+      focusPaneInDirection,
+      toggleSettings,
+      splitActive,
+      cyclePane,
+      openRichInput,
+    ],
+  );
+
+  const runMenuExtra = useCallback(
+    (id: MenuExtraId) => {
+      if (id === "menu:shortcuts") {
+        setShortcutsOpen((open) => !open);
+      } else if (id === "menu:checkUpdates") {
+        // Abre as Configurações junto: sem versão nova o toast não aparece, e
+        // um item de menu que não responde parece quebrado.
+        void updateCheck().then(setUpdate).catch(() => {});
+        void openViewTab("settings").catch(() => {});
+      } else if (id === "menu:docs") {
+        void openExternalUrl(docsUrl(i18n.language)).catch(() => {});
+      } else if (id === "menu:changelog") {
+        void openExternalUrl(changelogUrl(i18n.language)).catch(() => {});
+      } else if (id === "menu:issues") {
+        void openExternalUrl(`${REPO_URL}/issues/new`).catch(() => {});
+      }
+    },
+    [i18n.language, openViewTab],
+  );
+
+  // O menu nativo espelha os atalhos e o idioma correntes: rebind e troca de
+  // idioma remontam a barra.
+  useEffect(() => {
+    void setAppMenu(buildMenuSpec(t, bindings)).catch(() => {});
+  }, [t, bindings, i18n.language]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void onMenuAction((id) => {
+      if (isMenuExtraId(id)) {
+        runMenuExtra(id);
+        return;
+      }
+      if ((KEY_ACTIONS as string[]).includes(id)) runAction(id as KeyAction);
+    }).then((un) => {
+      if (disposed) un();
+      else unlisten = un;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [runAction, runMenuExtra]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (captureState.active) return;
@@ -2565,60 +2702,7 @@ export default function App() {
         e.preventDefault();
         e.stopPropagation();
         if (e.repeat) return;
-        if (action === "paletteActions") {
-          openPalette("actions");
-        } else if (action === "paletteSessions") {
-          openPalette("sessions");
-        } else if (action === "panel") {
-          toggleSidebar();
-        } else if (action === "files") {
-          if (activeId) void openFilesPanel(activeId).catch(() => {});
-        } else if (action === "filesFinder") {
-          openPalette("files");
-        } else if (action === "newTab") {
-          void newTab();
-        } else if (action === "closePane") {
-          void closeActivePane();
-        } else if (action === "openFolder") {
-          void openProjectFolder();
-        } else if (action === "newSession") {
-          openNewSession();
-        } else if (action === "newWorktreeSession") {
-          openNewSession(true);
-        } else if (action === "newWindow") {
-          void newWindow().catch(() => {});
-        } else if (action === "prevSession") {
-          cycleWorkspace(-1);
-        } else if (action === "nextSession") {
-          cycleWorkspace(1);
-        } else if (action === "prevTab") {
-          cycleTab(-1);
-        } else if (action === "nextTab") {
-          cycleTab(1);
-        } else if (action === "paneLeft") {
-          focusPaneInDirection("left");
-        } else if (action === "paneRight") {
-          focusPaneInDirection("right");
-        } else if (action === "paneUp") {
-          focusPaneInDirection("up");
-        } else if (action === "paneDown") {
-          focusPaneInDirection("down");
-        } else if (action === "settings") {
-          toggleSettings();
-        } else if (action === "splitRight") {
-          void splitActive("v");
-        } else if (action === "splitDown") {
-          void splitActive("h");
-        } else if (action === "nextPane") {
-          cyclePane();
-        } else if (action === "richInput" && activeId) {
-          if (richInputFocused.current) {
-            richInputFocused.current = false;
-            getTerm(activeId)?.term.focus();
-          } else {
-            openRichInput(activeId);
-          }
-        }
+        runAction(action);
         return;
       }
       if (isPaneResizeChord(e)) {
@@ -2654,16 +2738,7 @@ export default function App() {
     searchOpen,
     pasteFromClipboard,
     bindings,
-    newTab,
-    closeActivePane,
-    toggleSidebar,
-    openProjectFolder,
-    cycleWorkspace,
-    cycleTab,
-    focusPaneInDirection,
-    toggleSettings,
-    splitActive,
-    cyclePane,
+    runAction,
     resizeActivePane,
     activeWorkspace,
   ]);

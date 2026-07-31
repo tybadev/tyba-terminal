@@ -12,6 +12,21 @@ import "./theme";
 import "./font";
 import App from "./App";
 
+// O webview traz um menu de contexto próprio (Reload, e Inspect em debug) que
+// não é do produto e aparece em toda área sem menu nosso. Campo de texto
+// mantém o nativo — no CodeMirror e nos inputs ele ainda serve. Os menus do
+// Radix continuam funcionando: eles já chamam preventDefault antes daqui.
+document.addEventListener("contextmenu", (event) => {
+  const target = event.target;
+  if (
+    target instanceof Element &&
+    target.closest("input, textarea, [contenteditable='true']")
+  ) {
+    return;
+  }
+  event.preventDefault();
+});
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />

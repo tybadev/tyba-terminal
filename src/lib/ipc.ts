@@ -5,6 +5,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import type { MenuSpec } from "./appMenu";
+
 export type SessionId = string;
 
 export type SessionKind =
@@ -1174,6 +1176,14 @@ export const onThemeChanged = (
   handler: (state: ThemeState) => void,
 ): Promise<UnlistenFn> =>
   listen<ThemeState>("theme://changed", (e) => handler(e.payload));
+
+export const setAppMenu = (spec: MenuSpec) =>
+  invoke<void>("set_app_menu", { spec });
+
+export const onMenuAction = (
+  handler: (action: string) => void,
+): Promise<UnlistenFn> =>
+  listen<string>("tyba:menu", (e) => handler(e.payload));
 
 export const onPtyOutput = (
   id: SessionId,
