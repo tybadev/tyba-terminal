@@ -1188,6 +1188,8 @@ export const writeControl = (id: SessionId, bytes: string) =>
 
 export interface CommandSuggestion {
   command: string;
+  /** Nunca saiu com exit code 0: serve para o ghost text, não para a lista. */
+  failed: boolean;
   kind: "history" | "snippet";
   label: string | null;
 }

@@ -4133,6 +4133,11 @@ struct HistoryHit {
     last_used_at_ms: i64,
     in_cwd: bool,
     in_repo: bool,
+    /// Nunca saiu com exit code 0. Continua no histórico e ainda completa no
+    /// ghost text quando é prefixo do que o usuário digitou — mas não é
+    /// oferecido numa lista: `lljh` foi um erro de digitação, e devolvê-lo como
+    /// opção é sugerir o próprio engano.
+    failed: bool,
 }
 
 /// Fuzzy + frecência no core: o webview recebe a lista já ordenada (princípio #1).
@@ -4166,6 +4171,7 @@ fn search_command_history(
             Some((
                 score,
                 HistoryHit {
+                    failed: candidate.uses > 0 && candidate.successes == 0,
                     command: candidate.command,
                     cwd: candidate.cwd,
                     uses: candidate.uses,
@@ -4188,6 +4194,8 @@ fn search_command_history(
 #[serde(rename_all = "camelCase")]
 struct CommandSuggestion {
     command: String,
+    /// Só serve para o ghost text; a lista filtra.
+    failed: bool,
     /// `history` ou `snippet` — a UI marca a origem; o usuário precisa saber que
     /// aquele comando é um snippet, não algo que ele já rodou.
     kind: &'static str,
@@ -4222,6 +4230,7 @@ fn suggest_commands(
             {
                 out.push(CommandSuggestion {
                     command: snippet.command,
+                    failed: false,
                     kind: "snippet",
                     label: Some(snippet.name),
                 });
@@ -4239,6 +4248,7 @@ fn suggest_commands(
         }
         out.push(CommandSuggestion {
             command: hit.command,
+            failed: hit.failed,
             kind: "history",
             label: None,
         });

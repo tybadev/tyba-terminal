@@ -17,18 +17,8 @@ import {
   sessionBracketedPaste,
   sessionRelPath,
   submitRichInput,
-  submitShellLine,
-  type CommandSuggestion,
-  suggestCommands,
-  writeControl,
   type SessionId,
 } from "../lib/ipc";
-import {
-  clearsDraft,
-  controlBytes,
-  ghostFor,
-  SUGGEST_DEBOUNCE_MS,
-} from "../lib/commandLine";
 import {
   atQuery,
   enterAction,
@@ -46,13 +36,6 @@ interface Props {
   focusNonce: number;
   openedExplicitly: boolean;
   prefill?: string | null;
-  /**
-   * Modo linha de comando do shell: o Enter manda para o shell (limpando a
-   * linha antes) e Ctrl+C/D/Z viram sinal, nunca texto.
-   */
-  shellLine?: boolean;
-  /** Escopo do ranking do histórico: onde a sessão está agora. */
-  scope?: { cwd: string | null; repoRoot: string | null };
   onFocusChange: (focused: boolean) => void;
   onClose: () => void;
 }
@@ -63,8 +46,6 @@ export function RichInput({
   focusNonce,
   openedExplicitly,
   prefill,
-  shellLine,
-  scope,
   onFocusChange,
   onClose,
 }: Props) {
@@ -79,8 +60,6 @@ export function RichInput({
   const [warnArmed, setWarnArmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [popoverLeft, setPopoverLeft] = useState(0);
-  const [hits, setHits] = useState<CommandSuggestion[]>([]);
-  const [hitIndex, setHitIndex] = useState(0);
 
   useEffect(() => {
     if (!prefill) return;
@@ -156,44 +135,6 @@ export function RichInput({
     setPopoverLeft(Math.min(marker.offsetLeft, el.clientWidth - 240));
   }, [text, active]);
 
-  // Sugestão só existe quando a linha é do TYBA: em sessão de agente o texto é
-  // prompt em linguagem natural, não comando.
-  useEffect(() => {
-    if (!shellLine) {
-      setHits([]);
-      return;
-    }
-    let alive = true;
-    const timer = window.setTimeout(() => {
-      void suggestCommands(text, scope?.cwd ?? null, scope?.repoRoot ?? null)
-        .then((found) => {
-          if (!alive) return;
-          setHits(found);
-          setHitIndex(0);
-        })
-        .catch(() => {
-          if (alive) setHits([]);
-        });
-    }, SUGGEST_DEBOUNCE_MS);
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-    };
-  }, [shellLine, text, scope?.cwd, scope?.repoRoot]);
-
-  const ghost = shellLine ? ghostFor(text, hits) : "";
-
-  const acceptGhost = () => {
-    if (!ghost) return false;
-    applyText(text + ghost, text.length + ghost.length);
-    return true;
-  };
-
-  const acceptHit = (hit: CommandSuggestion) => {
-    applyText(hit.command, hit.command.length);
-    setHits([]);
-  };
-
   const resize = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -245,8 +186,7 @@ export function RichInput({
     }
     setWarnArmed(false);
     try {
-      if (shellLine) await submitShellLine(sessionId, value);
-      else await submitRichInput(sessionId, value, true);
+      await submitRichInput(sessionId, value, true);
     } catch (e) {
       setError(String(e));
       return;
@@ -256,45 +196,6 @@ export function RichInput({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (shellLine) {
-      const menuOpen = hits.length > 0 && !popoverOpen;
-      if (menuOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-        e.preventDefault();
-        const delta = e.key === "ArrowDown" ? 1 : -1;
-        setHitIndex((prev) => (prev + delta + hits.length) % hits.length);
-        return;
-      }
-      // → no fim da linha aceita o ghost, como no zsh-autosuggestions. No meio
-      // do texto ele é só mover o cursor.
-      if (e.key === "ArrowRight" && caret === text.length && acceptGhost()) {
-        e.preventDefault();
-        return;
-      }
-      if (e.key === "Tab" && !popoverOpen) {
-        e.preventDefault();
-        if (!acceptGhost() && menuOpen) acceptHit(hits[hitIndex]);
-        return;
-      }
-      if (e.key === "Escape" && hits.length > 0) {
-        e.preventDefault();
-        setHits([]);
-        return;
-      }
-      const bytes = controlBytes({
-        key: e.key,
-        ctrl: e.ctrlKey,
-        meta: e.metaKey,
-        alt: e.altKey,
-      });
-      if (bytes) {
-        e.preventDefault();
-        void writeControl(sessionId, bytes).catch(() => {});
-        if (clearsDraft({ key: e.key, ctrl: true, meta: false, alt: false })) {
-          applyText("", 0);
-        }
-        return;
-      }
-    }
     if (popoverOpen) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -351,35 +252,8 @@ export function RichInput({
     resize();
   };
 
-  const menuOpen = shellLine && hits.length > 0 && !popoverOpen;
-
   return (
     <div className="relative shrink-0 border-t border-tyba-border bg-tyba-sunken px-3 py-2">
-      {menuOpen && (
-        <div className="absolute bottom-full left-3 right-3 z-20 mb-1 max-h-56 overflow-y-auto rounded-[6px] border border-tyba-border bg-tyba-raised py-1 shadow-lg">
-          {hits.map((hit, i) => (
-            <button
-              key={`${hit.kind}:${hit.command}`}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                acceptHit(hit);
-              }}
-              className={`flex w-full items-center gap-2 px-2.5 py-1 text-left font-mono text-[12px] ${
-                i === hitIndex
-                  ? "bg-tyba-green/15 text-tyba-text"
-                  : "text-tyba-text-muted hover:bg-tyba-text/[.04]"
-              }`}
-            >
-              <span className="min-w-0 flex-1 truncate">{hit.command}</span>
-              {hit.kind === "snippet" && (
-                <span className="shrink-0 rounded-[3px] border border-tyba-border px-1 text-[9px] text-tyba-text-faint">
-                  {hit.label ?? t("paletteSnippets")}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
       {popoverOpen && (
         <div
           className="absolute bottom-full z-20 mb-1 max-h-56 w-72 overflow-y-auto rounded-[6px] border border-tyba-border bg-tyba-raised py-1 shadow-lg"
@@ -416,16 +290,6 @@ export function RichInput({
         >
           <Paperclip size={15} />
         </button>
-        <div className="relative min-w-0 flex-1">
-          {ghost && (
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words rounded-[4px] border border-transparent px-2 py-1 font-mono text-[13px] text-transparent"
-            >
-              {text}
-              <span className="text-tyba-text-faint">{ghost}</span>
-            </div>
-          )}
         <textarea
           ref={textareaRef}
           value={text}
@@ -442,9 +306,8 @@ export function RichInput({
             refreshMultiline();
           }}
           onBlur={() => onFocusChange(false)}
-          className="max-h-[168px] min-h-[28px] w-full resize-none rounded-[4px] border border-tyba-border bg-transparent px-2 py-1 font-mono text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-green/50"
+          className="max-h-[168px] min-h-[28px] flex-1 resize-none rounded-[4px] border border-tyba-border bg-transparent px-2 py-1 font-mono text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-green/50"
         />
-        </div>
         <button
           onClick={() => void doSubmit()}
           title={warnArmed ? t("richInputSensitiveWarn") : t("richInputSend")}

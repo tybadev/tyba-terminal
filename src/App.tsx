@@ -281,6 +281,7 @@ import {
   type ToolbarPref,
 } from "./lib/repoSnapshots";
 import { Toolbar } from "./components/Toolbar";
+import { CommandLine } from "./components/CommandLine";
 import { RichInput } from "./components/RichInput";
 import {
   DEFAULT_RICH_INPUT,
@@ -4230,21 +4231,23 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                {activeSession && (richInputVisible || ownsCommandLine) && (
+                {activeSession && ownsCommandLine && (
+                  <CommandLine
+                    key={`${activeSession.id}:line`}
+                    sessionId={activeSession.id}
+                    cwd={activeCwdKey}
+                    branch={activeGitStatus?.branch ?? null}
+                    scope={historyScope}
+                    focusNonce={commandLineNonce}
+                  />
+                )}
+                {activeSession && richInputVisible && !ownsCommandLine && (
                   <RichInput
-                    key={`${activeSession.id}${ownsCommandLine ? ":line" : ""}`}
+                    key={activeSession.id}
                     sessionId={activeSession.id}
                     pref={richInputPref}
-                    shellLine={ownsCommandLine}
-                    scope={historyScope}
-                    focusNonce={
-                      ownsCommandLine
-                        ? commandLineNonce
-                        : richInputFocusNonce
-                    }
-                    openedExplicitly={
-                      ownsCommandLine || richInputOpened.has(activeSession.id)
-                    }
+                    focusNonce={richInputFocusNonce}
+                    openedExplicitly={richInputOpened.has(activeSession.id)}
                     prefill={launchPrefills[activeSession.id] ?? null}
                     onFocusChange={(focused) => {
                       richInputFocused.current = focused;
