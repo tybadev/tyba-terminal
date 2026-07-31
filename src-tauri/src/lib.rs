@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod approvals;
+pub mod blocks;
 pub mod completion;
 pub mod docker;
 pub mod editor;
