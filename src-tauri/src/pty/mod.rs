@@ -327,6 +327,8 @@ impl PtyPool {
                 let mut last_cwd_canonical: Option<std::path::PathBuf> = None;
                 let mut last_bracketed = false;
                 let mut last_prompt_mode: Option<bool> = None;
+                let mut capture = crate::blocks::Capture::default();
+                let mut capturing = false;
 
                 loop {
                     let chunk = if !queued {
@@ -347,6 +349,12 @@ impl PtyPool {
                             let bracketed = {
                                 let mut screen = reader_screen.lock();
                                 screen.parser.process(&chunk);
+                                if capturing {
+                                    capture.push(&chunk);
+                                    if screen.parser.screen().alternate_screen() {
+                                        capture.saw_alt_screen();
+                                    }
+                                }
                                 if screen.attached() {
                                     screen.pending.extend_from_slice(&chunk);
                                 }
@@ -381,6 +389,12 @@ impl PtyPool {
                                     }
                                     ShellEvent::CommandStart => {
                                         tracker.on_start(now_ms());
+                                        // Bloco só existe com o modo prompt: sem
+                                        // ele o prompt é desenhado (e repintado)
+                                        // dentro da região, e o recorte sairia
+                                        // errado. Ver features/terminal-blocks.
+                                        capturing = last_prompt_mode == Some(true);
+                                        let _ = capture.take();
                                         let _ = app.emit(
                                             &command_event,
                                             SessionCommandPayload {
@@ -399,13 +413,42 @@ impl PtyPool {
                                             ShellEvent::CommandEnd(code) => Some(code),
                                             _ => None,
                                         };
+                                        let ended_at = now_ms();
+                                        let command = tracker
+                                            .command()
+                                            .map(str::to_string)
+                                            .unwrap_or_default();
+                                        let started = tracker.started_at().unwrap_or(ended_at);
                                         if let Some(record) = tracker.on_end(
                                             code,
-                                            now_ms(),
+                                            ended_at,
                                             last_cwd_canonical.as_deref(),
                                         ) {
                                             crate::history::record(record);
                                         }
+                                        if capturing && !capture.is_alt_screen() {
+                                            let dropped = capture.dropped();
+                                            let bytes = capture.take();
+                                            let (rows, cols) = {
+                                                let screen = reader_screen.lock();
+                                                screen.parser.screen().size()
+                                            };
+                                            if !command.is_empty() {
+                                                crate::blocks::finalize(crate::blocks::Finished {
+                                                    session_id: session_id.to_string(),
+                                                    command,
+                                                    exit_code: code,
+                                                    started_at_ms: started,
+                                                    finished_at_ms: ended_at,
+                                                    bytes,
+                                                    cols,
+                                                    rows,
+                                                    dropped,
+                                                });
+                                            }
+                                        }
+                                        capturing = false;
+                                        let _ = capture.take();
                                         last_match = false;
                                         let _ = app.emit(
                                             &command_event,

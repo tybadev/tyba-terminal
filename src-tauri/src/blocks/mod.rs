@@ -89,6 +89,56 @@ pub struct Block {
     pub truncated: usize,
 }
 
+/// Teto de bytes acumulados por bloco antes do finalize.
+///
+/// A saída fica em memória enquanto o comando roda; sem teto, um `yes` ou um
+/// log em loop comeriam a máquina. Passou daqui, o começo é descartado e o
+/// bloco diz que foi truncado em vez de mentir.
+pub const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+
+/// A saída de um comando enquanto ele roda.
+///
+/// Acumula na thread emitter, que é caminho quente: aqui só se copia bytes. O
+/// parse, a redação e a gravação acontecem depois, fora dela.
+#[derive(Debug, Default)]
+pub struct Capture {
+    bytes: Vec<u8>,
+    dropped: bool,
+    /// Alt-screen no meio do comando (vim, htop): por decisão da spec isso não
+    /// vira bloco — a tela é do programa, e recortá-la produziria lixo.
+    alt_screen: bool,
+}
+
+impl Capture {
+    pub fn push(&mut self, chunk: &[u8]) {
+        if self.bytes.len() + chunk.len() > MAX_CAPTURE_BYTES {
+            let overflow = self.bytes.len() + chunk.len() - MAX_CAPTURE_BYTES;
+            let cut = overflow.min(self.bytes.len());
+            self.bytes.drain(0..cut);
+            self.dropped = true;
+        }
+        self.bytes.extend_from_slice(chunk);
+    }
+
+    pub fn saw_alt_screen(&mut self) {
+        self.alt_screen = true;
+    }
+
+    pub fn is_alt_screen(&self) -> bool {
+        self.alt_screen
+    }
+
+    pub fn dropped(&self) -> bool {
+        self.dropped
+    }
+
+    pub fn take(&mut self) -> Vec<u8> {
+        self.dropped = false;
+        self.alt_screen = false;
+        std::mem::take(&mut self.bytes)
+    }
+}
+
 struct RawRow {
     text: String,
     runs: Vec<StyleRun>,
@@ -255,6 +305,78 @@ pub fn extract_lines(bytes: &[u8], cols: u16, _rows: u16) -> (Vec<LogicalLine>, 
     (lines, truncated)
 }
 
+/// O que a thread emitter entrega ao finalizar um comando.
+pub struct Finished {
+    pub session_id: String,
+    pub command: String,
+    pub exit_code: Option<i32>,
+    pub started_at_ms: i64,
+    pub finished_at_ms: i64,
+    pub bytes: Vec<u8>,
+    pub cols: u16,
+    pub rows: u16,
+    pub dropped: bool,
+}
+
+struct Finalizer {
+    tx: std::sync::mpsc::SyncSender<Finished>,
+}
+
+static FINALIZER: std::sync::OnceLock<Finalizer> = std::sync::OnceLock::new();
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Parse, redação e emissão saem da thread emitter.
+///
+/// O finalize de um bloco de 10 mil linhas é trabalho de verdade; fazê-lo no
+/// caminho quente seguraria o flush de output do terminal por todo esse tempo.
+/// A emitter só entrega os bytes e segue.
+pub fn install(app: tauri::AppHandle) {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Finished>(16);
+    if FINALIZER.set(Finalizer { tx }).is_err() {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("block-finalizer".into())
+        .spawn(move || {
+            use tauri::Emitter;
+            while let Ok(finished) = rx.recv() {
+                let block = build(finished);
+                let event = format!("block://finalized/{}", block.session_id);
+                let _ = app.emit(&event, block);
+            }
+        });
+}
+
+fn build(finished: Finished) -> Block {
+    let (lines, truncated) = extract_lines(&finished.bytes, finished.cols, finished.rows);
+    // Redação sobre a linha lógica inteira, não sobre chunk cru: chunk pode
+    // partir um `sk-…` no meio e o padrão escapar (princípio #10).
+    let lines = lines
+        .into_iter()
+        .map(|line| LogicalLine {
+            text: crate::session::redact::redact(&line.text).into_owned(),
+            runs: line.runs,
+        })
+        .collect();
+    Block {
+        id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        session_id: finished.session_id,
+        command: crate::session::redact::redact(&finished.command).into_owned(),
+        exit_code: finished.exit_code,
+        started_at_ms: finished.started_at_ms,
+        finished_at_ms: finished.finished_at_ms,
+        lines,
+        truncated: truncated + usize::from(finished.dropped),
+    }
+}
+
+/// Nunca bloqueia: fila cheia descarta o bloco em vez de segurar o terminal.
+pub fn finalize(finished: Finished) {
+    if let Some(finalizer) = FINALIZER.get() {
+        let _ = finalizer.tx.try_send(finished);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +387,36 @@ mod tests {
             .into_iter()
             .map(|line| line.text)
             .collect()
+    }
+
+    #[test]
+    fn capture_drops_the_beginning_instead_of_eating_the_machine() {
+        let mut capture = Capture::default();
+        let chunk = vec![b'x'; 1024 * 1024];
+        for _ in 0..10 {
+            capture.push(&chunk);
+        }
+        assert!(capture.dropped(), "precisa admitir que truncou");
+        assert!(capture.take().len() <= MAX_CAPTURE_BYTES);
+    }
+
+    #[test]
+    fn capture_keeps_the_end_which_is_what_the_user_is_looking_at() {
+        let mut capture = Capture::default();
+        capture.push(&vec![b'a'; MAX_CAPTURE_BYTES]);
+        capture.push(b"FIM");
+        let bytes = capture.take();
+        assert!(bytes.ends_with(b"FIM"));
+    }
+
+    #[test]
+    fn taking_the_capture_resets_the_flags_for_the_next_command() {
+        let mut capture = Capture::default();
+        capture.saw_alt_screen();
+        capture.push(b"x");
+        let _ = capture.take();
+        assert!(!capture.is_alt_screen());
+        assert!(!capture.dropped());
     }
 
     #[test]

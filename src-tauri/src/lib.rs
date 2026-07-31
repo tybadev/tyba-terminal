@@ -4684,6 +4684,7 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 let enabled = history_enabled(&state.store);
                 history::install(Arc::clone(&state.store), enabled);
+                blocks::install(app.handle().clone());
             }
 
             Ok(())
