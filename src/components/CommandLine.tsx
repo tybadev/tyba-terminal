@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { CaretRight, GitBranch } from "@phosphor-icons/react";
 
 import {
+  completePath,
   submitShellLine,
   suggestCommands,
   writeControl,
@@ -14,6 +15,8 @@ import {
   clearsDraft,
   controlBytes,
   ghostFor,
+  pathToken,
+  replaceToken,
   SUGGEST_DEBOUNCE_MS,
 } from "../lib/commandLine";
 
@@ -56,6 +59,7 @@ export function CommandLine({
   const [hits, setHits] = useState<CommandSuggestion[]>([]);
   const [index, setIndex] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [paths, setPaths] = useState<string[]>([]);
 
   const seenNonce = useRef(focusNonce);
   useEffect(() => {
@@ -90,12 +94,51 @@ export function CommandLine({
     };
   }, [text, scope.cwd, scope.repoRoot]);
 
+  // Caminho é completado contra o diretório de verdade, não contra o histórico:
+  // arquivo criado agora tem de aparecer sem nunca ter sido digitado antes.
+  const token = pathToken(text, caret);
+  useEffect(() => {
+    if (!token || !cwd) {
+      setPaths([]);
+      return;
+    }
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      void completePath(cwd, token.value)
+        .then((found) => {
+          if (alive) setPaths(found);
+        })
+        .catch(() => {
+          if (alive) setPaths([]);
+        });
+    }, SUGGEST_DEBOUNCE_MS);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [cwd, token?.value]);
+
+  const takePath = (completion: string) => {
+    if (!token) return false;
+    const next = replaceToken(text, token, completion);
+    apply(next.text, next.caret);
+    setPaths([]);
+    setMenuOpen(false);
+    return true;
+  };
+
   // Comando que só falhou completa no cinza quando é prefixo do que se está
   // digitando, mas nunca é oferecido como item — devolver `lljh` numa lista é
   // sugerir o próprio erro de digitação.
   const listed = hits.filter((hit) => !hit.failed);
-  const ghost = ghostFor(text, hits);
-  const showMenu = menuOpen && listed.length > 0;
+  // Caminho ganha do histórico no cinza: quem já digitou `cd sr` está
+  // escolhendo um diretório, não repetindo um comando inteiro.
+  const pathGhost =
+    token && paths.length > 0 && paths[0].startsWith(token.value)
+      ? paths[0].slice(token.value.length)
+      : "";
+  const ghost = pathGhost || ghostFor(text, hits);
+  const showMenu = menuOpen && (listed.length > 0 || paths.length > 0);
 
   const resize = () => {
     const el = inputRef.current;
@@ -117,6 +160,7 @@ export function CommandLine({
 
   const acceptGhost = () => {
     if (!ghost) return false;
+    if (pathGhost && token) return takePath(token.value + pathGhost);
     apply(text + ghost, text.length + ghost.length);
     return true;
   };
@@ -156,10 +200,11 @@ export function CommandLine({
     if (showMenu && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
       const delta = e.key === "ArrowDown" ? 1 : -1;
+      if (listed.length === 0) return;
       setIndex((prev) => (prev + delta + listed.length) % listed.length);
       return;
     }
-    if (e.key === "ArrowDown" && !showMenu && listed.length > 0) {
+    if (e.key === "ArrowDown" && !showMenu && (listed.length > 0 || paths.length > 0)) {
       e.preventDefault();
       setMenuOpen(true);
       return;
@@ -176,7 +221,9 @@ export function CommandLine({
         setMenuOpen(false);
         return;
       }
-      if (!acceptGhost() && listed.length > 0) setMenuOpen(true);
+      if (!acceptGhost() && (listed.length > 0 || paths.length > 0)) {
+        setMenuOpen(true);
+      }
       return;
     }
     // → no fim da linha aceita o cinza, como no zsh-autosuggestions; no meio do
@@ -188,7 +235,7 @@ export function CommandLine({
     if (e.key === "Enter") {
       if (e.shiftKey) return;
       e.preventDefault();
-      if (showMenu) {
+      if (showMenu && listed.length > 0) {
         apply(listed[index].command, listed[index].command.length);
         setMenuOpen(false);
         return;
@@ -203,6 +250,18 @@ export function CommandLine({
     <div className="relative shrink-0 border-t border-tyba-border bg-tyba-sunken px-3 py-2">
       {showMenu && (
         <div className="absolute bottom-full left-3 right-3 z-20 mb-1 max-h-56 overflow-y-auto rounded-[6px] border border-tyba-border bg-tyba-raised py-1 shadow-lg">
+          {paths.map((candidate) => (
+            <button
+              key={`path:${candidate}`}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                takePath(candidate);
+              }}
+              className="flex w-full items-center gap-2 px-2.5 py-1 text-left font-mono text-[12px] text-tyba-text-muted hover:bg-tyba-text/[.04]"
+            >
+              <span className="min-w-0 flex-1 truncate">{candidate}</span>
+            </button>
+          ))}
           {listed.map((hit, i) => (
             <button
               key={`${hit.kind}:${hit.command}`}

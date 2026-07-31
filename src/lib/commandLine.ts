@@ -66,6 +66,47 @@ export function clearsDraft(chord: ControlChord): boolean {
 
 export const SUGGEST_DEBOUNCE_MS = 70;
 
+export interface PathToken {
+  /** Índice onde o token começa, para trocá-lo sem tocar no resto da linha. */
+  start: number;
+  value: string;
+}
+
+const PATHISH = /^(\.{1,2}\/|~|\/)/;
+
+/**
+ * O token que deve ser completado como caminho, ou `null`.
+ *
+ * A primeira palavra da linha é posição de COMANDO, não de arquivo: num
+ * diretório com `teste/`, completar `te` para `teste/` transformaria o começo de
+ * `test` numa pasta. Só vale como caminho se for argumento, ou se o próprio
+ * token já disser que é caminho (`./`, `../`, `~`, `/`, ou contém barra).
+ */
+export function pathToken(text: string, caret: number): PathToken | null {
+  const before = text.slice(0, caret);
+  const match = /[^\s]*$/.exec(before);
+  if (!match) return null;
+  const value = match[0];
+  if (!value) return null;
+  const start = before.length - value.length;
+  const isFirstWord = before.slice(0, start).trim().length === 0;
+  if (isFirstWord && !PATHISH.test(value) && !value.includes("/")) return null;
+  return { start, value };
+}
+
+/** Troca só o token do caminho, preservando o resto da linha. */
+export function replaceToken(
+  text: string,
+  token: PathToken,
+  completion: string,
+): { text: string; caret: number } {
+  const next =
+    text.slice(0, token.start) +
+    completion +
+    text.slice(token.start + token.value.length);
+  return { text: next, caret: token.start + completion.length };
+}
+
 export interface Suggestion {
   command: string;
 }

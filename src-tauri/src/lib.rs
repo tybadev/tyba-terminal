@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod approvals;
+pub mod completion;
 pub mod docker;
 pub mod editor;
 pub mod error;
@@ -4257,6 +4258,18 @@ fn suggest_commands(
     Ok(out)
 }
 
+/// O `cwd` vem do front, que o recebe por `OSC 7` — atacante-controlável, e por
+/// isso **display-only** (ADR de 2026-07-08). Aqui ele só escolhe qual diretório
+/// listar para sugerir: nenhuma decisão de segurança sai daqui, e o usuário
+/// alcança qualquer caminho digitando de qualquer jeito.
+#[tauri::command]
+fn complete_path(cwd: String, token: String) -> Vec<String> {
+    if cwd.is_empty() {
+        return Vec::new();
+    }
+    completion::complete_path(std::path::Path::new(&cwd), &token)
+}
+
 #[tauri::command]
 fn clear_command_history(
     state: State<'_, AppState>,
@@ -4737,6 +4750,7 @@ pub fn run() {
             toggle_prompt_mode,
             search_command_history,
             suggest_commands,
+            complete_path,
             clear_command_history,
             set_history_enabled,
             list_snippets,

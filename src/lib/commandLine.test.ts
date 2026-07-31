@@ -5,6 +5,8 @@ import {
   controlBytes,
   ghostFor,
   keyboardOwner,
+  pathToken,
+  replaceToken,
   type OwnerInput,
 } from "./commandLine";
 
@@ -92,6 +94,50 @@ describe("ghostFor", () => {
 
   it("não sugere quando o digitado já é o comando inteiro", () => {
     expect(ghostFor("cargo clippy", hits)).toBe("");
+  });
+});
+
+describe("pathToken", () => {
+  const at = (text: string) => pathToken(text, text.length);
+
+  it("completa argumento como caminho", () => {
+    expect(at("cd tyba")).toEqual({ start: 3, value: "tyba" });
+    expect(at("cat src/lib/ip")).toEqual({ start: 4, value: "src/lib/ip" });
+  });
+
+  it("não completa a primeira palavra: ali é posição de comando", () => {
+    // Num diretório com `teste/`, completar `te` para `teste/` quebraria quem
+    // está digitando `test`.
+    expect(at("te")).toBeNull();
+    expect(at("git")).toBeNull();
+  });
+
+  it("completa a primeira palavra quando ela já se declara caminho", () => {
+    expect(at("./scr")).toEqual({ start: 0, value: "./scr" });
+    expect(at("../ou")).toEqual({ start: 0, value: "../ou" });
+    expect(at("~/proj")).toEqual({ start: 0, value: "~/proj" });
+    expect(at("/usr/lo")).toEqual({ start: 0, value: "/usr/lo" });
+    expect(at("bin/tool")).toEqual({ start: 0, value: "bin/tool" });
+  });
+
+  it("não completa depois de espaço nem em linha vazia", () => {
+    expect(at("cd ")).toBeNull();
+    expect(at("")).toBeNull();
+  });
+
+  it("usa o token sob o cursor, não o fim da linha", () => {
+    expect(pathToken("cp src dst", 5)).toEqual({ start: 3, value: "sr" });
+  });
+});
+
+describe("replaceToken", () => {
+  it("troca só o token e devolve o cursor depois dele", () => {
+    const text = "cp src dst";
+    const token = pathToken(text, 5)!;
+    expect(replaceToken(text, token, "src/")).toEqual({
+      text: "cp src/c dst",
+      caret: 7,
+    });
   });
 });
 

@@ -1200,6 +1200,9 @@ export const suggestCommands = (
   repoRoot: string | null,
 ) => invoke<CommandSuggestion[]>("suggest_commands", { query, cwd, repoRoot });
 
+export const completePath = (cwd: string, token: string) =>
+  invoke<string[]>("complete_path", { cwd, token });
+
 export const togglePromptMode = (id: SessionId) =>
   invoke<void>("toggle_prompt_mode", { id });
 
