@@ -108,6 +108,7 @@ import { AgentsPanel } from "./components/AgentsPanel";
 import { SubagentViewer } from "./components/SubagentViewer";
 import { ForgePanel } from "./components/ForgePanel";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
+import { SnippetArgsDialog } from "./components/SnippetArgsDialog";
 import { DiffStat } from "./components/DiffStat";
 import { SessionHoverCard } from "./components/SessionHoverCard";
 import { PromptDialog } from "./components/PromptDialog";
@@ -220,6 +221,10 @@ import {
   updateCheck,
   setAppMenu,
   onMenuAction,
+  renderSnippet,
+  snippetPlaceholders,
+  type Snippet,
+  type SnippetPlaceholder,
   updateDismiss,
   writeToSession,
   type UpdateStatus,
@@ -636,6 +641,10 @@ export default function App() {
     [worktreeDefault],
   );
   const [searchOpen, setSearchOpen] = useState(false);
+  const [snippetPrompt, setSnippetPrompt] = useState<{
+    snippet: Snippet;
+    placeholders: SnippetPlaceholder[];
+  } | null>(null);
   const [pastePrompt, setPastePrompt] = useState<TerminalPasteDetail | null>(
     null,
   );
@@ -2541,6 +2550,10 @@ export default function App() {
         openPalette("actions");
       } else if (action === "paletteSessions") {
         openPalette("sessions");
+      } else if (action === "paletteHistory") {
+        openPalette("history");
+      } else if (action === "paletteSnippets") {
+        openPalette("snippets");
       } else if (action === "panel") {
         toggleSidebar();
       } else if (action === "files") {
@@ -2612,6 +2625,54 @@ export default function App() {
       cyclePane,
       openRichInput,
     ],
+  );
+
+  const historyScope = useMemo(
+    () => ({
+      cwd: activeCwdKey,
+      repoRoot: activeSession?.repo_root ?? null,
+    }),
+    [activeCwdKey, activeSession?.repo_root],
+  );
+
+  // Histórico e snippet entram na linha pelo MESMO caminho do paste: bracketed
+  // paste detectado, control chars sanitizados e confirmação quando é multilinha.
+  // Nada é executado — quem aperta Enter é o dono.
+  const injectIntoActive = useCallback(
+    (text: string) => {
+      if (!activeId || !text) return;
+      deliverPaste(activeId, text);
+      getTerm(activeId)?.term.focus();
+    },
+    [activeId, deliverPaste],
+  );
+
+  const pickSnippet = useCallback(
+    (snippet: Snippet) => {
+      void snippetPlaceholders(snippet.command)
+        .then((found) => {
+          if (found.length === 0) {
+            return renderSnippet(snippet.id, snippet.command, []).then(
+              injectIntoActive,
+            );
+          }
+          setSnippetPrompt({ snippet, placeholders: found });
+        })
+        .catch((error) => toastError(t("snippetsError"), error));
+    },
+    [injectIntoActive, t],
+  );
+
+  const confirmSnippet = useCallback(
+    (values: [string, string][]) => {
+      const prompt = snippetPrompt;
+      setSnippetPrompt(null);
+      if (!prompt) return;
+      void renderSnippet(prompt.snippet.id, prompt.snippet.command, values)
+        .then(injectIntoActive)
+        .catch((error) => toastError(t("snippetsError"), error));
+    },
+    [snippetPrompt, injectIntoActive, t],
   );
 
   const runMenuExtra = useCallback(
@@ -3198,6 +3259,9 @@ export default function App() {
         onApplyLaunchConfig={applyLaunchConfigById}
         onNewLaunchConfig={newLaunchConfig}
         onSaveWorkspaceAsLaunchConfig={saveWorkspaceAsLaunchConfig}
+        historyScope={historyScope}
+        onPickHistory={injectIntoActive}
+        onPickSnippet={pickSnippet}
       />
       <LaunchConfigDialog
         draft={launchDraft}
@@ -3209,6 +3273,14 @@ export default function App() {
         onCancel={() => setPastePrompt(null)}
         onConfirm={confirmPaste}
       />
+      {snippetPrompt && (
+        <SnippetArgsDialog
+          snippet={snippetPrompt.snippet}
+          placeholders={snippetPrompt.placeholders}
+          onCancel={() => setSnippetPrompt(null)}
+          onConfirm={confirmSnippet}
+        />
+      )}
       <HostPicker
         open={hostPickerOpen}
         onOpenChange={setHostPickerOpen}

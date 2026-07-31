@@ -5,6 +5,7 @@ pub mod editor;
 pub mod error;
 pub mod files;
 pub mod forge;
+pub mod history;
 pub mod hook_ipc;
 pub mod launch_config;
 pub mod layout;
@@ -17,6 +18,7 @@ pub mod rich_input;
 pub mod sandbox;
 pub mod session;
 pub mod shell_path;
+pub mod snippet;
 pub mod ssh;
 pub mod status;
 pub mod theme;
@@ -4057,6 +4059,164 @@ fn set_app_menu(app: AppHandle, spec: menu::MenuSpec) -> Result<(), String> {
     menu::install(&app, &spec)
 }
 
+pub const HISTORY_PREF_KEY: &str = "pref.commandHistory";
+
+fn history_enabled(store: &Store) -> bool {
+    store
+        .get_setting(HISTORY_PREF_KEY)
+        .ok()
+        .flatten()
+        .map(|value| value != "off")
+        .unwrap_or(true)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryHit {
+    command: String,
+    cwd: Option<String>,
+    uses: u32,
+    last_used_at_ms: i64,
+    in_cwd: bool,
+    in_repo: bool,
+}
+
+/// Fuzzy + frecência no core: o webview recebe a lista já ordenada (princípio #1).
+#[tauri::command]
+fn search_command_history(
+    state: State<'_, AppState>,
+    query: String,
+    cwd: Option<String>,
+    repo_root: Option<String>,
+    limit: usize,
+) -> Result<Vec<HistoryHit>, String> {
+    use fuzzy_matcher::skim::SkimMatcherV2;
+    use fuzzy_matcher::FuzzyMatcher;
+
+    let candidates = state
+        .store
+        .history_candidates(cwd.as_deref(), repo_root.as_deref())
+        .map_err(|e| e.to_string())?;
+    let matcher = SkimMatcherV2::default();
+    let query = query.trim();
+    let now = approvals::now_ms() as i64;
+    let mut scored: Vec<(f64, HistoryHit)> = candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let fuzzy = if query.is_empty() {
+                1.0
+            } else {
+                matcher.fuzzy_match(&candidate.command, query)? as f64
+            };
+            let score = fuzzy * history::frecency(now, &candidate);
+            Some((
+                score,
+                HistoryHit {
+                    command: candidate.command,
+                    cwd: candidate.cwd,
+                    uses: candidate.uses,
+                    last_used_at_ms: candidate.last_used_at_ms,
+                    in_cwd: candidate.in_cwd,
+                    in_repo: candidate.in_repo,
+                },
+            ))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    Ok(scored
+        .into_iter()
+        .take(limit.min(500))
+        .map(|(_, hit)| hit)
+        .collect())
+}
+
+#[tauri::command]
+fn clear_command_history(
+    state: State<'_, AppState>,
+    repo_root: Option<String>,
+) -> Result<(), String> {
+    state
+        .store
+        .clear_command_history(repo_root.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_history_enabled(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    state
+        .store
+        .set_setting(HISTORY_PREF_KEY, if enabled { "on" } else { "off" })
+        .map_err(|e| e.to_string())?;
+    history::set_enabled(enabled);
+    Ok(())
+}
+
+/// Locais sempre; do repositório **só depois do consentimento** por hash — o
+/// mesmo de `.tyba/config.toml`. Clonar um repo não coloca comando na paleta.
+#[tauri::command]
+fn list_snippets(
+    state: State<'_, AppState>,
+    repo_root: Option<String>,
+) -> Result<Vec<snippet::Snippet>, String> {
+    let mut snippets = state.store.list_snippets().map_err(|e| e.to_string())?;
+    let Some(root) = repo_root else {
+        return Ok(snippets);
+    };
+    let param = repo::canonicalize_or(std::path::Path::new(&root));
+    let Some(top) = repo::toplevel(&param).map(|t| repo::canonicalize_or(&t)) else {
+        return Ok(snippets);
+    };
+    let Ok(Some((config, hash))) = repo_config::load(&top) else {
+        return Ok(snippets);
+    };
+    let consented = state
+        .store
+        .config_consent(&top.to_string_lossy(), &hash)
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    if consented {
+        snippets.extend(config.snippets);
+    }
+    Ok(snippets)
+}
+
+#[tauri::command]
+fn save_snippet(state: State<'_, AppState>, snippet: snippet::Snippet) -> Result<(), String> {
+    if snippet.source != snippet::Source::Local {
+        return Err("snippet de repositório é editado no .tyba/config.toml".into());
+    }
+    snippet::validate(&snippet.name, &snippet.command).map_err(|e| e.to_string())?;
+    state
+        .store
+        .save_snippet(&snippet)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_snippet(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.store.delete_snippet(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn snippet_placeholders(command: String) -> Vec<snippet::Placeholder> {
+    snippet::placeholders(&command)
+}
+
+/// Renderiza no core: o parser de placeholder é testado num lugar só, e o front
+/// não reimplementa substituição em cima de texto que vai virar linha de comando.
+#[tauri::command]
+fn render_snippet(
+    state: State<'_, AppState>,
+    id: String,
+    command: String,
+    values: Vec<(String, String)>,
+) -> Result<String, String> {
+    let rendered = snippet::render(&command, &values);
+    let _ = state.store.touch_snippet(&id);
+    Ok(rendered)
+}
+
 #[tauri::command]
 fn list_themes(state: State<'_, AppState>) -> Vec<theme::Theme> {
     state.themes.list()
@@ -4316,6 +4476,12 @@ pub fn run() {
 
             let _ = menu::install_fallback(app.handle());
 
+            {
+                let state = app.state::<AppState>();
+                let enabled = history_enabled(&state.store);
+                history::install(Arc::clone(&state.store), enabled);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4439,6 +4605,14 @@ pub fn run() {
             agent_repo_config,
             set_agent_config_consent,
             set_app_menu,
+            search_command_history,
+            clear_command_history,
+            set_history_enabled,
+            list_snippets,
+            save_snippet,
+            delete_snippet,
+            snippet_placeholders,
+            render_snippet,
             list_themes,
             get_theme_state,
             set_theme_mode,

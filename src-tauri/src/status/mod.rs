@@ -172,8 +172,12 @@ fn parse_osc(payload: &[u8]) -> Option<ShellEvent> {
             let decoded = base64::engine::general_purpose::STANDARD
                 .decode(encoded)
                 .ok()?;
-            let cmd = String::from_utf8_lossy(&decoded).trim().to_string();
-            if cmd.is_empty() {
+            // Só o fim é aparado: o espaço à ESQUERDA é sinal, não sujeira —
+            // é a convenção `ignorespace` ("não guarde este comando"), e o
+            // histórico precisa vê-la. Quem quer o comando limpo (matcher de
+            // agente, UI) chama `trim_start` no consumo.
+            let cmd = String::from_utf8_lossy(&decoded).trim_end().to_string();
+            if cmd.trim().is_empty() {
                 None
             } else {
                 Some(ShellEvent::CommandLine(cmd))
@@ -228,6 +232,21 @@ mod tests {
             events.extend(p.feed(&[*byte]));
         }
         assert_eq!(events, vec![ShellEvent::CommandLine("npm run dev".into())]);
+    }
+
+    #[test]
+    fn keeps_leading_space_and_drops_trailing_noise() {
+        let mut p = OscParser::new();
+        let events = p.feed(format!("\x1b]633;E;{}\x07", b64(" secret-cmd  \n")).as_bytes());
+        assert_eq!(events, vec![ShellEvent::CommandLine(" secret-cmd".into())]);
+    }
+
+    #[test]
+    fn whitespace_only_command_is_not_an_event() {
+        let mut p = OscParser::new();
+        assert!(p
+            .feed(format!("\x1b]633;E;{}\x07", b64("   ")).as_bytes())
+            .is_empty());
     }
 
     #[test]

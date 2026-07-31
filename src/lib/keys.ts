@@ -3,6 +3,8 @@ import { IS_MAC } from "./platform";
 export type KeyAction =
   | "paletteActions"
   | "paletteSessions"
+  | "paletteHistory"
+  | "paletteSnippets"
   | "panel"
   | "files"
   | "filesFinder"
@@ -33,6 +35,8 @@ export type KeyAction =
 export const KEY_ACTIONS: KeyAction[] = [
   "paletteActions",
   "paletteSessions",
+  "paletteHistory",
+  "paletteSnippets",
   "panel",
   "files",
   "filesFinder",
@@ -81,6 +85,8 @@ export const KEY_CATEGORY_ORDER: KeyCategory[] = [
 export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
   paletteActions: "general",
   paletteSessions: "general",
+  paletteHistory: "general",
+  paletteSnippets: "general",
   panel: "general",
   files: "general",
   filesFinder: "general",
@@ -112,6 +118,8 @@ export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
 export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   paletteActions: "paletteActions",
   paletteSessions: "paletteSessions",
+  paletteHistory: "paletteHistory",
+  paletteSnippets: "paletteSnippets",
   panel: "togglePanel",
   files: "filesPanel",
   filesFinder: "filesFinder",
@@ -165,6 +173,8 @@ export type Bindings = Record<KeyAction, string>;
 export const MAC_BINDINGS: Bindings = {
   paletteActions: "meta+p",
   paletteSessions: "meta+shift+p",
+  paletteHistory: "meta+r",
+  paletteSnippets: "meta+shift+r",
   panel: "meta+b",
   files: "meta+shift+e",
   filesFinder: "meta+e",
@@ -196,6 +206,8 @@ export const MAC_BINDINGS: Bindings = {
 export const PC_BINDINGS: Bindings = {
   paletteActions: "ctrl+shift+p",
   paletteSessions: "ctrl+alt+shift+p",
+  paletteHistory: "ctrl+shift+r",
+  paletteSnippets: "ctrl+alt+shift+r",
   panel: "ctrl+shift+b",
   files: "ctrl+shift+e",
   filesFinder: "ctrl+alt+e",
