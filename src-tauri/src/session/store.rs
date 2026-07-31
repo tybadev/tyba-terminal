@@ -785,6 +785,29 @@ impl Store {
         Ok(rows)
     }
 
+    /// Comandos distintos que começam com o prefixo, mais recentes primeiro.
+    /// Alimenta a completação de subcomando e flag.
+    pub fn history_with_prefix(&self, prefix: &str, limit: i64) -> Result<Vec<String>, StoreError> {
+        if prefix.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT command, MAX(started_at_ms) AS last_ms
+             FROM command_history
+             WHERE command LIKE ?1 ESCAPE '\\'
+             GROUP BY command
+             ORDER BY last_ms DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![format!("{}%", escape_like(prefix)), limit], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn clear_command_history(&self, repo_root: Option<&str>) -> Result<(), StoreError> {
         let conn = self.conn.lock();
         match repo_root {

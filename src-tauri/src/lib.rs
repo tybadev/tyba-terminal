@@ -4270,6 +4270,22 @@ fn complete_path(cwd: String, token: String) -> Vec<String> {
     completion::complete_path(std::path::Path::new(&cwd), &token)
 }
 
+/// Subcomando e flag vêm do histórico do próprio dono: para `git co`, os
+/// comandos que começaram com `git `. Personalizado, sem base externa e sem
+/// manutenção — a do Warp é AGPL e está fora de alcance.
+#[tauri::command]
+fn complete_argument(
+    state: State<'_, AppState>,
+    prefix: String,
+    token: String,
+) -> Result<Vec<String>, String> {
+    let commands = state
+        .store
+        .history_with_prefix(&prefix, 400)
+        .map_err(|e| e.to_string())?;
+    Ok(completion::next_tokens(&commands, &prefix, &token))
+}
+
 #[tauri::command]
 fn clear_command_history(
     state: State<'_, AppState>,
@@ -4751,6 +4767,7 @@ pub fn run() {
             search_command_history,
             suggest_commands,
             complete_path,
+            complete_argument,
             clear_command_history,
             set_history_enabled,
             list_snippets,

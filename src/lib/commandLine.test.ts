@@ -5,6 +5,7 @@ import {
   controlBytes,
   ghostFor,
   keyboardOwner,
+  lineToken,
   pathToken,
   replaceToken,
   type OwnerInput,
@@ -138,6 +139,29 @@ describe("replaceToken", () => {
       text: "cp src/c dst",
       caret: 7,
     });
+  });
+});
+
+describe("lineToken", () => {
+  const at = (text: string) => lineToken(text, text.length);
+
+  it("dá o token e o contexto que vem antes dele", () => {
+    expect(at("git co")).toEqual({ start: 4, value: "co", prefix: "git " });
+    expect(at("cargo test --l")).toEqual({
+      start: 11,
+      value: "--l",
+      prefix: "cargo test ",
+    });
+  });
+
+  it("aceita token vazio logo após o espaço", () => {
+    // `git ` sem nada digitado ainda deve oferecer os subcomandos usados.
+    expect(at("git ")).toEqual({ start: 4, value: "", prefix: "git " });
+  });
+
+  it("não completa a primeira palavra: ali não há contexto", () => {
+    expect(at("gi")).toBeNull();
+    expect(at("")).toBeNull();
   });
 });
 

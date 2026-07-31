@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { CaretRight, GitBranch } from "@phosphor-icons/react";
 
 import {
+  completeArgument,
   completePath,
   submitShellLine,
   suggestCommands,
@@ -15,6 +16,7 @@ import {
   clearsDraft,
   controlBytes,
   ghostFor,
+  lineToken,
   pathToken,
   replaceToken,
   SUGGEST_DEBOUNCE_MS,
@@ -60,6 +62,7 @@ export function CommandLine({
   const [index, setIndex] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [paths, setPaths] = useState<string[]>([]);
+  const [args, setArgs] = useState<string[]>([]);
 
   const seenNonce = useRef(focusNonce);
   useEffect(() => {
@@ -118,6 +121,39 @@ export function CommandLine({
     };
   }, [cwd, token?.value]);
 
+  // Subcomando e flag saem do histórico do próprio dono: `git ` oferece o que
+  // ELE já usou, não uma tabela genérica que envelhece.
+  const arg = lineToken(text, caret);
+  useEffect(() => {
+    if (!arg) {
+      setArgs([]);
+      return;
+    }
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      void completeArgument(arg.prefix, arg.value)
+        .then((found) => {
+          if (alive) setArgs(found);
+        })
+        .catch(() => {
+          if (alive) setArgs([]);
+        });
+    }, SUGGEST_DEBOUNCE_MS);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [arg?.prefix, arg?.value]);
+
+  const takeArg = (completion: string) => {
+    if (!arg) return false;
+    const next = replaceToken(text, arg, completion);
+    apply(next.text, next.caret);
+    setArgs([]);
+    setMenuOpen(false);
+    return true;
+  };
+
   const takePath = (completion: string) => {
     if (!token) return false;
     const next = replaceToken(text, token, completion);
@@ -137,8 +173,15 @@ export function CommandLine({
     token && paths.length > 0 && paths[0].startsWith(token.value)
       ? paths[0].slice(token.value.length)
       : "";
-  const ghost = pathGhost || ghostFor(text, hits);
-  const showMenu = menuOpen && (listed.length > 0 || paths.length > 0);
+  // Flag nunca é caminho: `--l` não existe em disco, e tentar completá-lo como
+  // arquivo só produziria silêncio.
+  const argGhost =
+    arg && args.length > 0 && args[0].startsWith(arg.value)
+      ? args[0].slice(arg.value.length)
+      : "";
+  const ghost = pathGhost || argGhost || ghostFor(text, hits);
+  const showMenu =
+    menuOpen && (listed.length > 0 || paths.length > 0 || args.length > 0);
 
   const resize = () => {
     const el = inputRef.current;
@@ -161,6 +204,7 @@ export function CommandLine({
   const acceptGhost = () => {
     if (!ghost) return false;
     if (pathGhost && token) return takePath(token.value + pathGhost);
+    if (argGhost && arg) return takeArg(arg.value + argGhost);
     apply(text + ghost, text.length + ghost.length);
     return true;
   };
@@ -204,7 +248,11 @@ export function CommandLine({
       setIndex((prev) => (prev + delta + listed.length) % listed.length);
       return;
     }
-    if (e.key === "ArrowDown" && !showMenu && (listed.length > 0 || paths.length > 0)) {
+    if (
+      e.key === "ArrowDown" &&
+      !showMenu &&
+      (listed.length > 0 || paths.length > 0 || args.length > 0)
+    ) {
       e.preventDefault();
       setMenuOpen(true);
       return;
@@ -221,7 +269,10 @@ export function CommandLine({
         setMenuOpen(false);
         return;
       }
-      if (!acceptGhost() && (listed.length > 0 || paths.length > 0)) {
+      if (
+        !acceptGhost() &&
+        (listed.length > 0 || paths.length > 0 || args.length > 0)
+      ) {
         setMenuOpen(true);
       }
       return;
@@ -250,6 +301,18 @@ export function CommandLine({
     <div className="relative shrink-0 border-t border-tyba-border bg-tyba-sunken px-3 py-2">
       {showMenu && (
         <div className="absolute bottom-full left-3 right-3 z-20 mb-1 max-h-56 overflow-y-auto rounded-[6px] border border-tyba-border bg-tyba-raised py-1 shadow-lg">
+          {args.map((candidate) => (
+            <button
+              key={`arg:${candidate}`}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                takeArg(candidate);
+              }}
+              className="flex w-full items-center gap-2 px-2.5 py-1 text-left font-mono text-[12px] text-tyba-text-muted hover:bg-tyba-text/[.04]"
+            >
+              <span className="min-w-0 flex-1 truncate">{candidate}</span>
+            </button>
+          ))}
           {paths.map((candidate) => (
             <button
               key={`path:${candidate}`}

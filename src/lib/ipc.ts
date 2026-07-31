@@ -1203,6 +1203,9 @@ export const suggestCommands = (
 export const completePath = (cwd: string, token: string) =>
   invoke<string[]>("complete_path", { cwd, token });
 
+export const completeArgument = (prefix: string, token: string) =>
+  invoke<string[]>("complete_argument", { prefix, token });
+
 export const togglePromptMode = (id: SessionId) =>
   invoke<void>("toggle_prompt_mode", { id });
 

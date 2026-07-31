@@ -75,6 +75,30 @@ export interface PathToken {
 const PATHISH = /^(\.{1,2}\/|~|\/)/;
 
 /**
+ * O token sob o cursor e o que vem antes dele na linha.
+ *
+ * O prefixo é o que dá contexto: `git ` completa subcomando, `cargo test `
+ * completa flag. Sem ele a sugestão seria "qualquer palavra que já digitei",
+ * que é trabalho do histórico.
+ */
+export interface LineToken {
+  start: number;
+  value: string;
+  prefix: string;
+}
+
+export function lineToken(text: string, caret: number): LineToken | null {
+  const before = text.slice(0, caret);
+  const match = /[^\s]*$/.exec(before);
+  if (!match) return null;
+  const value = match[0];
+  const start = before.length - value.length;
+  const prefix = before.slice(0, start);
+  if (!prefix.trim()) return null;
+  return { start, value, prefix };
+}
+
+/**
  * O token que deve ser completado como caminho, ou `null`.
  *
  * A primeira palavra da linha é posição de COMANDO, não de arquivo: num

@@ -86,9 +86,95 @@ pub fn complete_path(cwd: &Path, token: &str) -> Vec<String> {
     found.into_iter().map(|(_, name)| name).collect()
 }
 
+/// Subcomandos e flags aprendidos do próprio histórico.
+///
+/// A base de specs de comando do Warp é um crate inteiro e é AGPL — fora de
+/// alcance. Mas o TYBA já guarda tudo que o dono digitou: para `git co` basta
+/// olhar os comandos que começaram com `git ` e oferecer o token seguinte. Sai
+/// personalizado (só aparece o que ele de fato usa), não envelhece e não custa
+/// manutenção.
+///
+/// `commands` chega ordenado por recência; a ordem é preservada.
+pub fn next_tokens(commands: &[String], prefix: &str, token: &str) -> Vec<String> {
+    if prefix.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut found: Vec<String> = Vec::new();
+    for command in commands {
+        let Some(rest) = command.strip_prefix(prefix) else {
+            continue;
+        };
+        let Some(next) = rest.split_whitespace().next() else {
+            continue;
+        };
+        if !next.starts_with(token) || next == token {
+            continue;
+        }
+        if found.iter().any(|seen| seen == next) {
+            continue;
+        }
+        found.push(next.to_string());
+        if found.len() >= 8 {
+            break;
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn history() -> Vec<String> {
+        vec![
+            "git commit -m wip".to_string(),
+            "git checkout main".to_string(),
+            "git commit --no-verify".to_string(),
+            "cargo test --lib".to_string(),
+            "cargo test --nocapture".to_string(),
+            "ls -la".to_string(),
+        ]
+    }
+
+    #[test]
+    fn learns_subcommands_from_what_was_actually_used() {
+        assert_eq!(
+            next_tokens(&history(), "git ", "c"),
+            vec!["commit", "checkout"]
+        );
+    }
+
+    #[test]
+    fn learns_flags_deeper_in_the_line() {
+        assert_eq!(
+            next_tokens(&history(), "cargo test ", "--"),
+            vec!["--lib", "--nocapture"]
+        );
+    }
+
+    #[test]
+    fn keeps_recency_order_and_does_not_repeat() {
+        // `git commit` aparece duas vezes no histórico; a lista mostra uma.
+        let found = next_tokens(&history(), "git ", "");
+        assert_eq!(found, vec!["commit", "checkout"]);
+    }
+
+    #[test]
+    fn ignores_commands_that_do_not_share_the_prefix() {
+        assert!(next_tokens(&history(), "docker ", "").is_empty());
+    }
+
+    #[test]
+    fn never_offers_what_is_already_written_whole() {
+        assert!(!next_tokens(&history(), "git ", "commit").contains(&"commit".to_string()));
+    }
+
+    #[test]
+    fn empty_prefix_completes_nothing() {
+        // Sem prefixo isto viraria "sugira qualquer primeira palavra", que é
+        // trabalho do histórico, não da completação de argumento.
+        assert!(next_tokens(&history(), "", "g").is_empty());
+    }
 
     fn fixture() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
