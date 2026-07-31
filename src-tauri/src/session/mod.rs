@@ -191,6 +191,17 @@ impl SessionManager {
         }
     }
 
+    /// Desligado por padrão: trocar o dono da linha de comando é uma mudança
+    /// grande demais para acontecer sem o usuário pedir.
+    fn prompt_mode_enabled(&self) -> bool {
+        self.store
+            .get_setting("pref.promptMode")
+            .ok()
+            .flatten()
+            .map(|v| v == "on")
+            .unwrap_or(false)
+    }
+
     fn shell_integration_enabled(&self) -> bool {
         self.store
             .get_setting("pref.shell_integration")
@@ -269,6 +280,12 @@ impl SessionManager {
                 cmd.env("ZDOTDIR", dir);
                 cmd.env("TYBA_USER_ZDOTDIR", user_zdotdir);
             }
+        }
+
+        // O modo prompt do TYBA depende inteiramente do hook: sem integração o
+        // `PS1` não sai da tela e a linha do app não pode assumir nada.
+        if integration && self.prompt_mode_enabled() {
+            cmd.env("TYBA_PROMPT_MODE", "1");
         }
 
         let title = opts
@@ -758,6 +775,8 @@ fn zsh_chain(file: &str) -> String {
     )
 }
 
+const TYBA_ZSH_RC: &str = include_str!("tyba-zsh-rc.sh");
+
 fn write_zsh_integration() -> std::io::Result<PathBuf> {
     let dir = integration_dir("zsh")?;
 
@@ -765,20 +784,7 @@ fn write_zsh_integration() -> std::io::Result<PathBuf> {
     write_private(&dir, ".zprofile", &zsh_chain(".zprofile"))?;
     write_private(&dir, ".zlogin", &zsh_chain(".zlogin"))?;
 
-    let hooks = "\n# TYBA shell integration (OSC 133/633/7)\n\
-        if [[ -o interactive ]] && autoload -Uz add-zsh-hook 2>/dev/null; then\n  \
-        __tyba_esc() { printf '\\033]%s\\007' \"$1\"; }\n  \
-        __tyba_urlencode() { emulate -L zsh; local s=$1 out= i c; for (( i=1; i<=${#s}; i++ )); do c=$s[i]; if [[ $c == [A-Za-z0-9/._~-] ]]; then out+=$c; else out+=$(printf '%%%02X' ${(s: :)$(printf '%s' $c | od -An -tu1)}); fi; done; printf '%s' $out; }\n  \
-        __tyba_osc7() { __tyba_esc \"7;file://${HOST}$(__tyba_urlencode \"$PWD\")\"; }\n  \
-        __tyba_ps1b() { [[ \"$PS1\" == *$'\\033]133;B'* ]] || PS1=\"$PS1%{$(__tyba_esc '133;B')%}\"; }\n  \
-        __tyba_preexec() { __tyba_esc \"633;E;$(print -rn -- \"$1\" | base64 | tr -d '\\n')\"; __tyba_esc \"133;C\"; }\n  \
-        __tyba_precmd() { local __c=$?; __tyba_esc \"133;D;$__c\"; __tyba_esc \"133;A\"; __tyba_ps1b; __tyba_osc7; }\n  \
-        add-zsh-hook preexec __tyba_preexec\n  \
-        add-zsh-hook precmd __tyba_precmd\n  \
-        add-zsh-hook chpwd __tyba_osc7\n  \
-        __tyba_osc7\n\
-        fi\n\
-        ZDOTDIR=\"$TYBA_USER_ZDOTDIR\"\n";
+    let hooks = format!("\n{TYBA_ZSH_RC}\nZDOTDIR=\"$TYBA_USER_ZDOTDIR\"\n");
     write_private(&dir, ".zshrc", &format!("{}{}", zsh_chain(".zshrc"), hooks))?;
 
     Ok(dir)

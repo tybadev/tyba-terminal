@@ -83,17 +83,58 @@ if [ -z "${TYBA_BASH_HOOKS:-}" ] && case "$-" in *i*) true ;; *) false ;; esac; 
     return 0
   }
 
+  # --- Modo prompt do TYBA ---------------------------------------------------
+  # A linha de comando passa a ser um editor do app e o PS1 sai da tela. O
+  # original e guardado na PRIMEIRA aplicacao — depois disso o que esta em PS1
+  # ja e o nosso.
+  __tyba_prompt_mode="${TYBA_PROMPT_MODE:-0}"
+  __tyba_prompt_saved=0
+
+  __tyba_prompt_apply() {
+    if [ "$__tyba_prompt_saved" = 0 ]; then
+      __tyba_saved_ps1="$PS1"
+      __tyba_prompt_saved=1
+    fi
+    PS1="\[$__tyba_osc133b\]"
+    return 0
+  }
+
+  __tyba_prompt_restore() {
+    [ "$__tyba_prompt_saved" = 1 ] || return 0
+    PS1="$__tyba_saved_ps1"
+    return 0
+  }
+
+  # Valvula de escape: toda heuristica falha, e o caminho de volta nao pode ser
+  # fechar o app.
+  __tyba_prompt_toggle() {
+    if [ "$__tyba_prompt_mode" = 1 ]; then
+      __tyba_prompt_mode=0
+      __tyba_prompt_restore
+    else
+      __tyba_prompt_mode=1
+      __tyba_prompt_apply
+    fi
+    __tyba_esc "633;P;tyba-prompt=$__tyba_prompt_mode"
+    return 0
+  }
+
   # PRIMEIRO no PROMPT_COMMAND: captura $? antes de qualquer outro hook.
   __tyba_precmd() {
     local __c=$?
     __tyba_at_prompt=0
     __tyba_esc "133;D;$__c"
     __tyba_esc "133;A"
-    case "$PS1" in
-      *"$__tyba_osc133b"*) ;;
-      *) PS1="$PS1\[$__tyba_osc133b\]" ;;
-    esac
+    if [ "$__tyba_prompt_mode" = 1 ]; then
+      __tyba_prompt_apply
+    else
+      case "$PS1" in
+        *"$__tyba_osc133b"*) ;;
+        *) PS1="$PS1\[$__tyba_osc133b\]" ;;
+      esac
+    fi
     __tyba_osc7
+    __tyba_esc "633;P;tyba-prompt=$__tyba_prompt_mode"
     return 0
   }
 
@@ -119,6 +160,12 @@ if [ -z "${TYBA_BASH_HOOKS:-}" ] && case "$-" in *i*) true ;; *) false ;; esac; 
          fi ;;
     esac
   fi
+
+  # Alt+~ alterna o modo; Alt+= limpa a linha antes de o app enviar texto.
+  # O Warp usa ^P para o kill-buffer e com isso ROUBA o history-up do usuario —
+  # nao copiar essa escolha. Ponto unico a mudar se conflitar com algum plugin.
+  bind -x '"\e~": __tyba_prompt_toggle' 2>/dev/null
+  bind '"\e=": kill-whole-line' 2>/dev/null
 
   trap '__tyba_preexec' DEBUG
 fi

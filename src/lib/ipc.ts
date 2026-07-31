@@ -1180,6 +1180,23 @@ export const onThemeChanged = (
 export const setAppMenu = (spec: MenuSpec) =>
   invoke<void>("set_app_menu", { spec });
 
+export const submitShellLine = (id: SessionId, text: string) =>
+  invoke<void>("submit_shell_line", { id, text });
+
+export const writeControl = (id: SessionId, bytes: string) =>
+  invoke<void>("write_control", { id, bytes });
+
+export const togglePromptMode = (id: SessionId) =>
+  invoke<void>("toggle_prompt_mode", { id });
+
+export const onSessionPromptMode = (
+  id: SessionId,
+  handler: (on: boolean) => void,
+): Promise<UnlistenFn> =>
+  listen<{ prompt_mode: boolean }>(`session://prompt-mode/${id}`, (e) =>
+    handler(e.payload.prompt_mode),
+  );
+
 export interface HistoryHit {
   command: string;
   cwd: string | null;

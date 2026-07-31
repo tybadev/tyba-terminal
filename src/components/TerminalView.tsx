@@ -125,6 +125,8 @@ interface Props {
   onFocus?: () => void;
   onPaste?: (sessionId: SessionId, text: string) => void;
   onSearch?: () => void;
+  /** `alternate` = vim/htop/less: a tela é do programa, o teclado também. */
+  onAltScreen?: (alt: boolean) => void;
   onSplit?: (kind: "v" | "h") => void;
   /** Agente cru detectado no shell (F2 do detectar-agente-no-shell). */
   agentNotice?: { binary: string } | null;
@@ -148,6 +150,7 @@ export function TerminalView({
   onFocus,
   onPaste,
   onSearch,
+  onAltScreen,
   onSplit,
   agentNotice,
   onReopenManaged,
@@ -166,6 +169,8 @@ export function TerminalView({
   onFocusRef.current = onFocus;
   const onPasteRef = useRef(onPaste);
   onPasteRef.current = onPaste;
+  const onAltScreenRef = useRef(onAltScreen);
+  onAltScreenRef.current = onAltScreen;
   const showExitBannerRef = useRef<(() => void) | null>(null);
   const reattachesRef = useRef(false);
   reattachesRef.current = Boolean(reattaches);
@@ -269,6 +274,10 @@ export function TerminalView({
 
     termRef.current = term;
     fitRef.current = fit;
+
+    const bufferSub = term.buffer.onBufferChange((buffer) => {
+      onAltScreenRef.current?.(buffer.type === "alternate");
+    });
 
     const dataSub = term.onData((data) => {
       // Broadcast intercepta antes do PTY: a tecla vai para o conjunto inteiro,
@@ -396,6 +405,7 @@ export function TerminalView({
       el.removeEventListener("paste", onNativePaste, true);
       offTheme();
       linkProvider.dispose();
+      bufferSub.dispose();
       dataSub.dispose();
       unlisteners.forEach((un) => un());
       unregisterTerm(sessionId);

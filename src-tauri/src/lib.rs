@@ -4059,6 +4059,60 @@ fn set_app_menu(app: AppHandle, spec: menu::MenuSpec) -> Result<(), String> {
     menu::install(&app, &spec)
 }
 
+/// Limpa a linha do shell antes de escrever nela (`bindkey '\e=' kill-buffer`).
+/// Em modo prompt o usuário não digita ali, mas um widget do próprio zsh ou um
+/// toggle no meio do caminho pode ter deixado texto — que se somaria ao nosso.
+const KILL_LINE: &[u8] = b"\x1b=";
+
+/// Alterna o modo prompt dentro da sessão viva (`bindkey '\e~'`). É a válvula
+/// de escape: toda heurística falha, e o caminho de volta não pode ser fechar o
+/// app.
+const TOGGLE_PROMPT_MODE: &[u8] = b"\x1b~";
+
+#[tauri::command]
+fn submit_shell_line(
+    state: State<'_, AppState>,
+    id: SessionId,
+    text: String,
+) -> Result<(), String> {
+    let bracketed = state
+        .pty_pool
+        .bracketed_paste(id)
+        .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+    let (normalized, _) = rich_input::normalize(&text);
+    if normalized.trim().is_empty() {
+        return Ok(());
+    }
+    let payload = rich_input::plan_injection(&normalized, bracketed)?;
+
+    let _submitting = state.rich_input_submit.lock();
+    let mut bytes = Vec::with_capacity(KILL_LINE.len() + payload.len() + 1);
+    bytes.extend_from_slice(KILL_LINE);
+    bytes.extend_from_slice(&payload);
+    bytes.push(b'\n');
+    state.pty_pool.write(id, &bytes).map_err(|e| e.to_string())
+}
+
+/// Bytes crus para o PTY: sinais (Ctrl+C/D/Z) que a linha do TYBA nunca consome.
+#[tauri::command]
+fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Result<(), String> {
+    if bytes.len() > 8 || !bytes.chars().all(|c| c.is_control()) {
+        return Err("apenas caracteres de controle".into());
+    }
+    state
+        .pty_pool
+        .write(id, bytes.as_bytes())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn toggle_prompt_mode(state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
+    state
+        .pty_pool
+        .write(id, TOGGLE_PROMPT_MODE)
+        .map_err(|e| e.to_string())
+}
+
 pub const HISTORY_PREF_KEY: &str = "pref.commandHistory";
 
 fn history_enabled(store: &Store) -> bool {
@@ -4605,6 +4659,9 @@ pub fn run() {
             agent_repo_config,
             set_agent_config_consent,
             set_app_menu,
+            submit_shell_line,
+            write_control,
+            toggle_prompt_mode,
             search_command_history,
             clear_command_history,
             set_history_enabled,

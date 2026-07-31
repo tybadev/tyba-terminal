@@ -221,6 +221,7 @@ import {
   updateCheck,
   setAppMenu,
   onMenuAction,
+  onSessionPromptMode,
   renderSnippet,
   snippetPlaceholders,
   type Snippet,
@@ -308,6 +309,7 @@ import {
   isMenuExtraId,
   type MenuExtraId,
 } from "./lib/appMenu";
+import { keyboardOwner } from "./lib/commandLine";
 import { changelogUrl } from "./lib/changelog";
 import { docsUrl, REPO_URL } from "./lib/links";
 import {
@@ -641,6 +643,8 @@ export default function App() {
     [worktreeDefault],
   );
   const [searchOpen, setSearchOpen] = useState(false);
+  const [altScreens, setAltScreens] = useState<Record<string, boolean>>({});
+  const [promptModes, setPromptModes] = useState<Record<string, boolean>>({});
   const [snippetPrompt, setSnippetPrompt] = useState<{
     snippet: Snippet;
     placeholders: SnippetPlaceholder[];
@@ -2627,6 +2631,47 @@ export default function App() {
     ],
   );
 
+  // Quem é dono do teclado agora. A regra vive em lib/commandLine.ts, testada:
+  // é ela que impede a caixa de engolir a senha que o sudo está pedindo.
+  const promptMode = activeId ? (promptModes[activeId] ?? false) : false;
+  const ownsCommandLine =
+    keyboardOwner({
+      promptMode,
+      kind: activeSession?.kind,
+      altScreen: activeId ? (altScreens[activeId] ?? false) : false,
+      command: activeCommand,
+      integrated: promptMode,
+    }) === "tybaLine";
+
+  // Voltar do vim ou do fim de um comando devolve o foco para a linha.
+  const [commandLineNonce, setCommandLineNonce] = useState(0);
+  useEffect(() => {
+    if (ownsCommandLine) setCommandLineNonce((n) => n + 1);
+  }, [ownsCommandLine, activeId]);
+
+  // Quem responde se o PS1 saiu da tela é o SHELL, não o app: o hook relata por
+  // `633;P` a cada prompt. Assumir pela preferência mentiria quando o hook não
+  // subiu (shell sem integração, subshell, container).
+  useEffect(() => {
+    const ids = sessions.map((s) => s.id);
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    for (const id of ids) {
+      void onSessionPromptMode(id, (on) =>
+        setPromptModes((prev) =>
+          prev[id] === on ? prev : { ...prev, [id]: on },
+        ),
+      ).then((un) => {
+        if (disposed) un();
+        else unlisteners.push(un);
+      });
+    }
+    return () => {
+      disposed = true;
+      unlisteners.forEach((un) => un());
+    };
+  }, [sessions]);
+
   const historyScope = useMemo(
     () => ({
       cwd: activeCwdKey,
@@ -4004,6 +4049,13 @@ export default function App() {
                         onDismissNotice={() => dismissShellAgentNotice(s.id)}
                         onPaste={deliverPaste}
                         onSearch={() => setSearchOpen(true)}
+                        onAltScreen={(alt) =>
+                          setAltScreens((prev) =>
+                            prev[s.id] === alt
+                              ? prev
+                              : { ...prev, [s.id]: alt },
+                          )
+                        }
                         onSplit={(kind) => void splitActive(kind)}
                         visible={paneRect !== null}
                         focused={s.id === activeId}
@@ -4173,13 +4225,20 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                {activeSession && richInputVisible && (
+                {activeSession && (richInputVisible || ownsCommandLine) && (
                   <RichInput
-                    key={activeSession.id}
+                    key={`${activeSession.id}${ownsCommandLine ? ":line" : ""}`}
                     sessionId={activeSession.id}
                     pref={richInputPref}
-                    focusNonce={richInputFocusNonce}
-                    openedExplicitly={richInputOpened.has(activeSession.id)}
+                    shellLine={ownsCommandLine}
+                    focusNonce={
+                      ownsCommandLine
+                        ? commandLineNonce
+                        : richInputFocusNonce
+                    }
+                    openedExplicitly={
+                      ownsCommandLine || richInputOpened.has(activeSession.id)
+                    }
                     prefill={launchPrefills[activeSession.id] ?? null}
                     onFocusChange={(focused) => {
                       richInputFocused.current = focused;

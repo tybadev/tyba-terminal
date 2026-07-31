@@ -9,6 +9,7 @@ import {
   deleteSnippet,
   getPref,
   listSnippets,
+  setPref,
   saveSnippet,
   setHistoryEnabled,
   type Snippet,
@@ -16,6 +17,7 @@ import {
 import { pushToast, toastError } from "../lib/toast";
 
 const HISTORY_PREF_KEY = "pref.commandHistory";
+const PROMPT_MODE_PREF_KEY = "pref.promptMode";
 
 function blankSnippet(): Snippet {
   return {
@@ -31,6 +33,7 @@ function blankSnippet(): Snippet {
 export function ShellSettings() {
   const { t } = useTranslation();
   const [historyOn, setHistoryOn] = useState(true);
+  const [promptOn, setPromptOn] = useState(false);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [draft, setDraft] = useState<Snippet | null>(null);
 
@@ -44,6 +47,9 @@ export function ShellSettings() {
     void getPref(HISTORY_PREF_KEY)
       .then((value) => setHistoryOn(value !== "off"))
       .catch(() => setHistoryOn(true));
+    void getPref(PROMPT_MODE_PREF_KEY)
+      .then((value) => setPromptOn(value === "on"))
+      .catch(() => setPromptOn(false));
     refresh();
   }, [refresh]);
 
@@ -52,6 +58,14 @@ export function ShellSettings() {
     void setHistoryEnabled(next).catch((error) => {
       setHistoryOn(!next);
       toastError(t("historyEnabled"), error);
+    });
+  };
+
+  const togglePrompt = (next: boolean) => {
+    setPromptOn(next);
+    void setPref(PROMPT_MODE_PREF_KEY, next ? "on" : "off").catch((error) => {
+      setPromptOn(!next);
+      toastError(t("promptModeTitle"), error);
     });
   };
 
@@ -84,7 +98,25 @@ export function ShellSettings() {
 
   return (
     <section className="mx-auto w-full max-w-lg">
-      <span className="tyba-label">{t("settingsHistory")}</span>
+      <span className="tyba-label">{t("promptModeTitle")}</span>
+      <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
+        {t("promptModeHint")}
+      </p>
+      <div className="mt-2 flex items-center gap-3 rounded-[6px] border border-tyba-border p-4">
+        <span className="min-w-0 flex-1 text-[13px] text-tyba-text">
+          {t("promptModeEnabled")}
+        </span>
+        <Switch
+          checked={promptOn}
+          onCheckedChange={togglePrompt}
+          aria-label={t("promptModeEnabled")}
+        />
+      </div>
+      <p className="pt-2 text-[11px] leading-relaxed text-tyba-amber">
+        {t("promptModeEscape")}
+      </p>
+
+      <span className="tyba-label mt-6 block">{t("settingsHistory")}</span>
       <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
         {t("historyHint")}
       </p>

@@ -17,8 +17,11 @@ import {
   sessionBracketedPaste,
   sessionRelPath,
   submitRichInput,
+  submitShellLine,
+  writeControl,
   type SessionId,
 } from "../lib/ipc";
+import { clearsDraft, controlBytes } from "../lib/commandLine";
 import {
   atQuery,
   enterAction,
@@ -36,6 +39,11 @@ interface Props {
   focusNonce: number;
   openedExplicitly: boolean;
   prefill?: string | null;
+  /**
+   * Modo linha de comando do shell: o Enter manda para o shell (limpando a
+   * linha antes) e Ctrl+C/D/Z viram sinal, nunca texto.
+   */
+  shellLine?: boolean;
   onFocusChange: (focused: boolean) => void;
   onClose: () => void;
 }
@@ -46,6 +54,7 @@ export function RichInput({
   focusNonce,
   openedExplicitly,
   prefill,
+  shellLine,
   onFocusChange,
   onClose,
 }: Props) {
@@ -186,7 +195,8 @@ export function RichInput({
     }
     setWarnArmed(false);
     try {
-      await submitRichInput(sessionId, value, true);
+      if (shellLine) await submitShellLine(sessionId, value);
+      else await submitRichInput(sessionId, value, true);
     } catch (e) {
       setError(String(e));
       return;
@@ -196,6 +206,22 @@ export function RichInput({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (shellLine) {
+      const bytes = controlBytes({
+        key: e.key,
+        ctrl: e.ctrlKey,
+        meta: e.metaKey,
+        alt: e.altKey,
+      });
+      if (bytes) {
+        e.preventDefault();
+        void writeControl(sessionId, bytes).catch(() => {});
+        if (clearsDraft({ key: e.key, ctrl: true, meta: false, alt: false })) {
+          applyText("", 0);
+        }
+        return;
+      }
+    }
     if (popoverOpen) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
