@@ -35,6 +35,13 @@ interface Props {
    * tela fica em branco e sem lugar nenhum para digitar até o primeiro prompt.
    */
   waiting?: boolean;
+  /**
+   * Texto vindo de fora (paleta de histórico, snippet, colar).
+   *
+   * Com o terminal somente-leitura, injetar via `term.paste` seria engolido em
+   * silêncio — o destino passa a ser a caixa, que é quem edita a linha.
+   */
+  inject?: { text: string; nonce: number } | null;
 }
 
 function baseName(path: string | null): string {
@@ -58,6 +65,7 @@ export function CommandLine({
   scope,
   focusNonce,
   waiting,
+  inject,
 }: Props) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -68,6 +76,23 @@ export function CommandLine({
   const [menuOpen, setMenuOpen] = useState(false);
   const [paths, setPaths] = useState<string[]>([]);
   const [args, setArgs] = useState<string[]>([]);
+
+  const seenInject = useRef(inject?.nonce ?? 0);
+  useEffect(() => {
+    if (!inject || inject.nonce === seenInject.current) return;
+    seenInject.current = inject.nonce;
+    setText(inject.text);
+    setCaret(inject.text.length);
+    setMenuOpen(false);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(inject.text.length, inject.text.length);
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`;
+    });
+  }, [inject]);
 
   const seenNonce = useRef(focusNonce);
   useEffect(() => {

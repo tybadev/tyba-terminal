@@ -2668,6 +2668,10 @@ export default function App() {
 
   // Voltar do vim ou do fim de um comando devolve o foco para a linha.
   const [commandLineNonce, setCommandLineNonce] = useState(0);
+  const [injected, setInjected] = useState<{
+    text: string;
+    nonce: number;
+  } | null>(null);
   useEffect(() => {
     if (ownsCommandLine) {
       setCommandLineNonce((n) => n + 1);
@@ -2716,10 +2720,16 @@ export default function App() {
   const injectIntoActive = useCallback(
     (text: string) => {
       if (!activeId || !text) return;
+      // Com a linha do TYBA no comando, o terminal está somente-leitura: um
+      // `term.paste` aqui seria engolido sem aviso.
+      if (ownsCommandLine) {
+        setInjected({ text, nonce: Date.now() });
+        return;
+      }
       deliverPaste(activeId, text);
       getTerm(activeId)?.term.focus();
     },
-    [activeId, deliverPaste],
+    [activeId, deliverPaste, ownsCommandLine],
   );
 
   const pickSnippet = useCallback(
@@ -4079,6 +4089,8 @@ export default function App() {
                         onDismissNotice={() => dismissShellAgentNotice(s.id)}
                         onPaste={deliverPaste}
                         onSearch={() => setSearchOpen(true)}
+                        readOnly={s.id === activeId && ownsCommandLine}
+                        onReclaimFocus={() => setCommandLineNonce((n) => n + 1)}
                         onAltScreen={(alt) =>
                           setAltScreens((prev) =>
                             prev[s.id] === alt
@@ -4264,6 +4276,7 @@ export default function App() {
                     scope={historyScope}
                     focusNonce={commandLineNonce}
                     waiting={!ownsCommandLine}
+                    inject={injected}
                   />
                 )}
                 {activeSession && richInputVisible && !ownsCommandLine && (
