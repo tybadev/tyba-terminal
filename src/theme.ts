@@ -149,6 +149,29 @@ export function getTerminalTheme(): ITheme {
   return toXtermTheme(terminalPalette());
 }
 
+/**
+ * Cor ANSI por índice, para os blocos.
+ *
+ * Os 16 primeiros vêm da paleta do tema — é por isso que o bloco guarda o
+ * ÍNDICE e não o RGB: trocar de tema repinta a saída antiga junto. De 16 em
+ * diante é o cubo padrão do xterm, que nenhum tema define e todo terminal
+ * calcula igual.
+ */
+export function ansiColor(index: number): string {
+  const palette = terminalPalette();
+  if (index < 16) return palette.ansi[index] ?? palette.foreground;
+  if (index < 232) {
+    const n = index - 16;
+    const step = (v: number) => (v === 0 ? 0 : 55 + v * 40);
+    const r = step(Math.floor(n / 36));
+    const g = step(Math.floor((n % 36) / 6));
+    const b = step(n % 6);
+    return `rgb(${r} ${g} ${b})`;
+  }
+  const gray = 8 + (index - 232) * 10;
+  return `rgb(${gray} ${gray} ${gray})`;
+}
+
 export function onTerminalThemeChange(cb: (theme: ITheme) => void): () => void {
   terminalListeners.add(cb);
   return () => terminalListeners.delete(cb);

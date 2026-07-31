@@ -1221,6 +1221,46 @@ export const suggestLine = (input: {
 export const completeArgument = (prefix: string, token: string) =>
   invoke<string[]>("complete_argument", { prefix, token });
 
+export type BlockColor =
+  | { kind: "default" }
+  | { kind: "idx"; value: number }
+  | { kind: "rgb"; value: [number, number, number] };
+
+export interface StyleRun {
+  start: number;
+  end: number;
+  fg: BlockColor;
+  bg: BlockColor;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+}
+
+export interface LogicalLine {
+  text: string;
+  runs: StyleRun[];
+}
+
+export interface Block {
+  id: number;
+  sessionId: string;
+  command: string;
+  exitCode: number | null;
+  startedAtMs: number;
+  finishedAtMs: number;
+  lines: LogicalLine[];
+  truncated: number;
+}
+
+export const sessionBlocks = (id: SessionId) =>
+  invoke<Block[]>("session_blocks", { id });
+
+export const onBlockFinalized = (
+  id: SessionId,
+  handler: (block: Block) => void,
+): Promise<UnlistenFn> =>
+  listen<Block>(`block://finalized/${id}`, (e) => handler(e.payload));
+
 export const sessionPromptMode = (id: SessionId) =>
   invoke<boolean>("session_prompt_mode", { id });
 

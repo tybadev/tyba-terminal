@@ -221,11 +221,14 @@ import {
   updateCheck,
   setAppMenu,
   onMenuAction,
+  onBlockFinalized,
   onSessionPromptMode,
+  sessionBlocks,
   sessionPromptMode,
   togglePromptMode,
   renderSnippet,
   snippetPlaceholders,
+  type Block,
   type Snippet,
   type SnippetPlaceholder,
   updateDismiss,
@@ -282,6 +285,7 @@ import {
   type ToolbarPref,
 } from "./lib/repoSnapshots";
 import { Toolbar } from "./components/Toolbar";
+import { BlockList } from "./components/BlockList";
 import { CommandLine } from "./components/CommandLine";
 import { RichInput } from "./components/RichInput";
 import {
@@ -653,6 +657,7 @@ export default function App() {
   const [altScreens, setAltScreens] = useState<Record<string, boolean>>({});
   const [promptModes, setPromptModes] = useState<Record<string, boolean>>({});
   const [promptModePref, setPromptModePref] = useState(false);
+  const [blocks, setBlocks] = useState<Record<string, Block[]>>({});
   const [snippetPrompt, setSnippetPrompt] = useState<{
     snippet: Snippet;
     placeholders: SnippetPlaceholder[];
@@ -2724,6 +2729,33 @@ export default function App() {
     };
   }, [sessions]);
 
+  // Histórico persistido + os que chegam agora. O bloco vem pronto do core: o
+  // front não parseia saída, só desenha os spans.
+  useEffect(() => {
+    const ids = sessions.filter((s) => s.kind.type === "shell").map((s) => s.id);
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    for (const id of ids) {
+      void sessionBlocks(id)
+        .then((loaded) => {
+          if (!disposed && loaded.length > 0) {
+            setBlocks((prev) => (prev[id]?.length ? prev : { ...prev, [id]: loaded }));
+          }
+        })
+        .catch(() => {});
+      void onBlockFinalized(id, (block) => {
+        setBlocks((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), block] }));
+      }).then((un) => {
+        if (disposed) un();
+        else unlisteners.push(un);
+      });
+    }
+    return () => {
+      disposed = true;
+      unlisteners.forEach((un) => un());
+    };
+  }, [sessions]);
+
   const historyScope = useMemo(
     () => ({
       cwd: activeCwdKey,
@@ -4152,6 +4184,34 @@ export default function App() {
                             : undefined
                         }
                         onExit={() => void refreshSessions()}
+                      />
+                    );
+                  })}
+                  {sessions.map((s) => {
+                    const paneRect =
+                      paneLayout?.panes.find((p) => p.session === s.id) ?? null;
+                    const list = blocks[s.id] ?? [];
+                    // O xterm continua montado por baixo (a sessão é dele); a
+                    // lista só o cobre enquanto o shell está ocioso, senão a
+                    // saída apareceria duas vezes.
+                    const showBlocks =
+                      paneRect !== null &&
+                      list.length > 0 &&
+                      (promptModes[s.id] ?? false) &&
+                      !sessionCommands[s.id]?.running &&
+                      !(altScreens[s.id] ?? false);
+                    if (!showBlocks || !paneRect) return null;
+                    return (
+                      <BlockList
+                        key={`blocks-${s.id}`}
+                        blocks={list}
+                        framed={(paneLayout?.panes.length ?? 0) > 1}
+                        rect={{
+                          left: paneRect.x,
+                          top: paneRect.y,
+                          width: paneRect.w,
+                          height: paneRect.h,
+                        }}
                       />
                     );
                   })}
