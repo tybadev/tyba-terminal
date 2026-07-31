@@ -174,6 +174,19 @@ CREATE TABLE IF NOT EXISTS command_history (
 );
 CREATE INDEX IF NOT EXISTS command_history_by_time ON command_history (started_at_ms DESC);
 CREATE INDEX IF NOT EXISTS command_history_by_cwd ON command_history (cwd, started_at_ms DESC);
+CREATE TABLE IF NOT EXISTS block (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    command TEXT NOT NULL,
+    exit_code INTEGER,
+    started_at_ms INTEGER NOT NULL,
+    finished_at_ms INTEGER NOT NULL,
+    truncated INTEGER NOT NULL,
+    bytes INTEGER NOT NULL,
+    lines TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS block_by_session ON block (session_id, id DESC);
 CREATE TABLE IF NOT EXISTS snippet (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -189,6 +202,16 @@ CREATE TABLE IF NOT EXISTS snippet (
 /// Teto do histórico. Sem ele a tabela cresce com o uso e nunca encolhe: é a
 /// única do banco alimentada por cada Enter que o usuário dá.
 const COMMAND_HISTORY_CAP: i64 = 20_000;
+
+/// Retenção de bloco por sessão, nas duas dimensões. Contagem sozinha não
+/// protege de um bloco gigante; tamanho sozinho deixa a tabela crescer em
+/// número. Poda os mais antigos primeiro.
+const BLOCK_CAP_COUNT: i64 = 1_000;
+const BLOCK_CAP_BYTES: i64 = 64 * 1024 * 1024;
+
+/// Formato do payload de linhas. Versão desconhecida é IGNORADA na leitura —
+/// um bloco gravado por uma versão futura não pode derrubar a sessão.
+const BLOCK_VERSION: i64 = 1;
 
 /// Quantos comandos distintos entram no ranking. O corte é por recência, então o
 /// que fica de fora é o que ninguém procuraria de qualquer forma — e o fuzzy
@@ -823,6 +846,104 @@ impl Store {
                 conn.execute("DELETE FROM command_history", [])?;
             }
         }
+        Ok(())
+    }
+
+    pub fn insert_block(&self, block: &crate::blocks::Block) -> Result<usize, StoreError> {
+        let lines = serde_json::to_string(&block.lines)?;
+        let bytes = lines.len() as i64;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO block
+                 (session_id, version, command, exit_code, started_at_ms,
+                  finished_at_ms, truncated, bytes, lines)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                block.session_id,
+                BLOCK_VERSION,
+                block.command,
+                block.exit_code,
+                block.started_at_ms,
+                block.finished_at_ms,
+                block.truncated as i64,
+                bytes,
+                lines,
+            ],
+        )?;
+
+        // Poda por contagem E por tamanho: um `cat` de log enorme estoura o
+        // segundo teto muito antes do primeiro.
+        let pruned = conn.execute(
+            "DELETE FROM block WHERE session_id = ?1 AND id NOT IN (
+                 SELECT id FROM (
+                     SELECT id,
+                            ROW_NUMBER() OVER (ORDER BY id DESC) AS pos,
+                            SUM(bytes) OVER (ORDER BY id DESC) AS running
+                     FROM block WHERE session_id = ?1
+                 )
+                 WHERE pos <= ?2 AND running <= ?3
+             )",
+            params![block.session_id, BLOCK_CAP_COUNT, BLOCK_CAP_BYTES],
+        )?;
+        Ok(pruned)
+    }
+
+    /// Blocos de uma sessão, do mais antigo para o mais novo (ordem de leitura).
+    pub fn list_blocks(
+        &self,
+        session_id: &str,
+        limit: i64,
+    ) -> Result<Vec<crate::blocks::Block>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, version, command, exit_code, started_at_ms,
+                    finished_at_ms, truncated, lines
+             FROM block WHERE session_id = ?1
+             ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id, limit], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i32>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut blocks: Vec<crate::blocks::Block> = rows
+            .into_iter()
+            .filter(|row| row.2 == BLOCK_VERSION)
+            .filter_map(|row| {
+                let lines = serde_json::from_str(&row.8).ok()?;
+                Some(crate::blocks::Block {
+                    id: row.0 as u64,
+                    session_id: row.1,
+                    command: row.3,
+                    exit_code: row.4,
+                    started_at_ms: row.5,
+                    finished_at_ms: row.6,
+                    lines,
+                    truncated: row.7.max(0) as usize,
+                })
+            })
+            .collect();
+        blocks.reverse();
+        Ok(blocks)
+    }
+
+    pub fn drop_blocks(&self, session_id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM block WHERE session_id = ?1",
+            params![session_id],
+        )?;
         Ok(())
     }
 
@@ -1896,6 +2017,85 @@ mod tests {
 
         store.clear_command_history(None).unwrap();
         assert_eq!(history_count(&store), 0);
+    }
+
+    fn block(session: &str, command: &str, lines: usize) -> crate::blocks::Block {
+        crate::blocks::Block {
+            id: 0,
+            session_id: session.into(),
+            command: command.into(),
+            exit_code: Some(0),
+            started_at_ms: 1,
+            finished_at_ms: 2,
+            lines: (0..lines)
+                .map(|i| crate::blocks::LogicalLine {
+                    text: format!("linha {i}"),
+                    runs: Vec::new(),
+                })
+                .collect(),
+            truncated: 0,
+        }
+    }
+
+    #[test]
+    fn block_round_trip_keeps_reading_order() {
+        let store = Store::open_in_memory().unwrap();
+        store.insert_block(&block("s1", "primeiro", 1)).unwrap();
+        store.insert_block(&block("s1", "segundo", 2)).unwrap();
+        store.insert_block(&block("s2", "outra sessão", 1)).unwrap();
+
+        let found = store.list_blocks("s1", 100).unwrap();
+        assert_eq!(
+            found.iter().map(|b| b.command.as_str()).collect::<Vec<_>>(),
+            vec!["primeiro", "segundo"],
+            "do mais antigo para o mais novo, como se lê"
+        );
+        assert_eq!(found[1].lines.len(), 2);
+        assert_eq!(store.list_blocks("s2", 100).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn block_retention_prunes_the_oldest_by_count() {
+        let store = Store::open_in_memory().unwrap();
+        for i in 0..(BLOCK_CAP_COUNT + 5) {
+            store
+                .insert_block(&block("s1", &format!("cmd{i}"), 1))
+                .unwrap();
+        }
+        let found = store.list_blocks("s1", 5_000).unwrap();
+        assert_eq!(found.len() as i64, BLOCK_CAP_COUNT);
+        assert_eq!(found[0].command, "cmd5", "os mais antigos é que saem");
+    }
+
+    #[test]
+    fn block_of_unknown_version_is_ignored_not_fatal() {
+        // Bloco gravado por uma versão futura do TYBA não pode derrubar a
+        // sessão de quem voltou para uma versão antiga.
+        let store = Store::open_in_memory().unwrap();
+        store.insert_block(&block("s1", "atual", 1)).unwrap();
+        {
+            let conn = store.conn.lock();
+            conn.execute(
+                "INSERT INTO block (session_id, version, command, exit_code,
+                     started_at_ms, finished_at_ms, truncated, bytes, lines)
+                 VALUES ('s1', 999, 'do futuro', 0, 1, 2, 0, 10, 'formato-que-nao-existe')",
+                [],
+            )
+            .unwrap();
+        }
+        let found = store.list_blocks("s1", 100).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].command, "atual");
+    }
+
+    #[test]
+    fn dropping_a_session_drops_its_blocks_only() {
+        let store = Store::open_in_memory().unwrap();
+        store.insert_block(&block("s1", "a", 1)).unwrap();
+        store.insert_block(&block("s2", "b", 1)).unwrap();
+        store.drop_blocks("s1").unwrap();
+        assert!(store.list_blocks("s1", 10).unwrap().is_empty());
+        assert_eq!(store.list_blocks("s2", 10).unwrap().len(), 1);
     }
 
     #[test]

@@ -330,7 +330,7 @@ static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 /// O finalize de um bloco de 10 mil linhas é trabalho de verdade; fazê-lo no
 /// caminho quente seguraria o flush de output do terminal por todo esse tempo.
 /// A emitter só entrega os bytes e segue.
-pub fn install(app: tauri::AppHandle) {
+pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::store::Store>) {
     let (tx, rx) = std::sync::mpsc::sync_channel::<Finished>(16);
     if FINALIZER.set(Finalizer { tx }).is_err() {
         return;
@@ -340,7 +340,20 @@ pub fn install(app: tauri::AppHandle) {
         .spawn(move || {
             use tauri::Emitter;
             while let Ok(finished) = rx.recv() {
-                let block = build(finished);
+                let mut block = build(finished);
+                // Grava antes de emitir para o id do evento ser o mesmo do
+                // disco: o front usa esse id para casar o bloco novo com o
+                // histórico que já carregou.
+                match store.insert_block(&block) {
+                    Ok(_) => {
+                        if let Ok(saved) = store.list_blocks(&block.session_id, 1) {
+                            if let Some(last) = saved.last() {
+                                block.id = last.id;
+                            }
+                        }
+                    }
+                    Err(err) => eprintln!("tyba: bloco não persistido: {err}"),
+                }
                 let event = format!("block://finalized/{}", block.session_id);
                 let _ = app.emit(&event, block);
             }
