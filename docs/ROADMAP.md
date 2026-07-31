@@ -76,7 +76,6 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 - [x] CONTRIBUTING.md, README com instalação por plataforma
 - [ ] Codesign + notarização (macOS) — **falta o certificado Developer ID nos secrets**; o workflow já verifica com `codesign` + `spctl` e recusa publicar artefato não assinado (build ad-hoc é rejeitado pelo Gatekeeper e o usuário vê "app danificado")
 - [ ] Codesign Windows (SmartScreen) — o release já builda e publica Windows **unsigned** (NSIS `.exe` + MSI); sem certificado, o SmartScreen avisa "app não reconhecido". Mesma classe do bloqueador da Apple: aquisição de certificado, não código
-- [ ] PKGBUILD publicado na AUR (`packaging/aur/PKGBUILD` pronto; falta subir a conta/repo AUR)
 - [ ] QA de desktop em Linux real (webkitgtk + xterm.js, notificações, window-state, PTY)
 - [x] Notificação de versão nova + what's new — entregue na v0.1.1 (#140): `update/` no core compara com a última release, toast acionável + botão em Settings apontando para o changelog do site. What's new **dentro** da app (sem sair pro site) fica como polish futuro.
 - [ ] Auto-update assinado — **fora da v0.1 de propósito**: a chave privada de update é o secret mais perigoso do projeto (quem a tiver publica um "update" que a máquina do usuário instala sozinha). Entra na v0.2, com calma. Ver [TODO](TODO.md).
