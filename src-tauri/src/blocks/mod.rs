@@ -340,22 +340,16 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
         .spawn(move || {
             use tauri::Emitter;
             while let Ok(finished) = rx.recv() {
-                let mut block = build(finished);
-                // Grava antes de emitir para o id do evento ser o mesmo do
-                // disco: o front usa esse id para casar o bloco novo com o
-                // histórico que já carregou.
-                match store.insert_block(&block) {
-                    Ok(_) => {
-                        if let Ok(saved) = store.list_blocks(&block.session_id, 1) {
-                            if let Some(last) = saved.last() {
-                                block.id = last.id;
-                            }
-                        }
-                    }
-                    Err(err) => eprintln!("tyba: bloco não persistido: {err}"),
-                }
+                let block = build(finished);
+                // EMITE ANTES DE GRAVAR. O olho do usuário não pode esperar o
+                // disco: o bloco aparece, e a persistência acontece depois. O
+                // id vale para a sessão viva; ao reabrir, quem manda é o rowid
+                // que a leitura devolve.
                 let event = format!("block://finalized/{}", block.session_id);
-                let _ = app.emit(&event, block);
+                let _ = app.emit(&event, block.clone());
+                if let Err(err) = store.insert_block(&block) {
+                    eprintln!("tyba: bloco não persistido: {err}");
+                }
             }
         });
 }

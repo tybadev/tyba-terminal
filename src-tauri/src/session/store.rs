@@ -872,7 +872,8 @@ impl Store {
         )?;
 
         // Poda por contagem E por tamanho: um `cat` de log enorme estoura o
-        // segundo teto muito antes do primeiro.
+        // segundo teto muito antes do primeiro. Roda fora do caminho do que o
+        // usuário vê — o bloco já foi emitido antes desta função ser chamada.
         let pruned = conn.execute(
             "DELETE FROM block WHERE session_id = ?1 AND id NOT IN (
                  SELECT id FROM (

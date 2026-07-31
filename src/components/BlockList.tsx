@@ -116,6 +116,11 @@ function BlockCard({ block }: { block: Block }) {
   );
 }
 
+/** Métricas do cartão, para a estimativa nascer perto do valor medido. */
+const LINE_PX = 17;
+const HEADER_PX = 27;
+const BLOCK_GAP_PX = 16;
+
 interface Props {
   blocks: Block[];
   rect: PaneRectStyle;
@@ -128,11 +133,21 @@ export function BlockList({ blocks, rect, framed }: Props) {
   // saída antiga junto, senão o bloco congela a paleta de quando foi capturado.
   const [, repaint] = useReducer((n: number) => n + 1, 0);
   useEffect(() => onTerminalThemeChange(() => repaint()), []);
+  // A estimativa sai do número de linhas, não de um número fixo: com 80px
+  // chutados, o primeiro layout põe o bloco no lugar errado e ele PULA quando a
+  // medição real chega — que é o "aparece com delay e renderiza".
+  const estimate = (index: number) => {
+    const block = blocks[index];
+    if (!block) return LINE_PX + HEADER_PX;
+    const body = Math.max(block.lines.length, 0) * LINE_PX;
+    const footer = block.truncated > 0 ? LINE_PX : 0;
+    return HEADER_PX + body + footer + BLOCK_GAP_PX;
+  };
+
   const virtualizer = useVirtualizer({
     count: blocks.length,
     getScrollElement: () => scrollRef.current,
-    // Altura medida por elemento: a estimativa só evita o primeiro layout.
-    estimateSize: () => 80,
+    estimateSize: estimate,
     overscan: 6,
   });
 
