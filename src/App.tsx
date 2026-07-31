@@ -222,6 +222,7 @@ import {
   setAppMenu,
   onMenuAction,
   onSessionPromptMode,
+  sessionPromptMode,
   togglePromptMode,
   renderSnippet,
   snippetPlaceholders,
@@ -313,6 +314,7 @@ import {
 } from "./lib/appMenu";
 import {
   keyboardOwner,
+  lineState,
   PROMPT_MODE_PREF_KEY,
 } from "./lib/commandLine";
 import { changelogUrl } from "./lib/changelog";
@@ -2650,13 +2652,20 @@ export default function App() {
   // O shell só reporta o modo no primeiro prompt — depois de carregar rc,
   // framework e plugins. Até lá a linha aparece desabilitada em vez de a tela
   // ficar em branco sem lugar nenhum para digitar.
-  const promptPending =
-    promptModePref &&
+  // A linha aparece sempre que a sessão é um shell em modo prompt — inclusive
+  // com comando rodando ou app de tela cheia aberto. Ela só muda de estado.
+  const lineVisible =
     activeId != null &&
     activeSession?.kind.type === "shell" &&
-    promptModes[activeId] === undefined &&
-    !activeCommand?.running &&
-    !(altScreens[activeId] ?? false);
+    (promptMode || (promptModePref && promptModes[activeId] === undefined));
+
+  const commandLineState = lineState({
+    promptMode,
+    kind: activeSession?.kind,
+    altScreen: activeId ? (altScreens[activeId] ?? false) : false,
+    command: activeCommand,
+    integrated: promptMode,
+  });
   const ownsCommandLine =
     keyboardOwner({
       promptMode,
@@ -2699,6 +2708,15 @@ export default function App() {
         if (disposed) un();
         else unlisteners.push(un);
       });
+      // Consulta além de assinar: se o primeiro prompt chegou antes deste
+      // listener existir, o evento se perdeu e a linha nunca apareceria.
+      void sessionPromptMode(id)
+        .then((on) => {
+          if (!disposed && on) {
+            setPromptModes((prev) => (prev[id] ? prev : { ...prev, [id]: on }));
+          }
+        })
+        .catch(() => {});
     }
     return () => {
       disposed = true;
@@ -4267,7 +4285,7 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                {activeSession && (ownsCommandLine || promptPending) && (
+                {activeSession && lineVisible && (
                   <CommandLine
                     key={`${activeSession.id}:line`}
                     sessionId={activeSession.id}
@@ -4275,7 +4293,7 @@ export default function App() {
                     branch={activeGitStatus?.branch ?? null}
                     scope={historyScope}
                     focusNonce={commandLineNonce}
-                    waiting={!ownsCommandLine}
+                    state={commandLineState}
                     inject={injected}
                   />
                 )}

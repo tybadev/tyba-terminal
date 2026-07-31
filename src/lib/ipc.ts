@@ -1221,6 +1221,9 @@ export const suggestLine = (input: {
 export const completeArgument = (prefix: string, token: string) =>
   invoke<string[]>("complete_argument", { prefix, token });
 
+export const sessionPromptMode = (id: SessionId) =>
+  invoke<boolean>("session_prompt_mode", { id });
+
 export const togglePromptMode = (id: SessionId) =>
   invoke<void>("toggle_prompt_mode", { id });
 

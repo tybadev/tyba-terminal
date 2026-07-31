@@ -5,6 +5,7 @@ import {
   controlBytes,
   ghostFor,
   keyboardOwner,
+  lineState,
   lineToken,
   pathToken,
   replaceToken,
@@ -67,6 +68,35 @@ describe("keyboardOwner", () => {
 
   it("respeita a válvula de escape do usuário", () => {
     expect(keyboardOwner({ ...atPrompt, promptMode: false })).toBe("terminal");
+  });
+});
+
+describe("lineState", () => {
+  it("é editável só quando o shell está no prompt", () => {
+    expect(lineState(atPrompt)).toBe("own");
+  });
+
+  it("diz por que não é editável, em vez de sumir", () => {
+    // A caixa sumir e voltar a cada comando redimensionava o terminal duas
+    // vezes por execução.
+    expect(
+      lineState({
+        ...atPrompt,
+        command: { command: "sleep 5", running: true, agent_match: false },
+      }),
+    ).toBe("running");
+    expect(lineState({ ...atPrompt, altScreen: true })).toBe("app");
+    expect(lineState({ ...atPrompt, promptMode: false })).toBe("waiting");
+  });
+
+  it("app de tela cheia vence comando rodando", () => {
+    expect(
+      lineState({
+        ...atPrompt,
+        altScreen: true,
+        command: { command: "vim", running: true, agent_match: false },
+      }),
+    ).toBe("app");
   });
 });
 

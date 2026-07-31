@@ -4107,6 +4107,13 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
         .map_err(|e| e.to_string())
 }
 
+/// Consulta o modo prompt em vez de esperar o evento: quem assina depois do
+/// primeiro prompt nunca receberia o `633;P` e ficaria sem a linha de comando.
+#[tauri::command]
+fn session_prompt_mode(state: State<'_, AppState>, id: SessionId) -> bool {
+    state.pty_pool.prompt_mode(id).unwrap_or(false)
+}
+
 #[tauri::command]
 fn toggle_prompt_mode(state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
     state
@@ -4813,6 +4820,7 @@ pub fn run() {
             submit_shell_line,
             write_control,
             toggle_prompt_mode,
+            session_prompt_mode,
             search_command_history,
             suggest_commands,
             complete_path,

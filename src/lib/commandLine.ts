@@ -23,6 +23,21 @@ export interface OwnerInput {
   integrated: boolean;
 }
 
+/**
+ * Por que a linha não é editável agora — ela nunca desaparece.
+ *
+ * Sumir e voltar a cada comando redimensionava o terminal duas vezes por
+ * execução, e o `vim` reabria com outra altura.
+ */
+export type LineState = "own" | "waiting" | "running" | "app";
+
+export function lineState(input: OwnerInput): LineState {
+  if (keyboardOwner(input) === "tybaLine") return "own";
+  if (input.altScreen) return "app";
+  if (input.command?.running) return "running";
+  return "waiting";
+}
+
 export function keyboardOwner({
   promptMode,
   kind,

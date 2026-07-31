@@ -28,6 +28,9 @@ struct ScreenState {
     parser: vt100::Parser,
     pending: Vec<u8>,
     attachers: HashMap<String, usize>,
+    /// Última resposta do shell sobre o modo prompt (`633;P`). Guardada para
+    /// poder ser CONSULTADA: evento só é entregue a quem já estava ouvindo.
+    prompt_mode: bool,
 }
 
 impl ScreenState {
@@ -36,6 +39,7 @@ impl ScreenState {
             parser: vt100::Parser::new(rows, cols, SCROLLBACK_LINES),
             pending: Vec::with_capacity(READ_BUF_SIZE),
             attachers: HashMap::new(),
+            prompt_mode: false,
         }
     }
 
@@ -461,13 +465,18 @@ impl PtyPool {
                                     }
                                     ShellEvent::InputStart => {}
                                     ShellEvent::PromptMode(on) => {
-                                        if last_prompt_mode != Some(on) {
-                                            last_prompt_mode = Some(on);
-                                            let _ = app.emit(
-                                                &prompt_mode_event,
-                                                SessionPromptModePayload { prompt_mode: on },
-                                            );
-                                        }
+                                        last_prompt_mode = Some(on);
+                                        reader_screen.lock().prompt_mode = on;
+                                        // Emitido a CADA prompt, não só na
+                                        // mudança: um evento só chega a quem já
+                                        // estava ouvindo, e quem assinou tarde
+                                        // ficaria sem saber para sempre — foi o
+                                        // que deixou a linha de comando sem
+                                        // aparecer.
+                                        let _ = app.emit(
+                                            &prompt_mode_event,
+                                            SessionPromptModePayload { prompt_mode: on },
+                                        );
                                     }
                                     ShellEvent::Cwd(path) => {
                                         if last_cwd.as_deref() != Some(path.as_path()) {
@@ -572,6 +581,14 @@ impl PtyPool {
         for handle in self.ptys.lock().values() {
             handle.screen.lock().drop_window(window);
         }
+    }
+
+    /// O modo prompt reportado pelo shell, para quem chegou depois do evento.
+    pub fn prompt_mode(&self, id: PtyId) -> Option<bool> {
+        let ptys = self.ptys.lock();
+        let handle = ptys.get(&id)?;
+        let mode = handle.screen.lock().prompt_mode;
+        Some(mode)
     }
 
     pub fn bracketed_paste(&self, id: PtyId) -> Option<bool> {

@@ -15,12 +15,20 @@ import {
   controlBytes,
   ghostFor,
   lineToken,
+  type LineState,
   pathToken,
   replaceToken,
   SUGGEST_DEBOUNCE_MS,
 } from "../lib/commandLine";
 
 const MAX_HEIGHT_PX = 140;
+
+const PLACEHOLDER_BY_STATE: Record<LineState, string> = {
+  own: "commandLinePlaceholder",
+  waiting: "commandLineWaiting",
+  running: "commandLineRunning",
+  app: "commandLineApp",
+};
 
 interface Props {
   sessionId: SessionId;
@@ -30,11 +38,10 @@ interface Props {
   /** Muda quando a linha volta a ser do TYBA (fim de comando, saída do vim). */
   focusNonce: number;
   /**
-   * O shell ainda não confirmou o modo prompt (está carregando `.zshrc`,
-   * framework, plugins). A linha aparece desde já, desabilitada: sem isso a
-   * tela fica em branco e sem lugar nenhum para digitar até o primeiro prompt.
+   * Por que a linha não é editável agora. Ela **nunca** desaparece: sumir e
+   * voltar a cada comando redimensionava o terminal duas vezes por execução.
    */
-  waiting?: boolean;
+  state: LineState;
   /**
    * Texto vindo de fora (paleta de histórico, snippet, colar).
    *
@@ -64,9 +71,10 @@ export function CommandLine({
   branch,
   scope,
   focusNonce,
-  waiting,
+  state,
   inject,
 }: Props) {
+  const waiting = state !== "own";
   const { t } = useTranslation();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
@@ -385,7 +393,7 @@ export function CommandLine({
             autoCorrect="off"
             value={text}
             disabled={waiting}
-            placeholder={t(waiting ? "commandLineWaiting" : "commandLinePlaceholder")}
+            placeholder={t(PLACEHOLDER_BY_STATE[state])}
             onChange={(e) => {
               setText(e.target.value);
               setCaret(e.target.selectionStart ?? 0);
