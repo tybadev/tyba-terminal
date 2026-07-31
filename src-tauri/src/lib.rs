@@ -4258,6 +4258,53 @@ fn suggest_commands(
     Ok(out)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LineSuggestions {
+    commands: Vec<CommandSuggestion>,
+    paths: Vec<String>,
+    arguments: Vec<String>,
+}
+
+/// Uma chamada por tecla, não três.
+///
+/// Histórico, caminho e argumento eram três `invoke` separados a cada
+/// digitação: três travessias da ponte do webview e três consultas, para uma
+/// única mudança de estado na tela.
+#[tauri::command]
+fn suggest_line(
+    state: State<'_, AppState>,
+    query: String,
+    cwd: Option<String>,
+    repo_root: Option<String>,
+    path_token: Option<String>,
+    arg_prefix: Option<String>,
+    arg_token: Option<String>,
+) -> Result<LineSuggestions, String> {
+    let paths = match (&cwd, &path_token) {
+        (Some(cwd), Some(token)) if !cwd.is_empty() => {
+            completion::complete_path(std::path::Path::new(cwd), token)
+        }
+        _ => Vec::new(),
+    };
+    let arguments = match (&arg_prefix, &arg_token) {
+        (Some(prefix), Some(token)) => {
+            let commands = state
+                .store
+                .history_with_prefix(prefix, 400)
+                .map_err(|e| e.to_string())?;
+            completion::next_tokens(&commands, prefix, token)
+        }
+        _ => Vec::new(),
+    };
+    let commands = suggest_commands(state, query, cwd, repo_root)?;
+    Ok(LineSuggestions {
+        commands,
+        paths,
+        arguments,
+    })
+}
+
 /// O `cwd` vem do front, que o recebe por `OSC 7` — atacante-controlável, e por
 /// isso **display-only** (ADR de 2026-07-08). Aqui ele só escolhe qual diretório
 /// listar para sugerir: nenhuma decisão de segurança sai daqui, e o usuário
@@ -4768,6 +4815,7 @@ pub fn run() {
             suggest_commands,
             complete_path,
             complete_argument,
+            suggest_line,
             clear_command_history,
             set_history_enabled,
             list_snippets,

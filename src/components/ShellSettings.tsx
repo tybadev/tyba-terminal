@@ -14,10 +14,11 @@ import {
   setHistoryEnabled,
   type Snippet,
 } from "../lib/ipc";
+import { PROMPT_MODE_PREF_KEY } from "../lib/commandLine";
 import { pushToast, toastError } from "../lib/toast";
 
 const HISTORY_PREF_KEY = "pref.commandHistory";
-const PROMPT_MODE_PREF_KEY = "pref.promptMode";
+
 
 function blankSnippet(): Snippet {
   return {

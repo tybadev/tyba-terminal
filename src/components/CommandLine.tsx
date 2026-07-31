@@ -3,10 +3,8 @@ import { useTranslation } from "react-i18next";
 import { CaretRight, GitBranch } from "@phosphor-icons/react";
 
 import {
-  completeArgument,
-  completePath,
   submitShellLine,
-  suggestCommands,
+  suggestLine,
   writeControl,
   type CommandSuggestion,
   type SessionId,
@@ -31,6 +29,12 @@ interface Props {
   scope: { cwd: string | null; repoRoot: string | null };
   /** Muda quando a linha volta a ser do TYBA (fim de comando, saída do vim). */
   focusNonce: number;
+  /**
+   * O shell ainda não confirmou o modo prompt (está carregando `.zshrc`,
+   * framework, plugins). A linha aparece desde já, desabilitada: sem isso a
+   * tela fica em branco e sem lugar nenhum para digitar até o primeiro prompt.
+   */
+  waiting?: boolean;
 }
 
 function baseName(path: string | null): string {
@@ -53,6 +57,7 @@ export function CommandLine({
   branch,
   scope,
   focusNonce,
+  waiting,
 }: Props) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -71,79 +76,50 @@ export function CommandLine({
     inputRef.current?.focus();
   }, [focusNonce]);
 
-  // Sem nada digitado não há o que sugerir: lista aberta com a linha vazia é
-  // ruído em cima da saída do último comando.
+  const token = pathToken(text, caret);
+  const arg = lineToken(text, caret);
+
+  // Uma chamada por tecla. Antes eram três `invoke` — histórico, caminho e
+  // argumento — atravessando a ponte do webview a cada digitação para uma única
+  // mudança na tela.
   useEffect(() => {
-    if (!text.trim()) {
+    if (waiting || !text.trim()) {
       setHits([]);
+      setPaths([]);
+      setArgs([]);
       setMenuOpen(false);
       return;
     }
     let alive = true;
     const timer = window.setTimeout(() => {
-      void suggestCommands(text, scope.cwd, scope.repoRoot)
+      void suggestLine({
+        query: text,
+        cwd: scope.cwd,
+        repoRoot: scope.repoRoot,
+        pathToken: token?.value ?? null,
+        argPrefix: arg?.prefix ?? null,
+        argToken: arg?.value ?? null,
+      })
         .then((found) => {
           if (!alive) return;
-          setHits(found);
+          setHits(found.commands);
+          setPaths(found.paths);
+          setArgs(found.arguments);
           setIndex(0);
         })
         .catch(() => {
-          if (alive) setHits([]);
+          if (!alive) return;
+          setHits([]);
+          setPaths([]);
+          setArgs([]);
         });
     }, SUGGEST_DEBOUNCE_MS);
     return () => {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [text, scope.cwd, scope.repoRoot]);
-
-  // Caminho é completado contra o diretório de verdade, não contra o histórico:
-  // arquivo criado agora tem de aparecer sem nunca ter sido digitado antes.
-  const token = pathToken(text, caret);
-  useEffect(() => {
-    if (!token || !cwd) {
-      setPaths([]);
-      return;
-    }
-    let alive = true;
-    const timer = window.setTimeout(() => {
-      void completePath(cwd, token.value)
-        .then((found) => {
-          if (alive) setPaths(found);
-        })
-        .catch(() => {
-          if (alive) setPaths([]);
-        });
-    }, SUGGEST_DEBOUNCE_MS);
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-    };
-  }, [cwd, token?.value]);
-
-  // Subcomando e flag saem do histórico do próprio dono: `git ` oferece o que
-  // ELE já usou, não uma tabela genérica que envelhece.
-  const arg = lineToken(text, caret);
-  useEffect(() => {
-    if (!arg) {
-      setArgs([]);
-      return;
-    }
-    let alive = true;
-    const timer = window.setTimeout(() => {
-      void completeArgument(arg.prefix, arg.value)
-        .then((found) => {
-          if (alive) setArgs(found);
-        })
-        .catch(() => {
-          if (alive) setArgs([]);
-        });
-    }, SUGGEST_DEBOUNCE_MS);
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-    };
-  }, [arg?.prefix, arg?.value]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waiting, text, token?.value, arg?.prefix, arg?.value, scope.cwd, scope.repoRoot]);
 
   const takeArg = (completion: string) => {
     if (!arg) return false;
@@ -225,6 +201,7 @@ export function CommandLine({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (waiting) return;
     const bytes = controlBytes({
       key: e.key,
       ctrl: e.ctrlKey,
@@ -382,7 +359,8 @@ export function CommandLine({
             autoCapitalize="off"
             autoCorrect="off"
             value={text}
-            placeholder={t("commandLinePlaceholder")}
+            disabled={waiting}
+            placeholder={t(waiting ? "commandLineWaiting" : "commandLinePlaceholder")}
             onChange={(e) => {
               setText(e.target.value);
               setCaret(e.target.selectionStart ?? 0);

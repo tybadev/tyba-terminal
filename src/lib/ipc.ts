@@ -1203,6 +1203,21 @@ export const suggestCommands = (
 export const completePath = (cwd: string, token: string) =>
   invoke<string[]>("complete_path", { cwd, token });
 
+export interface LineSuggestions {
+  commands: CommandSuggestion[];
+  paths: string[];
+  arguments: string[];
+}
+
+export const suggestLine = (input: {
+  query: string;
+  cwd: string | null;
+  repoRoot: string | null;
+  pathToken: string | null;
+  argPrefix: string | null;
+  argToken: string | null;
+}) => invoke<LineSuggestions>("suggest_line", input);
+
 export const completeArgument = (prefix: string, token: string) =>
   invoke<string[]>("complete_argument", { prefix, token });
 

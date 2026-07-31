@@ -311,7 +311,10 @@ import {
   isMenuExtraId,
   type MenuExtraId,
 } from "./lib/appMenu";
-import { keyboardOwner } from "./lib/commandLine";
+import {
+  keyboardOwner,
+  PROMPT_MODE_PREF_KEY,
+} from "./lib/commandLine";
 import { changelogUrl } from "./lib/changelog";
 import { docsUrl, REPO_URL } from "./lib/links";
 import {
@@ -647,6 +650,7 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [altScreens, setAltScreens] = useState<Record<string, boolean>>({});
   const [promptModes, setPromptModes] = useState<Record<string, boolean>>({});
+  const [promptModePref, setPromptModePref] = useState(false);
   const [snippetPrompt, setSnippetPrompt] = useState<{
     snippet: Snippet;
     placeholders: SnippetPlaceholder[];
@@ -2441,6 +2445,7 @@ export default function App() {
         editorRaw,
         worktreeDefaultRaw,
         reviewAgentRaw,
+        promptModeRaw,
       ] = await Promise.all([
         listSessions().catch(() => [] as Session[]),
         layoutState().catch(() => EMPTY_LAYOUT),
@@ -2459,8 +2464,10 @@ export default function App() {
         getPref(EDITOR_PREF_KEY).catch(() => null),
         getPref(WORKTREE_DEFAULT_KEY).catch(() => null),
         getPref(REVIEW_AGENT_KEY).catch(() => null),
+        getPref(PROMPT_MODE_PREF_KEY).catch(() => null),
       ]);
       if (cancelled) return;
+      setPromptModePref(promptModeRaw === "on");
       setSessions(existing);
       setLayout(currentLayout);
       if (togglePrefRaw === "rail" || togglePrefRaw === "hidden") {
@@ -2640,6 +2647,16 @@ export default function App() {
   // Quem é dono do teclado agora. A regra vive em lib/commandLine.ts, testada:
   // é ela que impede a caixa de engolir a senha que o sudo está pedindo.
   const promptMode = activeId ? (promptModes[activeId] ?? false) : false;
+  // O shell só reporta o modo no primeiro prompt — depois de carregar rc,
+  // framework e plugins. Até lá a linha aparece desabilitada em vez de a tela
+  // ficar em branco sem lugar nenhum para digitar.
+  const promptPending =
+    promptModePref &&
+    activeId != null &&
+    activeSession?.kind.type === "shell" &&
+    promptModes[activeId] === undefined &&
+    !activeCommand?.running &&
+    !(altScreens[activeId] ?? false);
   const ownsCommandLine =
     keyboardOwner({
       promptMode,
@@ -4238,7 +4255,7 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                {activeSession && ownsCommandLine && (
+                {activeSession && (ownsCommandLine || promptPending) && (
                   <CommandLine
                     key={`${activeSession.id}:line`}
                     sessionId={activeSession.id}
@@ -4246,6 +4263,7 @@ export default function App() {
                     branch={activeGitStatus?.branch ?? null}
                     scope={historyScope}
                     focusNonce={commandLineNonce}
+                    waiting={!ownsCommandLine}
                   />
                 )}
                 {activeSession && richInputVisible && !ownsCommandLine && (
