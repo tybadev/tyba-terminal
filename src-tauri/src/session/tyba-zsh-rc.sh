@@ -33,17 +33,42 @@ if [[ -o interactive ]] && autoload -Uz add-zsh-hook 2>/dev/null; then
   __tyba_prompt_mode=${TYBA_PROMPT_MODE:-0}
   __tyba_prompt_saved=0
 
+  # Framework que repinta ASSINCRONO desfaz o PS1 vazio meio segundo depois: ele
+  # recalcula em background e chama `zle reset-prompt` com o prompt dele de
+  # volta. Verificado em pty real com Spaceship (2026-07-31).
+  #
+  # No spawn isso ja vem por env, mas o toggle em sessao viva (Alt+~) nao tem
+  # esse caminho — dai a mesma troca aqui, e reversivel.
+  __tyba_prompt_sync_on() {
+    if [[ -z ${__tyba_saved_async+x} ]]; then
+      __tyba_saved_async=${SPACESHIP_PROMPT_ASYNC-__tyba_none}
+    fi
+    SPACESHIP_PROMPT_ASYNC=false
+  }
+
+  __tyba_prompt_sync_off() {
+    [[ -n ${__tyba_saved_async+x} ]] || return 0
+    if [[ $__tyba_saved_async == __tyba_none ]]; then
+      unset SPACESHIP_PROMPT_ASYNC
+    else
+      SPACESHIP_PROMPT_ASYNC=$__tyba_saved_async
+    fi
+    unset __tyba_saved_async
+  }
+
   __tyba_prompt_apply() {
     if [[ $__tyba_prompt_saved == 0 ]]; then
       __tyba_saved_ps1=$PS1
       __tyba_saved_rprompt=$RPROMPT
       __tyba_prompt_saved=1
     fi
+    __tyba_prompt_sync_on
     PS1="%{$(__tyba_esc '133;B')%}"
     RPROMPT=""
   }
 
   __tyba_prompt_restore() {
+    __tyba_prompt_sync_off
     [[ $__tyba_prompt_saved == 1 ]] || return 0
     PS1=$__tyba_saved_ps1
     RPROMPT=$__tyba_saved_rprompt

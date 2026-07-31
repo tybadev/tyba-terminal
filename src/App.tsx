@@ -2652,7 +2652,14 @@ export default function App() {
   // Voltar do vim ou do fim de um comando devolve o foco para a linha.
   const [commandLineNonce, setCommandLineNonce] = useState(0);
   useEffect(() => {
-    if (ownsCommandLine) setCommandLineNonce((n) => n + 1);
+    if (ownsCommandLine) {
+      setCommandLineNonce((n) => n + 1);
+      return;
+    }
+    // Devolveu o teclado ao terminal (vim abriu, comando começou, modo
+    // desligado): o foco vai junto, senão as teclas caem numa caixa que já não
+    // é dona da linha.
+    if (activeId) getTerm(activeId)?.term.focus();
   }, [ownsCommandLine, activeId]);
 
   // Quem responde se o PS1 saiu da tela é o SHELL, não o app: o hook relata por

@@ -9,6 +9,7 @@ import {
   type CommandSuggestion,
   type SessionId,
 } from "../lib/ipc";
+import { toastError } from "../lib/toast";
 import {
   clearsDraft,
   controlBytes,
@@ -123,10 +124,16 @@ export function CommandLine({
   const run = () => {
     const value = text;
     if (!value.trim()) return;
-    apply("", 0);
-    setHits([]);
     setMenuOpen(false);
-    void submitShellLine(sessionId, value).catch(() => {});
+    // A linha só é limpa quando o shell aceitou. Multiline sem bracketed paste
+    // é recusado pelo core, e engolir o erro apagaria o que o usuário escreveu
+    // sem executar nada.
+    void submitShellLine(sessionId, value)
+      .then(() => {
+        apply("", 0);
+        setHits([]);
+      })
+      .catch((error) => toastError(t("commandLineFailed"), error));
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
