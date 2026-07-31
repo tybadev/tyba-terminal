@@ -96,13 +96,6 @@ Disparar **na tag** faz `github.ref` ser `refs/tags/v0.1.0`: assina, verifica e 
 ## Fechar
 
 - Publicar o rascunho no GitHub (o dono decide o momento).
-- **Publicar na AUR** (`packaging/aur/PKGBUILD`), se a conta já existir:
-  1. `pkgver` = a versão publicada.
-  2. Substituir `__SHA256_DEB__` pelo **sha256 real do `.deb` publicado** (`sha256sum` do arquivo baixado do release). O placeholder existe para **falhar alto**: `sha256sums=('SKIP')` desliga a verificação, e num pacote `-bin` o checksum é a única coisa que amarra o que o usuário instala ao que nós publicamos.
-  3. `makepkg --printsrcinfo > .SRCINFO` — a AUR **recusa o push sem isso**, e ele tem que ser regerado sempre que o PKGBUILD mudar.
-  4. Commit e push em `ssh://aur@aur.archlinux.org/tyba-bin.git`.
-
-  **Feito localmente, de propósito.** Automatizar exigiria guardar uma chave SSH da AUR num secret — e quem a tiver publica um PKGBUILD apontando para onde quiser. Mesma regra da chave do repo apt e da chave de update: publicação sensível não mora no CI.
 - **Acrescentar a versão em `tyba-site/src/lib/versions.ts`** — a página de versões antigas (`/{locale}/versions`) é **estática, mantida à mão**, exatamente como o changelog: sem fetch, sem rate limit, sem fallback para manter. Gere a entrada do release **que já existe**, nunca derive URL por padrão de nome:
 
   ```bash

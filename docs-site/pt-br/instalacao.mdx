@@ -18,13 +18,14 @@ Baixe o `.deb`, `.rpm` ou `.AppImage`:
 ```bash
 sudo apt install ./Tyba_0.4.1_amd64.deb     # Debian / Ubuntu
 sudo dnf install ./Tyba-0.4.1-1.x86_64.rpm  # Fedora
-yay -S tyba-bin                             # Arch (AUR)
 ```
+
+No Arch e derivadas, use o `.AppImage`: não há pacote no AUR.
 
 <Warning>
 **`bubblewrap` é obrigatório, não sugerido.** Sem ele o core recusa criar sessões de agente e o TYBA vira só um terminal.
 
-O `.deb`, o `.rpm` e o pacote do AUR já o instalam. Com o AppImage, instale você: `apt install bubblewrap`.
+O `.deb` e o `.rpm` já o instalam. Com o AppImage, instale você: `apt install bubblewrap` (ou `pacman -S bubblewrap` no Arch).
 </Warning>
 
 Se a sua distribuição desabilita namespaces de usuário não-privilegiados — alguns kernels endurecidos, ou Debian com `kernel.unprivileged_userns_clone=0` — as sessões de agente são recusadas com uma mensagem explicando o motivo. O sandbox nunca degrada em silêncio.

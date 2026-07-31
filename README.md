@@ -87,13 +87,13 @@ Full threat model and command risk classification: [docs/SECURITY.md](docs/SECUR
 **Linux** — download the `.deb`, `.rpm` or `.AppImage` from the [download page](https://www.tyba.dev/en/download):
 
 ```bash
-sudo apt install ./Tyba_0.1.3_amd64.deb    # Debian / Ubuntu
-sudo dnf install ./Tyba-0.1.3-1.x86_64.rpm # Fedora
+sudo apt install ./Tyba_0.4.1_amd64.deb    # Debian / Ubuntu
+sudo dnf install ./Tyba-0.4.1-1.x86_64.rpm # Fedora
 ```
 
-Arch: the PKGBUILD lives in [`packaging/aur/`](packaging/aur/) (`makepkg -si`); the AUR package is not published yet.
+Arch and derivatives: use the `.AppImage` — there is no AUR package.
 
-`bubblewrap` is a hard dependency, not a suggestion: without it the core refuses to spawn agents (fail-closed) and TYBA is just a terminal. The `.deb`/`.rpm`/AUR packages pull it in for you; with the AppImage, install it yourself (`apt install bubblewrap`). If your distro ships unprivileged user namespaces disabled (some hardened kernels, Debian with `kernel.unprivileged_userns_clone=0`), agent sessions are refused with an actionable message — the sandbox never silently degrades.
+`bubblewrap` is a hard dependency, not a suggestion: without it the core refuses to spawn agents (fail-closed) and TYBA is just a terminal. The `.deb`/`.rpm` packages pull it in for you; with the AppImage, install it yourself (`apt install bubblewrap`, or `pacman -S bubblewrap` on Arch). If your distro ships unprivileged user namespaces disabled (some hardened kernels, Debian with `kernel.unprivileged_userns_clone=0`), agent sessions are refused with an actionable message — the sandbox never silently degrades.
 
 **Windows** — download the `.exe` (installer) or `.msi` (managed install) from the [download page](https://www.tyba.dev/en/download). The binary is not signed yet: SmartScreen will warn — *More info → Run anyway*. The Windows jail confines writes and denies known secrets; reads are otherwise open — read [the platform docs](https://docs.tyba.dev/en/security/platforms) before relying on it.
 
