@@ -663,6 +663,10 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [altScreens, setAltScreens] = useState<Record<string, boolean>>({});
   const [promptModes, setPromptModes] = useState<Record<string, boolean>>({});
+  // O listener de comando é assinado uma vez por sessão; sem ref ele leria o
+  // modo do primeiro render para sempre.
+  const promptModesRef = useRef<Record<string, boolean>>({});
+  promptModesRef.current = promptModes;
   const [promptModePref, setPromptModePref] = useState(false);
   const [blocks, setBlocks] = useState<Record<string, Block[]>>({});
   const [snippetPrompt, setSnippetPrompt] = useState<{
@@ -1344,6 +1348,13 @@ export default function App() {
     const unlisteners: Array<() => void> = [];
     for (const id of sessionIds.split("\n").filter(Boolean)) {
       void onSessionCommand(id, (payload) => {
+        // Em modo bloco o terminal ao vivo mostra SÓ o comando atual: sem
+        // limpar, o cartão ativo exibia o scrollback inteiro da sessão, e cada
+        // comando deixava de ter o seu recorte. O histórico não se perde — ele
+        // está nos blocos, que é justamente para isso que existem.
+        if (payload.running && promptModesRef.current[id]) {
+          getTerm(id)?.term.clear();
+        }
         setSessionCommands((prev) => ({ ...prev, [id]: payload }));
       }).then((un) => (disposed ? un() : unlisteners.push(un)));
       void onSessionCwd(id, (payload) =>

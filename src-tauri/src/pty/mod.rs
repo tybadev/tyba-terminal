@@ -399,6 +399,20 @@ impl PtyPool {
                                         // errado. Ver features/terminal-blocks.
                                         capturing = last_prompt_mode == Some(true);
                                         let _ = capture.take();
+                                        if capturing {
+                                            // O estado de tela do core é o que
+                                            // reata a sessão ao trocar de aba.
+                                            // Sem limpá-lo junto com o xterm, o
+                                            // histórico inteiro voltaria dentro
+                                            // do cartão ativo no reattach.
+                                            // Sequência em vez de parser novo:
+                                            // recriar perderia os modos (como o
+                                            // bracketed paste).
+                                            reader_screen
+                                                .lock()
+                                                .parser
+                                                .process(b"\x1b[H\x1b[2J\x1b[3J");
+                                        }
                                         let _ = app.emit(
                                             &command_event,
                                             SessionCommandPayload {
