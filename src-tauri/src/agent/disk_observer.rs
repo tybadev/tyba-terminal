@@ -959,7 +959,7 @@ mod tests {
             .append(true)
             .open(&resumed)
             .unwrap();
-        writeln!(file, "{}", "{\"type\":\"assistant\",\"message\":{}}").unwrap();
+        writeln!(file, r#"{{"type":"assistant","message":{{}}}}"#).unwrap();
         drop(file);
 
         // Tick 2: o retomado vira o único plausível ⇒ bind provisório, e a
