@@ -8,10 +8,15 @@ pub const AGENT_ENV_BASELINE: [&str; 6] = ["PATH", "HOME", "USER", "LANG", "TMPD
 
 pub const CONFIG_REL: &str = ".tyba/config.toml";
 
+/// Teto de snippets vindos do repositório. Sem ele, um repo hostil (ou só
+/// descuidado) enche a paleta do dono e esconde os snippets dele.
+pub const MAX_REPO_SNIPPETS: usize = 100;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoConfig {
     pub default_agent: Option<String>,
     pub env_allow: Vec<String>,
+    pub snippets: Vec<crate::snippet::Snippet>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +33,18 @@ pub enum RepoConfigError {
 struct RawConfig {
     #[serde(default)]
     agent: RawAgent,
+    #[serde(default)]
+    snippet: Vec<RawSnippet>,
+}
+
+#[derive(Deserialize)]
+struct RawSnippet {
+    name: String,
+    command: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -64,7 +81,36 @@ pub fn parse(content: &str) -> Result<RepoConfig, RepoConfigError> {
     Ok(RepoConfig {
         default_agent: raw.agent.default,
         env_allow: raw.agent.env.allow,
+        snippets: repo_snippets(raw.snippet),
     })
+}
+
+/// Snippet inválido é descartado, não derruba a config inteira: o mesmo arquivo
+/// governa o env do agente, e um snippet mal escrito não pode impedir a sessão
+/// de nascer. Nomes repetidos ficam com a primeira ocorrência.
+fn repo_snippets(raw: Vec<RawSnippet>) -> Vec<crate::snippet::Snippet> {
+    let mut out: Vec<crate::snippet::Snippet> = Vec::new();
+    for entry in raw {
+        if out.len() >= MAX_REPO_SNIPPETS {
+            break;
+        }
+        if crate::snippet::validate(&entry.name, &entry.command).is_err() {
+            continue;
+        }
+        let name = entry.name.trim().to_string();
+        if out.iter().any(|s| s.name == name) {
+            continue;
+        }
+        out.push(crate::snippet::Snippet {
+            id: format!("repo:{name}"),
+            name,
+            command: entry.command,
+            description: entry.description,
+            tags: entry.tags,
+            source: crate::snippet::Source::Repo,
+        });
+    }
+    out
 }
 
 pub fn config_hash(content: &str) -> String {
@@ -176,6 +222,59 @@ mod tests {
         let config = parse("").unwrap();
         assert_eq!(config.default_agent, None);
         assert!(config.env_allow.is_empty());
+        assert!(config.snippets.is_empty());
+    }
+
+    #[test]
+    fn parses_repo_snippets_marked_as_repo_source() {
+        let content = "[[snippet]]\nname = \"seed\"\ncommand = \"bun run db:seed\"\n\
+                       description = \"popula o banco\"\ntags = [\"db\"]\n";
+        let config = parse(content).unwrap();
+        assert_eq!(config.snippets.len(), 1);
+        let snippet = &config.snippets[0];
+        assert_eq!(snippet.name, "seed");
+        assert_eq!(snippet.command, "bun run db:seed");
+        assert_eq!(snippet.description.as_deref(), Some("popula o banco"));
+        assert_eq!(snippet.tags, vec!["db"]);
+        assert_eq!(snippet.source, crate::snippet::Source::Repo);
+        assert_eq!(snippet.id, "repo:seed");
+    }
+
+    #[test]
+    fn invalid_snippet_is_dropped_without_killing_the_config() {
+        // O mesmo arquivo governa o env do agente: um snippet com `\r` (que
+        // executaria a linha ao ser injetada) não pode impedir a sessão de nascer.
+        let content = "[agent]\ndefault = \"claude\"\n\n\
+                       [[snippet]]\nname = \"ok\"\ncommand = \"ls\"\n\n\
+                       [[snippet]]\nname = \"mau\"\ncommand = \"deploy prod\\r\"\n\n\
+                       [[snippet]]\nname = \"\"\ncommand = \"ls\"\n";
+        let config = parse(content).unwrap();
+        assert_eq!(config.default_agent.as_deref(), Some("claude"));
+        assert_eq!(
+            config.snippets.iter().map(|s| &s.name).collect::<Vec<_>>(),
+            vec!["ok"]
+        );
+    }
+
+    #[test]
+    fn duplicate_snippet_name_keeps_the_first() {
+        let content = "[[snippet]]\nname = \"x\"\ncommand = \"primeiro\"\n\n\
+                       [[snippet]]\nname = \"x\"\ncommand = \"segundo\"\n";
+        let config = parse(content).unwrap();
+        assert_eq!(config.snippets.len(), 1);
+        assert_eq!(config.snippets[0].command, "primeiro");
+    }
+
+    #[test]
+    fn repo_cannot_flood_the_palette() {
+        let mut content = String::new();
+        for i in 0..(MAX_REPO_SNIPPETS + 25) {
+            content.push_str(&format!(
+                "[[snippet]]\nname = \"s{i}\"\ncommand = \"ls\"\n\n"
+            ));
+        }
+        let config = parse(&content).unwrap();
+        assert_eq!(config.snippets.len(), MAX_REPO_SNIPPETS);
     }
 
     #[test]
@@ -287,6 +386,7 @@ mod tests {
         let config = RepoConfig {
             default_agent: None,
             env_allow: vec!["DATABASE_URL".into()],
+            snippets: Vec::new(),
         };
         let out = agent_env(Some(&config), &user);
         assert_eq!(
@@ -304,6 +404,7 @@ mod tests {
         let config = RepoConfig {
             default_agent: None,
             env_allow: vec!["PATH".into()],
+            snippets: Vec::new(),
         };
         let out = agent_env(Some(&config), &user);
         assert_eq!(
@@ -320,6 +421,7 @@ mod tests {
         let config = RepoConfig {
             default_agent: None,
             env_allow: vec!["MISSING".into()],
+            snippets: Vec::new(),
         };
         let out = agent_env(Some(&config), &user);
         assert!(!out.contains_key("MISSING"));

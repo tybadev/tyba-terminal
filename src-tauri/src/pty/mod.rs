@@ -92,6 +92,10 @@ pub trait JailedSpawner: Send {
     fn spawn_jailed(&self, cmd: &CommandBuilder, size: PtySize) -> Result<JailedPtyPair, String>;
 }
 
+fn now_ms() -> i64 {
+    crate::approvals::now_ms() as i64
+}
+
 fn emit_pending(state: &mut ScreenState, app: &AppHandle, event: &str) {
     if let Some(bytes) = state.take_pending() {
         let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -309,9 +313,10 @@ impl PtyPool {
                 let mut queued = false;
                 let mut last_flush = Instant::now();
                 let mut osc = crate::status::OscParser::new();
-                let mut last_cmd: Option<String> = None;
+                let mut tracker = crate::history::Tracker::new(session_id.to_string());
                 let mut last_match = false;
                 let mut last_cwd: Option<std::path::PathBuf> = None;
+                let mut last_cwd_canonical: Option<std::path::PathBuf> = None;
                 let mut last_bracketed = false;
 
                 loop {
@@ -358,22 +363,40 @@ impl PtyPool {
                                 use crate::status::ShellEvent;
                                 match ev {
                                     ShellEvent::CommandLine(cmd) => {
-                                        last_match =
-                                            crate::rich_input::agent_matcher().matches(&cmd);
-                                        last_cmd = Some(cmd);
+                                        // O espaço à esquerda sobrevive ao parser
+                                        // (é o `ignorespace`); quem classifica o
+                                        // comando quer a linha limpa.
+                                        last_match = crate::rich_input::agent_matcher()
+                                            .matches(cmd.trim_start());
+                                        tracker.on_command_line(cmd);
                                     }
                                     ShellEvent::CommandStart => {
+                                        tracker.on_start(now_ms());
                                         let _ = app.emit(
                                             &command_event,
                                             SessionCommandPayload {
-                                                command: last_cmd.clone(),
+                                                command: tracker.command().map(str::to_string),
                                                 running: true,
                                                 agent_match: last_match,
                                             },
                                         );
                                     }
+                                    // `133;D` traz exit code; prompt novo sem ele é
+                                    // comando que não terminou (Ctrl+C no meio,
+                                    // shell reiniciado) — grava sem código em vez
+                                    // de sumir com ele.
                                     ShellEvent::CommandEnd(_) | ShellEvent::PromptStart => {
-                                        last_cmd = None;
+                                        let code = match ev {
+                                            ShellEvent::CommandEnd(code) => Some(code),
+                                            _ => None,
+                                        };
+                                        if let Some(record) = tracker.on_end(
+                                            code,
+                                            now_ms(),
+                                            last_cwd_canonical.as_deref(),
+                                        ) {
+                                            crate::history::record(record);
+                                        }
                                         last_match = false;
                                         let _ = app.emit(
                                             &command_event,
@@ -388,8 +411,16 @@ impl PtyPool {
                                     ShellEvent::Cwd(path) => {
                                         if last_cwd.as_deref() != Some(path.as_path()) {
                                             last_cwd = Some(path.clone());
-                                            let _ =
-                                                app.emit(&cwd_event, SessionCwdPayload::of(&path));
+                                            let payload = SessionCwdPayload::of(&path);
+                                            // O histórico guarda o caminho
+                                            // CANÔNICO. No macOS `/tmp` é symlink
+                                            // para `/private/tmp`: gravar o cru e
+                                            // consultar pelo canônico (que é o que
+                                            // o front tem) faria o escopo nunca
+                                            // casar, em silêncio.
+                                            last_cwd_canonical =
+                                                Some(std::path::PathBuf::from(&payload.canonical));
+                                            let _ = app.emit(&cwd_event, payload);
                                             let _ = app.emit(EVENT_CWD_CHANGED, session_id);
                                         }
                                     }

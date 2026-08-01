@@ -1,9 +1,20 @@
-export type PaletteMode = "actions" | "files" | "sessions";
+export type PaletteMode =
+  | "actions"
+  | "files"
+  | "sessions"
+  | "history"
+  | "snippets";
 
-export const PALETTE_MODES: PaletteMode[] = ["actions", "files", "sessions"];
+export const PALETTE_MODES: PaletteMode[] = [
+  "actions",
+  "files",
+  "sessions",
+  "history",
+  "snippets",
+];
 
-/// Tab avança (Ações → Arquivos → Sessões → Ações), Shift+Tab volta. Função
-/// pura pra testar o ciclo sem montar a paleta.
+/// Tab avança (Ações → Arquivos → Sessões → Histórico → Snippets → Ações),
+/// Shift+Tab volta. Função pura pra testar o ciclo sem montar a paleta.
 export function nextPaletteMode(mode: PaletteMode, dir: 1 | -1 = 1): PaletteMode {
   const count = PALETTE_MODES.length;
   const index = PALETTE_MODES.indexOf(mode);

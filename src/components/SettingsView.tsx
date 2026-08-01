@@ -10,6 +10,7 @@ import {
   DownloadSimple,
   FolderOpen,
   Info,
+  BracketsCurly,
   Keyboard,
   Palette,
   Plus,
@@ -87,6 +88,7 @@ import {
 import { Shortcut } from "@/components/ui/kbd";
 import { toastError } from "../lib/toast";
 import { FONT_SIZE_EVENT, setDefaultFontSize } from "./TerminalView";
+import { ShellSettings } from "./ShellSettings";
 import { ToolbarChipsEditor } from "./ToolbarChipsEditor";
 import type { RichInputPref } from "../lib/richInput";
 import type { ToolbarPref } from "../lib/repoSnapshots";
@@ -102,6 +104,7 @@ type Section =
   | "general"
   | "appearance"
   | "code"
+  | "shell"
   | "launch"
   | "shortcuts"
   | "preferences"
@@ -704,6 +707,12 @@ export function SettingsView({
           onClick={() => setSection("code")}
         />
         <NavItem
+          active={section === "shell"}
+          icon={<BracketsCurly size={15} />}
+          label={t("settingsSnippets")}
+          onClick={() => setSection("shell")}
+        />
+        <NavItem
           active={section === "launch"}
           icon={<Stack size={15} />}
           label={t("settingsLaunchConfigs")}
@@ -778,6 +787,8 @@ export function SettingsView({
             </p>
           </section>
         )}
+
+        {section === "shell" && <ShellSettings />}
 
         {section === "launch" && (
           <section className="mx-auto w-full max-w-lg">

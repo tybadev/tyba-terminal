@@ -163,7 +163,46 @@ CREATE TABLE IF NOT EXISTS lsp_managed_consents (
     version TEXT NOT NULL,
     decided_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS command_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    cwd TEXT,
+    command TEXT NOT NULL,
+    exit_code INTEGER,
+    started_at_ms INTEGER NOT NULL,
+    duration_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS command_history_by_time ON command_history (started_at_ms DESC);
+CREATE INDEX IF NOT EXISTS command_history_by_cwd ON command_history (cwd, started_at_ms DESC);
+CREATE TABLE IF NOT EXISTS snippet (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    command TEXT NOT NULL,
+    description TEXT,
+    tags TEXT,
+    created_at_ms INTEGER NOT NULL,
+    uses INTEGER NOT NULL DEFAULT 0,
+    last_used_at_ms INTEGER
+);
 ";
+
+/// Teto do histórico. Sem ele a tabela cresce com o uso e nunca encolhe: é a
+/// única do banco alimentada por cada Enter que o usuário dá.
+const COMMAND_HISTORY_CAP: i64 = 20_000;
+
+/// Quantos comandos distintos entram no ranking. O corte é por recência, então o
+/// que fica de fora é o que ninguém procuraria de qualquer forma — e o fuzzy
+/// roda sobre um conjunto limitado, não sobre a tabela inteira.
+const HISTORY_CANDIDATES: i64 = 2_000;
+
+/// `_` e `%` são curinga no LIKE, e caminho de repo pode conter os dois — sem
+/// escapar, `/tmp/a_b` casaria com `/tmp/axb`.
+fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -662,6 +701,170 @@ impl Store {
             }
         };
         Ok(entries)
+    }
+
+    /// Redige antes de gravar: `export TOKEN=sk-…` é o caso comum de linha de
+    /// comando com secret, não o exótico (princípio #10).
+    pub fn insert_command(&self, record: &crate::history::CommandRecord) -> Result<(), StoreError> {
+        let command = redact(&record.command);
+        let cwd = record.cwd.as_ref().map(|c| redact(c).into_owned());
+        let conn = self.conn.lock();
+        // Repetir o comando anterior não vira linha nova — `ls` três vezes
+        // seguidas polui o ranking e não diz nada.
+        let previous: Option<String> = conn
+            .query_row(
+                "SELECT command FROM command_history ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        if previous.as_deref() == Some(command.as_ref()) {
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT INTO command_history
+                 (session_id, cwd, command, exit_code, started_at_ms, duration_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                record.session_id,
+                cwd,
+                command.as_ref(),
+                record.exit_code,
+                record.started_at_ms,
+                record.duration_ms,
+            ],
+        )?;
+        conn.execute(
+            "DELETE FROM command_history
+             WHERE id <= (SELECT MAX(id) FROM command_history) - ?1",
+            params![COMMAND_HISTORY_CAP],
+        )?;
+        Ok(())
+    }
+
+    /// Candidatos crus do histórico, agregados por comando. O ranking (fuzzy +
+    /// frecência) fica em `history::frecency` — aqui só o que o SQL faz melhor.
+    pub fn history_candidates(
+        &self,
+        cwd: Option<&str>,
+        repo_root: Option<&str>,
+    ) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
+        let repo_prefix = repo_root.map(|root| format!("{}/", root.trim_end_matches('/')));
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT command,
+                    MAX(started_at_ms),
+                    COUNT(*),
+                    SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END),
+                    MAX(CASE WHEN cwd IS NOT NULL AND cwd = ?1 THEN 1 ELSE 0 END),
+                    MAX(CASE WHEN ?2 IS NOT NULL AND cwd IS NOT NULL
+                              AND (cwd = ?3 OR cwd LIKE ?2 ESCAPE '\\')
+                             THEN 1 ELSE 0 END),
+                    MAX(cwd)
+             FROM command_history
+             GROUP BY command
+             ORDER BY MAX(started_at_ms) DESC
+             LIMIT ?4",
+        )?;
+        let like = repo_prefix
+            .as_deref()
+            .map(|prefix| format!("{}%", escape_like(prefix)));
+        let rows = stmt
+            .query_map(params![cwd, like, repo_root, HISTORY_CANDIDATES], |row| {
+                Ok(crate::history::HistoryCandidate {
+                    command: row.get(0)?,
+                    last_used_at_ms: row.get(1)?,
+                    uses: row.get::<_, i64>(2)?.max(0) as u32,
+                    successes: row.get::<_, i64>(3)?.max(0) as u32,
+                    in_cwd: row.get::<_, i64>(4)? != 0,
+                    in_repo: row.get::<_, i64>(5)? != 0,
+                    cwd: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn clear_command_history(&self, repo_root: Option<&str>) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        match repo_root {
+            Some(root) => {
+                let prefix = format!("{}/", root.trim_end_matches('/'));
+                conn.execute(
+                    "DELETE FROM command_history
+                     WHERE cwd = ?1 OR cwd LIKE ?2 ESCAPE '\\'",
+                    params![root, format!("{}%", escape_like(&prefix))],
+                )?;
+            }
+            None => {
+                conn.execute("DELETE FROM command_history", [])?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn list_snippets(&self) -> Result<Vec<crate::snippet::Snippet>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, command, description, tags FROM snippet
+             ORDER BY uses DESC, last_used_at_ms DESC, name ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                let tags: Option<String> = row.get(4)?;
+                Ok(crate::snippet::Snippet {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    command: row.get(2)?,
+                    description: row.get(3)?,
+                    tags: tags
+                        .map(|raw| {
+                            raw.split('\u{1f}')
+                                .filter(|tag| !tag.is_empty())
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    source: crate::snippet::Source::Local,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn save_snippet(&self, snippet: &crate::snippet::Snippet) -> Result<(), StoreError> {
+        let tags = snippet.tags.join("\u{1f}");
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO snippet (id, name, command, description, tags, created_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                 name = ?2, command = ?3, description = ?4, tags = ?5",
+            params![
+                snippet.id,
+                snippet.name,
+                snippet.command,
+                snippet.description,
+                tags,
+                crate::approvals::now_ms() as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_snippet(&self, id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM snippet WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn touch_snippet(&self, id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE snippet SET uses = uses + 1, last_used_at_ms = ?2 WHERE id = ?1",
+            params![id, crate::approvals::now_ms() as i64],
+        )?;
+        Ok(())
     }
 
     pub fn save_layout(&self, rows: &LayoutRows) -> Result<(), StoreError> {
@@ -1539,5 +1742,164 @@ mod tests {
         assert!(command.contains("[REDACTED]"));
         assert!(!cwd.as_deref().unwrap().contains("AKIAIOSFODNN7EXAMPLE"));
         assert!(cwd.as_deref().unwrap().contains("[REDACTED]"));
+    }
+
+    fn command(cmd: &str, cwd: Option<&str>, at: i64) -> crate::history::CommandRecord {
+        crate::history::CommandRecord {
+            session_id: "s1".into(),
+            cwd: cwd.map(str::to_string),
+            command: cmd.into(),
+            exit_code: Some(0),
+            started_at_ms: at,
+            duration_ms: Some(10),
+        }
+    }
+
+    fn history_count(store: &Store) -> i64 {
+        let conn = store.conn.lock();
+        conn.query_row("SELECT COUNT(*) FROM command_history", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn command_history_redacts_secrets_before_persisting() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_command(&command(
+                "export TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+                Some("/repo"),
+                1,
+            ))
+            .unwrap();
+
+        let stored: String = {
+            let conn = store.conn.lock();
+            conn.query_row("SELECT command FROM command_history", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert!(!stored.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"));
+        assert!(stored.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn repeated_command_is_not_stored_twice_in_a_row() {
+        let store = Store::open_in_memory().unwrap();
+        store.insert_command(&command("ls", Some("/a"), 1)).unwrap();
+        store.insert_command(&command("ls", Some("/a"), 2)).unwrap();
+        store
+            .insert_command(&command("pwd", Some("/a"), 3))
+            .unwrap();
+        store.insert_command(&command("ls", Some("/a"), 4)).unwrap();
+        assert_eq!(history_count(&store), 3);
+    }
+
+    #[test]
+    fn history_candidates_flag_directory_and_repo_scope() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_command(&command("cargo test", Some("/repo/src"), 1))
+            .unwrap();
+        store
+            .insert_command(&command("bun test", Some("/repo"), 2))
+            .unwrap();
+        store
+            .insert_command(&command("brew upgrade", Some("/elsewhere"), 3))
+            .unwrap();
+
+        let found = store
+            .history_candidates(Some("/repo/src"), Some("/repo"))
+            .unwrap();
+        let by = |cmd: &str| {
+            found
+                .iter()
+                .find(|c| c.command == cmd)
+                .unwrap_or_else(|| panic!("{cmd} ausente"))
+                .clone()
+        };
+        assert!(by("cargo test").in_cwd);
+        assert!(by("cargo test").in_repo);
+        assert!(!by("bun test").in_cwd);
+        assert!(by("bun test").in_repo, "cwd igual à raiz conta como repo");
+        assert!(!by("brew upgrade").in_repo);
+    }
+
+    #[test]
+    fn history_candidates_aggregate_uses_and_successes() {
+        let store = Store::open_in_memory().unwrap();
+        for at in 1..=3 {
+            store
+                .insert_command(&command("cargo test", Some("/repo"), at))
+                .unwrap();
+            store
+                .insert_command(&command("pwd", Some("/repo"), at))
+                .unwrap();
+        }
+        let mut failed = command("cargo test", Some("/repo"), 9);
+        failed.exit_code = Some(101);
+        store.insert_command(&failed).unwrap();
+
+        let found = store.history_candidates(Some("/repo"), None).unwrap();
+        let cargo = found.iter().find(|c| c.command == "cargo test").unwrap();
+        assert_eq!(cargo.uses, 4);
+        assert_eq!(cargo.successes, 3);
+        assert_eq!(cargo.last_used_at_ms, 9);
+    }
+
+    #[test]
+    fn repo_scope_does_not_leak_through_like_wildcards() {
+        // `_` é curinga no LIKE: sem escapar, `/tmp/a_b` casaria com `/tmp/axb`.
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_command(&command("intruso", Some("/tmp/axb/sub"), 1))
+            .unwrap();
+        let found = store.history_candidates(None, Some("/tmp/a_b")).unwrap();
+        assert!(!found.iter().any(|c| c.in_repo));
+    }
+
+    #[test]
+    fn clear_by_repo_keeps_the_rest() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_command(&command("dentro", Some("/repo/src"), 1))
+            .unwrap();
+        store
+            .insert_command(&command("fora", Some("/outro"), 2))
+            .unwrap();
+        store.clear_command_history(Some("/repo")).unwrap();
+
+        let found = store.history_candidates(None, None).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].command, "fora");
+
+        store.clear_command_history(None).unwrap();
+        assert_eq!(history_count(&store), 0);
+    }
+
+    #[test]
+    fn snippet_round_trip_and_delete() {
+        let store = Store::open_in_memory().unwrap();
+        let snippet = crate::snippet::Snippet {
+            id: "s-1".into(),
+            name: "deploy".into(),
+            command: "deploy {{env}}".into(),
+            description: Some("sobe".into()),
+            tags: vec!["ops".into(), "ci".into()],
+            source: crate::snippet::Source::Local,
+        };
+        store.save_snippet(&snippet).unwrap();
+        assert_eq!(store.list_snippets().unwrap(), vec![snippet.clone()]);
+
+        let renamed = crate::snippet::Snippet {
+            name: "deploy prod".into(),
+            ..snippet.clone()
+        };
+        store.save_snippet(&renamed).unwrap();
+        let listed = store.list_snippets().unwrap();
+        assert_eq!(listed.len(), 1, "mesmo id não duplica");
+        assert_eq!(listed[0].name, "deploy prod");
+        assert_eq!(listed[0].tags, vec!["ops", "ci"]);
+
+        store.delete_snippet("s-1").unwrap();
+        assert!(store.list_snippets().unwrap().is_empty());
     }
 }

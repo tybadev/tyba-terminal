@@ -2,6 +2,8 @@ import { type KeyboardEvent, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
+  BracketsCurly,
+  ClockCounterClockwise,
   Desktop,
   DownloadSimple,
   FileMagnifyingGlass,
@@ -48,14 +50,18 @@ import {
 } from "../font";
 import {
   importThemeCmd,
+  listSnippets,
   listThemes,
+  searchCommandHistory,
   type FileSearchResult,
+  type HistoryHit,
   type LaunchConfig,
   type LaunchConfigId,
+  type Snippet,
   type Workspace,
   type WorkspaceId,
 } from "../lib/ipc";
-import { type Bindings } from "../lib/keys";
+import { type Bindings, type KeyAction } from "../lib/keys";
 import { nextPaletteMode, type PaletteMode } from "../lib/paletteMode";
 import { fileIcon } from "../lib/fileIcon";
 import { toastError } from "../lib/toast";
@@ -64,6 +70,38 @@ const THEME_ICONS: Record<ThemeMode, typeof Moon> = {
   dark: Moon,
   light: Sun,
   system: Desktop,
+};
+
+const MODE_ICONS: Record<PaletteMode, typeof MagnifyingGlass> = {
+  actions: MagnifyingGlass,
+  files: FileMagnifyingGlass,
+  sessions: TerminalWindow,
+  history: ClockCounterClockwise,
+  snippets: BracketsCurly,
+};
+
+const MODE_LABEL_KEYS: Record<PaletteMode, string> = {
+  actions: "actions",
+  files: "filesFinderMode",
+  sessions: "sessions",
+  history: "paletteHistory",
+  snippets: "paletteSnippets",
+};
+
+const MODE_BINDINGS: Record<PaletteMode, KeyAction> = {
+  actions: "paletteActions",
+  files: "filesFinder",
+  sessions: "paletteSessions",
+  history: "paletteHistory",
+  snippets: "paletteSnippets",
+};
+
+const PLACEHOLDER_KEYS: Record<PaletteMode, string> = {
+  actions: "searchCommand",
+  files: "filesFinderPlaceholder",
+  sessions: "searchSessions",
+  history: "paletteHistory",
+  snippets: "paletteSnippets",
 };
 
 const THEME_LABEL_KEYS: Record<ThemeMode, string> = {
@@ -96,6 +134,10 @@ interface Props {
   onApplyLaunchConfig: (id: LaunchConfigId) => void;
   onNewLaunchConfig: () => void;
   onSaveWorkspaceAsLaunchConfig: () => void;
+  /** Escopo do ranking do histórico: onde a sessão ativa está agora. */
+  historyScope: { cwd: string | null; repoRoot: string | null };
+  onPickHistory: (command: string) => void;
+  onPickSnippet: (snippet: Snippet) => void;
 }
 
 export function CommandPalette({
@@ -122,12 +164,17 @@ export function CommandPalette({
   onApplyLaunchConfig,
   onNewLaunchConfig,
   onSaveWorkspaceAsLaunchConfig,
+  historyScope,
+  onPickHistory,
+  onPickSnippet,
 }: Props) {
   const { t, i18n } = useTranslation();
   const [selectableThemes, setSelectableThemes] = useState<Theme[]>([]);
   const [query, setQuery] = useState("");
   const [fileResults, setFileResults] = useState<string[]>([]);
   const [fileTruncated, setFileTruncated] = useState(false);
+  const [historyHits, setHistoryHits] = useState<HistoryHit[]>([]);
+  const [snippets, setSnippets] = useState<Snippet[]>([]);
 
   useEffect(() => {
     if (!open) return;
@@ -169,6 +216,45 @@ export function CommandPalette({
     };
   }, [open, mode, query, searchFiles]);
 
+  // O ranking (fuzzy + frecência) roda no core; aqui só o debounce e a lista.
+  useEffect(() => {
+    if (!open || mode !== "history") return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      void searchCommandHistory(
+        query,
+        historyScope.cwd,
+        historyScope.repoRoot,
+        50,
+      )
+        .then((hits) => {
+          if (alive) setHistoryHits(hits);
+        })
+        .catch(() => {
+          if (alive) setHistoryHits([]);
+        });
+    }, query ? 90 : 0);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [open, mode, query, historyScope.cwd, historyScope.repoRoot]);
+
+  useEffect(() => {
+    if (!open || mode !== "snippets") return;
+    let alive = true;
+    void listSnippets(historyScope.repoRoot)
+      .then((found) => {
+        if (alive) setSnippets(found);
+      })
+      .catch(() => {
+        if (alive) setSnippets([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open, mode, historyScope.repoRoot]);
+
   const cycleMode = (e: KeyboardEvent) => {
     if (e.key !== "Tab") return;
     e.preventDefault();
@@ -200,30 +286,17 @@ export function CommandPalette({
       onOpenChange={onOpenChange}
       title={t("commandPalette")}
       description={t("searchCommand")}
-      shouldFilter={mode !== "files"}
+      shouldFilter={mode !== "files" && mode !== "history"}
       showCloseButton={false}
       className="top-28 max-w-[560px] translate-y-0 rounded-[6px] border-tyba-border-strong bg-tyba-surface shadow-2xl"
     >
       <div className="flex items-center gap-1 border-b border-tyba-border px-2 py-1.5">
-        {(["actions", "files", "sessions"] as const).map((m) => {
-          const Icon =
-            m === "actions"
-              ? MagnifyingGlass
-              : m === "files"
-                ? FileMagnifyingGlass
-                : TerminalWindow;
-          const label =
-            m === "actions"
-              ? t("actions")
-              : m === "files"
-                ? t("filesFinderMode")
-                : t("sessions");
-          const combo =
-            m === "actions"
-              ? bindings.paletteActions
-              : m === "files"
-                ? bindings.filesFinder
-                : bindings.paletteSessions;
+        {(
+          ["actions", "files", "sessions", "history", "snippets"] as const
+        ).map((m) => {
+          const Icon = MODE_ICONS[m];
+          const label = t(MODE_LABEL_KEYS[m]);
+          const combo = bindings[MODE_BINDINGS[m]];
           return (
             <button
               key={m}
@@ -249,13 +322,7 @@ export function CommandPalette({
         value={query}
         onValueChange={setQuery}
         onKeyDown={cycleMode}
-        placeholder={
-          mode === "sessions"
-            ? t("searchSessions")
-            : mode === "files"
-              ? t("filesFinderPlaceholder")
-              : t("searchCommand")
-        }
+        placeholder={t(PLACEHOLDER_KEYS[mode])}
       />
       <CommandList>
         <CommandEmpty>{t("noResults")}</CommandEmpty>
@@ -288,6 +355,53 @@ export function CommandPalette({
                 </CommandItem>
               );
             })}
+          </CommandGroup>
+        )}
+
+        {mode === "history" && (
+          <CommandGroup heading={t("paletteHistory")}>
+            {historyHits.map((hit) => (
+              <CommandItem
+                key={hit.command}
+                value={hit.command}
+                onSelect={run(() => onPickHistory(hit.command))}
+              >
+                <ClockCounterClockwise size={15} />
+                <span className="truncate font-mono text-[12px]">
+                  {hit.command}
+                </span>
+                <span className="ml-auto shrink-0 text-[10px] text-tyba-text-faint">
+                  {hit.inCwd
+                    ? t("historyHere")
+                    : hit.inRepo
+                      ? t("historyRepo")
+                      : t("historyUses", { count: hit.uses })}
+                </span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
+
+        {mode === "snippets" && (
+          <CommandGroup heading={t("paletteSnippets")}>
+            {snippets.map((snippet) => (
+              <CommandItem
+                key={snippet.id}
+                value={`${snippet.name} ${snippet.command} ${snippet.tags.join(" ")}`}
+                onSelect={run(() => onPickSnippet(snippet))}
+              >
+                <BracketsCurly size={15} />
+                <span className="shrink-0 truncate">{snippet.name}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-tyba-text-faint">
+                  {snippet.command}
+                </span>
+                {snippet.source === "repo" && (
+                  <span className="ml-auto shrink-0 rounded-[3px] border border-tyba-border px-1 text-[9px] text-tyba-text-faint">
+                    {t("snippetFromRepo")}
+                  </span>
+                )}
+              </CommandItem>
+            ))}
           </CommandGroup>
         )}
 

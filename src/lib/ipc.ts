@@ -1180,6 +1180,68 @@ export const onThemeChanged = (
 export const setAppMenu = (spec: MenuSpec) =>
   invoke<void>("set_app_menu", { spec });
 
+export interface HistoryHit {
+  command: string;
+  cwd: string | null;
+  uses: number;
+  lastUsedAtMs: number;
+  inCwd: boolean;
+  inRepo: boolean;
+}
+
+export type SnippetSource = "local" | "repo";
+
+export interface Snippet {
+  id: string;
+  name: string;
+  command: string;
+  description: string | null;
+  tags: string[];
+  source: SnippetSource;
+}
+
+export interface SnippetPlaceholder {
+  name: string;
+  default: string | null;
+}
+
+export const searchCommandHistory = (
+  query: string,
+  cwd: string | null,
+  repoRoot: string | null,
+  limit: number,
+) =>
+  invoke<HistoryHit[]>("search_command_history", {
+    query,
+    cwd,
+    repoRoot,
+    limit,
+  });
+
+export const clearCommandHistory = (repoRoot: string | null) =>
+  invoke<void>("clear_command_history", { repoRoot });
+
+export const setHistoryEnabled = (enabled: boolean) =>
+  invoke<void>("set_history_enabled", { enabled });
+
+export const listSnippets = (repoRoot: string | null) =>
+  invoke<Snippet[]>("list_snippets", { repoRoot });
+
+export const saveSnippet = (snippet: Snippet) =>
+  invoke<void>("save_snippet", { snippet });
+
+export const deleteSnippet = (id: string) =>
+  invoke<void>("delete_snippet", { id });
+
+export const snippetPlaceholders = (command: string) =>
+  invoke<SnippetPlaceholder[]>("snippet_placeholders", { command });
+
+export const renderSnippet = (
+  id: string,
+  command: string,
+  values: [string, string][],
+) => invoke<string>("render_snippet", { id, command, values });
+
 export const onMenuAction = (
   handler: (action: string) => void,
 ): Promise<UnlistenFn> =>
