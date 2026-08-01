@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -70,36 +70,53 @@ function duration(block: Block): string | null {
   return `${Math.round(ms / 60_000)}min`;
 }
 
+function BlockHeader({
+  block,
+  pinned,
+}: {
+  block: Block;
+  pinned?: boolean;
+}) {
+  const broke = failed(block.exitCode);
+  const took = duration(block);
+  return (
+    <div
+      className={`flex items-center gap-2 px-2.5 py-1 ${
+        pinned
+          ? "border-b border-tyba-border bg-tyba-raised"
+          : "border-b border-tyba-border/60"
+      }`}
+    >
+      <span className={`shrink-0 ${broke ? "text-tyba-red" : "text-tyba-green"}`}>
+        ❯
+      </span>
+      <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-tyba-text">
+        {block.command}
+      </span>
+      {took && (
+        <span className="shrink-0 font-mono text-[10px] text-tyba-text-faint">
+          {took}
+        </span>
+      )}
+      {broke && (
+        <span className="shrink-0 font-mono text-[10px] text-tyba-red">
+          {block.exitCode}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function BlockCard({ block }: { block: Block }) {
   const { t } = useTranslation();
   const broke = failed(block.exitCode);
-  const took = duration(block);
   return (
     <div
       className={`mb-2 overflow-hidden rounded-[5px] border ${
         broke ? "border-tyba-red/40 bg-tyba-red/[.04]" : "border-tyba-border"
       }`}
     >
-      <div className="flex items-center gap-2 border-b border-tyba-border/60 px-2.5 py-1">
-        <span
-          className={`shrink-0 ${broke ? "text-tyba-red" : "text-tyba-green"}`}
-        >
-          ❯
-        </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-tyba-text">
-          {block.command}
-        </span>
-        {took && (
-          <span className="shrink-0 font-mono text-[10px] text-tyba-text-faint">
-            {took}
-          </span>
-        )}
-        {broke && (
-          <span className="shrink-0 font-mono text-[10px] text-tyba-red">
-            {block.exitCode}
-          </span>
-        )}
-      </div>
+      <BlockHeader block={block} />
       {block.lines.length > 0 && (
         <div className="px-2.5 py-1 font-mono text-[13px] leading-[1.35] text-tyba-text-muted">
           {block.lines.map((line, i) => (
@@ -157,6 +174,31 @@ export function BlockList({ blocks, rect, framed }: Props) {
     if (last >= 0) virtualizer.scrollToIndex(last, { align: "end" });
   }, [last, virtualizer]);
 
+  // Bloco mais alto que o painel some com o próprio header ao rolar, e o que
+  // sobra na tela é uma parede de texto igual à de um terminal comum — some
+  // justamente o "cada comando tem o seu recorte". O header do bloco que está
+  // no topo da viewport fica preso ali.
+  //
+  // Preso por fora da lista, e não com `position: sticky`: o virtualizador
+  // posiciona cada item com `transform`, e sticky dentro de um ancestral
+  // transformado gruda no item, não na viewport.
+  const [pinned, setPinned] = useState<number | null>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const sync = () => {
+      const top = el.scrollTop;
+      const items = virtualizer.getVirtualItems();
+      const current = items.find(
+        (item) => item.start <= top && item.end > top + HEADER_PX,
+      );
+      setPinned(current ? current.index : null);
+    };
+    sync();
+    el.addEventListener("scroll", sync, { passive: true });
+    return () => el.removeEventListener("scroll", sync);
+  }, [virtualizer, blocks.length]);
+
   return (
     <div
       ref={scrollRef}
@@ -171,6 +213,14 @@ export function BlockList({ blocks, rect, framed }: Props) {
         height: `${rect.height}%`,
       }}
     >
+      {pinned !== null && blocks[pinned] && (
+        <div
+          className="pointer-events-none sticky top-0 z-10 -mx-2 -mt-2 mb-[-27px] overflow-hidden rounded-t-[5px] border-x border-t border-tyba-border"
+          style={{ marginLeft: 8, marginRight: 8 }}
+        >
+          <BlockHeader block={blocks[pinned]} pinned />
+        </div>
+      )}
       <div
         style={{ height: virtualizer.getTotalSize(), position: "relative" }}
       >
