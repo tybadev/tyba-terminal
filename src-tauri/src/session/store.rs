@@ -323,12 +323,26 @@ impl Store {
         Ok(())
     }
 
+    /// Descarta a sessão e tudo que ela gravou.
+    ///
+    /// O scrollback é coluna da própria linha e sai junto; blocos e checkpoint
+    /// moram em tabelas separadas, sem FK, e ficariam para trás. Quem descarta
+    /// uma sessão quer que a saída dela suma — deixá-la no disco esperando a
+    /// retenção contraria justamente o gesto (princípio #10).
+    ///
+    /// Numa transação porque as três apagam a mesma coisa: meio descarte é
+    /// output órfão que ninguém mais tem como listar nem apagar.
     pub fn remove_session(&self, id: SessionId) -> Result<(), StoreError> {
-        let conn = self.conn.lock();
-        conn.execute(
-            "DELETE FROM sessions WHERE id = ?1",
-            params![id.to_string()],
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let key = id.to_string();
+        tx.execute("DELETE FROM sessions WHERE id = ?1", params![key])?;
+        tx.execute("DELETE FROM block WHERE session_id = ?1", params![key])?;
+        tx.execute(
+            "DELETE FROM block_checkpoint WHERE session_id = ?1",
+            params![key],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -897,6 +911,16 @@ impl Store {
         Ok(pruned)
     }
 
+    /// Maior id já gravado, de qualquer sessão.
+    ///
+    /// É o piso do contador de ids vivos: o bloco emitido para a tela e o bloco
+    /// lido de volta do disco convivem na mesma lista.
+    pub fn max_block_id(&self) -> Result<u64, StoreError> {
+        let conn = self.conn.lock();
+        let max: Option<i64> = conn.query_row("SELECT MAX(id) FROM block", [], |row| row.get(0))?;
+        Ok(max.unwrap_or(0).max(0) as u64)
+    }
+
     /// Blocos de uma sessão, do mais antigo para o mais novo (ordem de leitura).
     pub fn list_blocks(
         &self,
@@ -945,15 +969,6 @@ impl Store {
             .collect();
         blocks.reverse();
         Ok(blocks)
-    }
-
-    pub fn drop_blocks(&self, session_id: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock();
-        conn.execute(
-            "DELETE FROM block WHERE session_id = ?1",
-            params![session_id],
-        )?;
-        Ok(())
     }
 
     /// Fotografia do comando em execução.
@@ -2177,13 +2192,39 @@ mod tests {
     }
 
     #[test]
-    fn dropping_a_session_drops_its_blocks_only() {
+    fn discarding_a_session_takes_its_blocks_and_checkpoint_along() {
+        // Descartar a sessão é o gesto de fazer a saída dela sumir. Bloco e
+        // checkpoint não têm FK; sem isto ficariam no disco até a retenção.
         let store = Store::open_in_memory().unwrap();
-        store.insert_block(&block("s1", "a", 1)).unwrap();
-        store.insert_block(&block("s2", "b", 1)).unwrap();
-        store.drop_blocks("s1").unwrap();
-        assert!(store.list_blocks("s1", 10).unwrap().is_empty());
-        assert_eq!(store.list_blocks("s2", 10).unwrap().len(), 1);
+        let doomed = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        store
+            .insert_block(&block(&doomed.to_string(), "a", 1))
+            .unwrap();
+        store
+            .insert_block(&block(&other.to_string(), "b", 1))
+            .unwrap();
+        store
+            .save_checkpoint(&doomed.to_string(), "cargo build", 10, 80, 24, b"x")
+            .unwrap();
+        store
+            .save_checkpoint(&other.to_string(), "cargo test", 10, 80, 24, b"y")
+            .unwrap();
+
+        store.remove_session(doomed).unwrap();
+
+        assert!(store
+            .list_blocks(&doomed.to_string(), 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.list_blocks(&other.to_string(), 10).unwrap().len(), 1);
+        // O checkpoint da descartada some; o da outra ainda vira bloco no boot.
+        assert_eq!(store.drain_checkpoints().unwrap(), 1);
+        assert_eq!(
+            store.list_blocks(&other.to_string(), 10).unwrap().len(),
+            2,
+            "o checkpoint sobrevivente é o da sessão que ficou"
+        );
     }
 
     #[test]
