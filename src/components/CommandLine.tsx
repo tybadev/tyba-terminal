@@ -28,6 +28,7 @@ const PLACEHOLDER_BY_STATE: Record<LineState, string> = {
   waiting: "commandLineWaiting",
   running: "commandLineRunning",
   app: "commandLineApp",
+  off: "commandLineOff",
 };
 
 interface Props {

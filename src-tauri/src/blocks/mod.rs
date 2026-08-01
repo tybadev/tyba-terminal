@@ -132,6 +132,11 @@ impl Capture {
         self.dropped
     }
 
+    /// Cópia do que já saiu, para o checkpoint. Não consome: o comando segue.
+    pub fn snapshot(&self) -> Vec<u8> {
+        self.bytes.clone()
+    }
+
     pub fn take(&mut self) -> Vec<u8> {
         self.dropped = false;
         self.alt_screen = false;
@@ -305,6 +310,12 @@ pub fn extract_lines(bytes: &[u8], cols: u16, _rows: u16) -> (Vec<LogicalLine>, 
     (lines, truncated)
 }
 
+/// Intervalo entre fotografias do comando em execução.
+///
+/// Cinco segundos é o compromisso: um crash perde no máximo isso, e um comando
+/// de dez minutos custa 120 gravações, não uma por chunk.
+pub const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// O que a thread emitter entrega ao finalizar um comando.
 pub struct Finished {
     pub session_id: String,
@@ -318,8 +329,23 @@ pub struct Finished {
     pub dropped: bool,
 }
 
+pub struct Checkpoint {
+    pub session_id: String,
+    pub command: String,
+    pub started_at_ms: i64,
+    pub bytes: Vec<u8>,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+pub enum Work {
+    Finish(Finished),
+    Save(Checkpoint),
+    Clear(String),
+}
+
 struct Finalizer {
-    tx: std::sync::mpsc::SyncSender<Finished>,
+    tx: std::sync::mpsc::SyncSender<Work>,
 }
 
 static FINALIZER: std::sync::OnceLock<Finalizer> = std::sync::OnceLock::new();
@@ -331,7 +357,7 @@ static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 /// caminho quente seguraria o flush de output do terminal por todo esse tempo.
 /// A emitter só entrega os bytes e segue.
 pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::store::Store>) {
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Finished>(16);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Work>(16);
     if FINALIZER.set(Finalizer { tx }).is_err() {
         return;
     }
@@ -339,16 +365,35 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
         .name("block-finalizer".into())
         .spawn(move || {
             use tauri::Emitter;
-            while let Ok(finished) = rx.recv() {
-                let block = build(finished);
-                // EMITE ANTES DE GRAVAR. O olho do usuário não pode esperar o
-                // disco: o bloco aparece, e a persistência acontece depois. O
-                // id vale para a sessão viva; ao reabrir, quem manda é o rowid
-                // que a leitura devolve.
-                let event = format!("block://finalized/{}", block.session_id);
-                let _ = app.emit(&event, block.clone());
-                if let Err(err) = store.insert_block(&block) {
-                    eprintln!("tyba: bloco não persistido: {err}");
+            while let Ok(work) = rx.recv() {
+                match work {
+                    Work::Finish(finished) => {
+                        let session = finished.session_id.clone();
+                        let block = build(finished);
+                        // EMITE ANTES DE GRAVAR. O olho do usuário não pode
+                        // esperar o disco: o bloco aparece, e a persistência
+                        // acontece depois. O id vale para a sessão viva; ao
+                        // reabrir, quem manda é o rowid que a leitura devolve.
+                        let event = format!("block://finalized/{session}");
+                        let _ = app.emit(&event, block.clone());
+                        if let Err(err) = store.insert_block(&block) {
+                            eprintln!("tyba: bloco não persistido: {err}");
+                        }
+                        let _ = store.clear_checkpoint(&session);
+                    }
+                    Work::Save(cp) => {
+                        let _ = store.save_checkpoint(
+                            &cp.session_id,
+                            &cp.command,
+                            cp.started_at_ms,
+                            cp.cols,
+                            cp.rows,
+                            &cp.bytes,
+                        );
+                    }
+                    Work::Clear(session) => {
+                        let _ = store.clear_checkpoint(&session);
+                    }
                 }
             }
         });
@@ -377,11 +422,15 @@ fn build(finished: Finished) -> Block {
     }
 }
 
-/// Nunca bloqueia: fila cheia descarta o bloco em vez de segurar o terminal.
-pub fn finalize(finished: Finished) {
+/// Nunca bloqueia: fila cheia descarta o trabalho em vez de segurar o terminal.
+pub fn submit(work: Work) {
     if let Some(finalizer) = FINALIZER.get() {
-        let _ = finalizer.tx.try_send(finished);
+        let _ = finalizer.tx.try_send(work);
     }
+}
+
+pub fn finalize(finished: Finished) {
+    submit(Work::Finish(finished));
 }
 
 #[cfg(test)]

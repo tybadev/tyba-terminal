@@ -187,6 +187,14 @@ CREATE TABLE IF NOT EXISTS block (
     lines TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS block_by_session ON block (session_id, id DESC);
+CREATE TABLE IF NOT EXISTS block_checkpoint (
+    session_id TEXT PRIMARY KEY,
+    command TEXT NOT NULL,
+    started_at_ms INTEGER NOT NULL,
+    cols INTEGER NOT NULL,
+    rows INTEGER NOT NULL,
+    bytes BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS snippet (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -946,6 +954,85 @@ impl Store {
             params![session_id],
         )?;
         Ok(())
+    }
+
+    /// Fotografia do comando em execução.
+    ///
+    /// Sem isto, um crash no meio de um `cargo build` de cinco minutos perde a
+    /// saída inteira — o bloco só nasce no `133;D`. Uma linha por sessão, sempre
+    /// substituída.
+    pub fn save_checkpoint(
+        &self,
+        session_id: &str,
+        command: &str,
+        started_at_ms: i64,
+        cols: u16,
+        rows: u16,
+        bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO block_checkpoint
+                 (session_id, command, started_at_ms, cols, rows, bytes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(session_id) DO UPDATE SET
+                 command = ?2, started_at_ms = ?3, cols = ?4, rows = ?5, bytes = ?6",
+            params![session_id, command, started_at_ms, cols, rows, bytes],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_checkpoint(&self, session_id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM block_checkpoint WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Checkpoints órfãos viram blocos interrompidos e são consumidos.
+    ///
+    /// Rodado no boot: se existe checkpoint, o app morreu com um comando
+    /// rodando — `exit_code` nulo é justamente o "não terminou".
+    pub fn drain_checkpoints(&self) -> Result<usize, StoreError> {
+        let rows: Vec<(String, String, i64, u16, u16, Vec<u8>)> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare(
+                "SELECT session_id, command, started_at_ms, cols, rows, bytes
+                 FROM block_checkpoint",
+            )?;
+            let mapped = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            mapped
+        };
+        let count = rows.len();
+        for (session_id, command, started_at_ms, cols, rows_n, bytes) in rows {
+            let (lines, truncated) = crate::blocks::extract_lines(&bytes, cols, rows_n);
+            let block = crate::blocks::Block {
+                id: 0,
+                session_id: session_id.clone(),
+                command,
+                exit_code: None,
+                started_at_ms,
+                finished_at_ms: started_at_ms,
+                lines,
+                truncated,
+            };
+            self.insert_block(&block)?;
+            self.clear_checkpoint(&session_id)?;
+        }
+        Ok(count)
     }
 
     pub fn list_snippets(&self) -> Result<Vec<crate::snippet::Snippet>, StoreError> {
@@ -2097,6 +2184,51 @@ mod tests {
         store.drop_blocks("s1").unwrap();
         assert!(store.list_blocks("s1", 10).unwrap().is_empty());
         assert_eq!(store.list_blocks("s2", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn orphan_checkpoint_becomes_an_unfinished_block_on_boot() {
+        // O app morreu no meio de um comando longo: a saída não pode sumir.
+        let store = Store::open_in_memory().unwrap();
+        store
+            .save_checkpoint("s1", "cargo build", 10, 80, 24, b"Compiling tyba\r\n")
+            .unwrap();
+
+        assert_eq!(store.drain_checkpoints().unwrap(), 1);
+        let found = store.list_blocks("s1", 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].command, "cargo build");
+        assert_eq!(found[0].exit_code, None, "não terminou, e o bloco diz isso");
+        assert_eq!(found[0].lines[0].text, "Compiling tyba");
+
+        // Consumido: reabrir de novo não duplica o bloco.
+        assert_eq!(store.drain_checkpoints().unwrap(), 0);
+        assert_eq!(store.list_blocks("s1", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn checkpoint_is_one_row_per_session_always_replaced() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .save_checkpoint("s1", "cmd", 1, 80, 24, b"antes")
+            .unwrap();
+        store
+            .save_checkpoint("s1", "cmd", 1, 80, 24, b"depois")
+            .unwrap();
+        store.drain_checkpoints().unwrap();
+        let found = store.list_blocks("s1", 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].lines[0].text, "depois");
+    }
+
+    #[test]
+    fn finished_command_leaves_no_checkpoint_behind() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .save_checkpoint("s1", "cmd", 1, 80, 24, b"parcial")
+            .unwrap();
+        store.clear_checkpoint("s1").unwrap();
+        assert_eq!(store.drain_checkpoints().unwrap(), 0);
     }
 
     #[test]

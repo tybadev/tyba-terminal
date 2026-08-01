@@ -2680,9 +2680,10 @@ export default function App() {
   const lineVisible =
     activeId != null &&
     activeSession?.kind.type === "shell" &&
-    (promptMode || (promptModePref && promptModes[activeId] === undefined));
+    (promptMode || promptModePref);
 
   const commandLineState = lineState({
+    reported: activeId ? promptModes[activeId] : undefined,
     promptMode,
     kind: activeSession?.kind,
     altScreen: activeId ? (altScreens[activeId] ?? false) : false,

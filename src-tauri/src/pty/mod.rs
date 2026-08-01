@@ -333,6 +333,7 @@ impl PtyPool {
                 let mut last_prompt_mode: Option<bool> = None;
                 let mut capture = crate::blocks::Capture::default();
                 let mut capturing = false;
+                let mut last_checkpoint = Instant::now();
 
                 loop {
                     let chunk = if !queued {
@@ -359,6 +360,14 @@ impl PtyPool {
                                         capture.saw_alt_screen();
                                     }
                                 }
+                                let checkpoint_due = capturing
+                                    && !capture.is_alt_screen()
+                                    && last_checkpoint.elapsed() >= crate::blocks::CHECKPOINT_EVERY;
+                                let checkpoint = checkpoint_due.then(|| {
+                                    last_checkpoint = Instant::now();
+                                    let (rows, cols) = screen.parser.screen().size();
+                                    (capture.snapshot(), cols, rows)
+                                });
                                 if screen.attached() {
                                     screen.pending.extend_from_slice(&chunk);
                                 }
@@ -366,6 +375,26 @@ impl PtyPool {
                                     emit_pending(&mut screen, &app, &output_event);
                                 }
                                 queued = !screen.pending.is_empty();
+                                if let Some((bytes, cols, rows)) = checkpoint {
+                                    // Sem isto, um crash no meio de um comando
+                                    // longo perde a saída inteira: o bloco só
+                                    // nasce no `133;D`.
+                                    crate::blocks::submit(crate::blocks::Work::Save(
+                                        crate::blocks::Checkpoint {
+                                            session_id: session_id.to_string(),
+                                            command: tracker
+                                                .command()
+                                                .unwrap_or_default()
+                                                .to_string(),
+                                            started_at_ms: tracker
+                                                .started_at()
+                                                .unwrap_or_else(now_ms),
+                                            bytes,
+                                            cols,
+                                            rows,
+                                        },
+                                    ));
+                                }
                                 screen.parser.screen().bracketed_paste()
                             };
                             if due {
@@ -398,6 +427,7 @@ impl PtyPool {
                                         // dentro da região, e o recorte sairia
                                         // errado. Ver features/terminal-blocks.
                                         capturing = last_prompt_mode == Some(true);
+                                        last_checkpoint = Instant::now();
                                         let _ = capture.take();
                                         if capturing {
                                             // O estado de tela do core é o que

@@ -29,10 +29,21 @@ export interface OwnerInput {
  * Sumir e voltar a cada comando redimensionava o terminal duas vezes por
  * execução, e o `vim` reabria com outra altura.
  */
-export type LineState = "own" | "waiting" | "running" | "app";
+export type LineState = "own" | "waiting" | "running" | "app" | "off";
 
-export function lineState(input: OwnerInput): LineState {
+/** O shell respondeu que NÃO está em modo prompt, mas o usuário quer estar. */
+export function isOff(input: OwnerInput & { reported: boolean | undefined }) {
+  return input.reported === false;
+}
+
+export function lineState(
+  input: OwnerInput & { reported?: boolean | undefined },
+): LineState {
   if (keyboardOwner(input) === "tybaLine") return "own";
+  // Desligado de propósito (ou por engano num ⌘⇧L a mais): a linha continua na
+  // tela dizendo isso. Ela sumir sem explicação foi o que fez o modo clássico
+  // parecer defeito.
+  if (input.reported === false) return "off";
   if (input.altScreen) return "app";
   if (input.command?.running) return "running";
   return "waiting";

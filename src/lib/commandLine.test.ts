@@ -89,6 +89,13 @@ describe("lineState", () => {
     expect(lineState({ ...atPrompt, promptMode: false })).toBe("waiting");
   });
 
+  it("desligado continua na tela, dizendo que está desligado", () => {
+    // A linha sumir sem explicação foi o que fez um ⌘⇧L a mais parecer defeito.
+    expect(
+      lineState({ ...atPrompt, promptMode: false, reported: false }),
+    ).toBe("off");
+  });
+
   it("app de tela cheia vence comando rodando", () => {
     expect(
       lineState({
