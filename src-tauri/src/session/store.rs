@@ -184,7 +184,9 @@ CREATE TABLE IF NOT EXISTS block (
     finished_at_ms INTEGER NOT NULL,
     truncated INTEGER NOT NULL,
     bytes INTEGER NOT NULL,
-    lines TEXT NOT NULL
+    lines TEXT NOT NULL,
+    alt_screen INTEGER NOT NULL DEFAULT 0,
+    cwd TEXT
 );
 CREATE INDEX IF NOT EXISTS block_by_session ON block (session_id, id DESC);
 CREATE TABLE IF NOT EXISTS block_checkpoint (
@@ -285,6 +287,11 @@ impl Store {
             "ALTER TABLE workspaces ADD COLUMN launch_config_id TEXT",
             [],
         );
+        let _ = conn.execute(
+            "ALTER TABLE block ADD COLUMN alt_screen INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute("ALTER TABLE block ADD COLUMN cwd TEXT", []);
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -878,8 +885,8 @@ impl Store {
         conn.execute(
             "INSERT INTO block
                  (session_id, version, command, exit_code, started_at_ms,
-                  finished_at_ms, truncated, bytes, lines)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                  finished_at_ms, truncated, bytes, lines, alt_screen, cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 block.session_id,
                 BLOCK_VERSION,
@@ -890,6 +897,8 @@ impl Store {
                 block.truncated as i64,
                 bytes,
                 lines,
+                block.alt_screen,
+                block.cwd,
             ],
         )?;
 
@@ -930,7 +939,7 @@ impl Store {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, version, command, exit_code, started_at_ms,
-                    finished_at_ms, truncated, lines
+                    finished_at_ms, truncated, lines, alt_screen, cwd
              FROM block WHERE session_id = ?1
              ORDER BY id DESC LIMIT ?2",
         )?;
@@ -946,6 +955,8 @@ impl Store {
                     row.get::<_, i64>(6)?,
                     row.get::<_, i64>(7)?,
                     row.get::<_, String>(8)?,
+                    row.get::<_, bool>(9)?,
+                    row.get::<_, Option<String>>(10)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -964,11 +975,26 @@ impl Store {
                     finished_at_ms: row.6,
                     lines,
                     truncated: row.7.max(0) as usize,
+                    alt_screen: row.9,
+                    cwd: row.10,
                 })
             })
             .collect();
         blocks.reverse();
         Ok(blocks)
+    }
+
+    /// Apaga os blocos de uma sessão viva — é o `clear`.
+    ///
+    /// Diferente do descarte da sessão (`remove_session`), que leva a linha da
+    /// sessão junto: aqui ela continua, só sem o que já rolou.
+    pub fn drop_blocks(&self, session_id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM block WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
     }
 
     /// Fotografia do comando em execução.
@@ -1039,6 +1065,10 @@ impl Store {
                 session_id: session_id.clone(),
                 command,
                 exit_code: None,
+                // Checkpoint só existe fora de tela alternada, e não carrega
+                // cwd: quem o gravou é a thread emitter, no meio do comando.
+                alt_screen: false,
+                cwd: None,
                 started_at_ms,
                 finished_at_ms: started_at_ms,
                 lines,
@@ -2128,6 +2158,8 @@ mod tests {
             session_id: session.into(),
             command: command.into(),
             exit_code: Some(0),
+            alt_screen: false,
+            cwd: None,
             started_at_ms: 1,
             finished_at_ms: 2,
             lines: (0..lines)
@@ -2189,6 +2221,26 @@ mod tests {
         let found = store.list_blocks("s1", 100).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].command, "atual");
+    }
+
+    #[test]
+    fn a_full_screen_app_still_leaves_a_block_behind() {
+        // `bat`, `vim`, `htop`: a saída é a tela de um programa e não se guarda,
+        // mas o comando foi executado — sumir com ele apaga do registro algo que
+        // a pessoa fez.
+        let store = Store::open_in_memory().unwrap();
+        let mut tui = block("s1", "bat README.md", 0);
+        tui.alt_screen = true;
+        store.insert_block(&tui).unwrap();
+
+        let found = store.list_blocks("s1", 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].command, "bat README.md");
+        assert!(
+            found[0].alt_screen,
+            "o bloco precisa dizer por que está vazio"
+        );
+        assert!(found[0].lines.is_empty());
     }
 
     #[test]

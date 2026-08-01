@@ -100,6 +100,20 @@ fn now_ms() -> i64 {
     crate::approvals::now_ms() as i64
 }
 
+/// Apaga tela e scrollback e volta o cursor ao topo.
+const CLEAR_SCREEN: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
+
+/// Onde começa o `133;C` dentro do chunk, se estiver inteiro nele.
+///
+/// Busca a sequência crua em vez de pedir a posição ao `OscParser`: ele existe
+/// para dizer O QUE aconteceu, e dar-lhe offsets por causa de um recorte de
+/// tela sujaria a peça mais frágil do sistema. Marcador partido entre dois
+/// chunks devolve `None`, e quem chama tem a rede do evento.
+fn command_start_at(chunk: &[u8]) -> Option<usize> {
+    const MARK: &[u8] = b"\x1b]133;C";
+    chunk.windows(MARK.len()).position(|w| w == MARK)
+}
+
 fn emit_pending(state: &mut ScreenState, app: &AppHandle, event: &str) {
     if let Some(bytes) = state.take_pending() {
         let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -334,6 +348,7 @@ impl PtyPool {
                 let mut capture = crate::blocks::Capture::default();
                 let mut capturing = false;
                 let mut last_checkpoint = Instant::now();
+                let mut swallow_echo = false;
 
                 loop {
                     let chunk = if !queued {
@@ -369,7 +384,30 @@ impl PtyPool {
                                     (capture.snapshot(), cols, rows)
                                 });
                                 if screen.attached() {
-                                    screen.pending.extend_from_slice(&chunk);
+                                    if swallow_echo {
+                                        // O eco do comando cai entre `133;B` e
+                                        // `133;C`, e o cartão já mostra o
+                                        // comando — na tela ao vivo ele
+                                        // aparecia duas vezes.
+                                        //
+                                        // O corte é no MARCADOR, não no chunk:
+                                        // a saída costuma vir grudada no
+                                        // `133;C`, e jogar o chunk fora levaria
+                                        // o começo dela junto.
+                                        //
+                                        // E a limpeza vai aqui, no mesmo canal
+                                        // dos bytes: pelo evento de comando ela
+                                        // chegava ANTES do eco, e limpava uma
+                                        // tela onde ele ainda não estava.
+                                        if let Some(at) = command_start_at(&chunk) {
+                                            screen.pending.clear();
+                                            screen.pending.extend_from_slice(CLEAR_SCREEN);
+                                            screen.pending.extend_from_slice(&chunk[at..]);
+                                            swallow_echo = false;
+                                        }
+                                    } else {
+                                        screen.pending.extend_from_slice(&chunk);
+                                    }
                                 }
                                 if due {
                                     emit_pending(&mut screen, &app, &output_event);
@@ -429,6 +467,11 @@ impl PtyPool {
                                         capturing = last_prompt_mode == Some(true);
                                         last_checkpoint = Instant::now();
                                         let _ = capture.take();
+                                        // Rede: se o marcador veio partido
+                                        // entre dois chunks, o corte por
+                                        // posição não achou nada e a tela ao
+                                        // vivo ficaria muda o comando inteiro.
+                                        swallow_echo = false;
                                         if capturing {
                                             // O estado de tela do core é o que
                                             // reata a sessão ao trocar de aba.
@@ -474,25 +517,67 @@ impl PtyPool {
                                         ) {
                                             crate::history::record(record);
                                         }
-                                        if capturing && !capture.is_alt_screen() {
+                                        if capturing {
+                                            // `vim`, `bat`, `htop`: a saída não
+                                            // vai, o bloco vai. Descartar o
+                                            // comando inteiro apagaria do
+                                            // registro algo que foi executado.
+                                            let alt_screen = capture.is_alt_screen();
                                             let dropped = capture.dropped();
                                             let bytes = capture.take();
                                             let (rows, cols) = {
                                                 let screen = reader_screen.lock();
                                                 screen.parser.screen().size()
                                             };
+                                            if crate::blocks::wipes_the_screen(&command) {
+                                                // Em modo bloco a tela É a lista
+                                                // de blocos: limpar sem levá-los
+                                                // junto é o `clear` não fazer
+                                                // nada, que foi o que aconteceu.
+                                                //
+                                                // O bloco do próprio `clear`
+                                                // continua — some o que veio
+                                                // antes, e fica quem mandou
+                                                // sumir. Sem ele a lista fica
+                                                // vazia e o painel vira um preto
+                                                // sem explicação.
+                                                crate::blocks::submit(crate::blocks::Work::Wipe(
+                                                    session_id.to_string(),
+                                                ));
+                                            }
                                             if !command.is_empty() {
                                                 crate::blocks::finalize(crate::blocks::Finished {
                                                     session_id: session_id.to_string(),
                                                     command,
                                                     exit_code: code,
+                                                    cwd: last_cwd_canonical.as_deref().map(
+                                                        |path| path.to_string_lossy().into_owned(),
+                                                    ),
                                                     started_at_ms: started,
                                                     finished_at_ms: ended_at,
-                                                    bytes,
+                                                    bytes: if alt_screen {
+                                                        Vec::new()
+                                                    } else {
+                                                        bytes
+                                                    },
                                                     cols,
                                                     rows,
-                                                    dropped,
+                                                    dropped: dropped && !alt_screen,
+                                                    alt_screen,
                                                 });
+                                            }
+                                        }
+                                        if capturing {
+                                            // O bloco assume a saída aqui. Sem
+                                            // esvaziar a tela ao vivo, a mesma
+                                            // saída fica desenhada duas vezes:
+                                            // no cartão que acabou de nascer e
+                                            // embaixo dele, no terminal.
+                                            let mut screen = reader_screen.lock();
+                                            screen.parser.process(CLEAR_SCREEN);
+                                            screen.pending.clear();
+                                            if screen.attached() {
+                                                screen.pending.extend_from_slice(CLEAR_SCREEN);
                                             }
                                         }
                                         capturing = false;
@@ -507,7 +592,13 @@ impl PtyPool {
                                             },
                                         );
                                     }
-                                    ShellEvent::InputStart => {}
+                                    ShellEvent::InputStart => {
+                                        // Daqui até o `133;C` só vem o eco do
+                                        // que foi submetido. Fora do modo
+                                        // prompt quem digitou foi o terminal, e
+                                        // aí o eco é a própria digitação.
+                                        swallow_echo = last_prompt_mode == Some(true);
+                                    }
                                     ShellEvent::PromptMode(on) => {
                                         last_prompt_mode = Some(on);
                                         reader_screen.lock().prompt_mode = on;
@@ -716,6 +807,38 @@ fn kill_process_group(_leader_pid: u32) -> std::io::Result<()> {
 }
 
 pub type SharedPtyPool = Arc<PtyPool>;
+
+#[cfg(test)]
+mod echo_cut_tests {
+    use super::command_start_at;
+
+    #[test]
+    fn finds_the_marker_and_keeps_what_comes_after_it() {
+        // O que vem grudado no `133;C` é a saída do comando: cortar o chunk
+        // inteiro levaria o começo dela junto.
+        let chunk = b"ls -la\r\n\x1b]133;C\x07total 0\r\n";
+        let at = command_start_at(chunk).expect("marcador inteiro no chunk");
+        assert_eq!(&chunk[at..], b"\x1b]133;C\x07total 0\r\n");
+    }
+
+    #[test]
+    fn survives_the_marker_with_parameters() {
+        let chunk = b"eco\x1b]133;C;cmdline=x\x1b\\saida";
+        assert!(command_start_at(chunk).is_some());
+    }
+
+    #[test]
+    fn says_nothing_when_the_marker_is_split_between_chunks() {
+        // Quem chama tem a rede do evento do parser: sem ela, a tela ao vivo
+        // ficaria muda o comando inteiro.
+        assert_eq!(command_start_at(b"eco\r\n\x1b]133"), None);
+    }
+
+    #[test]
+    fn says_nothing_on_a_chunk_of_plain_output() {
+        assert_eq!(command_start_at(b"total 0\r\ndrwxr-xr-x\r\n"), None);
+    }
+}
 
 #[cfg(test)]
 mod screen_state_tests {

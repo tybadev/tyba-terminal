@@ -10,12 +10,43 @@ export function failed(exitCode: number | null): boolean {
   );
 }
 
+/**
+ * O comando pede a tela limpa?
+ *
+ * Espelha `blocks::wipes_the_screen` no core, que é quem apaga a lista de
+ * verdade. Aqui serve para a faixa ao vivo NÃO abrir: `clear` não tem saída
+ * para mostrar, e abrir meio painel preto para depois esvaziar tudo é um
+ * solavanco em cima de um comando cujo ponto é justamente sumir com as coisas.
+ *
+ * Só ele sozinho: `clear && ls` tem saída de verdade depois.
+ */
+export function wipesTheScreen(command: string | null): boolean {
+  if (!command) return false;
+  const trimmed = command.trim();
+  return trimmed === "clear" || trimmed === "reset";
+}
+
 /** Duração só a partir de 1s: abaixo disso o número não informa nada. */
 export function duration(block: Block): string | null {
   const ms = block.finishedAtMs - block.startedAtMs;
   if (ms < 1000) return null;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.round(ms / 60_000)}min`;
+}
+
+/**
+ * O caminho encurtado para caber no header.
+ *
+ * Duas pastas finais em vez do caminho inteiro: o que responde "onde isto
+ * rodou" é o fim, e o começo empurraria o comando para fora da linha. O
+ * caminho completo fica no `title`.
+ */
+export function shortPath(path: string | null): string | null {
+  if (!path) return null;
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length === 0) return "/";
+  const tail = parts.slice(-2).join("/");
+  return parts.length > 2 ? `…/${tail}` : `/${tail}`;
 }
 
 /**
@@ -63,6 +94,8 @@ export function blockMarkdown(block: Block): string {
 
   const notes: string[] = [];
   if (failed(block.exitCode)) notes.push(`exit ${block.exitCode}`);
+  // Sem isto o bloco de um `vim` viraria um comando que não imprimiu nada.
+  if (block.altScreen) notes.push("full-screen app, output not captured");
   if (block.truncated > 0) notes.push(`${block.truncated} lines omitted`);
   const took = duration(block);
   if (took) notes.push(took);
@@ -70,4 +103,14 @@ export function blockMarkdown(block: Block): string {
   const lines = [`${fence}console`, body, fence];
   if (notes.length > 0) lines.push(notes.join(" · "));
   return lines.join("\n");
+}
+
+/**
+ * Vários blocos em markdown, na ordem da lista.
+ *
+ * Uma cerca por bloco, e não uma só com tudo dentro: cada comando tem o seu
+ * recorte, que é a coisa inteira que os blocos existem para dar.
+ */
+export function blocksMarkdown(blocks: Block[]): string {
+  return blocks.map(blockMarkdown).join("\n\n");
 }

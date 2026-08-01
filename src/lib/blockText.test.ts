@@ -1,6 +1,14 @@
 import { describe, expect, it } from "bun:test";
 
-import { blockMarkdown, blockOutput, duration, failed } from "./blockText";
+import {
+  blockMarkdown,
+  blockOutput,
+  blocksMarkdown,
+  duration,
+  shortPath,
+  failed,
+  wipesTheScreen,
+} from "./blockText";
 import type { Block } from "./ipc";
 
 function block(over: Partial<Block> = {}): Block {
@@ -13,6 +21,8 @@ function block(over: Partial<Block> = {}): Block {
     finishedAtMs: 0,
     lines: [],
     truncated: 0,
+    cwd: null,
+    altScreen: false,
     ...over,
   };
 }
@@ -56,6 +66,38 @@ describe("duration", () => {
     expect(duration(block({ startedAtMs: 0, finishedAtMs: 125_000 }))).toBe(
       "2min",
     );
+  });
+});
+
+describe("wipesTheScreen", () => {
+  it("matches the core rule, so the two sides do not drift", () => {
+    expect(wipesTheScreen("clear")).toBe(true);
+    expect(wipesTheScreen("reset")).toBe(true);
+    expect(wipesTheScreen("  clear  ")).toBe(true);
+  });
+
+  it("leaves alone anything that only starts with it", () => {
+    expect(wipesTheScreen("clear && ls")).toBe(false);
+    expect(wipesTheScreen("clear-cache")).toBe(false);
+    expect(wipesTheScreen(null)).toBe(false);
+  });
+});
+
+describe("shortPath", () => {
+  it("keeps the last two folders, which is what answers 'where'", () => {
+    expect(shortPath("/Users/x/swell-system/tyba-terminal")).toBe(
+      "…/swell-system/tyba-terminal",
+    );
+  });
+
+  it("does not mark a short path as cut", () => {
+    expect(shortPath("/Users/x")).toBe("/Users/x");
+    expect(shortPath("/tmp")).toBe("/tmp");
+  });
+
+  it("survives the root and the absent", () => {
+    expect(shortPath("/")).toBe("/");
+    expect(shortPath(null)).toBeNull();
   });
 });
 
@@ -129,6 +171,20 @@ describe("blockMarkdown", () => {
       }),
     );
     expect(out.split("\n").at(-1)).toBe("exit 1 · 3 lines omitted · 2.0s");
+  });
+
+  it("gives each block its own fence when copying several", () => {
+    // Uma cerca só com tudo dentro perderia o recorte por comando, que é a
+    // coisa inteira que os blocos dão.
+    const out = blocksMarkdown([
+      block({ command: "um", lines: textLines("a") }),
+      block({ command: "dois", lines: textLines("b") }),
+    ]);
+    expect(out).toBe("```console\n$ um\na\n```\n\n```console\n$ dois\nb\n```");
+  });
+
+  it("copies nothing for an empty selection", () => {
+    expect(blocksMarkdown([])).toBe("");
   });
 
   it("drops the prompt line for a block with no command", () => {

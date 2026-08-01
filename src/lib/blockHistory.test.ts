@@ -13,6 +13,8 @@ function block(id: number, command = `cmd${id}`): Block {
     finishedAtMs: 0,
     lines: [],
     truncated: 0,
+    cwd: null,
+    altScreen: false,
   };
 }
 

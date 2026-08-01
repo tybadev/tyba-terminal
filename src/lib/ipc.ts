@@ -1250,6 +1250,14 @@ export interface Block {
   finishedAtMs: number;
   lines: LogicalLine[];
   truncated: number;
+  /** Onde o comando rodou, do jeito que estava quando rodou. */
+  cwd: string | null;
+  /**
+   * O comando pintou a tela alternada (`vim`, `bat`, `htop`). A saída não é
+   * guardada — recortar a tela de um programa produz lixo —, mas o bloco existe
+   * para o comando não sumir do registro.
+   */
+  altScreen: boolean;
 }
 
 export const sessionBlocks = (id: SessionId) =>
@@ -1260,6 +1268,12 @@ export const onBlockFinalized = (
   handler: (block: Block) => void,
 ): Promise<UnlistenFn> =>
   listen<Block>(`block://finalized/${id}`, (e) => handler(e.payload));
+
+/** `clear`/`reset`: em modo bloco a tela é a lista, e ela some inteira. */
+export const onBlocksCleared = (
+  id: SessionId,
+  handler: () => void,
+): Promise<UnlistenFn> => listen(`block://cleared/${id}`, () => handler());
 
 export const sessionPromptMode = (id: SessionId) =>
   invoke<boolean>("session_prompt_mode", { id });

@@ -81,12 +81,21 @@ pub struct Block {
     pub session_id: String,
     pub command: String,
     pub exit_code: Option<i32>,
+    /// Onde o comando rodou. Um `ls` diz pouco sem isto, e a sessão pode ter
+    /// mudado de diretório depois — o bloco guarda o de quando aconteceu.
+    pub cwd: Option<String>,
     pub started_at_ms: i64,
     pub finished_at_ms: i64,
     pub lines: Vec<LogicalLine>,
     /// Linhas descartadas pelo teto, para o header dizer que faltou coisa em
     /// vez de mentir que aquilo é a saída inteira.
     pub truncated: usize,
+    /// O comando pintou a tela alternada (`vim`, `bat`, `htop`).
+    ///
+    /// A saída não é guardada — recortar a tela de um programa produz lixo —,
+    /// mas o BLOCO existe. Sumir com o comando inteiro apagaria do registro
+    /// algo que a pessoa rodou, que é pior do que um bloco sem corpo.
+    pub alt_screen: bool,
 }
 
 /// Teto de bytes acumulados por bloco antes do finalize.
@@ -321,12 +330,14 @@ pub struct Finished {
     pub session_id: String,
     pub command: String,
     pub exit_code: Option<i32>,
+    pub cwd: Option<String>,
     pub started_at_ms: i64,
     pub finished_at_ms: i64,
     pub bytes: Vec<u8>,
     pub cols: u16,
     pub rows: u16,
     pub dropped: bool,
+    pub alt_screen: bool,
 }
 
 pub struct Checkpoint {
@@ -342,6 +353,16 @@ pub enum Work {
     Finish(Finished),
     Save(Checkpoint),
     Clear(String),
+    /// `clear`/`reset`: a lista de blocos some, e some do disco também.
+    Wipe(String),
+}
+
+/// O comando pede a tela limpa?
+///
+/// Só ele sozinho: `clear && ls` faz outra coisa depois, e apagar a sessão
+/// inteira por causa do primeiro pedaço seria uma surpresa cara.
+pub fn wipes_the_screen(command: &str) -> bool {
+    matches!(command.trim(), "clear" | "reset")
 }
 
 struct Finalizer {
@@ -419,13 +440,25 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
                     Work::Clear(session) => {
                         let _ = store.clear_checkpoint(&session);
                     }
+                    Work::Wipe(session) => {
+                        let _ = store.drop_blocks(&session);
+                        let _ = store.clear_checkpoint(&session);
+                        let event = format!("block://cleared/{session}");
+                        let _ = app.emit(&event, ());
+                    }
                 }
             }
         });
 }
 
 fn build(finished: Finished) -> Block {
-    let (lines, truncated) = extract_lines(&finished.bytes, finished.cols, finished.rows);
+    // Tela alternada não tem corpo para extrair: o que ficou nos bytes é o
+    // desenho de um programa, e recortá-lo produziria lixo com cara de saída.
+    let (lines, truncated) = if finished.alt_screen {
+        (Vec::new(), 0)
+    } else {
+        extract_lines(&finished.bytes, finished.cols, finished.rows)
+    };
     // Redação sobre a linha lógica inteira, não sobre chunk cru: chunk pode
     // partir um `sk-…` no meio e o padrão escapar (princípio #10).
     let lines = lines
@@ -440,10 +473,12 @@ fn build(finished: Finished) -> Block {
         session_id: finished.session_id,
         command: crate::session::redact::redact(&finished.command).into_owned(),
         exit_code: finished.exit_code,
+        cwd: finished.cwd,
         started_at_ms: finished.started_at_ms,
         finished_at_ms: finished.finished_at_ms,
         lines,
         truncated: truncated + usize::from(finished.dropped),
+        alt_screen: finished.alt_screen,
     }
 }
 
@@ -468,6 +503,19 @@ mod tests {
             .into_iter()
             .map(|line| line.text)
             .collect()
+    }
+
+    #[test]
+    fn only_clear_and_reset_alone_wipe_the_list() {
+        assert!(wipes_the_screen("clear"));
+        assert!(wipes_the_screen("reset"));
+        assert!(wipes_the_screen("  clear  "));
+        // Apagar a sessão inteira porque a linha COMEÇA com clear seria uma
+        // surpresa cara — e irreversível.
+        assert!(!wipes_the_screen("clear && ls"));
+        assert!(!wipes_the_screen("clear-cache"));
+        assert!(!wipes_the_screen("echo clear"));
+        assert!(!wipes_the_screen(""));
     }
 
     #[test]
