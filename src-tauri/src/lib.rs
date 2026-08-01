@@ -9,6 +9,7 @@ pub mod hook_ipc;
 pub mod launch_config;
 pub mod layout;
 pub mod lsp;
+pub mod menu;
 pub mod pty;
 pub mod repo;
 pub mod repo_config;
@@ -4052,6 +4053,11 @@ fn set_agent_config_consent(
 }
 
 #[tauri::command]
+fn set_app_menu(app: AppHandle, spec: menu::MenuSpec) -> Result<(), String> {
+    menu::install(&app, &spec)
+}
+
+#[tauri::command]
 fn list_themes(state: State<'_, AppState>) -> Vec<theme::Theme> {
     state.themes.list()
 }
@@ -4112,6 +4118,26 @@ fn open_store(app: &AppHandle) -> session::store::Store {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Sem isto o Tauri instala o `Menu::default` dele (Ajuda → tauri.app).
+        // O menu do produto é montado pelo front via `set_app_menu`.
+        .enable_macos_default_menu(false)
+        // O menu do macOS é do app inteiro: sem escolher a janela em foco, um
+        // clique em "Nova aba" abriria uma aba em cada janela aberta.
+        .on_menu_event(|app, event| {
+            let action = event.id().0.clone();
+            let focused = app
+                .webview_windows()
+                .into_values()
+                .find(|window| window.is_focused().unwrap_or(false));
+            match focused {
+                Some(window) => {
+                    let _ = window.emit(menu::MENU_EVENT, action);
+                }
+                None => {
+                    let _ = app.emit(menu::MENU_EVENT, action);
+                }
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -4288,6 +4314,8 @@ pub fn run() {
                 });
             }
 
+            let _ = menu::install_fallback(app.handle());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4410,6 +4438,7 @@ pub fn run() {
             close_agent_viewers,
             agent_repo_config,
             set_agent_config_consent,
+            set_app_menu,
             list_themes,
             get_theme_state,
             set_theme_mode,
