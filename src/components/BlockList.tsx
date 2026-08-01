@@ -1,8 +1,18 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import {
+  ArrowUUpLeft,
+  Check,
+  ClipboardText,
+  Copy,
+  MarkdownLogo,
+} from "@phosphor-icons/react";
 
+import { blockMarkdown, blockOutput, duration, failed } from "../lib/blockText";
+import { writeClipboardText } from "../lib/clipboard";
 import type { Block, BlockColor, LogicalLine, StyleRun } from "../lib/ipc";
+import { toastError } from "../lib/toast";
 import { ansiColor, onTerminalThemeChange } from "../theme";
 import type { PaneRectStyle } from "./TerminalView";
 
@@ -57,33 +67,132 @@ function Line({ line }: { line: LogicalLine }) {
   return <div className="whitespace-pre-wrap break-words">{parts}</div>;
 }
 
-/// Ctrl+C (130) e SIGPIPE (141) não são falha: são o usuário interrompendo e um
-/// pipe fechando. Pintar isso de vermelho treinaria o olho a ignorar vermelho.
-function failed(exitCode: number | null): boolean {
-  return exitCode !== null && exitCode !== 0 && exitCode !== 130 && exitCode !== 141;
-}
+/** Quanto tempo o ✓ fica no lugar do ícone depois de copiar. */
+const COPIED_MS = 1200;
 
-function duration(block: Block): string | null {
-  const ms = block.finishedAtMs - block.startedAtMs;
-  if (ms < 1000) return null;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms / 60_000)}min`;
+type ActionId = "command" | "output" | "markdown";
+
+/**
+ * Copiar comando, copiar saída, copiar como markdown, devolver para a linha.
+ *
+ * Tudo sai do modelo do bloco — ver `lib/blockText`. Ler do DOM entregaria o
+ * corpo cortado em `BODY_LIMIT` linhas, e a saída sem os espaços que o
+ * `white-space` desenha mas o `textContent` não tem.
+ */
+function BlockActions({
+  block,
+  onInject,
+}: {
+  block: Block;
+  onInject?: (text: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState<ActionId | null>(null);
+  const timer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+
+  const copy = useCallback(
+    (id: ActionId, text: string) => {
+      void writeClipboardText(text)
+        .then(() => {
+          setCopied(id);
+          if (timer.current !== null) window.clearTimeout(timer.current);
+          timer.current = window.setTimeout(() => setCopied(null), COPIED_MS);
+        })
+        .catch((error) => toastError(t("blockCopyFailed"), error));
+    },
+    [t],
+  );
+
+  const hasOutput = block.lines.length > 0;
+  const items: Array<{
+    id: ActionId | "inject";
+    label: string;
+    icon: typeof Copy;
+    run: () => void;
+    show: boolean;
+  }> = [
+    {
+      id: "command",
+      label: t("blockCopyCommand"),
+      icon: Copy,
+      run: () => copy("command", block.command),
+      show: block.command.length > 0,
+    },
+    {
+      id: "output",
+      label: t("blockCopyOutput"),
+      icon: ClipboardText,
+      run: () => copy("output", blockOutput(block)),
+      show: hasOutput,
+    },
+    {
+      id: "markdown",
+      label: t("blockCopyMarkdown"),
+      icon: MarkdownLogo,
+      run: () => copy("markdown", blockMarkdown(block)),
+      show: block.command.length > 0 || hasOutput,
+    },
+    {
+      id: "inject",
+      label: t("blockReuse"),
+      icon: ArrowUUpLeft,
+      // Reinsere na linha e para por aí: quem aperta Enter é o dono.
+      run: () => onInject?.(block.command),
+      show: Boolean(onInject) && block.command.length > 0,
+    },
+  ];
+
+  return (
+    <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      {items
+        .filter((item) => item.show)
+        .map((item) => {
+          const Icon = copied === item.id ? Check : item.icon;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              title={item.label}
+              aria-label={item.label}
+              onClick={item.run}
+              // Caixa de tamanho fixo, e menor que a linha do comando: botão
+              // que cresce o header desalinha a estimativa de altura do
+              // virtualizador e o bloco pula quando a medição real chega.
+              className="flex size-[18px] items-center justify-center rounded-[3px] text-tyba-text-faint transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text focus-visible:bg-tyba-text/[.06] focus-visible:text-tyba-text"
+            >
+              <Icon size={13} weight={copied === item.id ? "bold" : "regular"} />
+            </button>
+          );
+        })}
+    </div>
+  );
 }
 
 function BlockHeader({
   block,
   pinned,
+  onInject,
 }: {
   block: Block;
   pinned?: boolean;
+  onInject?: (text: string) => void;
 }) {
   const broke = failed(block.exitCode);
   const took = duration(block);
   return (
     <div
-      className={`flex items-center gap-2 px-2.5 py-1 ${
+      className={`group flex items-center gap-2 px-2.5 py-1 ${
         pinned
-          ? "rounded-[4px] border border-tyba-border bg-tyba-surface shadow-md"
+          ? // O preso cobre o header do bloco de cima. Sem `pointer-events`
+            // próprio (a faixa que o segura é `none` para não engolir o
+            // scroll), as ações daquele bloco ficariam inalcançáveis.
+            "pointer-events-auto rounded-[4px] border border-tyba-border bg-tyba-surface shadow-md"
           : "border-b border-tyba-border/60"
       }`}
     >
@@ -103,6 +212,7 @@ function BlockHeader({
           {block.exitCode}
         </span>
       )}
+      <BlockActions block={block} onInject={onInject} />
     </div>
   );
 }
@@ -116,20 +226,28 @@ function BlockHeader({
  */
 const BODY_LIMIT = 200;
 
-function BlockCard({ block }: { block: Block }) {
+function BlockCard({
+  block,
+  onInject,
+}: {
+  block: Block;
+  onInject?: (text: string) => void;
+}) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const broke = failed(block.exitCode);
   const hidden = expanded ? 0 : Math.max(block.lines.length - BODY_LIMIT, 0);
   return (
+    // `group` aqui além do header: revela as ações com o ponteiro em qualquer
+    // lugar do cartão, não só na faixa de 27px de cima.
     <div
-      className={`mb-2 overflow-hidden rounded-[5px] border ${
+      className={`group mb-2 overflow-hidden rounded-[5px] border ${
         broke
           ? "border-tyba-red/50 bg-tyba-red/[.07]"
           : "border-tyba-border"
       }`}
     >
-      <BlockHeader block={block} />
+      <BlockHeader block={block} onInject={onInject} />
       {block.lines.length > 0 && (
         <div className="px-2.5 py-1 font-mono text-[13px] leading-[1.35] text-tyba-text-muted">
           {(expanded ? block.lines : block.lines.slice(0, BODY_LIMIT)).map(
@@ -166,9 +284,26 @@ interface Props {
   blocks: Block[];
   rect: PaneRectStyle;
   framed: boolean;
+  /**
+   * Devolve o comando para a linha, sem executar. É o mesmo caminho do
+   * histórico e do snippet — com a linha do TYBA no ar o terminal está
+   * somente-leitura, e `term.paste` seria engolido em silêncio.
+   *
+   * Ausente quando o painel não é o ativo: a injeção tem um destino só, e
+   * mandar o comando para a sessão errada é pior do que não ter o botão.
+   */
+  onInject?: (text: string) => void;
+  /** Mexer nos blocos de um painel torna aquele painel o ativo. */
+  onActivate?: () => void;
 }
 
-export function BlockList({ blocks, rect, framed }: Props) {
+export function BlockList({
+  blocks,
+  rect,
+  framed,
+  onInject,
+  onActivate,
+}: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // Cor indexada é resolvida na renderização: trocar de tema tem de repintar a
   // saída antiga junto, senão o bloco congela a paleta de quando foi capturado.
@@ -225,6 +360,7 @@ export function BlockList({ blocks, rect, framed }: Props) {
   return (
     <div
       ref={scrollRef}
+      onMouseDown={onActivate}
       className={`overflow-y-auto rounded-[4px] bg-tyba-sunken px-2 pb-3 pt-2 ${
         framed ? "border border-tyba-border" : ""
       }`}
@@ -241,7 +377,7 @@ export function BlockList({ blocks, rect, framed }: Props) {
           className="pointer-events-none sticky top-0 z-10 -mt-2"
           style={{ marginBottom: -(HEADER_PX + 8) }}
         >
-          <BlockHeader block={blocks[pinned]} pinned />
+          <BlockHeader block={blocks[pinned]} pinned onInject={onInject} />
         </div>
       )}
       <div
@@ -260,7 +396,7 @@ export function BlockList({ blocks, rect, framed }: Props) {
               transform: `translateY(${item.start}px)`,
             }}
           >
-            <BlockCard block={blocks[item.index]} />
+            <BlockCard block={blocks[item.index]} onInject={onInject} />
           </div>
         ))}
       </div>

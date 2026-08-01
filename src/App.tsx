@@ -4238,6 +4238,14 @@ export default function App() {
                             blocks={list}
                             framed={(paneLayout?.panes.length ?? 0) > 1}
                             rect={blocksRect(pane, live)}
+                            onInject={
+                              s.id === activeId ? injectIntoActive : undefined
+                            }
+                            onActivate={
+                              s.id === activeId
+                                ? undefined
+                                : () => void focusPane(paneRect.pane)
+                            }
                           />
                         )}
                         {live && (
