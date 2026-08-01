@@ -83,7 +83,7 @@ function BlockHeader({
     <div
       className={`flex items-center gap-2 px-2.5 py-1 ${
         pinned
-          ? "border-b border-tyba-border bg-tyba-raised"
+          ? "rounded-[4px] border border-tyba-border bg-tyba-surface shadow-md"
           : "border-b border-tyba-border/60"
       }`}
     >
@@ -107,22 +107,45 @@ function BlockHeader({
   );
 }
 
+/**
+ * Teto de linhas desenhadas de uma vez.
+ *
+ * O virtualizador virtualiza BLOCOS, não as linhas dentro de um: um bloco no
+ * teto de 10 mil linhas viraria 10 mil nós de DOM num item só e travaria o
+ * painel. Ninguém lê 10 mil linhas rolando — quem precisa, expande.
+ */
+const BODY_LIMIT = 200;
+
 function BlockCard({ block }: { block: Block }) {
   const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
   const broke = failed(block.exitCode);
+  const hidden = expanded ? 0 : Math.max(block.lines.length - BODY_LIMIT, 0);
   return (
     <div
       className={`mb-2 overflow-hidden rounded-[5px] border ${
-        broke ? "border-tyba-red/40 bg-tyba-red/[.04]" : "border-tyba-border"
+        broke
+          ? "border-tyba-red/50 bg-tyba-red/[.07]"
+          : "border-tyba-border"
       }`}
     >
       <BlockHeader block={block} />
       {block.lines.length > 0 && (
         <div className="px-2.5 py-1 font-mono text-[13px] leading-[1.35] text-tyba-text-muted">
-          {block.lines.map((line, i) => (
-            <Line key={i} line={line} />
-          ))}
+          {(expanded ? block.lines : block.lines.slice(0, BODY_LIMIT)).map(
+            (line, i) => (
+              <Line key={i} line={line} />
+            ),
+          )}
         </div>
+      )}
+      {hidden > 0 && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="w-full border-t border-tyba-border/60 px-2.5 py-1 text-left font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
+        >
+          {t("blockShowAll", { count: hidden })}
+        </button>
       )}
       {block.truncated > 0 && (
         <div className="border-t border-tyba-border/60 px-2.5 py-1 font-mono text-[10px] text-tyba-amber">
@@ -157,7 +180,7 @@ export function BlockList({ blocks, rect, framed }: Props) {
   const estimate = (index: number) => {
     const block = blocks[index];
     if (!block) return LINE_PX + HEADER_PX;
-    const body = Math.max(block.lines.length, 0) * LINE_PX;
+    const body = Math.min(block.lines.length, BODY_LIMIT) * LINE_PX;
     const footer = block.truncated > 0 ? LINE_PX : 0;
     return HEADER_PX + body + footer + BLOCK_GAP_PX;
   };
@@ -215,8 +238,8 @@ export function BlockList({ blocks, rect, framed }: Props) {
     >
       {pinned !== null && blocks[pinned] && (
         <div
-          className="pointer-events-none sticky top-0 z-10 -mx-2 -mt-2 mb-[-27px] overflow-hidden rounded-t-[5px] border-x border-t border-tyba-border"
-          style={{ marginLeft: 8, marginRight: 8 }}
+          className="pointer-events-none sticky top-0 z-10 -mt-2"
+          style={{ marginBottom: -(HEADER_PX + 8) }}
         >
           <BlockHeader block={blocks[pinned]} pinned />
         </div>
