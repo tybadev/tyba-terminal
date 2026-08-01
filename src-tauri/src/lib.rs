@@ -4701,10 +4701,13 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 let enabled = history_enabled(&state.store);
                 history::install(Arc::clone(&state.store), enabled);
-                blocks::install(app.handle().clone(), Arc::clone(&state.store));
                 // Checkpoint órfão = o app morreu com um comando rodando. Vira
                 // bloco sem exit code, que é exatamente o "não terminou".
+                //
+                // Antes do `install` porque o dreno GRAVA blocos, e é do maior
+                // id gravado que o contador de ids vivos parte.
                 let _ = state.store.drain_checkpoints();
+                blocks::install(app.handle().clone(), Arc::clone(&state.store));
             }
 
             Ok(())

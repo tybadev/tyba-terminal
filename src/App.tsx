@@ -293,6 +293,7 @@ import {
   liveRect,
 } from "./components/ActiveBlock";
 import { BlockList } from "./components/BlockList";
+import { mergeBlockHistory } from "./lib/blockHistory";
 import { CommandLine } from "./components/CommandLine";
 import { RichInput } from "./components/RichInput";
 import {
@@ -2757,9 +2758,11 @@ export default function App() {
     for (const id of ids) {
       void sessionBlocks(id)
         .then((loaded) => {
-          if (!disposed && loaded.length > 0) {
-            setBlocks((prev) => (prev[id]?.length ? prev : { ...prev, [id]: loaded }));
-          }
+          if (disposed || loaded.length === 0) return;
+          setBlocks((prev) => {
+            const merged = mergeBlockHistory(prev[id] ?? [], loaded);
+            return merged === prev[id] ? prev : { ...prev, [id]: merged };
+          });
         })
         .catch(() => {});
       void onBlockFinalized(id, (block) => {

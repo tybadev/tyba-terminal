@@ -351,6 +351,26 @@ struct Finalizer {
 static FINALIZER: std::sync::OnceLock<Finalizer> = std::sync::OnceLock::new();
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+fn next_id() -> u64 {
+    NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Põe o contador de ids vivos acima de tudo que está no disco.
+///
+/// Reabrir uma sessão mostra os blocos persistidos e os novos na MESMA lista, e
+/// o front usa o id como chave. Com o contador nascendo em 1 a cada boot, o
+/// primeiro comando de uma sessão reaberta recebe o id 1 — o mesmo do bloco mais
+/// antigo que acabou de ser lido do SQLite.
+///
+/// `fetch_max` e não `store`: chamar duas vezes, ou tarde demais, nunca faz o
+/// contador recuar para cima de um id já entregue.
+pub fn seed_ids(max_persisted: u64) {
+    NEXT_ID.fetch_max(
+        max_persisted.saturating_add(1),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 /// Parse, redação e emissão saem da thread emitter.
 ///
 /// O finalize de um bloco de 10 mil linhas é trabalho de verdade; fazê-lo no
@@ -360,6 +380,11 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
     let (tx, rx) = std::sync::mpsc::sync_channel::<Work>(16);
     if FINALIZER.set(Finalizer { tx }).is_err() {
         return;
+    }
+    // Depois do dreno de checkpoints, que também grava blocos: semear antes
+    // deixaria o contador abaixo das linhas que o dreno acabou de inserir.
+    if let Ok(max) = store.max_block_id() {
+        seed_ids(max);
     }
     let _ = std::thread::Builder::new()
         .name("block-finalizer".into())
@@ -411,7 +436,7 @@ fn build(finished: Finished) -> Block {
         })
         .collect();
     Block {
-        id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        id: next_id(),
         session_id: finished.session_id,
         command: crate::session::redact::redact(&finished.command).into_owned(),
         exit_code: finished.exit_code,
@@ -443,6 +468,22 @@ mod tests {
             .into_iter()
             .map(|line| line.text)
             .collect()
+    }
+
+    #[test]
+    fn live_ids_start_above_everything_already_on_disk() {
+        // Sem isto, o primeiro comando de uma sessão reaberta nasce com id 1 —
+        // colidindo com o rowid do bloco mais antigo que ela acabou de ler.
+        seed_ids(41);
+        let first = next_id();
+        let second = next_id();
+        assert!(first >= 42, "id vivo abaixo do que está no disco: {first}");
+        assert!(second > first);
+
+        // Semear com um valor menor não recua o contador para cima de um id já
+        // entregue — é o que torna a chamada segura fora de ordem.
+        seed_ids(1);
+        assert!(next_id() > second);
     }
 
     #[test]
