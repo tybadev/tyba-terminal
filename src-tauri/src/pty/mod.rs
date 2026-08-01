@@ -159,6 +159,13 @@ pub struct SessionBracketedPayload {
     pub bracketed_paste: bool,
 }
 
+/// O shell confirmando se o `PS1` saiu da tela. Só o hook sabe — o app pediu,
+/// mas quem responde é o shell.
+#[derive(Clone, Serialize)]
+pub struct SessionPromptModePayload {
+    pub prompt_mode: bool,
+}
+
 struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -277,6 +284,7 @@ impl PtyPool {
         let command_event = format!("session://command/{session_id}");
         let cwd_event = format!("session://cwd/{session_id}");
         let bracketed_event = format!("session://bracketed/{session_id}");
+        let prompt_mode_event = format!("session://prompt-mode/{session_id}");
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(CHANNEL_CAPACITY);
 
         std::thread::Builder::new()
@@ -318,6 +326,7 @@ impl PtyPool {
                 let mut last_cwd: Option<std::path::PathBuf> = None;
                 let mut last_cwd_canonical: Option<std::path::PathBuf> = None;
                 let mut last_bracketed = false;
+                let mut last_prompt_mode: Option<bool> = None;
 
                 loop {
                     let chunk = if !queued {
@@ -408,6 +417,15 @@ impl PtyPool {
                                         );
                                     }
                                     ShellEvent::InputStart => {}
+                                    ShellEvent::PromptMode(on) => {
+                                        if last_prompt_mode != Some(on) {
+                                            last_prompt_mode = Some(on);
+                                            let _ = app.emit(
+                                                &prompt_mode_event,
+                                                SessionPromptModePayload { prompt_mode: on },
+                                            );
+                                        }
+                                    }
                                     ShellEvent::Cwd(path) => {
                                         if last_cwd.as_deref() != Some(path.as_path()) {
                                             last_cwd = Some(path.clone());

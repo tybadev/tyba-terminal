@@ -221,6 +221,8 @@ import {
   updateCheck,
   setAppMenu,
   onMenuAction,
+  onSessionPromptMode,
+  togglePromptMode,
   renderSnippet,
   snippetPlaceholders,
   type Snippet,
@@ -279,6 +281,7 @@ import {
   type ToolbarPref,
 } from "./lib/repoSnapshots";
 import { Toolbar } from "./components/Toolbar";
+import { CommandLine } from "./components/CommandLine";
 import { RichInput } from "./components/RichInput";
 import {
   DEFAULT_RICH_INPUT,
@@ -308,6 +311,10 @@ import {
   isMenuExtraId,
   type MenuExtraId,
 } from "./lib/appMenu";
+import {
+  keyboardOwner,
+  PROMPT_MODE_PREF_KEY,
+} from "./lib/commandLine";
 import { changelogUrl } from "./lib/changelog";
 import { docsUrl, REPO_URL } from "./lib/links";
 import {
@@ -641,6 +648,9 @@ export default function App() {
     [worktreeDefault],
   );
   const [searchOpen, setSearchOpen] = useState(false);
+  const [altScreens, setAltScreens] = useState<Record<string, boolean>>({});
+  const [promptModes, setPromptModes] = useState<Record<string, boolean>>({});
+  const [promptModePref, setPromptModePref] = useState(false);
   const [snippetPrompt, setSnippetPrompt] = useState<{
     snippet: Snippet;
     placeholders: SnippetPlaceholder[];
@@ -2435,6 +2445,7 @@ export default function App() {
         editorRaw,
         worktreeDefaultRaw,
         reviewAgentRaw,
+        promptModeRaw,
       ] = await Promise.all([
         listSessions().catch(() => [] as Session[]),
         layoutState().catch(() => EMPTY_LAYOUT),
@@ -2453,8 +2464,10 @@ export default function App() {
         getPref(EDITOR_PREF_KEY).catch(() => null),
         getPref(WORKTREE_DEFAULT_KEY).catch(() => null),
         getPref(REVIEW_AGENT_KEY).catch(() => null),
+        getPref(PROMPT_MODE_PREF_KEY).catch(() => null),
       ]);
       if (cancelled) return;
+      setPromptModePref(promptModeRaw === "on");
       setSessions(existing);
       setLayout(currentLayout);
       if (togglePrefRaw === "rail" || togglePrefRaw === "hidden") {
@@ -2600,6 +2613,10 @@ export default function App() {
         // Só o menu chega aqui: pelo teclado o ⌘F passa pelo caminho de cima,
         // que exige o terminal em foco.
         if (getTerm(activeId)) setSearchOpen((v) => !v);
+      } else if (action === "promptLine" && activeId) {
+        // Alterna na sessão VIVA: a preferência só entra por env no spawn, e
+        // pedir sessão nova para experimentar é atrito demais.
+        void togglePromptMode(activeId).catch(() => {});
       } else if (action === "richInput" && activeId) {
         if (richInputFocused.current) {
           richInputFocused.current = false;
@@ -2626,6 +2643,64 @@ export default function App() {
       openRichInput,
     ],
   );
+
+  // Quem é dono do teclado agora. A regra vive em lib/commandLine.ts, testada:
+  // é ela que impede a caixa de engolir a senha que o sudo está pedindo.
+  const promptMode = activeId ? (promptModes[activeId] ?? false) : false;
+  // O shell só reporta o modo no primeiro prompt — depois de carregar rc,
+  // framework e plugins. Até lá a linha aparece desabilitada em vez de a tela
+  // ficar em branco sem lugar nenhum para digitar.
+  const promptPending =
+    promptModePref &&
+    activeId != null &&
+    activeSession?.kind.type === "shell" &&
+    promptModes[activeId] === undefined &&
+    !activeCommand?.running &&
+    !(altScreens[activeId] ?? false);
+  const ownsCommandLine =
+    keyboardOwner({
+      promptMode,
+      kind: activeSession?.kind,
+      altScreen: activeId ? (altScreens[activeId] ?? false) : false,
+      command: activeCommand,
+      integrated: promptMode,
+    }) === "tybaLine";
+
+  // Voltar do vim ou do fim de um comando devolve o foco para a linha.
+  const [commandLineNonce, setCommandLineNonce] = useState(0);
+  useEffect(() => {
+    if (ownsCommandLine) {
+      setCommandLineNonce((n) => n + 1);
+      return;
+    }
+    // Devolveu o teclado ao terminal (vim abriu, comando começou, modo
+    // desligado): o foco vai junto, senão as teclas caem numa caixa que já não
+    // é dona da linha.
+    if (activeId) getTerm(activeId)?.term.focus();
+  }, [ownsCommandLine, activeId]);
+
+  // Quem responde se o PS1 saiu da tela é o SHELL, não o app: o hook relata por
+  // `633;P` a cada prompt. Assumir pela preferência mentiria quando o hook não
+  // subiu (shell sem integração, subshell, container).
+  useEffect(() => {
+    const ids = sessions.map((s) => s.id);
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    for (const id of ids) {
+      void onSessionPromptMode(id, (on) =>
+        setPromptModes((prev) =>
+          prev[id] === on ? prev : { ...prev, [id]: on },
+        ),
+      ).then((un) => {
+        if (disposed) un();
+        else unlisteners.push(un);
+      });
+    }
+    return () => {
+      disposed = true;
+      unlisteners.forEach((un) => un());
+    };
+  }, [sessions]);
 
   const historyScope = useMemo(
     () => ({
@@ -4004,6 +4079,13 @@ export default function App() {
                         onDismissNotice={() => dismissShellAgentNotice(s.id)}
                         onPaste={deliverPaste}
                         onSearch={() => setSearchOpen(true)}
+                        onAltScreen={(alt) =>
+                          setAltScreens((prev) =>
+                            prev[s.id] === alt
+                              ? prev
+                              : { ...prev, [s.id]: alt },
+                          )
+                        }
                         onSplit={(kind) => void splitActive(kind)}
                         visible={paneRect !== null}
                         focused={s.id === activeId}
@@ -4173,7 +4255,18 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                {activeSession && richInputVisible && (
+                {activeSession && (ownsCommandLine || promptPending) && (
+                  <CommandLine
+                    key={`${activeSession.id}:line`}
+                    sessionId={activeSession.id}
+                    cwd={activeCwdKey}
+                    branch={activeGitStatus?.branch ?? null}
+                    scope={historyScope}
+                    focusNonce={commandLineNonce}
+                    waiting={!ownsCommandLine}
+                  />
+                )}
+                {activeSession && richInputVisible && !ownsCommandLine && (
                   <RichInput
                     key={activeSession.id}
                     sessionId={activeSession.id}

@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod approvals;
+pub mod completion;
 pub mod docker;
 pub mod editor;
 pub mod error;
@@ -4059,6 +4060,60 @@ fn set_app_menu(app: AppHandle, spec: menu::MenuSpec) -> Result<(), String> {
     menu::install(&app, &spec)
 }
 
+/// Limpa a linha do shell antes de escrever nela (`bindkey '\e=' kill-buffer`).
+/// Em modo prompt o usuário não digita ali, mas um widget do próprio zsh ou um
+/// toggle no meio do caminho pode ter deixado texto — que se somaria ao nosso.
+const KILL_LINE: &[u8] = b"\x1b=";
+
+/// Alterna o modo prompt dentro da sessão viva (`bindkey '\e~'`). É a válvula
+/// de escape: toda heurística falha, e o caminho de volta não pode ser fechar o
+/// app.
+const TOGGLE_PROMPT_MODE: &[u8] = b"\x1b~";
+
+#[tauri::command]
+fn submit_shell_line(
+    state: State<'_, AppState>,
+    id: SessionId,
+    text: String,
+) -> Result<(), String> {
+    let bracketed = state
+        .pty_pool
+        .bracketed_paste(id)
+        .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+    let (normalized, _) = rich_input::normalize(&text);
+    if normalized.trim().is_empty() {
+        return Ok(());
+    }
+    let payload = rich_input::plan_injection(&normalized, bracketed)?;
+
+    let _submitting = state.rich_input_submit.lock();
+    let mut bytes = Vec::with_capacity(KILL_LINE.len() + payload.len() + 1);
+    bytes.extend_from_slice(KILL_LINE);
+    bytes.extend_from_slice(&payload);
+    bytes.push(b'\n');
+    state.pty_pool.write(id, &bytes).map_err(|e| e.to_string())
+}
+
+/// Bytes crus para o PTY: sinais (Ctrl+C/D/Z) que a linha do TYBA nunca consome.
+#[tauri::command]
+fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Result<(), String> {
+    if bytes.len() > 8 || !bytes.chars().all(|c| c.is_control()) {
+        return Err("apenas caracteres de controle".into());
+    }
+    state
+        .pty_pool
+        .write(id, bytes.as_bytes())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn toggle_prompt_mode(state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
+    state
+        .pty_pool
+        .write(id, TOGGLE_PROMPT_MODE)
+        .map_err(|e| e.to_string())
+}
+
 pub const HISTORY_PREF_KEY: &str = "pref.commandHistory";
 
 fn history_enabled(store: &Store) -> bool {
@@ -4079,6 +4134,11 @@ struct HistoryHit {
     last_used_at_ms: i64,
     in_cwd: bool,
     in_repo: bool,
+    /// Nunca saiu com exit code 0. Continua no histórico e ainda completa no
+    /// ghost text quando é prefixo do que o usuário digitou — mas não é
+    /// oferecido numa lista: `lljh` foi um erro de digitação, e devolvê-lo como
+    /// opção é sugerir o próprio engano.
+    failed: bool,
 }
 
 /// Fuzzy + frecência no core: o webview recebe a lista já ordenada (princípio #1).
@@ -4112,6 +4172,7 @@ fn search_command_history(
             Some((
                 score,
                 HistoryHit {
+                    failed: candidate.uses > 0 && candidate.successes == 0,
                     command: candidate.command,
                     cwd: candidate.cwd,
                     uses: candidate.uses,
@@ -4128,6 +4189,148 @@ fn search_command_history(
         .take(limit.min(500))
         .map(|(_, hit)| hit)
         .collect())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommandSuggestion {
+    command: String,
+    /// Só serve para o ghost text; a lista filtra.
+    failed: bool,
+    /// `history` ou `snippet` — a UI marca a origem; o usuário precisa saber que
+    /// aquele comando é um snippet, não algo que ele já rodou.
+    kind: &'static str,
+    label: Option<String>,
+}
+
+const SUGGEST_LIMIT: usize = 8;
+
+/// O que aparece embaixo da linha de comando: histórico ranqueado por frecência
+/// e snippets, numa lista só. O ranking fica no core (princípio #1) — o webview
+/// recebe pronto e só desenha.
+#[tauri::command]
+fn suggest_commands(
+    state: State<'_, AppState>,
+    query: String,
+    cwd: Option<String>,
+    repo_root: Option<String>,
+) -> Result<Vec<CommandSuggestion>, String> {
+    use fuzzy_matcher::skim::SkimMatcherV2;
+    use fuzzy_matcher::FuzzyMatcher;
+
+    let query = query.trim();
+    let matcher = SkimMatcherV2::default();
+    let mut out: Vec<CommandSuggestion> = Vec::new();
+
+    // Snippet primeiro quando o nome casa: foi o usuário que o nomeou, então é
+    // mais intencional do que um comando que ele rodou uma vez sem querer.
+    if !query.is_empty() {
+        for snippet in state.store.list_snippets().unwrap_or_default() {
+            if matcher.fuzzy_match(&snippet.name, query).is_some()
+                || snippet.command.starts_with(query)
+            {
+                out.push(CommandSuggestion {
+                    command: snippet.command,
+                    failed: false,
+                    kind: "snippet",
+                    label: Some(snippet.name),
+                });
+            }
+            if out.len() >= 3 {
+                break;
+            }
+        }
+    }
+
+    let hits = search_command_history(state, query.to_string(), cwd, repo_root, SUGGEST_LIMIT)?;
+    for hit in hits {
+        if out.iter().any(|s| s.command == hit.command) {
+            continue;
+        }
+        out.push(CommandSuggestion {
+            command: hit.command,
+            failed: hit.failed,
+            kind: "history",
+            label: None,
+        });
+    }
+    out.truncate(SUGGEST_LIMIT);
+    Ok(out)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LineSuggestions {
+    commands: Vec<CommandSuggestion>,
+    paths: Vec<String>,
+    arguments: Vec<String>,
+}
+
+/// Uma chamada por tecla, não três.
+///
+/// Histórico, caminho e argumento eram três `invoke` separados a cada
+/// digitação: três travessias da ponte do webview e três consultas, para uma
+/// única mudança de estado na tela.
+#[tauri::command]
+fn suggest_line(
+    state: State<'_, AppState>,
+    query: String,
+    cwd: Option<String>,
+    repo_root: Option<String>,
+    path_token: Option<String>,
+    arg_prefix: Option<String>,
+    arg_token: Option<String>,
+) -> Result<LineSuggestions, String> {
+    let paths = match (&cwd, &path_token) {
+        (Some(cwd), Some(token)) if !cwd.is_empty() => {
+            completion::complete_path(std::path::Path::new(cwd), token)
+        }
+        _ => Vec::new(),
+    };
+    let arguments = match (&arg_prefix, &arg_token) {
+        (Some(prefix), Some(token)) => {
+            let commands = state
+                .store
+                .history_with_prefix(prefix, 400)
+                .map_err(|e| e.to_string())?;
+            completion::next_tokens(&commands, prefix, token)
+        }
+        _ => Vec::new(),
+    };
+    let commands = suggest_commands(state, query, cwd, repo_root)?;
+    Ok(LineSuggestions {
+        commands,
+        paths,
+        arguments,
+    })
+}
+
+/// O `cwd` vem do front, que o recebe por `OSC 7` — atacante-controlável, e por
+/// isso **display-only** (ADR de 2026-07-08). Aqui ele só escolhe qual diretório
+/// listar para sugerir: nenhuma decisão de segurança sai daqui, e o usuário
+/// alcança qualquer caminho digitando de qualquer jeito.
+#[tauri::command]
+fn complete_path(cwd: String, token: String) -> Vec<String> {
+    if cwd.is_empty() {
+        return Vec::new();
+    }
+    completion::complete_path(std::path::Path::new(&cwd), &token)
+}
+
+/// Subcomando e flag vêm do histórico do próprio dono: para `git co`, os
+/// comandos que começaram com `git `. Personalizado, sem base externa e sem
+/// manutenção — a do Warp é AGPL e está fora de alcance.
+#[tauri::command]
+fn complete_argument(
+    state: State<'_, AppState>,
+    prefix: String,
+    token: String,
+) -> Result<Vec<String>, String> {
+    let commands = state
+        .store
+        .history_with_prefix(&prefix, 400)
+        .map_err(|e| e.to_string())?;
+    Ok(completion::next_tokens(&commands, &prefix, &token))
 }
 
 #[tauri::command]
@@ -4605,7 +4808,14 @@ pub fn run() {
             agent_repo_config,
             set_agent_config_consent,
             set_app_menu,
+            submit_shell_line,
+            write_control,
+            toggle_prompt_mode,
             search_command_history,
+            suggest_commands,
+            complete_path,
+            complete_argument,
+            suggest_line,
             clear_command_history,
             set_history_enabled,
             list_snippets,

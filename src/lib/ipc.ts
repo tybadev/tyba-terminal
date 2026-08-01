@@ -1180,6 +1180,58 @@ export const onThemeChanged = (
 export const setAppMenu = (spec: MenuSpec) =>
   invoke<void>("set_app_menu", { spec });
 
+export const submitShellLine = (id: SessionId, text: string) =>
+  invoke<void>("submit_shell_line", { id, text });
+
+export const writeControl = (id: SessionId, bytes: string) =>
+  invoke<void>("write_control", { id, bytes });
+
+export interface CommandSuggestion {
+  command: string;
+  /** Nunca saiu com exit code 0: serve para o ghost text, não para a lista. */
+  failed: boolean;
+  kind: "history" | "snippet";
+  label: string | null;
+}
+
+export const suggestCommands = (
+  query: string,
+  cwd: string | null,
+  repoRoot: string | null,
+) => invoke<CommandSuggestion[]>("suggest_commands", { query, cwd, repoRoot });
+
+export const completePath = (cwd: string, token: string) =>
+  invoke<string[]>("complete_path", { cwd, token });
+
+export interface LineSuggestions {
+  commands: CommandSuggestion[];
+  paths: string[];
+  arguments: string[];
+}
+
+export const suggestLine = (input: {
+  query: string;
+  cwd: string | null;
+  repoRoot: string | null;
+  pathToken: string | null;
+  argPrefix: string | null;
+  argToken: string | null;
+}) => invoke<LineSuggestions>("suggest_line", input);
+
+export const completeArgument = (prefix: string, token: string) =>
+  invoke<string[]>("complete_argument", { prefix, token });
+
+export const togglePromptMode = (id: SessionId) =>
+  invoke<void>("toggle_prompt_mode", { id });
+
+export const onSessionPromptMode = (
+  id: SessionId,
+  handler: (on: boolean) => void,
+): Promise<UnlistenFn> =>
+  listen<{ prompt_mode: boolean }>(`session://prompt-mode/${id}`, (e) =>
+    handler(e.payload.prompt_mode),
+  );
+
 export interface HistoryHit {
   command: string;
   cwd: string | null;

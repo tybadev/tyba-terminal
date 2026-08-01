@@ -29,6 +29,10 @@ pub enum ShellEvent {
     CommandStart,
     /// `OSC 633 ; E ; <base64>` — texto da linha de comando.
     CommandLine(String),
+    /// `OSC 633 ; P ; tyba-prompt=<0|1>` — o shell confirma se está no modo
+    /// prompt do TYBA. É a resposta do hook, não um palpite do app: sem ela o
+    /// front não sabe se o `PS1` saiu mesmo da tela.
+    PromptMode(bool),
     /// `OSC 133 ; D [ ; <code> ]` — comando terminou (exit code).
     CommandEnd(i32),
     /// `OSC 7 ; file://<host><path>` — diretório de trabalho.
@@ -165,7 +169,16 @@ fn parse_osc(payload: &[u8]) -> Option<ShellEvent> {
             _ => None,
         },
         "633" => {
-            if parts.next()? != "E" {
+            let sub = parts.next()?;
+            if sub == "P" {
+                let value = parts.next()?.strip_prefix("tyba-prompt=")?;
+                return match value {
+                    "1" => Some(ShellEvent::PromptMode(true)),
+                    "0" => Some(ShellEvent::PromptMode(false)),
+                    _ => None,
+                };
+            }
+            if sub != "E" {
                 return None;
             }
             let encoded = parts.next()?;
@@ -239,6 +252,27 @@ mod tests {
         let mut p = OscParser::new();
         let events = p.feed(format!("\x1b]633;E;{}\x07", b64(" secret-cmd  \n")).as_bytes());
         assert_eq!(events, vec![ShellEvent::CommandLine(" secret-cmd".into())]);
+    }
+
+    #[test]
+    fn parses_prompt_mode_report_from_the_hook() {
+        let mut p = OscParser::new();
+        assert_eq!(
+            p.feed(b"\x1b]633;P;tyba-prompt=1\x07"),
+            vec![ShellEvent::PromptMode(true)]
+        );
+        assert_eq!(
+            p.feed(b"\x1b]633;P;tyba-prompt=0\x07"),
+            vec![ShellEvent::PromptMode(false)]
+        );
+    }
+
+    #[test]
+    fn ignores_other_633_properties() {
+        // O `633;P` do VS Code carrega várias chaves; só a nossa vira evento.
+        let mut p = OscParser::new();
+        assert!(p.feed(b"\x1b]633;P;Cwd=/tmp\x07").is_empty());
+        assert!(p.feed(b"\x1b]633;P;tyba-prompt=sim\x07").is_empty());
     }
 
     #[test]
