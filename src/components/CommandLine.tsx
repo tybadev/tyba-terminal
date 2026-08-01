@@ -155,6 +155,27 @@ export function CommandLine({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [waiting, text, token?.value, arg?.prefix, arg?.value, scope.cwd, scope.repoRoot]);
 
+  // ↑ abre o histórico. Com a caixa vazia não há o que sugerir enquanto se
+  // digita, então a lista só é buscada quando alguém pede — que é o gesto que
+  // todo mundo já traz do shell.
+  const openHistory = () => {
+    void suggestLine({
+      query: text,
+      cwd: scope.cwd,
+      repoRoot: scope.repoRoot,
+      pathToken: null,
+      argPrefix: null,
+      argToken: null,
+    })
+      .then((found) => {
+        if (found.commands.length === 0) return;
+        setHits(found.commands);
+        setIndex(0);
+        setMenuOpen(true);
+      })
+      .catch(() => {});
+  };
+
   const takeArg = (completion: string) => {
     if (!arg) return false;
     const next = replaceToken(text, arg, completion);
@@ -266,6 +287,18 @@ export function CommandLine({
     ) {
       e.preventDefault();
       setMenuOpen(true);
+      return;
+    }
+    // ↑ com a lista fechada é o histórico, como em qualquer shell. Já filtrado
+    // pelo que estiver escrito: com a caixa vazia vem o mais recente.
+    if (e.key === "ArrowUp" && !showMenu) {
+      e.preventDefault();
+      if (listed.length > 0) {
+        setIndex(0);
+        setMenuOpen(true);
+      } else {
+        openHistory();
+      }
       return;
     }
     if (e.key === "Escape") {
