@@ -9,6 +9,16 @@ import type { PaneRectStyle } from "./TerminalView";
  */
 export const LIVE_FRACTION = 0.5;
 
+/**
+ * Quanto um comando precisa durar para a faixa ao vivo abrir.
+ *
+ * `clear`, `cd`, `echo`: abrir e fechar a faixa em 30ms espreme a lista pela
+ * metade, mostra um retângulo preto e desfaz — um pisca que chama mais atenção
+ * do que a coisa que ele ia mostrar. Abaixo disto o comando já virou bloco
+ * antes de a faixa fazer falta.
+ */
+export const LIVE_DELAY_MS = 120;
+
 export function liveRect(pane: PaneRectStyle): PaneRectStyle {
   const height = pane.height * LIVE_FRACTION;
   return {

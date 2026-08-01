@@ -9,7 +9,13 @@ import {
   MarkdownLogo,
 } from "@phosphor-icons/react";
 
-import { blockMarkdown, blockOutput, duration, failed } from "../lib/blockText";
+import {
+  blockMarkdown,
+  blockOutput,
+  duration,
+  failed,
+  shortPath,
+} from "../lib/blockText";
 import { writeClipboardText } from "../lib/clipboard";
 import type { Block, BlockColor, LogicalLine, StyleRun } from "../lib/ipc";
 import { toastError } from "../lib/toast";
@@ -82,9 +88,12 @@ type ActionId = "command" | "output" | "markdown";
 function BlockActions({
   block,
   onInject,
+  always,
 }: {
   block: Block;
   onInject?: (text: string) => void;
+  /** Sem hover para revelar: é o caso do header preso, que não recebe hover. */
+  always?: boolean;
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState<ActionId | null>(null);
@@ -149,7 +158,13 @@ function BlockActions({
   ];
 
   return (
-    <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+    <div
+      className={`pointer-events-auto flex shrink-0 items-center gap-0.5 transition-opacity ${
+        always
+          ? "opacity-100"
+          : "opacity-0 focus-within:opacity-100 group-hover:opacity-100"
+      }`}
+    >
       {items
         .filter((item) => item.show)
         .map((item) => {
@@ -160,7 +175,12 @@ function BlockActions({
               type="button"
               title={item.label}
               aria-label={item.label}
-              onClick={item.run}
+              // Clicar numa ação não é clicar no bloco: sem isto, copiar a
+              // saída marcaria o cartão de quebra.
+              onClick={(event) => {
+                event.stopPropagation();
+                item.run();
+              }}
               // Caixa de tamanho fixo, e menor que a linha do comando: botão
               // que cresce o header desalinha a estimativa de altura do
               // virtualizador e o bloco pula quando a medição real chega.
@@ -185,14 +205,16 @@ function BlockHeader({
 }) {
   const broke = failed(block.exitCode);
   const took = duration(block);
+  const where = shortPath(block.cwd);
   return (
     <div
+      // O preso é `pointer-events-none`: ele fica POR CIMA da lista, e uma
+      // faixa opaca de 27px que captura a roda do mouse é uma faixa onde a
+      // lista não rola. Só as ações reativam — senão as do bloco do topo, que
+      // é o header que ele cobre, ficariam inalcançáveis.
       className={`group flex items-center gap-2 px-2.5 py-1 ${
         pinned
-          ? // O preso cobre o header do bloco de cima. Sem `pointer-events`
-            // próprio (a faixa que o segura é `none` para não engolir o
-            // scroll), as ações daquele bloco ficariam inalcançáveis.
-            "pointer-events-auto rounded-[4px] border border-tyba-border bg-tyba-surface shadow-md"
+          ? "pointer-events-none rounded-[4px] border border-tyba-border bg-tyba-surface shadow-md"
           : "border-b border-tyba-border/60"
       }`}
     >
@@ -202,9 +224,14 @@ function BlockHeader({
       <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-tyba-text">
         {block.command}
       </span>
-      {took && (
-        <span className="shrink-0 font-mono text-[10px] text-tyba-text-faint">
-          {took}
+      {/* Onde rodou. Encurtado porque o começo do caminho empurraria o comando
+          para fora da linha; o inteiro fica no title. */}
+      {where && (
+        <span
+          title={block.cwd ?? undefined}
+          className="max-w-[38%] shrink-0 truncate font-mono text-[10px] text-tyba-text-faint"
+        >
+          {where}
         </span>
       )}
       {broke && (
@@ -212,7 +239,12 @@ function BlockHeader({
           {block.exitCode}
         </span>
       )}
-      <BlockActions block={block} onInject={onInject} />
+      {took && (
+        <span className="shrink-0 font-mono text-[10px] tabular-nums text-tyba-text-faint">
+          {took}
+        </span>
+      )}
+      <BlockActions block={block} onInject={onInject} always={pinned} />
     </div>
   );
 }
@@ -226,12 +258,25 @@ function BlockHeader({
  */
 const BODY_LIMIT = 200;
 
+/**
+ * Barra à esquerda do cartão marcado.
+ *
+ * `box-shadow` e não borda: borda muda a altura medida, e altura que muda faz o
+ * virtualizador reposicionar a lista embaixo do ponteiro no meio de um
+ * shift-clique.
+ */
+const MARKED_BAR = "inset 2px 0 0 0 var(--tyba-primary)";
+
 function BlockCard({
   block,
   onInject,
+  marked,
+  onPick,
 }: {
   block: Block;
   onInject?: (text: string) => void;
+  marked: boolean;
+  onPick?: (event: React.MouseEvent) => void;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -241,13 +286,30 @@ function BlockCard({
     // `group` aqui além do header: revela as ações com o ponteiro em qualquer
     // lugar do cartão, não só na faixa de 27px de cima.
     <div
+      onClick={onPick}
+      // Shift-clique é o gesto do navegador para esticar seleção de texto.
+      // Barrar aqui é o que deixa o shift ser do bloco, sem sujar a tela com
+      // um trecho de texto realçado que ninguém pediu.
+      onMouseDown={(event) => {
+        if (event.shiftKey && onPick) event.preventDefault();
+      }}
+      style={marked ? { boxShadow: MARKED_BAR } : undefined}
       className={`group mb-2 overflow-hidden rounded-[5px] border ${
-        broke
-          ? "border-tyba-red/50 bg-tyba-red/[.07]"
-          : "border-tyba-border"
+        marked
+          ? "border-tyba-border-strong bg-tyba-green-tint"
+          : broke
+            ? "border-tyba-red/50 bg-tyba-red/[.07]"
+            : "border-tyba-border"
       }`}
     >
       <BlockHeader block={block} onInject={onInject} />
+      {/* Sem corpo, mas com motivo: um cartão vazio e mudo pareceria comando
+          que não imprimiu nada. */}
+      {block.altScreen && (
+        <div className="px-2.5 py-1 font-mono text-[11px] italic text-tyba-text-faint">
+          {t("blockAltScreen")}
+        </div>
+      )}
       {block.lines.length > 0 && (
         <div className="px-2.5 py-1 font-mono text-[13px] leading-[1.35] text-tyba-text-muted">
           {(expanded ? block.lines : block.lines.slice(0, BODY_LIMIT)).map(
@@ -259,7 +321,10 @@ function BlockCard({
       )}
       {hidden > 0 && (
         <button
-          onClick={() => setExpanded(true)}
+          onClick={(event) => {
+            event.stopPropagation();
+            setExpanded(true);
+          }}
           className="w-full border-t border-tyba-border/60 px-2.5 py-1 text-left font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
         >
           {t("blockShowAll", { count: hidden })}
@@ -295,6 +360,14 @@ interface Props {
   onInject?: (text: string) => void;
   /** Mexer nos blocos de um painel torna aquele painel o ativo. */
   onActivate?: () => void;
+  /** Ids marcados para copiar de uma vez. */
+  marked?: ReadonlySet<number>;
+  /** Clique num cartão. O modificador vem no evento; a regra é do chamador. */
+  onPick?: (id: number, event: React.MouseEvent) => void;
+  /** Clique no fundo da lista — sai da seleção sem procurar onde clicar. */
+  onClearPick?: () => void;
+  /** Atalho de copiar, já formatado. Vem de fora porque é rebindável. */
+  copyCombo?: string;
 }
 
 export function BlockList({
@@ -303,7 +376,12 @@ export function BlockList({
   framed,
   onInject,
   onActivate,
+  marked,
+  onPick,
+  onClearPick,
+  copyCombo,
 }: Props) {
+  const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   // Cor indexada é resolvida na renderização: trocar de tema tem de repintar a
   // saída antiga junto, senão o bloco congela a paleta de quando foi capturado.
@@ -345,6 +423,13 @@ export function BlockList({
     const el = scrollRef.current;
     if (!el) return;
     const sync = () => {
+      // Lista que cabe na tela não tem o que prender: ancorada embaixo, ela
+      // começa deslocada do topo, e as posições que o virtualizador calcula
+      // deixam de bater com a rolagem.
+      if (el.scrollHeight <= el.clientHeight + 1) {
+        setPinned(null);
+        return;
+      }
       const top = el.scrollTop;
       const items = virtualizer.getVirtualItems();
       const current = items.find(
@@ -358,12 +443,15 @@ export function BlockList({
   }, [virtualizer, blocks.length]);
 
   return (
+    // Duas camadas: a lista que rola e, POR CIMA dela, o que fica parado.
+    //
+    // O header preso já morou dentro do scroll, seguro por `sticky` e uma
+    // margem negativa que o tirava do fluxo. A conta nunca fecha: a margem é um
+    // número fixo, a altura do header é medida, e a diferença aparece como a
+    // primeira linha do bloco cortada e como scroll que não chega ao fim.
+    // Sobreposição não é fluxo — então não fica no fluxo.
     <div
-      ref={scrollRef}
-      onMouseDown={onActivate}
-      className={`overflow-y-auto rounded-[4px] bg-tyba-sunken px-2 pb-3 pt-2 ${
-        framed ? "border border-tyba-border" : ""
-      }`}
+      className="pointer-events-none"
       style={{
         position: "absolute",
         left: `${rect.left}%`,
@@ -372,34 +460,88 @@ export function BlockList({
         height: `${rect.height}%`,
       }}
     >
+      <div
+        ref={scrollRef}
+        // Rolagem movida na mão, e não pela nativa.
+        //
+        // A nativa não chegava aqui com o ponteiro sobre os cartões, só sobre
+        // a barra: esta lista é uma camada sobreposta ao terminal, e o WebKit
+        // prende o gesto ao scroller que escolheu no primeiro evento — preso
+        // no de trás, o de cima não recebe mais nada.
+        onWheel={(event) => {
+          const el = scrollRef.current;
+          if (!el) return;
+          const before = el.scrollTop;
+          el.scrollTop = before + event.deltaY;
+          // No topo e no fim o gesto passa adiante, senão a lista viraria um
+          // buraco onde nada mais rola.
+          if (el.scrollTop !== before) event.preventDefault();
+        }}
+        onMouseDown={onActivate}
+        // Só o fundo: clique que veio de um cartão para aqui por bubbling já
+        // decidiu o que fazer com a seleção.
+        onClick={(event) => {
+          if (event.target === event.currentTarget) onClearPick?.();
+        }}
+        // `overscroll-contain`: ao bater no topo, o WebKit passa o gesto para o
+        // ancestral e TRAVA nele até a rolagem terminar — daí "rolei tudo para
+        // cima e agora não desce mais, só clicando na barra". Conter o encadea-
+        // mento mantém o gesto nesta lista.
+        className={`pointer-events-auto h-full overflow-y-auto overscroll-contain rounded-[4px] bg-tyba-sunken px-2 pb-3 pt-2 ${
+          framed ? "border border-tyba-border" : ""
+        }`}
+      >
+        {/* Ancorado embaixo, como todo terminal: os blocos crescem de baixo
+            para cima e o último fica colado na linha de comando. Ancorado em
+            cima, poucos blocos deixam um vazio enorme logo acima do input —
+            que é exatamente para onde o olho vai. */}
+        <div className="flex min-h-full flex-col justify-end">
+          <div
+            style={{ height: virtualizer.getTotalSize(), position: "relative" }}
+          >
+          {virtualizer.getVirtualItems().map((item) => (
+            <div
+              key={blocks[item.index].id}
+              ref={virtualizer.measureElement}
+              data-index={item.index}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                transform: `translateY(${item.start}px)`,
+              }}
+            >
+              <BlockCard
+                block={blocks[item.index]}
+                onInject={onInject}
+                marked={marked?.has(blocks[item.index].id) ?? false}
+                onPick={
+                  onPick
+                    ? (event) => onPick(blocks[item.index].id, event)
+                    : undefined
+                }
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
       {pinned !== null && blocks[pinned] && (
-        <div
-          className="pointer-events-none sticky top-0 z-10 -mt-2"
-          style={{ marginBottom: -(HEADER_PX + 8) }}
-        >
+        <div className="absolute inset-x-2 top-2 z-10">
           <BlockHeader block={blocks[pinned]} pinned onInject={onInject} />
         </div>
       )}
-      <div
-        style={{ height: virtualizer.getTotalSize(), position: "relative" }}
-      >
-        {virtualizer.getVirtualItems().map((item) => (
-          <div
-            key={blocks[item.index].id}
-            ref={virtualizer.measureElement}
-            data-index={item.index}
-            style={{
-              position: "absolute",
-              top: 0,
-              left: 0,
-              width: "100%",
-              transform: `translateY(${item.start}px)`,
-            }}
-          >
-            <BlockCard block={blocks[item.index]} onInject={onInject} />
-          </div>
-        ))}
-      </div>
+
+      {/* Marcar bloco é um modo, e modo que não se anuncia ninguém acha. */}
+      {marked && marked.size > 0 && (
+        <div className="absolute bottom-4 right-3 z-10">
+          <span className="rounded-full border border-tyba-border bg-tyba-surface px-2 py-0.5 font-mono text-[10px] text-tyba-text-muted shadow-md">
+            {t("blockPicked", { count: marked.size, combo: copyCombo ?? "" })}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

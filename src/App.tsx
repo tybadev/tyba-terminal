@@ -224,6 +224,7 @@ import {
   setAppMenu,
   onMenuAction,
   onBlockFinalized,
+  onBlocksCleared,
   onSessionPromptMode,
   sessionBlocks,
   sessionPromptMode,
@@ -290,10 +291,19 @@ import { Toolbar } from "./components/Toolbar";
 import {
   ActiveBlockHeader,
   blocksRect,
+  LIVE_DELAY_MS,
   liveRect,
 } from "./components/ActiveBlock";
 import { BlockList } from "./components/BlockList";
 import { mergeBlockHistory } from "./lib/blockHistory";
+import { blocksMarkdown, wipesTheScreen } from "./lib/blockText";
+import {
+  inTextField,
+  modeFor,
+  pickedBlocks,
+  selectBlock,
+  type BlockSelection,
+} from "./lib/blockSelection";
 import { CommandLine } from "./components/CommandLine";
 import { RichInput } from "./components/RichInput";
 import {
@@ -670,6 +680,10 @@ export default function App() {
   promptModesRef.current = promptModes;
   const [promptModePref, setPromptModePref] = useState(false);
   const [blocks, setBlocks] = useState<Record<string, Block[]>>({});
+  // Lido por handler de clique e de tecla; num deles é `window`, e reassinar o
+  // listener a cada bloco que chega seria trabalho por nada.
+  const blocksRef = useRef<Record<string, Block[]>>({});
+  blocksRef.current = blocks;
   const [snippetPrompt, setSnippetPrompt] = useState<{
     snippet: Snippet;
     placeholders: SnippetPlaceholder[];
@@ -1349,13 +1363,12 @@ export default function App() {
     const unlisteners: Array<() => void> = [];
     for (const id of sessionIds.split("\n").filter(Boolean)) {
       void onSessionCommand(id, (payload) => {
-        // Em modo bloco o terminal ao vivo mostra SÓ o comando atual: sem
-        // limpar, o cartão ativo exibia o scrollback inteiro da sessão, e cada
-        // comando deixava de ter o seu recorte. O histórico não se perde — ele
-        // está nos blocos, que é justamente para isso que existem.
-        if (payload.running && promptModesRef.current[id]) {
-          getTerm(id)?.term.clear();
-        }
+        // A limpeza do terminal ao vivo NÃO mora aqui.
+        //
+        // Ela morava, e chegava adiantada: este evento vem por um canal e os
+        // bytes por outro, então limpava-se uma tela onde o eco do comando
+        // ainda não tinha chegado — e ele aparecia logo depois. Agora o próprio
+        // fluxo de bytes traz a limpeza, no lugar exato do `133;C`.
         setSessionCommands((prev) => ({ ...prev, [id]: payload }));
       }).then((un) => (disposed ? un() : unlisteners.push(un)));
       void onSessionCwd(id, (payload) =>
@@ -2771,12 +2784,86 @@ export default function App() {
         if (disposed) un();
         else unlisteners.push(un);
       });
+      void onBlocksCleared(id, () => {
+        setBlocks((prev) => (prev[id]?.length ? { ...prev, [id]: [] } : prev));
+        setBlockPick((prev) => (prev?.session === id ? null : prev));
+      }).then((un) => {
+        if (disposed) un();
+        else unlisteners.push(un);
+      });
     }
     return () => {
       disposed = true;
       unlisteners.forEach((un) => un());
     };
   }, [sessions]);
+
+  // Blocos marcados para copiar de uma vez. Estado de tela, não de sessão: é
+  // qual cartão está aceso, e morre com a janela.
+  const [blockPick, setBlockPick] = useState<{
+    session: SessionId;
+    selection: BlockSelection;
+  } | null>(null);
+
+  const pickBlock = useCallback(
+    (session: SessionId, id: number, event: React.MouseEvent) => {
+      // Arrastar texto dentro de um bloco termina em clique. Marcar o cartão
+      // aqui apagaria a seleção que a pessoa acabou de fazer.
+      //
+      // Menos com shift: shift-clique é COMO o navegador estende seleção de
+      // texto, então o guarda veria sempre texto selecionado e o intervalo de
+      // blocos nunca aconteceria. Aqui shift é do bloco — e a seleção de texto
+      // que ele deixou para trás vai embora junto.
+      const text = window.getSelection();
+      if (event.shiftKey) text?.removeAllRanges();
+      else if (text && !text.isCollapsed) return;
+      const order = (blocksRef.current[session] ?? []).map(
+        (block) => block.id,
+      );
+      setBlockPick((prev) => {
+        const current = prev?.session === session ? prev.selection : null;
+        const next = selectBlock(current, order, id, modeFor(event));
+        return next ? { session, selection: next } : null;
+      });
+    },
+    [],
+  );
+
+  const markedBlocks = useMemo(
+    () => (blockPick ? new Set(blockPick.selection.ids) : null),
+    [blockPick],
+  );
+
+  // A faixa ao vivo só abre para comando que dura. Ver `LIVE_DELAY_MS`.
+  const [liveSlow, setLiveSlow] = useState<Record<string, boolean>>({});
+  const liveTimers = useRef<Record<string, number>>({});
+  useEffect(() => {
+    const timers = liveTimers.current;
+    for (const [id, cmd] of Object.entries(sessionCommands)) {
+      if (cmd?.running) {
+        if (timers[id] === undefined) {
+          timers[id] = window.setTimeout(() => {
+            delete timers[id];
+            setLiveSlow((prev) => (prev[id] ? prev : { ...prev, [id]: true }));
+          }, LIVE_DELAY_MS);
+        }
+        continue;
+      }
+      if (timers[id] !== undefined) {
+        window.clearTimeout(timers[id]);
+        delete timers[id];
+      }
+      setLiveSlow((prev) => (prev[id] ? { ...prev, [id]: false } : prev));
+    }
+  }, [sessionCommands]);
+  useEffect(() => {
+    const timers = liveTimers.current;
+    return () => {
+      for (const timer of Object.values(timers)) window.clearTimeout(timer);
+    };
+  }, []);
+  const blockPickRef = useRef<typeof blockPick>(null);
+  blockPickRef.current = blockPick;
 
   const historyScope = useMemo(
     () => ({
@@ -2880,11 +2967,59 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (captureState.active) return;
+      // Esc só sai da seleção de blocos quando o teclado não é de um campo:
+      // com o foco na caixa de comando, Esc é dela — fecha a sugestão.
+      if (
+        e.key === "Escape" &&
+        blockPickRef.current &&
+        !inTextField(document.activeElement)
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        setBlockPick(null);
+        return;
+      }
+      // Voltar a digitar encerra o modo. Sem isto a seleção fica acesa por trás
+      // de um comando novo, porque com o foco na caixa o Esc é dela — e o
+      // usuário não tem como saber que precisa clicar em algum lugar.
+      if (
+        blockPickRef.current &&
+        e.key.length === 1 &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        setBlockPick(null);
+      }
       const combo = comboOf(e);
       if (!combo) return;
       const action = (Object.keys(bindings) as KeyAction[]).find(
         (a) => bindings[a] === combo,
       );
+      // Blocos marcados fazem o ⌘C copiar os blocos. Perde para quem tem
+      // seleção de texto de verdade: quem destacou algo quer aquilo, não o
+      // cartão que ficou aceso de antes.
+      if (action === "copy" && blockPickRef.current) {
+        const pick = blockPickRef.current;
+        const entry = getTerm(activeId);
+        const text = window.getSelection();
+        const busy =
+          (text && !text.isCollapsed) ||
+          (isTermFocused(entry) && entry?.term.hasSelection());
+        if (pick.session === activeId && !busy) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.repeat) return;
+          const chosen = pickedBlocks(
+            pick.selection,
+            blocksRef.current[activeId ?? ""] ?? [],
+          );
+          if (chosen.length > 0) {
+            void writeClipboardText(blocksMarkdown(chosen)).catch(() => {});
+          }
+          return;
+        }
+      }
       if (action && isTerminalAction(action)) {
         const entry = getTerm(activeId);
         const focused = isTermFocused(entry);
@@ -4233,7 +4368,13 @@ export default function App() {
                       width: paneRect.w,
                       height: paneRect.h,
                     };
-                    const live = Boolean(running?.running);
+                    // `clear` não abre a faixa: ele não tem saída para mostrar,
+                    // e meio painel preto que aparece para logo esvaziar tudo é
+                    // um solavanco em cima de um comando cujo ponto é sumir com
+                    // as coisas.
+                    const live =
+                      Boolean(liveSlow[s.id]) &&
+                      !wipesTheScreen(running?.command ?? null);
                     return (
                       <Fragment key={`blocks-${s.id}`}>
                         {list.length > 0 && (
@@ -4249,6 +4390,14 @@ export default function App() {
                                 ? undefined
                                 : () => void focusPane(paneRect.pane)
                             }
+                            marked={
+                              blockPick?.session === s.id
+                                ? (markedBlocks ?? undefined)
+                                : undefined
+                            }
+                            onPick={(id, event) => pickBlock(s.id, id, event)}
+                            onClearPick={() => setBlockPick(null)}
+                            copyCombo={formatCombo(bindings.copy)}
                           />
                         )}
                         {live && (
