@@ -41,6 +41,7 @@ import {
   hasOpenModifier,
 } from "../lib/terminalLinks";
 import { IS_MAC } from "../lib/platform";
+import { hiddenFraction } from "../lib/liveSeam";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
 export const RELAYOUT_EVENT = "tyba:relayout";
@@ -142,6 +143,19 @@ interface Props {
   agentNotice?: { binary: string } | null;
   onReopenManaged?: () => void;
   onDismissNotice?: () => void;
+  /**
+   * Quanto da tela a saída do comando em curso ocupa, de 0 a 1.
+   *
+   * Recorta a faixa ao vivo na altura da saída real, para o cartão do bloco
+   * nascer onde ela estava. `undefined` mostra o terminal inteiro.
+   *
+   * Nunca vira tamanho: entra como `transform` e `clip-path`, que ficam de fora
+   * do layout e por isso não acordam o `ResizeObserver` que redimensionaria o
+   * PTY. Trocar isto por altura é reintroduzir o `vim` reabrindo torto.
+   */
+  liveUsed?: number;
+  /** Mede a saída em curso para {@link Props.liveUsed} — ver `usedFraction`. */
+  onLiveRows?: (usedRows: number, totalRows: number, scrolled: boolean) => void;
 }
 
 export function TerminalView({
@@ -167,6 +181,8 @@ export function TerminalView({
   agentNotice,
   onReopenManaged,
   onDismissNotice,
+  liveUsed,
+  onLiveRows,
 }: Props) {
   const [gotOutput, setGotOutput] = useState(false);
   // O onData é assinado uma vez no mount: sem ref, a rajada ficaria presa no
@@ -193,6 +209,8 @@ export function TerminalView({
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
   const syncWebglRef = useRef<(() => void) | null>(null);
+  const onLiveRowsRef = useRef(onLiveRows);
+  onLiveRowsRef.current = onLiveRows;
   const hoveredLinkRef = useRef<string | null>(null);
   const [menuHasSelection, setMenuHasSelection] = useState(false);
   const [menuMouseMode, setMenuMouseMode] = useState(false);
@@ -349,6 +367,33 @@ export function TerminalView({
       });
     }).then(addUnlistener);
 
+    // Mede a saída do comando em curso para recortar a faixa ao vivo na altura
+    // dela. `cursorY` é a linha onde o shell parou de escrever; `baseY > 0`
+    // significa que a saída passou da tela e não há o que recortar.
+    //
+    // Só reporta quando o número muda: `onRender` dispara a cada repintura, e
+    // um evento por repintura atravessaria o React inteiro a cada linha de
+    // saída — o core já disputa CPU com os agentes.
+    let lastUsed = -1;
+    let lastTotal = -1;
+    let lastScrolled: boolean | null = null;
+    const measureLive = () => {
+      const report = onLiveRowsRef.current;
+      if (!report) return;
+      const buffer = term.buffer.active;
+      const used = buffer.cursorY + 1;
+      const scrolled = buffer.baseY > 0;
+      if (used === lastUsed && term.rows === lastTotal && scrolled === lastScrolled) {
+        return;
+      }
+      lastUsed = used;
+      lastTotal = term.rows;
+      lastScrolled = scrolled;
+      report(used, term.rows, scrolled);
+    };
+    const liveMeter = term.onRender(measureLive);
+    addUnlistener(() => liveMeter.dispose());
+
     let lastCols = -1;
     let lastRows = -1;
     let timer: number | null = null;
@@ -497,6 +542,29 @@ export function TerminalView({
         }
       : {};
 
+  // A parte de baixo do terminal que fica escondida, em fração da altura dele.
+  // A MESMA fração serve para descer o terminal e para cortá-lo: por isso a
+  // parte visível cai exatamente onde a lista de blocos termina.
+  const hidden = liveUsed === undefined ? 0 : hiddenFraction(liveUsed);
+  const liveClip: React.CSSProperties =
+    hidden <= 0 || !rect
+      ? {}
+      : {
+          // Desce por `top`, NÃO por `transform`.
+          //
+          // Os dois deixam o tamanho intacto — que é o que o `ResizeObserver`
+          // observa e o que viraria `resizeSession` —, mas `transform` promove o
+          // elemento a camada composta e o canvas WebGL do xterm passa a ser
+          // rasterizado numa textura que ignora o pixel ratio da tela: o texto
+          // ao vivo sai granulado ao lado dos cartões, mesma fonte e tudo.
+          //
+          // Para BAIXO porque a saída é escrita a partir do topo do terminal:
+          // quem precisa encostar no fim do painel é a borda de cima.
+          top: `${rect.top + hidden * rect.height}%`,
+          // E o corte é embaixo, onde estão as linhas que o comando não usou.
+          clipPath: `inset(0 0 ${hidden * 100}% 0)`,
+        };
+
   const selection = () => termRef.current?.getSelection() ?? "";
 
   const copySelection = (asMarkdown: boolean) => {
@@ -634,6 +702,14 @@ export function TerminalView({
                   top: `${rect.top}%`,
                   width: `${rect.width}%`,
                   height: `${rect.height}%`,
+                  // Recorte da faixa ao vivo. `height` acima é o tamanho que o
+                  // `fit` mede e que vira `resizeSession` — ele NÃO entra nesta
+                  // conta. O que se move aqui é só a imagem: `translateY` empurra
+                  // o terminal para que o topo dele encoste no fim da lista de
+                  // blocos, e `clipPath` corta embaixo o que sobrou. Ambos ficam
+                  // fora do layout, então o `ResizeObserver` não acorda e o PTY
+                  // não sabe que algo mudou.
+                  ...liveClip,
                   ...frameStyle,
                 }
               : { display: "none" }

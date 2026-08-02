@@ -1,43 +1,14 @@
 import type { PaneRectStyle } from "./TerminalView";
 
-/**
- * Fração do painel reservada para a saída ao vivo.
- *
- * É CONSTANTE de propósito: se a área do terminal mudasse quando o comando
- * começa e termina, o PTY seria redimensionado duas vezes por execução — o
- * mesmo bug que a linha de comando sumindo já causou.
- */
-export const LIVE_FRACTION = 0.5;
-
-/**
- * Quanto um comando precisa durar para a faixa ao vivo abrir.
- *
- * `clear`, `cd`, `echo`: abrir e fechar a faixa em 30ms espreme a lista pela
- * metade, mostra um retângulo preto e desfaz — um pisca que chama mais atenção
- * do que a coisa que ele ia mostrar. Abaixo disto o comando já virou bloco
- * antes de a faixa fazer falta.
- */
-export const LIVE_DELAY_MS = 120;
-
-export function liveRect(pane: PaneRectStyle): PaneRectStyle {
-  const height = pane.height * LIVE_FRACTION;
-  return {
-    left: pane.left,
-    top: pane.top + pane.height - height,
-    width: pane.width,
-    height,
-  };
-}
-
-export function blocksRect(pane: PaneRectStyle, live: boolean): PaneRectStyle {
-  if (!live) return pane;
-  return {
-    left: pane.left,
-    top: pane.top,
-    width: pane.width,
-    height: pane.height * (1 - LIVE_FRACTION),
-  };
-}
+export {
+  blocksRect,
+  hiddenFraction,
+  liveRect,
+  LIVE_DELAY_MS,
+  LIVE_FRACTION,
+  termRect,
+  usedFraction,
+} from "../lib/liveSeam";
 
 /**
  * O header do bloco que está executando, encaixado logo acima da saída ao vivo.
@@ -70,5 +41,31 @@ export function ActiveBlockHeader({
       </span>
       <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-tyba-green" />
     </div>
+  );
+}
+
+/**
+ * A moldura em volta da saída ao vivo — o resto do cartão que o header começa.
+ *
+ * Sem ela o bloco em execução é o único da lista sem caixa fechada: o header
+ * desenha a tampa e o corpo termina no vazio, o que lê como bloco cortado no
+ * meio, ainda mais ao lado dos cartões já prontos logo acima.
+ *
+ * É um irmão do terminal, não uma borda nele: o corpo ao vivo é recortado por
+ * `clip-path`, e uma borda no próprio elemento seria cortada junto — some
+ * justamente a linha de baixo, que é a que fecha a caixa.
+ */
+export function ActiveBlockFrame({ rect }: { rect: PaneRectStyle }) {
+  return (
+    <div
+      className="pointer-events-none z-10 rounded-b-[5px] border border-t-0 border-tyba-border"
+      style={{
+        position: "absolute",
+        left: `${rect.left}%`,
+        top: `${rect.top}%`,
+        width: `${rect.width}%`,
+        height: `${rect.height}%`,
+      }}
+    />
   );
 }
