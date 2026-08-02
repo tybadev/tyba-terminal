@@ -105,6 +105,19 @@ Disparar **na tag** faz `github.ref` ser `refs/tags/v0.1.0`: assina, verifica e 
   ```
 
   O nome do bundle é decidido pelo Tauri e já mudou entre versões: adivinhar o padrão gera link 404 silencioso, que é a mesma classe de mentira que o `LAST_KNOWN_RELEASE` existe para evitar.
+
+  > [!danger] Este passo vem DEPOIS de publicar o rascunho — no rascunho o comando devolve lixo
+  > Enquanto o release é rascunho, `publishedAt` é `null` e as URLs dos assets saem assim:
+  >
+  > ```
+  > https://github.com/tybadev/tyba-terminal/releases/download/untagged-8469518c85772dbbd313/Tyba_0.4.1_amd64.deb
+  > ```
+  >
+  > Esse `untagged-<hash>` **muda quando o release é publicado** — vira `download/v0.4.1/`. Copiar do rascunho grava na página de versões exatamente o 404 silencioso que o parágrafo acima manda evitar, e `date: .publishedAt[0:7]` estoura num campo nulo.
+  >
+  > Como o rascunho existe de propósito (o dono confere e publica na mão), a ordem correta é: publicar → só então gerar a entrada. Depois de escrever, confira as URLs de verdade — `curl -s -o /dev/null -w '%{http_code}' -IL <url>` em cada uma, todas 200. O `sha256` do próprio `SHA256SUMS.txt` não está dentro dele; calcule do arquivo baixado.
+  >
+  > (Descoberto ao cortar a 0.4.1: a skill mandava rodar o comando sem dizer em que momento, e no rascunho ele parece funcionar — devolve JSON bem-formado, com URLs que só quebram semanas depois, na página de versões antigas.)
 - **Gravar a versão publicada em `tyba-site/src/lib/release.ts` (`LAST_KNOWN_RELEASE`)** — versão + plataformas que de fato saíram. **Este passo não é cosmético.** O site lê a Releases API sem token, e a Vercel roda em IP compartilhado: sob rate limit o fetch falha, e sem essa memória a página conclui *"nenhum binário publicado"* — ou seja, no pico de tráfego ela diz ao usuário que o download não existe. A regra: **o site pode não saber que saiu versão nova; nunca pode dizer que não existe binário quando existe.**
 - Conferir que `tyba.dev/{locale}/download` já mostra a versão (a página lê a Releases API com cache de 1h — pode levar até uma hora, ou force um redeploy).
 - Conferir que o changelog do site tem a versão publicada, **sem o selo de pré-release** (ele some sozinho quando o release existe).
