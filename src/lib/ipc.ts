@@ -1221,6 +1221,63 @@ export const suggestLine = (input: {
 export const completeArgument = (prefix: string, token: string) =>
   invoke<string[]>("complete_argument", { prefix, token });
 
+export type BlockColor =
+  | { kind: "default" }
+  | { kind: "idx"; value: number }
+  | { kind: "rgb"; value: [number, number, number] };
+
+export interface StyleRun {
+  start: number;
+  end: number;
+  fg: BlockColor;
+  bg: BlockColor;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+}
+
+export interface LogicalLine {
+  text: string;
+  runs: StyleRun[];
+}
+
+export interface Block {
+  id: number;
+  sessionId: string;
+  command: string;
+  exitCode: number | null;
+  startedAtMs: number;
+  finishedAtMs: number;
+  lines: LogicalLine[];
+  truncated: number;
+  /** Onde o comando rodou, do jeito que estava quando rodou. */
+  cwd: string | null;
+  /**
+   * O comando pintou a tela alternada (`vim`, `bat`, `htop`). A saída não é
+   * guardada — recortar a tela de um programa produz lixo —, mas o bloco existe
+   * para o comando não sumir do registro.
+   */
+  altScreen: boolean;
+}
+
+export const sessionBlocks = (id: SessionId) =>
+  invoke<Block[]>("session_blocks", { id });
+
+export const onBlockFinalized = (
+  id: SessionId,
+  handler: (block: Block) => void,
+): Promise<UnlistenFn> =>
+  listen<Block>(`block://finalized/${id}`, (e) => handler(e.payload));
+
+/** `clear`/`reset`: em modo bloco a tela é a lista, e ela some inteira. */
+export const onBlocksCleared = (
+  id: SessionId,
+  handler: () => void,
+): Promise<UnlistenFn> => listen(`block://cleared/${id}`, () => handler());
+
+export const sessionPromptMode = (id: SessionId) =>
+  invoke<boolean>("session_prompt_mode", { id });
+
 export const togglePromptMode = (id: SessionId) =>
   invoke<void>("toggle_prompt_mode", { id });
 

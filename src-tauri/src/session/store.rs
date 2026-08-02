@@ -174,6 +174,29 @@ CREATE TABLE IF NOT EXISTS command_history (
 );
 CREATE INDEX IF NOT EXISTS command_history_by_time ON command_history (started_at_ms DESC);
 CREATE INDEX IF NOT EXISTS command_history_by_cwd ON command_history (cwd, started_at_ms DESC);
+CREATE TABLE IF NOT EXISTS block (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    command TEXT NOT NULL,
+    exit_code INTEGER,
+    started_at_ms INTEGER NOT NULL,
+    finished_at_ms INTEGER NOT NULL,
+    truncated INTEGER NOT NULL,
+    bytes INTEGER NOT NULL,
+    lines TEXT NOT NULL,
+    alt_screen INTEGER NOT NULL DEFAULT 0,
+    cwd TEXT
+);
+CREATE INDEX IF NOT EXISTS block_by_session ON block (session_id, id DESC);
+CREATE TABLE IF NOT EXISTS block_checkpoint (
+    session_id TEXT PRIMARY KEY,
+    command TEXT NOT NULL,
+    started_at_ms INTEGER NOT NULL,
+    cols INTEGER NOT NULL,
+    rows INTEGER NOT NULL,
+    bytes BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS snippet (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -189,6 +212,16 @@ CREATE TABLE IF NOT EXISTS snippet (
 /// Teto do histórico. Sem ele a tabela cresce com o uso e nunca encolhe: é a
 /// única do banco alimentada por cada Enter que o usuário dá.
 const COMMAND_HISTORY_CAP: i64 = 20_000;
+
+/// Retenção de bloco por sessão, nas duas dimensões. Contagem sozinha não
+/// protege de um bloco gigante; tamanho sozinho deixa a tabela crescer em
+/// número. Poda os mais antigos primeiro.
+const BLOCK_CAP_COUNT: i64 = 1_000;
+const BLOCK_CAP_BYTES: i64 = 64 * 1024 * 1024;
+
+/// Formato do payload de linhas. Versão desconhecida é IGNORADA na leitura —
+/// um bloco gravado por uma versão futura não pode derrubar a sessão.
+const BLOCK_VERSION: i64 = 1;
 
 /// Quantos comandos distintos entram no ranking. O corte é por recência, então o
 /// que fica de fora é o que ninguém procuraria de qualquer forma — e o fuzzy
@@ -254,6 +287,11 @@ impl Store {
             "ALTER TABLE workspaces ADD COLUMN launch_config_id TEXT",
             [],
         );
+        let _ = conn.execute(
+            "ALTER TABLE block ADD COLUMN alt_screen INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute("ALTER TABLE block ADD COLUMN cwd TEXT", []);
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -292,12 +330,26 @@ impl Store {
         Ok(())
     }
 
+    /// Descarta a sessão e tudo que ela gravou.
+    ///
+    /// O scrollback é coluna da própria linha e sai junto; blocos e checkpoint
+    /// moram em tabelas separadas, sem FK, e ficariam para trás. Quem descarta
+    /// uma sessão quer que a saída dela suma — deixá-la no disco esperando a
+    /// retenção contraria justamente o gesto (princípio #10).
+    ///
+    /// Numa transação porque as três apagam a mesma coisa: meio descarte é
+    /// output órfão que ninguém mais tem como listar nem apagar.
     pub fn remove_session(&self, id: SessionId) -> Result<(), StoreError> {
-        let conn = self.conn.lock();
-        conn.execute(
-            "DELETE FROM sessions WHERE id = ?1",
-            params![id.to_string()],
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let key = id.to_string();
+        tx.execute("DELETE FROM sessions WHERE id = ?1", params![key])?;
+        tx.execute("DELETE FROM block WHERE session_id = ?1", params![key])?;
+        tx.execute(
+            "DELETE FROM block_checkpoint WHERE session_id = ?1",
+            params![key],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -824,6 +876,208 @@ impl Store {
             }
         }
         Ok(())
+    }
+
+    pub fn insert_block(&self, block: &crate::blocks::Block) -> Result<usize, StoreError> {
+        let lines = serde_json::to_string(&block.lines)?;
+        let bytes = lines.len() as i64;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO block
+                 (session_id, version, command, exit_code, started_at_ms,
+                  finished_at_ms, truncated, bytes, lines, alt_screen, cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                block.session_id,
+                BLOCK_VERSION,
+                block.command,
+                block.exit_code,
+                block.started_at_ms,
+                block.finished_at_ms,
+                block.truncated as i64,
+                bytes,
+                lines,
+                block.alt_screen,
+                block.cwd,
+            ],
+        )?;
+
+        // Poda por contagem E por tamanho: um `cat` de log enorme estoura o
+        // segundo teto muito antes do primeiro. Roda fora do caminho do que o
+        // usuário vê — o bloco já foi emitido antes desta função ser chamada.
+        let pruned = conn.execute(
+            "DELETE FROM block WHERE session_id = ?1 AND id NOT IN (
+                 SELECT id FROM (
+                     SELECT id,
+                            ROW_NUMBER() OVER (ORDER BY id DESC) AS pos,
+                            SUM(bytes) OVER (ORDER BY id DESC) AS running
+                     FROM block WHERE session_id = ?1
+                 )
+                 WHERE pos <= ?2 AND running <= ?3
+             )",
+            params![block.session_id, BLOCK_CAP_COUNT, BLOCK_CAP_BYTES],
+        )?;
+        Ok(pruned)
+    }
+
+    /// Maior id já gravado, de qualquer sessão.
+    ///
+    /// É o piso do contador de ids vivos: o bloco emitido para a tela e o bloco
+    /// lido de volta do disco convivem na mesma lista.
+    pub fn max_block_id(&self) -> Result<u64, StoreError> {
+        let conn = self.conn.lock();
+        let max: Option<i64> = conn.query_row("SELECT MAX(id) FROM block", [], |row| row.get(0))?;
+        Ok(max.unwrap_or(0).max(0) as u64)
+    }
+
+    /// Blocos de uma sessão, do mais antigo para o mais novo (ordem de leitura).
+    pub fn list_blocks(
+        &self,
+        session_id: &str,
+        limit: i64,
+    ) -> Result<Vec<crate::blocks::Block>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, version, command, exit_code, started_at_ms,
+                    finished_at_ms, truncated, lines, alt_screen, cwd
+             FROM block WHERE session_id = ?1
+             ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id, limit], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i32>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, bool>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut blocks: Vec<crate::blocks::Block> = rows
+            .into_iter()
+            .filter(|row| row.2 == BLOCK_VERSION)
+            .filter_map(|row| {
+                let lines = serde_json::from_str(&row.8).ok()?;
+                Some(crate::blocks::Block {
+                    id: row.0 as u64,
+                    session_id: row.1,
+                    command: row.3,
+                    exit_code: row.4,
+                    started_at_ms: row.5,
+                    finished_at_ms: row.6,
+                    lines,
+                    truncated: row.7.max(0) as usize,
+                    alt_screen: row.9,
+                    cwd: row.10,
+                })
+            })
+            .collect();
+        blocks.reverse();
+        Ok(blocks)
+    }
+
+    /// Apaga os blocos de uma sessão viva — é o `clear`.
+    ///
+    /// Diferente do descarte da sessão (`remove_session`), que leva a linha da
+    /// sessão junto: aqui ela continua, só sem o que já rolou.
+    pub fn drop_blocks(&self, session_id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM block WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Fotografia do comando em execução.
+    ///
+    /// Sem isto, um crash no meio de um `cargo build` de cinco minutos perde a
+    /// saída inteira — o bloco só nasce no `133;D`. Uma linha por sessão, sempre
+    /// substituída.
+    pub fn save_checkpoint(
+        &self,
+        session_id: &str,
+        command: &str,
+        started_at_ms: i64,
+        cols: u16,
+        rows: u16,
+        bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO block_checkpoint
+                 (session_id, command, started_at_ms, cols, rows, bytes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(session_id) DO UPDATE SET
+                 command = ?2, started_at_ms = ?3, cols = ?4, rows = ?5, bytes = ?6",
+            params![session_id, command, started_at_ms, cols, rows, bytes],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_checkpoint(&self, session_id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM block_checkpoint WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Checkpoints órfãos viram blocos interrompidos e são consumidos.
+    ///
+    /// Rodado no boot: se existe checkpoint, o app morreu com um comando
+    /// rodando — `exit_code` nulo é justamente o "não terminou".
+    pub fn drain_checkpoints(&self) -> Result<usize, StoreError> {
+        let rows: Vec<(String, String, i64, u16, u16, Vec<u8>)> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare(
+                "SELECT session_id, command, started_at_ms, cols, rows, bytes
+                 FROM block_checkpoint",
+            )?;
+            let mapped = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            mapped
+        };
+        let count = rows.len();
+        for (session_id, command, started_at_ms, cols, rows_n, bytes) in rows {
+            let (lines, truncated) = crate::blocks::extract_lines(&bytes, cols, rows_n);
+            let block = crate::blocks::Block {
+                id: 0,
+                session_id: session_id.clone(),
+                command,
+                exit_code: None,
+                // Checkpoint só existe fora de tela alternada, e não carrega
+                // cwd: quem o gravou é a thread emitter, no meio do comando.
+                alt_screen: false,
+                cwd: None,
+                started_at_ms,
+                finished_at_ms: started_at_ms,
+                lines,
+                truncated,
+            };
+            self.insert_block(&block)?;
+            self.clear_checkpoint(&session_id)?;
+        }
+        Ok(count)
     }
 
     pub fn list_snippets(&self) -> Result<Vec<crate::snippet::Snippet>, StoreError> {
@@ -1896,6 +2150,178 @@ mod tests {
 
         store.clear_command_history(None).unwrap();
         assert_eq!(history_count(&store), 0);
+    }
+
+    fn block(session: &str, command: &str, lines: usize) -> crate::blocks::Block {
+        crate::blocks::Block {
+            id: 0,
+            session_id: session.into(),
+            command: command.into(),
+            exit_code: Some(0),
+            alt_screen: false,
+            cwd: None,
+            started_at_ms: 1,
+            finished_at_ms: 2,
+            lines: (0..lines)
+                .map(|i| crate::blocks::LogicalLine {
+                    text: format!("linha {i}"),
+                    runs: Vec::new(),
+                })
+                .collect(),
+            truncated: 0,
+        }
+    }
+
+    #[test]
+    fn block_round_trip_keeps_reading_order() {
+        let store = Store::open_in_memory().unwrap();
+        store.insert_block(&block("s1", "primeiro", 1)).unwrap();
+        store.insert_block(&block("s1", "segundo", 2)).unwrap();
+        store.insert_block(&block("s2", "outra sessão", 1)).unwrap();
+
+        let found = store.list_blocks("s1", 100).unwrap();
+        assert_eq!(
+            found.iter().map(|b| b.command.as_str()).collect::<Vec<_>>(),
+            vec!["primeiro", "segundo"],
+            "do mais antigo para o mais novo, como se lê"
+        );
+        assert_eq!(found[1].lines.len(), 2);
+        assert_eq!(store.list_blocks("s2", 100).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn block_retention_prunes_the_oldest_by_count() {
+        let store = Store::open_in_memory().unwrap();
+        for i in 0..(BLOCK_CAP_COUNT + 5) {
+            store
+                .insert_block(&block("s1", &format!("cmd{i}"), 1))
+                .unwrap();
+        }
+        let found = store.list_blocks("s1", 5_000).unwrap();
+        assert_eq!(found.len() as i64, BLOCK_CAP_COUNT);
+        assert_eq!(found[0].command, "cmd5", "os mais antigos é que saem");
+    }
+
+    #[test]
+    fn block_of_unknown_version_is_ignored_not_fatal() {
+        // Bloco gravado por uma versão futura do TYBA não pode derrubar a
+        // sessão de quem voltou para uma versão antiga.
+        let store = Store::open_in_memory().unwrap();
+        store.insert_block(&block("s1", "atual", 1)).unwrap();
+        {
+            let conn = store.conn.lock();
+            conn.execute(
+                "INSERT INTO block (session_id, version, command, exit_code,
+                     started_at_ms, finished_at_ms, truncated, bytes, lines)
+                 VALUES ('s1', 999, 'do futuro', 0, 1, 2, 0, 10, 'formato-que-nao-existe')",
+                [],
+            )
+            .unwrap();
+        }
+        let found = store.list_blocks("s1", 100).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].command, "atual");
+    }
+
+    #[test]
+    fn a_full_screen_app_still_leaves_a_block_behind() {
+        // `bat`, `vim`, `htop`: a saída é a tela de um programa e não se guarda,
+        // mas o comando foi executado — sumir com ele apaga do registro algo que
+        // a pessoa fez.
+        let store = Store::open_in_memory().unwrap();
+        let mut tui = block("s1", "bat README.md", 0);
+        tui.alt_screen = true;
+        store.insert_block(&tui).unwrap();
+
+        let found = store.list_blocks("s1", 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].command, "bat README.md");
+        assert!(
+            found[0].alt_screen,
+            "o bloco precisa dizer por que está vazio"
+        );
+        assert!(found[0].lines.is_empty());
+    }
+
+    #[test]
+    fn discarding_a_session_takes_its_blocks_and_checkpoint_along() {
+        // Descartar a sessão é o gesto de fazer a saída dela sumir. Bloco e
+        // checkpoint não têm FK; sem isto ficariam no disco até a retenção.
+        let store = Store::open_in_memory().unwrap();
+        let doomed = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        store
+            .insert_block(&block(&doomed.to_string(), "a", 1))
+            .unwrap();
+        store
+            .insert_block(&block(&other.to_string(), "b", 1))
+            .unwrap();
+        store
+            .save_checkpoint(&doomed.to_string(), "cargo build", 10, 80, 24, b"x")
+            .unwrap();
+        store
+            .save_checkpoint(&other.to_string(), "cargo test", 10, 80, 24, b"y")
+            .unwrap();
+
+        store.remove_session(doomed).unwrap();
+
+        assert!(store
+            .list_blocks(&doomed.to_string(), 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.list_blocks(&other.to_string(), 10).unwrap().len(), 1);
+        // O checkpoint da descartada some; o da outra ainda vira bloco no boot.
+        assert_eq!(store.drain_checkpoints().unwrap(), 1);
+        assert_eq!(
+            store.list_blocks(&other.to_string(), 10).unwrap().len(),
+            2,
+            "o checkpoint sobrevivente é o da sessão que ficou"
+        );
+    }
+
+    #[test]
+    fn orphan_checkpoint_becomes_an_unfinished_block_on_boot() {
+        // O app morreu no meio de um comando longo: a saída não pode sumir.
+        let store = Store::open_in_memory().unwrap();
+        store
+            .save_checkpoint("s1", "cargo build", 10, 80, 24, b"Compiling tyba\r\n")
+            .unwrap();
+
+        assert_eq!(store.drain_checkpoints().unwrap(), 1);
+        let found = store.list_blocks("s1", 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].command, "cargo build");
+        assert_eq!(found[0].exit_code, None, "não terminou, e o bloco diz isso");
+        assert_eq!(found[0].lines[0].text, "Compiling tyba");
+
+        // Consumido: reabrir de novo não duplica o bloco.
+        assert_eq!(store.drain_checkpoints().unwrap(), 0);
+        assert_eq!(store.list_blocks("s1", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn checkpoint_is_one_row_per_session_always_replaced() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .save_checkpoint("s1", "cmd", 1, 80, 24, b"antes")
+            .unwrap();
+        store
+            .save_checkpoint("s1", "cmd", 1, 80, 24, b"depois")
+            .unwrap();
+        store.drain_checkpoints().unwrap();
+        let found = store.list_blocks("s1", 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].lines[0].text, "depois");
+    }
+
+    #[test]
+    fn finished_command_leaves_no_checkpoint_behind() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .save_checkpoint("s1", "cmd", 1, 80, 24, b"parcial")
+            .unwrap();
+        store.clear_checkpoint("s1").unwrap();
+        assert_eq!(store.drain_checkpoints().unwrap(), 0);
     }
 
     #[test]

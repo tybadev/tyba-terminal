@@ -15,12 +15,21 @@ import {
   controlBytes,
   ghostFor,
   lineToken,
+  type LineState,
   pathToken,
   replaceToken,
   SUGGEST_DEBOUNCE_MS,
 } from "../lib/commandLine";
 
 const MAX_HEIGHT_PX = 140;
+
+const PLACEHOLDER_BY_STATE: Record<LineState, string> = {
+  own: "commandLinePlaceholder",
+  waiting: "commandLineWaiting",
+  running: "commandLineRunning",
+  app: "commandLineApp",
+  off: "commandLineOff",
+};
 
 interface Props {
   sessionId: SessionId;
@@ -30,11 +39,17 @@ interface Props {
   /** Muda quando a linha volta a ser do TYBA (fim de comando, saída do vim). */
   focusNonce: number;
   /**
-   * O shell ainda não confirmou o modo prompt (está carregando `.zshrc`,
-   * framework, plugins). A linha aparece desde já, desabilitada: sem isso a
-   * tela fica em branco e sem lugar nenhum para digitar até o primeiro prompt.
+   * Por que a linha não é editável agora. Ela **nunca** desaparece: sumir e
+   * voltar a cada comando redimensionava o terminal duas vezes por execução.
    */
-  waiting?: boolean;
+  state: LineState;
+  /**
+   * Texto vindo de fora (paleta de histórico, snippet, colar).
+   *
+   * Com o terminal somente-leitura, injetar via `term.paste` seria engolido em
+   * silêncio — o destino passa a ser a caixa, que é quem edita a linha.
+   */
+  inject?: { text: string; nonce: number } | null;
 }
 
 function baseName(path: string | null): string {
@@ -57,8 +72,10 @@ export function CommandLine({
   branch,
   scope,
   focusNonce,
-  waiting,
+  state,
+  inject,
 }: Props) {
+  const waiting = state !== "own";
   const { t } = useTranslation();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
@@ -68,6 +85,23 @@ export function CommandLine({
   const [menuOpen, setMenuOpen] = useState(false);
   const [paths, setPaths] = useState<string[]>([]);
   const [args, setArgs] = useState<string[]>([]);
+
+  const seenInject = useRef(inject?.nonce ?? 0);
+  useEffect(() => {
+    if (!inject || inject.nonce === seenInject.current) return;
+    seenInject.current = inject.nonce;
+    setText(inject.text);
+    setCaret(inject.text.length);
+    setMenuOpen(false);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(inject.text.length, inject.text.length);
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`;
+    });
+  }, [inject]);
 
   const seenNonce = useRef(focusNonce);
   useEffect(() => {
@@ -120,6 +154,27 @@ export function CommandLine({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [waiting, text, token?.value, arg?.prefix, arg?.value, scope.cwd, scope.repoRoot]);
+
+  // ↑ abre o histórico. Com a caixa vazia não há o que sugerir enquanto se
+  // digita, então a lista só é buscada quando alguém pede — que é o gesto que
+  // todo mundo já traz do shell.
+  const openHistory = () => {
+    void suggestLine({
+      query: text,
+      cwd: scope.cwd,
+      repoRoot: scope.repoRoot,
+      pathToken: null,
+      argPrefix: null,
+      argToken: null,
+    })
+      .then((found) => {
+        if (found.commands.length === 0) return;
+        setHits(found.commands);
+        setIndex(0);
+        setMenuOpen(true);
+      })
+      .catch(() => {});
+  };
 
   const takeArg = (completion: string) => {
     if (!arg) return false;
@@ -232,6 +287,18 @@ export function CommandLine({
     ) {
       e.preventDefault();
       setMenuOpen(true);
+      return;
+    }
+    // ↑ com a lista fechada é o histórico, como em qualquer shell. Já filtrado
+    // pelo que estiver escrito: com a caixa vazia vem o mais recente.
+    if (e.key === "ArrowUp" && !showMenu) {
+      e.preventDefault();
+      if (listed.length > 0) {
+        setIndex(0);
+        setMenuOpen(true);
+      } else {
+        openHistory();
+      }
       return;
     }
     if (e.key === "Escape") {
@@ -360,7 +427,7 @@ export function CommandLine({
             autoCorrect="off"
             value={text}
             disabled={waiting}
-            placeholder={t(waiting ? "commandLineWaiting" : "commandLinePlaceholder")}
+            placeholder={t(PLACEHOLDER_BY_STATE[state])}
             onChange={(e) => {
               setText(e.target.value);
               setCaret(e.target.selectionStart ?? 0);

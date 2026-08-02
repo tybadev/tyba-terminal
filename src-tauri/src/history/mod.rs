@@ -111,6 +111,10 @@ impl Tracker {
         self.raw = Some(raw);
     }
 
+    pub fn started_at(&self) -> Option<i64> {
+        self.started_at
+    }
+
     pub fn on_start(&mut self, now_ms: i64) {
         self.started_at = Some(now_ms);
     }

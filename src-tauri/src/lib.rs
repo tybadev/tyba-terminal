@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod approvals;
+pub mod blocks;
 pub mod completion;
 pub mod docker;
 pub mod editor;
@@ -4106,6 +4107,23 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
         .map_err(|e| e.to_string())
 }
 
+/// Consulta o modo prompt em vez de esperar o evento: quem assina depois do
+/// primeiro prompt nunca receberia o `633;P` e ficaria sem a linha de comando.
+/// Blocos já gravados de uma sessão, para reabrir mostrando o que aconteceu
+/// antes. Nada é gravado sem ser usado (ADR de 2026-07-10).
+#[tauri::command]
+fn session_blocks(state: State<'_, AppState>, id: SessionId) -> Result<Vec<blocks::Block>, String> {
+    state
+        .store
+        .list_blocks(&id.to_string(), 200)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn session_prompt_mode(state: State<'_, AppState>, id: SessionId) -> bool {
+    state.pty_pool.prompt_mode(id).unwrap_or(false)
+}
+
 #[tauri::command]
 fn toggle_prompt_mode(state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
     state
@@ -4683,6 +4701,13 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 let enabled = history_enabled(&state.store);
                 history::install(Arc::clone(&state.store), enabled);
+                // Checkpoint órfão = o app morreu com um comando rodando. Vira
+                // bloco sem exit code, que é exatamente o "não terminou".
+                //
+                // Antes do `install` porque o dreno GRAVA blocos, e é do maior
+                // id gravado que o contador de ids vivos parte.
+                let _ = state.store.drain_checkpoints();
+                blocks::install(app.handle().clone(), Arc::clone(&state.store));
             }
 
             Ok(())
@@ -4811,6 +4836,8 @@ pub fn run() {
             submit_shell_line,
             write_control,
             toggle_prompt_mode,
+            session_prompt_mode,
+            session_blocks,
             search_command_history,
             suggest_commands,
             complete_path,

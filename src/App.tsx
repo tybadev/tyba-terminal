@@ -1,5 +1,7 @@
 import type { ElementType } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState,
+  Fragment,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   CaretDown,
@@ -221,10 +223,15 @@ import {
   updateCheck,
   setAppMenu,
   onMenuAction,
+  onBlockFinalized,
+  onBlocksCleared,
   onSessionPromptMode,
+  sessionBlocks,
+  sessionPromptMode,
   togglePromptMode,
   renderSnippet,
   snippetPlaceholders,
+  type Block,
   type Snippet,
   type SnippetPlaceholder,
   updateDismiss,
@@ -281,6 +288,22 @@ import {
   type ToolbarPref,
 } from "./lib/repoSnapshots";
 import { Toolbar } from "./components/Toolbar";
+import {
+  ActiveBlockHeader,
+  blocksRect,
+  LIVE_DELAY_MS,
+  liveRect,
+} from "./components/ActiveBlock";
+import { BlockList } from "./components/BlockList";
+import { mergeBlockHistory } from "./lib/blockHistory";
+import { blocksMarkdown, wipesTheScreen } from "./lib/blockText";
+import {
+  inTextField,
+  modeFor,
+  pickedBlocks,
+  selectBlock,
+  type BlockSelection,
+} from "./lib/blockSelection";
 import { CommandLine } from "./components/CommandLine";
 import { RichInput } from "./components/RichInput";
 import {
@@ -313,6 +336,7 @@ import {
 } from "./lib/appMenu";
 import {
   keyboardOwner,
+  lineState,
   PROMPT_MODE_PREF_KEY,
 } from "./lib/commandLine";
 import { changelogUrl } from "./lib/changelog";
@@ -650,7 +674,16 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [altScreens, setAltScreens] = useState<Record<string, boolean>>({});
   const [promptModes, setPromptModes] = useState<Record<string, boolean>>({});
+  // O listener de comando é assinado uma vez por sessão; sem ref ele leria o
+  // modo do primeiro render para sempre.
+  const promptModesRef = useRef<Record<string, boolean>>({});
+  promptModesRef.current = promptModes;
   const [promptModePref, setPromptModePref] = useState(false);
+  const [blocks, setBlocks] = useState<Record<string, Block[]>>({});
+  // Lido por handler de clique e de tecla; num deles é `window`, e reassinar o
+  // listener a cada bloco que chega seria trabalho por nada.
+  const blocksRef = useRef<Record<string, Block[]>>({});
+  blocksRef.current = blocks;
   const [snippetPrompt, setSnippetPrompt] = useState<{
     snippet: Snippet;
     placeholders: SnippetPlaceholder[];
@@ -1330,6 +1363,12 @@ export default function App() {
     const unlisteners: Array<() => void> = [];
     for (const id of sessionIds.split("\n").filter(Boolean)) {
       void onSessionCommand(id, (payload) => {
+        // A limpeza do terminal ao vivo NÃO mora aqui.
+        //
+        // Ela morava, e chegava adiantada: este evento vem por um canal e os
+        // bytes por outro, então limpava-se uma tela onde o eco do comando
+        // ainda não tinha chegado — e ele aparecia logo depois. Agora o próprio
+        // fluxo de bytes traz a limpeza, no lugar exato do `133;C`.
         setSessionCommands((prev) => ({ ...prev, [id]: payload }));
       }).then((un) => (disposed ? un() : unlisteners.push(un)));
       void onSessionCwd(id, (payload) =>
@@ -2650,13 +2689,21 @@ export default function App() {
   // O shell só reporta o modo no primeiro prompt — depois de carregar rc,
   // framework e plugins. Até lá a linha aparece desabilitada em vez de a tela
   // ficar em branco sem lugar nenhum para digitar.
-  const promptPending =
-    promptModePref &&
+  // A linha aparece sempre que a sessão é um shell em modo prompt — inclusive
+  // com comando rodando ou app de tela cheia aberto. Ela só muda de estado.
+  const lineVisible =
     activeId != null &&
     activeSession?.kind.type === "shell" &&
-    promptModes[activeId] === undefined &&
-    !activeCommand?.running &&
-    !(altScreens[activeId] ?? false);
+    (promptMode || promptModePref);
+
+  const commandLineState = lineState({
+    reported: activeId ? promptModes[activeId] : undefined,
+    promptMode,
+    kind: activeSession?.kind,
+    altScreen: activeId ? (altScreens[activeId] ?? false) : false,
+    command: activeCommand,
+    integrated: promptMode,
+  });
   const ownsCommandLine =
     keyboardOwner({
       promptMode,
@@ -2668,6 +2715,10 @@ export default function App() {
 
   // Voltar do vim ou do fim de um comando devolve o foco para a linha.
   const [commandLineNonce, setCommandLineNonce] = useState(0);
+  const [injected, setInjected] = useState<{
+    text: string;
+    nonce: number;
+  } | null>(null);
   useEffect(() => {
     if (ownsCommandLine) {
       setCommandLineNonce((n) => n + 1);
@@ -2695,12 +2746,124 @@ export default function App() {
         if (disposed) un();
         else unlisteners.push(un);
       });
+      // Consulta além de assinar: se o primeiro prompt chegou antes deste
+      // listener existir, o evento se perdeu e a linha nunca apareceria.
+      void sessionPromptMode(id)
+        .then((on) => {
+          if (!disposed && on) {
+            setPromptModes((prev) => (prev[id] ? prev : { ...prev, [id]: on }));
+          }
+        })
+        .catch(() => {});
     }
     return () => {
       disposed = true;
       unlisteners.forEach((un) => un());
     };
   }, [sessions]);
+
+  // Histórico persistido + os que chegam agora. O bloco vem pronto do core: o
+  // front não parseia saída, só desenha os spans.
+  useEffect(() => {
+    const ids = sessions.filter((s) => s.kind.type === "shell").map((s) => s.id);
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    for (const id of ids) {
+      void sessionBlocks(id)
+        .then((loaded) => {
+          if (disposed || loaded.length === 0) return;
+          setBlocks((prev) => {
+            const merged = mergeBlockHistory(prev[id] ?? [], loaded);
+            return merged === prev[id] ? prev : { ...prev, [id]: merged };
+          });
+        })
+        .catch(() => {});
+      void onBlockFinalized(id, (block) => {
+        setBlocks((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), block] }));
+      }).then((un) => {
+        if (disposed) un();
+        else unlisteners.push(un);
+      });
+      void onBlocksCleared(id, () => {
+        setBlocks((prev) => (prev[id]?.length ? { ...prev, [id]: [] } : prev));
+        setBlockPick((prev) => (prev?.session === id ? null : prev));
+      }).then((un) => {
+        if (disposed) un();
+        else unlisteners.push(un);
+      });
+    }
+    return () => {
+      disposed = true;
+      unlisteners.forEach((un) => un());
+    };
+  }, [sessions]);
+
+  // Blocos marcados para copiar de uma vez. Estado de tela, não de sessão: é
+  // qual cartão está aceso, e morre com a janela.
+  const [blockPick, setBlockPick] = useState<{
+    session: SessionId;
+    selection: BlockSelection;
+  } | null>(null);
+
+  const pickBlock = useCallback(
+    (session: SessionId, id: number, event: React.MouseEvent) => {
+      // Arrastar texto dentro de um bloco termina em clique. Marcar o cartão
+      // aqui apagaria a seleção que a pessoa acabou de fazer.
+      //
+      // Menos com shift: shift-clique é COMO o navegador estende seleção de
+      // texto, então o guarda veria sempre texto selecionado e o intervalo de
+      // blocos nunca aconteceria. Aqui shift é do bloco — e a seleção de texto
+      // que ele deixou para trás vai embora junto.
+      const text = window.getSelection();
+      if (event.shiftKey) text?.removeAllRanges();
+      else if (text && !text.isCollapsed) return;
+      const order = (blocksRef.current[session] ?? []).map(
+        (block) => block.id,
+      );
+      setBlockPick((prev) => {
+        const current = prev?.session === session ? prev.selection : null;
+        const next = selectBlock(current, order, id, modeFor(event));
+        return next ? { session, selection: next } : null;
+      });
+    },
+    [],
+  );
+
+  const markedBlocks = useMemo(
+    () => (blockPick ? new Set(blockPick.selection.ids) : null),
+    [blockPick],
+  );
+
+  // A faixa ao vivo só abre para comando que dura. Ver `LIVE_DELAY_MS`.
+  const [liveSlow, setLiveSlow] = useState<Record<string, boolean>>({});
+  const liveTimers = useRef<Record<string, number>>({});
+  useEffect(() => {
+    const timers = liveTimers.current;
+    for (const [id, cmd] of Object.entries(sessionCommands)) {
+      if (cmd?.running) {
+        if (timers[id] === undefined) {
+          timers[id] = window.setTimeout(() => {
+            delete timers[id];
+            setLiveSlow((prev) => (prev[id] ? prev : { ...prev, [id]: true }));
+          }, LIVE_DELAY_MS);
+        }
+        continue;
+      }
+      if (timers[id] !== undefined) {
+        window.clearTimeout(timers[id]);
+        delete timers[id];
+      }
+      setLiveSlow((prev) => (prev[id] ? { ...prev, [id]: false } : prev));
+    }
+  }, [sessionCommands]);
+  useEffect(() => {
+    const timers = liveTimers.current;
+    return () => {
+      for (const timer of Object.values(timers)) window.clearTimeout(timer);
+    };
+  }, []);
+  const blockPickRef = useRef<typeof blockPick>(null);
+  blockPickRef.current = blockPick;
 
   const historyScope = useMemo(
     () => ({
@@ -2716,10 +2879,16 @@ export default function App() {
   const injectIntoActive = useCallback(
     (text: string) => {
       if (!activeId || !text) return;
+      // Com a linha do TYBA no comando, o terminal está somente-leitura: um
+      // `term.paste` aqui seria engolido sem aviso.
+      if (ownsCommandLine) {
+        setInjected({ text, nonce: Date.now() });
+        return;
+      }
       deliverPaste(activeId, text);
       getTerm(activeId)?.term.focus();
     },
-    [activeId, deliverPaste],
+    [activeId, deliverPaste, ownsCommandLine],
   );
 
   const pickSnippet = useCallback(
@@ -2798,11 +2967,59 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (captureState.active) return;
+      // Esc só sai da seleção de blocos quando o teclado não é de um campo:
+      // com o foco na caixa de comando, Esc é dela — fecha a sugestão.
+      if (
+        e.key === "Escape" &&
+        blockPickRef.current &&
+        !inTextField(document.activeElement)
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        setBlockPick(null);
+        return;
+      }
+      // Voltar a digitar encerra o modo. Sem isto a seleção fica acesa por trás
+      // de um comando novo, porque com o foco na caixa o Esc é dela — e o
+      // usuário não tem como saber que precisa clicar em algum lugar.
+      if (
+        blockPickRef.current &&
+        e.key.length === 1 &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        setBlockPick(null);
+      }
       const combo = comboOf(e);
       if (!combo) return;
       const action = (Object.keys(bindings) as KeyAction[]).find(
         (a) => bindings[a] === combo,
       );
+      // Blocos marcados fazem o ⌘C copiar os blocos. Perde para quem tem
+      // seleção de texto de verdade: quem destacou algo quer aquilo, não o
+      // cartão que ficou aceso de antes.
+      if (action === "copy" && blockPickRef.current) {
+        const pick = blockPickRef.current;
+        const entry = getTerm(activeId);
+        const text = window.getSelection();
+        const busy =
+          (text && !text.isCollapsed) ||
+          (isTermFocused(entry) && entry?.term.hasSelection());
+        if (pick.session === activeId && !busy) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.repeat) return;
+          const chosen = pickedBlocks(
+            pick.selection,
+            blocksRef.current[activeId ?? ""] ?? [],
+          );
+          if (chosen.length > 0) {
+            void writeClipboardText(blocksMarkdown(chosen)).catch(() => {});
+          }
+          return;
+        }
+      }
       if (action && isTerminalAction(action)) {
         const entry = getTerm(activeId);
         const focused = isTermFocused(entry);
@@ -4058,6 +4275,23 @@ export default function App() {
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ??
                       null;
+                    const pane = paneRect
+                      ? {
+                          left: paneRect.x,
+                          top: paneRect.y,
+                          width: paneRect.w,
+                          height: paneRect.h,
+                        }
+                      : null;
+                    // Em modo prompt o terminal ocupa uma faixa FIXA embaixo: a
+                    // lista de blocos a cobre quando ocioso e a revela quando um
+                    // comando roda, sem nunca redimensionar o PTY. Alt-screen é
+                    // a exceção — `vim` precisa do painel inteiro.
+                    const blocked =
+                      (promptModes[s.id] ?? false) &&
+                      !(altScreens[s.id] ?? false);
+                    const termRect =
+                      pane && blocked ? liveRect(pane) : pane;
                     const detected = detectedBySession.get(s.id) ?? null;
                     const notice = showShellAgentNotice(
                       s.kind,
@@ -4079,6 +4313,8 @@ export default function App() {
                         onDismissNotice={() => dismissShellAgentNotice(s.id)}
                         onPaste={deliverPaste}
                         onSearch={() => setSearchOpen(true)}
+                        readOnly={s.id === activeId && ownsCommandLine}
+                        onReclaimFocus={() => setCommandLineNonce((n) => n + 1)}
                         onAltScreen={(alt) =>
                           setAltScreens((prev) =>
                             prev[s.id] === alt
@@ -4106,16 +4342,7 @@ export default function App() {
                             : undefined
                         }
                         exited={isFinishedStatus(s.status)}
-                        rect={
-                          paneRect
-                            ? {
-                                left: paneRect.x,
-                                top: paneRect.y,
-                                width: paneRect.w,
-                                height: paneRect.h,
-                              }
-                            : null
-                        }
+                        rect={termRect}
                         onFocus={
                           paneRect
                             ? () => void focusPane(paneRect.pane)
@@ -4123,6 +4350,63 @@ export default function App() {
                         }
                         onExit={() => void refreshSessions()}
                       />
+                    );
+                  })}
+                  {sessions.map((s) => {
+                    const paneRect =
+                      paneLayout?.panes.find((p) => p.session === s.id) ?? null;
+                    const list = blocks[s.id] ?? [];
+                    const running = sessionCommands[s.id];
+                    const blocked =
+                      paneRect !== null &&
+                      (promptModes[s.id] ?? false) &&
+                      !(altScreens[s.id] ?? false);
+                    if (!blocked || !paneRect) return null;
+                    const pane = {
+                      left: paneRect.x,
+                      top: paneRect.y,
+                      width: paneRect.w,
+                      height: paneRect.h,
+                    };
+                    // `clear` não abre a faixa: ele não tem saída para mostrar,
+                    // e meio painel preto que aparece para logo esvaziar tudo é
+                    // um solavanco em cima de um comando cujo ponto é sumir com
+                    // as coisas.
+                    const live =
+                      Boolean(liveSlow[s.id]) &&
+                      !wipesTheScreen(running?.command ?? null);
+                    return (
+                      <Fragment key={`blocks-${s.id}`}>
+                        {list.length > 0 && (
+                          <BlockList
+                            blocks={list}
+                            framed={(paneLayout?.panes.length ?? 0) > 1}
+                            rect={blocksRect(pane, live)}
+                            onInject={
+                              s.id === activeId ? injectIntoActive : undefined
+                            }
+                            onActivate={
+                              s.id === activeId
+                                ? undefined
+                                : () => void focusPane(paneRect.pane)
+                            }
+                            marked={
+                              blockPick?.session === s.id
+                                ? (markedBlocks ?? undefined)
+                                : undefined
+                            }
+                            onPick={(id, event) => pickBlock(s.id, id, event)}
+                            onClearPick={() => setBlockPick(null)}
+                            copyCombo={formatCombo(bindings.copy)}
+                          />
+                        )}
+                        {live && (
+                          <ActiveBlockHeader
+                            command={running?.command ?? ""}
+                            rect={liveRect(pane)}
+                          />
+                        )}
+                      </Fragment>
                     );
                   })}
                   {paneLayout?.agentViewers.map((v) => {
@@ -4255,7 +4539,7 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                {activeSession && (ownsCommandLine || promptPending) && (
+                {activeSession && lineVisible && (
                   <CommandLine
                     key={`${activeSession.id}:line`}
                     sessionId={activeSession.id}
@@ -4263,7 +4547,8 @@ export default function App() {
                     branch={activeGitStatus?.branch ?? null}
                     scope={historyScope}
                     focusNonce={commandLineNonce}
-                    waiting={!ownsCommandLine}
+                    state={commandLineState}
+                    inject={injected}
                   />
                 )}
                 {activeSession && richInputVisible && !ownsCommandLine && (

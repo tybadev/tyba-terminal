@@ -127,6 +127,16 @@ interface Props {
   onSearch?: () => void;
   /** `alternate` = vim/htop/less: a tela é do programa, o teclado também. */
   onAltScreen?: (alt: boolean) => void;
+  /**
+   * A linha do TYBA é a dona do teclado agora.
+   *
+   * O xterm precisa virar somente-leitura: senão são DUAS entradas para a mesma
+   * linha, e o que for digitado aqui vai direto ao shell sem passar pela caixa,
+   * pelo histórico nem pela confirmação de paste.
+   */
+  readOnly?: boolean;
+  /** Clique sem seleção devolve o foco para a linha. */
+  onReclaimFocus?: () => void;
   onSplit?: (kind: "v" | "h") => void;
   /** Agente cru detectado no shell (F2 do detectar-agente-no-shell). */
   agentNotice?: { binary: string } | null;
@@ -151,6 +161,8 @@ export function TerminalView({
   onPaste,
   onSearch,
   onAltScreen,
+  readOnly,
+  onReclaimFocus,
   onSplit,
   agentNotice,
   onReopenManaged,
@@ -171,6 +183,10 @@ export function TerminalView({
   onPasteRef.current = onPaste;
   const onAltScreenRef = useRef(onAltScreen);
   onAltScreenRef.current = onAltScreen;
+  const onReclaimFocusRef = useRef(onReclaimFocus);
+  onReclaimFocusRef.current = onReclaimFocus;
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
   const showExitBannerRef = useRef<(() => void) | null>(null);
   const reattachesRef = useRef(false);
   reattachesRef.current = Boolean(reattaches);
@@ -381,6 +397,13 @@ export function TerminalView({
       }
     };
     const onMouseDown = () => onFocusRef.current?.();
+    // Clique para selecionar continua funcionando; clique "para posicionar o
+    // cursor" devolve o foco a quem de fato edita a linha.
+    const onMouseUp = () => {
+      if (!readOnlyRef.current) return;
+      if (term.hasSelection()) return;
+      onReclaimFocusRef.current?.();
+    };
     const onNativePaste = (e: ClipboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -391,6 +414,7 @@ export function TerminalView({
     window.addEventListener(RELAYOUT_EVENT, onRelayout);
     window.addEventListener(FONT_SIZE_EVENT, onFontSize);
     el.addEventListener("mousedown", onMouseDown);
+    el.addEventListener("mouseup", onMouseUp);
     el.addEventListener("paste", onNativePaste, true);
 
     return () => {
@@ -402,6 +426,7 @@ export function TerminalView({
       window.removeEventListener(RELAYOUT_EVENT, onRelayout);
       window.removeEventListener(FONT_SIZE_EVENT, onFontSize);
       el.removeEventListener("mousedown", onMouseDown);
+    el.removeEventListener("mouseup", onMouseUp);
       el.removeEventListener("paste", onNativePaste, true);
       offTheme();
       linkProvider.dispose();
@@ -431,9 +456,15 @@ export function TerminalView({
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    if (focused && visible) term.focus();
+    term.options.disableStdin = Boolean(readOnly);
+  }, [readOnly]);
+
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    if (focused && visible && !readOnly) term.focus();
     syncWebglRef.current?.();
-  }, [focused, visible]);
+  }, [focused, visible, readOnly]);
 
   // Ao ficar visível (troca de aba), o container sai de `display:none` e ganha
   // tamanho, mas o canvas do xterm ainda está nas dimensões antigas — a CSS o
