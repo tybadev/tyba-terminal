@@ -76,9 +76,28 @@ export function hiddenFraction(used: number): number {
   return Math.min(1, Math.max(0, 1 - used));
 }
 
-/** Altura da faixa revelada, em % do painel. */
+/** Altura da faixa revelada, em % do painel — sem contar o padding do terminal. */
 export function liveHeight(pane: SeamRect, used: number): number {
   return pane.height * LIVE_FRACTION * used;
+}
+
+/**
+ * O pedaço da faixa que a conta em % não enxerga, em px.
+ *
+ * As linhas não ocupam a caixa inteira do terminal: sobra o padding vertical
+ * dele. Recortar por fração da altura TOTAL corta alguns pixels acima do fim do
+ * texto — a última linha sai partida ao meio.
+ *
+ * Some quando a faixa está cheia (`used = 1`) e é máximo quando ela é uma
+ * réstia, que é justamente onde o erro relativo dói mais.
+ *
+ * Só aparecia com prompt que pergunta sem quebrar linha (`Ok to proceed? (y)`).
+ * Com `seq` ou `for` o cursor para numa linha vazia depois da saída, e essa
+ * folga de uma linha escondia o déficit.
+ */
+export function padSlackPx(padY: number, used: number): number {
+  if (!Number.isFinite(padY) || padY <= 0) return 0;
+  return padY * hiddenFraction(used);
 }
 
 /**

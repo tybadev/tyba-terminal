@@ -6,6 +6,7 @@ export {
   blocksRect,
   hiddenFraction,
   liveRect,
+  padSlackPx,
   LIVE_DELAY_MS,
   LIVE_FRACTION,
   termRect,
@@ -22,10 +23,19 @@ export {
 export function ActiveBlockHeader({
   command,
   rect,
+  liftPx = 0,
   onHeight,
 }: {
   command: string;
   rect: PaneRectStyle;
+  /**
+   * Quanto a faixa ao vivo sobe além do que a conta em % diz, em px.
+   *
+   * O recorte do terminal desconta o padding dele, então a saída aparece um
+   * pouco mais alta do que `liveRect` calcula. Header e moldura sobem junto —
+   * senão a tampa flutua no meio da saída. Ver `padSlackPx`.
+   */
+  liftPx?: number;
   /**
    * A altura que este header ocupa, medida.
    *
@@ -54,7 +64,7 @@ export function ActiveBlockHeader({
       style={{
         position: "absolute",
         left: `${rect.left}%`,
-        top: `${rect.top}%`,
+        top: `calc(${rect.top}% - ${liftPx}px)`,
         width: `${rect.width}%`,
         transform: "translateY(-100%)",
       }}
@@ -79,16 +89,23 @@ export function ActiveBlockHeader({
  * `clip-path`, e uma borda no próprio elemento seria cortada junto — some
  * justamente a linha de baixo, que é a que fecha a caixa.
  */
-export function ActiveBlockFrame({ rect }: { rect: PaneRectStyle }) {
+export function ActiveBlockFrame({
+  rect,
+  liftPx = 0,
+}: {
+  rect: PaneRectStyle;
+  /** Ver {@link ActiveBlockHeader} — sobe e cresce o mesmo tanto. */
+  liftPx?: number;
+}) {
   return (
     <div
       className="pointer-events-none z-10 rounded-b-[5px] border border-t-0 border-tyba-border"
       style={{
         position: "absolute",
         left: `${rect.left}%`,
-        top: `${rect.top}%`,
+        top: `calc(${rect.top}% - ${liftPx}px)`,
         width: `${rect.width}%`,
-        height: `${rect.height}%`,
+        height: `calc(${rect.height}% + ${liftPx}px)`,
       }}
     />
   );

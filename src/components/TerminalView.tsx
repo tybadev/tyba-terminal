@@ -45,6 +45,18 @@ import { hiddenFraction } from "../lib/liveSeam";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
 export const RELAYOUT_EVENT = "tyba:relayout";
+
+/**
+ * Padding vertical da caixa do terminal, em px.
+ *
+ * Mora aqui, e não nas classes, porque o recorte da faixa ao vivo precisa
+ * descontar exatamente este valor: as linhas ocupam a caixa MENOS ele, e
+ * recortar pela altura cheia parte a última linha ao meio. Duas fontes de
+ * verdade para o mesmo número foi como esse bug nasceu.
+ */
+export const LIVE_PAD_TOP_PX = 8;
+export const LIVE_PAD_BOTTOM_PX = 12;
+export const LIVE_PAD_Y_PX = LIVE_PAD_TOP_PX + LIVE_PAD_BOTTOM_PX;
 export const FONT_SIZE_EVENT = "tyba:font-size";
 
 const EXIT_BANNER_SETTLE_MS = 120;
@@ -546,6 +558,10 @@ export function TerminalView({
   // A MESMA fração serve para descer o terminal e para cortá-lo: por isso a
   // parte visível cai exatamente onde a lista de blocos termina.
   const hidden = liveUsed === undefined ? 0 : hiddenFraction(liveUsed);
+  // Padding vertical desta caixa, que as linhas NÃO ocupam. Sai de `calc`, com
+  // `100%` sendo a altura do próprio elemento — assim a conta segue certa se o
+  // painel mudar de tamanho, sem virar número mágico aqui. Ver `padSlackPx`.
+  const padY = `${LIVE_PAD_Y_PX}px`;
   const liveClip: React.CSSProperties =
     hidden <= 0 || !rect
       ? {}
@@ -560,9 +576,9 @@ export function TerminalView({
           //
           // Para BAIXO porque a saída é escrita a partir do topo do terminal:
           // quem precisa encostar no fim do painel é a borda de cima.
-          top: `${rect.top + hidden * rect.height}%`,
+          top: `calc(${rect.top}% + (${rect.height}% - ${padY}) * ${hidden})`,
           // E o corte é embaixo, onde estão as linhas que o comando não usou.
-          clipPath: `inset(0 0 ${hidden * 100}% 0)`,
+          clipPath: `inset(0 0 calc((100% - ${padY}) * ${hidden}) 0)`,
         };
 
   const selection = () => termRef.current?.getSelection() ?? "";
@@ -693,10 +709,12 @@ export function TerminalView({
       <ContextMenuTrigger asChild disabled={!visible}>
         <div
           ref={containerRef}
-          className={`overflow-hidden rounded-[4px] bg-tyba-sunken px-2 pb-3 pt-2 ${frameClass}`}
+          className={`overflow-hidden rounded-[4px] bg-tyba-sunken px-2 ${frameClass}`}
           style={
             visible && rect
               ? {
+                  paddingTop: LIVE_PAD_TOP_PX,
+                  paddingBottom: LIVE_PAD_BOTTOM_PX,
                   position: "absolute",
                   left: `${rect.left}%`,
                   top: `${rect.top}%`,

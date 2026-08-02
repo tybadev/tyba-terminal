@@ -6,6 +6,7 @@ import {
   liveHeight,
   liveRect,
   LIVE_FRACTION,
+  padSlackPx,
   termRect,
   usedFraction,
   type SeamRect,
@@ -36,6 +37,28 @@ describe("usedFraction", () => {
     expect(usedFraction(5, 0)).toBe(1);
     expect(usedFraction(Number.NaN, 24)).toBe(1);
     expect(usedFraction(5, Number.POSITIVE_INFINITY)).toBe(1);
+  });
+});
+
+describe("padSlackPx", () => {
+  it("é máximo com a faixa quase fechada e some com ela cheia", () => {
+    expect(padSlackPx(20, 1)).toBe(0);
+    expect(padSlackPx(20, 0)).toBeCloseTo(20);
+    expect(padSlackPx(20, 0.5)).toBeCloseTo(10);
+  });
+
+  it("sem padding não há folga a compensar", () => {
+    expect(padSlackPx(0, 0.3)).toBe(0);
+    expect(padSlackPx(Number.NaN, 0.3)).toBe(0);
+  });
+
+  it("cobre a última linha do prompt que pergunta sem quebrar linha", () => {
+    // O caso real: `Ok to proceed? (y)` com o cursor NA linha do texto. Sem a
+    // compensação, o recorte cai acima do fim dela.
+    const pane: SeamRect = { left: 0, top: 0, width: 100, height: 100 };
+    const used = usedFraction(4, 24);
+    expect(liveHeight(pane, used) > 0).toBe(true);
+    expect(padSlackPx(20, used)).toBeGreaterThan(15);
   });
 });
 

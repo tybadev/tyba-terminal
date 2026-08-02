@@ -294,9 +294,11 @@ import {
   blocksRect,
   LIVE_DELAY_MS,
   liveRect,
+  padSlackPx,
   termRect,
   usedFraction,
 } from "./components/ActiveBlock";
+import { LIVE_PAD_Y_PX } from "./components/TerminalView";
 import { BlockList } from "./components/BlockList";
 import { mergeBlockHistory } from "./lib/blockHistory";
 import { blocksMarkdown, wipesTheScreen } from "./lib/blockText";
@@ -4404,6 +4406,10 @@ export default function App() {
                     // costuma estar em boa parte vazio, e o cartão nasce longe
                     // de onde a saída estava.
                     const used = liveUsed[s.id] ?? 1;
+                    // A saída sobe além do que a conta em % diz, porque o
+                    // recorte desconta o padding do terminal. Lista, header e
+                    // moldura acompanham pelo mesmo tanto. Ver `padSlackPx`.
+                    const lift = padSlackPx(LIVE_PAD_Y_PX, used);
                     return (
                       <Fragment key={`blocks-${s.id}`}>
                         {list.length > 0 && (
@@ -4411,7 +4417,7 @@ export default function App() {
                             blocks={list}
                             framed={(paneLayout?.panes.length ?? 0) > 1}
                             rect={blocksRect(pane, live, used)}
-                            bottomInset={live ? activeHeaderPx : 0}
+                            bottomInset={live ? activeHeaderPx + lift : 0}
                             onInject={
                               s.id === activeId ? injectIntoActive : undefined
                             }
@@ -4435,9 +4441,13 @@ export default function App() {
                             <ActiveBlockHeader
                               command={running?.command ?? ""}
                               rect={liveRect(pane, used)}
+                              liftPx={lift}
                               onHeight={setActiveHeaderPx}
                             />
-                            <ActiveBlockFrame rect={liveRect(pane, used)} />
+                            <ActiveBlockFrame
+                              rect={liveRect(pane, used)}
+                              liftPx={lift}
+                            />
                           </>
                         )}
                       </Fragment>
