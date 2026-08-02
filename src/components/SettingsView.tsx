@@ -87,7 +87,7 @@ import {
 } from "../lib/keys";
 import { Shortcut } from "@/components/ui/kbd";
 import { toastError } from "../lib/toast";
-import { FONT_SIZE_EVENT, setDefaultFontSize } from "./TerminalView";
+import { setDefaultFontSize } from "./TerminalView";
 import { ShellSettings } from "./ShellSettings";
 import { ToolbarChipsEditor } from "./ToolbarChipsEditor";
 import type { RichInputPref } from "../lib/richInput";
@@ -664,9 +664,9 @@ export function SettingsView({
 
   const changeFontSize = (size: number) => {
     setFontSize(size);
+    // O anúncio vem de dentro do `setDefaultFontSize` — ele é a fonte única.
     setDefaultFontSize(size);
     void setPref("pref.code.font_size", String(size)).catch(() => {});
-    window.dispatchEvent(new CustomEvent(FONT_SIZE_EVENT, { detail: size }));
   };
 
   const importTheme = async () => {

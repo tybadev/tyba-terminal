@@ -265,15 +265,32 @@ const BODY_LIMIT = 200;
  * virtualizador reposicionar a lista embaixo do ponteiro no meio de um
  * shift-clique.
  */
+/**
+ * A barra na lateral do bloco marcado.
+ *
+ * `box-shadow` e não borda: borda muda a altura medida, e altura que muda faz o
+ * virtualizador reposicionar a lista embaixo do ponteiro no meio de um
+ * shift-clique.
+ *
+ * 2px, e não mais: com a borda do marcado já na cor de destaque, engrossar a
+ * barra faz a lateral esquerda destoar do resto do contorno — 6px contra 2px
+ * do topo lê como caixa torta. Mais destaque se pede à cor, não à espessura.
+ */
 const MARKED_BAR = "inset 2px 0 0 0 var(--tyba-primary)";
 
 function BlockCard({
   block,
+  fontSizePx,
+  lineHeightPx,
   onInject,
   marked,
   onPick,
 }: {
   block: Block;
+  /** Tamanho da fonte do terminal — ver o corpo abaixo. */
+  fontSizePx: number;
+  /** Altura real de uma linha do terminal, medida. */
+  lineHeightPx: number;
   onInject?: (text: string) => void;
   marked: boolean;
   onPick?: (event: React.MouseEvent) => void;
@@ -296,10 +313,10 @@ function BlockCard({
       style={marked ? { boxShadow: MARKED_BAR } : undefined}
       className={`group mb-2 overflow-hidden rounded-[5px] border ${
         marked
-          ? "border-tyba-border-strong bg-tyba-green-tint"
+          ? "border-tyba-primary bg-tyba-green-tint"
           : broke
             ? "border-tyba-red/50 bg-tyba-red/[.07]"
-            : "border-tyba-border"
+            : "border-tyba-block-border"
       }`}
     >
       <BlockHeader block={block} onInject={onInject} />
@@ -311,7 +328,17 @@ function BlockCard({
         </div>
       )}
       {block.lines.length > 0 && (
-        <div className="px-2.5 py-1 font-mono text-[13px] leading-[1.35] text-tyba-text-muted">
+        // Fonte e entrelinha do TERMINAL, não um tamanho próprio: este corpo é
+        // a mesma saída que estava no terminal um instante antes, e o dono pode
+        // ter mudado o tamanho da fonte. Preso em 13px, o texto encolhia ao
+        // virar cartão.
+        <div
+          className="px-2.5 py-1 font-mono text-tyba-text-muted"
+          style={{
+            fontSize: `${fontSizePx}px`,
+            lineHeight: `${lineHeightPx}px`,
+          }}
+        >
           {(expanded ? block.lines : block.lines.slice(0, BODY_LIMIT)).map(
             (line, i) => (
               <Line key={i} line={line} />
@@ -341,9 +368,16 @@ function BlockCard({
 
 /** Métricas do cartão, para a estimativa nascer perto do valor medido. */
 /// 13px × 1.35, a mesma métrica do xterm.
-const LINE_PX = 18;
+
 const HEADER_PX = 27;
-const BLOCK_GAP_PX = 16;
+/**
+ * Respiro entre um bloco e o seguinte.
+ *
+ * Exportado porque o bloco EM EXECUÇÃO também precisa dele: sem isso ele é o
+ * único da lista encostado no vizinho, e a diferença lê como defeito bem no
+ * cartão para onde o olho vai.
+ */
+export const BLOCK_GAP_PX = 16;
 /**
  * Folga para considerar a lista "no fim".
  *
@@ -390,6 +424,22 @@ interface Props {
    * como bloco cortado.
    */
   bottomInset?: number;
+  /**
+   * Tamanho da fonte do terminal, em px.
+   *
+   * O corpo do bloco usa a MESMA métrica do terminal: é a mesma saída, e o
+   * dono pode ter mudado o tamanho. Ver `getDefaultFontSize`.
+   */
+  fontSizePx: number;
+  /**
+   * Altura real de uma linha do terminal, em px.
+   *
+   * Medida, nunca calculada: o xterm aplica a entrelinha sobre a altura do
+   * glifo e o CSS sobre o `font-size`, então o mesmo 1.35 dá 21,5px de um lado
+   * e 16,2px do outro. O corpo do bloco é a mesma saída — tem de ter a mesma
+   * altura, ou o texto "pula" ao virar cartão.
+   */
+  lineHeightPx: number;
 }
 
 export function BlockList({
@@ -397,6 +447,8 @@ export function BlockList({
   rect,
   framed,
   bottomInset = 0,
+  fontSizePx,
+  lineHeightPx,
   onInject,
   onActivate,
   marked,
@@ -414,10 +466,11 @@ export function BlockList({
   // chutados, o primeiro layout põe o bloco no lugar errado e ele PULA quando a
   // medição real chega — que é o "aparece com delay e renderiza".
   const estimate = (index: number) => {
+    const line = lineHeightPx;
     const block = blocks[index];
-    if (!block) return LINE_PX + HEADER_PX;
-    const body = Math.min(block.lines.length, BODY_LIMIT) * LINE_PX;
-    const footer = block.truncated > 0 ? LINE_PX : 0;
+    if (!block) return line + HEADER_PX;
+    const body = Math.min(block.lines.length, BODY_LIMIT) * line;
+    const footer = block.truncated > 0 ? line : 0;
     return HEADER_PX + body + footer + BLOCK_GAP_PX;
   };
 
@@ -571,6 +624,8 @@ export function BlockList({
             >
               <BlockCard
                 block={blocks[item.index]}
+                fontSizePx={fontSizePx}
+                lineHeightPx={lineHeightPx}
                 onInject={onInject}
                 marked={marked?.has(blocks[item.index].id) ?? false}
                 onPick={
