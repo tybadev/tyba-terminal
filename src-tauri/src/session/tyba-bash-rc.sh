@@ -73,11 +73,31 @@ if [ -z "${TYBA_BASH_HOOKS:-}" ] && case "$-" in *i*) true ;; *) false ;; esac; 
       __tyba_precmd|__tyba_prompt_ready) return 0 ;;
     esac
     __tyba_at_prompt=0
-    local __h
-    __h="$(HISTTIMEFORMAT='' builtin history 1)"
+    local __raw __n __h
+    __raw="$(HISTTIMEFORMAT='' builtin history 1)"
+    __raw="${__raw#"${__raw%%[![:space:]]*}"}"
+    # O NÚMERO do histórico, guardado para comparar com o do comando anterior.
+    __n="${__raw%%[![:digit:]]*}"
+    __h="${__raw#"$__n"}"
     __h="${__h#"${__h%%[![:space:]]*}"}"
-    __h="${__h#"${__h%%[!0-9]*}"}"
-    __h="${__h#"${__h%%[![:space:]]*}"}"
+    # Histórico que não avançou = o bash NÃO guardou este comando.
+    #
+    # É o que `HISTCONTROL=ignorespace` faz com linha iniciada por espaço — e
+    # aí `history 1` devolve o comando ANTERIOR. Sem esta guarda o hook reporta
+    # o comando errado, registrando de novo o que já tinha rodado.
+    #
+    # O zsh não precisa disso: lá o `preexec` recebe a linha CRUA em `$1`, com
+    # o espaço inicial. No bash não há equivalente — o `DEBUG` trap só tem
+    # `BASH_COMMAND`, já expandido e disparado uma vez por elo do pipeline.
+    #
+    # Devolver o comando com um espaço à frente reusa a regra que o core já
+    # aplica (`history::should_record`): não entra no histórico, mas ainda vira
+    # bloco. `ignoredups` cai aqui também, e o efeito é o mesmo — o comando
+    # repetido não é regravado, o que é justamente o que se pediu ao repetir.
+    if [ -n "${__tyba_hist_n:-}" ] && [ "$__n" = "$__tyba_hist_n" ]; then
+      __h=" $BASH_COMMAND"
+    fi
+    __tyba_hist_n="$__n"
     __tyba_esc "633;E;$(printf '%s' "$__h" | base64 | tr -d '\n')"
     __tyba_esc "133;C"
     return 0
