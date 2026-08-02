@@ -1,43 +1,17 @@
+import { useEffect, useRef } from "react";
+
 import type { PaneRectStyle } from "./TerminalView";
 
-/**
- * Fração do painel reservada para a saída ao vivo.
- *
- * É CONSTANTE de propósito: se a área do terminal mudasse quando o comando
- * começa e termina, o PTY seria redimensionado duas vezes por execução — o
- * mesmo bug que a linha de comando sumindo já causou.
- */
-export const LIVE_FRACTION = 0.5;
-
-/**
- * Quanto um comando precisa durar para a faixa ao vivo abrir.
- *
- * `clear`, `cd`, `echo`: abrir e fechar a faixa em 30ms espreme a lista pela
- * metade, mostra um retângulo preto e desfaz — um pisca que chama mais atenção
- * do que a coisa que ele ia mostrar. Abaixo disto o comando já virou bloco
- * antes de a faixa fazer falta.
- */
-export const LIVE_DELAY_MS = 120;
-
-export function liveRect(pane: PaneRectStyle): PaneRectStyle {
-  const height = pane.height * LIVE_FRACTION;
-  return {
-    left: pane.left,
-    top: pane.top + pane.height - height,
-    width: pane.width,
-    height,
-  };
-}
-
-export function blocksRect(pane: PaneRectStyle, live: boolean): PaneRectStyle {
-  if (!live) return pane;
-  return {
-    left: pane.left,
-    top: pane.top,
-    width: pane.width,
-    height: pane.height * (1 - LIVE_FRACTION),
-  };
-}
+export {
+  blocksRect,
+  hiddenFraction,
+  liveRect,
+  padSlackPx,
+  LIVE_DELAY_MS,
+  LIVE_FRACTION,
+  termRect,
+  usedFraction,
+} from "../lib/liveSeam";
 
 /**
  * O header do bloco que está executando, encaixado logo acima da saída ao vivo.
@@ -49,17 +23,48 @@ export function blocksRect(pane: PaneRectStyle, live: boolean): PaneRectStyle {
 export function ActiveBlockHeader({
   command,
   rect,
+  liftPx = 0,
+  onHeight,
 }: {
   command: string;
   rect: PaneRectStyle;
+  /**
+   * Quanto a faixa ao vivo sobe além do que a conta em % diz, em px.
+   *
+   * O recorte do terminal desconta o padding dele, então a saída aparece um
+   * pouco mais alta do que `liveRect` calcula. Header e moldura sobem junto —
+   * senão a tampa flutua no meio da saída. Ver `padSlackPx`.
+   */
+  liftPx?: number;
+  /**
+   * A altura que este header ocupa, medida.
+   *
+   * Ele fica ACIMA da faixa ao vivo, sobre o fim da lista de blocos — que
+   * precisa encurtar do mesmo tanto para o último bloco não passar por baixo
+   * dele. Medido e não fixo: o header já mudou de altura antes (o ponto
+   * pulsante entrou depois), e número fixo aqui volta como bloco cortado.
+   */
+  onHeight?: (px: number) => void;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !onHeight) return;
+    const report = () => onHeight(el.getBoundingClientRect().height);
+    report();
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [onHeight]);
+
   return (
     <div
+      ref={ref}
       className="z-10 flex items-center gap-2 rounded-t-[5px] border border-b-0 border-tyba-border bg-tyba-sunken px-2.5 py-1"
       style={{
         position: "absolute",
         left: `${rect.left}%`,
-        top: `${rect.top}%`,
+        top: `calc(${rect.top}% - ${liftPx}px)`,
         width: `${rect.width}%`,
         transform: "translateY(-100%)",
       }}
@@ -70,5 +75,38 @@ export function ActiveBlockHeader({
       </span>
       <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-tyba-green" />
     </div>
+  );
+}
+
+/**
+ * A moldura em volta da saída ao vivo — o resto do cartão que o header começa.
+ *
+ * Sem ela o bloco em execução é o único da lista sem caixa fechada: o header
+ * desenha a tampa e o corpo termina no vazio, o que lê como bloco cortado no
+ * meio, ainda mais ao lado dos cartões já prontos logo acima.
+ *
+ * É um irmão do terminal, não uma borda nele: o corpo ao vivo é recortado por
+ * `clip-path`, e uma borda no próprio elemento seria cortada junto — some
+ * justamente a linha de baixo, que é a que fecha a caixa.
+ */
+export function ActiveBlockFrame({
+  rect,
+  liftPx = 0,
+}: {
+  rect: PaneRectStyle;
+  /** Ver {@link ActiveBlockHeader} — sobe e cresce o mesmo tanto. */
+  liftPx?: number;
+}) {
+  return (
+    <div
+      className="pointer-events-none z-10 rounded-b-[5px] border border-t-0 border-tyba-border"
+      style={{
+        position: "absolute",
+        left: `${rect.left}%`,
+        top: `calc(${rect.top}% - ${liftPx}px)`,
+        width: `${rect.width}%`,
+        height: `calc(${rect.height}% + ${liftPx}px)`,
+      }}
+    />
   );
 }

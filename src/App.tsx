@@ -289,11 +289,16 @@ import {
 } from "./lib/repoSnapshots";
 import { Toolbar } from "./components/Toolbar";
 import {
+  ActiveBlockFrame,
   ActiveBlockHeader,
   blocksRect,
   LIVE_DELAY_MS,
   liveRect,
+  padSlackPx,
+  termRect,
+  usedFraction,
 } from "./components/ActiveBlock";
+import { LIVE_PAD_Y_PX } from "./components/TerminalView";
 import { BlockList } from "./components/BlockList";
 import { mergeBlockHistory } from "./lib/blockHistory";
 import { blocksMarkdown, wipesTheScreen } from "./lib/blockText";
@@ -2862,6 +2867,20 @@ export default function App() {
       for (const timer of Object.values(timers)) window.clearTimeout(timer);
     };
   }, []);
+
+  // Quanto da tela a saída de cada sessão está ocupando — recorta a faixa ao
+  // vivo na altura dela para o cartão nascer onde a saída estava.
+  const [liveUsed, setLiveUsed] = useState<Record<string, number>>({});
+  // Altura medida do header do bloco em execução. A lista encurta desse tanto —
+  // o header é desenhado sobre o fim dela. Ver `BlockList.bottomInset`.
+  const [activeHeaderPx, setActiveHeaderPx] = useState(0);
+  const reportLiveRows = useCallback(
+    (id: SessionId, used: number, total: number, scrolled: boolean) => {
+      const next = usedFraction(used, total, scrolled);
+      setLiveUsed((prev) => (prev[id] === next ? prev : { ...prev, [id]: next }));
+    },
+    [],
+  );
   const blockPickRef = useRef<typeof blockPick>(null);
   blockPickRef.current = blockPick;
 
@@ -4290,8 +4309,8 @@ export default function App() {
                     const blocked =
                       (promptModes[s.id] ?? false) &&
                       !(altScreens[s.id] ?? false);
-                    const termRect =
-                      pane && blocked ? liveRect(pane) : pane;
+                    const terminalBox =
+                      pane && blocked ? termRect(pane) : pane;
                     const detected = detectedBySession.get(s.id) ?? null;
                     const notice = showShellAgentNotice(
                       s.kind,
@@ -4342,7 +4361,14 @@ export default function App() {
                             : undefined
                         }
                         exited={isFinishedStatus(s.status)}
-                        rect={termRect}
+                        rect={terminalBox}
+                        liveUsed={blocked ? liveUsed[s.id] : undefined}
+                        onLiveRows={
+                          blocked
+                            ? (used, total, scrolled) =>
+                                reportLiveRows(s.id, used, total, scrolled)
+                            : undefined
+                        }
                         onFocus={
                           paneRect
                             ? () => void focusPane(paneRect.pane)
@@ -4375,13 +4401,23 @@ export default function App() {
                     const live =
                       Boolean(liveSlow[s.id]) &&
                       !wipesTheScreen(running?.command ?? null);
+                    // A lista cede à faixa só a altura que a saída usa de fato.
+                    // Sem isto ela larga metade do painel para um terminal que
+                    // costuma estar em boa parte vazio, e o cartão nasce longe
+                    // de onde a saída estava.
+                    const used = liveUsed[s.id] ?? 1;
+                    // A saída sobe além do que a conta em % diz, porque o
+                    // recorte desconta o padding do terminal. Lista, header e
+                    // moldura acompanham pelo mesmo tanto. Ver `padSlackPx`.
+                    const lift = padSlackPx(LIVE_PAD_Y_PX, used);
                     return (
                       <Fragment key={`blocks-${s.id}`}>
                         {list.length > 0 && (
                           <BlockList
                             blocks={list}
                             framed={(paneLayout?.panes.length ?? 0) > 1}
-                            rect={blocksRect(pane, live)}
+                            rect={blocksRect(pane, live, used)}
+                            bottomInset={live ? activeHeaderPx + lift : 0}
                             onInject={
                               s.id === activeId ? injectIntoActive : undefined
                             }
@@ -4401,10 +4437,18 @@ export default function App() {
                           />
                         )}
                         {live && (
-                          <ActiveBlockHeader
-                            command={running?.command ?? ""}
-                            rect={liveRect(pane)}
-                          />
+                          <>
+                            <ActiveBlockHeader
+                              command={running?.command ?? ""}
+                              rect={liveRect(pane, used)}
+                              liftPx={lift}
+                              onHeight={setActiveHeaderPx}
+                            />
+                            <ActiveBlockFrame
+                              rect={liveRect(pane, used)}
+                              liftPx={lift}
+                            />
+                          </>
                         )}
                       </Fragment>
                     );
