@@ -63,6 +63,58 @@ export function keyboardOwner({
   return "tybaLine";
 }
 
+/** As quatro setas, pelo `key` do evento de teclado. */
+const ARROW_KEYS = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+]);
+
+export function isArrowKey(key: string): boolean {
+  return ARROW_KEYS.has(key);
+}
+
+export interface ArrowInput {
+  /** Entre `133;C` e `133;D`. Fora disso a linha do TYBA já é dona do teclado. */
+  running: boolean;
+  /**
+   * `ECHO` do termios: o tty entrega LINHAS, não teclas.
+   *
+   * Ligado, o driver só devolve a linha ao dar Enter e trata apenas
+   * backspace/kill — a seta entra como byte literal que nenhum leitor de linha
+   * interpreta, e ainda é ecoada de volta.
+   */
+  lineEcho: boolean;
+  /** vim, htop, less: a tela é do programa e as setas também. */
+  altScreen: boolean;
+}
+
+/**
+ * A seta morre aqui em vez de ir para o PTY?
+ *
+ * O caso: com um comando rodando, apertar seta escrevia `^[[A` na saída — e a
+ * saída vira bloco gravado no SQLite e no markdown do copiar. Some da tela ao
+ * limpar, não do disco.
+ *
+ * Só quando o tty está em modo linha, e essa condição é a causa, não um proxy
+ * dela: é exatamente nesse estado que a seta não serve a ninguém e é ecoada.
+ * Em raw, quem lê tecla a tecla precisa dela — o menu do `npm create`, que é
+ * canônico ao perguntar `Ok to proceed? (y)` e vira raw ao abrir a lista, no
+ * mesmo comando.
+ *
+ * Não vale para o resto do teclado: o `y` daquele prompt também é canônico com
+ * eco, e engoli-lo impediria responder. Ver {@link KeyboardOwner}.
+ */
+export function swallowsArrow({
+  running,
+  lineEcho,
+  altScreen,
+}: ArrowInput): boolean {
+  if (!running || altScreen) return false;
+  return lineEcho;
+}
+
 /**
  * Teclas que a linha do TYBA nunca consome: são sinais para o processo, não
  * texto. Ctrl+C também limpa a caixa — o usuário espera perder o rascunho.

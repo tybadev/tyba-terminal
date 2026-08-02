@@ -726,6 +726,42 @@ impl PtyPool {
         Some(mode)
     }
 
+    /// `ECHO` do termios do PTY — o tty está entregando LINHAS, não teclas.
+    ///
+    /// Ligado, o driver só devolve a linha ao dar Enter, trata apenas
+    /// backspace/kill e ecoa o resto: seta vira byte literal no meio da linha,
+    /// que nenhum leitor de linha interpreta. Ela não serve para o programa e
+    /// ainda é ecoada — vira `^[[A` na saída e no bloco gravado no disco.
+    ///
+    /// Desligado (raw), quem lê tecla a tecla precisa das setas de verdade: é o
+    /// menu do `npm create`, o `vim`, o `htop`.
+    ///
+    /// Não confundir com "ninguém está lendo": o `Ok to proceed? (y)` do npm é
+    /// canônico COM eco, e é por isso que o `y` digitado aparece. Segurar todo
+    /// o teclado neste estado impediria responder ao prompt — por isso só as
+    /// setas param aqui.
+    ///
+    /// Windows não tem termios e devolve `None`: o ConPTY fica como sempre foi.
+    #[cfg(unix)]
+    pub fn line_echo(&self, id: PtyId) -> Option<bool> {
+        let ptys = self.ptys.lock();
+        let handle = ptys.get(&id)?;
+        let fd = handle.master.as_raw_fd()?;
+        let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
+        // SAFETY: `fd` é o master deste pty, vivo enquanto o handle existir, e
+        // o lock acima garante que ele não é fechado no meio da chamada.
+        if unsafe { libc::tcgetattr(fd, termios.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let termios = unsafe { termios.assume_init() };
+        Some(termios.c_lflag & libc::ECHO != 0)
+    }
+
+    #[cfg(not(unix))]
+    pub fn line_echo(&self, _id: PtyId) -> Option<bool> {
+        None
+    }
+
     pub fn bracketed_paste(&self, id: PtyId) -> Option<bool> {
         let screen = self.screen_of(id)?;
         let enabled = screen.lock().parser.screen().bracketed_paste();
@@ -948,6 +984,63 @@ mod screen_tests {
         assert!(text.contains("hello"));
         assert!(text.contains("red"));
         assert!(text.contains("world"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod echo_tests {
+    use portable_pty::{native_pty_system, PtySize};
+
+    /// Lê o `ECHO` como `PtyPool::line_echo` lê, mas de um fd solto — o pool
+    /// exige uma sessão inteira, e o que está sob teste é a leitura da flag.
+    fn echo_of(fd: std::os::unix::io::RawFd) -> Option<bool> {
+        let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
+        if unsafe { libc::tcgetattr(fd, termios.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let termios = unsafe { termios.assume_init() };
+        Some(termios.c_lflag & libc::ECHO != 0)
+    }
+
+    fn set_echo(fd: std::os::unix::io::RawFd, on: bool) {
+        let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(unsafe { libc::tcgetattr(fd, termios.as_mut_ptr()) }, 0);
+        let mut termios = unsafe { termios.assume_init() };
+        if on {
+            termios.c_lflag |= libc::ECHO;
+        } else {
+            termios.c_lflag &= !libc::ECHO;
+        }
+        assert_eq!(unsafe { libc::tcsetattr(fd, libc::TCSANOW, &termios) }, 0);
+    }
+
+    /// O sinal que decide para onde vai a seta precisa acompanhar a troca de
+    /// modo em tempo real: o `npm create` começa canônico (`Ok to proceed?`) e
+    /// vira raw quando abre o menu, dentro do MESMO comando. Um valor lido uma
+    /// vez no início mandaria a seta para o lado errado da metade em diante.
+    #[test]
+    fn line_echo_acompanha_o_modo_do_tty() {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        let fd = pair.master.as_raw_fd().expect("master fd");
+
+        // Um pty nasce canônico com eco — é o estado em que o shell espera
+        // comando, e aquele em que a seta vira `^[[A` na saída.
+        assert_eq!(echo_of(fd), Some(true), "pty novo nasce com eco");
+
+        // Raw: quem lê tecla a tecla desliga o eco justamente para tratar as
+        // setas por conta própria.
+        set_echo(fd, false);
+        assert_eq!(echo_of(fd), Some(false));
+
+        set_echo(fd, true);
+        assert_eq!(echo_of(fd), Some(true), "volta ao canônico ao fim");
     }
 }
 

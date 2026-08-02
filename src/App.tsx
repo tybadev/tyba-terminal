@@ -227,6 +227,7 @@ import {
   onBlocksCleared,
   onSessionPromptMode,
   sessionBlocks,
+  sessionLineEcho,
   sessionPromptMode,
   togglePromptMode,
   renderSnippet,
@@ -299,6 +300,16 @@ import {
   usedFraction,
 } from "./components/ActiveBlock";
 import { LIVE_PAD_Y_PX } from "./components/TerminalView";
+
+/**
+ * Intervalo da consulta ao modo do tty, em ms.
+ *
+ * Só roda com comando em execução. Curto o bastante para acompanhar a troca de
+ * canônico para raw no meio de um mesmo comando (o menu do `npm create` abre
+ * segundos depois do `Ok to proceed?`), e longo o bastante para não pesar num
+ * core que já disputa CPU com os agentes.
+ */
+const LINE_ECHO_POLL_MS = 200;
 import { BlockList } from "./components/BlockList";
 import { mergeBlockHistory } from "./lib/blockHistory";
 import { blocksMarkdown, wipesTheScreen } from "./lib/blockText";
@@ -341,6 +352,7 @@ import {
 } from "./lib/appMenu";
 import {
   keyboardOwner,
+  swallowsArrow,
   lineState,
   PROMPT_MODE_PREF_KEY,
 } from "./lib/commandLine";
@@ -2874,6 +2886,48 @@ export default function App() {
   // Altura medida do header do bloco em execução. A lista encurta desse tanto —
   // o header é desenhado sobre o fim dela. Ver `BlockList.bottomInset`.
   const [activeHeaderPx, setActiveHeaderPx] = useState(0);
+
+  // O tty entrega linhas ou teclas? Decide se a seta vai ao PTY ou morre no
+  // caminho — ver `swallowsArrow`.
+  //
+  // Consultado em intervalo, e não uma vez por comando: o MESMO comando troca
+  // de modo no meio. O `npm create` pergunta `Ok to proceed? (y)` em canônico e
+  // vira raw ao abrir o menu; um valor lido no início mandaria a seta para o
+  // lado errado da metade em diante.
+  //
+  // Só enquanto há comando rodando: fora disso a linha do TYBA já é dona do
+  // teclado e a resposta não muda nada.
+  const [lineEcho, setLineEcho] = useState<Record<string, boolean>>({});
+  const runningIds = useMemo(
+    () =>
+      Object.entries(sessionCommands)
+        .filter(([, cmd]) => cmd?.running)
+        .map(([id]) => id)
+        .sort()
+        .join(","),
+    [sessionCommands],
+  );
+  useEffect(() => {
+    const ids = runningIds ? runningIds.split(",") : [];
+    if (ids.length === 0) return;
+    let alive = true;
+    const poll = () => {
+      for (const id of ids) {
+        void sessionLineEcho(id)
+          .then((on) => {
+            if (!alive) return;
+            setLineEcho((prev) => (prev[id] === on ? prev : { ...prev, [id]: on }));
+          })
+          .catch(() => {});
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, LINE_ECHO_POLL_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [runningIds]);
   const reportLiveRows = useCallback(
     (id: SessionId, used: number, total: number, scrolled: boolean) => {
       const next = usedFraction(used, total, scrolled);
@@ -4363,6 +4417,11 @@ export default function App() {
                         exited={isFinishedStatus(s.status)}
                         rect={terminalBox}
                         liveUsed={blocked ? liveUsed[s.id] : undefined}
+                        swallowArrows={swallowsArrow({
+                          running: Boolean(sessionCommands[s.id]?.running),
+                          lineEcho: lineEcho[s.id] ?? false,
+                          altScreen: altScreens[s.id] ?? false,
+                        })}
                         onLiveRows={
                           blocked
                             ? (used, total, scrolled) =>

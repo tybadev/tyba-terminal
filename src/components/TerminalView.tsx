@@ -42,6 +42,7 @@ import {
 } from "../lib/terminalLinks";
 import { IS_MAC } from "../lib/platform";
 import { hiddenFraction } from "../lib/liveSeam";
+import { isArrowKey } from "../lib/commandLine";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
 export const RELAYOUT_EVENT = "tyba:relayout";
@@ -168,6 +169,13 @@ interface Props {
   liveUsed?: number;
   /** Mede a saída em curso para {@link Props.liveUsed} — ver `usedFraction`. */
   onLiveRows?: (usedRows: number, totalRows: number, scrolled: boolean) => void;
+  /**
+   * Segurar as setas em vez de mandá-las ao PTY. Ver `swallowsArrow`.
+   *
+   * Vale só enquanto o tty entrega linhas: ali a seta não serve ao programa e
+   * ainda é ecoada, virando `^[[A` na saída que o bloco grava no disco.
+   */
+  swallowArrows?: boolean;
 }
 
 export function TerminalView({
@@ -195,6 +203,7 @@ export function TerminalView({
   onDismissNotice,
   liveUsed,
   onLiveRows,
+  swallowArrows,
 }: Props) {
   const [gotOutput, setGotOutput] = useState(false);
   // O onData é assinado uma vez no mount: sem ref, a rajada ficaria presa no
@@ -223,6 +232,10 @@ export function TerminalView({
   const syncWebglRef = useRef<(() => void) | null>(null);
   const onLiveRowsRef = useRef(onLiveRows);
   onLiveRowsRef.current = onLiveRows;
+  // O handler de tecla é assinado uma vez no mount: sem ref, ficaria preso no
+  // valor do primeiro render e a seta pararia de acompanhar o modo do tty.
+  const swallowArrowsRef = useRef(false);
+  swallowArrowsRef.current = Boolean(swallowArrows);
   const hoveredLinkRef = useRef<string | null>(null);
   const [menuHasSelection, setMenuHasSelection] = useState(false);
   const [menuMouseMode, setMenuMouseMode] = useState(false);
@@ -323,6 +336,17 @@ export function TerminalView({
 
     const bufferSub = term.buffer.onBufferChange((buffer) => {
       onAltScreenRef.current?.(buffer.type === "alternate");
+    });
+
+    // A seta morre aqui quando o tty está em modo linha — ver `swallowsArrow`.
+    //
+    // No evento de TECLADO, não no `onData`: ali a seta já virou `\x1b[A`, que
+    // é indistinguível de um ESC vindo de paste ou de rajada. Barrar por bytes
+    // engoliria escape legítimo de outra origem.
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown") return true;
+      if (!isArrowKey(event.key)) return true;
+      return !swallowArrowsRef.current;
     });
 
     const dataSub = term.onData((data) => {

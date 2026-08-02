@@ -4124,6 +4124,19 @@ fn session_prompt_mode(state: State<'_, AppState>, id: SessionId) -> bool {
     state.pty_pool.prompt_mode(id).unwrap_or(false)
 }
 
+/// O tty está entregando linhas (eco ligado) ou teclas (raw)?
+///
+/// Decide para onde vai a seta enquanto um comando roda: em modo linha ela é
+/// byte literal que ninguém interpreta e ainda é ecoada, virando `^[[A` na
+/// saída gravada do bloco. Ver `PtyPool::line_echo`.
+///
+/// `false` quando não há como saber (Windows, sessão morta): é o estado de
+/// sempre, com a tecla indo para o PTY.
+#[tauri::command]
+fn session_line_echo(state: State<'_, AppState>, id: SessionId) -> bool {
+    state.pty_pool.line_echo(id).unwrap_or(false)
+}
+
 #[tauri::command]
 fn toggle_prompt_mode(state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
     state
@@ -4837,6 +4850,7 @@ pub fn run() {
             write_control,
             toggle_prompt_mode,
             session_prompt_mode,
+            session_line_echo,
             session_blocks,
             search_command_history,
             suggest_commands,
