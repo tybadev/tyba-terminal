@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react";
+
 import type { PaneRectStyle } from "./TerminalView";
 
 export {
@@ -20,12 +22,34 @@ export {
 export function ActiveBlockHeader({
   command,
   rect,
+  onHeight,
 }: {
   command: string;
   rect: PaneRectStyle;
+  /**
+   * A altura que este header ocupa, medida.
+   *
+   * Ele fica ACIMA da faixa ao vivo, sobre o fim da lista de blocos — que
+   * precisa encurtar do mesmo tanto para o último bloco não passar por baixo
+   * dele. Medido e não fixo: o header já mudou de altura antes (o ponto
+   * pulsante entrou depois), e número fixo aqui volta como bloco cortado.
+   */
+  onHeight?: (px: number) => void;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !onHeight) return;
+    const report = () => onHeight(el.getBoundingClientRect().height);
+    report();
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [onHeight]);
+
   return (
     <div
+      ref={ref}
       className="z-10 flex items-center gap-2 rounded-t-[5px] border border-b-0 border-tyba-border bg-tyba-sunken px-2.5 py-1"
       style={{
         position: "absolute",

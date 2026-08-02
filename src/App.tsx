@@ -2869,6 +2869,9 @@ export default function App() {
   // Quanto da tela a saída de cada sessão está ocupando — recorta a faixa ao
   // vivo na altura dela para o cartão nascer onde a saída estava.
   const [liveUsed, setLiveUsed] = useState<Record<string, number>>({});
+  // Altura medida do header do bloco em execução. A lista encurta desse tanto —
+  // o header é desenhado sobre o fim dela. Ver `BlockList.bottomInset`.
+  const [activeHeaderPx, setActiveHeaderPx] = useState(0);
   const reportLiveRows = useCallback(
     (id: SessionId, used: number, total: number, scrolled: boolean) => {
       const next = usedFraction(used, total, scrolled);
@@ -4408,6 +4411,7 @@ export default function App() {
                             blocks={list}
                             framed={(paneLayout?.panes.length ?? 0) > 1}
                             rect={blocksRect(pane, live, used)}
+                            bottomInset={live ? activeHeaderPx : 0}
                             onInject={
                               s.id === activeId ? injectIntoActive : undefined
                             }
@@ -4431,6 +4435,7 @@ export default function App() {
                             <ActiveBlockHeader
                               command={running?.command ?? ""}
                               rect={liveRect(pane, used)}
+                              onHeight={setActiveHeaderPx}
                             />
                             <ActiveBlockFrame rect={liveRect(pane, used)} />
                           </>

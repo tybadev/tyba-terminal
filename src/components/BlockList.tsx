@@ -344,6 +344,14 @@ function BlockCard({
 const LINE_PX = 18;
 const HEADER_PX = 27;
 const BLOCK_GAP_PX = 16;
+/**
+ * Folga para considerar a lista "no fim".
+ *
+ * Zero exigiria pixel exato: arredondamento de `scrollHeight` fracionário e uma
+ * rolagem que parou a um fio do fim deixariam a lista de reancorar justamente
+ * quando o dono achava que estava acompanhando a saída.
+ */
+const STICK_SLACK_PX = 4;
 
 interface Props {
   blocks: Block[];
@@ -368,12 +376,27 @@ interface Props {
   onClearPick?: () => void;
   /** Atalho de copiar, já formatado. Vem de fora porque é rebindável. */
   copyCombo?: string;
+  /**
+   * Altura, em px, do header do bloco em execução — que fica POR CIMA do fim
+   * desta lista, não ao lado dela.
+   *
+   * Ele é desenhado no topo da faixa ao vivo com `translateY(-100%)`, ou seja,
+   * ocupa os últimos pixels do retângulo da lista. Sem reservar esse espaço, o
+   * último bloco passa por baixo do header e aparece com a linha final cortada
+   * — a rolagem chega ao fim, o corte não é dela.
+   *
+   * Vem MEDIDO, nunca fixo: é a mesma conta que o header preso já errou uma
+   * vez, número fixo contra altura real, e a diferença reaparece exatamente
+   * como bloco cortado.
+   */
+  bottomInset?: number;
 }
 
 export function BlockList({
   blocks,
   rect,
   framed,
+  bottomInset = 0,
   onInject,
   onActivate,
   marked,
@@ -410,6 +433,35 @@ export function BlockList({
     if (last >= 0) virtualizer.scrollToIndex(last, { align: "end" });
   }, [last, virtualizer]);
 
+  // Estava colado no fim quando o dono mexeu pela última vez?
+  //
+  // Medir isto na hora em que a altura muda não serve: o efeito roda depois do
+  // render, quando a lista JÁ encolheu e o fim já escapou. O que vale é o
+  // estado da última rolagem de verdade.
+  const atBottomRef = useRef(true);
+
+  // A altura da lista muda a cada linha de saída que chega — ela cede à faixa
+  // ao vivo só o que a saída usa. Ancorada embaixo e sem reancorar a rolagem, o
+  // último bloco aparece cortado no meio a cada linha nova.
+  //
+  // Só reancora quem já estava no fim: puxar de volta para baixo quem subiu
+  // para ler um bloco antigo é pior do que o corte que isto conserta.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || last < 0 || !atBottomRef.current) return;
+    // `scrollTop` na mão, e não `scrollToIndex`: o virtualizador posiciona os
+    // itens a partir do topo, mas a lista é ancorada embaixo (`justify-end` com
+    // `min-h-full`), então as posições dele não batem com a rolagem — é o mesmo
+    // descolamento que o header preso já contorna logo abaixo.
+    //
+    // Em rAF porque o efeito roda antes de o WebKit refazer o layout com a
+    // altura nova: lido agora, `scrollHeight` ainda é o de antes da mudança.
+    const id = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(id);
+  }, [rect.height, bottomInset, last]);
+
   // Bloco mais alto que o painel some com o próprio header ao rolar, e o que
   // sobra na tela é uma parede de texto igual à de um terminal comum — some
   // justamente o "cada comando tem o seu recorte". O header do bloco que está
@@ -423,6 +475,9 @@ export function BlockList({
     const el = scrollRef.current;
     if (!el) return;
     const sync = () => {
+      // Lista que cabe na tela está sempre no fim, por definição.
+      atBottomRef.current =
+        el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_SLACK_PX;
       // Lista que cabe na tela não tem o que prender: ancorada embaixo, ela
       // começa deslocada do topo, e as posições que o virtualizador calcula
       // deixam de bater com a rolagem.
@@ -457,7 +512,9 @@ export function BlockList({
         left: `${rect.left}%`,
         top: `${rect.top}%`,
         width: `${rect.width}%`,
-        height: `${rect.height}%`,
+        // Encurtado pelo header do bloco em execução, que é desenhado sobre o
+        // fim desta lista. Ver `bottomInset`.
+        height: `calc(${rect.height}% - ${bottomInset}px)`,
       }}
     >
       <div
