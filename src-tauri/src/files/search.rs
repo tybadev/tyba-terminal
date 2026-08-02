@@ -170,10 +170,16 @@ mod tests {
     fn temp_repo() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tyba-fuzzy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("src")).unwrap();
+        // O teste afirma o que o índice ignora, e `core.excludesfile` global de
+        // quem roda a suíte entra nessa conta: um padrão lá fora tiraria do
+        // índice um arquivo que o teste espera encontrar, e a falha não teria
+        // nada a ver com o código.
         let git = |args: &[&str]| {
             let out = Command::new("git")
                 .arg("-C")
                 .arg(&dir)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
                 .args(args)
                 .output()
                 .unwrap();

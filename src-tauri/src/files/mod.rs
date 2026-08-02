@@ -1235,10 +1235,17 @@ mod tests {
         assert_eq!(decos.len(), 2);
     }
 
+    // Sem neutralizar a config global, o commit do teste herda o
+    // `commit.gpgsign` de quem roda a suíte: com `gpg.format=ssh` o git chama o
+    // agente de chave a cada commit, que sob a suíte inteira em paralelo recusa
+    // assinar ou abre um prompt no meio da execução. O mesmo isolamento cobre
+    // `core.excludesfile`, que mudaria em silêncio o que conta como ignorado.
     fn git(dir: &Path, args: &[&str]) {
         let out = std::process::Command::new("git")
             .arg("-C")
             .arg(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .args(args)
             .output()
             .unwrap();
