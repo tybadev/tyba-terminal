@@ -5,10 +5,10 @@ pub(super) static NODE_RUNTIME: &[PlatformPin] = &[
     PlatformPin {
         platform: Platform::LinuxX86_64,
         pin: Pin {
-            version: "24.18.0",
-            url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.gz",
-            sha256: "783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8",
-            size: 57224421,
+            version: "24.18.1",
+            url: "https://nodejs.org/dist/v24.18.1/node-v24.18.1-linux-x64.tar.gz",
+            sha256: "9f5eb6ac21845a66c493c91a253b1da32fd684e89e9b7202d4936982336be4ca",
+            size: 57254099,
             archive: Archive::TarGz,
             member: "bin/node",
         },
@@ -16,10 +16,10 @@ pub(super) static NODE_RUNTIME: &[PlatformPin] = &[
     PlatformPin {
         platform: Platform::LinuxAarch64,
         pin: Pin {
-            version: "24.18.0",
-            url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-arm64.tar.gz",
-            sha256: "6b4484c2190274175df9aa8f28e2d758a819cb1c1fe6ab481e2f95b463ab8508",
-            size: 56979089,
+            version: "24.18.1",
+            url: "https://nodejs.org/dist/v24.18.1/node-v24.18.1-linux-arm64.tar.gz",
+            sha256: "df224555a083b918e46260cc969838501b9f9a87140c1195e5b9597b56d5dae2",
+            size: 56968528,
             archive: Archive::TarGz,
             member: "bin/node",
         },
@@ -27,10 +27,10 @@ pub(super) static NODE_RUNTIME: &[PlatformPin] = &[
     PlatformPin {
         platform: Platform::MacosAarch64,
         pin: Pin {
-            version: "24.18.0",
-            url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-darwin-arm64.tar.gz",
-            sha256: "e1a97e14c99c803e96c7339403282ea05a499c32f8d83defe9ef5ec66f979ed1",
-            size: 52087559,
+            version: "24.18.1",
+            url: "https://nodejs.org/dist/v24.18.1/node-v24.18.1-darwin-arm64.tar.gz",
+            sha256: "eb02f7fab96d3d67de40c5ec8566096fcb4c2026728787683ae5a97eb612b941",
+            size: 52089613,
             archive: Archive::TarGz,
             member: "bin/node",
         },
@@ -38,10 +38,10 @@ pub(super) static NODE_RUNTIME: &[PlatformPin] = &[
     PlatformPin {
         platform: Platform::MacosX86_64,
         pin: Pin {
-            version: "24.18.0",
-            url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-darwin-x64.tar.gz",
-            sha256: "dfd0dbd3e721503434df7b7205e719f61b3a3a31b2bcf9729b8b91fea240f080",
-            size: 53282687,
+            version: "24.18.1",
+            url: "https://nodejs.org/dist/v24.18.1/node-v24.18.1-darwin-x64.tar.gz",
+            sha256: "6fb20fceacbb157c2f95825b80df4a454a0f6d81cdcd7bb81eeae9147e0e76ec",
+            size: 53284823,
             archive: Archive::TarGz,
             member: "bin/node",
         },
@@ -49,10 +49,10 @@ pub(super) static NODE_RUNTIME: &[PlatformPin] = &[
 ];
 
 pub(super) static RUST_ANALYZER: &[PlatformPin] = &[
-    PlatformPin { platform: Platform::LinuxX86_64, pin: Pin { version: "2026-07-20", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-20/rust-analyzer-x86_64-unknown-linux-gnu.gz", sha256: "d12f8e6df9b6d84373e80cddb67d183587a52323878e87f4fb6df91814c23d80", size: 15028892, archive: Archive::Gzip, member: "rust-analyzer" } },
-    PlatformPin { platform: Platform::LinuxAarch64, pin: Pin { version: "2026-07-20", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-20/rust-analyzer-aarch64-unknown-linux-gnu.gz", sha256: "ff03f51db39f67ce5694fed091ca38f936195e5079d26f6c9df64596b5c9e640", size: 14439905, archive: Archive::Gzip, member: "rust-analyzer" } },
-    PlatformPin { platform: Platform::MacosAarch64, pin: Pin { version: "2026-07-20", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-20/rust-analyzer-aarch64-apple-darwin.gz", sha256: "f0db74fed7e356c987a319bde43937e36d3248fc97b390c25abf972e2076b022", size: 13988226, archive: Archive::Gzip, member: "rust-analyzer" } },
-    PlatformPin { platform: Platform::MacosX86_64, pin: Pin { version: "2026-07-20", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-20/rust-analyzer-x86_64-apple-darwin.gz", sha256: "2af82b65570becf6aeebce5a891a4724074c0857803dfa46f891487e06218c96", size: 14709095, archive: Archive::Gzip, member: "rust-analyzer" } },
+    PlatformPin { platform: Platform::LinuxX86_64, pin: Pin { version: "2026-08-03", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-08-03/rust-analyzer-x86_64-unknown-linux-gnu.gz", sha256: "769670319df8571dac91b6eab6d3a65b18b69488a6900959f2fb6157181ace9d", size: 14898878, archive: Archive::Gzip, member: "rust-analyzer" } },
+    PlatformPin { platform: Platform::LinuxAarch64, pin: Pin { version: "2026-08-03", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-08-03/rust-analyzer-aarch64-unknown-linux-gnu.gz", sha256: "ea5cb460f1532bf3c6f399b079840e968e3c25857669cd65af36dd707ea097e8", size: 14330087, archive: Archive::Gzip, member: "rust-analyzer" } },
+    PlatformPin { platform: Platform::MacosAarch64, pin: Pin { version: "2026-08-03", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-08-03/rust-analyzer-aarch64-apple-darwin.gz", sha256: "bba6cd8209643cd781f3ee5474fa232d3ee1b77a57f2e77982806e3c80a65207", size: 13873448, archive: Archive::Gzip, member: "rust-analyzer" } },
+    PlatformPin { platform: Platform::MacosX86_64, pin: Pin { version: "2026-08-03", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-08-03/rust-analyzer-x86_64-apple-darwin.gz", sha256: "8966f9429085c243817b9d13afa76e98920668c07a9b432901daaf047397c6cb", size: 14576027, archive: Archive::Gzip, member: "rust-analyzer" } },
 ];
 
 pub(super) static TAPLO: &[PlatformPin] = &[
@@ -111,10 +111,10 @@ pub(super) static MARKSMAN: &[PlatformPin] = &[
 ];
 
 pub(super) static TERRAFORM_LS: &[PlatformPin] = &[
-    PlatformPin { platform: Platform::LinuxX86_64, pin: Pin { version: "0.38.8", url: "https://releases.hashicorp.com/terraform-ls/0.38.8/terraform-ls_0.38.8_linux_amd64.zip", sha256: "d16077d9c83f13ac33501af49ea75f43218d3fa2437c6c1374550b2625edc3ef", size: 30326575, archive: Archive::Zip, member: "terraform-ls" } },
-    PlatformPin { platform: Platform::LinuxAarch64, pin: Pin { version: "0.38.8", url: "https://releases.hashicorp.com/terraform-ls/0.38.8/terraform-ls_0.38.8_linux_arm64.zip", sha256: "762db754428dd188b949533ca05437955e26f4b3fc699d4b93392668a24e7a10", size: 29620863, archive: Archive::Zip, member: "terraform-ls" } },
-    PlatformPin { platform: Platform::MacosAarch64, pin: Pin { version: "0.38.8", url: "https://releases.hashicorp.com/terraform-ls/0.38.8/terraform-ls_0.38.8_darwin_arm64.zip", sha256: "510a506f7bf1550294202347261961e52daa4664a795e2deffbf7df7296b1f6c", size: 30012654, archive: Archive::Zip, member: "terraform-ls" } },
-    PlatformPin { platform: Platform::MacosX86_64, pin: Pin { version: "0.38.8", url: "https://releases.hashicorp.com/terraform-ls/0.38.8/terraform-ls_0.38.8_darwin_amd64.zip", sha256: "34cfe6cbbb61da5b8fd21721e14be0f134417f249350872da1669454dc8762a4", size: 30709588, archive: Archive::Zip, member: "terraform-ls" } },
+    PlatformPin { platform: Platform::LinuxX86_64, pin: Pin { version: "0.39.0", url: "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_linux_amd64.zip", sha256: "7750edc736845fd8c04ff0fc6332423c12d8275b358668c8c17e8aedc43ef971", size: 31026533, archive: Archive::Zip, member: "terraform-ls" } },
+    PlatformPin { platform: Platform::LinuxAarch64, pin: Pin { version: "0.39.0", url: "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_linux_arm64.zip", sha256: "62f32ea22cb78e5e5667ed638ad6e0fbde30ab59228d073c3c9bb249f89c7f5a", size: 30305656, archive: Archive::Zip, member: "terraform-ls" } },
+    PlatformPin { platform: Platform::MacosAarch64, pin: Pin { version: "0.39.0", url: "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_darwin_arm64.zip", sha256: "6f80fe0b34af184175508f3d9135d8159f5dce4000d9b39540553eb1c267c54b", size: 30705654, archive: Archive::Zip, member: "terraform-ls" } },
+    PlatformPin { platform: Platform::MacosX86_64, pin: Pin { version: "0.39.0", url: "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_darwin_amd64.zip", sha256: "cc5bbc5b5a39d12d455c0d2b1e4b3a2c1f237d02d2cf819cf5252358f2d674de", size: 31418012, archive: Archive::Zip, member: "terraform-ls" } },
 ];
 
 pub(super) static CLOJURE_LSP: &[PlatformPin] = &[
