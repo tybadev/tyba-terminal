@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import type { PaneRectStyle } from "./TerminalView";
+import { LIVE_INSET_X_PX, type PaneRectStyle } from "./TerminalView";
 
 export {
   blocksRect,
@@ -63,9 +63,9 @@ export function ActiveBlockHeader({
       className="z-10 flex items-center gap-2 rounded-t-[5px] border border-b-0 border-tyba-border bg-tyba-sunken px-2.5 py-1"
       style={{
         position: "absolute",
-        left: `${rect.left}%`,
+        left: `calc(${rect.left}% + ${LIVE_INSET_X_PX}px)`,
         top: `calc(${rect.top}% - ${liftPx}px)`,
-        width: `${rect.width}%`,
+        width: `calc(${rect.width}% - ${LIVE_INSET_X_PX * 2}px)`,
         transform: "translateY(-100%)",
       }}
     >
@@ -102,9 +102,9 @@ export function ActiveBlockFrame({
       className="pointer-events-none z-10 rounded-b-[5px] border border-t-0 border-tyba-border"
       style={{
         position: "absolute",
-        left: `${rect.left}%`,
+        left: `calc(${rect.left}% + ${LIVE_INSET_X_PX}px)`,
         top: `calc(${rect.top}% - ${liftPx}px)`,
-        width: `${rect.width}%`,
+        width: `calc(${rect.width}% - ${LIVE_INSET_X_PX * 2}px)`,
         height: `calc(${rect.height}% + ${liftPx}px)`,
       }}
     />

@@ -42,6 +42,7 @@ import {
 } from "../lib/terminalLinks";
 import { IS_MAC } from "../lib/platform";
 import { hiddenFraction } from "../lib/liveSeam";
+import { isArrowKey } from "../lib/commandLine";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
 export const RELAYOUT_EVENT = "tyba:relayout";
@@ -54,6 +55,23 @@ export const RELAYOUT_EVENT = "tyba:relayout";
  * recortar pela altura cheia parte a última linha ao meio. Duas fontes de
  * verdade para o mesmo número foi como esse bug nasceu.
  */
+/**
+ * Recuo lateral do bloco em execução, em px.
+ *
+ * Sem ele o bloco ativo vai de ponta a ponta do painel enquanto os cartões
+ * parados respeitam a margem da lista — o em execução fica encostado nas
+ * bordas e destoa de todos os outros.
+ *
+ Encolhe a CAIXA, e o fundo do painel aparece atrás — é ele que dá a margem,
+ * do mesmo jeito que a lista dá a dos cartões. Virar padding em vez de margem
+ * faria o terminal pintar até a borda do painel e a área fora da moldura
+ * mostraria a cor dele, como se o bloco não terminasse ali.
+ *
+ * Entra na largura, então mexe no número de colunas. É um ajuste de LAYOUT,
+ * constante durante a sessão: a regra que não pode cair é o PTY não ser
+ * redimensionado POR COMANDO, e essa continua de pé.
+ */
+export const LIVE_INSET_X_PX = 8;
 export const LIVE_PAD_TOP_PX = 8;
 export const LIVE_PAD_BOTTOM_PX = 12;
 export const LIVE_PAD_Y_PX = LIVE_PAD_TOP_PX + LIVE_PAD_BOTTOM_PX;
@@ -81,8 +99,37 @@ export function requestTerminalRelayout() {
 
 let defaultFontSize = 13;
 
+/**
+ * Entrelinha do terminal — e a dos blocos tem de ser a MESMA.
+ *
+ * O corpo do bloco é a mesma saída que estava no terminal um instante antes.
+ * Métrica diferente faz o texto mudar de tamanho ao virar cartão, que é a
+ * emenda voltando por outro caminho.
+ */
+export const TERMINAL_LINE_HEIGHT = 1.35;
+
+/**
+ * Muda o tamanho da fonte do terminal e ANUNCIA.
+ *
+ * O anúncio faz parte da troca: os blocos usam esta mesma métrica, e quem
+ * apenas guardasse o valor deixaria o corpo dos cartões num tamanho e o
+ * terminal noutro. Foi o que aconteceu com a preferência lida no boot, que
+ * mudava o número sem avisar ninguém.
+ */
 export function setDefaultFontSize(size: number) {
-  if (size >= 10 && size <= 20) defaultFontSize = size;
+  if (size < 10 || size > 20 || size === defaultFontSize) return;
+  defaultFontSize = size;
+  window.dispatchEvent(new CustomEvent(FONT_SIZE_EVENT, { detail: size }));
+}
+
+/**
+ * O tamanho de fonte do terminal, que é preferência do dono.
+ *
+ * Os blocos leem daqui em vez de fixar um número: com o corpo do cartão preso
+ * em 13px, aumentar a fonte do terminal fazia a saída encolher ao virar bloco.
+ */
+export function getDefaultFontSize(): number {
+  return defaultFontSize;
 }
 
 function loadWebgl(term: Terminal, onLost: () => void): WebglAddon | null {
@@ -168,6 +215,21 @@ interface Props {
   liveUsed?: number;
   /** Mede a saída em curso para {@link Props.liveUsed} — ver `usedFraction`. */
   onLiveRows?: (usedRows: number, totalRows: number, scrolled: boolean) => void;
+  /**
+   * Altura real de uma linha desenhada, em px.
+   *
+   * O corpo dos blocos usa este valor: calcular a partir de `lineHeight` dá
+   * outro número, porque o xterm multiplica pela altura do glifo e o CSS pelo
+   * `font-size`.
+   */
+  onLineHeight?: (px: number) => void;
+  /**
+   * Segurar as setas em vez de mandá-las ao PTY. Ver `swallowsArrow`.
+   *
+   * Vale só enquanto o tty entrega linhas: ali a seta não serve ao programa e
+   * ainda é ecoada, virando `^[[A` na saída que o bloco grava no disco.
+   */
+  swallowArrows?: boolean;
 }
 
 export function TerminalView({
@@ -195,6 +257,8 @@ export function TerminalView({
   onDismissNotice,
   liveUsed,
   onLiveRows,
+  onLineHeight,
+  swallowArrows,
 }: Props) {
   const [gotOutput, setGotOutput] = useState(false);
   // O onData é assinado uma vez no mount: sem ref, a rajada ficaria presa no
@@ -223,6 +287,13 @@ export function TerminalView({
   const syncWebglRef = useRef<(() => void) | null>(null);
   const onLiveRowsRef = useRef(onLiveRows);
   onLiveRowsRef.current = onLiveRows;
+  const onLineHeightRef = useRef(onLineHeight);
+  onLineHeightRef.current = onLineHeight;
+  const measureLineHeightRef = useRef<(() => void) | null>(null);
+  // O handler de tecla é assinado uma vez no mount: sem ref, ficaria preso no
+  // valor do primeiro render e a seta pararia de acompanhar o modo do tty.
+  const swallowArrowsRef = useRef(false);
+  swallowArrowsRef.current = Boolean(swallowArrows);
   const hoveredLinkRef = useRef<string | null>(null);
   const [menuHasSelection, setMenuHasSelection] = useState(false);
   const [menuMouseMode, setMenuMouseMode] = useState(false);
@@ -308,6 +379,10 @@ export function TerminalView({
           /* dimensões ainda não prontas — o ResizeObserver refaz o fit */
         }
       }
+      // Mede já na abertura: os blocos precisam da altura da linha desde o
+      // primeiro render, e esperar o `onRender` deixaria a lista com a altura
+      // provisória enquanto nenhum comando rodasse.
+      measureLineHeightRef.current?.();
     });
 
     registerTerm(sessionId, { term, search });
@@ -323,6 +398,17 @@ export function TerminalView({
 
     const bufferSub = term.buffer.onBufferChange((buffer) => {
       onAltScreenRef.current?.(buffer.type === "alternate");
+    });
+
+    // A seta morre aqui quando o tty está em modo linha — ver `swallowsArrow`.
+    //
+    // No evento de TECLADO, não no `onData`: ali a seta já virou `\x1b[A`, que
+    // é indistinguível de um ESC vindo de paste ou de rajada. Barrar por bytes
+    // engoliria escape legítimo de outra origem.
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown") return true;
+      if (!isArrowKey(event.key)) return true;
+      return !swallowArrowsRef.current;
     });
 
     const dataSub = term.onData((data) => {
@@ -403,6 +489,28 @@ export function TerminalView({
       lastScrolled = scrolled;
       report(used, term.rows, scrolled);
     };
+    // A altura real de uma linha, medida do que o xterm desenhou.
+    //
+    // Não dá para calcular: o CSS multiplica `lineHeight` pelo `font-size`, o
+    // xterm multiplica pela altura MEDIDA do glifo — numa Nerd Font, ~1,33x o
+    // tamanho nominal. Mesmo 1.35 nos dois lados, alturas diferentes. O corpo
+    // do bloco é a mesma saída que estava aqui e precisa da altura de verdade.
+    let lastLineH = 0;
+    const measureLineHeight = () => {
+      // `.xterm-screen`, não `.xterm-rows`: com o renderer WebGL as linhas são
+      // desenhadas num canvas e a camada de divs fica sem altura. A tela tem
+      // sempre `rows * altura da célula`, com ou sem WebGL.
+      const screen = term.element?.querySelector(".xterm-screen");
+      if (!screen || term.rows <= 0) return;
+      const h = screen.getBoundingClientRect().height / term.rows;
+      if (h <= 0 || Math.abs(h - lastLineH) < 0.05) return;
+      lastLineH = h;
+      onLineHeightRef.current?.(h);
+    };
+    measureLineHeightRef.current = measureLineHeight;
+    const lineHeightMeter = term.onRender(measureLineHeight);
+    addUnlistener(() => lineHeightMeter.dispose());
+
     const liveMeter = term.onRender(measureLive);
     addUnlistener(() => liveMeter.dispose());
 
@@ -716,17 +824,17 @@ export function TerminalView({
                   paddingTop: LIVE_PAD_TOP_PX,
                   paddingBottom: LIVE_PAD_BOTTOM_PX,
                   position: "absolute",
-                  left: `${rect.left}%`,
+                  left: `calc(${rect.left}% + ${LIVE_INSET_X_PX}px)`,
                   top: `${rect.top}%`,
-                  width: `${rect.width}%`,
+                  width: `calc(${rect.width}% - ${LIVE_INSET_X_PX * 2}px)`,
                   height: `${rect.height}%`,
                   // Recorte da faixa ao vivo. `height` acima é o tamanho que o
                   // `fit` mede e que vira `resizeSession` — ele NÃO entra nesta
-                  // conta. O que se move aqui é só a imagem: `translateY` empurra
-                  // o terminal para que o topo dele encoste no fim da lista de
-                  // blocos, e `clipPath` corta embaixo o que sobrou. Ambos ficam
-                  // fora do layout, então o `ResizeObserver` não acorda e o PTY
-                  // não sabe que algo mudou.
+                  // conta. O que se move aqui é só a posição: `top` empurra o
+                  // terminal para que o topo dele encoste no fim da lista de
+                  // blocos, e `clipPath` corta embaixo o que sobrou. Nenhum dos
+                  // dois muda o TAMANHO, que é o que o `ResizeObserver` observa
+                  // — por isso o PTY não sabe que algo mudou.
                   ...liveClip,
                   ...frameStyle,
                 }

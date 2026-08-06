@@ -124,6 +124,8 @@ import {
 import { TabBar } from "./components/TabBar";
 import {
   requestTerminalRelayout,
+  FONT_SIZE_EVENT,
+  getDefaultFontSize,
   setDefaultFontSize,
   TerminalView,
 } from "./components/TerminalView";
@@ -227,6 +229,7 @@ import {
   onBlocksCleared,
   onSessionPromptMode,
   sessionBlocks,
+  sessionLineEcho,
   sessionPromptMode,
   togglePromptMode,
   renderSnippet,
@@ -299,7 +302,17 @@ import {
   usedFraction,
 } from "./components/ActiveBlock";
 import { LIVE_PAD_Y_PX } from "./components/TerminalView";
-import { BlockList } from "./components/BlockList";
+
+/**
+ * Intervalo da consulta ao modo do tty, em ms.
+ *
+ * Só roda com comando em execução. Curto o bastante para acompanhar a troca de
+ * canônico para raw no meio de um mesmo comando (o menu do `npm create` abre
+ * segundos depois do `Ok to proceed?`), e longo o bastante para não pesar num
+ * core que já disputa CPU com os agentes.
+ */
+const LINE_ECHO_POLL_MS = 200;
+import { BLOCK_GAP_PX, BlockList } from "./components/BlockList";
 import { mergeBlockHistory } from "./lib/blockHistory";
 import { blocksMarkdown, wipesTheScreen } from "./lib/blockText";
 import {
@@ -341,6 +354,7 @@ import {
 } from "./lib/appMenu";
 import {
   keyboardOwner,
+  swallowsArrow,
   lineState,
   PROMPT_MODE_PREF_KEY,
 } from "./lib/commandLine";
@@ -2868,12 +2882,82 @@ export default function App() {
     };
   }, []);
 
+  /**
+   * A faixa ao vivo está aberta para esta sessão?
+   *
+   * Uma resposta só, usada pelo recorte do terminal e pelo layout dos blocos:
+   * quando as duas contas divergem, o terminal fica recortado sem a lista
+   * saber, e vira uma tira no rodapé do painel.
+   */
+  const liveOf = useCallback(
+    (id: SessionId) =>
+      Boolean(liveSlow[id]) &&
+      !wipesTheScreen(sessionCommands[id]?.command ?? null),
+    [liveSlow, sessionCommands],
+  );
+
   // Quanto da tela a saída de cada sessão está ocupando — recorta a faixa ao
   // vivo na altura dela para o cartão nascer onde a saída estava.
   const [liveUsed, setLiveUsed] = useState<Record<string, number>>({});
   // Altura medida do header do bloco em execução. A lista encurta desse tanto —
   // o header é desenhado sobre o fim dela. Ver `BlockList.bottomInset`.
   const [activeHeaderPx, setActiveHeaderPx] = useState(0);
+
+  // O corpo dos blocos acompanha a fonte do TERMINAL: é a mesma saída, e ela
+  // mudava de tamanho ao virar cartão porque o corpo estava preso em 13px.
+  const [termFontSize, setTermFontSize] = useState(getDefaultFontSize);
+  // Altura real de uma linha do terminal, medida por ele. Ver `onLineHeight`.
+  const [termLineHeight, setTermLineHeight] = useState(
+    () => getDefaultFontSize() * 1.35,
+  );
+  useEffect(() => {
+    const sync = () => setTermFontSize(getDefaultFontSize());
+    sync();
+    window.addEventListener(FONT_SIZE_EVENT, sync);
+    return () => window.removeEventListener(FONT_SIZE_EVENT, sync);
+  }, []);
+
+  // O tty entrega linhas ou teclas? Decide se a seta vai ao PTY ou morre no
+  // caminho — ver `swallowsArrow`.
+  //
+  // Consultado em intervalo, e não uma vez por comando: o MESMO comando troca
+  // de modo no meio. O `npm create` pergunta `Ok to proceed? (y)` em canônico e
+  // vira raw ao abrir o menu; um valor lido no início mandaria a seta para o
+  // lado errado da metade em diante.
+  //
+  // Só enquanto há comando rodando: fora disso a linha do TYBA já é dona do
+  // teclado e a resposta não muda nada.
+  const [lineEcho, setLineEcho] = useState<Record<string, boolean>>({});
+  const runningIds = useMemo(
+    () =>
+      Object.entries(sessionCommands)
+        .filter(([, cmd]) => cmd?.running)
+        .map(([id]) => id)
+        .sort()
+        .join(","),
+    [sessionCommands],
+  );
+  useEffect(() => {
+    const ids = runningIds ? runningIds.split(",") : [];
+    if (ids.length === 0) return;
+    let alive = true;
+    const poll = () => {
+      for (const id of ids) {
+        void sessionLineEcho(id)
+          .then((on) => {
+            if (!alive) return;
+            setLineEcho((prev) => (prev[id] === on ? prev : { ...prev, [id]: on }));
+          })
+          .catch(() => {});
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, LINE_ECHO_POLL_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [runningIds]);
   const reportLiveRows = useCallback(
     (id: SessionId, used: number, total: number, scrolled: boolean) => {
       const next = usedFraction(used, total, scrolled);
@@ -4290,6 +4374,26 @@ export default function App() {
                       />
                     </div>
                   )}
+                  {/* O painel É a área de terminal, e pinta como tal.
+                      Antes dos terminais no DOM, portanto atrás de todos.
+
+                      Sem isto, tudo que não é coberto pelo terminal nem pela
+                      lista mostra o fundo do app, mais claro: a faixa entre o
+                      último cartão e o bloco em execução, e a margem em volta
+                      dele. Cada pedaço aparece como um degrau de cor. */}
+                  {paneLayout?.panes.map((p) => (
+                    <div
+                      key={`pane-bg-${p.pane}`}
+                      className="pointer-events-none bg-tyba-sunken"
+                      style={{
+                        position: "absolute",
+                        left: `${p.x}%`,
+                        top: `${p.y}%`,
+                        width: `${p.w}%`,
+                        height: `${p.h}%`,
+                      }}
+                    />
+                  ))}
                   {sessions.map((s) => {
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ??
@@ -4362,7 +4466,20 @@ export default function App() {
                         }
                         exited={isFinishedStatus(s.status)}
                         rect={terminalBox}
-                        liveUsed={blocked ? liveUsed[s.id] : undefined}
+                        // Só com a faixa ABERTA. `liveUsed` guarda a última
+                        // medida e não se apaga quando o comando termina: sem
+                        // esta guarda o recorte fica valendo para sempre, e o
+                        // terminal vira uma tira no rodapé assim que a lista
+                        // deixa de cobri-lo — num split, o painel sem blocos.
+                        liveUsed={
+                          blocked && liveOf(s.id) ? liveUsed[s.id] : undefined
+                        }
+                        swallowArrows={swallowsArrow({
+                          running: Boolean(sessionCommands[s.id]?.running),
+                          lineEcho: lineEcho[s.id] ?? false,
+                          altScreen: altScreens[s.id] ?? false,
+                        })}
+                        onLineHeight={setTermLineHeight}
                         onLiveRows={
                           blocked
                             ? (used, total, scrolled) =>
@@ -4398,9 +4515,7 @@ export default function App() {
                     // e meio painel preto que aparece para logo esvaziar tudo é
                     // um solavanco em cima de um comando cujo ponto é sumir com
                     // as coisas.
-                    const live =
-                      Boolean(liveSlow[s.id]) &&
-                      !wipesTheScreen(running?.command ?? null);
+                    const live = liveOf(s.id);
                     // A lista cede à faixa só a altura que a saída usa de fato.
                     // Sem isto ela larga metade do painel para um terminal que
                     // costuma estar em boa parte vazio, e o cartão nasce longe
@@ -4417,7 +4532,11 @@ export default function App() {
                             blocks={list}
                             framed={(paneLayout?.panes.length ?? 0) > 1}
                             rect={blocksRect(pane, live, used)}
-                            bottomInset={live ? activeHeaderPx + lift : 0}
+                            bottomInset={
+                              live ? activeHeaderPx + lift + BLOCK_GAP_PX : 0
+                            }
+                            fontSizePx={termFontSize}
+                            lineHeightPx={termLineHeight}
                             onInject={
                               s.id === activeId ? injectIntoActive : undefined
                             }

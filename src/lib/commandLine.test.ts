@@ -3,6 +3,8 @@ import { describe, expect, it } from "bun:test";
 import {
   clearsDraft,
   controlBytes,
+  isArrowKey,
+  swallowsArrow,
   ghostFor,
   keyboardOwner,
   lineState,
@@ -227,5 +229,47 @@ describe("controlBytes", () => {
   it("só o Ctrl+C limpa o rascunho", () => {
     expect(clearsDraft({ key: "c", ctrl: true, meta: false, alt: false })).toBe(true);
     expect(clearsDraft({ key: "d", ctrl: true, meta: false, alt: false })).toBe(false);
+  });
+});
+
+describe("swallowsArrow", () => {
+  const base = { running: true, lineEcho: true, altScreen: false };
+
+  it("engole a seta com o tty em modo linha — ela só viraria `^[[A` gravado", () => {
+    expect(swallowsArrow(base)).toBe(true);
+  });
+
+  it("deixa passar em raw: é o menu do `npm create` lendo tecla a tecla", () => {
+    expect(swallowsArrow({ ...base, lineEcho: false })).toBe(false);
+  });
+
+  it("deixa passar em alt-screen — a tela é do vim e as setas também", () => {
+    expect(swallowsArrow({ ...base, altScreen: true })).toBe(false);
+  });
+
+  it("sem comando rodando não é com ela: a linha do TYBA já é dona do teclado", () => {
+    expect(swallowsArrow({ ...base, running: false })).toBe(false);
+    expect(swallowsArrow({ ...base, running: false, lineEcho: false })).toBe(
+      false,
+    );
+  });
+
+  it("o mesmo comando troca de modo no meio, e a decisão acompanha", () => {
+    // `npm create`: canônico no `Ok to proceed? (y)`, raw quando abre o menu.
+    expect(swallowsArrow({ ...base, lineEcho: true })).toBe(true);
+    expect(swallowsArrow({ ...base, lineEcho: false })).toBe(false);
+  });
+});
+
+describe("isArrowKey", () => {
+  it("reconhece as quatro e mais nada", () => {
+    for (const k of ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]) {
+      expect(isArrowKey(k)).toBe(true);
+    }
+    // O `y` do `Ok to proceed?` também é canônico com eco: se entrasse aqui,
+    // não haveria como responder ao prompt.
+    expect(isArrowKey("y")).toBe(false);
+    expect(isArrowKey("Enter")).toBe(false);
+    expect(isArrowKey("Home")).toBe(false);
   });
 });

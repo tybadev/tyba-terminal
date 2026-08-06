@@ -21,6 +21,12 @@
   --tyba-border: rgba(255, 255, 255, 0.07);        /* borda = luz, não cinza */
   --tyba-border-strong: rgba(255, 255, 255, 0.16); /* foco/hover */
   --tyba-sunken: #000000;         /* área do terminal: preto absoluto */
+  /* Contorno do cartão de bloco.
+     Própria, e não `--tyba-border`: o cartão vive sobre o sunken, que em vários
+     temas é preto absoluto, e ali a borda comum rende 1,12:1 — some, e o que
+     separa um bloco do outro passa a ser só o espaçamento. Derivada do TEXTO
+     para servir a tema claro e escuro sem uma linha por tema. */
+  --tyba-block-border: color-mix(in srgb, var(--tyba-text) 28%, transparent);
 
   /* ---------- Texto ---------- */
   --tyba-text: #f5f5f6;
@@ -795,6 +801,7 @@
   --color-tyba-sunken: var(--tyba-sunken);
   --color-tyba-border: var(--tyba-border);
   --color-tyba-border-strong: var(--tyba-border-strong);
+  --color-tyba-block-border: var(--tyba-block-border);
 
   --color-tyba-text: var(--tyba-text);
   --color-tyba-text-muted: var(--tyba-text-muted);

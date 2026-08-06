@@ -1278,6 +1278,15 @@ export const onBlocksCleared = (
 export const sessionPromptMode = (id: SessionId) =>
   invoke<boolean>("session_prompt_mode", { id });
 
+/**
+ * O tty está entregando linhas (eco ligado) ou teclas (raw)?
+ *
+ * Ligado, a seta não serve ao programa e ainda é ecoada — vira `^[[A` na saída
+ * gravada do bloco. Desligado, quem lê tecla a tecla precisa dela.
+ */
+export const sessionLineEcho = (id: SessionId) =>
+  invoke<boolean>("session_line_echo", { id });
+
 export const togglePromptMode = (id: SessionId) =>
   invoke<void>("toggle_prompt_mode", { id });
 
