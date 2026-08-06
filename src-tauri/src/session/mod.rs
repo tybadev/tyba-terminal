@@ -1183,6 +1183,87 @@ mod tests {
         assert!(body.contains("TYBA_LOGIN_SHELL"));
     }
 
+    /// O hook do bash roda de verdade, num bash interativo.
+    ///
+    /// A lógica não dá para verificar lendo o arquivo: o que quebrava era o
+    /// `history 1` devolver o comando ANTERIOR quando o bash não guarda o atual
+    /// (`HISTCONTROL=ignorespace`), e isso só aparece executando.
+    #[test]
+    #[cfg(unix)]
+    fn bash_hook_marca_comando_iniciado_por_espaco() {
+        // Escreve o rc DIRETO da constante, num caminho exclusivo.
+        //
+        // Sem passar por `write_bash_integration`: ele grava num diretório fixo
+        // por uid, e dois testes chamando em paralelo disputam o mesmo arquivo —
+        // passa isolado e quebra em conjunto.
+        let rc = std::env::temp_dir().join(format!("tyba-rc-{}.sh", uuid::Uuid::new_v4()));
+        std::fs::write(&rc, TYBA_BASH_RC).expect("escrever rc");
+        // `__tyba_esc` vira um eco: o que interessa é O QUE o hook emitiria.
+        let script = format!(
+            r#"
+HISTCONTROL=ignorespace
+source {rc}
+__tyba_esc() {{ printf 'ESC[%s]\n' "$1"; }}
+__tyba_at_prompt=1
+echo alpha
+ echo secreto
+echo beta
+"#,
+            rc = rc.display()
+        );
+        let out = std::process::Command::new("bash")
+            .arg("-i")
+            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child
+                    .stdin
+                    .as_mut()
+                    .expect("stdin")
+                    .write_all(script.as_bytes())?;
+                child.wait_with_output()
+            });
+        let Ok(out) = out else {
+            std::fs::remove_file(&rc).ok();
+            // Sem bash utilizável, o teste não tem o que afirmar.
+            return;
+        };
+        std::fs::remove_file(&rc).ok();
+        // O hook emite o comando em BASE64 — decodificar é parte de ler o que
+        // ele mandou, e o espaço à esquerda só sobrevive assim.
+        use base64::Engine as _;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let emitidos: Vec<String> = text
+            .lines()
+            .filter_map(|l| l.split("633;E;").nth(1))
+            .filter_map(|rest| rest.split(']').next())
+            .filter_map(|b64| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64.trim())
+                    .ok()
+            })
+            .map(|raw| String::from_utf8_lossy(&raw).into_owned())
+            .collect();
+        if emitidos.is_empty() {
+            // bash sem histórico interativo (algumas jaulas de CI) — nada a afirmar.
+            return;
+        }
+        let secreto = emitidos.iter().find(|c| c.contains("secreto"));
+        assert_eq!(
+            secreto.map(String::as_str),
+            Some(" echo secreto"),
+            "o espaco a esquerda e o sinal de `ignorespace` e precisa chegar ao core inteiro; sem ele o hook reportava o comando ANTERIOR: {emitidos:?}"
+        );
+        assert!(
+            emitidos.iter().any(|c| c == "echo alpha"),
+            "comando normal segue sem espaco: {emitidos:?}"
+        );
+    }
+
     #[test]
     fn expand_home_handles_tilde_variants() {
         let home = std::env::var("HOME").unwrap();
