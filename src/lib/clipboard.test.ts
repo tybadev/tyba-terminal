@@ -5,6 +5,7 @@ import {
   hasUnsafeControlChars,
   isMultilinePaste,
   isSafeExternalUrl,
+  routePaste,
   sanitizePaste,
   stripTrailingNewline,
 } from "./clipboard";
@@ -121,6 +122,73 @@ describe("isMultilinePaste", () => {
 
   test("false for a single line with a trailing newline", () => {
     expect(isMultilinePaste("git status\n")).toBe(false);
+  });
+});
+
+describe("routePaste", () => {
+  const toTerminal = { ownsCommandLine: false, bracketed: true };
+  const toLine = { ownsCommandLine: true, bracketed: true };
+
+  test("com a linha do TYBA no comando, o texto vai para ELA", () => {
+    // O bug: ia para `term.paste`, e o `disableStdin` do terminal
+    // somente-leitura engole sem erro nenhum — o "Colar" do menu de contexto
+    // não fazia absolutamente nada, e nada na tela dizia por quê.
+    expect(routePaste({ raw: "git status", ...toLine })).toEqual({
+      to: "line",
+      text: "git status",
+    });
+  });
+
+  test("multilinha na linha do TYBA não pede confirmação", () => {
+    // A confirmação existe porque colar várias linhas num shell SEM bracketed
+    // paste executa cada uma na hora. Na caixa do TYBA nada roda até o Enter,
+    // então perguntar seria cerimônia sobre um risco que não existe ali.
+    expect(routePaste({ raw: "a\nb\nc", ...toLine })).toEqual({
+      to: "line",
+      text: "a\nb\nc",
+    });
+  });
+
+  test("sanitiza antes de entregar à linha", () => {
+    // O terminador de bracketed paste sai em qualquer destino: da caixa o
+    // texto ainda vai para o PTY no Enter, então deixá-lo passar só adiaria
+    // o problema para depois da confirmação humana.
+    expect(routePaste({ raw: "foo\x1b[201~bar", ...toLine })).toEqual({
+      to: "line",
+      text: "foobar",
+    });
+  });
+
+  test("sem a linha, texto simples vai direto para o terminal", () => {
+    expect(routePaste({ raw: "git status", ...toTerminal })).toEqual({
+      to: "terminal",
+      text: "git status",
+    });
+  });
+
+  test("control char pede confirmação, mesmo com bracketed paste", () => {
+    expect(routePaste({ raw: "a\x1b[31mb", ...toTerminal })).toEqual({
+      to: "confirm",
+      text: "a\x1b[31mb",
+    });
+  });
+
+  test("multilinha sem bracketed paste pede confirmação", () => {
+    expect(
+      routePaste({ raw: "a\nb", ownsCommandLine: false, bracketed: false }),
+    ).toEqual({ to: "confirm", text: "a\nb" });
+  });
+
+  test("multilinha COM bracketed paste passa direto", () => {
+    expect(routePaste({ raw: "a\nb", ...toTerminal })).toEqual({
+      to: "terminal",
+      text: "a\nb",
+    });
+  });
+
+  test("vazio não vai a lugar nenhum", () => {
+    expect(routePaste({ raw: "", ...toLine })).toBeNull();
+    expect(routePaste({ raw: "", ...toTerminal })).toBeNull();
   });
 });
 
