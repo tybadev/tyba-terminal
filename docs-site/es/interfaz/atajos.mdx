@@ -17,6 +17,8 @@ En Windows y Linux el default es `Ctrl+Shift+…`. Eso es deliberado: `Ctrl+C` y
 | --- | --- | --- |
 | Paleta de comandos | `⌘P` | `Ctrl+Shift+P` |
 | Paleta de sesiones | `⌘⇧P` | `Ctrl+Alt+Shift+P` |
+| Historial de comandos | `⌘R` | `Ctrl+Shift+R` |
+| Snippets | `⌘⇧R` | `Ctrl+Alt+Shift+R` |
 | Alternar la sidebar | `⌘B` | `Ctrl+Shift+B` |
 | Settings | `⌘,` | `Ctrl+,` |
 
@@ -75,6 +77,16 @@ En Windows y Linux el default es `Ctrl+Shift+…`. Eso es deliberado: `Ctrl+C` y
 | Denegar con feedback | `⌘↵` / `Ctrl+↵` confirma · `Esc` cancela |
 
 Los números del inbox cambian según el riesgo: en verde y amarillo son `[1] Yes` `[2] Always` `[3] No`; en **rojo** son solo `[1] Yes` `[2] No` — [el rojo nunca tiene "Always"](/es/seguridad/clasificacion-de-riesgo#lo-que-siempre-significa-realmente).
+
+## La barra de menú, en macOS
+
+TYBA dibuja su propia barra de menú — **Tyba, Archivo, Editar, Ver, Sesión, Ventana y Ayuda** — y los atajos que aparecen ahí son los mismos de esta página: la barra lee tu configuración, no una segunda tabla. Remapear un atajo cambia lo que muestra el menú.
+
+<Note>
+**En Windows y Linux no hay barra de menú.** Ambas plataformas corren con la barra de título propia de TYBA, y no hay dónde dibujarla. No se pierde nada: todo lo que está en el menú tiene atajo o vive en la paleta.
+</Note>
+
+Los atajos de terminal — copiar, pegar, buscar, seleccionar todo — **no** entran en el menú a propósito. En macOS, un acelerador de menú lo consume el sistema antes de llegar a la terminal: poner `⌘C` ahí apagaría la tecla dentro de la sesión.
 
 ## Remapear
 

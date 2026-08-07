@@ -1,0 +1,74 @@
+---
+title: "A linha de comando do TYBA"
+description: "O prompt do shell sai da tela e a linha onde você digita vira um editor do app — com sugestão enquanto você escreve."
+---
+
+Ajuda de digitação — sugestão em cinza, lista enquanto você escreve — **não é feature de terminal**. É feature de editor de texto. Numa grade de células que o shell pinta, não existe onde desenhar sugestão: o `zle` do zsh e o `readline` do bash são donos da linha, do cursor e do redesenho.
+
+A saída é não deixar o shell desenhar a linha. É isso que a **linha de comando do TYBA** faz: o `PS1` sai da tela e a caixa onde você digita passa a ser do app.
+
+<Note>
+**Vem desligada.** Ligue em **Configurações → Code → Linha de comando do TYBA**, na chave *Usar a linha do TYBA*. Vale para sessões **novas** — o modo entra no nascimento do shell.
+</Note>
+
+## O que você ganha
+
+| | |
+| --- | --- |
+| **Sugestão em cinza** | O resto de um comando que você já rodou aparece à frente do cursor. `Tab` ou `→` aceita. |
+| **Histórico e snippets na própria linha** | `↑` e `↓` percorrem a lista sem abrir nada. Snippets aparecem marcados. |
+| **Caminhos do diretório atual** | Arquivos e pastas de onde você está também completam. |
+| **Edição de verdade** | Um comando longo se edita como texto, não como linha de terminal. |
+| **Blocos de comando** | Cada comando vira um cartão — veja [blocos de comando](/pt-br/terminal/blocos-de-comando). |
+
+## Quem recebe a tecla
+
+A linha do TYBA **não** é sempre a dona do teclado, e isso é correção, não conforto: `ssh`, `psql`, `python`, o pedido de senha do `sudo` — todos leem o que você digita **durante** o comando. Uma caixa que engolisse essas teclas receberia a sua senha e não a mandaria a lugar nenhum.
+
+| Situação | Quem recebe |
+| --- | --- |
+| App de tela cheia (`vim`, `htop`, `less`) | O terminal, cru |
+| Comando em execução | O terminal, cru |
+| Shell parado no prompt | **A linha do TYBA** |
+
+`Ctrl+C`, `Ctrl+D` e `Ctrl+Z` vão para o processo mesmo com a linha em foco — são sinais, não texto. `Ctrl+C` também limpa a caixa, que é o que você espera dele.
+
+<Note>
+Enquanto um comando roda, a seta para cima e para baixo **não** vai para o programa se o terminal estiver esperando uma linha inteira. Ali ela não serviria para nada e ainda apareceria como `^[[A` na saída guardada. Em `vim`, `htop` ou num menu que lê tecla a tecla, ela passa normalmente.
+</Note>
+
+## Se algo travar
+
+<Warning>
+**`Alt+~` dentro do terminal devolve o prompt do shell na hora**, sem fechar a sessão nem perder o que está rodando.
+</Warning>
+
+É a válvula de escape, e ela existe porque a heurística pode falhar num shell com configuração exótica. Para voltar de vez, desligue a chave nas Configurações — as sessões já abertas seguem como estão até você abrir outra.
+
+## Onde funciona
+
+| | |
+| --- | --- |
+| **zsh e bash** | Sim, com [shell integration](/pt-br/terminal/shell-integration) ligada — é ela que avisa ao app onde o prompt começa e termina. |
+| **fish, nu, PowerShell, cmd** | Não. A sessão funciona normalmente, com o prompt do shell. |
+| **Sessões SSH** | Não. O shell é do outro lado, e o TYBA não escreve na máquina remota. |
+| **Sessões de agente** | Não se aplica — ali a caixa de texto é o [composer](/pt-br/agente/composer). |
+
+Sem os marcadores da shell integration não há como saber que o shell está no prompt. Nesse caso o TYBA **degrada para o terminal clássico** em vez de adivinhar.
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Blocos de comando" icon="square-dashed" href="/pt-br/terminal/blocos-de-comando">
+    O que a linha do TYBA liga junto.
+  </Card>
+  <Card title="Shell integration" icon="plug" href="/pt-br/terminal/shell-integration">
+    O pré-requisito, e por que ele não toca nos seus dotfiles.
+  </Card>
+  <Card title="Paleta de comandos" icon="command" href="/pt-br/interface/paleta-de-comandos">
+    Histórico e snippets também vivem lá, sem depender desta página.
+  </Card>
+  <Card title="Configurações do usuário" icon="sliders" href="/pt-br/configuracao/usuario">
+    Onde mora a chave, e o resto da seção Code.
+  </Card>
+</CardGroup>

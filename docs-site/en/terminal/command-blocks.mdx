@@ -1,0 +1,101 @@
+---
+title: "Command blocks"
+description: "Every command becomes a card with what you ran, what came out and how it ended — copyable, selectable and kept across sessions."
+---
+
+In a plain terminal, the output of ten commands is a single river of text. Finding where one started, copying only its output, or telling which of the ten failed is your job — by eye and by scrolling.
+
+With **blocks**, each command you run becomes a card: the command, its output, the exit code, how long it took and which folder it ran in.
+
+<Note>
+**Blocks come with the [TYBA command line](/en/terminal/command-line)**, and only exist while it is on. It is what takes the shell prompt off the screen — and that is what gives the app the exact boundary of where each command begins and ends. With the prompt drawn on screen, the boundary would land in the middle of a prompt that themes like Powerlevel10k repaint underneath, and the cut would come out wrong.
+</Note>
+
+## The card
+
+| | |
+| --- | --- |
+| **Green or red `❯`** | How it ended. Red tints the whole card. |
+| **The command** | Exactly as you sent it. |
+| **The folder** | Shortened; the full path is in the tooltip. |
+| **The exit code** | Only when it failed — success needs no number. |
+| **The duration** | Only from 1 second up. Below that the number tells you nothing. |
+
+Scrolling a tall block keeps its header pinned at the top, so you never lose track of which command you are reading.
+
+## What you can do with one
+
+Hover the header:
+
+| Action | |
+| --- | --- |
+| **Copy command** | Just the line you typed. |
+| **Copy full output** | Including what is beyond what the screen shows. |
+| **Copy as markdown** | Command and output in a code block, ready to paste into an issue or a chat. |
+| **Send back to the line** | The command returns to the input box **without running** — you edit it and press Enter. |
+
+<Note>
+Actions read the **model**, never what is drawn. Copying the output of a long block brings all of it, not just the rendered part.
+</Note>
+
+## Marking several
+
+Copying five commands at once is **block selection**, not text selection.
+
+| Gesture | |
+| --- | --- |
+| **Click** the card | Marks it, and makes it the anchor. Clicking the only marked one again unmarks it. |
+| **Shift + click** | Extends from the anchor to the one you clicked. |
+| **⌘ / Ctrl + click** | Marks and unmarks one at a time, leaving the rest alone. |
+| **⌘C / Ctrl+C** | Copies every marked block as markdown, in list order. |
+| **`Esc`** or a click on the background | Clears the marking. |
+
+Dragging **inside** a block is still ordinary text selection — and a drag that ended with text selected does not mark the block.
+
+<Warning>
+**Why not ordinary mouse selection across several cards.** The list only keeps drawn the blocks that fit on screen. Dragging across fifty and pressing ⌘C would hand you only the visible ones — less than you highlighted, with no warning at all. Marking block by block copies what you marked, every time.
+</Warning>
+
+## Full-screen apps produce no output
+
+`vim`, `htop`, `less` and friends draw the whole screen and wipe it on exit. Storing that would produce garbage shaped like output.
+
+Those commands become a card **with no body**, with the reason written in: *full-screen app — output is not stored*. The card stays: making the command disappear would be worse than a card with no output.
+
+## `clear` wipes the disk too
+
+<Warning>
+**`clear` and `reset` on their own wipe the list and the stored blocks — not just the screen.** It is irreversible, on purpose.
+</Warning>
+
+Clearing only the screen would leave on disk output you believed you had erased — including the output you erased precisely because something was showing. The `clear` block itself stays: without it the list empties, the terminal appears and the cursor sits loose in the middle of the pane, looking broken.
+
+Only the command on its own counts. `clear && ls` has real output after it, and wipes nothing.
+
+## What is kept
+
+Blocks survive closing the session: reopening shows the history above the new shell.
+
+| | |
+| --- | --- |
+| **Retention** | 1,000 blocks **and** 64 MB per session. Anything beyond that prunes the oldest first. |
+| **Very long blocks** | Cut at the limit, with a note of how many lines were left out. |
+| **Large bodies** | Show the first lines, with *show N more lines* at the bottom. |
+| **Secrets** | Redacted **before** writing. API keys, tokens and the like never reach the disk. |
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="The TYBA command line" icon="terminal" href="/en/terminal/command-line">
+    The prerequisite, and how to turn it on.
+  </Card>
+  <Card title="Shell integration" icon="plug" href="/en/terminal/shell-integration">
+    Where each command's boundaries come from.
+  </Card>
+  <Card title="Search" icon="search" href="/en/terminal/search">
+    Finding text in what has gone by.
+  </Card>
+  <Card title="Safe paste" icon="clipboard" href="/en/terminal/safe-paste">
+    The other side of the command line.
+  </Card>
+</CardGroup>

@@ -1,0 +1,74 @@
+---
+title: "La línea de comandos de TYBA"
+description: "El prompt del shell sale de la pantalla y la línea donde escribes pasa a ser un editor de la app — con sugerencias mientras escribes."
+---
+
+La ayuda al escribir — sugerencia en gris, lista mientras tecleas — **no es una función de terminal**. Es una función de editor de texto. En una rejilla de celdas que pinta el shell no hay dónde dibujar una sugerencia: el `zle` de zsh y el `readline` de bash son dueños de la línea, del cursor y del redibujado.
+
+La salida es dejar de permitir que el shell dibuje la línea. Eso hace la **línea de comandos de TYBA**: el `PS1` sale de la pantalla y la caja donde escribes pasa a ser de la app.
+
+<Note>
+**Viene apagada.** Actívala en **Configuración → Code → Línea de comandos de TYBA**, en el interruptor *Usar la línea de TYBA*. Vale para sesiones **nuevas** — el modo se aplica al nacer el shell.
+</Note>
+
+## Lo que ganas
+
+| | |
+| --- | --- |
+| **Sugerencia en gris** | El resto de un comando que ya ejecutaste aparece delante del cursor. `Tab` o `→` lo acepta. |
+| **Historial y snippets en la propia línea** | `↑` y `↓` recorren la lista sin abrir nada. Los snippets aparecen marcados. |
+| **Rutas del directorio actual** | Los archivos y carpetas de donde estás también se completan. |
+| **Edición de verdad** | Un comando largo se edita como texto, no como línea de terminal. |
+| **Bloques de comando** | Cada comando pasa a ser una tarjeta — mira [bloques de comando](/es/terminal/bloques-de-comando). |
+
+## Quién recibe la tecla
+
+La línea de TYBA **no** siempre es la dueña del teclado, y eso es corrección, no comodidad: `ssh`, `psql`, `python`, el `sudo` pidiendo contraseña — todos leen lo que escribes **durante** el comando. Una caja que se tragara esas teclas recibiría tu contraseña y no la enviaría a ninguna parte.
+
+| Situación | Quién la recibe |
+| --- | --- |
+| App de pantalla completa (`vim`, `htop`, `less`) | La terminal, en crudo |
+| Un comando en ejecución | La terminal, en crudo |
+| Shell parado en el prompt | **La línea de TYBA** |
+
+`Ctrl+C`, `Ctrl+D` y `Ctrl+Z` llegan al proceso incluso con la línea enfocada — son señales, no texto. `Ctrl+C` además vacía la caja, que es lo que esperas de él.
+
+<Note>
+Mientras un comando corre, las flechas arriba y abajo **no** llegan al programa si la terminal está esperando una línea entera. Ahí no servirían de nada y aun así aparecerían como `^[[A` en la salida guardada. En `vim`, `htop` o un menú que lee tecla a tecla, pasan con normalidad.
+</Note>
+
+## Si algo se traba
+
+<Warning>
+**`Alt+~` dentro de la terminal devuelve el prompt del shell al instante**, sin cerrar la sesión ni perder lo que está corriendo.
+</Warning>
+
+Es la válvula de escape, y existe porque la heurística puede fallar en un shell con configuración exótica. Para volver del todo, apaga el interruptor en Configuración — las sesiones ya abiertas siguen como están hasta que abras otra.
+
+## Dónde funciona
+
+| | |
+| --- | --- |
+| **zsh y bash** | Sí, con la [shell integration](/es/terminal/shell-integration) activada — es la que le dice a la app dónde empieza y termina el prompt. |
+| **fish, nu, PowerShell, cmd** | No. La sesión funciona con normalidad, con el prompt del shell. |
+| **Sesiones SSH** | No. El shell está del otro lado, y TYBA no escribe en la máquina remota. |
+| **Sesiones de agente** | No aplica — ahí la caja de texto es el [composer](/es/agente/composer). |
+
+Sin los marcadores de la shell integration no hay forma de saber que el shell está en el prompt. En ese caso TYBA **degrada a la terminal clásica** en lugar de adivinar.
+
+## Mira también
+
+<CardGroup cols={2}>
+  <Card title="Bloques de comando" icon="square-dashed" href="/es/terminal/bloques-de-comando">
+    Lo que la línea de TYBA activa junto con ella.
+  </Card>
+  <Card title="Shell integration" icon="plug" href="/es/terminal/shell-integration">
+    El prerrequisito, y por qué no toca tus dotfiles.
+  </Card>
+  <Card title="Paleta de comandos" icon="command" href="/es/interfaz/paleta-de-comandos">
+    El historial y los snippets también viven ahí, sin depender de esta página.
+  </Card>
+  <Card title="Configuración de usuario" icon="sliders" href="/es/referencia/config-de-usuario">
+    Dónde vive el interruptor, y el resto de la sección Code.
+  </Card>
+</CardGroup>

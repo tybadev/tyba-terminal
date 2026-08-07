@@ -1,0 +1,74 @@
+---
+title: "The TYBA command line"
+description: "The shell prompt leaves the screen and the line you type on becomes an editor in the app — with suggestions as you write."
+---
+
+Typing help — grey suggestions, a list while you write — **is not a terminal feature**. It is a text editor feature. On a grid of cells that the shell paints, there is nowhere to draw a suggestion: zsh's `zle` and bash's `readline` own the line, the cursor and the redraw.
+
+The way out is to stop letting the shell draw the line. That is what the **TYBA command line** does: `PS1` leaves the screen and the box you type in belongs to the app.
+
+<Note>
+**It ships off.** Turn it on in **Settings → Code → TYBA command line**, on the *Use the TYBA line* switch. It applies to **new** sessions — the mode is set when the shell is born.
+</Note>
+
+## What you get
+
+| | |
+| --- | --- |
+| **Grey suggestion** | The rest of a command you have already run appears ahead of the cursor. `Tab` or `→` accepts it. |
+| **History and snippets in the line itself** | `↑` and `↓` walk the list without opening anything. Snippets are marked as such. |
+| **Paths from the current directory** | Files and folders where you are complete too. |
+| **Real editing** | A long command is edited like text, not like a terminal line. |
+| **Command blocks** | Every command becomes a card — see [command blocks](/en/terminal/command-blocks). |
+
+## Who gets the keystroke
+
+The TYBA line is **not** always the keyboard's owner, and that is correctness rather than comfort: `ssh`, `psql`, `python`, `sudo` asking for a password — all of them read what you type **during** the command. A box that swallowed those keys would take your password and send it nowhere.
+
+| Situation | Who receives it |
+| --- | --- |
+| Full-screen app (`vim`, `htop`, `less`) | The terminal, raw |
+| A command is running | The terminal, raw |
+| Shell sitting at the prompt | **The TYBA line** |
+
+`Ctrl+C`, `Ctrl+D` and `Ctrl+Z` reach the process even with the line focused — they are signals, not text. `Ctrl+C` also clears the box, which is what you expect from it.
+
+<Note>
+While a command runs, the up and down arrows do **not** reach the program if the terminal is waiting for a whole line. There they would do nothing and would still show up as `^[[A` in the stored output. In `vim`, `htop`, or a menu reading key by key, they pass through normally.
+</Note>
+
+## If something gets stuck
+
+<Warning>
+**`Alt+~` inside the terminal hands the shell prompt back right away**, without closing the session or losing what is running.
+</Warning>
+
+It is the escape valve, and it exists because the heuristic can fail on a shell with an exotic configuration. To go back for good, turn the switch off in Settings — sessions already open stay as they are until you open another.
+
+## Where it works
+
+| | |
+| --- | --- |
+| **zsh and bash** | Yes, with [shell integration](/en/terminal/shell-integration) on — it is what tells the app where the prompt begins and ends. |
+| **fish, nu, PowerShell, cmd** | No. The session works normally, with the shell's own prompt. |
+| **SSH sessions** | No. The shell is on the other side, and TYBA does not write on the remote machine. |
+| **Agent sessions** | Not applicable — there the text box is the [composer](/en/agent/composer). |
+
+Without the shell integration markers there is no way to know the shell is at the prompt. In that case TYBA **falls back to the classic terminal** instead of guessing.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Command blocks" icon="square-dashed" href="/en/terminal/command-blocks">
+    What the TYBA line turns on alongside it.
+  </Card>
+  <Card title="Shell integration" icon="plug" href="/en/terminal/shell-integration">
+    The prerequisite, and why it never touches your dotfiles.
+  </Card>
+  <Card title="Command palette" icon="command" href="/en/interface/command-palette">
+    History and snippets live there too, with no dependency on this page.
+  </Card>
+  <Card title="User settings" icon="sliders" href="/en/reference/user-config">
+    Where the switch lives, and the rest of the Code section.
+  </Card>
+</CardGroup>
