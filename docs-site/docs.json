@@ -34,7 +34,9 @@
               "pt-br/terminal/usando-o-terminal",
               "pt-br/terminal/busca",
               "pt-br/terminal/colar-com-seguranca",
-              "pt-br/terminal/shell-integration"
+              "pt-br/terminal/shell-integration",
+              "pt-br/terminal/linha-de-comando",
+              "pt-br/terminal/blocos-de-comando"
             ]
           },
           {
@@ -158,7 +160,9 @@
               "en/terminal/using-the-terminal",
               "en/terminal/search",
               "en/terminal/safe-paste",
-              "en/terminal/shell-integration"
+              "en/terminal/shell-integration",
+              "en/terminal/command-line",
+              "en/terminal/command-blocks"
             ]
           },
           {
@@ -282,7 +286,9 @@
               "es/terminal/usando-la-terminal",
               "es/terminal/busqueda",
               "es/terminal/pegar-con-seguridad",
-              "es/terminal/shell-integration"
+              "es/terminal/shell-integration",
+              "es/terminal/linea-de-comandos",
+              "es/terminal/bloques-de-comando"
             ]
           },
           {

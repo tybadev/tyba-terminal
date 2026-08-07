@@ -1,0 +1,101 @@
+---
+title: "Bloques de comando"
+description: "Cada comando pasa a ser una tarjeta con lo que ejecutaste, lo que salió y cómo terminó — copiable, seleccionable y guardada entre sesiones."
+---
+
+En una terminal común, la salida de diez comandos es un único río de texto. Encontrar dónde empezó uno, copiar solo su salida, o saber cuál de los diez falló es trabajo tuyo — de vista y de scroll.
+
+Con **bloques**, cada comando ejecutado pasa a ser una tarjeta: el comando, la salida, el código de salida, cuánto tardó y en qué carpeta corrió.
+
+<Note>
+**Los bloques vienen con la [línea de comandos de TYBA](/es/terminal/linea-de-comandos)**, y solo existen mientras esté activada. Es ella la que saca el prompt del shell de la pantalla — y eso es lo que le da a la app la frontera exacta de dónde empieza y termina cada comando. Con el prompt dibujado en pantalla, la frontera caería en medio de un prompt que temas como Powerlevel10k repintan por debajo, y el recorte saldría mal.
+</Note>
+
+## La tarjeta
+
+| | |
+| --- | --- |
+| **`❯` verde o rojo** | Cómo terminó. El rojo tiñe la tarjeta entera. |
+| **El comando** | Tal como lo enviaste. |
+| **La carpeta** | Acortada; la ruta completa queda en el *tooltip*. |
+| **El código de salida** | Solo cuando falló — el éxito no necesita número. |
+| **La duración** | Solo a partir de 1 segundo. Por debajo, el número no informa nada. |
+
+Al hacer scroll en un bloque alto, su cabecera queda fijada arriba, para que no pierdas de vista qué comando estás leyendo.
+
+## Qué puedes hacer con uno
+
+Pasa el ratón por la cabecera:
+
+| Acción | |
+| --- | --- |
+| **Copiar comando** | Solo la línea que escribiste. |
+| **Copiar salida completa** | Incluido lo que queda más allá de lo que muestra la pantalla. |
+| **Copiar como markdown** | Comando y salida en bloque de código, listo para pegar en un issue o un chat. |
+| **Devolver a la línea** | El comando vuelve a la caja de escritura **sin ejecutarse** — lo editas y pulsas Enter. |
+
+<Note>
+Las acciones leen el **modelo**, nunca lo dibujado. Copiar la salida de un bloque largo la trae entera, no solo la parte renderizada.
+</Note>
+
+## Marcar varios
+
+Copiar cinco comandos de una vez es **selección de bloque**, no selección de texto.
+
+| Gesto | |
+| --- | --- |
+| **Clic** en la tarjeta | La marca, y pasa a ser el ancla. Volver a hacer clic en la única marcada la desmarca. |
+| **Shift + clic** | Extiende desde el ancla hasta la que clicaste. |
+| **⌘ / Ctrl + clic** | Marca y desmarca de una en una, sin tocar el resto. |
+| **⌘C / Ctrl+C** | Copia todas las marcadas en markdown, en el orden de la lista. |
+| **`Esc`** o clic en el fondo | Limpia la marcación. |
+
+Arrastrar **dentro** de un bloque sigue siendo selección de texto normal — y un arrastre que terminó con texto seleccionado no marca el bloque.
+
+<Warning>
+**Por qué no la selección normal del ratón a través de varias tarjetas.** La lista solo mantiene dibujados los bloques que caben en pantalla. Arrastrar por cincuenta y pulsar ⌘C te entregaría solo los visibles — menos de lo que resaltaste, sin ningún aviso. Marcar bloque a bloque copia lo que marcaste, siempre.
+</Warning>
+
+## Las apps de pantalla completa no dejan salida
+
+`vim`, `htop`, `less` y compañía dibujan la pantalla entera y la borran al salir. Guardar eso produciría basura con forma de salida.
+
+Esos comandos pasan a ser una tarjeta **sin cuerpo**, con el motivo escrito: *app de pantalla completa — la salida no se guarda*. La tarjeta se queda: hacer desaparecer el comando sería peor que una tarjeta sin salida.
+
+## `clear` también borra del disco
+
+<Warning>
+**`clear` y `reset` a solas borran la lista y los bloques guardados — no solo la pantalla.** Es irreversible, a propósito.
+</Warning>
+
+Limpiar solo la pantalla dejaría en disco una salida que creías haber borrado — incluida la que borraste justamente porque algo estaba a la vista. El bloque del propio `clear` se queda: sin él la lista se vacía, aparece la terminal y el cursor queda suelto en medio del panel, con pinta de defecto.
+
+Solo cuenta el comando a solas. `clear && ls` tiene salida de verdad después, y no borra nada.
+
+## Qué queda guardado
+
+Los bloques sobreviven al cierre de la sesión: al reabrirla se muestra el historial encima del shell nuevo.
+
+| | |
+| --- | --- |
+| **Retención** | 1.000 bloques **y** 64 MB por sesión. Lo que pase de ahí poda primero los más antiguos. |
+| **Bloques muy largos** | Cortados en el límite, con el aviso de cuántas líneas quedaron fuera. |
+| **Cuerpos grandes** | Muestran las primeras líneas, con *mostrar N líneas más* al pie. |
+| **Secrets** | Redactados **antes** de escribir. Claves de API, tokens y similares no llegan al disco. |
+
+## Mira también
+
+<CardGroup cols={2}>
+  <Card title="La línea de comandos de TYBA" icon="terminal" href="/es/terminal/linea-de-comandos">
+    El prerrequisito, y cómo activarla.
+  </Card>
+  <Card title="Shell integration" icon="plug" href="/es/terminal/shell-integration">
+    De dónde vienen las fronteras de cada comando.
+  </Card>
+  <Card title="Búsqueda" icon="search" href="/es/terminal/busqueda">
+    Encontrar texto en lo que ya pasó.
+  </Card>
+  <Card title="Pegar con seguridad" icon="clipboard" href="/es/terminal/pegar-con-seguridad">
+    El otro lado de la línea de comandos.
+  </Card>
+</CardGroup>

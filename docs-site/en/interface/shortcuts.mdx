@@ -17,6 +17,8 @@ On Windows and Linux the default is `Ctrl+Shift+…`. That's deliberate: `Ctrl+C
 | --- | --- | --- |
 | Command palette | `⌘P` | `Ctrl+Shift+P` |
 | Sessions palette | `⌘⇧P` | `Ctrl+Alt+Shift+P` |
+| Command history | `⌘R` | `Ctrl+Shift+R` |
+| Snippets | `⌘⇧R` | `Ctrl+Alt+Shift+R` |
 | Toggle sidebar | `⌘B` | `Ctrl+Shift+B` |
 | Settings | `⌘,` | `Ctrl+,` |
 
@@ -75,6 +77,16 @@ On Windows and Linux the default is `Ctrl+Shift+…`. That's deliberate: `Ctrl+C
 | Deny with feedback | `⌘↵` / `Ctrl+↵` confirms · `Esc` cancels |
 
 The inbox numbers change with the risk: on green and yellow they're `[1] Yes` `[2] Always` `[3] No`; on **red** they're only `[1] Yes` `[2] No` — [red never has "Always"](/en/security/risk-classification#what-always-really-means).
+
+## The menu bar, on macOS
+
+TYBA draws its own menu bar — **Tyba, File, Edit, View, Session, Window and Help** — and the shortcuts shown there are the ones on this page: the bar reads your configuration, not a second table. Remapping a shortcut changes what the menu displays.
+
+<Note>
+**There is no menu bar on Windows or Linux.** Both run with TYBA's own title bar, and there is nowhere to draw one. Nothing is lost: everything in the menu has a shortcut or lives in the palette.
+</Note>
+
+Terminal shortcuts — copy, paste, find, select all — are deliberately **not** in the menu. On macOS a menu accelerator is consumed by the system before it reaches the terminal: putting `⌘C` there would switch the key off inside the session.
 
 ## Remapping
 

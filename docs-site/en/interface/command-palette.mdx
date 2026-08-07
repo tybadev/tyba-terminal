@@ -1,22 +1,28 @@
 ---
 title: "Command palette"
-description: "There are two, not one — and which one you want depends on whether you're after an action or a place."
+description: "One dialog with several modes — and which one you want depends on whether you're after an action, a place, a file or a command you already ran."
 ---
 
-## There are two
+## The modes
 
 <Tabs>
 <Tab title="macOS">
-| Palette | Shortcut | What it's for |
+| Mode | Shortcut | What it's for |
 | --- | --- | --- |
 | **Actions** | `⌘P` | Doing something |
 | **Sessions** | `⌘⇧P` | Going somewhere |
+| **Command history** | `⌘R` | Finding a command you already ran |
+| **Snippets** | `⌘⇧R` | Running a command you saved |
+| **Files** | `⌘E` | Opening a file from the repository |
 </Tab>
 <Tab title="Windows and Linux">
-| Palette | Shortcut | What it's for |
+| Mode | Shortcut | What it's for |
 | --- | --- | --- |
 | **Actions** | `Ctrl+Shift+P` | Doing something |
 | **Sessions** | `Ctrl+Alt+Shift+P` | Going somewhere |
+| **Command history** | `Ctrl+Shift+R` | Finding a command you already ran |
+| **Snippets** | `Ctrl+Alt+Shift+R` | Running a command you saved |
+| **Files** | `Ctrl+Alt+E` | Opening a file from the repository |
 </Tab>
 </Tabs>
 
@@ -24,7 +30,7 @@ description: "There are two, not one — and which one you want depends on wheth
 **If you come from VS Code, the `⇧` is swapped.** There, `⌘⇧P` is the command palette. Here `⌘⇧P` is the **sessions** one — the actions palette is plain `⌘P`.
 </Warning>
 
-It's the same dialog with two modes. At the top there are two buttons — **Actions** and **Sessions** — each with its own shortcut next to it. You can switch modes with a click, without closing.
+It's the same dialog. At the top there is one button per mode, each with its own shortcut next to it; you can switch with a click, without closing.
 
 The magnifying-glass icon in the header opens the **actions** palette.
 
@@ -92,6 +98,26 @@ The search matches the **name**, the **repository path** and the id. Searching b
 <Note>
 With no workspace open, the Sessions mode is empty.
 </Note>
+
+## Command history
+
+`⌘R` / `Ctrl+Shift+R`. Lists what you have already run, with each command's **directory** beside it.
+
+The ranking isn't merely chronological: it weighs how often you ran it and how recently, and **favours what ran where you are now**. Working in two repositories doesn't mix one history into the other.
+
+`↵` sends the command back to the input line — you check it and press Enter.
+
+<Note>
+History is recorded by [shell integration](/en/terminal/shell-integration), and does **not** depend on the [TYBA command line](/en/terminal/command-line): it works with your own shell prompt, exactly as it always was.
+
+A command starting with a **space** doesn't go in — the same convention as the shell's `HISTCONTROL=ignorespace`. To turn it off for good and erase what was already recorded: **Settings → Code**.
+</Note>
+
+## Snippets
+
+`⌘⇧R` / `Ctrl+Alt+Shift+R`. Commands you saved with a name and a description, so you don't have to memorise them.
+
+A snippet can have **fields**: when you pick it, TYBA asks for each value before handing the finished command to the line. Creating, editing and deleting happens in **Settings → Code**.
 
 ## What the palette doesn't have
 

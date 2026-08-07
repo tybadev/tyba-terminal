@@ -1,0 +1,101 @@
+---
+title: "Blocos de comando"
+description: "Cada comando vira um cartão com o que você rodou, o que saiu e como terminou — copiável, remarcável e guardado entre sessões."
+---
+
+Num terminal comum, a saída de dez comandos é um rio único de texto. Achar onde um começou, copiar só a saída dele, ou saber qual dos dez falhou é trabalho seu — de olho e de rolagem.
+
+Com **blocos**, cada comando executado vira um cartão: o comando, a saída, o código de saída, quanto demorou e em que pasta rodou.
+
+<Note>
+**Os blocos vêm com a [linha de comando do TYBA](/pt-br/terminal/linha-de-comando)**, e só existem com ela ligada. É ela que tira o prompt do shell da tela — e é isso que dá ao app a fronteira exata de onde cada comando começa e termina. Com o prompt desenhado na tela, a fronteira cairia no meio de um prompt que temas como o Powerlevel10k repintam por baixo, e o recorte sairia errado.
+</Note>
+
+## O cartão
+
+| | |
+| --- | --- |
+| **`❯` verde ou vermelho** | Como terminou. Vermelho tinge o cartão inteiro. |
+| **O comando** | Do jeito que você mandou. |
+| **A pasta** | Encurtada; o caminho inteiro fica no *tooltip*. |
+| **O código de saída** | Só quando falhou — sucesso não precisa de número. |
+| **A duração** | Só a partir de 1 segundo. Abaixo disso o número não informa nada. |
+
+Rolar um bloco alto mantém o cabeçalho dele preso no topo, para você não perder de vista qual comando está lendo.
+
+## O que dá para fazer com um
+
+Passe o mouse no cabeçalho:
+
+| Ação | |
+| --- | --- |
+| **Copiar comando** | Só a linha que você digitou. |
+| **Copiar saída inteira** | Inclusive o que está além do que a tela mostra. |
+| **Copiar como markdown** | Comando e saída em bloco de código, pronto para colar num issue ou num chat. |
+| **Devolver para a linha** | O comando volta para a caixa de digitação **sem executar** — você edita e aperta Enter. |
+
+<Note>
+As ações leem o **modelo**, nunca o que está desenhado. Copiar a saída de um bloco longo traz tudo, não só o pedaço renderizado.
+</Note>
+
+## Marcar vários
+
+Copiar cinco comandos de uma vez é **seleção de bloco**, não seleção de texto.
+
+| Gesto | |
+| --- | --- |
+| **Clique** no cartão | Marca, e vira a âncora. Clicar de novo no único marcado desmarca. |
+| **Shift + clique** | Estende da âncora até o clicado. |
+| **⌘ / Ctrl + clique** | Marca e desmarca um por vez, sem mexer no resto. |
+| **⌘C / Ctrl+C** | Copia todos os marcados em markdown, na ordem da lista. |
+| **`Esc`** ou clique no fundo | Limpa a marcação. |
+
+Arrastar **dentro** de um bloco continua sendo seleção de texto normal — e um arrasto que terminou com texto selecionado não marca o bloco.
+
+<Warning>
+**Por que não a seleção normal do mouse através de vários cartões.** A lista só mantém desenhados os blocos que cabem na tela. Arrastar por cinquenta e apertar ⌘C entregaria só os que estavam visíveis — menos do que você destacou, sem nenhum aviso. Marcar bloco a bloco copia o que você marcou, sempre.
+</Warning>
+
+## App de tela cheia não vira saída
+
+`vim`, `htop`, `less` e companhia desenham a tela inteira e a apagam ao sair. Guardar isso produziria lixo com cara de saída.
+
+Esses comandos viram cartão **sem corpo**, com o motivo escrito: *app de tela cheia — a saída não é guardada*. O cartão fica: sumir com o comando seria pior do que um cartão sem saída.
+
+## `clear` apaga do disco também
+
+<Warning>
+**`clear` e `reset` sozinhos apagam a lista e os blocos guardados — não só da tela.** É irreversível, de propósito.
+</Warning>
+
+Limpar só a tela deixaria no disco uma saída que você achou que tinha apagado — inclusive aquela que você apagou justamente por ter algo à mostra. O bloco do próprio `clear` fica: sem ele a lista some inteira, o terminal aparece e o cursor fica solto no meio do painel, parecendo defeito.
+
+Só o comando sozinho conta. `clear && ls` tem saída de verdade depois, e não apaga nada.
+
+## O que fica guardado
+
+Os blocos sobrevivem a fechar a sessão: reabrir mostra o histórico acima do shell novo.
+
+| | |
+| --- | --- |
+| **Retenção** | 1.000 blocos **e** 64 MB por sessão. O que passar disso poda os mais antigos primeiro. |
+| **Blocos muito longos** | Cortados no limite, com o aviso de quantas linhas ficaram de fora. |
+| **Corpos grandes** | Mostram as primeiras linhas, com *mostrar mais N linhas* no rodapé. |
+| **Secrets** | Redigidos **antes** de gravar. Chaves de API, tokens e afins não chegam ao disco. |
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="A linha de comando do TYBA" icon="terminal" href="/pt-br/terminal/linha-de-comando">
+    O pré-requisito, e como ligar.
+  </Card>
+  <Card title="Shell integration" icon="plug" href="/pt-br/terminal/shell-integration">
+    De onde vêm as fronteiras de cada comando.
+  </Card>
+  <Card title="Busca" icon="search" href="/pt-br/terminal/busca">
+    Achar texto no que já passou.
+  </Card>
+  <Card title="Colar com segurança" icon="clipboard" href="/pt-br/terminal/colar-com-seguranca">
+    O outro lado da linha de comando.
+  </Card>
+</CardGroup>

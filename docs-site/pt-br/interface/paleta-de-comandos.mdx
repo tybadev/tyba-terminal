@@ -1,22 +1,28 @@
 ---
 title: "Paleta de comandos"
-description: "São duas, não uma — e a que você quer depende de estar procurando uma ação ou um lugar."
+description: "É um diálogo com vários modos — e o que você quer depende de estar procurando uma ação, um lugar, um arquivo ou um comando que já rodou."
 ---
 
-## São duas
+## Os modos
 
 <Tabs>
 <Tab title="macOS">
-| Paleta | Atalho | Para que serve |
+| Modo | Atalho | Para que serve |
 | --- | --- | --- |
 | **Ações** | `⌘P` | Fazer alguma coisa |
 | **Sessões** | `⌘⇧P` | Ir para algum lugar |
+| **Histórico de comandos** | `⌘R` | Achar um comando que você já rodou |
+| **Snippets** | `⌘⇧R` | Rodar um comando que você guardou |
+| **Arquivos** | `⌘E` | Abrir um arquivo do repositório |
 </Tab>
 <Tab title="Windows e Linux">
-| Paleta | Atalho | Para que serve |
+| Modo | Atalho | Para que serve |
 | --- | --- | --- |
 | **Ações** | `Ctrl+Shift+P` | Fazer alguma coisa |
 | **Sessões** | `Ctrl+Alt+Shift+P` | Ir para algum lugar |
+| **Histórico de comandos** | `Ctrl+Shift+R` | Achar um comando que você já rodou |
+| **Snippets** | `Ctrl+Alt+Shift+R` | Rodar um comando que você guardou |
+| **Arquivos** | `Ctrl+Alt+E` | Abrir um arquivo do repositório |
 </Tab>
 </Tabs>
 
@@ -24,7 +30,7 @@ description: "São duas, não uma — e a que você quer depende de estar procur
 **Se você vem do VS Code, o `⇧` está trocado.** Lá `⌘⇧P` é a paleta de comandos. Aqui `⌘⇧P` é a de **sessões** — a de ações é `⌘P` limpo.
 </Warning>
 
-É o mesmo diálogo com dois modos. No topo há dois botões — **Ações** e **Sessões** — cada um com o próprio atalho ao lado. Dá para trocar de modo com o clique, sem fechar.
+É o mesmo diálogo. No topo há um botão por modo, cada um com o próprio atalho ao lado; dá para trocar com o clique, sem fechar.
 
 O ícone de lupa no cabeçalho abre a paleta de **ações**.
 
@@ -92,6 +98,26 @@ A busca casa com o **nome**, o **caminho do repositório** e o id. Procurar pela
 <Note>
 Sem nenhum workspace aberto, o modo Sessões fica vazio.
 </Note>
+
+## Histórico de comandos
+
+`⌘R` / `Ctrl+Shift+R`. Lista o que você já rodou, com o **diretório** de cada comando ao lado.
+
+O ranking não é só cronológico: pesa quantas vezes você rodou e há quanto tempo, e **prioriza o que rodou onde você está agora**. Trabalhar em dois repositórios não mistura um histórico no outro.
+
+`↵` devolve o comando para a linha de digitação — você confere e aperta Enter.
+
+<Note>
+O histórico é gravado pela [shell integration](/pt-br/terminal/shell-integration), e **não** depende da [linha de comando do TYBA](/pt-br/terminal/linha-de-comando): funciona com o prompt do seu shell do jeito que sempre foi.
+
+Comando iniciado por **espaço** não entra — é a mesma convenção do `HISTCONTROL=ignorespace` do shell. Desligar de vez e apagar o que já foi gravado: **Configurações → Code**.
+</Note>
+
+## Snippets
+
+`⌘⇧R` / `Ctrl+Alt+Shift+R`. Comandos que você guardou com nome e descrição, para não decorar.
+
+Um snippet pode ter **campos**: ao escolher, o TYBA pergunta o valor de cada um antes de devolver o comando pronto para a linha. Criar, editar e apagar é em **Configurações → Code**.
 
 ## O que não tem na paleta
 
