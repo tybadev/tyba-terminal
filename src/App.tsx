@@ -362,10 +362,9 @@ import { changelogUrl } from "./lib/changelog";
 import { docsUrl, REPO_URL } from "./lib/links";
 import {
   flattenPaste,
-  hasUnsafeControlChars,
-  isMultilinePaste,
   openExternalUrl,
   readClipboardText,
+  routePaste,
   sanitizePaste,
   writeClipboardText,
 } from "./lib/clipboard";
@@ -2573,19 +2572,42 @@ export default function App() {
     };
   }, [refreshSessions]);
 
-  const deliverPaste = useCallback((sessionId: SessionId, raw: string) => {
-    const entry = getTerm(sessionId);
-    if (!entry || !raw) return;
-    const text = sanitizePaste(raw);
-    const bracketed = entry.term.modes.bracketedPasteMode;
-    const risky =
-      hasUnsafeControlChars(text) || (isMultilinePaste(text) && !bracketed);
-    if (!risky) {
-      entry.term.paste(text);
-      return;
-    }
-    setPastePrompt({ sessionId, text });
-  }, []);
+  // Texto que a linha do TYBA recebeu de fora — paste, histórico, snippet.
+  // Declarado aqui, e não junto do resto da linha lá embaixo, porque o
+  // `deliverPaste` precisa dele.
+  const [injected, setInjected] = useState<{
+    text: string;
+    nonce: number;
+  } | null>(null);
+  // A linha do TYBA está no comando do teclado? Ref pelo mesmo motivo que
+  // `promptModesRef` existe: `ownsCommandLine` só é calculado bem abaixo, e uma
+  // dependência de `useCallback` seria lida antes de existir.
+  const ownsCommandLineRef = useRef(false);
+
+  const deliverPaste = useCallback(
+    (sessionId: SessionId, raw: string) => {
+      const entry = getTerm(sessionId);
+      if (!entry) return;
+      // A dona do teclado é a linha da sessão ATIVA. Colar num painel vizinho
+      // continua indo para o terminal dele, que não está somente-leitura.
+      const route = routePaste({
+        raw,
+        ownsCommandLine: sessionId === activeId && ownsCommandLineRef.current,
+        bracketed: entry.term.modes.bracketedPasteMode,
+      });
+      if (!route) return;
+      if (route.to === "line") {
+        setInjected({ text: route.text, nonce: Date.now() });
+        return;
+      }
+      if (route.to === "terminal") {
+        entry.term.paste(route.text);
+        return;
+      }
+      setPastePrompt({ sessionId, text: route.text });
+    },
+    [activeId],
+  );
 
   const pasteFromClipboard = useCallback(async () => {
     if (!activeId) return;
@@ -2606,11 +2628,22 @@ export default function App() {
         mode === "single"
           ? flattenPaste(pastePrompt.text)
           : sanitizePaste(pastePrompt.text);
+      // O comando pode ter terminado entre abrir o preview e confirmar, e aí a
+      // linha do TYBA voltou a ser a dona do teclado: o `term.paste` seria
+      // engolido e o texto confirmado sumiria sem aviso.
+      if (
+        pastePrompt.sessionId === activeId &&
+        ownsCommandLineRef.current
+      ) {
+        setInjected({ text, nonce: Date.now() });
+        setPastePrompt(null);
+        return;
+      }
       entry?.term.paste(text);
       entry?.term.focus();
       setPastePrompt(null);
     },
-    [pastePrompt],
+    [activeId, pastePrompt],
   );
 
   // Despacho único das ações: o teclado e o menu nativo do macOS entram por
@@ -2732,12 +2765,10 @@ export default function App() {
       integrated: promptMode,
     }) === "tybaLine";
 
+  ownsCommandLineRef.current = ownsCommandLine;
+
   // Voltar do vim ou do fim de um comando devolve o foco para a linha.
   const [commandLineNonce, setCommandLineNonce] = useState(0);
-  const [injected, setInjected] = useState<{
-    text: string;
-    nonce: number;
-  } | null>(null);
   useEffect(() => {
     if (ownsCommandLine) {
       setCommandLineNonce((n) => n + 1);
@@ -2982,14 +3013,12 @@ export default function App() {
   const injectIntoActive = useCallback(
     (text: string) => {
       if (!activeId || !text) return;
-      // Com a linha do TYBA no comando, o terminal está somente-leitura: um
-      // `term.paste` aqui seria engolido sem aviso.
-      if (ownsCommandLine) {
-        setInjected({ text, nonce: Date.now() });
-        return;
-      }
+      // Sem decidir de novo para onde o texto vai: quem decide é o
+      // `deliverPaste`, e duas cópias da regra divergiriam — foi assim que o
+      // "Colar" do menu de contexto ficou inerte enquanto histórico e snippet
+      // funcionavam.
       deliverPaste(activeId, text);
-      getTerm(activeId)?.term.focus();
+      if (!ownsCommandLine) getTerm(activeId)?.term.focus();
     },
     [activeId, deliverPaste, ownsCommandLine],
   );
