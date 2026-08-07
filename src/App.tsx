@@ -127,6 +127,7 @@ import {
   FONT_SIZE_EVENT,
   getDefaultFontSize,
   setDefaultFontSize,
+  TERMINAL_LINE_HEIGHT,
   TerminalView,
 } from "./components/TerminalView";
 import {
@@ -313,6 +314,7 @@ import { LIVE_PAD_Y_PX } from "./components/TerminalView";
  */
 const LINE_ECHO_POLL_MS = 200;
 import { BLOCK_GAP_PX, BlockList } from "./components/BlockList";
+import { withEntry } from "./lib/perSession";
 import { mergeBlockHistory } from "./lib/blockHistory";
 import { blocksMarkdown, wipesTheScreen } from "./lib/blockText";
 import {
@@ -2932,15 +2934,34 @@ export default function App() {
   const [liveUsed, setLiveUsed] = useState<Record<string, number>>({});
   // Altura medida do header do bloco em execução. A lista encurta desse tanto —
   // o header é desenhado sobre o fim dela. Ver `BlockList.bottomInset`.
-  const [activeHeaderPx, setActiveHeaderPx] = useState(0);
+  //
+  // Por SESSÃO, não por janela: com a tela dividida os headers são medidos em
+  // painéis de larguras diferentes, e um valor único deixa o último a medir
+  // sobrescrever o outro. Ver `lib/perSession`.
+  const [activeHeaderPx, setActiveHeaderPx] = useState<Record<string, number>>(
+    {},
+  );
 
   // O corpo dos blocos acompanha a fonte do TERMINAL: é a mesma saída, e ela
   // mudava de tamanho ao virar cartão porque o corpo estava preso em 13px.
+  //
+  // Esta é preferência do dono e vale para a janela inteira — ao contrário das
+  // medidas abaixo, que saem do layout de cada painel.
   const [termFontSize, setTermFontSize] = useState(getDefaultFontSize);
   // Altura real de uma linha do terminal, medida por ele. Ver `onLineHeight`.
-  const [termLineHeight, setTermLineHeight] = useState(
-    () => getDefaultFontSize() * 1.35,
+  // Por sessão pelo mesmo motivo do header.
+  const [termLineHeight, setTermLineHeight] = useState<Record<string, number>>(
+    {},
   );
+  // Enquanto o terminal de uma sessão não mediu, a estimativa sai da fonte —
+  // é o que evita o primeiro render posicionar os blocos com altura chutada.
+  const fallbackLineHeight = termFontSize * TERMINAL_LINE_HEIGHT;
+  const reportLineHeight = useCallback((id: SessionId, px: number) => {
+    setTermLineHeight((prev) => withEntry(prev, id, px));
+  }, []);
+  const reportHeaderPx = useCallback((id: SessionId, px: number) => {
+    setActiveHeaderPx((prev) => withEntry(prev, id, px));
+  }, []);
   useEffect(() => {
     const sync = () => setTermFontSize(getDefaultFontSize());
     sync();
@@ -2977,7 +2998,7 @@ export default function App() {
         void sessionLineEcho(id)
           .then((on) => {
             if (!alive) return;
-            setLineEcho((prev) => (prev[id] === on ? prev : { ...prev, [id]: on }));
+            setLineEcho((prev) => withEntry(prev, id, on));
           })
           .catch(() => {});
       }
@@ -2992,7 +3013,7 @@ export default function App() {
   const reportLiveRows = useCallback(
     (id: SessionId, used: number, total: number, scrolled: boolean) => {
       const next = usedFraction(used, total, scrolled);
-      setLiveUsed((prev) => (prev[id] === next ? prev : { ...prev, [id]: next }));
+      setLiveUsed((prev) => withEntry(prev, id, next));
     },
     [],
   );
@@ -4508,7 +4529,7 @@ export default function App() {
                           lineEcho: lineEcho[s.id] ?? false,
                           altScreen: altScreens[s.id] ?? false,
                         })}
-                        onLineHeight={setTermLineHeight}
+                        onLineHeight={(px) => reportLineHeight(s.id, px)}
                         onLiveRows={
                           blocked
                             ? (used, total, scrolled) =>
@@ -4562,10 +4583,16 @@ export default function App() {
                             framed={(paneLayout?.panes.length ?? 0) > 1}
                             rect={blocksRect(pane, live, used)}
                             bottomInset={
-                              live ? activeHeaderPx + lift + BLOCK_GAP_PX : 0
+                              live
+                                ? (activeHeaderPx[s.id] ?? 0) +
+                                  lift +
+                                  BLOCK_GAP_PX
+                                : 0
                             }
                             fontSizePx={termFontSize}
-                            lineHeightPx={termLineHeight}
+                            lineHeightPx={
+                              termLineHeight[s.id] ?? fallbackLineHeight
+                            }
                             onInject={
                               s.id === activeId ? injectIntoActive : undefined
                             }
@@ -4590,7 +4617,7 @@ export default function App() {
                               command={running?.command ?? ""}
                               rect={liveRect(pane, used)}
                               liftPx={lift}
-                              onHeight={setActiveHeaderPx}
+                              onHeight={(px) => reportHeaderPx(s.id, px)}
                             />
                             <ActiveBlockFrame
                               rect={liveRect(pane, used)}

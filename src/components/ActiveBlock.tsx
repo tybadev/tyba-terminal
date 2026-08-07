@@ -47,15 +47,24 @@ export function ActiveBlockHeader({
   onHeight?: (px: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // O callback entra por ref, e o efeito não depende dele.
+  //
+  // Quem chama passa uma arrow que fecha sobre o id da sessão, ou seja: função
+  // nova a cada render. Na dependência do efeito, isso desmontaria e remontaria
+  // o `ResizeObserver` em todo render — um observer que se recria não observa
+  // nada, e ainda relata a altura de novo, o que renderiza de novo.
+  const onHeightRef = useRef(onHeight);
+  onHeightRef.current = onHeight;
   useEffect(() => {
     const el = ref.current;
-    if (!el || !onHeight) return;
-    const report = () => onHeight(el.getBoundingClientRect().height);
+    if (!el) return;
+    const report = () =>
+      onHeightRef.current?.(el.getBoundingClientRect().height);
     report();
     const ro = new ResizeObserver(report);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [onHeight]);
+  }, []);
 
   return (
     <div
