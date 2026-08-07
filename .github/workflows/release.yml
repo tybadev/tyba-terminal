@@ -563,14 +563,41 @@ jobs:
             echo "tag de ensaio apagada: $tag"
           fi
 
-          fail=0
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "::error::o release de ensaio $tag AINDA EXISTE depois da limpeza"
-            fail=1
+          # A conferência espera a API propagar o DELETE antes de acusar.
+          #
+          # Ler o ref logo depois de apagá-lo ainda devolve 200 por um instante.
+          # Medido no ensaio da 0.5.0 (2026-08-07): o job apagou release e tag —
+          # o log traz as duas linhas de sucesso — e 0,9s depois leu a tag como
+          # existente e falhou o run inteiro. Não havia resíduo nenhum; o
+          # vermelho era da própria conferência.
+          #
+          # Vermelho que mente custa o mesmo que verde que mente: quem vê o
+          # ensaio falhar vai atrás de um resíduo que não existe, ou pior,
+          # aprende a ignorar a falha deste job.
+          #
+          # A garantia não afrouxa. Resíduo de verdade continua lá depois das
+          # tentativas, e aí o job falha alto — o que muda é não chamar de
+          # resíduo o que é atraso de leitura.
+          residue() {
+            local what=""
+            if gh release view "$tag" >/dev/null 2>&1; then
+              what="release"
+            fi
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+              what="${what:+$what e }tag"
+            fi
+            printf '%s' "$what"
+          }
+
+          left=""
+          for _ in $(seq 1 10); do
+            left="$(residue)"
+            [ -n "$left" ] || break
+            sleep 3
+          done
+
+          if [ -n "$left" ]; then
+            echo "::error::o ensaio $tag deixou resíduo depois de 30s: $left"
+            exit 1
           fi
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
-            echo "::error::a tag de ensaio $tag AINDA EXISTE depois da limpeza"
-            fail=1
-          fi
-          [ "$fail" -eq 0 ] || exit 1
           echo "ok: ensaio $tag não deixou resíduo — release e tag apagados"
