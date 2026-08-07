@@ -481,6 +481,25 @@ export function BlockList({
     overscan: 6,
   });
 
+  // Métrica nova = TODO cartão muda de altura, e o virtualizador precisa saber.
+  //
+  // Ele guarda a altura MEDIDA por índice, e `estimateSize` só vale para quem
+  // ele ainda não mediu. Sem este reset, um cartão já medido conserva a altura
+  // antiga enquanto o corpo passa a desenhar na nova — o bloco seguinte é
+  // posicionado por cima do anterior e o texto de um vaza sobre o outro.
+  //
+  // Não era possível antes: o corpo do cartão tinha tamanho fixo, então a
+  // métrica nunca mudava depois do mount e o cache nunca envelhecia. Ela virou
+  // dinâmica para o cartão acompanhar a fonte do terminal — e a mudança que
+  // consertou o texto pulando ao virar bloco abriu esta.
+  //
+  // O caminho normal passa por aqui sempre, não só quando o dono mexe na fonte:
+  // a altura de linha nasce estimada da fonte e vira o valor medido do
+  // `.xterm-screen` assim que o terminal desenha.
+  useEffect(() => {
+    virtualizer.measure();
+  }, [fontSizePx, lineHeightPx, virtualizer]);
+
   const last = blocks.length - 1;
   useEffect(() => {
     if (last >= 0) virtualizer.scrollToIndex(last, { align: "end" });
