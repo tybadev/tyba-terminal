@@ -311,7 +311,7 @@ function BlockCard({
         if (event.shiftKey && onPick) event.preventDefault();
       }}
       style={marked ? { boxShadow: MARKED_BAR } : undefined}
-      className={`group mb-2 overflow-hidden rounded-[5px] border ${
+      className={`group overflow-hidden rounded-[5px] border ${
         marked
           ? "border-tyba-primary bg-tyba-green-tint"
           : broke
@@ -371,13 +371,21 @@ function BlockCard({
 
 const HEADER_PX = 27;
 /**
+ * A linha do motivo no cartão de tela cheia (`text-[11px]` + `py-1`).
+ *
+ * Ele não tem corpo, mas não é só o header: sem esta parcela a estimativa
+ * ficava curta para todo `vim`, `htop` ou `less`, e o cartão seguinte nascia
+ * por cima dele.
+ */
+const ALT_SCREEN_PX = 21;
+/**
  * Respiro entre um bloco e o seguinte.
  *
  * Exportado porque o bloco EM EXECUÇÃO também precisa dele: sem isso ele é o
  * único da lista encostado no vizinho, e a diferença lê como defeito bem no
  * cartão para onde o olho vai.
  */
-export const BLOCK_GAP_PX = 16;
+export const BLOCK_GAP_PX = 8;
 /**
  * Folga para considerar a lista "no fim".
  *
@@ -469,9 +477,12 @@ export function BlockList({
     const line = lineHeightPx;
     const block = blocks[index];
     if (!block) return line + HEADER_PX;
+    // Cartão de tela cheia não tem corpo, mas tem a linha do MOTIVO. Sem ela na
+    // conta, todo bloco de `vim`/`htop` era estimado curto demais.
+    const reason = block.altScreen ? ALT_SCREEN_PX : 0;
     const body = Math.min(block.lines.length, BODY_LIMIT) * line;
     const footer = block.truncated > 0 ? line : 0;
-    return HEADER_PX + body + footer + BLOCK_GAP_PX;
+    return HEADER_PX + reason + body + footer + BLOCK_GAP_PX;
   };
 
   const virtualizer = useVirtualizer({
@@ -480,6 +491,25 @@ export function BlockList({
     estimateSize: estimate,
     overscan: 6,
   });
+
+  // Métrica nova = TODO cartão muda de altura, e o virtualizador precisa saber.
+  //
+  // Ele guarda a altura MEDIDA por índice, e `estimateSize` só vale para quem
+  // ele ainda não mediu. Sem este reset, um cartão já medido conserva a altura
+  // antiga enquanto o corpo passa a desenhar na nova — o bloco seguinte é
+  // posicionado por cima do anterior e o texto de um vaza sobre o outro.
+  //
+  // Não era possível antes: o corpo do cartão tinha tamanho fixo, então a
+  // métrica nunca mudava depois do mount e o cache nunca envelhecia. Ela virou
+  // dinâmica para o cartão acompanhar a fonte do terminal — e a mudança que
+  // consertou o texto pulando ao virar bloco abriu esta.
+  //
+  // O caminho normal passa por aqui sempre, não só quando o dono mexe na fonte:
+  // a altura de linha nasce estimada da fonte e vira o valor medido do
+  // `.xterm-screen` assim que o terminal desenha.
+  useEffect(() => {
+    virtualizer.measure();
+  }, [fontSizePx, lineHeightPx, virtualizer]);
 
   const last = blocks.length - 1;
   useEffect(() => {
@@ -620,6 +650,14 @@ export function BlockList({
                 left: 0,
                 width: "100%",
                 transform: `translateY(${item.start}px)`,
+                // O respiro é PADDING daqui, não margem do cartão.
+                //
+                // `measureElement` lê `offsetHeight`, e margem de filho colapsa
+                // para fora dele: o virtualizador media o cartão sem o respiro,
+                // punha o próximo colado, e a margem que ele não viu virava
+                // sobreposição. Como padding, o respiro está dentro do que ele
+                // mede — e a estimativa passa a falar da mesma caixa.
+                paddingBottom: BLOCK_GAP_PX,
               }}
             >
               <BlockCard
