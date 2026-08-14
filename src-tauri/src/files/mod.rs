@@ -196,8 +196,25 @@ pub(crate) fn rel_of(root: &Path, path: &Path) -> Option<String> {
 }
 
 pub fn find_repo_root(start: &Path) -> Option<PathBuf> {
+    find_repo_root_bounded(start, crate::ssh::home_dir().as_deref())
+}
+
+/// A subida para **antes** de `home` em vez de aceitá-la como raiz. Repositório
+/// de dotfiles na home é comum e legítimo, mas tratá-lo como "o projeto" ancora
+/// o painel na pasta pessoal inteira — com watcher recursivo e decoração de git
+/// por cima dela — para toda sessão aberta em qualquer lugar abaixo. A regra de
+/// contexto ("sessão em repo → repo root") nunca previu esse caso: sem a
+/// barreira ela transforma `~/qualquer-coisa` em `~`, e o galho "fora de repo →
+/// cwd", que é a resposta certa ali, nunca é alcançado.
+///
+/// `home` separado do resto para o teste não depender do `$HOME` do processo —
+/// mexer em env var é global e briga com os testes rodando em paralelo.
+pub fn find_repo_root_bounded(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
     let mut cur = Some(start);
     while let Some(dir) = cur {
+        if home == Some(dir) {
+            return None;
+        }
         if dir.join(".git").exists() {
             return Some(dir.to_path_buf());
         }
@@ -1055,6 +1072,38 @@ mod tests {
         let deep = repo.join("src/inner");
         std::fs::create_dir_all(&deep).unwrap();
         assert_eq!(find_repo_root(&deep).as_deref(), Some(repo.as_path()));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn find_repo_root_stops_before_a_repo_at_home() {
+        // Home com `.git` (dotfiles) e uma pasta comum embaixo: a resposta certa
+        // é None, para o chamador cair no galho "fora de repo → cwd". Sem a
+        // barreira, `~/plain` viraria `~`.
+        let base = tmp();
+        let home = base.join("home");
+        std::fs::create_dir_all(home.join(".git")).unwrap();
+        let plain = home.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(find_repo_root_bounded(&plain, Some(&home)), None);
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn find_repo_root_still_finds_a_repo_below_home() {
+        // A barreira não pode cegar o caso normal: projeto de verdade dentro da
+        // home continua sendo raiz, mesmo com a home sendo repo.
+        let base = tmp();
+        let home = base.join("home");
+        std::fs::create_dir_all(home.join(".git")).unwrap();
+        let repo = home.join("proj");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let deep = repo.join("src/inner");
+        std::fs::create_dir_all(&deep).unwrap();
+        assert_eq!(
+            find_repo_root_bounded(&deep, Some(&home)).as_deref(),
+            Some(repo.as_path())
+        );
         std::fs::remove_dir_all(&base).ok();
     }
 
