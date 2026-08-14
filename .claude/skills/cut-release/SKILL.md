@@ -16,6 +16,45 @@ Daí decorrem as duas travas que **não** devem ser afrouxadas:
 - **macOS sem certificado não sai.** O job assina e verifica com `codesign` + `spctl`. Sem o certificado Developer ID, o `.dmg` é ad-hoc: o Gatekeeper diz "app danificado" e o usuário conclui que o produto está quebrado. **Isso vale para Intel também** — a assinatura é do app, não da arquitetura.
 - **A `main` só entra por PR com os 4 gates verdes**, e a tag roda os gates de novo (uma tag pode apontar para qualquer commit).
 
+## A trava que a 0.5.0 pagou para existir
+
+> **Feature com superfície visual não entra em release sem ter sido usada em
+> tela — pelo dono, no app real, não em `tauri dev`.**
+
+Não é "testar mais". É uma trava com critério de saída, e ela existe porque a
+0.5.0 foi cortada sem isso e o resultado apareceu em **três minutos** de uso:
+blocos desenhados uns por cima dos outros, painel nascendo com metade vazia, e
+o split criando painel menor que a área. Os quatro gates estavam verdes. A CI
+não tinha como pegar: **os gates cobrem parser, tipo e teste unitário — nenhum
+deles desenha uma tela.**
+
+O que essa verificação exige, antes da tag:
+
+- **Rodar no binário empacotado**, não no `tauri dev`. O `dev` esconde: o
+  watcher do Rust já rodou com binário velho por horas sem avisar, e o Vite
+  disfarça fazendo HMR normalmente.
+- **Ligar o que a versão liga.** Se a feature é opt-in, ligue. A 0.5.0 quase
+  saiu com o changelog anunciando blocos que ninguém tinha visto acesos.
+- **Exercitar os estados, não a tela feliz**: saída longa, saída curta, app de
+  tela cheia (`vim`/`htop`), redimensionar a janela, dividir o painel, reabrir
+  a sessão. Foi exatamente nessa lista que os três defeitos estavam — e ela já
+  estava escrita como "o que continua sem verificação" no handoff **antes** de
+  a tag ser cortada.
+- **"Sem verificação em tela" bloqueia a tag.** Se o handoff da leva ainda diz
+  isso sobre qualquer item visual, não corte. Registrar a lacuna e cortar
+  assim mesmo foi o erro da 0.4.0 (E2E de captura) e da 0.5.0 (layout dos
+  blocos) — duas versões seguidas, o mesmo padrão.
+
+> [!warning] Print não substitui uso. Diagnosticar layout por screenshot leva a
+> corrigir contas que estão erradas mas não são a causa — aconteceu duas vezes
+> seguidas na 0.5.0. Quando o defeito é de layout, o caminho é **instrumentar**
+> (um `<div>` fixo com `getTotalSize`, `start`, `size` medido por item) e ler
+> número, não régua em imagem.
+
+O custo de segurar é uma versão sair uma semana depois. O custo de não segurar
+é o usuário ligar a feature-título e ver ela quebrada — e nesse ponto o
+changelog já prometeu.
+
 ## Antes de qualquer coisa
 
 1. **A versão bate nos três manifestos?** `src-tauri/tauri.conf.json`, `package.json`, `src-tauri/Cargo.toml`. O job `version` recusa a tag se divergir — e é ele que impede publicar um `Tyba_0.1.0.dmg` dentro de um release `v0.2.0`.
@@ -26,6 +65,9 @@ Daí decorrem as duas travas que **não** devem ser afrouxadas:
    - `all` → Linux + macOS (Apple Silicon e Intel). Só depois que os secrets da Apple estiverem no Environment `release`.
 
    Sem essa variável, `git push --tags` buildaria macOS, falharia por falta de certificado e **levaria o Linux junto**.
+5. **O que a versão liga foi usado em tela?** Ver a trava acima. Se o handoff da
+   leva ainda diz "sem verificação em tela" sobre qualquer item visual, **não
+   corte** — some a lacuna aqui e ela sai no release.
 
 ## Ensaiar antes (não pule)
 
