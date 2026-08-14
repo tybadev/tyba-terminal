@@ -1194,8 +1194,12 @@ export function FilesPanel({
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1">
-        <div className="flex w-[240px] shrink-0 flex-col border-r border-tyba-border">
+      {/* A árvore pinta à direita por `flex-row-reverse`, e continua sendo o
+          primeiro filho no DOM de propósito: a ordem de leitura e de Tab é
+          árvore → conteúdo, que é a ordem lógica de navegar arquivo, não a
+          ordem em que eles aparecem na tela. */}
+      <div className="flex min-h-0 flex-1 flex-row-reverse">
+        <div className="flex w-[240px] shrink-0 flex-col border-l border-tyba-border">
           <div className="flex h-7 shrink-0 items-center gap-1 border-b border-tyba-border px-2">
             <span
               className="min-w-0 flex-1 truncate text-[10px] uppercase tracking-wide text-tyba-text-faint"
