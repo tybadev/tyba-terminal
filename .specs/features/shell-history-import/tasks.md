@@ -430,7 +430,7 @@ T13 → T14
 
 ---
 
-### T12: Seção de import em Configurações
+### T12: Seção de import em Configurações ✅
 
 **What**: botão de importar, lista de fontes com contagem, barra de progresso e relatório ao fim.
 **Where**: `src/components/ShellSettings.tsx`
@@ -445,9 +445,10 @@ T13 → T14
 
 **Done when**:
 
-- [ ] Fonte ausente não aparece; fonte pulada aparece com o motivo
-- [ ] Import em andamento desabilita o botão
-- [ ] Gate check passa: `bun run typecheck && bun test`
+- [x] Fonte ausente não aparece; fonte pulada aparece com o motivo, em âmbar
+- [x] Import em andamento desabilita o botão e mostra o progresso por fonte
+- [x] Sem fonte nenhuma, o botão fica desabilitado e a seção diz por quê
+- [x] Gate check passa: `bun run typecheck` limpo e 547 testes de front verdes
 
 **Tests**: none
 **Gate**: build
