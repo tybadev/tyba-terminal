@@ -314,7 +314,7 @@ T13 → T14
 
 ---
 
-### T8: Chave de import e gravação em lote
+### T8: Chave de import e gravação em lote ✅
 
 **What**: migration de `import_key` com índice UNIQUE e `Store::insert_imported_batch` com `INSERT OR IGNORE` numa transação por lote.
 **Where**: `src-tauri/src/session/store.rs`
@@ -329,12 +329,13 @@ T13 → T14
 
 **Done when**:
 
-- [ ] Migration roda duas vezes sem erro (idempotente), com teste
-- [ ] Teste: inserir o mesmo lote duas vezes não muda a contagem de linhas
-- [ ] Teste: linha viva (chave nula) não colide com outra linha viva
-- [ ] Não usa `insert_command`; a eviction roda uma vez, fora do laço
-- [ ] Gate check passa: `cd src-tauri && cargo test`
-- [ ] Contagem de testes: 4 novos
+- [x] Migration roda duas vezes sem erro (idempotente), com teste em banco de arquivo, não em memória
+- [x] Teste: inserir o mesmo lote duas vezes não muda a contagem de linhas
+- [x] Teste: linha viva (chave nula) não colide com outra linha viva
+- [x] Não usa `insert_command`; a eviction virou método público, chamado uma vez pelo runner
+- [x] Índice UNIQUE criado **depois** do `ALTER`, nunca no `SCHEMA`: em banco antigo a coluna ainda não existe quando o `SCHEMA` roda
+- [x] Gate check passa: `cd src-tauri && cargo test` — 1214 passaram, mais clippy `-D warnings`
+- [x] Contagem de testes: 4 novos
 
 **Tests**: unit
 **Gate**: quick

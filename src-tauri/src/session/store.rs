@@ -170,7 +170,8 @@ CREATE TABLE IF NOT EXISTS command_history (
     command TEXT NOT NULL,
     exit_code INTEGER,
     started_at_ms INTEGER NOT NULL,
-    duration_ms INTEGER
+    duration_ms INTEGER,
+    import_key TEXT
 );
 CREATE INDEX IF NOT EXISTS command_history_by_time ON command_history (started_at_ms DESC);
 CREATE INDEX IF NOT EXISTS command_history_by_cwd ON command_history (cwd, started_at_ms DESC);
@@ -416,6 +417,15 @@ impl Store {
             [],
         );
         let _ = conn.execute("ALTER TABLE block ADD COLUMN cwd TEXT", []);
+        let _ = conn.execute("ALTER TABLE command_history ADD COLUMN import_key TEXT", []);
+        // Depois do ALTER, nunca no SCHEMA: em banco antigo a coluna ainda não
+        // existe quando o SCHEMA roda. NULL não colide com NULL em índice UNIQUE
+        // no SQLite, então a linha viva (chave nula) não é afetada.
+        let _ = conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS command_history_import_key
+             ON command_history (import_key)",
+            [],
+        );
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -912,6 +922,46 @@ impl Store {
         )?;
         evict_command_history(&conn, COMMAND_HISTORY_CAP)?;
         Ok(())
+    }
+
+    /// Grava um lote de entradas importadas numa transação só.
+    ///
+    /// **Não passa por `insert_command`**, e não é economia de código: aquele
+    /// caminho faz um `SELECT` do comando anterior e um `DELETE` de eviction a
+    /// cada linha. Correto para uma linha por vez, catastrófico para 100 000.
+    ///
+    /// `INSERT OR IGNORE` contra o índice único de `import_key`: reimportar não
+    /// duplica porque o banco recusa, não porque alguém acertou a contabilidade.
+    /// Devolve quantas linhas entraram de fato.
+    pub fn insert_imported_batch(
+        &self,
+        rows: &[crate::history::import::ImportRow],
+    ) -> Result<usize, StoreError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let mut inserted = 0;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO command_history
+                     (command, started_at_ms, duration_ms, import_key)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for row in rows {
+                inserted += stmt.execute(params![
+                    row.command,
+                    row.started_at_ms,
+                    row.duration_ms,
+                    row.import_key,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
+    /// Corta o histórico no teto. O import chama uma vez, ao fim.
+    pub fn evict_command_history(&self) -> Result<(), StoreError> {
+        evict_command_history(&self.conn.lock(), COMMAND_HISTORY_CAP)
     }
 
     /// Candidatos crus do histórico, agregados por comando. O ranking (fuzzy +
@@ -2315,6 +2365,75 @@ mod tests {
             .history_candidates(Some("deploy-legacy"), None, None)
             .unwrap();
         assert!(com_query.iter().any(|c| c.command == "deploy-legacy"));
+    }
+
+    fn imported(command: &str, at: i64) -> crate::history::import::ImportRow {
+        use crate::history::import::{import_key, source::ImportSource, ImportRow};
+        ImportRow {
+            command: command.into(),
+            started_at_ms: at,
+            duration_ms: None,
+            import_key: import_key(ImportSource::Zsh, command, at),
+        }
+    }
+
+    #[test]
+    fn an_imported_batch_lands_with_command_date_and_key() {
+        let store = Store::open_in_memory().unwrap();
+        let inserted = store
+            .insert_imported_batch(&[imported("cargo test", 7_000)])
+            .unwrap();
+        assert_eq!(inserted, 1);
+
+        let found = store
+            .history_candidates(Some("cargo test"), None, None)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].last_used_at_ms, 7_000);
+        // Sem exit code: é o que a frecência trata como desconhecido.
+        assert_eq!(found[0].known_exit_codes, 0);
+    }
+
+    /// Reimportar é o caso normal, não a exceção: o usuário roda de novo semanas
+    /// depois para pegar o que digitou fora do TYBA nesse meio-tempo.
+    #[test]
+    fn importing_the_same_batch_twice_does_not_duplicate() {
+        let store = Store::open_in_memory().unwrap();
+        let batch = [imported("cargo test", 7_000), imported("pwd", 8_000)];
+        assert_eq!(store.insert_imported_batch(&batch).unwrap(), 2);
+        assert_eq!(store.insert_imported_batch(&batch).unwrap(), 0);
+        assert_eq!(history_count(&store), 2);
+    }
+
+    /// O índice é UNIQUE e a linha viva tem chave nula. No SQLite NULL não
+    /// colide com NULL, então a captura ao vivo não é afetada.
+    #[test]
+    fn live_rows_have_no_key_and_never_collide() {
+        let store = Store::open_in_memory().unwrap();
+        store.insert_command(&command("ls", None, 1)).unwrap();
+        store.insert_command(&command("pwd", None, 2)).unwrap();
+        store.insert_command(&command("ls", None, 3)).unwrap();
+        assert_eq!(history_count(&store), 3);
+    }
+
+    #[test]
+    fn the_migration_runs_twice_without_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.sqlite");
+        let first = Store::open(&path).unwrap();
+        first
+            .insert_imported_batch(&[imported("cargo test", 7_000)])
+            .unwrap();
+        drop(first);
+
+        let second = Store::open(&path).unwrap();
+        assert_eq!(history_count(&second), 1);
+        assert_eq!(
+            second
+                .insert_imported_batch(&[imported("cargo test", 7_000)])
+                .unwrap(),
+            0
+        );
     }
 
     /// A lista sem busca agrega só a janela recente; a busca com query, não.
