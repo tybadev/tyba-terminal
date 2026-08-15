@@ -4195,12 +4195,12 @@ fn search_command_history(
     use fuzzy_matcher::skim::SkimMatcherV2;
     use fuzzy_matcher::FuzzyMatcher;
 
+    let query = query.trim();
     let candidates = state
         .store
-        .history_candidates(cwd.as_deref(), repo_root.as_deref())
+        .history_candidates(Some(query), cwd.as_deref(), repo_root.as_deref())
         .map_err(|e| e.to_string())?;
     let matcher = SkimMatcherV2::default();
-    let query = query.trim();
     let now = approvals::now_ms() as i64;
     let mut scored: Vec<(f64, HistoryHit)> = candidates
         .into_iter()
@@ -4214,7 +4214,10 @@ fn search_command_history(
             Some((
                 score,
                 HistoryHit {
-                    failed: candidate.uses > 0 && candidate.successes == 0,
+                    // Mesma regra da frecência: sem exit code conhecido não há
+                    // fracasso a marcar. Comando importado não grava código, e
+                    // carimbá-lo de "falhou" seria mentira na UI.
+                    failed: candidate.known_exit_codes > 0 && candidate.successes == 0,
                     command: candidate.command,
                     cwd: candidate.cwd,
                     uses: candidate.uses,

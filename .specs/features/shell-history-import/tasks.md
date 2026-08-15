@@ -142,7 +142,7 @@ T13 → T14
 
 ---
 
-### T3: Pré-filtro em SQL para a busca com query
+### T3: Pré-filtro em SQL para a busca com query ✅
 
 **What**: `Store::history_candidates_matching` filtra por `LIKE` antes de agregar, e `search_command_history` passa a usá-lo quando a query não é vazia.
 **Where**: `src-tauri/src/session/store.rs`
@@ -157,14 +157,16 @@ T13 → T14
 
 **Done when**:
 
-- [ ] Teste: com mais candidatos recentes do que o teto da janela, um comando antigo que casa com a query ainda é retornado
-- [ ] Query vazia continua indo pelo caminho de recência
-- [ ] Medição registrada no commit: tempo da consulta com 100 000 linhas
-- [ ] Gate check passa: `cd src-tauri && cargo test`
-- [ ] Contagem de testes: 2 novos (nenhum apagado)
+- [x] Teste: com mais candidatos recentes do que o teto da janela, um comando antigo que casa com a query ainda é retornado
+- [x] Query vazia continua indo pelo caminho de recência
+- [x] O filtro aceita o mesmo que o fuzzy (caracteres em ordem), não substring — senão a busca perde resultado que hoje encontra
+- [x] **Acrescentado durante a execução**: `HistoryHit.failed` usava o mesmo `successes == 0` que a AD-002 corrigiu; sem ajustar, a UI carimbaria "falhou" em todo comando importado. Uma linha na função que esta task já altera
+- [x] Medição registrada no commit: tempo da consulta com 100 000 linhas
+- [x] Gate check passa (fim de fase, gate de build): fmt, clippy `-D warnings`, 1180 testes Rust, typecheck, 547 testes de front
+- [x] Contagem de testes: 3 novos (nenhum apagado)
 
 **Tests**: unit
-**Gate**: quick
+**Gate**: build (última task da fase)
 
 **Commit**: `feat(history): busca com query considera todo o histórico, não só a janela recente`
 

@@ -261,6 +261,28 @@ fn evict_command_history(conn: &Connection, cap: i64) -> Result<(), StoreError> 
     Ok(())
 }
 
+/// Padrão de LIKE que aceita o mesmo que o fuzzy: os caracteres da busca em
+/// ordem, com qualquer coisa entre eles.
+///
+/// Um `%termo%` cru recusaria o que o `SkimMatcherV2` aceita — `cgt` casa com
+/// `cargo test` no fuzzy e não casaria no LIKE. Como este filtro roda **antes**
+/// do fuzzy, ele precisa deixar passar um superconjunto, ou a busca perde
+/// resultado que hoje encontra.
+fn subsequence_like(query: &str) -> String {
+    let mut pattern = String::with_capacity(query.len() * 2 + 1);
+    pattern.push('%');
+    for ch in query.chars() {
+        match ch {
+            '\\' => pattern.push_str("\\\\"),
+            '%' => pattern.push_str("\\%"),
+            '_' => pattern.push_str("\\_"),
+            other => pattern.push(other),
+        }
+        pattern.push('%');
+    }
+    pattern
+}
+
 /// `_` e `%` são curinga no LIKE, e caminho de repo pode conter os dois — sem
 /// escapar, `/tmp/a_b` casaria com `/tmp/axb`.
 fn escape_like(value: &str) -> String {
@@ -825,8 +847,14 @@ impl Store {
 
     /// Candidatos crus do histórico, agregados por comando. O ranking (fuzzy +
     /// frecência) fica em `history::frecency` — aqui só o que o SQL faz melhor.
+    ///
+    /// Com `query`, o corte de `HISTORY_CANDIDATES` passa a valer sobre o que
+    /// casa, e não sobre a tabela inteira. Sem isso, comando importado — que tem
+    /// data velha — fica fora da janela de recentes e nunca chega ao fuzzy, por
+    /// mais exata que seja a busca.
     pub fn history_candidates(
         &self,
+        query: Option<&str>,
         cwd: Option<&str>,
         repo_root: Option<&str>,
     ) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
@@ -844,6 +872,7 @@ impl Store {
                              THEN 1 ELSE 0 END),
                     MAX(cwd)
              FROM command_history
+             WHERE ?5 IS NULL OR command LIKE ?5 ESCAPE '\\'
              GROUP BY command
              ORDER BY MAX(started_at_ms) DESC
              LIMIT ?4",
@@ -851,19 +880,26 @@ impl Store {
         let like = repo_prefix
             .as_deref()
             .map(|prefix| format!("{}%", escape_like(prefix)));
+        let matching = query
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(subsequence_like);
         let rows = stmt
-            .query_map(params![cwd, like, repo_root, HISTORY_CANDIDATES], |row| {
-                Ok(crate::history::HistoryCandidate {
-                    command: row.get(0)?,
-                    last_used_at_ms: row.get(1)?,
-                    uses: row.get::<_, i64>(2)?.max(0) as u32,
-                    successes: row.get::<_, i64>(3)?.max(0) as u32,
-                    known_exit_codes: row.get::<_, i64>(4)?.max(0) as u32,
-                    in_cwd: row.get::<_, i64>(5)? != 0,
-                    in_repo: row.get::<_, i64>(6)? != 0,
-                    cwd: row.get(7)?,
-                })
-            })?
+            .query_map(
+                params![cwd, like, repo_root, HISTORY_CANDIDATES, matching],
+                |row| {
+                    Ok(crate::history::HistoryCandidate {
+                        command: row.get(0)?,
+                        last_used_at_ms: row.get(1)?,
+                        uses: row.get::<_, i64>(2)?.max(0) as u32,
+                        successes: row.get::<_, i64>(3)?.max(0) as u32,
+                        known_exit_codes: row.get::<_, i64>(4)?.max(0) as u32,
+                        in_cwd: row.get::<_, i64>(5)? != 0,
+                        in_repo: row.get::<_, i64>(6)? != 0,
+                        cwd: row.get(7)?,
+                    })
+                },
+            )?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -2115,7 +2151,7 @@ mod tests {
             .unwrap();
 
         let found = store
-            .history_candidates(Some("/repo/src"), Some("/repo"))
+            .history_candidates(None, Some("/repo/src"), Some("/repo"))
             .unwrap();
         let by = |cmd: &str| {
             found
@@ -2146,7 +2182,7 @@ mod tests {
         failed.exit_code = Some(101);
         store.insert_command(&failed).unwrap();
 
-        let found = store.history_candidates(Some("/repo"), None).unwrap();
+        let found = store.history_candidates(None, Some("/repo"), None).unwrap();
         let cargo = found.iter().find(|c| c.command == "cargo test").unwrap();
         assert_eq!(cargo.uses, 4);
         assert_eq!(cargo.successes, 3);
@@ -2176,7 +2212,7 @@ mod tests {
         unknown.exit_code = None;
         store.insert_command(&unknown).unwrap();
 
-        let found = store.history_candidates(Some("/repo"), None).unwrap();
+        let found = store.history_candidates(None, Some("/repo"), None).unwrap();
         let deploy = found.iter().find(|c| c.command == "deploy").unwrap();
         assert_eq!(deploy.uses, 3);
         assert_eq!(deploy.successes, 1);
@@ -2226,6 +2262,52 @@ mod tests {
         assert_eq!(COMMAND_HISTORY_CAP, 100_000);
     }
 
+    /// Sem o filtro em SQL, o corte de `HISTORY_CANDIDATES` é por recência e o
+    /// comando importado — data velha — nunca chega ao fuzzy.
+    #[test]
+    fn query_reaches_a_command_older_than_the_recent_window() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_command(&command("deploy-legacy", None, 1))
+            .unwrap();
+        for at in 0..HISTORY_CANDIDATES {
+            store
+                .insert_command(&command(&format!("recente{at}"), None, 1_000 + at))
+                .unwrap();
+        }
+
+        let sem_query = store.history_candidates(None, None, None).unwrap();
+        assert!(!sem_query.iter().any(|c| c.command == "deploy-legacy"));
+
+        let com_query = store
+            .history_candidates(Some("deploy-legacy"), None, None)
+            .unwrap();
+        assert!(com_query.iter().any(|c| c.command == "deploy-legacy"));
+    }
+
+    /// O filtro roda antes do fuzzy, então precisa aceitar o que o fuzzy aceita:
+    /// os caracteres em ordem, não a substring.
+    #[test]
+    fn query_matches_the_same_subsequence_the_fuzzy_would() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_command(&command("cargo test", None, 1))
+            .unwrap();
+
+        let found = store.history_candidates(Some("cgt"), None, None).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].command, "cargo test");
+    }
+
+    #[test]
+    fn query_wildcards_are_escaped() {
+        let store = Store::open_in_memory().unwrap();
+        store.insert_command(&command("axb", None, 1)).unwrap();
+
+        let found = store.history_candidates(Some("a_b"), None, None).unwrap();
+        assert!(found.is_empty());
+    }
+
     #[test]
     fn repo_scope_does_not_leak_through_like_wildcards() {
         // `_` é curinga no LIKE: sem escapar, `/tmp/a_b` casaria com `/tmp/axb`.
@@ -2233,7 +2315,9 @@ mod tests {
         store
             .insert_command(&command("intruso", Some("/tmp/axb/sub"), 1))
             .unwrap();
-        let found = store.history_candidates(None, Some("/tmp/a_b")).unwrap();
+        let found = store
+            .history_candidates(None, None, Some("/tmp/a_b"))
+            .unwrap();
         assert!(!found.iter().any(|c| c.in_repo));
     }
 
@@ -2248,7 +2332,7 @@ mod tests {
             .unwrap();
         store.clear_command_history(Some("/repo")).unwrap();
 
-        let found = store.history_candidates(None, None).unwrap();
+        let found = store.history_candidates(None, None, None).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].command, "fora");
 
