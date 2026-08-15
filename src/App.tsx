@@ -313,6 +313,15 @@ import { LIVE_PAD_Y_PX } from "./components/TerminalView";
  * core que já disputa CPU com os agentes.
  */
 const LINE_ECHO_POLL_MS = 200;
+
+/** Piso do painel lateral. Os 240px são a largura fixa da coluna da árvore
+ *  (`FilesPanel`, `w-[240px] shrink-0`, que por ser `shrink-0` não cede); o
+ *  resto é o mínimo para o conteúdo ao lado dela não virar uma fresta. Abaixo
+ *  disso o painel fica menor que o próprio conteúdo e a árvore transborda. */
+const SIDE_MIN_PX = 360;
+/** Piso do terminal. Sem ele o arrasto para o outro lado engole a área de
+ *  trabalho, que é o problema simétrico e igualmente fácil de provocar. */
+const MAIN_MIN_PX = 320;
 import { BLOCK_GAP_PX, BlockList } from "./components/BlockList";
 import { withEntry } from "./lib/perSession";
 import { mergeBlockHistory } from "./lib/blockHistory";
@@ -1035,8 +1044,18 @@ export default function App() {
       e.preventDefault();
       const bounds = mainAreaRef.current?.getBoundingClientRect();
       if (!bounds || bounds.width === 0) return;
-      const compute = (ev: PointerEvent) =>
-        Math.min(0.9, Math.max(0.1, (bounds.right - ev.clientX) / bounds.width));
+      // O limite tem que ser em PIXEL, não em fração. Com 10%/90% um painel
+      // numa janela de 1512px podia ir a ~151px — e a coluna da árvore é
+      // `w-[240px] shrink-0`, que não encolhe: o painel ficava menor que o
+      // próprio conteúdo e a árvore transbordava por baixo do terminal.
+      // A fração só existe porque é o que o core persiste; o clamp acontece
+      // antes da conversão.
+      const compute = (ev: PointerEvent) => {
+        const min = Math.min(SIDE_MIN_PX, bounds.width / 2);
+        const max = Math.max(min, bounds.width - MAIN_MIN_PX);
+        const px = Math.min(max, Math.max(min, bounds.right - ev.clientX));
+        return px / bounds.width;
+      };
       const up = (ev: PointerEvent) => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
@@ -4309,7 +4328,14 @@ export default function App() {
                   }`}
                   style={
                     sideVisible && !sideExpanded
-                      ? { width: `${(1 - sideRatio) * 100}%` }
+                      ? // O `minWidth` não é redundante com o clamp do arrasto:
+                        // a razão é persistida, então uma janela redimensionada
+                        // para menos — ou um valor gravado antes deste conserto
+                        // — reproduziria o transbordo sem ninguém arrastar nada.
+                        {
+                          width: `${(1 - sideRatio) * 100}%`,
+                          minWidth: MAIN_MIN_PX,
+                        }
                       : undefined
                   }
                 >
@@ -4673,7 +4699,10 @@ export default function App() {
                       }
                     >
                       <span
-                        className={`rounded-full bg-tyba-border-strong transition-colors hover:bg-tyba-green/70 ${
+                        // Mesmo peso do divisor do painel lateral: são a mesma
+                        // peça de linguagem visual e destoar entre elas se lê
+                        // como defeito.
+                        className={`rounded-full bg-tyba-border-strong/60 transition-colors hover:bg-tyba-green/70 ${
                           d.kind === "v" ? "h-full w-px" : "h-px w-full"
                         }`}
                       />
@@ -4819,11 +4848,26 @@ export default function App() {
                         onPointerDown={startSideDrag}
                         className="z-10 flex w-[7px] shrink-0 cursor-col-resize items-stretch justify-center"
                       >
-                        <span className="w-px bg-tyba-border-strong transition-colors hover:bg-tyba-green/70" />
+                        {/* Sem linha em repouso, de propósito: quem separa as
+                            duas regiões é o degrau de fundo (o painel é
+                            `surface`, o terminal é `sunken`), não um traço.
+                            Enquanto a linha existia ela era a ÚNICA separação
+                            da metade de baixo pra baixo — medido, os dois lados
+                            davam rgb(22,19,19) idênticos ali —, e por isso
+                            precisava do peso de régua para se sustentar.
+                            A linha volta no hover, que é quando ela vira
+                            affordance de arrastar em vez de moldura. */}
+                        <span className="w-px bg-transparent transition-colors hover:bg-tyba-green/70" />
                       </div>
                     )}
                     <div
-                      className={`flex min-h-0 min-w-0 flex-1${
+                      // `bg-tyba-surface` explícito é o que faz a separação
+                      // existir: sem ele o degrau para o terminal só aparecia
+                      // na metade de cima e sumia na de baixo, onde os dois
+                      // lados mediam a mesma cor. Fundo constante é o que
+                      // permite a linha do divisor recuar para o hover.
+                      style={sideExpanded ? undefined : { minWidth: SIDE_MIN_PX }}
+                      className={`flex min-h-0 min-w-0 flex-1 bg-tyba-surface${
                         renderSideView?.startsWith("agents:")
                           ? agentsMotion.exiting
                             ? " tyba-panel-exit"
