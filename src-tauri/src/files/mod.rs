@@ -129,6 +129,15 @@ pub struct PanelInfo {
     pub decorated: bool,
     pub remote: bool,
     pub host: Option<String>,
+    /// Raiz que a sessão resolveria **agora**, quando difere da ancorada; `None`
+    /// quando as duas batem. Quem decide se divergiu é o core, não a UI — o
+    /// webview só escolhe entre o ícone mudo e o rótulo.
+    ///
+    /// A raiz ser fixa é decisão (`file-explorer/rules.md`, decisão 2), e o
+    /// re-ancorar manual é a saída prevista para ela. O que faltava era saber
+    /// que a saída existe: um ícone de 14px sem rótulo é indistinguível de
+    /// decoração, e o dono do projeto não sabia que o botão estava ali.
+    pub drifted_to: Option<String>,
 }
 
 #[derive(Clone, Serialize)]

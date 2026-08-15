@@ -84,6 +84,10 @@ impl FileBackend for SftpBackend<'_> {
             decorated: self.context.decorated(),
             remote: true,
             host: Some(self.alias.to_string()),
+            // No remoto, medir a divergência custaria um exec de git por
+            // consulta — caro para o benefício. Fica sempre `None`: o botão de
+            // re-ancorar continua lá, só não se antecipa.
+            drifted_to: None,
         }
     }
 

@@ -38,6 +38,9 @@ impl FileBackend for LocalBackend {
             decorated: !matches!(self.context, Context::OutsideRepo),
             remote: false,
             host: None,
+            // Quem mede a divergência é `files_panel_info`, que tem a sessão em
+            // mãos; o backend só conhece a raiz já ancorada.
+            drifted_to: None,
         }
     }
 

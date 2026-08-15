@@ -208,6 +208,7 @@ const resources = {
       filesPanel: "Arquivos",
       filesTitle: "Arquivos",
       filesReanchor: "Re-ancorar no cwd atual",
+      filesReanchorTo: "A sessão está em {{dir}} — re-ancorar",
       filesRefresh: "Atualizar",
       filesRemoteHost: "Raiz remota em {{host}}",
       filesReconnecting: "Conexão com o host caiu — as operações podem falhar até reconectar.",
@@ -1169,6 +1170,7 @@ const resources = {
       filesPanel: "Files",
       filesTitle: "Files",
       filesReanchor: "Re-anchor to current cwd",
+      filesReanchorTo: "Session is in {{dir}} — re-anchor",
       filesRefresh: "Refresh",
       filesRemoteHost: "Remote root on {{host}}",
       filesReconnecting:

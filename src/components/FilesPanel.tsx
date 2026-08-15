@@ -78,6 +78,7 @@ import {
   onFilesDecorations,
   onFilesGutter,
   onFilesTree,
+  onSessionCwd,
   onLspDiagnostics,
   onLspManagedError,
   onLspManagedProgress,
@@ -471,12 +472,22 @@ export function FilesPanel({
         return next;
       });
     });
+    // A raiz não segue o `cd` — isso é decisão, não descuido. O que se faz aqui
+    // é reperguntar ao core se ela ainda bate com o cwd vivo, porque é essa
+    // medida que faz o botão de re-ancorar ganhar rótulo em vez de continuar um
+    // ícone mudo que ninguém encontra.
+    const unCwd = onSessionCwd(session.id, () => {
+      void filesPanelInfo(session.id)
+        .then((i) => setInfo(i))
+        .catch(() => {});
+    });
     return () => {
       void unTree.then((f) => f());
       void unDeco.then((f) => f());
       void unGutter.then((f) => f());
       void unConflict.then((f) => f());
       void unLsp.then((f) => f());
+      void unCwd.then((f) => f());
     };
   }, [session.id, relist]);
 
@@ -1003,6 +1014,10 @@ export function FilesPanel({
   const rootLabel = info
     ? info.root.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || info.root
     : t("filesRootLabel");
+  const driftLabel = info?.drifted_to
+    ? info.drifted_to.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ||
+      info.drifted_to
+    : null;
   const lspErrors = currentDiagnostics.filter((d) => d.severity === 1).length;
   const lspWarnings = currentDiagnostics.filter((d) => d.severity === 2).length;
   const lspServer =
@@ -1156,14 +1171,32 @@ export function FilesPanel({
             <ArrowClockwise size={13} className={busy ? "animate-spin" : ""} />
           </button>
         )}
-        <button
-          onClick={() => void reanchor()}
-          aria-label={t("filesReanchor")}
-          title={t("filesReanchor")}
-          className="text-tyba-text-faint hover:text-tyba-text"
-        >
-          <Crosshair size={14} />
-        </button>
+        {/* Discreto enquanto a raiz bate com o cwd vivo; com rótulo quando
+            divergem. A raiz ser fixa é decisão, e o re-ancorar é a saída
+            prevista — o que faltava era saber que a saída existe. Ícone mudo de
+            14px num header de 28px é indistinguível de decoração. */}
+        {driftLabel ? (
+          <button
+            onClick={() => void reanchor()}
+            aria-label={t("filesReanchorTo", { dir: driftLabel })}
+            title={t("filesReanchorTo", { dir: driftLabel })}
+            className="flex items-center gap-1 rounded-[3px] bg-tyba-amber/10 px-1.5 py-0.5 text-[10px] text-tyba-amber hover:bg-tyba-amber/20"
+          >
+            <Crosshair size={13} />
+            <span className="max-w-[120px] truncate font-mono">
+              {driftLabel}
+            </span>
+          </button>
+        ) : (
+          <button
+            onClick={() => void reanchor()}
+            aria-label={t("filesReanchor")}
+            title={t("filesReanchor")}
+            className="text-tyba-text-faint hover:text-tyba-text"
+          >
+            <Crosshair size={14} />
+          </button>
+        )}
         <button
           onClick={onToggleExpand}
           aria-label={t(expanded ? "tunnelsCollapse" : "tunnelsExpand")}

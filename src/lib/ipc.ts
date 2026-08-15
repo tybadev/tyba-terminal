@@ -1519,6 +1519,12 @@ export interface FilesPanelInfo {
   remote: boolean;
   /** Alias do host quando remoto; `null` no local. */
   host: string | null;
+  /**
+   * Raiz que a sessão resolveria agora, quando difere da ancorada; `null`
+   * quando batem. Quem mede é o core — aqui só se escolhe entre o ícone mudo
+   * e o rótulo. Sempre `null` no remoto, onde medir custaria um exec de git.
+   */
+  drifted_to: string | null;
 }
 
 export const openFilesPanel = (id: SessionId) =>
