@@ -355,7 +355,15 @@ export function CommandLine({
     // A FAIXA continua na cor da área de terminal — sem isso ela mostraria o
     // fundo do app (mais claro, e com a aurora por cima), trocando um degrau por
     // outro. Quem se destaca é a caixa dentro dela, não a faixa.
-    <div className="relative shrink-0 bg-tyba-sunken px-3 pb-2 pt-1">
+    //
+    // `px-2` e não `px-3`: é o mesmo recuo do scroller da lista, então a borda
+    // da caixa cai na MESMA coluna da borda dos cartões. Com 12px contra 8px a
+    // diferença era de 4px — pouca para parecer intencional, suficiente para
+    // parecer torto.
+    //
+    // Respiro igual em cima e embaixo: com `pt-1 pb-2` a caixa ficava encostada
+    // na lista e solta do rodapé.
+    <div className="relative shrink-0 bg-tyba-sunken px-2 py-2">
       {showMenu && (
         <div className="absolute bottom-full left-3 right-3 z-20 mb-1 max-h-56 overflow-y-auto rounded-[6px] border border-tyba-border bg-tyba-raised py-1 shadow-lg">
           {args.map((candidate) => (
@@ -408,17 +416,24 @@ export function CommandLine({
       )}
 
       <div
-        className={`flex items-start gap-2 rounded-[8px] border bg-tyba-raised px-2.5 py-1 transition-colors ${
-          focused ? "border-tyba-green/45" : "border-tyba-border"
+        // O que separa a caixa do painel é LUZ, não cinza — é a regra do
+        // BLACKOUT, onde as camadas quase não clareiam. Daí o verniz vertical
+        // (`--tyba-sheen`) e a aresta iluminada no topo (`--tyba-edge`), que são
+        // as peças que o design system criou para exatamente isto. Só subir o
+        // fundo para `raised` rendia pouca diferença sobre o sunken de vários
+        // temas, e a caixa continuava lendo como continuação do output.
+        //
+        // A aresta fica nos DOIS estados: no foco ela soma ao anel em vez de dar
+        // lugar a ele, senão a caixa muda de espessura ao receber o cursor.
+        className={`flex items-start gap-2 rounded-[8px] border px-2.5 py-1.5 transition-colors ${
+          focused ? "border-tyba-green/45" : "border-tyba-border-strong/70"
         }`}
-        style={
-          focused
-            ? {
-                boxShadow:
-                  "0 0 0 1px color-mix(in srgb, var(--tyba-green) 25%, transparent)",
-              }
-            : { boxShadow: "var(--tyba-edge)" }
-        }
+        style={{
+          background: "var(--tyba-sheen, var(--tyba-raised))",
+          boxShadow: focused
+            ? "var(--tyba-edge), 0 0 0 1px color-mix(in srgb, var(--tyba-green) 25%, transparent)"
+            : "var(--tyba-edge), var(--tyba-shadow-sm)",
+        }}
       >
         {/* O PS1 saiu da tela; o que ele dizia (onde estou, em que branch) não
             pode sumir junto. */}

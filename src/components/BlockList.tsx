@@ -429,7 +429,15 @@ function SessionOpened({
 /** Métricas do cartão, para a estimativa nascer perto do valor medido. */
 /// 13px × 1.35, a mesma métrica do xterm.
 
-const HEADER_PX = 27;
+/**
+ * A tampa do cartão: o header MAIS a borda da caixa em volta.
+ *
+ * 35, e não os 27 de antes: medido no app, um cartão sem corpo dá 43px de altura
+ * — 35 de caixa e os 8 do respiro. O número antigo deixava TODA estimativa 8px
+ * curta, e estimativa curta é cartão sobrepondo o vizinho enquanto a medida real
+ * não chega.
+ */
+const HEADER_PX = 35;
 /**
  * A linha do motivo no cartão de tela cheia (`text-[11px]` + `py-1`).
  *
@@ -454,6 +462,15 @@ export const BLOCK_GAP_PX = 8;
  * quando o dono achava que estava acompanhando a saída.
  */
 const STICK_SLACK_PX = 4;
+
+/**
+ * Quanto tempo sem rolar até conferir as alturas do que está na tela.
+ *
+ * Curto o bastante para o dono não ver o desencontro, longo o bastante para não
+ * rodar no meio de um gesto de rolagem — que é onde o virtualizador
+ * deliberadamente não mede.
+ */
+const SETTLE_MS = 120;
 
 interface Props {
   blocks: Block[];
@@ -603,19 +620,80 @@ export function BlockList({
   // a altura de linha nasce estimada da fonte e vira o valor medido do
   // `.xterm-screen` assim que o terminal desenha.
   //
-  // LARGURA conta pelo mesmo motivo, e faltava: o corpo quebra linha, então um
-  // painel mais estreito deixa TODO cartão mais alto. Sem este descarte, os
-  // cartões fora da janela guardam a altura de antes do split e são posicionados
-  // uns por cima dos outros — o texto embaralhado que aparece ao dividir a tela.
-  // Só quem está montado é remedido sozinho; o resto depende disto.
+  // LARGURA conta pelo mesmo motivo: o corpo quebra linha, então um painel mais
+  // estreito deixa TODO cartão mais alto.
+  //
+  // > [!warning] Os três passos abaixo são um só. Tirar qualquer um recria a
+  // > sobreposição de cartões, e o teste não pega — só o pixel na tela.
+  //
+  // **1. `measure()` sozinho piora o que deveria consertar.** Ele faz
+  // `itemSizeCache.clear()` e mais nada (virtual-core, `this.measure`). Quem
+  // repõe a medida é o `ResizeObserver` do virtualizador, e observer só fala
+  // quando o tamanho MUDA: o cartão já montado que continua do mesmo tamanho
+  // nunca reporta de novo e fica com a ESTIMATIVA para sempre. Medido no app:
+  // um bloco de 1101px cujo vizinho começava 72px depois.
+  //
+  // **2. `getTotalSize()` não é chamada morta.** Ela força o recálculo das
+  // posições AGORA, com o cache já vazio, o que deixa cada item com a sua
+  // estimativa em `measurementsCache`. Sem ela, o passo 3 mede certo e joga
+  // fora: `resizeItem` compara o valor medido com o que está em
+  // `measurementsCache` — que ainda seria a medida ANTIGA, idêntica à nova —,
+  // vê `delta === 0` e não regrava. Como `measure()` já tinha limpado o cache,
+  // o item cai de volta na estimativa. Foi assim que a sobreposição sobreviveu
+  // à primeira correção: de 1029px de erro para 34px, sem nunca chegar a zero.
+  //
+  // **3. A re-medição de quem está montado.** `measureElement` com o mesmo nó
+  // não re-observa nada, só mede e chama `resizeItem` — que agora grava, porque
+  // o delta contra a estimativa não é zero.
   useEffect(() => {
     virtualizer.measure();
+    const el = scrollRef.current;
+    if (!el) return;
+    virtualizer.getTotalSize();
+    el.querySelectorAll<HTMLElement>("[data-index]").forEach((node) => {
+      virtualizer.measureElement(node);
+    });
   }, [fontSizePx, lineHeightPx, cellWidthPx, widthPx, virtualizer]);
+
+  /**
+   * Confere o que está na tela contra o que o virtualizador acha, e corrige a
+   * diferença. Não apaga nada — ao contrário do bloco acima.
+   *
+   * Existe porque o virtualizador NÃO mede item que monta durante a rolagem
+   * (`shouldMeasureDuringScroll`, em virtual-core): é uma decisão dele, para os
+   * itens não pularem sob o ponteiro de quem está rolando. O efeito colateral é
+   * que um cartão que entrou na tela rolando fica com a ESTIMATIVA, e estimativa
+   * de bloco com texto quebrado erra por uma linha ou mais — que aparece como o
+   * cartão seguinte começando por cima do fim do anterior.
+   *
+   * `resizeItem` compara com o valor em cache e só escreve quando difere, então
+   * passar por aqui à toa não custa nem provoca laço de render.
+   */
+  const settle = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.querySelectorAll<HTMLElement>("[data-index]").forEach((node) => {
+      const index = Number(node.dataset.index);
+      const size = node.offsetHeight;
+      if (Number.isFinite(index) && index >= 0 && size > 0) {
+        virtualizer.resizeItem(index, size);
+      }
+    });
+  }, [virtualizer]);
 
   const last = blocks.length - 1;
   useEffect(() => {
     if (last >= 0) virtualizer.scrollToIndex(last, { align: "end" });
   }, [last, virtualizer]);
+
+  // Bloco novo entra, a lista rola até ele e itens montam no caminho — o mesmo
+  // caso do parágrafo acima, e o mais comum de todos: é o que acontece a cada
+  // comando executado. Num frame, para conferir o que o layout já desenhou.
+  useEffect(() => {
+    if (last < 0) return;
+    const id = requestAnimationFrame(settle);
+    return () => cancelAnimationFrame(id);
+  }, [last, settle]);
 
   // Estava colado no fim quando o dono mexeu pela última vez?
   //
@@ -671,15 +749,30 @@ export function BlockList({
       }
       const top = el.scrollTop;
       const items = virtualizer.getVirtualItems();
+      // `<` e não `<=`: com o bloco começando exatamente no topo, o header dele
+      // está à vista e prender desenha o MESMO header duas vezes, um debaixo do
+      // outro. Prende só quando o de verdade já saiu de cena.
       const current = items.find(
-        (item) => item.start <= top && item.end > top + HEADER_PX,
+        (item) => item.start < top && item.end > top + HEADER_PX,
       );
       setPinned(current ? current.index : null);
     };
     sync();
-    el.addEventListener("scroll", sync, { passive: true });
-    return () => el.removeEventListener("scroll", sync);
-  }, [virtualizer, blocks.length]);
+    // A conferência de alturas roda quando a rolagem PARA, não a cada evento:
+    // durante o gesto o virtualizador não mede de propósito, e corrigir no meio
+    // do caminho é justamente o pulo sob o ponteiro que ele evita.
+    let settleTimer: number | null = null;
+    const onScroll = () => {
+      sync();
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(settle, SETTLE_MS);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+    };
+  }, [virtualizer, blocks.length, settle]);
 
   return (
     // Duas camadas: a lista que rola e, POR CIMA dela, o que fica parado.

@@ -4327,7 +4327,15 @@ export default function App() {
 
               <main ref={mainAreaRef} className="flex min-h-0 min-w-0 flex-1">
                 <div
-                  className={`min-h-0 min-w-0 flex-col ${
+                  // `px-2`: a área de painéis não encosta na árvore nem na
+                  // borda da janela. O respiro é DAQUI, e não de dentro dos
+                  // painéis, por dois motivos: os painéis são posicionados em %
+                  // de `paneAreaRef`, que é filho deste div e por isso já nasce
+                  // deslocado; e a linha de comando é irmã do `paneAreaRef`,
+                  // então ela anda junto e continua na mesma coluna dos cartões.
+                  // Padding no próprio `paneAreaRef` não serviria: filho
+                  // `absolute` se posiciona pelo padding box, ou seja, ignora.
+                  className={`min-h-0 min-w-0 flex-col px-2 ${
                     sideVisible
                       ? sideExpanded
                         ? "hidden"
