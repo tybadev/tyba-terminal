@@ -210,8 +210,9 @@ CREATE TABLE IF NOT EXISTS snippet (
 ";
 
 /// Teto do histórico. Sem ele a tabela cresce com o uso e nunca encolhe: é a
-/// única do banco alimentada por cada Enter que o usuário dá.
-const COMMAND_HISTORY_CAP: i64 = 20_000;
+/// única do banco alimentada por cada Enter que o usuário dá. Dimensionado para
+/// caber o histórico importado de anos de shell, não só o digitado no TYBA.
+const COMMAND_HISTORY_CAP: i64 = 100_000;
 
 /// Retenção de bloco por sessão, nas duas dimensões. Contagem sozinha não
 /// protege de um bloco gigante; tamanho sozinho deixa a tabela crescer em
@@ -227,6 +228,38 @@ const BLOCK_VERSION: i64 = 1;
 /// que fica de fora é o que ninguém procuraria de qualquer forma — e o fuzzy
 /// roda sobre um conjunto limitado, não sobre a tabela inteira.
 const HISTORY_CANDIDATES: i64 = 2_000;
+
+/// Corta o histórico no teto, mantendo as entradas **mais recentes por data**.
+///
+/// O corte não pode ser por `id`: entrada importada entra com `id` novo e data
+/// velha, então cortar por ordem de inserção expulsaria justamente as linhas
+/// vivas, que têm `id` menor. O `id` só desempata data igual, para o resultado
+/// ser determinístico.
+///
+/// A guarda de `MIN`/`MAX` existe porque isto roda a cada comando: as duas são
+/// O(1) no rowid, enquanto o `DELETE` percorre o índice de tempo até o teto.
+/// O intervalo de `id` nunca é menor que a contagem de linhas, então quando ele
+/// cabe no teto a tabela também cabe.
+fn evict_command_history(conn: &Connection, cap: i64) -> Result<(), StoreError> {
+    let span: i64 = conn.query_row(
+        "SELECT IFNULL(MAX(id) - MIN(id) + 1, 0) FROM command_history",
+        [],
+        |row| row.get(0),
+    )?;
+    if span <= cap {
+        return Ok(());
+    }
+    conn.execute(
+        "DELETE FROM command_history
+         WHERE id IN (
+             SELECT id FROM command_history
+             ORDER BY started_at_ms DESC, id DESC
+             LIMIT -1 OFFSET ?1
+         )",
+        params![cap],
+    )?;
+    Ok(())
+}
 
 /// `_` e `%` são curinga no LIKE, e caminho de repo pode conter os dois — sem
 /// escapar, `/tmp/a_b` casaria com `/tmp/axb`.
@@ -786,11 +819,7 @@ impl Store {
                 record.duration_ms,
             ],
         )?;
-        conn.execute(
-            "DELETE FROM command_history
-             WHERE id <= (SELECT MAX(id) FROM command_history) - ?1",
-            params![COMMAND_HISTORY_CAP],
-        )?;
+        evict_command_history(&conn, COMMAND_HISTORY_CAP)?;
         Ok(())
     }
 
@@ -2152,6 +2181,49 @@ mod tests {
         assert_eq!(deploy.uses, 3);
         assert_eq!(deploy.successes, 1);
         assert_eq!(deploy.known_exit_codes, 2);
+    }
+
+    fn remaining_commands(store: &Store) -> Vec<String> {
+        let conn = store.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT command FROM command_history ORDER BY started_at_ms")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows
+    }
+
+    #[test]
+    fn eviction_keeps_the_newest_by_time() {
+        let store = Store::open_in_memory().unwrap();
+        for at in 1..=4 {
+            store
+                .insert_command(&command(&format!("cmd{at}"), None, at))
+                .unwrap();
+        }
+        evict_command_history(&store.conn.lock(), 2).unwrap();
+        assert_eq!(remaining_commands(&store), vec!["cmd3", "cmd4"]);
+    }
+
+    /// O caso do import: entrada com data velha entra por último, logo com `id`
+    /// maior. Cortar por `id` apagaria o comando vivo e guardaria o importado.
+    #[test]
+    fn eviction_drops_the_late_inserted_old_entry_not_the_live_one() {
+        let store = Store::open_in_memory().unwrap();
+        store.insert_command(&command("vivo", None, 100)).unwrap();
+        store
+            .insert_command(&command("importado", None, 1))
+            .unwrap();
+        evict_command_history(&store.conn.lock(), 1).unwrap();
+        assert_eq!(remaining_commands(&store), vec!["vivo"]);
+    }
+
+    #[test]
+    fn command_history_cap_fits_an_imported_history() {
+        assert_eq!(COMMAND_HISTORY_CAP, 100_000);
     }
 
     #[test]

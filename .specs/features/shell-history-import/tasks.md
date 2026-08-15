@@ -114,7 +114,7 @@ T13 → T14
 
 ---
 
-### T2: Eviction por idade e teto de 100 000
+### T2: Eviction por idade e teto de 100 000 ✅
 
 **What**: o corte do teto passa a apagar a entrada mais antiga por `started_at_ms` em vez do menor `id`, e `COMMAND_HISTORY_CAP` vai de 20 000 para 100 000.
 **Where**: `src-tauri/src/session/store.rs`
@@ -129,11 +129,11 @@ T13 → T14
 
 **Done when**:
 
-- [ ] Teste que hoje não existe: passar do teto apaga a entrada **mais antiga**, não a de menor `id`
-- [ ] Teste com entrada de data velha inserida depois de entrada recente: a recente sobrevive
-- [ ] `COMMAND_HISTORY_CAP` = 100 000, fixado por teste
-- [ ] Gate check passa: `cd src-tauri && cargo test`
-- [ ] Contagem de testes: 3 novos (nenhum apagado)
+- [x] Teste que hoje não existe: passar do teto apaga a entrada **mais antiga**, não a de menor `id`
+- [x] Teste com entrada de data velha inserida depois de entrada recente: a recente sobrevive
+- [x] `COMMAND_HISTORY_CAP` = 100 000, fixado por teste
+- [x] Gate check passa: `cd src-tauri && cargo test` — 1177 passaram, 0 falharam
+- [x] Contagem de testes: 3 novos (nenhum apagado)
 
 **Tests**: unit
 **Gate**: quick
