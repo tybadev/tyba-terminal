@@ -808,6 +808,7 @@ impl Store {
                     MAX(started_at_ms),
                     COUNT(*),
                     SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN exit_code IS NOT NULL THEN 1 ELSE 0 END),
                     MAX(CASE WHEN cwd IS NOT NULL AND cwd = ?1 THEN 1 ELSE 0 END),
                     MAX(CASE WHEN ?2 IS NOT NULL AND cwd IS NOT NULL
                               AND (cwd = ?3 OR cwd LIKE ?2 ESCAPE '\\')
@@ -828,9 +829,10 @@ impl Store {
                     last_used_at_ms: row.get(1)?,
                     uses: row.get::<_, i64>(2)?.max(0) as u32,
                     successes: row.get::<_, i64>(3)?.max(0) as u32,
-                    in_cwd: row.get::<_, i64>(4)? != 0,
-                    in_repo: row.get::<_, i64>(5)? != 0,
-                    cwd: row.get(6)?,
+                    known_exit_codes: row.get::<_, i64>(4)?.max(0) as u32,
+                    in_cwd: row.get::<_, i64>(5)? != 0,
+                    in_repo: row.get::<_, i64>(6)? != 0,
+                    cwd: row.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -2120,6 +2122,36 @@ mod tests {
         assert_eq!(cargo.uses, 4);
         assert_eq!(cargo.successes, 3);
         assert_eq!(cargo.last_used_at_ms, 9);
+    }
+
+    /// Entrada sem exit code conta em `uses`, não em `known_exit_codes` — é o
+    /// que separa "só falhou" de "não se sabe" na frecência.
+    #[test]
+    fn history_candidates_count_known_exit_codes() {
+        let store = Store::open_in_memory().unwrap();
+        // Alternando com outro comando: entradas iguais e consecutivas são
+        // deduplicadas na escrita.
+        store
+            .insert_command(&command("deploy", Some("/repo"), 1))
+            .unwrap();
+        store
+            .insert_command(&command("pwd", Some("/repo"), 2))
+            .unwrap();
+        let mut failed = command("deploy", Some("/repo"), 3);
+        failed.exit_code = Some(101);
+        store.insert_command(&failed).unwrap();
+        store
+            .insert_command(&command("pwd", Some("/repo"), 4))
+            .unwrap();
+        let mut unknown = command("deploy", Some("/repo"), 5);
+        unknown.exit_code = None;
+        store.insert_command(&unknown).unwrap();
+
+        let found = store.history_candidates(Some("/repo"), None).unwrap();
+        let deploy = found.iter().find(|c| c.command == "deploy").unwrap();
+        assert_eq!(deploy.uses, 3);
+        assert_eq!(deploy.successes, 1);
+        assert_eq!(deploy.known_exit_codes, 2);
     }
 
     #[test]

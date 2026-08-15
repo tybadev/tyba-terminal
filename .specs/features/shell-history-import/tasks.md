@@ -86,7 +86,7 @@ T13 → T14
 
 ## Task Breakdown
 
-### T1: Demérito de fracasso só com exit code conhecido
+### T1: Demérito de fracasso só com exit code conhecido ✅
 
 **What**: `HistoryCandidate` ganha `known_exit_codes`, a consulta de candidatos passa a agregá-lo e `frecency` só aplica o corte de 0,5 quando há código conhecido e nenhum é zero.
 **Where**: `src-tauri/src/history/mod.rs`
@@ -101,11 +101,11 @@ T13 → T14
 
 **Done when**:
 
-- [ ] `frecency` distingue as três situações: só falhou, nenhum código conhecido, misto
-- [ ] Teste novo para cada uma das três; os testes de frecência existentes continuam passando
-- [ ] A consulta em `store.rs` preenche o campo com `SUM(CASE WHEN exit_code IS NOT NULL THEN 1 ELSE 0 END)`
-- [ ] Gate check passa: `cd src-tauri && cargo test`
-- [ ] Contagem de testes: 3 novos em `history`, 1 novo em `store` (nenhum apagado)
+- [x] `frecency` distingue as três situações: só falhou, nenhum código conhecido, misto
+- [x] Teste novo para cada uma das três; os testes de frecência existentes continuam passando
+- [x] A consulta em `store.rs` preenche o campo com `SUM(CASE WHEN exit_code IS NOT NULL THEN 1 ELSE 0 END)`
+- [x] Gate check passa: `cd src-tauri && cargo test` — 1174 passaram, 0 falharam
+- [x] Contagem de testes: 3 novos em `history`, 1 novo em `store` (nenhum apagado)
 
 **Tests**: unit
 **Gate**: quick
