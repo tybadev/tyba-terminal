@@ -38,9 +38,10 @@
 
 ## Handoff
 
-- Current phase: shell-history-import — Tasks concluída (14 tasks, 6 fases), aguardando aprovação para Execute
-- Status: planned
+- Current phase: shell-history-import — Fase 1 concluída (T1, T2, T3), executando fatia 1 (fases 1 a 4)
+- Status: implementing (task 3 de 12)
 - Branch: feat/shell-history-import, no worktree `.claude/worktrees/shell-history-import`
-- Last commit: 3653d92 — fix(build): o gerador de CSS apagava 195 linhas em uso, e nenhum gate pegava (#259)
-- Next step: aprovar as tasks e executar a Fase 1 (T1–T3), que é o que impede o import de se anular
-- Open assumptions: sete premissas não confirmadas na spec (timestamp sintetizado, cwd NULL, session_id NULL, duplicata entre fontes, chave de idempotência, redação reaproveitada, exit code desconhecido)
+- Last commit: 46306e9 — feat(history): busca com query considera todo o histórico, não só a janela recente
+- Next step: T4, parser de zsh
+- Open assumptions: seis premissas não confirmadas na spec (timestamp sintetizado, cwd NULL, session_id NULL, duplicata entre fontes, chave de idempotência, redação reaproveitada). A do exit code desconhecido virou código em T1
+- Achado aberto: com 100 000 linhas a consulta de query vazia (paleta abrindo) custa 48 ms, contra 13-16 ms da consulta com filtro. É consequência do teto novo; decisão do dono pendente
