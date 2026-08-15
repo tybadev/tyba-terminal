@@ -404,7 +404,7 @@ T13 → T14
 
 ---
 
-### T11: IPC e i18n do import
+### T11: IPC e i18n do import ✅
 
 **What**: wrappers `scanShellHistorySources` / `importShellHistory`, tipos do relatório e chaves de texto pt/en.
 **Where**: `src/lib/ipc.ts`
@@ -419,9 +419,9 @@ T13 → T14
 
 **Done when**:
 
-- [ ] Tipos espelham `ImportReport` e `SourceScan` do core
-- [ ] Chaves pt e en presentes nas duas línguas
-- [ ] Gate check passa: `bun run typecheck && bun test`
+- [x] Tipos espelham `ImportReport` e `SourceScan` do core
+- [x] Chaves pt e en presentes nas duas línguas
+- [x] Gate check passa: `bun run typecheck` limpo e 547 testes de front verdes
 
 **Tests**: none
 **Gate**: build
