@@ -1323,12 +1323,23 @@ async fn files_panel_info(
     let (root, context) = state
         .files
         .ensure(&app, id, || resolve_files_root(&state, id))?;
+    // A raiz ancorada não segue o `cd` — é decisão, não descuido. Aqui só se
+    // mede se ela ainda bate com o que a sessão resolveria agora, para a UI
+    // poder oferecer o re-ancorar em vez de esperar que o usuário descubra o
+    // botão sozinho. Falha de resolução (sessão sem líder, cwd ilegível) é
+    // `None`: não se cutuca o usuário por causa de um estado transitório.
+    let drifted_to = resolve_files_root(&state, id)
+        .ok()
+        .map(|(live, _)| live)
+        .filter(|live| live != &root)
+        .map(|live| live.to_string_lossy().into_owned());
     Ok(files::PanelInfo {
         root: root.to_string_lossy().into_owned(),
         kind: context.kind_str().to_string(),
         decorated: !matches!(context, files::Context::OutsideRepo),
         remote: false,
         host: None,
+        drifted_to,
     })
 }
 
