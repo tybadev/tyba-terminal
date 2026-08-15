@@ -4673,7 +4673,10 @@ export default function App() {
                       }
                     >
                       <span
-                        className={`rounded-full bg-tyba-border-strong transition-colors hover:bg-tyba-green/70 ${
+                        // Mesmo peso do divisor do painel lateral: são a mesma
+                        // peça de linguagem visual e destoar entre elas se lê
+                        // como defeito.
+                        className={`rounded-full bg-tyba-border-strong/60 transition-colors hover:bg-tyba-green/70 ${
                           d.kind === "v" ? "h-full w-px" : "h-px w-full"
                         }`}
                       />
@@ -4819,7 +4822,14 @@ export default function App() {
                         onPointerDown={startSideDrag}
                         className="z-10 flex w-[7px] shrink-0 cursor-col-resize items-stretch justify-center"
                       >
-                        <span className="w-px bg-tyba-border-strong transition-colors hover:bg-tyba-green/70" />
+                        {/* `border-strong` é o token de foco/hover (ver
+                            styles.css); em repouso ele desenha uma régua, não
+                            uma costura — medido em rgb(60,60,60) sobre o
+                            sunken, ~1,9:1. O `--tyba-border` cru resolveria o
+                            peso e criaria o problema oposto: ~1,1:1 sobre preto,
+                            some. O 60% é o meio-termo, e por ser proporcional
+                            acompanha cada tema em vez de fixar um cinza. */}
+                        <span className="w-px bg-tyba-border-strong/60 transition-colors hover:bg-tyba-green/70" />
                       </div>
                     )}
                     <div
