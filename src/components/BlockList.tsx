@@ -9,6 +9,7 @@ import {
   MarkdownLogo,
 } from "@phosphor-icons/react";
 
+import { bodyLines, columnsFor } from "../lib/blockMetrics";
 import {
   blockMarkdown,
   blockOutput,
@@ -259,6 +260,15 @@ function BlockHeader({
 const BODY_LIMIT = 200;
 
 /**
+ * Quanto da largura do scroller NÃO é texto do corpo, em px.
+ *
+ * `px-2` do scroller (8+8), a borda do cartão (1+1) e o `px-2.5` do corpo
+ * (10+10). Entra na conta de quantas colunas cabem numa linha — errar aqui
+ * volta como estimativa curta, que é cartão em cima de cartão.
+ */
+const BODY_INSET_X_PX = 38;
+
+/**
  * Barra à esquerda do cartão marcado.
  *
  * `box-shadow` e não borda: borda muda a altura medida, e altura que muda faz o
@@ -366,10 +376,68 @@ function BlockCard({
   );
 }
 
+/**
+ * O começo da pilha: onde e quando a sessão abriu.
+ *
+ * Um painel de shell recém-aberto era um vazio absoluto, e como a lista só
+ * existia com pelo menos um bloco, o que aparecia ali era a caixa do xterm — que
+ * ocupa meia altura do painel. Daí o "o split abre já menor": o painel novo
+ * nunca abriu menor, ele só não tinha nada cobrindo a outra metade.
+ *
+ * Fica FORA da lista virtualizada, como primeiro nó do conteúdo: assim ele não
+ * entra em índice, em seleção nem na contagem de marcados, e não há um bloco
+ * falso que a cópia possa alcançar. Rola junto porque está dentro do scroller.
+ */
+function SessionOpened({
+  cwd,
+  at,
+  fontSizePx,
+}: {
+  cwd: string | null;
+  /** Quando a sessão abriu, em ms. */
+  at: number | null;
+  fontSizePx: number;
+}) {
+  const { t } = useTranslation();
+  const where = shortPath(cwd);
+  const when =
+    at === null || !Number.isFinite(at)
+      ? null
+      : new Date(at).toLocaleTimeString(undefined, {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+  return (
+    <div
+      // Sem borda cheia: é uma marca de começo, não um bloco. Cartão de verdade
+      // aqui competiria com o primeiro comando de fato.
+      className="mb-2 flex items-center gap-2 px-2.5 py-1 font-mono text-tyba-text-faint"
+      style={{ fontSize: `${Math.max(10, fontSizePx - 2)}px` }}
+    >
+      <span className="size-1 shrink-0 rounded-full bg-tyba-text-faint/60" />
+      <span className="shrink-0">{t("blockSessionOpened")}</span>
+      {where && (
+        <span title={cwd ?? undefined} className="min-w-0 truncate">
+          · {where}
+        </span>
+      )}
+      {when && <span className="shrink-0 tabular-nums">· {when}</span>}
+    </div>
+  );
+}
+
 /** Métricas do cartão, para a estimativa nascer perto do valor medido. */
 /// 13px × 1.35, a mesma métrica do xterm.
 
-const HEADER_PX = 27;
+/**
+ * A tampa do cartão: o header MAIS a borda da caixa em volta.
+ *
+ * 35, e não os 27 de antes: medido no app, um cartão sem corpo dá 43px de altura
+ * — 35 de caixa e os 8 do respiro. O número antigo deixava TODA estimativa 8px
+ * curta, e estimativa curta é cartão sobrepondo o vizinho enquanto a medida real
+ * não chega.
+ */
+const HEADER_PX = 35;
 /**
  * A linha do motivo no cartão de tela cheia (`text-[11px]` + `py-1`).
  *
@@ -395,10 +463,18 @@ export const BLOCK_GAP_PX = 8;
  */
 const STICK_SLACK_PX = 4;
 
+/**
+ * Quanto tempo sem rolar até conferir as alturas do que está na tela.
+ *
+ * Curto o bastante para o dono não ver o desencontro, longo o bastante para não
+ * rodar no meio de um gesto de rolagem — que é onde o virtualizador
+ * deliberadamente não mede.
+ */
+const SETTLE_MS = 120;
+
 interface Props {
   blocks: Block[];
   rect: PaneRectStyle;
-  framed: boolean;
   /**
    * Devolve o comando para a linha, sem executar. É o mesmo caminho do
    * histórico e do snippet — com a linha do TYBA no ar o terminal está
@@ -448,15 +524,30 @@ interface Props {
    * altura, ou o texto "pula" ao virar cartão.
    */
   lineHeightPx: number;
+  /**
+   * Largura real de uma célula do terminal, em px.
+   *
+   * A mesma medida no outro eixo, e ela entra na ESTIMATIVA: o corpo do cartão
+   * quebra linha, então uma linha lógica pode ocupar três. Ver `blockMetrics`.
+   */
+  cellWidthPx: number;
+  /**
+   * Onde e quando a sessão abriu — o cartão-zero, no começo da pilha.
+   *
+   * Ausente não é caso de erro: sessão sem cwd conhecido ainda merece a marca de
+   * início.
+   */
+  opened?: { cwd: string | null; atMs: number | null };
 }
 
 export function BlockList({
   blocks,
   rect,
-  framed,
   bottomInset = 0,
   fontSizePx,
   lineHeightPx,
+  cellWidthPx,
+  opened,
   onInject,
   onActivate,
   marked,
@@ -470,6 +561,25 @@ export function BlockList({
   // saída antiga junto, senão o bloco congela a paleta de quando foi capturado.
   const [, repaint] = useReducer((n: number) => n + 1, 0);
   useEffect(() => onTerminalThemeChange(() => repaint()), []);
+
+  // A largura do scroller, medida.
+  //
+  // Entra em duas contas: quantos caracteres cabem numa linha do corpo — sem
+  // isso a estimativa ignora a quebra — e o descarte das alturas já medidas,
+  // logo abaixo. Medida, e não derivada do `rect` em %: o retângulo é uma
+  // fração do painel, e a mesma fração dá larguras diferentes conforme a
+  // janela e o painel lateral.
+  const [widthPx, setWidthPx] = useState(0);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setWidthPx(el.clientWidth);
+    const ro = new ResizeObserver(() => setWidthPx(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const cols = columnsFor(widthPx, cellWidthPx, BODY_INSET_X_PX);
+
   // A estimativa sai do número de linhas, não de um número fixo: com 80px
   // chutados, o primeiro layout põe o bloco no lugar errado e ele PULA quando a
   // medição real chega — que é o "aparece com delay e renderiza".
@@ -480,7 +590,9 @@ export function BlockList({
     // Cartão de tela cheia não tem corpo, mas tem a linha do MOTIVO. Sem ela na
     // conta, todo bloco de `vim`/`htop` era estimado curto demais.
     const reason = block.altScreen ? ALT_SCREEN_PX : 0;
-    const body = Math.min(block.lines.length, BODY_LIMIT) * line;
+    // Linhas VISUAIS, não lógicas: o corpo desenha com `whitespace-pre-wrap`, e
+    // num painel estreito uma linha de saída ocupa três. Ver `blockMetrics`.
+    const body = bodyLines(block.lines, cols, BODY_LIMIT) * line;
     const footer = block.truncated > 0 ? line : 0;
     return HEADER_PX + reason + body + footer + BLOCK_GAP_PX;
   };
@@ -507,14 +619,81 @@ export function BlockList({
   // O caminho normal passa por aqui sempre, não só quando o dono mexe na fonte:
   // a altura de linha nasce estimada da fonte e vira o valor medido do
   // `.xterm-screen` assim que o terminal desenha.
+  //
+  // LARGURA conta pelo mesmo motivo: o corpo quebra linha, então um painel mais
+  // estreito deixa TODO cartão mais alto.
+  //
+  // > [!warning] Os três passos abaixo são um só. Tirar qualquer um recria a
+  // > sobreposição de cartões, e o teste não pega — só o pixel na tela.
+  //
+  // **1. `measure()` sozinho piora o que deveria consertar.** Ele faz
+  // `itemSizeCache.clear()` e mais nada (virtual-core, `this.measure`). Quem
+  // repõe a medida é o `ResizeObserver` do virtualizador, e observer só fala
+  // quando o tamanho MUDA: o cartão já montado que continua do mesmo tamanho
+  // nunca reporta de novo e fica com a ESTIMATIVA para sempre. Medido no app:
+  // um bloco de 1101px cujo vizinho começava 72px depois.
+  //
+  // **2. `getTotalSize()` não é chamada morta.** Ela força o recálculo das
+  // posições AGORA, com o cache já vazio, o que deixa cada item com a sua
+  // estimativa em `measurementsCache`. Sem ela, o passo 3 mede certo e joga
+  // fora: `resizeItem` compara o valor medido com o que está em
+  // `measurementsCache` — que ainda seria a medida ANTIGA, idêntica à nova —,
+  // vê `delta === 0` e não regrava. Como `measure()` já tinha limpado o cache,
+  // o item cai de volta na estimativa. Foi assim que a sobreposição sobreviveu
+  // à primeira correção: de 1029px de erro para 34px, sem nunca chegar a zero.
+  //
+  // **3. A re-medição de quem está montado.** `measureElement` com o mesmo nó
+  // não re-observa nada, só mede e chama `resizeItem` — que agora grava, porque
+  // o delta contra a estimativa não é zero.
   useEffect(() => {
     virtualizer.measure();
-  }, [fontSizePx, lineHeightPx, virtualizer]);
+    const el = scrollRef.current;
+    if (!el) return;
+    virtualizer.getTotalSize();
+    el.querySelectorAll<HTMLElement>("[data-index]").forEach((node) => {
+      virtualizer.measureElement(node);
+    });
+  }, [fontSizePx, lineHeightPx, cellWidthPx, widthPx, virtualizer]);
+
+  /**
+   * Confere o que está na tela contra o que o virtualizador acha, e corrige a
+   * diferença. Não apaga nada — ao contrário do bloco acima.
+   *
+   * Existe porque o virtualizador NÃO mede item que monta durante a rolagem
+   * (`shouldMeasureDuringScroll`, em virtual-core): é uma decisão dele, para os
+   * itens não pularem sob o ponteiro de quem está rolando. O efeito colateral é
+   * que um cartão que entrou na tela rolando fica com a ESTIMATIVA, e estimativa
+   * de bloco com texto quebrado erra por uma linha ou mais — que aparece como o
+   * cartão seguinte começando por cima do fim do anterior.
+   *
+   * `resizeItem` compara com o valor em cache e só escreve quando difere, então
+   * passar por aqui à toa não custa nem provoca laço de render.
+   */
+  const settle = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.querySelectorAll<HTMLElement>("[data-index]").forEach((node) => {
+      const index = Number(node.dataset.index);
+      const size = node.offsetHeight;
+      if (Number.isFinite(index) && index >= 0 && size > 0) {
+        virtualizer.resizeItem(index, size);
+      }
+    });
+  }, [virtualizer]);
 
   const last = blocks.length - 1;
   useEffect(() => {
     if (last >= 0) virtualizer.scrollToIndex(last, { align: "end" });
   }, [last, virtualizer]);
+
+  // Bloco novo entra, a lista rola até ele e itens montam no caminho — o mesmo
+  // caso do parágrafo acima, e o mais comum de todos: é o que acontece a cada
+  // comando executado. Num frame, para conferir o que o layout já desenhou.
+  useEffect(() => {
+    if (last < 0) return;
+    const id = requestAnimationFrame(settle);
+    return () => cancelAnimationFrame(id);
+  }, [last, settle]);
 
   // Estava colado no fim quando o dono mexeu pela última vez?
   //
@@ -570,15 +749,30 @@ export function BlockList({
       }
       const top = el.scrollTop;
       const items = virtualizer.getVirtualItems();
+      // `<` e não `<=`: com o bloco começando exatamente no topo, o header dele
+      // está à vista e prender desenha o MESMO header duas vezes, um debaixo do
+      // outro. Prende só quando o de verdade já saiu de cena.
       const current = items.find(
-        (item) => item.start <= top && item.end > top + HEADER_PX,
+        (item) => item.start < top && item.end > top + HEADER_PX,
       );
       setPinned(current ? current.index : null);
     };
     sync();
-    el.addEventListener("scroll", sync, { passive: true });
-    return () => el.removeEventListener("scroll", sync);
-  }, [virtualizer, blocks.length]);
+    // A conferência de alturas roda quando a rolagem PARA, não a cada evento:
+    // durante o gesto o virtualizador não mede de propósito, e corrigir no meio
+    // do caminho é justamente o pulo sob o ponteiro que ele evita.
+    let settleTimer: number | null = null;
+    const onScroll = () => {
+      sync();
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(settle, SETTLE_MS);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+    };
+  }, [virtualizer, blocks.length, settle]);
 
   return (
     // Duas camadas: a lista que rola e, POR CIMA dela, o que fica parado.
@@ -627,15 +821,24 @@ export function BlockList({
         // ancestral e TRAVA nele até a rolagem terminar — daí "rolei tudo para
         // cima e agora não desce mais, só clicando na barra". Conter o encadea-
         // mento mantém o gesto nesta lista.
-        className={`pointer-events-auto h-full overflow-y-auto overscroll-contain rounded-[4px] bg-tyba-sunken px-2 pb-3 pt-2 ${
-          framed ? "border border-tyba-border" : ""
-        }`}
+        // Sem contorno próprio: quem emoldura é o PAINEL, uma camada acima de
+        // tudo (ver `App`). Lista e terminal desenhando cada um a sua borda
+        // punham duas caixas dentro do mesmo painel, e a de baixo só existia na
+        // metade que o terminal ocupa.
+        className="pointer-events-auto h-full overflow-y-auto overscroll-contain rounded-[4px] bg-tyba-sunken px-2 pb-3 pt-2"
       >
         {/* Ancorado embaixo, como todo terminal: os blocos crescem de baixo
             para cima e o último fica colado na linha de comando. Ancorado em
             cima, poucos blocos deixam um vazio enorme logo acima do input —
             que é exatamente para onde o olho vai. */}
         <div className="flex min-h-full flex-col justify-end">
+          {opened && (
+            <SessionOpened
+              cwd={opened.cwd}
+              at={opened.atMs}
+              fontSizePx={fontSizePx}
+            />
+          )}
           <div
             style={{ height: virtualizer.getTotalSize(), position: "relative" }}
           >

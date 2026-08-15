@@ -127,6 +127,7 @@ import {
   FONT_SIZE_EVENT,
   getDefaultFontSize,
   setDefaultFontSize,
+  TERMINAL_CELL_WIDTH,
   TERMINAL_LINE_HEIGHT,
   TerminalView,
 } from "./components/TerminalView";
@@ -2978,6 +2979,13 @@ export default function App() {
   const reportLineHeight = useCallback((id: SessionId, px: number) => {
     setTermLineHeight((prev) => withEntry(prev, id, px));
   }, []);
+  // Largura de uma célula, medida — a estimativa de altura do bloco precisa
+  // saber quantos caracteres cabem na linha, porque o corpo do cartão quebra.
+  const [termCellWidth, setTermCellWidth] = useState<Record<string, number>>({});
+  const fallbackCellWidth = termFontSize * TERMINAL_CELL_WIDTH;
+  const reportCellWidth = useCallback((id: SessionId, px: number) => {
+    setTermCellWidth((prev) => withEntry(prev, id, px));
+  }, []);
   const reportHeaderPx = useCallback((id: SessionId, px: number) => {
     setActiveHeaderPx((prev) => withEntry(prev, id, px));
   }, []);
@@ -4319,7 +4327,15 @@ export default function App() {
 
               <main ref={mainAreaRef} className="flex min-h-0 min-w-0 flex-1">
                 <div
-                  className={`min-h-0 min-w-0 flex-col ${
+                  // `px-2`: a área de painéis não encosta na árvore nem na
+                  // borda da janela. O respiro é DAQUI, e não de dentro dos
+                  // painéis, por dois motivos: os painéis são posicionados em %
+                  // de `paneAreaRef`, que é filho deste div e por isso já nasce
+                  // deslocado; e a linha de comando é irmã do `paneAreaRef`,
+                  // então ela anda junto e continua na mesma coluna dos cartões.
+                  // Padding no próprio `paneAreaRef` não serviria: filho
+                  // `absolute` se posiciona pelo padding box, ou seja, ignora.
+                  className={`min-h-0 min-w-0 flex-col px-2 ${
                     sideVisible
                       ? sideExpanded
                         ? "hidden"
@@ -4524,7 +4540,6 @@ export default function App() {
                         onSplit={(kind) => void splitActive(kind)}
                         visible={paneRect !== null}
                         focused={s.id === activeId}
-                        framed={(paneLayout?.panes.length ?? 0) > 1}
                         connecting={s.kind.type === "ssh"}
                         reattaches={!ptyExitEndsSession(s.kind)}
                         connection={
@@ -4556,6 +4571,7 @@ export default function App() {
                           altScreen: altScreens[s.id] ?? false,
                         })}
                         onLineHeight={(px) => reportLineHeight(s.id, px)}
+                        onCellWidth={(px) => reportCellWidth(s.id, px)}
                         onLiveRows={
                           blocked
                             ? (used, total, scrolled) =>
@@ -4603,40 +4619,49 @@ export default function App() {
                     const lift = padSlackPx(LIVE_PAD_Y_PX, used);
                     return (
                       <Fragment key={`blocks-${s.id}`}>
-                        {list.length > 0 && (
-                          <BlockList
-                            blocks={list}
-                            framed={(paneLayout?.panes.length ?? 0) > 1}
-                            rect={blocksRect(pane, live, used)}
-                            bottomInset={
-                              live
-                                ? (activeHeaderPx[s.id] ?? 0) +
-                                  lift +
-                                  BLOCK_GAP_PX
-                                : 0
-                            }
-                            fontSizePx={termFontSize}
-                            lineHeightPx={
-                              termLineHeight[s.id] ?? fallbackLineHeight
-                            }
-                            onInject={
-                              s.id === activeId ? injectIntoActive : undefined
-                            }
-                            onActivate={
-                              s.id === activeId
-                                ? undefined
-                                : () => void focusPane(paneRect.pane)
-                            }
-                            marked={
-                              blockPick?.session === s.id
-                                ? (markedBlocks ?? undefined)
-                                : undefined
-                            }
-                            onPick={(id, event) => pickBlock(s.id, id, event)}
-                            onClearPick={() => setBlockPick(null)}
-                            copyCombo={formatCombo(bindings.copy)}
-                          />
-                        )}
+                        {/* Sem `list.length > 0`: a lista é o que COBRE o
+                            terminal, e o terminal em modo prompt é meia altura
+                            do painel. Escondida enquanto não houvesse bloco, o
+                            painel recém-aberto mostrava a caixa do xterm no
+                            rodapé e vazio em cima — o "abre já menor" do split.
+                            Vazia ela é um scroller com o cartão-zero dentro. */}
+                        <BlockList
+                          blocks={list}
+                          rect={blocksRect(pane, live, used)}
+                          bottomInset={
+                            live
+                              ? (activeHeaderPx[s.id] ?? 0) + lift + BLOCK_GAP_PX
+                              : 0
+                          }
+                          fontSizePx={termFontSize}
+                          lineHeightPx={
+                            termLineHeight[s.id] ?? fallbackLineHeight
+                          }
+                          cellWidthPx={termCellWidth[s.id] ?? fallbackCellWidth}
+                          opened={{
+                            cwd:
+                              sessionCwds[s.id]?.cwd ??
+                              sessionCwds[s.id]?.canonical ??
+                              null,
+                            atMs: Date.parse(s.created_at) || null,
+                          }}
+                          onInject={
+                            s.id === activeId ? injectIntoActive : undefined
+                          }
+                          onActivate={
+                            s.id === activeId
+                              ? undefined
+                              : () => void focusPane(paneRect.pane)
+                          }
+                          marked={
+                            blockPick?.session === s.id
+                              ? (markedBlocks ?? undefined)
+                              : undefined
+                          }
+                          onPick={(id, event) => pickBlock(s.id, id, event)}
+                          onClearPick={() => setBlockPick(null)}
+                          copyCombo={formatCombo(bindings.copy)}
+                        />
                         {live && (
                           <>
                             <ActiveBlockHeader
@@ -4654,6 +4679,37 @@ export default function App() {
                       </Fragment>
                     );
                   })}
+                  {/* A moldura do painel — do PAINEL, não do que está dentro.
+                      Depois de tudo no DOM, e `pointer-events-none`.
+
+                      Antes, quem desenhava contorno eram o terminal e a lista,
+                      cada um o seu. Em modo prompt o terminal é meia altura: o
+                      painel focado aparecia com a moldura só da metade para
+                      baixo, e com dois contornos concorrentes dentro da mesma
+                      caixa. Como camada de cima ela também não some atrás de um
+                      terminal opaco — que é o caso de todo painel de agente. */}
+                  {(paneLayout?.panes.length ?? 0) > 1 &&
+                    paneLayout?.panes.map((p) => (
+                      <div
+                        key={`pane-frame-${p.pane}`}
+                        className="pointer-events-none rounded-[4px] border border-tyba-border"
+                        style={{
+                          position: "absolute",
+                          left: `${p.x}%`,
+                          top: `${p.y}%`,
+                          width: `${p.w}%`,
+                          height: `${p.h}%`,
+                          ...(p.session === activeId
+                            ? {
+                                borderColor:
+                                  "color-mix(in srgb, var(--tyba-green) 45%, transparent)",
+                                boxShadow:
+                                  "0 0 0 1px color-mix(in srgb, var(--tyba-green) 25%, transparent), 0 0 14px -2px var(--tyba-glow-green, rgba(124,197,68,.4))",
+                              }
+                            : {}),
+                        }}
+                      />
+                    ))}
                   {paneLayout?.agentViewers.map((v) => {
                     const owner = sessionById.get(v.session);
                     return (

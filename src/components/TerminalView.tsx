@@ -109,6 +109,15 @@ let defaultFontSize = 13;
 export const TERMINAL_LINE_HEIGHT = 1.35;
 
 /**
+ * Largura de uma célula em fração do tamanho da fonte, só como ponto de partida.
+ *
+ * Vale enquanto o terminal daquela sessão não mediu a sua — 0,6 é o avanço da
+ * JetBrains Mono, a fonte padrão. Serve para a primeira estimativa não nascer
+ * sem largura nenhuma; o valor medido chega no primeiro render e manda.
+ */
+export const TERMINAL_CELL_WIDTH = 0.6;
+
+/**
  * Muda o tamanho da fonte do terminal e ANUNCIA.
  *
  * O anúncio faz parte da troca: os blocos usam esta mesma métrica, e quem
@@ -165,7 +174,6 @@ interface Props {
   sessionId: SessionId;
   visible: boolean;
   focused: boolean;
-  framed: boolean;
   rect: PaneRectStyle | null;
   exited?: boolean;
   /**
@@ -224,6 +232,15 @@ interface Props {
    */
   onLineHeight?: (px: number) => void;
   /**
+   * Largura real de uma célula, em px — a mesma medida, no outro eixo.
+   *
+   * A estimativa de altura de um bloco precisa saber quantos caracteres cabem
+   * na linha, porque o corpo do cartão quebra o texto. Medida pelo mesmo motivo
+   * da altura: o avanço do glifo numa Nerd Font não é o que uma conta a partir
+   * do `font-size` daria.
+   */
+  onCellWidth?: (px: number) => void;
+  /**
    * Segurar as setas em vez de mandá-las ao PTY. Ver `swallowsArrow`.
    *
    * Vale só enquanto o tty entrega linhas: ali a seta não serve ao programa e
@@ -236,7 +253,6 @@ export function TerminalView({
   sessionId,
   visible,
   focused,
-  framed,
   rect,
   exited,
   reattaches,
@@ -258,6 +274,7 @@ export function TerminalView({
   liveUsed,
   onLiveRows,
   onLineHeight,
+  onCellWidth,
   swallowArrows,
 }: Props) {
   const [gotOutput, setGotOutput] = useState(false);
@@ -289,6 +306,8 @@ export function TerminalView({
   onLiveRowsRef.current = onLiveRows;
   const onLineHeightRef = useRef(onLineHeight);
   onLineHeightRef.current = onLineHeight;
+  const onCellWidthRef = useRef(onCellWidth);
+  onCellWidthRef.current = onCellWidth;
   const measureLineHeightRef = useRef<(() => void) | null>(null);
   // O handler de tecla é assinado uma vez no mount: sem ref, ficaria preso no
   // valor do primeiro render e a seta pararia de acompanhar o modo do tty.
@@ -496,16 +515,27 @@ export function TerminalView({
     // tamanho nominal. Mesmo 1.35 nos dois lados, alturas diferentes. O corpo
     // do bloco é a mesma saída que estava aqui e precisa da altura de verdade.
     let lastLineH = 0;
+    let lastCellW = 0;
     const measureLineHeight = () => {
       // `.xterm-screen`, não `.xterm-rows`: com o renderer WebGL as linhas são
       // desenhadas num canvas e a camada de divs fica sem altura. A tela tem
       // sempre `rows * altura da célula`, com ou sem WebGL.
       const screen = term.element?.querySelector(".xterm-screen");
       if (!screen || term.rows <= 0) return;
-      const h = screen.getBoundingClientRect().height / term.rows;
-      if (h <= 0 || Math.abs(h - lastLineH) < 0.05) return;
-      lastLineH = h;
-      onLineHeightRef.current?.(h);
+      const box = screen.getBoundingClientRect();
+      const h = box.height / term.rows;
+      if (h > 0 && Math.abs(h - lastLineH) >= 0.05) {
+        lastLineH = h;
+        onLineHeightRef.current?.(h);
+      }
+      // A largura da célula sai da MESMA caixa: a estimativa de altura de um
+      // bloco depende de quantos caracteres cabem na linha, e o corpo do cartão
+      // usa esta fonte.
+      if (term.cols <= 0) return;
+      const w = box.width / term.cols;
+      if (w <= 0 || Math.abs(w - lastCellW) < 0.05) return;
+      lastCellW = w;
+      onCellWidthRef.current?.(w);
     };
     measureLineHeightRef.current = measureLineHeight;
     const lineHeightMeter = term.onRender(measureLineHeight);
@@ -651,16 +681,6 @@ export function TerminalView({
     });
     return () => cancelAnimationFrame(raf);
   }, [visible, rect]);
-
-  const frameClass = framed ? "border border-tyba-border" : "";
-  const frameStyle: React.CSSProperties =
-    framed && focused
-      ? {
-          borderColor: "color-mix(in srgb, var(--tyba-green) 45%, transparent)",
-          boxShadow:
-            "0 0 0 1px color-mix(in srgb, var(--tyba-green) 25%, transparent), 0 0 14px -2px var(--tyba-glow-green, rgba(124,197,68,.4))",
-        }
-      : {};
 
   // A parte de baixo do terminal que fica escondida, em fração da altura dele.
   // A MESMA fração serve para descer o terminal e para cortá-lo: por isso a
@@ -817,7 +837,10 @@ export function TerminalView({
       <ContextMenuTrigger asChild disabled={!visible}>
         <div
           ref={containerRef}
-          className={`overflow-hidden rounded-[4px] bg-tyba-sunken px-2 ${frameClass}`}
+          // Sem contorno próprio: quem emoldura é o PAINEL (ver `App`). A borda
+          // aqui só cercava a caixa do terminal, que em modo prompt é meia
+          // altura — o painel focado aparecia com moldura na metade de baixo.
+          className="overflow-hidden rounded-[4px] bg-tyba-sunken px-2"
           style={
             visible && rect
               ? {
@@ -836,7 +859,6 @@ export function TerminalView({
                   // dois muda o TAMANHO, que é o que o `ResizeObserver` observa
                   // — por isso o PTY não sabe que algo mudou.
                   ...liveClip,
-                  ...frameStyle,
                 }
               : { display: "none" }
           }
