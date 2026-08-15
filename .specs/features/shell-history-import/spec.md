@@ -144,7 +144,7 @@ O motor de histórico do TYBA está pronto — captura por `OSC 633;E`/`133;D`, 
 
 | Requirement ID | Story | Phase | Status |
 | -------------- | ----- | ----- | ------ |
-| HIMP-01 | P1: Importar zsh, bash e fish | Design | Pending |
+| HIMP-01 | P1: Importar zsh, bash e fish | Tasks | Implementing |
 | HIMP-02 | P1: Importar zsh, bash e fish | Tasks | Implementing |
 | HIMP-03 | P1: Importar zsh, bash e fish | Tasks | Implementing |
 | HIMP-04 | P1: Importar zsh, bash e fish | Tasks | Implementing |
@@ -153,7 +153,7 @@ O motor de histórico do TYBA está pronto — captura por `OSC 633;E`/`133;D`, 
 | HIMP-07 | P1: Importar zsh, bash e fish | Tasks | Implementing |
 | HIMP-08 | P1: Importar zsh, bash e fish | Tasks | Implementing |
 | HIMP-09 | P1: Importar zsh, bash e fish | Tasks | Implementing |
-| HIMP-10 | P1: Importar zsh, bash e fish | Design | Pending |
+| HIMP-10 | P1: Importar zsh, bash e fish | Tasks | Implementing |
 | HIMP-11 | P1: Histórico importado ranqueia junto com o vivo | Tasks | Implementing |
 | HIMP-12 | P1: Histórico importado ranqueia junto com o vivo | Tasks | Implementing |
 | HIMP-13 | P1: Histórico importado ranqueia junto com o vivo | Design | Pending |

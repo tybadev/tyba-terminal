@@ -376,7 +376,7 @@ T13 → T14
 
 ---
 
-### T10: Comandos Tauri e fronteira de agente
+### T10: Comandos Tauri e fronteira de agente ✅
 
 **What**: `scan_shell_history_sources` e `import_shell_history` registrados, com evento de progresso, e o teste de fronteira que trava o import fora do alcance de sessão de agente.
 **Where**: `src-tauri/src/lib.rs`
@@ -391,10 +391,11 @@ T13 → T14
 
 **Done when**:
 
-- [ ] Teste de fronteira: a superfície alcançável por sessão de agente (`HookAction`) não expõe import
-- [ ] Progresso emitido por evento, não por retorno
-- [ ] Gate check passa: `cd src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test`
-- [ ] Contagem de testes: 2 novos
+- [x] Teste de fronteira em `hook_ipc/framing.rs`: o canal do agente responde apenas `allow`, `deny` ou `ack`. A fronteira é **de tipo** — `HookAction` é enum fechado —, e o teste é a tripwire: quem adicionar variante precisa mexer nele, e aí a mudança aparece na revisão
+- [x] Progresso emitido por evento (`history:import-progress`), não pelo retorno
+- [x] Nenhum parâmetro de caminho vem do chamador: as fontes saem do `home_dir()` e do env do próprio core
+- [x] Gate check passa: fmt, clippy `-D warnings`, 1222 testes Rust
+- [x] Contagem de testes: 1 novo (o de fronteira). O segundo previsto não existe: não há como um teste provar que um comando Tauri **não** é alcançável de um processo que não fala Tauri — o que dá para travar é o conjunto de respostas do único canal que existe
 
 **Tests**: unit
 **Gate**: build

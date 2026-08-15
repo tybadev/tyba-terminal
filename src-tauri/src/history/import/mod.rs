@@ -23,6 +23,10 @@ use crate::session::store::Store;
 /// inteiro, e o que já commitou sobrevive a um fechamento no meio do import.
 const BATCH: usize = 1_000;
 
+/// Progresso do import para o webview. Sai por evento, não pelo retorno: o
+/// retorno só chega quando tudo acabou.
+pub const EVENT_PROGRESS: &str = "history:import-progress";
+
 /// Uma entrada lida de arquivo de histórico, antes de virar linha no banco.
 ///
 /// `exit_code` não aparece: nenhuma das fontes de texto grava código, e nulo é
@@ -94,6 +98,15 @@ pub struct Progress {
 pub enum ImportError {
     AlreadyRunning,
     Store(String),
+}
+
+impl std::fmt::Display for ImportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ImportError::AlreadyRunning => write!(f, "history_import_already_running"),
+            ImportError::Store(error) => write!(f, "{error}"),
+        }
+    }
 }
 
 static RUNNING: AtomicBool = AtomicBool::new(false);

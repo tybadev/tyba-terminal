@@ -4183,6 +4183,43 @@ struct HistoryHit {
     failed: bool,
 }
 
+/// As fontes de histórico que existem no disco, com a contagem de cada uma.
+///
+/// Só conta: nada entra no banco antes de o usuário mandar importar. É o que o
+/// convite de primeiro uso mostra.
+#[tauri::command]
+fn scan_shell_history_sources() -> Result<Vec<history::import::source::SourceScan>, String> {
+    let Some(home) = ssh::home_dir() else {
+        return Ok(Vec::new());
+    };
+    let sources = history::import::source::resolve(&home, &|name| std::env::var(name).ok());
+    Ok(sources
+        .iter()
+        .filter_map(|source| history::import::source::scan(source).ok())
+        .collect())
+}
+
+/// Importa o histórico do shell para dentro do `command_history`.
+///
+/// Superfície **humana**: nenhum hook, tool ou comando de sessão de agente chega
+/// aqui. O único canal que o agente tem com o core é o socket de hook, e a
+/// resposta dele é uma decisão (`HookAction`), nunca uma ação como esta.
+#[tauri::command]
+fn import_shell_history(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<history::import::ImportReport, String> {
+    let Some(home) = ssh::home_dir() else {
+        return Err("history_import_no_home".into());
+    };
+    let sources = history::import::source::resolve(&home, &|name| std::env::var(name).ok());
+    let report = history::import::run(&state.store, &sources, &mut |progress| {
+        let _ = app.emit(history::import::EVENT_PROGRESS, progress);
+    })
+    .map_err(|error| error.to_string())?;
+    Ok(report)
+}
+
 /// Fuzzy + frecência no core: o webview recebe a lista já ordenada (princípio #1).
 #[tauri::command]
 fn search_command_history(
@@ -4867,6 +4904,8 @@ pub fn run() {
             session_line_echo,
             session_blocks,
             search_command_history,
+            scan_shell_history_sources,
+            import_shell_history,
             suggest_commands,
             complete_path,
             complete_argument,
