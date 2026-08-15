@@ -1,5 +1,6 @@
 import type { ITheme } from "@xterm/xterm";
 
+import { terminalTheme } from "./lib/terminalTheme";
 import {
   getThemeState,
   onThemeChanged,
@@ -121,32 +122,30 @@ function computeVars(theme: Theme): Record<string, string> {
   return vars;
 }
 
-function toXtermTheme(palette: TerminalPalette): ITheme {
-  const [
-    black, red, green, yellow, blue, magenta, cyan, white,
-    brightBlack, brightRed, brightGreen, brightYellow,
-    brightBlue, brightMagenta, brightCyan, brightWhite,
-  ] = palette.ansi;
-  return {
-    background: palette.background,
-    foreground: palette.foreground,
-    cursor: palette.cursor,
-    cursorAccent: palette.cursorAccent,
-    selectionBackground: palette.selectionBackground,
-    black, red, green, yellow, blue, magenta, cyan, white,
-    brightBlack, brightRed, brightGreen, brightYellow,
-    brightBlue, brightMagenta, brightCyan, brightWhite,
-  };
-}
-
 function terminalPalette(): TerminalPalette {
   const theme = activeTheme();
   if (theme) return theme.terminal;
   return effectiveBase() === "light" ? FALLBACK_LIGHT : FALLBACK_DARK;
 }
 
+/**
+ * O fundo da área de terminal, do token de UI.
+ *
+ * Lido do CSS computado porque os temas builtin moram em `styles.css` (por
+ * `data-theme`) e os importados entram como variável no `:root` — este é o
+ * único ponto onde os dois caminhos já se encontraram. A regra de quem vence
+ * está em `lib/terminalTheme`.
+ */
+function uiSunken(): string | null {
+  return (
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--tyba-sunken")
+      .trim() || null
+  );
+}
+
 export function getTerminalTheme(): ITheme {
-  return toXtermTheme(terminalPalette());
+  return terminalTheme(terminalPalette(), uiSunken());
 }
 
 /**

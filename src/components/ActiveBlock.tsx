@@ -69,7 +69,7 @@ export function ActiveBlockHeader({
   return (
     <div
       ref={ref}
-      className="z-10 flex items-center gap-2 rounded-t-[5px] border border-b-0 border-tyba-border bg-tyba-sunken px-2.5 py-1"
+      className="z-10 flex items-center gap-2 overflow-hidden rounded-t-[5px] border border-b-0 border-tyba-border bg-tyba-sunken px-2.5 py-1"
       style={{
         position: "absolute",
         left: `calc(${rect.left}% + ${LIVE_INSET_X_PX}px)`,
@@ -78,10 +78,22 @@ export function ActiveBlockHeader({
         transform: "translateY(-100%)",
       }}
     >
+      {/* O filete de luz que atravessa a tampa do cartão enquanto o comando
+          roda. É a peça `.tyba-flow-line` do design system — "o que está
+          executando" —, que estava no CSS sem nenhum uso.
+
+          Na BORDA, e não no texto: o efeito serve para anunciar que há algo em
+          curso, e animar o nome do comando faria mexer justamente o que se quer
+          ler. Ele para sozinho em `prefers-reduced-motion`. */}
+      <span
+        aria-hidden
+        className="tyba-flow-line tyba-flow-line--live tyba-flow-line--thick pointer-events-none absolute inset-x-0 top-0"
+      />
       <span className="shrink-0 text-tyba-green">❯</span>
       <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-tyba-text">
         {command}
       </span>
+      {/* O ponto fica: o filete diz "algo corre", o ponto diz "é este bloco". */}
       <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-tyba-green" />
     </div>
   );

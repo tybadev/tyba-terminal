@@ -9,6 +9,7 @@ import {
   MarkdownLogo,
 } from "@phosphor-icons/react";
 
+import { bodyLines, columnsFor } from "../lib/blockMetrics";
 import {
   blockMarkdown,
   blockOutput,
@@ -259,6 +260,15 @@ function BlockHeader({
 const BODY_LIMIT = 200;
 
 /**
+ * Quanto da largura do scroller NÃO é texto do corpo, em px.
+ *
+ * `px-2` do scroller (8+8), a borda do cartão (1+1) e o `px-2.5` do corpo
+ * (10+10). Entra na conta de quantas colunas cabem numa linha — errar aqui
+ * volta como estimativa curta, que é cartão em cima de cartão.
+ */
+const BODY_INSET_X_PX = 38;
+
+/**
  * Barra à esquerda do cartão marcado.
  *
  * `box-shadow` e não borda: borda muda a altura medida, e altura que muda faz o
@@ -366,6 +376,56 @@ function BlockCard({
   );
 }
 
+/**
+ * O começo da pilha: onde e quando a sessão abriu.
+ *
+ * Um painel de shell recém-aberto era um vazio absoluto, e como a lista só
+ * existia com pelo menos um bloco, o que aparecia ali era a caixa do xterm — que
+ * ocupa meia altura do painel. Daí o "o split abre já menor": o painel novo
+ * nunca abriu menor, ele só não tinha nada cobrindo a outra metade.
+ *
+ * Fica FORA da lista virtualizada, como primeiro nó do conteúdo: assim ele não
+ * entra em índice, em seleção nem na contagem de marcados, e não há um bloco
+ * falso que a cópia possa alcançar. Rola junto porque está dentro do scroller.
+ */
+function SessionOpened({
+  cwd,
+  at,
+  fontSizePx,
+}: {
+  cwd: string | null;
+  /** Quando a sessão abriu, em ms. */
+  at: number | null;
+  fontSizePx: number;
+}) {
+  const { t } = useTranslation();
+  const where = shortPath(cwd);
+  const when =
+    at === null || !Number.isFinite(at)
+      ? null
+      : new Date(at).toLocaleTimeString(undefined, {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+  return (
+    <div
+      // Sem borda cheia: é uma marca de começo, não um bloco. Cartão de verdade
+      // aqui competiria com o primeiro comando de fato.
+      className="mb-2 flex items-center gap-2 px-2.5 py-1 font-mono text-tyba-text-faint"
+      style={{ fontSize: `${Math.max(10, fontSizePx - 2)}px` }}
+    >
+      <span className="size-1 shrink-0 rounded-full bg-tyba-text-faint/60" />
+      <span className="shrink-0">{t("blockSessionOpened")}</span>
+      {where && (
+        <span title={cwd ?? undefined} className="min-w-0 truncate">
+          · {where}
+        </span>
+      )}
+      {when && <span className="shrink-0 tabular-nums">· {when}</span>}
+    </div>
+  );
+}
+
 /** Métricas do cartão, para a estimativa nascer perto do valor medido. */
 /// 13px × 1.35, a mesma métrica do xterm.
 
@@ -398,7 +458,6 @@ const STICK_SLACK_PX = 4;
 interface Props {
   blocks: Block[];
   rect: PaneRectStyle;
-  framed: boolean;
   /**
    * Devolve o comando para a linha, sem executar. É o mesmo caminho do
    * histórico e do snippet — com a linha do TYBA no ar o terminal está
@@ -448,15 +507,30 @@ interface Props {
    * altura, ou o texto "pula" ao virar cartão.
    */
   lineHeightPx: number;
+  /**
+   * Largura real de uma célula do terminal, em px.
+   *
+   * A mesma medida no outro eixo, e ela entra na ESTIMATIVA: o corpo do cartão
+   * quebra linha, então uma linha lógica pode ocupar três. Ver `blockMetrics`.
+   */
+  cellWidthPx: number;
+  /**
+   * Onde e quando a sessão abriu — o cartão-zero, no começo da pilha.
+   *
+   * Ausente não é caso de erro: sessão sem cwd conhecido ainda merece a marca de
+   * início.
+   */
+  opened?: { cwd: string | null; atMs: number | null };
 }
 
 export function BlockList({
   blocks,
   rect,
-  framed,
   bottomInset = 0,
   fontSizePx,
   lineHeightPx,
+  cellWidthPx,
+  opened,
   onInject,
   onActivate,
   marked,
@@ -470,6 +544,25 @@ export function BlockList({
   // saída antiga junto, senão o bloco congela a paleta de quando foi capturado.
   const [, repaint] = useReducer((n: number) => n + 1, 0);
   useEffect(() => onTerminalThemeChange(() => repaint()), []);
+
+  // A largura do scroller, medida.
+  //
+  // Entra em duas contas: quantos caracteres cabem numa linha do corpo — sem
+  // isso a estimativa ignora a quebra — e o descarte das alturas já medidas,
+  // logo abaixo. Medida, e não derivada do `rect` em %: o retângulo é uma
+  // fração do painel, e a mesma fração dá larguras diferentes conforme a
+  // janela e o painel lateral.
+  const [widthPx, setWidthPx] = useState(0);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setWidthPx(el.clientWidth);
+    const ro = new ResizeObserver(() => setWidthPx(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const cols = columnsFor(widthPx, cellWidthPx, BODY_INSET_X_PX);
+
   // A estimativa sai do número de linhas, não de um número fixo: com 80px
   // chutados, o primeiro layout põe o bloco no lugar errado e ele PULA quando a
   // medição real chega — que é o "aparece com delay e renderiza".
@@ -480,7 +573,9 @@ export function BlockList({
     // Cartão de tela cheia não tem corpo, mas tem a linha do MOTIVO. Sem ela na
     // conta, todo bloco de `vim`/`htop` era estimado curto demais.
     const reason = block.altScreen ? ALT_SCREEN_PX : 0;
-    const body = Math.min(block.lines.length, BODY_LIMIT) * line;
+    // Linhas VISUAIS, não lógicas: o corpo desenha com `whitespace-pre-wrap`, e
+    // num painel estreito uma linha de saída ocupa três. Ver `blockMetrics`.
+    const body = bodyLines(block.lines, cols, BODY_LIMIT) * line;
     const footer = block.truncated > 0 ? line : 0;
     return HEADER_PX + reason + body + footer + BLOCK_GAP_PX;
   };
@@ -507,9 +602,15 @@ export function BlockList({
   // O caminho normal passa por aqui sempre, não só quando o dono mexe na fonte:
   // a altura de linha nasce estimada da fonte e vira o valor medido do
   // `.xterm-screen` assim que o terminal desenha.
+  //
+  // LARGURA conta pelo mesmo motivo, e faltava: o corpo quebra linha, então um
+  // painel mais estreito deixa TODO cartão mais alto. Sem este descarte, os
+  // cartões fora da janela guardam a altura de antes do split e são posicionados
+  // uns por cima dos outros — o texto embaralhado que aparece ao dividir a tela.
+  // Só quem está montado é remedido sozinho; o resto depende disto.
   useEffect(() => {
     virtualizer.measure();
-  }, [fontSizePx, lineHeightPx, virtualizer]);
+  }, [fontSizePx, lineHeightPx, cellWidthPx, widthPx, virtualizer]);
 
   const last = blocks.length - 1;
   useEffect(() => {
@@ -627,15 +728,24 @@ export function BlockList({
         // ancestral e TRAVA nele até a rolagem terminar — daí "rolei tudo para
         // cima e agora não desce mais, só clicando na barra". Conter o encadea-
         // mento mantém o gesto nesta lista.
-        className={`pointer-events-auto h-full overflow-y-auto overscroll-contain rounded-[4px] bg-tyba-sunken px-2 pb-3 pt-2 ${
-          framed ? "border border-tyba-border" : ""
-        }`}
+        // Sem contorno próprio: quem emoldura é o PAINEL, uma camada acima de
+        // tudo (ver `App`). Lista e terminal desenhando cada um a sua borda
+        // punham duas caixas dentro do mesmo painel, e a de baixo só existia na
+        // metade que o terminal ocupa.
+        className="pointer-events-auto h-full overflow-y-auto overscroll-contain rounded-[4px] bg-tyba-sunken px-2 pb-3 pt-2"
       >
         {/* Ancorado embaixo, como todo terminal: os blocos crescem de baixo
             para cima e o último fica colado na linha de comando. Ancorado em
             cima, poucos blocos deixam um vazio enorme logo acima do input —
             que é exatamente para onde o olho vai. */}
         <div className="flex min-h-full flex-col justify-end">
+          {opened && (
+            <SessionOpened
+              cwd={opened.cwd}
+              at={opened.atMs}
+              fontSizePx={fontSizePx}
+            />
+          )}
           <div
             style={{ height: virtualizer.getTotalSize(), position: "relative" }}
           >

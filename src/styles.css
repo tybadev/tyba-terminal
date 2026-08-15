@@ -998,6 +998,13 @@ samp {
   background-size: 200% 100%;
   animation: tyba-flow 3s linear infinite;
 }
+/* Modificador de espessura, e não uma utilitária do Tailwind: `.tyba-flow-line`
+   fixa `height` fora de camada, e utilitária de mesma especificidade em @layer
+   perde a disputa — o fio continuaria com 1px sem ninguém entender por quê. */
+.tyba-flow-line--thick {
+  height: 2px;
+  border-radius: 2px;
+}
 @keyframes tyba-flow {
   from { background-position: 0% 0; }
   to { background-position: -200% 0; }
