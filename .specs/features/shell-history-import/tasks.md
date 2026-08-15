@@ -230,7 +230,7 @@ T13 → T14
 
 ---
 
-### T5: Parser de bash
+### T5: Parser de bash ✅
 
 **What**: parser de `~/.bash_history` com e sem linha `#<epoch>` de `HISTTIMEFORMAT`, e continuação por `\`.
 **Where**: `src-tauri/src/history/import/parser/bash.rs`
@@ -245,10 +245,11 @@ T13 → T14
 
 **Done when**:
 
-- [ ] Testes com fixture sintética: sem timestamp, com `#<epoch>`, continuação, arquivo vazio
-- [ ] Ordem do arquivo preservada na data sintetizada
-- [ ] Gate check passa: `cd src-tauri && cargo test`
-- [ ] Contagem de testes: 5 novos
+- [x] Testes com fixture sintética: sem timestamp, com `#<epoch>`, arquivo misto, comentário digitado, arquivo vazio, UTF-8 inválido
+- [x] Ordem do arquivo preservada na data sintetizada
+- [x] **Corrigido contra a medição**: o bash **não** usa continuação por `\` — com `cmdhist` (o padrão) ele junta o multilinha numa linha só trocando quebra por `;`. Tratar a barra final como continuação corromperia comando que legitimamente termina em barra, e há teste fixando isso. Também não metafica, ao contrário do zsh
+- [x] Gate check passa: `cd src-tauri && cargo test` — 1195 passaram
+- [x] Contagem de testes: 7 novos
 
 **Tests**: unit
 **Gate**: quick
