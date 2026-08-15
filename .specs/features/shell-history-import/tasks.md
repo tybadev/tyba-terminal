@@ -172,6 +172,35 @@ T13 → T14
 
 ---
 
+### T3b: Janela recente para a lista sem busca ✅
+
+**What**: a lista que abre a paleta (query vazia) agrega só as `HISTORY_RECENT_ROWS` linhas mais recentes; a busca com query continua olhando o histórico inteiro.
+**Where**: `src-tauri/src/session/store.rs`
+**Depends on**: T3
+**Reuses**: a consulta de candidatos de T3
+**Requirement**: HIMP-12
+
+**Nasceu da medição do T3**: com o teto de 100 000 a query vazia passou a custar 48 ms, e ela roda sem debounce ao abrir a paleta.
+
+**Tools**:
+
+- MCP: NONE
+- Skill: NONE
+
+**Done when**:
+
+- [x] Teste: a lista sem busca fica na janela; a busca com query alcança o que está fora dela
+- [x] Medição: query vazia 48 → 13 ms; busca com filtro 13,6 → 21,7 ms (a subconsulta materializa antes de agrupar), bem abaixo do debounce de 120 ms
+- [x] Gate check passa: fmt, clippy `-D warnings`, 1181 testes Rust
+- [x] Contagem de testes: 1 novo (nenhum apagado)
+
+**Tests**: unit
+**Gate**: build
+
+**Commit**: `perf(history): lista sem busca agrega só a janela recente`
+
+---
+
 ### T4: Parser de zsh
 
 **What**: parser de `~/.zsh_history` cobrindo formato estendido (`: <epoch>:<dur>;<cmd>`), formato simples e continuação por `\`.

@@ -229,6 +229,11 @@ const BLOCK_VERSION: i64 = 1;
 /// roda sobre um conjunto limitado, não sobre a tabela inteira.
 const HISTORY_CANDIDATES: i64 = 2_000;
 
+/// Quantas linhas a lista **sem busca** agrega. Ela abre a paleta e roda sem
+/// debounce, então não pode custar a tabela inteira: com 100 000 linhas isso é
+/// 48 ms contra 10 ms sobre a janela. A busca com query ignora este limite.
+const HISTORY_RECENT_ROWS: i64 = 20_000;
+
 /// Corta o histórico no teto, mantendo as entradas **mais recentes por data**.
 ///
 /// O corte não pode ser por `id`: entrada importada entra com `id` novo e data
@@ -259,6 +264,70 @@ fn evict_command_history(conn: &Connection, cap: i64) -> Result<(), StoreError> 
         params![cap],
     )?;
     Ok(())
+}
+
+/// Candidatos agregados por comando, de dentro de uma conexão já travada.
+///
+/// `recent_rows` limita **só a lista sem busca** — o "últimos comandos" que abre
+/// a paleta. Agregar a tabela inteira para isso custa 48 ms com 100 000 linhas,
+/// contra 10 ms sobre a janela; e o que sai da janela é justamente o que
+/// ninguém veria numa lista de recentes. Com busca o limite não se aplica: ali o
+/// ponto é alcançar o comando antigo, e o filtro em SQL já corta o volume.
+fn history_candidates_in(
+    conn: &Connection,
+    query: Option<&str>,
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
+    recent_rows: i64,
+) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
+    let repo_prefix = repo_root.map(|root| format!("{}/", root.trim_end_matches('/')));
+    let mut stmt = conn.prepare(
+        "SELECT command,
+                MAX(started_at_ms),
+                COUNT(*),
+                SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN exit_code IS NOT NULL THEN 1 ELSE 0 END),
+                MAX(CASE WHEN cwd IS NOT NULL AND cwd = ?1 THEN 1 ELSE 0 END),
+                MAX(CASE WHEN ?2 IS NOT NULL AND cwd IS NOT NULL
+                          AND (cwd = ?3 OR cwd LIKE ?2 ESCAPE '\\')
+                         THEN 1 ELSE 0 END),
+                MAX(cwd)
+         FROM (SELECT command, cwd, exit_code, started_at_ms
+                 FROM command_history
+                WHERE ?5 IS NULL OR command LIKE ?5 ESCAPE '\\'
+                ORDER BY started_at_ms DESC
+                LIMIT ?6)
+         GROUP BY command
+         ORDER BY MAX(started_at_ms) DESC
+         LIMIT ?4",
+    )?;
+    let like = repo_prefix
+        .as_deref()
+        .map(|prefix| format!("{}%", escape_like(prefix)));
+    let matching = query
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+        .map(subsequence_like);
+    // `-1` é "sem limite" no SQLite.
+    let scan = if matching.is_some() { -1 } else { recent_rows };
+    let rows = stmt
+        .query_map(
+            params![cwd, like, repo_root, HISTORY_CANDIDATES, matching, scan],
+            |row| {
+                Ok(crate::history::HistoryCandidate {
+                    command: row.get(0)?,
+                    last_used_at_ms: row.get(1)?,
+                    uses: row.get::<_, i64>(2)?.max(0) as u32,
+                    successes: row.get::<_, i64>(3)?.max(0) as u32,
+                    known_exit_codes: row.get::<_, i64>(4)?.max(0) as u32,
+                    in_cwd: row.get::<_, i64>(5)? != 0,
+                    in_repo: row.get::<_, i64>(6)? != 0,
+                    cwd: row.get(7)?,
+                })
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 /// Padrão de LIKE que aceita o mesmo que o fuzzy: os caracteres da busca em
@@ -858,50 +927,13 @@ impl Store {
         cwd: Option<&str>,
         repo_root: Option<&str>,
     ) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
-        let repo_prefix = repo_root.map(|root| format!("{}/", root.trim_end_matches('/')));
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT command,
-                    MAX(started_at_ms),
-                    COUNT(*),
-                    SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN exit_code IS NOT NULL THEN 1 ELSE 0 END),
-                    MAX(CASE WHEN cwd IS NOT NULL AND cwd = ?1 THEN 1 ELSE 0 END),
-                    MAX(CASE WHEN ?2 IS NOT NULL AND cwd IS NOT NULL
-                              AND (cwd = ?3 OR cwd LIKE ?2 ESCAPE '\\')
-                             THEN 1 ELSE 0 END),
-                    MAX(cwd)
-             FROM command_history
-             WHERE ?5 IS NULL OR command LIKE ?5 ESCAPE '\\'
-             GROUP BY command
-             ORDER BY MAX(started_at_ms) DESC
-             LIMIT ?4",
-        )?;
-        let like = repo_prefix
-            .as_deref()
-            .map(|prefix| format!("{}%", escape_like(prefix)));
-        let matching = query
-            .map(str::trim)
-            .filter(|q| !q.is_empty())
-            .map(subsequence_like);
-        let rows = stmt
-            .query_map(
-                params![cwd, like, repo_root, HISTORY_CANDIDATES, matching],
-                |row| {
-                    Ok(crate::history::HistoryCandidate {
-                        command: row.get(0)?,
-                        last_used_at_ms: row.get(1)?,
-                        uses: row.get::<_, i64>(2)?.max(0) as u32,
-                        successes: row.get::<_, i64>(3)?.max(0) as u32,
-                        known_exit_codes: row.get::<_, i64>(4)?.max(0) as u32,
-                        in_cwd: row.get::<_, i64>(5)? != 0,
-                        in_repo: row.get::<_, i64>(6)? != 0,
-                        cwd: row.get(7)?,
-                    })
-                },
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
+        history_candidates_in(
+            &self.conn.lock(),
+            query,
+            cwd,
+            repo_root,
+            HISTORY_RECENT_ROWS,
+        )
     }
 
     /// Comandos distintos que começam com o prefixo, mais recentes primeiro.
@@ -2283,6 +2315,26 @@ mod tests {
             .history_candidates(Some("deploy-legacy"), None, None)
             .unwrap();
         assert!(com_query.iter().any(|c| c.command == "deploy-legacy"));
+    }
+
+    /// A lista sem busca agrega só a janela recente; a busca com query, não.
+    #[test]
+    fn the_recent_window_bounds_the_list_without_a_query() {
+        let store = Store::open_in_memory().unwrap();
+        for at in 1..=3 {
+            store
+                .insert_command(&command(&format!("cmd{at}"), None, at))
+                .unwrap();
+        }
+        let conn = store.conn.lock();
+
+        let recentes = history_candidates_in(&conn, None, None, None, 2).unwrap();
+        let nomes: Vec<&str> = recentes.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(nomes, vec!["cmd3", "cmd2"]);
+
+        let buscado = history_candidates_in(&conn, Some("cmd1"), None, None, 2).unwrap();
+        assert_eq!(buscado.len(), 1);
+        assert_eq!(buscado[0].command, "cmd1");
     }
 
     /// O filtro roda antes do fuzzy, então precisa aceitar o que o fuzzy aceita:
