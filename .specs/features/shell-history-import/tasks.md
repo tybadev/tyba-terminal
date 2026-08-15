@@ -258,7 +258,7 @@ T13 → T14
 
 ---
 
-### T6: Parser de fish
+### T6: Parser de fish ✅
 
 **What**: parser do `fish_history`, precedido da verificação do formato na documentação oficial do fish.
 **Where**: `src-tauri/src/history/import/parser/fish.rs`
@@ -273,11 +273,11 @@ T13 → T14
 
 **Done when**:
 
-- [ ] Formato conferido na doc do fish **antes** de escrever o parser; o achado vai no comentário do módulo (escape de newline dentro de `cmd:` é o ponto)
-- [ ] Fixture sintética derivada da doc, nunca de arquivo real
-- [ ] Testes: registro simples, comando multilinha, `when` ausente, arquivo vazio
-- [ ] Gate check passa: `cd src-tauri && cargo test`
-- [ ] Contagem de testes: 5 novos
+- [x] Formato conferido contra o fish 4.8.1 instalado, melhor que a doc: multilinha vem com `\n` literal, barra vira `\\`, UTF-8 é cru e `:` dentro do comando é válido — o que derrubaria um parser YAML estrito. O achado está no comentário do módulo
+- [x] Fixture sintética escrita à mão a partir do que foi medido, com `XDG_DATA_HOME` e sessão de histórico dedicados na sondagem — o histórico real do usuário nunca foi lido
+- [x] Testes: registro simples, multilinha, barra escapada, dois pontos no comando, `when` ausente, bloco `paths`, UTF-8 inválido, arquivo vazio
+- [x] Gate check passa (fim de fase, gate de build): fmt, clippy `-D warnings`, 1203 testes Rust
+- [x] Contagem de testes: 8 novos. Um deles pegou bug real antes do commit: o `when` do fish estava indo em segundos para uma coluna em milissegundos
 
 **Tests**: unit
 **Gate**: quick

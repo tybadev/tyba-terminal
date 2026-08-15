@@ -145,7 +145,7 @@ O motor de histórico do TYBA está pronto — captura por `OSC 633;E`/`133;D`, 
 | Requirement ID | Story | Phase | Status |
 | -------------- | ----- | ----- | ------ |
 | HIMP-01 | P1: Importar zsh, bash e fish | Design | Pending |
-| HIMP-02 | P1: Importar zsh, bash e fish | Design | Pending |
+| HIMP-02 | P1: Importar zsh, bash e fish | Tasks | Implementing |
 | HIMP-03 | P1: Importar zsh, bash e fish | Design | Pending |
 | HIMP-04 | P1: Importar zsh, bash e fish | Design | Pending |
 | HIMP-05 | P1: Importar zsh, bash e fish | Design | Pending |

@@ -4,4 +4,5 @@
 //! testáveis com fixture sintética, sem disco e sem shell instalado.
 
 pub mod bash;
+pub mod fish;
 pub mod zsh;
