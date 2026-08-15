@@ -344,7 +344,7 @@ T13 → T14
 
 ---
 
-### T9: Runner do import
+### T9: Runner do import ✅
 
 **What**: orquestra leitura → parse → `should_record` + `redact` → lote de 1 000, um import por vez, com relatório por fonte.
 **Where**: `src-tauri/src/history/import/mod.rs`
@@ -359,14 +359,15 @@ T13 → T14
 
 **Done when**:
 
-- [ ] Teste: fixture com `export TOKEN=sk-…` entra redigida — o segredo não aparece em texto claro no banco
-- [ ] Teste: comando iniciado por espaço não é gravado
-- [ ] Teste: fonte ilegível é pulada com motivo e as demais seguem
-- [ ] Teste: segundo import concorrente é recusado
-- [ ] Teste: relatório traz lidas, importadas e descartadas por fonte
-- [ ] Texto de comando não aparece em log
-- [ ] Gate check passa: `cd src-tauri && cargo test`
-- [ ] Contagem de testes: 6 novos
+- [x] Teste: fixture com `export TOKEN=sk-…` entra redigida — o segredo não aparece em texto claro no banco
+- [x] Teste: comando iniciado por espaço não é gravado
+- [x] Teste: fonte ilegível é pulada com motivo e as demais seguem
+- [x] Teste: segundo import concorrente é recusado
+- [x] Teste: relatório traz lidas, importadas e descartadas por fonte
+- [x] Teste: arquivo maior que um lote entra inteiro; reimportar não duplica
+- [x] Texto de comando não aparece em log — **garantia estrutural, não asserção**: o módulo não tem nenhuma chamada de log, e `SourceOutcome` não tem campo de comando. Não há como um teste afirmar a ausência de log; o que dá para fixar é a forma do que atravessa o IPC, e ela não carrega comando
+- [x] Gate check passa: `cd src-tauri && cargo test` — 1221 passaram, mais clippy `-D warnings`
+- [x] Contagem de testes: 7 novos. Os testes precisaram de trava própria: o guarda de "um import por vez" é do processo e o `cargo test` roda em paralelo dentro dele — sem serializar, um teste recusava o import do outro
 
 **Tests**: unit
 **Gate**: quick
