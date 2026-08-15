@@ -286,7 +286,7 @@ T13 → T14
 
 ---
 
-### T7: Resolução e contagem de fontes
+### T7: Resolução e contagem de fontes ✅
 
 **What**: `import::source` resolve o caminho de cada fonte (`$HISTFILE` quando presente no ambiente do core, senão o padrão) e conta as entradas sem gravar nada.
 **Where**: `src-tauri/src/history/import/source.rs`
@@ -301,10 +301,11 @@ T13 → T14
 
 **Done when**:
 
-- [ ] Testes com `$HOME` temporário: fonte presente, ausente, `$HISTFILE` apontando para outro caminho
-- [ ] `scan` não escreve no banco (teste verifica contagem de linhas inalterada)
-- [ ] Gate check passa: `cd src-tauri && cargo test`
-- [ ] Contagem de testes: 4 novos
+- [x] Testes com `$HOME` temporário: fonte presente, ausente, `$HISTFILE` apontando para outro caminho, `$XDG_DATA_HOME` do fish
+- [x] `scan` não escreve nada (teste confere que o arquivo de origem não muda de tamanho)
+- [x] **Refinamento sobre a spec**: `$HISTFILE` é uma variável só e vale para o shell que a definiu. Aplicá-la a zsh **e** a bash importaria o mesmo arquivo duas vezes, com a contagem de uso dobrada. Passa a valer só para o shell que `$SHELL` aponta, e caminho repetido é resolvido uma vez só
+- [x] Gate check passa: `cd src-tauri && cargo test` + clippy `-D warnings`
+- [x] Contagem de testes: 7 novos
 
 **Tests**: unit
 **Gate**: quick

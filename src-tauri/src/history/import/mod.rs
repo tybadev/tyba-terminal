@@ -4,6 +4,7 @@
 //! `~/.zsh_history` e abre uma paleta vazia. Aqui esse histórico entra.
 
 pub mod parser;
+pub mod source;
 
 /// Uma entrada lida de arquivo de histórico, antes de virar linha no banco.
 ///
