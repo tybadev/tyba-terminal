@@ -9,6 +9,8 @@
 //! o registro é descartado — perder uma linha de histórico é melhor do que
 //! segurar o flush de output do terminal.
 
+pub mod import;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, OnceLock};

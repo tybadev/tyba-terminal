@@ -201,10 +201,10 @@ T13 → T14
 
 ---
 
-### T4: Parser de zsh
+### T4: Parser de zsh ✅
 
 **What**: parser de `~/.zsh_history` cobrindo formato estendido (`: <epoch>:<dur>;<cmd>`), formato simples e continuação por `\`.
-**Where**: `src-tauri/src/history/import/parser/zsh.rs`
+**Where**: `src-tauri/src/history/import/parser/zsh.rs` (mais o `mod.rs` de `import` e de `parser`, que a árvore de módulos exige)
 **Depends on**: T3
 **Reuses**: —
 **Requirement**: HIMP-02
@@ -216,11 +216,12 @@ T13 → T14
 
 **Done when**:
 
-- [ ] Itera sobre `BufRead`, sem `read_to_string`
-- [ ] Testes com fixture **sintética**: estendido, simples, continuação por `\`, linha com UTF-8 inválido, arquivo vazio
-- [ ] Entrada sem timestamp recebe data sintetizada para trás a partir do `mtime`, preservando a ordem
-- [ ] Gate check passa: `cd src-tauri && cargo test`
-- [ ] Contagem de testes: 6 novos
+- [x] Itera sobre `BufRead`, sem `read_to_string`
+- [x] Testes com fixture **sintética**: estendido, simples, continuação por `\`, linha com UTF-8 inválido, arquivo vazio
+- [x] Entrada sem timestamp recebe data sintetizada para trás a partir do `mtime`, preservando a ordem
+- [x] **Achado na verificação do formato**: o zsh metafica bytes ≥ 0x80 como `0x83, b ^ 0x20`. Medido contra o zsh real, com arquivo gerado para isso. Sem desfazer, `echo olá ç` não decodifica em UTF-8 e some no descarte — o design não previa
+- [x] Gate check passa: `cd src-tauri && cargo test` — 1188 passaram
+- [x] Contagem de testes: 7 novos (um a mais que o previsto: `count` e `parse` precisam concordar sobre o que é entrada, ou a data sintetizada sai deslocada)
 
 **Tests**: unit
 **Gate**: quick
