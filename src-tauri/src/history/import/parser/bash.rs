@@ -140,11 +140,16 @@ mod tests {
     }
 
     /// Comentário digitado no prompt vai para o histórico como comando.
+    ///
+    /// O caso do número negativo é o que exige a checagem de dígitos: sozinho,
+    /// o `parse::<i64>` aceitaria `-123` e transformaria o comentário em data.
     #[test]
     fn a_comment_the_user_typed_is_a_command_not_a_timestamp() {
-        let (found, _) = entries(b"# nota para depois\n", 0);
-        assert_eq!(found.len(), 1);
+        let (found, _) = entries(b"# nota para depois\n#-123 nao e data\n#-123\n", 0);
+        assert_eq!(found.len(), 3);
         assert_eq!(found[0].command, "# nota para depois");
+        assert_eq!(found[1].command, "#-123 nao e data");
+        assert_eq!(found[2].command, "#-123");
     }
 
     #[test]

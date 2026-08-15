@@ -144,18 +144,18 @@ O motor de histórico do TYBA está pronto — captura por `OSC 633;E`/`133;D`, 
 
 | Requirement ID | Story | Phase | Status |
 | -------------- | ----- | ----- | ------ |
-| HIMP-01 | P1: Importar zsh, bash e fish | Tasks | Implementing |
-| HIMP-02 | P1: Importar zsh, bash e fish | Tasks | Implementing |
-| HIMP-03 | P1: Importar zsh, bash e fish | Tasks | Implementing |
-| HIMP-04 | P1: Importar zsh, bash e fish | Tasks | Implementing |
-| HIMP-05 | P1: Importar zsh, bash e fish | Tasks | Implementing |
-| HIMP-06 | P1: Importar zsh, bash e fish | Tasks | Implementing |
-| HIMP-07 | P1: Importar zsh, bash e fish | Tasks | Implementing |
-| HIMP-08 | P1: Importar zsh, bash e fish | Tasks | Implementing |
-| HIMP-09 | P1: Importar zsh, bash e fish | Tasks | Implementing |
-| HIMP-10 | P1: Importar zsh, bash e fish | Tasks | Implementing |
-| HIMP-11 | P1: Histórico importado ranqueia junto com o vivo | Tasks | Implementing |
-| HIMP-12 | P1: Histórico importado ranqueia junto com o vivo | Tasks | Implementing |
+| HIMP-01 | P1: Importar zsh, bash e fish | Verified | Verified |
+| HIMP-02 | P1: Importar zsh, bash e fish | Verified | Verified |
+| HIMP-03 | P1: Importar zsh, bash e fish | Verified | Verified |
+| HIMP-04 | P1: Importar zsh, bash e fish | Verified | Verified |
+| HIMP-05 | P1: Importar zsh, bash e fish | Verified | Verified |
+| HIMP-06 | P1: Importar zsh, bash e fish | Verified | Verified |
+| HIMP-07 | P1: Importar zsh, bash e fish | Verified | Verified |
+| HIMP-08 | P1: Importar zsh, bash e fish | Verified | Verified |
+| HIMP-09 | P1: Importar zsh, bash e fish | Verified | Verified |
+| HIMP-10 | P1: Importar zsh, bash e fish | Verified | Verified |
+| HIMP-11 | P1: Histórico importado ranqueia junto com o vivo | Verified | Verified |
+| HIMP-12 | P1: Histórico importado ranqueia junto com o vivo | Verified | Verified |
 | HIMP-13 | P1: Histórico importado ranqueia junto com o vivo | Design | Pending |
 | HIMP-14 | P2: Convite no primeiro uso | - | Pending |
 | HIMP-15 | P3: Importar o history.db do atuin | - | Pending |
@@ -178,7 +178,7 @@ Mapa dos IDs para os critérios:
 - **HIMP-14** convite no primeiro uso (P2 inteiro)
 - **HIMP-15** fonte atuin (P3 inteiro)
 
-**Coverage:** 15 total, 0 mapeados para tasks, 15 pendentes ⚠️
+**Coverage:** 15 total. 13 verificados (fatia 1, P1 completo); HIMP-14 e HIMP-15 pendentes por serem P2 e P3, fora da fatia.
 
 ---
 

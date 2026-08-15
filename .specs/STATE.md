@@ -38,10 +38,10 @@
 
 ## Handoff
 
-- Current phase: shell-history-import — Fase 1 concluída (T1, T2, T3), executando fatia 1 (fases 1 a 4)
-- Status: implementing (task 3 de 12)
+- Current phase: shell-history-import — fatia 1 (fases 1 a 4) concluída e validada
+- Status: done (P1); P2 (convite) e P3 (atuin) não iniciadas
 - Branch: feat/shell-history-import, no worktree `.claude/worktrees/shell-history-import`
-- Last commit: 46306e9 — feat(history): busca com query considera todo o histórico, não só a janela recente
-- Next step: T4, parser de zsh
-- Open assumptions: seis premissas não confirmadas na spec (timestamp sintetizado, cwd NULL, session_id NULL, duplicata entre fontes, chave de idempotência, redação reaproveitada). A do exit code desconhecido virou código em T1
-- Achado aberto: com 100 000 linhas a consulta de query vazia (paleta abrindo) custa 48 ms, contra 13-16 ms da consulta com filtro. É consequência do teto novo; decisão do dono pendente
+- Last commit: validação da feature, com `validation.md` em PASS
+- Next step: abrir o PR da fatia 1. Depois dele, T13 (convite no primeiro uso) e T14 (fonte atuin)
+- Open assumptions: as seis premissas da spec viraram código e teste. Nenhuma ficou por confirmar
+- Dívida declarada: nenhum teste importa 100 000 entradas pelo caminho do produto — a medição de perf saiu de SQLite avulso. É ensaio de release, não gate de merge

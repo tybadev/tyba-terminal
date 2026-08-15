@@ -407,6 +407,25 @@ mod tests {
         assert_eq!(commands(&store).len(), 5);
     }
 
+    /// O caso real do reimport: semanas depois, o arquivo cresceu com o que foi
+    /// digitado fora do TYBA. Só isso pode entrar.
+    #[test]
+    fn a_file_that_grew_since_the_last_import_brings_only_the_new_entries() {
+        let _serial = serial();
+        let home = home_with(".zsh_history", ": 1:0;ls\n");
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(import(&store, home.path()).sources[0].imported, 1);
+
+        let path = home.path().join(".zsh_history");
+        let grown = fs::read_to_string(&path).unwrap() + ": 2:0;pwd\n";
+        fs::write(&path, grown).unwrap();
+
+        let second = import(&store, home.path());
+        assert_eq!(second.sources[0].read, 2);
+        assert_eq!(second.sources[0].imported, 1);
+        assert_eq!(commands(&store).len(), 2);
+    }
+
     #[test]
     fn importing_twice_does_not_duplicate() {
         let _serial = serial();

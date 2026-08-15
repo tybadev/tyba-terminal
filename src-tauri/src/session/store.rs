@@ -2416,6 +2416,25 @@ mod tests {
         assert_eq!(history_count(&store), 3);
     }
 
+    /// Entrada importada não tem `cwd`, então não pertence a repo nenhum:
+    /// limpar o histórico de um repositório não pode levá-la junto.
+    #[test]
+    fn clearing_a_repo_keeps_imported_entries_that_have_no_cwd() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_command(&command("dentro do repo", Some("/repo/src"), 1))
+            .unwrap();
+        store
+            .insert_imported_batch(&[imported("importado", 2)])
+            .unwrap();
+
+        store.clear_command_history(Some("/repo")).unwrap();
+        assert_eq!(remaining_commands(&store), vec!["importado"]);
+
+        store.clear_command_history(None).unwrap();
+        assert_eq!(history_count(&store), 0);
+    }
+
     #[test]
     fn the_migration_runs_twice_without_failing() {
         let dir = tempfile::tempdir().unwrap();
