@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -50,8 +50,16 @@ function runStyle(run: StyleRun): React.CSSProperties {
 /**
  * Uma linha lógica vira spans. Nunca HTML: os runs são dados, e montar string
  * de markup a partir de saída de comando é injeção esperando acontecer.
+ *
+ * Memoizado porque este é o nó que se multiplica: uma linha com cor gera até
+ * dois spans por run, e saída colorida dá uns 16 runs por linha. Um cartão de
+ * 200 linhas passa de 3 mil nós, e sem memo TODOS eram recriados a cada render
+ * do `App` — que acontece a ~60 Hz enquanto um comando escreve.
+ *
+ * O objeto `line` vem do bloco e mantém identidade: `setBlocks` recria o array,
+ * não os blocos. É o que faz a comparação rasa do memo valer aqui.
  */
-function Line({ line }: { line: LogicalLine }) {
+const Line = memo(function Line({ line }: { line: LogicalLine }) {
   if (line.runs.length === 0) {
     return <div className="whitespace-pre-wrap break-words">{line.text}</div>;
   }
@@ -72,7 +80,7 @@ function Line({ line }: { line: LogicalLine }) {
     parts.push(<span key="tail">{line.text.slice(cursor)}</span>);
   }
   return <div className="whitespace-pre-wrap break-words">{parts}</div>;
-}
+});
 
 /** Quanto tempo o ✓ fica no lugar do ícone depois de copiar. */
 const COPIED_MS = 1200;
@@ -86,7 +94,7 @@ type ActionId = "command" | "output" | "markdown";
  * corpo cortado em `BODY_LIMIT` linhas, e a saída sem os espaços que o
  * `white-space` desenha mas o `textContent` não tem.
  */
-function BlockActions({
+const BlockActions = memo(function BlockActions({
   block,
   onInject,
   always,
@@ -193,9 +201,9 @@ function BlockActions({
         })}
     </div>
   );
-}
+});
 
-function BlockHeader({
+const BlockHeader = memo(function BlockHeader({
   block,
   pinned,
   onInject,
@@ -248,7 +256,7 @@ function BlockHeader({
       <BlockActions block={block} onInject={onInject} always={pinned} />
     </div>
   );
-}
+});
 
 /**
  * Teto de linhas desenhadas de uma vez.
@@ -288,7 +296,7 @@ const BODY_INSET_X_PX = 38;
  */
 const MARKED_BAR = "inset 2px 0 0 0 var(--tyba-primary)";
 
-function BlockCard({
+const BlockCard = memo(function BlockCard({
   block,
   fontSizePx,
   lineHeightPx,
@@ -303,7 +311,16 @@ function BlockCard({
   lineHeightPx: number;
   onInject?: (text: string) => void;
   marked: boolean;
-  onPick?: (event: React.MouseEvent) => void;
+  /**
+   * Recebe o id, e não um handler já amarrado ao bloco.
+   *
+   * Amarrar do lado de fora (`(event) => onPick(block.id, event)`) cria uma
+   * função nova por render do pai, e prop com identidade nova derruba o memo
+   * deste componente — que é justo o que ele existe para evitar. O id já está
+   * no `block`; quem amarra é o corpo daqui, que só roda quando o cartão
+   * realmente re-renderiza.
+   */
+  onPick?: (id: number, event: React.MouseEvent) => void;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -313,7 +330,7 @@ function BlockCard({
     // `group` aqui além do header: revela as ações com o ponteiro em qualquer
     // lugar do cartão, não só na faixa de 27px de cima.
     <div
-      onClick={onPick}
+      onClick={onPick ? (event) => onPick(block.id, event) : undefined}
       // Shift-clique é o gesto do navegador para esticar seleção de texto.
       // Barrar aqui é o que deixa o shift ser do bloco, sem sujar a tela com
       // um trecho de texto realçado que ninguém pediu.
@@ -374,7 +391,7 @@ function BlockCard({
       )}
     </div>
   );
-}
+});
 
 /**
  * O começo da pilha: onde e quando a sessão abriu.
@@ -540,7 +557,20 @@ interface Props {
   opened?: { cwd: string | null; atMs: number | null };
 }
 
-export function BlockList({
+/**
+ * Memoizada por último, e é a memoização que mais rende.
+ *
+ * O `App` é um componente só, com dezenas de estados, e re-renderiza a ~60 Hz
+ * enquanto um comando escreve — a altura da faixa ao vivo é medida a cada
+ * repintura do xterm. Sem memo aqui, toda lista de blocos de todo painel
+ * re-renderizava junto, a cada frame.
+ *
+ * > [!warning] Memo só vale com as props estáveis do outro lado. `rect`,
+ * > `opened`, `onActivate`, `onPick` e `onClearPick` são objetos e funções: se
+ * > o `App` voltar a criá-los inline no JSX, a comparação rasa falha em todo
+ * > render e este memo passa a custar sem devolver nada.
+ */
+export const BlockList = memo(function BlockList({
   blocks,
   rect,
   bottomInset = 0,
@@ -908,11 +938,9 @@ export function BlockList({
                 lineHeightPx={lineHeightPx}
                 onInject={onInject}
                 marked={marked?.has(blocks[item.index].id) ?? false}
-                onPick={
-                  onPick
-                    ? (event) => onPick(blocks[item.index].id, event)
-                    : undefined
-                }
+                // Repassado direto, sem amarrar o id aqui: ver o comentário do
+                // prop em `BlockCard`.
+                onPick={onPick}
                 />
               </div>
             ))}
@@ -936,4 +964,4 @@ export function BlockList({
       )}
     </div>
   );
-}
+});

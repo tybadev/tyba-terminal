@@ -324,7 +324,7 @@ const SIDE_MIN_PX = 360;
  *  trabalho, que é o problema simétrico e igualmente fácil de provocar. */
 const MAIN_MIN_PX = 320;
 import { BLOCK_GAP_PX, BlockList } from "./components/BlockList";
-import { withEntry } from "./lib/perSession";
+import { handlerCache, withEntry } from "./lib/perSession";
 import { mergeBlockHistory } from "./lib/blockHistory";
 import { blocksMarkdown, wipesTheScreen } from "./lib/blockText";
 import {
@@ -2901,6 +2901,11 @@ export default function App() {
     [],
   );
 
+  // A sessão é amarrada FORA do JSX, senão a prop nasce com identidade nova a
+  // cada render e derruba o `memo` do cartão de bloco. Ver `handlerCache`.
+  const pickerFor = useMemo(() => handlerCache(pickBlock), [pickBlock]);
+  const clearPick = useCallback(() => setBlockPick(null), []);
+
   const markedBlocks = useMemo(
     () => (blockPick ? new Set(blockPick.selection.ids) : null),
     [blockPick],
@@ -4658,8 +4663,8 @@ export default function App() {
                               ? (markedBlocks ?? undefined)
                               : undefined
                           }
-                          onPick={(id, event) => pickBlock(s.id, id, event)}
-                          onClearPick={() => setBlockPick(null)}
+                          onPick={pickerFor(s.id)}
+                          onClearPick={clearPick}
                           copyCombo={formatCombo(bindings.copy)}
                         />
                         {live && (

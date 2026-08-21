@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { withEntry } from "./perSession";
+import { handlerCache, withEntry } from "./perSession";
 
 describe("withEntry", () => {
   test("guarda o valor da sessão sem tocar nas vizinhas", () => {
@@ -36,5 +36,39 @@ describe("withEntry", () => {
     const measures = withEntry(withEntry({}, "a", 21.5), "b", 16.2);
     expect(measures.a).toBe(21.5);
     expect(measures.b).toBe(16.2);
+  });
+});
+
+describe("handlerCache", () => {
+  test("devolve a MESMA função para a mesma sessão", () => {
+    const cache = handlerCache<[number]>(() => {});
+    expect(cache("s1")).toBe(cache("s1"));
+  });
+
+  test("devolve funções diferentes para sessões diferentes", () => {
+    const cache = handlerCache<[number]>(() => {});
+    expect(cache("s1")).not.toBe(cache("s2"));
+  });
+
+  test("amarra a sessão e repassa o resto dos argumentos", () => {
+    const seen: Array<[string, number, string]> = [];
+    const cache = handlerCache<[number, string]>((id, n, s) =>
+      seen.push([id, n, s]),
+    );
+    cache("s1")(7, "a");
+    cache("s2")(8, "b");
+    expect(seen).toEqual([
+      ["s1", 7, "a"],
+      ["s2", 8, "b"],
+    ]);
+  });
+
+  test("a função guardada continua válida depois de outra sessão entrar", () => {
+    const seen: string[] = [];
+    const cache = handlerCache<[]>((id) => seen.push(id));
+    const first = cache("s1");
+    cache("s2");
+    first();
+    expect(seen).toEqual(["s1"]);
   });
 });
