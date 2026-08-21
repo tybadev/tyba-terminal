@@ -456,6 +456,15 @@ function SessionOpened({
  */
 const HEADER_PX = 35;
 /**
+ * Altura mínima para um bloco prender o header no topo.
+ *
+ * Três vezes o header: o bloco precisa ter saída o bastante para valer a pena
+ * lembrar de quem ela é depois que o header dele sai de cena. Abaixo disso o
+ * header real some e volta na mesma rolagem, e prender só acrescenta uma barra
+ * piscando — ver a conta na condição de `pinned`.
+ */
+const PIN_MIN_PX = HEADER_PX * 3;
+/**
  * A linha do motivo no cartão de tela cheia (`text-[11px]` + `py-1`).
  *
  * Ele não tem corpo, mas não é só o header: sem esta parcela a estimativa
@@ -836,8 +845,21 @@ export const BlockList = memo(function BlockList({
       // `<` e não `<=`: com o bloco começando exatamente no topo, o header dele
       // está à vista e prender desenha o MESMO header duas vezes, um debaixo do
       // outro. Prende só quando o de verdade já saiu de cena.
+      //
+      // E só bloco ALTO prende, que é o caso para o qual isto existe: o header
+      // sumir ao rolar só é problema quando ainda falta muita saída embaixo.
+      //
+      // Sem o piso, a barra piscava várias vezes por segundo numa pilha de
+      // comandos curtos. A conta: a condição acima só vale numa janela de
+      // `altura − HEADER_PX`, então um bloco de `ls` com 43px de altura a
+      // satisfaz por 8px de cada 43 — aparece, some, aparece, a cada bloco
+      // cruzado. Alto o bastante, a janela é quase o bloco inteiro e a barra
+      // fica parada, que é como ela deve se comportar.
       const current = items.find(
-        (item) => item.start < top && item.end > top + HEADER_PX,
+        (item) =>
+          item.end - item.start >= PIN_MIN_PX &&
+          item.start < top &&
+          item.end > top + HEADER_PX,
       );
       setPinned(current ? current.index : null);
     };
