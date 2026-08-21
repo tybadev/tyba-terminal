@@ -328,6 +328,7 @@ const SIDE_MIN_PX = 360;
  *  trabalho, que é o problema simétrico e igualmente fácil de provocar. */
 const MAIN_MIN_PX = 320;
 import { handlerCache, withEntry } from "./lib/perSession";
+import { useStableCallback } from "./lib/stableProps";
 import { mergeBlockHistory } from "./lib/blockHistory";
 import { blocksMarkdown, wipesTheScreen } from "./lib/blockText";
 import {
@@ -3274,18 +3275,23 @@ export default function App() {
   // Histórico e snippet entram na linha pelo MESMO caminho do paste: bracketed
   // paste detectado, control chars sanitizados e confirmação quando é multilinha.
   // Nada é executado — quem aperta Enter é o dono.
-  const injectIntoActive = useCallback(
-    (text: string) => {
-      if (!activeId || !text) return;
-      // Sem decidir de novo para onde o texto vai: quem decide é o
-      // `deliverPaste`, e duas cópias da regra divergiriam — foi assim que o
-      // "Colar" do menu de contexto ficou inerte enquanto histórico e snippet
-      // funcionavam.
-      deliverPaste(activeId, text);
-      if (!ownsCommandLine) getTerm(activeId)?.term.focus();
-    },
-    [activeId, deliverPaste, ownsCommandLine],
-  );
+  //
+  // `useStableCallback` e não `useCallback`: isto desce como `onInject` para o
+  // `SessionBlocks`, que é `memo`. As dependências naturais deste handler são
+  // as que mais mudam no app — `activeId` a cada troca de foco de painel e
+  // `ownsCommandLine` a cada começo e fim de comando —, então a lista daria
+  // identidade nova em toda fronteira de comando e invalidaria a memoização de
+  // TODOS os painéis, inclusive os que nada tinham a ver com o comando. Ver
+  // `lib/stableProps`.
+  const injectIntoActive = useStableCallback((text: string) => {
+    if (!activeId || !text) return;
+    // Sem decidir de novo para onde o texto vai: quem decide é o
+    // `deliverPaste`, e duas cópias da regra divergiriam — foi assim que o
+    // "Colar" do menu de contexto ficou inerte enquanto histórico e snippet
+    // funcionavam.
+    deliverPaste(activeId, text);
+    if (!ownsCommandLine) getTerm(activeId)?.term.focus();
+  });
 
   const pickSnippet = useCallback(
     (snippet: Snippet) => {
