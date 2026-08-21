@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  boxIsMounted,
   clearsDraft,
   controlBytes,
   ghostFor,
@@ -12,6 +13,7 @@ import {
   programName,
   replaceToken,
   swallowsArrow,
+  type LineState,
   type OwnerInput,
 } from "./commandLine";
 
@@ -385,5 +387,45 @@ describe("continuação do shell (PS2)", () => {
 
   it("sem continuação, nada muda", () => {
     expect(lineState(atPrompt)).toBe("own");
+  });
+});
+
+describe("boxIsMounted", () => {
+  const STATES: LineState[] = [
+    "own",
+    "waiting",
+    "running",
+    "continuation",
+    "app",
+    "off",
+  ];
+
+  it("só o app de tela cheia troca a caixa pela faixa de uma linha", () => {
+    expect(STATES.filter((state) => !boxIsMounted(state))).toEqual(["app"]);
+  });
+
+  it("a linha que não é minha ainda tem caixa na tela, com o rascunho dentro", () => {
+    // O defeito que este predicado existe para impedir: o efeito que zerava a
+    // altura medida da caixa saía por `state !== "own"` — e quatro dos cinco
+    // estados que esse guarda pega mantêm a MESMA textarea montada. Colar três
+    // linhas e ver a sessão reportar `running` colapsava a caixa para 28px com
+    // o texto fora de vista, e nada o devolvia depois: altura inline não se
+    // desfaz sozinha.
+    const clearedByOldGuard = STATES.filter((state) => state !== "own");
+    expect(clearedByOldGuard.filter(boxIsMounted)).toEqual([
+      "waiting",
+      "running",
+      "continuation",
+      "off",
+    ]);
+  });
+
+  it("voltar do app remonta a caixa, e caixa remontada nasce sem altura", () => {
+    // A outra metade, e a razão de a medida ser refeita por `state`: em `app` a
+    // textarea some do DOM, então o elemento que volta é OUTRO — o rascunho
+    // continua no estado do React, mas a altura inline daquele elemento morreu
+    // junto com ele.
+    expect(boxIsMounted("app")).toBe(false);
+    expect(boxIsMounted("own")).toBe(true);
   });
 });

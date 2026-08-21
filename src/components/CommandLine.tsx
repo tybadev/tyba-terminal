@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -11,6 +11,7 @@ import {
 import { shortPath } from "../lib/blockText";
 import { toastError } from "../lib/toast";
 import {
+  boxIsMounted,
   clearsDraft,
   controlBytes,
   ghostFor,
@@ -95,7 +96,7 @@ export function CommandLine({
   const waiting = state !== "own";
   // App de tela cheia: a linha não desaparece, troca de conteúdo. E encolhe,
   // se houver espaço para isso sem mexer nos painéis — ver `canCollapse`.
-  const collapsed = state === "app";
+  const collapsed = !boxIsMounted(state);
   const compact = collapsed && canCollapse;
   const where = shortPath(cwd);
   const { t } = useTranslation();
@@ -123,19 +124,8 @@ export function CommandLine({
       if (!el) return;
       el.focus();
       el.setSelectionRange(inject.text.length, inject.text.length);
-      el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`;
     });
   }, [inject]);
-
-  // A altura da caixa é escrita à mão em `resize()`, e altura inline não se
-  // desfaz sozinha: com um rascunho de três linhas no ar quando o `vim` abre, a
-  // faixa ficava alta E morta — três linhas de nada ocupando a tela do app.
-  useEffect(() => {
-    if (state === "own") return;
-    const el = inputRef.current;
-    if (el) el.style.height = "";
-  }, [state]);
 
   const seenNonce = useRef(focusNonce);
   useEffect(() => {
@@ -255,6 +245,24 @@ export function CommandLine({
     el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`;
   };
 
+  // A altura da caixa é medida, não declarada: `rows={1}` e `min-h-[28px]` só
+  // dão o piso, e quem sabe que o rascunho tem três linhas é o `scrollHeight`.
+  // Por isso ela se recalcula aqui, em UM lugar, e não em cada caminho que
+  // mexe no texto. Um lugar só derruba as duas armadilhas de uma vez:
+  //
+  // - a caixa não some quando a linha deixa de ser sua. Em `running`,
+  //   `continuation` e `off` é a MESMA textarea, desabilitada, com o rascunho
+  //   dentro (ver `boxIsMounted`). Zerar a altura na ida colapsava o texto para
+  //   uma linha, e nada o devolvia na volta: altura inline não se desfaz
+  //   sozinha, e quem a escrevia só rodava ao digitar.
+  // - saindo do `app` a textarea é REMONTADA — elemento novo, sem altura
+  //   inline, com o rascunho ainda no estado. Sem remedir por `state`, voltar
+  //   do `vim` devolvia a caixa em 28px com o texto cortado.
+  //
+  // `useLayoutEffect` porque a medida acontece antes da pintura: com `useEffect`
+  // o quadro intermediário com a altura errada chega à tela.
+  useLayoutEffect(resize, [state, text]);
+
   const apply = (next: string, nextCaret: number) => {
     setText(next);
     setCaret(nextCaret);
@@ -262,7 +270,6 @@ export function CommandLine({
       const el = inputRef.current;
       if (!el) return;
       el.setSelectionRange(nextCaret, nextCaret);
-      resize();
     });
   };
 
@@ -541,7 +548,6 @@ export function CommandLine({
               setText(e.target.value);
               setCaret(e.target.selectionStart ?? 0);
               setMenuOpen(false);
-              resize();
             }}
             onKeyDown={onKeyDown}
             onKeyUp={() => setCaret(inputRef.current?.selectionStart ?? 0)}
