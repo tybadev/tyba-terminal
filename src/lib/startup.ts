@@ -9,6 +9,28 @@ export function parseStartupMode(raw: string | null | undefined): StartupMode {
 }
 
 /**
+ * Abrir o modal de "nova sessão" no boot?
+ *
+ * A pergunta é "não há workspace nenhum?", e ela só tem resposta quando o core
+ * terminou de carregar.
+ *
+ * > [!warning] `ready: false` não é layout vazio. A thread de boot responde
+ * > `boot_snapshot` antes de o `load_remapped` rodar, e nesse intervalo
+ * > `workspaces` vem vazio por ainda não ter sido lido — não por não haver
+ * > nada. Decidir por esse valor abre o modal por cima dos workspaces que estão
+ * > voltando; e como a decisão vale uma vez só por janela, ela nunca se
+ * > reavaliaria quando o layout real chegasse.
+ */
+export function shouldPromptNewSession(input: {
+  ready: boolean;
+  workspaces: number;
+  prompted: boolean;
+}): boolean {
+  if (!input.ready || input.prompted) return false;
+  return input.workspaces === 0;
+}
+
+/**
  * O app terminou de carregar e o splash pode sair.
  *
  * Evento de DOM, e não de IPC: quem escuta é o `main.tsx`, que roda antes do
