@@ -623,6 +623,40 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
         });
 }
 
+/// Redige a linha inteira, e a linha redigida perde a cor.
+///
+/// Redação sobre a linha lógica, não sobre chunk cru: chunk pode partir um
+/// `sk-…` no meio e o padrão escapar (princípio #10).
+///
+/// Os runs vão embora porque a redação ENCOLHE o texto — `[REDACTED]` tem 10
+/// unidades e o menor segredo que o padrão pega tem 20 — e os offsets não
+/// acompanham: todo run a partir do segredo passa a apontar para fora da linha.
+/// O front fatia com `String.prototype.slice`, que clampa em silêncio em vez de
+/// estourar, então o defeito não aparece como erro: a cor do segredo escorre
+/// para o resto da linha.
+///
+/// Recalcular os offsets junto com o texto preservaria a cor, mas ao preço de
+/// mais uma aritmética de offset — e é exatamente esse tipo de aritmética que já
+/// desalinhou a cor duas vezes neste arquivo, num caminho (linha com segredo)
+/// que quase nunca roda e portanto quase nunca seria observado. Uma linha por
+/// sessão sem cor é barato; um offset errado que ninguém vê, não.
+///
+/// `Cow::Borrowed` é a prova de que a regex não achou nada. É o caminho comum e
+/// não paga nada: nem cópia do texto, nem perda de cor.
+fn redact_line(line: LogicalLine) -> LogicalLine {
+    let redacted = match crate::session::redact::redact(&line.text) {
+        std::borrow::Cow::Borrowed(_) => None,
+        std::borrow::Cow::Owned(text) => Some(text),
+    };
+    match redacted {
+        None => line,
+        Some(text) => LogicalLine {
+            text,
+            runs: Vec::new(),
+        },
+    }
+}
+
 fn build(finished: Finished) -> Block {
     // Tela alternada não tem corpo para extrair: o que ficou nos bytes é o
     // desenho de um programa, e recortá-lo produziria lixo com cara de saída.
@@ -631,15 +665,7 @@ fn build(finished: Finished) -> Block {
     } else {
         extract_lines(&finished.bytes, finished.cols, finished.rows)
     };
-    // Redação sobre a linha lógica inteira, não sobre chunk cru: chunk pode
-    // partir um `sk-…` no meio e o padrão escapar (princípio #10).
-    let lines = lines
-        .into_iter()
-        .map(|line| LogicalLine {
-            text: crate::session::redact::redact(&line.text).into_owned(),
-            runs: line.runs,
-        })
-        .collect();
+    let lines = lines.into_iter().map(redact_line).collect();
     Block {
         id: next_id(),
         session_id: finished.session_id,
@@ -741,6 +767,119 @@ mod tests {
         let (lines, _) = extract_lines("ááááá\x1b[31mbbbbb\x1b[0m\r\n".as_bytes(), 5, 5);
         assert_eq!(lines.len(), 1);
         assert_eq!(js_slice(&lines[0].text, &lines[0].runs[0]), "bbbbb");
+    }
+
+    /// Chave sintética, escrita à mão — é a que a própria documentação da AWS
+    /// usa como exemplo. Fixture de segredo nunca sai de sessão real.
+    const FAKE_AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+
+    /// Um `Finished` mínimo: para o que `build` faz aqui, só os bytes importam.
+    fn finished(bytes: &[u8]) -> Finished {
+        Finished {
+            session_id: "s1".into(),
+            command: "printf".into(),
+            exit_code: Some(0),
+            cwd: None,
+            started_at_ms: 0,
+            finished_at_ms: 1,
+            bytes: bytes.to_vec(),
+            cols: 80,
+            rows: 24,
+            dropped: 0,
+            alt_screen: false,
+        }
+    }
+
+    /// Remonta a linha como o componente `Line` do front remonta, devolvendo
+    /// `(pedaço, colorido?)` na ordem em que os spans entram no DOM.
+    ///
+    /// É o mesmo passeio de `src/components/BlockList.tsx` — trecho simples até
+    /// o começo do run, trecho colorido até o fim dele, rabo depois do último
+    /// run —, com o `slice` do JS, que CLAMPA no comprimento em vez de estourar.
+    /// É esse clamp que faz um offset fora do texto virar cor no lugar errado em
+    /// vez de um erro que alguém veria.
+    fn rendered(line: &LogicalLine) -> Vec<(String, bool)> {
+        let units: Vec<u16> = line.text.encode_utf16().collect();
+        let cut = |from: usize, to: usize| {
+            let from = from.min(units.len());
+            let to = to.clamp(from, units.len());
+            String::from_utf16_lossy(&units[from..to])
+        };
+        if line.runs.is_empty() {
+            return vec![(line.text.clone(), false)];
+        }
+        let mut parts = Vec::new();
+        let mut cursor = 0usize;
+        for run in &line.runs {
+            if run.start_utf16 > cursor {
+                parts.push((cut(cursor, run.start_utf16), false));
+            }
+            parts.push((cut(run.start_utf16, run.end_utf16), true));
+            cursor = run.end_utf16;
+        }
+        if cursor < units.len() {
+            parts.push((cut(cursor, units.len()), false));
+        }
+        parts
+    }
+
+    /// `export AWS_KEY=<segredo em vermelho> ok`.
+    ///
+    /// O segredo tem 20 unidades e `[REDACTED]` tem 10: o texto encolhe 10 e
+    /// todo offset dali para a frente passa a apontar para fora dele.
+    fn redacted_line() -> LogicalLine {
+        let bytes = format!("export AWS_KEY=\x1b[31m{FAKE_AWS_KEY}\x1b[0m ok\r\n");
+        let mut block = build(finished(bytes.as_bytes()));
+        assert_eq!(block.lines.len(), 1);
+        block.lines.remove(0)
+    }
+
+    #[test]
+    fn the_redaction_leaves_no_run_pointing_past_the_text() {
+        let line = redacted_line();
+        assert!(!line.text.contains(FAKE_AWS_KEY), "{}", line.text);
+        let len = line.text.encode_utf16().count();
+        for run in &line.runs {
+            assert!(
+                run.start_utf16 <= run.end_utf16 && run.end_utf16 <= len,
+                "{run:?} fora de um texto de {len} unidades: {:?}",
+                line.text
+            );
+        }
+    }
+
+    #[test]
+    fn the_redaction_never_paints_what_was_not_colored() {
+        let line = redacted_line();
+        let parts = rendered(&line);
+
+        // O front tem de conseguir remontar o texto inteiro a partir dos runs.
+        let joined: String = parts.iter().map(|(text, _)| text.as_str()).collect();
+        assert_eq!(joined, line.text);
+
+        // E o que ele pinta é a marca da redação ou nada — nunca o ` ok`, que
+        // veio depois do run e sem cor nenhuma.
+        let colored: String = parts
+            .iter()
+            .filter(|(_, colored)| *colored)
+            .map(|(text, _)| text.as_str())
+            .collect();
+        assert!(
+            colored.is_empty() || colored == crate::session::redact::REDACTION_MARK,
+            "pintou {colored:?}"
+        );
+    }
+
+    #[test]
+    fn only_the_line_the_redaction_touched_loses_its_color() {
+        let bytes = format!("\x1b[32mok\x1b[0m\r\nAWS_KEY={FAKE_AWS_KEY} \x1b[31mfim\x1b[0m\r\n");
+        let block = build(finished(bytes.as_bytes()));
+        assert_eq!(block.lines.len(), 2);
+        // A linha limpa não paga pelo segredo da vizinha.
+        assert_eq!(
+            js_slice(&block.lines[0].text, &block.lines[0].runs[0]),
+            "ok"
+        );
     }
 
     /// Bloco gravado antes desta mudança guarda offset de BYTE sob as chaves
