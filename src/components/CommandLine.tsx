@@ -8,6 +8,7 @@ import {
   type CommandSuggestion,
   type SessionId,
 } from "../lib/ipc";
+import { shortPath } from "../lib/blockText";
 import { toastError } from "../lib/toast";
 import {
   clearsDraft,
@@ -32,6 +33,8 @@ const PLACEHOLDER_BY_STATE: Record<LineState, string> = {
 
 interface Props {
   sessionId: SessionId;
+  /** Onde o comando vai rodar. Ver o rodapé da linha. */
+  cwd: string | null;
   scope: { cwd: string | null; repoRoot: string | null };
   /** Muda quando a linha volta a ser do TYBA (fim de comando, saída do vim). */
   focusNonce: number;
@@ -59,12 +62,14 @@ interface Props {
  */
 export function CommandLine({
   sessionId,
+  cwd,
   scope,
   focusNonce,
   state,
   inject,
 }: Props) {
   const waiting = state !== "own";
+  const where = shortPath(cwd);
   const { t } = useTranslation();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
@@ -484,14 +489,21 @@ export function CommandLine({
           />
         </div>
 
-        {/* Sem cwd nem branch aqui.
-            O PS1 saiu da tela e o que ele dizia precisa continuar visível — mas
-            já está: a status bar encostada logo abaixo mostra os dois, a menos
-            de 20px daqui. Repetir "muriki-api ⑂ develop" duas vezes numa faixa
-            de 40px é a definição de ruído.
-            Volta a fazer sentido quando existir uma linha de comando POR
-            PAINEL: aí cada uma fala de um cwd diferente e a status bar, que é
-            uma só, não dá conta. Ver `command-line/rules` no cofre. */}
+        {/* Onde o comando vai rodar.
+            Encurtado com a MESMA regra do header de cada bloco (`…/pai/pasta`),
+            e não só o nome da pasta: duas pastas `src` em repositórios
+            diferentes são indistinguíveis pelo basename, e é exatamente na hora
+            de apertar Enter que essa distinção importa.
+            A branch fica de fora — ela está na status bar 20px abaixo e não
+            muda o destino do comando. O caminho, sim. */}
+        {where && (
+          <span
+            title={cwd ?? undefined}
+            className="shrink-0 truncate pt-1.5 font-mono text-[11px] leading-[17px] text-tyba-text-faint"
+          >
+            {where}
+          </span>
+        )}
       </div>
     </div>
   );

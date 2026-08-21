@@ -4852,6 +4852,7 @@ export default function App() {
                   <CommandLine
                     key={`${activeSession.id}:line`}
                     sessionId={activeSession.id}
+                    cwd={activeCwdKey}
                     scope={historyScope}
                     focusNonce={commandLineNonce}
                     state={commandLineState}
