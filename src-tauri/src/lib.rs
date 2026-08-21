@@ -547,6 +547,11 @@ fn hosts_alias(store: &Arc<session::store::Store>, host_id: &str) -> Option<Stri
 /// Só shell é reaberto. Um agente não é um processo idempotente: religá-lo sozinho
 /// no boot faria um agente começar a agir sem ninguém ter pedido — a sessão volta
 /// morta, e o dono decide.
+///
+/// O cwd de cada sessão passa por [`session::cwd::reopen_policy`] antes de
+/// qualquer syscall: pasta protegida pelo TCC não é conferida, e caminho em
+/// volume montado não é reaberto. O módulo explica por quê — em resumo, era o
+/// `stat` daqui que abria o diálogo de permissão do macOS e travava a abertura.
 fn resume_startup(
     app: &AppHandle,
     store: &Arc<session::store::Store>,
@@ -562,6 +567,9 @@ fn resume_startup(
     );
     let mut remap = std::collections::HashMap::new();
     let dead = sessions.dead_sessions();
+    // Resolvido uma vez: a classificação é pura, e ler o env por sessão não
+    // acrescentaria nada.
+    let home = session::cwd::home();
 
     if mode == session::StartupMode::Fresh {
         for s in dead {
@@ -608,8 +616,19 @@ fn resume_startup(
         let Some(cwd) = old.cwd.clone() else {
             continue;
         };
-        if !cwd.is_dir() {
-            continue;
+        // O `stat` daqui era o congelamento da abertura. Leia `session::cwd`
+        // antes de "consertar" isto de volta para um `is_dir()` incondicional.
+        match session::cwd::reopen_policy(&cwd, home.as_deref()) {
+            session::cwd::ReopenPolicy::Checked if !cwd.is_dir() => continue,
+            session::cwd::ReopenPolicy::Skip => {
+                eprintln!(
+                    "[tyba] sessão {} volta parada: {} está em volume que pode não estar montado",
+                    old.id,
+                    cwd.display()
+                );
+                continue;
+            }
+            _ => {}
         }
         let handle = app.clone();
         let opts = CreateSessionOpts {
