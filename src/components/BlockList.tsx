@@ -221,10 +221,14 @@ const BlockHeader = memo(function BlockHeader({
       // faixa opaca de 27px que captura a roda do mouse é uma faixa onde a
       // lista não rola. Só as ações reativam — senão as do bloco do topo, que
       // é o header que ele cobre, ficariam inalcançáveis.
+      // O fundo e o filete do preso moram no INVÓLUCRO, não aqui: só assim ele
+      // atravessa a largura inteira da lista enquanto o texto continua alinhado
+      // com o comando do cartão de baixo, que é recuado pelo padding do
+      // scroller. Com fundo próprio, a faixa era um cartão solto de 8px de
+      // margem e o comando dela caía 8px à esquerda do comando de todos os
+      // outros — ficava lendo como outra coisa, não como o mesmo header.
       className={`group flex items-center gap-2 px-2.5 py-1 ${
-        pinned
-          ? "pointer-events-none rounded-[4px] border border-tyba-border bg-tyba-surface shadow-md"
-          : "border-b border-tyba-border/60"
+        pinned ? "pointer-events-none" : "border-b border-tyba-border/60"
       }`}
     >
       <span className={`shrink-0 ${broke ? "text-tyba-red" : "text-tyba-green"}`}>
@@ -270,11 +274,14 @@ const BODY_LIMIT = 200;
 /**
  * Quanto da largura do scroller NÃO é texto do corpo, em px.
  *
- * `px-2` do scroller (8+8), a borda do cartão (1+1) e o `px-2.5` do corpo
- * (10+10). Entra na conta de quantas colunas cabem numa linha — errar aqui
- * volta como estimativa curta, que é cartão em cima de cartão.
+ * `px-2` do scroller (8+8) e o `px-2.5` do corpo (10+10). Entra na conta de
+ * quantas colunas cabem numa linha — errar aqui volta como estimativa curta,
+ * que é cartão em cima de cartão.
+ *
+ * Já contou a borda do cartão (1+1). Não conta mais: o contorno virou trilho
+ * por `box-shadow`, que não ocupa espaço de layout — ver `rail`.
  */
-const BODY_INSET_X_PX = 38;
+const BODY_INSET_X_PX = 36;
 
 /**
  * Barra à esquerda do cartão marcado.
@@ -295,6 +302,33 @@ const BODY_INSET_X_PX = 38;
  * do topo lê como caixa torta. Mais destaque se pede à cor, não à espessura.
  */
 const MARKED_BAR = "inset 2px 0 0 0 var(--tyba-primary)";
+
+/**
+ * O trilho na lateral esquerda do cartão — o único destaque permanente dele.
+ *
+ * Substituiu a moldura completa. `--tyba-block-border` é branco a 28% sobre
+ * preto absoluto, e a 28% ele é visível por desenho: numa caixa fechada em
+ * volta de um cartão de 200 linhas, isso vira dois trilhos brancos atravessando
+ * a viewport inteira dos dois lados do texto, o tempo todo em que se lê. E como
+ * TODO bloco tinha a mesma, o destaque não discriminava nada — o custo de
+ * atenção era pago em cada linha e a informação devolvida era zero.
+ *
+ * Um traço só na esquerda diz a mesma coisa ("aqui começa um bloco") no lugar
+ * onde o olho já volta a cada linha. O que separa um bloco do outro passa a ser
+ * o espaço entre eles, que não custa atenção nenhuma.
+ *
+ * `box-shadow` e não borda, pelo motivo de sempre nesta lista: borda muda a
+ * altura medida, e altura que muda faz o virtualizador reposicionar o conteúdo
+ * embaixo do ponteiro no meio de um gesto.
+ */
+function rail(marked: boolean, broke: boolean): string {
+  if (marked) return MARKED_BAR;
+  // Falha é o que merece cor permanente. O corpo inteiro tingido de vermelho
+  // transformava 200 linhas de saída numa parede — e saída de erro é
+  // justamente a que mais se lê.
+  if (broke) return "inset 2px 0 0 0 var(--tyba-red)";
+  return "inset 2px 0 0 0 var(--tyba-block-border)";
+}
 
 const BlockCard = memo(function BlockCard({
   block,
@@ -337,13 +371,9 @@ const BlockCard = memo(function BlockCard({
       onMouseDown={(event) => {
         if (event.shiftKey && onPick) event.preventDefault();
       }}
-      style={marked ? { boxShadow: MARKED_BAR } : undefined}
-      className={`group overflow-hidden rounded-[5px] border ${
-        marked
-          ? "border-tyba-primary bg-tyba-green-tint"
-          : broke
-            ? "border-tyba-red/50 bg-tyba-red/[.07]"
-            : "border-tyba-block-border"
+      style={{ boxShadow: rail(marked, broke) }}
+      className={`group overflow-hidden rounded-[5px] transition-colors ${
+        marked ? "bg-tyba-green-tint" : "hover:bg-tyba-text/[.02]"
       }`}
     >
       <BlockHeader block={block} onInject={onInject} />
@@ -479,7 +509,7 @@ const ALT_SCREEN_PX = 21;
  * único da lista encostado no vizinho, e a diferença lê como defeito bem no
  * cartão para onde o olho vai.
  */
-export const BLOCK_GAP_PX = 8;
+export const BLOCK_GAP_PX = 14;
 /**
  * Folga para considerar a lista "no fim".
  *
@@ -970,8 +1000,18 @@ export const BlockList = memo(function BlockList({
         </div>
       </div>
 
+      {/* Faixa rente ao topo, e não cartão flutuante.
+          Ela morava em `inset-x-2 top-2` com borda em volta, cantos e
+          `shadow-md`: lia como um cartão solto voando por cima da lista, e
+          entre a sombra e as margens comia a linha de cima E a de baixo do que
+          estava embaixo dela. Encostada nas bordas, com um filete só
+          separando, ela vira o que é — cromo da lista, dizendo de quem é a
+          saída que se está lendo.
+          Opaca continua sendo: o trabalho dela é esconder o que passa por trás.
+          O `px-2` repete o padding do scroller para o comando cair na mesma
+          coluna do comando de todo cartão. */}
       {pinned !== null && blocks[pinned] && (
-        <div className="absolute inset-x-2 top-2 z-10">
+        <div className="absolute inset-x-0 top-0 z-10 rounded-t-[4px] border-b border-tyba-border bg-tyba-sunken px-2">
           <BlockHeader block={blocks[pinned]} pinned onInject={onInject} />
         </div>
       )}
