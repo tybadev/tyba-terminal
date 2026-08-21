@@ -119,7 +119,27 @@ const COMMAND_SEPARATORS: &[char] = &[';', '&', '|', '\n', '\r', '(', ')', '{', 
 /// `echo` recusado não tem contorno. Deixar um programa de texto DE FORA custa
 /// um falso positivo; colocar um que executa custa o push publicado — por isso
 /// crescer esta lista é a mudança perigosa deste arquivo, não encurtá-la.
-const TEXT_ONLY_COMMANDS: &[&str] = &["echo", "printf", "grep", "egrep", "fgrep", "rg", "ag"];
+///
+/// `rg` e `ag` estavam aqui e SAÍRAM: os dois executam por flag documentada.
+/// `rg --pre COMMAND` roda um pré-processador por arquivo e
+/// `rg --hostname-bin COMMAND` roda um comando; `ag --pager COMMAND` entrega a
+/// string a `popen()`, que é `sh -c` — `ag --pager "git push origin main" x .`
+/// era o push escrito na linha saindo sem recusa nenhuma.
+///
+/// Distinguir `rg` COM flag executora de `rg` sem ela foi considerado e
+/// recusado por duas razões. A primeira é a que já abriu este arquivo duas
+/// vezes: lista de nomes falha ABERTO no nome que ela ainda não tem, e
+/// `--hostname-bin` é de 2023 — o próximo chega sem avisar. A segunda é
+/// definitiva: `RIPGREP_CONFIG_PATH=./cfg rg pattern` traz `--pre` de um
+/// arquivo, e a flag não aparece em lugar nenhum da linha. A promessa deste
+/// módulo é sobre o que está ESCRITO no comando, e a distinção não pode ser
+/// feita a partir do que está escrito.
+///
+/// O limite honesto da lista: ela fala de NOME, e nome não fixa binário. Quem
+/// põe um `grep` que executa (o `--filter=COMMANDS` do `ugrep`, por exemplo) na
+/// frente do PATH derruba a garantia — igual a qualquer outra análise estática
+/// de string, e por isso não é o que esta lista promete.
+const TEXT_ONLY_COMMANDS: &[&str] = &["echo", "printf", "grep", "egrep", "fgrep"];
 
 /// Flags globais do `git` que consomem o argumento SEGUINTE.
 ///
@@ -281,6 +301,9 @@ struct GitCall<'a> {
     /// Já sem aspas: `git "push"` é push.
     subcommand: String,
     args: &'a [&'a str],
+    /// Índice de `args[0]` no segmento inteiro. Sem ele, [`message_operand_mask`]
+    /// teria a fatia mas não saberia onde ela começa.
+    args_at: usize,
 }
 
 /// Último token do valor da flag em `at`.
@@ -291,19 +314,31 @@ struct GitCall<'a> {
 /// push. Aspas que nunca fecham devolvem o próprio `at`: engolir o resto da
 /// linha esconderia o push em vez de achá-lo.
 fn quoted_value_end(tokens: &[&str], at: usize) -> usize {
+    quoted_value_span_end(tokens, at).unwrap_or(at)
+}
+
+/// Igual a [`quoted_value_end`], mas separa os dois casos que ele funde.
+///
+/// `quoted_value_end` devolve o próprio `at` tanto para "valor de um token só"
+/// quanto para "aspa que nunca fecha", e para achar o subcomando tanto faz. Para
+/// [`message_operand_mask`] não tanto faz: lá o retorno vira um SALTO na
+/// varredura, e saltar por causa de uma aspa que não fecha seria esconder o que
+/// vem depois. `None` é o caso da aspa aberta, e quem salta trata como
+/// "não salta".
+fn quoted_value_span_end(tokens: &[&str], at: usize) -> Option<usize> {
     let Some(value) = tokens.get(at) else {
-        return at;
+        return Some(at);
     };
     let Some(quote) = value.chars().next().filter(|c| *c == '"' || *c == '\'') else {
-        return at;
+        return Some(at);
     };
     if value.len() > 1 && value.ends_with(quote) {
-        return at;
+        return Some(at);
     }
     tokens[at + 1..]
         .iter()
         .position(|t| t.ends_with(quote))
-        .map_or(at, |pos| at + 1 + pos)
+        .map(|pos| at + 1 + pos)
 }
 
 /// A invocação de `git` que começa na posição `git_at`.
@@ -323,7 +358,91 @@ fn git_call_at<'a>(tokens: &'a [&'a str], git_at: usize) -> Option<GitCall<'a>> 
     Some(GitCall {
         subcommand,
         args: &tokens[at + 1..],
+        args_at: at + 1,
     })
+}
+
+/// Subcomandos de `git` cujo `-m` carrega TEXTO escrito por humano.
+///
+/// Fail-closed por omissão: subcomando que falte aqui continua com a varredura
+/// inteira em cima dos argumentos — perde-se um falso positivo, nunca a recusa.
+/// `revert` e `cherry-pick` ficam de fora de propósito, e não por esquecimento:
+/// o `-m` deles é número de mainline, não mensagem. `branch -m` também não
+/// entra — ali `-m` é rename, e o operando é nome de branch.
+const GIT_MESSAGE_SUBCOMMANDS: &[&str] = &["commit", "tag", "merge", "stash", "notes"];
+
+/// `-m`, `--message`, e o cluster curto terminado em `m` (`git commit -am`).
+///
+/// A forma GRUDADA não precisa entrar: `--message=git push origin main` e
+/// `-m'git push origin main'` deixam o `git` colado na flag num token só, e
+/// `program_name` desse token nunca resolve para `git` — o casamento já não
+/// acontece. Aspa em volta da própria flag (`git commit '-m' …`) não é
+/// reconhecida aqui e cai de volta na recusa: é o lado seguro de errar.
+fn is_message_flag(token: &str) -> bool {
+    token == "--message"
+        || (token.len() > 1
+            && token.starts_with('-')
+            && !token.starts_with("--")
+            && token.ends_with('m'))
+}
+
+/// Posições do segmento que são operando de `-m` de um `git` que carrega
+/// mensagem — conteúdo, não posição de programa.
+///
+/// Existe por um custo assimétrico. `git commit -m "git push origin main"`
+/// tokeniza para `[git, commit, -m, "git, push, origin, main"]`, casa na
+/// posição 3 e caía na recusa hard-coded do core: um "não" incondicional e
+/// não-allowlistável. Um `grep` recusado se reescreve trocando o programa; uma
+/// mensagem de commit é conteúdo, e num repositório que DOCUMENTA a regra
+/// (este) a frase costuma ser o assunto do commit.
+///
+/// **O que esta exceção NÃO é.** Não é "argumento de git não é programa" —
+/// isso seria falso e perigoso: `git submodule foreach`, `git bisect run`,
+/// `git rebase -x` e `git filter-branch --tree-filter` executam o que recebem,
+/// e a varredura precisa continuar por cima deles. O salto vale para o operando
+/// de `-m` de um dos [`GIT_MESSAGE_SUBCOMMANDS`], e para mais nada.
+///
+/// **Por que não reabre o caminho principal.** O salto é duplamente
+/// condicionado: só depois de um `git <subcomando de mensagem>` identificado no
+/// MESMO segmento, e só sobre o operando daquela flag. Num segmento assim quem
+/// roda é o `git` — os tokens restantes são argumentos dele, não de um runner,
+/// então `ssh host -m … git push` e `docker run -m 512m img git push` não
+/// ganham salto nenhum. E substituição de comando dentro da mensagem
+/// (`-m "$(git push origin main)"`) já sai como segmento próprio no corte por
+/// caractere de [`COMMAND_SEPARATORS`], onde é varrida inteira.
+///
+/// O falso positivo continua nas flags irmãs que também carregam texto
+/// (`--author`, `--date`): elas não entram porque cada nome aqui alarga o
+/// buraco, e nenhuma delas tem o custo do `-m`.
+fn message_operand_mask(tokens: &[&str]) -> Vec<bool> {
+    // Sem `-m` no segmento não há o que marcar, e é o caso da esmagadora
+    // maioria: sai antes de varrer de novo.
+    if !tokens.iter().any(|token| is_message_flag(token)) {
+        return Vec::new();
+    }
+    let mut mask = vec![false; tokens.len()];
+    for git_at in git_positions(tokens) {
+        let Some(call) = git_call_at(tokens, git_at) else {
+            continue;
+        };
+        if !GIT_MESSAGE_SUBCOMMANDS.contains(&call.subcommand.as_str()) {
+            continue;
+        }
+        for (offset, token) in call.args.iter().enumerate() {
+            if !is_message_flag(token) {
+                continue;
+            }
+            let operand = call.args_at + offset + 1;
+            // Aspa que não fecha não vira salto — ver [`quoted_value_span_end`].
+            let Some(end) = quoted_value_span_end(tokens, operand) else {
+                continue;
+            };
+            for slot in mask.iter_mut().take(end + 1).skip(operand) {
+                *slot = true;
+            }
+        }
+    }
+    mask
 }
 
 /// Roda o predicado sobre cada invocação de `git` da linha.
@@ -335,10 +454,18 @@ fn git_call_at<'a>(tokens: &'a [&'a str], git_at: usize) -> Option<GitCall<'a>> 
 /// Basta UMA invocação casar. Um segmento pode ter várias (`git grep … && git
 /// push …` já vem partido pelo separador, mas `nix-shell -p git --run git
 /// push` não), e exigir que fosse a primeira era como o push se escondia.
+///
+/// A única posição pulada é a de operando de mensagem — ver
+/// [`message_operand_mask`], que documenta por que o salto não reabre o
+/// caminho principal.
 fn any_git_call(command: &str, predicate: impl Fn(&GitCall) -> bool) -> bool {
     for segment in command.split(|c| COMMAND_SEPARATORS.contains(&c)) {
         let tokens = word_tokens(segment);
+        let message = message_operand_mask(&tokens);
         for at in git_positions(&tokens) {
+            if message.get(at).copied().unwrap_or(false) {
+                continue;
+            }
             if git_call_at(&tokens, at).is_some_and(|call| predicate(&call)) {
                 return true;
             }
@@ -445,9 +572,19 @@ pub fn classify_risk(command: &str) -> RiskLevel {
     }
 
     // ---- verde: read-only ----
+    // Verde é auto-aprovável: roda sem prompt nenhum quando o usuário liga a
+    // aprovação automática. Então o critério não é "read-only no uso comum", é
+    // "read-only por argumento NENHUM" — o mesmo que já deixa `date`/`hostname`
+    // fora de TRIVIAL_COMMANDS.
+    //
+    // `rg` estava aqui e SAIU: `rg --pre ./x pattern .` roda `./x` uma vez por
+    // arquivo, e o verde entregava execução arbitrária sem prompt. Sai o nome
+    // inteiro, não a flag — o porquê está em TEXT_ONLY_COMMANDS. O custo é `rg`
+    // virar amarelo, que ainda entra no "sempre permitir" da sessão; o custo do
+    // contrário era o aval automático.
     if matches!(
         first,
-        "ls" | "pwd" | "cat" | "grep" | "rg" | "head" | "tail" | "which" | "file" | "wc"
+        "ls" | "pwd" | "cat" | "grep" | "head" | "tail" | "which" | "file" | "wc"
     ) {
         return RiskLevel::Green;
     }
@@ -947,6 +1084,29 @@ mod tests {
         "runner-que-ainda-nao-existe --flag ",
     ];
 
+    /// Buscador de texto que EXECUTA argumento, escrito com a flag documentada
+    /// de cada um.
+    ///
+    /// Coluna acrescentada pelo TERCEIRO conserto deste arquivo, e ela existe
+    /// porque a matriz tinha um ângulo cego: [`TEXT_ONLY_COMMANDS`] é a única
+    /// direção em que o módulo falha ABERTO, e nenhuma coluna daqui encostava
+    /// nela. Quando `rg` e `ag` entraram naquela lista, os 16.800 casos
+    /// continuaram verdes — [`LAUNCHERS`] só enumera runner, e o passe de texto
+    /// não é um runner, é o desligamento da varredura inteira.
+    ///
+    /// A coluna é o sensor: cada nome aqui está FORA do passe de texto e tem de
+    /// continuar fora. Devolver qualquer um deles à lista derruba centenas de
+    /// casos de uma vez, em vez de nenhum.
+    const EXECUTING_TEXT_LAUNCHERS: &[&str] = &[
+        "rg --pre ",          // roda o pré-processador uma vez por arquivo
+        "rg --hostname-bin ", // roda o binário que responde o hostname
+        "ag --pager ",        // vai para `popen()`, que é `sh -c`
+        "sed -e ",            // `s///e` executa o resultado do padrão
+        "awk ",               // `system()` e `| "cmd"`
+        "find . -exec ",      // `-exec` é o nome da coisa
+        "zgrep -e ",          // repassa a linha ao shell
+    ];
+
     /// Formas de nomear o binário do git.
     const GIT_PROGRAMS: &[&str] = &[
         "git",
@@ -1006,14 +1166,16 @@ mod tests {
         "grep -r 'git push origin main' docs",
         "grep push .git/config",
         "egrep 'git push origin main' log",
-        "rg 'git push origin main' --files-with-matches",
         "/usr/bin/grep -rn 'git push origin main' .",
+        // A mesma busca com `rg` NÃO está aqui de propósito: `rg` saiu do passe
+        // de texto e passou a ser recusado — ver
+        // `busca_com_rg_que_cita_push_de_trunk_passa_a_ser_recusada`.
         "cat CONTRIBUTING.md",
     ];
 
-    fn push_commands(targets: &[&str]) -> Vec<String> {
+    fn push_commands_from(launchers: &[&str], targets: &[&str]) -> Vec<String> {
         let mut out = Vec::new();
-        for launcher in LAUNCHERS {
+        for launcher in launchers {
             for program in GIT_PROGRAMS {
                 for flags in GLOBAL_FLAGS {
                     for push in PUSH_SPELLINGS {
@@ -1025,6 +1187,10 @@ mod tests {
             }
         }
         out
+    }
+
+    fn push_commands(targets: &[&str]) -> Vec<String> {
+        push_commands_from(LAUNCHERS, targets)
     }
 
     /// A tabela que os dois consertos anteriores não tinham.
@@ -1040,6 +1206,14 @@ mod tests {
     /// entra como LINHA numa coluna daqui, não como `assert!` avulso no fim do
     /// arquivo. Coluna nova (um jeito novo de escrever a mesma coisa) entra
     /// como coluna.
+    ///
+    /// O TERCEIRO conserto mostrou o limite dessa regra: a tabela só cobre o
+    /// que passa pela varredura, e não viu `rg`/`ag` entrarem em
+    /// [`TEXT_ONLY_COMMANDS`] — que não é uma forma de invocar, é o
+    /// DESLIGAMENTO da varredura. Toda exceção nova precisa da própria tabela,
+    /// e as duas que existem hoje são
+    /// [`matriz_de_ferramenta_que_executa_nao_ganha_o_passe_de_texto`] e
+    /// [`matriz_de_push_atras_de_uma_mensagem_continua_recusada`].
     #[test]
     fn matriz_de_push_para_trunk_e_sempre_recusada_e_vermelha() {
         for cmd in push_commands(TRUNK_TARGETS) {
@@ -1051,6 +1225,28 @@ mod tests {
                 classify_risk(&cmd),
                 RiskLevel::Red,
                 "push para trunk não é vermelho: {cmd:?}"
+            );
+        }
+    }
+
+    /// A exceção da mensagem, cruzada com a matriz inteira.
+    ///
+    /// [`message_operand_mask`] é a primeira posição que a varredura pula, e o
+    /// risco dela é cegar o que vem DEPOIS. Um `assert!` avulso pega a linha
+    /// que o autor lembrou; cruzar o prefixo com as 16.800 formas de escrever o
+    /// push cobre todas de uma vez.
+    #[test]
+    fn matriz_de_push_atras_de_uma_mensagem_continua_recusada() {
+        for cmd in push_commands(TRUNK_TARGETS) {
+            let with_message = format!(r#"git commit -m "wip" && {cmd}"#);
+            assert!(
+                is_refused_by_core(&with_message),
+                "mensagem de commit cegou o push seguinte: {with_message:?}"
+            );
+            assert_eq!(
+                classify_risk(&with_message),
+                RiskLevel::Red,
+                "mensagem de commit rebaixou o push seguinte: {with_message:?}"
             );
         }
     }
@@ -1070,6 +1266,156 @@ mod tests {
                 "todo push é vermelho, mesmo fora da trunk: {cmd:?}"
             );
         }
+    }
+
+    /// O ângulo cego da matriz, agora coberto.
+    ///
+    /// O passe de [`TEXT_ONLY_COMMANDS`] desliga a varredura do SEGMENTO
+    /// inteiro. Num buscador que executa argumento isso não é um falso
+    /// positivo a menos: é o push escrito na linha saindo sem recusa —
+    /// `ag --pager "git push origin main" x .` manda a string para `popen()`,
+    /// que é `sh -c`, e o push acontece.
+    #[test]
+    fn matriz_de_ferramenta_que_executa_nao_ganha_o_passe_de_texto() {
+        for cmd in push_commands_from(EXECUTING_TEXT_LAUNCHERS, TRUNK_TARGETS) {
+            assert!(
+                is_refused_by_core(&cmd),
+                "buscador que executa argumento ganhou o passe de texto: {cmd:?}"
+            );
+            assert_eq!(
+                classify_risk(&cmd),
+                RiskLevel::Red,
+                "buscador que executa argumento não é vermelho: {cmd:?}"
+            );
+        }
+    }
+
+    /// O outro lado: o buraco existe de propósito, e tem a largura da lista.
+    ///
+    /// Derivado de [`TEXT_ONLY_COMMANDS`] em vez de escrito à mão — nome novo
+    /// na lista entra aqui sozinho, e tem de sobreviver ao teste de cima.
+    #[test]
+    fn matriz_do_passe_de_texto_tem_a_largura_da_lista() {
+        for name in TEXT_ONLY_COMMANDS {
+            for target in TRUNK_TARGETS {
+                let cmd = format!("{name} -q git push {target}");
+                assert!(
+                    !is_refused_by_core(&cmd),
+                    "comando de texto virou recusa sem contorno: {cmd:?}"
+                );
+            }
+        }
+    }
+
+    /// Verde é auto-aprovável: roda sem prompt nenhum quando o usuário liga a
+    /// aprovação automática. Então a exigência não é "read-only no uso comum",
+    /// é "read-only por argumento NENHUM" — o mesmo critério que já deixa
+    /// `date`/`hostname` fora de [`TRIVIAL_COMMANDS`].
+    #[test]
+    fn binario_que_executa_argumento_nao_e_verde() {
+        assert_ne!(classify_risk("rg --pre ./x pattern ."), RiskLevel::Green);
+        assert_ne!(
+            classify_risk("rg --hostname-bin ./x pattern ."),
+            RiskLevel::Green
+        );
+        // Sem exceção por flag: o nome sai da lista inteiro, porque
+        // `RIPGREP_CONFIG_PATH=./cfg rg pattern` traz `--pre` de um arquivo que
+        // a linha de comando não mostra.
+        assert_ne!(classify_risk("rg pattern src"), RiskLevel::Green);
+        assert_ne!(classify_risk("ag --pager ./x pattern"), RiskLevel::Green);
+        // Quem cumpre o critério continua verde — o contorno do `rg` é de uma
+        // palavra.
+        assert_eq!(classify_risk("grep -r TODO src"), RiskLevel::Green);
+    }
+
+    /// Preço medido de tirar `rg` do passe de texto: buscar a string passa a
+    /// ser recusado. É o falso positivo que este módulo aceita de propósito, e
+    /// é o único da família que tem contorno de uma palavra.
+    #[test]
+    fn busca_com_rg_que_cita_push_de_trunk_passa_a_ser_recusada() {
+        assert!(is_refused_by_core("rg 'git push origin main' docs"));
+        assert!(!is_refused_by_core("grep -r 'git push origin main' docs"));
+    }
+
+    /// Mensagem de commit é CONTEÚDO, não comando.
+    ///
+    /// `git commit -m "git push origin main"` tokeniza para
+    /// `[git, commit, -m, "git, push, origin, main"]`, casa na posição 3 e caía
+    /// na recusa hard-coded — um "não" incondicional e não-allowlistável, num
+    /// `commit`. O `grep` recusado se reescreve trocando o programa; a mensagem
+    /// de commit não tem para onde ir, e num repositório que DOCUMENTA a regra
+    /// (este) a frase é o assunto do commit.
+    #[test]
+    fn mensagem_de_commit_que_cita_push_de_trunk_nao_e_recusada() {
+        assert!(!is_refused_by_core(
+            r#"git commit -m "git push origin main""#
+        ));
+        assert!(!is_refused_by_core(
+            r#"git commit -am "explica por que git push origin master é recusado""#
+        ));
+        assert!(!is_refused_by_core(
+            r#"git commit --message "git push origin main""#
+        ));
+        assert!(!is_refused_by_core(
+            r#"git tag -m "git push origin main" v1"#
+        ));
+        assert!(!is_refused_by_core(
+            r#"git merge --no-ff -m "git push origin main" feat/x"#
+        ));
+        assert!(!is_refused_by_core(
+            r#"git -C /repo commit -m "git push origin main""#
+        ));
+        assert!(!is_refused_by_core(
+            r#"git stash push -m "git push origin main""#
+        ));
+        assert!(!is_refused_by_core(
+            r#"git notes add -m "git push origin main""#
+        ));
+        // Amarelo, não vermelho: é um commit, e amarelo é o default do commit.
+        assert_eq!(
+            classify_risk(r#"git commit -m "git push origin main""#),
+            RiskLevel::Yellow
+        );
+    }
+
+    /// A exceção da mensagem não pode reabrir o caminho principal.
+    ///
+    /// Ela vale para o operando de `-m` de um `git` que carrega mensagem, e
+    /// para mais nada: substituição de comando dentro da mensagem já sai como
+    /// segmento próprio no corte por caractere, e o resto da linha continua
+    /// varrido posição a posição.
+    #[test]
+    fn a_excecao_da_mensagem_nao_abre_o_push() {
+        assert!(is_refused_by_core(
+            r#"git commit -m "$(git push origin main)""#
+        ));
+        assert!(is_refused_by_core(
+            r#"git commit -m "wip" && git push origin main"#
+        ));
+        assert!(is_refused_by_core(
+            r#"git commit -m "wip"; git push origin main"#
+        ));
+        assert!(is_refused_by_core(
+            r#"git commit -m "wip" `git push origin main`"#
+        ));
+        // Mensagem que fecha em UM token não estica sobre o que vem depois.
+        assert!(is_refused_by_core(
+            r#"git commit -m 'wip' git push origin main"#
+        ));
+        // O `-m` de fora de um git que carrega mensagem não cega nada.
+        assert!(is_refused_by_core("ssh host -m hmac git push origin main"));
+        assert!(is_refused_by_core(
+            "docker run -m 512m img git push origin main"
+        ));
+        // `-m` de subcomando cujo operando NÃO é mensagem (número de mainline)
+        // continua varrido: omissão falha FECHADA.
+        assert!(is_refused_by_core(
+            r#"git cherry-pick -m git push origin main"#
+        ));
+        // Aspa que não fecha não vira passe: sem fim de valor, não há salto.
+        assert!(is_refused_by_core(r#"git commit -m "git push origin main"#));
+        // A mensagem some, o push aparece.
+        assert!(is_refused_by_core("git commit -m wip git push origin main"));
     }
 
     #[test]
