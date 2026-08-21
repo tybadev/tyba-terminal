@@ -22,6 +22,16 @@ use parking_lot::{Condvar, Mutex};
 /// front reconsulta `boot_snapshot` ao receber.
 pub const EVENT_READY: &str = "app://ready";
 
+/// Emitido quando a thread de boot morreu de pânico ANTES de abrir o portão.
+/// Payload: `{ message: string }`, a mensagem do pânico.
+///
+/// Vem sempre seguido de [`EVENT_READY`]: o portão abre de todo jeito (senão
+/// todo comando de escrita paga o timeout de espera e a falha vira lentidão), e
+/// o snapshot que o front reconsultar estará incompleto — sem sessões, sem
+/// layout, ou pela metade. É este evento que diz que o vazio é falha, não
+/// ausência de dado.
+pub const EVENT_FAILED: &str = "app://boot-failed";
+
 /// "O estado do core terminou de carregar?"
 ///
 /// `AtomicBool` + `Condvar` em vez de `tokio::sync::Notify` porque a maioria dos

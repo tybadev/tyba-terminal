@@ -103,7 +103,23 @@ const COMMAND_PREFIXES: &[&str] = &[
 ];
 
 /// Shells que recebem o comando como argumento (`bash -c "git push …"`).
-const SHELL_BINARIES: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish", "ash"];
+///
+/// `cmd`, `powershell` e `pwsh` entram pelo mesmo motivo que os POSIX:
+/// `cmd /c git push origin main` é um push, e sem eles na lista o `git` do meio
+/// contava como argumento de um binário desconhecido — o mesmo buraco de
+/// Windows que o resto deste módulo fechou.
+const SHELL_BINARIES: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "fish",
+    "ash",
+    "cmd",
+    "powershell",
+    "pwsh",
+];
 
 /// Flags globais do `git` que consomem o argumento SEGUINTE.
 ///
@@ -123,21 +139,79 @@ const GIT_GLOBAL_FLAGS_WITH_VALUE: &[&str] = &[
     "--attr-source",
 ];
 
-/// Tira aspas e barras invertidas antes do casamento.
+/// Tira aspas e barras invertidas de UM token antes do casamento.
 ///
 /// Sem isso `git push origin "main"` e `git push origin ma\in` chegam ao
 /// comparador como refname diferente de `main` e escapam da recusa. O preço é
 /// um falso positivo em texto citado que contenha separador (`echo "; git push
 /// origin main"`), e esse é o lado certo de errar: recusa a mais custa um
 /// "não" ao agente, recusa a menos publica na main.
-fn unquote(command: &str) -> String {
-    command.replace(['"', '\'', '\\'], "")
+///
+/// **Por token, nunca na linha inteira.** Aplicado na linha, este `replace`
+/// comia também a barra que separa diretório no Windows: `C:\Program Files\Git\
+/// bin\git.exe push origin main` virava `C:Program FilesGitbingit.exe …`, o
+/// nome do programa dava `C:Program`, e o push para main não era recusado nem
+/// pintado de vermelho — ficava amarelo, que é o nível que entra na allowlist
+/// de "sempre permitir" da sessão.
+fn unquote(token: &str) -> String {
+    token.replace(['"', '\'', '\\'], "")
 }
 
-/// Nome do binário sem diretório nem `.exe`: `/usr/bin/git` é `git`.
-fn binary_name(token: &str) -> &str {
+/// Onde a barra invertida é separador e onde é escape.
+///
+/// O mesmo caractere é as duas coisas e o mesmo texto não pode ser as duas: no
+/// Windows `\` separa diretório (`C:\Git\bin\git.exe`), no shell POSIX escapa o
+/// caractere seguinte (`gi\t` é `git`). A divisão adotada é por posição:
+///
+/// - **Token do programa**: vale a leitura de caminho. Primeiro corta em `/` e
+///   `\` e fica com o último pedaço; só então tira aspas e `.exe`. Era essa
+///   ordem que o unquote de linha inteira invertia.
+/// - **Qualquer outro token**: vale a leitura de escape, feita por [`unquote`].
+///   Refname de git não pode conter `\` (`git check-ref-format` recusa), então
+///   num refspec a barra só pode ser escape de shell — tirá-la ali não perde
+///   informação.
+///
+/// Como no token do programa as duas leituras se excluem, ele é testado nas
+/// duas por [`program_is`] e basta uma casar: fechar o caminho do Windows não
+/// pode reabrir o do POSIX.
+fn program_name(token: &str) -> &str {
     let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
-    base.strip_suffix(".exe").unwrap_or(base)
+    let base = base.trim_matches(|c| c == '"' || c == '\'');
+    strip_exe(base)
+}
+
+/// `.exe` sai sem olhar caixa: `GIT.EXE` roda igual a `git.exe` no Windows.
+fn strip_exe(name: &str) -> &str {
+    name.len()
+        .checked_sub(4)
+        .filter(|&cut| name.is_char_boundary(cut) && name[cut..].eq_ignore_ascii_case(".exe"))
+        .map_or(name, |cut| &name[..cut])
+}
+
+/// Roda `pred` sobre os nomes possíveis do programa nomeado por `token`.
+fn program_is(token: &str, pred: impl Fn(&str) -> bool) -> bool {
+    if pred(program_name(token)) {
+        return true;
+    }
+    // Leitura de escape do POSIX — só difere da de caminho quando há barra
+    // invertida no token, daí o teste antes de alocar.
+    token.contains('\\') && pred(program_name(&unquote(token)))
+}
+
+fn is_git_program(token: &str) -> bool {
+    program_is(token, |name| name.eq_ignore_ascii_case("git"))
+}
+
+/// Token que ainda parece PEDAÇO de caminho, por ter separador de diretório.
+///
+/// Existe para um caso só, e do Windows: caminho com espaço e sem aspas
+/// (`C:\Program Files\Git\bin\git.exe push origin main`) chega aqui partido em
+/// dois tokens pelo `split_whitespace`, e o primeiro (`C:\Program`) não nomeia
+/// binário nenhum. A varredura de [`git_at`] continua enquanto o token seguinte
+/// ainda tiver separador e para no primeiro que não tem — é isso que impede
+/// `./tool git push origin main`, onde o `git` é argumento, de virar recusa.
+fn looks_like_path(token: &str) -> bool {
+    token.contains(['/', '\\'])
 }
 
 /// `FOO=bar` na frente do comando é ambiente, não comando.
@@ -148,17 +222,28 @@ fn is_assignment(token: &str) -> bool {
         })
 }
 
+/// `FOO=bar` continua sendo ambiente mesmo citado — `"FOO=bar" git push` não
+/// engana o casamento só por causa das aspas.
+fn is_assignment_token(token: &str) -> bool {
+    is_assignment(token) || (token.contains(['"', '\'']) && is_assignment(&unquote(token)))
+}
+
 /// Onde está, neste segmento, o `git` que de fato vai rodar.
 fn git_at(tokens: &[&str]) -> Option<usize> {
     let mut at = 0;
-    while tokens.get(at).is_some_and(|t| is_assignment(t)) {
+    while tokens.get(at).is_some_and(|t| is_assignment_token(t)) {
         at += 1;
     }
-    let name = binary_name(tokens.get(at)?);
-    if name == "git" {
+    let first = *tokens.get(at)?;
+    if is_git_program(first) {
         return Some(at);
     }
-    if COMMAND_PREFIXES.contains(&name) || SHELL_BINARIES.contains(&name) {
+    if program_is(first, |name| {
+        COMMAND_PREFIXES
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(name))
+            || SHELL_BINARIES.iter().any(|s| s.eq_ignore_ascii_case(name))
+    }) {
         // `sudo git push`, `env -i git push`, `bash -c "git push …"`: o wrapper
         // não muda o que o comando é. Daqui pra frente o primeiro `git` solto é
         // ele — varrer, em vez de decodificar as flags de cada wrapper, é de
@@ -166,7 +251,17 @@ fn git_at(tokens: &[&str]) -> Option<usize> {
         // tabela de flags por wrapper seria uma segunda lista para manter certa.
         return tokens[at + 1..]
             .iter()
-            .position(|t| binary_name(t) == "git")
+            .position(|t| is_git_program(t))
+            .map(|pos| at + 1 + pos);
+    }
+    if looks_like_path(first) {
+        // Caminho com espaço e sem aspas: o programa continua nos tokens
+        // seguintes enquanto eles ainda tiverem separador (ver
+        // [`looks_like_path`]).
+        return tokens[at + 1..]
+            .iter()
+            .take_while(|t| looks_like_path(t))
+            .position(|t| is_git_program(t))
             .map(|pos| at + 1 + pos);
     }
     // Qualquer outro binário: o `git` que aparecer daqui pra frente é argumento
@@ -176,22 +271,47 @@ fn git_at(tokens: &[&str]) -> Option<usize> {
 
 /// Uma invocação de `git` encontrada num segmento.
 struct GitCall<'a> {
-    subcommand: &'a str,
+    /// Já sem aspas: `git "push"` é push.
+    subcommand: String,
     args: &'a [&'a str],
+}
+
+/// Último token do valor da flag em `at`.
+///
+/// Valor citado e com espaço (`-C "C:\meu repo"`) chega partido pelo
+/// `split_whitespace`. Consumir só o primeiro token faria o subcomando cair no
+/// miolo do caminho — `git -C "C:\meu repo" push origin main` deixava de ser
+/// push. Aspas que nunca fecham devolvem o próprio `at`: engolir o resto da
+/// linha esconderia o push em vez de achá-lo.
+fn quoted_value_end(tokens: &[&str], at: usize) -> usize {
+    let Some(value) = tokens.get(at) else {
+        return at;
+    };
+    let Some(quote) = value.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+        return at;
+    };
+    if value.len() > 1 && value.ends_with(quote) {
+        return at;
+    }
+    tokens[at + 1..]
+        .iter()
+        .position(|t| t.ends_with(quote))
+        .map_or(at, |pos| at + 1 + pos)
 }
 
 fn git_call<'a>(tokens: &'a [&'a str]) -> Option<GitCall<'a>> {
     let mut at = git_at(tokens)? + 1;
     while let Some(&token) = tokens.get(at) {
-        if !token.starts_with('-') {
+        let flag = unquote(token);
+        if !flag.starts_with('-') {
             break;
         }
         at += 1;
-        if GIT_GLOBAL_FLAGS_WITH_VALUE.contains(&token) {
-            at += 1;
+        if GIT_GLOBAL_FLAGS_WITH_VALUE.contains(&flag.as_str()) {
+            at = quoted_value_end(tokens, at) + 1;
         }
     }
-    let subcommand = *tokens.get(at)?;
+    let subcommand = unquote(tokens.get(at)?);
     Some(GitCall {
         subcommand,
         args: &tokens[at + 1..],
@@ -199,9 +319,13 @@ fn git_call<'a>(tokens: &'a [&'a str]) -> Option<GitCall<'a>> {
 }
 
 /// Roda o predicado sobre cada invocação de `git` da linha.
+///
+/// O corte em separadores é por CARACTERE e ignora aspas de propósito: `echo
+/// "; git push origin main"` vira dois segmentos e é recusado. Falso positivo
+/// conhecido e aceito — ver [`unquote`].
 fn any_git_call(command: &str, predicate: impl Fn(&GitCall) -> bool) -> bool {
-    let line = unquote(command);
-    line.split(|c| COMMAND_SEPARATORS.contains(&c))
+    command
+        .split(|c| COMMAND_SEPARATORS.contains(&c))
         .any(|segment| {
             let tokens = word_tokens(segment);
             git_call(&tokens).is_some_and(|call| predicate(&call))
@@ -220,12 +344,15 @@ fn is_trunk_ref(raw: &str) -> bool {
 
 fn pushes_to_trunk(args: &[&str]) -> bool {
     args.iter().any(|raw| {
+        // Argumento é o território da leitura de escape da barra invertida —
+        // ver [`program_name`].
+        let arg = unquote(raw);
         // `--all` e `--mirror` não nomeiam ref nenhuma e levam TODAS as branches
         // locais junto: é push para main sem escrever "main".
-        if *raw == "--all" || *raw == "--mirror" {
+        if arg == "--all" || arg == "--mirror" {
             return true;
         }
-        !raw.starts_with('-') && is_trunk_ref(raw)
+        !arg.starts_with('-') && is_trunk_ref(&arg)
     })
 }
 
@@ -644,6 +771,80 @@ mod tests {
         assert!(!is_refused_by_core("echo git push origin main"));
         assert!(!is_refused_by_core("grep -r 'git push origin main' docs"));
         assert!(!is_refused_by_core("cat CONTRIBUTING.md"));
+    }
+
+    /// A barra invertida do Windows separa diretório, e tirá-la da linha inteira
+    /// antes de resolver o nome do binário desmontava o caminho: o basename de
+    /// `C:\Program Files\Git\bin\git.exe` virava `C:Program`, o push deixava de
+    /// ser push e o princípio 5 do CLAUDE.md ("recusado pelo core. Sempre")
+    /// valia só no POSIX.
+    #[test]
+    fn core_recusa_push_com_caminho_do_windows() {
+        assert!(is_refused_by_core(
+            r"C:\Program Files\Git\bin\git.exe push origin main"
+        ));
+        assert!(is_refused_by_core(
+            r#""C:\Program Files\Git\bin\git.exe" push origin main"#
+        ));
+        assert!(is_refused_by_core(
+            r"C:\tools\git\bin\git.exe push origin master"
+        ));
+        assert!(is_refused_by_core(
+            r"C:\tools\git\cmd\GIT.EXE push origin main"
+        ));
+        assert!(is_refused_by_core(
+            r"C:\tools\git\bin\git.exe -C C:\repo push origin main"
+        ));
+        // Valor de flag citado e com espaço chega partido em dois tokens.
+        assert!(is_refused_by_core(
+            r#"git -C "C:\meu repo" push origin main"#
+        ));
+        assert!(is_refused_by_core("cmd /c git push origin main"));
+        assert!(is_refused_by_core(
+            r#"powershell -Command "git push origin main""#
+        ));
+    }
+
+    /// A mesma barra invertida é escape no shell POSIX. Como o token do programa
+    /// não pode ser caminho e escape ao mesmo tempo, ele é lido das duas formas
+    /// e basta uma casar — fechar a leitura de caminho não pode abrir a de
+    /// escape.
+    #[test]
+    fn core_recusa_push_com_binario_escapado_no_posix() {
+        assert!(is_refused_by_core(r"gi\t push origin main"));
+        assert!(is_refused_by_core(r"/usr/bin/gi\t push origin main"));
+        assert!(is_refused_by_core(r"\git push origin main"));
+    }
+
+    #[test]
+    fn core_nao_recusa_caminho_do_windows_que_nao_e_push() {
+        assert!(!is_refused_by_core(
+            r"C:\Program Files\Git\bin\git.exe push origin feat/x"
+        ));
+        assert!(!is_refused_by_core(
+            r"C:\Program Files\Git\bin\git.exe status"
+        ));
+        assert!(!is_refused_by_core(r"echo C:\Users\me\main"));
+        assert!(!is_refused_by_core(r"copy C:\tools\git.exe D:\bin"));
+        assert!(!is_refused_by_core(r"C:\Users\me\projects\main\build.bat"));
+    }
+
+    /// Amarelo entra na allowlist de "sempre permitir" da sessão. Push do
+    /// Windows classificado como amarelo é push liberado por sessão inteira.
+    #[test]
+    fn caminho_do_windows_nao_rebaixa_push_para_amarelo() {
+        assert_eq!(
+            classify_risk(r"C:\Program Files\Git\bin\git.exe push origin main"),
+            RiskLevel::Red
+        );
+        assert_eq!(
+            classify_risk(r#""C:\Program Files\Git\bin\git.exe" push"#),
+            RiskLevel::Red
+        );
+        assert_eq!(
+            classify_risk(r"C:\tools\git\bin\git.exe push"),
+            RiskLevel::Red
+        );
     }
 
     #[test]

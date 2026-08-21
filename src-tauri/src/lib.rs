@@ -4685,6 +4685,7 @@ fn run_boot(
     layout: layout::SharedLayout,
     pty_pool: SharedPtyPool,
     reconcile: std::sync::mpsc::Sender<()>,
+    boot: Arc<boot::BootGate>,
 ) {
     let total = boot::Span::start("boot.thread");
 
@@ -4731,9 +4732,12 @@ fn run_boot(
 
     // Abrir o portão antes de avisar: quem for reconsultar por causa do evento
     // precisa achar `ready: true`, não uma corrida.
-    if let Some(state) = app.try_state::<AppState>() {
-        state.boot.mark_ready();
-    }
+    //
+    // O portão chega por parâmetro, e não por `try_state::<AppState>()`, porque
+    // ali um `None` — estado não gerenciado ainda — deixava o portão fechado
+    // para sempre sem nenhum sinal. Como parâmetro, não há caminho em que a
+    // thread chegue até aqui sem ter o que abrir.
+    boot.mark_ready();
     let _ = app.emit(layout::EVENT_CHANGED, layout.state());
     let _ = app.emit(boot::EVENT_READY, ());
     let _ = reconcile.send(());
@@ -4752,6 +4756,82 @@ fn run_boot(
     }
 
     store.checkpoint_truncate();
+}
+
+#[derive(Clone, serde::Serialize)]
+struct BootFailure {
+    message: String,
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&'static str>() {
+        return (*text).to_string();
+    }
+    if let Some(text) = payload.downcast_ref::<String>() {
+        return text.clone();
+    }
+    "pânico sem mensagem".into()
+}
+
+/// Roda o corpo do boot e garante que o portão abre mesmo se ele explodir.
+///
+/// A thread de boot é a única que chama `mark_ready`. Se ela morrer antes
+/// disso, o portão fica fechado PARA SEMPRE, e o sintoma não é um crash: o
+/// splash desiste em `SPLASH_CEILING_MS` e entrega um app sem sessões e sem
+/// layout, enquanto todo `create_session`/`apply_launch_config` paga
+/// [`BOOT_WAIT`] antes de fazer qualquer coisa. Falha disfarçada de lentidão.
+/// Enquanto o boot morava no `.setup()`, o mesmo erro matava o app na hora, com
+/// stack trace — a regressão foi trocar barulho por silêncio.
+///
+/// `catch_unwind` é o único jeito de reagir DEPOIS do pânico e ainda abrir o
+/// portão, e `AssertUnwindSafe` é honesto aqui porque nada do estado capturado
+/// é lido no caminho de unwind: ele abre o portão e avisa, não continua o
+/// arranque em cima de estado meio escrito. O que sobrar quebrado (mutex
+/// envenenado, sessão sem PTY) quebra alto no primeiro uso, que é melhor do que
+/// uma janela que nunca responde.
+///
+/// Devolve a mensagem do pânico só quando ele aconteceu ANTES do `mark_ready`.
+/// Depois dele o arranque já cumpriu o contrato — o que roda ali é manutenção
+/// (GC de worktree órfão, truncate do WAL), e derrubar um banner de "o app não
+/// carregou" por causa dela seria mentira.
+fn guard_boot(gate: &boot::BootGate, body: impl FnOnce()) -> Option<String> {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+    let Err(payload) = outcome else {
+        return None;
+    };
+    let message = panic_message(&*payload);
+    eprintln!("[tyba] a thread de boot morreu: {message}");
+    let before_ready = !gate.is_ready();
+    gate.mark_ready();
+    before_ready.then_some(message)
+}
+
+fn spawn_boot(
+    app: AppHandle,
+    store: Arc<Store>,
+    sessions: SharedSessionManager,
+    layout: layout::SharedLayout,
+    pty_pool: SharedPtyPool,
+    reconcile: std::sync::mpsc::Sender<()>,
+    boot: Arc<boot::BootGate>,
+) {
+    let failure_app = app.clone();
+    let gate = Arc::clone(&boot);
+    std::thread::Builder::new()
+        .name("boot".into())
+        .spawn(move || {
+            let failed = guard_boot(&gate, || {
+                run_boot(app, store, sessions, layout, pty_pool, reconcile, boot);
+            });
+            if let Some(message) = failed {
+                // Mesma ordem do caminho de sucesso: portão (já aberto pelo
+                // `guard_boot`), depois aviso. O `ready` vai junto para o splash
+                // não ficar esperando os 4 s de teto por um boot que já morreu.
+                let _ = failure_app.emit(boot::EVENT_FAILED, BootFailure { message });
+                let _ = failure_app.emit(boot::EVENT_READY, ());
+            }
+        })
+        .expect("failed to spawn boot thread");
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -4921,24 +5001,16 @@ pub fn run() {
             let _ = menu::install_fallback(app.handle());
             span.end();
 
-            let boot_handle = app.handle().clone();
-            let boot_store = Arc::clone(&store);
-            let boot_sessions = Arc::clone(&sessions);
-            let boot_layout = Arc::clone(&layout);
-            let boot_pty = Arc::clone(&pty_pool);
-            std::thread::Builder::new()
-                .name("boot".into())
-                .spawn(move || {
-                    run_boot(
-                        boot_handle,
-                        boot_store,
-                        boot_sessions,
-                        boot_layout,
-                        boot_pty,
-                        reconcile_tx,
-                    );
-                })
-                .expect("failed to spawn boot thread");
+            let boot_gate = Arc::clone(&app.state::<AppState>().boot);
+            spawn_boot(
+                app.handle().clone(),
+                Arc::clone(&store),
+                Arc::clone(&sessions),
+                Arc::clone(&layout),
+                Arc::clone(&pty_pool),
+                reconcile_tx,
+                boot_gate,
+            );
 
             setup_span.end();
             Ok(())
@@ -5172,6 +5244,45 @@ mod tests {
             create_session(app.clone(), state.clone(), opts),
             apply_launch_config(app, state, id, None, 80, 24),
         )
+    }
+
+    /// Pânico na thread de boot não pode deixar o portão fechado: fechado para
+    /// sempre é o splash desistindo em 4 s, o app sem sessões e sem layout, e
+    /// todo comando de escrita pagando `BOOT_WAIT` — falha vestida de lentidão.
+    ///
+    /// O pânico impresso no output destes dois testes é esperado, e o hook fica
+    /// como está de propósito: silenciá-lo é `set_hook` global, que numa suíte
+    /// paralela pode vazar para outro teste e engolir a mensagem de uma falha
+    /// de verdade.
+    #[test]
+    fn panico_no_boot_abre_o_portao_e_reporta() {
+        let gate = boot::BootGate::new();
+        let failed = guard_boot(&gate, || panic!("restore explodiu"));
+
+        assert!(gate.is_ready());
+        assert_eq!(failed.as_deref(), Some("restore explodiu"));
+    }
+
+    /// Depois do `mark_ready` o arranque já cumpriu o contrato — o que roda ali
+    /// é manutenção. Reportar "o app não carregou" por causa dela seria mentira.
+    #[test]
+    fn panico_depois_do_ready_nao_vira_falha_de_boot() {
+        let gate = boot::BootGate::new();
+        let failed = guard_boot(&gate, || {
+            gate.mark_ready();
+            panic!("gc de worktree explodiu");
+        });
+
+        assert!(gate.is_ready());
+        assert_eq!(failed, None);
+    }
+
+    #[test]
+    fn boot_sem_panico_nao_reporta_falha() {
+        let gate = boot::BootGate::new();
+        let failed = guard_boot(&gate, || gate.mark_ready());
+        assert!(gate.is_ready());
+        assert_eq!(failed, None);
     }
 
     #[test]
