@@ -751,6 +751,22 @@ export const layoutState = () => invoke<Loaded<LayoutState>>("layout_state");
  */
 export interface BootSnapshot {
   ready: boolean;
+  /**
+   * A thread de boot morreu antes de terminar, e esta é a mensagem do pânico.
+   *
+   * Não-nulo significa que as listas ao lado estão incompletas **por falha**, e
+   * não por ausência de dado. Só é preenchido quando o pânico foi antes de o
+   * portão abrir — depois disso é manutenção (GC de worktree, truncate do WAL)
+   * e não vira aviso. Uma vez preenchido, nunca muda.
+   *
+   * O core grava a mensagem e abre o portão sob o mesmo lock, nessa ordem, e
+   * lê o `ready` antes do resto: `ready: true` nunca vem com um `bootFailure`
+   * desatualizado.
+   *
+   * Existe porque o evento `app://boot-failed` sofre a mesma corrida de entrega
+   * que o `app://ready` — e ao contrário dele, não tinha segunda via.
+   */
+  bootFailure: string | null;
   prefs: Record<string, string>;
   sessions: Session[];
   layout: LayoutState;

@@ -979,14 +979,26 @@ export default function App() {
   // manda o `app://ready`. Sem consumir ESTE evento, um boot que morreu fica
   // indistinguível de um app que simplesmente não tem sessão, e o usuário
   // conclui que perdeu o trabalho em vez de que algo quebrou.
-  useEffect(() => {
-    const unlisten = onBootFailed((message) => {
+  //
+  // O aviso é o mesmo para as duas vias — o evento, que é o caminho rápido, e o
+  // campo `bootFailure` do snapshot, que é a rede quando o evento se perde. Um
+  // `ref` guarda o que já foi avisado: as duas podem chegar, e avisar duas
+  // vezes da mesma falha é ruído.
+  const bootFailureSeen = useRef(false);
+  const reportBootFailure = useCallback(
+    (message: string) => {
+      if (bootFailureSeen.current) return;
+      bootFailureSeen.current = true;
       toastError(t("bootFailed"), message);
-    });
+    },
+    [t],
+  );
+  useEffect(() => {
+    const unlisten = onBootFailed(reportBootFailure);
     return () => {
       void unlisten.then((off) => off());
     };
-  }, [t]);
+  }, [reportBootFailure]);
 
   // O core avisa quando a thread de boot termina. Só então o que veio vazio
   // vira estado — antes disso é transitório.
@@ -1012,15 +1024,26 @@ export default function App() {
     });
 
     const tick = async () => {
-      // `list_sessions` é `async` no core, então esta pergunta roda no pool
-      // assíncrono e não na main thread do macOS — a mesma que desenha o
-      // webview. É por isso que ela, e não `boot_snapshot`, é a do poll.
-      const ready = await refreshSessions();
-      // O `stopped` só é consultado depois do `refreshLayout`, de propósito: o
-      // próprio sucesso deste tick sobe o `bootReady` e desmonta o efeito, e
-      // desistir por causa disso deixaria o layout sem carregar.
-      if (ready) refreshLayout();
-      schedule(ready);
+      // `boot_snapshot` e não `list_sessions`: os dois são `async` no core,
+      // então nenhum roda na main thread do macOS — a que desenha o webview —,
+      // mas só este traz o `bootFailure`. E o evento que carregaria essa
+      // notícia sofre a mesma corrida de entrega que o `app://ready`, com o
+      // agravante de a thread de boot começar dentro do `.setup()`, antes de o
+      // webview existir. Sem o campo aqui, um pânico cedo não chegaria nunca.
+      //
+      // De quebra, uma pergunta em vez de duas: sessões e layout vêm juntos.
+      const snapshot = await bootSnapshot().catch(() => null);
+      if (snapshot?.bootFailure) reportBootFailure(snapshot.bootFailure);
+      const loaded = acceptLoaded(snapshot ? { ready: snapshot.ready, value: snapshot } : null);
+      if (loaded) {
+        setSessions(loaded.sessions);
+        setLayout(loaded.layout);
+        promptNewSessionIfEmpty(true, loaded.layout.workspaces.length);
+      }
+      // O `stopped` só é consultado no fim, de propósito: o próprio sucesso
+      // deste tick sobe o `bootReady` e desmonta o efeito, e desistir por causa
+      // disso deixaria layout e falha sem aplicar.
+      schedule(loaded !== null);
     };
     const schedule = (ready: boolean) => {
       const delay = nextBootPoll({ ready, elapsedMs: Date.now() - startedAt });
