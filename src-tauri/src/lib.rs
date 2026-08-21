@@ -149,38 +149,52 @@ fn pane_bound_sessions(layout: &layout::LayoutState) -> std::collections::HashSe
 fn session_worktree_roots(
     sessions: &[Session],
     bound: &std::collections::HashSet<SessionId>,
-    home: Option<&std::path::Path>,
 ) -> std::collections::HashSet<std::path::PathBuf> {
-    let mut roots = std::collections::HashSet::new();
-    for session in sessions {
-        if !bound.contains(&session.id) {
-            continue;
-        }
-        let Some(worktree) = session.worktree.as_ref() else {
-            continue;
-        };
-        // `Skip` é o volume que pode não estar montado. Ali quem pendura é a
-        // própria syscall, em I/O ininterrompível, sem diálogo para clicar e sem
-        // timeout para estourar — e pendurar a thread de reconciliação congelaria
-        // o chip de todos os outros repositórios junto. Ver `session::cwd`, que
-        // é quem classifica caminho neste projeto.
-        if matches!(
-            session::cwd::reopen_policy(&worktree.path, home),
-            session::cwd::ReopenPolicy::Skip
-        ) {
-            continue;
-        }
+    touchable_worktrees(sessions, bound)
         // `toplevel` é a checagem de existência, e é de propósito que não haja
         // um `is_dir()` antes: worktree removido — na mão ou pelo `gc_orphans` —
         // faz o `git` falhar, o caminho é descartado e nada aparece na tela. A
         // única retentativa é a cadência da própria reconciliação.
-        if let Some(root) = repo::toplevel(&worktree.path) {
-            roots.insert(root);
-        }
-    }
-    roots
+        .filter_map(repo::toplevel)
+        .collect()
 }
 
+/// Os worktrees que a reconciliação pode mandar o `git` visitar.
+///
+/// **O `git` daqui bloqueia a thread `repo-reconcile`**: `repo::toplevel` faz
+/// shell-out e espera no `output()`, e num mount NFS/SMB morto o processo fica
+/// em I/O ininterrompível — sem diálogo para clicar e sem timeout para estourar.
+/// A thread não volta, e o `EVENT_RECONCILED` para de sair para todos os
+/// repositórios, não só para o do caminho ruim.
+///
+/// Por isso a pergunta é `may_hang_shared_thread`, e **não** a `reopen_policy`
+/// que o `resume_startup` usa. As duas classificam caminho pelo texto e
+/// compartilham a lista de prefixos, mas foram calibradas por custos opostos: lá
+/// adiar à toa perde uma aba, e por isso `/mnt/c` (o disco do Windows no WSL)
+/// passa; aqui adiar à toa perde o chip de branch de um repositório até o tick
+/// seguinte, e tocar errado perde o de todos, para sempre. Reusar a política do
+/// arranque aqui já foi exatamente esse bug.
+fn touchable_worktrees<'a>(
+    sessions: &'a [Session],
+    bound: &'a std::collections::HashSet<SessionId>,
+) -> impl Iterator<Item = &'a std::path::Path> {
+    sessions
+        .iter()
+        .filter(|session| bound.contains(&session.id))
+        .filter_map(|session| session.worktree.as_ref())
+        .map(|worktree| worktree.path.as_path())
+        .filter(|path| !session::cwd::may_hang_shared_thread(path))
+}
+
+/// Roda inteira na thread `repo-reconcile`, e os três blocos abaixo fazem
+/// shell-out de `git`.
+///
+/// Só o dos worktrees de sessão filtra caminho antes de tocar. Os outros dois —
+/// a raiz que o dono escolheu para o workspace e o cwd de um shell vivo —
+/// continuam expostos a um mount morto, de propósito: ali o chip perdido é o do
+/// repositório principal, e adiar `/mnt/c` cobraria isso de todo usuário de WSL
+/// no caso saudável, que é o comum. Fechar a classe inteira é tirar o `git` de
+/// dentro desta thread, não alongar a lista de prefixos.
 fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::PathBuf> {
     let layout = state.layout.state();
     let mut roots: std::collections::HashSet<std::path::PathBuf> = layout
@@ -192,13 +206,9 @@ fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::
         .collect();
 
     let sessions = state.sessions.list();
-    // Resolvido uma vez: a classificação é pura, e ler o env por sessão não
-    // acrescentaria nada. Mesmo motivo do `resume_startup`.
-    let home = session::cwd::home();
     roots.extend(session_worktree_roots(
         &sessions,
         &pane_bound_sessions(&layout),
-        home.as_deref(),
     ));
 
     for session in sessions {
@@ -643,7 +653,10 @@ fn hosts_alias(store: &Arc<session::store::Store>, host_id: &str) -> Option<Stri
 /// O cwd de cada sessão passa por [`session::cwd::reopen_policy`] antes de
 /// qualquer syscall daqui: caminho em volume que pode não estar montado não é
 /// reaberto, e pasta protegida pelo TCC é reaberta sem o `is_dir()` desta
-/// função. O segundo caso **não** evita o diálogo de permissão do macOS — o
+/// função. **É a política do chamador barato**: adiar à toa aqui custa uma aba
+/// que não volta, e é por isso que `/mnt/c` do WSL passa. Quem paga a thread de
+/// todo mundo pergunta a `may_hang_shared_thread` — ver `touchable_worktrees`.
+/// O segundo caso **não** evita o diálogo de permissão do macOS — o
 /// `resolve_cwd` do spawn stata o mesmo caminho poucas linhas depois, e o shell
 /// ainda faz `chdir` para lá. O módulo explica o que cada variante compra.
 fn resume_startup(
@@ -5571,7 +5584,7 @@ mod tests {
         let sessions = vec![agent_session(id, Some(repo.clone()))];
         let bound: std::collections::HashSet<SessionId> = [id].into_iter().collect();
 
-        let roots = session_worktree_roots(&sessions, &bound, None);
+        let roots = session_worktree_roots(&sessions, &bound);
         assert_eq!(
             roots,
             [repo::canonicalize_or(&repo)].into_iter().collect(),
@@ -5587,7 +5600,7 @@ mod tests {
         let repo = temp_repo();
         let sessions = vec![agent_session(uuid::Uuid::new_v4(), Some(repo.clone()))];
 
-        let roots = session_worktree_roots(&sessions, &std::collections::HashSet::new(), None);
+        let roots = session_worktree_roots(&sessions, &std::collections::HashSet::new());
         assert!(roots.is_empty(), "{roots:?}");
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
     }
@@ -5601,22 +5614,57 @@ mod tests {
         let sessions = vec![agent_session(id, Some(ghost))];
         let bound: std::collections::HashSet<SessionId> = [id].into_iter().collect();
 
-        assert!(session_worktree_roots(&sessions, &bound, None).is_empty());
+        assert!(session_worktree_roots(&sessions, &bound).is_empty());
     }
 
-    /// Volume que pode não estar montado não é tocado: lá o `stat` pendura em
-    /// I/O ininterrompível, e quem pendura é a thread que atualiza o chip de
-    /// todos os repositórios. Ver `session::cwd::ReopenPolicy::Skip`.
-    #[test]
-    fn worktree_em_volume_montado_nao_e_tocado() {
-        let id = uuid::Uuid::new_v4();
-        let sessions = vec![agent_session(
-            id,
-            Some(std::path::PathBuf::from("/Volumes/NAS/repo")),
-        )];
-        let bound: std::collections::HashSet<SessionId> = [id].into_iter().collect();
+    fn worktrees_bound_to_panes(
+        paths: &[&str],
+    ) -> (Vec<Session>, std::collections::HashSet<SessionId>) {
+        let sessions: Vec<Session> = paths
+            .iter()
+            .map(|path| agent_session(uuid::Uuid::new_v4(), Some(std::path::PathBuf::from(*path))))
+            .collect();
+        let bound = sessions.iter().map(|s| s.id).collect();
+        (sessions, bound)
+    }
 
-        assert!(session_worktree_roots(&sessions, &bound, None).is_empty());
+    /// Nenhum destes caminhos chega ao `git rev-parse`.
+    ///
+    /// O chamador é a thread `repo-reconcile`: `repo::toplevel` faz shell-out e
+    /// bloqueia no `output()`. Num mount morto o `git` fica em I/O
+    /// ininterrompível, a thread nunca volta e o `EVENT_RECONCILED` para de sair
+    /// para **todos** os repositórios. `/mnt` e `/media` entram na lista por
+    /// causa desse custo — o arranque, que paga uma aba, os deixa passar. Ver
+    /// `session::cwd::may_hang_shared_thread`.
+    #[test]
+    fn worktree_em_mount_suspeito_nao_chega_ao_git() {
+        let (sessions, bound) = worktrees_bound_to_panes(&[
+            "/Volumes/NAS/repo",
+            "/Network/Servers/ci/repo",
+            "/net/host/share/repo",
+            "/mnt/nas/repo",
+            "/media/nas/repo",
+            r"\\servidor\share\repo",
+            "//servidor/share/repo",
+        ]);
+
+        let touchable: Vec<_> = touchable_worktrees(&sessions, &bound).collect();
+        assert!(touchable.is_empty(), "{touchable:?}");
+    }
+
+    /// O contraponto que separa o filtro certo de um `filter` que descarta tudo:
+    /// worktree local — inclusive sob pasta do TCC, onde o diálogo tem fim —
+    /// continua chegando ao `git`.
+    #[test]
+    fn worktree_local_continua_chegando_ao_git() {
+        let (sessions, bound) = worktrees_bound_to_panes(&[
+            "/Users/tester/code/tyba",
+            "/Users/tester/Documents/tyba",
+            "/tmp/tyba",
+        ]);
+
+        let touchable: Vec<_> = touchable_worktrees(&sessions, &bound).collect();
+        assert_eq!(touchable.len(), 3, "{touchable:?}");
     }
 
     #[test]
@@ -5625,7 +5673,7 @@ mod tests {
         let sessions = vec![agent_session(id, None)];
         let bound: std::collections::HashSet<SessionId> = [id].into_iter().collect();
 
-        assert!(session_worktree_roots(&sessions, &bound, None).is_empty());
+        assert!(session_worktree_roots(&sessions, &bound).is_empty());
     }
 
     #[test]
