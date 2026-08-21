@@ -98,10 +98,92 @@ impl<T> Loaded<T> {
 /// do usuário pendurado.
 const BOOT_WAIT: Duration = Duration::from_secs(10);
 
+/// As sessões que estão dentro de algum pane, em qualquer workspace ou tab.
+///
+/// `AgentViewer` conta junto com `Leaf`: os dois prendem uma sessão a um pane, e
+/// os dois podem estar em foco.
+fn pane_bound_sessions(layout: &layout::LayoutState) -> std::collections::HashSet<SessionId> {
+    fn walk(node: &layout::PaneNode, out: &mut std::collections::HashSet<SessionId>) {
+        match node {
+            layout::PaneNode::Leaf { session_id, .. }
+            | layout::PaneNode::AgentViewer { session_id, .. } => {
+                out.insert(*session_id);
+            }
+            layout::PaneNode::Split { first, second, .. } => {
+                walk(first, out);
+                walk(second, out);
+            }
+        }
+    }
+
+    let mut out = std::collections::HashSet::new();
+    for workspace in &layout.workspaces {
+        for tab in &workspace.tabs {
+            if let Some(root) = &tab.root {
+                walk(root, &mut out);
+            }
+        }
+    }
+    out
+}
+
+/// O worktree das sessões presas a um pane, viva ou encerrada.
+///
+/// O worktree de um agente continua em disco depois que a sessão morre — é o
+/// ponto do modelo, e é lá que o dono revisa o diff. Sem raiz observada ele não
+/// ganhava `RepoSnapshot`, e o chip de branch ficava sem o que mostrar: não
+/// porque o repositório sumiu, mas porque ninguém tinha olhado.
+///
+/// **O corte é o pane, não "toda sessão encerrada".** A tabela `sessions` cresce
+/// monotonicamente no modo `Resume` (o padrão), e `restore` devolve todas: com o
+/// corte por status, cada agente já encerrado viraria uma raiz nova, cada raiz um
+/// watcher de FS mais `branch`/`status`/`ahead_behind` a cada evento — custo que
+/// só cresce, num core que disputa CPU com os agentes. E o corte não perde nada
+/// visível: o chip mostra a sessão ATIVA, e sessão ativa é sempre sessão num
+/// pane.
+///
+/// Vale para a sessão viva também, de propósito. O caminho do `process_cwd`
+/// abaixo já resolve o mesmo worktree enquanto o agente vive; registrar pelos
+/// dois lados faz a raiz não sumir no instante em que ele termina, e o watcher
+/// não é derrubado para ser recriado igual no reconcile seguinte.
+fn session_worktree_roots(
+    sessions: &[Session],
+    bound: &std::collections::HashSet<SessionId>,
+    home: Option<&std::path::Path>,
+) -> std::collections::HashSet<std::path::PathBuf> {
+    let mut roots = std::collections::HashSet::new();
+    for session in sessions {
+        if !bound.contains(&session.id) {
+            continue;
+        }
+        let Some(worktree) = session.worktree.as_ref() else {
+            continue;
+        };
+        // `Skip` é o volume que pode não estar montado. Ali quem pendura é a
+        // própria syscall, em I/O ininterrompível, sem diálogo para clicar e sem
+        // timeout para estourar — e pendurar a thread de reconciliação congelaria
+        // o chip de todos os outros repositórios junto. Ver `session::cwd`, que
+        // é quem classifica caminho neste projeto.
+        if matches!(
+            session::cwd::reopen_policy(&worktree.path, home),
+            session::cwd::ReopenPolicy::Skip
+        ) {
+            continue;
+        }
+        // `toplevel` é a checagem de existência, e é de propósito que não haja
+        // um `is_dir()` antes: worktree removido — na mão ou pelo `gc_orphans` —
+        // faz o `git` falhar, o caminho é descartado e nada aparece na tela. A
+        // única retentativa é a cadência da própria reconciliação.
+        if let Some(root) = repo::toplevel(&worktree.path) {
+            roots.insert(root);
+        }
+    }
+    roots
+}
+
 fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::PathBuf> {
-    let mut roots: std::collections::HashSet<std::path::PathBuf> = state
-        .layout
-        .state()
+    let layout = state.layout.state();
+    let mut roots: std::collections::HashSet<std::path::PathBuf> = layout
         .workspaces
         .iter()
         .filter_map(|w| w.repo_root.as_deref())
@@ -109,7 +191,17 @@ fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::
         .filter_map(|root| repo::toplevel(&root))
         .collect();
 
-    for session in state.sessions.list() {
+    let sessions = state.sessions.list();
+    // Resolvido uma vez: a classificação é pura, e ler o env por sessão não
+    // acrescentaria nada. Mesmo motivo do `resume_startup`.
+    let home = session::cwd::home();
+    roots.extend(session_worktree_roots(
+        &sessions,
+        &pane_bound_sessions(&layout),
+        home.as_deref(),
+    ));
+
+    for session in sessions {
         if !matches!(session.status, SessionStatus::Running) {
             continue;
         }
@@ -5339,6 +5431,201 @@ mod tests {
             panic!("gc de worktree explodiu");
         });
         assert_eq!(gate.failure(), None);
+    }
+
+    fn git_in_test(dir: &std::path::Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?} falhou em {}", dir.display());
+    }
+
+    /// Repositório de verdade num temp: `repo::toplevel` chama o binário do git,
+    /// e um fixture de mentira não distinguiria "existe" de "sumiu" — que é
+    /// exatamente a distinção sob teste.
+    fn temp_repo() -> std::path::PathBuf {
+        let base = std::env::temp_dir().join(format!("tyba-roots-{}", uuid::Uuid::new_v4()));
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_in_test(&repo, &["init", "-q"]);
+        git_in_test(&repo, &["config", "user.email", "t@t.com"]);
+        git_in_test(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        git_in_test(&repo, &["add", "-A"]);
+        git_in_test(&repo, &["commit", "-qm", "init"]);
+        repo
+    }
+
+    fn agent_session(id: SessionId, worktree: Option<std::path::PathBuf>) -> Session {
+        Session {
+            id,
+            kind: SessionKind::Agent {
+                runner: session::AgentRunnerKind::ClaudeCode,
+            },
+            title: "agente".into(),
+            repo_root: None,
+            worktree: worktree.map(|path| worktree::Worktree {
+                path,
+                branch: "tyba/x".into(),
+                base_ref: "0".repeat(40),
+                dirty: false,
+                ahead: 0,
+            }),
+            // Encerrada: é o caso que não tinha raiz observada.
+            status: SessionStatus::Exited { code: 0 },
+            attention: false,
+            created_at: chrono::Utc::now(),
+            cwd: None,
+            connection: session::ConnectionState::Live,
+        }
+    }
+
+    fn leaf(session: SessionId) -> layout::PaneNode {
+        layout::PaneNode::Leaf {
+            id: uuid::Uuid::new_v4(),
+            session_id: session,
+        }
+    }
+
+    fn workspace_with(roots: Vec<layout::PaneNode>) -> layout::LayoutState {
+        let tabs = roots
+            .into_iter()
+            .map(|root| layout::Tab {
+                id: uuid::Uuid::new_v4(),
+                title: None,
+                view: None,
+                active_pane: None,
+                root: Some(root),
+                created_at: chrono::Utc::now(),
+            })
+            .collect();
+        layout::LayoutState {
+            workspaces: vec![layout::Workspace {
+                id: uuid::Uuid::new_v4(),
+                name: "w".into(),
+                name_locked: false,
+                repo_root: None,
+                color: None,
+                group: None,
+                kind: layout::WorkspaceKind::User,
+                launch_config_id: None,
+                active_tab: None,
+                tabs,
+                side_view: None,
+                side_ratio: 0.5,
+                side_expanded: false,
+                created_at: chrono::Utc::now(),
+            }],
+            active_workspace: None,
+        }
+    }
+
+    /// Split aninhado, tab que não é a ativa e pane de `AgentViewer` contam: o
+    /// que decide é estar preso a um pane, não estar visível agora.
+    #[test]
+    fn as_sessoes_de_todos_os_panes_entram_no_corte() {
+        let visible = uuid::Uuid::new_v4();
+        let nested = uuid::Uuid::new_v4();
+        let other_tab = uuid::Uuid::new_v4();
+        let viewer = uuid::Uuid::new_v4();
+
+        let split = layout::PaneNode::Split {
+            id: uuid::Uuid::new_v4(),
+            split: layout::SplitKind::H,
+            ratio: 0.5,
+            first: Box::new(leaf(visible)),
+            second: Box::new(layout::PaneNode::Split {
+                id: uuid::Uuid::new_v4(),
+                split: layout::SplitKind::V,
+                ratio: 0.5,
+                first: Box::new(leaf(nested)),
+                second: Box::new(layout::PaneNode::AgentViewer {
+                    id: uuid::Uuid::new_v4(),
+                    session_id: viewer,
+                }),
+            }),
+        };
+        let layout = workspace_with(vec![split, leaf(other_tab)]);
+
+        let bound = pane_bound_sessions(&layout);
+        assert_eq!(bound.len(), 4);
+        for id in [visible, nested, other_tab, viewer] {
+            assert!(bound.contains(&id), "{id} ficou de fora");
+        }
+    }
+
+    #[test]
+    fn layout_sem_pane_nenhum_nao_prende_sessao() {
+        assert!(pane_bound_sessions(&workspace_with(Vec::new())).is_empty());
+    }
+
+    /// O achado: sessão de agente ENCERRADA com worktree passa a ganhar raiz
+    /// observada — sem ela o chip de branch não tinha o que mostrar.
+    #[test]
+    fn o_worktree_de_uma_sessao_encerrada_num_pane_vira_raiz_observada() {
+        let repo = temp_repo();
+        let id = uuid::Uuid::new_v4();
+        let sessions = vec![agent_session(id, Some(repo.clone()))];
+        let bound: std::collections::HashSet<SessionId> = [id].into_iter().collect();
+
+        let roots = session_worktree_roots(&sessions, &bound, None);
+        assert_eq!(
+            roots,
+            [repo::canonicalize_or(&repo)].into_iter().collect(),
+            "worktree de sessão encerrada não virou raiz"
+        );
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    /// O corte. Sessão fora de qualquer pane não pode ser mostrada por chip
+    /// nenhum, e a tabela `sessions` guarda todas as de todos os tempos.
+    #[test]
+    fn sessao_fora_de_pane_nao_vira_raiz_observada() {
+        let repo = temp_repo();
+        let sessions = vec![agent_session(uuid::Uuid::new_v4(), Some(repo.clone()))];
+
+        let roots = session_worktree_roots(&sessions, &std::collections::HashSet::new(), None);
+        assert!(roots.is_empty(), "{roots:?}");
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    /// `gc_orphans` remove órfão, e o usuário pode apagar a pasta na mão.
+    /// Caminho morto sai da lista em silêncio — nem erro, nem raiz fantasma.
+    #[test]
+    fn worktree_que_sumiu_do_disco_e_descartado_em_silencio() {
+        let id = uuid::Uuid::new_v4();
+        let ghost = std::env::temp_dir().join(format!("tyba-sumiu-{}", uuid::Uuid::new_v4()));
+        let sessions = vec![agent_session(id, Some(ghost))];
+        let bound: std::collections::HashSet<SessionId> = [id].into_iter().collect();
+
+        assert!(session_worktree_roots(&sessions, &bound, None).is_empty());
+    }
+
+    /// Volume que pode não estar montado não é tocado: lá o `stat` pendura em
+    /// I/O ininterrompível, e quem pendura é a thread que atualiza o chip de
+    /// todos os repositórios. Ver `session::cwd::ReopenPolicy::Skip`.
+    #[test]
+    fn worktree_em_volume_montado_nao_e_tocado() {
+        let id = uuid::Uuid::new_v4();
+        let sessions = vec![agent_session(
+            id,
+            Some(std::path::PathBuf::from("/Volumes/NAS/repo")),
+        )];
+        let bound: std::collections::HashSet<SessionId> = [id].into_iter().collect();
+
+        assert!(session_worktree_roots(&sessions, &bound, None).is_empty());
+    }
+
+    #[test]
+    fn sessao_sem_worktree_nao_acrescenta_raiz() {
+        let id = uuid::Uuid::new_v4();
+        let sessions = vec![agent_session(id, None)];
+        let bound: std::collections::HashSet<SessionId> = [id].into_iter().collect();
+
+        assert!(session_worktree_roots(&sessions, &bound, None).is_empty());
     }
 
     #[test]
