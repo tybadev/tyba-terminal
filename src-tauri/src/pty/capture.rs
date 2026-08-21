@@ -16,7 +16,7 @@ use crate::blocks::Capture;
 use crate::history::{CommandRecord, Tracker};
 use crate::status::{OscParser, ShellEvent};
 
-use super::SessionCwdPayload;
+use super::{SessionCommandPayload, SessionCwdPayload};
 
 fn marker_at(chunk: &[u8], mark: &[u8]) -> Option<usize> {
     chunk.windows(mark.len()).position(|w| w == mark)
@@ -72,13 +72,17 @@ pub(super) enum Action {
     ClearCoreScreen,
     /// O bloco assumiu a saída: limpa o core e a tela ao vivo.
     ResetScreen,
-    Running {
-        command: Option<String>,
-        agent_match: bool,
-    },
-    Idle,
-    /// O shell entrou (ou saiu) de prompt de continuação.
-    Continuation(bool),
+    /// O ciclo de comando INTEIRO — rodando, ocioso, em continuação —, num
+    /// payload só.
+    ///
+    /// Armadilha que custou caro: `running` e `continuation` já foram ações
+    /// separadas, e o emitter mandava cada uma como um `SessionCommandPayload`
+    /// completo. Como o front guarda o payload por sessão substituindo o
+    /// objeto (`{...prev, [id]: payload}`), o último a escrever ganha — e um
+    /// `Continuation(false)` empurrado logo depois do `Running` apagava o
+    /// comando em execução. `continuation` é CAMPO deste estado, não fato
+    /// independente; quem emite um campo emite todos.
+    CommandState(SessionCommandPayload),
     Record(CommandRecord),
     Wipe,
     Finalize(FinishedBlock),
@@ -93,6 +97,71 @@ pub(super) enum Action {
 /// receber bytes em vez de escurecer de vez.
 const MAX_ECHO_BYTES: usize = 8 * 1024;
 
+/// Onde está a linha depois do Enter. O shell não marca `PS2` com OSC nenhum —
+/// o estado é inferido pela AUSÊNCIA, e por isso precisa de três casas, não de
+/// um booleano.
+///
+/// A distinção entre as duas últimas é o achado do review: enquanto "eco
+/// terminou" e "o shell está em continuação" eram a mesma flag, todo `ls -la`
+/// era anunciado como continuação no intervalo entre o Enter e o `133;C`, e a
+/// linha do TYBA dizia "o shell espera o resto do comando" para um comando de
+/// uma linha só.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Submission {
+    /// Prompt primário, ou comando em execução: nada pendente.
+    Idle,
+    /// O eco terminou e o shell ainda não disse o que fez com a linha. Não se
+    /// anuncia NADA daqui: é o intervalo em que o comando comum também está.
+    AwaitingShell,
+    /// O shell pintou outra coisa em vez de rodar — é o `PS2`. Fica até um
+    /// marcador (`633;E`, `133;C`, `133;B`) ou o fim do comando desfazer.
+    Continuing,
+}
+
+/// O shell PINTOU alguma coisa aqui, ou só mexeu no terminal?
+///
+/// É a pergunta que separa `ls -la` de `for … do`: entre o Enter e o `633;E`
+/// do preexec o shell não desenha glifo nenhum — o `\e[?2004l` com que o `zle`
+/// fecha o bracketed paste é controle, não texto. Já o `PS2` é texto por
+/// definição (`for> `, `dquote> `). Contar byte cru em vez de glifo daria
+/// continuação a todo comando cujo desligamento do bracketed paste caísse num
+/// chunk sozinho.
+///
+/// Sem estado entre chamadas de propósito: o `HoldBack` da thread de leitura
+/// entrega chunks que só terminam fora de sequência de escape, então nenhuma
+/// delas chega partida aqui.
+fn paints_glyph(bytes: &[u8]) -> bool {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Scan {
+        Ground,
+        Esc,
+        Csi,
+        /// Corpo de OSC/DCS/APC/PM/SOS — termina em `BEL` ou `ST`.
+        StringBody,
+    }
+
+    let mut state = Scan::Ground;
+    for &byte in bytes {
+        state = match (state, byte) {
+            // `ESC` aborta o que estava em curso, em qualquer estado — é
+            // também como o `ST` (`ESC \`) fecha o corpo de string.
+            (_, 0x1b) => Scan::Esc,
+            (Scan::Esc, b'[') => Scan::Csi,
+            (Scan::Esc, b']' | b'P' | b'X' | b'^' | b'_') => Scan::StringBody,
+            (Scan::Esc, _) => Scan::Ground,
+            (Scan::Csi, 0x40..=0x7e) => Scan::Ground,
+            (Scan::Csi, _) => Scan::Csi,
+            (Scan::StringBody, 0x07) => Scan::Ground,
+            (Scan::StringBody, _) => Scan::StringBody,
+            // Fora de sequência, o que não é controle vira glifo. `\r`, `\n` e
+            // `\x7f` mexem no cursor, não pintam.
+            (Scan::Ground, 0x20..=0x7e) | (Scan::Ground, 0x80..=0xff) => return true,
+            (Scan::Ground, _) => Scan::Ground,
+        };
+    }
+    false
+}
+
 pub(super) struct CaptureMachine {
     osc: OscParser,
     tracker: Tracker,
@@ -101,12 +170,12 @@ pub(super) struct CaptureMachine {
     swallow_echo: bool,
     /// Bytes já engolidos à espera da quebra de linha do eco.
     swallowed: usize,
-    /// A linha foi submetida e o shell não executou nada: o eco terminou e
-    /// nem `133;C` nem prompt novo vieram.
-    submitted: bool,
-    /// O que já foi ANUNCIADO ao front sobre a continuação, para não repetir
-    /// evento a cada chunk.
-    continuation: bool,
+    submission: Submission,
+    /// O último estado do ciclo de comando ENTREGUE ao front — o objeto que ele
+    /// tem em mãos agora. É daqui que sai todo payload, e é contra ele que a
+    /// transição de continuação é comparada: assim o campo viaja junto do
+    /// estado certo, em vez de um payload parcial sobrescrever o inteiro.
+    command: SessionCommandPayload,
     prompt_mode: Option<bool>,
     agent_match: bool,
     cwd: Option<PathBuf>,
@@ -122,8 +191,8 @@ impl CaptureMachine {
             capturing: false,
             swallow_echo: false,
             swallowed: 0,
-            submitted: false,
-            continuation: false,
+            submission: Submission::Idle,
+            command: SessionCommandPayload::default(),
             prompt_mode: None,
             agent_match: false,
             cwd: None,
@@ -148,6 +217,11 @@ impl CaptureMachine {
             scan_from = end;
         }
 
+        // O que o SHELL escreveu neste chunk, já sem o eco do que foi digitado.
+        // É a matéria-prima do assentamento da submissão lá embaixo: entre o
+        // Enter e o preexec o shell não pinta nada, e o `PS2` é a exceção.
+        let shell_reply: &[u8];
+
         // A tela ao vivo é decidida com o estado de ANTES dos eventos: o que
         // está chegando é o eco do comando que acabou de ser submetido.
         if self.swallow_echo {
@@ -164,15 +238,23 @@ impl CaptureMachine {
             //
             // Desarmar na quebra de linha cobre qualquer caminho que não emita
             // `133;C`, inclusive os que ninguém previu, e não custa relógio.
+            //
+            // Mas desarmar o eco e ANUNCIAR continuação são duas perguntas
+            // diferentes, e compartilhavam esta flag: aqui a linha só passa a
+            // `AwaitingShell` — quem decide que virou `PS2` é o assentamento,
+            // no fim do chunk.
             match chunk.iter().position(|b| *b == b'\n') {
                 Some(at) => {
                     self.swallow_echo = false;
-                    self.submitted = true;
+                    self.submission = Submission::AwaitingShell;
+                    shell_reply = &chunk[at + 1..];
                     if at + 1 < chunk.len() {
                         actions.push(Action::Live(at + 1..chunk.len()));
                     }
                 }
                 None => {
+                    // Tudo o que veio é eco: o shell ainda não respondeu nada.
+                    shell_reply = &[];
                     self.swallowed += chunk.len();
                     if self.swallowed > MAX_ECHO_BYTES {
                         self.swallow_echo = false;
@@ -181,6 +263,7 @@ impl CaptureMachine {
                 }
             }
         } else {
+            shell_reply = chunk;
             actions.push(Action::Live(0..chunk.len()));
         }
 
@@ -196,7 +279,7 @@ impl CaptureMachine {
                     // linha e não está em continuação. Zerar aqui, e não só no
                     // `133;C`, evita anunciar continuação no intervalo entre os
                     // dois marcadores.
-                    self.submitted = false;
+                    self.submission = Submission::Idle;
                 }
                 ShellEvent::CommandStart => {
                     self.tracker.on_start(now_ms);
@@ -226,7 +309,7 @@ impl CaptureMachine {
                         .map(|at| from + at)
                         .unwrap_or(chunk.len());
                     scan_from = end;
-                    self.submitted = false;
+                    self.submission = Submission::Idle;
                     if self.capturing {
                         self.push_capture(&chunk[from..end], alt_screen);
                         // O estado de tela do core é o que reata a sessão ao
@@ -247,10 +330,12 @@ impl CaptureMachine {
                         // eco, e limpava uma tela onde ele ainda não estava.
                         actions.push(Action::LiveRestart(from..chunk.len()));
                     }
-                    actions.push(Action::Running {
+                    actions.push(self.announce(SessionCommandPayload {
                         command: self.tracker.command().map(str::to_string),
+                        running: true,
                         agent_match: self.agent_match,
-                    });
+                        continuation: false,
+                    }));
                 }
                 // `133;D` traz exit code; prompt novo sem ele é comando que não
                 // terminou (Ctrl+C no meio, shell reiniciado) — grava sem
@@ -265,7 +350,7 @@ impl CaptureMachine {
                     self.swallowed = 0;
                     // `133;B` é o PS1, ou seja prompt PRIMÁRIO: o shell está
                     // pronto para comando novo, não continuando um.
-                    self.submitted = false;
+                    self.submission = Submission::Idle;
                 }
                 ShellEvent::PromptMode(on) => {
                     self.prompt_mode = Some(on);
@@ -286,16 +371,44 @@ impl CaptureMachine {
             }
         }
 
-        // O shell não marca prompt de continuação: o `PS2` não emite OSC
-        // nenhum. O estado é inferido pela AUSÊNCIA — a linha foi submetida, o
-        // eco terminou, e nem `633;E`/`133;C` nem prompt novo apareceram.
-        // Anunciado só na transição; o front usa isto para saber que o que ele
-        // mandar é MAIS LINHA do mesmo comando, não comando novo.
-        if self.submitted != self.continuation {
-            self.continuation = self.submitted;
-            actions.push(Action::Continuation(self.continuation));
+        // O ASSENTAMENTO da submissão. O shell não marca prompt de continuação
+        // — o `PS2` não emite OSC nenhum —, então o sinal é o que ele fez em
+        // vez de rodar: pintou. Nenhum marcador desfez a submissão neste chunk
+        // E veio glifo depois da quebra de linha do eco: é `PS2`.
+        //
+        // A quebra de linha sozinha não serve, e era esse o bug: ela chega no
+        // mesmo instante do Enter, muito antes de o shell responder, e com ela
+        // todo `ls -la` passava pela tela anunciado como continuação.
+        if self.submission == Submission::AwaitingShell && paints_glyph(shell_reply) {
+            self.submission = Submission::Continuing;
+        }
+
+        // `continuation` viaja no payload INTEIRO, montado sobre o estado que o
+        // front já tem: emitido sozinho, com `running: false` dentro, ele
+        // apagava o comando em execução (o front substitui o objeto do id).
+        // Quando o `133;C` deste mesmo chunk já reescreveu o estado, não sobra
+        // transição nenhuma para anunciar — e é por isso que não há aqui
+        // nenhuma reordenação de ações.
+        //
+        // `running` manda: os dois campos são estados diferentes do mesmo
+        // ciclo, e o payload documenta que nunca vêm juntos. Um shell que
+        // emitisse `133;B` sem fechar o comando anterior chegaria aqui com os
+        // dois — a invariante se sustenta no core, não na boa vontade do hook.
+        let continuation = self.submission == Submission::Continuing && !self.command.running;
+        if continuation != self.command.continuation {
+            let mut next = self.command.clone();
+            next.continuation = continuation;
+            actions.push(self.announce(next));
         }
         actions
+    }
+
+    /// Guarda o estado que o front passa a ter e devolve a ação que o leva.
+    /// Toda saída de ciclo de comando passa por aqui — é o único lugar onde
+    /// `self.command` e o que o webview tem em mãos podem divergir.
+    fn announce(&mut self, next: SessionCommandPayload) -> Action {
+        self.command = next.clone();
+        Action::CommandState(next)
     }
 
     /// O PTY morreu com um comando em voo (`exec sleep 3`, `kill -9 $$`, sessão
@@ -384,11 +497,10 @@ impl CaptureMachine {
         self.capturing = false;
         let _ = self.capture.take();
         self.agent_match = false;
-        // `Idle` já diz ao front `continuation: false`; o estado interno tem de
-        // acompanhar, senão a próxima transição não seria detectada.
-        self.submitted = false;
-        self.continuation = false;
-        actions.push(Action::Idle);
+        // O estado ocioso já diz ao front `continuation: false`; o interno tem
+        // de acompanhar, senão a próxima transição não seria detectada.
+        self.submission = Submission::Idle;
+        actions.push(self.announce(SessionCommandPayload::default()));
         actions
     }
 }
@@ -503,8 +615,10 @@ mod tests {
         // sairia errado — mas o front ainda precisa saber que há comando.
         let mut machine = CaptureMachine::new("s1".into());
         let actions = machine.on_chunk(&one_shot_chunk("echo hi", "hi\r\n"), 2_000, false);
-        assert!(actions.iter().any(|a| matches!(a, Action::Running { .. })));
-        assert!(actions.iter().any(|a| matches!(a, Action::Idle)));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::CommandState(state) if state.running)));
+        assert!(actions.contains(&idle()));
         assert!(!actions.iter().any(|a| matches!(a, Action::Finalize(_))));
     }
 
@@ -522,8 +636,10 @@ mod tests {
 
         let actions = machine.on_eof(9_000);
 
-        let idle_at = actions.iter().position(|a| matches!(a, Action::Idle));
-        assert!(idle_at.is_some(), "front precisa ouvir running: false");
+        assert!(
+            actions.contains(&idle()),
+            "front precisa ouvir running: false"
+        );
         let block = finalized(actions).expect("bloco em voo precisa ser fechado");
         assert_eq!(block.command, "exec sleep 3");
         // Desconhecido não é fracasso: ADR de 2026-08-15.
@@ -537,7 +653,7 @@ mod tests {
         let mut machine = in_prompt_mode();
         let actions = machine.on_eof(9_000);
         assert_eq!(actions.len(), 1);
-        assert_eq!(actions[0], Action::Idle);
+        assert_eq!(actions[0], idle());
     }
 
     #[test]
@@ -684,13 +800,13 @@ mod tests {
 
         let entered = machine.on_chunk(b"for i in 1 2 3; do\r\nfor> ", 2_000, false);
         assert!(
-            entered.contains(&Action::Continuation(true)),
+            front_state(&entered).continuation,
             "o front precisa saber que a linha não vale como comando novo"
         );
 
         // Enquanto continua, não repete o evento a cada chunk.
         let more = machine.on_chunk(b"echo $i\r\nfor> ", 2_100, false);
-        assert!(!more.iter().any(|a| matches!(a, Action::Continuation(_))));
+        assert!(!more.iter().any(|a| matches!(a, Action::CommandState(_))));
 
         // `done` fecha o comando: o shell roda preexec e emite `633;E`+`133;C`.
         let closed = machine.on_chunk(
@@ -702,8 +818,154 @@ mod tests {
             2_200,
             false,
         );
-        assert!(closed.contains(&Action::Continuation(false)));
-        assert!(closed.iter().any(|a| matches!(a, Action::Running { .. })));
+        // O mesmo payload diz as duas coisas: sem isso, um `Continuation(false)`
+        // atrás do `Running` apagava o comando que acabou de começar.
+        let state = front_state(&closed);
+        assert!(!state.continuation);
+        assert!(state.running);
+        assert_eq!(
+            state.command.as_deref(),
+            Some("for i in 1 2 3; do echo $i; done")
+        );
+    }
+
+    /// O estado que o front guarda depois de aplicar o lote inteiro.
+    ///
+    /// Não é conveniência de teste: o front faz
+    /// `setSessionCommands(prev => ({ ...prev, [id]: payload }))` — cada
+    /// payload SUBSTITUI o objeto do id, e o último a escrever ganha. Asserção
+    /// ação a ação esconde justamente o bug em que uma ação parcial apaga o
+    /// estado que a anterior tinha acabado de montar.
+    fn front_state(actions: &[Action]) -> SessionCommandPayload {
+        let mut state = SessionCommandPayload::default();
+        for action in actions {
+            if let Action::CommandState(next) = action {
+                state = next.clone();
+            }
+        }
+        state
+    }
+
+    /// Estado ocioso: é o que o front recebe quando não há comando.
+    fn idle() -> Action {
+        Action::CommandState(SessionCommandPayload::default())
+    }
+
+    #[test]
+    fn the_running_command_survives_the_echo_and_the_marker_in_different_chunks() {
+        // Pega todo comando cujo eco e `633;E`/`133;C` caiam em leituras
+        // diferentes do PTY — e SEMPRE os multi-linha. Com o estado apagado a
+        // faixa de bloco ao vivo não abria, o header nascia sem comando, e o
+        // pior: o front devolvia o teclado à linha do TYBA COM comando
+        // rodando, então o que o usuário digitasse ia para o stdin dele.
+        let mut machine = at_the_prompt();
+        machine.on_chunk(b"ls -la\r\n", 2_000, false);
+        let actions = machine.on_chunk(
+            format!("\x1b]633;E;{}\x07\x1b]133;C\x07total 0\r\n", b64("ls -la")).as_bytes(),
+            2_010,
+            false,
+        );
+        let state = front_state(&actions);
+        assert!(
+            state.running,
+            "o estado final apagou o comando: {actions:?}"
+        );
+        assert_eq!(state.command.as_deref(), Some("ls -la"));
+        assert!(!state.continuation);
+    }
+
+    #[test]
+    fn a_line_that_was_just_submitted_is_not_a_continuation_yet() {
+        // O intervalo entre o Enter e o `133;C` do shell. Anunciar continuação
+        // aqui fazia a linha do TYBA dizer "o shell espera o resto do comando"
+        // para um `ls -la`, toda vez.
+        let mut machine = at_the_prompt();
+        let actions = machine.on_chunk(b"ls -la\r\n", 2_000, false);
+        assert!(
+            !front_state(&actions).continuation,
+            "continuação anunciada entre o Enter e o preexec: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn an_incomplete_command_announces_the_continuation_and_keeps_the_screen() {
+        let mut machine = at_the_prompt();
+        let chunk = b"for i in 1 2 3; do\r\nfor> ";
+        let actions = machine.on_chunk(chunk, 2_000, false);
+        assert!(
+            front_state(&actions).continuation,
+            "o `PS2` é continuação: {actions:?}"
+        );
+        assert_eq!(
+            live_screen(chunk, &actions),
+            "for> ",
+            "o `for> ` do PS2 não pode sumir da tela"
+        );
+    }
+
+    #[test]
+    fn the_continuation_waits_for_the_shell_to_paint_the_ps2() {
+        // O mesmo `for … do`, com a quebra de linha e o `PS2` em leituras
+        // diferentes do PTY. Quem anuncia é o glifo, não o Enter.
+        let mut machine = at_the_prompt();
+        let submitted = machine.on_chunk(b"for i in 1 2 3; do\r\n", 2_000, false);
+        assert!(
+            !front_state(&submitted).continuation,
+            "só a quebra de linha não distingue `for` de `ls`: {submitted:?}"
+        );
+        let ps2 = machine.on_chunk(b"for> ", 2_010, false);
+        assert!(front_state(&ps2).continuation, "o `PS2` chegou: {ps2:?}");
+    }
+
+    #[test]
+    fn control_bytes_after_the_echo_are_not_a_continuation_prompt() {
+        // O `zle` desliga o bracketed paste ao fechar a linha, ANTES do
+        // preexec. Cair num chunk sozinho não pode virar `PS2`.
+        let mut machine = at_the_prompt();
+        let closing = machine.on_chunk(b"ls -la\r\n\x1b[?2004l", 2_000, false);
+        assert!(
+            !front_state(&closing).continuation,
+            "controle não é prompt: {closing:?}"
+        );
+        let running = machine.on_chunk(
+            format!("\x1b]633;E;{}\x07\x1b]133;C\x07", b64("ls -la")).as_bytes(),
+            2_010,
+            false,
+        );
+        assert!(front_state(&running).running);
+    }
+
+    #[test]
+    fn the_continuation_is_not_repeated_while_the_user_types_the_body() {
+        // O estado é pegajoso: enquanto nenhum marcador desfaz a submissão, o
+        // eco de cada linha nova não vira evento.
+        let mut machine = at_the_prompt();
+        machine.on_chunk(b"for i in 1 2 3; do\r\nfor> ", 2_000, false);
+        for chunk in [b"echo".as_slice(), b" $i", b"\r\n", b"for> "] {
+            let actions = machine.on_chunk(chunk, 2_100, false);
+            assert!(
+                !actions.iter().any(|a| matches!(a, Action::CommandState(_))),
+                "evento repetido em {chunk:?}: {actions:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_glyph_is_what_the_shell_draws_not_what_it_commands() {
+        assert!(paints_glyph(b"for> "));
+        assert!(
+            paints_glyph(b"\x1b[32mfor> \x1b[0m"),
+            "cor não esconde texto"
+        );
+        assert!(!paints_glyph(b""));
+        assert!(!paints_glyph(b"\x1b[?2004l"), "bracketed paste é controle");
+        assert!(!paints_glyph(b"\x1b]133;C\x07"), "OSC com BEL é controle");
+        assert!(
+            !paints_glyph(b"\x1b]0;titulo\x1b\\"),
+            "OSC com ST é controle"
+        );
+        assert!(!paints_glyph(b"\r\n\x08\x7f"), "cursor não é glifo");
+        assert!(paints_glyph("café".as_bytes()), "acento é glifo");
     }
 
     #[test]
@@ -711,7 +973,7 @@ mod tests {
         let mut machine = at_the_prompt();
         let actions = machine.on_chunk(&one_shot_chunk("echo hi", "hi\r\n"), 2_000, false);
         assert!(
-            !actions.iter().any(|a| matches!(a, Action::Continuation(_))),
+            !front_state(&actions).continuation,
             "piscada de continuação em comando normal: {actions:?}"
         );
     }
@@ -801,7 +1063,8 @@ mod tests {
             .any(|a| matches!(a, Action::Cwd(payload) if payload.cwd == "/tmp")));
         assert!(actions.iter().any(|action| matches!(
             action,
-            Action::Running { command, agent_match: true } if command.as_deref() == Some("claude --continue")
+            Action::CommandState(state)
+                if state.agent_match && state.command.as_deref() == Some("claude --continue")
         )));
         // Mesmo diretório de novo não vira evento.
         let again = machine.on_chunk(b"\x1b]7;file://host/tmp\x07", 2_100, false);

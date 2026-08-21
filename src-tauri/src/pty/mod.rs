@@ -133,7 +133,7 @@ pub struct PtyExitPayload {
     pub code: Option<u32>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct SessionCommandPayload {
     /// Linha de comando em execução (shell integration), ou `None` quando ocioso.
     pub command: Option<String>,
@@ -254,42 +254,16 @@ impl ActionSink {
         let mut started = false;
         for action in actions {
             match action {
-                capture::Action::Running {
-                    command,
-                    agent_match,
-                } => {
-                    started = true;
-                    let _ = self.app.emit(
-                        &self.command_event,
-                        SessionCommandPayload {
-                            command,
-                            running: true,
-                            agent_match,
-                            continuation: false,
-                        },
-                    );
-                }
-                capture::Action::Idle => {
-                    let _ = self.app.emit(
-                        &self.command_event,
-                        SessionCommandPayload {
-                            command: None,
-                            running: false,
-                            agent_match: false,
-                            continuation: false,
-                        },
-                    );
-                }
-                capture::Action::Continuation(on) => {
-                    let _ = self.app.emit(
-                        &self.command_event,
-                        SessionCommandPayload {
-                            command: None,
-                            running: false,
-                            agent_match: false,
-                            continuation: on,
-                        },
-                    );
+                // Um payload por estado, e o estado vem pronto da máquina. Já
+                // foram três ações — `Running`, `Idle`, `Continuation` — e cada
+                // uma montava aqui um `SessionCommandPayload` COMPLETO com os
+                // campos que não conhecia zerados. Como o front substitui o
+                // objeto da sessão a cada payload, a última a sair apagava as
+                // anteriores: o `Continuation` do fim do chunk derrubava o
+                // `Running` empurrado um instante antes.
+                capture::Action::CommandState(state) => {
+                    started |= state.running;
+                    let _ = self.app.emit(&self.command_event, state);
                 }
                 capture::Action::Record(record) => crate::history::record(record),
                 capture::Action::Wipe => {
