@@ -52,13 +52,32 @@ impl Style {
     }
 }
 
-/// Trecho de uma linha com o mesmo estilo. `start`/`end` são offsets **de
-/// bytes** no texto da linha.
+/// Trecho de uma linha com o mesmo estilo.
+///
+/// Os offsets são em **unidades UTF-16**, e o nome do campo diz isso porque o
+/// contrato não estava declarado na fronteira e ninguém percebeu: eram offsets
+/// de BYTE (`text.len()` do Rust) e o webview os aplicava com
+/// `String.prototype.slice`, que indexa por unidade UTF-16. Os dois só
+/// coincidem em ASCII puro — `á` são 2 bytes e 1 unidade, `日` 3 e 1, `😀` 4 e
+/// 2 —, então qualquer acento deslocava a cor da primeira ocorrência até o fim
+/// da linha. Em saída em português isso é o caso comum, não o excepcional.
+///
+/// Converter aqui e não no front é de propósito: o consumidor é um webview e
+/// sempre será, e o finalize já é o lugar onde o parse acontece uma vez só —
+/// converter na renderização se pagaria a cada frame, do lado que já é o
+/// gargalo.
+///
+/// A CHAVE de serialização continua `start`/`end` por compatibilidade: bloco já
+/// gravado no SQLite tem os offsets antigos sob esses nomes, e renomear faria o
+/// `serde` falhar na leitura — o histórico inteiro sumiria da lista, porque
+/// `list_blocks` descarta silenciosamente a linha que não desserializa.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StyleRun {
-    pub start: usize,
-    pub end: usize,
+    #[serde(rename = "start")]
+    pub start_utf16: usize,
+    #[serde(rename = "end")]
+    pub end_utf16: usize,
     pub fg: Color,
     pub bg: Color,
     pub bold: bool,
@@ -87,8 +106,14 @@ pub struct Block {
     pub started_at_ms: i64,
     pub finished_at_ms: i64,
     pub lines: Vec<LogicalLine>,
-    /// Linhas descartadas pelo teto, para o header dizer que faltou coisa em
-    /// vez de mentir que aquilo é a saída inteira.
+    /// Linhas descartadas, para o header dizer que faltou coisa em vez de
+    /// mentir que aquilo é a saída inteira. Soma as duas perdas possíveis: o
+    /// teto de captura, que corta enquanto o comando roda, e o teto do bloco,
+    /// que corta na hora de virar linha.
+    ///
+    /// Saída sem `\n` nenhum (barra de progresso, blob binário) perde conteúdo
+    /// sem perder linha, e aí este número é zero com razão — a unidade é linha,
+    /// e não havia linha.
     pub truncated: usize,
     /// O comando pintou a tela alternada (`vim`, `bat`, `htop`).
     ///
@@ -105,6 +130,15 @@ pub struct Block {
 /// bloco diz que foi truncado em vez de mentir.
 pub const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 
+/// Quantas linhas lógicas há num trecho de saída.
+///
+/// Linha lógica termina em `\n`: o wrap não cria linha, só quebra a mesma linha
+/// na tela. É o que permite contar o que foi descartado sem parsear — o que se
+/// perde são linhas, e linha é `\n`.
+fn logical_lines(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|b| **b == b'\n').count()
+}
+
 /// A saída de um comando enquanto ele roda.
 ///
 /// Acumula na thread emitter, que é caminho quente: aqui só se copia bytes. O
@@ -112,7 +146,7 @@ pub const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Debug, Default)]
 pub struct Capture {
     bytes: Vec<u8>,
-    dropped: bool,
+    dropped_lines: usize,
     /// Alt-screen no meio do comando (vim, htop): por decisão da spec isso não
     /// vira bloco — a tela é do programa, e recortá-la produziria lixo.
     alt_screen: bool,
@@ -123,8 +157,12 @@ impl Capture {
         if self.bytes.len() + chunk.len() > MAX_CAPTURE_BYTES {
             let overflow = self.bytes.len() + chunk.len() - MAX_CAPTURE_BYTES;
             let cut = overflow.min(self.bytes.len());
+            // Contadas ANTES do dreno: depois estes bytes não existem mais.
+            // Antes daqui saía um `bool`, e quem o consumia somava 1 ao total
+            // de linhas cortadas — oito megabytes de saída perdidos viravam
+            // "1 linha" no rodapé do bloco.
+            self.dropped_lines += logical_lines(&self.bytes[..cut]);
             self.bytes.drain(0..cut);
-            self.dropped = true;
         }
         self.bytes.extend_from_slice(chunk);
     }
@@ -137,8 +175,9 @@ impl Capture {
         self.alt_screen
     }
 
-    pub fn dropped(&self) -> bool {
-        self.dropped
+    /// Linhas que o teto de captura comeu enquanto o comando ainda rodava.
+    pub fn dropped(&self) -> usize {
+        self.dropped_lines
     }
 
     /// Cópia do que já saiu, para o checkpoint. Não consome: o comando segue.
@@ -147,21 +186,39 @@ impl Capture {
     }
 
     pub fn take(&mut self) -> Vec<u8> {
-        self.dropped = false;
+        self.dropped_lines = 0;
         self.alt_screen = false;
         std::mem::take(&mut self.bytes)
     }
 }
 
+/// Trecho com o mesmo estilo, ainda em offsets de BYTE — a unidade em que o
+/// `vt100` e a `String` do Rust trabalham, e a única em que a aritmética de
+/// junção e de `trim_end` abaixo está correta. Vira `StyleRun` só no fim, com o
+/// texto da linha lógica já fechado.
+#[derive(Debug, Clone, Copy)]
+struct ByteRun {
+    start: usize,
+    end: usize,
+    style: Style,
+}
+
 struct RawRow {
     text: String,
-    runs: Vec<StyleRun>,
+    runs: Vec<ByteRun>,
     wrapped: bool,
+}
+
+/// Linha lógica antes da conversão de unidade.
+#[derive(Default)]
+struct RawLine {
+    text: String,
+    runs: Vec<ByteRun>,
 }
 
 fn read_row(screen: &vt100::Screen, row: u16, cols: u16) -> RawRow {
     let mut text = String::new();
-    let mut runs: Vec<StyleRun> = Vec::new();
+    let mut runs: Vec<ByteRun> = Vec::new();
     let mut open: Option<(Style, usize)> = None;
 
     for col in 0..cols {
@@ -224,25 +281,85 @@ fn read_row(screen: &vt100::Screen, row: u16, cols: u16) -> RawRow {
     }
 }
 
-fn finish_run(style: Style, start: usize, end: usize) -> StyleRun {
-    StyleRun {
-        start,
-        end,
-        fg: style.fg,
-        bg: style.bg,
-        bold: style.bold,
-        italic: style.italic,
-        underline: style.underline,
+fn finish_run(style: Style, start: usize, end: usize) -> ByteRun {
+    ByteRun { start, end, style }
+}
+
+/// Fecha a linha convertendo os offsets de byte para unidades UTF-16.
+///
+/// É a única passagem da fronteira: daqui para a frente o número significa
+/// unidade UTF-16, que é o que o `slice` do JS conta.
+fn into_logical(raw: RawLine) -> LogicalLine {
+    let runs = if raw.text.is_ascii() {
+        // Em ASCII os dois números são o mesmo, e é o caso comum: não paga
+        // varredura nenhuma.
+        raw.runs
+            .into_iter()
+            .map(|run| style_run(run, run.start, run.end))
+            .collect()
+    } else {
+        to_utf16(&raw.text, raw.runs)
+    };
+    LogicalLine {
+        text: raw.text,
+        runs,
     }
+}
+
+fn style_run(run: ByteRun, start_utf16: usize, end_utf16: usize) -> StyleRun {
+    StyleRun {
+        start_utf16,
+        end_utf16,
+        fg: run.style.fg,
+        bg: run.style.bg,
+        bold: run.style.bold,
+        italic: run.style.italic,
+        underline: run.style.underline,
+    }
+}
+
+/// Uma passada pelo texto resolve todas as marcas dos runs.
+///
+/// Converter run a run com `text[..offset].encode_utf16().count()` seria
+/// quadrático numa linha muito colorida — e linha muito colorida é justamente
+/// a que tem run.
+fn to_utf16(text: &str, runs: Vec<ByteRun>) -> Vec<StyleRun> {
+    let mut marks: Vec<usize> = runs.iter().flat_map(|run| [run.start, run.end]).collect();
+    marks.sort_unstable();
+    marks.dedup();
+
+    let mut units: Vec<usize> = Vec::with_capacity(marks.len());
+    let mut mark = 0;
+    let mut seen = 0;
+    for (at, ch) in text.char_indices() {
+        while mark < marks.len() && marks[mark] <= at {
+            units.push(seen);
+            mark += 1;
+        }
+        seen += ch.len_utf16();
+    }
+    // Marcas no fim do texto — `run.end` da última linha cai sempre aqui.
+    while mark < marks.len() {
+        units.push(seen);
+        mark += 1;
+    }
+
+    let at_mark = |byte: usize| match marks.binary_search(&byte) {
+        Ok(found) => units[found],
+        Err(_) => seen,
+    };
+    runs.iter()
+        .map(|run| style_run(*run, at_mark(run.start), at_mark(run.end)))
+        .collect()
 }
 
 /// Junta as linhas visuais em linhas lógicas, desfazendo o soft-wrap.
 ///
 /// É o que permite o reflow sem reparse: a fronteira guardada é a **lógica**, e
 /// quem quebra por largura é o renderizador.
-fn join_wrapped(rows: Vec<RawRow>) -> Vec<LogicalLine> {
-    let mut lines: Vec<LogicalLine> = Vec::new();
-    let mut current = LogicalLine::default();
+fn join_wrapped(rows: Vec<RawRow>) -> Vec<RawLine> {
+    let mut lines: Vec<RawLine> = Vec::new();
+    let mut current = RawLine::default();
     let mut open = false;
 
     for row in rows {
@@ -265,16 +382,66 @@ fn join_wrapped(rows: Vec<RawRow>) -> Vec<LogicalLine> {
     lines
 }
 
-/// Teto de linhas que a saída pode ocupar, para dimensionar a grade.
+/// Quantas linhas de grade a saída ocupa, sem teto.
 ///
 /// Cada `\n` começa uma linha, e o resto só pode acrescentar por wrap — usar o
 /// tamanho em bytes como proxy dos imprimíveis superestima (escape conta como
-/// texto), o que é o lado seguro de errar.
-fn rows_needed(bytes: &[u8], cols: u16) -> u16 {
-    let newlines = bytes.iter().filter(|b| **b == b'\n').count();
+/// texto). Superestimar é o lado seguro: a grade nasce maior do que precisa,
+/// nunca menor, e é ser "nunca menor" que garante que nada role para fora dela.
+fn rows_of(bytes: &[u8], cols: u16) -> usize {
+    let newlines = logical_lines(bytes);
     let wrapped = bytes.len() / cols.max(1) as usize;
-    let estimate = newlines + wrapped + 2;
-    estimate.clamp(1, MAX_LINES).min(u16::MAX as usize) as u16
+    newlines + wrapped + 2
+}
+
+/// Altura da grade para esta saída, com o teto do bloco.
+fn rows_needed(bytes: &[u8], cols: u16) -> u16 {
+    rows_of(bytes, cols).clamp(1, MAX_LINES) as u16
+}
+
+/// Onde começa a parte da saída que cabe no bloco.
+///
+/// A grade do `vt100` não pode crescer sem limite — cada célula é um
+/// `[char; 6]` mais atributos, então uma linha de 80 colunas custa perto de
+/// 3 KB e o teto de 10 mil já são ~30 MB — e `Size::rows` é `u16`, o que fecha
+/// a porta em 65 535 de qualquer jeito. O que passa do teto SOME DENTRO da
+/// grade: rola para fora, e a API de scrollback do 0.15.2 não devolve (voltar
+/// mais de uma tela estoura `visible_rows`, que faz `rows_len - offset`).
+///
+/// Some em silêncio, e era esse o bug: `seq 1 50000` perdia 40 mil linhas e o
+/// bloco reportava zero cortado, porque a conta antiga era
+/// `lines.len() - MAX_LINES` sobre uma lista que a própria grade já limitava a
+/// `MAX_LINES`. Nunca dava mais que zero.
+///
+/// Cortar aqui, ANTES do parser, é o que torna a perda contável: o que a grade
+/// recebe cabe inteiro, e o que ficou de fora está medido. O corte cai logo
+/// depois de um `\n` para não partir linha ao meio; o preço é o estado de cor
+/// herdado do trecho descartado, e quem colore reemite o SGR a cada linha.
+fn head_cut(bytes: &[u8], cols: u16) -> usize {
+    if rows_of(bytes, cols) <= MAX_LINES {
+        return 0;
+    }
+    let width = cols.max(1) as usize;
+    // A mesma folga de 2 que `rows_of` dá, para o corte e a grade concordarem.
+    let budget = MAX_LINES.saturating_sub(2);
+    let mut used = 0;
+    let mut end = bytes.len();
+    while end > 0 {
+        let start = bytes[..end - 1]
+            .iter()
+            .rposition(|b| *b == b'\n')
+            .map(|at| at + 1)
+            .unwrap_or(0);
+        let cost = 1 + (end - start) / width;
+        if used + cost > budget {
+            // Uma linha só maior que o teto inteiro: fica ela, truncada pela
+            // grade, em vez de devolver bloco vazio.
+            return if used == 0 { start } else { end };
+        }
+        used += cost;
+        end = start;
+    }
+    0
 }
 
 /// Processa os bytes do bloco uma vez e devolve as linhas lógicas.
@@ -296,9 +463,14 @@ fn rows_needed(bytes: &[u8], cols: u16) -> u16 {
 /// cursor é ancorado no topo, que não se move.
 pub fn extract_lines(bytes: &[u8], cols: u16, _rows: u16) -> (Vec<LogicalLine>, usize) {
     let cols = cols.max(1);
-    let height = rows_needed(bytes, cols);
+    // O teto é imposto AQUI, no byte, e não depois sobre a lista de linhas: a
+    // grade já não deixaria a lista passar de `MAX_LINES`, então o corte de lá
+    // era código morto que reportava zero. Ver `head_cut`.
+    let cut = head_cut(bytes, cols);
+    let kept = &bytes[cut..];
+    let height = rows_needed(kept, cols);
     let mut parser = vt100::Parser::new(height, cols, 0);
-    parser.process(bytes);
+    parser.process(kept);
 
     let screen = parser.screen();
     let rows_vec: Vec<RawRow> = (0..height).map(|row| read_row(screen, row, cols)).collect();
@@ -312,11 +484,10 @@ pub fn extract_lines(bytes: &[u8], cols: u16, _rows: u16) -> (Vec<LogicalLine>, 
         lines.pop();
     }
 
-    let truncated = lines.len().saturating_sub(MAX_LINES);
-    if truncated > 0 {
-        lines.drain(0..truncated);
-    }
-    (lines, truncated)
+    // A conversão de unidade vem por último, depois de toda a aritmética de
+    // junção e de corte — que só fecha em byte.
+    let lines = lines.into_iter().map(into_logical).collect();
+    (lines, logical_lines(&bytes[..cut]))
 }
 
 /// Intervalo entre fotografias do comando em execução.
@@ -336,7 +507,8 @@ pub struct Finished {
     pub bytes: Vec<u8>,
     pub cols: u16,
     pub rows: u16,
-    pub dropped: bool,
+    /// Linhas que o teto de captura comeu antes de o parser ver os bytes.
+    pub dropped: usize,
     pub alt_screen: bool,
 }
 
@@ -477,7 +649,9 @@ fn build(finished: Finished) -> Block {
         started_at_ms: finished.started_at_ms,
         finished_at_ms: finished.finished_at_ms,
         lines,
-        truncated: truncated + usize::from(finished.dropped),
+        // As duas perdas somam porque são a MESMA unidade: linhas. Antes o
+        // segundo termo era um `bool` convertido em 0 ou 1.
+        truncated: truncated + finished.dropped,
         alt_screen: finished.alt_screen,
     }
 }
@@ -496,6 +670,108 @@ pub fn finalize(finished: Finished) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fatia como o `String.prototype.slice` do JS: por unidade UTF-16.
+    ///
+    /// É o teste ATRAVESSANDO a fronteira. A suíte antiga fatiava com
+    /// `&text[run.start..run.end]`, que em Rust é fatiamento por byte — por
+    /// isso ela passava verde enquanto o webview pintava errado. Os dois só
+    /// concordam em ASCII.
+    fn js_slice(text: &str, run: &StyleRun) -> String {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        String::from_utf16_lossy(&units[run.start_utf16..run.end_utf16])
+    }
+
+    /// Roda a saída pelo pipeline e devolve o que o front pintaria colorido.
+    fn painted(bytes: &[u8]) -> Vec<String> {
+        let (lines, _) = extract_lines(bytes, 40, 5);
+        lines
+            .iter()
+            .flat_map(|line| line.runs.iter().map(|run| js_slice(&line.text, run)))
+            .collect()
+    }
+
+    #[test]
+    fn accented_text_does_not_shift_the_color() {
+        // `printf 'ação: \033[31mvermelho\033[0m\n'` — a reprodução mínima do
+        // bug. `ação: ` tem 7 bytes e 6 unidades UTF-16, então o offset de byte
+        // começava um caractere à direita e a última letra ficava sem cor.
+        assert_eq!(
+            painted("ação: \x1b[31mvermelho\x1b[0m\r\n".as_bytes()),
+            vec!["vermelho"]
+        );
+    }
+
+    #[test]
+    fn cjk_and_emoji_do_not_shift_the_color() {
+        // `日` são 3 bytes e 1 unidade; `😀` são 4 bytes e 2 unidades — o único
+        // caractere aqui em que unidade UTF-16 não é o mesmo que caractere.
+        assert_eq!(
+            painted("日本語 \x1b[32mverde\x1b[0m\r\n".as_bytes()),
+            vec!["verde"]
+        );
+        assert_eq!(
+            painted("😀😀 \x1b[34mazul\x1b[0m\r\n".as_bytes()),
+            vec!["azul"]
+        );
+    }
+
+    #[test]
+    fn the_accent_inside_the_colored_run_survives() {
+        assert_eq!(
+            painted("erro: \x1b[31mnão encontrado\x1b[0m\r\n".as_bytes()),
+            vec!["não encontrado"]
+        );
+    }
+
+    #[test]
+    fn several_runs_on_one_accented_line_each_land_where_they_belong() {
+        assert_eq!(
+            painted(
+                "ç \x1b[31mum\x1b[0m ã \x1b[32mdois\x1b[0m é \x1b[34mtrês\x1b[0m\r\n".as_bytes()
+            ),
+            vec!["um", "dois", "três"]
+        );
+    }
+
+    #[test]
+    fn the_offsets_survive_the_wrap_join_with_accents() {
+        // A junção soma offsets de linha visual; ela só fecha em byte, e a
+        // conversão tem de vir depois dela.
+        let (lines, _) = extract_lines("ááááá\x1b[31mbbbbb\x1b[0m\r\n".as_bytes(), 5, 5);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(js_slice(&lines[0].text, &lines[0].runs[0]), "bbbbb");
+    }
+
+    /// Bloco gravado antes desta mudança guarda offset de BYTE sob as chaves
+    /// `start`/`end`. Renomear a chave faria o `serde` falhar e `list_blocks`
+    /// descartar a linha inteira em silêncio — o histórico sumiria da tela.
+    #[test]
+    fn a_block_persisted_before_the_change_still_deserializes() {
+        let old_row = r#"[{"text":"ola","runs":[{"start":0,"end":3,"fg":{"kind":"idx","value":1},"bg":{"kind":"default"},"bold":false,"italic":false,"underline":false}]}]"#;
+        let lines: Vec<LogicalLine> = serde_json::from_str(old_row).expect("histórico antigo");
+        assert_eq!(lines[0].runs[0].start_utf16, 0);
+        assert_eq!(lines[0].runs[0].end_utf16, 3);
+    }
+
+    #[test]
+    fn the_wire_keys_stay_the_ones_already_on_disk() {
+        let line = LogicalLine {
+            text: "ola".into(),
+            runs: vec![StyleRun {
+                start_utf16: 0,
+                end_utf16: 3,
+                fg: Color::Idx(1),
+                bg: Color::Default,
+                bold: false,
+                italic: false,
+                underline: false,
+            }],
+        };
+        let json = serde_json::to_string(&line).unwrap();
+        assert!(json.contains(r#""start":0"#), "{json}");
+        assert!(json.contains(r#""end":3"#), "{json}");
+    }
 
     fn lines_of(bytes: &[u8], cols: u16, rows: u16) -> Vec<String> {
         extract_lines(bytes, cols, rows)
@@ -541,8 +817,24 @@ mod tests {
         for _ in 0..10 {
             capture.push(&chunk);
         }
-        assert!(capture.dropped(), "precisa admitir que truncou");
         assert!(capture.take().len() <= MAX_CAPTURE_BYTES);
+    }
+
+    /// Buraco conhecido, fixado aqui para ninguém o "consertar" mentindo.
+    ///
+    /// Saída sem `\n` nenhum — blob binário, barra de progresso que só usa
+    /// `\r` — perde CONTEÚDO sem perder LINHA: a linha lógica continua uma só,
+    /// mais curta. Zero é a resposta certa na unidade que o bloco reporta.
+    /// Denunciar a perda exigiria um segundo número em bytes, e isso é campo
+    /// novo no `Block` e coluna nova no SQLite.
+    #[test]
+    fn output_without_newlines_loses_bytes_without_losing_lines() {
+        let mut capture = Capture::default();
+        let chunk = vec![b'x'; 1024 * 1024];
+        for _ in 0..10 {
+            capture.push(&chunk);
+        }
+        assert_eq!(capture.dropped(), 0);
     }
 
     #[test]
@@ -561,7 +853,7 @@ mod tests {
         capture.push(b"x");
         let _ = capture.take();
         assert!(!capture.is_alt_screen());
-        assert!(!capture.dropped());
+        assert_eq!(capture.dropped(), 0);
     }
 
     #[test]
@@ -621,7 +913,7 @@ mod tests {
         assert_eq!(line.text, "normal vermelho fim");
         assert_eq!(line.runs.len(), 1, "só o trecho colorido vira run");
         let run = &line.runs[0];
-        assert_eq!(&line.text[run.start..run.end], "vermelho");
+        assert_eq!(js_slice(&line.text, run), "vermelho");
         assert_eq!(run.fg, Color::Idx(1));
     }
 
@@ -649,12 +941,112 @@ mod tests {
         let line = &lines[0];
         assert_eq!(line.text, "aaaaabbbbb");
         let run = &line.runs[0];
-        assert_eq!(&line.text[run.start..run.end], "bbbbb");
+        assert_eq!(js_slice(&line.text, run), "bbbbb");
     }
 
     #[test]
     fn empty_output_produces_no_lines() {
         assert!(lines_of(b"", 80, 24).is_empty());
+    }
+
+    /// Saída sintética de N linhas numeradas — é o `seq 1 N` do relato, escrito
+    /// à mão.
+    fn numbered(count: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for i in 1..=count {
+            out.extend_from_slice(format!("linha{i}\r\n").as_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn output_past_the_ceiling_says_how_much_it_lost() {
+        // O bug: a grade tinha no máximo MAX_LINES linhas, então
+        // `lines.len() - MAX_LINES` era SEMPRE zero e o rodapé nunca aparecia.
+        // Quarenta mil linhas sumiam com o bloco jurando que estava inteiro.
+        let (lines, truncated) = extract_lines(&numbered(MAX_LINES + 5_000), 80, 24);
+        assert!(truncated > 0, "perda silenciosa de novo");
+        assert!(lines.len() <= MAX_LINES);
+        // Cada linha perdida está contada: o que ficou mais o que se foi é o
+        // que entrou.
+        assert_eq!(lines.len() + truncated, MAX_LINES + 5_000);
+    }
+
+    #[test]
+    fn the_end_is_what_survives_the_ceiling() {
+        // O usuário olha para o fim da saída — é lá que está o erro.
+        let (lines, _) = extract_lines(&numbered(MAX_LINES + 100), 80, 24);
+        assert_eq!(
+            lines.last().map(|line| line.text.as_str()),
+            Some(format!("linha{}", MAX_LINES + 100).as_str())
+        );
+    }
+
+    #[test]
+    fn output_within_the_ceiling_is_never_reported_as_cut() {
+        let (lines, truncated) = extract_lines(&numbered(200), 80, 24);
+        assert_eq!(truncated, 0);
+        assert_eq!(lines.len(), 200);
+    }
+
+    #[test]
+    fn trailing_blank_lines_are_not_mistaken_for_truncation() {
+        // O rabo em branco da grade é descartado na leitura; contar a diferença
+        // entre grade e linhas faria isso virar "linha cortada".
+        let (_, truncated) = extract_lines(b"a\r\n\r\n\r\n", 80, 24);
+        assert_eq!(truncated, 0);
+    }
+
+    #[test]
+    fn a_single_line_taller_than_the_ceiling_is_kept_instead_of_emptying_the_block() {
+        let monster = vec![b'x'; MAX_LINES * 80 + 10_000];
+        let (lines, _) = extract_lines(&monster, 80, 24);
+        assert!(!lines.is_empty(), "bloco vazio é pior que bloco truncado");
+    }
+
+    #[test]
+    fn the_capture_ceiling_reports_lines_not_a_flag() {
+        // `usize::from(dropped)` somava 1: oito megabytes viravam "1 linha".
+        let mut capture = Capture::default();
+        let line = b"uma linha de saida qualquer\r\n";
+        // Enche até o teto, depois empurra mais um megabyte por cima.
+        while capture.snapshot().len() + line.len() <= MAX_CAPTURE_BYTES {
+            capture.push(line);
+        }
+        // O que sai é o COMEÇO, então a conta é sobre as linhas velhas que
+        // foram expulsas para abrir espaço — não sobre as que entraram.
+        let over = numbered(30_000);
+        capture.push(&over);
+        let evicted = over.len() / line.len();
+        assert_eq!(capture.dropped(), evicted);
+        assert!(
+            capture.dropped() > 1,
+            "o código antigo reportava exatamente 1 aqui, para qualquer perda"
+        );
+    }
+
+    #[test]
+    fn the_two_ceilings_add_up_in_the_same_unit() {
+        // Uma perda é do teto de captura (bytes, enquanto roda) e a outra do
+        // teto do bloco (linhas, no finalize). Só somam porque as duas são
+        // convertidas para linha antes.
+        let finished = Finished {
+            session_id: "s1".into(),
+            command: "seq".into(),
+            exit_code: Some(0),
+            cwd: None,
+            started_at_ms: 0,
+            finished_at_ms: 1,
+            bytes: numbered(MAX_LINES + 100),
+            cols: 80,
+            rows: 24,
+            dropped: 7,
+            alt_screen: false,
+        };
+        let cut_by_the_block = extract_lines(&numbered(MAX_LINES + 100), 80, 24).1;
+        let block = build(finished);
+        assert!(cut_by_the_block > 0);
+        assert_eq!(block.truncated, cut_by_the_block + 7);
     }
 
     #[test]
