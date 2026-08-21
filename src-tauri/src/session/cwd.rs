@@ -13,13 +13,16 @@
 //! Só aparece na primeira execução depois de um build novo, porque depois disso
 //! a permissão já foi concedida. Num app distribuído, isso é *toda atualização*.
 //!
-//! Tirar o boot da main thread (ver [`crate::boot`]) impede o congelamento, mas
-//! não resolve o resto: pedir acesso a Documents porque o app abriu, e não
-//! porque alguém pediu aquela sessão, continua errado. E o volume de rede é pior
-//! que o diálogo — num mount que não responde, o `stat` pendura em I/O
-//! ininterrompível, sem diálogo nenhum para clicar e sem caminho de saída.
+//! **O que consertou o congelamento foi tirar o boot da main thread** (ver
+//! [`crate::boot`]) — não esta classificação. Com o boot em thread própria, o
+//! diálogo segura só aquela thread e a janela continua respondendo. Nenhuma
+//! variante daqui faz o diálogo do TCC deixar de aparecer, e a de
+//! [`ReopenPolicy::Unchecked`] explica por que não dá.
 //!
-//! Daí as três respostas desta classificação, uma para cada risco.
+//! O que esta classificação resolve é o outro risco, o que thread nenhuma
+//! salva: num volume de rede que não responde, o `stat` pendura em I/O
+//! ininterrompível — sem diálogo para clicar e sem timeout para estourar. Contra
+//! isso a única defesa é não tocar, e é o que [`ReopenPolicy::Skip`] faz.
 
 use std::path::{Path, PathBuf};
 
@@ -28,15 +31,29 @@ use std::path::{Path, PathBuf};
 pub enum ReopenPolicy {
     /// Caminho comum: confere que a pasta existe e reabre. É o que sempre foi.
     Checked,
-    /// Pasta sob TCC: reabre **sem** conferir antes.
+    /// Pasta sob TCC: `resume_startup` reabre sem conferir antes.
     ///
-    /// A conferência só produzia um booleano, e custava um diálogo do sistema.
-    /// O `resolve_cwd` do spawn já cai em `$HOME` quando a pasta sumiu, então o
-    /// que se perde ao não conferir é a distinção entre "não abre a tab" e "abre
-    /// a tab no home" — e isso não vale um prompt de permissão no arranque.
+    /// **Isto não evita o diálogo do TCC — nem evitou algum dia.** Reabrir a
+    /// sessão *é* entrar na pasta: logo adiante, `session::resolve_cwd` stata o
+    /// mesmo caminho e o shell nasce com `chdir` para dentro dele. O acesso
+    /// acontece de todo jeito; pular o `is_dir()` daqui só muda qual chamada
+    /// esbarra primeiro no TCC. E o prompt é um por categoria de pasta, não um
+    /// por sessão — não existe um N de diálogos para reduzir.
+    ///
+    /// O que a variante muda de fato é o destino quando a pasta sumiu:
+    /// `Checked` descarta a tab, `Unchecked` reabre em `$HOME`, que é onde o
+    /// `resolve_cwd` cai. Numa pasta que o usuário só visita de vez em quando,
+    /// devolver a tab viva vale mais que a distinção.
+    ///
+    /// E não adianta perseguir o "zero syscall" propagando a política até o
+    /// `resolve_cwd`: sem aquele `is_dir()` o `chdir` do spawn falha numa pasta
+    /// que sumiu, e a tab não volta nem no home — pior que hoje, e sem ganho,
+    /// porque o `chdir` entra na pasta protegida do mesmo jeito.
     Unchecked,
     /// Volume que pode não estar montado: não reabre, e não toca.
     ///
+    /// A única variante que de fato evita a syscall, porque é a única que
+    /// desiste da sessão — quem reabre acaba tocando na pasta em algum ponto.
     /// Aqui nem o spawn serve de plano B: num mount morto quem pendura é a
     /// própria chamada, stat ou chdir, sem diálogo e sem timeout. A sessão volta
     /// morta — o que não é perda, porque um shell num volume ausente não teria
@@ -61,8 +78,9 @@ pub fn home() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
 }
 
-/// Função pura: decide olhando só para o texto do caminho, sem syscall — que é
-/// o ponto inteiro deste módulo.
+/// Função pura: decide olhando só para o texto do caminho, sem syscall. Statar
+/// para descobrir se pode statar seria o próprio bug — é num volume morto que a
+/// classificação precisa acertar, e é lá que a syscall pendura.
 pub fn reopen_policy(cwd: &Path, home: Option<&Path>) -> ReopenPolicy {
     // `Path::starts_with` compara componente a componente, e é isso que faz
     // `~/Documents-old` NÃO casar com `~/Documents`. Um `starts_with` de string
@@ -99,13 +117,15 @@ mod tests {
         assert_eq!(policy("/Users/tester"), ReopenPolicy::Checked);
     }
 
+    /// "Sem conferir" é sobre o `is_dir()` do `resume_startup`, e só. O `stat` do
+    /// `resolve_cwd` vem depois — ver a doc de [`ReopenPolicy::Unchecked`].
     #[test]
-    fn as_tres_pastas_do_info_plist_reabrem_sem_stat() {
+    fn as_tres_pastas_do_info_plist_reabrem_sem_conferir() {
         for dir in TCC_HOME_DIRS {
             assert_eq!(
                 policy(&format!("/Users/tester/{dir}")),
                 ReopenPolicy::Unchecked,
-                "{dir} está no Info.plist e não pode ser conferida no arranque"
+                "{dir} está no Info.plist e o arranque não a confere antes de reabrir"
             );
             assert_eq!(
                 policy(&format!("/Users/tester/{dir}/projeto/sub")),
