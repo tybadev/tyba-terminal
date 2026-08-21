@@ -276,6 +276,7 @@ import {
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
 import {
   mergeLoaded,
+  nextBootPoll,
   parseStartupMode,
   shouldPromptNewSession,
   SPLASH_DONE_EVENT,
@@ -950,38 +951,73 @@ export default function App() {
     );
   }, [layout.workspaces, sessionQuery]);
 
+  /** Recarrega a lista de sessões. Devolve se o core respondeu pronto. */
   const refreshSessions = useCallback(async () => {
     const all = await listSessions().catch(() => null);
     const loaded = acceptLoaded(all);
     if (loaded) setSessions(loaded);
+    return loaded !== null;
   }, [acceptLoaded]);
+
+  /** O layout também veio vazio do meio do boot; reconsultar é a outra metade. */
+  const refreshLayout = useCallback(() => {
+    void layoutState()
+      .then((next) => {
+        const loaded = acceptLoaded(next);
+        if (!loaded) return;
+        setLayout(loaded);
+        promptNewSessionIfEmpty(true, loaded.workspaces.length);
+      })
+      .catch(() => {});
+  }, [acceptLoaded, promptNewSessionIfEmpty]);
 
   // O core avisa quando a thread de boot termina. Só então o que veio vazio
   // vira estado — antes disso é transitório.
+  //
+  // > [!warning] O aviso pode não chegar. `listen()` do Tauri é assíncrono:
+  // > entre pedir o registro e o listener existir de fato há uma janela, e o
+  // > `app://ready` emitido dentro dela se perde — o core não reenvia. Por isso
+  // > o poll ao lado do listener: ele não depende da entrega de nada. Os dois
+  // > caminhos param juntos, porque marcar `bootReady` muda a dependência e
+  // > desmonta este efeito; e se rodarem em paralelo por um instante, nenhum
+  // > desfaz o outro — `mergeLoaded` não deixa o `ready` regredir nem aplica
+  // > lista de resposta que não veio pronta.
   useEffect(() => {
     if (bootReady) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const startedAt = Date.now();
+
     const unlisten = onAppReady(() => {
       markReady();
       void refreshSessions();
-      void layoutState()
-        .then((next) => {
-          const loaded = acceptLoaded(next);
-          if (!loaded) return;
-          setLayout(loaded);
-          promptNewSessionIfEmpty(true, loaded.workspaces.length);
-        })
-        .catch(() => {});
+      refreshLayout();
     });
+
+    const tick = async () => {
+      // `list_sessions` é `async` no core, então esta pergunta roda no pool
+      // assíncrono e não na main thread do macOS — a mesma que desenha o
+      // webview. É por isso que ela, e não `boot_snapshot`, é a do poll.
+      const ready = await refreshSessions();
+      // O `stopped` só é consultado depois do `refreshLayout`, de propósito: o
+      // próprio sucesso deste tick sobe o `bootReady` e desmonta o efeito, e
+      // desistir por causa disso deixaria o layout sem carregar.
+      if (ready) refreshLayout();
+      schedule(ready);
+    };
+    const schedule = (ready: boolean) => {
+      const delay = nextBootPoll({ ready, elapsedMs: Date.now() - startedAt });
+      if (delay === null || stopped) return;
+      timer = window.setTimeout(() => void tick(), delay);
+    };
+    schedule(false);
+
     return () => {
+      stopped = true;
+      window.clearTimeout(timer);
       void unlisten.then((off) => off());
     };
-  }, [
-    bootReady,
-    markReady,
-    acceptLoaded,
-    refreshSessions,
-    promptNewSessionIfEmpty,
-  ]);
+  }, [bootReady, markReady, refreshSessions, refreshLayout]);
 
   const sessionById = useMemo(
     () => new Map(sessions.map((s) => [s.id, s])),

@@ -70,6 +70,54 @@ export function mergeLoaded<T>(
 }
 
 /**
+ * O boot normal termina em ~80 ms. Com tick de 150 ms, o evento perdido custa
+ * no máximo um piscar até a janela preencher — e no caminho feliz nenhum tick
+ * chega a disparar, porque o `app://ready` desmonta o efeito antes disso.
+ */
+const BOOT_POLL_FAST_MS = 150;
+const BOOT_POLL_FAST_UNTIL_MS = 2_000;
+/** Passados 2 s o boot não é normal: é disco lento ou diálogo na frente. */
+const BOOT_POLL_SLOW_MS = 1_000;
+const BOOT_POLL_SLOW_UNTIL_MS = 30_000;
+/** Meio minuto parado é gente: alguém tem um diálogo do macOS para clicar. */
+const BOOT_POLL_IDLE_MS = 5_000;
+
+/**
+ * Quanto esperar até perguntar de novo se o core terminou de carregar — ou
+ * `null` para parar.
+ *
+ * > [!warning] O `app://ready` pode nunca chegar. `listen()` do Tauri é
+ * > assíncrono: entre pedir o registro e o listener existir de fato há uma
+ * > janela, e o evento emitido dentro dela se perde — o core não reenvia. Se
+ * > naquele mesmo intervalo o `boot_snapshot` tiver lido `ready: false` (ele lê
+ * > o `ready` antes de montar o resto, de propósito), o front fica sem nenhuma
+ * > notícia de que o boot acabou: sessões e layout nunca chegam, o splash já
+ * > desistiu aos 4 s e a janela fica vazia até uma chamada não relacionada
+ * > acontecer. O poll é a saída que não depende da entrega de um evento.
+ *
+ * Os intervalos afrouxam porque a espera muda de natureza: o boot normal
+ * termina em ~80 ms, mas o caso ruim é um diálogo de permissão do macOS
+ * segurando a thread até alguém clicar, o que leva minutos. Perguntar a cada
+ * 150 ms por minutos seria desperdício; perguntar a cada 5 s no primeiro
+ * segundo seria lentidão visível.
+ *
+ * Não há teto: desistir devolveria exatamente o estado que este poll existe
+ * para fechar — janela vazia, e agora sem nada que a conserte. O laço para no
+ * instante em que a resposta vem `ready`, que no caminho feliz é antes mesmo
+ * do primeiro tick, e o custo de continuar é uma chamada assíncrona a cada 5 s,
+ * fora da main thread.
+ */
+export function nextBootPoll(input: {
+  ready: boolean;
+  elapsedMs: number;
+}): number | null {
+  if (input.ready) return null;
+  if (input.elapsedMs < BOOT_POLL_FAST_UNTIL_MS) return BOOT_POLL_FAST_MS;
+  if (input.elapsedMs < BOOT_POLL_SLOW_UNTIL_MS) return BOOT_POLL_SLOW_MS;
+  return BOOT_POLL_IDLE_MS;
+}
+
+/**
  * O app terminou de carregar e o splash pode sair.
  *
  * Evento de DOM, e não de IPC: quem escuta é o `main.tsx`, que roda antes do
