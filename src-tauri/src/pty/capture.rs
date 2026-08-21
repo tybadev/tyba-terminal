@@ -77,6 +77,8 @@ pub(super) enum Action {
         agent_match: bool,
     },
     Idle,
+    /// O shell entrou (ou saiu) de prompt de continuação.
+    Continuation(bool),
     Record(CommandRecord),
     Wipe,
     Finalize(FinishedBlock),
@@ -84,12 +86,27 @@ pub(super) enum Action {
     Cwd(SessionCwdPayload),
 }
 
+/// Teto do que se engole esperando a quebra de linha do eco.
+///
+/// Nada é para sempre: uma linha de comando não passa de um buffer de leitura,
+/// e se a quebra nunca vier — caminho que ninguém previu — a tela volta a
+/// receber bytes em vez de escurecer de vez.
+const MAX_ECHO_BYTES: usize = 8 * 1024;
+
 pub(super) struct CaptureMachine {
     osc: OscParser,
     tracker: Tracker,
     capture: Capture,
     capturing: bool,
     swallow_echo: bool,
+    /// Bytes já engolidos à espera da quebra de linha do eco.
+    swallowed: usize,
+    /// A linha foi submetida e o shell não executou nada: o eco terminou e
+    /// nem `133;C` nem prompt novo vieram.
+    submitted: bool,
+    /// O que já foi ANUNCIADO ao front sobre a continuação, para não repetir
+    /// evento a cada chunk.
+    continuation: bool,
     prompt_mode: Option<bool>,
     agent_match: bool,
     cwd: Option<PathBuf>,
@@ -104,6 +121,9 @@ impl CaptureMachine {
             capture: Capture::default(),
             capturing: false,
             swallow_echo: false,
+            swallowed: 0,
+            submitted: false,
+            continuation: false,
             prompt_mode: None,
             agent_match: false,
             cwd: None,
@@ -134,15 +154,31 @@ impl CaptureMachine {
             // O eco cai entre `133;B` e `133;C`, e o cartão já mostra o
             // comando — na tela ao vivo ele aparecia duas vezes.
             //
-            // O corte é no MARCADOR, não no chunk: a saída costuma vir grudada
-            // no `133;C`, e jogar o chunk fora levaria o começo dela junto.
+            // O fim do eco é a QUEBRA DE LINHA que o tty devolve pelo Enter,
+            // não o `133;C`. Esperar pelo `133;C` era o bug: comando incompleto
+            // (`for … do`, `while`, `if`, `cat <<EOF`, aspas abertas) não faz o
+            // zsh rodar preexec, então `133;C` não vem NUNCA — e a flag ficava
+            // ligada indefinidamente. O `for> ` do PS2 sumia, o eco do que se
+            // digitava depois sumia, e a tela ficava preta até o próximo
+            // comando completo. Todo comando multi-linha caía nisso.
             //
-            // E a limpeza vai junto com os bytes, no mesmo canal: pelo evento
-            // de comando ela chegava ANTES do eco, e limpava uma tela onde ele
-            // ainda não estava.
-            if let Some(at) = command_start_at(chunk) {
-                actions.push(Action::LiveRestart(at..chunk.len()));
-                self.swallow_echo = false;
+            // Desarmar na quebra de linha cobre qualquer caminho que não emita
+            // `133;C`, inclusive os que ninguém previu, e não custa relógio.
+            match chunk.iter().position(|b| *b == b'\n') {
+                Some(at) => {
+                    self.swallow_echo = false;
+                    self.submitted = true;
+                    if at + 1 < chunk.len() {
+                        actions.push(Action::Live(at + 1..chunk.len()));
+                    }
+                }
+                None => {
+                    self.swallowed += chunk.len();
+                    if self.swallowed > MAX_ECHO_BYTES {
+                        self.swallow_echo = false;
+                        actions.push(Action::Live(0..chunk.len()));
+                    }
+                }
             }
         } else {
             actions.push(Action::Live(0..chunk.len()));
@@ -156,6 +192,11 @@ impl CaptureMachine {
                     // limpa.
                     self.agent_match = crate::rich_input::agent_matcher().matches(cmd.trim_start());
                     self.tracker.on_command_line(cmd);
+                    // O `633;E` sai do preexec: se ele veio, o shell ACEITOU a
+                    // linha e não está em continuação. Zerar aqui, e não só no
+                    // `133;C`, evita anunciar continuação no intervalo entre os
+                    // dois marcadores.
+                    self.submitted = false;
                 }
                 ShellEvent::CommandStart => {
                     self.tracker.on_start(now_ms);
@@ -185,6 +226,7 @@ impl CaptureMachine {
                         .map(|at| from + at)
                         .unwrap_or(chunk.len());
                     scan_from = end;
+                    self.submitted = false;
                     if self.capturing {
                         self.push_capture(&chunk[from..end], alt_screen);
                         // O estado de tela do core é o que reata a sessão ao
@@ -192,6 +234,18 @@ impl CaptureMachine {
                         // histórico inteiro voltaria dentro do cartão ativo no
                         // reattach.
                         actions.push(Action::ClearCoreScreen);
+                        // E a tela ao vivo recomeça no marcador. Isto morava no
+                        // ramo do eco, e por isso dependia de ele ter achado o
+                        // `133;C` — agora o eco desarma sozinho na quebra de
+                        // linha, e quem manda limpar é o comando começar, que é
+                        // o fato que de verdade justifica a limpeza.
+                        //
+                        // O corte é no MARCADOR, não no chunk: a saída vem
+                        // grudada nele, e limpar o chunk inteiro levaria o
+                        // começo dela junto. A limpeza vai no mesmo canal dos
+                        // bytes — pelo evento de comando ela chegava ANTES do
+                        // eco, e limpava uma tela onde ele ainda não estava.
+                        actions.push(Action::LiveRestart(from..chunk.len()));
                     }
                     actions.push(Action::Running {
                         command: self.tracker.command().map(str::to_string),
@@ -204,10 +258,14 @@ impl CaptureMachine {
                 ShellEvent::CommandEnd(code) => actions.extend(self.finish(Some(code), now_ms)),
                 ShellEvent::PromptStart => actions.extend(self.finish(None, now_ms)),
                 ShellEvent::InputStart => {
-                    // Daqui até o `133;C` só vem o eco do que foi submetido.
-                    // Fora do modo prompt quem digitou foi o terminal, e aí o
-                    // eco é a própria digitação.
+                    // Daqui até a quebra de linha só vem o eco do que foi
+                    // submetido. Fora do modo prompt quem digitou foi o
+                    // terminal, e aí o eco é a própria digitação.
                     self.swallow_echo = self.prompt_mode == Some(true);
+                    self.swallowed = 0;
+                    // `133;B` é o PS1, ou seja prompt PRIMÁRIO: o shell está
+                    // pronto para comando novo, não continuando um.
+                    self.submitted = false;
                 }
                 ShellEvent::PromptMode(on) => {
                     self.prompt_mode = Some(on);
@@ -226,6 +284,16 @@ impl CaptureMachine {
                     }
                 }
             }
+        }
+
+        // O shell não marca prompt de continuação: o `PS2` não emite OSC
+        // nenhum. O estado é inferido pela AUSÊNCIA — a linha foi submetida, o
+        // eco terminou, e nem `633;E`/`133;C` nem prompt novo apareceram.
+        // Anunciado só na transição; o front usa isto para saber que o que ele
+        // mandar é MAIS LINHA do mesmo comando, não comando novo.
+        if self.submitted != self.continuation {
+            self.continuation = self.submitted;
+            actions.push(Action::Continuation(self.continuation));
         }
         actions
     }
@@ -316,6 +384,10 @@ impl CaptureMachine {
         self.capturing = false;
         let _ = self.capture.take();
         self.agent_match = false;
+        // `Idle` já diz ao front `continuation: false`; o estado interno tem de
+        // acompanhar, senão a próxima transição não seria detectada.
+        self.submitted = false;
+        self.continuation = false;
         actions.push(Action::Idle);
         actions
     }
@@ -500,6 +572,160 @@ mod tests {
         .into_bytes();
         let block = finalized(machine.on_chunk(&chunk, 2_100, false)).expect("bloco");
         assert_eq!(text_of(&block), ["hi"]);
+    }
+
+    /// Junta o que sai para a tela ao vivo, aplicando as ações na ordem —
+    /// `LiveRestart` descarta o que já tinha entrado, como o emitter faz.
+    fn live_screen(chunk: &[u8], actions: &[Action]) -> String {
+        let mut out: Vec<u8> = Vec::new();
+        for action in actions {
+            match action {
+                Action::Live(range) => out.extend_from_slice(&chunk[range.clone()]),
+                Action::LiveRestart(range) => {
+                    out.clear();
+                    out.extend_from_slice(&chunk[range.clone()]);
+                }
+                Action::ResetScreen => out.clear(),
+                _ => {}
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// Uma sessão em modo prompt logo depois do `133;B`, que é onde o eco
+    /// começa a ser engolido.
+    fn at_the_prompt() -> CaptureMachine {
+        let mut machine = in_prompt_mode();
+        machine.on_chunk(b"\x1b]133;B\x07", 1_000, false);
+        machine
+    }
+
+    #[test]
+    fn an_incomplete_command_does_not_black_out_the_screen() {
+        // `for i in 1 2 3; do` + Enter: o zsh não roda preexec, então NENHUM
+        // `133;C` é emitido. Enquanto o desarme dependia dele, a flag ficava
+        // ligada para sempre e nada mais chegava ao xterm — o `for> ` sumia, o
+        // eco do que se digitava depois sumia, e a tela ficava preta.
+        let mut machine = at_the_prompt();
+        let chunk = b"for i in 1 2 3; do\r\nfor> ";
+        let actions = machine.on_chunk(chunk, 2_000, false);
+        assert_eq!(live_screen(chunk, &actions), "for> ");
+    }
+
+    #[test]
+    fn the_screen_keeps_working_for_every_line_of_the_continuation() {
+        let mut machine = at_the_prompt();
+        machine.on_chunk(b"for i in 1 2 3; do\r\nfor> ", 2_000, false);
+        let chunk = b"echo $i\r\nfor> ";
+        let actions = machine.on_chunk(chunk, 2_100, false);
+        assert_eq!(
+            live_screen(chunk, &actions),
+            "echo $i\r\nfor> ",
+            "a partir da segunda linha o eco é a tela, não duplicata"
+        );
+    }
+
+    #[test]
+    fn the_echo_of_a_complete_command_is_still_hidden() {
+        // O outro lado: desarmar cedo demais traz de volta o eco duplicado que
+        // o `swallow_echo` existe para evitar.
+        let mut machine = at_the_prompt();
+        let chunk = format!(
+            "ls -la\r\n\x1b]633;E;{}\x07\x1b]133;C\x07total 0\r\n",
+            b64("ls -la")
+        )
+        .into_bytes();
+        let actions = machine.on_chunk(&chunk, 2_000, false);
+        let screen = live_screen(&chunk, &actions);
+        assert!(
+            !screen.contains("ls -la"),
+            "eco vazou para a tela: {screen:?}"
+        );
+        assert!(screen.contains("total 0"), "saída sumiu: {screen:?}");
+    }
+
+    #[test]
+    fn an_echo_split_across_chunks_is_still_swallowed_whole() {
+        let mut machine = at_the_prompt();
+        let first = b"ls -l";
+        assert_eq!(
+            live_screen(first, &machine.on_chunk(first, 2_000, false)),
+            ""
+        );
+        let second = b"a\r\nresto";
+        assert_eq!(
+            live_screen(second, &machine.on_chunk(second, 2_010, false)),
+            "resto"
+        );
+    }
+
+    #[test]
+    fn an_echo_that_never_breaks_the_line_gives_up_instead_of_going_dark() {
+        // Caminho que ninguém previu: sem quebra de linha, o teto de bytes é o
+        // que impede a tela de escurecer para sempre.
+        let mut machine = at_the_prompt();
+        let plausible = vec![b'x'; MAX_ECHO_BYTES];
+        assert_eq!(
+            live_screen(&plausible, &machine.on_chunk(&plausible, 2_000, false)),
+            "",
+            "até o teto ainda pode ser eco de uma linha comprida"
+        );
+        let past_it = b"agora aparece";
+        assert_eq!(
+            live_screen(past_it, &machine.on_chunk(past_it, 2_010, false)),
+            "agora aparece",
+            "passou do teto sem quebra de linha: a tela volta a receber bytes"
+        );
+    }
+
+    #[test]
+    fn the_continuation_is_announced_and_taken_back() {
+        let mut machine = at_the_prompt();
+
+        let entered = machine.on_chunk(b"for i in 1 2 3; do\r\nfor> ", 2_000, false);
+        assert!(
+            entered.contains(&Action::Continuation(true)),
+            "o front precisa saber que a linha não vale como comando novo"
+        );
+
+        // Enquanto continua, não repete o evento a cada chunk.
+        let more = machine.on_chunk(b"echo $i\r\nfor> ", 2_100, false);
+        assert!(!more.iter().any(|a| matches!(a, Action::Continuation(_))));
+
+        // `done` fecha o comando: o shell roda preexec e emite `633;E`+`133;C`.
+        let closed = machine.on_chunk(
+            format!(
+                "done\r\n\x1b]633;E;{}\x07\x1b]133;C\x07",
+                b64("for i in 1 2 3; do echo $i; done")
+            )
+            .as_bytes(),
+            2_200,
+            false,
+        );
+        assert!(closed.contains(&Action::Continuation(false)));
+        assert!(closed.iter().any(|a| matches!(a, Action::Running { .. })));
+    }
+
+    #[test]
+    fn a_complete_command_never_announces_continuation() {
+        let mut machine = at_the_prompt();
+        let actions = machine.on_chunk(&one_shot_chunk("echo hi", "hi\r\n"), 2_000, false);
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::Continuation(_))),
+            "piscada de continuação em comando normal: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn outside_prompt_mode_nothing_is_swallowed() {
+        // Sem modo prompt quem digitou foi o terminal, e o eco é a digitação.
+        let mut machine = CaptureMachine::new("s1".into());
+        machine.on_chunk(b"\x1b]133;B\x07", 1_000, false);
+        let chunk = b"for i in 1 2 3; do\r\nfor> ";
+        assert_eq!(
+            live_screen(chunk, &machine.on_chunk(chunk, 2_000, false)),
+            "for i in 1 2 3; do\r\nfor> "
+        );
     }
 
     #[test]

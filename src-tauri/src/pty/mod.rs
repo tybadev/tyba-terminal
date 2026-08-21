@@ -139,6 +139,14 @@ pub struct SessionCommandPayload {
     pub command: Option<String>,
     pub running: bool,
     pub agent_match: bool,
+    /// O shell está em prompt de continuação (`PS2`): a última linha submetida
+    /// não fechou o comando — `for`, `while`, `if`, `cat <<EOF`, aspas abertas.
+    ///
+    /// Nunca vem junto de `running: true`: são estados diferentes do mesmo
+    /// ciclo. Enquanto for `true`, o que o usuário mandar é MAIS LINHA do
+    /// mesmo comando, e não comando novo — sem isto o front só vê
+    /// `running: false` e oferece a linha como se fosse começar do zero.
+    pub continuation: bool,
 }
 
 /// Diretório de trabalho reportado via `OSC 7`.
@@ -257,6 +265,7 @@ impl ActionSink {
                             command,
                             running: true,
                             agent_match,
+                            continuation: false,
                         },
                     );
                 }
@@ -267,6 +276,18 @@ impl ActionSink {
                             command: None,
                             running: false,
                             agent_match: false,
+                            continuation: false,
+                        },
+                    );
+                }
+                capture::Action::Continuation(on) => {
+                    let _ = self.app.emit(
+                        &self.command_event,
+                        SessionCommandPayload {
+                            command: None,
+                            running: false,
+                            agent_match: false,
+                            continuation: on,
                         },
                     );
                 }
