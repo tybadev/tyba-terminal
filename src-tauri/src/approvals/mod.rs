@@ -9,8 +9,11 @@
 //!   hard-coded, nunca entra em allowlist
 //!
 //! Push para main/master é RECUSADO pelo core antes de virar pedido.
-//! Análise estática de string tem limites (ex.: `git push` sem args com
-//! main em checkout) — o runner complementa com contexto de branch.
+//! Análise estática de string tem limites e ninguém os cobre hoje: `git push`
+//! sem refspec com main em checkout passa, porque a branch corrente não chega
+//! até aqui. Enquanto não chegar, a promessa deste módulo é sobre o que está
+//! ESCRITO no comando — dizer mais do que isso seria dar por coberto um buraco
+//! que continua aberto.
 
 pub mod tool_action;
 pub mod tool_risk;
@@ -86,20 +89,152 @@ fn word_tokens(command: &str) -> Vec<&str> {
     command.split_whitespace().collect()
 }
 
-/// Regra hard-coded do core: push para main/master nunca vira pedido de
-/// aprovação — é recusado na hora. Cobre nome direto, refspec (`HEAD:main`)
-/// e force-push (`+main`).
-pub fn is_refused_by_core(command: &str) -> bool {
-    let tokens = word_tokens(command);
-    let Some(git_at) = tokens.iter().position(|w| *w == "git") else {
-        return false;
-    };
-    if tokens.get(git_at + 1).copied() != Some("push") {
-        return false;
+/// Separadores de shell: depois de qualquer um deles pode começar um comando
+/// novo.
+///
+/// Casados como CARACTERE, não como token. `echo x;git push origin main` não
+/// tem espaço em volta do `;`, então `;git` chega inteiro ao `split_whitespace`
+/// — casar o separador por token deixaria a forma colada passar batido.
+const COMMAND_SEPARATORS: &[char] = &[';', '&', '|', '\n', '\r', '(', ')', '{', '}', '`'];
+
+/// Palavras que rodam OUTRO comando sem mudar o que ele é.
+const COMMAND_PREFIXES: &[&str] = &[
+    "env", "command", "exec", "nohup", "time", "sudo", "doas", "nice", "stdbuf", "setsid", "xargs",
+];
+
+/// Shells que recebem o comando como argumento (`bash -c "git push …"`).
+const SHELL_BINARIES: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish", "ash"];
+
+/// Flags globais do `git` que consomem o argumento SEGUINTE.
+///
+/// São elas que furavam o casamento: com `git -C /repo push`, o subcomando
+/// deixa de ser o token logo depois do `git`, e a comparação ingênua devolvia
+/// "não é push" para um push. A forma grudada (`--git-dir=…`) não precisa de
+/// lista: é um token só, e cai na regra geral de flag.
+const GIT_GLOBAL_FLAGS_WITH_VALUE: &[&str] = &[
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--exec-path",
+    "--config-env",
+    "--super-prefix",
+    "--attr-source",
+];
+
+/// Tira aspas e barras invertidas antes do casamento.
+///
+/// Sem isso `git push origin "main"` e `git push origin ma\in` chegam ao
+/// comparador como refname diferente de `main` e escapam da recusa. O preço é
+/// um falso positivo em texto citado que contenha separador (`echo "; git push
+/// origin main"`), e esse é o lado certo de errar: recusa a mais custa um
+/// "não" ao agente, recusa a menos publica na main.
+fn unquote(command: &str) -> String {
+    command.replace(['"', '\'', '\\'], "")
+}
+
+/// Nome do binário sem diretório nem `.exe`: `/usr/bin/git` é `git`.
+fn binary_name(token: &str) -> &str {
+    let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
+    base.strip_suffix(".exe").unwrap_or(base)
+}
+
+/// `FOO=bar` na frente do comando é ambiente, não comando.
+fn is_assignment(token: &str) -> bool {
+    !token.starts_with('-')
+        && token.split_once('=').is_some_and(|(name, _)| {
+            !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        })
+}
+
+/// Onde está, neste segmento, o `git` que de fato vai rodar.
+fn git_at(tokens: &[&str]) -> Option<usize> {
+    let mut at = 0;
+    while tokens.get(at).is_some_and(|t| is_assignment(t)) {
+        at += 1;
     }
-    tokens[git_at + 2..].iter().any(|raw| {
-        let w = raw.trim_start_matches('+');
-        w == "main" || w == "master" || w.ends_with(":main") || w.ends_with(":master")
+    let name = binary_name(tokens.get(at)?);
+    if name == "git" {
+        return Some(at);
+    }
+    if COMMAND_PREFIXES.contains(&name) || SHELL_BINARIES.contains(&name) {
+        // `sudo git push`, `env -i git push`, `bash -c "git push …"`: o wrapper
+        // não muda o que o comando é. Daqui pra frente o primeiro `git` solto é
+        // ele — varrer, em vez de decodificar as flags de cada wrapper, é de
+        // propósito: `sudo -u app git push` tem valor de flag no meio, e uma
+        // tabela de flags por wrapper seria uma segunda lista para manter certa.
+        return tokens[at + 1..]
+            .iter()
+            .position(|t| binary_name(t) == "git")
+            .map(|pos| at + 1 + pos);
+    }
+    // Qualquer outro binário: o `git` que aparecer daqui pra frente é argumento
+    // dele, não comando. É o que impede `echo git push main` de virar recusa.
+    None
+}
+
+/// Uma invocação de `git` encontrada num segmento.
+struct GitCall<'a> {
+    subcommand: &'a str,
+    args: &'a [&'a str],
+}
+
+fn git_call<'a>(tokens: &'a [&'a str]) -> Option<GitCall<'a>> {
+    let mut at = git_at(tokens)? + 1;
+    while let Some(&token) = tokens.get(at) {
+        if !token.starts_with('-') {
+            break;
+        }
+        at += 1;
+        if GIT_GLOBAL_FLAGS_WITH_VALUE.contains(&token) {
+            at += 1;
+        }
+    }
+    let subcommand = *tokens.get(at)?;
+    Some(GitCall {
+        subcommand,
+        args: &tokens[at + 1..],
+    })
+}
+
+/// Roda o predicado sobre cada invocação de `git` da linha.
+fn any_git_call(command: &str, predicate: impl Fn(&GitCall) -> bool) -> bool {
+    let line = unquote(command);
+    line.split(|c| COMMAND_SEPARATORS.contains(&c))
+        .any(|segment| {
+            let tokens = word_tokens(segment);
+            git_call(&tokens).is_some_and(|call| predicate(&call))
+        })
+}
+
+/// O destino de um refspec é o que vem depois do último `:` — `HEAD:main`,
+/// `HEAD:refs/heads/main`, `:main` (delete) e `+main` (force) chegam todos em
+/// `main`.
+fn is_trunk_ref(raw: &str) -> bool {
+    let spec = raw.trim_start_matches('+');
+    let dest = spec.rsplit(':').next().unwrap_or(spec);
+    let dest = dest.strip_prefix("refs/heads/").unwrap_or(dest);
+    dest == "main" || dest == "master"
+}
+
+fn pushes_to_trunk(args: &[&str]) -> bool {
+    args.iter().any(|raw| {
+        // `--all` e `--mirror` não nomeiam ref nenhuma e levam TODAS as branches
+        // locais junto: é push para main sem escrever "main".
+        if *raw == "--all" || *raw == "--mirror" {
+            return true;
+        }
+        !raw.starts_with('-') && is_trunk_ref(raw)
+    })
+}
+
+/// Regra hard-coded do core: push para main/master nunca vira pedido de
+/// aprovação — é recusado na hora. Cobre nome direto, refspec (`HEAD:main`),
+/// force-push (`+main`) e as flags globais do git no meio (`git -C /repo push`).
+pub fn is_refused_by_core(command: &str) -> bool {
+    any_git_call(command, |call| {
+        call.subcommand == "push" && pushes_to_trunk(call.args)
     })
 }
 
@@ -157,10 +292,8 @@ pub fn classify_risk(command: &str) -> RiskLevel {
         return RiskLevel::Red;
     }
     // dano público/irreversível
-    if let Some(git_at) = tokens.iter().position(|w| *w == "git") {
-        if tokens.get(git_at + 1).copied() == Some("push") {
-            return RiskLevel::Red;
-        }
+    if any_git_call(cmd, |call| call.subcommand == "push") {
+        return RiskLevel::Red;
     }
     if first == "gh"
         && tokens.get(1).copied() == Some("pr")
@@ -176,6 +309,11 @@ pub fn classify_risk(command: &str) -> RiskLevel {
     ) {
         return RiskLevel::Green;
     }
+    // De propósito estrito, ao contrário do casamento de `push`: aqui o token
+    // logo depois do `git` TEM de ser o subcomando. Tolerar flag global no meio
+    // pintaria de verde `git -c alias.st='!curl … | sh' st`, que é execução
+    // arbitrária com cara de `git status`. Tolerância a mais na recusa custa um
+    // "não"; tolerância a mais no verde custa o aval automático.
     if first == "git"
         && matches!(
             tokens.get(1).copied(),
@@ -392,6 +530,122 @@ mod tests {
         assert_eq!(classify_risk("chown -R app: /srv"), RiskLevel::Red);
     }
 
+    /// Amarelo entra na allowlist da sessão ("sempre permitir"); vermelho não.
+    /// Push classificado como amarelo é push liberado por sessão inteira.
+    #[test]
+    fn flag_global_do_git_nao_rebaixa_push_para_amarelo() {
+        assert_eq!(
+            classify_risk("git -C /repo push origin main"),
+            RiskLevel::Red
+        );
+        assert_eq!(classify_risk("git -c user.name=x push"), RiskLevel::Red);
+        assert_eq!(
+            classify_risk("git --git-dir=/repo/.git push origin main"),
+            RiskLevel::Red
+        );
+        assert_eq!(
+            classify_risk("git --work-tree /repo --git-dir /repo/.git push"),
+            RiskLevel::Red
+        );
+        assert_eq!(
+            classify_risk("git --no-pager push origin main"),
+            RiskLevel::Red
+        );
+        assert_eq!(
+            classify_risk("/usr/bin/git push origin main"),
+            RiskLevel::Red
+        );
+        assert_eq!(
+            classify_risk("cd /repo && git push origin x"),
+            RiskLevel::Red
+        );
+        assert_eq!(classify_risk("ls;git push"), RiskLevel::Red);
+    }
+
+    #[test]
+    fn git_que_e_argumento_de_outro_comando_nao_e_push() {
+        // Recusa hard-coded de um `echo` é tão bug quanto push liberado.
+        assert_eq!(classify_risk("echo git push main"), RiskLevel::Green);
+        assert_eq!(classify_risk("grep push .git/config"), RiskLevel::Green);
+    }
+
+    #[test]
+    fn core_recusa_push_para_main_master() {
+        assert!(is_refused_by_core("git push origin main"));
+        assert!(is_refused_by_core("git push --force origin master"));
+        assert!(is_refused_by_core("git push origin HEAD:main"));
+        assert!(is_refused_by_core("git push origin +main"));
+    }
+
+    /// A tabela de fuga: tudo aqui rodava um push para main e passava batido
+    /// pelo casamento `tokens[git+1] == "push"`.
+    #[test]
+    fn core_recusa_push_com_flag_global_no_meio() {
+        assert!(is_refused_by_core("git -C /repo push origin main"));
+        assert!(is_refused_by_core(
+            "git -c push.default=current push origin main"
+        ));
+        assert!(is_refused_by_core(
+            "git --git-dir=/repo/.git push origin main"
+        ));
+        assert!(is_refused_by_core(
+            "git --work-tree /repo push origin master"
+        ));
+        assert!(is_refused_by_core(
+            "git -C /repo -c user.name=x --no-pager push origin main"
+        ));
+        assert!(is_refused_by_core("git --namespace ns push origin main"));
+    }
+
+    #[test]
+    fn core_recusa_push_atras_de_wrapper_ou_separador() {
+        assert!(is_refused_by_core("cd /repo && git push origin main"));
+        assert!(is_refused_by_core("ls;git push origin main"));
+        assert!(is_refused_by_core("false || git push origin main"));
+        assert!(is_refused_by_core("$(git push origin main)"));
+        assert!(is_refused_by_core("bash -c \"git push origin main\""));
+        assert!(is_refused_by_core("sudo git push origin main"));
+        assert!(is_refused_by_core("GIT_SSH_COMMAND=x git push origin main"));
+        assert!(is_refused_by_core("env -i git push origin main"));
+        assert!(is_refused_by_core("/usr/bin/git push origin main"));
+    }
+
+    #[test]
+    fn core_recusa_refspec_que_nao_soletra_main() {
+        assert!(is_refused_by_core("git push origin HEAD:refs/heads/main"));
+        assert!(is_refused_by_core("git push origin \"main\""));
+        assert!(is_refused_by_core("git push origin 'main'"));
+        assert!(is_refused_by_core(r"git push origin ma\in"));
+        assert!(is_refused_by_core("git push origin refs/heads/master"));
+        assert!(is_refused_by_core("git push origin :master"));
+        // `--all`/`--mirror` levam todas as branches locais, main junto.
+        assert!(is_refused_by_core("git push --all origin"));
+        assert!(is_refused_by_core("git push --mirror origin"));
+    }
+
+    #[test]
+    fn core_nao_recusa_push_para_feature() {
+        assert!(!is_refused_by_core("git push origin feat/x"));
+        assert!(!is_refused_by_core("git push origin fix/main-menu"));
+        assert!(!is_refused_by_core("echo main"));
+        assert!(!is_refused_by_core("git status"));
+        assert!(!is_refused_by_core("git -C /repo push origin feat/x"));
+        // Mandar o conteúdo da main para uma branch de feature é o inverso do
+        // dano que a regra existe para impedir.
+        assert!(!is_refused_by_core("git push origin main:feat/x"));
+        assert!(!is_refused_by_core("git -C /repo status"));
+    }
+
+    /// O `git` que é argumento de outro binário não é comando: recusar aqui é
+    /// bloquear, sem contorno possível, um `echo`.
+    #[test]
+    fn core_nao_recusa_git_que_e_argumento() {
+        assert!(!is_refused_by_core("echo git push main"));
+        assert!(!is_refused_by_core("echo git push origin main"));
+        assert!(!is_refused_by_core("grep -r 'git push origin main' docs"));
+        assert!(!is_refused_by_core("cat CONTRIBUTING.md"));
+    }
+
     #[test]
     fn verde_read_only() {
         assert_eq!(classify_risk("ls -la"), RiskLevel::Green);
@@ -440,22 +694,6 @@ mod tests {
             classify_risk("some-random-binary --flag"),
             RiskLevel::Yellow
         );
-    }
-
-    #[test]
-    fn core_recusa_push_para_main_master() {
-        assert!(is_refused_by_core("git push origin main"));
-        assert!(is_refused_by_core("git push --force origin master"));
-        assert!(is_refused_by_core("git push origin HEAD:main"));
-        assert!(is_refused_by_core("git push origin +main"));
-    }
-
-    #[test]
-    fn core_nao_recusa_push_para_feature() {
-        assert!(!is_refused_by_core("git push origin feat/x"));
-        assert!(!is_refused_by_core("git push origin fix/main-menu"));
-        assert!(!is_refused_by_core("echo main"));
-        assert!(!is_refused_by_core("git status"));
     }
 
     fn approval(decision: Decision) -> Resolution {
