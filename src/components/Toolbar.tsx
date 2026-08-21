@@ -10,8 +10,8 @@ import {
 } from "@phosphor-icons/react";
 
 import { Shortcut } from "@/components/ui/kbd";
-import type { RepoSnapshot, SessionId } from "../lib/ipc";
-import type { ChipId, ToolbarPref } from "../lib/repoSnapshots";
+import type { RepoSnapshot } from "../lib/ipc";
+import type { BranchChip, ChipId, ToolbarPref } from "../lib/repoSnapshots";
 import { BranchPicker } from "./BranchPicker";
 
 interface Props {
@@ -27,8 +27,10 @@ interface Props {
    *
    * `sessionId` nulo deixa o chip como texto — é o que sobra quando não há
    * sessão, ou quando o core não teria como localizar o repositório dela.
+   * `state: "unknown"` é o chip que fica na barra sem rótulo nem ação; `null`
+   * é o único caso em que ele não existe (não há repositório nenhum em jogo).
    */
-  branch: { label: string; sessionId: SessionId | null } | null;
+  branch: BranchChip | null;
   snapshot: RepoSnapshot | undefined;
   hasWorktree: boolean;
   onOpenDiff: () => void;
@@ -88,6 +90,24 @@ export function Toolbar({
         ) : null;
       case "branch":
         if (!branch) return null;
+        // A sessão tem repositório, mas o TYBA não acompanha a branch dele: o
+        // chip fica no lugar dizendo isso. Sumir era o que fazia uma sessão de
+        // agente encerrada parecer defeito da barra.
+        if (branch.state === "unknown") {
+          return (
+            <span
+              key={id}
+              title={t("toolbarBranchUnknownHint")}
+              className="flex min-w-0 shrink items-center gap-1 text-tyba-text-muted"
+              aria-label={t("toolbarBranchUnknown")}
+            >
+              <GitBranch size={12} className="shrink-0" />
+              {/* Travessão em vez de palavra: o ícone já diz "branch", e o que
+                  falta dizer é só que o valor não está disponível. */}
+              <span className="truncate">—</span>
+            </span>
+          );
+        }
         // Com uma sessão que o core sabe localizar, o chip troca de branch; sem
         // ela, continua sendo o texto que sempre foi. O seletor faz o checkout
         // em dois passos — armar e confirmar —, que é a rede para uma ação que

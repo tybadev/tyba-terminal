@@ -245,12 +245,142 @@ export function ghostFor(text: string, hits: Suggestion[]): string {
 }
 
 /**
+ * As flags de um wrapper, separadas pelo que interessa aqui: consumir ou não o
+ * próximo token.
+ *
+ * `value` é a lista que evita o defeito — `sudo -u app git push` tem `app` como
+ * OPERANDO do `-u`, não como programa. `bare` existe para o outro lado: sem
+ * saber que `-k` não leva valor, `sudo -k make` teria de desistir em "sudo".
+ *
+ * > [!warning] Uma flag ausente das duas listas é DESCONHECIDA, e desconhecida
+ * > faz a leitura parar no wrapper (ver `programName`). É por isso que
+ * > `-S`/`--split-string` do `env` fica fora de propósito: o valor dele é a
+ * > linha de comando inteira em um token só, que este parser não separa.
+ */
+interface WrapperFlags {
+  /** Consomem o próximo token como valor. */
+  value: Set<string>;
+  /** Não consomem nada. */
+  bare: Set<string>;
+}
+
+const flags = (value: string[], bare: string[]): WrapperFlags => ({
+  value: new Set(value),
+  bare: new Set(bare),
+});
+
+/**
  * Prefixos que não são o programa, e sim como ele foi chamado.
  *
  * `sudo vim` é o `vim` na tela; dizer "sudo está no controle" seria trocar o
  * nome do programa pelo nome da permissão.
  */
-const WRAPPERS = new Set(["sudo", "doas", "env", "command", "nohup", "time"]);
+const WRAPPERS = new Map<string, WrapperFlags>([
+  [
+    "sudo",
+    flags(
+      [
+        "-u", "--user",
+        "-g", "--group",
+        "-p", "--prompt",
+        "-C", "--close-from",
+        "-h", "--host",
+        "-R", "--chroot",
+        "-D", "--chdir",
+        "-T", "--command-timeout",
+        "-U", "--other-user",
+        "-r", "--role",
+        "-t", "--type",
+      ],
+      [
+        "-A", "--askpass",
+        "-b", "--background",
+        "-B", "--bell",
+        "-E", "--preserve-env",
+        "-H", "--set-home",
+        "-i", "--login",
+        "-K", "--remove-timestamp",
+        "-k", "--reset-timestamp",
+        "-n", "--non-interactive",
+        "-N", "--no-update",
+        "-P", "--preserve-groups",
+        "-S", "--stdin",
+        "-s", "--shell",
+      ],
+    ),
+  ],
+  ["doas", flags(["-u", "-a", "-C"], ["-L", "-n", "-s"])],
+  [
+    "env",
+    flags(
+      ["-u", "--unset", "-C", "--chdir"],
+      ["-i", "--ignore-environment", "-0", "--null", "-v", "--debug"],
+    ),
+  ],
+  ["command", flags([], ["-p", "-v", "-V"])],
+  ["nohup", flags([], [])],
+  [
+    "time",
+    flags(
+      ["-f", "--format", "-o", "--output"],
+      ["-p", "--portability", "-a", "--append", "-v", "--verbose"],
+    ),
+  ],
+]);
+
+type FlagStep = "bare" | "value" | "unknown";
+
+/** Quanto um token de flag consome: só a si mesmo, o próximo também, ou sabe-se lá. */
+function flagStep(known: WrapperFlags, token: string): FlagStep {
+  if (token.startsWith("--")) {
+    // `--user=app` traz o valor colado: seja a flag conhecida ou não, ela
+    // nunca come o próximo token — e o próximo token é o programa.
+    if (token.includes("=")) return "bare";
+    if (known.value.has(token)) return "value";
+    return known.bare.has(token) ? "bare" : "unknown";
+  }
+  const letters = token.slice(1);
+  if (!letters) return "unknown";
+  for (let i = 0; i < letters.length; i++) {
+    const flag = `-${letters[i]}`;
+    if (known.value.has(flag)) {
+      // Num bundle, só a última letra pode levar valor: em `-uH app` o valor do
+      // `-u` seria o "H", e em `-uapp` seria "app" colado. Ambíguo demais.
+      return i === letters.length - 1 ? "value" : "unknown";
+    }
+    if (!known.bare.has(flag)) return "unknown";
+  }
+  return "bare";
+}
+
+/** `FOO=bar BAZ=qux nvim` — atribuição de ambiente vem antes do programa. */
+function dropAssignments(words: string[]): string[] {
+  let rest = words;
+  while (rest.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[0])) {
+    rest = rest.slice(1);
+  }
+  return rest;
+}
+
+/**
+ * O que sobra depois das flags do wrapper, ou `null` quando alguma delas é
+ * ilegível — e aí quem responde é o wrapper, não um chute.
+ */
+function afterWrapperFlags(
+  words: string[],
+  known: WrapperFlags,
+): string[] | null {
+  let rest = dropAssignments(words);
+  while (rest.length > 0) {
+    const token = rest[0];
+    if (token === "--") return dropAssignments(rest.slice(1));
+    if (!token.startsWith("-")) break;
+    const step = flagStep(known, token);
+    if (step === "unknown") return null;
+    rest = dropAssignments(rest.slice(step === "value" ? 2 : 1));
+  }
+  return rest;
+}
 
 /**
  * O nome do programa que está com a tela, a partir da linha de comando.
@@ -266,25 +396,24 @@ const WRAPPERS = new Set(["sudo", "doas", "env", "command", "nohup", "time"]);
  * > que ele vai reconhecer. A fidelidade real custaria um `tcgetpgrp` no fd do
  * > master no core — a infraestrutura existe (`PtyPool::line_echo` já faz esse
  * > acesso), mas é outra fatia, e esta não depende dela.
+ *
+ * O critério não é precisão absoluta, é nunca afirmar bobagem: diante de uma
+ * flag de wrapper que não sabe ler, a leitura para e o nome do wrapper é a
+ * resposta. "sudo" é impreciso e verdadeiro; devolver o operando de uma flag
+ * seria errado com confiança, que num rótulo é a pior forma de errar — não se
+ * parece com defeito, então ninguém desconfia.
  */
 export function programName(command: string | null | undefined): string | null {
   if (!command) return null;
-  let words = command.trim().split(/\s+/).filter(Boolean);
-  // `FOO=bar BAZ=qux nvim` — atribuição de ambiente vem antes do programa e
-  // pode haver mais de uma.
-  while (words.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
-    words = words.slice(1);
-  }
-  while (words.length > 1 && WRAPPERS.has(basename(words[0]))) {
-    words = words.slice(1);
-    // `env -i CC=clang make`: as flags do wrapper e as atribuições que vêm
-    // com ele também não são o programa.
-    while (
-      words.length > 1 &&
-      (words[0].startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]))
-    ) {
-      words = words.slice(1);
-    }
+  let words = dropAssignments(command.trim().split(/\s+/).filter(Boolean));
+  while (words.length > 1) {
+    const known = WRAPPERS.get(basename(words[0]));
+    if (!known) break;
+    const rest = afterWrapperFlags(words.slice(1), known);
+    // Sem nada legível depois do wrapper (flag desconhecida, ou flags que
+    // consumiram a linha toda), o wrapper É o que o usuário digitou.
+    if (!rest || rest.length === 0) break;
+    words = rest;
   }
   const first = words[0];
   if (!first) return null;

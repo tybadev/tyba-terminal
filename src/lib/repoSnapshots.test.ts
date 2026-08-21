@@ -6,11 +6,12 @@ import {
   parseToolbarPref,
   sessionRepoDir,
   snapshotForDir,
+  toolbarBranchChip,
 } from "./repoSnapshots";
 
-const snap = (root: string): RepoSnapshot => ({
+const snap = (root: string, branch = "main"): RepoSnapshot => ({
   root,
-  branch: "main",
+  branch,
   status: null,
   ahead: null,
   behind: null,
@@ -148,5 +149,98 @@ describe("sessionRepoDir", () => {
     expect(sessionRepoDir({ worktree: null, alive: true, cwd: null })).toBe(
       null,
     );
+  });
+});
+
+describe("toolbarBranchChip", () => {
+  const WT = "/home/u/.tyba/wt/task";
+  const REPO = "/home/u/repo";
+  const live = {
+    id: "s1",
+    worktree: WT,
+    alive: true,
+    cwd: WT,
+  };
+
+  test("worktree com snapshot: rótulo do próprio repo e checkout na sessão", () => {
+    expect(
+      toolbarBranchChip({
+        session: live,
+        workspaceDir: REPO,
+        snapshots: { [WT]: snap(WT, "task/x"), [REPO]: snap(REPO, "main") },
+      }),
+    ).toEqual({ state: "known", label: "task/x", sessionId: "s1" });
+  });
+
+  test("worktree sem snapshot vira 'não sei', não vira chip ausente", () => {
+    // O caso comum: `watched_repo_roots` só registra o cwd de sessão em
+    // `Running`, e o worktree continua existindo depois que a sessão morre.
+    // Sumir o chip nesse cenário lê como defeito — o usuário não tem como
+    // saber que foi de propósito.
+    expect(
+      toolbarBranchChip({
+        session: { ...live, alive: false, cwd: null },
+        workspaceDir: REPO,
+        snapshots: { [REPO]: snap(REPO, "main") },
+      }),
+    ).toEqual({ state: "unknown" });
+  });
+
+  test("o 'não sei' nunca empresta o rótulo do workspace", () => {
+    // A regressão que este chip já teve: dizer `main` do repo principal
+    // enquanto o checkout cairia dentro do worktree do agente.
+    const chip = toolbarBranchChip({
+      session: { ...live, alive: false, cwd: null },
+      workspaceDir: REPO,
+      snapshots: { [REPO]: snap(REPO, "main") },
+    });
+    expect(chip).not.toEqual({
+      state: "known",
+      label: "main",
+      sessionId: null,
+    });
+  });
+
+  test("sessão viva fora de repositório git não ganha chip nenhum", () => {
+    // Sem worktree, um dir sem snapshot é indistinguível de "não é git": o
+    // chip ausente ali é a resposta certa, e inventar "não sei" seria ruído.
+    expect(
+      toolbarBranchChip({
+        session: { id: "s2", worktree: null, alive: true, cwd: "/tmp/scratch" },
+        workspaceDir: null,
+        snapshots: { [REPO]: snap(REPO) },
+      }),
+    ).toBeNull();
+  });
+
+  test("sem sessão, o rótulo é o do workspace e o chip não age", () => {
+    expect(
+      toolbarBranchChip({
+        session: null,
+        workspaceDir: "/home/u/repo/src",
+        snapshots: { [REPO]: snap(REPO, "main") },
+      }),
+    ).toEqual({ state: "known", label: "main", sessionId: null });
+  });
+
+  test("sessão encerrada sem worktree cai no workspace", () => {
+    // Aqui não há repositório PRÓPRIO para contradizer o do workspace.
+    expect(
+      toolbarBranchChip({
+        session: { id: "s3", worktree: null, alive: false, cwd: REPO },
+        workspaceDir: REPO,
+        snapshots: { [REPO]: snap(REPO, "main") },
+      }),
+    ).toEqual({ state: "known", label: "main", sessionId: null });
+  });
+
+  test("sem sessão e sem snapshot do workspace, nada", () => {
+    expect(
+      toolbarBranchChip({
+        session: null,
+        workspaceDir: "/home/u/outro",
+        snapshots: { [REPO]: snap(REPO) },
+      }),
+    ).toBeNull();
   });
 });

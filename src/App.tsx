@@ -296,8 +296,8 @@ import {
 import {
   DEFAULT_TOOLBAR,
   parseToolbarPref,
-  sessionRepoDir,
   snapshotForDir,
+  toolbarBranchChip,
   type ToolbarPref,
 } from "./lib/repoSnapshots";
 import { Toolbar } from "./components/Toolbar";
@@ -1887,34 +1887,21 @@ export default function App() {
     [sessionCwds],
   );
 
-  /**
-   * O chip de branch da barra de status: rótulo e alvo do checkout, juntos.
-   *
-   * Juntos porque saíam de fontes diferentes e podiam ser repositórios
-   * diferentes — a barra lia o repo do WORKSPACE e o `session_checkout`
-   * resolvia o worktree da SESSÃO. O rótulo passa a vir do repositório onde a
-   * troca de branch de fato cai; quando esse repositório não é conhecido, o
-   * chip cai para o texto do workspace e o seletor não abre.
-   */
+  // Ver `toolbarBranchChip`: a decisão de rótulo/ação/"não sei" mora lá, pura e
+  // testada. Aqui só se junta o estado que a tela tem.
   const toolbarBranch = useMemo(() => {
-    const sessionDir = activeSession
-      ? sessionRepoDir({
-          worktree: activeSession.worktree?.path ?? null,
-          alive: !isFinishedStatus(activeSession.status),
-          cwd: sessionCwds[activeSession.id]?.canonical ?? null,
-        })
-      : null;
-    if (activeSession && sessionDir) {
-      // Sem cair para o workspace se este repositório não tiver snapshot:
-      // rótulo emprestado de outro repo é justamente o defeito.
-      const own = snapshotForDir(repoSnapshots, sessionDir);
-      return own?.branch
-        ? { label: own.branch, sessionId: activeSession.id }
-        : null;
-    }
-    const dir = activeWorkspace ? workspaceGitDir(activeWorkspace) : null;
-    const snap = dir ? snapshotForDir(repoSnapshots, dir) : undefined;
-    return snap?.branch ? { label: snap.branch, sessionId: null } : null;
+    return toolbarBranchChip({
+      session: activeSession
+        ? {
+            id: activeSession.id,
+            worktree: activeSession.worktree?.path ?? null,
+            alive: !isFinishedStatus(activeSession.status),
+            cwd: sessionCwds[activeSession.id]?.canonical ?? null,
+          }
+        : null,
+      workspaceDir: activeWorkspace ? workspaceGitDir(activeWorkspace) : null,
+      snapshots: repoSnapshots,
+    });
   }, [
     activeSession,
     activeWorkspace,

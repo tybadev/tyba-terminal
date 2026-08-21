@@ -178,6 +178,9 @@ const resources = {
         "Barra fina no rodapé do terminal com pasta, branch, diff e relógio da sessão ativa.",
       toolbarCwd: "Pasta atual",
       toolbarBranch: "Branch do git",
+      toolbarBranchUnknown: "Branch indisponível",
+      toolbarBranchUnknownHint:
+        "O TYBA acompanha a branch do repositório enquanto a sessão está em execução. Esta sessão tem um worktree, mas a branch dele não está sendo lida agora.",
       toolbarDiff: "Alterações não commitadas",
       toolbarReviewDiff: "Revisar diff do worktree",
       toolbarAheadBehind: "Commits à frente e atrás do upstream",
@@ -1146,6 +1149,9 @@ const resources = {
         "Thin bar at the terminal footer with folder, branch, diff and clock for the active session.",
       toolbarCwd: "Current folder",
       toolbarBranch: "Git branch",
+      toolbarBranchUnknown: "Branch unavailable",
+      toolbarBranchUnknownHint:
+        "TYBA tracks the repository branch while the session is running. This session has a worktree, but its branch is not being read right now.",
       toolbarDiff: "Uncommitted changes",
       toolbarReviewDiff: "Review worktree diff",
       toolbarAheadBehind: "Commits ahead and behind upstream",
