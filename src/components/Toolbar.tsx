@@ -18,11 +18,17 @@ interface Props {
   pref: ToolbarPref;
   cwd: string | null;
   /**
-   * A sessão de que a barra fala. Sem ela o chip de branch é só texto: trocar
-   * de branch é uma operação de repositório, e quem sabe qual repositório é o
-   * core, a partir da sessão.
+   * O chip de branch, já resolvido: o rótulo e a sessão que o checkout usa.
+   *
+   * Vem pronto, e não derivado de `snapshot`, porque os dois têm de falar do
+   * MESMO repositório. `snapshot` é do workspace; o checkout do core resolve o
+   * worktree da sessão. Enquanto o chip lia um e agia sobre o outro, dava para
+   * trocar de branch num repositório vendo a branch de outro na tela.
+   *
+   * `sessionId` nulo deixa o chip como texto — é o que sobra quando não há
+   * sessão, ou quando o core não teria como localizar o repositório dela.
    */
-  sessionId: SessionId | null;
+  branch: { label: string; sessionId: SessionId | null } | null;
   snapshot: RepoSnapshot | undefined;
   hasWorktree: boolean;
   onOpenDiff: () => void;
@@ -54,7 +60,7 @@ function basename(path: string): string {
 export function Toolbar({
   pref,
   cwd,
-  sessionId,
+  branch,
   snapshot,
   hasWorktree,
   onOpenDiff,
@@ -81,16 +87,17 @@ export function Toolbar({
           </span>
         ) : null;
       case "branch":
-        if (!snapshot?.branch) return null;
-        // Com sessão, o chip troca de branch; sem ela, continua sendo o texto
-        // que sempre foi. O seletor faz o checkout em dois passos — armar e
-        // confirmar —, que é a rede para uma ação que mexe no working tree.
-        return sessionId ? (
+        if (!branch) return null;
+        // Com uma sessão que o core sabe localizar, o chip troca de branch; sem
+        // ela, continua sendo o texto que sempre foi. O seletor faz o checkout
+        // em dois passos — armar e confirmar —, que é a rede para uma ação que
+        // mexe no working tree.
+        return branch.sessionId ? (
           <BranchPicker
             key={id}
-            sessionId={sessionId}
+            sessionId={branch.sessionId}
             browsing={null}
-            label={snapshot.branch}
+            label={branch.label}
             onBrowse={() => {}}
             variant="chip"
             browsable={false}
@@ -98,12 +105,12 @@ export function Toolbar({
         ) : (
           <span
             key={id}
-            title={snapshot.branch}
+            title={branch.label}
             className="flex min-w-0 shrink items-center gap-1"
             aria-label={t("toolbarBranch")}
           >
             <GitBranch size={12} className="shrink-0" />
-            <span className="truncate">{snapshot.branch}</span>
+            <span className="truncate">{branch.label}</span>
           </span>
         );
       case "diffCount": {

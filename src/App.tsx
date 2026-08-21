@@ -1,7 +1,5 @@
 import type { ElementType } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState,
-  Fragment,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   CaretDown,
@@ -275,7 +273,11 @@ import {
   type AgentRunnerId,
 } from "./lib/agentSession";
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
-import { parseStartupMode, SPLASH_DONE_EVENT } from "./lib/startup";
+import {
+  parseStartupMode,
+  shouldPromptNewSession,
+  SPLASH_DONE_EVENT,
+} from "./lib/startup";
 import {
   compactPath,
   resolveWorkspaceCwd,
@@ -290,21 +292,18 @@ import {
 import {
   DEFAULT_TOOLBAR,
   parseToolbarPref,
+  sessionRepoDir,
   snapshotForDir,
   type ToolbarPref,
 } from "./lib/repoSnapshots";
 import { Toolbar } from "./components/Toolbar";
 import {
-  ActiveBlockFrame,
-  ActiveBlockHeader,
-  blocksRect,
   LIVE_DELAY_MS,
-  liveRect,
-  padSlackPx,
   termRect,
   usedFraction,
 } from "./components/ActiveBlock";
-import { LIVE_PAD_Y_PX } from "./components/TerminalView";
+import { SessionBlocks } from "./components/SessionBlocks";
+import { sessionBlocksData } from "./lib/sessionBlocks";
 
 /**
  * Intervalo da consulta ao modo do tty, em ms.
@@ -324,7 +323,6 @@ const SIDE_MIN_PX = 360;
 /** Piso do terminal. Sem ele o arrasto para o outro lado engole a área de
  *  trabalho, que é o problema simétrico e igualmente fácil de provocar. */
 const MAIN_MIN_PX = 320;
-import { BLOCK_GAP_PX, BlockList } from "./components/BlockList";
 import { handlerCache, withEntry } from "./lib/perSession";
 import { mergeBlockHistory } from "./lib/blockHistory";
 import { blocksMarkdown, wipesTheScreen } from "./lib/blockText";
@@ -771,6 +769,19 @@ export default function App() {
   }, []);
   const booted = useRef(false);
 
+  // A decisão nasce em dois pontos — no snapshot, quando ele já vem pronto, e
+  // no `app://ready`, quando não vinha — e vale uma vez só. O ref é o que
+  // garante a unicidade; `shouldPromptNewSession` é quem decide.
+  const promptNewSessionIfEmpty = useCallback(
+    (ready: boolean, workspaces: number) => {
+      const prompted = booted.current;
+      if (!shouldPromptNewSession({ ready, workspaces, prompted })) return;
+      booted.current = true;
+      setNewSessionOpen(true);
+    },
+    [],
+  );
+
   useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
@@ -929,14 +940,16 @@ export default function App() {
       void refreshSessions();
       void layoutState()
         .then((next) => {
-          if (next.ready) setLayout(next.value);
+          if (!next.ready) return;
+          setLayout(next.value);
+          promptNewSessionIfEmpty(true, next.value.workspaces.length);
         })
         .catch(() => {});
     });
     return () => {
       void unlisten.then((off) => off());
     };
-  }, [bootReady, refreshSessions]);
+  }, [bootReady, refreshSessions, promptNewSessionIfEmpty]);
 
   const sessionById = useMemo(
     () => new Map(sessions.map((s) => [s.id, s])),
@@ -1789,6 +1802,42 @@ export default function App() {
     [sessionCwds],
   );
 
+  /**
+   * O chip de branch da barra de status: rótulo e alvo do checkout, juntos.
+   *
+   * Juntos porque saíam de fontes diferentes e podiam ser repositórios
+   * diferentes — a barra lia o repo do WORKSPACE e o `session_checkout`
+   * resolvia o worktree da SESSÃO. O rótulo passa a vir do repositório onde a
+   * troca de branch de fato cai; quando esse repositório não é conhecido, o
+   * chip cai para o texto do workspace e o seletor não abre.
+   */
+  const toolbarBranch = useMemo(() => {
+    const sessionDir = activeSession
+      ? sessionRepoDir({
+          worktree: activeSession.worktree?.path ?? null,
+          alive: !isFinishedStatus(activeSession.status),
+          cwd: sessionCwds[activeSession.id]?.canonical ?? null,
+        })
+      : null;
+    if (activeSession && sessionDir) {
+      // Sem cair para o workspace se este repositório não tiver snapshot:
+      // rótulo emprestado de outro repo é justamente o defeito.
+      const own = snapshotForDir(repoSnapshots, sessionDir);
+      return own?.branch
+        ? { label: own.branch, sessionId: activeSession.id }
+        : null;
+    }
+    const dir = activeWorkspace ? workspaceGitDir(activeWorkspace) : null;
+    const snap = dir ? snapshotForDir(repoSnapshots, dir) : undefined;
+    return snap?.branch ? { label: snap.branch, sessionId: null } : null;
+  }, [
+    activeSession,
+    activeWorkspace,
+    repoSnapshots,
+    sessionCwds,
+    workspaceGitDir,
+  ]);
+
   // Sessão SSH roda o `ssh` localmente: o cwd do processo fica no home e nunca
   // reflete o `cd` do outro lado. Mostrar caminho local seria mentira — o que
   // localiza o usuário é o destino.
@@ -2640,16 +2689,16 @@ export default function App() {
       }
       const fontSize = Number(fontRaw);
       if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
-      if (currentLayout.workspaces.length === 0 && !booted.current) {
-        booted.current = true;
-        setNewSessionOpen(true);
-      }
+      promptNewSessionIfEmpty(
+        snapshot?.ready ?? false,
+        currentLayout.workspaces.length,
+      );
     })();
     return () => {
       cancelled = true;
       unlisten?.();
     };
-  }, [refreshSessions]);
+  }, [refreshSessions, promptNewSessionIfEmpty]);
 
   // Texto que a linha do TYBA recebeu de fora — paste, histórico, snippet.
   // Declarado aqui, e não junto do resto da linha lá embaixo, porque o
@@ -4654,96 +4703,53 @@ export default function App() {
                       />
                     );
                   })}
+                  {/* Nada de objeto ou arrow montados aqui dentro: o corpo do
+                      painel é `memo`, e prop com identidade nova a cada quadro
+                      faz a comparação rasa falhar sempre. Ver
+                      `SessionBlocks`. */}
                   {sessions.map((s) => {
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ?? null;
-                    const list = blocks[s.id] ?? [];
-                    const running = sessionCommands[s.id];
                     const blocked =
                       paneRect !== null &&
                       (promptModes[s.id] ?? false) &&
                       !(altScreens[s.id] ?? false);
                     if (!blocked || !paneRect) return null;
-                    const pane = {
-                      left: paneRect.x,
-                      top: paneRect.y,
-                      width: paneRect.w,
-                      height: paneRect.h,
-                    };
-                    // `clear` não abre a faixa: ele não tem saída para mostrar,
-                    // e meio painel preto que aparece para logo esvaziar tudo é
-                    // um solavanco em cima de um comando cujo ponto é sumir com
-                    // as coisas.
-                    const live = liveOf(s.id);
-                    // A lista cede à faixa só a altura que a saída usa de fato.
-                    // Sem isto ela larga metade do painel para um terminal que
-                    // costuma estar em boa parte vazio, e o cartão nasce longe
-                    // de onde a saída estava.
-                    const used = liveUsed[s.id] ?? 1;
-                    // A saída sobe além do que a conta em % diz, porque o
-                    // recorte desconta o padding do terminal. Lista, header e
-                    // moldura acompanham pelo mesmo tanto. Ver `padSlackPx`.
-                    const lift = padSlackPx(LIVE_PAD_Y_PX, used);
                     return (
-                      <Fragment key={`blocks-${s.id}`}>
-                        {/* Sem `list.length > 0`: a lista é o que COBRE o
-                            terminal, e o terminal em modo prompt é meia altura
-                            do painel. Escondida enquanto não houvesse bloco, o
-                            painel recém-aberto mostrava a caixa do xterm no
-                            rodapé e vazio em cima — o "abre já menor" do split.
-                            Vazia ela é um scroller com o cartão-zero dentro. */}
-                        <BlockList
-                          blocks={list}
-                          rect={blocksRect(pane, live, used)}
-                          bottomInset={
-                            live
-                              ? (activeHeaderPx[s.id] ?? 0) + lift + BLOCK_GAP_PX
-                              : 0
-                          }
-                          fontSizePx={termFontSize}
-                          lineHeightPx={
-                            termLineHeight[s.id] ?? fallbackLineHeight
-                          }
-                          cellWidthPx={termCellWidth[s.id] ?? fallbackCellWidth}
-                          opened={{
-                            cwd:
-                              sessionCwds[s.id]?.cwd ??
-                              sessionCwds[s.id]?.canonical ??
-                              null,
-                            atMs: Date.parse(s.created_at) || null,
-                          }}
-                          onInject={
-                            s.id === activeId ? injectIntoActive : undefined
-                          }
-                          onActivate={
-                            s.id === activeId
-                              ? undefined
-                              : () => void focusPane(paneRect.pane)
-                          }
-                          marked={
-                            blockPick?.session === s.id
-                              ? (markedBlocks ?? undefined)
-                              : undefined
-                          }
-                          onPick={pickerFor(s.id)}
-                          onClearPick={clearPick}
-                          copyCombo={formatCombo(bindings.copy)}
-                        />
-                        {live && (
-                          <>
-                            <ActiveBlockHeader
-                              command={running?.command ?? ""}
-                              rect={liveRect(pane, used)}
-                              liftPx={lift}
-                              onHeight={(px) => reportHeaderPx(s.id, px)}
-                            />
-                            <ActiveBlockFrame
-                              rect={liveRect(pane, used)}
-                              liftPx={lift}
-                            />
-                          </>
-                        )}
-                      </Fragment>
+                      <SessionBlocks
+                        key={`blocks-${s.id}`}
+                        {...sessionBlocksData({
+                          session: s,
+                          pane: paneRect,
+                          blocks: blocks[s.id],
+                          // `clear` não abre a faixa: ele não tem saída para
+                          // mostrar, e meio painel preto que aparece para logo
+                          // esvaziar tudo é um solavanco em cima de um comando
+                          // cujo ponto é sumir com as coisas.
+                          live: liveOf(s.id),
+                          // A lista cede à faixa só a altura que a saída usa de
+                          // fato. Sem isto ela larga metade do painel para um
+                          // terminal que costuma estar em boa parte vazio, e o
+                          // cartão nasce longe de onde a saída estava.
+                          used: liveUsed[s.id],
+                          headerPx: activeHeaderPx[s.id],
+                          fontSizePx: termFontSize,
+                          lineHeightPx:
+                            termLineHeight[s.id] ?? fallbackLineHeight,
+                          cellWidthPx: termCellWidth[s.id] ?? fallbackCellWidth,
+                          cwd: sessionCwds[s.id],
+                          active: s.id === activeId,
+                          command: sessionCommands[s.id]?.command,
+                          marked:
+                            blockPick?.session === s.id ? markedBlocks : null,
+                          copyCombo: formatCombo(bindings.copy),
+                        })}
+                        onInject={injectIntoActive}
+                        onFocusPane={focusPane}
+                        onPick={pickerFor(s.id)}
+                        onClearPick={clearPick}
+                        onHeaderPx={reportHeaderPx}
+                      />
                     );
                   })}
                   {/* A moldura do painel — do PAINEL, não do que está dentro.
@@ -4941,7 +4947,7 @@ export default function App() {
                   <Toolbar
                     pref={toolbarPref}
                     cwd={workspaceCwd(activeWorkspace)}
-                    sessionId={activeSession?.id ?? null}
+                    branch={toolbarBranch}
                     snapshot={(() => {
                       const dir = workspaceGitDir(activeWorkspace);
                       return dir

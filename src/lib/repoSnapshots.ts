@@ -16,6 +16,33 @@ export function snapshotForDir(
   return best;
 }
 
+/**
+ * Onde uma ação de repositório da sessão vai cair — o alvo real do checkout.
+ *
+ * Espelha `session_repo_context` no core, na mesma ordem: worktree primeiro,
+ * cwd do processo depois.
+ *
+ * > [!warning] Não é o repositório do WORKSPACE. `workspaceGitDir` cai no cwd
+ * > de qualquer sessão folha, e no fim em `repo_root` — que, para uma sessão de
+ * > agente, é o repo principal, não o worktree dela. Com as duas fontes
+ * > misturadas, a barra dizia `main` do repo principal enquanto o seletor
+ * > trocava de branch dentro do worktree do agente: rótulo e alvo em
+ * > repositórios diferentes, sem nada na tela denunciando.
+ *
+ * `null` onde o core também falharia: sem worktree e sem processo vivo não há
+ * cwd para ler, e o seletor abriria só para dizer que a sessão não tem um
+ * processo ativo.
+ */
+export function sessionRepoDir(input: {
+  worktree: string | null;
+  alive: boolean;
+  cwd: string | null;
+}): string | null {
+  if (input.worktree) return input.worktree;
+  if (!input.alive) return null;
+  return input.cwd;
+}
+
 const CHIP_IDS = [
   "cwd",
   "branch",

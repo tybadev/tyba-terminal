@@ -4,6 +4,7 @@ import type { RepoSnapshot } from "./ipc";
 import {
   DEFAULT_TOOLBAR,
   parseToolbarPref,
+  sessionRepoDir,
   snapshotForDir,
 } from "./repoSnapshots";
 
@@ -102,5 +103,50 @@ describe("parseToolbarPref", () => {
       '{"version":1,"enabled":false,"left":[],"right":[],"hidden":[]}',
     );
     expect(pref.enabled).toBe(false);
+  });
+});
+
+describe("sessionRepoDir", () => {
+  test("worktree ganha do cwd — é o que o core resolve primeiro", () => {
+    // O caso do defeito: a barra lia o repo principal e o checkout caía no
+    // worktree do agente.
+    expect(
+      sessionRepoDir({
+        worktree: "/home/u/.tyba/wt/task",
+        alive: true,
+        cwd: "/home/u/repo",
+      }),
+    ).toBe("/home/u/.tyba/wt/task");
+  });
+
+  test("worktree vale mesmo com a sessão encerrada", () => {
+    // `session_repo_context` sai pelo worktree antes de olhar o processo.
+    expect(
+      sessionRepoDir({
+        worktree: "/home/u/.tyba/wt/task",
+        alive: false,
+        cwd: null,
+      }),
+    ).toBe("/home/u/.tyba/wt/task");
+  });
+
+  test("sem worktree, o cwd da sessão viva", () => {
+    expect(
+      sessionRepoDir({ worktree: null, alive: true, cwd: "/home/u/repo/src" }),
+    ).toBe("/home/u/repo/src");
+  });
+
+  test("sessão morta sem worktree não tem repositório", () => {
+    // O core devolveria "a sessão não tem um processo ativo": abrir o seletor
+    // aqui seria abrir só para mostrar erro.
+    expect(
+      sessionRepoDir({ worktree: null, alive: false, cwd: "/home/u/repo" }),
+    ).toBe(null);
+  });
+
+  test("sessão viva sem cwd conhecido também não", () => {
+    expect(sessionRepoDir({ worktree: null, alive: true, cwd: null })).toBe(
+      null,
+    );
   });
 });
