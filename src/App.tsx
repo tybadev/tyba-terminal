@@ -366,6 +366,7 @@ import {
 } from "./lib/appMenu";
 import {
   keyboardOwner,
+  programName,
   swallowsArrow,
   lineState,
   PROMPT_MODE_PREF_KEY,
@@ -4853,6 +4854,8 @@ export default function App() {
                     key={`${activeSession.id}:line`}
                     sessionId={activeSession.id}
                     cwd={activeCwdKey}
+                    program={programName(activeCommand?.command)}
+                    canCollapse={(paneLayout?.panes.length ?? 1) <= 1}
                     scope={historyScope}
                     focusNonce={commandLineNonce}
                     state={commandLineState}

@@ -35,6 +35,27 @@ interface Props {
   sessionId: SessionId;
   /** Onde o comando vai rodar. Ver o rodapé da linha. */
   cwd: string | null;
+  /**
+   * Quem está com a tela, quando `state === "app"`. Ver `programName`.
+   *
+   * "nvim está no controle" é reconhecível — o usuário abriu o nvim. "Um app
+   * está usando a tela" é verdadeiro e não ajuda ninguém.
+   */
+  program?: string | null;
+  /**
+   * Pode encolher a faixa quando um app toma a tela?
+   *
+   * Só com UM painel. Existe uma linha de comando para a sessão ativa, não uma
+   * por painel: encolher com a tela dividida faria alternar o foco entre um
+   * painel em vim e outro no prompt mudar a altura da faixa a cada troca — e
+   * altura da faixa é altura da área de painéis, logo um `resizeSession` em
+   * TODOS os PTYs por troca de foco. É a mesma família do bug que a regra "a
+   * linha nunca some" existe para evitar.
+   *
+   * Cai sozinho quando existir uma linha por painel: aí cada faixa encolhe a
+   * sua e só aquele PTY sente.
+   */
+  canCollapse?: boolean;
   scope: { cwd: string | null; repoRoot: string | null };
   /** Muda quando a linha volta a ser do TYBA (fim de comando, saída do vim). */
   focusNonce: number;
@@ -63,12 +84,18 @@ interface Props {
 export function CommandLine({
   sessionId,
   cwd,
+  program,
+  canCollapse = true,
   scope,
   focusNonce,
   state,
   inject,
 }: Props) {
   const waiting = state !== "own";
+  // App de tela cheia: a linha não desaparece, troca de conteúdo. E encolhe,
+  // se houver espaço para isso sem mexer nos painéis — ver `canCollapse`.
+  const collapsed = state === "app";
+  const compact = collapsed && canCollapse;
   const where = shortPath(cwd);
   const { t } = useTranslation();
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -99,6 +126,15 @@ export function CommandLine({
       el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`;
     });
   }, [inject]);
+
+  // A altura da caixa é escrita à mão em `resize()`, e altura inline não se
+  // desfaz sozinha: com um rascunho de três linhas no ar quando o `vim` abre, a
+  // faixa ficava alta E morta — três linhas de nada ocupando a tela do app.
+  useEffect(() => {
+    if (state === "own") return;
+    const el = inputRef.current;
+    if (el) el.style.height = "";
+  }, [state]);
 
   const seenNonce = useRef(focusNonce);
   useEffect(() => {
@@ -446,14 +482,40 @@ export function CommandLine({
             header de cada bloco usa para o comando que deu certo. */}
         <span
           aria-hidden
-          className={`shrink-0 select-none pt-1 font-mono text-[13px] leading-[20px] transition-all ${
-            focused ? "text-tyba-green" : "text-tyba-green/45"
+          className={`shrink-0 select-none font-mono transition-all ${
+            collapsed
+              ? `text-[11px] text-tyba-text-faint ${compact ? "leading-[17px]" : "flex min-h-[28px] items-center"}`
+              : `pt-1 text-[13px] leading-[20px] ${focused ? "text-tyba-green" : "text-tyba-green/45"}`
           }`}
-          style={focused ? { textShadow: "var(--tyba-glow-green)" } : undefined}
+          style={
+            focused && !collapsed
+              ? { textShadow: "var(--tyba-glow-green)" }
+              : undefined
+          }
         >
           ❯
         </span>
 
+        {collapsed ? (
+          /* Colapsada, não escondida.
+             A regra de nunca sumir continua valendo — sumir e voltar
+             redimensionava o terminal duas vezes por comando e o vim reabria
+             com outra altura. O que muda é o que ela desenha por dentro: some
+             a caixa de digitar, some o caminho, e sobra uma faixa de uma linha
+             dizendo de quem é o teclado.
+             O custo de resize é zero aqui: entrar em alt-screen JÁ redimensiona
+             o painel inteiro (o terminal vai de metade para tudo), e as duas
+             coisas acontecem no mesmo commit do React — um resize, não dois. */
+          <span
+            className={`flex min-w-0 flex-1 items-center truncate font-mono text-[11px] text-tyba-text-faint ${
+              compact ? "leading-[17px]" : "min-h-[28px]"
+            }`}
+          >
+            {program
+              ? t("commandLineAppNamed", { program })
+              : t("commandLineApp")}
+          </span>
+        ) : (
         <div className="relative min-w-0 flex-1">
           {ghost && (
             <div
@@ -488,6 +550,7 @@ export function CommandLine({
             className="max-h-[140px] min-h-[28px] w-full resize-none border-0 bg-transparent py-1 font-mono text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
           />
         </div>
+        )}
 
         {/* Onde o comando vai rodar.
             Encurtado com a MESMA regra do header de cada bloco (`…/pai/pasta`),
@@ -496,7 +559,7 @@ export function CommandLine({
             de apertar Enter que essa distinção importa.
             A branch fica de fora — ela está na status bar 20px abaixo e não
             muda o destino do comando. O caminho, sim. */}
-        {where && (
+        {where && !collapsed && (
           <span
             title={cwd ?? undefined}
             className="shrink-0 truncate pt-1.5 font-mono text-[11px] leading-[17px] text-tyba-text-faint"

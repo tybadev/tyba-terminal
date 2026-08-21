@@ -3,14 +3,15 @@ import { describe, expect, it } from "bun:test";
 import {
   clearsDraft,
   controlBytes,
-  isArrowKey,
-  swallowsArrow,
   ghostFor,
+  isArrowKey,
   keyboardOwner,
   lineState,
   lineToken,
   pathToken,
+  programName,
   replaceToken,
+  swallowsArrow,
   type OwnerInput,
 } from "./commandLine";
 
@@ -271,5 +272,42 @@ describe("isArrowKey", () => {
     expect(isArrowKey("y")).toBe(false);
     expect(isArrowKey("Enter")).toBe(false);
     expect(isArrowKey("Home")).toBe(false);
+  });
+});
+
+describe("programName", () => {
+  it("comando simples", () => {
+    expect(programName("nvim")).toBe("nvim");
+    expect(programName("htop -d 5")).toBe("htop");
+  });
+
+  it("caminho absoluto vira só o nome", () => {
+    expect(programName("/usr/local/bin/nvim arquivo.ts")).toBe("nvim");
+  });
+
+  it("atribuição de ambiente na frente não é o programa", () => {
+    expect(programName("EDITOR=vim FOO=bar nvim")).toBe("nvim");
+  });
+
+  it("wrapper não rouba o nome do programa", () => {
+    expect(programName("sudo vim /etc/hosts")).toBe("vim");
+    expect(programName("env -i CC=clang make")).toBe("make");
+    expect(programName("nohup htop")).toBe("htop");
+  });
+
+  it("wrapper sozinho continua sendo o programa", () => {
+    // `sudo` sem nada depois é o que o usuário digitou, e é o que ele vê.
+    expect(programName("sudo")).toBe("sudo");
+  });
+
+  it("vazio e nulo não inventam nome", () => {
+    expect(programName("")).toBeNull();
+    expect(programName(null)).toBeNull();
+    expect(programName("   ")).toBeNull();
+  });
+
+  it("o comando digitado ganha do processo em primeiro plano", () => {
+    // `git log` abre o `less`; o rótulo diz "git", que é o que foi pedido.
+    expect(programName("git log --oneline")).toBe("git");
   });
 });

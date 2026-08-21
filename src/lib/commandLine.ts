@@ -227,3 +227,57 @@ export function ghostFor(text: string, hits: Suggestion[]): string {
   );
   return hit ? hit.command.slice(text.length) : "";
 }
+
+/**
+ * Prefixos que não são o programa, e sim como ele foi chamado.
+ *
+ * `sudo vim` é o `vim` na tela; dizer "sudo está no controle" seria trocar o
+ * nome do programa pelo nome da permissão.
+ */
+const WRAPPERS = new Set(["sudo", "doas", "env", "command", "nohup", "time"]);
+
+/**
+ * O nome do programa que está com a tela, a partir da linha de comando.
+ *
+ * Serve ao rótulo da linha colapsada: com um app de tela cheia rodando, dizer
+ * "nvim está no controle" é infinitamente mais útil que "um app está usando a
+ * tela" — o usuário reconhece o que ele mesmo abriu.
+ *
+ * > [!warning] É o comando que o usuário DIGITOU, não o processo em primeiro
+ * > plano do tty. `git log` abre o `less` e esta função devolve "git".
+ * >
+ * > É impreciso e é honesto: foi `git log` que o usuário pediu, e é `git log`
+ * > que ele vai reconhecer. A fidelidade real custaria um `tcgetpgrp` no fd do
+ * > master no core — a infraestrutura existe (`PtyPool::line_echo` já faz esse
+ * > acesso), mas é outra fatia, e esta não depende dela.
+ */
+export function programName(command: string | null | undefined): string | null {
+  if (!command) return null;
+  let words = command.trim().split(/\s+/).filter(Boolean);
+  // `FOO=bar BAZ=qux nvim` — atribuição de ambiente vem antes do programa e
+  // pode haver mais de uma.
+  while (words.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
+    words = words.slice(1);
+  }
+  while (words.length > 1 && WRAPPERS.has(basename(words[0]))) {
+    words = words.slice(1);
+    // `env -i CC=clang make`: as flags do wrapper e as atribuições que vêm
+    // com ele também não são o programa.
+    while (
+      words.length > 1 &&
+      (words[0].startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]))
+    ) {
+      words = words.slice(1);
+    }
+  }
+  const first = words[0];
+  if (!first) return null;
+  const name = basename(first);
+  return name || null;
+}
+
+/** O último segmento de um caminho: `/usr/local/bin/nvim` vira `nvim`. */
+function basename(word: string): string {
+  const trimmed = word.replace(/\/+$/, "");
+  return trimmed.slice(trimmed.lastIndexOf("/") + 1);
+}
