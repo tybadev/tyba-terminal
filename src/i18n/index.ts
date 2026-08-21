@@ -102,6 +102,8 @@ const resources = {
       blockPicked_other: "{{count}} blocos marcados — {{combo}} copia",
       blockAltScreen: "app de tela cheia — a saída não é guardada",
       blockSessionOpened: "sessão iniciada",
+      bootFailed:
+        "O TYBA não terminou de carregar — sessões e layout podem estar faltando",
       commandLineWaiting: "Carregando o shell…",
       commandLineContinuation:
         "O shell espera o resto do comando — digite no terminal",
@@ -1068,6 +1070,8 @@ const resources = {
       blockPicked_other: "{{count}} blocks marked — {{combo}} copies",
       blockAltScreen: "full-screen app — output is not kept",
       blockSessionOpened: "session started",
+      bootFailed:
+        "TYBA did not finish loading — sessions and layout may be missing",
       commandLineWaiting: "Loading the shell…",
       commandLineContinuation:
         "The shell is waiting for the rest of the command — type in the terminal",

@@ -977,6 +977,24 @@ export const setSideViewRatio = (
 export const onAppReady = (handler: () => void): Promise<UnlistenFn> =>
   listen(EVENT_APP_READY, () => handler());
 
+/**
+ * A thread de boot do core morreu de pânico antes de terminar.
+ *
+ * Vem sempre seguido de `app://ready`: o portão abre de todo jeito, senão todo
+ * comando de escrita pagaria o timeout de espera e a falha viraria lentidão. O
+ * snapshot que se reconsultar depois disto estará incompleto — sem sessões, sem
+ * layout, ou pela metade.
+ *
+ * É ESTE evento que diz que o vazio é falha, e não ausência de dado. Sem
+ * consumi-lo, um boot que morreu é indistinguível de um app sem sessão nenhuma.
+ */
+export const onBootFailed = (
+  handler: (message: string) => void,
+): Promise<UnlistenFn> =>
+  listen<{ message: string }>("app://boot-failed", (e) =>
+    handler(e.payload.message),
+  );
+
 export const onLayoutChanged = (
   handler: (state: LayoutState) => void,
 ): Promise<UnlistenFn> =>

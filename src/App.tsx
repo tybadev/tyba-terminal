@@ -146,6 +146,7 @@ import {
   dockerOpenDashboard,
   bootSnapshot,
   onAppReady,
+  onBootFailed,
   focusPane,
   layoutState,
   leafSessions,
@@ -970,6 +971,22 @@ export default function App() {
       })
       .catch(() => {});
   }, [acceptLoaded, promptNewSessionIfEmpty]);
+
+  // A thread de boot morreu, e o vazio na tela é falha e não ausência de dado.
+  //
+  // O core abre o portão mesmo em pânico — senão todo comando de escrita
+  // pagaria o timeout de espera e a falha viraria lentidão —, e logo em seguida
+  // manda o `app://ready`. Sem consumir ESTE evento, um boot que morreu fica
+  // indistinguível de um app que simplesmente não tem sessão, e o usuário
+  // conclui que perdeu o trabalho em vez de que algo quebrou.
+  useEffect(() => {
+    const unlisten = onBootFailed((message) => {
+      toastError(t("bootFailed"), message);
+    });
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [t]);
 
   // O core avisa quando a thread de boot termina. Só então o que veio vazio
   // vira estado — antes disso é transitório.
