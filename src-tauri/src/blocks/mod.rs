@@ -87,8 +87,14 @@ pub struct Block {
     pub started_at_ms: i64,
     pub finished_at_ms: i64,
     pub lines: Vec<LogicalLine>,
-    /// Linhas descartadas pelo teto, para o header dizer que faltou coisa em
-    /// vez de mentir que aquilo é a saída inteira.
+    /// Linhas descartadas, para o header dizer que faltou coisa em vez de
+    /// mentir que aquilo é a saída inteira. Soma as duas perdas possíveis: o
+    /// teto de captura, que corta enquanto o comando roda, e o teto do bloco,
+    /// que corta na hora de virar linha.
+    ///
+    /// Saída sem `\n` nenhum (barra de progresso, blob binário) perde conteúdo
+    /// sem perder linha, e aí este número é zero com razão — a unidade é linha,
+    /// e não havia linha.
     pub truncated: usize,
     /// O comando pintou a tela alternada (`vim`, `bat`, `htop`).
     ///
@@ -105,6 +111,15 @@ pub struct Block {
 /// bloco diz que foi truncado em vez de mentir.
 pub const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 
+/// Quantas linhas lógicas há num trecho de saída.
+///
+/// Linha lógica termina em `\n`: o wrap não cria linha, só quebra a mesma linha
+/// na tela. É o que permite contar o que foi descartado sem parsear — o que se
+/// perde são linhas, e linha é `\n`.
+fn logical_lines(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|b| **b == b'\n').count()
+}
+
 /// A saída de um comando enquanto ele roda.
 ///
 /// Acumula na thread emitter, que é caminho quente: aqui só se copia bytes. O
@@ -112,7 +127,7 @@ pub const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Debug, Default)]
 pub struct Capture {
     bytes: Vec<u8>,
-    dropped: bool,
+    dropped_lines: usize,
     /// Alt-screen no meio do comando (vim, htop): por decisão da spec isso não
     /// vira bloco — a tela é do programa, e recortá-la produziria lixo.
     alt_screen: bool,
@@ -123,8 +138,12 @@ impl Capture {
         if self.bytes.len() + chunk.len() > MAX_CAPTURE_BYTES {
             let overflow = self.bytes.len() + chunk.len() - MAX_CAPTURE_BYTES;
             let cut = overflow.min(self.bytes.len());
+            // Contadas ANTES do dreno: depois estes bytes não existem mais.
+            // Antes daqui saía um `bool`, e quem o consumia somava 1 ao total
+            // de linhas cortadas — oito megabytes de saída perdidos viravam
+            // "1 linha" no rodapé do bloco.
+            self.dropped_lines += logical_lines(&self.bytes[..cut]);
             self.bytes.drain(0..cut);
-            self.dropped = true;
         }
         self.bytes.extend_from_slice(chunk);
     }
@@ -137,8 +156,9 @@ impl Capture {
         self.alt_screen
     }
 
-    pub fn dropped(&self) -> bool {
-        self.dropped
+    /// Linhas que o teto de captura comeu enquanto o comando ainda rodava.
+    pub fn dropped(&self) -> usize {
+        self.dropped_lines
     }
 
     /// Cópia do que já saiu, para o checkpoint. Não consome: o comando segue.
@@ -147,7 +167,7 @@ impl Capture {
     }
 
     pub fn take(&mut self) -> Vec<u8> {
-        self.dropped = false;
+        self.dropped_lines = 0;
         self.alt_screen = false;
         std::mem::take(&mut self.bytes)
     }
@@ -265,16 +285,66 @@ fn join_wrapped(rows: Vec<RawRow>) -> Vec<LogicalLine> {
     lines
 }
 
-/// Teto de linhas que a saída pode ocupar, para dimensionar a grade.
+/// Quantas linhas de grade a saída ocupa, sem teto.
 ///
 /// Cada `\n` começa uma linha, e o resto só pode acrescentar por wrap — usar o
 /// tamanho em bytes como proxy dos imprimíveis superestima (escape conta como
-/// texto), o que é o lado seguro de errar.
-fn rows_needed(bytes: &[u8], cols: u16) -> u16 {
-    let newlines = bytes.iter().filter(|b| **b == b'\n').count();
+/// texto). Superestimar é o lado seguro: a grade nasce maior do que precisa,
+/// nunca menor, e é ser "nunca menor" que garante que nada role para fora dela.
+fn rows_of(bytes: &[u8], cols: u16) -> usize {
+    let newlines = logical_lines(bytes);
     let wrapped = bytes.len() / cols.max(1) as usize;
-    let estimate = newlines + wrapped + 2;
-    estimate.clamp(1, MAX_LINES).min(u16::MAX as usize) as u16
+    newlines + wrapped + 2
+}
+
+/// Altura da grade para esta saída, com o teto do bloco.
+fn rows_needed(bytes: &[u8], cols: u16) -> u16 {
+    rows_of(bytes, cols).clamp(1, MAX_LINES) as u16
+}
+
+/// Onde começa a parte da saída que cabe no bloco.
+///
+/// A grade do `vt100` não pode crescer sem limite — cada célula é um
+/// `[char; 6]` mais atributos, então uma linha de 80 colunas custa perto de
+/// 3 KB e o teto de 10 mil já são ~30 MB — e `Size::rows` é `u16`, o que fecha
+/// a porta em 65 535 de qualquer jeito. O que passa do teto SOME DENTRO da
+/// grade: rola para fora, e a API de scrollback do 0.15.2 não devolve (voltar
+/// mais de uma tela estoura `visible_rows`, que faz `rows_len - offset`).
+///
+/// Some em silêncio, e era esse o bug: `seq 1 50000` perdia 40 mil linhas e o
+/// bloco reportava zero cortado, porque a conta antiga era
+/// `lines.len() - MAX_LINES` sobre uma lista que a própria grade já limitava a
+/// `MAX_LINES`. Nunca dava mais que zero.
+///
+/// Cortar aqui, ANTES do parser, é o que torna a perda contável: o que a grade
+/// recebe cabe inteiro, e o que ficou de fora está medido. O corte cai logo
+/// depois de um `\n` para não partir linha ao meio; o preço é o estado de cor
+/// herdado do trecho descartado, e quem colore reemite o SGR a cada linha.
+fn head_cut(bytes: &[u8], cols: u16) -> usize {
+    if rows_of(bytes, cols) <= MAX_LINES {
+        return 0;
+    }
+    let width = cols.max(1) as usize;
+    // A mesma folga de 2 que `rows_of` dá, para o corte e a grade concordarem.
+    let budget = MAX_LINES.saturating_sub(2);
+    let mut used = 0;
+    let mut end = bytes.len();
+    while end > 0 {
+        let start = bytes[..end - 1]
+            .iter()
+            .rposition(|b| *b == b'\n')
+            .map(|at| at + 1)
+            .unwrap_or(0);
+        let cost = 1 + (end - start) / width;
+        if used + cost > budget {
+            // Uma linha só maior que o teto inteiro: fica ela, truncada pela
+            // grade, em vez de devolver bloco vazio.
+            return if used == 0 { start } else { end };
+        }
+        used += cost;
+        end = start;
+    }
+    0
 }
 
 /// Processa os bytes do bloco uma vez e devolve as linhas lógicas.
@@ -296,9 +366,14 @@ fn rows_needed(bytes: &[u8], cols: u16) -> u16 {
 /// cursor é ancorado no topo, que não se move.
 pub fn extract_lines(bytes: &[u8], cols: u16, _rows: u16) -> (Vec<LogicalLine>, usize) {
     let cols = cols.max(1);
-    let height = rows_needed(bytes, cols);
+    // O teto é imposto AQUI, no byte, e não depois sobre a lista de linhas: a
+    // grade já não deixaria a lista passar de `MAX_LINES`, então o corte de lá
+    // era código morto que reportava zero. Ver `head_cut`.
+    let cut = head_cut(bytes, cols);
+    let kept = &bytes[cut..];
+    let height = rows_needed(kept, cols);
     let mut parser = vt100::Parser::new(height, cols, 0);
-    parser.process(bytes);
+    parser.process(kept);
 
     let screen = parser.screen();
     let rows_vec: Vec<RawRow> = (0..height).map(|row| read_row(screen, row, cols)).collect();
@@ -312,11 +387,7 @@ pub fn extract_lines(bytes: &[u8], cols: u16, _rows: u16) -> (Vec<LogicalLine>, 
         lines.pop();
     }
 
-    let truncated = lines.len().saturating_sub(MAX_LINES);
-    if truncated > 0 {
-        lines.drain(0..truncated);
-    }
-    (lines, truncated)
+    (lines, logical_lines(&bytes[..cut]))
 }
 
 /// Intervalo entre fotografias do comando em execução.
@@ -336,7 +407,8 @@ pub struct Finished {
     pub bytes: Vec<u8>,
     pub cols: u16,
     pub rows: u16,
-    pub dropped: bool,
+    /// Linhas que o teto de captura comeu antes de o parser ver os bytes.
+    pub dropped: usize,
     pub alt_screen: bool,
 }
 
@@ -477,7 +549,9 @@ fn build(finished: Finished) -> Block {
         started_at_ms: finished.started_at_ms,
         finished_at_ms: finished.finished_at_ms,
         lines,
-        truncated: truncated + usize::from(finished.dropped),
+        // As duas perdas somam porque são a MESMA unidade: linhas. Antes o
+        // segundo termo era um `bool` convertido em 0 ou 1.
+        truncated: truncated + finished.dropped,
         alt_screen: finished.alt_screen,
     }
 }
@@ -541,8 +615,24 @@ mod tests {
         for _ in 0..10 {
             capture.push(&chunk);
         }
-        assert!(capture.dropped(), "precisa admitir que truncou");
         assert!(capture.take().len() <= MAX_CAPTURE_BYTES);
+    }
+
+    /// Buraco conhecido, fixado aqui para ninguém o "consertar" mentindo.
+    ///
+    /// Saída sem `\n` nenhum — blob binário, barra de progresso que só usa
+    /// `\r` — perde CONTEÚDO sem perder LINHA: a linha lógica continua uma só,
+    /// mais curta. Zero é a resposta certa na unidade que o bloco reporta.
+    /// Denunciar a perda exigiria um segundo número em bytes, e isso é campo
+    /// novo no `Block` e coluna nova no SQLite.
+    #[test]
+    fn output_without_newlines_loses_bytes_without_losing_lines() {
+        let mut capture = Capture::default();
+        let chunk = vec![b'x'; 1024 * 1024];
+        for _ in 0..10 {
+            capture.push(&chunk);
+        }
+        assert_eq!(capture.dropped(), 0);
     }
 
     #[test]
@@ -561,7 +651,7 @@ mod tests {
         capture.push(b"x");
         let _ = capture.take();
         assert!(!capture.is_alt_screen());
-        assert!(!capture.dropped());
+        assert_eq!(capture.dropped(), 0);
     }
 
     #[test]
@@ -655,6 +745,106 @@ mod tests {
     #[test]
     fn empty_output_produces_no_lines() {
         assert!(lines_of(b"", 80, 24).is_empty());
+    }
+
+    /// Saída sintética de N linhas numeradas — é o `seq 1 N` do relato, escrito
+    /// à mão.
+    fn numbered(count: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for i in 1..=count {
+            out.extend_from_slice(format!("linha{i}\r\n").as_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn output_past_the_ceiling_says_how_much_it_lost() {
+        // O bug: a grade tinha no máximo MAX_LINES linhas, então
+        // `lines.len() - MAX_LINES` era SEMPRE zero e o rodapé nunca aparecia.
+        // Quarenta mil linhas sumiam com o bloco jurando que estava inteiro.
+        let (lines, truncated) = extract_lines(&numbered(MAX_LINES + 5_000), 80, 24);
+        assert!(truncated > 0, "perda silenciosa de novo");
+        assert!(lines.len() <= MAX_LINES);
+        // Cada linha perdida está contada: o que ficou mais o que se foi é o
+        // que entrou.
+        assert_eq!(lines.len() + truncated, MAX_LINES + 5_000);
+    }
+
+    #[test]
+    fn the_end_is_what_survives_the_ceiling() {
+        // O usuário olha para o fim da saída — é lá que está o erro.
+        let (lines, _) = extract_lines(&numbered(MAX_LINES + 100), 80, 24);
+        assert_eq!(
+            lines.last().map(|line| line.text.as_str()),
+            Some(format!("linha{}", MAX_LINES + 100).as_str())
+        );
+    }
+
+    #[test]
+    fn output_within_the_ceiling_is_never_reported_as_cut() {
+        let (lines, truncated) = extract_lines(&numbered(200), 80, 24);
+        assert_eq!(truncated, 0);
+        assert_eq!(lines.len(), 200);
+    }
+
+    #[test]
+    fn trailing_blank_lines_are_not_mistaken_for_truncation() {
+        // O rabo em branco da grade é descartado na leitura; contar a diferença
+        // entre grade e linhas faria isso virar "linha cortada".
+        let (_, truncated) = extract_lines(b"a\r\n\r\n\r\n", 80, 24);
+        assert_eq!(truncated, 0);
+    }
+
+    #[test]
+    fn a_single_line_taller_than_the_ceiling_is_kept_instead_of_emptying_the_block() {
+        let monster = vec![b'x'; MAX_LINES * 80 + 10_000];
+        let (lines, _) = extract_lines(&monster, 80, 24);
+        assert!(!lines.is_empty(), "bloco vazio é pior que bloco truncado");
+    }
+
+    #[test]
+    fn the_capture_ceiling_reports_lines_not_a_flag() {
+        // `usize::from(dropped)` somava 1: oito megabytes viravam "1 linha".
+        let mut capture = Capture::default();
+        let line = b"uma linha de saida qualquer\r\n";
+        // Enche até o teto, depois empurra mais um megabyte por cima.
+        while capture.snapshot().len() + line.len() <= MAX_CAPTURE_BYTES {
+            capture.push(line);
+        }
+        // O que sai é o COMEÇO, então a conta é sobre as linhas velhas que
+        // foram expulsas para abrir espaço — não sobre as que entraram.
+        let over = numbered(30_000);
+        capture.push(&over);
+        let evicted = over.len() / line.len();
+        assert_eq!(capture.dropped(), evicted);
+        assert!(
+            capture.dropped() > 1,
+            "o código antigo reportava exatamente 1 aqui, para qualquer perda"
+        );
+    }
+
+    #[test]
+    fn the_two_ceilings_add_up_in_the_same_unit() {
+        // Uma perda é do teto de captura (bytes, enquanto roda) e a outra do
+        // teto do bloco (linhas, no finalize). Só somam porque as duas são
+        // convertidas para linha antes.
+        let finished = Finished {
+            session_id: "s1".into(),
+            command: "seq".into(),
+            exit_code: Some(0),
+            cwd: None,
+            started_at_ms: 0,
+            finished_at_ms: 1,
+            bytes: numbered(MAX_LINES + 100),
+            cols: 80,
+            rows: 24,
+            dropped: 7,
+            alt_screen: false,
+        };
+        let cut_by_the_block = extract_lines(&numbered(MAX_LINES + 100), 80, 24).1;
+        let block = build(finished);
+        assert!(cut_by_the_block > 0);
+        assert_eq!(block.truncated, cut_by_the_block + 7);
     }
 
     #[test]

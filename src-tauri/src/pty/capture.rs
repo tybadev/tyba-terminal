@@ -47,7 +47,8 @@ pub(super) struct FinishedBlock {
     pub started_at_ms: i64,
     pub finished_at_ms: i64,
     pub bytes: Vec<u8>,
-    pub dropped: bool,
+    /// Linhas que o teto de captura comeu enquanto o comando rodava.
+    pub dropped: usize,
     pub alt_screen: bool,
 }
 
@@ -303,7 +304,7 @@ impl CaptureMachine {
                     started_at_ms: started,
                     finished_at_ms: now_ms,
                     bytes: if alt_screen { Vec::new() } else { bytes },
-                    dropped: dropped && !alt_screen,
+                    dropped: if alt_screen { 0 } else { dropped },
                     alt_screen,
                 }));
             }
