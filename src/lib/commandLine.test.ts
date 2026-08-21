@@ -310,6 +310,51 @@ describe("programName", () => {
     // `git log` abre o `less`; o rótulo diz "git", que é o que foi pedido.
     expect(programName("git log --oneline")).toBe("git");
   });
+
+  it("o valor de uma flag do wrapper não é o programa", () => {
+    // `sudo -u app git push`: o `app` é o usuário, não o programa. Dizer
+    // "app está no controle" é errado com confiança — a pior forma de errar
+    // num rótulo, porque não se parece com defeito.
+    expect(programName("sudo -u app git push")).toBe("git");
+    expect(programName("sudo --user app git push")).toBe("git");
+    expect(programName("sudo -g wheel htop")).toBe("htop");
+    expect(programName("doas -u deploy nvim /etc/hosts")).toBe("nvim");
+    expect(programName("env -u LANG nvim")).toBe("nvim");
+  });
+
+  it("flag com `=` não consome o próximo token", () => {
+    expect(programName("sudo --user=app git push")).toBe("git");
+  });
+
+  it("flag booleana conhecida não come o programa", () => {
+    expect(programName("sudo -k make")).toBe("make");
+    expect(programName("sudo -E -H make install")).toBe("make");
+  });
+
+  it("`--` encerra as flags do wrapper", () => {
+    expect(programName("sudo -u app -- git push")).toBe("git");
+  });
+
+  it("flag desconhecida devolve o wrapper, não um chute", () => {
+    // Sem saber se a flag consome o próximo token, qualquer resposta seria
+    // adivinhação. "sudo" é impreciso e verdadeiro; "config" seria mentira.
+    expect(programName("sudo --flag-que-nao-conheco config git push")).toBe(
+      "sudo",
+    );
+    expect(programName("env -S nvim arquivo.ts")).toBe("env");
+  });
+
+  it("wrapper cujas flags consumiram tudo continua sendo o programa", () => {
+    expect(programName("sudo -u app")).toBe("sudo");
+  });
+
+  it("bundle de flags curtas: só o último caractere pode levar valor", () => {
+    // `sudo -Hu app make`: `-H` é booleana e `-u` leva valor.
+    expect(programName("sudo -Hu app make")).toBe("make");
+    // Com a flag de valor no meio, o resto do bundle seria o valor dela —
+    // ambíguo demais para adivinhar.
+    expect(programName("sudo -uH app make")).toBe("sudo");
+  });
 });
 
 describe("continuação do shell (PS2)", () => {
