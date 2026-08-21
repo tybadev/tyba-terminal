@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     worktree TEXT,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    scrollback TEXT
+    cwd TEXT
 );
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     side_view TEXT,
     side_ratio REAL,
     side_expanded INTEGER,
+    launch_config_id TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tabs (
@@ -249,15 +250,114 @@ pub enum StoreError {
     Time(#[from] chrono::ParseError),
 }
 
+/// Versão de schema que este binário espera, em `PRAGMA user_version`.
+///
+/// 1 — linha de base. Estas colunas eram `ALTER TABLE ... ADD COLUMN` disparado
+///     a cada abertura do banco e engolido com `let _ =`: em toda máquina que já
+///     tinha usado o app, as catorze falhavam, todo boot, para nada.
+/// 2 — `sessions.scrollback` sai. Ninguém lia a coluna, e output de terminal
+///     parado no disco contraria o princípio #10 do CLAUDE.md.
+const SCHEMA_VERSION: i64 = 2;
+
+/// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
+/// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
+/// banco novo já as tem pelo `SCHEMA`, o banco de quem usava o app as ganhou
+/// pelos ALTERs antigos, e só um banco de origem incerta chega sem alguma.
+const BASELINE_COLUMNS: &[(&str, &str, &str)] = &[
+    ("tabs", "workspace_id", "TEXT"),
+    ("tabs", "view", "TEXT"),
+    ("workspaces", "color", "TEXT"),
+    ("workspaces", "group_name", "TEXT"),
+    ("workspaces", "kind", "TEXT"),
+    ("workspaces", "side_view", "TEXT"),
+    ("workspaces", "side_ratio", "REAL"),
+    ("workspaces", "side_expanded", "INTEGER"),
+    ("workspaces", "name_locked", "INTEGER"),
+    ("workspaces", "launch_config_id", "TEXT"),
+    // Sem o cwd não há como reabrir a sessão na mesma pasta: o PTY morre com o
+    // app e o pane fica órfão. É o que faz a tab sumir no reopen (#50).
+    ("sessions", "cwd", "TEXT"),
+    ("host", "tunnels", "TEXT"),
+    ("block", "alt_screen", "INTEGER NOT NULL DEFAULT 0"),
+    ("block", "cwd", "TEXT"),
+];
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, StoreError> {
+    // `PRAGMA` não aceita parâmetro ligado; `table` vem de constante do próprio
+    // código, nunca de entrada externa.
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Migração por degrau, guardada por `PRAGMA user_version`.
+///
+/// Roda depois do `SCHEMA`, que só cria o que falta: num banco novo tudo já
+/// nasceu na forma final e os degraus são no-op — o que os deixa passar é
+/// justamente a checagem de coluna, não a versão.
+fn migrate(conn: &Connection) -> Result<(), StoreError> {
+    let from: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if from >= SCHEMA_VERSION {
+        return Ok(());
+    }
+
+    if from < 1 {
+        for (table, column, kind) in BASELINE_COLUMNS {
+            if has_column(conn, table, column)? {
+                continue;
+            }
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"),
+                [],
+            )?;
+        }
+    }
+
+    if from < 2 && has_column(conn, "sessions", "scrollback")? {
+        conn.execute("ALTER TABLE sessions DROP COLUMN scrollback", [])?;
+    }
+
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    Ok(())
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
+        let span = crate::boot::Span::start("store.connection_open");
         let conn = Connection::open(path)?;
+        span.end();
+
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        Self::init(conn)
+        // O par correto do WAL. O default (`FULL`) fazia um fsync por commit —
+        // e este banco leva commit pequeno o tempo todo (bloco, histórico,
+        // layout). Com `NORMAL` o fsync acontece no checkpoint: um corte de
+        // energia pode custar as últimas transações, nunca o banco.
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // Sem timeout, qualquer escrita concorrente devolve SQLITE_BUSY na hora
+        // — e o app tem várias threads gravando (histórico, blocos, sessões).
+        conn.pragma_update(None, "busy_timeout", 5_000)?;
+        // Negativo = KiB em vez de páginas. 16 MiB cobre o banco inteiro do uso
+        // real (~2,4 MB) com folga, então leitura repetida não volta ao disco.
+        conn.pragma_update(None, "cache_size", -16_000)?;
+        // Explícito porque o default (1000 páginas) é implícito demais para uma
+        // decisão que se paga: no disco de quem usa o app o WAL já foi visto com
+        // 5,8 MB para um banco de 2,4 MB. Meio disso segura o arquivo pequeno
+        // sem transformar cada commit em checkpoint.
+        conn.pragma_update(None, "wal_autocheckpoint", 512)?;
+
+        let span = crate::boot::Span::start("store.init");
+        let store = Self::init(conn);
+        span.end();
+        store
     }
 
     pub fn open_in_memory() -> Result<Self, StoreError> {
@@ -267,34 +367,21 @@ impl Store {
     fn init(conn: Connection) -> Result<Self, StoreError> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
-        let _ = conn.execute("ALTER TABLE tabs ADD COLUMN workspace_id TEXT", []);
-        let _ = conn.execute("ALTER TABLE tabs ADD COLUMN view TEXT", []);
-        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN color TEXT", []);
-        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN group_name TEXT", []);
-        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN kind TEXT", []);
-        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN side_view TEXT", []);
-        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN side_ratio REAL", []);
-        let _ = conn.execute(
-            "ALTER TABLE workspaces ADD COLUMN side_expanded INTEGER",
-            [],
-        );
-        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN name_locked INTEGER", []);
-        // Sem o cwd não há como reabrir a sessão na mesma pasta: o PTY morre com o
-        // app e o pane fica órfão. É o que faz a tab sumir no reopen (#50).
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN cwd TEXT", []);
-        let _ = conn.execute("ALTER TABLE host ADD COLUMN tunnels TEXT", []);
-        let _ = conn.execute(
-            "ALTER TABLE workspaces ADD COLUMN launch_config_id TEXT",
-            [],
-        );
-        let _ = conn.execute(
-            "ALTER TABLE block ADD COLUMN alt_screen INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
-        let _ = conn.execute("ALTER TABLE block ADD COLUMN cwd TEXT", []);
+        migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Devolve o WAL ao tamanho do que ele realmente precisa.
+    ///
+    /// Checkpoint passivo reaproveita o arquivo mas nunca o encolhe: o WAL fica
+    /// na maior marca que já atingiu, para sempre. `TRUNCATE` é o único que
+    /// devolve o espaço — e por isso roda uma vez, na thread de boot, fora da
+    /// main thread e fora do caminho de qualquer clique.
+    pub fn checkpoint_truncate(&self) {
+        let conn = self.conn.lock();
+        let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
     }
 
     pub fn upsert_session(&self, s: &Session) -> Result<(), StoreError> {
@@ -332,10 +419,10 @@ impl Store {
 
     /// Descarta a sessão e tudo que ela gravou.
     ///
-    /// O scrollback é coluna da própria linha e sai junto; blocos e checkpoint
-    /// moram em tabelas separadas, sem FK, e ficariam para trás. Quem descarta
-    /// uma sessão quer que a saída dela suma — deixá-la no disco esperando a
-    /// retenção contraria justamente o gesto (princípio #10).
+    /// Blocos e checkpoint moram em tabelas separadas, sem FK, e ficariam para
+    /// trás se só a linha de `sessions` saísse. Quem descarta uma sessão quer
+    /// que a saída dela suma — deixá-la no disco esperando a retenção contraria
+    /// justamente o gesto (princípio #10).
     ///
     /// Numa transação porque as três apagam a mesma coisa: meio descarte é
     /// output órfão que ninguém mais tem como listar nem apagar.
@@ -554,26 +641,21 @@ impl Store {
         Ok(())
     }
 
-    pub fn save_scrollback(&self, id: SessionId, text: &str) -> Result<(), StoreError> {
-        let redacted = redact(text);
+    /// Todas as preferências de uma vez. O mount do front lia dezesseis chaves,
+    /// uma por `invoke`: paralelo do lado do JS, fila do lado do core, porque
+    /// cada uma pegava o mesmo `Mutex<Connection>`.
+    pub fn prefs(&self) -> Result<std::collections::HashMap<String, String>, StoreError> {
         let conn = self.conn.lock();
-        conn.execute(
-            "UPDATE sessions SET scrollback = ?2 WHERE id = ?1",
-            params![id.to_string(), redacted.as_ref()],
-        )?;
-        Ok(())
-    }
-
-    pub fn load_scrollback(&self, id: SessionId) -> Result<Option<String>, StoreError> {
-        let conn = self.conn.lock();
-        let value = conn
-            .query_row(
-                "SELECT scrollback FROM sessions WHERE id = ?1",
-                params![id.to_string()],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .map_err(StoreError::from)?;
-        Ok(value)
+        let mut stmt = conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'pref.%'")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows {
+            let (key, value) = row?;
+            out.insert(key, value);
+        }
+        Ok(out)
     }
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
@@ -1858,19 +1940,112 @@ mod tests {
         );
     }
 
+    fn user_version(store: &Store) -> i64 {
+        let conn = store.conn.lock();
+        conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn column_exists(store: &Store, table: &str, column: &str) -> bool {
+        let conn = store.conn.lock();
+        has_column(&conn, table, column).unwrap()
+    }
+
+    /// Um banco como o que a versão anterior do app deixava no disco: schema
+    /// antigo mais os catorze `ADD COLUMN` que rodavam a cada abertura. Escrito
+    /// à mão de propósito — nada aqui sai de um banco real.
+    fn write_legacy_database(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                title TEXT NOT NULL,
+                repo_root TEXT,
+                worktree TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                scrollback TEXT
+            );
+            CREATE TABLE workspaces (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                repo_root TEXT,
+                position INTEGER NOT NULL,
+                active_tab TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE tabs (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                position INTEGER NOT NULL,
+                active_pane TEXT,
+                created_at TEXT NOT NULL
+            );
+            ALTER TABLE sessions ADD COLUMN cwd TEXT;
+            ALTER TABLE workspaces ADD COLUMN color TEXT;
+            ALTER TABLE workspaces ADD COLUMN group_name TEXT;
+            ALTER TABLE workspaces ADD COLUMN kind TEXT;
+            ALTER TABLE workspaces ADD COLUMN side_view TEXT;
+            ALTER TABLE workspaces ADD COLUMN side_ratio REAL;
+            ALTER TABLE workspaces ADD COLUMN side_expanded INTEGER;
+            ALTER TABLE workspaces ADD COLUMN name_locked INTEGER;
+            ALTER TABLE workspaces ADD COLUMN launch_config_id TEXT;
+            ALTER TABLE tabs ADD COLUMN workspace_id TEXT;
+            ALTER TABLE tabs ADD COLUMN view TEXT;
+            INSERT INTO sessions (id, kind, title, status, created_at, scrollback)
+            VALUES ('7b1f0c6e-0000-4000-8000-000000000001', '{\"type\":\"shell\"}', 'zsh',
+                    '{\"state\":\"exited\",\"code\":0}', '2026-01-01T00:00:00Z',
+                    'saída antiga que não deveria ter ido pro disco');",
+        )
+        .unwrap();
+    }
+
     #[test]
-    fn scrollback_is_redacted_before_persisting() {
+    fn fresh_database_lands_on_the_current_schema_version() {
         let store = Store::open_in_memory().unwrap();
-        let s = sample("zsh");
-        store.upsert_session(&s).unwrap();
 
-        store
-            .save_scrollback(s.id, "leaked AKIAIOSFODNN7EXAMPLE in output")
-            .unwrap();
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert!(!column_exists(&store, "sessions", "scrollback"));
+        for (table, column, _) in BASELINE_COLUMNS {
+            assert!(
+                column_exists(&store, table, column),
+                "{table}.{column} deveria vir do SCHEMA"
+            );
+        }
+    }
 
-        let scrollback = store.load_scrollback(s.id).unwrap().unwrap();
-        assert!(!scrollback.contains("AKIAIOSFODNN7EXAMPLE"));
-        assert!(scrollback.contains("[REDACTED]"));
+    #[test]
+    fn legacy_database_migrates_without_reapplying_the_baseline_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        write_legacy_database(&path);
+
+        let store = Store::open(&path).unwrap();
+
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert!(!column_exists(&store, "sessions", "scrollback"));
+        for (table, column, _) in BASELINE_COLUMNS {
+            assert!(column_exists(&store, table, column));
+        }
+        // A sessão herdada sobrevive à queda da coluna: o que sai é o output,
+        // não a linha.
+        let sessions = store.load_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title, "zsh");
+    }
+
+    #[test]
+    fn reopening_a_migrated_database_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        write_legacy_database(&path);
+
+        drop(Store::open(&path).unwrap());
+        let store = Store::open(&path).unwrap();
+
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert_eq!(store.load_sessions().unwrap().len(), 1);
     }
 
     #[test]

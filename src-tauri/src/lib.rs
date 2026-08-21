@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod approvals;
 pub mod blocks;
+pub mod boot;
 pub mod completion;
 pub mod docker;
 pub mod editor;
@@ -63,7 +64,39 @@ struct AppState {
     agent_prober: agent::process_probe::SharedAgentProber,
     disk_observer: agent::disk_observer::SharedDiskObserver,
     tunnel_states: crate::ssh::tunnel::SharedTunnelStates,
+    /// Fecha em `false` e abre quando a thread de boot termina. Ver [`boot`].
+    boot: Arc<boot::BootGate>,
 }
+
+/// Resposta que separa "carregou e está vazio" de "ainda não carregou".
+///
+/// Sem isto a UI leria a lista vazia do meio do boot como estado final e
+/// desenharia "nenhuma sessão" por cima de vinte sessões que estão voltando.
+#[derive(serde::Serialize)]
+struct Loaded<T> {
+    ready: bool,
+    value: T,
+}
+
+impl<T> Loaded<T> {
+    /// `ready` é lido **antes** do valor, e a ordem é a decisão. Se o boot
+    /// terminar entre as duas leituras, o pior caso aqui é anunciar `false` com
+    /// dado que já era bom — o front reconsulta e nada se perde. Na ordem
+    /// inversa o pior caso seria anunciar `true` carregando o estado de antes do
+    /// boot, e aí a UI trata como final o que era transitório.
+    fn read(state: &AppState, value: impl FnOnce() -> T) -> Self {
+        let ready = state.boot.is_ready();
+        Self {
+            ready,
+            value: value(),
+        }
+    }
+}
+
+/// Teto para quem escreve antes do boot terminar. Não é um tempo esperado: é o
+/// limite acima do qual preferimos agir com estado incompleto a deixar o clique
+/// do usuário pendurado.
+const BOOT_WAIT: Duration = Duration::from_secs(10);
 
 fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::PathBuf> {
     let mut roots: std::collections::HashSet<std::path::PathBuf> = state
@@ -514,6 +547,11 @@ fn hosts_alias(store: &Arc<session::store::Store>, host_id: &str) -> Option<Stri
 /// Só shell é reaberto. Um agente não é um processo idempotente: religá-lo sozinho
 /// no boot faria um agente começar a agir sem ninguém ter pedido — a sessão volta
 /// morta, e o dono decide.
+///
+/// O cwd de cada sessão passa por [`session::cwd::reopen_policy`] antes de
+/// qualquer syscall: pasta protegida pelo TCC não é conferida, e caminho em
+/// volume montado não é reaberto. O módulo explica por quê — em resumo, era o
+/// `stat` daqui que abria o diálogo de permissão do macOS e travava a abertura.
 fn resume_startup(
     app: &AppHandle,
     store: &Arc<session::store::Store>,
@@ -529,6 +567,9 @@ fn resume_startup(
     );
     let mut remap = std::collections::HashMap::new();
     let dead = sessions.dead_sessions();
+    // Resolvido uma vez: a classificação é pura, e ler o env por sessão não
+    // acrescentaria nada.
+    let home = session::cwd::home();
 
     if mode == session::StartupMode::Fresh {
         for s in dead {
@@ -575,8 +616,19 @@ fn resume_startup(
         let Some(cwd) = old.cwd.clone() else {
             continue;
         };
-        if !cwd.is_dir() {
-            continue;
+        // O `stat` daqui era o congelamento da abertura. Leia `session::cwd`
+        // antes de "consertar" isto de volta para um `is_dir()` incondicional.
+        match session::cwd::reopen_policy(&cwd, home.as_deref()) {
+            session::cwd::ReopenPolicy::Checked if !cwd.is_dir() => continue,
+            session::cwd::ReopenPolicy::Skip => {
+                eprintln!(
+                    "[tyba] sessão {} volta parada: {} está em volume que pode não estar montado",
+                    old.id,
+                    cwd.display()
+                );
+                continue;
+            }
+            _ => {}
         }
         let handle = app.clone();
         let opts = CreateSessionOpts {
@@ -611,6 +663,11 @@ fn create_session(
     state: State<'_, AppState>,
     opts: CreateSessionOpts,
 ) -> Result<Session, String> {
+    // Leitura devolve "carregando"; escrita espera. Criar sessão antes do boot
+    // terminar seria criá-la para o `load_remapped` da thread de boot passar por
+    // cima logo em seguida — o pane nasceria apontando para o nada.
+    state.boot.wait_ready(BOOT_WAIT);
+
     let handle = app.clone();
     let session = match &opts.kind {
         SessionKind::Agent { .. } => {
@@ -710,7 +767,9 @@ fn rematerialize_hosts(state: &State<'_, AppState>) -> Result<(), crate::error::
 }
 
 #[tauri::command]
-fn list_hosts(state: State<'_, AppState>) -> Result<Vec<crate::ssh::Host>, crate::error::AppError> {
+async fn list_hosts(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::ssh::Host>, crate::error::AppError> {
     state.store.load_hosts().map_err(store_err)
 }
 
@@ -2567,7 +2626,7 @@ fn list_worktree_files(
 }
 
 #[tauri::command]
-fn attach_session(
+async fn attach_session(
     app: AppHandle,
     window: tauri::Window,
     state: State<'_, AppState>,
@@ -2590,9 +2649,14 @@ fn repo_snapshots(state: State<'_, AppState>) -> Vec<repo::RepoSnapshot> {
 }
 
 #[tauri::command]
-fn session_cwd(state: State<'_, AppState>, id: SessionId) -> Option<pty::SessionCwdPayload> {
-    let pid = state.pty_pool.leader_pid(id)?;
-    repo::process_cwd(pid).map(|p| pty::SessionCwdPayload::of(&p))
+async fn session_cwd(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<Option<pty::SessionCwdPayload>, String> {
+    let Some(pid) = state.pty_pool.leader_pid(id) else {
+        return Ok(None);
+    };
+    Ok(repo::process_cwd(pid).map(|p| pty::SessionCwdPayload::of(&p)))
 }
 
 #[tauri::command]
@@ -2609,8 +2673,8 @@ fn resize_session(
 }
 
 #[tauri::command]
-fn list_sessions(state: State<'_, AppState>) -> Vec<Session> {
-    state.sessions.list()
+async fn list_sessions(state: State<'_, AppState>) -> Result<Loaded<Vec<Session>>, String> {
+    Ok(Loaded::read(&state, || state.sessions.list()))
 }
 
 #[tauri::command]
@@ -2628,8 +2692,36 @@ fn dispose_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
 }
 
 #[tauri::command]
-fn layout_state(state: State<'_, AppState>) -> layout::LayoutState {
-    state.layout.state()
+async fn layout_state(state: State<'_, AppState>) -> Result<Loaded<layout::LayoutState>, String> {
+    Ok(Loaded::read(&state, || state.layout.state()))
+}
+
+#[derive(serde::Serialize)]
+struct BootSnapshot {
+    ready: bool,
+    prefs: std::collections::HashMap<String, String>,
+    sessions: Vec<Session>,
+    layout: layout::LayoutState,
+}
+
+/// Tudo que o mount do front precisa, numa chamada.
+///
+/// Eram dezoito `invoke` — dezesseis deles `get_pref`, um `SELECT` cada, todos
+/// disputando o mesmo `Mutex<Connection>`. Paralelo no JS, serial do lado de cá.
+///
+/// `ready: false` significa "a thread de boot ainda não terminou": as listas
+/// podem estar vazias por isso, não por não haver nada. O front espera
+/// [`boot::EVENT_READY`] e reconsulta.
+#[tauri::command]
+async fn boot_snapshot(state: State<'_, AppState>) -> Result<BootSnapshot, String> {
+    // Lido primeiro de propósito — ver [`Loaded::read`].
+    let ready = state.boot.is_ready();
+    Ok(BootSnapshot {
+        ready,
+        prefs: state.store.prefs().map_err(|e| e.to_string())?,
+        sessions: state.sessions.list(),
+        layout: state.layout.state(),
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -3197,7 +3289,7 @@ fn list_shells() -> Vec<session::ShellOption> {
 }
 
 #[tauri::command]
-fn get_pref(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+async fn get_pref(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
     if !key.starts_with("pref.") {
         return Err("chave de preferência inválida".into());
     }
@@ -3205,7 +3297,7 @@ fn get_pref(state: State<'_, AppState>, key: String) -> Result<Option<String>, S
 }
 
 #[tauri::command]
-fn set_pref(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+async fn set_pref(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
     if !key.starts_with("pref.") {
         return Err("chave de preferência inválida".into());
     }
@@ -4010,19 +4102,27 @@ struct AgentConfigInfo {
     consent: Option<bool>,
 }
 
+/// Fora do threadpool de blocking isto é uma bomba armada: por baixo,
+/// `agent_path()` resolve o PATH de login spawnando `$SHELL -lic` — shell
+/// **interativo**, roda o `.zshrc` inteiro — com busy-wait de até 3 s, e é
+/// `OnceLock`, então a primeira chamada segura quem passar por ela. Nesta
+/// máquina, `zsh -lic` custa ~660 ms. Na main thread isso era beachball; num
+/// worker do runtime seria um worker sequestrado.
 #[tauri::command]
-fn agent_binary_available(runner: crate::session::AgentRunnerKind) -> bool {
-    agent::binary_available(&runner)
+async fn agent_binary_available(runner: crate::session::AgentRunnerKind) -> bool {
+    tauri::async_runtime::spawn_blocking(move || agent::binary_available(&runner))
+        .await
+        .unwrap_or(false)
 }
 
 /// Agente (claude/codex) detectado rodando na sessão de shell `session_id`, se
 /// houver. Estado alimentado pelo poll de [`poll_agent_probers`].
 #[tauri::command]
-fn detected_agent(
+async fn detected_agent(
     state: State<'_, AppState>,
     session_id: SessionId,
-) -> Option<agent::process_probe::DetectedAgent> {
-    state.agent_prober.detected(session_id)
+) -> Result<Option<agent::process_probe::DetectedAgent>, String> {
+    Ok(state.agent_prober.detected(session_id))
 }
 
 #[tauri::command]
@@ -4123,7 +4223,10 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
 /// Blocos já gravados de uma sessão, para reabrir mostrando o que aconteceu
 /// antes. Nada é gravado sem ser usado (ADR de 2026-07-10).
 #[tauri::command]
-fn session_blocks(state: State<'_, AppState>, id: SessionId) -> Result<Vec<blocks::Block>, String> {
+async fn session_blocks(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<Vec<blocks::Block>, String> {
     state
         .store
         .list_blocks(&id.to_string(), 200)
@@ -4185,11 +4288,23 @@ struct HistoryHit {
 
 /// Fuzzy + frecência no core: o webview recebe a lista já ordenada (princípio #1).
 #[tauri::command]
-fn search_command_history(
+async fn search_command_history(
     state: State<'_, AppState>,
     query: String,
     cwd: Option<String>,
     repo_root: Option<String>,
+    limit: usize,
+) -> Result<Vec<HistoryHit>, String> {
+    history_hits(&state, &query, cwd.as_deref(), repo_root.as_deref(), limit)
+}
+
+/// O corpo do comando, síncrono, para quem já está numa thread — `suggest_line`
+/// chama daqui em vez de `.await` no comando só para não virar duas travessias.
+fn history_hits(
+    state: &AppState,
+    query: &str,
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
     limit: usize,
 ) -> Result<Vec<HistoryHit>, String> {
     use fuzzy_matcher::skim::SkimMatcherV2;
@@ -4197,7 +4312,7 @@ fn search_command_history(
 
     let candidates = state
         .store
-        .history_candidates(cwd.as_deref(), repo_root.as_deref())
+        .history_candidates(cwd, repo_root)
         .map_err(|e| e.to_string())?;
     let matcher = SkimMatcherV2::default();
     let query = query.trim();
@@ -4251,11 +4366,20 @@ const SUGGEST_LIMIT: usize = 8;
 /// e snippets, numa lista só. O ranking fica no core (princípio #1) — o webview
 /// recebe pronto e só desenha.
 #[tauri::command]
-fn suggest_commands(
+async fn suggest_commands(
     state: State<'_, AppState>,
     query: String,
     cwd: Option<String>,
     repo_root: Option<String>,
+) -> Result<Vec<CommandSuggestion>, String> {
+    command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref())
+}
+
+fn command_suggestions(
+    state: &AppState,
+    query: &str,
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
 ) -> Result<Vec<CommandSuggestion>, String> {
     use fuzzy_matcher::skim::SkimMatcherV2;
     use fuzzy_matcher::FuzzyMatcher;
@@ -4284,7 +4408,7 @@ fn suggest_commands(
         }
     }
 
-    let hits = search_command_history(state, query.to_string(), cwd, repo_root, SUGGEST_LIMIT)?;
+    let hits = history_hits(state, query, cwd, repo_root, SUGGEST_LIMIT)?;
     for hit in hits {
         if out.iter().any(|s| s.command == hit.command) {
             continue;
@@ -4314,7 +4438,7 @@ struct LineSuggestions {
 /// digitação: três travessias da ponte do webview e três consultas, para uma
 /// única mudança de estado na tela.
 #[tauri::command]
-fn suggest_line(
+async fn suggest_line(
     state: State<'_, AppState>,
     query: String,
     cwd: Option<String>,
@@ -4339,7 +4463,7 @@ fn suggest_line(
         }
         _ => Vec::new(),
     };
-    let commands = suggest_commands(state, query, cwd, repo_root)?;
+    let commands = command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref())?;
     Ok(LineSuggestions {
         commands,
         paths,
@@ -4399,7 +4523,7 @@ fn set_history_enabled(state: State<'_, AppState>, enabled: bool) -> Result<(), 
 /// Locais sempre; do repositório **só depois do consentimento** por hash — o
 /// mesmo de `.tyba/config.toml`. Clonar um repo não coloca comando na paleta.
 #[tauri::command]
-fn list_snippets(
+async fn list_snippets(
     state: State<'_, AppState>,
     repo_root: Option<String>,
 ) -> Result<Vec<snippet::Snippet>, String> {
@@ -4463,8 +4587,8 @@ fn render_snippet(
 }
 
 #[tauri::command]
-fn list_themes(state: State<'_, AppState>) -> Vec<theme::Theme> {
-    state.themes.list()
+async fn list_themes(state: State<'_, AppState>) -> Result<Vec<theme::Theme>, String> {
+    Ok(state.themes.list())
 }
 
 #[tauri::command]
@@ -4503,8 +4627,6 @@ fn import_theme(
     state.themes.import(&app, &path).map_err(|e| e.to_string())
 }
 
-const SCROLLBACK_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
-
 fn open_store(app: &AppHandle) -> session::store::Store {
     let db_path = std::env::var_os("TYBA_DATA_DIR")
         .map(std::path::PathBuf::from)
@@ -4518,6 +4640,94 @@ fn open_store(app: &AppHandle) -> session::store::Store {
         .and_then(|path| session::store::Store::open(&path).ok())
         .or_else(|| session::store::Store::open_in_memory().ok())
         .expect("failed to open session store")
+}
+
+/// Tudo que o arranque faz e que não precisa da main thread.
+///
+/// Isto morava no closure `.setup()`, que roda na main thread com o event loop
+/// parado e a janela já visível — ver [`boot`]. Fora dali, o webview carrega em
+/// paralelo: a UI aparece "carregando" em vez de congelada, e ao receber
+/// [`boot::EVENT_READY`] reconsulta o estado.
+///
+/// A ordem interna não é livre. `restore` precede `resume_startup`, que precisa
+/// saber quais sessões morreram; o layout entra depois, porque é ele que reaponta
+/// os panes para as sessões recém-nascidas; e `drain_checkpoints` fica antes de
+/// `blocks::install` porque o dreno grava blocos e o contador de ids vivos parte
+/// do maior id gravado.
+fn run_boot(
+    app: AppHandle,
+    store: Arc<Store>,
+    sessions: SharedSessionManager,
+    layout: layout::SharedLayout,
+    pty_pool: SharedPtyPool,
+    reconcile: std::sync::mpsc::Sender<()>,
+) {
+    let total = boot::Span::start("boot.thread");
+
+    // O tyba.conf é derivado do banco, então se regenera no boot: quem
+    // cadastrou host numa versão antiga recebe o que mudou no formato
+    // (multiplexing, p.ex.) sem ter que reeditar host por host.
+    let span = boot::Span::start("ssh.materialize");
+    if let (Ok(hosts), Some(home)) = (store.load_hosts(), ssh::home_dir()) {
+        if !hosts.is_empty() {
+            if let Err(e) = ssh::config::materialize(&home, &hosts) {
+                eprintln!("tyba: ssh config não materializou: {e}");
+            }
+        }
+    }
+    span.end();
+
+    let span = boot::Span::start("sessions.restore");
+    let _ = sessions.restore();
+    span.end();
+
+    let span = boot::Span::start("resume_startup");
+    let remap = resume_startup(&app, &store, &sessions, &pty_pool);
+    let valid: std::collections::HashSet<SessionId> =
+        sessions.list().iter().map(|s| s.id).collect();
+    span.end_with(format!(
+        "{} sessões, {} reabertas",
+        valid.len(),
+        remap.len()
+    ));
+
+    let span = boot::Span::start("layout.load");
+    layout.load_remapped(&valid, &remap);
+    span.end();
+
+    let enabled = history_enabled(&store);
+    history::install(Arc::clone(&store), enabled);
+
+    // Checkpoint órfão = o app morreu com um comando rodando. Vira bloco sem
+    // exit code, que é exatamente o "não terminou".
+    let span = boot::Span::start("checkpoints.drain");
+    let _ = store.drain_checkpoints();
+    span.end();
+    blocks::install(app.clone(), Arc::clone(&store));
+
+    // Abrir o portão antes de avisar: quem for reconsultar por causa do evento
+    // precisa achar `ready: true`, não uma corrida.
+    if let Some(state) = app.try_state::<AppState>() {
+        state.boot.mark_ready();
+    }
+    let _ = app.emit(layout::EVENT_CHANGED, layout.state());
+    let _ = app.emit(boot::EVENT_READY, ());
+    let _ = reconcile.send(());
+
+    total.end();
+
+    // Daqui para baixo é manutenção, fora do tempo de arranque — e depois do
+    // `ready` de propósito, para não empurrá-lo.
+
+    // O GC só pode rodar DEPOIS do restore: ele decide o que é órfão a partir de
+    // `sessions.list()`, e antes do restore essa lista está vazia — todo worktree
+    // gerenciado pareceria abandonado.
+    let report = worktree::gc_orphans(&known_worktree_paths(&sessions));
+    for removed in &report.removed {
+        eprintln!("[tyba] worktree órfão removido: {}", removed.display());
+    }
+
+    store.checkpoint_truncate();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -4563,6 +4773,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            let setup_span = boot::Span::start("setup.total");
             let store = Arc::new(open_store(app.handle()));
             let pty_pool: SharedPtyPool = Arc::new(pty::PtyPool::new());
             let sessions: SharedSessionManager =
@@ -4617,6 +4828,7 @@ pub fn run() {
                     })
                 })),
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
+                boot: Arc::new(boot::BootGate::new()),
             });
 
             // Fim de subagente async detectado por arquivo desce a sessão a Idle
@@ -4642,44 +4854,6 @@ pub fn run() {
                     }));
             }
 
-            // O tyba.conf é derivado do banco, então se regenera no boot: quem
-            // cadastrou host numa versão antiga recebe o que mudou no formato
-            // (multiplexing, p.ex.) sem ter que reeditar host por host.
-            if let (Ok(hosts), Some(home)) = (store.load_hosts(), ssh::home_dir()) {
-                if !hosts.is_empty() {
-                    if let Err(e) = ssh::config::materialize(&home, &hosts) {
-                        eprintln!("tyba: ssh config não materializou: {e}");
-                    }
-                }
-            }
-
-            let _ = sessions.restore();
-            let remap = resume_startup(app.handle(), &store, &sessions, &pty_pool);
-            let valid: std::collections::HashSet<SessionId> =
-                sessions.list().iter().map(|s| s.id).collect();
-            layout.load_remapped(&valid, &remap);
-
-            let _ = app.emit(layout::EVENT_CHANGED, layout.state());
-
-            std::thread::Builder::new()
-                .name("scrollback-flush".into())
-                .spawn(move || loop {
-                    std::thread::sleep(SCROLLBACK_FLUSH_INTERVAL);
-                    sessions.flush_scrollback(&pty_pool);
-                })
-                .expect("failed to spawn scrollback flush thread");
-
-            let gc_sessions = Arc::clone(&app.state::<AppState>().sessions);
-            std::thread::Builder::new()
-                .name("worktree-gc".into())
-                .spawn(move || {
-                    let report = worktree::gc_orphans(&known_worktree_paths(&gc_sessions));
-                    for removed in &report.removed {
-                        eprintln!("[tyba] worktree órfão removido: {}", removed.display());
-                    }
-                })
-                .expect("failed to spawn worktree gc thread");
-
             let cwd_tx = reconcile_tx.clone();
             app.listen_any(pty::EVENT_CWD_CHANGED, move |_| {
                 let _ = cwd_tx.send(());
@@ -4696,8 +4870,6 @@ pub fn run() {
                     }
                 })
                 .expect("failed to spawn repo reconcile thread");
-
-            let _ = reconcile_tx.send(());
 
             let probe_handle = app.handle().clone();
             std::thread::Builder::new()
@@ -4719,24 +4891,36 @@ pub fn run() {
                 });
             }
 
+            // Único passo caro que fica: montar o NSMenu é operação de main
+            // thread, não há para onde mover.
+            let span = boot::Span::start("menu.install");
             let _ = menu::install_fallback(app.handle());
+            span.end();
 
-            {
-                let state = app.state::<AppState>();
-                let enabled = history_enabled(&state.store);
-                history::install(Arc::clone(&state.store), enabled);
-                // Checkpoint órfão = o app morreu com um comando rodando. Vira
-                // bloco sem exit code, que é exatamente o "não terminou".
-                //
-                // Antes do `install` porque o dreno GRAVA blocos, e é do maior
-                // id gravado que o contador de ids vivos parte.
-                let _ = state.store.drain_checkpoints();
-                blocks::install(app.handle().clone(), Arc::clone(&state.store));
-            }
+            let boot_handle = app.handle().clone();
+            let boot_store = Arc::clone(&store);
+            let boot_sessions = Arc::clone(&sessions);
+            let boot_layout = Arc::clone(&layout);
+            let boot_pty = Arc::clone(&pty_pool);
+            std::thread::Builder::new()
+                .name("boot".into())
+                .spawn(move || {
+                    run_boot(
+                        boot_handle,
+                        boot_store,
+                        boot_sessions,
+                        boot_layout,
+                        boot_pty,
+                        reconcile_tx,
+                    );
+                })
+                .expect("failed to spawn boot thread");
 
+            setup_span.end();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            boot_snapshot,
             agent_binary_available,
             detected_agent,
             create_session,

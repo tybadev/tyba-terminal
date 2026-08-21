@@ -1,3 +1,4 @@
+pub mod cwd;
 pub mod redact;
 pub mod store;
 
@@ -528,15 +529,6 @@ impl SessionManager {
         self.sessions.write().remove(&id);
         let _ = pty_pool.kill(id);
         let _ = self.store.remove_session(id);
-    }
-
-    pub fn flush_scrollback(&self, pty_pool: &SharedPtyPool) {
-        let ids: Vec<SessionId> = self.sessions.read().keys().copied().collect();
-        for id in ids {
-            if let Ok(text) = pty_pool.scrollback_text(id) {
-                let _ = self.store.save_scrollback(id, &text);
-            }
-        }
     }
 
     /// Traz de volta as sessões persistidas, todas mortas: o PTY não sobrevive ao
