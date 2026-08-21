@@ -292,6 +292,7 @@ import {
 import {
   DEFAULT_TOOLBAR,
   parseToolbarPref,
+  sessionRepoDir,
   snapshotForDir,
   type ToolbarPref,
 } from "./lib/repoSnapshots";
@@ -1800,6 +1801,42 @@ export default function App() {
     (w: Workspace): string | null => workspaceMatchDir(w, sessionCwds),
     [sessionCwds],
   );
+
+  /**
+   * O chip de branch da barra de status: rótulo e alvo do checkout, juntos.
+   *
+   * Juntos porque saíam de fontes diferentes e podiam ser repositórios
+   * diferentes — a barra lia o repo do WORKSPACE e o `session_checkout`
+   * resolvia o worktree da SESSÃO. O rótulo passa a vir do repositório onde a
+   * troca de branch de fato cai; quando esse repositório não é conhecido, o
+   * chip cai para o texto do workspace e o seletor não abre.
+   */
+  const toolbarBranch = useMemo(() => {
+    const sessionDir = activeSession
+      ? sessionRepoDir({
+          worktree: activeSession.worktree?.path ?? null,
+          alive: !isFinishedStatus(activeSession.status),
+          cwd: sessionCwds[activeSession.id]?.canonical ?? null,
+        })
+      : null;
+    if (activeSession && sessionDir) {
+      // Sem cair para o workspace se este repositório não tiver snapshot:
+      // rótulo emprestado de outro repo é justamente o defeito.
+      const own = snapshotForDir(repoSnapshots, sessionDir);
+      return own?.branch
+        ? { label: own.branch, sessionId: activeSession.id }
+        : null;
+    }
+    const dir = activeWorkspace ? workspaceGitDir(activeWorkspace) : null;
+    const snap = dir ? snapshotForDir(repoSnapshots, dir) : undefined;
+    return snap?.branch ? { label: snap.branch, sessionId: null } : null;
+  }, [
+    activeSession,
+    activeWorkspace,
+    repoSnapshots,
+    sessionCwds,
+    workspaceGitDir,
+  ]);
 
   // Sessão SSH roda o `ssh` localmente: o cwd do processo fica no home e nunca
   // reflete o `cd` do outro lado. Mostrar caminho local seria mentira — o que
@@ -4910,7 +4947,7 @@ export default function App() {
                   <Toolbar
                     pref={toolbarPref}
                     cwd={workspaceCwd(activeWorkspace)}
-                    sessionId={activeSession?.id ?? null}
+                    branch={toolbarBranch}
                     snapshot={(() => {
                       const dir = workspaceGitDir(activeWorkspace);
                       return dir
