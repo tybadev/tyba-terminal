@@ -29,7 +29,13 @@ export interface OwnerInput {
  * Sumir e voltar a cada comando redimensionava o terminal duas vezes por
  * execução, e o `vim` reabria com outra altura.
  */
-export type LineState = "own" | "waiting" | "running" | "app" | "off";
+export type LineState =
+  | "own"
+  | "waiting"
+  | "running"
+  | "continuation"
+  | "app"
+  | "off";
 
 /** O shell respondeu que NÃO está em modo prompt, mas o usuário quer estar. */
 export function isOff(input: OwnerInput & { reported: boolean | undefined }) {
@@ -46,6 +52,9 @@ export function lineState(
   if (input.reported === false) return "off";
   if (input.altScreen) return "app";
   if (input.command?.running) return "running";
+  // Continuação vem DEPOIS de `running` na ordem porque os dois nunca são
+  // verdadeiros juntos — a ordem aqui é legibilidade, não precedência.
+  if (input.command?.continuation) return "continuation";
   return "waiting";
 }
 
@@ -60,6 +69,13 @@ export function keyboardOwner({
   if (kind?.type !== "shell") return "terminal";
   if (altScreen) return "terminal";
   if (command?.running) return "terminal";
+  // O shell está no meio de um comando multi-linha, esperando o resto.
+  //
+  // Sem esta linha o front só via `running: false` — o `PS2` não emite OSC
+  // nenhum — e devolvia o teclado para a caixa do TYBA, que oferecia começar
+  // um comando novo. O que o usuário digitasse ali viraria uma submissão
+  // separada em vez do corpo do `for` que ele estava escrevendo.
+  if (command?.continuation) return "terminal";
   return "tybaLine";
 }
 

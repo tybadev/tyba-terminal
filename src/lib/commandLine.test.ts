@@ -19,7 +19,7 @@ const atPrompt: OwnerInput = {
   promptMode: true,
   kind: { type: "shell" },
   altScreen: false,
-  command: { command: null, running: false, agent_match: false },
+  command: { command: null, running: false, agent_match: false, continuation: false },
   integrated: true,
 };
 
@@ -33,7 +33,7 @@ describe("keyboardOwner", () => {
     // não vai a lugar nenhum.
     const running = {
       ...atPrompt,
-      command: { command: "ssh prod", running: true, agent_match: false },
+      command: { command: "ssh prod", running: true, agent_match: false, continuation: false },
     };
     expect(keyboardOwner(running)).toBe("terminal");
   });
@@ -85,7 +85,7 @@ describe("lineState", () => {
     expect(
       lineState({
         ...atPrompt,
-        command: { command: "sleep 5", running: true, agent_match: false },
+        command: { command: "sleep 5", running: true, agent_match: false, continuation: false },
       }),
     ).toBe("running");
     expect(lineState({ ...atPrompt, altScreen: true })).toBe("app");
@@ -104,7 +104,7 @@ describe("lineState", () => {
       lineState({
         ...atPrompt,
         altScreen: true,
-        command: { command: "vim", running: true, agent_match: false },
+        command: { command: "vim", running: true, agent_match: false, continuation: false },
       }),
     ).toBe("app");
   });
@@ -309,5 +309,36 @@ describe("programName", () => {
   it("o comando digitado ganha do processo em primeiro plano", () => {
     // `git log` abre o `less`; o rótulo diz "git", que é o que foi pedido.
     expect(programName("git log --oneline")).toBe("git");
+  });
+});
+
+describe("continuação do shell (PS2)", () => {
+  const emPS2 = {
+    ...atPrompt,
+    command: {
+      command: "for i in 1 2 3; do",
+      running: false,
+      agent_match: false,
+      continuation: true,
+    },
+  };
+
+  it("o teclado é do TERMINAL, não da linha do TYBA", () => {
+    // O `PS2` não emite OSC nenhum, então `running` é false e sem o campo
+    // `continuation` a linha se achava dona: o que fosse digitado ali viraria
+    // submissão separada em vez do corpo do `for`.
+    expect(keyboardOwner(emPS2)).toBe("terminal");
+  });
+
+  it("a linha diz que o shell espera o resto", () => {
+    expect(lineState(emPS2)).toBe("continuation");
+  });
+
+  it("alt-screen ganha da continuação", () => {
+    expect(lineState({ ...emPS2, altScreen: true })).toBe("app");
+  });
+
+  it("sem continuação, nada muda", () => {
+    expect(lineState(atPrompt)).toBe("own");
   });
 });

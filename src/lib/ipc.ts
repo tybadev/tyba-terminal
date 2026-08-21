@@ -1426,6 +1426,14 @@ export interface SessionCommand {
   command: string | null;
   running: boolean;
   agent_match: boolean;
+  /**
+   * O shell está em prompt de continuação (`PS2`).
+   *
+   * `for`, `while`, `if`, `cat <<EOF`, aspas abertas: a última linha submetida
+   * não fechou o comando. Nunca vem junto de `running: true` — são estados
+   * diferentes do mesmo ciclo.
+   */
+  continuation: boolean;
 }
 
 export const submitRichInput = (id: SessionId, text: string, submit: boolean) =>

@@ -26,6 +26,7 @@ const MAX_HEIGHT_PX = 140;
 const PLACEHOLDER_BY_STATE: Record<LineState, string> = {
   own: "commandLinePlaceholder",
   waiting: "commandLineWaiting",
+  continuation: "commandLineContinuation",
   running: "commandLineRunning",
   app: "commandLineApp",
   off: "commandLineOff",
