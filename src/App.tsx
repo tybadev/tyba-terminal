@@ -203,6 +203,7 @@ import {
   splitPane,
   type ApprovalRequest,
   type LayoutState,
+  type Loaded,
   type RepoSnapshot,
   type Session,
   type SessionCommand,
@@ -274,6 +275,7 @@ import {
 } from "./lib/agentSession";
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
 import {
+  mergeLoaded,
   parseStartupMode,
   shouldPromptNewSession,
   SPLASH_DONE_EVENT,
@@ -877,6 +879,32 @@ export default function App() {
    * voltando.
    */
   const [bootReady, setBootReady] = useState(false);
+  // Espelho de `bootReady` para quem lê de dentro de um `await`: a closure de
+  // uma resposta que demorou guarda o valor de quando a chamada saiu, e o boot
+  // pode ter terminado no meio do caminho.
+  const bootReadyRef = useRef(false);
+  const markReady = useCallback(() => {
+    bootReadyRef.current = true;
+    setBootReady(true);
+  }, []);
+
+  /**
+   * Porta única das respostas do core que carregam `ready`.
+   *
+   * Devolve o dado quando ele vale como estado, e `null` quando a resposta é do
+   * meio do boot — aí quem aplicaria estaria apagando o que está voltando. As
+   * duas invariantes (o `ready` não regride; a lista só se aplica quando
+   * `ready`) vivem em `mergeLoaded`, e não em cada chamador.
+   */
+  const acceptLoaded = useCallback(
+    <T,>(response: Loaded<T> | null | undefined): T | null => {
+      const update = mergeLoaded(bootReadyRef.current, response);
+      if (update.ready) markReady();
+      return update.value;
+    },
+    [markReady],
+  );
+
   // O splash espera por isto. Ver `main.tsx`.
   useEffect(() => {
     if (bootReady) window.dispatchEvent(new Event(SPLASH_DONE_EVENT));
@@ -924,32 +952,36 @@ export default function App() {
 
   const refreshSessions = useCallback(async () => {
     const all = await listSessions().catch(() => null);
-    if (!all) return;
-    setBootReady(all.ready);
-    // Lista vazia do meio do boot não é lista vazia: pisar no estado com ela
-    // apagaria da tela as sessões que estão voltando.
-    if (all.ready) setSessions(all.value);
-  }, []);
+    const loaded = acceptLoaded(all);
+    if (loaded) setSessions(loaded);
+  }, [acceptLoaded]);
 
   // O core avisa quando a thread de boot termina. Só então o que veio vazio
   // vira estado — antes disso é transitório.
   useEffect(() => {
     if (bootReady) return;
     const unlisten = onAppReady(() => {
-      setBootReady(true);
+      markReady();
       void refreshSessions();
       void layoutState()
         .then((next) => {
-          if (!next.ready) return;
-          setLayout(next.value);
-          promptNewSessionIfEmpty(true, next.value.workspaces.length);
+          const loaded = acceptLoaded(next);
+          if (!loaded) return;
+          setLayout(loaded);
+          promptNewSessionIfEmpty(true, loaded.workspaces.length);
         })
         .catch(() => {});
     });
     return () => {
       void unlisten.then((off) => off());
     };
-  }, [bootReady, refreshSessions, promptNewSessionIfEmpty]);
+  }, [
+    bootReady,
+    markReady,
+    acceptLoaded,
+    refreshSessions,
+    promptNewSessionIfEmpty,
+  ]);
 
   const sessionById = useMemo(
     () => new Map(sessions.map((s) => [s.id, s])),
@@ -2630,12 +2662,17 @@ export default function App() {
       if (cancelled) return;
       const prefs = snapshot?.prefs ?? {};
       const pref = (key: string) => prefs[key] ?? null;
-      const existing = snapshot?.sessions ?? [];
-      const currentLayout = snapshot?.layout ?? EMPTY_LAYOUT;
-      // `ready: false` significa que a thread de boot do core ainda não
-      // terminou: as listas vêm vazias por isso, não por não haver nada. Quem
-      // avisa é `app://ready`, e o efeito abaixo reconsulta.
-      setBootReady(snapshot?.ready ?? false);
+      // As prefs saem de um SELECT direto e não dependem da thread de boot:
+      // valem mesmo com `ready: false`. As listas, não — elas passam pela
+      // porta, que também é quem decide o `ready` (ver `mergeLoaded`): esta
+      // resposta pode chegar depois do `app://ready`, dizendo `false` sobre um
+      // boot que já terminou.
+      const loaded = acceptLoaded(
+        snapshot && {
+          ready: snapshot.ready,
+          value: { sessions: snapshot.sessions, layout: snapshot.layout },
+        },
+      );
       const togglePrefRaw = pref(TOGGLE_PREF_KEY);
       const detailsRaw = pref(DETAILS_PREF_KEY);
       const overridesRaw = pref(DETAILS_OVERRIDES_KEY);
@@ -2653,8 +2690,10 @@ export default function App() {
       const reviewAgentRaw = pref(REVIEW_AGENT_KEY);
       const promptModeRaw = pref(PROMPT_MODE_PREF_KEY);
       setPromptModePref(promptModeRaw === "on");
-      setSessions(existing);
-      setLayout(currentLayout);
+      if (loaded) {
+        setSessions(loaded.sessions);
+        setLayout(loaded.layout);
+      }
       if (togglePrefRaw === "rail" || togglePrefRaw === "hidden") {
         setTogglePref(togglePrefRaw);
       }
@@ -2689,16 +2728,19 @@ export default function App() {
       }
       const fontSize = Number(fontRaw);
       if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
+      // Só o layout que valeu como estado decide o modal. Resposta atrasada não
+      // decide nada: quem decidiu foi o handler do `app://ready`, com o layout
+      // que ele mesmo reconsultou.
       promptNewSessionIfEmpty(
-        snapshot?.ready ?? false,
-        currentLayout.workspaces.length,
+        loaded !== null,
+        loaded?.layout.workspaces.length ?? 0,
       );
     })();
     return () => {
       cancelled = true;
       unlisten?.();
     };
-  }, [refreshSessions, promptNewSessionIfEmpty]);
+  }, [acceptLoaded, refreshSessions, promptNewSessionIfEmpty]);
 
   // Texto que a linha do TYBA recebeu de fora — paste, histórico, snippet.
   // Declarado aqui, e não junto do resto da linha lá embaixo, porque o
