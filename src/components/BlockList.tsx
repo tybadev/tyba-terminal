@@ -601,7 +601,20 @@ export function BlockList({
     count: blocks.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: estimate,
-    overscan: 6,
+    // 6 cartões de folga custam caro AQUI e não em qualquer lista: um cartão de
+    // 200 linhas coloridas passa de 3 mil nós de DOM, então a folga sozinha
+    // mantinha dezenas de milhares de nós montados fora da tela.
+    overscan: 2,
+    // O cache de altura é keyado por ESTE valor. Sem ele o padrão é o índice —
+    // e `mergeBlockHistory` faz prepend do histórico do SQLite, o que desloca
+    // todos os índices de uma vez e faz cada altura medida passar a pertencer a
+    // outro bloco. É o embaralhar de cartões ao abrir a sessão.
+    getItemKey: (index) => blocks[index]?.id ?? index,
+    // O adapter do React chama `flushSync` a cada mudança de range, ou seja
+    // DENTRO do handler de rolagem. Com cartões altos o range muda ao cruzar
+    // cada bloco, e cada uma dessas virava um render + commit síncrono e
+    // bloqueante da lista inteira, no meio do gesto.
+    useFlushSync: false,
   });
 
   // Métrica nova = TODO cartão muda de altura, e o virtualizador precisa saber.
@@ -682,9 +695,36 @@ export function BlockList({
   }, [virtualizer]);
 
   const last = blocks.length - 1;
+
+  // Rolagem movida na mão, e não pela nativa.
+  //
+  // A nativa não chegava aqui com o ponteiro sobre os cartões, só sobre a
+  // barra: esta lista é uma camada sobreposta ao terminal, e o WebKit prende o
+  // gesto ao scroller que escolheu no primeiro evento — preso no de trás, o de
+  // cima não recebe mais nada.
+  //
+  // > [!warning] Listener NATIVO com `passive: false`, e não o `onWheel` do
+  // > React. Este efeito inteiro existe por causa dessa diferença.
+  // >
+  // > O React registra `wheel` no container raiz sempre como PASSIVO (ele trata
+  // > `wheel`, `touchstart` e `touchmove` como caso especial). Num listener
+  // > passivo o `preventDefault` é inerte: o navegador avisa no console e rola
+  // > assim mesmo. Como o handler já tinha somado `deltaY` no `scrollTop` na
+  // > mão, a rolagem nativa vinha POR CIMA e o gesto andava o DOBRO — que é a
+  // > sensação de "pula e escapa" no trackpad.
   useEffect(() => {
-    if (last >= 0) virtualizer.scrollToIndex(last, { align: "end" });
-  }, [last, virtualizer]);
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      const before = el.scrollTop;
+      el.scrollTop = before + event.deltaY;
+      // No topo e no fim o gesto passa adiante, senão a lista viraria um
+      // buraco onde nada mais rola.
+      if (el.scrollTop !== before) event.preventDefault();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   // Bloco novo entra, a lista rola até ele e itens montam no caminho — o mesmo
   // caso do parágrafo acima, e o mais comum de todos: é o que acontece a cada
@@ -715,6 +755,20 @@ export function BlockList({
     // itens a partir do topo, mas a lista é ancorada embaixo (`justify-end` com
     // `min-h-full`), então as posições dele não batem com a rolagem — é o mesmo
     // descolamento que o header preso já contorna logo abaixo.
+    //
+    // > [!warning] Um `scrollToIndex(last)` já morou três linhas acima daqui, e
+    // > era ele que travava a rolagem. Não o traga de volta.
+    // >
+    // > `scrollToIndex` não escreve `scrollTop` e pronto: ele arma um laço de
+    // > `requestAnimationFrame` (`scheduleScrollReconcile`, no virtual-core)
+    // > que recalcula o alvo A CADA FRAME e reescreve a rolagem até convergir
+    // > ou até 5 segundos. Com o descolamento do parágrafo acima, o alvo nunca
+    // > bate — então o laço ia até o teto, a cada bloco novo, desfazendo no
+    // > frame seguinte todo gesto de quem tentasse subir para ler.
+    // >
+    // > Ele também não tinha a guarda de `atBottomRef` que este efeito tem, o
+    // > que fazia bloco novo puxar a lista para o fim mesmo com o dono lendo
+    // > algo antigo lá em cima.
     //
     // Em rAF porque o efeito roda antes de o WebKit refazer o layout com a
     // altura nova: lido agora, `scrollHeight` ainda é o de antes da mudança.
@@ -796,21 +850,6 @@ export function BlockList({
     >
       <div
         ref={scrollRef}
-        // Rolagem movida na mão, e não pela nativa.
-        //
-        // A nativa não chegava aqui com o ponteiro sobre os cartões, só sobre
-        // a barra: esta lista é uma camada sobreposta ao terminal, e o WebKit
-        // prende o gesto ao scroller que escolheu no primeiro evento — preso
-        // no de trás, o de cima não recebe mais nada.
-        onWheel={(event) => {
-          const el = scrollRef.current;
-          if (!el) return;
-          const before = el.scrollTop;
-          el.scrollTop = before + event.deltaY;
-          // No topo e no fim o gesto passa adiante, senão a lista viraria um
-          // buraco onde nada mais rola.
-          if (el.scrollTop !== before) event.preventDefault();
-        }}
         onMouseDown={onActivate}
         // Só o fundo: clique que veio de um cartão para aqui por bubbling já
         // decidiu o que fazer com a seleção.
