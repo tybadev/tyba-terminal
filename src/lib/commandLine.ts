@@ -58,6 +58,20 @@ export function lineState(
   return "waiting";
 }
 
+/**
+ * A caixa de digitar existe no DOM neste estado?
+ *
+ * > [!warning] Só `app` a troca pela faixa de uma linha. `waiting`, `running`,
+ * > `continuation` e `off` mantêm a MESMA textarea montada — desabilitada, com
+ * > o rascunho dentro. Quem confundir "não é minha" com "não está na tela"
+ * > mexe numa caixa que o usuário está olhando: zerar a altura medida ali
+ * > esconde o texto que ele escreveu, e a altura não volta sozinha porque
+ * > quem a escreve é a medição do conteúdo, não o CSS.
+ */
+export function boxIsMounted(state: LineState): boolean {
+  return state !== "app";
+}
+
 export function keyboardOwner({
   promptMode,
   kind,
