@@ -97,12 +97,9 @@ type ActionId = "command" | "output" | "markdown";
 const BlockActions = memo(function BlockActions({
   block,
   onInject,
-  always,
 }: {
   block: Block;
   onInject?: (text: string) => void;
-  /** Sem hover para revelar: é o caso do header preso, que não recebe hover. */
-  always?: boolean;
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState<ActionId | null>(null);
@@ -168,11 +165,17 @@ const BlockActions = memo(function BlockActions({
 
   return (
     <div
-      className={`pointer-events-auto flex shrink-0 items-center gap-0.5 transition-opacity ${
-        always
-          ? "opacity-100"
-          : "opacity-0 focus-within:opacity-100 group-hover:opacity-100"
-      }`}
+      // Sempre presentes, e discretos — não escondidos atrás do hover.
+      //
+      // Antes o cartão normal nascia em `opacity-0` e só o header PRESO ficava
+      // opaco, porque ele é `pointer-events-none` e nunca recebe hover. O
+      // resultado é que o mesmo bloco mostrava quatro ícones no topo da lista e
+      // nenhum logo abaixo: a barra de ações parecia ir e vir sem regra.
+      //
+      // Visível de saída também responde à pergunta "dá para copiar isso?" sem
+      // exigir que se descubra passando o mouse. A 40% ela informa sem competir
+      // com o comando, que é o que a linha tem de mais importante.
+      className="pointer-events-auto flex shrink-0 items-center gap-0.5 opacity-40 transition-opacity focus-within:opacity-100 group-hover:opacity-100"
     >
       {items
         .filter((item) => item.show)
@@ -257,7 +260,7 @@ const BlockHeader = memo(function BlockHeader({
           {took}
         </span>
       )}
-      <BlockActions block={block} onInject={onInject} always={pinned} />
+      <BlockActions block={block} onInject={onInject} />
     </div>
   );
 });
