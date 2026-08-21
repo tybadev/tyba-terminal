@@ -768,13 +768,6 @@ impl PtyPool {
         Some(enabled)
     }
 
-    pub fn scrollback_text(&self, id: PtyId) -> Result<String, PtyError> {
-        let ptys = self.ptys.lock();
-        let handle = ptys.get(&id).ok_or(PtyError::NotFound(id))?;
-        let text = handle.screen.lock().parser.screen().contents();
-        Ok(text)
-    }
-
     pub fn kill(&self, id: PtyId) -> Result<(), PtyError> {
         let handle = {
             let mut ptys = self.ptys.lock();

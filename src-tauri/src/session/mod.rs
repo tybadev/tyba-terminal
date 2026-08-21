@@ -530,15 +530,6 @@ impl SessionManager {
         let _ = self.store.remove_session(id);
     }
 
-    pub fn flush_scrollback(&self, pty_pool: &SharedPtyPool) {
-        let ids: Vec<SessionId> = self.sessions.read().keys().copied().collect();
-        for id in ids {
-            if let Ok(text) = pty_pool.scrollback_text(id) {
-                let _ = self.store.save_scrollback(id, &text);
-            }
-        }
-    }
-
     /// Traz de volta as sessões persistidas, todas mortas: o PTY não sobrevive ao
     /// processo. Antes as linhas de shell eram **apagadas** aqui — e com elas o
     /// cwd, que é justamente o que permite reabrir a sessão no mesmo lugar. Quem
