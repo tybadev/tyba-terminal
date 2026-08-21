@@ -9,11 +9,19 @@
 //!   hard-coded, nunca entra em allowlist
 //!
 //! Push para main/master é RECUSADO pelo core antes de virar pedido.
-//! Análise estática de string tem limites e ninguém os cobre hoje: `git push`
-//! sem refspec com main em checkout passa, porque a branch corrente não chega
-//! até aqui. Enquanto não chegar, a promessa deste módulo é sobre o que está
-//! ESCRITO no comando — dizer mais do que isso seria dar por coberto um buraco
-//! que continua aberto.
+//! Análise estática de string tem limites e ninguém os cobre hoje. Os dois
+//! conhecidos, escritos para não serem redescobertos como surpresa:
+//!
+//! - `git push` sem refspec com main em checkout passa, porque a branch
+//!   corrente não chega até aqui.
+//! - O nome do binário pode estar em VALOR de flag do runner, separado do
+//!   subcomando: `docker run --entrypoint git img push origin main` não é
+//!   recusado. Fechar isso pede decodificar a CLI de cada runner — a lista que
+//!   [`git_positions`] existe para não ter.
+//!
+//! Enquanto isso, a promessa deste módulo é sobre o que está ESCRITO no
+//! comando — dizer mais do que isso seria dar por coberto um buraco que
+//! continua aberto.
 
 pub mod tool_action;
 pub mod tool_risk;
@@ -97,29 +105,21 @@ fn word_tokens(command: &str) -> Vec<&str> {
 /// — casar o separador por token deixaria a forma colada passar batido.
 const COMMAND_SEPARATORS: &[char] = &[';', '&', '|', '\n', '\r', '(', ')', '{', '}', '`'];
 
-/// Palavras que rodam OUTRO comando sem mudar o que ele é.
-const COMMAND_PREFIXES: &[&str] = &[
-    "env", "command", "exec", "nohup", "time", "sudo", "doas", "nice", "stdbuf", "setsid", "xargs",
-];
-
-/// Shells que recebem o comando como argumento (`bash -c "git push …"`).
+/// Comandos cujos argumentos são TEXTO, nunca comando.
 ///
-/// `cmd`, `powershell` e `pwsh` entram pelo mesmo motivo que os POSIX:
-/// `cmd /c git push origin main` é um push, e sem eles na lista o `git` do meio
-/// contava como argumento de um binário desconhecido — o mesmo buraco de
-/// Windows que o resto deste módulo fechou.
-const SHELL_BINARIES: &[&str] = &[
-    "sh",
-    "bash",
-    "zsh",
-    "dash",
-    "ksh",
-    "fish",
-    "ash",
-    "cmd",
-    "powershell",
-    "pwsh",
-];
+/// É a única exceção à varredura de [`git_positions`], e é a única direção
+/// deste módulo que falha ABERTO: o que entra aqui deixa de ser varrido. Por
+/// isso a lista é curta e só tem emissor e buscador de texto — programa que não
+/// tem, em nenhuma flag documentada, forma de executar um argumento. `sed` e
+/// `awk` ficam de fora de propósito: `sed 's/x/y/e'` e `awk 'BEGIN{system(…)}'`
+/// executam.
+///
+/// A lista existe para um caso conhecido e só para ele: `echo git push main` e
+/// `grep -r 'git push origin main' docs` não podem virar recusa, porque um
+/// `echo` recusado não tem contorno. Deixar um programa de texto DE FORA custa
+/// um falso positivo; colocar um que executa custa o push publicado — por isso
+/// crescer esta lista é a mudança perigosa deste arquivo, não encurtá-la.
+const TEXT_ONLY_COMMANDS: &[&str] = &["echo", "printf", "grep", "egrep", "fgrep", "rg", "ag"];
 
 /// Flags globais do `git` que consomem o argumento SEGUINTE.
 ///
@@ -202,18 +202,6 @@ fn is_git_program(token: &str) -> bool {
     program_is(token, |name| name.eq_ignore_ascii_case("git"))
 }
 
-/// Token que ainda parece PEDAÇO de caminho, por ter separador de diretório.
-///
-/// Existe para um caso só, e do Windows: caminho com espaço e sem aspas
-/// (`C:\Program Files\Git\bin\git.exe push origin main`) chega aqui partido em
-/// dois tokens pelo `split_whitespace`, e o primeiro (`C:\Program`) não nomeia
-/// binário nenhum. A varredura de [`git_at`] continua enquanto o token seguinte
-/// ainda tiver separador e para no primeiro que não tem — é isso que impede
-/// `./tool git push origin main`, onde o `git` é argumento, de virar recusa.
-fn looks_like_path(token: &str) -> bool {
-    token.contains(['/', '\\'])
-}
-
 /// `FOO=bar` na frente do comando é ambiente, não comando.
 fn is_assignment(token: &str) -> bool {
     !token.starts_with('-')
@@ -228,45 +216,64 @@ fn is_assignment_token(token: &str) -> bool {
     is_assignment(token) || (token.contains(['"', '\'']) && is_assignment(&unquote(token)))
 }
 
-/// Onde está, neste segmento, o `git` que de fato vai rodar.
-fn git_at(tokens: &[&str]) -> Option<usize> {
+/// Primeiro token que não é atribuição de ambiente — onde o comando começa.
+fn command_start(tokens: &[&str]) -> usize {
     let mut at = 0;
     while tokens.get(at).is_some_and(|t| is_assignment_token(t)) {
         at += 1;
     }
-    let first = *tokens.get(at)?;
-    if is_git_program(first) {
-        return Some(at);
-    }
-    if program_is(first, |name| {
-        COMMAND_PREFIXES
-            .iter()
-            .any(|p| p.eq_ignore_ascii_case(name))
-            || SHELL_BINARIES.iter().any(|s| s.eq_ignore_ascii_case(name))
-    }) {
-        // `sudo git push`, `env -i git push`, `bash -c "git push …"`: o wrapper
-        // não muda o que o comando é. Daqui pra frente o primeiro `git` solto é
-        // ele — varrer, em vez de decodificar as flags de cada wrapper, é de
-        // propósito: `sudo -u app git push` tem valor de flag no meio, e uma
-        // tabela de flags por wrapper seria uma segunda lista para manter certa.
-        return tokens[at + 1..]
-            .iter()
-            .position(|t| is_git_program(t))
-            .map(|pos| at + 1 + pos);
-    }
-    if looks_like_path(first) {
-        // Caminho com espaço e sem aspas: o programa continua nos tokens
-        // seguintes enquanto eles ainda tiverem separador (ver
-        // [`looks_like_path`]).
-        return tokens[at + 1..]
-            .iter()
-            .take_while(|t| looks_like_path(t))
-            .position(|t| is_git_program(t))
-            .map(|pos| at + 1 + pos);
-    }
-    // Qualquer outro binário: o `git` que aparecer daqui pra frente é argumento
-    // dele, não comando. É o que impede `echo git push main` de virar recusa.
-    None
+    at
+}
+
+/// TODA posição em que um `git` pode estar rodando neste segmento.
+///
+/// A largura desta varredura é a decisão de segurança do módulo, e ela vem de
+/// duas perguntas que parecem uma só e não são: "quem é o programa desta
+/// linha?" e "esta linha publica na main?". A primeira é um problema de
+/// parsing de shell que ninguém resolve com análise estática; a segunda só
+/// precisa de uma resposta conservadora.
+///
+/// A versão anterior respondia a segunda pergunta com a primeira: aceitava
+/// `git` na primeira posição, atrás de uma lista de wrappers (`sudo`, `bash
+/// -c`, `cmd /c`) ou atrás de um caminho, e devolvia "não é comando" para
+/// qualquer outro. `ssh host git push origin main`, `docker exec c git push
+/// origin main` e `kubectl exec pod -- git push origin main` caíam no "não" —
+/// não eram recusados e ainda saíam AMARELOS, que é o nível que entra na
+/// allowlist de "sempre permitir" da sessão. E o app tem broadcast por SSH: o
+/// primeiro deles é o caminho normal do produto, não um contorno exótico.
+///
+/// Completar a lista de runners não é opção — `ssh`, `docker`, `podman`,
+/// `kubectl`, `nix-shell`, `flatpak`, `toolbox`, `distrobox`, `lxc`, o próximo
+/// —, porque uma lista de quem executa comando falha ABERTO no nome que ela
+/// ainda não tem, em silêncio, e foi exatamente assim que este arquivo abriu a
+/// porta duas vezes. Aqui a regra é a inversa: qualquer token `git` isolado
+/// conta, venha atrás de quem vier. Binário novo no mundo cai na regra sem
+/// ninguém precisar saber o nome dele.
+///
+/// Varre TODAS as posições, não a primeira: em `nix-shell -p git --run git
+/// push origin main` o primeiro `git` é valor de flag do wrapper, e parar nele
+/// faria o subcomando cair em `--run`.
+///
+/// O preço são falsos positivos medidos: `git grep 'git push origin main'` e
+/// `./tool git push origin main` passam a ser recusados (o segundo era
+/// permitido de propósito antes — o `git` ali pode mesmo ser argumento de um
+/// binário local). É o lado certo de errar, o mesmo já documentado em
+/// [`unquote`]: recusa a mais custa um "não" que o usuário reescreve; recusa a
+/// menos publica num repositório público, e isso não volta atrás. A única
+/// exceção é [`TEXT_ONLY_COMMANDS`], para o caso em que a recusa não teria
+/// contorno nenhum (`echo git push main`).
+fn git_positions<'a>(tokens: &'a [&'a str]) -> impl Iterator<Item = usize> + 'a {
+    let scan = !tokens.get(command_start(tokens)).is_some_and(|token| {
+        program_is(token, |name| {
+            TEXT_ONLY_COMMANDS
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(name))
+        })
+    });
+    tokens
+        .iter()
+        .enumerate()
+        .filter_map(move |(at, token)| (scan && is_git_program(token)).then_some(at))
 }
 
 /// Uma invocação de `git` encontrada num segmento.
@@ -299,8 +306,9 @@ fn quoted_value_end(tokens: &[&str], at: usize) -> usize {
         .map_or(at, |pos| at + 1 + pos)
 }
 
-fn git_call<'a>(tokens: &'a [&'a str]) -> Option<GitCall<'a>> {
-    let mut at = git_at(tokens)? + 1;
+/// A invocação de `git` que começa na posição `git_at`.
+fn git_call_at<'a>(tokens: &'a [&'a str], git_at: usize) -> Option<GitCall<'a>> {
+    let mut at = git_at + 1;
     while let Some(&token) = tokens.get(at) {
         let flag = unquote(token);
         if !flag.starts_with('-') {
@@ -323,13 +331,20 @@ fn git_call<'a>(tokens: &'a [&'a str]) -> Option<GitCall<'a>> {
 /// O corte em separadores é por CARACTERE e ignora aspas de propósito: `echo
 /// "; git push origin main"` vira dois segmentos e é recusado. Falso positivo
 /// conhecido e aceito — ver [`unquote`].
+///
+/// Basta UMA invocação casar. Um segmento pode ter várias (`git grep … && git
+/// push …` já vem partido pelo separador, mas `nix-shell -p git --run git
+/// push` não), e exigir que fosse a primeira era como o push se escondia.
 fn any_git_call(command: &str, predicate: impl Fn(&GitCall) -> bool) -> bool {
-    command
-        .split(|c| COMMAND_SEPARATORS.contains(&c))
-        .any(|segment| {
-            let tokens = word_tokens(segment);
-            git_call(&tokens).is_some_and(|call| predicate(&call))
-        })
+    for segment in command.split(|c| COMMAND_SEPARATORS.contains(&c)) {
+        let tokens = word_tokens(segment);
+        for at in git_positions(&tokens) {
+            if git_call_at(&tokens, at).is_some_and(|call| predicate(&call)) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// O destino de um refspec é o que vem depois do último `:` — `HEAD:main`,
@@ -845,6 +860,248 @@ mod tests {
             classify_risk(r"C:\tools\git\bin\git.exe push"),
             RiskLevel::Red
         );
+    }
+
+    /// Runner remoto ou em container é o MESMO push, só que numa máquina que o
+    /// usuário não está olhando — e o app tem broadcast por SSH, então `ssh
+    /// host git push origin main` não é hipótese de laboratório.
+    ///
+    /// Os três primeiros foram medidos devolvendo `refused=false risk=Yellow`
+    /// depois do conserto do caminho do Windows: amarelo é o nível que entra na
+    /// allowlist de "sempre permitir" da sessão, então era push liberado em
+    /// bloco.
+    #[test]
+    fn core_recusa_push_atras_de_runner_remoto_ou_container() {
+        assert!(is_refused_by_core("ssh host git push origin main"));
+        assert!(is_refused_by_core("docker exec c git push origin main"));
+        assert!(is_refused_by_core(
+            "kubectl exec pod -- git push origin main"
+        ));
+        assert_eq!(
+            classify_risk("ssh host git push origin main"),
+            RiskLevel::Red
+        );
+        assert_eq!(
+            classify_risk("docker exec c git push origin main"),
+            RiskLevel::Red
+        );
+        assert_eq!(
+            classify_risk("kubectl exec pod -- git push origin main"),
+            RiskLevel::Red
+        );
+    }
+
+    /// O conserto não pode ser uma lista de runners conhecidos.
+    ///
+    /// O buraco não é `ssh`, nem `docker`, nem `kubectl`: é "binário que este
+    /// arquivo ainda não ouviu falar". Uma lista de runners fecha os três nomes
+    /// e continua aberta para o quarto — e o quarto chega sem avisar. Este
+    /// teste falha em qualquer implementação baseada em enumerar quem roda
+    /// comando, e é de propósito.
+    #[test]
+    fn runner_que_ninguem_listou_nao_e_porta_de_saida() {
+        let cmd = "runner-que-ainda-nao-existe --flag git push origin main";
+        assert!(is_refused_by_core(cmd));
+        assert_eq!(classify_risk(cmd), RiskLevel::Red);
+    }
+
+    /// O primeiro `git` da linha pode não ser o que roda: em `nix-shell -p git
+    /// --run git push`, o primeiro é VALOR de flag do wrapper. Parar no
+    /// primeiro faz o subcomando cair em `--run` e o push some.
+    #[test]
+    fn primeiro_git_da_linha_pode_nao_ser_o_que_roda() {
+        assert!(is_refused_by_core(
+            "nix-shell -p git --run git push origin main"
+        ));
+        assert!(is_refused_by_core(
+            "apt install git && git push origin main"
+        ));
+    }
+
+    /// Formas de chamar quem roda o comando.
+    ///
+    /// Coluna estreitada pelo SEGUNDO conserto deste arquivo: ao fechar o
+    /// caminho do Windows, a varredura passou a exigir que o `git` estivesse na
+    /// primeira posição, atrás de um prefixo conhecido ou atrás de um caminho —
+    /// e todo runner remoto/em container caiu fora.
+    const LAUNCHERS: &[&str] = &[
+        "",
+        "sudo ",
+        "env -i ",
+        "nohup ",
+        "time ",
+        "xargs ",
+        "bash -c ",
+        "sh -c ",
+        "cmd /c ",
+        "ssh host ",
+        "ssh -t user@host ",
+        "docker exec c ",
+        "docker run --rm img ",
+        "podman exec c ",
+        "kubectl exec pod -- ",
+        "nix-shell -p git --run ",
+        "timeout 60 ",
+        "toolbox run ",
+        "distrobox enter -- ",
+        "runner-que-ainda-nao-existe --flag ",
+    ];
+
+    /// Formas de nomear o binário do git.
+    const GIT_PROGRAMS: &[&str] = &[
+        "git",
+        "/usr/bin/git",
+        "git.exe",
+        r"C:\Program Files\Git\bin\git.exe",
+        r"gi\t",
+        "\"git\"",
+    ];
+
+    /// Flags globais entre o `git` e o subcomando.
+    ///
+    /// Coluna estreitada pelo PRIMEIRO conserto deste arquivo: `git push` era
+    /// recusado e `git -C /repo push` passava, porque o casamento olhava só o
+    /// token logo depois do `git`.
+    const GLOBAL_FLAGS: &[&str] = &[
+        "",
+        "-C /repo ",
+        "-c push.default=current ",
+        "--git-dir=/repo/.git ",
+        "--work-tree /repo ",
+        "--no-pager ",
+        "-C /repo -c user.name=x --no-pager ",
+    ];
+
+    const PUSH_SPELLINGS: &[&str] = &["push", "\"push\""];
+
+    /// Formas de escrever "main"/"master" como destino.
+    const TRUNK_TARGETS: &[&str] = &[
+        "origin main",
+        "origin master",
+        "origin HEAD:main",
+        "origin +main",
+        "origin HEAD:refs/heads/main",
+        "origin :master",
+        "origin \"main\"",
+        r"origin ma\in",
+        "--all origin",
+        "--mirror origin",
+    ];
+
+    /// Destino que NÃO é trunk. Sensor de discriminação: sem esta coluna,
+    /// "recusa tudo" passaria na matriz positiva.
+    const NON_TRUNK_TARGETS: &[&str] = &[
+        "origin feat/x",
+        "origin fix/main-menu",
+        "origin main:feat/x",
+        "origin HEAD:refs/heads/release",
+    ];
+
+    /// Comando de texto que MENCIONA um push: recusar aqui bloqueia um `echo`
+    /// sem contorno possível.
+    const TEXT_ONLY_MENTIONS: &[&str] = &[
+        "echo git push main",
+        "echo git push origin main",
+        "printf 'git push origin main'",
+        "grep -r 'git push origin main' docs",
+        "grep push .git/config",
+        "egrep 'git push origin main' log",
+        "rg 'git push origin main' --files-with-matches",
+        "/usr/bin/grep -rn 'git push origin main' .",
+        "cat CONTRIBUTING.md",
+    ];
+
+    fn push_commands(targets: &[&str]) -> Vec<String> {
+        let mut out = Vec::new();
+        for launcher in LAUNCHERS {
+            for program in GIT_PROGRAMS {
+                for flags in GLOBAL_FLAGS {
+                    for push in PUSH_SPELLINGS {
+                        for target in targets {
+                            out.push(format!("{launcher}{program} {flags}{push} {target}"));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// A tabela que os dois consertos anteriores não tinham.
+    ///
+    /// Cada coluna é uma forma de escrever a MESMA coisa — um push para a
+    /// trunk — e o produto cartesiano é o teste. Caso solto só pega a linha que
+    /// o autor lembrou de escrever; foi assim que o primeiro conserto estreitou
+    /// [`GLOBAL_FLAGS`] com a suíte verde, e o segundo estreitou [`LAUNCHERS`]
+    /// com a suíte verde de novo. Cruzar as colunas faz cada estreitamento
+    /// derrubar centenas de casos de uma vez, em vez de nenhum.
+    ///
+    /// **Regra para o próximo conserto deste arquivo**: forma nova de invocar
+    /// entra como LINHA numa coluna daqui, não como `assert!` avulso no fim do
+    /// arquivo. Coluna nova (um jeito novo de escrever a mesma coisa) entra
+    /// como coluna.
+    #[test]
+    fn matriz_de_push_para_trunk_e_sempre_recusada_e_vermelha() {
+        for cmd in push_commands(TRUNK_TARGETS) {
+            assert!(
+                is_refused_by_core(&cmd),
+                "push para trunk não recusado pelo core: {cmd:?}"
+            );
+            assert_eq!(
+                classify_risk(&cmd),
+                RiskLevel::Red,
+                "push para trunk não é vermelho: {cmd:?}"
+            );
+        }
+    }
+
+    /// O outro lado da matriz: recusa cega também é bug. Push para branch de
+    /// feature é vermelho (aprovação humana), nunca recusa.
+    #[test]
+    fn matriz_de_push_fora_da_trunk_nunca_e_recusada() {
+        for cmd in push_commands(NON_TRUNK_TARGETS) {
+            assert!(
+                !is_refused_by_core(&cmd),
+                "recusa cega: push fora da trunk foi recusado: {cmd:?}"
+            );
+            assert_eq!(
+                classify_risk(&cmd),
+                RiskLevel::Red,
+                "todo push é vermelho, mesmo fora da trunk: {cmd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mencao_a_push_em_comando_de_texto_nao_e_recusada() {
+        for cmd in TEXT_ONLY_MENTIONS {
+            assert!(
+                !is_refused_by_core(cmd),
+                "texto que menciona push virou recusa: {cmd:?}"
+            );
+        }
+    }
+
+    /// Invariante entre as duas perguntas que este módulo responde.
+    ///
+    /// Recusa e classificação usam a mesma varredura, e podem divergir de novo
+    /// se alguém estreitar uma só. Divergência na direção perigosa é a mesma
+    /// linha sendo negada por um caminho e liberada em BLOCO pelo outro:
+    /// amarelo entra na allowlist de "sempre permitir" da sessão.
+    #[test]
+    fn recusado_pelo_core_nunca_e_allowlistavel() {
+        let mut corpus = push_commands(TRUNK_TARGETS);
+        corpus.extend(push_commands(NON_TRUNK_TARGETS));
+        corpus.extend(TEXT_ONLY_MENTIONS.iter().map(|c| (*c).to_string()));
+        for cmd in corpus {
+            if is_refused_by_core(&cmd) {
+                assert_eq!(
+                    classify_risk(&cmd),
+                    RiskLevel::Red,
+                    "recusado pelo core mas não vermelho: {cmd:?}"
+                );
+            }
+        }
     }
 
     #[test]
