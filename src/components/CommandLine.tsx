@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CaretRight, GitBranch } from "@phosphor-icons/react";
 
 import {
   submitShellLine,
@@ -33,8 +32,6 @@ const PLACEHOLDER_BY_STATE: Record<LineState, string> = {
 
 interface Props {
   sessionId: SessionId;
-  cwd: string | null;
-  branch: string | null;
   scope: { cwd: string | null; repoRoot: string | null };
   /** Muda quando a linha volta a ser do TYBA (fim de comando, saída do vim). */
   focusNonce: number;
@@ -52,12 +49,6 @@ interface Props {
   inject?: { text: string; nonce: number } | null;
 }
 
-function baseName(path: string | null): string {
-  if (!path) return "";
-  const trimmed = path.replace(/\/+$/, "");
-  return trimmed.slice(trimmed.lastIndexOf("/") + 1) || "/";
-}
-
 /**
  * A linha de comando do shell.
  *
@@ -68,8 +59,6 @@ function baseName(path: string | null): string {
  */
 export function CommandLine({
   sessionId,
-  cwd,
-  branch,
   scope,
   focusNonce,
   state,
@@ -342,8 +331,6 @@ export function CommandLine({
     }
   };
 
-  const dir = baseName(cwd);
-
   return (
     // A caixa é OUTRA peça, não o fim do output.
     //
@@ -363,9 +350,24 @@ export function CommandLine({
     //
     // Respiro igual em cima e embaixo: com `pt-1 pb-2` a caixa ficava encostada
     // na lista e solta do rodapé.
-    <div className="relative shrink-0 bg-tyba-sunken px-2 py-2">
+    // A separação da lista é um FILETE, não um degrau.
+    //
+    // A faixa continua na cor da área de terminal — sem isso ela mostraria o
+    // fundo do app, mais claro e com a aurora por cima, trocando uma emenda por
+    // outra. O que marca onde a leitura acaba e a escrita começa é uma linha de
+    // 1px, que acende de leve quando a linha é sua: é o segundo sinal de foco,
+    // junto com o chevron.
+    //
+    // `px-0` na faixa e `px-2.5` na linha: o chevron cai na mesma coluna do
+    // chevron de todo bloco, que é o alinhamento que faz as duas coisas lerem
+    // como a mesma família.
+    <div
+      className={`relative shrink-0 border-t bg-tyba-sunken px-2 py-1.5 transition-colors ${
+        focused ? "border-tyba-green/25" : "border-tyba-border"
+      }`}
+    >
       {showMenu && (
-        <div className="absolute bottom-full left-3 right-3 z-20 mb-1 max-h-56 overflow-y-auto rounded-[6px] border border-tyba-border bg-tyba-raised py-1 shadow-lg">
+        <div className="absolute bottom-full left-2.5 right-2.5 z-20 mb-1 max-h-56 overflow-y-auto rounded-[6px] border border-tyba-border bg-tyba-raised py-1 shadow-lg">
           {args.map((candidate) => (
             <button
               key={`arg:${candidate}`}
@@ -416,37 +418,36 @@ export function CommandLine({
       )}
 
       <div
-        // O que separa a caixa do painel é LUZ, não cinza — é a regra do
-        // BLACKOUT, onde as camadas quase não clareiam. Daí o verniz vertical
-        // (`--tyba-sheen`) e a aresta iluminada no topo (`--tyba-edge`), que são
-        // as peças que o design system criou para exatamente isto. Só subir o
-        // fundo para `raised` rendia pouca diferença sobre o sunken de vários
-        // temas, e a caixa continuava lendo como continuação do output.
+        // Não é uma caixa. É a próxima linha do terminal.
         //
-        // A aresta fica nos DOIS estados: no foco ela soma ao anel em vez de dar
-        // lugar a ele, senão a caixa muda de espessura ao receber o cursor.
-        className={`flex items-start gap-2 rounded-[8px] border px-2.5 py-1.5 transition-colors ${
-          focused ? "border-tyba-green/45" : "border-tyba-border-strong/70"
-        }`}
-        style={{
-          background: "var(--tyba-sheen, var(--tyba-raised))",
-          boxShadow: focused
-            ? "var(--tyba-edge), 0 0 0 1px color-mix(in srgb, var(--tyba-green) 25%, transparent)"
-            : "var(--tyba-edge), var(--tyba-shadow-sm)",
-        }}
+        // Antes era um campo elevado: fundo `raised` com verniz vertical
+        // (`--tyba-sheen`), aresta iluminada, cantos de 8px, sombra e um anel
+        // verde no foco. Cada uma dessas peças existe no design system para
+        // separar uma superfície da outra — e é justamente o que aqui não se
+        // quer. Sobre o preto absoluto da área de terminal, o verniz lê como
+        // plástico, e o conjunto lê como formulário colado no rodapé.
+        //
+        // A lista logo acima já fixou a gramática de "um comando": chevron
+        // verde à esquerda, o texto em mono, o cwd apagado à direita. Esta
+        // linha usa a MESMA, e a diferença entre ela e um bloco pronto passa a
+        // ser só o cursor piscando — que é a verdade: é o próximo bloco, ainda
+        // sendo escrito.
+        className="flex items-start gap-2.5 px-2.5"
       >
-        {/* O PS1 saiu da tela; o que ele dizia (onde estou, em que branch) não
-            pode sumir junto. */}
-        <div className="flex h-7 shrink-0 items-center gap-1.5 font-mono text-[12px] text-tyba-text-muted">
-          {dir && <span className="max-w-40 truncate">{dir}</span>}
-          {branch && (
-            <span className="flex items-center gap-0.5 truncate text-tyba-text-faint">
-              <GitBranch size={11} />
-              <span className="max-w-32 truncate">{branch}</span>
-            </span>
-          )}
-          <CaretRight size={12} weight="bold" className="text-tyba-green" />
-        </div>
+        {/* O chevron é a âncora e o único elemento colorido da linha.
+            Ele também é o indicador de foco: some o anel em volta da caixa, e
+            quem diz "o teclado é seu" é ele acendendo. Verde apagado quando a
+            linha não é sua, cheio e com brilho quando é — o mesmo verde que o
+            header de cada bloco usa para o comando que deu certo. */}
+        <span
+          aria-hidden
+          className={`shrink-0 select-none pt-1 font-mono text-[13px] leading-[20px] transition-all ${
+            focused ? "text-tyba-green" : "text-tyba-green/45"
+          }`}
+          style={focused ? { textShadow: "var(--tyba-glow-green)" } : undefined}
+        >
+          ❯
+        </span>
 
         <div className="relative min-w-0 flex-1">
           {ghost && (
@@ -482,6 +483,15 @@ export function CommandLine({
             className="max-h-[140px] min-h-[28px] w-full resize-none border-0 bg-transparent py-1 font-mono text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
           />
         </div>
+
+        {/* Sem cwd nem branch aqui.
+            O PS1 saiu da tela e o que ele dizia precisa continuar visível — mas
+            já está: a status bar encostada logo abaixo mostra os dois, a menos
+            de 20px daqui. Repetir "muriki-api ⑂ develop" duas vezes numa faixa
+            de 40px é a definição de ruído.
+            Volta a fazer sentido quando existir uma linha de comando POR
+            PAINEL: aí cada uma fala de um cwd diferente e a status bar, que é
+            uma só, não dá conta. Ver `command-line/rules` no cofre. */}
       </div>
     </div>
   );

@@ -4852,8 +4852,6 @@ export default function App() {
                   <CommandLine
                     key={`${activeSession.id}:line`}
                     sessionId={activeSession.id}
-                    cwd={activeCwdKey}
-                    branch={activeGitStatus?.branch ?? null}
                     scope={historyScope}
                     focusNonce={commandLineNonce}
                     state={commandLineState}
