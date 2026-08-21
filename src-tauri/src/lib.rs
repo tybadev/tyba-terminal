@@ -549,9 +549,11 @@ fn hosts_alias(store: &Arc<session::store::Store>, host_id: &str) -> Option<Stri
 /// morta, e o dono decide.
 ///
 /// O cwd de cada sessão passa por [`session::cwd::reopen_policy`] antes de
-/// qualquer syscall: pasta protegida pelo TCC não é conferida, e caminho em
-/// volume montado não é reaberto. O módulo explica por quê — em resumo, era o
-/// `stat` daqui que abria o diálogo de permissão do macOS e travava a abertura.
+/// qualquer syscall daqui: caminho em volume que pode não estar montado não é
+/// reaberto, e pasta protegida pelo TCC é reaberta sem o `is_dir()` desta
+/// função. O segundo caso **não** evita o diálogo de permissão do macOS — o
+/// `resolve_cwd` do spawn stata o mesmo caminho poucas linhas depois, e o shell
+/// ainda faz `chdir` para lá. O módulo explica o que cada variante compra.
 fn resume_startup(
     app: &AppHandle,
     store: &Arc<session::store::Store>,
@@ -616,8 +618,11 @@ fn resume_startup(
         let Some(cwd) = old.cwd.clone() else {
             continue;
         };
-        // O `stat` daqui era o congelamento da abertura. Leia `session::cwd`
-        // antes de "consertar" isto de volta para um `is_dir()` incondicional.
+        // Este `stat` era o congelamento da abertura enquanto o boot rodava na
+        // main thread; hoje o que ele ainda pode fazer é pendurar a thread de
+        // boot num volume de rede morto, sem diálogo e sem timeout. Leia
+        // `session::cwd` antes de "consertar" isto de volta para um `is_dir()`
+        // incondicional.
         match session::cwd::reopen_policy(&cwd, home.as_deref()) {
             session::cwd::ReopenPolicy::Checked if !cwd.is_dir() => continue,
             session::cwd::ReopenPolicy::Skip => {
@@ -657,8 +662,13 @@ fn resume_startup(
     remap
 }
 
+/// `async` de propósito: comando síncrono roda na **main thread**, e este aqui
+/// espera o boot terminar. O splash do front desiste em 4 s, então a janela fica
+/// clicável enquanto a thread de boot ainda pode estar carregando — um ⌘T nessa
+/// fresta congelaria a main thread, e com ela o webview, por até [`BOOT_WAIT`].
+/// Nada abaixo precisa da main thread: menu e janela ficam no `setup()`.
 #[tauri::command]
-fn create_session(
+async fn create_session(
     app: AppHandle,
     state: State<'_, AppState>,
     opts: CreateSessionOpts,
@@ -666,7 +676,13 @@ fn create_session(
     // Leitura devolve "carregando"; escrita espera. Criar sessão antes do boot
     // terminar seria criá-la para o `load_remapped` da thread de boot passar por
     // cima logo em seguida — o pane nasceria apontando para o nada.
-    state.boot.wait_ready(BOOT_WAIT);
+    //
+    // A espera é condvar bloqueante: num worker do runtime ela dormiria até
+    // `BOOT_WAIT` segurando os outros comandos assíncronos, daí o threadpool de
+    // blocking. O resultado é descartado pelo mesmo motivo que o teto existe —
+    // passado ele, agimos com estado incompleto em vez de pendurar o clique.
+    let boot = Arc::clone(&state.boot);
+    let _ = tauri::async_runtime::spawn_blocking(move || boot.wait_ready(BOOT_WAIT)).await;
 
     let handle = app.clone();
     let session = match &opts.kind {
@@ -2858,7 +2874,10 @@ struct SlotSpawn<'a> {
     rows: u16,
 }
 
-fn spawn_slot(
+/// `async` porque chama [`create_session`], que espera o boot — e porque cria
+/// worktree pelo caminho isolado, o que é `git` em subprocesso. Nenhuma das duas
+/// coisas pode acontecer na main thread.
+async fn spawn_slot(
     app: &AppHandle,
     state: &State<'_, AppState>,
     ctx: &SlotSpawn<'_>,
@@ -2891,7 +2910,8 @@ fn spawn_slot(
                 shell: None,
                 initial_prompt: slot.initial_prompt.clone(),
             },
-        );
+        )
+        .await;
     }
 
     let branch = launch_config::slot_branch(&config.slug, &slot.name);
@@ -2937,10 +2957,14 @@ fn spawn_slot(
             initial_prompt: slot.initial_prompt.clone(),
         },
     )
+    .await
 }
 
+/// `async` pelo mesmo motivo de [`create_session`]: cada slot passa por ele, e
+/// um comando síncrono seguraria a main thread durante toda a espera do boot e
+/// toda a criação de worktree.
 #[tauri::command]
-fn apply_launch_config(
+async fn apply_launch_config(
     app: AppHandle,
     state: State<'_, AppState>,
     id: launch_config::LaunchConfigId,
@@ -2992,7 +3016,7 @@ fn apply_launch_config(
         rows,
     };
     for slot in &config.slots {
-        match spawn_slot(&app, &state, &ctx, slot) {
+        match spawn_slot(&app, &state, &ctx, slot).await {
             Ok(session) => {
                 if let Some(prompt) = &slot.initial_prompt {
                     prefills.push(PrefillPayload {
@@ -5128,6 +5152,27 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guarda de compilação, não teste: os dois comandos abaixo esperam o boot,
+    /// e comando síncrono roda na main thread. Devolvê-los para `fn` congela o
+    /// webview por até `BOOT_WAIT` em quem apertar ⌘T na fresta entre o splash
+    /// desistir (4 s) e o boot terminar — a regressão que este `impl Future`
+    /// impede de voltar em silêncio.
+    #[allow(dead_code)]
+    fn comandos_que_esperam_o_boot_seguem_assincronos(
+        app: AppHandle,
+        state: State<'_, AppState>,
+        opts: CreateSessionOpts,
+        id: launch_config::LaunchConfigId,
+    ) -> (
+        impl std::future::Future<Output = Result<Session, String>> + '_,
+        impl std::future::Future<Output = Result<AppliedLaunchConfig, String>> + '_,
+    ) {
+        (
+            create_session(app.clone(), state.clone(), opts),
+            apply_launch_config(app, state, id, None, 80, 24),
+        )
+    }
 
     #[test]
     fn build_info_carries_version_and_platform() {

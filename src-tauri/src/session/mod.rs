@@ -622,6 +622,14 @@ pub fn expand_home(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// O `is_dir()` daqui é o que faz uma pasta que sumiu virar `$HOME` em vez de
+/// erro de spawn — inclusive no reopen do arranque, onde é o único stat que
+/// sobra para a política [`cwd::ReopenPolicy::Unchecked`]. É também onde o
+/// diálogo do TCC realmente aparece quando o caminho está sob Desktop/Documents/
+/// Downloads: `cwd::reopen_policy` classifica sem tocar no disco, mas quem
+/// reabre passa por aqui. Tirar o stat não livra do diálogo — o `chdir` do
+/// shell entra na mesma pasta em seguida — e troca "tab no home" por "tab
+/// nenhuma".
 pub fn resolve_cwd(requested: Option<&Path>) -> PathBuf {
     let home = || {
         std::env::var("HOME")
