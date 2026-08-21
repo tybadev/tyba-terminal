@@ -146,7 +146,8 @@ import {
   dockerAvailable,
   dockerListContainers,
   dockerOpenDashboard,
-  getPref,
+  bootSnapshot,
+  onAppReady,
   focusPane,
   layoutState,
   leafSessions,
@@ -274,7 +275,7 @@ import {
   type AgentRunnerId,
 } from "./lib/agentSession";
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
-import { parseStartupMode } from "./lib/startup";
+import { parseStartupMode, SPLASH_DONE_EVENT } from "./lib/startup";
 import {
   compactPath,
   resolveWorkspaceCwd,
@@ -856,6 +857,20 @@ export default function App() {
     [activeId],
   );
 
+  /**
+   * O core terminou de carregar?
+   *
+   * `false` não é "vazio", é "ainda não sei". O boot do core roda numa thread
+   * e um comando que chega antes dela terminar devolve listas vazias — tratar
+   * isso como estado final desenha "nenhuma sessão" por cima das que estão
+   * voltando.
+   */
+  const [bootReady, setBootReady] = useState(false);
+  // O splash espera por isto. Ver `main.tsx`.
+  useEffect(() => {
+    if (bootReady) window.dispatchEvent(new Event(SPLASH_DONE_EVENT));
+  }, [bootReady]);
+
   const paneLayout = useMemo(
     () => (activeTab?.root ? computeRects(activeTab.root) : null),
     [activeTab],
@@ -898,8 +913,30 @@ export default function App() {
 
   const refreshSessions = useCallback(async () => {
     const all = await listSessions().catch(() => null);
-    if (all) setSessions(all);
+    if (!all) return;
+    setBootReady(all.ready);
+    // Lista vazia do meio do boot não é lista vazia: pisar no estado com ela
+    // apagaria da tela as sessões que estão voltando.
+    if (all.ready) setSessions(all.value);
   }, []);
+
+  // O core avisa quando a thread de boot termina. Só então o que veio vazio
+  // vira estado — antes disso é transitório.
+  useEffect(() => {
+    if (bootReady) return;
+    const unlisten = onAppReady(() => {
+      setBootReady(true);
+      void refreshSessions();
+      void layoutState()
+        .then((next) => {
+          if (next.ready) setLayout(next.value);
+        })
+        .catch(() => {});
+    });
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [bootReady, refreshSessions]);
 
   const sessionById = useMemo(
     () => new Map(sessions.map((s) => [s.id, s])),
@@ -2534,46 +2571,38 @@ export default function App() {
         return;
       }
       unlisten = un;
-      const [
-        existing,
-        currentLayout,
-        togglePrefRaw,
-        detailsRaw,
-        overridesRaw,
-        nameRaw,
-        bindingsRaw,
-        fontRaw,
-        containersRaw,
-        gitStatusRaw,
-        shellIntegrationRaw,
-        startupRaw,
-        toolbarRaw,
-        richInputRaw,
-        editorRaw,
-        worktreeDefaultRaw,
-        reviewAgentRaw,
-        promptModeRaw,
-      ] = await Promise.all([
-        listSessions().catch(() => [] as Session[]),
-        layoutState().catch(() => EMPTY_LAYOUT),
-        getPref(TOGGLE_PREF_KEY).catch(() => null),
-        getPref(DETAILS_PREF_KEY).catch(() => null),
-        getPref(DETAILS_OVERRIDES_KEY).catch(() => null),
-        getPref(ACCOUNT_NAME_KEY).catch(() => null),
-        getPref(BINDINGS_PREF_KEY).catch(() => null),
-        getPref(FONT_SIZE_KEY).catch(() => null),
-        getPref(SHOW_CONTAINERS_KEY).catch(() => null),
-        getPref(GIT_STATUS_KEY).catch(() => null),
-        getPref(SHELL_INTEGRATION_KEY).catch(() => null),
-        getPref(STARTUP_KEY).catch(() => null),
-        getPref(TOOLBAR_PREF_KEY).catch(() => null),
-        getPref(RICH_INPUT_PREF_KEY).catch(() => null),
-        getPref(EDITOR_PREF_KEY).catch(() => null),
-        getPref(WORKTREE_DEFAULT_KEY).catch(() => null),
-        getPref(REVIEW_AGENT_KEY).catch(() => null),
-        getPref(PROMPT_MODE_PREF_KEY).catch(() => null),
-      ]);
+      // UMA chamada, e não dezoito.
+      //
+      // Eram 18 `invoke` no mount, 16 deles `get_pref`. Comando síncrono do
+      // Tauri roda na main thread do macOS — a mesma que desenha o webview —,
+      // então "paralelo" no JS vira fila ali, entremeada com a construção dos
+      // terminais. O core devolve prefs, sessões e layout de uma vez.
+      const snapshot = await bootSnapshot().catch(() => null);
       if (cancelled) return;
+      const prefs = snapshot?.prefs ?? {};
+      const pref = (key: string) => prefs[key] ?? null;
+      const existing = snapshot?.sessions ?? [];
+      const currentLayout = snapshot?.layout ?? EMPTY_LAYOUT;
+      // `ready: false` significa que a thread de boot do core ainda não
+      // terminou: as listas vêm vazias por isso, não por não haver nada. Quem
+      // avisa é `app://ready`, e o efeito abaixo reconsulta.
+      setBootReady(snapshot?.ready ?? false);
+      const togglePrefRaw = pref(TOGGLE_PREF_KEY);
+      const detailsRaw = pref(DETAILS_PREF_KEY);
+      const overridesRaw = pref(DETAILS_OVERRIDES_KEY);
+      const nameRaw = pref(ACCOUNT_NAME_KEY);
+      const bindingsRaw = pref(BINDINGS_PREF_KEY);
+      const fontRaw = pref(FONT_SIZE_KEY);
+      const containersRaw = pref(SHOW_CONTAINERS_KEY);
+      const gitStatusRaw = pref(GIT_STATUS_KEY);
+      const shellIntegrationRaw = pref(SHELL_INTEGRATION_KEY);
+      const startupRaw = pref(STARTUP_KEY);
+      const toolbarRaw = pref(TOOLBAR_PREF_KEY);
+      const richInputRaw = pref(RICH_INPUT_PREF_KEY);
+      const editorRaw = pref(EDITOR_PREF_KEY);
+      const worktreeDefaultRaw = pref(WORKTREE_DEFAULT_KEY);
+      const reviewAgentRaw = pref(REVIEW_AGENT_KEY);
+      const promptModeRaw = pref(PROMPT_MODE_PREF_KEY);
       setPromptModePref(promptModeRaw === "on");
       setSessions(existing);
       setLayout(currentLayout);

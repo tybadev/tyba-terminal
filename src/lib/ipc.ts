@@ -611,7 +611,24 @@ export const reconnectSsh = (id: SessionId) =>
 export const resizeSession = (id: SessionId, cols: number, rows: number) =>
   invoke<void>("resize_session", { id, cols, rows });
 
-export const listSessions = () => invoke<Session[]>("list_sessions");
+/**
+ * Resposta que separa "carregou e está vazio" de "ainda não carregou".
+ *
+ * O boot do core roda numa thread, e comando que chega antes dela terminar
+ * devolve `ready: false`. Sem essa distinção a UI leria a lista vazia do meio
+ * do boot como estado final e desenharia "nenhuma sessão" por cima de vinte
+ * sessões que estão voltando.
+ */
+export interface Loaded<T> {
+  ready: boolean;
+  value: T;
+}
+
+/** O core terminou de carregar. Quem leu `ready: false` reconsulta aqui. */
+export const EVENT_APP_READY = "app://ready";
+
+export const listSessions = () =>
+  invoke<Loaded<Session[]>>("list_sessions");
 
 export const sessionMarkSeen = (id: SessionId) =>
   invoke<void>("session_mark_seen", { id });
@@ -722,7 +739,24 @@ export interface LayoutState {
   active_workspace: WorkspaceId | null;
 }
 
-export const layoutState = () => invoke<LayoutState>("layout_state");
+export const layoutState = () => invoke<Loaded<LayoutState>>("layout_state");
+
+/**
+ * Tudo que a primeira pintura precisa, numa chamada.
+ *
+ * Eram 18 `invoke` no mount, 16 deles `get_pref`. Cada comando síncrono do
+ * Tauri roda na main thread do macOS — a mesma que desenha o webview —, então
+ * "paralelo" no JS vira fila ali. Um comando só tira 18 travessias do caminho
+ * crítico da abertura.
+ */
+export interface BootSnapshot {
+  ready: boolean;
+  prefs: Record<string, string>;
+  sessions: Session[];
+  layout: LayoutState;
+}
+
+export const bootSnapshot = () => invoke<BootSnapshot>("boot_snapshot");
 
 export type LaunchConfigId = string;
 export type SlotId = string;
@@ -938,6 +972,10 @@ export const setSideViewRatio = (
   ratio: number,
   commit = true,
 ) => invoke<void>("set_side_view_ratio", { workspaceId, ratio, commit });
+
+/** O core terminou de carregar. Quem leu `ready: false` reconsulta aqui. */
+export const onAppReady = (handler: () => void): Promise<UnlistenFn> =>
+  listen(EVENT_APP_READY, () => handler());
 
 export const onLayoutChanged = (
   handler: (state: LayoutState) => void,
