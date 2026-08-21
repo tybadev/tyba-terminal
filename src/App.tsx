@@ -861,6 +861,33 @@ export default function App() {
     [activeTab],
   );
 
+  /**
+   * As sessões que ocupam um painel em ALGUMA aba, de qualquer workspace.
+   *
+   * Só elas ganham um `xterm.js`. Sem este corte, o `sessions.map` do render
+   * montava um terminal por sessão da LISTA — e a lista guarda sessão morta: no
+   * modo `Resume`, que é o padrão, agente e container encerrados nunca são
+   * esquecidos. Medido num banco real: 22 sessões, todas `exited`, zero painéis
+   * — 22 instâncias de xterm construídas no boot, nenhuma visível, cada uma com
+   * seu `attach_session`, seus listeners e seu `ResizeObserver`. E como a
+   * tabela só cresce, o app ficava mais lento a cada uso.
+   *
+   * > [!warning] Em QUALQUER aba, não na ativa. `paneLayout` acima só conhece a
+   * > aba ativa; filtrar por ele desmontaria os terminais das outras abas a
+   * > cada troca, e o xterm remontado volta com a tela que o core reenvia, não
+   * > com o scrollback que o webview tinha. Trocaria um problema por outro.
+   */
+  const pannedSessions = useMemo(() => {
+    const ids = new Set<string>();
+    for (const workspace of layout.workspaces) {
+      for (const tab of workspace.tabs) {
+        if (!tab.root) continue;
+        for (const pane of computeRects(tab.root).panes) ids.add(pane.session);
+      }
+    }
+    return ids;
+  }, [layout.workspaces]);
+
   const workspaces = useMemo(() => {
     const query = sessionQuery.trim().toLowerCase();
     if (!query) return layout.workspaces;
@@ -4493,6 +4520,11 @@ export default function App() {
                     />
                   ))}
                   {sessions.map((s) => {
+                    // Sem painel em aba nenhuma, sem terminal. Ver
+                    // `pannedSessions`: a lista de sessões guarda as mortas, e
+                    // construir um xterm para cada uma era o grosso do custo
+                    // de abertura.
+                    if (!pannedSessions.has(s.id)) return null;
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ??
                       null;
