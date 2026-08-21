@@ -4877,6 +4877,7 @@ export default function App() {
                   <Toolbar
                     pref={toolbarPref}
                     cwd={workspaceCwd(activeWorkspace)}
+                    sessionId={activeSession?.id ?? null}
                     snapshot={(() => {
                       const dir = workspaceGitDir(activeWorkspace);
                       return dir

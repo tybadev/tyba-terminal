@@ -10,12 +10,19 @@ import {
 } from "@phosphor-icons/react";
 
 import { Shortcut } from "@/components/ui/kbd";
-import type { RepoSnapshot } from "../lib/ipc";
+import type { RepoSnapshot, SessionId } from "../lib/ipc";
 import type { ChipId, ToolbarPref } from "../lib/repoSnapshots";
+import { BranchPicker } from "./BranchPicker";
 
 interface Props {
   pref: ToolbarPref;
   cwd: string | null;
+  /**
+   * A sessão de que a barra fala. Sem ela o chip de branch é só texto: trocar
+   * de branch é uma operação de repositório, e quem sabe qual repositório é o
+   * core, a partir da sessão.
+   */
+  sessionId: SessionId | null;
   snapshot: RepoSnapshot | undefined;
   hasWorktree: boolean;
   onOpenDiff: () => void;
@@ -47,6 +54,7 @@ function basename(path: string): string {
 export function Toolbar({
   pref,
   cwd,
+  sessionId,
   snapshot,
   hasWorktree,
   onOpenDiff,
@@ -73,7 +81,21 @@ export function Toolbar({
           </span>
         ) : null;
       case "branch":
-        return snapshot?.branch ? (
+        if (!snapshot?.branch) return null;
+        // Com sessão, o chip troca de branch; sem ela, continua sendo o texto
+        // que sempre foi. O seletor faz o checkout em dois passos — armar e
+        // confirmar —, que é a rede para uma ação que mexe no working tree.
+        return sessionId ? (
+          <BranchPicker
+            key={id}
+            sessionId={sessionId}
+            browsing={null}
+            label={snapshot.branch}
+            onBrowse={() => {}}
+            variant="chip"
+            browsable={false}
+          />
+        ) : (
           <span
             key={id}
             title={snapshot.branch}
@@ -83,7 +105,7 @@ export function Toolbar({
             <GitBranch size={12} className="shrink-0" />
             <span className="truncate">{snapshot.branch}</span>
           </span>
-        ) : null;
+        );
       case "diffCount": {
         const status = snapshot?.status;
         if (!status?.dirty) return null;
