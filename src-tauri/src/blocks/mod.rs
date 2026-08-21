@@ -52,13 +52,32 @@ impl Style {
     }
 }
 
-/// Trecho de uma linha com o mesmo estilo. `start`/`end` são offsets **de
-/// bytes** no texto da linha.
+/// Trecho de uma linha com o mesmo estilo.
+///
+/// Os offsets são em **unidades UTF-16**, e o nome do campo diz isso porque o
+/// contrato não estava declarado na fronteira e ninguém percebeu: eram offsets
+/// de BYTE (`text.len()` do Rust) e o webview os aplicava com
+/// `String.prototype.slice`, que indexa por unidade UTF-16. Os dois só
+/// coincidem em ASCII puro — `á` são 2 bytes e 1 unidade, `日` 3 e 1, `😀` 4 e
+/// 2 —, então qualquer acento deslocava a cor da primeira ocorrência até o fim
+/// da linha. Em saída em português isso é o caso comum, não o excepcional.
+///
+/// Converter aqui e não no front é de propósito: o consumidor é um webview e
+/// sempre será, e o finalize já é o lugar onde o parse acontece uma vez só —
+/// converter na renderização se pagaria a cada frame, do lado que já é o
+/// gargalo.
+///
+/// A CHAVE de serialização continua `start`/`end` por compatibilidade: bloco já
+/// gravado no SQLite tem os offsets antigos sob esses nomes, e renomear faria o
+/// `serde` falhar na leitura — o histórico inteiro sumiria da lista, porque
+/// `list_blocks` descarta silenciosamente a linha que não desserializa.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StyleRun {
-    pub start: usize,
-    pub end: usize,
+    #[serde(rename = "start")]
+    pub start_utf16: usize,
+    #[serde(rename = "end")]
+    pub end_utf16: usize,
     pub fg: Color,
     pub bg: Color,
     pub bold: bool,
@@ -173,15 +192,33 @@ impl Capture {
     }
 }
 
+/// Trecho com o mesmo estilo, ainda em offsets de BYTE — a unidade em que o
+/// `vt100` e a `String` do Rust trabalham, e a única em que a aritmética de
+/// junção e de `trim_end` abaixo está correta. Vira `StyleRun` só no fim, com o
+/// texto da linha lógica já fechado.
+#[derive(Debug, Clone, Copy)]
+struct ByteRun {
+    start: usize,
+    end: usize,
+    style: Style,
+}
+
 struct RawRow {
     text: String,
-    runs: Vec<StyleRun>,
+    runs: Vec<ByteRun>,
     wrapped: bool,
+}
+
+/// Linha lógica antes da conversão de unidade.
+#[derive(Default)]
+struct RawLine {
+    text: String,
+    runs: Vec<ByteRun>,
 }
 
 fn read_row(screen: &vt100::Screen, row: u16, cols: u16) -> RawRow {
     let mut text = String::new();
-    let mut runs: Vec<StyleRun> = Vec::new();
+    let mut runs: Vec<ByteRun> = Vec::new();
     let mut open: Option<(Style, usize)> = None;
 
     for col in 0..cols {
@@ -244,25 +281,85 @@ fn read_row(screen: &vt100::Screen, row: u16, cols: u16) -> RawRow {
     }
 }
 
-fn finish_run(style: Style, start: usize, end: usize) -> StyleRun {
-    StyleRun {
-        start,
-        end,
-        fg: style.fg,
-        bg: style.bg,
-        bold: style.bold,
-        italic: style.italic,
-        underline: style.underline,
+fn finish_run(style: Style, start: usize, end: usize) -> ByteRun {
+    ByteRun { start, end, style }
+}
+
+/// Fecha a linha convertendo os offsets de byte para unidades UTF-16.
+///
+/// É a única passagem da fronteira: daqui para a frente o número significa
+/// unidade UTF-16, que é o que o `slice` do JS conta.
+fn into_logical(raw: RawLine) -> LogicalLine {
+    let runs = if raw.text.is_ascii() {
+        // Em ASCII os dois números são o mesmo, e é o caso comum: não paga
+        // varredura nenhuma.
+        raw.runs
+            .into_iter()
+            .map(|run| style_run(run, run.start, run.end))
+            .collect()
+    } else {
+        to_utf16(&raw.text, raw.runs)
+    };
+    LogicalLine {
+        text: raw.text,
+        runs,
     }
+}
+
+fn style_run(run: ByteRun, start_utf16: usize, end_utf16: usize) -> StyleRun {
+    StyleRun {
+        start_utf16,
+        end_utf16,
+        fg: run.style.fg,
+        bg: run.style.bg,
+        bold: run.style.bold,
+        italic: run.style.italic,
+        underline: run.style.underline,
+    }
+}
+
+/// Uma passada pelo texto resolve todas as marcas dos runs.
+///
+/// Converter run a run com `text[..offset].encode_utf16().count()` seria
+/// quadrático numa linha muito colorida — e linha muito colorida é justamente
+/// a que tem run.
+fn to_utf16(text: &str, runs: Vec<ByteRun>) -> Vec<StyleRun> {
+    let mut marks: Vec<usize> = runs.iter().flat_map(|run| [run.start, run.end]).collect();
+    marks.sort_unstable();
+    marks.dedup();
+
+    let mut units: Vec<usize> = Vec::with_capacity(marks.len());
+    let mut mark = 0;
+    let mut seen = 0;
+    for (at, ch) in text.char_indices() {
+        while mark < marks.len() && marks[mark] <= at {
+            units.push(seen);
+            mark += 1;
+        }
+        seen += ch.len_utf16();
+    }
+    // Marcas no fim do texto — `run.end` da última linha cai sempre aqui.
+    while mark < marks.len() {
+        units.push(seen);
+        mark += 1;
+    }
+
+    let at_mark = |byte: usize| match marks.binary_search(&byte) {
+        Ok(found) => units[found],
+        Err(_) => seen,
+    };
+    runs.iter()
+        .map(|run| style_run(*run, at_mark(run.start), at_mark(run.end)))
+        .collect()
 }
 
 /// Junta as linhas visuais em linhas lógicas, desfazendo o soft-wrap.
 ///
 /// É o que permite o reflow sem reparse: a fronteira guardada é a **lógica**, e
 /// quem quebra por largura é o renderizador.
-fn join_wrapped(rows: Vec<RawRow>) -> Vec<LogicalLine> {
-    let mut lines: Vec<LogicalLine> = Vec::new();
-    let mut current = LogicalLine::default();
+fn join_wrapped(rows: Vec<RawRow>) -> Vec<RawLine> {
+    let mut lines: Vec<RawLine> = Vec::new();
+    let mut current = RawLine::default();
     let mut open = false;
 
     for row in rows {
@@ -387,6 +484,9 @@ pub fn extract_lines(bytes: &[u8], cols: u16, _rows: u16) -> (Vec<LogicalLine>, 
         lines.pop();
     }
 
+    // A conversão de unidade vem por último, depois de toda a aritmética de
+    // junção e de corte — que só fecha em byte.
+    let lines = lines.into_iter().map(into_logical).collect();
     (lines, logical_lines(&bytes[..cut]))
 }
 
@@ -571,6 +671,108 @@ pub fn finalize(finished: Finished) {
 mod tests {
     use super::*;
 
+    /// Fatia como o `String.prototype.slice` do JS: por unidade UTF-16.
+    ///
+    /// É o teste ATRAVESSANDO a fronteira. A suíte antiga fatiava com
+    /// `&text[run.start..run.end]`, que em Rust é fatiamento por byte — por
+    /// isso ela passava verde enquanto o webview pintava errado. Os dois só
+    /// concordam em ASCII.
+    fn js_slice(text: &str, run: &StyleRun) -> String {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        String::from_utf16_lossy(&units[run.start_utf16..run.end_utf16])
+    }
+
+    /// Roda a saída pelo pipeline e devolve o que o front pintaria colorido.
+    fn painted(bytes: &[u8]) -> Vec<String> {
+        let (lines, _) = extract_lines(bytes, 40, 5);
+        lines
+            .iter()
+            .flat_map(|line| line.runs.iter().map(|run| js_slice(&line.text, run)))
+            .collect()
+    }
+
+    #[test]
+    fn accented_text_does_not_shift_the_color() {
+        // `printf 'ação: \033[31mvermelho\033[0m\n'` — a reprodução mínima do
+        // bug. `ação: ` tem 7 bytes e 6 unidades UTF-16, então o offset de byte
+        // começava um caractere à direita e a última letra ficava sem cor.
+        assert_eq!(
+            painted("ação: \x1b[31mvermelho\x1b[0m\r\n".as_bytes()),
+            vec!["vermelho"]
+        );
+    }
+
+    #[test]
+    fn cjk_and_emoji_do_not_shift_the_color() {
+        // `日` são 3 bytes e 1 unidade; `😀` são 4 bytes e 2 unidades — o único
+        // caractere aqui em que unidade UTF-16 não é o mesmo que caractere.
+        assert_eq!(
+            painted("日本語 \x1b[32mverde\x1b[0m\r\n".as_bytes()),
+            vec!["verde"]
+        );
+        assert_eq!(
+            painted("😀😀 \x1b[34mazul\x1b[0m\r\n".as_bytes()),
+            vec!["azul"]
+        );
+    }
+
+    #[test]
+    fn the_accent_inside_the_colored_run_survives() {
+        assert_eq!(
+            painted("erro: \x1b[31mnão encontrado\x1b[0m\r\n".as_bytes()),
+            vec!["não encontrado"]
+        );
+    }
+
+    #[test]
+    fn several_runs_on_one_accented_line_each_land_where_they_belong() {
+        assert_eq!(
+            painted(
+                "ç \x1b[31mum\x1b[0m ã \x1b[32mdois\x1b[0m é \x1b[34mtrês\x1b[0m\r\n".as_bytes()
+            ),
+            vec!["um", "dois", "três"]
+        );
+    }
+
+    #[test]
+    fn the_offsets_survive_the_wrap_join_with_accents() {
+        // A junção soma offsets de linha visual; ela só fecha em byte, e a
+        // conversão tem de vir depois dela.
+        let (lines, _) = extract_lines("ááááá\x1b[31mbbbbb\x1b[0m\r\n".as_bytes(), 5, 5);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(js_slice(&lines[0].text, &lines[0].runs[0]), "bbbbb");
+    }
+
+    /// Bloco gravado antes desta mudança guarda offset de BYTE sob as chaves
+    /// `start`/`end`. Renomear a chave faria o `serde` falhar e `list_blocks`
+    /// descartar a linha inteira em silêncio — o histórico sumiria da tela.
+    #[test]
+    fn a_block_persisted_before_the_change_still_deserializes() {
+        let old_row = r#"[{"text":"ola","runs":[{"start":0,"end":3,"fg":{"kind":"idx","value":1},"bg":{"kind":"default"},"bold":false,"italic":false,"underline":false}]}]"#;
+        let lines: Vec<LogicalLine> = serde_json::from_str(old_row).expect("histórico antigo");
+        assert_eq!(lines[0].runs[0].start_utf16, 0);
+        assert_eq!(lines[0].runs[0].end_utf16, 3);
+    }
+
+    #[test]
+    fn the_wire_keys_stay_the_ones_already_on_disk() {
+        let line = LogicalLine {
+            text: "ola".into(),
+            runs: vec![StyleRun {
+                start_utf16: 0,
+                end_utf16: 3,
+                fg: Color::Idx(1),
+                bg: Color::Default,
+                bold: false,
+                italic: false,
+                underline: false,
+            }],
+        };
+        let json = serde_json::to_string(&line).unwrap();
+        assert!(json.contains(r#""start":0"#), "{json}");
+        assert!(json.contains(r#""end":3"#), "{json}");
+    }
+
     fn lines_of(bytes: &[u8], cols: u16, rows: u16) -> Vec<String> {
         extract_lines(bytes, cols, rows)
             .0
@@ -711,7 +913,7 @@ mod tests {
         assert_eq!(line.text, "normal vermelho fim");
         assert_eq!(line.runs.len(), 1, "só o trecho colorido vira run");
         let run = &line.runs[0];
-        assert_eq!(&line.text[run.start..run.end], "vermelho");
+        assert_eq!(js_slice(&line.text, run), "vermelho");
         assert_eq!(run.fg, Color::Idx(1));
     }
 
@@ -739,7 +941,7 @@ mod tests {
         let line = &lines[0];
         assert_eq!(line.text, "aaaaabbbbb");
         let run = &line.runs[0];
-        assert_eq!(&line.text[run.start..run.end], "bbbbb");
+        assert_eq!(js_slice(&line.text, run), "bbbbb");
     }
 
     #[test]
