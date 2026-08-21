@@ -2713,8 +2713,15 @@ async fn layout_state(state: State<'_, AppState>) -> Result<Loaded<layout::Layou
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct BootSnapshot {
     ready: bool,
+    /// A thread de boot morreu antes de terminar, e esta é a mensagem.
+    ///
+    /// Segunda via do `app://boot-failed` — ver [`boot::EVENT_FAILED`]. Com
+    /// `ready: true` e este campo preenchido, as listas ao lado estão
+    /// incompletas por falha, não por ausência de dado.
+    boot_failure: Option<String>,
     prefs: std::collections::HashMap<String, String>,
     sessions: Vec<Session>,
     layout: layout::LayoutState,
@@ -2728,12 +2735,20 @@ struct BootSnapshot {
 /// `ready: false` significa "a thread de boot ainda não terminou": as listas
 /// podem estar vazias por isso, não por não haver nada. O front espera
 /// [`boot::EVENT_READY`] e reconsulta.
+///
+/// `bootFailure` preenchido significa a terceira possibilidade: a thread morreu,
+/// e o que vem ao lado está vazio por falha. É a rede do `app://boot-failed`,
+/// que pode ter sido emitido antes de o listener do front existir.
 #[tauri::command]
 async fn boot_snapshot(state: State<'_, AppState>) -> Result<BootSnapshot, String> {
     // Lido primeiro de propósito — ver [`Loaded::read`].
     let ready = state.boot.is_ready();
     Ok(BootSnapshot {
         ready,
+        // Depois do `ready`, e é a ordem que faz o campo valer: o portão só abre
+        // depois de a mensagem estar gravada (ver `BootGate::mark_failed`), então
+        // ler o `ready` primeiro nunca devolve `true` com falha em branco.
+        boot_failure: state.boot.failure(),
         prefs: state.store.prefs().map_err(|e| e.to_string())?,
         sessions: state.sessions.list(),
         layout: state.layout.state(),
@@ -4794,6 +4809,10 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// Depois dele o arranque já cumpriu o contrato — o que roda ali é manutenção
 /// (GC de worktree órfão, truncate do WAL), e derrubar um banner de "o app não
 /// carregou" por causa dela seria mentira.
+///
+/// A mesma mensagem fica retida no portão, e não só no valor de retorno: o
+/// retorno vira um evento, que pode não ser entregue — ver
+/// [`boot::EVENT_FAILED`].
 fn guard_boot(gate: &boot::BootGate, body: impl FnOnce()) -> Option<String> {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
     let Err(payload) = outcome else {
@@ -4801,9 +4820,11 @@ fn guard_boot(gate: &boot::BootGate, body: impl FnOnce()) -> Option<String> {
     };
     let message = panic_message(&*payload);
     eprintln!("[tyba] a thread de boot morreu: {message}");
-    let before_ready = !gate.is_ready();
-    gate.mark_ready();
-    before_ready.then_some(message)
+    if gate.is_ready() {
+        return None;
+    }
+    gate.mark_failed(&message);
+    Some(message)
 }
 
 fn spawn_boot(
@@ -5283,6 +5304,41 @@ mod tests {
         let failed = guard_boot(&gate, || gate.mark_ready());
         assert!(gate.is_ready());
         assert_eq!(failed, None);
+    }
+
+    /// O evento sozinho não basta: `spawn_boot` começa a thread dentro do
+    /// `.setup()`, antes de o webview carregar, e o `listen()` do Tauri é
+    /// assíncrono. Um pânico dentro do `ssh::config::materialize` ou do
+    /// `sessions.restore()` dispara em milissegundos, antes de o listener
+    /// existir, e o core não reemite. A mensagem retida no portão é o que o
+    /// `boot_snapshot` devolve para quem perdeu o evento.
+    #[test]
+    fn a_falha_do_boot_continua_legivel_depois_do_evento() {
+        let gate = boot::BootGate::new();
+        let failed = guard_boot(&gate, || panic!("materialize explodiu"));
+
+        assert_eq!(failed.as_deref(), Some("materialize explodiu"));
+        assert_eq!(gate.failure().as_deref(), Some("materialize explodiu"));
+    }
+
+    #[test]
+    fn boot_sem_panico_nao_deixa_falha_no_portao() {
+        let gate = boot::BootGate::new();
+        let _ = guard_boot(&gate, || gate.mark_ready());
+        assert_eq!(gate.failure(), None);
+    }
+
+    /// Mesma razão de `panico_depois_do_ready_nao_vira_falha_de_boot`: o que
+    /// roda depois do `mark_ready` é manutenção, e um banner de "o app não
+    /// carregou" por causa dela seria mentira — inclusive no snapshot.
+    #[test]
+    fn panico_depois_do_ready_nao_aparece_no_snapshot() {
+        let gate = boot::BootGate::new();
+        let _ = guard_boot(&gate, || {
+            gate.mark_ready();
+            panic!("gc de worktree explodiu");
+        });
+        assert_eq!(gate.failure(), None);
     }
 
     #[test]
