@@ -272,16 +272,21 @@ const BlockHeader = memo(function BlockHeader({
 const BODY_LIMIT = 200;
 
 /**
+ * Altura do botão "mostrar mais" (`text-[10px]` + `py-1` + `border-t`).
+ *
+ * Entra na estimativa. Sem ele, TODO bloco grande era estimado ~22px curto — e
+ * estimativa curta é cartão nascendo por cima do fim do anterior.
+ */
+const SHOW_MORE_PX = 22;
+
+/**
  * Quanto da largura do scroller NÃO é texto do corpo, em px.
  *
- * `px-2` do scroller (8+8) e o `px-2.5` do corpo (10+10). Entra na conta de
- * quantas colunas cabem numa linha — errar aqui volta como estimativa curta,
- * que é cartão em cima de cartão.
- *
- * Já contou a borda do cartão (1+1). Não conta mais: o contorno virou trilho
- * por `box-shadow`, que não ocupa espaço de layout — ver `rail`.
+ * `px-2` do scroller (8+8), a borda do cartão (1+1) e o `px-2.5` do corpo
+ * (10+10). Entra na conta de quantas colunas cabem numa linha — errar aqui
+ * volta como estimativa curta, que é cartão em cima de cartão.
  */
-const BODY_INSET_X_PX = 36;
+const BODY_INSET_X_PX = 38;
 
 /**
  * Barra à esquerda do cartão marcado.
@@ -303,32 +308,6 @@ const BODY_INSET_X_PX = 36;
  */
 const MARKED_BAR = "inset 2px 0 0 0 var(--tyba-primary)";
 
-/**
- * O trilho na lateral esquerda do cartão — o único destaque permanente dele.
- *
- * Substituiu a moldura completa. `--tyba-block-border` é branco a 28% sobre
- * preto absoluto, e a 28% ele é visível por desenho: numa caixa fechada em
- * volta de um cartão de 200 linhas, isso vira dois trilhos brancos atravessando
- * a viewport inteira dos dois lados do texto, o tempo todo em que se lê. E como
- * TODO bloco tinha a mesma, o destaque não discriminava nada — o custo de
- * atenção era pago em cada linha e a informação devolvida era zero.
- *
- * Um traço só na esquerda diz a mesma coisa ("aqui começa um bloco") no lugar
- * onde o olho já volta a cada linha. O que separa um bloco do outro passa a ser
- * o espaço entre eles, que não custa atenção nenhuma.
- *
- * `box-shadow` e não borda, pelo motivo de sempre nesta lista: borda muda a
- * altura medida, e altura que muda faz o virtualizador reposicionar o conteúdo
- * embaixo do ponteiro no meio de um gesto.
- */
-function rail(marked: boolean, broke: boolean): string {
-  if (marked) return MARKED_BAR;
-  // Falha é o que merece cor permanente. O corpo inteiro tingido de vermelho
-  // transformava 200 linhas de saída numa parede — e saída de erro é
-  // justamente a que mais se lê.
-  if (broke) return "inset 2px 0 0 0 var(--tyba-red)";
-  return "inset 2px 0 0 0 var(--tyba-block-border)";
-}
 
 const BlockCard = memo(function BlockCard({
   block,
@@ -337,6 +316,8 @@ const BlockCard = memo(function BlockCard({
   onInject,
   marked,
   onPick,
+  shown,
+  onShowMore,
 }: {
   block: Block;
   /** Tamanho da fonte do terminal — ver o corpo abaixo. */
@@ -355,11 +336,24 @@ const BlockCard = memo(function BlockCard({
    * realmente re-renderiza.
    */
   onPick?: (id: number, event: React.MouseEvent) => void;
+  /**
+   * Quantas linhas do corpo desenhar. Vem de FORA por dois motivos.
+   *
+   * Morava aqui, num `useState` booleano de "expandido". Como o cartão desmonta
+   * ao sair da tela pela virtualização, o estado ia junto: o dono expandia,
+   * rolava, voltava, e estava fechado de novo.
+   *
+   * E o virtualizador precisa saber. A estimativa de altura é calculada pela
+   * lista, que não enxergava esse booleano — um bloco expandido de 5 mil linhas
+   * seguia estimado em 200. O total da lista ficava menor que o conteúdo real,
+   * e daí "rolo e nunca chego no fim".
+   */
+  shown: number;
+  onShowMore?: (id: number) => void;
 }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
   const broke = failed(block.exitCode);
-  const hidden = expanded ? 0 : Math.max(block.lines.length - BODY_LIMIT, 0);
+  const hidden = Math.max(block.lines.length - shown, 0);
   return (
     // `group` aqui além do header: revela as ações com o ponteiro em qualquer
     // lugar do cartão, não só na faixa de 27px de cima.
@@ -371,9 +365,13 @@ const BlockCard = memo(function BlockCard({
       onMouseDown={(event) => {
         if (event.shiftKey && onPick) event.preventDefault();
       }}
-      style={{ boxShadow: rail(marked, broke) }}
-      className={`group overflow-hidden rounded-[5px] transition-colors ${
-        marked ? "bg-tyba-green-tint" : "hover:bg-tyba-text/[.02]"
+      style={marked ? { boxShadow: MARKED_BAR } : undefined}
+      className={`group overflow-hidden rounded-[5px] border ${
+        marked
+          ? "border-tyba-primary bg-tyba-green-tint"
+          : broke
+            ? "border-tyba-red/50 bg-tyba-red/[.07]"
+            : "border-tyba-block-border"
       }`}
     >
       <BlockHeader block={block} onInject={onInject} />
@@ -396,7 +394,7 @@ const BlockCard = memo(function BlockCard({
             lineHeight: `${lineHeightPx}px`,
           }}
         >
-          {(expanded ? block.lines : block.lines.slice(0, BODY_LIMIT)).map(
+          {block.lines.slice(0, shown).map(
             (line, i) => (
               <Line key={i} line={line} />
             ),
@@ -407,11 +405,11 @@ const BlockCard = memo(function BlockCard({
         <button
           onClick={(event) => {
             event.stopPropagation();
-            setExpanded(true);
+            onShowMore?.(block.id);
           }}
           className="w-full border-t border-tyba-border/60 px-2.5 py-1 text-left font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
         >
-          {t("blockShowAll", { count: hidden })}
+          {t("blockShowAll", { count: Math.min(hidden, BODY_LIMIT) })}
         </button>
       )}
       {block.truncated > 0 && (
@@ -509,7 +507,7 @@ const ALT_SCREEN_PX = 21;
  * único da lista encostado no vizinho, e a diferença lê como defeito bem no
  * cartão para onde o olho vai.
  */
-export const BLOCK_GAP_PX = 14;
+export const BLOCK_GAP_PX = 8;
 /**
  * Folga para considerar a lista "no fim".
  *
@@ -638,6 +636,26 @@ export const BlockList = memo(function BlockList({
   // logo abaixo. Medida, e não derivada do `rect` em %: o retângulo é uma
   // fração do painel, e a mesma fração dá larguras diferentes conforme a
   // janela e o painel lateral.
+  /**
+   * Quantas linhas cada bloco está mostrando, por id.
+   *
+   * Mora na LISTA, não no cartão. No cartão, o estado morria junto com ele na
+   * virtualização — expandir, rolar e voltar devolvia o bloco fechado. E, o que
+   * é pior, a `estimate` daqui não conseguia enxergá-lo: um bloco expandido de
+   * 5 mil linhas continuava estimado em 200, o total da lista ficava muito
+   * menor que o conteúdo real, e a rolagem nunca chegava ao fim.
+   *
+   * Sem limpeza, pelo mesmo motivo de `withEntry`: id de bloco não se repete, e
+   * um número por bloco lido é barato perto de varrer isto a cada mudança.
+   */
+  const [shown, setShown] = useState<Record<number, number>>({});
+  const showMore = useCallback((id: number) => {
+    setShown((prev) => ({
+      ...prev,
+      [id]: (prev[id] ?? BODY_LIMIT) + BODY_LIMIT,
+    }));
+  }, []);
+
   const [widthPx, setWidthPx] = useState(0);
   useEffect(() => {
     const el = scrollRef.current;
@@ -661,29 +679,33 @@ export const BlockList = memo(function BlockList({
     const reason = block.altScreen ? ALT_SCREEN_PX : 0;
     // Linhas VISUAIS, não lógicas: o corpo desenha com `whitespace-pre-wrap`, e
     // num painel estreito uma linha de saída ocupa três. Ver `blockMetrics`.
-    const body = bodyLines(block.lines, cols, BODY_LIMIT) * line;
+    //
+    // O teto é o que o bloco está MOSTRANDO, não `BODY_LIMIT`: quem já pediu
+    // mais linhas tem um cartão maior, e estimar pelo teto fixo devolvia um
+    // total de lista menor que o conteúdo — a rolagem parava antes do fim.
+    const limit = shown[block.id] ?? BODY_LIMIT;
+    const body = bodyLines(block.lines, cols, limit) * line;
+    const more = block.lines.length > limit ? SHOW_MORE_PX : 0;
     const footer = block.truncated > 0 ? line : 0;
-    return HEADER_PX + reason + body + footer + BLOCK_GAP_PX;
+    return HEADER_PX + reason + body + more + footer + BLOCK_GAP_PX;
   };
 
   const virtualizer = useVirtualizer({
     count: blocks.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: estimate,
-    // 6 cartões de folga custam caro AQUI e não em qualquer lista: um cartão de
-    // 200 linhas coloridas passa de 3 mil nós de DOM, então a folga sozinha
-    // mantinha dezenas de milhares de nós montados fora da tela.
-    overscan: 2,
+    // Já esteve em 2, para conter os nós de DOM: um cartão de 200 linhas
+    // coloridas passa de 3 mil, e a folga sozinha mantinha dezenas de milhares
+    // montados fora da tela. Voltou para 6 — folga é o que cobre a área que
+    // entra na tela ANTES de o React renderizar, e cortá-la troca nós de DOM
+    // por retângulo vazio durante o gesto. Quem paga a conta dos nós agora é o
+    // `memo` de `Line` e do cartão, que é onde ela devia ser paga.
+    overscan: 6,
     // O cache de altura é keyado por ESTE valor. Sem ele o padrão é o índice —
     // e `mergeBlockHistory` faz prepend do histórico do SQLite, o que desloca
     // todos os índices de uma vez e faz cada altura medida passar a pertencer a
     // outro bloco. É o embaralhar de cartões ao abrir a sessão.
     getItemKey: (index) => blocks[index]?.id ?? index,
-    // O adapter do React chama `flushSync` a cada mudança de range, ou seja
-    // DENTRO do handler de rolagem. Com cartões altos o range muda ao cruzar
-    // cada bloco, e cada uma dessas virava um render + commit síncrono e
-    // bloqueante da lista inteira, no meio do gesto.
-    useFlushSync: false,
   });
 
   // Métrica nova = TODO cartão muda de altura, e o virtualizador precisa saber.
@@ -993,6 +1015,8 @@ export const BlockList = memo(function BlockList({
                 // Repassado direto, sem amarrar o id aqui: ver o comentário do
                 // prop em `BlockCard`.
                 onPick={onPick}
+                shown={shown[blocks[item.index].id] ?? BODY_LIMIT}
+                onShowMore={showMore}
                 />
               </div>
             ))}
