@@ -212,6 +212,16 @@ fn apply_screen(state: &mut ScreenState, chunk: &[u8], actions: &[capture::Actio
                     }
                 }
             }
+            // Bytes próprios, e não recorte: o eco resgatado veio de um chunk
+            // que já passou. Vai para a fila sem limpar nada — o prompt
+            // primário que o precede continua desenhado, e o `PS2` que o segue
+            // entra depois. O core já tem a linha (ele vê o chunk inteiro), o
+            // que faltava era a janela anexada.
+            capture::Action::LiveEcho(bytes) => {
+                if state.attached() {
+                    state.pending.extend_from_slice(bytes);
+                }
+            }
             capture::Action::LiveRestart(range) => {
                 if state.attached() {
                     if let Some(bytes) = chunk.get(range.clone()) {
@@ -340,6 +350,7 @@ impl ActionSink {
                     let _ = self.app.emit(EVENT_CWD_CHANGED, self.session_id);
                 }
                 capture::Action::Live(_)
+                | capture::Action::LiveEcho(_)
                 | capture::Action::LiveRestart(_)
                 | capture::Action::ClearCoreScreen
                 | capture::Action::ResetScreen => {}
@@ -909,6 +920,33 @@ mod ingest_tests {
         ingest_chunk(&mut state, &mut machine, b"tyba", 1_000);
         assert!(state.pending.is_empty());
         assert!(state.parser.screen().contents().contains("tyba"));
+    }
+
+    /// O achado do review no nível do encanamento. Num comando incompleto o
+    /// `133;C` nunca chega, então nada repunha o eco engolido: o core, que vê o
+    /// chunk inteiro, ficava com a linha submetida, e a janela anexada só com o
+    /// `PS2`. Trocar de aba e voltar consertava — a foto vem do core —, ficar
+    /// olhando não.
+    #[test]
+    fn an_incomplete_command_leaves_the_window_with_the_screen_the_core_has() {
+        let mut state = ScreenState::new(24, 80);
+        state.attach("main");
+        let mut machine = CaptureMachine::new("s1".into());
+        let mut seen = Vec::new();
+        for chunk in [
+            b"\x1b]633;P;tyba-prompt=1\x07".as_slice(),
+            b"\x1b]133;B\x07",
+            b"for i in 1 2 3; do\r\nfor> ",
+        ] {
+            ingest_chunk(&mut state, &mut machine, chunk, 1_000);
+            seen.extend(state.take_pending().unwrap_or_default());
+        }
+        assert!(
+            rendered(&seen).contains("for i in 1 2 3; do"),
+            "a janela ficou sem a linha que o `PS2` espera terminar: {:?}",
+            rendered(&seen)
+        );
+        assert_eq!(rendered(&seen), state.parser.screen().contents());
     }
 
     /// A invariante que o lock único sustenta: só existem duas ordens em que um
