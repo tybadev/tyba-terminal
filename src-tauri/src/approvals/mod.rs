@@ -18,6 +18,13 @@
 //!   subcomando: `docker run --entrypoint git img push origin main` não é
 //!   recusado. Fechar isso pede decodificar a CLI de cada runner — a lista que
 //!   [`git_positions`] existe para não ter.
+//! - O push pode não estar escrito na linha que o executa. Variável
+//!   (`P=push; git $P origin main`), apelido (`alias gp='git push origin main'`
+//!   e `git config alias.p 'push origin main'`, que publicam quando `gp`/`git p`
+//!   rodarem depois) e codificação (`echo <base64> | base64 -d | sh`) escondem
+//!   o texto de uma análise que só lê o que está escrito. O QUARTO conserto
+//!   fechou a composição — a saída de um comando virando comando — e este eixo
+//!   é o vizinho dela que continua aberto: aqui não há texto para achar.
 //!
 //! Enquanto isso, a promessa deste módulo é sobre o que está ESCRITO no
 //! comando — dizer mais do que isso seria dar por coberto um buraco que
@@ -140,6 +147,90 @@ const COMMAND_SEPARATORS: &[char] = &[';', '&', '|', '\n', '\r', '(', ')', '{', 
 /// frente do PATH derruba a garantia — igual a qualquer outra análise estática
 /// de string, e por isso não é o que esta lista promete.
 const TEXT_ONLY_COMMANDS: &[&str] = &["echo", "printf", "grep", "egrep", "fgrep"];
+
+/// Caracteres que tiram a saída de um comando da tela.
+///
+/// Este é o alfabeto da composição de shell, e a razão de ele existir é o
+/// QUARTO conserto deste arquivo. Um passe é concedido a um SEGMENTO, mas o
+/// valor de um segmento depende de para onde vai o stdout dele: `echo git push
+/// origin main` é texto, e `echo git push origin main | zsh` é o push. O corte
+/// de [`COMMAND_SEPARATORS`] separa em `|`, então quem EMITE o texto e quem o
+/// EXECUTA viravam segmentos analisados independentemente — o primeiro ganhava
+/// o passe, o segundo não tinha `git` nenhum, e a linha saía AMARELA, que é o
+/// nível que entra na allowlist de "sempre permitir" da sessão.
+///
+/// A regra adotada é a grosseira de propósito: nenhum passe vale numa linha que
+/// tenha qualquer um destes caracteres, esteja ele onde estiver. A alternativa
+/// considerada e recusada foi a fina — negar o passe só ao estágio cujo stdout
+/// está canalizado —, e ela é insuficiente por um caso concreto:
+/// `sh -c "$(cat x | grep 'git push origin main')"` canaliza para o `grep`, que
+/// é o ÚLTIMO estágio e portanto teria stdout "livre"; quem captura é o `$()`
+/// em volta, que o corte em segmentos já desmontou. Rastrear isso pede
+/// reconstruir o aninhamento que o `split` desfaz — precisão que este módulo
+/// não tem como sustentar, no arquivo que já vazou quatro vezes por excesso de
+/// precisão.
+///
+/// **Alfabeto, não vocabulário.** A lista é de CARACTERES, não de construções:
+/// cano, redirecionamento, here-string, here-doc, substituição de comando,
+/// substituição de processo e o `%…%` do `cmd` se escrevem todos com um destes
+/// sete. Construção nova cai na regra sem ninguém precisar saber o nome dela —
+/// é o mesmo motivo de [`git_positions`] varrer toda posição em vez de manter
+/// lista de runners.
+///
+/// `;`, `&`, `\n` e `\r` ficam de FORA de propósito: eles sequenciam, não
+/// capturam. `echo git push origin main; ls` manda o texto para a tela, e
+/// recusar ali seria um `echo` recusado sem contorno — exatamente o custo que
+/// [`TEXT_ONLY_COMMANDS`] existe para evitar.
+const OUTPUT_ROUTING: &[char] = &['|', '>', '<', '`', '$', '(', ')'];
+
+/// Se as exceções da varredura valem nesta linha.
+///
+/// Decidido sobre a LINHA INTEIRA e antes do corte em segmentos, porque é o
+/// corte que destrói a relação entre quem emite e quem executa. Vale para TODO
+/// passe — [`TEXT_ONLY_COMMANDS`] e [`message_operand_mask`] —, e não só para o
+/// que apareceu no relato: os dois são "não varra isto", e os dois assumem a
+/// mesma coisa, que o texto continue texto. Passe novo neste arquivo nasce
+/// gasto por aqui, ou repete o buraco.
+///
+/// A direção é monotônica: este portão só DESLIGA exceção, nunca liga. Nenhuma
+/// linha recusada antes deixa de ser recusada por causa dele.
+fn passes_allowed(command: &str) -> bool {
+    !command.contains(OUTPUT_ROUTING)
+}
+
+/// Tokens de UM segmento, com a palavra cortada no caractere que a termina.
+///
+/// Achado pela varredura do alfabeto do QUARTO conserto, e é um buraco que já
+/// existia antes dele: `git push origin main>/dev/null` NÃO era recusado. O
+/// motivo é que `>` não separa comando — [`COMMAND_SEPARATORS`] não o tem, e
+/// com razão, porque separar ali esconderia o push de
+/// `git -C /repo>x push origin main` num segundo segmento. Sem separar e sem
+/// cortar, o `split_whitespace` entregava `main>/dev/null` como UM token, e
+/// `is_trunk_ref` comparava essa string inteira com `main`. Um push para a
+/// trunk escrito por extenso, sem obfuscação nenhuma, saía sem recusa; a forma
+/// `git push>x origin main` ainda saía AMARELA.
+///
+/// O corte é semântico, não só conservador: depois de `>` ou `<` vem o NOME DO
+/// ARQUIVO do redirecionamento, que nunca é um programa, e depois de `$` vem
+/// uma expansão que não está escrita na linha. Descartar essas caudas não perde
+/// nada que este módulo prometa analisar, e mantém colados os tokens que o
+/// casamento precisa ver em sequência — é por isso que o corte TRUNCA em vez de
+/// partir em dois: partir empurraria a cauda para o meio do casamento
+/// (`git>x push` viraria `git`, `x`, `push`, e `x` tomaria o lugar do
+/// subcomando).
+///
+/// Cortar por [`OUTPUT_ROUTING`] cobre exatamente `<`, `>` e `$`: os outros
+/// quatro caracteres da lista também estão em [`COMMAND_SEPARATORS`] e já
+/// partiram o segmento antes de chegar aqui. Usar a mesma constante nos dois
+/// lugares é de propósito — caractere novo em [`OUTPUT_ROUTING`] vira portão e
+/// terminador de palavra de uma vez, sem as duas leituras divergirem.
+fn segment_tokens(segment: &str) -> Vec<&str> {
+    segment
+        .split_whitespace()
+        .map(|token| token.split(OUTPUT_ROUTING).next().unwrap_or(token))
+        .filter(|token| !token.is_empty())
+        .collect()
+}
 
 /// Flags globais do `git` que consomem o argumento SEGUINTE.
 ///
@@ -281,15 +372,18 @@ fn command_start(tokens: &[&str]) -> usize {
 /// [`unquote`]: recusa a mais custa um "não" que o usuário reescreve; recusa a
 /// menos publica num repositório público, e isso não volta atrás. A única
 /// exceção é [`TEXT_ONLY_COMMANDS`], para o caso em que a recusa não teria
-/// contorno nenhum (`echo git push main`).
-fn git_positions<'a>(tokens: &'a [&'a str]) -> impl Iterator<Item = usize> + 'a {
-    let scan = !tokens.get(command_start(tokens)).is_some_and(|token| {
-        program_is(token, |name| {
-            TEXT_ONLY_COMMANDS
-                .iter()
-                .any(|c| c.eq_ignore_ascii_case(name))
-        })
-    });
+/// contorno nenhum (`echo git push main`) — e ela só vale quando
+/// [`passes_allowed`] concorda, porque `echo` que emite para a tela é texto e
+/// `echo` canalizado é o comando que ele escreve.
+fn git_positions<'a>(tokens: &'a [&'a str], passes: bool) -> impl Iterator<Item = usize> + 'a {
+    let scan = !passes
+        || !tokens.get(command_start(tokens)).is_some_and(|token| {
+            program_is(token, |name| {
+                TEXT_ONLY_COMMANDS
+                    .iter()
+                    .any(|c| c.eq_ignore_ascii_case(name))
+            })
+        });
     tokens
         .iter()
         .enumerate()
@@ -414,14 +508,22 @@ fn is_message_flag(token: &str) -> bool {
 /// O falso positivo continua nas flags irmãs que também carregam texto
 /// (`--author`, `--date`): elas não entram porque cada nome aqui alarga o
 /// buraco, e nenhuma delas tem o custo do `-m`.
-fn message_operand_mask(tokens: &[&str]) -> Vec<bool> {
+fn message_operand_mask(tokens: &[&str], passes: bool) -> Vec<bool> {
+    // Sem passe na linha não há máscara: ver [`passes_allowed`]. O salto da
+    // mensagem é um passe como o de [`TEXT_ONLY_COMMANDS`] e cai pelo mesmo
+    // portão, mesmo não tendo sido ele o do relato — o custo é o commit cuja
+    // mensagem CITA um push de trunk numa linha com cano ou redirecionamento
+    // virar recusa, e o benefício é não haver passe fora do portão.
+    if !passes {
+        return Vec::new();
+    }
     // Sem `-m` no segmento não há o que marcar, e é o caso da esmagadora
     // maioria: sai antes de varrer de novo.
     if !tokens.iter().any(|token| is_message_flag(token)) {
         return Vec::new();
     }
     let mut mask = vec![false; tokens.len()];
-    for git_at in git_positions(tokens) {
+    for git_at in git_positions(tokens, passes) {
         let Some(call) = git_call_at(tokens, git_at) else {
             continue;
         };
@@ -458,11 +560,19 @@ fn message_operand_mask(tokens: &[&str]) -> Vec<bool> {
 /// A única posição pulada é a de operando de mensagem — ver
 /// [`message_operand_mask`], que documenta por que o salto não reabre o
 /// caminho principal.
+///
+/// **Onde o passe é decidido.** Fora do laço, sobre a linha inteira. Toda
+/// exceção deste módulo é concedida a um SEGMENTO, e nenhum segmento sabe para
+/// onde vai o próprio stdout depois do corte — por isso [`passes_allowed`] roda
+/// aqui e desce como parâmetro, em vez de cada exceção decidir sozinha.
 fn any_git_call(command: &str, predicate: impl Fn(&GitCall) -> bool) -> bool {
+    // Decidido na linha inteira e uma vez só, antes do corte: é o corte que
+    // separa quem emite o texto de quem o executa. Ver [`passes_allowed`].
+    let passes = passes_allowed(command);
     for segment in command.split(|c| COMMAND_SEPARATORS.contains(&c)) {
-        let tokens = word_tokens(segment);
-        let message = message_operand_mask(&tokens);
-        for at in git_positions(&tokens) {
+        let tokens = segment_tokens(segment);
+        let message = message_operand_mask(&tokens, passes);
+        for at in git_positions(&tokens, passes) {
             if message.get(at).copied().unwrap_or(false) {
                 continue;
             }
@@ -1148,6 +1258,55 @@ mod tests {
         "--mirror origin",
     ];
 
+    /// Construções de shell que levam a saída de um comando para outro lugar.
+    ///
+    /// Coluna acrescentada pelo QUARTO conserto. É a primeira coluna que não
+    /// fala de como se ESCREVE o push — fala do que acontece com a saída de
+    /// quem o escreve. `echo git push origin main` é texto; a mesma linha com
+    /// `| zsh` no fim é o push, e as duas metades eram segmentos analisados
+    /// independentemente.
+    ///
+    /// Cada linha aqui é um caso do mundo real e legível. A cobertura de
+    /// verdade não está nesta lista — está em
+    /// [`matriz_do_passe_nao_sobrevive_ao_alfabeto_que_canaliza`], que varre o
+    /// alfabeto em vez do vocabulário. Esta coluna existe para o leitor ver a
+    /// forma; aquela existe para a forma que ninguém escreveu aqui.
+    const COMPOSITIONS: &[&str] = &[
+        "echo {cmd} | sh",
+        "echo {cmd} | zsh",
+        "echo {cmd} | bash",
+        "echo {cmd} | dash",
+        "echo {cmd} | ksh",
+        "echo {cmd} | fish",
+        "echo {cmd} | sh -s",
+        "echo {cmd} | tee /tmp/x | sh",
+        "echo {cmd} | ssh host sh",
+        "echo {cmd} | xargs -I% sh -c %",
+        "echo {cmd} | . /dev/stdin",
+        "printf '{cmd}' | zsh",
+        "grep -r '{cmd}' docs | sh",
+        "eval $(echo {cmd})",
+        "eval `echo {cmd}`",
+        "sh -c \"$(echo {cmd})\"",
+        "(echo {cmd}) | zsh",
+        "echo {cmd} > /tmp/x.sh",
+        "echo {cmd} >> ~/.zshrc",
+        "echo {cmd} | while read l; do eval $l; done",
+    ];
+
+    /// Onde um caractere de composição pode aparecer em volta do comando.
+    ///
+    /// Quatro posições, não uma: colado conta tanto quanto espaçado — é o mesmo
+    /// motivo de [`COMMAND_SEPARATORS`] casar por CARACTERE —, e "antes" conta
+    /// porque o texto pode ser o último estágio de um cano que alguém captura
+    /// por fora (`sh -c "$(cat x | grep '…')"`).
+    const ROUTING_PLACEMENTS: &[&str] = &[
+        "{cmd} {sep} sink",
+        "{cmd}{sep}sink",
+        "sink {sep} {cmd}",
+        "{sep}{cmd}{sep}",
+    ];
+
     /// Destino que NÃO é trunk. Sensor de discriminação: sem esta coluna,
     /// "recusa tudo" passaria na matriz positiva.
     const NON_TRUNK_TARGETS: &[&str] = &[
@@ -1193,6 +1352,37 @@ mod tests {
         push_commands_from(LAUNCHERS, targets)
     }
 
+    /// A linha exata que [`TEXT_ONLY_COMMANDS`] existe para NÃO recusar.
+    ///
+    /// Base compartilhada entre a matriz do passe e as duas varreduras do
+    /// alfabeto, para que o sensor prove que é a MESMA linha que sobrevive
+    /// limpa e morre canalizada.
+    fn text_pass_command(name: &str, target: &str) -> String {
+        format!("{name} -q git push {target}")
+    }
+
+    fn compose(template: &str, cmd: &str) -> String {
+        template.replace("{cmd}", cmd)
+    }
+
+    fn place(placement: &str, cmd: &str, sep: char) -> String {
+        placement
+            .replace("{cmd}", cmd)
+            .replace("{sep}", sep.to_string().as_str())
+    }
+
+    /// Caracteres de [`COMMAND_SEPARATORS`] que NÃO canalizam: sequenciam e
+    /// deixam a saída na tela. Derivado das duas constantes de produção em vez
+    /// de escrito à mão — mover um caractere de uma lista para a outra troca os
+    /// dois lados da prova sozinho.
+    fn sequencing_separators() -> Vec<char> {
+        COMMAND_SEPARATORS
+            .iter()
+            .copied()
+            .filter(|c| !OUTPUT_ROUTING.contains(c))
+            .collect()
+    }
+
     /// A tabela que os dois consertos anteriores não tinham.
     ///
     /// Cada coluna é uma forma de escrever a MESMA coisa — um push para a
@@ -1207,13 +1397,46 @@ mod tests {
     /// arquivo. Coluna nova (um jeito novo de escrever a mesma coisa) entra
     /// como coluna.
     ///
-    /// O TERCEIRO conserto mostrou o limite dessa regra: a tabela só cobre o
-    /// que passa pela varredura, e não viu `rg`/`ag` entrarem em
+    /// **Por que essa regra não bastou, duas vezes seguidas.** Ela é reativa
+    /// por construção: a tabela multiplica formas que alguém LEMBROU de
+    /// escrever, e as duas regressões seguintes vieram, as duas, de uma forma
+    /// que ninguém tinha lembrado. O TERCEIRO conserto caiu em
     /// [`TEXT_ONLY_COMMANDS`] — que não é uma forma de invocar, é o
-    /// DESLIGAMENTO da varredura. Toda exceção nova precisa da própria tabela,
-    /// e as duas que existem hoje são
-    /// [`matriz_de_ferramenta_que_executa_nao_ganha_o_passe_de_texto`] e
-    /// [`matriz_de_push_atras_de_uma_mensagem_continua_recusada`].
+    /// DESLIGAMENTO da varredura — e o QUARTO caiu no cano, que não é uma forma
+    /// de invocar nem um desligamento: é o que acontece com a SAÍDA de quem
+    /// escreve o push. Nenhuma coluna daqui olhava para fora do comando.
+    ///
+    /// **O que mudou no QUARTO conserto.** Vocabulário não fecha, alfabeto
+    /// fecha. Toda construção de shell — cano, redirecionamento, here-string,
+    /// here-doc, substituição de comando, substituição de processo, `xargs`,
+    /// `-c` — se escreve com um caractere de [`OUTPUT_ROUTING`] ou de
+    /// [`COMMAND_SEPARATORS`], e essas duas listas são finitas e vivem no
+    /// código de produção. Por isso a cobertura de composição não é uma coluna
+    /// de exemplos e sim uma VARREDURA das constantes:
+    /// [`matriz_do_passe_nao_sobrevive_ao_alfabeto_que_canaliza`] cruza cada
+    /// caractere que canaliza com cada passe e cada posição, e
+    /// [`matriz_do_passe_sobrevive_ao_alfabeto_que_so_sequencia`] cruza o
+    /// complemento para provar que a recusa não virou cega. Caractere novo numa
+    /// das constantes entra nas duas varreduras sozinho, sem ninguém escrever
+    /// caso nenhum. [`COMPOSITIONS`] fica como a versão legível do mesmo fato.
+    ///
+    /// **A regra que substitui a antiga, então**: passe novo (qualquer lugar
+    /// onde a varredura seja desligada) nasce atrás de [`passes_allowed`] e
+    /// entra na varredura do alfabeto. Forma nova de invocar continua sendo
+    /// linha de coluna. As tabelas por exceção que existem hoje são
+    /// [`matriz_de_ferramenta_que_executa_nao_ganha_o_passe_de_texto`],
+    /// [`matriz_de_push_atras_de_uma_mensagem_continua_recusada`] e
+    /// [`matriz_de_push_para_trunk_composta_e_sempre_recusada`].
+    ///
+    /// **O que a matriz continua não sendo a ferramenta certa para fazer.** Ela
+    /// prova propriedades de STRING, e o eixo que sobra não é de string: nome
+    /// não fixa binário (um `grep` que executa na frente do PATH), variável de
+    /// ambiente não aparece na linha (`RIPGREP_CONFIG_PATH`), e o nome do
+    /// programa pode estar em VALOR de flag de um runner
+    /// (`docker run --entrypoint git img push origin main`). Para esses o
+    /// instrumento é o sandbox — [`crate::sandbox`], que nega a rede e a escrita
+    /// fora do worktree independentemente do que a linha diga —, não mais uma
+    /// coluna aqui.
     #[test]
     fn matriz_de_push_para_trunk_e_sempre_recusada_e_vermelha() {
         for cmd in push_commands(TRUNK_TARGETS) {
@@ -1305,6 +1528,192 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Os dois casos exatos do relato do QUARTO conserto.
+    ///
+    /// O segundo já saía vermelho por acidente — `classify_risk` casa `| sh`
+    /// como SUBSTRING —, e o primeiro saía AMARELO, que é o nível que entra na
+    /// allowlist de "sempre permitir" da sessão. Os dois estão aqui porque a
+    /// diferença entre eles era o nome do shell, e não a semântica.
+    #[test]
+    fn passe_de_texto_nao_sobrevive_ao_cano() {
+        assert!(is_refused_by_core("echo git push origin main | zsh"));
+        assert!(is_refused_by_core("echo git push origin main | sh"));
+        assert_eq!(
+            classify_risk("echo git push origin main | zsh"),
+            RiskLevel::Red
+        );
+        assert_eq!(
+            classify_risk("echo git push origin main | sh"),
+            RiskLevel::Red
+        );
+    }
+
+    /// O QUINTO buraco, achado pela varredura antes de virar relato.
+    ///
+    /// Não é composição: é um push para a trunk escrito por extenso, com um
+    /// redirecionamento colado no refspec. `>` não separa comando, então
+    /// `main>/dev/null` chegava como UM token e não casava com `main`. Já
+    /// vazava no commit que este conserto corrige — ver [`segment_tokens`].
+    #[test]
+    fn redirecionamento_colado_nao_esconde_o_push() {
+        for cmd in [
+            "git push origin main>/dev/null",
+            "git push origin main>x",
+            "git push>x origin main",
+            "git>x push origin main",
+            "git -C /repo>x push origin main",
+            "git push origin main<x",
+            "git push origin main$sufixo",
+            "git push origin +main>x",
+            "git push --all>x origin",
+        ] {
+            assert!(
+                is_refused_by_core(cmd),
+                "redirecionamento colado escondeu o push: {cmd:?}"
+            );
+            assert_eq!(
+                classify_risk(cmd),
+                RiskLevel::Red,
+                "redirecionamento colado rebaixou o push: {cmd:?}"
+            );
+        }
+        // Sensor: cortar a palavra não pode inventar trunk onde não há. O
+        // destino real aqui é `ma`, e o `in` é nome de arquivo.
+        assert!(!is_refused_by_core("git push origin ma>in"));
+        assert!(!is_refused_by_core("git push origin feat/$nome"));
+    }
+
+    /// A varredura do alfabeto — o que substitui a coluna de exemplos.
+    ///
+    /// Cruza cada PASSE do módulo com cada caractere de [`OUTPUT_ROUTING`] e
+    /// cada posição de [`ROUTING_PLACEMENTS`]. As três dimensões saem de
+    /// constantes: nome novo em [`TEXT_ONLY_COMMANDS`] e caractere novo em
+    /// [`OUTPUT_ROUTING`] entram aqui sem ninguém escrever caso nenhum, e um
+    /// passe novo que esqueça [`passes_allowed`] cai de imediato.
+    #[test]
+    fn matriz_do_passe_nao_sobrevive_ao_alfabeto_que_canaliza() {
+        for sep in OUTPUT_ROUTING.iter().copied() {
+            for placement in ROUTING_PLACEMENTS {
+                // Passe de texto.
+                for name in TEXT_ONLY_COMMANDS {
+                    for target in TRUNK_TARGETS {
+                        let cmd = place(placement, &text_pass_command(name, target), sep);
+                        assert!(
+                            is_refused_by_core(&cmd),
+                            "passe de texto sobreviveu à saída canalizada: {cmd:?}"
+                        );
+                        assert_eq!(
+                            classify_risk(&cmd),
+                            RiskLevel::Red,
+                            "passe de texto canalizado não é vermelho: {cmd:?}"
+                        );
+                    }
+                }
+                // Passe da mensagem de commit — o outro lugar onde a varredura
+                // é desligada. Não foi ele o do relato; está aqui porque o
+                // portão é o mesmo e a prova tem de ser a mesma.
+                for target in TRUNK_TARGETS {
+                    let cmd = place(
+                        placement,
+                        &format!(r#"git commit -m "git push {target}""#),
+                        sep,
+                    );
+                    assert!(
+                        is_refused_by_core(&cmd),
+                        "passe da mensagem sobreviveu à saída canalizada: {cmd:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// O outro lado do alfabeto: sequenciar não é canalizar.
+    ///
+    /// Sem este sensor, "desligar todo passe sempre" passaria na varredura de
+    /// cima — e desligar todo passe é recusar `echo git push main`, que é a
+    /// recusa sem contorno que [`TEXT_ONLY_COMMANDS`] existe para evitar. O
+    /// complemento é calculado a partir das duas constantes de produção, então
+    /// mover um caractere de uma lista para a outra troca os dois lados juntos.
+    #[test]
+    fn matriz_do_passe_sobrevive_ao_alfabeto_que_so_sequencia() {
+        let sequencers = sequencing_separators();
+        assert!(
+            !sequencers.is_empty(),
+            "sem separador que só sequencia, o sensor não discrimina nada"
+        );
+        for sep in sequencers {
+            for placement in ROUTING_PLACEMENTS {
+                for name in TEXT_ONLY_COMMANDS {
+                    for target in TRUNK_TARGETS {
+                        let cmd = place(placement, &text_pass_command(name, target), sep);
+                        assert!(
+                            !is_refused_by_core(&cmd),
+                            "recusa cega: sequenciar não leva a saída para lugar nenhum: {cmd:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A coluna de composição cruzada com a matriz inteira do push.
+    ///
+    /// A versão legível da varredura de cima: construções reais de shell, cada
+    /// uma cruzada com as formas de escrever o push. Um `assert!` avulso pega a
+    /// linha que o autor lembrou; cruzar faz um estreitamento derrubar milhares
+    /// de casos de uma vez.
+    #[test]
+    fn matriz_de_push_para_trunk_composta_e_sempre_recusada() {
+        for template in COMPOSITIONS {
+            for push in push_commands_from(&[""], TRUNK_TARGETS) {
+                let cmd = compose(template, &push);
+                assert!(
+                    is_refused_by_core(&cmd),
+                    "push composto não recusado pelo core: {cmd:?}"
+                );
+                assert_eq!(
+                    classify_risk(&cmd),
+                    RiskLevel::Red,
+                    "push composto não é vermelho: {cmd:?}"
+                );
+            }
+        }
+    }
+
+    /// O preço medido do portão, item a item.
+    ///
+    /// Fixado de propósito: é uma lista de linhas que ANTES não eram recusadas
+    /// e agora são. Quem um dia quiser um passe mais fino tem aqui o custo
+    /// exato que estaria comprando de volta, e qualquer estreitamento futuro do
+    /// portão faz este teste falhar em vez de passar em silêncio.
+    #[test]
+    fn falsos_positivos_novos_do_portao_estao_medidos() {
+        // Busca legítima que passa por um cano ou por uma variável.
+        assert!(is_refused_by_core(
+            "grep -rn 'git push origin main' . | head -20"
+        ));
+        assert!(is_refused_by_core(
+            "grep -r 'git push origin main' \"$DOCS\""
+        ));
+        assert!(is_refused_by_core(
+            "grep -c 'git push origin main' docs/*.md > /tmp/contagem"
+        ));
+        // Subshell, que não canaliza nada — cai junto porque `(` é do alfabeto.
+        assert!(is_refused_by_core("(echo git push origin main)"));
+        // Mensagem de commit que cita a regra, numa linha com redirecionamento.
+        assert!(is_refused_by_core(
+            r#"git commit -m "git push origin main" > /dev/null"#
+        ));
+        // O contorno de todos é tirar a composição: a mesma linha, limpa,
+        // continua passando.
+        assert!(!is_refused_by_core("grep -rn 'git push origin main' ."));
+        assert!(!is_refused_by_core("grep -r 'git push origin main' docs"));
+        assert!(!is_refused_by_core("echo git push origin main"));
+        assert!(!is_refused_by_core(
+            r#"git commit -m "git push origin main""#
+        ));
     }
 
     /// Verde é auto-aprovável: roda sem prompt nenhum quando o usuário liga a
@@ -1434,11 +1843,34 @@ mod tests {
     /// se alguém estreitar uma só. Divergência na direção perigosa é a mesma
     /// linha sendo negada por um caminho e liberada em BLOCO pelo outro:
     /// amarelo entra na allowlist de "sempre permitir" da sessão.
+    ///
+    /// O QUARTO conserto alargou o corpus para a composição, e por um motivo
+    /// concreto: `echo git push origin main | zsh` saía AMARELO enquanto
+    /// `… | sh` saía vermelho, porque `classify_risk` casa `| sh` como
+    /// substring e nunca ouviu falar de `zsh`. A divergência não era teórica —
+    /// era a mesma linha recusada por um caminho e allowlistável pelo outro,
+    /// dependendo do nome do shell.
     #[test]
     fn recusado_pelo_core_nunca_e_allowlistavel() {
         let mut corpus = push_commands(TRUNK_TARGETS);
         corpus.extend(push_commands(NON_TRUNK_TARGETS));
         corpus.extend(TEXT_ONLY_MENTIONS.iter().map(|c| (*c).to_string()));
+        for template in COMPOSITIONS {
+            corpus.extend(
+                push_commands_from(&[""], TRUNK_TARGETS)
+                    .iter()
+                    .map(|push| compose(template, push)),
+            );
+        }
+        for sep in OUTPUT_ROUTING.iter().copied() {
+            for placement in ROUTING_PLACEMENTS {
+                for name in TEXT_ONLY_COMMANDS {
+                    for target in TRUNK_TARGETS {
+                        corpus.push(place(placement, &text_pass_command(name, target), sep));
+                    }
+                }
+            }
+        }
         for cmd in corpus {
             if is_refused_by_core(&cmd) {
                 assert_eq!(
