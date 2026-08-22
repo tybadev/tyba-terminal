@@ -64,6 +64,17 @@ pub(super) struct Snapshot {
 pub(super) enum Action {
     /// Trecho do chunk que vai para a tela ao vivo.
     Live(Range<usize>),
+    /// O eco engolido que ninguém mais vai repor, devolvido à tela ao vivo.
+    ///
+    /// Carrega os bytes em vez de um recorte porque o eco e o sinal que o
+    /// resgata caem em chunks diferentes: a quebra de linha vem do tty e o
+    /// `PS2` vem do shell, então na maioria das leituras já não há índice deste
+    /// chunk que aponte para a linha submetida.
+    ///
+    /// Não é `LiveRestart`: aquele LIMPA a tela antes de emendar, e aqui o
+    /// prompt primário já desenhado (`❯ `) tem de continuar onde está — a
+    /// linha se escreve depois dele, não no lugar dele.
+    LiveEcho(Vec<u8>),
     /// O corte do eco: joga fora o que está na fila da tela ao vivo, limpa a
     /// tela e emenda o trecho do chunk.
     LiveRestart(Range<usize>),
@@ -168,8 +179,13 @@ pub(super) struct CaptureMachine {
     capture: Capture,
     capturing: bool,
     swallow_echo: bool,
-    /// Bytes já engolidos à espera da quebra de linha do eco.
-    swallowed: usize,
+    /// O eco já engolido nesta submissão, guardado inteiro em vez de contado.
+    ///
+    /// Serve às duas perguntas: `len()` é o antigo contador contra o
+    /// `MAX_ECHO_BYTES`, e o conteúdo é o que volta à tela quando o `133;C`
+    /// nunca chega. Só cresce entre o `133;B` e a quebra de linha, então o teto
+    /// é o próprio `MAX_ECHO_BYTES` mais um chunk.
+    echo: Vec<u8>,
     submission: Submission,
     /// O último estado do ciclo de comando ENTREGUE ao front — o objeto que ele
     /// tem em mãos agora. É daqui que sai todo payload, e é contra ele que a
@@ -190,7 +206,7 @@ impl CaptureMachine {
             capture: Capture::default(),
             capturing: false,
             swallow_echo: false,
-            swallowed: 0,
+            echo: Vec::new(),
             submission: Submission::Idle,
             command: SessionCommandPayload::default(),
             prompt_mode: None,
@@ -222,6 +238,12 @@ impl CaptureMachine {
         // Enter e o preexec o shell não pinta nada, e o `PS2` é a exceção.
         let shell_reply: &[u8];
 
+        // Onde a tela ao vivo deste chunk começa dentro de `actions`. O eco
+        // resgatado é decidido no FIM do chunk, mas foi escrito ANTES do que o
+        // shell pintou depois dele — entra por aqui para não sair na tela
+        // depois do `PS2` que ele mesmo provocou.
+        let live_from = actions.len();
+
         // A tela ao vivo é decidida com o estado de ANTES dos eventos: o que
         // está chegando é o eco do comando que acabou de ser submetido.
         if self.swallow_echo {
@@ -247,6 +269,9 @@ impl CaptureMachine {
                 Some(at) => {
                     self.swallow_echo = false;
                     self.submission = Submission::AwaitingShell;
+                    // Guardado, não descartado: o assentamento lá embaixo ainda
+                    // pode descobrir que ninguém vai repor esta linha.
+                    self.echo.extend_from_slice(&chunk[..=at]);
                     shell_reply = &chunk[at + 1..];
                     if at + 1 < chunk.len() {
                         actions.push(Action::Live(at + 1..chunk.len()));
@@ -255,9 +280,14 @@ impl CaptureMachine {
                 None => {
                     // Tudo o que veio é eco: o shell ainda não respondeu nada.
                     shell_reply = &[];
-                    self.swallowed += chunk.len();
-                    if self.swallowed > MAX_ECHO_BYTES {
+                    self.echo.extend_from_slice(chunk);
+                    if self.echo.len() > MAX_ECHO_BYTES {
                         self.swallow_echo = false;
+                        // Desistir é desistir: sem quebra de linha a submissão
+                        // nunca chegou a `AwaitingShell`, então este eco não
+                        // tem resgate nenhum à espera dele — segurá-lo só
+                        // guardaria 8 KiB por sessão até o próximo `133;B`.
+                        self.echo.clear();
                         actions.push(Action::Live(0..chunk.len()));
                     }
                 }
@@ -292,6 +322,11 @@ impl CaptureMachine {
                     // corte por posição não achou nada e a tela ao vivo ficaria
                     // muda o comando inteiro.
                     self.swallow_echo = false;
+                    // O comando começou: quem repõe o eco daqui em diante é o
+                    // `LiveRestart` logo abaixo, e o cartão do bloco mostra a
+                    // linha inteira. Devolver o eco por cima disso é o eco
+                    // duplicado que o `swallow_echo` existe para evitar.
+                    self.echo.clear();
                     // A saída vem grudada no `133;C` — o mesmo fato que já
                     // obrigava o corte da tela ao vivo. Sem recortar aqui
                     // também, o bloco nasce VAZIO sempre que marcador, saída e
@@ -347,7 +382,7 @@ impl CaptureMachine {
                     // submetido. Fora do modo prompt quem digitou foi o
                     // terminal, e aí o eco é a própria digitação.
                     self.swallow_echo = self.prompt_mode == Some(true);
-                    self.swallowed = 0;
+                    self.echo.clear();
                     // `133;B` é o PS1, ou seja prompt PRIMÁRIO: o shell está
                     // pronto para comando novo, não continuando um.
                     self.submission = Submission::Idle;
@@ -381,6 +416,21 @@ impl CaptureMachine {
         // todo `ls -la` passava pela tela anunciado como continuação.
         if self.submission == Submission::AwaitingShell && paints_glyph(shell_reply) {
             self.submission = Submission::Continuing;
+            // E aqui a máquina acaba de descobrir que o `133;C` não vem: o
+            // shell pintou o `PS2` em vez de rodar o preexec. Ninguém mais vai
+            // repor o eco engolido — o único repintor é o `LiveRestart` do
+            // braço do `CommandStart` —, então a linha submetida sumia da tela
+            // e sobrava `❯ for> `, o prompt primário colado no de continuação.
+            //
+            // É o resgate do caminho em que ninguém repinta, e só dele: no
+            // caminho normal a submissão nunca chega a `Continuing`, porque
+            // `633;E`, `133;C` e `133;B` a devolvem a `Idle` antes.
+            //
+            // `take` e não `clone`: o resgate é único por submissão, e o eco
+            // das linhas seguintes já vai direto para a tela.
+            if !self.echo.is_empty() {
+                actions.insert(live_from, Action::LiveEcho(std::mem::take(&mut self.echo)));
+            }
         }
 
         // `continuation` viaja no payload INTEIRO, montado sobre o estado que o
@@ -690,22 +740,33 @@ mod tests {
         assert_eq!(text_of(&block), ["hi"]);
     }
 
-    /// Junta o que sai para a tela ao vivo, aplicando as ações na ordem —
-    /// `LiveRestart` descarta o que já tinha entrado, como o emitter faz.
-    fn live_screen(chunk: &[u8], actions: &[Action]) -> String {
-        let mut out: Vec<u8> = Vec::new();
+    /// Aplica as ações de UM chunk sobre a tela ao vivo que já existe, na ordem
+    /// — `LiveRestart` descarta o que já tinha entrado, como o emitter faz.
+    ///
+    /// Acumular entre chunks não é conveniência de escrita: o eco e o `PS2` que
+    /// o justifica caem em leituras diferentes do PTY sempre que o shell é
+    /// menos rápido que o tty, e asserção chunk a chunk não enxerga a linha que
+    /// sumiu duas leituras atrás.
+    fn paint(screen: &mut Vec<u8>, chunk: &[u8], actions: &[Action]) {
         for action in actions {
             match action {
-                Action::Live(range) => out.extend_from_slice(&chunk[range.clone()]),
+                Action::Live(range) => screen.extend_from_slice(&chunk[range.clone()]),
+                Action::LiveEcho(bytes) => screen.extend_from_slice(bytes),
                 Action::LiveRestart(range) => {
-                    out.clear();
-                    out.extend_from_slice(&chunk[range.clone()]);
+                    screen.clear();
+                    screen.extend_from_slice(&chunk[range.clone()]);
                 }
-                Action::ResetScreen => out.clear(),
+                Action::ResetScreen => screen.clear(),
                 _ => {}
             }
         }
-        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// Junta o que sai para a tela ao vivo num chunk só.
+    fn live_screen(chunk: &[u8], actions: &[Action]) -> String {
+        let mut screen: Vec<u8> = Vec::new();
+        paint(&mut screen, chunk, actions);
+        String::from_utf8_lossy(&screen).into_owned()
     }
 
     /// Uma sessão em modo prompt logo depois do `133;B`, que é onde o eco
@@ -722,10 +783,108 @@ mod tests {
         // `133;C` é emitido. Enquanto o desarme dependia dele, a flag ficava
         // ligada para sempre e nada mais chegava ao xterm — o `for> ` sumia, o
         // eco do que se digitava depois sumia, e a tela ficava preta.
+        //
+        // A pergunta daqui é só se a tela volta a receber bytes. A igualdade
+        // com `"for> "` que morava aqui respondia a mais que isso, e de quebra
+        // fixava o bug seguinte como esperado: a tela deixou de escurecer, mas
+        // a linha submetida continuou sumindo. O conteúdo exato é de
+        // `the_first_line_of_an_incomplete_command_stays_on_the_screen`.
+        let mut machine = at_the_prompt();
+        let chunk = b"for i in 1 2 3; do\r\nfor> ";
+        let screen = live_screen(chunk, &machine.on_chunk(chunk, 2_000, false));
+        assert!(screen.ends_with("for> "), "a tela escureceu: {screen:?}");
+    }
+
+    #[test]
+    fn the_first_line_of_an_incomplete_command_stays_on_the_screen() {
+        // O eco é engolido a partir do `133;B`, e quem o repõe na tela é o
+        // `LiveRestart` do `133;C` — que num comando incompleto NUNCA vem,
+        // porque o zsh não roda o preexec enquanto a linha não fecha. A tela
+        // mostrava `❯ for> `, o prompt primário colado no de continuação, sem
+        // traço nenhum do que foi digitado.
+        //
+        // É a pior linha para sumir: é exatamente a que a UI de continuação
+        // existe para ajudar a terminar.
         let mut machine = at_the_prompt();
         let chunk = b"for i in 1 2 3; do\r\nfor> ";
         let actions = machine.on_chunk(chunk, 2_000, false);
-        assert_eq!(live_screen(chunk, &actions), "for> ");
+        assert_eq!(
+            live_screen(chunk, &actions),
+            "for i in 1 2 3; do\r\nfor> ",
+            "a linha submetida sumiu da tela: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn the_first_line_survives_the_ps2_arriving_in_another_chunk() {
+        // O mesmo caso com o eco e o `PS2` em leituras diferentes do PTY — que
+        // é o comum, porque um vem do tty e o outro do shell. Quando a
+        // repintura acontece, o eco já é de um chunk que passou: recorte por
+        // índice não alcança, e por isso a ação carrega bytes próprios.
+        //
+        // O próprio eco parte em duas leituras aqui: é a linha inteira que tem
+        // de voltar, não o pedaço em que a quebra de linha calhou de cair.
+        let mut machine = at_the_prompt();
+        let mut screen = Vec::new();
+        for chunk in [b"for i in 1 2 3;".as_slice(), b" do\r\n", b"for> "] {
+            paint(&mut screen, chunk, &machine.on_chunk(chunk, 2_000, false));
+        }
+        assert_eq!(
+            String::from_utf8_lossy(&screen),
+            "for i in 1 2 3; do\r\nfor> "
+        );
+    }
+
+    #[test]
+    fn the_lines_after_the_first_are_echoed_once_each() {
+        // O outro lado da repintura: da segunda linha em diante o eco JÁ é a
+        // tela — o `swallow_echo` está desarmado —, e repor de novo escreveria
+        // tudo duas vezes.
+        let mut machine = at_the_prompt();
+        let mut screen = Vec::new();
+        let first = b"for i in 1 2 3; do\r\nfor> ";
+        paint(&mut screen, first, &machine.on_chunk(first, 2_000, false));
+        let body = b"echo $i\r\nfor> ";
+        paint(&mut screen, body, &machine.on_chunk(body, 2_100, false));
+        let text = String::from_utf8_lossy(&screen);
+        assert_eq!(
+            text.matches("for i in 1 2 3; do").count(),
+            1,
+            "a primeira linha foi repintada mais de uma vez: {text:?}"
+        );
+        assert_eq!(
+            text.matches("echo $i").count(),
+            1,
+            "o corpo da continuação apareceu em duplicata: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_complete_command_never_repaints_the_swallowed_echo() {
+        // A guarda do caminho normal, em DOIS chunks de propósito: é aí que a
+        // submissão fica pendurada em `AwaitingShell` atravessando a fronteira,
+        // e é aí que uma repintura mal condicionada dispararia. Aqui o `133;C`
+        // chega, o cartão do bloco já mostra o comando e o `LiveRestart` limpa
+        // a tela — repor o eco seria o eco duplicado que o `swallow_echo`
+        // existe para evitar.
+        let mut machine = at_the_prompt();
+        let mut screen = Vec::new();
+        let submitted = b"ls -la\r\n";
+        paint(
+            &mut screen,
+            submitted,
+            &machine.on_chunk(submitted, 2_000, false),
+        );
+        let started =
+            format!("\x1b]633;E;{}\x07\x1b]133;C\x07total 0\r\n", b64("ls -la")).into_bytes();
+        paint(
+            &mut screen,
+            &started,
+            &machine.on_chunk(&started, 2_010, false),
+        );
+        let text = String::from_utf8_lossy(&screen);
+        assert!(!text.contains("ls -la"), "eco duplicado na tela: {text:?}");
+        assert!(text.contains("total 0"), "saída sumiu: {text:?}");
     }
 
     #[test]
@@ -768,11 +927,14 @@ mod tests {
             live_screen(first, &machine.on_chunk(first, 2_000, false)),
             ""
         );
-        let second = b"a\r\nresto";
-        assert_eq!(
-            live_screen(second, &machine.on_chunk(second, 2_010, false)),
-            "resto"
-        );
+        // O `133;C` fecha o eco de verdade. Texto solto depois da quebra de
+        // linha NÃO serve de fixture aqui: para a máquina isso é `PS2`, e aí o
+        // eco volta à tela de propósito — é o resgate do comando incompleto.
+        let second =
+            format!("a\r\n\x1b]633;E;{}\x07\x1b]133;C\x07resto", b64("ls -la")).into_bytes();
+        let screen = live_screen(&second, &machine.on_chunk(&second, 2_010, false));
+        assert!(!screen.contains("ls -l"), "metade do eco vazou: {screen:?}");
+        assert!(screen.ends_with("resto"), "a saída sumiu: {screen:?}");
     }
 
     #[test]
@@ -896,10 +1058,13 @@ mod tests {
             front_state(&actions).continuation,
             "o `PS2` é continuação: {actions:?}"
         );
-        assert_eq!(
-            live_screen(chunk, &actions),
-            "for> ",
-            "o `for> ` do PS2 não pode sumir da tela"
+        // O par: anunciar continuação não pode custar a tela. Quanto ao que
+        // exatamente sobra nela, quem responde é
+        // `the_first_line_of_an_incomplete_command_stays_on_the_screen`.
+        let screen = live_screen(chunk, &actions);
+        assert!(
+            screen.ends_with("for> "),
+            "o `PS2` não pode sumir da tela: {screen:?}"
         );
     }
 
