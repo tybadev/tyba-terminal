@@ -300,34 +300,101 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, Stor
 /// Roda depois do `SCHEMA`, que só cria o que falta: num banco novo tudo já
 /// nasceu na forma final e os degraus são no-op — o que os deixa passar é
 /// justamente a checagem de coluna, não a versão.
-fn migrate(conn: &Connection) -> Result<(), StoreError> {
+///
+/// # Um degrau que não pega não é motivo para perder o banco
+///
+/// Erro de degrau **não** sobe como `Err`. As instruções que este `migrate`
+/// substituiu eram `let _ = conn.execute(...)`, engolidas de propósito; trocar
+/// isso por `?` transformaria estados de banco que hoje só degradam — índice,
+/// view ou trigger sobrando sobre `sessions.scrollback`, banco editado à mão,
+/// restauração parcial de backup — em `Store::open` devolvendo `Err`. E o que
+/// há do outro lado do `Err` é o `open_store` caindo para um banco **em
+/// memória**: o usuário abre o app depois de atualizar, não encontra nenhuma
+/// sessão, nenhum layout e nenhum histórico, e tudo que fizer nessa abertura
+/// morre com o processo. Isto rodaria na primeira abertura de todo mundo.
+///
+/// Então o degrau que falha vira linha no relatório, e o banco do disco segue
+/// sendo o banco. Fatal de verdade — não dá para ler `user_version`, não dá
+/// para carimbar a versão nova — continua subindo como `Err`: aí o arquivo não
+/// é um banco utilizável e cair para memória é a única saída que ainda tem app.
+///
+/// # A versão só anda até o degrau contíguo que pegou
+///
+/// Carimbar `SCHEMA_VERSION` com degrau pendente marcaria como concluída uma
+/// migração que não aconteceu, e ela nunca mais seria tentada. Os dois degraus
+/// **rodam** de todo jeito (o 2 tira output de terminal do disco — princípio
+/// #10 —, e adiar isso porque o 1 falhou seria o pior dos dois mundos), mas a
+/// versão gravada é a do último que pegou sem buraco antes dele. O custo de
+/// ficar para trás é reexecutar um punhado de `PRAGMA table_info` por abertura,
+/// até a próxima que der certo.
+fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
     let from: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if from >= SCHEMA_VERSION {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
-    if from < 1 {
+    let mut skipped: Vec<String> = Vec::new();
+
+    let baseline_applied = if from < 1 {
+        let mut applied = true;
         for (table, column, kind) in BASELINE_COLUMNS {
-            if has_column(conn, table, column)? {
-                continue;
+            match has_column(conn, table, column) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(e) => {
+                    skipped.push(format!("{table}.{column}: {e}"));
+                    applied = false;
+                    continue;
+                }
             }
-            conn.execute(
+            if let Err(e) = conn.execute(
                 &format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"),
                 [],
-            )?;
+            ) {
+                skipped.push(format!("{table}.{column}: {e}"));
+                applied = false;
+            }
         }
+        applied
+    } else {
+        true
+    };
+
+    let scrollback_applied = if from < 2 {
+        match has_column(conn, "sessions", "scrollback") {
+            Ok(true) => match conn.execute("ALTER TABLE sessions DROP COLUMN scrollback", []) {
+                Ok(_) => true,
+                Err(e) => {
+                    skipped.push(format!("sessions.scrollback: {e}"));
+                    false
+                }
+            },
+            Ok(false) => true,
+            Err(e) => {
+                skipped.push(format!("sessions.scrollback: {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
+    let reached = match (baseline_applied, scrollback_applied) {
+        (true, true) => SCHEMA_VERSION,
+        (true, false) => 1,
+        (false, _) => from,
+    };
+    if reached > from {
+        conn.pragma_update(None, "user_version", reached)?;
     }
 
-    if from < 2 && has_column(conn, "sessions", "scrollback")? {
-        conn.execute("ALTER TABLE sessions DROP COLUMN scrollback", [])?;
-    }
-
-    conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-    Ok(())
+    Ok(skipped)
 }
 
 pub struct Store {
     conn: Mutex<Connection>,
+    /// Ver [`Store::degraded`].
+    degraded: Option<String>,
 }
 
 impl Store {
@@ -367,10 +434,29 @@ impl Store {
     fn init(conn: Connection) -> Result<Self, StoreError> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
-        migrate(&conn)?;
+        let skipped = migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            degraded: (!skipped.is_empty()).then(|| {
+                format!(
+                    "a migração do banco de sessões não aplicou {} passo(s): {}",
+                    skipped.len(),
+                    skipped.join("; ")
+                )
+            }),
         })
+    }
+
+    /// O banco abriu, mas o schema não chegou onde este binário espera.
+    ///
+    /// `Some` significa que algum degrau da migração não pegou: as colunas que
+    /// ele criaria podem faltar, e a consulta que depender delas vai falhar
+    /// sozinha. Não é motivo para recusar o banco — é motivo para o usuário
+    /// **saber**, porque o sintoma é lista vazia e lista vazia é indistinguível
+    /// de "não tem nada". Quem lê isto é o `open_store`, que transforma a
+    /// mensagem em falha de boot (`app://boot-failed` + `bootFailure`).
+    pub fn degraded(&self) -> Option<&str> {
+        self.degraded.as_deref()
     }
 
     /// Devolve o WAL ao tamanho do que ele realmente precisa.
@@ -2033,6 +2119,110 @@ mod tests {
         let sessions = store.load_sessions().unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].title, "zsh");
+    }
+
+    /// Um banco legado com um índice sobre a coluna que a versão 2 derruba.
+    /// SQLite recusa o `DROP COLUMN` enquanto o índice existir — é o estado
+    /// mais barato de fabricar entre os que a review lista (índice, view ou
+    /// trigger sobrando, banco editado à mão, backup restaurado pela metade).
+    fn write_database_that_refuses_the_drop(path: &Path) {
+        write_legacy_database(path);
+        Connection::open(path)
+            .unwrap()
+            .execute_batch("CREATE INDEX sessions_by_scrollback ON sessions(scrollback);")
+            .unwrap();
+    }
+
+    /// **Atualizar o app não pode deixar alguém sem app.** Este degrau roda na
+    /// primeira abertura de todo usuário depois de atualizar; se ele derrubasse
+    /// o `Store::open`, o `open_store` cairia para um banco em memória e a
+    /// abertura inteira — sessões, layout, histórico — sumiria em silêncio.
+    #[test]
+    fn a_migration_step_that_cannot_apply_keeps_the_database_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        write_database_that_refuses_the_drop(&path);
+
+        let store = Store::open(&path).expect("banco com degrau pendente ainda tem de abrir");
+
+        // O banco continua sendo o do disco: a sessão herdada está lá.
+        assert_eq!(store.load_sessions().unwrap().len(), 1);
+        // O que não pegou continua não tendo pegado — nada de fingir sucesso.
+        assert!(column_exists(&store, "sessions", "scrollback"));
+    }
+
+    /// E a falha não pode ser silenciosa: é ela que o `open_store` transforma
+    /// em `app://boot-failed`, para o vazio na tela ler como falha e não como
+    /// ausência de dado.
+    #[test]
+    fn a_skipped_migration_step_is_reported_by_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        write_database_that_refuses_the_drop(&path);
+
+        let store = Store::open(&path).unwrap();
+
+        let degraded = store
+            .degraded()
+            .expect("o degrau que falhou tem de aparecer");
+        assert!(
+            degraded.contains("sessions.scrollback"),
+            "a mensagem tem de dizer qual degrau ficou para trás: {degraded}"
+        );
+    }
+
+    /// O contrapeso: banco saudável não pode reportar degradação, senão o
+    /// banner de falha apareceria em toda abertura e deixaria de significar
+    /// alguma coisa.
+    #[test]
+    fn a_healthy_database_reports_no_degradation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        write_legacy_database(&path);
+
+        assert_eq!(Store::open(&path).unwrap().degraded(), None);
+        assert_eq!(Store::open_in_memory().unwrap().degraded(), None);
+    }
+
+    /// Carimbar `SCHEMA_VERSION` com degrau pendente marcaria como concluída
+    /// uma migração que não aconteceu — e ela nunca mais seria tentada. A
+    /// versão anda até o degrau contíguo que pegou, e o resto é retentado.
+    #[test]
+    fn a_pending_step_holds_the_schema_version_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        write_database_that_refuses_the_drop(&path);
+
+        // A linha de base pegou; o `DROP COLUMN` não. Versão 1, não 2.
+        let store = Store::open(&path).unwrap();
+        assert_eq!(user_version(&store), 1);
+        for (table, column, _) in BASELINE_COLUMNS {
+            assert!(column_exists(&store, table, column));
+        }
+        drop(store);
+
+        // Some o obstáculo e a próxima abertura completa a migração sozinha.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("DROP INDEX sessions_by_scrollback;")
+            .unwrap();
+        let store = Store::open(&path).unwrap();
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert_eq!(store.degraded(), None);
+        assert!(!column_exists(&store, "sessions", "scrollback"));
+        assert_eq!(store.load_sessions().unwrap().len(), 1);
+    }
+
+    /// A outra metade da distinção: banco **ilegível** continua sendo `Err`.
+    /// Aqui não há o que degradar — o arquivo não é um banco —, e é o único
+    /// caso em que cair para memória é a saída que ainda entrega um app.
+    #[test]
+    fn an_unreadable_file_is_still_a_hard_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        std::fs::write(&path, b"isto nao e um banco sqlite").unwrap();
+
+        assert!(Store::open(&path).is_err());
     }
 
     #[test]

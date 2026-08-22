@@ -22,12 +22,21 @@ use parking_lot::{Condvar, Mutex};
 /// front reconsulta `boot_snapshot` ao receber.
 pub const EVENT_READY: &str = "app://ready";
 
-/// Emitido quando a thread de boot morreu de pânico ANTES de abrir o portão.
-/// Payload: `{ message: string }`, a mensagem do pânico.
+/// Emitido quando o arranque não entregou o estado inteiro. Payload:
+/// `{ message: string }`.
+///
+/// São duas origens, e a mensagem é o que as distingue:
+///
+/// - **A thread de boot morreu de pânico** antes de abrir o portão. Aqui não há
+///   sessão, não há layout, e a mensagem é a do pânico.
+/// - **O banco de sessões abriu degradado** — migração com degrau pendente, ou
+///   queda para um banco em memória porque o arquivo do disco não abriu (ver
+///   `open_store`). O arranque termina normalmente; o que estiver faltando
+///   falta porque o banco não tinha para dar.
 ///
 /// Vem sempre seguido de [`EVENT_READY`]: o portão abre de todo jeito (senão
 /// todo comando de escrita paga o timeout de espera e a falha vira lentidão), e
-/// o snapshot que o front reconsultar estará incompleto — sem sessões, sem
+/// o snapshot que o front reconsultar pode estar incompleto — sem sessões, sem
 /// layout, ou pela metade. É este evento que diz que o vazio é falha, não
 /// ausência de dado.
 ///
@@ -117,6 +126,32 @@ impl BootGate {
         }
         self.ready.store(true, Ordering::Release);
         self.changed.notify_all();
+    }
+
+    /// Registra uma falha **sem** abrir o portão.
+    ///
+    /// É o par de [`mark_failed`] para a falha que não interrompe o arranque: o
+    /// banco de sessões que abriu degradado (ver `open_store`), por exemplo. O
+    /// estado ainda vai carregar, então antecipar o `ready` seria mentira — o
+    /// splash sumiria em cima de listas que a thread de boot ainda está
+    /// preenchendo, e todo comando de escrita deixaria de esperar por elas.
+    ///
+    /// A ordem que o [`mark_failed`] garante sob um lock só continua valendo
+    /// aqui por construção: quem chama isto o faz **antes** de o portão abrir,
+    /// e o `store(Release)` do `mark_ready` publica a mensagem junto. O que
+    /// muda é que agora existe `ready: false` com falha registrada — estado
+    /// legítimo, e o `boot_gate` já o devolve porque lê a falha antes do
+    /// desvio.
+    ///
+    /// A primeira mensagem manda, como no [`mark_failed`]: um banco degradado
+    /// explica melhor o app vazio do que o pânico que ele provocou depois.
+    ///
+    /// [`mark_failed`]: BootGate::mark_failed
+    pub fn note_failure(&self, message: impl Into<String>) {
+        let mut failure = self.failure.lock();
+        if failure.is_none() {
+            *failure = Some(message.into());
+        }
     }
 
     /// A mensagem da falha, se o boot morreu antes de terminar.
@@ -252,6 +287,45 @@ mod tests {
         gate.mark_failed("pânico");
         gate.mark_ready();
         assert_eq!(gate.failure().as_deref(), Some("pânico"));
+    }
+
+    /// A falha do banco degradado é conhecida no `.setup()`, antes de a thread
+    /// de boot existir. Registrá-la não pode antecipar o `ready`: o estado
+    /// ainda vai carregar, e um portão aberto cedo entrega listas pela metade
+    /// como se fossem finais.
+    #[test]
+    fn note_failure_records_without_opening_the_gate() {
+        let gate = BootGate::new();
+        gate.note_failure("o banco abriu degradado");
+
+        assert!(!gate.is_ready());
+        assert_eq!(gate.failure().as_deref(), Some("o banco abriu degradado"));
+        assert!(!gate.wait_ready(Duration::from_millis(10)));
+    }
+
+    /// E quando a thread termina bem, a falha anotada antes continua lá — é o
+    /// caso real: banco degradado, boot completo. `mark_ready` publica a
+    /// mensagem junto com o `ready`, então ninguém lê "carregou, sem falha".
+    #[test]
+    fn a_noted_failure_survives_a_clean_boot() {
+        let gate = BootGate::new();
+        gate.note_failure("o banco abriu degradado");
+        gate.mark_ready();
+
+        assert!(gate.is_ready());
+        assert_eq!(gate.failure().as_deref(), Some("o banco abriu degradado"));
+    }
+
+    /// A primeira mensagem manda também aqui: o banco degradado explica melhor
+    /// o app vazio do que o pânico que ele provocou depois.
+    #[test]
+    fn a_noted_failure_wins_over_a_later_panic() {
+        let gate = BootGate::new();
+        gate.note_failure("o banco abriu degradado");
+        gate.mark_failed("restore explodiu");
+
+        assert!(gate.is_ready());
+        assert_eq!(gate.failure().as_deref(), Some("o banco abriu degradado"));
     }
 
     /// Quem espera para ESCREVER precisa acordar quando o boot morre — senão a

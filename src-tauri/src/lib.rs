@@ -2866,11 +2866,18 @@ async fn layout_state(state: State<'_, AppState>) -> Result<Loaded<layout::Layou
 #[serde(rename_all = "camelCase")]
 struct BootSnapshot {
     ready: bool,
-    /// A thread de boot morreu antes de terminar, e esta é a mensagem.
+    /// O arranque não entregou o estado inteiro, e esta é a mensagem.
     ///
-    /// Segunda via do `app://boot-failed` — ver [`boot::EVENT_FAILED`]. Com
-    /// `ready: true` e este campo preenchido, as listas ao lado estão
-    /// incompletas por falha, não por ausência de dado.
+    /// Segunda via do `app://boot-failed` — ver [`boot::EVENT_FAILED`] para as
+    /// duas origens (thread de boot morta, banco de sessões degradado). Com este
+    /// campo preenchido, as listas ao lado estão incompletas por falha, não por
+    /// ausência de dado.
+    ///
+    /// **Pode vir com `ready: false`.** O banco degradado é conhecido no
+    /// `.setup()`, antes de a thread de boot começar, e `note_failure` registra
+    /// sem abrir o portão — o estado ainda vai carregar. `ready` continua sendo
+    /// a pergunta "as listas já são finais?", e este campo, "o que veio dá para
+    /// confiar?"; são independentes.
     boot_failure: Option<String>,
     prefs: std::collections::HashMap<String, String>,
     sessions: Vec<Session>,
@@ -2943,7 +2950,8 @@ struct BootGateSnapshot {
     ready: bool,
     /// Mesmo campo, e mesma rede, do [`BootSnapshot::boot_failure`]: o
     /// `app://boot-failed` sai de dentro da thread de boot, antes de o listener
-    /// do front existir, e o core não reemite.
+    /// do front existir, e o core não reemite. Vale aqui a mesma ressalva de
+    /// lá — pode chegar com `ready: false`, e é o caso do banco degradado.
     boot_failure: Option<String>,
     /// **Ausente** — e não vazio — enquanto `ready == false`.
     ///
@@ -2965,12 +2973,12 @@ fn boot_gate_snapshot(
 ) -> BootGateSnapshot {
     // Lido antes do resto, e a ordem é a decisão — ver [`Loaded::read`].
     let ready = gate.is_ready();
-    // Lido antes do desvio de propósito, para viajar também no retorno cedo.
-    // Hoje é impossível chegar no retorno cedo com falha — `mark_failed` grava a
-    // mensagem e abre o portão sob o mesmo lock, então falha implica
-    // `ready: true` —, mas perguntar ao portão custa um `Mutex<Option<String>>`
-    // e nenhuma consulta. Engolir a única segunda via do `app://boot-failed`
-    // para economizar isso seria trocar a notícia da falha por nada.
+    // Lido antes do desvio, e agora isso importa de verdade: o banco degradado
+    // é registrado no `.setup()` com `note_failure`, que NÃO abre o portão, então
+    // o retorno cedo é o caminho por onde essa notícia chega — o poll roda a
+    // cada ~150ms justamente enquanto `ready` é `false`. Antes só `mark_failed`
+    // produzia falha, e ela implicava `ready: true`; ler o portão aqui já era o
+    // certo por um `Mutex<Option<String>>` de custo, e virou o único caminho.
     let boot_failure = gate.failure();
     if !ready {
         return BootGateSnapshot {
@@ -4981,7 +4989,29 @@ fn import_theme(
     state.themes.import(&app, &path).map_err(|e| e.to_string())
 }
 
-fn open_store(app: &AppHandle) -> session::store::Store {
+/// Abre o banco de sessões — e devolve, junto, o que se perdeu no caminho.
+///
+/// O segundo membro é a mensagem de degradação, `None` quando abriu inteiro.
+/// Ela existe porque **as duas quedas daqui são silenciosas por natureza**: um
+/// banco em memória responde a tudo, e um schema com degrau pendente também. O
+/// sintoma, nos dois casos, é o app abrir sem sessão, sem layout e sem
+/// histórico — indistinguível de uma instalação nova. E isto roda na primeira
+/// abertura de todo usuário depois de atualizar.
+///
+/// Os dois níveis, do mais grave para o menos:
+///
+/// - **O arquivo do disco não abriu.** Não é um banco legível: corrompido,
+///   permissão, meio backup. Cair para memória é a única saída que ainda
+///   entrega um app, mas o que o usuário tinha continua no disco e **não** está
+///   ali — daí a mensagem.
+/// - **Abriu, com degrau de migração pendente.** O banco é o do disco e os
+///   dados estão lá; o schema é que ficou atrás do que este binário espera. Ver
+///   [`session::store::Store::degraded`].
+///
+/// O `expect` que sobrou é de outra natureza: `open_in_memory` falhando
+/// significa que o SQLite embutido não subiu, e nesse ponto não existe app para
+/// degradar.
+fn open_store(app: &AppHandle) -> (session::store::Store, Option<String>) {
     let db_path = std::env::var_os("TYBA_DATA_DIR")
         .map(std::path::PathBuf::from)
         .or_else(|| app.path().app_data_dir().ok())
@@ -4990,10 +5020,27 @@ fn open_store(app: &AppHandle) -> session::store::Store {
             dir.join("tyba.db")
         });
 
-    db_path
-        .and_then(|path| session::store::Store::open(&path).ok())
-        .or_else(|| session::store::Store::open_in_memory().ok())
-        .expect("failed to open session store")
+    let cause = match &db_path {
+        Some(path) => match session::store::Store::open(path) {
+            Ok(store) => {
+                let degraded = store.degraded().map(str::to_owned);
+                return (store, degraded);
+            }
+            Err(e) => e.to_string(),
+        },
+        None => "não há diretório de dados para o app".to_string(),
+    };
+
+    let store = session::store::Store::open_in_memory()
+        .expect("nem o banco em memória abriu: o SQLite embutido não subiu");
+    (
+        store,
+        Some(format!(
+            "o banco de sessões não abriu e esta janela está usando um banco temporário: \
+             sessões, layout e histórico não foram carregados, e nada do que você fizer agora \
+             será salvo ({cause})"
+        )),
+    )
 }
 
 /// Tudo que o arranque faz e que não precisa da main thread.
@@ -5068,6 +5115,15 @@ fn run_boot(
     // para sempre sem nenhum sinal. Como parâmetro, não há caminho em que a
     // thread chegue até aqui sem ter o que abrir.
     boot.mark_ready();
+    // Falha registrada ANTES da thread — banco degradado, ver `open_store` — só
+    // pode virar aviso aqui: o `.setup()` roda antes de o webview existir, e um
+    // `emit` de lá não teria ninguém do outro lado. A ordem é a mesma do caminho
+    // de pânico (falha antes do `ready`), para o front não tratar como final o
+    // vazio que já dá para explicar. Pânico não passa por aqui — quem o reporta
+    // é o `spawn_boot`, que é onde o unwind chega.
+    if let Some(message) = boot.failure() {
+        let _ = app.emit(boot::EVENT_FAILED, BootFailure { message });
+    }
     let _ = app.emit(layout::EVENT_CHANGED, layout.state());
     let _ = app.emit(boot::EVENT_READY, ());
     let _ = reconcile.send(());
@@ -5142,6 +5198,46 @@ fn guard_boot(gate: &boot::BootGate, body: impl FnOnce()) -> Option<String> {
     Some(message)
 }
 
+/// O fim da thread de boot quando ela morreu antes de abrir o portão.
+///
+/// Separado do [`spawn_boot`] porque é a parte com contrato: o caminho de
+/// pânico tem de deixar o app no mesmo estado observável do caminho feliz, e
+/// isso são três avisos, nesta ordem — e não dois, que era o buraco.
+///
+/// O `reconcile.send` é o terceiro. Ele mora no fim do [`run_boot`], que o
+/// pânico nunca alcança: sem ele a thread `repo-reconcile` fica parada no
+/// `recv()`, o `repo://reconciled` nunca sai, e os chips de branch e de diff
+/// ficam vazios em cima de um app que já perdeu as sessões — até que um
+/// `pty::EVENT_CWD_CHANGED` qualquer cutuque o canal por acaso, o que exige o
+/// usuário abrir um terminal e trocar de pasta.
+///
+/// **Cutucar antes do `guard_boot` cobriria os dois caminhos com uma linha só,
+/// e é por isso que não está lá.** A thread de reconcile dorme 300 ms e drena
+/// antes de agir, então o pontapé antecipado só se funde com o do fim do boot
+/// quando o boot inteiro cabe nesses 300 ms — e ele não cabe: SQLite, `ssh -G`,
+/// restore de sessão e layout. Fora dessa janela, o `reconcile_repo_watchers`
+/// roda com `layout.state()` e `sessions.list()` ainda vazios, emite um
+/// `repo://reconciled` sem nenhum repo — exatamente o vazio-que-parece-final
+/// que o `BootGate` existe para não produzir — e ainda paga um `set_roots` com
+/// os `git` que ele dispara, competindo por IO com o boot que se está
+/// esperando. O ramo de falha custa uma linha a mais e não tem nada disso.
+///
+/// Enviar duas vezes não é risco: `guard_boot` só devolve `Some` quando o
+/// pânico precedeu o `mark_ready`, que precede o `send` do [`run_boot`]. Um
+/// pânico na manutenção pós-`ready` já teve o seu pontapé e não chega aqui.
+fn finish_failed_boot<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    reconcile: &std::sync::mpsc::Sender<()>,
+    message: String,
+) {
+    // Mesma ordem do caminho de sucesso: portão (já aberto pelo `guard_boot`),
+    // depois aviso. O `ready` vai junto para o splash não ficar esperando os 4 s
+    // de teto por um boot que já morreu.
+    let _ = app.emit(boot::EVENT_FAILED, BootFailure { message });
+    let _ = app.emit(boot::EVENT_READY, ());
+    let _ = reconcile.send(());
+}
+
 fn spawn_boot(
     app: AppHandle,
     store: Arc<Store>,
@@ -5152,6 +5248,7 @@ fn spawn_boot(
     boot: Arc<boot::BootGate>,
 ) {
     let failure_app = app.clone();
+    let failure_reconcile = reconcile.clone();
     let gate = Arc::clone(&boot);
     std::thread::Builder::new()
         .name("boot".into())
@@ -5159,12 +5256,14 @@ fn spawn_boot(
             let failed = guard_boot(&gate, || {
                 run_boot(app, store, sessions, layout, pty_pool, reconcile, boot);
             });
-            if let Some(message) = failed {
-                // Mesma ordem do caminho de sucesso: portão (já aberto pelo
-                // `guard_boot`), depois aviso. O `ready` vai junto para o splash
-                // não ficar esperando os 4 s de teto por um boot que já morreu.
-                let _ = failure_app.emit(boot::EVENT_FAILED, BootFailure { message });
-                let _ = failure_app.emit(boot::EVENT_READY, ());
+            if let Some(panicked) = failed {
+                // O `guard_boot` diz SE reportar; o portão diz O QUÊ. Quando uma
+                // falha anterior já estava anotada — banco degradado, ver
+                // `open_store` —, é ela que o `boot_snapshot` devolve, e o evento
+                // tem de dizer o mesmo: duas vias com mensagens diferentes viram
+                // dois avisos para uma falha só, e o front dedupe pela primeira.
+                let message = gate.failure().unwrap_or(panicked);
+                finish_failed_boot(&failure_app, &failure_reconcile, message);
             }
         })
         .expect("failed to spawn boot thread");
@@ -5214,7 +5313,20 @@ pub fn run() {
         })
         .setup(|app| {
             let setup_span = boot::Span::start("setup.total");
-            let store = Arc::new(open_store(app.handle()));
+            let (opened_store, store_degraded) = open_store(app.handle());
+            let store = Arc::new(opened_store);
+
+            // O portão nasce aqui, e não dentro do `AppState`, porque a notícia
+            // do banco degradado é mais velha que ele: `note_failure` registra
+            // sem abrir o portão — o estado ainda vai carregar —, e assim o
+            // `mark_ready` do fim do boot publica `ready` com a mensagem já
+            // gravada, que é o que o `boot_snapshot` conta como contrato.
+            let boot_gate = Arc::new(boot::BootGate::new());
+            if let Some(message) = store_degraded {
+                eprintln!("[tyba] {message}");
+                boot_gate.note_failure(message);
+            }
+
             let pty_pool: SharedPtyPool = Arc::new(pty::PtyPool::new());
             let sessions: SharedSessionManager =
                 Arc::new(session::SessionManager::new(Arc::clone(&store)));
@@ -5268,7 +5380,7 @@ pub fn run() {
                     })
                 })),
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
-                boot: Arc::new(boot::BootGate::new()),
+                boot: Arc::clone(&boot_gate),
             });
 
             // Fim de subagente async detectado por arquivo desce a sessão a Idle
@@ -5337,7 +5449,6 @@ pub fn run() {
             let _ = menu::install_fallback(app.handle());
             span.end();
 
-            let boot_gate = Arc::clone(&app.state::<AppState>().boot);
             spawn_boot(
                 app.handle().clone(),
                 Arc::clone(&store),
@@ -5793,6 +5904,63 @@ mod tests {
         let snapshot = boot_gate_snapshot(&gate, empty_boot_loaded);
         assert!(!snapshot.ready);
         assert_eq!(snapshot.boot_failure, None);
+    }
+
+    /// O banco degradado é conhecido no `.setup()`, antes de a thread de boot
+    /// começar, e registrá-lo não abre o portão — o estado ainda vai carregar.
+    /// O retorno cedo do poll é por onde essa notícia chega, então ele não pode
+    /// engoli-la: o `loaded` continua ausente (não há o que entregar), mas a
+    /// falha viaja.
+    #[test]
+    fn a_degraded_store_reports_before_the_gate_opens() {
+        let gate = boot::BootGate::new();
+        gate.note_failure("o banco de sessões não abriu");
+
+        let snapshot = boot_gate_snapshot(&gate, empty_boot_loaded);
+
+        assert!(!snapshot.ready);
+        assert!(snapshot.loaded.is_none());
+        assert_eq!(
+            snapshot.boot_failure.as_deref(),
+            Some("o banco de sessões não abriu")
+        );
+    }
+
+    /// E continua reportando depois que o boot termina bem — que é o caso real
+    /// do banco degradado: o arranque completa, e o que falta falta porque o
+    /// banco não tinha para dar.
+    #[test]
+    fn a_degraded_store_still_reports_after_a_clean_boot() {
+        let gate = boot::BootGate::new();
+        gate.note_failure("o banco de sessões não abriu");
+        let failed = guard_boot(&gate, || gate.mark_ready());
+
+        // Não houve pânico: quem reporta é o campo do portão, não o retorno.
+        assert_eq!(failed, None);
+        let snapshot = boot_gate_snapshot(&gate, empty_boot_loaded);
+        assert!(snapshot.ready);
+        assert_eq!(
+            snapshot.boot_failure.as_deref(),
+            Some("o banco de sessões não abriu")
+        );
+    }
+
+    /// O caminho de pânico tem de deixar o app no mesmo estado observável do
+    /// caminho feliz — e o pontapé da reconciliação faz parte dele. Sem este
+    /// `send`, a thread `repo-reconcile` fica parada no `recv()` e os chips de
+    /// branch e de diff nunca se preenchem, em cima de um app que já perdeu as
+    /// sessões, até que um `EVENT_CWD_CHANGED` qualquer chegue por acaso.
+    #[test]
+    fn a_dead_boot_still_kicks_the_reconciler() {
+        let app = tauri::test::mock_app();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+
+        finish_failed_boot(app.handle(), &tx, "restore explodiu".into());
+
+        assert!(
+            rx.try_recv().is_ok(),
+            "o ramo de falha do boot não cutucou o canal de reconciliação"
+        );
     }
 
     fn git_in_test(dir: &std::path::Path, args: &[&str]) {
