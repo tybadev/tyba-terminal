@@ -72,6 +72,30 @@ export function boxIsMounted(state: LineState): boolean {
   return state !== "app";
 }
 
+/**
+ * A caixa aceita digitação neste estado?
+ *
+ * > [!warning] `waiting` é editável, e isso é a correção — não uma folga.
+ * > Ele é o intervalo entre a sessão abrir e o shell reportar o primeiro
+ * > prompt: 1,4 s no `.zshrc` do dono, medido em pty real. Desabilitada ali, a
+ * > caixa não recebe tecla NENHUMA — textarea desabilitada não dispara
+ * > `keydown` —, então o comando digitado no primeiro segundo de cada sessão
+ * > não aparece em lugar nenhum e o Enter não faz nada. É o "digitei um
+ * > comando, apertei Enter e não aconteceu nada".
+ * >
+ * > Editável, o rascunho fica na caixa e o Enter vira uma submissão que o core
+ * > segura até o shell abrir a linha dele (ver `LineEditorGate`), em vez de
+ * > escrever num tty canônico que ecoaria a injeção crua na tela.
+ *
+ * Os outros continuam fechados, e por motivos que não mudaram: em `running` e
+ * `continuation` quem lê o teclado é o comando, em `app` é o programa de tela
+ * cheia, e `off` é o shell tendo respondido que NÃO está em modo prompt — ali a
+ * linha do TYBA não teria para onde enviar.
+ */
+export function boxAcceptsTyping(state: LineState): boolean {
+  return state === "own" || state === "waiting";
+}
+
 export function keyboardOwner({
   promptMode,
   kind,

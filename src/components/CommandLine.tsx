@@ -11,6 +11,7 @@ import {
 import { shortPath } from "../lib/blockText";
 import { toastError } from "../lib/toast";
 import {
+  boxAcceptsTyping,
   boxIsMounted,
   clearsDraft,
   controlBytes,
@@ -93,7 +94,10 @@ export function CommandLine({
   state,
   inject,
 }: Props) {
-  const waiting = state !== "own";
+  // Não é "a linha não é minha", é "a caixa não aceita tecla". A diferença é
+  // o `waiting`: a linha ainda não é do TYBA, mas o rascunho pode ser escrito
+  // e o Enter fica de pé — ver `boxAcceptsTyping`.
+  const waiting = !boxAcceptsTyping(state);
   // App de tela cheia: a linha não desaparece, troca de conteúdo. E encolhe,
   // se houver espaço para isso sem mexer nos painéis — ver `canCollapse`.
   const collapsed = !boxIsMounted(state);
@@ -111,6 +115,11 @@ export function CommandLine({
   const [focused, setFocused] = useState(false);
   const [paths, setPaths] = useState<string[]>([]);
   const [args, setArgs] = useState<string[]>([]);
+  // Uma submissão de cada vez. Ela deixou de ser instantânea: em sessão nova o
+  // core segura a linha até o shell abrir a dele, e a caixa só é limpa quando
+  // ele aceita. Sem esta trava, um segundo Enter na espera enviaria o MESMO
+  // texto de novo — e o shell rodaria o comando duas vezes.
+  const [submitting, setSubmitting] = useState(false);
 
   const seenInject = useRef(inject?.nonce ?? 0);
   useEffect(() => {
@@ -283,8 +292,9 @@ export function CommandLine({
 
   const run = () => {
     const value = text;
-    if (!value.trim()) return;
+    if (!value.trim() || submitting) return;
     setMenuOpen(false);
+    setSubmitting(true);
     // A linha só é limpa quando o shell aceitou. Multiline sem bracketed paste
     // é recusado pelo core, e engolir o erro apagaria o que o usuário escreveu
     // sem executar nada.
@@ -293,7 +303,8 @@ export function CommandLine({
         apply("", 0);
         setHits([]);
       })
-      .catch((error) => toastError(t("commandLineFailed"), error));
+      .catch((error) => toastError(t("commandLineFailed"), error))
+      .finally(() => setSubmitting(false));
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

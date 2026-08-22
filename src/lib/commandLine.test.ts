@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  boxAcceptsTyping,
   boxIsMounted,
   clearsDraft,
   controlBytes,
@@ -387,6 +388,51 @@ describe("continuação do shell (PS2)", () => {
 
   it("sem continuação, nada muda", () => {
     expect(lineState(atPrompt)).toBe("own");
+  });
+});
+
+describe("boxAcceptsTyping", () => {
+  const STATES: LineState[] = [
+    "own",
+    "waiting",
+    "running",
+    "continuation",
+    "app",
+    "off",
+  ];
+
+  it("a caixa aceita tecla enquanto o shell ainda está carregando", () => {
+    // O bug que este predicado fecha: `waiting` é o intervalo entre a sessão
+    // abrir e o shell reportar o primeiro prompt — 1,4 s no `.zshrc` do dono.
+    // A caixa ficava desabilitada ali, e textarea desabilitada não dispara
+    // `keydown`: o que se digitasse no primeiro segundo de cada sessão não
+    // aparecia em lugar nenhum, e o Enter não fazia nada.
+    expect(boxAcceptsTyping("waiting")).toBe(true);
+    expect(boxAcceptsTyping("own")).toBe(true);
+  });
+
+  it("os outros continuam fechados, e cada um por um motivo", () => {
+    // Não é uma lista de conveniência. `running` e `continuation`: quem lê o
+    // teclado é o comando — é a regra que impede a caixa de engolir a senha do
+    // sudo. `app`: a textarea nem está no DOM. `off`: o shell respondeu que NÃO
+    // está em modo prompt, e a linha do TYBA não teria para onde enviar.
+    expect(STATES.filter((state) => !boxAcceptsTyping(state))).toEqual([
+      "running",
+      "continuation",
+      "app",
+      "off",
+    ]);
+  });
+
+  it("estar na tela e aceitar tecla são perguntas diferentes", () => {
+    // O par que se confundia num predicado só. `waiting` está montada E aceita
+    // tecla; `running` está montada e NÃO aceita. Quem responder uma pela outra
+    // volta a desabilitar o carregamento — ou, pior, libera a caixa no meio de
+    // um comando que está lendo stdin.
+    const mountedButClosed = STATES.filter(
+      (state) => boxIsMounted(state) && !boxAcceptsTyping(state),
+    );
+    expect(mountedButClosed).toEqual(["running", "continuation", "off"]);
   });
 });
 
