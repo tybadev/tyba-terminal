@@ -2878,7 +2878,11 @@ struct BootSnapshot {
     /// sem abrir o portão — o estado ainda vai carregar. `ready` continua sendo
     /// a pergunta "as listas já são finais?", e este campo, "o que veio dá para
     /// confiar?"; são independentes.
-    boot_failure: Option<String>,
+    ///
+    /// O `kind` é o que diz QUAL das duas origens — ver [`boot::FailureKind`].
+    /// Sem ele o front escolhia o mesmo título para as duas, e ele está errado
+    /// para o banco degradado: ali o arranque terminou inteiro.
+    boot_failure: Option<boot::Failure>,
     prefs: std::collections::HashMap<String, String>,
     sessions: Vec<Session>,
     layout: layout::LayoutState,
@@ -2952,7 +2956,7 @@ struct BootGateSnapshot {
     /// `app://boot-failed` sai de dentro da thread de boot, antes de o listener
     /// do front existir, e o core não reemite. Vale aqui a mesma ressalva de
     /// lá — pode chegar com `ready: false`, e é o caso do banco degradado.
-    boot_failure: Option<String>,
+    boot_failure: Option<boot::Failure>,
     /// **Ausente** — e não vazio — enquanto `ready == false`.
     ///
     /// Vazio é indistinguível de "carregou e não tem", e foi essa confusão que
@@ -5163,8 +5167,8 @@ fn run_boot(
     // de pânico (falha antes do `ready`), para o front não tratar como final o
     // vazio que já dá para explicar. Pânico não passa por aqui — quem o reporta
     // é o `spawn_boot`, que é onde o unwind chega.
-    if let Some(message) = boot.failure() {
-        let _ = app.emit(boot::EVENT_FAILED, BootFailure { message });
+    if let Some(failure) = boot.failure() {
+        let _ = app.emit(boot::EVENT_FAILED, failure);
     }
     let _ = app.emit(layout::EVENT_CHANGED, layout.state());
     let _ = app.emit(boot::EVENT_READY, ());
@@ -5184,11 +5188,6 @@ fn run_boot(
     }
 
     store.checkpoint_truncate();
-}
-
-#[derive(Clone, serde::Serialize)]
-struct BootFailure {
-    message: String,
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -5270,12 +5269,12 @@ fn guard_boot(gate: &boot::BootGate, body: impl FnOnce()) -> Option<String> {
 fn finish_failed_boot<R: tauri::Runtime>(
     app: &AppHandle<R>,
     reconcile: &std::sync::mpsc::Sender<()>,
-    message: String,
+    failure: boot::Failure,
 ) {
     // Mesma ordem do caminho de sucesso: portão (já aberto pelo `guard_boot`),
     // depois aviso. O `ready` vai junto para o splash não ficar esperando os 4 s
     // de teto por um boot que já morreu.
-    let _ = app.emit(boot::EVENT_FAILED, BootFailure { message });
+    let _ = app.emit(boot::EVENT_FAILED, failure);
     let _ = app.emit(boot::EVENT_READY, ());
     let _ = reconcile.send(());
 }
@@ -5298,14 +5297,17 @@ fn spawn_boot(
             let failed = guard_boot(&gate, || {
                 run_boot(app, store, sessions, layout, pty_pool, reconcile, boot);
             });
-            if let Some(panicked) = failed {
-                // O `guard_boot` diz SE reportar; o portão diz O QUÊ. Quando uma
-                // falha anterior já estava anotada — banco degradado, ver
-                // `open_store` —, é ela que o `boot_snapshot` devolve, e o evento
-                // tem de dizer o mesmo: duas vias com mensagens diferentes viram
-                // dois avisos para uma falha só, e o front dedupe pela primeira.
-                let message = gate.failure().unwrap_or(panicked);
-                finish_failed_boot(&failure_app, &failure_reconcile, message);
+            // O `guard_boot` diz SE reportar; o portão diz O QUÊ. Quando uma
+            // falha anterior já estava anotada — banco degradado, ver
+            // `open_store` —, é a mensagem DELA que o `boot_snapshot` devolve, e
+            // o evento tem de dizer o mesmo: duas vias com mensagens diferentes
+            // viram dois avisos para uma falha só, e o front dedupe pela
+            // primeira. O `kind`, esse, já veio escalado pelo `mark_failed` —
+            // ver a ressalva lá.
+            if failed.is_some() {
+                if let Some(failure) = gate.failure() {
+                    finish_failed_boot(&failure_app, &failure_reconcile, failure);
+                }
             }
         })
         .expect("failed to spawn boot thread");
@@ -5864,7 +5866,10 @@ mod tests {
         let failed = guard_boot(&gate, || panic!("materialize explodiu"));
 
         assert_eq!(failed.as_deref(), Some("materialize explodiu"));
-        assert_eq!(gate.failure().as_deref(), Some("materialize explodiu"));
+        assert_eq!(
+            gate.failure().map(|f| f.message).as_deref(),
+            Some("materialize explodiu")
+        );
     }
 
     #[test]
@@ -5952,7 +5957,10 @@ mod tests {
         let snapshot = boot_gate_snapshot(&gate, empty_boot_loaded);
 
         assert!(snapshot.ready);
-        assert_eq!(snapshot.boot_failure.as_deref(), Some("restore explodiu"));
+        assert_eq!(
+            snapshot.boot_failure.map(|f| f.message).as_deref(),
+            Some("restore explodiu")
+        );
         assert!(snapshot.loaded.is_some());
     }
 
@@ -5982,7 +5990,7 @@ mod tests {
         assert!(!snapshot.ready);
         assert!(snapshot.loaded.is_none());
         assert_eq!(
-            snapshot.boot_failure.as_deref(),
+            snapshot.boot_failure.map(|f| f.message).as_deref(),
             Some("o banco de sessões não abriu")
         );
     }
@@ -6001,7 +6009,7 @@ mod tests {
         let snapshot = boot_gate_snapshot(&gate, empty_boot_loaded);
         assert!(snapshot.ready);
         assert_eq!(
-            snapshot.boot_failure.as_deref(),
+            snapshot.boot_failure.map(|f| f.message).as_deref(),
             Some("o banco de sessões não abriu")
         );
     }
@@ -6016,7 +6024,14 @@ mod tests {
         let app = tauri::test::mock_app();
         let (tx, rx) = std::sync::mpsc::channel::<()>();
 
-        finish_failed_boot(app.handle(), &tx, "restore explodiu".into());
+        finish_failed_boot(
+            app.handle(),
+            &tx,
+            boot::Failure {
+                kind: boot::FailureKind::BootThreadDied,
+                message: "restore explodiu".into(),
+            },
+        );
 
         assert!(
             rx.try_recv().is_ok(),

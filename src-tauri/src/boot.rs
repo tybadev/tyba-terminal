@@ -23,9 +23,9 @@ use parking_lot::{Condvar, Mutex};
 pub const EVENT_READY: &str = "app://ready";
 
 /// Emitido quando o arranque não entregou o estado inteiro. Payload:
-/// `{ message: string }`.
+/// `{ kind, message }` — ver [`FailureKind`].
 ///
-/// São duas origens, e a mensagem é o que as distingue:
+/// São duas origens, e elas pedem avisos DIFERENTES ao usuário:
 ///
 /// - **A thread de boot morreu de pânico** antes de abrir o portão. Aqui não há
 ///   sessão, não há layout, e a mensagem é a do pânico.
@@ -47,6 +47,38 @@ pub const EVENT_READY: &str = "app://ready";
 /// `boot_snapshot` devolve a cada consulta; o mesmo desenho do `app://ready`,
 /// que tem o poll do front como segunda via.
 pub const EVENT_FAILED: &str = "app://boot-failed";
+
+/// De qual das duas origens do [`EVENT_FAILED`] a falha veio.
+///
+/// Existe porque **o front não tem como descobrir isso sozinho**, e a diferença
+/// decide o que dizer: com a thread morta o app está vazio e o aviso certo é
+/// "sessões e layout podem estar faltando"; com o banco degradado o arranque
+/// correu inteiro, e essa mesma frase é falsa — o que pode faltar é o histórico
+/// que o banco não tinha para dar.
+///
+/// Enum, e não um `bool degraded`: o dia em que aparecer uma terceira origem, o
+/// `match` do front quebra na compilação em vez de cair no ramo errado.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FailureKind {
+    /// A thread de boot morreu de pânico antes de abrir o portão: não há sessão
+    /// nem layout, e a mensagem é a do pânico.
+    BootThreadDied,
+    /// O banco de sessões abriu degradado — migração com degrau pendente, ou
+    /// queda para banco em memória (ver `open_store`). O arranque termina
+    /// normalmente.
+    StoreDegraded,
+}
+
+/// O que o arranque tem a dizer quando não entregou tudo.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Failure {
+    pub kind: FailureKind,
+    /// Prosa em pt-BR no banco degradado; string crua de pânico na thread morta.
+    /// É o corpo do aviso, nunca o título — quem escolhe o título é o `kind`.
+    pub message: String,
+}
 
 /// "O estado do core terminou de carregar?"
 ///
@@ -74,7 +106,7 @@ pub struct BootGate {
     /// `Mutex` do `Condvar` e cofre da mensagem de falha, no mesmo lugar de
     /// propósito: é o que torna "gravar a falha" e "abrir o portão" indivisíveis
     /// para quem observa.
-    failure: Mutex<Option<String>>,
+    failure: Mutex<Option<Failure>>,
     changed: Condvar,
 }
 
@@ -118,11 +150,24 @@ impl BootGate {
     ///
     /// A primeira mensagem manda: quem morreu primeiro explica o resto.
     ///
+    /// > [!warning] A primeira mensagem manda, mas o **`kind` escala**. Com o
+    /// > banco degradado já anotado e a thread morta em seguida, as duas coisas
+    /// > são verdade ao mesmo tempo, e cada uma responde a metade do aviso: a
+    /// > prosa do banco explica a CAUSA, e é a morte da thread que decide o que
+    /// > o usuário PERDEU. Guardar o `kind` do banco aqui faria o toast dizer
+    /// > "o histórico pode estar incompleto" sobre um app sem sessão nenhuma.
+    ///
     /// [`wait_ready`]: BootGate::wait_ready
     pub fn mark_failed(&self, message: impl Into<String>) {
         let mut failure = self.failure.lock();
-        if failure.is_none() {
-            *failure = Some(message.into());
+        match failure.as_mut() {
+            Some(first) => first.kind = FailureKind::BootThreadDied,
+            None => {
+                *failure = Some(Failure {
+                    kind: FailureKind::BootThreadDied,
+                    message: message.into(),
+                })
+            }
         }
         self.ready.store(true, Ordering::Release);
         self.changed.notify_all();
@@ -150,7 +195,10 @@ impl BootGate {
     pub fn note_failure(&self, message: impl Into<String>) {
         let mut failure = self.failure.lock();
         if failure.is_none() {
-            *failure = Some(message.into());
+            *failure = Some(Failure {
+                kind: FailureKind::StoreDegraded,
+                message: message.into(),
+            });
         }
     }
 
@@ -160,7 +208,7 @@ impl BootGate {
     /// de boot, que começa antes de o webview carregar, e o `listen()` do Tauri
     /// é assíncrono: um pânico cedo dispara antes de o listener existir e o core
     /// não reemite. Quem reconsulta o estado encontra a falha aqui.
-    pub fn failure(&self) -> Option<String> {
+    pub fn failure(&self) -> Option<Failure> {
         self.failure.lock().clone()
     }
 
@@ -262,7 +310,62 @@ mod tests {
         gate.mark_failed("sessions.restore explodiu");
         // Abre o portão junto — falha com portão fechado vira lentidão.
         assert!(gate.is_ready());
-        assert_eq!(gate.failure().as_deref(), Some("sessions.restore explodiu"));
+        assert_eq!(
+            gate.failure().map(|f| f.message).as_deref(),
+            Some("sessions.restore explodiu")
+        );
+    }
+
+    /// Cada origem carimba o seu tipo. É o que o front usa para escolher o
+    /// título do aviso, e escolher pela mensagem não é possível: uma é prosa em
+    /// pt-BR e a outra é string crua de pânico, sem forma comum.
+    #[test]
+    fn each_origin_stamps_its_own_kind() {
+        let died = BootGate::new();
+        died.mark_failed("index out of bounds");
+        assert_eq!(
+            died.failure().map(|f| f.kind),
+            Some(FailureKind::BootThreadDied)
+        );
+
+        let degraded = BootGate::new();
+        degraded.note_failure("o banco de sessões abriu degradado");
+        assert_eq!(
+            degraded.failure().map(|f| f.kind),
+            Some(FailureKind::StoreDegraded)
+        );
+    }
+
+    /// As duas origens juntas: a MENSAGEM é a primeira, o `kind` é o pior.
+    ///
+    /// O banco degradado é anotado no `.setup()`; se a thread morrer depois, as
+    /// duas coisas são verdade e cada uma responde metade do aviso. A prosa do
+    /// banco explica a causa; a morte da thread é quem decide que não há sessão
+    /// nenhuma. Guardar o `kind` do banco aqui faria o toast prometer que só o
+    /// histórico pode faltar, sobre um app vazio.
+    #[test]
+    fn a_dead_thread_escalates_the_kind_but_keeps_the_first_message() {
+        let gate = BootGate::new();
+        gate.note_failure("o banco de sessões abriu degradado");
+        gate.mark_failed("index out of bounds");
+        let failure = gate.failure().expect("a falha sumiu");
+        assert_eq!(failure.message, "o banco de sessões abriu degradado");
+        assert_eq!(failure.kind, FailureKind::BootThreadDied);
+    }
+
+    /// O contrapeso: sem thread morta, o tipo NÃO escala. Sem este teste, um
+    /// `kind` fixo em `BootThreadDied` passaria no teste acima e faria todo
+    /// banco degradado dizer que as sessões podem estar faltando — que é
+    /// exatamente o aviso errado que o `kind` existe para consertar.
+    #[test]
+    fn a_healthy_boot_over_a_degraded_store_keeps_the_store_kind() {
+        let gate = BootGate::new();
+        gate.note_failure("o banco de sessões abriu degradado");
+        gate.mark_ready();
+        assert_eq!(
+            gate.failure().map(|f| f.kind),
+            Some(FailureKind::StoreDegraded)
+        );
     }
 
     /// Quem observa `ready: true` tem de observar a falha junto: se a ordem
@@ -276,7 +379,7 @@ mod tests {
         while !gate.is_ready() {
             std::hint::spin_loop();
         }
-        assert_eq!(gate.failure().as_deref(), Some("morreu"));
+        assert_eq!(gate.failure().map(|f| f.message).as_deref(), Some("morreu"));
     }
 
     /// O `guard_boot` chama `mark_ready` no caminho de unwind. A mensagem já
@@ -286,7 +389,7 @@ mod tests {
         let gate = BootGate::new();
         gate.mark_failed("pânico");
         gate.mark_ready();
-        assert_eq!(gate.failure().as_deref(), Some("pânico"));
+        assert_eq!(gate.failure().map(|f| f.message).as_deref(), Some("pânico"));
     }
 
     /// A falha do banco degradado é conhecida no `.setup()`, antes de a thread
@@ -299,7 +402,10 @@ mod tests {
         gate.note_failure("o banco abriu degradado");
 
         assert!(!gate.is_ready());
-        assert_eq!(gate.failure().as_deref(), Some("o banco abriu degradado"));
+        assert_eq!(
+            gate.failure().map(|f| f.message).as_deref(),
+            Some("o banco abriu degradado")
+        );
         assert!(!gate.wait_ready(Duration::from_millis(10)));
     }
 
@@ -313,7 +419,10 @@ mod tests {
         gate.mark_ready();
 
         assert!(gate.is_ready());
-        assert_eq!(gate.failure().as_deref(), Some("o banco abriu degradado"));
+        assert_eq!(
+            gate.failure().map(|f| f.message).as_deref(),
+            Some("o banco abriu degradado")
+        );
     }
 
     /// A primeira mensagem manda também aqui: o banco degradado explica melhor
@@ -325,7 +434,10 @@ mod tests {
         gate.mark_failed("restore explodiu");
 
         assert!(gate.is_ready());
-        assert_eq!(gate.failure().as_deref(), Some("o banco abriu degradado"));
+        assert_eq!(
+            gate.failure().map(|f| f.message).as_deref(),
+            Some("o banco abriu degradado")
+        );
     }
 
     /// Quem espera para ESCREVER precisa acordar quando o boot morre — senão a

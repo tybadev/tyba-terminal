@@ -104,6 +104,10 @@ const resources = {
       blockSessionOpened: "sessão iniciada",
       bootFailed:
         "O TYBA não terminou de carregar — sessões e layout podem estar faltando",
+      // O par do acima, para a OUTRA origem. O arranque terminou inteiro aqui:
+      // dizer "não terminou de carregar" seria prometer ao usuário que ele
+      // perdeu o que está vendo na tela. Ver `bootFailureTitleKey`.
+      bootStoreDegraded: "O banco de sessões do TYBA não abriu por inteiro",
       commandLineWaiting: "Carregando o shell…",
       commandLineContinuation:
         "O shell espera o resto do comando — digite no terminal",
@@ -1075,6 +1079,7 @@ const resources = {
       blockSessionOpened: "session started",
       bootFailed:
         "TYBA did not finish loading — sessions and layout may be missing",
+      bootStoreDegraded: "TYBA's session database did not open fully",
       commandLineWaiting: "Loading the shell…",
       commandLineContinuation:
         "The shell is waiting for the rest of the command — type in the terminal",

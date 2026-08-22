@@ -752,32 +752,59 @@ export const layoutState = () => invoke<Loaded<LayoutState>>("layout_state");
 export interface BootSnapshot {
   ready: boolean;
   /**
-   * Alguma coisa do arranque falhou, e esta é a mensagem.
+   * Alguma coisa do arranque falhou. O `kind` diz o quê; a `message`, os
+   * detalhes.
    *
    * Não-nulo significa que o que veio ao lado pode estar incompleto **por
    * falha**, e não por ausência de dado. Uma vez preenchido, nunca muda.
    *
    * > [!warning] Tem **duas** origens, e elas dizem coisas diferentes:
    * >
-   * > 1. **A thread de boot morreu** — a mensagem é a string crua do pânico, e
-   * >    sessões e layout estão vazios. Chega com `ready: true`, porque o
-   * >    portão abre mesmo em pânico (senão todo comando de escrita pagaria o
-   * >    timeout e a falha viraria lentidão).
-   * > 2. **O banco degradou** — um passo da migração não pegou. A mensagem é
-   * >    texto em pt-BR para pessoa ler, o boot terminou normal, e isto é
-   * >    sabido já no `.setup()`, antes da thread de boot: chega com
+   * > 1. `bootThreadDied` — **a thread de boot morreu**: a mensagem é a string
+   * >    crua do pânico, e sessões e layout estão vazios. Chega com
+   * >    `ready: true`, porque o portão abre mesmo em pânico (senão todo
+   * >    comando de escrita pagaria o timeout e a falha viraria lentidão).
+   * > 2. `storeDegraded` — **o banco não abriu por inteiro**: ou um passo da
+   * >    migração não pegou, ou o arquivo não abriu e esta janela caiu para um
+   * >    banco em memória, onde nada do que o usuário fizer será salvo. A
+   * >    mensagem é texto em pt-BR para pessoa ler, o boot termina normal, e
+   * >    isto é sabido já no `.setup()`, antes da thread de boot: chega com
    * >    **`ready: false`**.
    * >
    * > Ou seja: `bootFailure` pode vir com `ready` em qualquer valor. Quem ler
    * > só um dos dois perde metade dos casos.
+   * >
+   * > Com as DUAS ao mesmo tempo — banco degradado e thread morta depois —, a
+   * > `message` é a primeira (a causa) e o `kind` é o pior (o que se perdeu).
    *
    * Existe porque o evento `app://boot-failed` sofre a mesma corrida de entrega
    * que o `app://ready` — e ao contrário dele, não tinha segunda via.
    */
-  bootFailure: string | null;
+  bootFailure: BootFailure | null;
   prefs: Record<string, string>;
   sessions: Session[];
   layout: LayoutState;
+}
+
+/**
+ * De qual das duas origens a falha de arranque veio.
+ *
+ * > [!warning] O `kind` decide o TÍTULO do aviso, e não é enfeite: as duas
+ * > origens pedem frases opostas. Em `bootThreadDied` o app está vazio e o
+ * > certo é dizer que sessões e layout podem estar faltando. Em
+ * > `storeDegraded` o arranque terminou inteiro — essa mesma frase seria
+ * > mentira, e o que pode faltar é o histórico que o banco não tinha para dar.
+ *
+ * Antes daqui as duas chegavam como uma string só e o front escolhia o mesmo
+ * título para ambas. Pela mensagem não dá para distinguir: uma é prosa em
+ * pt-BR, a outra é string crua de pânico.
+ */
+export type BootFailureKind = "bootThreadDied" | "storeDegraded";
+
+export interface BootFailure {
+  kind: BootFailureKind;
+  /** Corpo do aviso, nunca o título — quem escolhe o título é o `kind`. */
+  message: string;
 }
 
 export const bootSnapshot = () => invoke<BootSnapshot>("boot_snapshot");
@@ -797,7 +824,7 @@ export const bootSnapshot = () => invoke<BootSnapshot>("boot_snapshot");
  */
 export interface BootGate {
   ready: boolean;
-  bootFailure: string | null;
+  bootFailure: BootFailure | null;
   loaded: { sessions: Session[]; layout: LayoutState } | null;
 }
 
@@ -1034,11 +1061,9 @@ export const onAppReady = (handler: () => void): Promise<UnlistenFn> =>
  * consumi-lo, um boot que morreu é indistinguível de um app sem sessão nenhuma.
  */
 export const onBootFailed = (
-  handler: (message: string) => void,
+  handler: (failure: BootFailure) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ message: string }>("app://boot-failed", (e) =>
-    handler(e.payload.message),
-  );
+  listen<BootFailure>("app://boot-failed", (e) => handler(e.payload));
 
 export const onLayoutChanged = (
   handler: (state: LayoutState) => void,

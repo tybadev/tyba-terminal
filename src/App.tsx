@@ -244,7 +244,9 @@ import {
   updateDismiss,
   writeToSession,
   type UpdateStatus,
+  type BootFailure,
 } from "./lib/ipc";
+import { bootFailureTitleKey } from "./lib/bootFailure";
 import { basename } from "@/lib/utils";
 import { buildConflictPrompt } from "./lib/conflicts";
 import {
@@ -1077,10 +1079,12 @@ export default function App() {
   // vezes da mesma falha é ruído.
   const bootFailureSeen = useRef(false);
   const reportBootFailure = useCallback(
-    (message: string) => {
+    (failure: BootFailure) => {
       if (bootFailureSeen.current) return;
       bootFailureSeen.current = true;
-      toastError(t("bootFailed"), message);
+      // O título vem do `kind`, não da mensagem — ver `bootFailureTitleKey`,
+      // que é onde mora o porquê e o que quebra se aparecer origem nova.
+      toastError(t(bootFailureTitleKey(failure.kind)), failure.message);
     },
     [t],
   );
