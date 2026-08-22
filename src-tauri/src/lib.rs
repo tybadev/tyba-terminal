@@ -6056,9 +6056,14 @@ mod tests {
         let base = std::env::temp_dir().join(format!("tyba-roots-{}", uuid::Uuid::new_v4()));
         let repo = base.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        git_in_test(&repo, &["init", "-q"]);
+        git_in_test(&repo, &["init", "-q", "-b", "main"]);
         git_in_test(&repo, &["config", "user.email", "t@t.com"]);
         git_in_test(&repo, &["config", "user.name", "t"]);
+        // Assinatura desligada, como nos outros fixtures de git do repo. Com
+        // `commit.gpgsign` ligado no global — e é o caso de quem assina com
+        // 1Password ou chave em hardware —, o `git commit` daqui vai ao agente
+        // e pendura o teste esperando uma aprovação que ninguém vai dar.
+        git_in_test(&repo, &["config", "commit.gpgsign", "false"]);
         std::fs::write(repo.join("a.txt"), "a\n").unwrap();
         git_in_test(&repo, &["add", "-A"]);
         git_in_test(&repo, &["commit", "-qm", "init"]);
