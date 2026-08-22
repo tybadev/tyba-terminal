@@ -774,6 +774,27 @@ export interface BootSnapshot {
 
 export const bootSnapshot = () => invoke<BootSnapshot>("boot_snapshot");
 
+/**
+ * A resposta do POLL do boot: o portão, e só.
+ *
+ * Existe separada do `boot_snapshot` porque o poll repete a cada 150ms
+ * enquanto o boot não termina — e o snapshot completo roda `store.prefs()`,
+ * tomando o mesmo mutex que a thread de boot está usando. O poll disputava o
+ * lock com a coisa que ele está esperando terminar.
+ *
+ * `loaded` é **ausente**, não vazio, enquanto `ready` for falso: vazio é
+ * indistinguível de "carregou e não tem", que é a confusão que o `Loaded`
+ * existe para desfazer. Assim quem esquecer de olhar o `ready` quebra, em vez
+ * de desenhar "nenhuma sessão" por cima de vinte que estão voltando.
+ */
+export interface BootGate {
+  ready: boolean;
+  bootFailure: string | null;
+  loaded: { sessions: Session[]; layout: LayoutState } | null;
+}
+
+export const bootGate = () => invoke<BootGate>("boot_gate");
+
 export type LaunchConfigId = string;
 export type SlotId = string;
 

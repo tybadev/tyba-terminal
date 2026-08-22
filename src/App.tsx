@@ -144,6 +144,7 @@ import {
   dockerAvailable,
   dockerListContainers,
   dockerOpenDashboard,
+  bootGate,
   bootSnapshot,
   onAppReady,
   onBootFailed,
@@ -1105,17 +1106,28 @@ export default function App() {
       // webview existir. Sem o campo aqui, um pânico cedo não chegaria nunca.
       //
       // De quebra, uma pergunta em vez de duas: sessões e layout vêm juntos.
-      const snapshot = await bootSnapshot().catch(() => null);
-      if (snapshot?.bootFailure) reportBootFailure(snapshot.bootFailure);
-      // Recupera as preferências que a primeira tentativa pode não ter trazido.
-      // `applyPrefs` é idempotente por `ref`, então tick que chega depois de
-      // elas já valerem não pisa no que o dono mudou nas Configurações.
-      if (snapshot) applyPrefs(snapshot.prefs);
-      const loaded = acceptLoaded(snapshot ? { ready: snapshot.ready, value: snapshot } : null);
+      // `boot_gate` e não `boot_snapshot`: os dois são `async` no core, mas o
+      // snapshot completo roda `store.prefs()` a cada chamada, tomando o mesmo
+      // mutex que a thread de boot usa. O poll estava disputando o lock com a
+      // coisa que ele espera terminar — e descartando o resultado, porque o
+      // `mergeLoaded` recusa payload que não veio pronto.
+      const gate = await bootGate().catch(() => null);
+      if (gate?.bootFailure) reportBootFailure(gate.bootFailure);
+      const loaded = acceptLoaded(
+        gate?.loaded ? { ready: gate.ready, value: gate.loaded } : null,
+      );
       if (loaded) {
         setSessions(loaded.sessions);
         setLayout(loaded.layout);
         promptNewSessionIfEmpty(true, loaded.layout.workspaces.length);
+        // As prefs não vêm no portão, e o mount pode não tê-las trazido — a
+        // chamada dele rejeita inteira quando o `store.prefs()` falha. Uma
+        // pergunta a mais, só quando elas nunca chegaram, e só nesta transição.
+        if (!prefsApplied.current) {
+          void bootSnapshot()
+            .then((full) => applyPrefs(full.prefs))
+            .catch(() => {});
+        }
       }
       // O `stopped` só é consultado no fim, de propósito: o próprio sucesso
       // deste tick sobe o `bootReady` e desmonta o efeito, e desistir por causa
