@@ -29,3 +29,35 @@ export function withEntry<T>(
   if (prev[id] === value) return prev;
   return { ...prev, [id]: value };
 }
+
+/**
+ * Handler amarrado a uma sessão, com identidade estável entre renders.
+ *
+ * O problema que ele resolve: a lista de painéis é um `map`, e amarrar a sessão
+ * ali dentro (`onPick={(id, e) => pickBlock(s.id, id, e)}`) cria uma função
+ * nova a cada render — mesmo que `pickBlock` seja um `useCallback` estável. A
+ * prop com identidade nova desce até o cartão e derruba o `memo` dele, que é
+ * justamente o que impede milhares de nós de DOM de serem recriados a cada
+ * quadro enquanto um comando escreve.
+ *
+ * Guarda uma função por sessão e devolve sempre a MESMA. `run` precisa ter
+ * identidade estável (um `useCallback` com dependências vazias): o cache
+ * captura a primeira, e uma `run` que muda depois não seria vista.
+ *
+ * Não há remoção pelo mesmo motivo de `withEntry`: `SessionId` é UUID e não se
+ * repete, então nenhuma sessão nova herda o handler de uma morta. O que sobra é
+ * uma closure por sessão fechada na memória da janela, e varrer isso a cada
+ * mudança de lista custaria mais do que deixar.
+ */
+export function handlerCache<A extends unknown[]>(
+  run: (id: string, ...args: A) => void,
+): (id: string) => (...args: A) => void {
+  const cache = new Map<string, (...args: A) => void>();
+  return (id) => {
+    const hit = cache.get(id);
+    if (hit) return hit;
+    const bound = (...args: A) => run(id, ...args);
+    cache.set(id, bound);
+    return bound;
+  };
+}

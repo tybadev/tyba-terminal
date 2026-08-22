@@ -27,9 +27,34 @@ interface Props {
   browsing: string | null;
   label: string;
   onBrowse: (branch: string | null) => void;
+  /**
+   * Como o gatilho se apresenta.
+   *
+   * `pill` é o do painel de diff, que flutua sobre conteúdo e precisa de
+   * contorno para existir. `chip` é o da barra de status, onde ele convive com
+   * os outros chips e um contorno o faria destoar de todos eles.
+   */
+  variant?: "pill" | "chip";
+  /**
+   * A lista serve para NAVEGAR até uma branch, ou só para trocar de branch?
+   *
+   * No painel de diff, clicar numa linha significa "me mostra o diff dessa
+   * branch" — o `browsing`. Na barra de status esse conceito não existe: ali só
+   * há o repositório onde a sessão está, e a única coisa que faz sentido é o
+   * checkout. Com `false`, a linha inteira arma o checkout em vez de navegar,
+   * e a faixa "voltar para a sessão" some.
+   */
+  browsable?: boolean;
 }
 
-export function BranchPicker({ sessionId, browsing, label, onBrowse }: Props) {
+export function BranchPicker({
+  sessionId,
+  browsing,
+  label,
+  onBrowse,
+  variant = "pill",
+  browsable = true,
+}: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<BranchList | null>(null);
@@ -108,13 +133,17 @@ export function BranchPicker({ sessionId, browsing, label, onBrowse }: Props) {
       <PopoverTrigger asChild>
         <button
           title={t("branchPickerTitle")}
-          className={`flex min-w-0 shrink items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[10px] transition-colors ${
-            browsing
-              ? "border-tyba-violet/50 text-tyba-violet hover:bg-tyba-violet/10"
-              : "border-tyba-border text-tyba-text-faint hover:bg-tyba-text/[.04] hover:text-tyba-text"
-          }`}
+          className={
+            variant === "chip"
+              ? "flex min-w-0 shrink items-center gap-1 rounded-[3px] px-1 -mx-1 transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
+              : `flex min-w-0 shrink items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[10px] transition-colors ${
+                  browsing
+                    ? "border-tyba-violet/50 text-tyba-violet hover:bg-tyba-violet/10"
+                    : "border-tyba-border text-tyba-text-faint hover:bg-tyba-text/[.04] hover:text-tyba-text"
+                }`
+          }
         >
-          <GitBranch size={10} className="shrink-0" />
+          <GitBranch size={variant === "chip" ? 12 : 10} className="shrink-0" />
           <span className="truncate">{label}</span>
         </button>
       </PopoverTrigger>
@@ -140,7 +169,7 @@ export function BranchPicker({ sessionId, browsing, label, onBrowse }: Props) {
             )}
           </button>
         </div>
-        {browsing && (
+        {browsable && browsing && (
           <button
             onClick={() => {
               onBrowse(null);
@@ -171,6 +200,17 @@ export function BranchPicker({ sessionId, browsing, label, onBrowse }: Props) {
                 <button
                   key={b.name}
                   onClick={() => {
+                    if (!browsable) {
+                      // Sem navegação, a linha inteira é o alvo do checkout: um
+                      // botão de 20px dentro de uma linha de 300 é alvo pequeno
+                      // demais para a única ação que a lista oferece. A troca
+                      // continua em dois passos — este clique ARMA, o próximo
+                      // confirma.
+                      if (b.is_current) return;
+                      if (armedCheckout === b.name) doCheckout(b.name, b.is_remote);
+                      else armCheckout(b.name);
+                      return;
+                    }
                     onBrowse(b.is_current ? null : b.name);
                     setOpen(false);
                   }}

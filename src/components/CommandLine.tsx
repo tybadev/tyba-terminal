@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CaretRight, GitBranch } from "@phosphor-icons/react";
 
 import {
   submitShellLine,
@@ -9,8 +8,11 @@ import {
   type CommandSuggestion,
   type SessionId,
 } from "../lib/ipc";
+import { shortPath } from "../lib/blockText";
 import { toastError } from "../lib/toast";
 import {
+  boxAcceptsTyping,
+  boxIsMounted,
   clearsDraft,
   controlBytes,
   ghostFor,
@@ -26,6 +28,7 @@ const MAX_HEIGHT_PX = 140;
 const PLACEHOLDER_BY_STATE: Record<LineState, string> = {
   own: "commandLinePlaceholder",
   waiting: "commandLineWaiting",
+  continuation: "commandLineContinuation",
   running: "commandLineRunning",
   app: "commandLineApp",
   off: "commandLineOff",
@@ -33,8 +36,29 @@ const PLACEHOLDER_BY_STATE: Record<LineState, string> = {
 
 interface Props {
   sessionId: SessionId;
+  /** Onde o comando vai rodar. Ver o rodapé da linha. */
   cwd: string | null;
-  branch: string | null;
+  /**
+   * Quem está com a tela, quando `state === "app"`. Ver `programName`.
+   *
+   * "nvim está no controle" é reconhecível — o usuário abriu o nvim. "Um app
+   * está usando a tela" é verdadeiro e não ajuda ninguém.
+   */
+  program?: string | null;
+  /**
+   * Pode encolher a faixa quando um app toma a tela?
+   *
+   * Só com UM painel. Existe uma linha de comando para a sessão ativa, não uma
+   * por painel: encolher com a tela dividida faria alternar o foco entre um
+   * painel em vim e outro no prompt mudar a altura da faixa a cada troca — e
+   * altura da faixa é altura da área de painéis, logo um `resizeSession` em
+   * TODOS os PTYs por troca de foco. É a mesma família do bug que a regra "a
+   * linha nunca some" existe para evitar.
+   *
+   * Cai sozinho quando existir uma linha por painel: aí cada faixa encolhe a
+   * sua e só aquele PTY sente.
+   */
+  canCollapse?: boolean;
   scope: { cwd: string | null; repoRoot: string | null };
   /** Muda quando a linha volta a ser do TYBA (fim de comando, saída do vim). */
   focusNonce: number;
@@ -52,12 +76,6 @@ interface Props {
   inject?: { text: string; nonce: number } | null;
 }
 
-function baseName(path: string | null): string {
-  if (!path) return "";
-  const trimmed = path.replace(/\/+$/, "");
-  return trimmed.slice(trimmed.lastIndexOf("/") + 1) || "/";
-}
-
 /**
  * A linha de comando do shell.
  *
@@ -69,13 +87,22 @@ function baseName(path: string | null): string {
 export function CommandLine({
   sessionId,
   cwd,
-  branch,
+  program,
+  canCollapse = true,
   scope,
   focusNonce,
   state,
   inject,
 }: Props) {
-  const waiting = state !== "own";
+  // Não é "a linha não é minha", é "a caixa não aceita tecla". A diferença é
+  // o `waiting`: a linha ainda não é do TYBA, mas o rascunho pode ser escrito
+  // e o Enter fica de pé — ver `boxAcceptsTyping`.
+  const waiting = !boxAcceptsTyping(state);
+  // App de tela cheia: a linha não desaparece, troca de conteúdo. E encolhe,
+  // se houver espaço para isso sem mexer nos painéis — ver `canCollapse`.
+  const collapsed = !boxIsMounted(state);
+  const compact = collapsed && canCollapse;
+  const where = shortPath(cwd);
   const { t } = useTranslation();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
@@ -88,6 +115,11 @@ export function CommandLine({
   const [focused, setFocused] = useState(false);
   const [paths, setPaths] = useState<string[]>([]);
   const [args, setArgs] = useState<string[]>([]);
+  // Uma submissão de cada vez. Ela deixou de ser instantânea: em sessão nova o
+  // core segura a linha até o shell abrir a dele, e a caixa só é limpa quando
+  // ele aceita. Sem esta trava, um segundo Enter na espera enviaria o MESMO
+  // texto de novo — e o shell rodaria o comando duas vezes.
+  const [submitting, setSubmitting] = useState(false);
 
   const seenInject = useRef(inject?.nonce ?? 0);
   useEffect(() => {
@@ -101,8 +133,6 @@ export function CommandLine({
       if (!el) return;
       el.focus();
       el.setSelectionRange(inject.text.length, inject.text.length);
-      el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`;
     });
   }, [inject]);
 
@@ -224,6 +254,24 @@ export function CommandLine({
     el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`;
   };
 
+  // A altura da caixa é medida, não declarada: `rows={1}` e `min-h-[28px]` só
+  // dão o piso, e quem sabe que o rascunho tem três linhas é o `scrollHeight`.
+  // Por isso ela se recalcula aqui, em UM lugar, e não em cada caminho que
+  // mexe no texto. Um lugar só derruba as duas armadilhas de uma vez:
+  //
+  // - a caixa não some quando a linha deixa de ser sua. Em `running`,
+  //   `continuation` e `off` é a MESMA textarea, desabilitada, com o rascunho
+  //   dentro (ver `boxIsMounted`). Zerar a altura na ida colapsava o texto para
+  //   uma linha, e nada o devolvia na volta: altura inline não se desfaz
+  //   sozinha, e quem a escrevia só rodava ao digitar.
+  // - saindo do `app` a textarea é REMONTADA — elemento novo, sem altura
+  //   inline, com o rascunho ainda no estado. Sem remedir por `state`, voltar
+  //   do `vim` devolvia a caixa em 28px com o texto cortado.
+  //
+  // `useLayoutEffect` porque a medida acontece antes da pintura: com `useEffect`
+  // o quadro intermediário com a altura errada chega à tela.
+  useLayoutEffect(resize, [state, text]);
+
   const apply = (next: string, nextCaret: number) => {
     setText(next);
     setCaret(nextCaret);
@@ -231,7 +279,6 @@ export function CommandLine({
       const el = inputRef.current;
       if (!el) return;
       el.setSelectionRange(nextCaret, nextCaret);
-      resize();
     });
   };
 
@@ -245,8 +292,9 @@ export function CommandLine({
 
   const run = () => {
     const value = text;
-    if (!value.trim()) return;
+    if (!value.trim() || submitting) return;
     setMenuOpen(false);
+    setSubmitting(true);
     // A linha só é limpa quando o shell aceitou. Multiline sem bracketed paste
     // é recusado pelo core, e engolir o erro apagaria o que o usuário escreveu
     // sem executar nada.
@@ -255,7 +303,8 @@ export function CommandLine({
         apply("", 0);
         setHits([]);
       })
-      .catch((error) => toastError(t("commandLineFailed"), error));
+      .catch((error) => toastError(t("commandLineFailed"), error))
+      .finally(() => setSubmitting(false));
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -342,8 +391,6 @@ export function CommandLine({
     }
   };
 
-  const dir = baseName(cwd);
-
   return (
     // A caixa é OUTRA peça, não o fim do output.
     //
@@ -363,9 +410,24 @@ export function CommandLine({
     //
     // Respiro igual em cima e embaixo: com `pt-1 pb-2` a caixa ficava encostada
     // na lista e solta do rodapé.
-    <div className="relative shrink-0 bg-tyba-sunken px-2 py-2">
+    // A separação da lista é um FILETE, não um degrau.
+    //
+    // A faixa continua na cor da área de terminal — sem isso ela mostraria o
+    // fundo do app, mais claro e com a aurora por cima, trocando uma emenda por
+    // outra. O que marca onde a leitura acaba e a escrita começa é uma linha de
+    // 1px, que acende de leve quando a linha é sua: é o segundo sinal de foco,
+    // junto com o chevron.
+    //
+    // `px-0` na faixa e `px-2.5` na linha: o chevron cai na mesma coluna do
+    // chevron de todo bloco, que é o alinhamento que faz as duas coisas lerem
+    // como a mesma família.
+    <div
+      className={`relative shrink-0 border-t bg-tyba-sunken px-2 py-1.5 transition-colors ${
+        focused ? "border-tyba-green/25" : "border-tyba-border"
+      }`}
+    >
       {showMenu && (
-        <div className="absolute bottom-full left-3 right-3 z-20 mb-1 max-h-56 overflow-y-auto rounded-[6px] border border-tyba-border bg-tyba-raised py-1 shadow-lg">
+        <div className="absolute bottom-full left-2.5 right-2.5 z-20 mb-1 max-h-56 overflow-y-auto rounded-[6px] border border-tyba-border bg-tyba-raised py-1 shadow-lg">
           {args.map((candidate) => (
             <button
               key={`arg:${candidate}`}
@@ -416,38 +478,63 @@ export function CommandLine({
       )}
 
       <div
-        // O que separa a caixa do painel é LUZ, não cinza — é a regra do
-        // BLACKOUT, onde as camadas quase não clareiam. Daí o verniz vertical
-        // (`--tyba-sheen`) e a aresta iluminada no topo (`--tyba-edge`), que são
-        // as peças que o design system criou para exatamente isto. Só subir o
-        // fundo para `raised` rendia pouca diferença sobre o sunken de vários
-        // temas, e a caixa continuava lendo como continuação do output.
+        // Não é uma caixa. É a próxima linha do terminal.
         //
-        // A aresta fica nos DOIS estados: no foco ela soma ao anel em vez de dar
-        // lugar a ele, senão a caixa muda de espessura ao receber o cursor.
-        className={`flex items-start gap-2 rounded-[8px] border px-2.5 py-1.5 transition-colors ${
-          focused ? "border-tyba-green/45" : "border-tyba-border-strong/70"
-        }`}
-        style={{
-          background: "var(--tyba-sheen, var(--tyba-raised))",
-          boxShadow: focused
-            ? "var(--tyba-edge), 0 0 0 1px color-mix(in srgb, var(--tyba-green) 25%, transparent)"
-            : "var(--tyba-edge), var(--tyba-shadow-sm)",
-        }}
+        // Antes era um campo elevado: fundo `raised` com verniz vertical
+        // (`--tyba-sheen`), aresta iluminada, cantos de 8px, sombra e um anel
+        // verde no foco. Cada uma dessas peças existe no design system para
+        // separar uma superfície da outra — e é justamente o que aqui não se
+        // quer. Sobre o preto absoluto da área de terminal, o verniz lê como
+        // plástico, e o conjunto lê como formulário colado no rodapé.
+        //
+        // A lista logo acima já fixou a gramática de "um comando": chevron
+        // verde à esquerda, o texto em mono, o cwd apagado à direita. Esta
+        // linha usa a MESMA, e a diferença entre ela e um bloco pronto passa a
+        // ser só o cursor piscando — que é a verdade: é o próximo bloco, ainda
+        // sendo escrito.
+        className="flex items-start gap-2.5 px-2.5"
       >
-        {/* O PS1 saiu da tela; o que ele dizia (onde estou, em que branch) não
-            pode sumir junto. */}
-        <div className="flex h-7 shrink-0 items-center gap-1.5 font-mono text-[12px] text-tyba-text-muted">
-          {dir && <span className="max-w-40 truncate">{dir}</span>}
-          {branch && (
-            <span className="flex items-center gap-0.5 truncate text-tyba-text-faint">
-              <GitBranch size={11} />
-              <span className="max-w-32 truncate">{branch}</span>
-            </span>
-          )}
-          <CaretRight size={12} weight="bold" className="text-tyba-green" />
-        </div>
+        {/* O chevron é a âncora e o único elemento colorido da linha.
+            Ele também é o indicador de foco: some o anel em volta da caixa, e
+            quem diz "o teclado é seu" é ele acendendo. Verde apagado quando a
+            linha não é sua, cheio e com brilho quando é — o mesmo verde que o
+            header de cada bloco usa para o comando que deu certo. */}
+        <span
+          aria-hidden
+          className={`shrink-0 select-none font-mono transition-all ${
+            collapsed
+              ? `text-[11px] text-tyba-text-faint ${compact ? "leading-[17px]" : "flex min-h-[28px] items-center"}`
+              : `pt-1 text-[13px] leading-[20px] ${focused ? "text-tyba-green" : "text-tyba-green/45"}`
+          }`}
+          style={
+            focused && !collapsed
+              ? { textShadow: "var(--tyba-glow-green)" }
+              : undefined
+          }
+        >
+          ❯
+        </span>
 
+        {collapsed ? (
+          /* Colapsada, não escondida.
+             A regra de nunca sumir continua valendo — sumir e voltar
+             redimensionava o terminal duas vezes por comando e o vim reabria
+             com outra altura. O que muda é o que ela desenha por dentro: some
+             a caixa de digitar, some o caminho, e sobra uma faixa de uma linha
+             dizendo de quem é o teclado.
+             O custo de resize é zero aqui: entrar em alt-screen JÁ redimensiona
+             o painel inteiro (o terminal vai de metade para tudo), e as duas
+             coisas acontecem no mesmo commit do React — um resize, não dois. */
+          <span
+            className={`flex min-w-0 flex-1 items-center truncate font-mono text-[11px] text-tyba-text-faint ${
+              compact ? "leading-[17px]" : "min-h-[28px]"
+            }`}
+          >
+            {program
+              ? t("commandLineAppNamed", { program })
+              : t("commandLineApp")}
+          </span>
+        ) : (
         <div className="relative min-w-0 flex-1">
           {ghost && (
             <div
@@ -472,7 +559,6 @@ export function CommandLine({
               setText(e.target.value);
               setCaret(e.target.selectionStart ?? 0);
               setMenuOpen(false);
-              resize();
             }}
             onKeyDown={onKeyDown}
             onKeyUp={() => setCaret(inputRef.current?.selectionStart ?? 0)}
@@ -482,6 +568,23 @@ export function CommandLine({
             className="max-h-[140px] min-h-[28px] w-full resize-none border-0 bg-transparent py-1 font-mono text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
           />
         </div>
+        )}
+
+        {/* Onde o comando vai rodar.
+            Encurtado com a MESMA regra do header de cada bloco (`…/pai/pasta`),
+            e não só o nome da pasta: duas pastas `src` em repositórios
+            diferentes são indistinguíveis pelo basename, e é exatamente na hora
+            de apertar Enter que essa distinção importa.
+            A branch fica de fora — ela está na status bar 20px abaixo e não
+            muda o destino do comando. O caminho, sim. */}
+        {where && !collapsed && (
+          <span
+            title={cwd ?? undefined}
+            className="shrink-0 truncate pt-1.5 font-mono text-[11px] leading-[17px] text-tyba-text-faint"
+          >
+            {where}
+          </span>
+        )}
       </div>
     </div>
   );

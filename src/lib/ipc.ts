@@ -611,7 +611,24 @@ export const reconnectSsh = (id: SessionId) =>
 export const resizeSession = (id: SessionId, cols: number, rows: number) =>
   invoke<void>("resize_session", { id, cols, rows });
 
-export const listSessions = () => invoke<Session[]>("list_sessions");
+/**
+ * Resposta que separa "carregou e está vazio" de "ainda não carregou".
+ *
+ * O boot do core roda numa thread, e comando que chega antes dela terminar
+ * devolve `ready: false`. Sem essa distinção a UI leria a lista vazia do meio
+ * do boot como estado final e desenharia "nenhuma sessão" por cima de vinte
+ * sessões que estão voltando.
+ */
+export interface Loaded<T> {
+  ready: boolean;
+  value: T;
+}
+
+/** O core terminou de carregar. Quem leu `ready: false` reconsulta aqui. */
+export const EVENT_APP_READY = "app://ready";
+
+export const listSessions = () =>
+  invoke<Loaded<Session[]>>("list_sessions");
 
 export const sessionMarkSeen = (id: SessionId) =>
   invoke<void>("session_mark_seen", { id });
@@ -722,7 +739,96 @@ export interface LayoutState {
   active_workspace: WorkspaceId | null;
 }
 
-export const layoutState = () => invoke<LayoutState>("layout_state");
+export const layoutState = () => invoke<Loaded<LayoutState>>("layout_state");
+
+/**
+ * Tudo que a primeira pintura precisa, numa chamada.
+ *
+ * Eram 18 `invoke` no mount, 16 deles `get_pref`. Cada comando síncrono do
+ * Tauri roda na main thread do macOS — a mesma que desenha o webview —, então
+ * "paralelo" no JS vira fila ali. Um comando só tira 18 travessias do caminho
+ * crítico da abertura.
+ */
+export interface BootSnapshot {
+  ready: boolean;
+  /**
+   * Alguma coisa do arranque falhou. O `kind` diz o quê; a `message`, os
+   * detalhes.
+   *
+   * Não-nulo significa que o que veio ao lado pode estar incompleto **por
+   * falha**, e não por ausência de dado. Uma vez preenchido, nunca muda.
+   *
+   * > [!warning] Tem **duas** origens, e elas dizem coisas diferentes:
+   * >
+   * > 1. `bootThreadDied` — **a thread de boot morreu**: a mensagem é a string
+   * >    crua do pânico, e sessões e layout estão vazios. Chega com
+   * >    `ready: true`, porque o portão abre mesmo em pânico (senão todo
+   * >    comando de escrita pagaria o timeout e a falha viraria lentidão).
+   * > 2. `storeDegraded` — **o banco não abriu por inteiro**: ou um passo da
+   * >    migração não pegou, ou o arquivo não abriu e esta janela caiu para um
+   * >    banco em memória, onde nada do que o usuário fizer será salvo. A
+   * >    mensagem é texto em pt-BR para pessoa ler, o boot termina normal, e
+   * >    isto é sabido já no `.setup()`, antes da thread de boot: chega com
+   * >    **`ready: false`**.
+   * >
+   * > Ou seja: `bootFailure` pode vir com `ready` em qualquer valor. Quem ler
+   * > só um dos dois perde metade dos casos.
+   * >
+   * > Com as DUAS ao mesmo tempo — banco degradado e thread morta depois —, a
+   * > `message` é a primeira (a causa) e o `kind` é o pior (o que se perdeu).
+   *
+   * Existe porque o evento `app://boot-failed` sofre a mesma corrida de entrega
+   * que o `app://ready` — e ao contrário dele, não tinha segunda via.
+   */
+  bootFailure: BootFailure | null;
+  prefs: Record<string, string>;
+  sessions: Session[];
+  layout: LayoutState;
+}
+
+/**
+ * De qual das duas origens a falha de arranque veio.
+ *
+ * > [!warning] O `kind` decide o TÍTULO do aviso, e não é enfeite: as duas
+ * > origens pedem frases opostas. Em `bootThreadDied` o app está vazio e o
+ * > certo é dizer que sessões e layout podem estar faltando. Em
+ * > `storeDegraded` o arranque terminou inteiro — essa mesma frase seria
+ * > mentira, e o que pode faltar é o histórico que o banco não tinha para dar.
+ *
+ * Antes daqui as duas chegavam como uma string só e o front escolhia o mesmo
+ * título para ambas. Pela mensagem não dá para distinguir: uma é prosa em
+ * pt-BR, a outra é string crua de pânico.
+ */
+export type BootFailureKind = "bootThreadDied" | "storeDegraded";
+
+export interface BootFailure {
+  kind: BootFailureKind;
+  /** Corpo do aviso, nunca o título — quem escolhe o título é o `kind`. */
+  message: string;
+}
+
+export const bootSnapshot = () => invoke<BootSnapshot>("boot_snapshot");
+
+/**
+ * A resposta do POLL do boot: o portão, e só.
+ *
+ * Existe separada do `boot_snapshot` porque o poll repete a cada 150ms
+ * enquanto o boot não termina — e o snapshot completo roda `store.prefs()`,
+ * tomando o mesmo mutex que a thread de boot está usando. O poll disputava o
+ * lock com a coisa que ele está esperando terminar.
+ *
+ * `loaded` é **ausente**, não vazio, enquanto `ready` for falso: vazio é
+ * indistinguível de "carregou e não tem", que é a confusão que o `Loaded`
+ * existe para desfazer. Assim quem esquecer de olhar o `ready` quebra, em vez
+ * de desenhar "nenhuma sessão" por cima de vinte que estão voltando.
+ */
+export interface BootGate {
+  ready: boolean;
+  bootFailure: BootFailure | null;
+  loaded: { sessions: Session[]; layout: LayoutState } | null;
+}
+
+export const bootGate = () => invoke<BootGate>("boot_gate");
 
 export type LaunchConfigId = string;
 export type SlotId = string;
@@ -938,6 +1044,26 @@ export const setSideViewRatio = (
   ratio: number,
   commit = true,
 ) => invoke<void>("set_side_view_ratio", { workspaceId, ratio, commit });
+
+/** O core terminou de carregar. Quem leu `ready: false` reconsulta aqui. */
+export const onAppReady = (handler: () => void): Promise<UnlistenFn> =>
+  listen(EVENT_APP_READY, () => handler());
+
+/**
+ * A thread de boot do core morreu de pânico antes de terminar.
+ *
+ * Vem sempre seguido de `app://ready`: o portão abre de todo jeito, senão todo
+ * comando de escrita pagaria o timeout de espera e a falha viraria lentidão. O
+ * snapshot que se reconsultar depois disto estará incompleto — sem sessões, sem
+ * layout, ou pela metade.
+ *
+ * É ESTE evento que diz que o vazio é falha, e não ausência de dado. Sem
+ * consumi-lo, um boot que morreu é indistinguível de um app sem sessão nenhuma.
+ */
+export const onBootFailed = (
+  handler: (failure: BootFailure) => void,
+): Promise<UnlistenFn> =>
+  listen<BootFailure>("app://boot-failed", (e) => handler(e.payload));
 
 export const onLayoutChanged = (
   handler: (state: LayoutState) => void,
@@ -1388,6 +1514,14 @@ export interface SessionCommand {
   command: string | null;
   running: boolean;
   agent_match: boolean;
+  /**
+   * O shell está em prompt de continuação (`PS2`).
+   *
+   * `for`, `while`, `if`, `cat <<EOF`, aspas abertas: a última linha submetida
+   * não fechou o comando. Nunca vem junto de `running: true` — são estados
+   * diferentes do mesmo ciclo.
+   */
+  continuation: boolean;
 }
 
 export const submitRichInput = (id: SessionId, text: string, submit: boolean) =>

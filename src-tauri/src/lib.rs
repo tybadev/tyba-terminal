@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod approvals;
 pub mod blocks;
+pub mod boot;
 pub mod completion;
 pub mod docker;
 pub mod editor;
@@ -63,12 +64,168 @@ struct AppState {
     agent_prober: agent::process_probe::SharedAgentProber,
     disk_observer: agent::disk_observer::SharedDiskObserver,
     tunnel_states: crate::ssh::tunnel::SharedTunnelStates,
+    /// Fecha em `false` e abre quando a thread de boot termina. Ver [`boot`].
+    boot: Arc<boot::BootGate>,
 }
 
+/// Resposta que separa "carregou e está vazio" de "ainda não carregou".
+///
+/// Sem isto a UI leria a lista vazia do meio do boot como estado final e
+/// desenharia "nenhuma sessão" por cima de vinte sessões que estão voltando.
+#[derive(serde::Serialize)]
+struct Loaded<T> {
+    ready: bool,
+    value: T,
+}
+
+impl<T> Loaded<T> {
+    /// `ready` é lido **antes** do valor, e a ordem é a decisão. Se o boot
+    /// terminar entre as duas leituras, o pior caso aqui é anunciar `false` com
+    /// dado que já era bom — o front reconsulta e nada se perde. Na ordem
+    /// inversa o pior caso seria anunciar `true` carregando o estado de antes do
+    /// boot, e aí a UI trata como final o que era transitório.
+    fn read(state: &AppState, value: impl FnOnce() -> T) -> Self {
+        let ready = state.boot.is_ready();
+        Self {
+            ready,
+            value: value(),
+        }
+    }
+}
+
+/// Teto para quem escreve antes do boot terminar. Não é um tempo esperado: é o
+/// limite acima do qual preferimos agir com estado incompleto a deixar o clique
+/// do usuário pendurado.
+const BOOT_WAIT: Duration = Duration::from_secs(10);
+
+/// A recusa de quem precisa do estado carregado para agir sem estragar nada.
+/// O usuário reclica; a alternativa é tratar "ainda não li" como "não existe".
+const BOOT_NOT_READY: &str = "o app ainda está carregando; tente de novo em instantes";
+
+/// Segura o comando até a thread de boot terminar, e devolve se ela terminou.
+///
+/// **A ordem em relação às leituras é o contrato.** Antes do `mark_ready`,
+/// `state.sessions` e `state.layout` estão vazios porque nada foi carregado
+/// ainda — não porque não haja nada. Quem lê antes desta espera lê "ainda não
+/// li" e não tem como distinguir de "não existe"; quem decide a partir disso
+/// duplica workspace, apaga worktree que tem dono, ou reescreve o layout salvo
+/// por cima de uma memória vazia.
+///
+/// `false` significa que o teto de [`BOOT_WAIT`] estourou com o portão ainda
+/// fechado. Quem escreve a partir de uma leitura de estado tem de tratar esse
+/// caso à parte — ver [`BOOT_NOT_READY`].
+///
+/// `spawn_blocking` porque a espera é condvar bloqueante: num worker do runtime
+/// ela dormiria até [`BOOT_WAIT`] segurando os outros comandos assíncronos. O
+/// portão entra por valor para não haver empréstimo atravessando o `.await`.
+async fn wait_for_boot(boot: Arc<boot::BootGate>) -> bool {
+    tauri::async_runtime::spawn_blocking(move || boot.wait_ready(BOOT_WAIT))
+        .await
+        // Join que falhou é portão que não se sabe: `false` é a resposta
+        // conservadora, e quem chama recusa em vez de agir no escuro.
+        .unwrap_or(false)
+}
+
+/// As sessões que estão dentro de algum pane, em qualquer workspace ou tab.
+///
+/// `AgentViewer` conta junto com `Leaf`: os dois prendem uma sessão a um pane, e
+/// os dois podem estar em foco.
+fn pane_bound_sessions(layout: &layout::LayoutState) -> std::collections::HashSet<SessionId> {
+    fn walk(node: &layout::PaneNode, out: &mut std::collections::HashSet<SessionId>) {
+        match node {
+            layout::PaneNode::Leaf { session_id, .. }
+            | layout::PaneNode::AgentViewer { session_id, .. } => {
+                out.insert(*session_id);
+            }
+            layout::PaneNode::Split { first, second, .. } => {
+                walk(first, out);
+                walk(second, out);
+            }
+        }
+    }
+
+    let mut out = std::collections::HashSet::new();
+    for workspace in &layout.workspaces {
+        for tab in &workspace.tabs {
+            if let Some(root) = &tab.root {
+                walk(root, &mut out);
+            }
+        }
+    }
+    out
+}
+
+/// O worktree das sessões presas a um pane, viva ou encerrada.
+///
+/// O worktree de um agente continua em disco depois que a sessão morre — é o
+/// ponto do modelo, e é lá que o dono revisa o diff. Sem raiz observada ele não
+/// ganhava `RepoSnapshot`, e o chip de branch ficava sem o que mostrar: não
+/// porque o repositório sumiu, mas porque ninguém tinha olhado.
+///
+/// **O corte é o pane, não "toda sessão encerrada".** A tabela `sessions` cresce
+/// monotonicamente no modo `Resume` (o padrão), e `restore` devolve todas: com o
+/// corte por status, cada agente já encerrado viraria uma raiz nova, cada raiz um
+/// watcher de FS mais `branch`/`status`/`ahead_behind` a cada evento — custo que
+/// só cresce, num core que disputa CPU com os agentes. E o corte não perde nada
+/// visível: o chip mostra a sessão ATIVA, e sessão ativa é sempre sessão num
+/// pane.
+///
+/// Vale para a sessão viva também, de propósito. O caminho do `process_cwd`
+/// abaixo já resolve o mesmo worktree enquanto o agente vive; registrar pelos
+/// dois lados faz a raiz não sumir no instante em que ele termina, e o watcher
+/// não é derrubado para ser recriado igual no reconcile seguinte.
+fn session_worktree_roots(
+    sessions: &[Session],
+    bound: &std::collections::HashSet<SessionId>,
+) -> std::collections::HashSet<std::path::PathBuf> {
+    touchable_worktrees(sessions, bound)
+        // `toplevel` é a checagem de existência, e é de propósito que não haja
+        // um `is_dir()` antes: worktree removido — na mão ou pelo `gc_orphans` —
+        // faz o `git` falhar, o caminho é descartado e nada aparece na tela. A
+        // única retentativa é a cadência da própria reconciliação.
+        .filter_map(repo::toplevel)
+        .collect()
+}
+
+/// Os worktrees que a reconciliação pode mandar o `git` visitar.
+///
+/// **O `git` daqui bloqueia a thread `repo-reconcile`**: `repo::toplevel` faz
+/// shell-out e espera no `output()`, e num mount NFS/SMB morto o processo fica
+/// em I/O ininterrompível — sem diálogo para clicar e sem timeout para estourar.
+/// A thread não volta, e o `EVENT_RECONCILED` para de sair para todos os
+/// repositórios, não só para o do caminho ruim.
+///
+/// Por isso a pergunta é `may_hang_shared_thread`, e **não** a `reopen_policy`
+/// que o `resume_startup` usa. As duas classificam caminho pelo texto e
+/// compartilham a lista de prefixos, mas foram calibradas por custos opostos: lá
+/// adiar à toa perde uma aba, e por isso `/mnt/c` (o disco do Windows no WSL)
+/// passa; aqui adiar à toa perde o chip de branch de um repositório até o tick
+/// seguinte, e tocar errado perde o de todos, para sempre. Reusar a política do
+/// arranque aqui já foi exatamente esse bug.
+fn touchable_worktrees<'a>(
+    sessions: &'a [Session],
+    bound: &'a std::collections::HashSet<SessionId>,
+) -> impl Iterator<Item = &'a std::path::Path> {
+    sessions
+        .iter()
+        .filter(|session| bound.contains(&session.id))
+        .filter_map(|session| session.worktree.as_ref())
+        .map(|worktree| worktree.path.as_path())
+        .filter(|path| !session::cwd::may_hang_shared_thread(path))
+}
+
+/// Roda inteira na thread `repo-reconcile`, e os três blocos abaixo fazem
+/// shell-out de `git`.
+///
+/// Só o dos worktrees de sessão filtra caminho antes de tocar. Os outros dois —
+/// a raiz que o dono escolheu para o workspace e o cwd de um shell vivo —
+/// continuam expostos a um mount morto, de propósito: ali o chip perdido é o do
+/// repositório principal, e adiar `/mnt/c` cobraria isso de todo usuário de WSL
+/// no caso saudável, que é o comum. Fechar a classe inteira é tirar o `git` de
+/// dentro desta thread, não alongar a lista de prefixos.
 fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::PathBuf> {
-    let mut roots: std::collections::HashSet<std::path::PathBuf> = state
-        .layout
-        .state()
+    let layout = state.layout.state();
+    let mut roots: std::collections::HashSet<std::path::PathBuf> = layout
         .workspaces
         .iter()
         .filter_map(|w| w.repo_root.as_deref())
@@ -76,7 +233,13 @@ fn watched_repo_roots(state: &AppState) -> std::collections::HashSet<std::path::
         .filter_map(|root| repo::toplevel(&root))
         .collect();
 
-    for session in state.sessions.list() {
+    let sessions = state.sessions.list();
+    roots.extend(session_worktree_roots(
+        &sessions,
+        &pane_bound_sessions(&layout),
+    ));
+
+    for session in sessions {
         if !matches!(session.status, SessionStatus::Running) {
             continue;
         }
@@ -514,6 +677,16 @@ fn hosts_alias(store: &Arc<session::store::Store>, host_id: &str) -> Option<Stri
 /// Só shell é reaberto. Um agente não é um processo idempotente: religá-lo sozinho
 /// no boot faria um agente começar a agir sem ninguém ter pedido — a sessão volta
 /// morta, e o dono decide.
+///
+/// O cwd de cada sessão passa por [`session::cwd::reopen_policy`] antes de
+/// qualquer syscall daqui: caminho em volume que pode não estar montado não é
+/// reaberto, e pasta protegida pelo TCC é reaberta sem o `is_dir()` desta
+/// função. **É a política do chamador barato**: adiar à toa aqui custa uma aba
+/// que não volta, e é por isso que `/mnt/c` do WSL passa. Quem paga a thread de
+/// todo mundo pergunta a `may_hang_shared_thread` — ver `touchable_worktrees`.
+/// O segundo caso **não** evita o diálogo de permissão do macOS — o
+/// `resolve_cwd` do spawn stata o mesmo caminho poucas linhas depois, e o shell
+/// ainda faz `chdir` para lá. O módulo explica o que cada variante compra.
 fn resume_startup(
     app: &AppHandle,
     store: &Arc<session::store::Store>,
@@ -529,6 +702,9 @@ fn resume_startup(
     );
     let mut remap = std::collections::HashMap::new();
     let dead = sessions.dead_sessions();
+    // Resolvido uma vez: a classificação é pura, e ler o env por sessão não
+    // acrescentaria nada.
+    let home = session::cwd::home();
 
     if mode == session::StartupMode::Fresh {
         for s in dead {
@@ -575,8 +751,22 @@ fn resume_startup(
         let Some(cwd) = old.cwd.clone() else {
             continue;
         };
-        if !cwd.is_dir() {
-            continue;
+        // Este `stat` era o congelamento da abertura enquanto o boot rodava na
+        // main thread; hoje o que ele ainda pode fazer é pendurar a thread de
+        // boot num volume de rede morto, sem diálogo e sem timeout. Leia
+        // `session::cwd` antes de "consertar" isto de volta para um `is_dir()`
+        // incondicional.
+        match session::cwd::reopen_policy(&cwd, home.as_deref()) {
+            session::cwd::ReopenPolicy::Checked if !cwd.is_dir() => continue,
+            session::cwd::ReopenPolicy::Skip => {
+                eprintln!(
+                    "[tyba] sessão {} volta parada: {} está em volume que pode não estar montado",
+                    old.id,
+                    cwd.display()
+                );
+                continue;
+            }
+            _ => {}
         }
         let handle = app.clone();
         let opts = CreateSessionOpts {
@@ -605,12 +795,28 @@ fn resume_startup(
     remap
 }
 
+/// `async` de propósito: comando síncrono roda na **main thread**, e este aqui
+/// espera o boot terminar. O splash do front desiste em 4 s, então a janela fica
+/// clicável enquanto a thread de boot ainda pode estar carregando — um ⌘T nessa
+/// fresta congelaria a main thread, e com ela o webview, por até [`BOOT_WAIT`].
+/// Nada abaixo precisa da main thread: menu e janela ficam no `setup()`.
 #[tauri::command]
-fn create_session(
+async fn create_session(
     app: AppHandle,
     state: State<'_, AppState>,
     opts: CreateSessionOpts,
 ) -> Result<Session, String> {
+    // Leitura devolve "carregando"; escrita espera. Criar sessão antes do boot
+    // terminar seria criá-la para o `load_remapped` da thread de boot passar por
+    // cima logo em seguida — o pane nasceria apontando para o nada.
+    //
+    // O resultado é descartado pelo mesmo motivo que o teto existe: passado ele,
+    // agimos com estado incompleto em vez de pendurar o clique. Aqui isso é
+    // aceitável porque a sessão nova não se decide a partir do que já estava
+    // salvo — ao contrário do `apply_launch_config`, que precisa do layout lido
+    // para não duplicar workspace.
+    let _ = wait_for_boot(Arc::clone(&state.boot)).await;
+
     let handle = app.clone();
     let session = match &opts.kind {
         SessionKind::Agent { .. } => {
@@ -710,7 +916,9 @@ fn rematerialize_hosts(state: &State<'_, AppState>) -> Result<(), crate::error::
 }
 
 #[tauri::command]
-fn list_hosts(state: State<'_, AppState>) -> Result<Vec<crate::ssh::Host>, crate::error::AppError> {
+async fn list_hosts(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::ssh::Host>, crate::error::AppError> {
     state.store.load_hosts().map_err(store_err)
 }
 
@@ -1022,6 +1230,15 @@ async fn worktree_remove(
     delete_branch: bool,
     force: bool,
 ) -> Result<(), String> {
+    // O `busy` abaixo é a única coisa entre um `git worktree remove --force` e o
+    // worktree de uma sessão viva, e ele se decide por `sessions.list()`. Antes
+    // do boot essa lista está vazia: toda sessão parece encerrada, a guarda
+    // deixa passar e o worktree em uso vai embora. Esperar o portão é o que faz
+    // dela uma guarda.
+    if !wait_for_boot(Arc::clone(&state.boot)).await {
+        return Err(BOOT_NOT_READY.into());
+    }
+
     let path = std::path::PathBuf::from(&path);
     let canonical = repo::canonicalize_or(&path);
     let busy = state.sessions.list().into_iter().any(|s| {
@@ -1038,6 +1255,14 @@ async fn worktree_remove(
 
 #[tauri::command]
 async fn worktree_gc(state: State<'_, AppState>) -> Result<worktree::GcReport, String> {
+    // A regra já está escrita no `run_boot`, onde o GC roda depois do restore:
+    // ele decide o que é órfão a partir de `sessions.list()`, e com a lista
+    // vazia **todo** worktree gerenciado parece abandonado. Aqui quem dispara é
+    // o usuário, e o teto pode estourar antes do restore — recusar é a única
+    // saída, porque o que este comando faz quando erra é apagar o que tem dono.
+    if !wait_for_boot(Arc::clone(&state.boot)).await {
+        return Err(BOOT_NOT_READY.into());
+    }
     Ok(worktree::gc_orphans(&known_worktree_paths(&state.sessions)))
 }
 
@@ -2567,7 +2792,7 @@ fn list_worktree_files(
 }
 
 #[tauri::command]
-fn attach_session(
+async fn attach_session(
     app: AppHandle,
     window: tauri::Window,
     state: State<'_, AppState>,
@@ -2590,9 +2815,14 @@ fn repo_snapshots(state: State<'_, AppState>) -> Vec<repo::RepoSnapshot> {
 }
 
 #[tauri::command]
-fn session_cwd(state: State<'_, AppState>, id: SessionId) -> Option<pty::SessionCwdPayload> {
-    let pid = state.pty_pool.leader_pid(id)?;
-    repo::process_cwd(pid).map(|p| pty::SessionCwdPayload::of(&p))
+async fn session_cwd(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<Option<pty::SessionCwdPayload>, String> {
+    let Some(pid) = state.pty_pool.leader_pid(id) else {
+        return Ok(None);
+    };
+    Ok(repo::process_cwd(pid).map(|p| pty::SessionCwdPayload::of(&p)))
 }
 
 #[tauri::command]
@@ -2609,8 +2839,8 @@ fn resize_session(
 }
 
 #[tauri::command]
-fn list_sessions(state: State<'_, AppState>) -> Vec<Session> {
-    state.sessions.list()
+async fn list_sessions(state: State<'_, AppState>) -> Result<Loaded<Vec<Session>>, String> {
+    Ok(Loaded::read(&state, || state.sessions.list()))
 }
 
 #[tauri::command]
@@ -2628,8 +2858,158 @@ fn dispose_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
 }
 
 #[tauri::command]
-fn layout_state(state: State<'_, AppState>) -> layout::LayoutState {
-    state.layout.state()
+async fn layout_state(state: State<'_, AppState>) -> Result<Loaded<layout::LayoutState>, String> {
+    Ok(Loaded::read(&state, || state.layout.state()))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BootSnapshot {
+    ready: bool,
+    /// O arranque não entregou o estado inteiro, e esta é a mensagem.
+    ///
+    /// Segunda via do `app://boot-failed` — ver [`boot::EVENT_FAILED`] para as
+    /// duas origens (thread de boot morta, banco de sessões degradado). Com este
+    /// campo preenchido, as listas ao lado estão incompletas por falha, não por
+    /// ausência de dado.
+    ///
+    /// **Pode vir com `ready: false`.** O banco degradado é conhecido no
+    /// `.setup()`, antes de a thread de boot começar, e `note_failure` registra
+    /// sem abrir o portão — o estado ainda vai carregar. `ready` continua sendo
+    /// a pergunta "as listas já são finais?", e este campo, "o que veio dá para
+    /// confiar?"; são independentes.
+    ///
+    /// O `kind` é o que diz QUAL das duas origens — ver [`boot::FailureKind`].
+    /// Sem ele o front escolhia o mesmo título para as duas, e ele está errado
+    /// para o banco degradado: ali o arranque terminou inteiro.
+    boot_failure: Option<boot::Failure>,
+    prefs: std::collections::HashMap<String, String>,
+    sessions: Vec<Session>,
+    layout: layout::LayoutState,
+}
+
+/// Tudo que o mount do front precisa, numa chamada.
+///
+/// Eram dezoito `invoke` — dezesseis deles `get_pref`, um `SELECT` cada, todos
+/// disputando o mesmo `Mutex<Connection>`. Paralelo no JS, serial do lado de cá.
+///
+/// `ready: false` significa "a thread de boot ainda não terminou": as listas
+/// podem estar vazias por isso, não por não haver nada. O front espera
+/// [`boot::EVENT_READY`] e reconsulta.
+///
+/// `bootFailure` preenchido significa a terceira possibilidade: a thread morreu,
+/// e o que vem ao lado está vazio por falha. É a rede do `app://boot-failed`,
+/// que pode ter sido emitido antes de o listener do front existir.
+///
+/// **Lê tudo mesmo com `ready: false`, e é de propósito.** É a chamada do mount,
+/// uma por abertura do app, e as prefs são o motivo: elas saem de um `SELECT`
+/// direto, não dependem da thread de boot, e o front as aplica **uma vez** — não
+/// há caminho que as releia depois do `app://ready`. Devolver prefs vazias no
+/// boot lento — que é justamente quando `ready` chega `false` aqui — abriria o
+/// app com fonte, toolbar, atalhos e modo de arranque no padrão, em silêncio.
+/// Quem repergunta é o [`boot_gate`], e é lá que o retorno cedo mora.
+#[tauri::command]
+async fn boot_snapshot(state: State<'_, AppState>) -> Result<BootSnapshot, String> {
+    // Lido primeiro de propósito — ver [`Loaded::read`].
+    let ready = state.boot.is_ready();
+    Ok(BootSnapshot {
+        ready,
+        // Depois do `ready`, e é a ordem que faz o campo valer: o portão só abre
+        // depois de a mensagem estar gravada (ver `BootGate::mark_failed`), então
+        // ler o `ready` primeiro nunca devolve `true` com falha em branco.
+        boot_failure: state.boot.failure(),
+        prefs: state.store.prefs().map_err(|e| e.to_string())?,
+        sessions: state.sessions.list(),
+        layout: state.layout.state(),
+    })
+}
+
+/// Estado que só existe depois da thread de boot: sessões reabertas e layout.
+///
+/// Os dois juntos num objeto de propósito — é um `null` só para o front
+/// conferir, e não a chance de ler um e esquecer o outro.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BootLoaded {
+    sessions: Vec<Session>,
+    layout: layout::LayoutState,
+}
+
+/// A resposta do poll do boot: o portão, e só.
+///
+/// Separado do [`BootSnapshot`] porque os dois chamadores querem coisas
+/// diferentes. O mount chama uma vez e precisa das prefs mesmo com
+/// `ready: false` — elas saem de um `SELECT` direto e não dependem da thread de
+/// boot. O poll repergunta a cada ~150ms enquanto o portão está fechado e
+/// **descarta** tudo que não seja o portão, porque o `mergeLoaded` do front
+/// recusa payload sem `ready`.
+///
+/// Servir os dois pelo mesmo comando cobrava do poll, a cada tick, o `SELECT`
+/// das prefs mais um clone de `sessions.list()` e outro de `layout.state()` —
+/// os três sob os mesmos locks que a thread de boot está usando para `restore`
+/// e `drain_checkpoints`. Quem espera o boot terminar virava quem o atrasa.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BootGateSnapshot {
+    ready: bool,
+    /// Mesmo campo, e mesma rede, do [`BootSnapshot::boot_failure`]: o
+    /// `app://boot-failed` sai de dentro da thread de boot, antes de o listener
+    /// do front existir, e o core não reemite. Vale aqui a mesma ressalva de
+    /// lá — pode chegar com `ready: false`, e é o caso do banco degradado.
+    boot_failure: Option<boot::Failure>,
+    /// **Ausente** — e não vazio — enquanto `ready == false`.
+    ///
+    /// Vazio é indistinguível de "carregou e não tem", e foi essa confusão que
+    /// gerou o [`Loaded`] em primeiro lugar. O `ready: false` já resolve para
+    /// quem lê direito; a ausência resolve também para quem esquecer de olhar,
+    /// que quebra em vez de desenhar "nenhuma sessão" por cima de vinte que
+    /// estão voltando.
+    loaded: Option<BootLoaded>,
+}
+
+/// Monta a resposta do poll sem tocar no que o portão fechado ainda não tem.
+///
+/// `loaded` chega como closure porque o ponto do desvio é justamente **não
+/// executá-la** — é o que o teste consegue contar.
+fn boot_gate_snapshot(
+    gate: &boot::BootGate,
+    loaded: impl FnOnce() -> BootLoaded,
+) -> BootGateSnapshot {
+    // Lido antes do resto, e a ordem é a decisão — ver [`Loaded::read`].
+    let ready = gate.is_ready();
+    // Lido antes do desvio, e agora isso importa de verdade: o banco degradado
+    // é registrado no `.setup()` com `note_failure`, que NÃO abre o portão, então
+    // o retorno cedo é o caminho por onde essa notícia chega — o poll roda a
+    // cada ~150ms justamente enquanto `ready` é `false`. Antes só `mark_failed`
+    // produzia falha, e ela implicava `ready: true`; ler o portão aqui já era o
+    // certo por um `Mutex<Option<String>>` de custo, e virou o único caminho.
+    let boot_failure = gate.failure();
+    if !ready {
+        return BootGateSnapshot {
+            ready,
+            boot_failure,
+            loaded: None,
+        };
+    }
+    BootGateSnapshot {
+        ready,
+        boot_failure,
+        loaded: Some(loaded()),
+    }
+}
+
+/// "O boot já terminou?", mais a rede do `app://boot-failed`. Ver
+/// [`BootGateSnapshot`] para por que não é o [`boot_snapshot`].
+///
+/// `async` pelo mesmo motivo do `boot_snapshot`: comando síncrono do Tauri roda
+/// na main thread do macOS — a mesma que desenha o webview —, e um tick a cada
+/// 150ms ali entra na fila da pintura mesmo custando quase nada.
+#[tauri::command]
+async fn boot_gate(state: State<'_, AppState>) -> Result<BootGateSnapshot, String> {
+    Ok(boot_gate_snapshot(&state.boot, || BootLoaded {
+        sessions: state.sessions.list(),
+        layout: state.layout.state(),
+    }))
 }
 
 #[derive(serde::Serialize)]
@@ -2766,7 +3146,10 @@ struct SlotSpawn<'a> {
     rows: u16,
 }
 
-fn spawn_slot(
+/// `async` porque chama [`create_session`], que espera o boot — e porque cria
+/// worktree pelo caminho isolado, o que é `git` em subprocesso. Nenhuma das duas
+/// coisas pode acontecer na main thread.
+async fn spawn_slot(
     app: &AppHandle,
     state: &State<'_, AppState>,
     ctx: &SlotSpawn<'_>,
@@ -2799,7 +3182,8 @@ fn spawn_slot(
                 shell: None,
                 initial_prompt: slot.initial_prompt.clone(),
             },
-        );
+        )
+        .await;
     }
 
     let branch = launch_config::slot_branch(&config.slug, &slot.name);
@@ -2845,10 +3229,56 @@ fn spawn_slot(
             initial_prompt: slot.initial_prompt.clone(),
         },
     )
+    .await
 }
 
+/// O que a busca de workspace de uma launch config permite concluir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchReuse {
+    /// Já existe workspace desta configuração: ativa e devolve.
+    Reuse(layout::WorkspaceId),
+    /// Layout carregado e sem workspace desta configuração: pode criar.
+    Create,
+    /// O portão de boot não abriu dentro do teto: o `load_remapped` ainda não
+    /// rodou, e um layout vazio não é resposta para "existe workspace?".
+    Unknown,
+}
+
+/// Achar é prova. Não achar, não.
+///
+/// A armadilha: `state.layout` só é populado pelo `load_remapped` da thread de
+/// boot, e até lá `workspace_of_launch_config` responde `None` para **toda**
+/// configuração — inclusive as que já têm workspace. Ler esse `None` como
+/// "não existe" tem dois preços, e o segundo é o caro:
+///
+/// 1. o comando cria um SEGUNDO workspace para a mesma launch config, com todas
+///    as sessões e worktrees do primeiro repetidas;
+/// 2. o `insert_workspace` que vem depois persiste via `LayoutManager::persist`,
+///    que reescreve o layout inteiro a partir da memória — e `save_layout` é
+///    `DELETE`+`INSERT`. Com a memória ainda vazia, o que estava salvo no banco
+///    e ainda não foi lido some junto.
+///
+/// Por isso `None` com o portão fechado é [`LaunchReuse::Unknown`], nunca
+/// `Create`: a recusa é reversível (o usuário reclica), a duplicata e a perda de
+/// layout não são.
+///
+/// `Some` dispensa o portão de propósito: entre o `load_remapped` e o
+/// `mark_ready` existe uma fresta em que o layout já está lido e o portão ainda
+/// não abriu. Achar ali é achar de verdade, e recusar o reuso criaria
+/// exatamente a duplicata que esta função existe para impedir.
+fn decide_launch_reuse(boot_ready: bool, found: Option<layout::WorkspaceId>) -> LaunchReuse {
+    match found {
+        Some(ws) => LaunchReuse::Reuse(ws),
+        None if boot_ready => LaunchReuse::Create,
+        None => LaunchReuse::Unknown,
+    }
+}
+
+/// `async` pelo mesmo motivo de [`create_session`]: cada slot passa por ele, e
+/// um comando síncrono seguraria a main thread durante toda a espera do boot e
+/// toda a criação de worktree.
 #[tauri::command]
-fn apply_launch_config(
+async fn apply_launch_config(
     app: AppHandle,
     state: State<'_, AppState>,
     id: launch_config::LaunchConfigId,
@@ -2858,8 +3288,31 @@ fn apply_launch_config(
 ) -> Result<AppliedLaunchConfig, String> {
     let clean = clean.unwrap_or(false);
 
-    if !clean {
-        if let Some(ws) = state.layout.workspace_of_launch_config(id) {
+    // A espera vem ANTES da leitura do layout, e a ordem é o conserto. O
+    // `create_session` de cada slot também espera o boot, mas lá embaixo, dentro
+    // do `spawn_slot`: ler o layout antes disso é lê-lo vazio na fresta entre o
+    // splash desistir (4 s) e a thread de boot terminar.
+    //
+    // No caminho normal não custa nada — com o portão aberto o `wait_ready`
+    // retorna sem dormir. Na fresta, é a mesma espera que o clique já pagava
+    // dentro do `spawn_slot`, só que agora do lado certo da leitura.
+    //
+    // O resultado importa, ao contrário do `create_session`: é ele que diz se o
+    // layout pode ser lido.
+    let ready = wait_for_boot(Arc::clone(&state.boot)).await;
+
+    // Com `clean` o reuso é recusado de propósito: o pedido é um workspace novo.
+    // A busca é pulada, mas o portão continua valendo — o `insert_workspace` lá
+    // embaixo persiste o layout inteiro, e fazer isso com a memória vazia apaga
+    // o que estava salvo. Ver [`decide_launch_reuse`].
+    let found = if clean {
+        None
+    } else {
+        state.layout.workspace_of_launch_config(id)
+    };
+
+    match decide_launch_reuse(ready, found) {
+        LaunchReuse::Reuse(ws) => {
             state
                 .layout
                 .activate_workspace(ws)
@@ -2871,6 +3324,11 @@ fn apply_launch_config(
                 failures: Vec::new(),
             });
         }
+        // Estourou o teto com a thread de boot ainda presa (diálogo de TCC,
+        // disco lento). Recusar é a resposta menos ruim: o usuário reclica,
+        // enquanto seguir em frente duplica workspace e apaga o layout salvo.
+        LaunchReuse::Unknown => return Err(BOOT_NOT_READY.into()),
+        LaunchReuse::Create => {}
     }
 
     let stored = state
@@ -2900,7 +3358,7 @@ fn apply_launch_config(
         rows,
     };
     for slot in &config.slots {
-        match spawn_slot(&app, &state, &ctx, slot) {
+        match spawn_slot(&app, &state, &ctx, slot).await {
             Ok(session) => {
                 if let Some(prompt) = &slot.initial_prompt {
                     prefills.push(PrefillPayload {
@@ -3197,7 +3655,7 @@ fn list_shells() -> Vec<session::ShellOption> {
 }
 
 #[tauri::command]
-fn get_pref(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+async fn get_pref(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
     if !key.starts_with("pref.") {
         return Err("chave de preferência inválida".into());
     }
@@ -3205,7 +3663,7 @@ fn get_pref(state: State<'_, AppState>, key: String) -> Result<Option<String>, S
 }
 
 #[tauri::command]
-fn set_pref(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+async fn set_pref(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
     if !key.starts_with("pref.") {
         return Err("chave de preferência inválida".into());
     }
@@ -4010,19 +4468,27 @@ struct AgentConfigInfo {
     consent: Option<bool>,
 }
 
+/// Fora do threadpool de blocking isto é uma bomba armada: por baixo,
+/// `agent_path()` resolve o PATH de login spawnando `$SHELL -lic` — shell
+/// **interativo**, roda o `.zshrc` inteiro — com busy-wait de até 3 s, e é
+/// `OnceLock`, então a primeira chamada segura quem passar por ela. Nesta
+/// máquina, `zsh -lic` custa ~660 ms. Na main thread isso era beachball; num
+/// worker do runtime seria um worker sequestrado.
 #[tauri::command]
-fn agent_binary_available(runner: crate::session::AgentRunnerKind) -> bool {
-    agent::binary_available(&runner)
+async fn agent_binary_available(runner: crate::session::AgentRunnerKind) -> bool {
+    tauri::async_runtime::spawn_blocking(move || agent::binary_available(&runner))
+        .await
+        .unwrap_or(false)
 }
 
 /// Agente (claude/codex) detectado rodando na sessão de shell `session_id`, se
 /// houver. Estado alimentado pelo poll de [`poll_agent_probers`].
 #[tauri::command]
-fn detected_agent(
+async fn detected_agent(
     state: State<'_, AppState>,
     session_id: SessionId,
-) -> Option<agent::process_probe::DetectedAgent> {
-    state.agent_prober.detected(session_id)
+) -> Result<Option<agent::process_probe::DetectedAgent>, String> {
+    Ok(state.agent_prober.detected(session_id))
 }
 
 #[tauri::command]
@@ -4082,8 +4548,38 @@ const KILL_LINE: &[u8] = b"\x1b=";
 /// app.
 const TOGGLE_PROMPT_MODE: &[u8] = b"\x1b~";
 
+/// Teto da espera pelo editor de linha do shell. O rc do dono leva 1,4 s; um
+/// `.zshrc` pesado em máquina fria leva mais.
+///
+/// O teto existe para o shell que **nunca** chega lá — sem integração, ou morto
+/// carregando. Estourado, a linha é escrita assim mesmo: sem o `633;P` não há
+/// como saber, e escrever é o que o comando fazia antes do portão. Recusar
+/// tornaria pior um caso que hoje funciona.
+const LINE_EDITOR_WAIT: Duration = Duration::from_secs(5);
+
+/// Segura a submissão até o shell alcançar o editor de linha, e devolve se
+/// alcançou.
+///
+/// `spawn_blocking` e portão por valor pelas mesmas duas razões do
+/// [`wait_for_boot`]: a espera é condvar bloqueante, e empréstimo não atravessa
+/// `.await`.
+async fn wait_for_line_editor(gate: Arc<pty::LineEditorGate>) -> bool {
+    tauri::async_runtime::spawn_blocking(move || gate.wait_open(LINE_EDITOR_WAIT))
+        .await
+        .unwrap_or(false)
+}
+
+/// `async` de propósito: a espera é o que mantém a injeção fora do eco do
+/// terminal.
+///
+/// Antes daqui a linha era escrita no PTY sem nada garantir que houvesse quem a
+/// lesse. Isso não a perdia — o driver enfileira e o zsh executa quando assume
+/// —, mas durante o carregamento do rc o tty está canônico e ECOA os bytes
+/// crus: a injeção aparecia como `^[=<comando>` no topo da sessão, fora de
+/// qualquer bloco, e o comando só rodava 1,4 s depois. Ver
+/// [`pty::LineEditorGate`] para a medição e para o que já foi medido e é falso.
 #[tauri::command]
-fn submit_shell_line(
+async fn submit_shell_line(
     state: State<'_, AppState>,
     id: SessionId,
     text: String,
@@ -4097,6 +4593,18 @@ fn submit_shell_line(
         return Ok(());
     }
     let payload = rich_input::plan_injection(&normalized, bracketed)?;
+
+    // A espera vem ANTES do lock de submissão: um shell que demora seguraria a
+    // fila de todas as outras sessões por [`LINE_EDITOR_WAIT`].
+    //
+    // O valor devolvido é ignorado de propósito — ver [`LINE_EDITOR_WAIT`]:
+    // estourar o teto significa "não dá para saber", e a resposta a isso é
+    // escrever, que é o que este comando fazia antes de existir portão.
+    let gate = state
+        .pty_pool
+        .line_editor_gate(id)
+        .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+    let _ = wait_for_line_editor(gate).await;
 
     let _submitting = state.rich_input_submit.lock();
     let mut bytes = Vec::with_capacity(KILL_LINE.len() + payload.len() + 1);
@@ -4123,7 +4631,10 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
 /// Blocos já gravados de uma sessão, para reabrir mostrando o que aconteceu
 /// antes. Nada é gravado sem ser usado (ADR de 2026-07-10).
 #[tauri::command]
-fn session_blocks(state: State<'_, AppState>, id: SessionId) -> Result<Vec<blocks::Block>, String> {
+async fn session_blocks(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<Vec<blocks::Block>, String> {
     state
         .store
         .list_blocks(&id.to_string(), 200)
@@ -4185,11 +4696,23 @@ struct HistoryHit {
 
 /// Fuzzy + frecência no core: o webview recebe a lista já ordenada (princípio #1).
 #[tauri::command]
-fn search_command_history(
+async fn search_command_history(
     state: State<'_, AppState>,
     query: String,
     cwd: Option<String>,
     repo_root: Option<String>,
+    limit: usize,
+) -> Result<Vec<HistoryHit>, String> {
+    history_hits(&state, &query, cwd.as_deref(), repo_root.as_deref(), limit)
+}
+
+/// O corpo do comando, síncrono, para quem já está numa thread — `suggest_line`
+/// chama daqui em vez de `.await` no comando só para não virar duas travessias.
+fn history_hits(
+    state: &AppState,
+    query: &str,
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
     limit: usize,
 ) -> Result<Vec<HistoryHit>, String> {
     use fuzzy_matcher::skim::SkimMatcherV2;
@@ -4197,7 +4720,7 @@ fn search_command_history(
 
     let candidates = state
         .store
-        .history_candidates(cwd.as_deref(), repo_root.as_deref())
+        .history_candidates(cwd, repo_root)
         .map_err(|e| e.to_string())?;
     let matcher = SkimMatcherV2::default();
     let query = query.trim();
@@ -4251,11 +4774,20 @@ const SUGGEST_LIMIT: usize = 8;
 /// e snippets, numa lista só. O ranking fica no core (princípio #1) — o webview
 /// recebe pronto e só desenha.
 #[tauri::command]
-fn suggest_commands(
+async fn suggest_commands(
     state: State<'_, AppState>,
     query: String,
     cwd: Option<String>,
     repo_root: Option<String>,
+) -> Result<Vec<CommandSuggestion>, String> {
+    command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref())
+}
+
+fn command_suggestions(
+    state: &AppState,
+    query: &str,
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
 ) -> Result<Vec<CommandSuggestion>, String> {
     use fuzzy_matcher::skim::SkimMatcherV2;
     use fuzzy_matcher::FuzzyMatcher;
@@ -4284,7 +4816,7 @@ fn suggest_commands(
         }
     }
 
-    let hits = search_command_history(state, query.to_string(), cwd, repo_root, SUGGEST_LIMIT)?;
+    let hits = history_hits(state, query, cwd, repo_root, SUGGEST_LIMIT)?;
     for hit in hits {
         if out.iter().any(|s| s.command == hit.command) {
             continue;
@@ -4314,7 +4846,7 @@ struct LineSuggestions {
 /// digitação: três travessias da ponte do webview e três consultas, para uma
 /// única mudança de estado na tela.
 #[tauri::command]
-fn suggest_line(
+async fn suggest_line(
     state: State<'_, AppState>,
     query: String,
     cwd: Option<String>,
@@ -4339,7 +4871,7 @@ fn suggest_line(
         }
         _ => Vec::new(),
     };
-    let commands = suggest_commands(state, query, cwd, repo_root)?;
+    let commands = command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref())?;
     Ok(LineSuggestions {
         commands,
         paths,
@@ -4399,7 +4931,7 @@ fn set_history_enabled(state: State<'_, AppState>, enabled: bool) -> Result<(), 
 /// Locais sempre; do repositório **só depois do consentimento** por hash — o
 /// mesmo de `.tyba/config.toml`. Clonar um repo não coloca comando na paleta.
 #[tauri::command]
-fn list_snippets(
+async fn list_snippets(
     state: State<'_, AppState>,
     repo_root: Option<String>,
 ) -> Result<Vec<snippet::Snippet>, String> {
@@ -4463,8 +4995,8 @@ fn render_snippet(
 }
 
 #[tauri::command]
-fn list_themes(state: State<'_, AppState>) -> Vec<theme::Theme> {
-    state.themes.list()
+async fn list_themes(state: State<'_, AppState>) -> Result<Vec<theme::Theme>, String> {
+    Ok(state.themes.list())
 }
 
 #[tauri::command]
@@ -4503,9 +5035,29 @@ fn import_theme(
     state.themes.import(&app, &path).map_err(|e| e.to_string())
 }
 
-const SCROLLBACK_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
-
-fn open_store(app: &AppHandle) -> session::store::Store {
+/// Abre o banco de sessões — e devolve, junto, o que se perdeu no caminho.
+///
+/// O segundo membro é a mensagem de degradação, `None` quando abriu inteiro.
+/// Ela existe porque **as duas quedas daqui são silenciosas por natureza**: um
+/// banco em memória responde a tudo, e um schema com degrau pendente também. O
+/// sintoma, nos dois casos, é o app abrir sem sessão, sem layout e sem
+/// histórico — indistinguível de uma instalação nova. E isto roda na primeira
+/// abertura de todo usuário depois de atualizar.
+///
+/// Os dois níveis, do mais grave para o menos:
+///
+/// - **O arquivo do disco não abriu.** Não é um banco legível: corrompido,
+///   permissão, meio backup. Cair para memória é a única saída que ainda
+///   entrega um app, mas o que o usuário tinha continua no disco e **não** está
+///   ali — daí a mensagem.
+/// - **Abriu, com degrau de migração pendente.** O banco é o do disco e os
+///   dados estão lá; o schema é que ficou atrás do que este binário espera. Ver
+///   [`session::store::Store::degraded`].
+///
+/// O `expect` que sobrou é de outra natureza: `open_in_memory` falhando
+/// significa que o SQLite embutido não subiu, e nesse ponto não existe app para
+/// degradar.
+fn open_store(app: &AppHandle) -> (session::store::Store, Option<String>) {
     let db_path = std::env::var_os("TYBA_DATA_DIR")
         .map(std::path::PathBuf::from)
         .or_else(|| app.path().app_data_dir().ok())
@@ -4514,10 +5066,251 @@ fn open_store(app: &AppHandle) -> session::store::Store {
             dir.join("tyba.db")
         });
 
-    db_path
-        .and_then(|path| session::store::Store::open(&path).ok())
-        .or_else(|| session::store::Store::open_in_memory().ok())
-        .expect("failed to open session store")
+    let cause = match &db_path {
+        Some(path) => match session::store::Store::open(path) {
+            Ok(store) => {
+                let degraded = store.degraded().map(str::to_owned);
+                return (store, degraded);
+            }
+            Err(e) => e.to_string(),
+        },
+        None => "não há diretório de dados para o app".to_string(),
+    };
+
+    let store = session::store::Store::open_in_memory()
+        .expect("nem o banco em memória abriu: o SQLite embutido não subiu");
+    (
+        store,
+        Some(format!(
+            "o banco de sessões não abriu e esta janela está usando um banco temporário: \
+             sessões, layout e histórico não foram carregados, e nada do que você fizer agora \
+             será salvo ({cause})"
+        )),
+    )
+}
+
+/// Tudo que o arranque faz e que não precisa da main thread.
+///
+/// Isto morava no closure `.setup()`, que roda na main thread com o event loop
+/// parado e a janela já visível — ver [`boot`]. Fora dali, o webview carrega em
+/// paralelo: a UI aparece "carregando" em vez de congelada, e ao receber
+/// [`boot::EVENT_READY`] reconsulta o estado.
+///
+/// A ordem interna não é livre. `restore` precede `resume_startup`, que precisa
+/// saber quais sessões morreram; o layout entra depois, porque é ele que reaponta
+/// os panes para as sessões recém-nascidas; e `drain_checkpoints` fica antes de
+/// `blocks::install` porque o dreno grava blocos e o contador de ids vivos parte
+/// do maior id gravado.
+fn run_boot(
+    app: AppHandle,
+    store: Arc<Store>,
+    sessions: SharedSessionManager,
+    layout: layout::SharedLayout,
+    pty_pool: SharedPtyPool,
+    reconcile: std::sync::mpsc::Sender<()>,
+    boot: Arc<boot::BootGate>,
+) {
+    let total = boot::Span::start("boot.thread");
+
+    // O tyba.conf é derivado do banco, então se regenera no boot: quem
+    // cadastrou host numa versão antiga recebe o que mudou no formato
+    // (multiplexing, p.ex.) sem ter que reeditar host por host.
+    let span = boot::Span::start("ssh.materialize");
+    if let (Ok(hosts), Some(home)) = (store.load_hosts(), ssh::home_dir()) {
+        if !hosts.is_empty() {
+            if let Err(e) = ssh::config::materialize(&home, &hosts) {
+                eprintln!("tyba: ssh config não materializou: {e}");
+            }
+        }
+    }
+    span.end();
+
+    let span = boot::Span::start("sessions.restore");
+    let _ = sessions.restore();
+    span.end();
+
+    let span = boot::Span::start("resume_startup");
+    let remap = resume_startup(&app, &store, &sessions, &pty_pool);
+    let valid: std::collections::HashSet<SessionId> =
+        sessions.list().iter().map(|s| s.id).collect();
+    span.end_with(format!(
+        "{} sessões, {} reabertas",
+        valid.len(),
+        remap.len()
+    ));
+
+    let span = boot::Span::start("layout.load");
+    layout.load_remapped(&valid, &remap);
+    span.end();
+
+    let enabled = history_enabled(&store);
+    history::install(Arc::clone(&store), enabled);
+
+    // Checkpoint órfão = o app morreu com um comando rodando. Vira bloco sem
+    // exit code, que é exatamente o "não terminou".
+    let span = boot::Span::start("checkpoints.drain");
+    let _ = store.drain_checkpoints();
+    span.end();
+    blocks::install(app.clone(), Arc::clone(&store));
+
+    // Abrir o portão antes de avisar: quem for reconsultar por causa do evento
+    // precisa achar `ready: true`, não uma corrida.
+    //
+    // O portão chega por parâmetro, e não por `try_state::<AppState>()`, porque
+    // ali um `None` — estado não gerenciado ainda — deixava o portão fechado
+    // para sempre sem nenhum sinal. Como parâmetro, não há caminho em que a
+    // thread chegue até aqui sem ter o que abrir.
+    boot.mark_ready();
+    // Falha registrada ANTES da thread — banco degradado, ver `open_store` — só
+    // pode virar aviso aqui: o `.setup()` roda antes de o webview existir, e um
+    // `emit` de lá não teria ninguém do outro lado. A ordem é a mesma do caminho
+    // de pânico (falha antes do `ready`), para o front não tratar como final o
+    // vazio que já dá para explicar. Pânico não passa por aqui — quem o reporta
+    // é o `spawn_boot`, que é onde o unwind chega.
+    if let Some(failure) = boot.failure() {
+        let _ = app.emit(boot::EVENT_FAILED, failure);
+    }
+    let _ = app.emit(layout::EVENT_CHANGED, layout.state());
+    let _ = app.emit(boot::EVENT_READY, ());
+    let _ = reconcile.send(());
+
+    total.end();
+
+    // Daqui para baixo é manutenção, fora do tempo de arranque — e depois do
+    // `ready` de propósito, para não empurrá-lo.
+
+    // O GC só pode rodar DEPOIS do restore: ele decide o que é órfão a partir de
+    // `sessions.list()`, e antes do restore essa lista está vazia — todo worktree
+    // gerenciado pareceria abandonado.
+    let report = worktree::gc_orphans(&known_worktree_paths(&sessions));
+    for removed in &report.removed {
+        eprintln!("[tyba] worktree órfão removido: {}", removed.display());
+    }
+
+    store.checkpoint_truncate();
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&'static str>() {
+        return (*text).to_string();
+    }
+    if let Some(text) = payload.downcast_ref::<String>() {
+        return text.clone();
+    }
+    "pânico sem mensagem".into()
+}
+
+/// Roda o corpo do boot e garante que o portão abre mesmo se ele explodir.
+///
+/// A thread de boot é a única que chama `mark_ready`. Se ela morrer antes
+/// disso, o portão fica fechado PARA SEMPRE, e o sintoma não é um crash: o
+/// splash desiste em `SPLASH_CEILING_MS` e entrega um app sem sessões e sem
+/// layout, enquanto todo `create_session`/`apply_launch_config` paga
+/// [`BOOT_WAIT`] antes de fazer qualquer coisa. Falha disfarçada de lentidão.
+/// Enquanto o boot morava no `.setup()`, o mesmo erro matava o app na hora, com
+/// stack trace — a regressão foi trocar barulho por silêncio.
+///
+/// `catch_unwind` é o único jeito de reagir DEPOIS do pânico e ainda abrir o
+/// portão, e `AssertUnwindSafe` é honesto aqui porque nada do estado capturado
+/// é lido no caminho de unwind: ele abre o portão e avisa, não continua o
+/// arranque em cima de estado meio escrito. O que sobrar quebrado (mutex
+/// envenenado, sessão sem PTY) quebra alto no primeiro uso, que é melhor do que
+/// uma janela que nunca responde.
+///
+/// Devolve a mensagem do pânico só quando ele aconteceu ANTES do `mark_ready`.
+/// Depois dele o arranque já cumpriu o contrato — o que roda ali é manutenção
+/// (GC de worktree órfão, truncate do WAL), e derrubar um banner de "o app não
+/// carregou" por causa dela seria mentira.
+///
+/// A mesma mensagem fica retida no portão, e não só no valor de retorno: o
+/// retorno vira um evento, que pode não ser entregue — ver
+/// [`boot::EVENT_FAILED`].
+fn guard_boot(gate: &boot::BootGate, body: impl FnOnce()) -> Option<String> {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+    let Err(payload) = outcome else {
+        return None;
+    };
+    let message = panic_message(&*payload);
+    eprintln!("[tyba] a thread de boot morreu: {message}");
+    if gate.is_ready() {
+        return None;
+    }
+    gate.mark_failed(&message);
+    Some(message)
+}
+
+/// O fim da thread de boot quando ela morreu antes de abrir o portão.
+///
+/// Separado do [`spawn_boot`] porque é a parte com contrato: o caminho de
+/// pânico tem de deixar o app no mesmo estado observável do caminho feliz, e
+/// isso são três avisos, nesta ordem — e não dois, que era o buraco.
+///
+/// O `reconcile.send` é o terceiro. Ele mora no fim do [`run_boot`], que o
+/// pânico nunca alcança: sem ele a thread `repo-reconcile` fica parada no
+/// `recv()`, o `repo://reconciled` nunca sai, e os chips de branch e de diff
+/// ficam vazios em cima de um app que já perdeu as sessões — até que um
+/// `pty::EVENT_CWD_CHANGED` qualquer cutuque o canal por acaso, o que exige o
+/// usuário abrir um terminal e trocar de pasta.
+///
+/// **Cutucar antes do `guard_boot` cobriria os dois caminhos com uma linha só,
+/// e é por isso que não está lá.** A thread de reconcile dorme 300 ms e drena
+/// antes de agir, então o pontapé antecipado só se funde com o do fim do boot
+/// quando o boot inteiro cabe nesses 300 ms — e ele não cabe: SQLite, `ssh -G`,
+/// restore de sessão e layout. Fora dessa janela, o `reconcile_repo_watchers`
+/// roda com `layout.state()` e `sessions.list()` ainda vazios, emite um
+/// `repo://reconciled` sem nenhum repo — exatamente o vazio-que-parece-final
+/// que o `BootGate` existe para não produzir — e ainda paga um `set_roots` com
+/// os `git` que ele dispara, competindo por IO com o boot que se está
+/// esperando. O ramo de falha custa uma linha a mais e não tem nada disso.
+///
+/// Enviar duas vezes não é risco: `guard_boot` só devolve `Some` quando o
+/// pânico precedeu o `mark_ready`, que precede o `send` do [`run_boot`]. Um
+/// pânico na manutenção pós-`ready` já teve o seu pontapé e não chega aqui.
+fn finish_failed_boot<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    reconcile: &std::sync::mpsc::Sender<()>,
+    failure: boot::Failure,
+) {
+    // Mesma ordem do caminho de sucesso: portão (já aberto pelo `guard_boot`),
+    // depois aviso. O `ready` vai junto para o splash não ficar esperando os 4 s
+    // de teto por um boot que já morreu.
+    let _ = app.emit(boot::EVENT_FAILED, failure);
+    let _ = app.emit(boot::EVENT_READY, ());
+    let _ = reconcile.send(());
+}
+
+fn spawn_boot(
+    app: AppHandle,
+    store: Arc<Store>,
+    sessions: SharedSessionManager,
+    layout: layout::SharedLayout,
+    pty_pool: SharedPtyPool,
+    reconcile: std::sync::mpsc::Sender<()>,
+    boot: Arc<boot::BootGate>,
+) {
+    let failure_app = app.clone();
+    let failure_reconcile = reconcile.clone();
+    let gate = Arc::clone(&boot);
+    std::thread::Builder::new()
+        .name("boot".into())
+        .spawn(move || {
+            let failed = guard_boot(&gate, || {
+                run_boot(app, store, sessions, layout, pty_pool, reconcile, boot);
+            });
+            // O `guard_boot` diz SE reportar; o portão diz O QUÊ. Quando uma
+            // falha anterior já estava anotada — banco degradado, ver
+            // `open_store` —, é a mensagem DELA que o `boot_snapshot` devolve, e
+            // o evento tem de dizer o mesmo: duas vias com mensagens diferentes
+            // viram dois avisos para uma falha só, e o front dedupe pela
+            // primeira. O `kind`, esse, já veio escalado pelo `mark_failed` —
+            // ver a ressalva lá.
+            if failed.is_some() {
+                if let Some(failure) = gate.failure() {
+                    finish_failed_boot(&failure_app, &failure_reconcile, failure);
+                }
+            }
+        })
+        .expect("failed to spawn boot thread");
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -4563,7 +5356,21 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let store = Arc::new(open_store(app.handle()));
+            let setup_span = boot::Span::start("setup.total");
+            let (opened_store, store_degraded) = open_store(app.handle());
+            let store = Arc::new(opened_store);
+
+            // O portão nasce aqui, e não dentro do `AppState`, porque a notícia
+            // do banco degradado é mais velha que ele: `note_failure` registra
+            // sem abrir o portão — o estado ainda vai carregar —, e assim o
+            // `mark_ready` do fim do boot publica `ready` com a mensagem já
+            // gravada, que é o que o `boot_snapshot` conta como contrato.
+            let boot_gate = Arc::new(boot::BootGate::new());
+            if let Some(message) = store_degraded {
+                eprintln!("[tyba] {message}");
+                boot_gate.note_failure(message);
+            }
+
             let pty_pool: SharedPtyPool = Arc::new(pty::PtyPool::new());
             let sessions: SharedSessionManager =
                 Arc::new(session::SessionManager::new(Arc::clone(&store)));
@@ -4617,6 +5424,7 @@ pub fn run() {
                     })
                 })),
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
+                boot: Arc::clone(&boot_gate),
             });
 
             // Fim de subagente async detectado por arquivo desce a sessão a Idle
@@ -4642,44 +5450,6 @@ pub fn run() {
                     }));
             }
 
-            // O tyba.conf é derivado do banco, então se regenera no boot: quem
-            // cadastrou host numa versão antiga recebe o que mudou no formato
-            // (multiplexing, p.ex.) sem ter que reeditar host por host.
-            if let (Ok(hosts), Some(home)) = (store.load_hosts(), ssh::home_dir()) {
-                if !hosts.is_empty() {
-                    if let Err(e) = ssh::config::materialize(&home, &hosts) {
-                        eprintln!("tyba: ssh config não materializou: {e}");
-                    }
-                }
-            }
-
-            let _ = sessions.restore();
-            let remap = resume_startup(app.handle(), &store, &sessions, &pty_pool);
-            let valid: std::collections::HashSet<SessionId> =
-                sessions.list().iter().map(|s| s.id).collect();
-            layout.load_remapped(&valid, &remap);
-
-            let _ = app.emit(layout::EVENT_CHANGED, layout.state());
-
-            std::thread::Builder::new()
-                .name("scrollback-flush".into())
-                .spawn(move || loop {
-                    std::thread::sleep(SCROLLBACK_FLUSH_INTERVAL);
-                    sessions.flush_scrollback(&pty_pool);
-                })
-                .expect("failed to spawn scrollback flush thread");
-
-            let gc_sessions = Arc::clone(&app.state::<AppState>().sessions);
-            std::thread::Builder::new()
-                .name("worktree-gc".into())
-                .spawn(move || {
-                    let report = worktree::gc_orphans(&known_worktree_paths(&gc_sessions));
-                    for removed in &report.removed {
-                        eprintln!("[tyba] worktree órfão removido: {}", removed.display());
-                    }
-                })
-                .expect("failed to spawn worktree gc thread");
-
             let cwd_tx = reconcile_tx.clone();
             app.listen_any(pty::EVENT_CWD_CHANGED, move |_| {
                 let _ = cwd_tx.send(());
@@ -4696,8 +5466,6 @@ pub fn run() {
                     }
                 })
                 .expect("failed to spawn repo reconcile thread");
-
-            let _ = reconcile_tx.send(());
 
             let probe_handle = app.handle().clone();
             std::thread::Builder::new()
@@ -4719,24 +5487,28 @@ pub fn run() {
                 });
             }
 
+            // Único passo caro que fica: montar o NSMenu é operação de main
+            // thread, não há para onde mover.
+            let span = boot::Span::start("menu.install");
             let _ = menu::install_fallback(app.handle());
+            span.end();
 
-            {
-                let state = app.state::<AppState>();
-                let enabled = history_enabled(&state.store);
-                history::install(Arc::clone(&state.store), enabled);
-                // Checkpoint órfão = o app morreu com um comando rodando. Vira
-                // bloco sem exit code, que é exatamente o "não terminou".
-                //
-                // Antes do `install` porque o dreno GRAVA blocos, e é do maior
-                // id gravado que o contador de ids vivos parte.
-                let _ = state.store.drain_checkpoints();
-                blocks::install(app.handle().clone(), Arc::clone(&state.store));
-            }
+            spawn_boot(
+                app.handle().clone(),
+                Arc::clone(&store),
+                Arc::clone(&sessions),
+                Arc::clone(&layout),
+                Arc::clone(&pty_pool),
+                reconcile_tx,
+                boot_gate,
+            );
 
+            setup_span.end();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            boot_snapshot,
+            boot_gate,
             agent_binary_available,
             detected_agent,
             create_session,
@@ -4944,6 +5716,558 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guarda de compilação, não teste: os dois comandos abaixo esperam o boot,
+    /// e comando síncrono roda na main thread. Devolvê-los para `fn` congela o
+    /// webview por até `BOOT_WAIT` em quem apertar ⌘T na fresta entre o splash
+    /// desistir (4 s) e o boot terminar — a regressão que este `assert_future`
+    /// impede de voltar em silêncio.
+    ///
+    /// O `apply_launch_config` está aqui por espera **própria**: ele chama
+    /// `wait_for_boot` na primeira linha, porque precisa do layout carregado
+    /// para decidir entre reusar e criar workspace. Antes só herdava a espera do
+    /// `create_session` de cada slot, e a leitura do layout ficava do lado
+    /// errado dela.
+    ///
+    /// Os dois de worktree entraram pelo mesmo motivo, com o defeito virado ao
+    /// contrário: eles não travam nada, mas decidem o que **apagar** a partir de
+    /// `sessions.list()`. Com a lista ainda vazia, o `remove` não vê a sessão
+    /// viva que a guarda existe para proteger e o `gc` acha que todo worktree
+    /// gerenciado é órfão.
+    #[allow(dead_code)]
+    fn comandos_que_esperam_o_boot_seguem_assincronos(
+        app: AppHandle,
+        state: State<'_, AppState>,
+        opts: CreateSessionOpts,
+        id: launch_config::LaunchConfigId,
+        path: String,
+    ) {
+        // Uma chamada por comando, e não uma tupla de `impl Future`: a tupla
+        // cresce a cada comando que entra no conjunto e o `type_complexity` do
+        // clippy passa a reclamar. O `T` fixo em cada chamada mantém a guarda no
+        // mesmo lugar — prende o tipo do `Output`, e um `fn` síncrono devolvendo
+        // `Result` não é `Future` nenhum.
+        fn assert_future<T>(_: impl std::future::Future<Output = T>) {}
+
+        assert_future::<Result<Session, String>>(create_session(app.clone(), state.clone(), opts));
+        assert_future::<Result<AppliedLaunchConfig, String>>(apply_launch_config(
+            app,
+            state.clone(),
+            id,
+            None,
+            80,
+            24,
+        ));
+        assert_future::<Result<(), String>>(worktree_remove(state.clone(), path, false, false));
+        assert_future::<Result<worktree::GcReport, String>>(worktree_gc(state));
+    }
+
+    /// A irmã da guarda acima, para o OUTRO portão.
+    ///
+    /// `submit_shell_line` espera o shell abrir o editor de linha dele. Voltar
+    /// a ser síncrono não quebraria compilação em lugar nenhum, e nenhum teste
+    /// falharia por comando não executado — ele executa. O que volta é o eco
+    /// cru da injeção no topo da sessão e o atraso de um `.zshrc` inteiro entre
+    /// o Enter e o comando. Defeito que não quebra teste é o que esta guarda
+    /// existe para prender.
+    #[allow(dead_code)]
+    fn comandos_que_esperam_o_shell_seguem_assincronos(
+        state: State<'_, AppState>,
+        id: SessionId,
+        text: String,
+    ) {
+        fn assert_future<T>(_: impl std::future::Future<Output = T>) {}
+
+        assert_future::<Result<(), String>>(submit_shell_line(state, id, text));
+    }
+
+    /// O `None` do layout antes do boot não é "não existe", é "ainda não li":
+    /// `state.layout` só é populado pelo `load_remapped` da thread de boot, e
+    /// até lá `workspace_of_launch_config` responde `None` para toda
+    /// configuração — inclusive as que já têm workspace. Tratar isso como
+    /// ausência faz o `apply_launch_config` criar um SEGUNDO workspace para a
+    /// mesma launch config.
+    #[test]
+    fn layout_nao_carregado_nao_autoriza_criar_workspace() {
+        assert_eq!(decide_launch_reuse(false, None), LaunchReuse::Unknown);
+    }
+
+    /// O contrapeso do teste acima: com o layout carregado, "não achei" volta a
+    /// significar "não existe". Sem este, recusar sempre passaria.
+    #[test]
+    fn layout_carregado_e_sem_workspace_autoriza_criar() {
+        assert_eq!(decide_launch_reuse(true, None), LaunchReuse::Create);
+    }
+
+    /// Achar é prova positiva, e o portão fechado não a desfaz. Existe a fresta
+    /// entre o `load_remapped` e o `mark_ready` em que o layout já está lido e o
+    /// portão ainda não abriu; recusar o reuso ali criaria a duplicata que a
+    /// recusa existe para evitar.
+    #[test]
+    fn workspace_encontrado_dispensa_o_portao() {
+        let ws = uuid::Uuid::new_v4();
+        assert_eq!(decide_launch_reuse(false, Some(ws)), LaunchReuse::Reuse(ws));
+    }
+
+    #[test]
+    fn workspace_encontrado_com_layout_carregado_e_reusado() {
+        let ws = uuid::Uuid::new_v4();
+        assert_eq!(decide_launch_reuse(true, Some(ws)), LaunchReuse::Reuse(ws));
+    }
+
+    /// Pânico na thread de boot não pode deixar o portão fechado: fechado para
+    /// sempre é o splash desistindo em 4 s, o app sem sessões e sem layout, e
+    /// todo comando de escrita pagando `BOOT_WAIT` — falha vestida de lentidão.
+    ///
+    /// O pânico impresso no output destes dois testes é esperado, e o hook fica
+    /// como está de propósito: silenciá-lo é `set_hook` global, que numa suíte
+    /// paralela pode vazar para outro teste e engolir a mensagem de uma falha
+    /// de verdade.
+    #[test]
+    fn panico_no_boot_abre_o_portao_e_reporta() {
+        let gate = boot::BootGate::new();
+        let failed = guard_boot(&gate, || panic!("restore explodiu"));
+
+        assert!(gate.is_ready());
+        assert_eq!(failed.as_deref(), Some("restore explodiu"));
+    }
+
+    /// Depois do `mark_ready` o arranque já cumpriu o contrato — o que roda ali
+    /// é manutenção. Reportar "o app não carregou" por causa dela seria mentira.
+    #[test]
+    fn panico_depois_do_ready_nao_vira_falha_de_boot() {
+        let gate = boot::BootGate::new();
+        let failed = guard_boot(&gate, || {
+            gate.mark_ready();
+            panic!("gc de worktree explodiu");
+        });
+
+        assert!(gate.is_ready());
+        assert_eq!(failed, None);
+    }
+
+    #[test]
+    fn boot_sem_panico_nao_reporta_falha() {
+        let gate = boot::BootGate::new();
+        let failed = guard_boot(&gate, || gate.mark_ready());
+        assert!(gate.is_ready());
+        assert_eq!(failed, None);
+    }
+
+    /// O evento sozinho não basta: `spawn_boot` começa a thread dentro do
+    /// `.setup()`, antes de o webview carregar, e o `listen()` do Tauri é
+    /// assíncrono. Um pânico dentro do `ssh::config::materialize` ou do
+    /// `sessions.restore()` dispara em milissegundos, antes de o listener
+    /// existir, e o core não reemite. A mensagem retida no portão é o que o
+    /// `boot_snapshot` devolve para quem perdeu o evento.
+    #[test]
+    fn a_falha_do_boot_continua_legivel_depois_do_evento() {
+        let gate = boot::BootGate::new();
+        let failed = guard_boot(&gate, || panic!("materialize explodiu"));
+
+        assert_eq!(failed.as_deref(), Some("materialize explodiu"));
+        assert_eq!(
+            gate.failure().map(|f| f.message).as_deref(),
+            Some("materialize explodiu")
+        );
+    }
+
+    #[test]
+    fn boot_sem_panico_nao_deixa_falha_no_portao() {
+        let gate = boot::BootGate::new();
+        let _ = guard_boot(&gate, || gate.mark_ready());
+        assert_eq!(gate.failure(), None);
+    }
+
+    /// Mesma razão de `panico_depois_do_ready_nao_vira_falha_de_boot`: o que
+    /// roda depois do `mark_ready` é manutenção, e um banner de "o app não
+    /// carregou" por causa dela seria mentira — inclusive no snapshot.
+    #[test]
+    fn panico_depois_do_ready_nao_aparece_no_snapshot() {
+        let gate = boot::BootGate::new();
+        let _ = guard_boot(&gate, || {
+            gate.mark_ready();
+            panic!("gc de worktree explodiu");
+        });
+        assert_eq!(gate.failure(), None);
+    }
+
+    fn empty_boot_loaded() -> BootLoaded {
+        BootLoaded {
+            sessions: Vec::new(),
+            layout: layout::LayoutState {
+                workspaces: Vec::new(),
+                active_workspace: None,
+            },
+        }
+    }
+
+    /// O poll do boot roda a cada ~150ms **enquanto o boot não termina**, e o
+    /// front descarta tudo que não venha `ready`. Cada tick que lê prefs, sessões
+    /// e layout paga o `Mutex<Connection>` e os locks de sessão/layout que a
+    /// thread de boot está usando naquele exato instante para `restore` e
+    /// `drain_checkpoints`: quem espera o boot terminar não pode ser quem o
+    /// atrasa. Contar as leituras é o que prova que o portão fechado responde de
+    /// graça — a economia não aparece em nenhuma asserção sobre o payload.
+    #[test]
+    fn a_closed_gate_answers_without_reading_any_state() {
+        let gate = boot::BootGate::new();
+        let reads = std::cell::Cell::new(0u32);
+
+        for _ in 0..10 {
+            let snapshot = boot_gate_snapshot(&gate, || {
+                reads.set(reads.get() + 1);
+                empty_boot_loaded()
+            });
+            assert!(!snapshot.ready);
+            assert!(snapshot.loaded.is_none());
+        }
+
+        assert_eq!(reads.get(), 0, "o poll leu estado que o front descarta");
+    }
+
+    /// O contrapeso do teste acima: sem ele, um retorno cedo incondicional —
+    /// que nunca entregaria sessão nem layout — passaria igual.
+    #[test]
+    fn an_open_gate_reads_the_state_once() {
+        let gate = boot::BootGate::new();
+        gate.mark_ready();
+        let reads = std::cell::Cell::new(0u32);
+
+        let snapshot = boot_gate_snapshot(&gate, || {
+            reads.set(reads.get() + 1);
+            empty_boot_loaded()
+        });
+
+        assert!(snapshot.ready);
+        assert!(snapshot.loaded.is_some());
+        assert_eq!(reads.get(), 1);
+    }
+
+    /// O retorno cedo não pode engolir a notícia da falha: ela é a única segunda
+    /// via do `app://boot-failed`, que dispara antes de o listener do front
+    /// existir. E não engole porque não chega a ser o portador — `mark_failed`
+    /// grava a mensagem e abre o portão sob o mesmo lock, então toda falha sai
+    /// por aqui, pelo caminho `ready: true`, com o payload junto.
+    #[test]
+    fn a_dead_boot_thread_reports_through_the_gate_snapshot() {
+        let gate = boot::BootGate::new();
+        gate.mark_failed("restore explodiu");
+
+        let snapshot = boot_gate_snapshot(&gate, empty_boot_loaded);
+
+        assert!(snapshot.ready);
+        assert_eq!(
+            snapshot.boot_failure.map(|f| f.message).as_deref(),
+            Some("restore explodiu")
+        );
+        assert!(snapshot.loaded.is_some());
+    }
+
+    /// Boot em andamento não é falha: `bootFailure` nulo com `ready: false` é o
+    /// caso normal do poll, e reportá-lo viraria banner de "o app não carregou"
+    /// em cima de um app que está carregando.
+    #[test]
+    fn a_pending_boot_is_not_a_failure() {
+        let gate = boot::BootGate::new();
+        let snapshot = boot_gate_snapshot(&gate, empty_boot_loaded);
+        assert!(!snapshot.ready);
+        assert_eq!(snapshot.boot_failure, None);
+    }
+
+    /// O banco degradado é conhecido no `.setup()`, antes de a thread de boot
+    /// começar, e registrá-lo não abre o portão — o estado ainda vai carregar.
+    /// O retorno cedo do poll é por onde essa notícia chega, então ele não pode
+    /// engoli-la: o `loaded` continua ausente (não há o que entregar), mas a
+    /// falha viaja.
+    #[test]
+    fn a_degraded_store_reports_before_the_gate_opens() {
+        let gate = boot::BootGate::new();
+        gate.note_failure("o banco de sessões não abriu");
+
+        let snapshot = boot_gate_snapshot(&gate, empty_boot_loaded);
+
+        assert!(!snapshot.ready);
+        assert!(snapshot.loaded.is_none());
+        assert_eq!(
+            snapshot.boot_failure.map(|f| f.message).as_deref(),
+            Some("o banco de sessões não abriu")
+        );
+    }
+
+    /// E continua reportando depois que o boot termina bem — que é o caso real
+    /// do banco degradado: o arranque completa, e o que falta falta porque o
+    /// banco não tinha para dar.
+    #[test]
+    fn a_degraded_store_still_reports_after_a_clean_boot() {
+        let gate = boot::BootGate::new();
+        gate.note_failure("o banco de sessões não abriu");
+        let failed = guard_boot(&gate, || gate.mark_ready());
+
+        // Não houve pânico: quem reporta é o campo do portão, não o retorno.
+        assert_eq!(failed, None);
+        let snapshot = boot_gate_snapshot(&gate, empty_boot_loaded);
+        assert!(snapshot.ready);
+        assert_eq!(
+            snapshot.boot_failure.map(|f| f.message).as_deref(),
+            Some("o banco de sessões não abriu")
+        );
+    }
+
+    /// O caminho de pânico tem de deixar o app no mesmo estado observável do
+    /// caminho feliz — e o pontapé da reconciliação faz parte dele. Sem este
+    /// `send`, a thread `repo-reconcile` fica parada no `recv()` e os chips de
+    /// branch e de diff nunca se preenchem, em cima de um app que já perdeu as
+    /// sessões, até que um `EVENT_CWD_CHANGED` qualquer chegue por acaso.
+    #[test]
+    fn a_dead_boot_still_kicks_the_reconciler() {
+        let app = tauri::test::mock_app();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+
+        finish_failed_boot(
+            app.handle(),
+            &tx,
+            boot::Failure {
+                kind: boot::FailureKind::BootThreadDied,
+                message: "restore explodiu".into(),
+            },
+        );
+
+        assert!(
+            rx.try_recv().is_ok(),
+            "o ramo de falha do boot não cutucou o canal de reconciliação"
+        );
+    }
+
+    fn git_in_test(dir: &std::path::Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?} falhou em {}", dir.display());
+    }
+
+    /// Repositório de verdade num temp: `repo::toplevel` chama o binário do git,
+    /// e um fixture de mentira não distinguiria "existe" de "sumiu" — que é
+    /// exatamente a distinção sob teste.
+    fn temp_repo() -> std::path::PathBuf {
+        let base = std::env::temp_dir().join(format!("tyba-roots-{}", uuid::Uuid::new_v4()));
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_in_test(&repo, &["init", "-q"]);
+        git_in_test(&repo, &["config", "user.email", "t@t.com"]);
+        git_in_test(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        git_in_test(&repo, &["add", "-A"]);
+        git_in_test(&repo, &["commit", "-qm", "init"]);
+        repo
+    }
+
+    fn agent_session(id: SessionId, worktree: Option<std::path::PathBuf>) -> Session {
+        Session {
+            id,
+            kind: SessionKind::Agent {
+                runner: session::AgentRunnerKind::ClaudeCode,
+            },
+            title: "agente".into(),
+            repo_root: None,
+            worktree: worktree.map(|path| worktree::Worktree {
+                path,
+                branch: "tyba/x".into(),
+                base_ref: "0".repeat(40),
+                dirty: false,
+                ahead: 0,
+            }),
+            // Encerrada: é o caso que não tinha raiz observada.
+            status: SessionStatus::Exited { code: 0 },
+            attention: false,
+            created_at: chrono::Utc::now(),
+            cwd: None,
+            connection: session::ConnectionState::Live,
+        }
+    }
+
+    fn leaf(session: SessionId) -> layout::PaneNode {
+        layout::PaneNode::Leaf {
+            id: uuid::Uuid::new_v4(),
+            session_id: session,
+        }
+    }
+
+    fn workspace_with(roots: Vec<layout::PaneNode>) -> layout::LayoutState {
+        let tabs = roots
+            .into_iter()
+            .map(|root| layout::Tab {
+                id: uuid::Uuid::new_v4(),
+                title: None,
+                view: None,
+                active_pane: None,
+                root: Some(root),
+                created_at: chrono::Utc::now(),
+            })
+            .collect();
+        layout::LayoutState {
+            workspaces: vec![layout::Workspace {
+                id: uuid::Uuid::new_v4(),
+                name: "w".into(),
+                name_locked: false,
+                repo_root: None,
+                color: None,
+                group: None,
+                kind: layout::WorkspaceKind::User,
+                launch_config_id: None,
+                active_tab: None,
+                tabs,
+                side_view: None,
+                side_ratio: 0.5,
+                side_expanded: false,
+                created_at: chrono::Utc::now(),
+            }],
+            active_workspace: None,
+        }
+    }
+
+    /// Split aninhado, tab que não é a ativa e pane de `AgentViewer` contam: o
+    /// que decide é estar preso a um pane, não estar visível agora.
+    #[test]
+    fn as_sessoes_de_todos_os_panes_entram_no_corte() {
+        let visible = uuid::Uuid::new_v4();
+        let nested = uuid::Uuid::new_v4();
+        let other_tab = uuid::Uuid::new_v4();
+        let viewer = uuid::Uuid::new_v4();
+
+        let split = layout::PaneNode::Split {
+            id: uuid::Uuid::new_v4(),
+            split: layout::SplitKind::H,
+            ratio: 0.5,
+            first: Box::new(leaf(visible)),
+            second: Box::new(layout::PaneNode::Split {
+                id: uuid::Uuid::new_v4(),
+                split: layout::SplitKind::V,
+                ratio: 0.5,
+                first: Box::new(leaf(nested)),
+                second: Box::new(layout::PaneNode::AgentViewer {
+                    id: uuid::Uuid::new_v4(),
+                    session_id: viewer,
+                }),
+            }),
+        };
+        let layout = workspace_with(vec![split, leaf(other_tab)]);
+
+        let bound = pane_bound_sessions(&layout);
+        assert_eq!(bound.len(), 4);
+        for id in [visible, nested, other_tab, viewer] {
+            assert!(bound.contains(&id), "{id} ficou de fora");
+        }
+    }
+
+    #[test]
+    fn layout_sem_pane_nenhum_nao_prende_sessao() {
+        assert!(pane_bound_sessions(&workspace_with(Vec::new())).is_empty());
+    }
+
+    /// O achado: sessão de agente ENCERRADA com worktree passa a ganhar raiz
+    /// observada — sem ela o chip de branch não tinha o que mostrar.
+    #[test]
+    fn o_worktree_de_uma_sessao_encerrada_num_pane_vira_raiz_observada() {
+        let repo = temp_repo();
+        let id = uuid::Uuid::new_v4();
+        let sessions = vec![agent_session(id, Some(repo.clone()))];
+        let bound: std::collections::HashSet<SessionId> = [id].into_iter().collect();
+
+        let roots = session_worktree_roots(&sessions, &bound);
+        assert_eq!(
+            roots,
+            [repo::canonicalize_or(&repo)].into_iter().collect(),
+            "worktree de sessão encerrada não virou raiz"
+        );
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    /// O corte. Sessão fora de qualquer pane não pode ser mostrada por chip
+    /// nenhum, e a tabela `sessions` guarda todas as de todos os tempos.
+    #[test]
+    fn sessao_fora_de_pane_nao_vira_raiz_observada() {
+        let repo = temp_repo();
+        let sessions = vec![agent_session(uuid::Uuid::new_v4(), Some(repo.clone()))];
+
+        let roots = session_worktree_roots(&sessions, &std::collections::HashSet::new());
+        assert!(roots.is_empty(), "{roots:?}");
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    /// `gc_orphans` remove órfão, e o usuário pode apagar a pasta na mão.
+    /// Caminho morto sai da lista em silêncio — nem erro, nem raiz fantasma.
+    #[test]
+    fn worktree_que_sumiu_do_disco_e_descartado_em_silencio() {
+        let id = uuid::Uuid::new_v4();
+        let ghost = std::env::temp_dir().join(format!("tyba-sumiu-{}", uuid::Uuid::new_v4()));
+        let sessions = vec![agent_session(id, Some(ghost))];
+        let bound: std::collections::HashSet<SessionId> = [id].into_iter().collect();
+
+        assert!(session_worktree_roots(&sessions, &bound).is_empty());
+    }
+
+    fn worktrees_bound_to_panes(
+        paths: &[&str],
+    ) -> (Vec<Session>, std::collections::HashSet<SessionId>) {
+        let sessions: Vec<Session> = paths
+            .iter()
+            .map(|path| agent_session(uuid::Uuid::new_v4(), Some(std::path::PathBuf::from(*path))))
+            .collect();
+        let bound = sessions.iter().map(|s| s.id).collect();
+        (sessions, bound)
+    }
+
+    /// Nenhum destes caminhos chega ao `git rev-parse`.
+    ///
+    /// O chamador é a thread `repo-reconcile`: `repo::toplevel` faz shell-out e
+    /// bloqueia no `output()`. Num mount morto o `git` fica em I/O
+    /// ininterrompível, a thread nunca volta e o `EVENT_RECONCILED` para de sair
+    /// para **todos** os repositórios. `/mnt` e `/media` entram na lista por
+    /// causa desse custo — o arranque, que paga uma aba, os deixa passar. Ver
+    /// `session::cwd::may_hang_shared_thread`.
+    #[test]
+    fn worktree_em_mount_suspeito_nao_chega_ao_git() {
+        let (sessions, bound) = worktrees_bound_to_panes(&[
+            "/Volumes/NAS/repo",
+            "/Network/Servers/ci/repo",
+            "/net/host/share/repo",
+            "/mnt/nas/repo",
+            "/media/nas/repo",
+            r"\\servidor\share\repo",
+            "//servidor/share/repo",
+        ]);
+
+        let touchable: Vec<_> = touchable_worktrees(&sessions, &bound).collect();
+        assert!(touchable.is_empty(), "{touchable:?}");
+    }
+
+    /// O contraponto que separa o filtro certo de um `filter` que descarta tudo:
+    /// worktree local — inclusive sob pasta do TCC, onde o diálogo tem fim —
+    /// continua chegando ao `git`.
+    #[test]
+    fn worktree_local_continua_chegando_ao_git() {
+        let (sessions, bound) = worktrees_bound_to_panes(&[
+            "/Users/tester/code/tyba",
+            "/Users/tester/Documents/tyba",
+            "/tmp/tyba",
+        ]);
+
+        let touchable: Vec<_> = touchable_worktrees(&sessions, &bound).collect();
+        assert_eq!(touchable.len(), 3, "{touchable:?}");
+    }
+
+    #[test]
+    fn sessao_sem_worktree_nao_acrescenta_raiz() {
+        let id = uuid::Uuid::new_v4();
+        let sessions = vec![agent_session(id, None)];
+        let bound: std::collections::HashSet<SessionId> = [id].into_iter().collect();
+
+        assert!(session_worktree_roots(&sessions, &bound).is_empty());
+    }
 
     #[test]
     fn build_info_carries_version_and_platform() {
