@@ -991,6 +991,22 @@ export default function App() {
    * do que o dono mudou nas Configurações nesse meio-tempo.
    */
   const prefsApplied = useRef(false);
+  const applyPrefsRef = useRef<(p: Record<string, string>) => void>(() => {});
+  /**
+   * Repesca as preferências quando a primeira tentativa não as trouxe.
+   *
+   * Mora aqui, e não dentro de um dos caminhos, porque **os dois** chegam ao
+   * pronto e nenhum é garantido: o `app://ready` costuma ganhar do primeiro
+   * tick do poll — o boot normal termina em ~80ms —, e o poll é a única via
+   * quando o evento se perde na janela do `listen()`. Instalada num caminho só,
+   * a rede fica inalcançável justamente no caso comum.
+   */
+  const recoverPrefs = useCallback(() => {
+    if (prefsApplied.current) return;
+    void bootSnapshot()
+      .then((full) => applyPrefsRef.current(full.prefs))
+      .catch(() => {});
+  }, []);
   const applyPrefs = useCallback((prefs: Record<string, string>) => {
     if (prefsApplied.current) return;
     prefsApplied.current = true;
@@ -1045,6 +1061,7 @@ export default function App() {
     const fontSize = Number(fontRaw);
     if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
   }, []);
+  applyPrefsRef.current = applyPrefs;
 
   // A thread de boot morreu, e o vazio na tela é falha e não ausência de dado.
   //
@@ -1095,6 +1112,10 @@ export default function App() {
       markReady();
       void refreshSessions();
       refreshLayout();
+      // O evento normalmente ganha do primeiro tick, e `markReady` desmonta
+      // este efeito — então a repesca tem de sair daqui também, senão ela só
+      // funciona no caso raro em que o evento se perde.
+      recoverPrefs();
     });
 
     const tick = async () => {
@@ -1121,13 +1142,8 @@ export default function App() {
         setLayout(loaded.layout);
         promptNewSessionIfEmpty(true, loaded.layout.workspaces.length);
         // As prefs não vêm no portão, e o mount pode não tê-las trazido — a
-        // chamada dele rejeita inteira quando o `store.prefs()` falha. Uma
-        // pergunta a mais, só quando elas nunca chegaram, e só nesta transição.
-        if (!prefsApplied.current) {
-          void bootSnapshot()
-            .then((full) => applyPrefs(full.prefs))
-            .catch(() => {});
-        }
+        // chamada dele rejeita inteira quando o `store.prefs()` falha.
+        recoverPrefs();
       }
       // O `stopped` só é consultado no fim, de propósito: o próprio sucesso
       // deste tick sobe o `bootReady` e desmonta o efeito, e desistir por causa
@@ -1146,7 +1162,7 @@ export default function App() {
       window.clearTimeout(timer);
       void unlisten.then((off) => off());
     };
-  }, [bootReady, markReady, refreshSessions, refreshLayout]);
+  }, [bootReady, markReady, refreshSessions, refreshLayout, recoverPrefs]);
 
   const sessionById = useMemo(
     () => new Map(sessions.map((s) => [s.id, s])),
