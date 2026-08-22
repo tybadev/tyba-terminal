@@ -3,7 +3,10 @@
 //! reflete via eventos `approvals://requested` e `approvals://resolved`.
 //!
 //! Classificação de risco por padrões (docs/SECURITY.md):
-//! - verde: read-only (auto-aprovável se o usuário configurar)
+//! - verde: read-only. NÃO é "auto-aprovável se o usuário configurar" — é
+//!   auto-permitido sempre: `agent/session.rs` mapeia `Green` para
+//!   `HookAction::Allow { reason: None }`, sem prompt e sem entrar no inbox.
+//!   Ver [`green_allowed`], que é o que garante que a linha seja um comando só.
 //! - amarelo: escrita dentro do worktree — o default
 //! - vermelho: dano público/irreversível — aprovação humana SEMPRE,
 //!   hard-coded, nunca entra em allowlist
@@ -618,11 +621,37 @@ pub fn is_refused_by_core(command: &str) -> bool {
 }
 
 /// Binários triviais sem efeito colateral: só leem ou esperam e não têm modo
-/// de escrita/rede alcançável por argumento. Verde apenas quando é exatamente
-/// o binário — qualquer operador de shell tira do fast-path (ver
-/// `has_shell_operator`). `date`/`hostname` ficam de fora: têm modo de escrita
-/// (`date -s`, `hostname NAME`), então não são comprovadamente sem efeito.
+/// de escrita/rede alcançável por argumento. Verde apenas atrás de
+/// [`green_allowed`], que era o único ramo verde guardado antes do QUINTO
+/// conserto. `date`/`hostname` ficam de fora: têm modo de escrita (`date -s`,
+/// `hostname NAME`), então não são comprovadamente sem efeito.
 const TRIVIAL_COMMANDS: &[&str] = &["sleep", "echo", "true", "false", "whoami", "uname", "id"];
+
+/// Leitores puros: nomeados, não têm modo de escrita nem de execução
+/// alcançável por argumento. Verde apenas atrás de [`green_allowed`] — o nome
+/// diz o que o PRIMEIRO token faz, e nada sobre o resto da linha.
+///
+/// `rg` estava aqui e SAIU: `rg --pre ./x pattern .` roda `./x` uma vez por
+/// arquivo, e o verde entregava execução arbitrária sem prompt. Sai o nome
+/// inteiro, não a flag — o porquê está em [`TEXT_ONLY_COMMANDS`]. O custo é
+/// `rg` virar amarelo, que ainda entra no "sempre permitir" da sessão; o custo
+/// do contrário era o aval automático.
+///
+/// É constante, e não `matches!` embutido, porque a matriz varre esta lista:
+/// nome novo aqui entra na varredura do alfabeto sem ninguém escrever caso
+/// nenhum.
+const READ_ONLY_COMMANDS: &[&str] = &[
+    "ls", "pwd", "cat", "grep", "head", "tail", "which", "file", "wc",
+];
+
+/// Subcomandos de `git` que só leem o repositório.
+///
+/// Casados de propósito ESTRITO, ao contrário do casamento de `push`: o token
+/// logo depois do `git` TEM de ser o subcomando. Tolerar flag global no meio
+/// pintaria de verde `git -c alias.st='!curl … | sh' st`, que é execução
+/// arbitrária com cara de `git status`. Tolerância a mais na recusa custa um
+/// "não"; tolerância a mais no verde custa o aval automático.
+const GIT_READ_ONLY_SUBCOMMANDS: &[&str] = &["status", "log", "diff", "show"];
 
 /// Metacaracteres que habilitam encadeamento, redirecionamento ou substituição.
 /// Presença de qualquer um desqualifica o comando do fast-path verde: fail-closed.
@@ -632,6 +661,45 @@ const SHELL_METACHARACTERS: &[char] = &[
 
 fn has_shell_operator(command: &str) -> bool {
     command.chars().any(|c| SHELL_METACHARACTERS.contains(&c))
+}
+
+/// Se algum ramo verde vale nesta linha.
+///
+/// Verde é AUTO-PERMITIDO: `tool_risk::classify_command` repassa este
+/// resultado e `agent/session.rs` mapeia `Green` para
+/// `HookAction::Allow { reason: None }` — sem prompt, sem inbox, sem registro
+/// de decisão humana. Por isso o critério de um ramo verde nunca é "read-only
+/// no uso comum", é "read-only por argumento NENHUM"; e o nome do primeiro
+/// token só responde por si mesmo, não pelo resto da linha.
+///
+/// O QUINTO conserto: [`TRIVIAL_COMMANDS`] já era guardado, os dois vizinhos
+/// não. `cat payload.sh | zsh` executava sem aprovação — o primeiro token é
+/// `cat`, nenhuma checagem vermelha casa (`| sh` e `| bash` são substrings
+/// literais e não conhecem `zsh`, `python`, `node`, `perl`) e o `bash_touches_
+/// outside` não acha caminho absoluto candidato. Valia igual para
+/// `ls > /etc/algo`, `grep -h . seed | python` e `cat x; rm -rf ~`.
+///
+/// O portão é ÚNICO e vem antes da seção inteira, em vez de repetido por ramo:
+/// ramo verde novo nasce atrás dele por construção, sem depender de o autor
+/// lembrar do `&&`. É a mesma forma de [`passes_allowed`], e pelo mesmo motivo.
+///
+/// **Por que [`SHELL_METACHARACTERS`] e não [`OUTPUT_ROUTING`].** As duas
+/// constantes respondem perguntas diferentes, e a de lá não serve aqui.
+/// [`passes_allowed`] pergunta "o texto continua texto?", e para isso `;` e `&`
+/// ficam de fora DE PROPÓSITO: eles sequenciam sem capturar, e recusar
+/// `echo git push main; ls` seria um `echo` recusado sem contorno. Aqui a
+/// pergunta é outra — "esta linha é UM comando read-only e nada mais?" — e
+/// sequenciar responde não: `cat x; rm -rf ~` é exatamente o caso do relato.
+/// [`SHELL_METACHARACTERS`] é superconjunto estrito de [`OUTPUT_ROUTING`] e
+/// cobre os quatro eixos que tiram o read-only do read-only: cano (`|`),
+/// redirecionamento (`<`, `>`), substituição de comando (`` ` ``, `$`, `(`,
+/// `)`) e sequenciamento (`;`, `&`, `\n`, `\r`).
+///
+/// A direção é monotônica: este portão só REBAIXA verde para amarelo, nunca
+/// promove. Amarelo continua allowlistável por sessão, então o custo é um
+/// prompt uma vez, não um comando bloqueado.
+fn green_allowed(command: &str) -> bool {
+    !has_shell_operator(command)
 }
 
 /// Classificação por padrões. Conservadora: na dúvida, amarelo.
@@ -682,37 +750,23 @@ pub fn classify_risk(command: &str) -> RiskLevel {
     }
 
     // ---- verde: read-only ----
-    // Verde é auto-aprovável: roda sem prompt nenhum quando o usuário liga a
-    // aprovação automática. Então o critério não é "read-only no uso comum", é
-    // "read-only por argumento NENHUM" — o mesmo que já deixa `date`/`hostname`
-    // fora de TRIVIAL_COMMANDS.
-    //
-    // `rg` estava aqui e SAIU: `rg --pre ./x pattern .` roda `./x` uma vez por
-    // arquivo, e o verde entregava execução arbitrária sem prompt. Sai o nome
-    // inteiro, não a flag — o porquê está em TEXT_ONLY_COMMANDS. O custo é `rg`
-    // virar amarelo, que ainda entra no "sempre permitir" da sessão; o custo do
-    // contrário era o aval automático.
-    if matches!(
-        first,
-        "ls" | "pwd" | "cat" | "grep" | "head" | "tail" | "which" | "file" | "wc"
-    ) {
+    // Portão único da seção: nenhum ramo verde vale numa linha com operador de
+    // shell. Ver [`green_allowed`] — inclusive por que ele é um `return` antes
+    // da seção e não um `&&` por ramo.
+    if !green_allowed(cmd) {
+        return RiskLevel::Yellow;
+    }
+    if READ_ONLY_COMMANDS.contains(&first) {
         return RiskLevel::Green;
     }
-    // De propósito estrito, ao contrário do casamento de `push`: aqui o token
-    // logo depois do `git` TEM de ser o subcomando. Tolerar flag global no meio
-    // pintaria de verde `git -c alias.st='!curl … | sh' st`, que é execução
-    // arbitrária com cara de `git status`. Tolerância a mais na recusa custa um
-    // "não"; tolerância a mais no verde custa o aval automático.
     if first == "git"
-        && matches!(
-            tokens.get(1).copied(),
-            Some("status") | Some("log") | Some("diff") | Some("show")
-        )
+        && tokens
+            .get(1)
+            .is_some_and(|sub| GIT_READ_ONLY_SUBCOMMANDS.contains(sub))
     {
         return RiskLevel::Green;
     }
-    // triviais só quando é exatamente o binário: operador de shell cai no default
-    if TRIVIAL_COMMANDS.contains(&first) && !has_shell_operator(cmd) {
+    if TRIVIAL_COMMANDS.contains(&first) {
         return RiskLevel::Green;
     }
 
@@ -1428,6 +1482,23 @@ mod tests {
     /// [`matriz_de_push_atras_de_uma_mensagem_continua_recusada`] e
     /// [`matriz_de_push_para_trunk_composta_e_sempre_recusada`].
     ///
+    /// **O QUINTO conserto: o mesmo eixo, aplicado ao lado que CONCEDE.** A
+    /// varredura do alfabeto nasceu olhando só para os passes, e o buraco
+    /// seguinte estava no vizinho: `cat payload.sh | zsh` saía VERDE, que é
+    /// auto-permitido sem prompt nenhum. Passe canalizado e verde composto são
+    /// a mesma classe de erro — um token responde por si e a linha faz outra
+    /// coisa —, então o verde ganhou a varredura equivalente em
+    /// [`matriz_do_verde_nao_sobrevive_ao_alfabeto_de_operadores`], com sensor
+    /// em [`matriz_do_verde_limpo_continua_verde`]. O alfabeto de lá é
+    /// [`SHELL_METACHARACTERS`], não [`OUTPUT_ROUTING`]: as duas constantes
+    /// respondem perguntas diferentes, e o porquê está em [`green_allowed`].
+    ///
+    /// **A regra ganha um segundo lado, então**: onde o módulo CONCEDE (verde,
+    /// que dispensa o prompt) vale o mesmo que onde ele DESLIGA a varredura
+    /// (passe). Ramo verde novo nasce atrás de [`green_allowed`] e entra na
+    /// varredura do alfabeto pela constante — nunca por um `matches!` embutido,
+    /// que é o que impedia a matriz de enumerar a lista verde antes.
+    ///
     /// **O que a matriz continua não sendo a ferramenta certa para fazer.** Ela
     /// prova propriedades de STRING, e o eixo que sobra não é de string: nome
     /// não fixa binário (um `grep` que executa na frente do PATH), variável de
@@ -1626,6 +1697,159 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Todo comando que este módulo pinta de VERDE, derivado das constantes de
+    /// produção.
+    ///
+    /// Vocabulário escrito à mão foi exatamente o que deixou o QUINTO conserto
+    /// passar: a matriz cobria o passe e não o verde, e a lista verde vivia
+    /// dentro de um `matches!` que nenhum teste conseguia enumerar. Por isso
+    /// [`READ_ONLY_COMMANDS`] e [`GIT_READ_ONLY_SUBCOMMANDS`] são constantes —
+    /// nome novo em qualquer uma das três listas entra na varredura sozinho.
+    fn green_commands() -> Vec<String> {
+        let mut out: Vec<String> = READ_ONLY_COMMANDS
+            .iter()
+            .chain(TRIVIAL_COMMANDS.iter())
+            .map(|name| format!("{name} seed"))
+            .collect();
+        out.extend(
+            GIT_READ_ONLY_SUBCOMMANDS
+                .iter()
+                .map(|sub| format!("git {sub} seed")),
+        );
+        out
+    }
+
+    /// A varredura do alfabeto aplicada ao VERDE — o mesmo eixo, o vizinho que
+    /// faltava.
+    ///
+    /// Verde é auto-permitido sem prompt (ver [`green_allowed`]), então um
+    /// comando verde com operador de shell é a MESMA classe de erro que um
+    /// passe com cano: o primeiro token responde por si, e a linha faz outra
+    /// coisa. Aqui o alfabeto é [`SHELL_METACHARACTERS`] e não
+    /// [`OUTPUT_ROUTING`], porque sequenciar já basta — `cat x; rm -rf ~` é um
+    /// dos quatro casos do relato.
+    #[test]
+    fn matriz_do_verde_nao_sobrevive_ao_alfabeto_de_operadores() {
+        let mut checked = 0usize;
+        for sep in SHELL_METACHARACTERS.iter().copied() {
+            for placement in ROUTING_PLACEMENTS {
+                for base in green_commands() {
+                    let cmd = place(placement, &base, sep);
+                    // `\n` e `\r` são operadores de shell E espaço em branco, e
+                    // `classify_risk` começa por `trim()`. Na posição de
+                    // moldura (`{sep}{cmd}{sep}`) os dois viram só padding:
+                    // `"\nls seed\n"` volta a ser `ls seed`, um comando
+                    // read-only sozinho, e verde ali está certo. O corte é por
+                    // igualdade exata com a base — se sobrou qualquer coisa
+                    // além do espaço, a linha entra na varredura.
+                    if cmd.trim() == base {
+                        continue;
+                    }
+                    checked += 1;
+                    assert_ne!(
+                        classify_risk(&cmd),
+                        RiskLevel::Green,
+                        "verde auto-permitido com operador de shell: {cmd:?}"
+                    );
+                }
+            }
+        }
+        // Sensor do corte acima: se ele passar a engolir a varredura inteira, o
+        // teste vira decoração sem ninguém notar.
+        let total = SHELL_METACHARACTERS.len() * ROUTING_PLACEMENTS.len() * green_commands().len();
+        assert!(
+            checked * 10 > total * 9,
+            "o corte do padding engoliu a varredura: {checked} de {total}"
+        );
+    }
+
+    /// O sensor da varredura de cima: sem ele, "nunca devolver verde" passaria.
+    ///
+    /// Verde existe para o comando read-only sozinho não custar um prompt a
+    /// cada leitura. A mesma linha que morre composta tem de sobreviver limpa,
+    /// e a base é literalmente a mesma [`green_commands`].
+    /// O que o portão custa, escrito para não ser redescoberto como surpresa.
+    ///
+    /// [`green_allowed`] olha CARACTERE, não sintaxe, então não distingue o
+    /// `|` que canaliza do `|` que é alternância dentro das aspas de um regex.
+    /// Medido sobre um corpus de 30 linhas read-only realistas, 6 caem de verde
+    /// para amarelo, e são todas desta forma: metacaractere de regex ou de
+    /// glob no argumento de um leitor.
+    ///
+    /// O custo é limitado a UM prompt: amarelo continua entrando no "sempre
+    /// permitir" da sessão, ao contrário de vermelho. É o mesmo preço que
+    /// [`TRIVIAL_COMMANDS`] já pagava desde antes (`echo "a|b"` nunca foi
+    /// verde), e o lado certo de errar — um prompt a mais custa um clique, um
+    /// verde a mais executa `cat payload.sh | zsh` sem perguntar.
+    ///
+    /// Distinguir aspas foi considerado e recusado: exigiria um parser de
+    /// citação de shell, que é precisão que este módulo não sustenta — o mesmo
+    /// argumento de [`OUTPUT_ROUTING`], no arquivo que já vazou por excesso de
+    /// precisão.
+    #[test]
+    fn o_portao_do_verde_custa_amarelo_e_nunca_vermelho() {
+        for cmd in [
+            "grep -E 'a|b' file",
+            r"grep '\bword\b' file",
+            r#"grep "(foo)" x"#,
+            "grep '$HOME' file",
+            "wc -l < file",
+            "cat a{1,2}.txt",
+        ] {
+            assert_eq!(
+                classify_risk(cmd),
+                RiskLevel::Yellow,
+                "custo do portão passou de amarelo: {cmd:?}"
+            );
+        }
+    }
+
+    /// O outro lado da medida: a leitura do dia a dia continua verde, e sem
+    /// prompt. Se esta lista encolher, o portão ficou largo demais.
+    #[test]
+    fn leitura_comum_continua_verde_sem_prompt() {
+        for cmd in [
+            "ls -la src",
+            "cat package.json",
+            "cat src/main.rs src/lib.rs",
+            "head -n 20 README.md",
+            "tail -f log.txt",
+            "wc -l src/main.rs",
+            "which node",
+            "file target/debug/tyba",
+            "pwd",
+            "grep -r TODO src",
+            r#"grep -rn "fn main" src"#,
+            "git status",
+            "git status --porcelain",
+            "git log --oneline -5",
+            "git log --format=%h",
+            "git diff HEAD~1",
+            "git diff --stat",
+            "git show HEAD:src/lib.rs",
+            "ls src/**/*.ts",
+        ] {
+            assert_eq!(
+                classify_risk(cmd),
+                RiskLevel::Green,
+                "leitura comum deixou de ser verde: {cmd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn matriz_do_verde_limpo_continua_verde() {
+        let bases = green_commands();
+        assert!(!bases.is_empty(), "sem base verde, o sensor não discrimina");
+        for base in bases {
+            assert_eq!(
+                classify_risk(&base),
+                RiskLevel::Green,
+                "verde limpo deixou de ser verde: {base:?}"
+            );
         }
     }
 
@@ -1889,6 +2113,40 @@ mod tests {
         assert_eq!(classify_risk("git log --oneline -5"), RiskLevel::Green);
         assert_eq!(classify_risk("git diff HEAD~1"), RiskLevel::Green);
         assert_eq!(classify_risk("grep -r TODO src"), RiskLevel::Green);
+    }
+
+    /// Os quatro casos do relato, na letra. Verde é AUTO-PERMITIDO —
+    /// `agent/session.rs` mapeia `RiskLevel::Green` para
+    /// `HookAction::Allow { reason: None }` —, então uma linha composta que
+    /// saia verde executa sem prompt nenhum. O primeiro token é read-only; o
+    /// resto da linha não é.
+    ///
+    /// Nenhum dos quatro casa checagem vermelha: `cmd.contains("| sh")` e
+    /// `"| bash"` são substrings literais e não conhecem `zsh`, `python`,
+    /// `node` nem `perl`; `first == "rm"` olha o PRIMEIRO token, e em
+    /// `cat x; rm -rf ~` o primeiro token é `cat`.
+    #[test]
+    fn verde_read_only_nao_sobrevive_a_operador_de_shell() {
+        assert_ne!(classify_risk("cat payload.sh | zsh"), RiskLevel::Green);
+        assert_ne!(classify_risk("ls > /etc/algo"), RiskLevel::Green);
+        assert_ne!(classify_risk("grep -h . seed | python"), RiskLevel::Green);
+        assert_ne!(classify_risk("cat x; rm -rf ~"), RiskLevel::Green);
+    }
+
+    /// O vizinho com o mesmo defeito: o ramo do `git` read-only também
+    /// concedia verde olhando só os dois primeiros tokens.
+    ///
+    /// `git status; rm -rf ~` já saía amarelo ANTES do conserto, mas por
+    /// acidente: `split_whitespace` entrega `status;` colado, e a comparação
+    /// com `status` falha. Com o `;` separado por espaço o mesmo comando saía
+    /// verde — por isso o caso está aqui nas duas formas.
+    #[test]
+    fn verde_do_git_nao_sobrevive_a_operador_de_shell() {
+        assert_ne!(classify_risk("git log | zsh"), RiskLevel::Green);
+        assert_ne!(classify_risk("git diff > /etc/algo"), RiskLevel::Green);
+        assert_ne!(classify_risk("git show $(cat x)"), RiskLevel::Green);
+        assert_ne!(classify_risk("git status ; rm -rf ~"), RiskLevel::Green);
+        assert_ne!(classify_risk("git status; rm -rf ~"), RiskLevel::Green);
     }
 
     #[test]
