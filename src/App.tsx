@@ -973,6 +973,78 @@ export default function App() {
       .catch(() => {});
   }, [acceptLoaded, promptNewSessionIfEmpty]);
 
+  /**
+   * As 16 preferências, aplicadas de uma vez — e recuperáveis.
+   *
+   * Antes cada uma era um `getPref` com `.catch` próprio, então uma falha
+   * custava UMA configuração. Trocar por uma chamada só tirou 18 travessias da
+   * main thread do caminho crítico, mas transformou a falha em tudo-ou-nada: se
+   * o `boot_snapshot` rejeitar — e ele rejeita quando o `store.prefs()` falha,
+   * por exemplo com `SQLITE_BUSY` depois do `busy_timeout` enquanto a thread de
+   * boot martela o mesmo mutex —, TODA preferência cai no padrão pela vida da
+   * janela: fonte, toolbar, atalhos, modo prompt, editor.
+   *
+   * O `ref` é o que permite recuperar sem estragar: o poll já volta a perguntar
+   * enquanto o boot não terminou, então ele reaplica se a primeira tentativa não
+   * trouxe nada — e uma vez aplicadas, uma resposta atrasada não pisa por cima
+   * do que o dono mudou nas Configurações nesse meio-tempo.
+   */
+  const prefsApplied = useRef(false);
+  const applyPrefs = useCallback((prefs: Record<string, string>) => {
+    if (prefsApplied.current) return;
+    prefsApplied.current = true;
+    const pref = (key: string) => prefs[key] ?? null;
+    const togglePrefRaw = pref(TOGGLE_PREF_KEY);
+    const detailsRaw = pref(DETAILS_PREF_KEY);
+    const overridesRaw = pref(DETAILS_OVERRIDES_KEY);
+    const nameRaw = pref(ACCOUNT_NAME_KEY);
+    const bindingsRaw = pref(BINDINGS_PREF_KEY);
+    const fontRaw = pref(FONT_SIZE_KEY);
+    const containersRaw = pref(SHOW_CONTAINERS_KEY);
+    const gitStatusRaw = pref(GIT_STATUS_KEY);
+    const shellIntegrationRaw = pref(SHELL_INTEGRATION_KEY);
+    const startupRaw = pref(STARTUP_KEY);
+    const toolbarRaw = pref(TOOLBAR_PREF_KEY);
+    const richInputRaw = pref(RICH_INPUT_PREF_KEY);
+    const editorRaw = pref(EDITOR_PREF_KEY);
+    const worktreeDefaultRaw = pref(WORKTREE_DEFAULT_KEY);
+    const reviewAgentRaw = pref(REVIEW_AGENT_KEY);
+    const promptModeRaw = pref(PROMPT_MODE_PREF_KEY);
+    setPromptModePref(promptModeRaw === "on");
+    if (togglePrefRaw === "rail" || togglePrefRaw === "hidden") {
+      setTogglePref(togglePrefRaw);
+    }
+    if (detailsRaw === "on" || detailsRaw === "off") setDetailsPref(detailsRaw);
+    if (overridesRaw) {
+      try {
+        setDetailOverrides(
+          JSON.parse(overridesRaw) as Record<string, DetailsPref>,
+        );
+      } catch {
+        setDetailOverrides({});
+      }
+    }
+    if (nameRaw) setAccountName(nameRaw);
+    setBindings(parseBindings(bindingsRaw));
+    setShowContainers(containersRaw === "on");
+    setShowGitStatus(gitStatusRaw !== "off");
+    setShellIntegration(shellIntegrationRaw !== "off");
+    setStartup(parseStartupMode(startupRaw));
+    setToolbarPref(parseToolbarPref(toolbarRaw));
+    if (editorRaw) setEditorPref(editorRaw);
+    setWorktreeDefault(worktreeDefaultRaw === "on");
+    if (reviewAgentRaw) setReviewAgent(reviewAgentRaw);
+    const richInput = parseRichInputPref(richInputRaw);
+    setRichInputPref(richInput);
+    if (richInput.agentRegex) {
+      void setAgentMatchPattern(richInput.agentRegex)
+        .then((accepted) => setRichInputRegexInvalid(!accepted))
+        .catch(() => setRichInputRegexInvalid(true));
+    }
+    const fontSize = Number(fontRaw);
+    if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
+  }, []);
+
   // A thread de boot morreu, e o vazio na tela é falha e não ausência de dado.
   //
   // O core abre o portão mesmo em pânico — senão todo comando de escrita
@@ -1035,6 +1107,10 @@ export default function App() {
       // De quebra, uma pergunta em vez de duas: sessões e layout vêm juntos.
       const snapshot = await bootSnapshot().catch(() => null);
       if (snapshot?.bootFailure) reportBootFailure(snapshot.bootFailure);
+      // Recupera as preferências que a primeira tentativa pode não ter trazido.
+      // `applyPrefs` é idempotente por `ref`, então tick que chega depois de
+      // elas já valerem não pisa no que o dono mudou nas Configurações.
+      if (snapshot) applyPrefs(snapshot.prefs);
       const loaded = acceptLoaded(snapshot ? { ready: snapshot.ready, value: snapshot } : null);
       if (loaded) {
         setSessions(loaded.sessions);
@@ -2734,74 +2810,19 @@ export default function App() {
       // um app sem sessão, sem layout e sem explicação, que é exatamente o
       // "vazio indistinguível de falha" que este campo existe para evitar.
       if (snapshot?.bootFailure) reportBootFailure(snapshot.bootFailure);
-      const prefs = snapshot?.prefs ?? {};
-      const pref = (key: string) => prefs[key] ?? null;
-      // As prefs saem de um SELECT direto e não dependem da thread de boot:
-      // valem mesmo com `ready: false`. As listas, não — elas passam pela
-      // porta, que também é quem decide o `ready` (ver `mergeLoaded`): esta
-      // resposta pode chegar depois do `app://ready`, dizendo `false` sobre um
-      // boot que já terminou.
+      // Só aplica se veio de fato: `{}` de uma chamada que rejeitou não é
+      // "nenhuma preferência", é "não sei" — e gravar isso como estado deixaria
+      // o dono com todos os padrões pela vida da janela. O poll reaplica.
+      if (snapshot) applyPrefs(snapshot.prefs);
+      // As listas passam pela thread de boot e só valem quando ela terminou —
+      // vazio do meio do boot não é vazio. Ver `mergeLoaded`.
       const loaded = acceptLoaded(
-        snapshot && {
-          ready: snapshot.ready,
-          value: { sessions: snapshot.sessions, layout: snapshot.layout },
-        },
+        snapshot ? { ready: snapshot.ready, value: snapshot } : null,
       );
-      const togglePrefRaw = pref(TOGGLE_PREF_KEY);
-      const detailsRaw = pref(DETAILS_PREF_KEY);
-      const overridesRaw = pref(DETAILS_OVERRIDES_KEY);
-      const nameRaw = pref(ACCOUNT_NAME_KEY);
-      const bindingsRaw = pref(BINDINGS_PREF_KEY);
-      const fontRaw = pref(FONT_SIZE_KEY);
-      const containersRaw = pref(SHOW_CONTAINERS_KEY);
-      const gitStatusRaw = pref(GIT_STATUS_KEY);
-      const shellIntegrationRaw = pref(SHELL_INTEGRATION_KEY);
-      const startupRaw = pref(STARTUP_KEY);
-      const toolbarRaw = pref(TOOLBAR_PREF_KEY);
-      const richInputRaw = pref(RICH_INPUT_PREF_KEY);
-      const editorRaw = pref(EDITOR_PREF_KEY);
-      const worktreeDefaultRaw = pref(WORKTREE_DEFAULT_KEY);
-      const reviewAgentRaw = pref(REVIEW_AGENT_KEY);
-      const promptModeRaw = pref(PROMPT_MODE_PREF_KEY);
-      setPromptModePref(promptModeRaw === "on");
       if (loaded) {
         setSessions(loaded.sessions);
         setLayout(loaded.layout);
       }
-      if (togglePrefRaw === "rail" || togglePrefRaw === "hidden") {
-        setTogglePref(togglePrefRaw);
-      }
-      if (detailsRaw === "on" || detailsRaw === "off") {
-        setDetailsPref(detailsRaw);
-      }
-      if (overridesRaw) {
-        try {
-          setDetailOverrides(
-            JSON.parse(overridesRaw) as Record<string, DetailsPref>,
-          );
-        } catch {
-          setDetailOverrides({});
-        }
-      }
-      if (nameRaw) setAccountName(nameRaw);
-      setBindings(parseBindings(bindingsRaw));
-      setShowContainers(containersRaw === "on");
-      setShowGitStatus(gitStatusRaw !== "off");
-      setShellIntegration(shellIntegrationRaw !== "off");
-      setStartup(parseStartupMode(startupRaw));
-      setToolbarPref(parseToolbarPref(toolbarRaw));
-      if (editorRaw) setEditorPref(editorRaw);
-      setWorktreeDefault(worktreeDefaultRaw === "on");
-      if (reviewAgentRaw) setReviewAgent(reviewAgentRaw);
-      const richInput = parseRichInputPref(richInputRaw);
-      setRichInputPref(richInput);
-      if (richInput.agentRegex) {
-        void setAgentMatchPattern(richInput.agentRegex)
-          .then((accepted) => setRichInputRegexInvalid(!accepted))
-          .catch(() => setRichInputRegexInvalid(true));
-      }
-      const fontSize = Number(fontRaw);
-      if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
       // Só o layout que valeu como estado decide o modal. Resposta atrasada não
       // decide nada: quem decidiu foi o handler do `app://ready`, com o layout
       // que ele mesmo reconsultou.
@@ -2814,7 +2835,7 @@ export default function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, [acceptLoaded, refreshSessions, promptNewSessionIfEmpty]);
+  }, [acceptLoaded, refreshSessions, promptNewSessionIfEmpty, applyPrefs]);
 
   // Texto que a linha do TYBA recebeu de fora — paste, histórico, snippet.
   // Declarado aqui, e não junto do resto da linha lá embaixo, porque o
