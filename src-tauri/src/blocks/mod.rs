@@ -382,21 +382,287 @@ fn join_wrapped(rows: Vec<RawRow>) -> Vec<RawLine> {
     lines
 }
 
+/// Folga entre o que a saída ocupa e a altura com que a grade nasce.
+///
+/// A saída quase sempre termina em `\n`, e o cursor precisa de uma linha para
+/// pousar depois dela: sem a folga esse `\n` final rola a grade e come a
+/// PRIMEIRA linha — perda silenciosa, que é o que este módulo existe para não
+/// ter. O rabo em branco que a folga cria é aparado no `extract_lines`.
+const GRID_SLACK: usize = 2;
+
+/// Onde o cursor está e até onde a saída já pintou, numa grade de `width`
+/// colunas e altura ilimitada.
+///
+/// `painted` só anda quando um glifo cai numa linha. Mover o cursor não pinta:
+/// contar o `\n` final como linha usada dobraria a conta de toda saída normal.
+struct Pen {
+    width: usize,
+    row: usize,
+    col: usize,
+    painted: usize,
+}
+
+impl Pen {
+    fn new(width: usize) -> Self {
+        Self {
+            width,
+            row: 0,
+            col: 0,
+            painted: 0,
+        }
+    }
+
+    /// Escreve um glifo de `cols` colunas, embrulhando se não couber.
+    fn put(&mut self, cols: usize) {
+        if self.col + cols > self.width {
+            self.row = self.row.saturating_add(1);
+            self.col = 0;
+        }
+        self.col += cols;
+        self.painted = self.painted.max(self.row);
+    }
+
+    fn down(&mut self, rows: usize) {
+        self.row = self.row.saturating_add(rows);
+    }
+
+    fn up(&mut self, rows: usize) {
+        self.row = self.row.saturating_sub(rows);
+    }
+
+    fn at_col(&mut self, col: usize) {
+        self.col = col.min(self.width);
+    }
+
+    fn rows(&self) -> usize {
+        self.painted + 1
+    }
+}
+
+/// Colunas que um caractere ocupa na grade.
+///
+/// Aproximação deliberada: as faixas East Asian Wide/Fullwidth mais emoji
+/// valem 2, o resto vale 1. A tabela exata é a do `unicode-width`, que já está
+/// na árvore por baixo do `vt100` — usá-la direto exigiria uma dependência
+/// nova no `Cargo.toml`, e a diferença que sobra é a de baixo.
+///
+/// O que fica impreciso é a marca combinante, que tem largura ZERO e aqui vale
+/// 1: `é` decomposto conta 2 colunas em vez de 1. O erro é para CIMA, ou seja
+/// para o lado de descartar demais, e é limitado ao número de acentos
+/// decompostos da linha. As faixas foram escolhidas para NÃO pegar traço de
+/// tabela nem travessão — os caracteres de 3 bytes comuns em saída de CLI —,
+/// porque um `─` contado como 2 colunas cortaria pela metade toda saída em
+/// tabela.
+fn char_cols(ch: u32) -> usize {
+    const WIDE: &[(u32, u32)] = &[
+        (0x1100, 0x115f),
+        (0x2e80, 0x303e),
+        (0x3041, 0x33ff),
+        (0x3400, 0x4dbf),
+        (0x4e00, 0x9fff),
+        (0xa000, 0xa4cf),
+        (0xac00, 0xd7a3),
+        (0xf900, 0xfaff),
+        (0xfe10, 0xfe19),
+        (0xfe30, 0xfe6f),
+        (0xff00, 0xff60),
+        (0xffe0, 0xffe6),
+        (0x1f300, 0x1f64f),
+        (0x1f900, 0x1f9ff),
+        (0x20000, 0x3fffd),
+    ];
+    if ch < 0x1100 {
+        return 1;
+    }
+    if WIDE.iter().any(|(low, high)| ch >= *low && ch <= *high) {
+        2
+    } else {
+        1
+    }
+}
+
+/// Decodifica um caractere UTF-8 e devolve quantos bytes ele comeu.
+///
+/// Byte inválido ou sequência truncada anda 1 byte e vale um glifo: o `vt100`
+/// também põe alguma coisa na tela, e parar aqui deixaria o resto da saída sem
+/// medir.
+fn decode(bytes: &[u8], at: usize) -> (u32, usize) {
+    let lead = bytes[at];
+    let (mut ch, len) = match lead {
+        0x00..=0x7f => return (lead as u32, 1),
+        0xc0..=0xdf => ((lead & 0x1f) as u32, 2),
+        0xe0..=0xef => ((lead & 0x0f) as u32, 3),
+        0xf0..=0xf7 => ((lead & 0x07) as u32, 4),
+        _ => return (0xfffd, 1),
+    };
+    for step in 1..len {
+        match bytes.get(at + step) {
+            Some(byte) if (0x80..0xc0).contains(byte) => {
+                ch = (ch << 6) | (byte & 0x3f) as u32;
+            }
+            _ => return (0xfffd, step),
+        }
+    }
+    (ch, len)
+}
+
 /// Quantas linhas de grade a saída ocupa, sem teto.
 ///
-/// Cada `\n` começa uma linha, e o resto só pode acrescentar por wrap — usar o
-/// tamanho em bytes como proxy dos imprimíveis superestima (escape conta como
-/// texto). Superestimar é o lado seguro: a grade nasce maior do que precisa,
-/// nunca menor, e é ser "nunca menor" que garante que nada role para fora dela.
-fn rows_of(bytes: &[u8], cols: u16) -> usize {
-    let newlines = logical_lines(bytes);
-    let wrapped = bytes.len() / cols.max(1) as usize;
-    newlines + wrapped + 2
+/// ARMADILHA — esta conta tem DOIS consumidores cujos lados seguros são
+/// OPOSTOS, e foi por não notar isso que a saída sumiu:
+///
+/// - `rows_needed` dimensiona a grade. Errar para MAIS só gasta memória; para
+///   menos, o conteúdo rola para fora e some sem entrar em contagem nenhuma.
+/// - `head_cut` decide o que DESCARTAR. Aqui é o contrário: errar para mais
+///   joga fora saída que caberia.
+///
+/// A conta antiga era `bytes.len() / cols`, com o escape contando como texto.
+/// Enquanto ela só dimensionava a grade, o exagero era o lado seguro — grade
+/// maior não perde nada. Quando virou orçamento de descarte, o MESMO exagero
+/// passou a apagar saída: `bun install` colorido gasta ~282 bytes para pintar
+/// 60 colunas, e a barra de progresso do `docker pull` é um megabyte numa
+/// linha só, porque `\r` redesenha sempre a mesma.
+///
+/// Por isso aqui se conta o que PINTA: escape custa zero coluna, `\r` volta à
+/// coluna zero, e o wrap sai da largura, não do tamanho do buffer. É a única
+/// métrica que serve aos dois consumidores ao mesmo tempo.
+///
+/// O que CONTINUA impreciso, e para que lado:
+///
+/// - Apagar não desconta. `CSI 2J` e `CSI 2K` não devolvem a linha ao contador
+///   (`painted` só sobe), então quem limpa e repinta é contado duas vezes. Erra
+///   para descartar demais. Programa que faz isso o tempo todo usa alt-screen,
+///   e alt-screen não vira bloco.
+/// - `CSI r;cH` com uma linha absurda (`CSI 999999H`) leva o cursor para lá de
+///   verdade, enquanto o `vt100` o prenderia na altura da grade. Erra para
+///   descartar demais, e só num programa que emita coordenada fora da tela.
+/// - Marca combinante vale 1 em vez de 0 — ver `char_cols`.
+fn grid_rows(bytes: &[u8], cols: u16) -> usize {
+    /// Onde o scanner está dentro de uma sequência de escape. Mesma máquina do
+    /// `paints_glyph` (`pty/capture.rs`), reescrita aqui porque este módulo
+    /// precisa de mais do que "pintou ou não": precisa de quanto e onde.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Scan {
+        Ground,
+        Esc,
+        Csi,
+        /// Corpo de OSC/DCS/APC/PM/SOS — termina em `BEL` ou `ST`.
+        StringBody,
+    }
+
+    const TAB: usize = 8;
+
+    let width = cols.max(1) as usize;
+    let mut pen = Pen::new(width);
+    let mut state = Scan::Ground;
+    // Só os dois primeiros parâmetros interessam: linha e coluna do `CUP`.
+    let mut params = [0usize; 2];
+    let mut param_at = 0usize;
+    let mut at = 0usize;
+
+    while at < bytes.len() {
+        let byte = bytes[at];
+        let mut step = 1usize;
+
+        // `ESC` aborta o que estava em curso, em qualquer estado — é também
+        // como o `ST` (`ESC \`) fecha o corpo de string.
+        if byte == 0x1b {
+            state = Scan::Esc;
+            at += 1;
+            continue;
+        }
+
+        match state {
+            Scan::Ground => match byte {
+                b'\r' => pen.at_col(0),
+                b'\n' | 0x0b | 0x0c => pen.down(1),
+                0x08 => pen.at_col(pen.col.saturating_sub(1)),
+                b'\t' => pen.at_col(((pen.col / TAB) + 1) * TAB),
+                0x00..=0x1f | 0x7f => {}
+                0x20..=0x7e => pen.put(1),
+                _ => {
+                    let (ch, len) = decode(bytes, at);
+                    step = len;
+                    pen.put(char_cols(ch));
+                }
+            },
+            Scan::Esc => {
+                state = Scan::Ground;
+                match byte {
+                    b'[' => {
+                        state = Scan::Csi;
+                        params = [0, 0];
+                        param_at = 0;
+                    }
+                    b']' | b'P' | b'X' | b'^' | b'_' => state = Scan::StringBody,
+                    // IND desce, NEL desce e volta à margem, RI sobe.
+                    b'D' => pen.down(1),
+                    b'E' => {
+                        pen.down(1);
+                        pen.at_col(0);
+                    }
+                    b'M' => pen.up(1),
+                    _ => {}
+                }
+            }
+            Scan::Csi => match byte {
+                b'0'..=b'9' => {
+                    let slot = &mut params[param_at];
+                    *slot = slot
+                        .saturating_mul(10)
+                        .saturating_add((byte - b'0') as usize);
+                }
+                b';' => param_at = (param_at + 1).min(params.len() - 1),
+                0x40..=0x7e => {
+                    // Movimento de cursor é o que separa um `docker pull` de
+                    // 8 camadas — que sobe e redesenha as MESMAS 8 linhas —
+                    // de uma saída de 8 mil linhas. Ignorá-lo contaria cada
+                    // redesenho como linha nova.
+                    let first = params[0].max(1);
+                    match byte {
+                        b'A' => pen.up(first),
+                        b'B' | b'e' => pen.down(first),
+                        b'E' => {
+                            pen.down(first);
+                            pen.at_col(0);
+                        }
+                        b'F' => {
+                            pen.up(first);
+                            pen.at_col(0);
+                        }
+                        // O posicionamento absoluto é ancorado no TOPO da
+                        // grade, e não no topo de uma tela de 24 linhas: é a
+                        // mesma divergência que o `extract_lines` documenta.
+                        b'H' | b'f' => {
+                            pen.row = first - 1;
+                            pen.at_col(params[1].max(1) - 1);
+                        }
+                        b'd' => pen.row = first - 1,
+                        b'G' | b'`' => pen.at_col(first - 1),
+                        b'C' | b'a' => pen.at_col(pen.col.saturating_add(first)),
+                        b'D' => pen.at_col(pen.col.saturating_sub(first)),
+                        _ => {}
+                    }
+                    state = Scan::Ground;
+                }
+                _ => {}
+            },
+            Scan::StringBody => {
+                if byte == 0x07 {
+                    state = Scan::Ground;
+                }
+            }
+        }
+
+        at += step;
+    }
+
+    pen.rows()
 }
 
 /// Altura da grade para esta saída, com o teto do bloco.
 fn rows_needed(bytes: &[u8], cols: u16) -> u16 {
-    rows_of(bytes, cols).clamp(1, MAX_LINES) as u16
+    (grid_rows(bytes, cols) + GRID_SLACK).clamp(1, MAX_LINES) as u16
 }
 
 /// Onde começa a parte da saída que cabe no bloco.
@@ -414,16 +680,23 @@ fn rows_needed(bytes: &[u8], cols: u16) -> u16 {
 /// `MAX_LINES`. Nunca dava mais que zero.
 ///
 /// Cortar aqui, ANTES do parser, é o que torna a perda contável: o que a grade
-/// recebe cabe inteiro, e o que ficou de fora está medido. O corte cai logo
-/// depois de um `\n` para não partir linha ao meio; o preço é o estado de cor
-/// herdado do trecho descartado, e quem colore reemite o SGR a cada linha.
+/// recebe cabe inteiro, e o que ficou de fora está medido. Decidir DEPOIS do
+/// parser seria exato por construção, mas é justamente o que não dá: a grade é
+/// o recurso que precisa ser dimensionado antes, e o que passar dela rola para
+/// fora sem volta. O corte cai logo depois de um `\n` para não partir linha ao
+/// meio; o preço é o estado de cor herdado do trecho descartado, e quem colore
+/// reemite o SGR a cada linha.
+///
+/// O orçamento se mede em `grid_rows`, e não em bytes — ver a armadilha lá. A
+/// soma dos custos linha a linha é EXATA para saída normal (cada linha começa
+/// na coluna zero, então a próxima começa exatamente `custo` linhas abaixo) e
+/// nunca fica abaixo do que a grade vai precisar, que é o lado que importa.
 fn head_cut(bytes: &[u8], cols: u16) -> usize {
-    if rows_of(bytes, cols) <= MAX_LINES {
+    if grid_rows(bytes, cols) + GRID_SLACK <= MAX_LINES {
         return 0;
     }
-    let width = cols.max(1) as usize;
-    // A mesma folga de 2 que `rows_of` dá, para o corte e a grade concordarem.
-    let budget = MAX_LINES.saturating_sub(2);
+    // A mesma folga que `rows_needed` dá, para o corte e a grade concordarem.
+    let budget = MAX_LINES.saturating_sub(GRID_SLACK);
     let mut used = 0;
     let mut end = bytes.len();
     while end > 0 {
@@ -432,7 +705,13 @@ fn head_cut(bytes: &[u8], cols: u16) -> usize {
             .rposition(|b| *b == b'\n')
             .map(|at| at + 1)
             .unwrap_or(0);
-        let cost = 1 + (end - start) / width;
+        // O PTY entrega `\r\n` (é o `ONLCR` do termios), e aí cada linha
+        // começa na coluna zero. Se um `\n` vier sozinho, a coluna atravessa a
+        // quebra e a linha seguinte pode embrulhar uma vez mais cedo — uma
+        // linha a mais, no máximo, e é essa que se paga aqui. Sem isso a soma
+        // ficaria ABAIXO do que a grade precisa, e a diferença sumiria rolando.
+        let carried = start >= 2 && bytes[start - 2] != b'\r';
+        let cost = grid_rows(&bytes[start..end], cols) + usize::from(carried);
         if used + cost > budget {
             // Uma linha só maior que o teto inteiro: fica ela, truncada pela
             // grade, em vez de devolver bloco vazio.
@@ -1192,5 +1471,235 @@ mod tests {
     fn wide_characters_are_not_duplicated() {
         let out = lines_of("日本語\r\n".as_bytes(), 20, 5);
         assert_eq!(out, vec!["日本語"]);
+    }
+
+    /// Linha "colorida por token", do jeito que `bun install`, `cargo build` e
+    /// `pip` escrevem: cada palavra leva o seu próprio SGR. Com 20 tokens são
+    /// 282 bytes no cano para 60 colunas na tela — a proporção medida, escrita
+    /// à mão. Com 6 tokens, 86 bytes para 18 colunas.
+    fn colored_line(tokens: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for _ in 0..tokens {
+            // 7 bytes de SGR + 3 imprimíveis + 4 de reset = 14 bytes por token.
+            out.extend_from_slice(b"\x1b[1;32mabc\x1b[0m");
+        }
+        out.extend_from_slice(b"\r\n");
+        out
+    }
+
+    fn colored_output(lines: usize, tokens: usize) -> Vec<u8> {
+        let line = colored_line(tokens);
+        let mut out = Vec::with_capacity(lines * line.len());
+        for _ in 0..lines {
+            out.extend_from_slice(&line);
+        }
+        out
+    }
+
+    /// `docker pull`, `pip`, `curl`: preâmbulo, uma barra de progresso de 1 MB
+    /// que redesenha a MESMA linha com `\r`, e o resultado no fim.
+    fn progress_bar_output() -> Vec<u8> {
+        let mut out = Vec::new();
+        for at in 0..500 {
+            out.extend_from_slice(format!("preambulo {at}\r\n").as_bytes());
+        }
+        while out.len() < 1024 * 1024 {
+            for pct in 0..=100 {
+                out.extend_from_slice(format!("\rbaixando [{pct:>3}%]").as_bytes());
+            }
+        }
+        out.extend_from_slice(b"\r\n");
+        for at in 0..10 {
+            out.extend_from_slice(format!("resultado {at}\r\n").as_bytes());
+        }
+        out
+    }
+
+    fn texts(lines: &[LogicalLine]) -> Vec<&str> {
+        lines.iter().map(|line| line.text.as_str()).collect()
+    }
+
+    #[test]
+    fn color_per_token_does_not_shrink_what_fits() {
+        assert_eq!(colored_line(20).len(), 282, "a fixture mede o que se mediu");
+        let out = colored_output(5_000, 20);
+        let (lines, truncated) = extract_lines(&out, 80, 24);
+        // 60 colunas em 80: cada linha ocupa UMA linha de grade, e cinco mil
+        // cabem nas dez mil do teto com folga de sobra.
+        assert_eq!(truncated, 0, "descartou saída que cabia inteira");
+        assert_eq!(lines.len(), 5_000);
+    }
+
+    #[test]
+    fn a_short_colored_line_still_costs_one_row() {
+        assert_eq!(colored_line(6).len(), 86);
+        let out = colored_output(9_000, 6);
+        let (lines, truncated) = extract_lines(&out, 80, 24);
+        assert_eq!(truncated, 0, "18 colunas em 80 não são duas linhas");
+        assert_eq!(lines.len(), 9_000);
+    }
+
+    #[test]
+    fn the_progress_bar_does_not_swallow_what_came_before_it() {
+        // `\r` redesenha a MESMA linha: um megabyte de barra é UMA linha de
+        // grade. Medir a barra em bytes fazia ela sozinha estourar o teto e
+        // levar junto tudo que veio antes dela.
+        let out = progress_bar_output();
+        let (lines, truncated) = extract_lines(&out, 80, 24);
+        assert_eq!(truncated, 0, "a barra comeu o preâmbulo");
+        assert_eq!(
+            lines.first().map(|line| line.text.as_str()),
+            Some("preambulo 0")
+        );
+        assert_eq!(
+            lines.last().map(|line| line.text.as_str()),
+            Some("resultado 9")
+        );
+        // 500 de preâmbulo + a barra, que é uma linha só + 10 de resultado.
+        assert_eq!(lines.len(), 511);
+    }
+
+    fn plain_line(at: usize) -> String {
+        format!("pacote {at:05} resolvido em 12ms")
+    }
+
+    /// A mesma linha, vestida: um rascunho do mesmo tamanho apagado pelo `\r`
+    /// que vem atrás, e cada palavra com o seu SGR. Na tela sai idêntica à
+    /// crua; no cano pesa três vezes mais.
+    fn dressed_line(at: usize) -> Vec<u8> {
+        let text = plain_line(at);
+        let mut out = Vec::new();
+        out.extend_from_slice(b"\x1b[2m");
+        out.extend_from_slice(&vec![b'.'; text.len()]);
+        out.extend_from_slice(b"\x1b[0m\r");
+        let painted: Vec<String> = text
+            .split(' ')
+            .map(|word| format!("\x1b[1;36m{word}\x1b[0m"))
+            .collect();
+        out.extend_from_slice(painted.join(" ").as_bytes());
+        out.extend_from_slice(b"\r\n");
+        out
+    }
+
+    fn output_of(lines: usize, line: impl Fn(usize) -> Vec<u8>) -> Vec<u8> {
+        let mut out = Vec::new();
+        for at in 0..lines {
+            out.extend_from_slice(&line(at));
+        }
+        out
+    }
+
+    /// A CLASSE, e não os três casos que a denunciaram.
+    ///
+    /// O orçamento do que descartar tem de se medir no que a TELA mostra. Byte
+    /// que não pinta — SGR, `\r` de redesenho — não ocupa coluna nenhuma, logo
+    /// não pode mudar uma linha sequer do que o bloco guarda nem do que ele diz
+    /// ter perdido. Toda métrica que conte bytes falha aqui na hora, inclusive
+    /// a próxima que tentar o mesmo atalho.
+    ///
+    /// Junto vai a conservação, nos dois trajes: o que ficou mais o que se foi
+    /// é o que entrou. Ela é o outro lado da moeda — pega a métrica que
+    /// SUBESTIMA e deixa a grade curta, onde a saída some rolando para fora
+    /// sem nem ser contada.
+    #[test]
+    fn what_does_not_paint_does_not_cost() {
+        for count in [100usize, 4_000, MAX_LINES - 1, MAX_LINES + 3_000] {
+            let plain = output_of(count, |at| format!("{}\r\n", plain_line(at)).into_bytes());
+            let dressed = output_of(count, dressed_line);
+            assert!(
+                dressed.len() > plain.len() * 2,
+                "a fixture não pesa: o traje precisa custar bytes"
+            );
+
+            let (plain_lines, plain_cut) = extract_lines(&plain, 80, 24);
+            let (dressed_lines, dressed_cut) = extract_lines(&dressed, 80, 24);
+
+            assert_eq!(
+                plain_cut, dressed_cut,
+                "o traje mudou quanto se descarta (count={count})"
+            );
+            assert_eq!(
+                texts(&plain_lines),
+                texts(&dressed_lines),
+                "o traje mudou o que sobrou (count={count})"
+            );
+            assert_eq!(
+                plain_lines.len() + plain_cut,
+                count,
+                "conservação quebrada no cru (count={count})"
+            );
+            assert_eq!(
+                dressed_lines.len() + dressed_cut,
+                count,
+                "conservação quebrada no vestido (count={count})"
+            );
+        }
+    }
+
+    /// O outro lado da métrica honesta, por dentro: ela não pode SUBESTIMAR.
+    ///
+    /// Se o custo sair menor do que a saída ocupa, o corte deixa passar mais do
+    /// que a grade aguenta, o `clamp` de `rows_needed` morde, e o excedente
+    /// rola para fora sem entrar no contador. É a mesma perda silenciosa,
+    /// entrando pela outra porta. A folga da grade tem de sobreviver ao corte.
+    #[test]
+    fn what_survives_the_cut_fits_the_grid() {
+        let shapes: Vec<(&str, Vec<u8>)> = vec![
+            ("cru", numbered(MAX_LINES + 5_000)),
+            ("colorido", colored_output(20_000, 20)),
+            ("vestido", output_of(20_000, dressed_line)),
+            ("barra de progresso", progress_bar_output()),
+            ("redesenho de camadas", layered_redraw_output()),
+        ];
+        for (name, out) in shapes {
+            let cut = head_cut(&out, 80);
+            assert!(
+                grid_rows(&out[cut..], 80) + GRID_SLACK <= MAX_LINES,
+                "o que sobrou do corte não cabe na grade ({name})"
+            );
+        }
+    }
+
+    /// `docker pull`: cada refresh reimprime as MESMAS camadas e volta com
+    /// `CSI nA`. São oito linhas na tela, não dezesseis mil.
+    fn layered_redraw_output() -> Vec<u8> {
+        let mut out = Vec::new();
+        for round in 0..2_000 {
+            for layer in 0..8 {
+                out.extend_from_slice(format!("camada {layer}: {}%\r\n", round % 100).as_bytes());
+            }
+            out.extend_from_slice(b"\x1b[8A");
+        }
+        out
+    }
+
+    #[test]
+    fn redrawing_the_same_lines_costs_those_lines_once() {
+        let out = layered_redraw_output();
+        let (lines, truncated) = extract_lines(&out, 80, 24);
+        assert_eq!(truncated, 0, "contou cada refresh como linha nova");
+        assert_eq!(lines.len(), 8, "oito camadas na tela, oito linhas");
+    }
+
+    #[test]
+    fn the_metric_counts_columns_and_not_bytes() {
+        // Escape não pinta: um SGR de sete bytes ocupa zero coluna.
+        assert_eq!(grid_rows(b"\x1b[1;32mabc\x1b[0m", 80), 1);
+        // `\r` volta à margem: o redesenho não consome linha.
+        assert_eq!(grid_rows(&vec![b'x'; 10_000], 4), 2_500);
+        let mut redraw = Vec::new();
+        for _ in 0..10_000 {
+            redraw.extend_from_slice(b"\rxxxx");
+        }
+        assert_eq!(grid_rows(&redraw, 4), 1);
+        // O wrap sai da largura, não do buffer.
+        assert_eq!(grid_rows(b"abcdefghij", 5), 2);
+        // Caractere largo ocupa duas colunas.
+        assert_eq!(grid_rows("日本語".as_bytes(), 4), 2);
+        // Traço de tabela também tem 3 bytes, e UMA coluna: tratá-lo como
+        // largo cortaria pela metade toda saída em tabela.
+        assert_eq!(grid_rows("──────────".as_bytes(), 5), 2);
+        // `\n` no fim não inventa linha — o rabo em branco não é saída.
+        assert_eq!(grid_rows(b"um\r\ndois\r\n", 80), 2);
     }
 }
