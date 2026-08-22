@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -25,6 +25,82 @@ const CHANNEL_CAPACITY: usize = 128;
 
 pub type PtyId = Uuid;
 
+/// "O shell já chegou ao editor de linha dele?"
+///
+/// Serve a quem vai INJETAR uma linha. Antes desse instante o tty está em modo
+/// canônico, e escrever ali não perde nada — o driver enfileira, e o zsh executa
+/// quando assume o terminal — mas custa duas coisas:
+///
+/// - **o driver ECOA os bytes crus na tela**, então a injeção aparece como
+///   `^[=<comando>` no topo da sessão, antes de qualquer `133;A`: lixo solto,
+///   fora de qualquer bloco (verificado em pty real, 2026-08-22);
+/// - **o comando só roda quando o shell termina de carregar**, o que no
+///   `.zshrc` do dono é 1,4 s. Da cadeira, é apertar Enter e não acontecer nada.
+///
+/// > [!warning] O portão NÃO existe para impedir perda de byte. Isso foi
+/// > medido e é falso: `tcsetattr` do zsh não descarta a fila de entrada, e a
+/// > linha escrita em t=0 executa (4/4 em pty real, em t=0, 50 ms e 200 ms).
+/// > Quem "otimizar" isto de volta para uma escrita direta não vai ver teste
+/// > quebrar por perda — vai ver o eco cru voltar ao topo da sessão.
+///
+/// O sinal é o `633;P` do `precmd`, que sai imediatamente antes de o zle
+/// assumir: medindo o `ECHO` do termios do master a cada 5 ms, ele cai no MESMO
+/// milissegundo em que o `633;P` chega. Por isso o portão abre com o `633;P`
+/// **em qualquer modo** — ele responde "o editor de linha está vivo", não "o
+/// modo prompt está ligado". Um shell em modo clássico também aceita a injeção:
+/// o `bindkey '\e='` é instalado pelo rc de qualquer jeito.
+///
+/// `Mutex` próprio, e não o da tela: o único caminho que o toma é este, sempre
+/// como folha — quem espera aqui nunca segura a tela, e quem abre já está
+/// dentro dela. Inverter isso é o que criaria ordem de lock.
+///
+/// Mesmo desenho do [`crate::boot::BootGate`], e pela mesma razão: quem só quer
+/// *perguntar* é síncrono, quem vai *escrever* espera.
+#[derive(Default)]
+pub struct LineEditorGate {
+    open: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl LineEditorGate {
+    fn mark_open(&self) {
+        let mut open = self.open.lock();
+        if *open {
+            return;
+        }
+        *open = true;
+        self.changed.notify_all();
+    }
+
+    /// Segura até o shell alcançar o editor de linha, e devolve se alcançou.
+    ///
+    /// `false` é o teto estourado com o portão ainda fechado: shell sem
+    /// integração (nunca emite `633;P`), ou que morreu carregando. Quem chama
+    /// **escreve assim mesmo** — a espera é para não ecoar lixo, não para
+    /// evitar perda, e recusar deixaria de rodar um comando que hoje roda.
+    ///
+    /// Bloqueante de propósito: o chamador é um comando `async` e paga isto num
+    /// `spawn_blocking`, como o `wait_for_boot`.
+    pub fn wait_open(&self, timeout: Duration) -> bool {
+        let mut open = self.open.lock();
+        if *open {
+            return true;
+        }
+        // Laço com prazo, e não um `wait_for` só: `Condvar` acorda espúrio, e
+        // uma volta a mais devolveria `false` antes da hora — que aqui não é
+        // "esperei demais", é escrever no tty canônico e ecoar a injeção crua,
+        // exatamente o que o portão existe para evitar. Mesmo desenho do
+        // `BootGate::wait_ready`.
+        let deadline = Instant::now() + timeout;
+        while !*open {
+            if self.changed.wait_until(&mut open, deadline).timed_out() {
+                return *open;
+            }
+        }
+        true
+    }
+}
+
 struct ScreenState {
     parser: vt100::Parser,
     pending: Vec<u8>,
@@ -32,6 +108,9 @@ struct ScreenState {
     /// Última resposta do shell sobre o modo prompt (`633;P`). Guardada para
     /// poder ser CONSULTADA: evento só é entregue a quem já estava ouvindo.
     prompt_mode: bool,
+    /// Aberto pelo mesmo `633;P` que atualiza o campo acima — ver
+    /// [`LineEditorGate`].
+    line_editor: Arc<LineEditorGate>,
 }
 
 impl ScreenState {
@@ -41,6 +120,7 @@ impl ScreenState {
             pending: Vec::with_capacity(READ_BUF_SIZE),
             attachers: HashMap::new(),
             prompt_mode: false,
+            line_editor: Arc::new(LineEditorGate::default()),
         }
     }
 
@@ -241,7 +321,13 @@ fn apply_screen(state: &mut ScreenState, chunk: &[u8], actions: &[capture::Actio
                     state.pending.extend_from_slice(CLEAR_SCREEN);
                 }
             }
-            capture::Action::PromptMode(on) => state.prompt_mode = *on,
+            // O portão abre com o `633;P` em QUALQUER modo: ele diz que o
+            // editor de linha assumiu o terminal, não que o modo prompt está
+            // ligado. Ver [`LineEditorGate`].
+            capture::Action::PromptMode(on) => {
+                state.prompt_mode = *on;
+                state.line_editor.mark_open();
+            }
             _ => {}
         }
     }
@@ -673,6 +759,17 @@ impl PtyPool {
         }
     }
 
+    /// O portão do editor de linha desta sessão — ver [`LineEditorGate`].
+    ///
+    /// Devolve o `Arc` em vez de esperar aqui dentro: esperar seguraria o lock
+    /// do pool inteiro, e o portão de UMA sessão fecharia todas as outras.
+    pub fn line_editor_gate(&self, id: PtyId) -> Option<Arc<LineEditorGate>> {
+        let ptys = self.ptys.lock();
+        let handle = ptys.get(&id)?;
+        let gate = Arc::clone(&handle.screen.lock().line_editor);
+        Some(gate)
+    }
+
     /// O modo prompt reportado pelo shell, para quem chegou depois do evento.
     pub fn prompt_mode(&self, id: PtyId) -> Option<bool> {
         let ptys = self.ptys.lock();
@@ -881,8 +978,13 @@ mod screen_state_tests {
 
 #[cfg(test)]
 mod ingest_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use parking_lot::Mutex;
+
     use super::capture::CaptureMachine;
-    use super::{apply_screen, ingest_chunk, ScreenState, SCROLLBACK_LINES};
+    use super::{apply_screen, ingest_chunk, LineEditorGate, ScreenState, SCROLLBACK_LINES};
 
     /// O que uma janela recebe ao anexar, na ordem de `PtyPool::attach`: o que
     /// estava na fila (que sai em broadcast, e ela já está ouvindo) e depois a
@@ -901,6 +1003,74 @@ mod ingest_tests {
         let mut parser = vt100::Parser::new(24, 80, SCROLLBACK_LINES);
         parser.process(bytes);
         parser.screen().contents()
+    }
+
+    /// O portão nasce fechado: sem isso a espera passaria direto e a linha
+    /// voltaria a ser escrita num shell que ainda não lê.
+    #[test]
+    fn the_line_editor_gate_starts_closed() {
+        let gate = LineEditorGate::default();
+        assert!(!gate.wait_open(Duration::from_millis(10)));
+    }
+
+    /// O `633;P` é o sinal, e ele vale em QUALQUER modo — é o editor de linha
+    /// que abre o portão, não o modo prompt. Um shell em modo clássico também
+    /// tem `bindkey '\e='` e também aceita a injeção; exigir `tyba-prompt=1`
+    /// aqui deixaria a submissão pendurada até o teto justamente nele.
+    #[test]
+    fn any_prompt_report_opens_the_line_editor_gate() {
+        for report in [
+            b"\x1b]633;P;tyba-prompt=1\x07".as_slice(),
+            b"\x1b]633;P;tyba-prompt=0\x07",
+        ] {
+            let mut state = ScreenState::new(24, 80);
+            let gate = Arc::clone(&state.line_editor);
+            let mut machine = CaptureMachine::new("s1".into());
+            assert!(!gate.wait_open(Duration::from_millis(0)));
+            ingest_chunk(&mut state, &mut machine, report, 1_000);
+            assert!(
+                gate.wait_open(Duration::from_millis(0)),
+                "o `633;P` não abriu o portão: {report:?}"
+            );
+        }
+    }
+
+    /// Saída comum não abre o portão. É o teste que dá sentido aos outros: o rc
+    /// do usuário IMPRIME enquanto carrega — `Last login`, banner de nvm, OSC 7
+    /// —, e um portão que abrisse com byte qualquer abriria no primeiro deles,
+    /// deixando a espera valendo zero justamente na janela que ela cobre.
+    #[test]
+    fn output_during_startup_does_not_open_the_line_editor_gate() {
+        let mut state = ScreenState::new(24, 80);
+        let gate = Arc::clone(&state.line_editor);
+        let mut machine = CaptureMachine::new("s1".into());
+        for chunk in [
+            b"Last login: Fri Aug 22\r\n".as_slice(),
+            b"\x1b]7;file:///Users/tester\x07",
+            b"nvm carregando...\r\n",
+        ] {
+            ingest_chunk(&mut state, &mut machine, chunk, 1_000);
+        }
+        assert!(!gate.wait_open(Duration::from_millis(0)));
+    }
+
+    /// Quem já esperava acorda — a espera não pode depender de o portão já
+    /// estar aberto na hora de perguntar.
+    #[test]
+    fn a_waiter_wakes_when_the_shell_reaches_its_line_editor() {
+        let state = Arc::new(Mutex::new(ScreenState::new(24, 80)));
+        let gate = Arc::clone(&state.lock().line_editor);
+        let opener = Arc::clone(&state);
+        let waiter = std::thread::spawn(move || gate.wait_open(Duration::from_secs(5)));
+        let mut machine = CaptureMachine::new("s1".into());
+        std::thread::sleep(Duration::from_millis(30));
+        ingest_chunk(
+            &mut opener.lock(),
+            &mut machine,
+            b"\x1b]633;P;tyba-prompt=1\x07",
+            1_000,
+        );
+        assert!(waiter.join().unwrap());
     }
 
     #[test]

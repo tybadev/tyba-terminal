@@ -4544,8 +4544,38 @@ const KILL_LINE: &[u8] = b"\x1b=";
 /// app.
 const TOGGLE_PROMPT_MODE: &[u8] = b"\x1b~";
 
+/// Teto da espera pelo editor de linha do shell. O rc do dono leva 1,4 s; um
+/// `.zshrc` pesado em máquina fria leva mais.
+///
+/// O teto existe para o shell que **nunca** chega lá — sem integração, ou morto
+/// carregando. Estourado, a linha é escrita assim mesmo: sem o `633;P` não há
+/// como saber, e escrever é o que o comando fazia antes do portão. Recusar
+/// tornaria pior um caso que hoje funciona.
+const LINE_EDITOR_WAIT: Duration = Duration::from_secs(5);
+
+/// Segura a submissão até o shell alcançar o editor de linha, e devolve se
+/// alcançou.
+///
+/// `spawn_blocking` e portão por valor pelas mesmas duas razões do
+/// [`wait_for_boot`]: a espera é condvar bloqueante, e empréstimo não atravessa
+/// `.await`.
+async fn wait_for_line_editor(gate: Arc<pty::LineEditorGate>) -> bool {
+    tauri::async_runtime::spawn_blocking(move || gate.wait_open(LINE_EDITOR_WAIT))
+        .await
+        .unwrap_or(false)
+}
+
+/// `async` de propósito: a espera é o que mantém a injeção fora do eco do
+/// terminal.
+///
+/// Antes daqui a linha era escrita no PTY sem nada garantir que houvesse quem a
+/// lesse. Isso não a perdia — o driver enfileira e o zsh executa quando assume
+/// —, mas durante o carregamento do rc o tty está canônico e ECOA os bytes
+/// crus: a injeção aparecia como `^[=<comando>` no topo da sessão, fora de
+/// qualquer bloco, e o comando só rodava 1,4 s depois. Ver
+/// [`pty::LineEditorGate`] para a medição e para o que já foi medido e é falso.
 #[tauri::command]
-fn submit_shell_line(
+async fn submit_shell_line(
     state: State<'_, AppState>,
     id: SessionId,
     text: String,
@@ -4559,6 +4589,18 @@ fn submit_shell_line(
         return Ok(());
     }
     let payload = rich_input::plan_injection(&normalized, bracketed)?;
+
+    // A espera vem ANTES do lock de submissão: um shell que demora seguraria a
+    // fila de todas as outras sessões por [`LINE_EDITOR_WAIT`].
+    //
+    // O valor devolvido é ignorado de propósito — ver [`LINE_EDITOR_WAIT`]:
+    // estourar o teto significa "não dá para saber", e a resposta a isso é
+    // escrever, que é o que este comando fazia antes de existir portão.
+    let gate = state
+        .pty_pool
+        .line_editor_gate(id)
+        .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+    let _ = wait_for_line_editor(gate).await;
 
     let _submitting = state.rich_input_submit.lock();
     let mut bytes = Vec::with_capacity(KILL_LINE.len() + payload.len() + 1);
@@ -5716,6 +5758,25 @@ mod tests {
         ));
         assert_future::<Result<(), String>>(worktree_remove(state.clone(), path, false, false));
         assert_future::<Result<worktree::GcReport, String>>(worktree_gc(state));
+    }
+
+    /// A irmã da guarda acima, para o OUTRO portão.
+    ///
+    /// `submit_shell_line` espera o shell abrir o editor de linha dele. Voltar
+    /// a ser síncrono não quebraria compilação em lugar nenhum, e nenhum teste
+    /// falharia por comando não executado — ele executa. O que volta é o eco
+    /// cru da injeção no topo da sessão e o atraso de um `.zshrc` inteiro entre
+    /// o Enter e o comando. Defeito que não quebra teste é o que esta guarda
+    /// existe para prender.
+    #[allow(dead_code)]
+    fn comandos_que_esperam_o_shell_seguem_assincronos(
+        state: State<'_, AppState>,
+        id: SessionId,
+        text: String,
+    ) {
+        fn assert_future<T>(_: impl std::future::Future<Output = T>) {}
+
+        assert_future::<Result<(), String>>(submit_shell_line(state, id, text));
     }
 
     /// O `None` do layout antes do boot não é "não existe", é "ainda não li":
