@@ -153,12 +153,13 @@ pub fn build_policy(spec: &SandboxSpec) -> String {
         "(allow ipc-posix-shm*)".into(),
         "(allow user-preference-read)".into(),
         mach_lookup_line(&BASE_MACH_LOOKUPS),
-        format!(
-            "(allow file-ioctl (literal \"/dev/tty\") (literal \"/dev/ptmx\") (literal \"/dev/dtracehelper\") (regex #\"^/dev/ttys[0-9]+$\"))"
-        ),
-        format!(
-            "(allow file-write* (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/dtracehelper\") (literal \"/dev/tty\") (regex #\"^/dev/ttys[0-9]+$\"))"
-        ),
+        // `.into()`, e não `format!`: as duas linhas são literais sem
+        // interpolação nenhuma, e o `useless_format` do clippy passou a
+        // recusá-las. O texto da regra não muda — só o caminho até a `String`.
+        "(allow file-ioctl (literal \"/dev/tty\") (literal \"/dev/ptmx\") (literal \"/dev/dtracehelper\") (regex #\"^/dev/ttys[0-9]+$\"))"
+            .into(),
+        "(allow file-write* (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/dtracehelper\") (literal \"/dev/tty\") (regex #\"^/dev/ttys[0-9]+$\"))"
+            .into(),
     ];
 
     let mut system_read: Vec<Rule> = SYSTEM_READ_ROOTS

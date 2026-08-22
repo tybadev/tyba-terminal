@@ -1037,9 +1037,14 @@ fn wsl_distros() -> Vec<String> {
 /// limpa em nomes de distro. Parser frágil → tem teste.
 #[cfg(windows)]
 fn decode_wsl_list(bytes: &[u8]) -> Vec<String> {
+    // `as_chunks::<2>()` e não `chunks_exact(2)`: o `chunks_exact_to_as_chunks`
+    // do clippy 1.98 recusa o segundo. O `.0` são os pares completos e o `.1` é
+    // o byte ímpar que sobra — mesmo descarte que o `chunks_exact` fazia.
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     String::from_utf16_lossy(&units)
         .lines()
