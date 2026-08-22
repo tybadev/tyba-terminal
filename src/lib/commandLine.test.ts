@@ -429,10 +429,13 @@ describe("boxAcceptsTyping", () => {
     // tecla; `running` está montada e NÃO aceita. Quem responder uma pela outra
     // volta a desabilitar o carregamento — ou, pior, libera a caixa no meio de
     // um comando que está lendo stdin.
+    //
+    // `off` saiu desta lista em 22/08: ele deixou de ter caixa montada. Não é
+    // que passou a aceitar tecla — é que não há mais caixa ali.
     const mountedButClosed = STATES.filter(
       (state) => boxIsMounted(state) && !boxAcceptsTyping(state),
     );
-    expect(mountedButClosed).toEqual(["running", "continuation", "off"]);
+    expect(mountedButClosed).toEqual(["running", "continuation"]);
   });
 });
 
@@ -446,8 +449,14 @@ describe("boxIsMounted", () => {
     "off",
   ];
 
-  it("só o app de tela cheia troca a caixa pela faixa de uma linha", () => {
-    expect(STATES.filter((state) => !boxIsMounted(state))).toEqual(["app"]);
+  it("app de tela cheia e modo clássico trocam a caixa pela faixa", () => {
+    // `off` entrou em 22/08. No modo clássico a caixa ficava montada e
+    // desabilitada: ~36px de input morto no rodapé, com o prompt de verdade no
+    // terminal logo acima. É a mesma saída que `app` já usava.
+    expect(STATES.filter((state) => !boxIsMounted(state))).toEqual([
+      "app",
+      "off",
+    ]);
   });
 
   it("a linha que não é minha ainda tem caixa na tela, com o rascunho dentro", () => {
@@ -462,7 +471,6 @@ describe("boxIsMounted", () => {
       "waiting",
       "running",
       "continuation",
-      "off",
     ]);
   });
 

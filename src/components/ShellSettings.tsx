@@ -15,6 +15,7 @@ import {
   type Snippet,
 } from "../lib/ipc";
 import { PROMPT_MODE_PREF_KEY } from "../lib/commandLine";
+import { PromptModePicker } from "./PromptModePicker";
 import { pushToast, toastError } from "../lib/toast";
 
 const HISTORY_PREF_KEY = "pref.commandHistory";
@@ -103,16 +104,7 @@ export function ShellSettings() {
       <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
         {t("promptModeHint")}
       </p>
-      <div className="mt-2 flex items-center gap-3 rounded-[6px] border border-tyba-border p-4">
-        <span className="min-w-0 flex-1 text-[13px] text-tyba-text">
-          {t("promptModeEnabled")}
-        </span>
-        <Switch
-          checked={promptOn}
-          onCheckedChange={togglePrompt}
-          aria-label={t("promptModeEnabled")}
-        />
-      </div>
+      <PromptModePicker value={promptOn} onChange={togglePrompt} />
       <p className="pt-2 text-[11px] leading-relaxed text-tyba-amber">
         {t("promptModeEscape")}
       </p>
