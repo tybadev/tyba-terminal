@@ -2889,6 +2889,14 @@ struct BootSnapshot {
 /// `bootFailure` preenchido significa a terceira possibilidade: a thread morreu,
 /// e o que vem ao lado está vazio por falha. É a rede do `app://boot-failed`,
 /// que pode ter sido emitido antes de o listener do front existir.
+///
+/// **Lê tudo mesmo com `ready: false`, e é de propósito.** É a chamada do mount,
+/// uma por abertura do app, e as prefs são o motivo: elas saem de um `SELECT`
+/// direto, não dependem da thread de boot, e o front as aplica **uma vez** — não
+/// há caminho que as releia depois do `app://ready`. Devolver prefs vazias no
+/// boot lento — que é justamente quando `ready` chega `false` aqui — abriria o
+/// app com fonte, toolbar, atalhos e modo de arranque no padrão, em silêncio.
+/// Quem repergunta é o [`boot_gate`], e é lá que o retorno cedo mora.
 #[tauri::command]
 async fn boot_snapshot(state: State<'_, AppState>) -> Result<BootSnapshot, String> {
     // Lido primeiro de propósito — ver [`Loaded::read`].
@@ -2903,6 +2911,93 @@ async fn boot_snapshot(state: State<'_, AppState>) -> Result<BootSnapshot, Strin
         sessions: state.sessions.list(),
         layout: state.layout.state(),
     })
+}
+
+/// Estado que só existe depois da thread de boot: sessões reabertas e layout.
+///
+/// Os dois juntos num objeto de propósito — é um `null` só para o front
+/// conferir, e não a chance de ler um e esquecer o outro.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BootLoaded {
+    sessions: Vec<Session>,
+    layout: layout::LayoutState,
+}
+
+/// A resposta do poll do boot: o portão, e só.
+///
+/// Separado do [`BootSnapshot`] porque os dois chamadores querem coisas
+/// diferentes. O mount chama uma vez e precisa das prefs mesmo com
+/// `ready: false` — elas saem de um `SELECT` direto e não dependem da thread de
+/// boot. O poll repergunta a cada ~150ms enquanto o portão está fechado e
+/// **descarta** tudo que não seja o portão, porque o `mergeLoaded` do front
+/// recusa payload sem `ready`.
+///
+/// Servir os dois pelo mesmo comando cobrava do poll, a cada tick, o `SELECT`
+/// das prefs mais um clone de `sessions.list()` e outro de `layout.state()` —
+/// os três sob os mesmos locks que a thread de boot está usando para `restore`
+/// e `drain_checkpoints`. Quem espera o boot terminar virava quem o atrasa.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BootGateSnapshot {
+    ready: bool,
+    /// Mesmo campo, e mesma rede, do [`BootSnapshot::boot_failure`]: o
+    /// `app://boot-failed` sai de dentro da thread de boot, antes de o listener
+    /// do front existir, e o core não reemite.
+    boot_failure: Option<String>,
+    /// **Ausente** — e não vazio — enquanto `ready == false`.
+    ///
+    /// Vazio é indistinguível de "carregou e não tem", e foi essa confusão que
+    /// gerou o [`Loaded`] em primeiro lugar. O `ready: false` já resolve para
+    /// quem lê direito; a ausência resolve também para quem esquecer de olhar,
+    /// que quebra em vez de desenhar "nenhuma sessão" por cima de vinte que
+    /// estão voltando.
+    loaded: Option<BootLoaded>,
+}
+
+/// Monta a resposta do poll sem tocar no que o portão fechado ainda não tem.
+///
+/// `loaded` chega como closure porque o ponto do desvio é justamente **não
+/// executá-la** — é o que o teste consegue contar.
+fn boot_gate_snapshot(
+    gate: &boot::BootGate,
+    loaded: impl FnOnce() -> BootLoaded,
+) -> BootGateSnapshot {
+    // Lido antes do resto, e a ordem é a decisão — ver [`Loaded::read`].
+    let ready = gate.is_ready();
+    // Lido antes do desvio de propósito, para viajar também no retorno cedo.
+    // Hoje é impossível chegar no retorno cedo com falha — `mark_failed` grava a
+    // mensagem e abre o portão sob o mesmo lock, então falha implica
+    // `ready: true` —, mas perguntar ao portão custa um `Mutex<Option<String>>`
+    // e nenhuma consulta. Engolir a única segunda via do `app://boot-failed`
+    // para economizar isso seria trocar a notícia da falha por nada.
+    let boot_failure = gate.failure();
+    if !ready {
+        return BootGateSnapshot {
+            ready,
+            boot_failure,
+            loaded: None,
+        };
+    }
+    BootGateSnapshot {
+        ready,
+        boot_failure,
+        loaded: Some(loaded()),
+    }
+}
+
+/// "O boot já terminou?", mais a rede do `app://boot-failed`. Ver
+/// [`BootGateSnapshot`] para por que não é o [`boot_snapshot`].
+///
+/// `async` pelo mesmo motivo do `boot_snapshot`: comando síncrono do Tauri roda
+/// na main thread do macOS — a mesma que desenha o webview —, e um tick a cada
+/// 150ms ali entra na fila da pintura mesmo custando quase nada.
+#[tauri::command]
+async fn boot_gate(state: State<'_, AppState>) -> Result<BootGateSnapshot, String> {
+    Ok(boot_gate_snapshot(&state.boot, || BootLoaded {
+        sessions: state.sessions.list(),
+        layout: state.layout.state(),
+    }))
 }
 
 #[derive(serde::Serialize)]
@@ -5258,6 +5353,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             boot_snapshot,
+            boot_gate,
             agent_binary_available,
             detected_agent,
             create_session,
@@ -5617,6 +5713,86 @@ mod tests {
             panic!("gc de worktree explodiu");
         });
         assert_eq!(gate.failure(), None);
+    }
+
+    fn empty_boot_loaded() -> BootLoaded {
+        BootLoaded {
+            sessions: Vec::new(),
+            layout: layout::LayoutState {
+                workspaces: Vec::new(),
+                active_workspace: None,
+            },
+        }
+    }
+
+    /// O poll do boot roda a cada ~150ms **enquanto o boot não termina**, e o
+    /// front descarta tudo que não venha `ready`. Cada tick que lê prefs, sessões
+    /// e layout paga o `Mutex<Connection>` e os locks de sessão/layout que a
+    /// thread de boot está usando naquele exato instante para `restore` e
+    /// `drain_checkpoints`: quem espera o boot terminar não pode ser quem o
+    /// atrasa. Contar as leituras é o que prova que o portão fechado responde de
+    /// graça — a economia não aparece em nenhuma asserção sobre o payload.
+    #[test]
+    fn a_closed_gate_answers_without_reading_any_state() {
+        let gate = boot::BootGate::new();
+        let reads = std::cell::Cell::new(0u32);
+
+        for _ in 0..10 {
+            let snapshot = boot_gate_snapshot(&gate, || {
+                reads.set(reads.get() + 1);
+                empty_boot_loaded()
+            });
+            assert!(!snapshot.ready);
+            assert!(snapshot.loaded.is_none());
+        }
+
+        assert_eq!(reads.get(), 0, "o poll leu estado que o front descarta");
+    }
+
+    /// O contrapeso do teste acima: sem ele, um retorno cedo incondicional —
+    /// que nunca entregaria sessão nem layout — passaria igual.
+    #[test]
+    fn an_open_gate_reads_the_state_once() {
+        let gate = boot::BootGate::new();
+        gate.mark_ready();
+        let reads = std::cell::Cell::new(0u32);
+
+        let snapshot = boot_gate_snapshot(&gate, || {
+            reads.set(reads.get() + 1);
+            empty_boot_loaded()
+        });
+
+        assert!(snapshot.ready);
+        assert!(snapshot.loaded.is_some());
+        assert_eq!(reads.get(), 1);
+    }
+
+    /// O retorno cedo não pode engolir a notícia da falha: ela é a única segunda
+    /// via do `app://boot-failed`, que dispara antes de o listener do front
+    /// existir. E não engole porque não chega a ser o portador — `mark_failed`
+    /// grava a mensagem e abre o portão sob o mesmo lock, então toda falha sai
+    /// por aqui, pelo caminho `ready: true`, com o payload junto.
+    #[test]
+    fn a_dead_boot_thread_reports_through_the_gate_snapshot() {
+        let gate = boot::BootGate::new();
+        gate.mark_failed("restore explodiu");
+
+        let snapshot = boot_gate_snapshot(&gate, empty_boot_loaded);
+
+        assert!(snapshot.ready);
+        assert_eq!(snapshot.boot_failure.as_deref(), Some("restore explodiu"));
+        assert!(snapshot.loaded.is_some());
+    }
+
+    /// Boot em andamento não é falha: `bootFailure` nulo com `ready: false` é o
+    /// caso normal do poll, e reportá-lo viraria banner de "o app não carregou"
+    /// em cima de um app que está carregando.
+    #[test]
+    fn a_pending_boot_is_not_a_failure() {
+        let gate = boot::BootGate::new();
+        let snapshot = boot_gate_snapshot(&gate, empty_boot_loaded);
+        assert!(!snapshot.ready);
+        assert_eq!(snapshot.boot_failure, None);
     }
 
     fn git_in_test(dir: &std::path::Path, args: &[&str]) {
