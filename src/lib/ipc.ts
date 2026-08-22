@@ -752,16 +752,24 @@ export const layoutState = () => invoke<Loaded<LayoutState>>("layout_state");
 export interface BootSnapshot {
   ready: boolean;
   /**
-   * A thread de boot morreu antes de terminar, e esta é a mensagem do pânico.
+   * Alguma coisa do arranque falhou, e esta é a mensagem.
    *
-   * Não-nulo significa que as listas ao lado estão incompletas **por falha**, e
-   * não por ausência de dado. Só é preenchido quando o pânico foi antes de o
-   * portão abrir — depois disso é manutenção (GC de worktree, truncate do WAL)
-   * e não vira aviso. Uma vez preenchido, nunca muda.
+   * Não-nulo significa que o que veio ao lado pode estar incompleto **por
+   * falha**, e não por ausência de dado. Uma vez preenchido, nunca muda.
    *
-   * O core grava a mensagem e abre o portão sob o mesmo lock, nessa ordem, e
-   * lê o `ready` antes do resto: `ready: true` nunca vem com um `bootFailure`
-   * desatualizado.
+   * > [!warning] Tem **duas** origens, e elas dizem coisas diferentes:
+   * >
+   * > 1. **A thread de boot morreu** — a mensagem é a string crua do pânico, e
+   * >    sessões e layout estão vazios. Chega com `ready: true`, porque o
+   * >    portão abre mesmo em pânico (senão todo comando de escrita pagaria o
+   * >    timeout e a falha viraria lentidão).
+   * > 2. **O banco degradou** — um passo da migração não pegou. A mensagem é
+   * >    texto em pt-BR para pessoa ler, o boot terminou normal, e isto é
+   * >    sabido já no `.setup()`, antes da thread de boot: chega com
+   * >    **`ready: false`**.
+   * >
+   * > Ou seja: `bootFailure` pode vir com `ready` em qualquer valor. Quem ler
+   * > só um dos dois perde metade dos casos.
    *
    * Existe porque o evento `app://boot-failed` sofre a mesma corrida de entrega
    * que o `app://ready` — e ao contrário dele, não tinha segunda via.
