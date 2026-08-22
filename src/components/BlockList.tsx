@@ -944,7 +944,22 @@ export const BlockList = memo(function BlockList({
     // primeira linha do bloco cortada e como scroll que não chega ao fim.
     // Sobreposição não é fluxo — então não fica no fluxo.
     <div
-      className="pointer-events-none"
+      // `z-10` não é enfeite de empilhamento: é o que põe a lista ACIMA das
+      // camadas do xterm.
+      //
+      // O xterm desenha `canvas.xterm-link-layer` com `z-index: 2` dentro do
+      // `xterm-screen`. Sem z-index próprio, esta camada fica em `auto` e o
+      // canvas ganha o hit-test no retângulo que ele ocupa — mesmo estando
+      // ATRÁS na ordem do DOM. O ponteiro vira I-beam (cursor do xterm), a roda
+      // vai para o terminal e a lista não rola. Fora daquele retângulo ela rola
+      // normalmente, que é o que faz o defeito parecer intermitente.
+      //
+      // Medido: `elementFromPoint` devolvia `CANVAS.xterm-link-layer` e o
+      // `scrollTop` ficava congelado com 916px de rolagem disponível.
+      //
+      // Seguro porque esta lista só existe em modo prompt (ver `App`): no modo
+      // clássico ela não é montada e o terminal recebe o ponteiro inteiro.
+      className="pointer-events-none z-10"
       style={{
         position: "absolute",
         left: `${rect.left}%`,
