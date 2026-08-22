@@ -98,6 +98,34 @@ impl<T> Loaded<T> {
 /// do usuário pendurado.
 const BOOT_WAIT: Duration = Duration::from_secs(10);
 
+/// A recusa de quem precisa do estado carregado para agir sem estragar nada.
+/// O usuário reclica; a alternativa é tratar "ainda não li" como "não existe".
+const BOOT_NOT_READY: &str = "o app ainda está carregando; tente de novo em instantes";
+
+/// Segura o comando até a thread de boot terminar, e devolve se ela terminou.
+///
+/// **A ordem em relação às leituras é o contrato.** Antes do `mark_ready`,
+/// `state.sessions` e `state.layout` estão vazios porque nada foi carregado
+/// ainda — não porque não haja nada. Quem lê antes desta espera lê "ainda não
+/// li" e não tem como distinguir de "não existe"; quem decide a partir disso
+/// duplica workspace, apaga worktree que tem dono, ou reescreve o layout salvo
+/// por cima de uma memória vazia.
+///
+/// `false` significa que o teto de [`BOOT_WAIT`] estourou com o portão ainda
+/// fechado. Quem escreve a partir de uma leitura de estado tem de tratar esse
+/// caso à parte — ver [`BOOT_NOT_READY`].
+///
+/// `spawn_blocking` porque a espera é condvar bloqueante: num worker do runtime
+/// ela dormiria até [`BOOT_WAIT`] segurando os outros comandos assíncronos. O
+/// portão entra por valor para não haver empréstimo atravessando o `.await`.
+async fn wait_for_boot(boot: Arc<boot::BootGate>) -> bool {
+    tauri::async_runtime::spawn_blocking(move || boot.wait_ready(BOOT_WAIT))
+        .await
+        // Join que falhou é portão que não se sabe: `false` é a resposta
+        // conservadora, e quem chama recusa em vez de agir no escuro.
+        .unwrap_or(false)
+}
+
 /// As sessões que estão dentro de algum pane, em qualquer workspace ou tab.
 ///
 /// `AgentViewer` conta junto com `Leaf`: os dois prendem uma sessão a um pane, e
@@ -782,12 +810,12 @@ async fn create_session(
     // terminar seria criá-la para o `load_remapped` da thread de boot passar por
     // cima logo em seguida — o pane nasceria apontando para o nada.
     //
-    // A espera é condvar bloqueante: num worker do runtime ela dormiria até
-    // `BOOT_WAIT` segurando os outros comandos assíncronos, daí o threadpool de
-    // blocking. O resultado é descartado pelo mesmo motivo que o teto existe —
-    // passado ele, agimos com estado incompleto em vez de pendurar o clique.
-    let boot = Arc::clone(&state.boot);
-    let _ = tauri::async_runtime::spawn_blocking(move || boot.wait_ready(BOOT_WAIT)).await;
+    // O resultado é descartado pelo mesmo motivo que o teto existe: passado ele,
+    // agimos com estado incompleto em vez de pendurar o clique. Aqui isso é
+    // aceitável porque a sessão nova não se decide a partir do que já estava
+    // salvo — ao contrário do `apply_launch_config`, que precisa do layout lido
+    // para não duplicar workspace.
+    let _ = wait_for_boot(Arc::clone(&state.boot)).await;
 
     let handle = app.clone();
     let session = match &opts.kind {
@@ -1202,6 +1230,15 @@ async fn worktree_remove(
     delete_branch: bool,
     force: bool,
 ) -> Result<(), String> {
+    // O `busy` abaixo é a única coisa entre um `git worktree remove --force` e o
+    // worktree de uma sessão viva, e ele se decide por `sessions.list()`. Antes
+    // do boot essa lista está vazia: toda sessão parece encerrada, a guarda
+    // deixa passar e o worktree em uso vai embora. Esperar o portão é o que faz
+    // dela uma guarda.
+    if !wait_for_boot(Arc::clone(&state.boot)).await {
+        return Err(BOOT_NOT_READY.into());
+    }
+
     let path = std::path::PathBuf::from(&path);
     let canonical = repo::canonicalize_or(&path);
     let busy = state.sessions.list().into_iter().any(|s| {
@@ -1218,6 +1255,14 @@ async fn worktree_remove(
 
 #[tauri::command]
 async fn worktree_gc(state: State<'_, AppState>) -> Result<worktree::GcReport, String> {
+    // A regra já está escrita no `run_boot`, onde o GC roda depois do restore:
+    // ele decide o que é órfão a partir de `sessions.list()`, e com a lista
+    // vazia **todo** worktree gerenciado parece abandonado. Aqui quem dispara é
+    // o usuário, e o teto pode estourar antes do restore — recusar é a única
+    // saída, porque o que este comando faz quando erra é apagar o que tem dono.
+    if !wait_for_boot(Arc::clone(&state.boot)).await {
+        return Err(BOOT_NOT_READY.into());
+    }
     Ok(worktree::gc_orphans(&known_worktree_paths(&state.sessions)))
 }
 
@@ -3080,6 +3125,48 @@ async fn spawn_slot(
     .await
 }
 
+/// O que a busca de workspace de uma launch config permite concluir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchReuse {
+    /// Já existe workspace desta configuração: ativa e devolve.
+    Reuse(layout::WorkspaceId),
+    /// Layout carregado e sem workspace desta configuração: pode criar.
+    Create,
+    /// O portão de boot não abriu dentro do teto: o `load_remapped` ainda não
+    /// rodou, e um layout vazio não é resposta para "existe workspace?".
+    Unknown,
+}
+
+/// Achar é prova. Não achar, não.
+///
+/// A armadilha: `state.layout` só é populado pelo `load_remapped` da thread de
+/// boot, e até lá `workspace_of_launch_config` responde `None` para **toda**
+/// configuração — inclusive as que já têm workspace. Ler esse `None` como
+/// "não existe" tem dois preços, e o segundo é o caro:
+///
+/// 1. o comando cria um SEGUNDO workspace para a mesma launch config, com todas
+///    as sessões e worktrees do primeiro repetidas;
+/// 2. o `insert_workspace` que vem depois persiste via `LayoutManager::persist`,
+///    que reescreve o layout inteiro a partir da memória — e `save_layout` é
+///    `DELETE`+`INSERT`. Com a memória ainda vazia, o que estava salvo no banco
+///    e ainda não foi lido some junto.
+///
+/// Por isso `None` com o portão fechado é [`LaunchReuse::Unknown`], nunca
+/// `Create`: a recusa é reversível (o usuário reclica), a duplicata e a perda de
+/// layout não são.
+///
+/// `Some` dispensa o portão de propósito: entre o `load_remapped` e o
+/// `mark_ready` existe uma fresta em que o layout já está lido e o portão ainda
+/// não abriu. Achar ali é achar de verdade, e recusar o reuso criaria
+/// exatamente a duplicata que esta função existe para impedir.
+fn decide_launch_reuse(boot_ready: bool, found: Option<layout::WorkspaceId>) -> LaunchReuse {
+    match found {
+        Some(ws) => LaunchReuse::Reuse(ws),
+        None if boot_ready => LaunchReuse::Create,
+        None => LaunchReuse::Unknown,
+    }
+}
+
 /// `async` pelo mesmo motivo de [`create_session`]: cada slot passa por ele, e
 /// um comando síncrono seguraria a main thread durante toda a espera do boot e
 /// toda a criação de worktree.
@@ -3094,8 +3181,31 @@ async fn apply_launch_config(
 ) -> Result<AppliedLaunchConfig, String> {
     let clean = clean.unwrap_or(false);
 
-    if !clean {
-        if let Some(ws) = state.layout.workspace_of_launch_config(id) {
+    // A espera vem ANTES da leitura do layout, e a ordem é o conserto. O
+    // `create_session` de cada slot também espera o boot, mas lá embaixo, dentro
+    // do `spawn_slot`: ler o layout antes disso é lê-lo vazio na fresta entre o
+    // splash desistir (4 s) e a thread de boot terminar.
+    //
+    // No caminho normal não custa nada — com o portão aberto o `wait_ready`
+    // retorna sem dormir. Na fresta, é a mesma espera que o clique já pagava
+    // dentro do `spawn_slot`, só que agora do lado certo da leitura.
+    //
+    // O resultado importa, ao contrário do `create_session`: é ele que diz se o
+    // layout pode ser lido.
+    let ready = wait_for_boot(Arc::clone(&state.boot)).await;
+
+    // Com `clean` o reuso é recusado de propósito: o pedido é um workspace novo.
+    // A busca é pulada, mas o portão continua valendo — o `insert_workspace` lá
+    // embaixo persiste o layout inteiro, e fazer isso com a memória vazia apaga
+    // o que estava salvo. Ver [`decide_launch_reuse`].
+    let found = if clean {
+        None
+    } else {
+        state.layout.workspace_of_launch_config(id)
+    };
+
+    match decide_launch_reuse(ready, found) {
+        LaunchReuse::Reuse(ws) => {
             state
                 .layout
                 .activate_workspace(ws)
@@ -3107,6 +3217,11 @@ async fn apply_launch_config(
                 failures: Vec::new(),
             });
         }
+        // Estourou o teto com a thread de boot ainda presa (diálogo de TCC,
+        // disco lento). Recusar é a resposta menos ruim: o usuário reclica,
+        // enquanto seguir em frente duplica workspace e apaga o layout salvo.
+        LaunchReuse::Unknown => return Err(BOOT_NOT_READY.into()),
+        LaunchReuse::Create => {}
     }
 
     let stored = state
@@ -5354,22 +5469,80 @@ mod tests {
     /// Guarda de compilação, não teste: os dois comandos abaixo esperam o boot,
     /// e comando síncrono roda na main thread. Devolvê-los para `fn` congela o
     /// webview por até `BOOT_WAIT` em quem apertar ⌘T na fresta entre o splash
-    /// desistir (4 s) e o boot terminar — a regressão que este `impl Future`
+    /// desistir (4 s) e o boot terminar — a regressão que este `assert_future`
     /// impede de voltar em silêncio.
+    ///
+    /// O `apply_launch_config` está aqui por espera **própria**: ele chama
+    /// `wait_for_boot` na primeira linha, porque precisa do layout carregado
+    /// para decidir entre reusar e criar workspace. Antes só herdava a espera do
+    /// `create_session` de cada slot, e a leitura do layout ficava do lado
+    /// errado dela.
+    ///
+    /// Os dois de worktree entraram pelo mesmo motivo, com o defeito virado ao
+    /// contrário: eles não travam nada, mas decidem o que **apagar** a partir de
+    /// `sessions.list()`. Com a lista ainda vazia, o `remove` não vê a sessão
+    /// viva que a guarda existe para proteger e o `gc` acha que todo worktree
+    /// gerenciado é órfão.
     #[allow(dead_code)]
     fn comandos_que_esperam_o_boot_seguem_assincronos(
         app: AppHandle,
         state: State<'_, AppState>,
         opts: CreateSessionOpts,
         id: launch_config::LaunchConfigId,
-    ) -> (
-        impl std::future::Future<Output = Result<Session, String>> + '_,
-        impl std::future::Future<Output = Result<AppliedLaunchConfig, String>> + '_,
+        path: String,
     ) {
-        (
-            create_session(app.clone(), state.clone(), opts),
-            apply_launch_config(app, state, id, None, 80, 24),
-        )
+        // Uma chamada por comando, e não uma tupla de `impl Future`: a tupla
+        // cresce a cada comando que entra no conjunto e o `type_complexity` do
+        // clippy passa a reclamar. O `T` fixo em cada chamada mantém a guarda no
+        // mesmo lugar — prende o tipo do `Output`, e um `fn` síncrono devolvendo
+        // `Result` não é `Future` nenhum.
+        fn assert_future<T>(_: impl std::future::Future<Output = T>) {}
+
+        assert_future::<Result<Session, String>>(create_session(app.clone(), state.clone(), opts));
+        assert_future::<Result<AppliedLaunchConfig, String>>(apply_launch_config(
+            app,
+            state.clone(),
+            id,
+            None,
+            80,
+            24,
+        ));
+        assert_future::<Result<(), String>>(worktree_remove(state.clone(), path, false, false));
+        assert_future::<Result<worktree::GcReport, String>>(worktree_gc(state));
+    }
+
+    /// O `None` do layout antes do boot não é "não existe", é "ainda não li":
+    /// `state.layout` só é populado pelo `load_remapped` da thread de boot, e
+    /// até lá `workspace_of_launch_config` responde `None` para toda
+    /// configuração — inclusive as que já têm workspace. Tratar isso como
+    /// ausência faz o `apply_launch_config` criar um SEGUNDO workspace para a
+    /// mesma launch config.
+    #[test]
+    fn layout_nao_carregado_nao_autoriza_criar_workspace() {
+        assert_eq!(decide_launch_reuse(false, None), LaunchReuse::Unknown);
+    }
+
+    /// O contrapeso do teste acima: com o layout carregado, "não achei" volta a
+    /// significar "não existe". Sem este, recusar sempre passaria.
+    #[test]
+    fn layout_carregado_e_sem_workspace_autoriza_criar() {
+        assert_eq!(decide_launch_reuse(true, None), LaunchReuse::Create);
+    }
+
+    /// Achar é prova positiva, e o portão fechado não a desfaz. Existe a fresta
+    /// entre o `load_remapped` e o `mark_ready` em que o layout já está lido e o
+    /// portão ainda não abriu; recusar o reuso ali criaria a duplicata que a
+    /// recusa existe para evitar.
+    #[test]
+    fn workspace_encontrado_dispensa_o_portao() {
+        let ws = uuid::Uuid::new_v4();
+        assert_eq!(decide_launch_reuse(false, Some(ws)), LaunchReuse::Reuse(ws));
+    }
+
+    #[test]
+    fn workspace_encontrado_com_layout_carregado_e_reusado() {
+        let ws = uuid::Uuid::new_v4();
+        assert_eq!(decide_launch_reuse(true, Some(ws)), LaunchReuse::Reuse(ws));
     }
 
     /// Pânico na thread de boot não pode deixar o portão fechado: fechado para
