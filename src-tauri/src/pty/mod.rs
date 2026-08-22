@@ -237,6 +237,47 @@ fn apply_screen(state: &mut ScreenState, chunk: &[u8], actions: &[capture::Actio
     }
 }
 
+/// Um chunk inteiro sob UM lock só: o parse, a decisão da máquina e o que vai
+/// para a fila da tela ao vivo.
+///
+/// Estar tudo aqui dentro é a invariante, não arrumação. `PtyPool::attach`
+/// tranca ESTA mesma tela e faz, nesta ordem: drena a fila, fotografa
+/// `contents_formatted()` e só então registra a janela em `attachers`. A foto
+/// começa limpando a tela do destino, então tudo que a janela recebeu ANTES
+/// dela é inofensivo — mas o que chegar DEPOIS e já estiver dentro da foto é
+/// desenhado duas vezes.
+///
+/// Com o parse e o enfileiramento em seções críticas separadas, um `attach`
+/// cabe entre os dois: a foto já traz o efeito do chunk, a janela entra em
+/// `attachers`, e o `apply_screen` seguinte vê `attached()` e empurra o MESMO
+/// chunk para a fila. O caminho é real — `attach_session` é `async` e roda num
+/// worker do runtime, em paralelo com esta thread.
+///
+/// Passar um `attached()` fotografado no primeiro lock fecharia o caso de UMA
+/// janela, mas não o de duas: com outra já anexada, a fotografia diz `true` e
+/// o `Live` sai assim mesmo — para quem acabou de anexar, duplicado. O único
+/// jeito de a fresta não existir é não haver dois locks.
+///
+/// O custo cabe: esta seção crítica já carrega o `emit_pending`, que faz base64
+/// e atravessa o IPC. Ao lado disso, varrer o chunk atrás de OSC e copiá-lo
+/// para a captura não muda de ordem de grandeza — e a tela só tem um usuário
+/// quente, que é esta thread.
+///
+/// O vt100 do core vê o chunk INTEIRO: o recorte da máquina decide o que vira
+/// bloco, não o que o terminal desenha.
+fn ingest_chunk(
+    state: &mut ScreenState,
+    machine: &mut capture::CaptureMachine,
+    chunk: &[u8],
+    now_ms: i64,
+) -> Vec<capture::Action> {
+    state.parser.process(chunk);
+    let alt_screen = state.parser.screen().alternate_screen();
+    let actions = machine.on_chunk(chunk, now_ms, alt_screen);
+    apply_screen(state, chunk, &actions);
+    actions
+}
+
 /// O lado não-visual das ações: eventos para o webview, histórico e blocos.
 /// Fora do lock de tela — `emit` atravessa IPC e não pode segurar o terminal.
 struct ActionSink {
@@ -474,24 +515,22 @@ impl PtyPool {
                     match chunk {
                         Some(chunk) => {
                             let due = last_flush.elapsed() >= FLUSH_INTERVAL;
-                            // O vt100 do core vê o chunk INTEIRO: o recorte da
-                            // máquina decide o que vira bloco, não o que o
-                            // terminal desenha.
-                            let alt_screen = {
+                            // Um lock só do parse até a fila: ver `ingest_chunk`.
+                            let (actions, bracketed, cols, rows) = {
                                 let mut screen = reader_screen.lock();
-                                screen.parser.process(&chunk);
-                                screen.parser.screen().alternate_screen()
-                            };
-                            let actions = machine.on_chunk(&chunk, now_ms(), alt_screen);
-                            let (bracketed, cols, rows) = {
-                                let mut screen = reader_screen.lock();
-                                apply_screen(&mut screen, &chunk, &actions);
+                                let actions =
+                                    ingest_chunk(&mut screen, &mut machine, &chunk, now_ms());
                                 if due {
                                     emit_pending(&mut screen, &app, &output_event);
                                 }
                                 queued = !screen.pending.is_empty();
                                 let (rows, cols) = screen.parser.screen().size();
-                                (screen.parser.screen().bracketed_paste(), cols, rows)
+                                (
+                                    actions,
+                                    screen.parser.screen().bracketed_paste(),
+                                    cols,
+                                    rows,
+                                )
                             };
                             if due {
                                 last_flush = Instant::now();
@@ -826,6 +865,102 @@ mod screen_state_tests {
         state.drop_window("tyba-2");
         state.pending.extend_from_slice(b"live");
         assert_eq!(state.take_pending().as_deref(), Some(&b"live"[..]));
+    }
+}
+
+#[cfg(test)]
+mod ingest_tests {
+    use super::capture::CaptureMachine;
+    use super::{apply_screen, ingest_chunk, ScreenState, SCROLLBACK_LINES};
+
+    /// O que uma janela recebe ao anexar, na ordem de `PtyPool::attach`: o que
+    /// estava na fila (que sai em broadcast, e ela já está ouvindo) e depois a
+    /// foto da tela. A foto começa limpando o destino — por isso o que veio
+    /// antes dela não conta, e o que vier depois conta duas vezes.
+    fn attach_bytes(state: &mut ScreenState, window: &str) -> Vec<u8> {
+        let mut seen = state.take_pending().unwrap_or_default();
+        seen.extend_from_slice(&state.parser.screen().contents_formatted());
+        state.attach(window);
+        seen
+    }
+
+    /// A tela que esses bytes desenham num terminal virgem — é o que o webview
+    /// mostra, e a única unidade em que "desenhou duas vezes" é afirmável.
+    fn rendered(bytes: &[u8]) -> String {
+        let mut parser = vt100::Parser::new(24, 80, SCROLLBACK_LINES);
+        parser.process(bytes);
+        parser.screen().contents()
+    }
+
+    #[test]
+    fn ingesting_a_chunk_queues_it_for_an_attached_screen() {
+        let mut state = ScreenState::new(24, 80);
+        state.attach("main");
+        let mut machine = CaptureMachine::new("s1".into());
+        ingest_chunk(&mut state, &mut machine, b"tyba", 1_000);
+        assert_eq!(state.take_pending().as_deref(), Some(&b"tyba"[..]));
+        assert!(state.parser.screen().contents().contains("tyba"));
+    }
+
+    #[test]
+    fn ingesting_a_chunk_queues_nothing_for_a_detached_screen() {
+        let mut state = ScreenState::new(24, 80);
+        let mut machine = CaptureMachine::new("s1".into());
+        ingest_chunk(&mut state, &mut machine, b"tyba", 1_000);
+        assert!(state.pending.is_empty());
+        assert!(state.parser.screen().contents().contains("tyba"));
+    }
+
+    /// A invariante que o lock único sustenta: só existem duas ordens em que um
+    /// `attach` pode cair em relação a um chunk — antes dele e depois dele —, e
+    /// as duas têm de deixar a janela com a mesma tela do core. É por não haver
+    /// uma terceira ordem que a duplicação some.
+    #[test]
+    fn an_attacher_sees_the_same_screen_on_either_side_of_a_chunk() {
+        let chunk = b"tyba\r\n";
+
+        let mut before = ScreenState::new(24, 80);
+        let mut machine = CaptureMachine::new("s1".into());
+        let mut seen_before = attach_bytes(&mut before, "main");
+        ingest_chunk(&mut before, &mut machine, chunk, 1_000);
+        seen_before.extend(before.take_pending().unwrap_or_default());
+
+        let mut after = ScreenState::new(24, 80);
+        let mut machine = CaptureMachine::new("s1".into());
+        ingest_chunk(&mut after, &mut machine, chunk, 1_000);
+        let mut seen_after = attach_bytes(&mut after, "main");
+        seen_after.extend(after.take_pending().unwrap_or_default());
+
+        assert_eq!(rendered(&seen_before), rendered(&seen_after));
+        assert_eq!(rendered(&seen_before), before.parser.screen().contents());
+    }
+
+    /// A terceira ordem, executada à mão: parse num lock, `attach` na fresta,
+    /// `apply_screen` noutro. A foto já traz o chunk e o `attached()` do segundo
+    /// lock manda o mesmo chunk para a fila — a janela desenha a saída duas
+    /// vezes.
+    ///
+    /// O teste existe porque a corrida em si não é testável: ela mora no
+    /// entrelaçamento de duas threads e some ao olhar. Isto é o mais perto que
+    /// dá de deixá-la executável, e é o que torna verificável o motivo de
+    /// `ingest_chunk` ser um bloco só.
+    #[test]
+    fn splitting_the_step_draws_the_chunk_twice() {
+        let chunk = b"tyba\r\n";
+        let mut state = ScreenState::new(24, 80);
+        let mut machine = CaptureMachine::new("s1".into());
+
+        state.parser.process(chunk);
+        let alt_screen = state.parser.screen().alternate_screen();
+        let actions = machine.on_chunk(chunk, 1_000, alt_screen);
+
+        let mut seen = attach_bytes(&mut state, "main");
+
+        apply_screen(&mut state, chunk, &actions);
+        seen.extend(state.take_pending().unwrap_or_default());
+
+        assert_eq!(rendered(&seen).matches("tyba").count(), 2);
+        assert_eq!(state.parser.screen().contents().matches("tyba").count(), 1);
     }
 }
 
