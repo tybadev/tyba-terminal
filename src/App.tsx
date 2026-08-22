@@ -2724,6 +2724,16 @@ export default function App() {
       // terminais. O core devolve prefs, sessões e layout de uma vez.
       const snapshot = await bootSnapshot().catch(() => null);
       if (cancelled) return;
+      // A falha do boot precisa ser lida AQUI também, e não só no poll.
+      //
+      // O poll só roda enquanto `bootReady` é falso. Quando a thread de boot
+      // morre, o core abre o portão assim mesmo — senão todo comando de escrita
+      // pagaria o timeout —, então este snapshot volta `ready: true` COM
+      // `bootFailure`. Ler só no poll significa que `markReady()` desmonta o
+      // efeito e cancela o timer antes do primeiro tick, e o aviso nunca sai:
+      // um app sem sessão, sem layout e sem explicação, que é exatamente o
+      // "vazio indistinguível de falha" que este campo existe para evitar.
+      if (snapshot?.bootFailure) reportBootFailure(snapshot.bootFailure);
       const prefs = snapshot?.prefs ?? {};
       const pref = (key: string) => prefs[key] ?? null;
       // As prefs saem de um SELECT direto e não dependem da thread de boot:
