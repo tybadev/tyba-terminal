@@ -61,15 +61,22 @@ export function lineState(
 /**
  * A caixa de digitar existe no DOM neste estado?
  *
- * > [!warning] Só `app` a troca pela faixa de uma linha. `waiting`, `running`,
- * > `continuation` e `off` mantêm a MESMA textarea montada — desabilitada, com
- * > o rascunho dentro. Quem confundir "não é minha" com "não está na tela"
+ * > [!warning] `app` e `off` a trocam pela faixa de uma linha. `waiting`,
+ * > `running` e `continuation` mantêm a MESMA textarea montada — desabilitada,
+ * > com o rascunho dentro. Quem confundir "não é minha" com "não está na tela"
  * > mexe numa caixa que o usuário está olhando: zerar a altura medida ali
  * > esconde o texto que ele escreveu, e a altura não volta sozinha porque
  * > quem a escreve é a medição do conteúdo, não o CSS.
+ *
+ * `off` entrou aqui em 22/08: no modo clássico a caixa ficava montada e
+ * desabilitada, ~36px de input morto no rodapé com o prompt de verdade no
+ * terminal logo acima. Não é exceção à regra de que a linha nunca some — é a
+ * mesma saída que `app` já usava. A regra existe contra resize **por comando**,
+ * dezenas de vezes por sessão; trocar de modo é deliberado e raro, e custa um
+ * resize só.
  */
 export function boxIsMounted(state: LineState): boolean {
-  return state !== "app";
+  return state !== "app" && state !== "off";
 }
 
 /**

@@ -522,17 +522,24 @@ export function CommandLine({
              com outra altura. O que muda é o que ela desenha por dentro: some
              a caixa de digitar, some o caminho, e sobra uma faixa de uma linha
              dizendo de quem é o teclado.
-             O custo de resize é zero aqui: entrar em alt-screen JÁ redimensiona
-             o painel inteiro (o terminal vai de metade para tudo), e as duas
-             coisas acontecem no mesmo commit do React — um resize, não dois. */
+             Em `app` o custo de resize é zero: entrar em alt-screen JÁ
+             redimensiona o painel inteiro (o terminal vai de metade para tudo),
+             e as duas coisas acontecem no mesmo commit do React — um resize,
+             não dois. Em `off` há um resize, e ele é aceito: trocar de modo é
+             ação deliberada e rara, ao contrário de rodar um comando.
+             O TEXTO depende do estado, e não só do `program`. Tratar a faixa
+             como "sempre app" fazia o modo clássico dizer que um programa tomou
+             a tela quando ninguém tomou. */
           <span
             className={`flex min-w-0 flex-1 items-center truncate font-mono text-[11px] text-tyba-text-faint ${
               compact ? "leading-[17px]" : "min-h-[28px]"
             }`}
           >
-            {program
-              ? t("commandLineAppNamed", { program })
-              : t("commandLineApp")}
+            {state === "off"
+              ? t("commandLineOff")
+              : program
+                ? t("commandLineAppNamed", { program })
+                : t("commandLineApp")}
           </span>
         ) : (
         <div className="relative min-w-0 flex-1">
