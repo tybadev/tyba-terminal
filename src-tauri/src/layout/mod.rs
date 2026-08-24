@@ -318,6 +318,7 @@ pub const VIEW_CONTAINERS: &str = "containers";
 pub const VIEW_SETTINGS: &str = "settings";
 pub const VIEW_WORKSPACE: &str = "workspace";
 pub const VIEW_CONNECTIONS: &str = "connections";
+pub const VIEW_STATS: &str = "stats";
 pub const VIEW_DIFF_PREFIX: &str = "diff:";
 pub const VIEW_TUNNELS_PREFIX: &str = "tunnels:";
 pub const VIEW_FILES_PREFIX: &str = "files:";
