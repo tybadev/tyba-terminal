@@ -5,6 +5,8 @@
 //! como o Tab do shell faz. Diretório vem com `/` no fim para o próximo Tab
 //! continuar descendo.
 
+pub mod argument;
+
 use std::path::{Path, PathBuf};
 
 const MAX_ENTRIES: usize = 40;

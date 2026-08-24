@@ -1403,8 +1403,12 @@ export const suggestLine = (input: {
   argToken: string | null;
 }) => invoke<LineSuggestions>("suggest_line", input);
 
-export const completeArgument = (prefix: string, token: string) =>
-  invoke<string[]>("complete_argument", { prefix, token });
+export const completeArgument = (
+  prefix: string,
+  token: string,
+  cwd: string | null,
+  repoRoot: string | null,
+) => invoke<string[]>("complete_argument", { prefix, token, cwd, repoRoot });
 
 export type BlockColor =
   | { kind: "default" }
