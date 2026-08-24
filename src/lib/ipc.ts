@@ -32,6 +32,22 @@ export interface Worktree {
 
 export type ConnectionState = "live" | "reconnecting" | "dropped";
 
+/** O que a tela sugere. Espelha `ObservedState` do core. */
+export type ObservedState = "running" | "awaiting_input" | "idle";
+
+/**
+ * Agente deduzido da tela, em sessão que o TYBA não lançou — logo, sem gate,
+ * sem inbox e sem jaula.
+ *
+ * Campo à parte de `status` de propósito: aquele carrega o que o agente disse
+ * por hook, este o que o TYBA achou. `state: null` é **presença sem estado** —
+ * há um agente ali e o sinal não diz o que ele faz.
+ */
+export interface ObservedAgent {
+  agent: string;
+  state: ObservedState | null;
+}
+
 export interface Session {
   id: SessionId;
   kind: SessionKind;
@@ -45,6 +61,8 @@ export interface Session {
   /** Id da conversa nativa do agente, lido pelo core do transcript/rollout da
    * CLI. Presente = existe conversa a retomar; ausente = não há convite. */
   agent_conversation_id?: string | null;
+  /** Nunca vem do banco: é derivado da tela de agora. */
+  observed?: ObservedAgent | null;
 }
 
 export interface CreateSessionOpts {
