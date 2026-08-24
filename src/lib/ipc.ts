@@ -1255,6 +1255,51 @@ export const dockerOpenDashboard = () =>
 export const openViewTab = (view: string) =>
   invoke<void>("open_view_tab", { view });
 
+export interface ApprovalTotals {
+  requested: number;
+  auto_approved: number;
+  human_decided: number;
+  denied: number;
+  auto_approved_pct: number;
+  human_decided_pct: number;
+  denied_pct: number;
+  /** `null` = ninguém decidiu nada no período (não é zero). */
+  median_human_ms: number | null;
+}
+
+export interface CommandStat {
+  command: string;
+  requests: number;
+  risk: RiskLevel;
+  approved: number;
+  approval_rate: number;
+}
+
+export interface SessionStat {
+  session_id: string;
+  title: string;
+  commands: number;
+  approvals: number;
+  total_ms: number;
+}
+
+export interface AgentStats {
+  totals: ApprovalTotals;
+  commands: CommandStat[];
+  sessions: SessionStat[];
+  repos: string[];
+}
+
+/**
+ * Estatísticas de agente já agregadas em SQL, no core.
+ *
+ * `days` é a janela (`null` = tudo) e o corte em epoch ms sai do relógio do
+ * core, não daqui: contar "os últimos 7 dias" no webview daria um recorte
+ * diferente do que o banco filtrou.
+ */
+export const agentStats = (days: number | null, repoRoot: string | null) =>
+  invoke<AgentStats>("agent_stats", { days, repoRoot });
+
 export const dockerRemoveContainer = (
   containerId: string,
   host?: string | null,
