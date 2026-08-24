@@ -11,6 +11,13 @@ use serde::{Deserialize, Serialize};
 use crate::session::SessionId;
 
 const AVAILABILITY_TTL: Duration = Duration::from_secs(10);
+/// Vida do nome de container servido à completação.
+///
+/// Medido nesta máquina: um `docker ps` custa ~45 ms. Sem cache, digitar
+/// `docker exec my` pagaria isso por tecla. Cinco segundos é curto o bastante
+/// para um container recém-subido aparecer antes de a pessoa terminar de
+/// pensar, e longo o bastante para a digitação inteira sair de graça.
+const COMPLETION_TTL: Duration = Duration::from_secs(5);
 const VERSION_TIMEOUT: Duration = Duration::from_millis(1500);
 const PS_TIMEOUT: Duration = Duration::from_secs(3);
 const RM_TIMEOUT: Duration = Duration::from_secs(5);
@@ -463,6 +470,10 @@ pub struct DockerManager {
     /// Por alvo (`None` = local): docker no Mac não diz nada sobre docker na VPS.
     availability: Mutex<HashMap<Option<String>, (bool, Instant)>>,
     known: Mutex<HashMap<String, String>>,
+    /// Só para completação. Separado do `known` porque aquele só se atualiza
+    /// quando alguém abre o painel de containers, e a completação não pode
+    /// depender disso para não servir nome de container que já morreu.
+    completion_names: Mutex<Option<(Instant, Vec<String>)>>,
     projects: Mutex<HashMap<String, ProjectInfo>>,
     tabs: Mutex<HashMap<(String, ContainerTab), SessionId>>,
 }
@@ -472,6 +483,43 @@ pub type SharedDocker = Arc<DockerManager>;
 impl DockerManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Nomes de containers **em execução**, para completar argumento.
+    ///
+    /// Comando mais barato que o `list`: sem `-a`, sem `--no-trunc` e sem JSON —
+    /// aqui só o nome importa. Container parado fica de fora de propósito:
+    /// `docker exec` num container parado falha, e oferecer o nome seria
+    /// sugerir o erro.
+    ///
+    /// Devolve vazio, nunca erro: a completação não é lugar de reclamar de
+    /// daemon parado.
+    pub fn completion_names(&self) -> Vec<String> {
+        {
+            let cache = self.completion_names.lock();
+            if let Some((at, names)) = cache.as_ref() {
+                if at.elapsed() < COMPLETION_TTL {
+                    return names.clone();
+                }
+            }
+        }
+        // A disponibilidade tem cache próprio (10 s), então esta guarda quase
+        // nunca custa processo — e evita o timeout de 3 s do `ps` com o daemon
+        // parado.
+        if !self.available(None) {
+            return Vec::new();
+        }
+        let names = run_docker(&["ps", "--format", "{{.Names}}"], PS_TIMEOUT, None)
+            .map(|raw| {
+                raw.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        *self.completion_names.lock() = Some((Instant::now(), names.clone()));
+        names
     }
 
     pub fn available(&self, host: Option<&str>) -> bool {

@@ -29,6 +29,8 @@ pub enum Provider {
     MakeTarget,
     /// Hosts configurados no gestor de conexões.
     SshHost,
+    /// Nomes de containers em execução.
+    DockerContainer,
 }
 
 /// As palavras do prefixo que decidem o provedor, já sem flags.
@@ -73,6 +75,12 @@ pub fn provider_for(prefix: &str) -> Option<Provider> {
             Some(Provider::GitBranch)
         }
         ("npm" | "pnpm" | "yarn" | "bun", "run") => Some(Provider::NpmScript),
+        // Só subcomando que age sobre container que JÁ existe. `docker run` cria
+        // um do zero: oferecer o nome de um existente ali é sugerir colisão.
+        (
+            "docker",
+            "exec" | "logs" | "stop" | "start" | "restart" | "attach" | "kill" | "inspect" | "top",
+        ) => Some(Provider::DockerContainer),
         ("make", _) => Some(Provider::MakeTarget),
         ("ssh" | "scp" | "sftp", _) if words.len() == 1 => Some(Provider::SshHost),
         _ => None,
@@ -239,6 +247,22 @@ mod tests {
         // `make clean build` é legítimo, então o provedor continua valendo.
         assert_eq!(provider_for("make "), Some(Provider::MakeTarget));
         assert_eq!(provider_for("make clean "), Some(Provider::MakeTarget));
+    }
+
+    #[test]
+    fn docker_completa_container_so_em_subcomando_que_age_sobre_um_existente() {
+        assert_eq!(
+            provider_for("docker exec "),
+            Some(Provider::DockerContainer)
+        );
+        assert_eq!(
+            provider_for("docker logs "),
+            Some(Provider::DockerContainer)
+        );
+        // `docker run` CRIA: oferecer nome existente é sugerir colisão.
+        assert_eq!(provider_for("docker run "), None);
+        assert_eq!(provider_for("docker build "), None);
+        assert_eq!(provider_for("docker ps "), None);
     }
 
     #[test]

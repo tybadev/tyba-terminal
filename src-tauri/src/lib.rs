@@ -5071,6 +5071,7 @@ fn provider_candidates(
             .load_hosts()
             .map(|hosts| hosts.into_iter().map(|h| h.alias).collect())
             .unwrap_or_default(),
+        Provider::DockerContainer => state.docker.completion_names(),
     }
 }
 
@@ -5108,8 +5109,12 @@ fn argument_candidates(
     Ok(found)
 }
 
+/// Assíncrono **de propósito**: o provedor de Docker pode custar um `docker ps`
+/// (~45 ms medidos nesta máquina), e comando síncrono do Tauri roda na main
+/// thread do macOS — a mesma que desenha o webview. Síncrono aqui seria engasgo
+/// visível na digitação, e o cache do cliente não cobre a primeira chamada.
 #[tauri::command]
-fn complete_argument(
+async fn complete_argument(
     state: State<'_, AppState>,
     prefix: String,
     token: String,
