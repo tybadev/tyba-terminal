@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
+use crate::agent::notify;
+
 use crate::agent::hooks_settings::{hook_command, hooks_settings_json};
 use crate::agent::subagents::SharedSubagents;
 use crate::agent::{AgentRunner, ClaudeCodeRunner, CodexRunner, HookSetup};
@@ -120,8 +122,24 @@ fn main_window_focused(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-fn notify_native(app: &AppHandle, sessions: &SharedSessionManager, id: SessionId, body: &str) {
+fn notify_native(
+    app: &AppHandle,
+    sessions: &SharedSessionManager,
+    store: &Store,
+    kind: notify::NotifyKind,
+    id: SessionId,
+    body: &str,
+) {
     if main_window_focused(app) {
+        return;
+    }
+    // Preferência ilegível não silencia o aviso: `ok().flatten()` cai em `None`,
+    // que é "nunca escolhi", que é o default ligado. Perder o aviso de um agente
+    // bloqueado por causa de um erro de leitura seria o dano maior.
+    let enabled_raw = store.get_setting(kind.enabled_key()).ok().flatten();
+    let sound_raw = store.get_setting(kind.sound_key()).ok().flatten();
+    let policy = notify::resolve(kind, enabled_raw.as_deref(), sound_raw.as_deref());
+    if !policy.enabled {
         return;
     }
     let title = sessions
@@ -129,16 +147,26 @@ fn notify_native(app: &AppHandle, sessions: &SharedSessionManager, id: SessionId
         .map(|s| s.title)
         .unwrap_or_else(|| "sessão de agente".into());
     let body = crate::session::redact::redact(body);
-    let _ = app
+    let mut builder = app
         .notification()
         .builder()
         .title(format!("Tyba — {title}"))
-        .body(body.as_ref())
-        .show();
+        .body(body.as_ref());
+    if let Some(sound) = policy.sound {
+        builder = builder.sound(sound);
+    }
+    let _ = builder.show();
 }
 
 fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
-    notify_native(&ctx.app, &ctx.sessions, ctx.session_id, body);
+    notify_native(
+        &ctx.app,
+        &ctx.sessions,
+        &ctx.store,
+        notify::NotifyKind::Request,
+        ctx.session_id,
+        body,
+    );
 }
 
 const TURN_END_SETTLE_MS: u64 = 2000;
@@ -190,6 +218,7 @@ fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_se
     let app = ctx.app.clone();
     let sessions = ctx.sessions.clone();
     let turn_settle = ctx.turn_settle.clone();
+    let store = ctx.store.clone();
     let id = ctx.session_id;
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(TURN_END_SETTLE_MS));
@@ -223,7 +252,7 @@ fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_se
             None => summary.clone(),
         };
         let body = summary.unwrap_or_else(|| "Terminou o que tinha pra rodar".into());
-        notify_native(&app, &sessions, id, &body);
+        notify_native(&app, &sessions, &store, notify::NotifyKind::Done, id, &body);
     });
 }
 
