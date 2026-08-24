@@ -481,6 +481,9 @@ impl SessionManager {
         // Sem o prefixo verbatim do Windows (`\\?\`) — é o cwd que a UI exibe.
         let cwd = cmd.get_cwd().map(|c| strip_verbatim_prefix(Path::new(c)));
 
+        // O tipo vai junto porque o palpite de tela depende dele: sessão de
+        // agente do TYBA não recebe nenhum, e a sessão só entra no mapa DEPOIS
+        // do spawn — quem resolve isso lá dentro não teria onde perguntar.
         pty_pool.spawn(
             app.clone(),
             id,
@@ -489,6 +492,7 @@ impl SessionManager {
             jail,
             cols,
             rows,
+            &kind,
             Box::new(move || on_exit(id)),
         )?;
 

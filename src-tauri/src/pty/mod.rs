@@ -7,11 +7,17 @@ use base64::Engine;
 use parking_lot::{Condvar, Mutex};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 use uuid::Uuid;
+
+use crate::session::SessionKind;
+use crate::status::observer::ScreenObserver;
+
+use observe::ScreenPipe;
 
 mod capture;
 mod holdback;
+mod observe;
 
 #[cfg(target_os = "windows")]
 pub mod conpty_jailed;
@@ -184,7 +190,7 @@ fn now_ms() -> i64 {
 /// Apaga tela e scrollback e volta o cursor ao topo.
 const CLEAR_SCREEN: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
 
-fn emit_pending(state: &mut ScreenState, app: &AppHandle, event: &str) {
+fn emit_pending<R: Runtime>(state: &mut ScreenState, app: &AppHandle<R>, event: &str) {
     if let Some(bytes) = state.take_pending() {
         let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
         let _ = app.emit(event, PtyOutputPayload { data });
@@ -272,9 +278,18 @@ struct PtyHandle {
     size: (u16, u16),
 }
 
+/// Como uma sessão ganha (ou não) um observador de tela.
+///
+/// Fábrica, e não um observador pronto por parâmetro, porque quem sabe montá-lo
+/// — registro de manifestos, `SessionManager`, `AppHandle`, prober de processo —
+/// só existe junto no `setup` do app. O `PtyPool` não conhece nenhum deles.
+pub type ScreenObserverFactory =
+    Arc<dyn Fn(PtyId, &SessionKind) -> Option<ScreenObserver> + Send + Sync>;
+
 #[derive(Default)]
 pub struct PtyPool {
     ptys: Mutex<HashMap<PtyId, PtyHandle>>,
+    observers: Mutex<Option<ScreenObserverFactory>>,
 }
 
 /// A parte visual das ações, sob um lock só.
@@ -376,15 +391,15 @@ fn ingest_chunk(
 
 /// O lado não-visual das ações: eventos para o webview, histórico e blocos.
 /// Fora do lock de tela — `emit` atravessa IPC e não pode segurar o terminal.
-struct ActionSink {
-    app: AppHandle,
+struct ActionSink<R: Runtime> {
+    app: AppHandle<R>,
     session_id: PtyId,
     command_event: String,
     cwd_event: String,
     prompt_mode_event: String,
 }
 
-impl ActionSink {
+impl<R: Runtime> ActionSink<R> {
     /// Devolve `true` quando um comando começou — é o sinal para reiniciar o
     /// relógio do checkpoint.
     fn run(&self, actions: Vec<capture::Action>, cols: u16, rows: u16) -> bool {
@@ -451,18 +466,39 @@ impl PtyPool {
         Self::default()
     }
 
+    /// Instalada uma vez, no `setup`. Sem ela nenhuma sessão observa tela — que
+    /// é o estado de um `PtyPool` de teste.
+    pub fn set_screen_observers(&self, factory: ScreenObserverFactory) {
+        *self.observers.lock() = Some(factory);
+    }
+
+    /// O que observa a tela desta sessão, se a fábrica estiver instalada e o
+    /// tipo da sessão admitir palpite de tela.
+    ///
+    /// Resolvido aqui dentro, e não recebido pronto de quem chama o `spawn`:
+    /// um parâmetro a mais numa função de doze é um parâmetro que alguém passa
+    /// `None` sem que nada acuse.
+    fn screen_pipe(&self, id: PtyId, kind: &SessionKind) -> Option<ScreenPipe> {
+        let factory = self.observers.lock().clone()?;
+        factory(id, kind).map(ScreenPipe::new)
+    }
+
     #[allow(clippy::too_many_arguments)]
-    pub fn spawn(
+    pub fn spawn<R: Runtime>(
         &self,
-        app: AppHandle,
+        app: AppHandle<R>,
         session_id: PtyId,
         mut cmd: CommandBuilder,
         env: Option<&HashMap<String, String>>,
         jail: Option<Box<dyn JailedSpawner>>,
         cols: u16,
         rows: u16,
+        kind: &SessionKind,
         on_exit: Box<dyn FnOnce() + Send>,
     ) -> Result<(), PtyError> {
+        // O palpite de tela nasce com o PTY e morre com ele. Sessão de agente
+        // do TYBA não recebe nenhum: onde há hook, a tela não opina.
+        let pipe = self.screen_pipe(session_id, kind);
         if let Some(env) = env {
             cmd.env_clear();
             for (k, v) in env {
@@ -588,6 +624,7 @@ impl PtyPool {
                 let mut last_bracketed = false;
                 let mut last_checkpoint = Instant::now();
                 let mut machine = capture::CaptureMachine::new(session_id.to_string());
+                let mut pipe = pipe;
                 let sink = ActionSink {
                     app: app.clone(),
                     session_id,
@@ -597,7 +634,9 @@ impl PtyPool {
                 };
 
                 loop {
-                    let chunk = if !queued {
+                    // O despertar extra é do assentamento: ver `observe`.
+                    let settling = pipe.as_ref().is_some_and(ScreenPipe::wants_settle);
+                    let chunk = if !queued && !settling {
                         match rx.recv() {
                             Ok(chunk) => Some(chunk),
                             Err(_) => break,
@@ -613,7 +652,7 @@ impl PtyPool {
                         Some(chunk) => {
                             let due = last_flush.elapsed() >= FLUSH_INTERVAL;
                             // Um lock só do parse até a fila: ver `ingest_chunk`.
-                            let (actions, bracketed, cols, rows) = {
+                            let (actions, bracketed, cols, rows, snapshot) = {
                                 let mut screen = reader_screen.lock();
                                 let actions =
                                     ingest_chunk(&mut screen, &mut machine, &chunk, now_ms());
@@ -622,13 +661,33 @@ impl PtyPool {
                                 }
                                 queued = !screen.pending.is_empty();
                                 let (rows, cols) = screen.parser.screen().size();
+                                let snapshot = pipe.as_mut().and_then(|p| p.cut(&screen, due));
                                 (
                                     actions,
                                     screen.parser.screen().bracketed_paste(),
                                     cols,
                                     rows,
+                                    snapshot,
                                 )
                             };
+                            // FORA do lock e FORA da main thread, de propósito.
+                            //
+                            // Sob o lock sai só o RECORTE — título e até oito
+                            // linhas —, porque avaliar manifesto ali seria
+                            // segurar a tela inteira (o `attach`, o `resize`, o
+                            // `write`) por regra de terceiro. E aqui, na thread
+                            // emissora desta sessão, e não num comando do
+                            // Tauri: comando síncrono roda na main thread do
+                            // macOS, onde qualquer microssegundo é frame de UI.
+                            //
+                            // A alternativa considerada — uma thread só para
+                            // observar, comum a todas as sessões — foi
+                            // descartada por raio de alcance: aqui, um
+                            // manifesto patológico atrasa a sessão que o
+                            // carrega; lá, atrasaria a detecção de todas.
+                            if let (Some(pipe), Some(snapshot)) = (pipe.as_mut(), snapshot) {
+                                pipe.feed(&snapshot);
+                            }
                             if due {
                                 last_flush = Instant::now();
                             }
@@ -664,10 +723,14 @@ impl PtyPool {
                             }
                         }
                         None => {
-                            {
+                            let snapshot = {
                                 let mut screen = reader_screen.lock();
                                 emit_pending(&mut screen, &app, &output_event);
                                 queued = false;
+                                pipe.as_mut().and_then(|p| p.cut_pending(&screen))
+                            };
+                            if let (Some(pipe), Some(snapshot)) = (pipe.as_mut(), snapshot) {
+                                pipe.feed(&snapshot);
                             }
                             last_flush = Instant::now();
                         }
@@ -687,6 +750,9 @@ impl PtyPool {
                     (cols, rows)
                 };
                 sink.run(actions, cols, rows);
+                if let Some(pipe) = pipe.as_mut() {
+                    pipe.finish();
+                }
                 let _ = app.emit(&exit_event, PtyExitPayload { code: None });
                 on_exit();
             })
@@ -1169,6 +1235,158 @@ mod ingest_tests {
 
         assert_eq!(rendered(&seen).matches("tyba").count(), 2);
         assert_eq!(state.parser.screen().contents().matches("tyba").count(), 1);
+    }
+}
+
+/// A prova de que o produtor está LIGADO — um PTY de verdade, um app mock, e o
+/// palpite chegando ao sink.
+///
+/// Existe porque o resto da fiação é invisível ao teste unitário: com o `spawn`
+/// resolvendo o observador por dentro, trocar a resolução por `None` deixaria
+/// toda a suíte verde e o produtor desligado em campo. É a diferença entre
+/// "compila" e "funciona".
+#[cfg(all(test, unix))]
+mod spawn_observed_tests {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use parking_lot::Mutex;
+    use portable_pty::CommandBuilder;
+
+    use super::{PtyId, PtyPool};
+    use crate::session::{AgentRunnerKind, ObservedAgent, ObservedState, SessionKind};
+    use crate::status::observer::ScreenObserver;
+    use crate::status::registry::ManifestRegistry;
+
+    const CODEX: &str = r#"
+id = "codex"
+match = { title = ["Codex"] }
+
+[[rules]]
+id = "working"
+state = "running"
+region = { bottom_lines = 3 }
+contains = ["esc to interrupt"]
+"#;
+
+    type Visto = Arc<Mutex<Vec<Option<ObservedAgent>>>>;
+
+    fn pool_com_manifesto() -> (PtyPool, Visto) {
+        let pool = PtyPool::new();
+        let visto: Visto = Arc::new(Mutex::new(Vec::new()));
+        let da_fabrica = Arc::clone(&visto);
+        pool.set_screen_observers(Arc::new(move |_id, kind| {
+            let do_sink = Arc::clone(&da_fabrica);
+            ScreenObserver::for_session(
+                kind,
+                Arc::new(ManifestRegistry::from_sources(&[CODEX])),
+                Box::new(|| None),
+                Box::new(move |observed| do_sink.lock().push(observed)),
+            )
+        }));
+        (pool, visto)
+    }
+
+    /// Uma rajada com a tela do agente no FIM: o primeiro `printf` chega bem
+    /// depois do último flush (vira quadro na hora), e o segundo chega 5 ms
+    /// atrás dele — dentro da janela, portanto sem quadro próprio. Só o
+    /// assentamento vê essa segunda tela.
+    fn tela_de_codex_no_fim_da_rajada() -> CommandBuilder {
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(
+            "sleep 0.1; printf 'inicio\\n'; sleep 0.005; \
+             printf '\\033]0;Codex\\007. Working (2s . esc to interrupt)\\n'; sleep 0.2",
+        );
+        cmd
+    }
+
+    fn espera(visto: &Visto, o_que: impl Fn(&[Option<ObservedAgent>]) -> bool) -> bool {
+        espera_ate(visto, Duration::from_secs(10), o_que)
+    }
+
+    /// Para afirmar que algo NÃO acontece, o teto é curto de propósito: o
+    /// processo do teste vive ~0,3 s, e esperar dez segundos por um palpite que
+    /// não vem é só suíte lenta.
+    fn espera_ate(
+        visto: &Visto,
+        teto: Duration,
+        o_que: impl Fn(&[Option<ObservedAgent>]) -> bool,
+    ) -> bool {
+        let prazo = Instant::now() + teto;
+        while Instant::now() < prazo {
+            if o_que(&visto.lock()) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        false
+    }
+
+    #[test]
+    fn a_sessao_de_shell_recebe_o_palpite_do_pty_de_verdade() {
+        let app = tauri::test::mock_app();
+        let (pool, visto) = pool_com_manifesto();
+
+        pool.spawn(
+            app.handle().clone(),
+            PtyId::new_v4(),
+            tela_de_codex_no_fim_da_rajada(),
+            None,
+            None,
+            80,
+            24,
+            &SessionKind::Shell,
+            Box::new(|| {}),
+        )
+        .unwrap();
+
+        assert!(
+            espera(&visto, |publicados| publicados.iter().flatten().any(|o| {
+                o.agent == "codex" && o.state == Some(ObservedState::Running)
+            })),
+            "o palpite nunca chegou ao sink: publicados={:?}",
+            visto.lock()
+        );
+
+        // E o fim do processo leva o palpite junto — senão o quadro fica
+        // apontando um agente que morreu com o terminal.
+        assert!(
+            espera(&visto, |publicados| publicados.last() == Some(&None)),
+            "o palpite sobreviveu à morte do PTY: publicados={:?}",
+            visto.lock()
+        );
+    }
+
+    /// A mesma fiação, do outro lado: onde há hook, a tela não opina — e a
+    /// recusa acontece antes de qualquer recorte.
+    #[test]
+    fn a_sessao_de_agente_gerenciada_nao_recebe_palpite_nenhum() {
+        let app = tauri::test::mock_app();
+        let (pool, visto) = pool_com_manifesto();
+
+        pool.spawn(
+            app.handle().clone(),
+            PtyId::new_v4(),
+            tela_de_codex_no_fim_da_rajada(),
+            None,
+            None,
+            80,
+            24,
+            &SessionKind::Agent {
+                runner: AgentRunnerKind::Codex,
+            },
+            Box::new(|| {}),
+        )
+        .unwrap();
+
+        assert!(
+            !espera_ate(&visto, Duration::from_secs(2), |publicados| {
+                !publicados.is_empty()
+            }),
+            "sessão com hook recebeu palpite de tela: publicados={:?}",
+            visto.lock()
+        );
     }
 }
 

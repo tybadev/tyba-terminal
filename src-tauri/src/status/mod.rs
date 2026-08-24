@@ -14,6 +14,8 @@ pub mod subagent_transcript;
 pub mod transcript;
 
 pub mod manifest;
+pub mod observer;
+pub mod registry;
 pub mod screen;
 
 use base64::Engine;
