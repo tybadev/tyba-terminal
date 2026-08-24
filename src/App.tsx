@@ -76,6 +76,7 @@ import {
   noticeKey,
   showShellAgentNotice,
 } from "./lib/shellAgentNotice";
+import { resumeCandidates, showAgentResumeInvite } from "./lib/agentResume";
 import {
   paneRunningAgent,
   tabRunningAgent,
@@ -182,6 +183,8 @@ import {
   onSubagentsChanged,
   detectedAgent,
   killShellAgent,
+  canResumeAgentSession,
+  resumeAgentSession,
   type AgentRunner,
   onAgentDetected,
   type DetectedAgent,
@@ -546,6 +549,20 @@ export default function App() {
   const [dismissedShellNotices, setDismissedShellNotices] = useState<
     Map<SessionId, string>
   >(() => new Map());
+  // Veredito do core sobre retomar a conversa nativa de uma sessão de agente
+  // morta. `undefined` = ainda não perguntado; o convite só nasce do `true`.
+  const [resumableAgents, setResumableAgents] = useState<
+    Map<SessionId, boolean>
+  >(() => new Map());
+  const [dismissedResumeInvites, setDismissedResumeInvites] = useState<
+    Set<SessionId>
+  >(() => new Set());
+  // Quantas vezes o core re-subiu um processo NESTE mesmo id de sessão. Entra na
+  // `key` do TerminalView: sem isso o xterm continuaria montado sobre um PTY que
+  // não existe mais, sem reatar no novo e sem nunca receber saída.
+  const [paneEpochs, setPaneEpochs] = useState<Map<SessionId, number>>(
+    () => new Map(),
+  );
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
   const [togglePref, setTogglePref] = useState<SidebarTogglePref>("hidden");
   const [detailsPref, setDetailsPref] = useState<DetailsPref>("on");
@@ -1623,6 +1640,70 @@ export default function App() {
     },
     [detectedBySession, spawnAgentSession, goToSession, t],
   );
+
+  // Pergunta ao core, uma vez por sessão candidata, se dá pra retomar a conversa
+  // nativa daquele agente. Quem decide é ele: só o core sabe se o id foi
+  // capturado, se o binário continua no PATH e se a pasta sobreviveu. Enquanto
+  // não responder `true`, nada aparece — convite que abre em erro é pior que
+  // convite nenhum.
+  const askedResume = useRef<Set<SessionId>>(new Set());
+  useEffect(() => {
+    let alive = true;
+    for (const id of resumeCandidates(sessions)) {
+      if (askedResume.current.has(id)) continue;
+      askedResume.current.add(id);
+      void canResumeAgentSession(id)
+        .then((ok) => {
+          if (alive) setResumableAgents((prev) => new Map(prev).set(id, ok));
+        })
+        .catch(() => {
+          // Falha na pergunta é "não": silêncio, nunca convite.
+          if (alive) setResumableAgents((prev) => new Map(prev).set(id, false));
+        });
+    }
+    return () => {
+      alive = false;
+    };
+  }, [sessions]);
+
+  const resumingAgents = useRef<Set<SessionId>>(new Set());
+  const resumeAgentConversation = useCallback(
+    async (sessionId: SessionId) => {
+      if (resumingAgents.current.has(sessionId)) return;
+      resumingAgents.current.add(sessionId);
+      try {
+        const fresh = await resumeAgentSession(sessionId);
+        // A sessão volta viva com o MESMO id — é a mesma conversa, e o pane já
+        // aponta para ela. Escrita direta, e não pelo `session://status`: aquele
+        // listener recusa de propósito a volta de "encerrada" para "rodando".
+        setSessions((prev) =>
+          prev.map((s) => (s.id === fresh.id ? fresh : s)),
+        );
+        // O PTY é outro, então a assinatura de saída do anterior morreu com ele.
+        // Trocar a `key` remonta o TerminalView, que reata e começa com a tela
+        // limpa em vez de escrever o agente novo embaixo do "sessão encerrada".
+        setPaneEpochs((prev) =>
+          new Map(prev).set(sessionId, (prev.get(sessionId) ?? 0) + 1),
+        );
+        askedResume.current.delete(sessionId);
+        setResumableAgents((prev) => {
+          const next = new Map(prev);
+          next.delete(sessionId);
+          return next;
+        });
+        goToSession(sessionId);
+      } catch (e) {
+        toastError(t("agentResumeFailed"), translateError(e, t));
+      } finally {
+        resumingAgents.current.delete(sessionId);
+      }
+    },
+    [goToSession, t],
+  );
+
+  const dismissResumeInvite = useCallback((sessionId: SessionId) => {
+    setDismissedResumeInvites((prev) => new Set(prev).add(sessionId));
+  }, []);
 
   // Sessão com agente vivo recebe o prompt direto; sessão plain (ou morta)
   // ganha uma sessão de agente nova apontada pro repo conflitado.
@@ -4803,9 +4884,14 @@ export default function App() {
                       detected,
                       dismissedShellNotices.get(s.id),
                     );
+                    const resumeInvite = showAgentResumeInvite(
+                      s,
+                      resumableAgents.get(s.id),
+                      dismissedResumeInvites.has(s.id),
+                    );
                     return (
                       <TerminalView
-                        key={s.id}
+                        key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
                         sessionId={s.id}
                         agentNotice={
                           notice && detected
@@ -4816,6 +4902,15 @@ export default function App() {
                           void reopenShellAgentManaged(s.id)
                         }
                         onDismissNotice={() => dismissShellAgentNotice(s.id)}
+                        resumeNotice={
+                          resumeInvite && s.kind.type === "agent"
+                            ? { binary: agentBinaryName(s.kind.runner) }
+                            : null
+                        }
+                        onResumeAgent={() =>
+                          void resumeAgentConversation(s.id)
+                        }
+                        onDismissResume={() => dismissResumeInvite(s.id)}
                         onPaste={deliverPaste}
                         onSearch={() => setSearchOpen(true)}
                         readOnly={s.id === activeId && ownsCommandLine}

@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { CircleNotch, ShieldSlash } from "@phosphor-icons/react";
+import {
+  ArrowCounterClockwise,
+  CircleNotch,
+  ShieldSlash,
+} from "@phosphor-icons/react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -211,6 +215,17 @@ interface Props {
   onReopenManaged?: () => void;
   onDismissNotice?: () => void;
   /**
+   * Convite de retomar a conversa nativa do agente numa sessão que morreu com o
+   * app anterior. Só o core decide se ele aparece — ver `canResumeAgentSession`.
+   *
+   * O par do `agentNotice`, no outro lado da vida da sessão: aquele avisa de
+   * agente vivo fora do gate, este oferece religar um agente morto. Por isso
+   * este só existe com `exited`, e os dois nunca dividem a tela.
+   */
+  resumeNotice?: { binary: string } | null;
+  onResumeAgent?: () => void;
+  onDismissResume?: () => void;
+  /**
    * Quanto da tela a saída do comando em curso ocupa, de 0 a 1.
    *
    * Recorta a faixa ao vivo na altura da saída real, para o cartão do bloco
@@ -271,6 +286,9 @@ export function TerminalView({
   agentNotice,
   onReopenManaged,
   onDismissNotice,
+  resumeNotice,
+  onResumeAgent,
+  onDismissResume,
   liveUsed,
   onLiveRows,
   onLineHeight,
@@ -763,6 +781,44 @@ export function TerminalView({
             className="shrink-0 rounded-[3px] px-1.5 py-0.5 font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
           >
             {i18n.t("shellAgentIgnore")}
+          </button>
+        )}
+      </div>
+    )}
+    {resumeNotice && rect && visible && exited && (
+      <div
+        className="z-10 flex items-center gap-2 border-b border-tyba-cyan/30 bg-tyba-sunken px-2 py-1"
+        style={{
+          position: "absolute",
+          left: `${rect.left}%`,
+          top: `${rect.top}%`,
+          width: `${rect.width}%`,
+        }}
+      >
+        <ArrowCounterClockwise
+          size={12}
+          weight="bold"
+          className="shrink-0 text-tyba-cyan"
+        />
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-tyba-text-muted">
+          {i18n.t("agentResumeNotice", { binary: resumeNotice.binary })}
+        </span>
+        {onResumeAgent && (
+          <button
+            type="button"
+            onClick={onResumeAgent}
+            className="shrink-0 rounded-[3px] border border-tyba-cyan/40 px-2 py-0.5 font-mono text-[10px] text-tyba-cyan hover:bg-tyba-cyan/10"
+          >
+            {i18n.t("agentResume")}
+          </button>
+        )}
+        {onDismissResume && (
+          <button
+            type="button"
+            onClick={onDismissResume}
+            className="shrink-0 rounded-[3px] px-1.5 py-0.5 font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
+          >
+            {i18n.t("agentResumeIgnore")}
           </button>
         )}
       </div>

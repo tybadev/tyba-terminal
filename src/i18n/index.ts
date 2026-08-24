@@ -263,6 +263,11 @@ const resources = {
       shellAgentReopenFailed: "Não deu pra reabrir gerenciado",
       shellAgentReopenSpawnFailed:
         "O agente foi encerrado, mas a sessão gerenciada não abriu",
+      agentResumeNotice:
+        "A conversa deste agente continua no disco. Retomar sobe o {{binary}} com o histórico dela.",
+      agentResume: "Retomar conversa",
+      agentResumeIgnore: "Agora não",
+      agentResumeFailed: "Não deu pra retomar a conversa",
       "error.agent.reopen_not_detected":
         "Nenhum agente detectado nesta sessão.",
       "error.agent.reopen_no_cwd":
@@ -1241,6 +1246,11 @@ const resources = {
       shellAgentReopenFailed: "Could not reopen managed",
       shellAgentReopenSpawnFailed:
         "The agent was terminated, but the managed session did not open",
+      agentResumeNotice:
+        "This agent's conversation is still on disk. Resuming starts {{binary}} with its history.",
+      agentResume: "Resume conversation",
+      agentResumeIgnore: "Not now",
+      agentResumeFailed: "Could not resume the conversation",
       "error.agent.reopen_not_detected": "No agent detected in this session.",
       "error.agent.reopen_no_cwd": "Could not resolve the agent's folder.",
       "error.agent.reopen_not_git":
