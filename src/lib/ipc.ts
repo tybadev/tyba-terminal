@@ -1510,6 +1510,46 @@ export const searchCommandHistory = (
 export const clearCommandHistory = (repoRoot: string | null) =>
   invoke<void>("clear_command_history", { repoRoot });
 
+export type ImportSource = "zsh" | "bash" | "fish";
+
+export interface ShellHistorySource {
+  source: ImportSource;
+  path: string;
+  entries: number;
+}
+
+export interface ImportSourceOutcome {
+  source: ImportSource;
+  path: string;
+  read: number;
+  imported: number;
+  discarded: number;
+  /** Preenchido quando a fonte inteira foi pulada, com o motivo. */
+  skipped: string | null;
+}
+
+export interface ImportReport {
+  sources: ImportSourceOutcome[];
+}
+
+export interface ImportProgress {
+  source: ImportSource;
+  imported: number;
+  total: number;
+}
+
+/** Conta as entradas de cada fonte. Não grava nada. */
+export const scanShellHistorySources = () =>
+  invoke<ShellHistorySource[]>("scan_shell_history_sources");
+
+export const importShellHistory = () =>
+  invoke<ImportReport>("import_shell_history");
+
+export const onShellHistoryImportProgress = (
+  handler: (progress: ImportProgress) => void,
+) =>
+  listen<ImportProgress>("history:import-progress", (e) => handler(e.payload));
+
 export const setHistoryEnabled = (enabled: boolean) =>
   invoke<void>("set_history_enabled", { enabled });
 
