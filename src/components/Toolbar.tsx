@@ -11,11 +11,26 @@ import {
 
 import { Shortcut } from "@/components/ui/kbd";
 import type { RepoSnapshot } from "../lib/ipc";
-import type { ChipId, ToolbarPref } from "../lib/repoSnapshots";
+import type { BranchChip, ChipId, ToolbarPref } from "../lib/repoSnapshots";
+import { BranchPicker } from "./BranchPicker";
 
 interface Props {
   pref: ToolbarPref;
   cwd: string | null;
+  /**
+   * O chip de branch, já resolvido: o rótulo e a sessão que o checkout usa.
+   *
+   * Vem pronto, e não derivado de `snapshot`, porque os dois têm de falar do
+   * MESMO repositório. `snapshot` é do workspace; o checkout do core resolve o
+   * worktree da sessão. Enquanto o chip lia um e agia sobre o outro, dava para
+   * trocar de branch num repositório vendo a branch de outro na tela.
+   *
+   * `sessionId` nulo deixa o chip como texto — é o que sobra quando não há
+   * sessão, ou quando o core não teria como localizar o repositório dela.
+   * `state: "unknown"` é o chip que fica na barra sem rótulo nem ação; `null`
+   * é o único caso em que ele não existe (não há repositório nenhum em jogo).
+   */
+  branch: BranchChip | null;
   snapshot: RepoSnapshot | undefined;
   hasWorktree: boolean;
   onOpenDiff: () => void;
@@ -47,6 +62,7 @@ function basename(path: string): string {
 export function Toolbar({
   pref,
   cwd,
+  branch,
   snapshot,
   hasWorktree,
   onOpenDiff,
@@ -73,17 +89,50 @@ export function Toolbar({
           </span>
         ) : null;
       case "branch":
-        return snapshot?.branch ? (
+        if (!branch) return null;
+        // A sessão tem repositório, mas o TYBA não acompanha a branch dele: o
+        // chip fica no lugar dizendo isso. Sumir era o que fazia uma sessão de
+        // agente encerrada parecer defeito da barra.
+        if (branch.state === "unknown") {
+          return (
+            <span
+              key={id}
+              title={t("toolbarBranchUnknownHint")}
+              className="flex min-w-0 shrink items-center gap-1 text-tyba-text-muted"
+              aria-label={t("toolbarBranchUnknown")}
+            >
+              <GitBranch size={12} className="shrink-0" />
+              {/* Travessão em vez de palavra: o ícone já diz "branch", e o que
+                  falta dizer é só que o valor não está disponível. */}
+              <span className="truncate">—</span>
+            </span>
+          );
+        }
+        // Com uma sessão que o core sabe localizar, o chip troca de branch; sem
+        // ela, continua sendo o texto que sempre foi. O seletor faz o checkout
+        // em dois passos — armar e confirmar —, que é a rede para uma ação que
+        // mexe no working tree.
+        return branch.sessionId ? (
+          <BranchPicker
+            key={id}
+            sessionId={branch.sessionId}
+            browsing={null}
+            label={branch.label}
+            onBrowse={() => {}}
+            variant="chip"
+            browsable={false}
+          />
+        ) : (
           <span
             key={id}
-            title={snapshot.branch}
+            title={branch.label}
             className="flex min-w-0 shrink items-center gap-1"
             aria-label={t("toolbarBranch")}
           >
             <GitBranch size={12} className="shrink-0" />
-            <span className="truncate">{snapshot.branch}</span>
+            <span className="truncate">{branch.label}</span>
           </span>
-        ) : null;
+        );
       case "diffCount": {
         const status = snapshot?.status;
         if (!status?.dirty) return null;

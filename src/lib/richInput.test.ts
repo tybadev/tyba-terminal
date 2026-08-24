@@ -15,6 +15,7 @@ const cmd = (over: Partial<SessionCommand> = {}): SessionCommand => ({
   command: null,
   running: false,
   agent_match: false,
+  continuation: false,
   ...over,
 });
 

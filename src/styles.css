@@ -870,6 +870,23 @@ body,
   color: var(--tyba-text);
   font-family: var(--tyba-font-ui);
   -webkit-font-smoothing: antialiased;
+  /*
+   * O DOCUMENTO nunca rola. Num app de janela, a janela É a viewport: quem rola
+   * é sempre um scroller interno, com dono e limites conhecidos.
+   *
+   * Sem isto, qualquer filho que transborde o `h-screen` da raiz faz o corpo
+   * rolar — e o sintoma não é conteúdo deslizando dentro de um painel, é a
+   * interface INTEIRA se movendo, moldura e barra lateral junto.
+   *
+   * A brecha é de TEMPO, não de layout, e por isso não some ajeitando altura: a
+   * lista de blocos só é montada depois que o core confirma o modo prompt (o
+   * `blocked` em `App`), e essa resposta chega por IPC. Na aba recém-aberta,
+   * entre o primeiro quadro e a resposta, não existe scroller nenhum sob o
+   * ponteiro e a roda cai no documento. Quando a lista aparece, o
+   * `overscroll-contain` dela passa a conter o gesto e o mesmo movimento passa
+   * a funcionar — daí o "só rola dentro da aba depois que eu clico nela".
+   */
+  overflow: hidden;
 }
 
 ::selection {

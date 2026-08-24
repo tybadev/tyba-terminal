@@ -137,7 +137,19 @@ pub fn rename(root: &Path, from_rel: &str, to_rel: &str) -> Result<(), String> {
     imp::rename(&root_canon, &from_parent, &from_leaf, &to_parent, &to_leaf)
 }
 
-pub fn delete(root: &Path, rel: &str) -> Result<(), String> {
+/// Qual caminho o [`delete`] mandaria para a Lixeira — e o handle que mantém a
+/// verificação de pé até a remoção acontecer.
+///
+/// Separado do `delete` porque é aqui que mora a garantia de segurança: **qual**
+/// caminho é escolhido. Se a Lixeira funciona é outro assunto, e é um assunto
+/// do sistema.
+///
+/// A separação é o que torna a garantia testável sem efeito colateral. O teste
+/// que a cobria chamava a Lixeira de verdade e descartava o resultado com
+/// `let _ =` — então ele provava pouco, e no macOS ainda abria um diálogo do
+/// Finder pedindo Touch ID a cada `cargo test`. Teste que precisa de senha não
+/// roda em CI e treina quem desenvolve a clicar em "permitir" sem ler.
+fn delete_target(root: &Path, rel: &str) -> Result<(Option<std::fs::File>, PathBuf), String> {
     reject_root_rel(rel)?;
     let (parent_rel, leaf) = split_leaf(rel)?;
     let parent = resolve_within(root, &parent_rel)?;
@@ -147,13 +159,17 @@ pub fn delete(root: &Path, rel: &str) -> Result<(), String> {
     let meta =
         std::fs::symlink_metadata(&link_path).map_err(|e| format!("item inexistente: {e}"))?;
     if meta.file_type().is_symlink() {
-        // Symlink: manda o LINK pra Lixeira, nunca o alvo — funciona mesmo que
-        // o alvo aponte pra fora da raiz (o link vive na raiz, já validado).
-        trash::delete(&link_path).map_err(|e| format!("falha ao mover para a Lixeira: {e}"))
+        // Symlink: vai o LINK pra Lixeira, nunca o alvo — vale mesmo que o alvo
+        // aponte pra fora da raiz, porque o link vive na raiz, já validada.
+        Ok((None, link_path))
     } else {
-        let (_handle, real) = open_verified_any(root, &link_path)?;
-        trash::delete(&real).map_err(|e| format!("falha ao mover para a Lixeira: {e}"))
+        open_verified_any(root, &link_path)
     }
+}
+
+pub fn delete(root: &Path, rel: &str) -> Result<(), String> {
+    let (_handle, target) = delete_target(root, rel)?;
+    trash::delete(&target).map_err(|e| format!("falha ao mover para a Lixeira: {e}"))
 }
 
 /// Como `open_verified`, mas aceita diretório: valida o path real do fd (arquivo)
@@ -739,13 +755,26 @@ mod tests {
         let outside = tmp();
         std::fs::write(outside.join("keep.txt"), "outside").unwrap();
         std::os::unix::fs::symlink(outside.join("keep.txt"), root.join("link")).unwrap();
-        // trash pode não estar disponível em CI headless; só validamos que, se
-        // remover, foi o LINK — o alvo permanece intocado de qualquer forma.
-        let _ = delete(&root, "link");
+        // Afirma a ESCOLHA do caminho, não o efeito de removê-lo: a garantia é
+        // que o alvo do symlink nunca é o escolhido. Chamar a Lixeira de
+        // verdade aqui provava menos — o resultado era descartado — e no macOS
+        // abria um diálogo do Finder pedindo Touch ID a cada `cargo test`.
+        let (_handle, target) = delete_target(&root, "link").unwrap();
+        assert!(
+            std::fs::symlink_metadata(&target)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "o escolhido é o próprio link, não o que ele resolve"
+        );
+        assert_ne!(
+            target,
+            outside.join("keep.txt"),
+            "o alvo do symlink nunca vai pra Lixeira"
+        );
         assert_eq!(
             std::fs::read_to_string(outside.join("keep.txt")).unwrap(),
-            "outside",
-            "o alvo do symlink nunca vai pra Lixeira"
+            "outside"
         );
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&outside).ok();

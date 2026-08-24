@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -50,8 +50,16 @@ function runStyle(run: StyleRun): React.CSSProperties {
 /**
  * Uma linha lógica vira spans. Nunca HTML: os runs são dados, e montar string
  * de markup a partir de saída de comando é injeção esperando acontecer.
+ *
+ * Memoizado porque este é o nó que se multiplica: uma linha com cor gera até
+ * dois spans por run, e saída colorida dá uns 16 runs por linha. Um cartão de
+ * 200 linhas passa de 3 mil nós, e sem memo TODOS eram recriados a cada render
+ * do `App` — que acontece a ~60 Hz enquanto um comando escreve.
+ *
+ * O objeto `line` vem do bloco e mantém identidade: `setBlocks` recria o array,
+ * não os blocos. É o que faz a comparação rasa do memo valer aqui.
  */
-function Line({ line }: { line: LogicalLine }) {
+const Line = memo(function Line({ line }: { line: LogicalLine }) {
   if (line.runs.length === 0) {
     return <div className="whitespace-pre-wrap break-words">{line.text}</div>;
   }
@@ -72,7 +80,7 @@ function Line({ line }: { line: LogicalLine }) {
     parts.push(<span key="tail">{line.text.slice(cursor)}</span>);
   }
   return <div className="whitespace-pre-wrap break-words">{parts}</div>;
-}
+});
 
 /** Quanto tempo o ✓ fica no lugar do ícone depois de copiar. */
 const COPIED_MS = 1200;
@@ -86,15 +94,12 @@ type ActionId = "command" | "output" | "markdown";
  * corpo cortado em `BODY_LIMIT` linhas, e a saída sem os espaços que o
  * `white-space` desenha mas o `textContent` não tem.
  */
-function BlockActions({
+const BlockActions = memo(function BlockActions({
   block,
   onInject,
-  always,
 }: {
   block: Block;
   onInject?: (text: string) => void;
-  /** Sem hover para revelar: é o caso do header preso, que não recebe hover. */
-  always?: boolean;
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState<ActionId | null>(null);
@@ -160,11 +165,17 @@ function BlockActions({
 
   return (
     <div
-      className={`pointer-events-auto flex shrink-0 items-center gap-0.5 transition-opacity ${
-        always
-          ? "opacity-100"
-          : "opacity-0 focus-within:opacity-100 group-hover:opacity-100"
-      }`}
+      // Sempre presentes, e discretos — não escondidos atrás do hover.
+      //
+      // Antes o cartão normal nascia em `opacity-0` e só o header PRESO ficava
+      // opaco, porque ele é `pointer-events-none` e nunca recebe hover. O
+      // resultado é que o mesmo bloco mostrava quatro ícones no topo da lista e
+      // nenhum logo abaixo: a barra de ações parecia ir e vir sem regra.
+      //
+      // Visível de saída também responde à pergunta "dá para copiar isso?" sem
+      // exigir que se descubra passando o mouse. A 40% ela informa sem competir
+      // com o comando, que é o que a linha tem de mais importante.
+      className="pointer-events-auto flex shrink-0 items-center gap-0.5 opacity-40 transition-opacity focus-within:opacity-100 group-hover:opacity-100"
     >
       {items
         .filter((item) => item.show)
@@ -193,9 +204,9 @@ function BlockActions({
         })}
     </div>
   );
-}
+});
 
-function BlockHeader({
+const BlockHeader = memo(function BlockHeader({
   block,
   pinned,
   onInject,
@@ -213,10 +224,14 @@ function BlockHeader({
       // faixa opaca de 27px que captura a roda do mouse é uma faixa onde a
       // lista não rola. Só as ações reativam — senão as do bloco do topo, que
       // é o header que ele cobre, ficariam inalcançáveis.
+      // O fundo e o filete do preso moram no INVÓLUCRO, não aqui: só assim ele
+      // atravessa a largura inteira da lista enquanto o texto continua alinhado
+      // com o comando do cartão de baixo, que é recuado pelo padding do
+      // scroller. Com fundo próprio, a faixa era um cartão solto de 8px de
+      // margem e o comando dela caía 8px à esquerda do comando de todos os
+      // outros — ficava lendo como outra coisa, não como o mesmo header.
       className={`group flex items-center gap-2 px-2.5 py-1 ${
-        pinned
-          ? "pointer-events-none rounded-[4px] border border-tyba-border bg-tyba-surface shadow-md"
-          : "border-b border-tyba-border/60"
+        pinned ? "pointer-events-none" : "border-b border-tyba-border/60"
       }`}
     >
       <span className={`shrink-0 ${broke ? "text-tyba-red" : "text-tyba-green"}`}>
@@ -245,10 +260,10 @@ function BlockHeader({
           {took}
         </span>
       )}
-      <BlockActions block={block} onInject={onInject} always={pinned} />
+      <BlockActions block={block} onInject={onInject} />
     </div>
   );
-}
+});
 
 /**
  * Teto de linhas desenhadas de uma vez.
@@ -258,6 +273,14 @@ function BlockHeader({
  * painel. Ninguém lê 10 mil linhas rolando — quem precisa, expande.
  */
 const BODY_LIMIT = 200;
+
+/**
+ * Altura do botão "mostrar mais" (`text-[10px]` + `py-1` + `border-t`).
+ *
+ * Entra na estimativa. Sem ele, TODO bloco grande era estimado ~22px curto — e
+ * estimativa curta é cartão nascendo por cima do fim do anterior.
+ */
+const SHOW_MORE_PX = 22;
 
 /**
  * Quanto da largura do scroller NÃO é texto do corpo, em px.
@@ -288,13 +311,16 @@ const BODY_INSET_X_PX = 38;
  */
 const MARKED_BAR = "inset 2px 0 0 0 var(--tyba-primary)";
 
-function BlockCard({
+
+const BlockCard = memo(function BlockCard({
   block,
   fontSizePx,
   lineHeightPx,
   onInject,
   marked,
   onPick,
+  shown,
+  onShowMore,
 }: {
   block: Block;
   /** Tamanho da fonte do terminal — ver o corpo abaixo. */
@@ -303,17 +329,39 @@ function BlockCard({
   lineHeightPx: number;
   onInject?: (text: string) => void;
   marked: boolean;
-  onPick?: (event: React.MouseEvent) => void;
+  /**
+   * Recebe o id, e não um handler já amarrado ao bloco.
+   *
+   * Amarrar do lado de fora (`(event) => onPick(block.id, event)`) cria uma
+   * função nova por render do pai, e prop com identidade nova derruba o memo
+   * deste componente — que é justo o que ele existe para evitar. O id já está
+   * no `block`; quem amarra é o corpo daqui, que só roda quando o cartão
+   * realmente re-renderiza.
+   */
+  onPick?: (id: number, event: React.MouseEvent) => void;
+  /**
+   * Quantas linhas do corpo desenhar. Vem de FORA por dois motivos.
+   *
+   * Morava aqui, num `useState` booleano de "expandido". Como o cartão desmonta
+   * ao sair da tela pela virtualização, o estado ia junto: o dono expandia,
+   * rolava, voltava, e estava fechado de novo.
+   *
+   * E o virtualizador precisa saber. A estimativa de altura é calculada pela
+   * lista, que não enxergava esse booleano — um bloco expandido de 5 mil linhas
+   * seguia estimado em 200. O total da lista ficava menor que o conteúdo real,
+   * e daí "rolo e nunca chego no fim".
+   */
+  shown: number;
+  onShowMore?: (id: number) => void;
 }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
   const broke = failed(block.exitCode);
-  const hidden = expanded ? 0 : Math.max(block.lines.length - BODY_LIMIT, 0);
+  const hidden = Math.max(block.lines.length - shown, 0);
   return (
     // `group` aqui além do header: revela as ações com o ponteiro em qualquer
     // lugar do cartão, não só na faixa de 27px de cima.
     <div
-      onClick={onPick}
+      onClick={onPick ? (event) => onPick(block.id, event) : undefined}
       // Shift-clique é o gesto do navegador para esticar seleção de texto.
       // Barrar aqui é o que deixa o shift ser do bloco, sem sujar a tela com
       // um trecho de texto realçado que ninguém pediu.
@@ -349,7 +397,7 @@ function BlockCard({
             lineHeight: `${lineHeightPx}px`,
           }}
         >
-          {(expanded ? block.lines : block.lines.slice(0, BODY_LIMIT)).map(
+          {block.lines.slice(0, shown).map(
             (line, i) => (
               <Line key={i} line={line} />
             ),
@@ -360,11 +408,11 @@ function BlockCard({
         <button
           onClick={(event) => {
             event.stopPropagation();
-            setExpanded(true);
+            onShowMore?.(block.id);
           }}
           className="w-full border-t border-tyba-border/60 px-2.5 py-1 text-left font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
         >
-          {t("blockShowAll", { count: hidden })}
+          {t("blockShowAll", { count: Math.min(hidden, BODY_LIMIT) })}
         </button>
       )}
       {block.truncated > 0 && (
@@ -374,7 +422,7 @@ function BlockCard({
       )}
     </div>
   );
-}
+});
 
 /**
  * O começo da pilha: onde e quando a sessão abriu.
@@ -438,6 +486,15 @@ function SessionOpened({
  * não chega.
  */
 const HEADER_PX = 35;
+/**
+ * Altura mínima para um bloco prender o header no topo.
+ *
+ * Três vezes o header: o bloco precisa ter saída o bastante para valer a pena
+ * lembrar de quem ela é depois que o header dele sai de cena. Abaixo disso o
+ * header real some e volta na mesma rolagem, e prender só acrescenta uma barra
+ * piscando — ver a conta na condição de `pinned`.
+ */
+const PIN_MIN_PX = HEADER_PX * 3;
 /**
  * A linha do motivo no cartão de tela cheia (`text-[11px]` + `py-1`).
  *
@@ -540,7 +597,20 @@ interface Props {
   opened?: { cwd: string | null; atMs: number | null };
 }
 
-export function BlockList({
+/**
+ * Memoizada por último, e é a memoização que mais rende.
+ *
+ * O `App` é um componente só, com dezenas de estados, e re-renderiza a ~60 Hz
+ * enquanto um comando escreve — a altura da faixa ao vivo é medida a cada
+ * repintura do xterm. Sem memo aqui, toda lista de blocos de todo painel
+ * re-renderizava junto, a cada frame.
+ *
+ * > [!warning] Memo só vale com as props estáveis do outro lado. `rect`,
+ * > `opened`, `onActivate`, `onPick` e `onClearPick` são objetos e funções: se
+ * > o `App` voltar a criá-los inline no JSX, a comparação rasa falha em todo
+ * > render e este memo passa a custar sem devolver nada.
+ */
+export const BlockList = memo(function BlockList({
   blocks,
   rect,
   bottomInset = 0,
@@ -569,6 +639,26 @@ export function BlockList({
   // logo abaixo. Medida, e não derivada do `rect` em %: o retângulo é uma
   // fração do painel, e a mesma fração dá larguras diferentes conforme a
   // janela e o painel lateral.
+  /**
+   * Quantas linhas cada bloco está mostrando, por id.
+   *
+   * Mora na LISTA, não no cartão. No cartão, o estado morria junto com ele na
+   * virtualização — expandir, rolar e voltar devolvia o bloco fechado. E, o que
+   * é pior, a `estimate` daqui não conseguia enxergá-lo: um bloco expandido de
+   * 5 mil linhas continuava estimado em 200, o total da lista ficava muito
+   * menor que o conteúdo real, e a rolagem nunca chegava ao fim.
+   *
+   * Sem limpeza, pelo mesmo motivo de `withEntry`: id de bloco não se repete, e
+   * um número por bloco lido é barato perto de varrer isto a cada mudança.
+   */
+  const [shown, setShown] = useState<Record<number, number>>({});
+  const showMore = useCallback((id: number) => {
+    setShown((prev) => ({
+      ...prev,
+      [id]: (prev[id] ?? BODY_LIMIT) + BODY_LIMIT,
+    }));
+  }, []);
+
   const [widthPx, setWidthPx] = useState(0);
   useEffect(() => {
     const el = scrollRef.current;
@@ -592,16 +682,33 @@ export function BlockList({
     const reason = block.altScreen ? ALT_SCREEN_PX : 0;
     // Linhas VISUAIS, não lógicas: o corpo desenha com `whitespace-pre-wrap`, e
     // num painel estreito uma linha de saída ocupa três. Ver `blockMetrics`.
-    const body = bodyLines(block.lines, cols, BODY_LIMIT) * line;
+    //
+    // O teto é o que o bloco está MOSTRANDO, não `BODY_LIMIT`: quem já pediu
+    // mais linhas tem um cartão maior, e estimar pelo teto fixo devolvia um
+    // total de lista menor que o conteúdo — a rolagem parava antes do fim.
+    const limit = shown[block.id] ?? BODY_LIMIT;
+    const body = bodyLines(block.lines, cols, limit) * line;
+    const more = block.lines.length > limit ? SHOW_MORE_PX : 0;
     const footer = block.truncated > 0 ? line : 0;
-    return HEADER_PX + reason + body + footer + BLOCK_GAP_PX;
+    return HEADER_PX + reason + body + more + footer + BLOCK_GAP_PX;
   };
 
   const virtualizer = useVirtualizer({
     count: blocks.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: estimate,
+    // Já esteve em 2, para conter os nós de DOM: um cartão de 200 linhas
+    // coloridas passa de 3 mil, e a folga sozinha mantinha dezenas de milhares
+    // montados fora da tela. Voltou para 6 — folga é o que cobre a área que
+    // entra na tela ANTES de o React renderizar, e cortá-la troca nós de DOM
+    // por retângulo vazio durante o gesto. Quem paga a conta dos nós agora é o
+    // `memo` de `Line` e do cartão, que é onde ela devia ser paga.
     overscan: 6,
+    // O cache de altura é keyado por ESTE valor. Sem ele o padrão é o índice —
+    // e `mergeBlockHistory` faz prepend do histórico do SQLite, o que desloca
+    // todos os índices de uma vez e faz cada altura medida passar a pertencer a
+    // outro bloco. É o embaralhar de cartões ao abrir a sessão.
+    getItemKey: (index) => blocks[index]?.id ?? index,
   });
 
   // Métrica nova = TODO cartão muda de altura, e o virtualizador precisa saber.
@@ -682,9 +789,36 @@ export function BlockList({
   }, [virtualizer]);
 
   const last = blocks.length - 1;
+
+  // Rolagem movida na mão, e não pela nativa.
+  //
+  // A nativa não chegava aqui com o ponteiro sobre os cartões, só sobre a
+  // barra: esta lista é uma camada sobreposta ao terminal, e o WebKit prende o
+  // gesto ao scroller que escolheu no primeiro evento — preso no de trás, o de
+  // cima não recebe mais nada.
+  //
+  // > [!warning] Listener NATIVO com `passive: false`, e não o `onWheel` do
+  // > React. Este efeito inteiro existe por causa dessa diferença.
+  // >
+  // > O React registra `wheel` no container raiz sempre como PASSIVO (ele trata
+  // > `wheel`, `touchstart` e `touchmove` como caso especial). Num listener
+  // > passivo o `preventDefault` é inerte: o navegador avisa no console e rola
+  // > assim mesmo. Como o handler já tinha somado `deltaY` no `scrollTop` na
+  // > mão, a rolagem nativa vinha POR CIMA e o gesto andava o DOBRO — que é a
+  // > sensação de "pula e escapa" no trackpad.
   useEffect(() => {
-    if (last >= 0) virtualizer.scrollToIndex(last, { align: "end" });
-  }, [last, virtualizer]);
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      const before = el.scrollTop;
+      el.scrollTop = before + event.deltaY;
+      // No topo e no fim o gesto passa adiante, senão a lista viraria um
+      // buraco onde nada mais rola.
+      if (el.scrollTop !== before) event.preventDefault();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   // Bloco novo entra, a lista rola até ele e itens montam no caminho — o mesmo
   // caso do parágrafo acima, e o mais comum de todos: é o que acontece a cada
@@ -715,6 +849,20 @@ export function BlockList({
     // itens a partir do topo, mas a lista é ancorada embaixo (`justify-end` com
     // `min-h-full`), então as posições dele não batem com a rolagem — é o mesmo
     // descolamento que o header preso já contorna logo abaixo.
+    //
+    // > [!warning] Um `scrollToIndex(last)` já morou três linhas acima daqui, e
+    // > era ele que travava a rolagem. Não o traga de volta.
+    // >
+    // > `scrollToIndex` não escreve `scrollTop` e pronto: ele arma um laço de
+    // > `requestAnimationFrame` (`scheduleScrollReconcile`, no virtual-core)
+    // > que recalcula o alvo A CADA FRAME e reescreve a rolagem até convergir
+    // > ou até 5 segundos. Com o descolamento do parágrafo acima, o alvo nunca
+    // > bate — então o laço ia até o teto, a cada bloco novo, desfazendo no
+    // > frame seguinte todo gesto de quem tentasse subir para ler.
+    // >
+    // > Ele também não tinha a guarda de `atBottomRef` que este efeito tem, o
+    // > que fazia bloco novo puxar a lista para o fim mesmo com o dono lendo
+    // > algo antigo lá em cima.
     //
     // Em rAF porque o efeito roda antes de o WebKit refazer o layout com a
     // altura nova: lido agora, `scrollHeight` ainda é o de antes da mudança.
@@ -752,8 +900,21 @@ export function BlockList({
       // `<` e não `<=`: com o bloco começando exatamente no topo, o header dele
       // está à vista e prender desenha o MESMO header duas vezes, um debaixo do
       // outro. Prende só quando o de verdade já saiu de cena.
+      //
+      // E só bloco ALTO prende, que é o caso para o qual isto existe: o header
+      // sumir ao rolar só é problema quando ainda falta muita saída embaixo.
+      //
+      // Sem o piso, a barra piscava várias vezes por segundo numa pilha de
+      // comandos curtos. A conta: a condição acima só vale numa janela de
+      // `altura − HEADER_PX`, então um bloco de `ls` com 43px de altura a
+      // satisfaz por 8px de cada 43 — aparece, some, aparece, a cada bloco
+      // cruzado. Alto o bastante, a janela é quase o bloco inteiro e a barra
+      // fica parada, que é como ela deve se comportar.
       const current = items.find(
-        (item) => item.start < top && item.end > top + HEADER_PX,
+        (item) =>
+          item.end - item.start >= PIN_MIN_PX &&
+          item.start < top &&
+          item.end > top + HEADER_PX,
       );
       setPinned(current ? current.index : null);
     };
@@ -783,7 +944,22 @@ export function BlockList({
     // primeira linha do bloco cortada e como scroll que não chega ao fim.
     // Sobreposição não é fluxo — então não fica no fluxo.
     <div
-      className="pointer-events-none"
+      // `z-10` não é enfeite de empilhamento: é o que põe a lista ACIMA das
+      // camadas do xterm.
+      //
+      // O xterm desenha `canvas.xterm-link-layer` com `z-index: 2` dentro do
+      // `xterm-screen`. Sem z-index próprio, esta camada fica em `auto` e o
+      // canvas ganha o hit-test no retângulo que ele ocupa — mesmo estando
+      // ATRÁS na ordem do DOM. O ponteiro vira I-beam (cursor do xterm), a roda
+      // vai para o terminal e a lista não rola. Fora daquele retângulo ela rola
+      // normalmente, que é o que faz o defeito parecer intermitente.
+      //
+      // Medido: `elementFromPoint` devolvia `CANVAS.xterm-link-layer` e o
+      // `scrollTop` ficava congelado com 916px de rolagem disponível.
+      //
+      // Seguro porque esta lista só existe em modo prompt (ver `App`): no modo
+      // clássico ela não é montada e o terminal recebe o ponteiro inteiro.
+      className="pointer-events-none z-10"
       style={{
         position: "absolute",
         left: `${rect.left}%`,
@@ -796,21 +972,6 @@ export function BlockList({
     >
       <div
         ref={scrollRef}
-        // Rolagem movida na mão, e não pela nativa.
-        //
-        // A nativa não chegava aqui com o ponteiro sobre os cartões, só sobre
-        // a barra: esta lista é uma camada sobreposta ao terminal, e o WebKit
-        // prende o gesto ao scroller que escolheu no primeiro evento — preso
-        // no de trás, o de cima não recebe mais nada.
-        onWheel={(event) => {
-          const el = scrollRef.current;
-          if (!el) return;
-          const before = el.scrollTop;
-          el.scrollTop = before + event.deltaY;
-          // No topo e no fim o gesto passa adiante, senão a lista viraria um
-          // buraco onde nada mais rola.
-          if (el.scrollTop !== before) event.preventDefault();
-        }}
         onMouseDown={onActivate}
         // Só o fundo: clique que veio de um cartão para aqui por bubbling já
         // decidiu o que fazer com a seleção.
@@ -869,11 +1030,11 @@ export function BlockList({
                 lineHeightPx={lineHeightPx}
                 onInject={onInject}
                 marked={marked?.has(blocks[item.index].id) ?? false}
-                onPick={
-                  onPick
-                    ? (event) => onPick(blocks[item.index].id, event)
-                    : undefined
-                }
+                // Repassado direto, sem amarrar o id aqui: ver o comentário do
+                // prop em `BlockCard`.
+                onPick={onPick}
+                shown={shown[blocks[item.index].id] ?? BODY_LIMIT}
+                onShowMore={showMore}
                 />
               </div>
             ))}
@@ -881,8 +1042,18 @@ export function BlockList({
         </div>
       </div>
 
+      {/* Faixa rente ao topo, e não cartão flutuante.
+          Ela morava em `inset-x-2 top-2` com borda em volta, cantos e
+          `shadow-md`: lia como um cartão solto voando por cima da lista, e
+          entre a sombra e as margens comia a linha de cima E a de baixo do que
+          estava embaixo dela. Encostada nas bordas, com um filete só
+          separando, ela vira o que é — cromo da lista, dizendo de quem é a
+          saída que se está lendo.
+          Opaca continua sendo: o trabalho dela é esconder o que passa por trás.
+          O `px-2` repete o padding do scroller para o comando cair na mesma
+          coluna do comando de todo cartão. */}
       {pinned !== null && blocks[pinned] && (
-        <div className="absolute inset-x-2 top-2 z-10">
+        <div className="absolute inset-x-0 top-0 z-10 rounded-t-[4px] border-b border-tyba-border bg-tyba-sunken px-2">
           <BlockHeader block={blocks[pinned]} pinned onInject={onInject} />
         </div>
       )}
@@ -897,4 +1068,4 @@ export function BlockList({
       )}
     </div>
   );
-}
+});

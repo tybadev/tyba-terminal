@@ -1,7 +1,5 @@
 import type { ElementType } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState,
-  Fragment,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   CaretDown,
@@ -146,7 +144,10 @@ import {
   dockerAvailable,
   dockerListContainers,
   dockerOpenDashboard,
-  getPref,
+  bootGate,
+  bootSnapshot,
+  onAppReady,
+  onBootFailed,
   focusPane,
   layoutState,
   leafSessions,
@@ -204,6 +205,7 @@ import {
   splitPane,
   type ApprovalRequest,
   type LayoutState,
+  type Loaded,
   type RepoSnapshot,
   type Session,
   type SessionCommand,
@@ -242,7 +244,9 @@ import {
   updateDismiss,
   writeToSession,
   type UpdateStatus,
+  type BootFailure,
 } from "./lib/ipc";
+import { bootFailureTitleKey } from "./lib/bootFailure";
 import { basename } from "@/lib/utils";
 import { buildConflictPrompt } from "./lib/conflicts";
 import {
@@ -274,7 +278,13 @@ import {
   type AgentRunnerId,
 } from "./lib/agentSession";
 import { scheduleAgentReadyPrompt } from "./lib/agentReady";
-import { parseStartupMode } from "./lib/startup";
+import {
+  mergeLoaded,
+  nextBootPoll,
+  parseStartupMode,
+  shouldPromptNewSession,
+  SPLASH_DONE_EVENT,
+} from "./lib/startup";
 import {
   compactPath,
   resolveWorkspaceCwd,
@@ -290,20 +300,17 @@ import {
   DEFAULT_TOOLBAR,
   parseToolbarPref,
   snapshotForDir,
+  toolbarBranchChip,
   type ToolbarPref,
 } from "./lib/repoSnapshots";
 import { Toolbar } from "./components/Toolbar";
 import {
-  ActiveBlockFrame,
-  ActiveBlockHeader,
-  blocksRect,
   LIVE_DELAY_MS,
-  liveRect,
-  padSlackPx,
   termRect,
   usedFraction,
 } from "./components/ActiveBlock";
-import { LIVE_PAD_Y_PX } from "./components/TerminalView";
+import { SessionBlocks } from "./components/SessionBlocks";
+import { sessionBlocksData } from "./lib/sessionBlocks";
 
 /**
  * Intervalo da consulta ao modo do tty, em ms.
@@ -323,8 +330,8 @@ const SIDE_MIN_PX = 360;
 /** Piso do terminal. Sem ele o arrasto para o outro lado engole a área de
  *  trabalho, que é o problema simétrico e igualmente fácil de provocar. */
 const MAIN_MIN_PX = 320;
-import { BLOCK_GAP_PX, BlockList } from "./components/BlockList";
-import { withEntry } from "./lib/perSession";
+import { handlerCache, withEntry } from "./lib/perSession";
+import { useStableCallback } from "./lib/stableProps";
 import { mergeBlockHistory } from "./lib/blockHistory";
 import { blocksMarkdown, wipesTheScreen } from "./lib/blockText";
 import {
@@ -366,6 +373,7 @@ import {
 } from "./lib/appMenu";
 import {
   keyboardOwner,
+  programName,
   swallowsArrow,
   lineState,
   PROMPT_MODE_PREF_KEY,
@@ -769,6 +777,19 @@ export default function App() {
   }, []);
   const booted = useRef(false);
 
+  // A decisão nasce em dois pontos — no snapshot, quando ele já vem pronto, e
+  // no `app://ready`, quando não vinha — e vale uma vez só. O ref é o que
+  // garante a unicidade; `shouldPromptNewSession` é quem decide.
+  const promptNewSessionIfEmpty = useCallback(
+    (ready: boolean, workspaces: number) => {
+      const prompted = booted.current;
+      if (!shouldPromptNewSession({ ready, workspaces, prompted })) return;
+      booted.current = true;
+      setNewSessionOpen(true);
+    },
+    [],
+  );
+
   useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
@@ -855,10 +876,77 @@ export default function App() {
     [activeId],
   );
 
+  /**
+   * O core terminou de carregar?
+   *
+   * `false` não é "vazio", é "ainda não sei". O boot do core roda numa thread
+   * e um comando que chega antes dela terminar devolve listas vazias — tratar
+   * isso como estado final desenha "nenhuma sessão" por cima das que estão
+   * voltando.
+   */
+  const [bootReady, setBootReady] = useState(false);
+  // Espelho de `bootReady` para quem lê de dentro de um `await`: a closure de
+  // uma resposta que demorou guarda o valor de quando a chamada saiu, e o boot
+  // pode ter terminado no meio do caminho.
+  const bootReadyRef = useRef(false);
+  const markReady = useCallback(() => {
+    bootReadyRef.current = true;
+    setBootReady(true);
+  }, []);
+
+  /**
+   * Porta única das respostas do core que carregam `ready`.
+   *
+   * Devolve o dado quando ele vale como estado, e `null` quando a resposta é do
+   * meio do boot — aí quem aplicaria estaria apagando o que está voltando. As
+   * duas invariantes (o `ready` não regride; a lista só se aplica quando
+   * `ready`) vivem em `mergeLoaded`, e não em cada chamador.
+   */
+  const acceptLoaded = useCallback(
+    <T,>(response: Loaded<T> | null | undefined): T | null => {
+      const update = mergeLoaded(bootReadyRef.current, response);
+      if (update.ready) markReady();
+      return update.value;
+    },
+    [markReady],
+  );
+
+  // O splash espera por isto. Ver `main.tsx`.
+  useEffect(() => {
+    if (bootReady) window.dispatchEvent(new Event(SPLASH_DONE_EVENT));
+  }, [bootReady]);
+
   const paneLayout = useMemo(
     () => (activeTab?.root ? computeRects(activeTab.root) : null),
     [activeTab],
   );
+
+  /**
+   * As sessões que ocupam um painel em ALGUMA aba, de qualquer workspace.
+   *
+   * Só elas ganham um `xterm.js`. Sem este corte, o `sessions.map` do render
+   * montava um terminal por sessão da LISTA — e a lista guarda sessão morta: no
+   * modo `Resume`, que é o padrão, agente e container encerrados nunca são
+   * esquecidos. Medido num banco real: 22 sessões, todas `exited`, zero painéis
+   * — 22 instâncias de xterm construídas no boot, nenhuma visível, cada uma com
+   * seu `attach_session`, seus listeners e seu `ResizeObserver`. E como a
+   * tabela só cresce, o app ficava mais lento a cada uso.
+   *
+   * > [!warning] Em QUALQUER aba, não na ativa. `paneLayout` acima só conhece a
+   * > aba ativa; filtrar por ele desmontaria os terminais das outras abas a
+   * > cada troca, e o xterm remontado volta com a tela que o core reenvia, não
+   * > com o scrollback que o webview tinha. Trocaria um problema por outro.
+   */
+  const pannedSessions = useMemo(() => {
+    const ids = new Set<string>();
+    for (const workspace of layout.workspaces) {
+      for (const tab of workspace.tabs) {
+        if (!tab.root) continue;
+        for (const pane of computeRects(tab.root).panes) ids.add(pane.session);
+      }
+    }
+    return ids;
+  }, [layout.workspaces]);
 
   const workspaces = useMemo(() => {
     const query = sessionQuery.trim().toLowerCase();
@@ -868,10 +956,217 @@ export default function App() {
     );
   }, [layout.workspaces, sessionQuery]);
 
+  /** Recarrega a lista de sessões. Devolve se o core respondeu pronto. */
   const refreshSessions = useCallback(async () => {
     const all = await listSessions().catch(() => null);
-    if (all) setSessions(all);
+    const loaded = acceptLoaded(all);
+    if (loaded) setSessions(loaded);
+    return loaded !== null;
+  }, [acceptLoaded]);
+
+  /** O layout também veio vazio do meio do boot; reconsultar é a outra metade. */
+  const refreshLayout = useCallback(() => {
+    void layoutState()
+      .then((next) => {
+        const loaded = acceptLoaded(next);
+        if (!loaded) return;
+        setLayout(loaded);
+        promptNewSessionIfEmpty(true, loaded.workspaces.length);
+      })
+      .catch(() => {});
+  }, [acceptLoaded, promptNewSessionIfEmpty]);
+
+  /**
+   * As 16 preferências, aplicadas de uma vez — e recuperáveis.
+   *
+   * Antes cada uma era um `getPref` com `.catch` próprio, então uma falha
+   * custava UMA configuração. Trocar por uma chamada só tirou 18 travessias da
+   * main thread do caminho crítico, mas transformou a falha em tudo-ou-nada: se
+   * o `boot_snapshot` rejeitar — e ele rejeita quando o `store.prefs()` falha,
+   * por exemplo com `SQLITE_BUSY` depois do `busy_timeout` enquanto a thread de
+   * boot martela o mesmo mutex —, TODA preferência cai no padrão pela vida da
+   * janela: fonte, toolbar, atalhos, modo prompt, editor.
+   *
+   * O `ref` é o que permite recuperar sem estragar: o poll já volta a perguntar
+   * enquanto o boot não terminou, então ele reaplica se a primeira tentativa não
+   * trouxe nada — e uma vez aplicadas, uma resposta atrasada não pisa por cima
+   * do que o dono mudou nas Configurações nesse meio-tempo.
+   */
+  const prefsApplied = useRef(false);
+  const applyPrefsRef = useRef<(p: Record<string, string>) => void>(() => {});
+  /**
+   * Repesca as preferências quando a primeira tentativa não as trouxe.
+   *
+   * Mora aqui, e não dentro de um dos caminhos, porque **os dois** chegam ao
+   * pronto e nenhum é garantido: o `app://ready` costuma ganhar do primeiro
+   * tick do poll — o boot normal termina em ~80ms —, e o poll é a única via
+   * quando o evento se perde na janela do `listen()`. Instalada num caminho só,
+   * a rede fica inalcançável justamente no caso comum.
+   */
+  const recoverPrefs = useCallback(() => {
+    if (prefsApplied.current) return;
+    void bootSnapshot()
+      .then((full) => applyPrefsRef.current(full.prefs))
+      .catch(() => {});
   }, []);
+  const applyPrefs = useCallback((prefs: Record<string, string>) => {
+    if (prefsApplied.current) return;
+    prefsApplied.current = true;
+    const pref = (key: string) => prefs[key] ?? null;
+    const togglePrefRaw = pref(TOGGLE_PREF_KEY);
+    const detailsRaw = pref(DETAILS_PREF_KEY);
+    const overridesRaw = pref(DETAILS_OVERRIDES_KEY);
+    const nameRaw = pref(ACCOUNT_NAME_KEY);
+    const bindingsRaw = pref(BINDINGS_PREF_KEY);
+    const fontRaw = pref(FONT_SIZE_KEY);
+    const containersRaw = pref(SHOW_CONTAINERS_KEY);
+    const gitStatusRaw = pref(GIT_STATUS_KEY);
+    const shellIntegrationRaw = pref(SHELL_INTEGRATION_KEY);
+    const startupRaw = pref(STARTUP_KEY);
+    const toolbarRaw = pref(TOOLBAR_PREF_KEY);
+    const richInputRaw = pref(RICH_INPUT_PREF_KEY);
+    const editorRaw = pref(EDITOR_PREF_KEY);
+    const worktreeDefaultRaw = pref(WORKTREE_DEFAULT_KEY);
+    const reviewAgentRaw = pref(REVIEW_AGENT_KEY);
+    const promptModeRaw = pref(PROMPT_MODE_PREF_KEY);
+    setPromptModePref(promptModeRaw === "on");
+    if (togglePrefRaw === "rail" || togglePrefRaw === "hidden") {
+      setTogglePref(togglePrefRaw);
+    }
+    if (detailsRaw === "on" || detailsRaw === "off") setDetailsPref(detailsRaw);
+    if (overridesRaw) {
+      try {
+        setDetailOverrides(
+          JSON.parse(overridesRaw) as Record<string, DetailsPref>,
+        );
+      } catch {
+        setDetailOverrides({});
+      }
+    }
+    if (nameRaw) setAccountName(nameRaw);
+    setBindings(parseBindings(bindingsRaw));
+    setShowContainers(containersRaw === "on");
+    setShowGitStatus(gitStatusRaw !== "off");
+    setShellIntegration(shellIntegrationRaw !== "off");
+    setStartup(parseStartupMode(startupRaw));
+    setToolbarPref(parseToolbarPref(toolbarRaw));
+    if (editorRaw) setEditorPref(editorRaw);
+    setWorktreeDefault(worktreeDefaultRaw === "on");
+    if (reviewAgentRaw) setReviewAgent(reviewAgentRaw);
+    const richInput = parseRichInputPref(richInputRaw);
+    setRichInputPref(richInput);
+    if (richInput.agentRegex) {
+      void setAgentMatchPattern(richInput.agentRegex)
+        .then((accepted) => setRichInputRegexInvalid(!accepted))
+        .catch(() => setRichInputRegexInvalid(true));
+    }
+    const fontSize = Number(fontRaw);
+    if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
+  }, []);
+  applyPrefsRef.current = applyPrefs;
+
+  // A thread de boot morreu, e o vazio na tela é falha e não ausência de dado.
+  //
+  // O core abre o portão mesmo em pânico — senão todo comando de escrita
+  // pagaria o timeout de espera e a falha viraria lentidão —, e logo em seguida
+  // manda o `app://ready`. Sem consumir ESTE evento, um boot que morreu fica
+  // indistinguível de um app que simplesmente não tem sessão, e o usuário
+  // conclui que perdeu o trabalho em vez de que algo quebrou.
+  //
+  // O aviso é o mesmo para as duas vias — o evento, que é o caminho rápido, e o
+  // campo `bootFailure` do snapshot, que é a rede quando o evento se perde. Um
+  // `ref` guarda o que já foi avisado: as duas podem chegar, e avisar duas
+  // vezes da mesma falha é ruído.
+  const bootFailureSeen = useRef(false);
+  const reportBootFailure = useCallback(
+    (failure: BootFailure) => {
+      if (bootFailureSeen.current) return;
+      bootFailureSeen.current = true;
+      // O título vem do `kind`, não da mensagem — ver `bootFailureTitleKey`,
+      // que é onde mora o porquê e o que quebra se aparecer origem nova.
+      toastError(t(bootFailureTitleKey(failure.kind)), failure.message);
+    },
+    [t],
+  );
+  useEffect(() => {
+    const unlisten = onBootFailed(reportBootFailure);
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [reportBootFailure]);
+
+  // O core avisa quando a thread de boot termina. Só então o que veio vazio
+  // vira estado — antes disso é transitório.
+  //
+  // > [!warning] O aviso pode não chegar. `listen()` do Tauri é assíncrono:
+  // > entre pedir o registro e o listener existir de fato há uma janela, e o
+  // > `app://ready` emitido dentro dela se perde — o core não reenvia. Por isso
+  // > o poll ao lado do listener: ele não depende da entrega de nada. Os dois
+  // > caminhos param juntos, porque marcar `bootReady` muda a dependência e
+  // > desmonta este efeito; e se rodarem em paralelo por um instante, nenhum
+  // > desfaz o outro — `mergeLoaded` não deixa o `ready` regredir nem aplica
+  // > lista de resposta que não veio pronta.
+  useEffect(() => {
+    if (bootReady) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const startedAt = Date.now();
+
+    const unlisten = onAppReady(() => {
+      markReady();
+      void refreshSessions();
+      refreshLayout();
+      // O evento normalmente ganha do primeiro tick, e `markReady` desmonta
+      // este efeito — então a repesca tem de sair daqui também, senão ela só
+      // funciona no caso raro em que o evento se perde.
+      recoverPrefs();
+    });
+
+    const tick = async () => {
+      // `boot_snapshot` e não `list_sessions`: os dois são `async` no core,
+      // então nenhum roda na main thread do macOS — a que desenha o webview —,
+      // mas só este traz o `bootFailure`. E o evento que carregaria essa
+      // notícia sofre a mesma corrida de entrega que o `app://ready`, com o
+      // agravante de a thread de boot começar dentro do `.setup()`, antes de o
+      // webview existir. Sem o campo aqui, um pânico cedo não chegaria nunca.
+      //
+      // De quebra, uma pergunta em vez de duas: sessões e layout vêm juntos.
+      // `boot_gate` e não `boot_snapshot`: os dois são `async` no core, mas o
+      // snapshot completo roda `store.prefs()` a cada chamada, tomando o mesmo
+      // mutex que a thread de boot usa. O poll estava disputando o lock com a
+      // coisa que ele espera terminar — e descartando o resultado, porque o
+      // `mergeLoaded` recusa payload que não veio pronto.
+      const gate = await bootGate().catch(() => null);
+      if (gate?.bootFailure) reportBootFailure(gate.bootFailure);
+      const loaded = acceptLoaded(
+        gate?.loaded ? { ready: gate.ready, value: gate.loaded } : null,
+      );
+      if (loaded) {
+        setSessions(loaded.sessions);
+        setLayout(loaded.layout);
+        promptNewSessionIfEmpty(true, loaded.layout.workspaces.length);
+        // As prefs não vêm no portão, e o mount pode não tê-las trazido — a
+        // chamada dele rejeita inteira quando o `store.prefs()` falha.
+        recoverPrefs();
+      }
+      // O `stopped` só é consultado no fim, de propósito: o próprio sucesso
+      // deste tick sobe o `bootReady` e desmonta o efeito, e desistir por causa
+      // disso deixaria layout e falha sem aplicar.
+      schedule(loaded !== null);
+    };
+    const schedule = (ready: boolean) => {
+      const delay = nextBootPoll({ ready, elapsedMs: Date.now() - startedAt });
+      if (delay === null || stopped) return;
+      timer = window.setTimeout(() => void tick(), delay);
+    };
+    schedule(false);
+
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      void unlisten.then((off) => off());
+    };
+  }, [bootReady, markReady, refreshSessions, refreshLayout, recoverPrefs]);
 
   const sessionById = useMemo(
     () => new Map(sessions.map((s) => [s.id, s])),
@@ -1724,6 +2019,29 @@ export default function App() {
     [sessionCwds],
   );
 
+  // Ver `toolbarBranchChip`: a decisão de rótulo/ação/"não sei" mora lá, pura e
+  // testada. Aqui só se junta o estado que a tela tem.
+  const toolbarBranch = useMemo(() => {
+    return toolbarBranchChip({
+      session: activeSession
+        ? {
+            id: activeSession.id,
+            worktree: activeSession.worktree?.path ?? null,
+            alive: !isFinishedStatus(activeSession.status),
+            cwd: sessionCwds[activeSession.id]?.canonical ?? null,
+          }
+        : null,
+      workspaceDir: activeWorkspace ? workspaceGitDir(activeWorkspace) : null,
+      snapshots: repoSnapshots,
+    });
+  }, [
+    activeSession,
+    activeWorkspace,
+    repoSnapshots,
+    sessionCwds,
+    workspaceGitDir,
+  ]);
+
   // Sessão SSH roda o `ssh` localmente: o cwd do processo fica no home e nunca
   // reflete o `cd` do outro lado. Mostrar caminho local seria mentira — o que
   // localiza o usuário é o destino.
@@ -2506,93 +2824,50 @@ export default function App() {
         return;
       }
       unlisten = un;
-      const [
-        existing,
-        currentLayout,
-        togglePrefRaw,
-        detailsRaw,
-        overridesRaw,
-        nameRaw,
-        bindingsRaw,
-        fontRaw,
-        containersRaw,
-        gitStatusRaw,
-        shellIntegrationRaw,
-        startupRaw,
-        toolbarRaw,
-        richInputRaw,
-        editorRaw,
-        worktreeDefaultRaw,
-        reviewAgentRaw,
-        promptModeRaw,
-      ] = await Promise.all([
-        listSessions().catch(() => [] as Session[]),
-        layoutState().catch(() => EMPTY_LAYOUT),
-        getPref(TOGGLE_PREF_KEY).catch(() => null),
-        getPref(DETAILS_PREF_KEY).catch(() => null),
-        getPref(DETAILS_OVERRIDES_KEY).catch(() => null),
-        getPref(ACCOUNT_NAME_KEY).catch(() => null),
-        getPref(BINDINGS_PREF_KEY).catch(() => null),
-        getPref(FONT_SIZE_KEY).catch(() => null),
-        getPref(SHOW_CONTAINERS_KEY).catch(() => null),
-        getPref(GIT_STATUS_KEY).catch(() => null),
-        getPref(SHELL_INTEGRATION_KEY).catch(() => null),
-        getPref(STARTUP_KEY).catch(() => null),
-        getPref(TOOLBAR_PREF_KEY).catch(() => null),
-        getPref(RICH_INPUT_PREF_KEY).catch(() => null),
-        getPref(EDITOR_PREF_KEY).catch(() => null),
-        getPref(WORKTREE_DEFAULT_KEY).catch(() => null),
-        getPref(REVIEW_AGENT_KEY).catch(() => null),
-        getPref(PROMPT_MODE_PREF_KEY).catch(() => null),
-      ]);
+      // UMA chamada, e não dezoito.
+      //
+      // Eram 18 `invoke` no mount, 16 deles `get_pref`. Comando síncrono do
+      // Tauri roda na main thread do macOS — a mesma que desenha o webview —,
+      // então "paralelo" no JS vira fila ali, entremeada com a construção dos
+      // terminais. O core devolve prefs, sessões e layout de uma vez.
+      const snapshot = await bootSnapshot().catch(() => null);
       if (cancelled) return;
-      setPromptModePref(promptModeRaw === "on");
-      setSessions(existing);
-      setLayout(currentLayout);
-      if (togglePrefRaw === "rail" || togglePrefRaw === "hidden") {
-        setTogglePref(togglePrefRaw);
+      // A falha do boot precisa ser lida AQUI também, e não só no poll.
+      //
+      // O poll só roda enquanto `bootReady` é falso. Quando a thread de boot
+      // morre, o core abre o portão assim mesmo — senão todo comando de escrita
+      // pagaria o timeout —, então este snapshot volta `ready: true` COM
+      // `bootFailure`. Ler só no poll significa que `markReady()` desmonta o
+      // efeito e cancela o timer antes do primeiro tick, e o aviso nunca sai:
+      // um app sem sessão, sem layout e sem explicação, que é exatamente o
+      // "vazio indistinguível de falha" que este campo existe para evitar.
+      if (snapshot?.bootFailure) reportBootFailure(snapshot.bootFailure);
+      // Só aplica se veio de fato: `{}` de uma chamada que rejeitou não é
+      // "nenhuma preferência", é "não sei" — e gravar isso como estado deixaria
+      // o dono com todos os padrões pela vida da janela. O poll reaplica.
+      if (snapshot) applyPrefs(snapshot.prefs);
+      // As listas passam pela thread de boot e só valem quando ela terminou —
+      // vazio do meio do boot não é vazio. Ver `mergeLoaded`.
+      const loaded = acceptLoaded(
+        snapshot ? { ready: snapshot.ready, value: snapshot } : null,
+      );
+      if (loaded) {
+        setSessions(loaded.sessions);
+        setLayout(loaded.layout);
       }
-      if (detailsRaw === "on" || detailsRaw === "off") {
-        setDetailsPref(detailsRaw);
-      }
-      if (overridesRaw) {
-        try {
-          setDetailOverrides(
-            JSON.parse(overridesRaw) as Record<string, DetailsPref>,
-          );
-        } catch {
-          setDetailOverrides({});
-        }
-      }
-      if (nameRaw) setAccountName(nameRaw);
-      setBindings(parseBindings(bindingsRaw));
-      setShowContainers(containersRaw === "on");
-      setShowGitStatus(gitStatusRaw !== "off");
-      setShellIntegration(shellIntegrationRaw !== "off");
-      setStartup(parseStartupMode(startupRaw));
-      setToolbarPref(parseToolbarPref(toolbarRaw));
-      if (editorRaw) setEditorPref(editorRaw);
-      setWorktreeDefault(worktreeDefaultRaw === "on");
-      if (reviewAgentRaw) setReviewAgent(reviewAgentRaw);
-      const richInput = parseRichInputPref(richInputRaw);
-      setRichInputPref(richInput);
-      if (richInput.agentRegex) {
-        void setAgentMatchPattern(richInput.agentRegex)
-          .then((accepted) => setRichInputRegexInvalid(!accepted))
-          .catch(() => setRichInputRegexInvalid(true));
-      }
-      const fontSize = Number(fontRaw);
-      if (fontSize >= 10 && fontSize <= 20) setDefaultFontSize(fontSize);
-      if (currentLayout.workspaces.length === 0 && !booted.current) {
-        booted.current = true;
-        setNewSessionOpen(true);
-      }
+      // Só o layout que valeu como estado decide o modal. Resposta atrasada não
+      // decide nada: quem decidiu foi o handler do `app://ready`, com o layout
+      // que ele mesmo reconsultou.
+      promptNewSessionIfEmpty(
+        loaded !== null,
+        loaded?.layout.workspaces.length ?? 0,
+      );
     })();
     return () => {
       cancelled = true;
       unlisten?.();
     };
-  }, [refreshSessions]);
+  }, [acceptLoaded, refreshSessions, promptNewSessionIfEmpty, applyPrefs]);
 
   // Texto que a linha do TYBA recebeu de fora — paste, histórico, snippet.
   // Declarado aqui, e não junto do resto da linha lá embaixo, porque o
@@ -2901,6 +3176,11 @@ export default function App() {
     [],
   );
 
+  // A sessão é amarrada FORA do JSX, senão a prop nasce com identidade nova a
+  // cada render e derruba o `memo` do cartão de bloco. Ver `handlerCache`.
+  const pickerFor = useMemo(() => handlerCache(pickBlock), [pickBlock]);
+  const clearPick = useCallback(() => setBlockPick(null), []);
+
   const markedBlocks = useMemo(
     () => (blockPick ? new Set(blockPick.selection.ids) : null),
     [blockPick],
@@ -3058,18 +3338,23 @@ export default function App() {
   // Histórico e snippet entram na linha pelo MESMO caminho do paste: bracketed
   // paste detectado, control chars sanitizados e confirmação quando é multilinha.
   // Nada é executado — quem aperta Enter é o dono.
-  const injectIntoActive = useCallback(
-    (text: string) => {
-      if (!activeId || !text) return;
-      // Sem decidir de novo para onde o texto vai: quem decide é o
-      // `deliverPaste`, e duas cópias da regra divergiriam — foi assim que o
-      // "Colar" do menu de contexto ficou inerte enquanto histórico e snippet
-      // funcionavam.
-      deliverPaste(activeId, text);
-      if (!ownsCommandLine) getTerm(activeId)?.term.focus();
-    },
-    [activeId, deliverPaste, ownsCommandLine],
-  );
+  //
+  // `useStableCallback` e não `useCallback`: isto desce como `onInject` para o
+  // `SessionBlocks`, que é `memo`. As dependências naturais deste handler são
+  // as que mais mudam no app — `activeId` a cada troca de foco de painel e
+  // `ownsCommandLine` a cada começo e fim de comando —, então a lista daria
+  // identidade nova em toda fronteira de comando e invalidaria a memoização de
+  // TODOS os painéis, inclusive os que nada tinham a ver com o comando. Ver
+  // `lib/stableProps`.
+  const injectIntoActive = useStableCallback((text: string) => {
+    if (!activeId || !text) return;
+    // Sem decidir de novo para onde o texto vai: quem decide é o
+    // `deliverPaste`, e duas cópias da regra divergiriam — foi assim que o
+    // "Colar" do menu de contexto ficou inerte enquanto histórico e snippet
+    // funcionavam.
+    deliverPaste(activeId, text);
+    if (!ownsCommandLine) getTerm(activeId)?.term.focus();
+  });
 
   const pickSnippet = useCallback(
     (snippet: Snippet) => {
@@ -4487,6 +4772,11 @@ export default function App() {
                     />
                   ))}
                   {sessions.map((s) => {
+                    // Sem painel em aba nenhuma, sem terminal. Ver
+                    // `pannedSessions`: a lista de sessões guarda as mortas, e
+                    // construir um xterm para cada uma era o grosso do custo
+                    // de abertura.
+                    if (!pannedSessions.has(s.id)) return null;
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ??
                       null;
@@ -4587,96 +4877,53 @@ export default function App() {
                       />
                     );
                   })}
+                  {/* Nada de objeto ou arrow montados aqui dentro: o corpo do
+                      painel é `memo`, e prop com identidade nova a cada quadro
+                      faz a comparação rasa falhar sempre. Ver
+                      `SessionBlocks`. */}
                   {sessions.map((s) => {
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ?? null;
-                    const list = blocks[s.id] ?? [];
-                    const running = sessionCommands[s.id];
                     const blocked =
                       paneRect !== null &&
                       (promptModes[s.id] ?? false) &&
                       !(altScreens[s.id] ?? false);
                     if (!blocked || !paneRect) return null;
-                    const pane = {
-                      left: paneRect.x,
-                      top: paneRect.y,
-                      width: paneRect.w,
-                      height: paneRect.h,
-                    };
-                    // `clear` não abre a faixa: ele não tem saída para mostrar,
-                    // e meio painel preto que aparece para logo esvaziar tudo é
-                    // um solavanco em cima de um comando cujo ponto é sumir com
-                    // as coisas.
-                    const live = liveOf(s.id);
-                    // A lista cede à faixa só a altura que a saída usa de fato.
-                    // Sem isto ela larga metade do painel para um terminal que
-                    // costuma estar em boa parte vazio, e o cartão nasce longe
-                    // de onde a saída estava.
-                    const used = liveUsed[s.id] ?? 1;
-                    // A saída sobe além do que a conta em % diz, porque o
-                    // recorte desconta o padding do terminal. Lista, header e
-                    // moldura acompanham pelo mesmo tanto. Ver `padSlackPx`.
-                    const lift = padSlackPx(LIVE_PAD_Y_PX, used);
                     return (
-                      <Fragment key={`blocks-${s.id}`}>
-                        {/* Sem `list.length > 0`: a lista é o que COBRE o
-                            terminal, e o terminal em modo prompt é meia altura
-                            do painel. Escondida enquanto não houvesse bloco, o
-                            painel recém-aberto mostrava a caixa do xterm no
-                            rodapé e vazio em cima — o "abre já menor" do split.
-                            Vazia ela é um scroller com o cartão-zero dentro. */}
-                        <BlockList
-                          blocks={list}
-                          rect={blocksRect(pane, live, used)}
-                          bottomInset={
-                            live
-                              ? (activeHeaderPx[s.id] ?? 0) + lift + BLOCK_GAP_PX
-                              : 0
-                          }
-                          fontSizePx={termFontSize}
-                          lineHeightPx={
-                            termLineHeight[s.id] ?? fallbackLineHeight
-                          }
-                          cellWidthPx={termCellWidth[s.id] ?? fallbackCellWidth}
-                          opened={{
-                            cwd:
-                              sessionCwds[s.id]?.cwd ??
-                              sessionCwds[s.id]?.canonical ??
-                              null,
-                            atMs: Date.parse(s.created_at) || null,
-                          }}
-                          onInject={
-                            s.id === activeId ? injectIntoActive : undefined
-                          }
-                          onActivate={
-                            s.id === activeId
-                              ? undefined
-                              : () => void focusPane(paneRect.pane)
-                          }
-                          marked={
-                            blockPick?.session === s.id
-                              ? (markedBlocks ?? undefined)
-                              : undefined
-                          }
-                          onPick={(id, event) => pickBlock(s.id, id, event)}
-                          onClearPick={() => setBlockPick(null)}
-                          copyCombo={formatCombo(bindings.copy)}
-                        />
-                        {live && (
-                          <>
-                            <ActiveBlockHeader
-                              command={running?.command ?? ""}
-                              rect={liveRect(pane, used)}
-                              liftPx={lift}
-                              onHeight={(px) => reportHeaderPx(s.id, px)}
-                            />
-                            <ActiveBlockFrame
-                              rect={liveRect(pane, used)}
-                              liftPx={lift}
-                            />
-                          </>
-                        )}
-                      </Fragment>
+                      <SessionBlocks
+                        key={`blocks-${s.id}`}
+                        {...sessionBlocksData({
+                          session: s,
+                          pane: paneRect,
+                          blocks: blocks[s.id],
+                          // `clear` não abre a faixa: ele não tem saída para
+                          // mostrar, e meio painel preto que aparece para logo
+                          // esvaziar tudo é um solavanco em cima de um comando
+                          // cujo ponto é sumir com as coisas.
+                          live: liveOf(s.id),
+                          // A lista cede à faixa só a altura que a saída usa de
+                          // fato. Sem isto ela larga metade do painel para um
+                          // terminal que costuma estar em boa parte vazio, e o
+                          // cartão nasce longe de onde a saída estava.
+                          used: liveUsed[s.id],
+                          headerPx: activeHeaderPx[s.id],
+                          fontSizePx: termFontSize,
+                          lineHeightPx:
+                            termLineHeight[s.id] ?? fallbackLineHeight,
+                          cellWidthPx: termCellWidth[s.id] ?? fallbackCellWidth,
+                          cwd: sessionCwds[s.id],
+                          active: s.id === activeId,
+                          command: sessionCommands[s.id]?.command,
+                          marked:
+                            blockPick?.session === s.id ? markedBlocks : null,
+                          copyCombo: formatCombo(bindings.copy),
+                        })}
+                        onInject={injectIntoActive}
+                        onFocusPane={focusPane}
+                        onPick={pickerFor(s.id)}
+                        onClearPick={clearPick}
+                        onHeaderPx={reportHeaderPx}
+                      />
                     );
                   })}
                   {/* A moldura do painel — do PAINEL, não do que está dentro.
@@ -4848,7 +5095,8 @@ export default function App() {
                     key={`${activeSession.id}:line`}
                     sessionId={activeSession.id}
                     cwd={activeCwdKey}
-                    branch={activeGitStatus?.branch ?? null}
+                    program={programName(activeCommand?.command)}
+                    canCollapse={(paneLayout?.panes.length ?? 1) <= 1}
                     scope={historyScope}
                     focusNonce={commandLineNonce}
                     state={commandLineState}
@@ -4873,6 +5121,7 @@ export default function App() {
                   <Toolbar
                     pref={toolbarPref}
                     cwd={workspaceCwd(activeWorkspace)}
+                    branch={toolbarBranch}
                     snapshot={(() => {
                       const dir = workspaceGitDir(activeWorkspace);
                       return dir

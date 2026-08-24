@@ -4,12 +4,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
+mod capture;
 mod holdback;
 
 #[cfg(target_os = "windows")]
@@ -24,6 +25,82 @@ const CHANNEL_CAPACITY: usize = 128;
 
 pub type PtyId = Uuid;
 
+/// "O shell já chegou ao editor de linha dele?"
+///
+/// Serve a quem vai INJETAR uma linha. Antes desse instante o tty está em modo
+/// canônico, e escrever ali não perde nada — o driver enfileira, e o zsh executa
+/// quando assume o terminal — mas custa duas coisas:
+///
+/// - **o driver ECOA os bytes crus na tela**, então a injeção aparece como
+///   `^[=<comando>` no topo da sessão, antes de qualquer `133;A`: lixo solto,
+///   fora de qualquer bloco (verificado em pty real, 2026-08-22);
+/// - **o comando só roda quando o shell termina de carregar**, o que no
+///   `.zshrc` do dono é 1,4 s. Da cadeira, é apertar Enter e não acontecer nada.
+///
+/// > [!warning] O portão NÃO existe para impedir perda de byte. Isso foi
+/// > medido e é falso: `tcsetattr` do zsh não descarta a fila de entrada, e a
+/// > linha escrita em t=0 executa (4/4 em pty real, em t=0, 50 ms e 200 ms).
+/// > Quem "otimizar" isto de volta para uma escrita direta não vai ver teste
+/// > quebrar por perda — vai ver o eco cru voltar ao topo da sessão.
+///
+/// O sinal é o `633;P` do `precmd`, que sai imediatamente antes de o zle
+/// assumir: medindo o `ECHO` do termios do master a cada 5 ms, ele cai no MESMO
+/// milissegundo em que o `633;P` chega. Por isso o portão abre com o `633;P`
+/// **em qualquer modo** — ele responde "o editor de linha está vivo", não "o
+/// modo prompt está ligado". Um shell em modo clássico também aceita a injeção:
+/// o `bindkey '\e='` é instalado pelo rc de qualquer jeito.
+///
+/// `Mutex` próprio, e não o da tela: o único caminho que o toma é este, sempre
+/// como folha — quem espera aqui nunca segura a tela, e quem abre já está
+/// dentro dela. Inverter isso é o que criaria ordem de lock.
+///
+/// Mesmo desenho do [`crate::boot::BootGate`], e pela mesma razão: quem só quer
+/// *perguntar* é síncrono, quem vai *escrever* espera.
+#[derive(Default)]
+pub struct LineEditorGate {
+    open: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl LineEditorGate {
+    fn mark_open(&self) {
+        let mut open = self.open.lock();
+        if *open {
+            return;
+        }
+        *open = true;
+        self.changed.notify_all();
+    }
+
+    /// Segura até o shell alcançar o editor de linha, e devolve se alcançou.
+    ///
+    /// `false` é o teto estourado com o portão ainda fechado: shell sem
+    /// integração (nunca emite `633;P`), ou que morreu carregando. Quem chama
+    /// **escreve assim mesmo** — a espera é para não ecoar lixo, não para
+    /// evitar perda, e recusar deixaria de rodar um comando que hoje roda.
+    ///
+    /// Bloqueante de propósito: o chamador é um comando `async` e paga isto num
+    /// `spawn_blocking`, como o `wait_for_boot`.
+    pub fn wait_open(&self, timeout: Duration) -> bool {
+        let mut open = self.open.lock();
+        if *open {
+            return true;
+        }
+        // Laço com prazo, e não um `wait_for` só: `Condvar` acorda espúrio, e
+        // uma volta a mais devolveria `false` antes da hora — que aqui não é
+        // "esperei demais", é escrever no tty canônico e ecoar a injeção crua,
+        // exatamente o que o portão existe para evitar. Mesmo desenho do
+        // `BootGate::wait_ready`.
+        let deadline = Instant::now() + timeout;
+        while !*open {
+            if self.changed.wait_until(&mut open, deadline).timed_out() {
+                return *open;
+            }
+        }
+        true
+    }
+}
+
 struct ScreenState {
     parser: vt100::Parser,
     pending: Vec<u8>,
@@ -31,6 +108,9 @@ struct ScreenState {
     /// Última resposta do shell sobre o modo prompt (`633;P`). Guardada para
     /// poder ser CONSULTADA: evento só é entregue a quem já estava ouvindo.
     prompt_mode: bool,
+    /// Aberto pelo mesmo `633;P` que atualiza o campo acima — ver
+    /// [`LineEditorGate`].
+    line_editor: Arc<LineEditorGate>,
 }
 
 impl ScreenState {
@@ -40,6 +120,7 @@ impl ScreenState {
             pending: Vec::with_capacity(READ_BUF_SIZE),
             attachers: HashMap::new(),
             prompt_mode: false,
+            line_editor: Arc::new(LineEditorGate::default()),
         }
     }
 
@@ -103,17 +184,6 @@ fn now_ms() -> i64 {
 /// Apaga tela e scrollback e volta o cursor ao topo.
 const CLEAR_SCREEN: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
 
-/// Onde começa o `133;C` dentro do chunk, se estiver inteiro nele.
-///
-/// Busca a sequência crua em vez de pedir a posição ao `OscParser`: ele existe
-/// para dizer O QUE aconteceu, e dar-lhe offsets por causa de um recorte de
-/// tela sujaria a peça mais frágil do sistema. Marcador partido entre dois
-/// chunks devolve `None`, e quem chama tem a rede do evento.
-fn command_start_at(chunk: &[u8]) -> Option<usize> {
-    const MARK: &[u8] = b"\x1b]133;C";
-    chunk.windows(MARK.len()).position(|w| w == MARK)
-}
-
 fn emit_pending(state: &mut ScreenState, app: &AppHandle, event: &str) {
     if let Some(bytes) = state.take_pending() {
         let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -143,19 +213,27 @@ pub struct PtyExitPayload {
     pub code: Option<u32>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct SessionCommandPayload {
     /// Linha de comando em execução (shell integration), ou `None` quando ocioso.
     pub command: Option<String>,
     pub running: bool,
     pub agent_match: bool,
+    /// O shell está em prompt de continuação (`PS2`): a última linha submetida
+    /// não fechou o comando — `for`, `while`, `if`, `cat <<EOF`, aspas abertas.
+    ///
+    /// Nunca vem junto de `running: true`: são estados diferentes do mesmo
+    /// ciclo. Enquanto for `true`, o que o usuário mandar é MAIS LINHA do
+    /// mesmo comando, e não comando novo — sem isto o front só vê
+    /// `running: false` e oferece a linha como se fosse começar do zero.
+    pub continuation: bool,
 }
 
 /// Diretório de trabalho reportado via `OSC 7`.
 ///
 /// Atacante-controlável: qualquer processo que escreva no tty pode forjar.
 /// Uso exclusivo de exibição — nunca embasa decisão de segurança.
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SessionCwdPayload {
     pub cwd: String,
     pub canonical: String,
@@ -197,6 +275,175 @@ struct PtyHandle {
 #[derive(Default)]
 pub struct PtyPool {
     ptys: Mutex<HashMap<PtyId, PtyHandle>>,
+}
+
+/// A parte visual das ações, sob um lock só.
+///
+/// `chunk.get` em vez de índice: o recorte vem da máquina e o chunk é o mesmo
+/// que a alimentou, mas um descompasso aqui viraria pânico numa thread de PTY —
+/// e thread de PTY que morre leva a sessão junto, em silêncio.
+fn apply_screen(state: &mut ScreenState, chunk: &[u8], actions: &[capture::Action]) {
+    for action in actions {
+        match action {
+            capture::Action::Live(range) => {
+                if state.attached() {
+                    if let Some(bytes) = chunk.get(range.clone()) {
+                        state.pending.extend_from_slice(bytes);
+                    }
+                }
+            }
+            // Bytes próprios, e não recorte: o eco resgatado veio de um chunk
+            // que já passou. Vai para a fila sem limpar nada — o prompt
+            // primário que o precede continua desenhado, e o `PS2` que o segue
+            // entra depois. O core já tem a linha (ele vê o chunk inteiro), o
+            // que faltava era a janela anexada.
+            capture::Action::LiveEcho(bytes) => {
+                if state.attached() {
+                    state.pending.extend_from_slice(bytes);
+                }
+            }
+            capture::Action::LiveRestart(range) => {
+                if state.attached() {
+                    if let Some(bytes) = chunk.get(range.clone()) {
+                        state.pending.clear();
+                        state.pending.extend_from_slice(CLEAR_SCREEN);
+                        state.pending.extend_from_slice(bytes);
+                    }
+                }
+            }
+            // Sequência em vez de parser novo: recriar perderia os modos (como
+            // o bracketed paste).
+            capture::Action::ClearCoreScreen => state.parser.process(CLEAR_SCREEN),
+            capture::Action::ResetScreen => {
+                state.parser.process(CLEAR_SCREEN);
+                state.pending.clear();
+                if state.attached() {
+                    state.pending.extend_from_slice(CLEAR_SCREEN);
+                }
+            }
+            // O portão abre com o `633;P` em QUALQUER modo: ele diz que o
+            // editor de linha assumiu o terminal, não que o modo prompt está
+            // ligado. Ver [`LineEditorGate`].
+            capture::Action::PromptMode(on) => {
+                state.prompt_mode = *on;
+                state.line_editor.mark_open();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Um chunk inteiro sob UM lock só: o parse, a decisão da máquina e o que vai
+/// para a fila da tela ao vivo.
+///
+/// Estar tudo aqui dentro é a invariante, não arrumação. `PtyPool::attach`
+/// tranca ESTA mesma tela e faz, nesta ordem: drena a fila, fotografa
+/// `contents_formatted()` e só então registra a janela em `attachers`. A foto
+/// começa limpando a tela do destino, então tudo que a janela recebeu ANTES
+/// dela é inofensivo — mas o que chegar DEPOIS e já estiver dentro da foto é
+/// desenhado duas vezes.
+///
+/// Com o parse e o enfileiramento em seções críticas separadas, um `attach`
+/// cabe entre os dois: a foto já traz o efeito do chunk, a janela entra em
+/// `attachers`, e o `apply_screen` seguinte vê `attached()` e empurra o MESMO
+/// chunk para a fila. O caminho é real — `attach_session` é `async` e roda num
+/// worker do runtime, em paralelo com esta thread.
+///
+/// Passar um `attached()` fotografado no primeiro lock fecharia o caso de UMA
+/// janela, mas não o de duas: com outra já anexada, a fotografia diz `true` e
+/// o `Live` sai assim mesmo — para quem acabou de anexar, duplicado. O único
+/// jeito de a fresta não existir é não haver dois locks.
+///
+/// O custo cabe: esta seção crítica já carrega o `emit_pending`, que faz base64
+/// e atravessa o IPC. Ao lado disso, varrer o chunk atrás de OSC e copiá-lo
+/// para a captura não muda de ordem de grandeza — e a tela só tem um usuário
+/// quente, que é esta thread.
+///
+/// O vt100 do core vê o chunk INTEIRO: o recorte da máquina decide o que vira
+/// bloco, não o que o terminal desenha.
+fn ingest_chunk(
+    state: &mut ScreenState,
+    machine: &mut capture::CaptureMachine,
+    chunk: &[u8],
+    now_ms: i64,
+) -> Vec<capture::Action> {
+    state.parser.process(chunk);
+    let alt_screen = state.parser.screen().alternate_screen();
+    let actions = machine.on_chunk(chunk, now_ms, alt_screen);
+    apply_screen(state, chunk, &actions);
+    actions
+}
+
+/// O lado não-visual das ações: eventos para o webview, histórico e blocos.
+/// Fora do lock de tela — `emit` atravessa IPC e não pode segurar o terminal.
+struct ActionSink {
+    app: AppHandle,
+    session_id: PtyId,
+    command_event: String,
+    cwd_event: String,
+    prompt_mode_event: String,
+}
+
+impl ActionSink {
+    /// Devolve `true` quando um comando começou — é o sinal para reiniciar o
+    /// relógio do checkpoint.
+    fn run(&self, actions: Vec<capture::Action>, cols: u16, rows: u16) -> bool {
+        let mut started = false;
+        for action in actions {
+            match action {
+                // Um payload por estado, e o estado vem pronto da máquina. Já
+                // foram três ações — `Running`, `Idle`, `Continuation` — e cada
+                // uma montava aqui um `SessionCommandPayload` COMPLETO com os
+                // campos que não conhecia zerados. Como o front substitui o
+                // objeto da sessão a cada payload, a última a sair apagava as
+                // anteriores: o `Continuation` do fim do chunk derrubava o
+                // `Running` empurrado um instante antes.
+                capture::Action::CommandState(state) => {
+                    started |= state.running;
+                    let _ = self.app.emit(&self.command_event, state);
+                }
+                capture::Action::Record(record) => crate::history::record(record),
+                capture::Action::Wipe => {
+                    crate::blocks::submit(crate::blocks::Work::Wipe(self.session_id.to_string()))
+                }
+                capture::Action::Finalize(block) => {
+                    crate::blocks::finalize(crate::blocks::Finished {
+                        session_id: self.session_id.to_string(),
+                        command: block.command,
+                        exit_code: block.exit_code,
+                        cwd: block.cwd,
+                        started_at_ms: block.started_at_ms,
+                        finished_at_ms: block.finished_at_ms,
+                        bytes: block.bytes,
+                        cols,
+                        rows,
+                        dropped: block.dropped,
+                        alt_screen: block.alt_screen,
+                    })
+                }
+                // Emitido a CADA prompt, não só na mudança: um evento só chega
+                // a quem já estava ouvindo, e quem assinou tarde ficaria sem
+                // saber para sempre — foi o que deixou a linha de comando sem
+                // aparecer.
+                capture::Action::PromptMode(on) => {
+                    let _ = self.app.emit(
+                        &self.prompt_mode_event,
+                        SessionPromptModePayload { prompt_mode: on },
+                    );
+                }
+                capture::Action::Cwd(payload) => {
+                    let _ = self.app.emit(&self.cwd_event, payload);
+                    let _ = self.app.emit(EVENT_CWD_CHANGED, self.session_id);
+                }
+                capture::Action::Live(_)
+                | capture::Action::LiveEcho(_)
+                | capture::Action::LiveRestart(_)
+                | capture::Action::ClearCoreScreen
+                | capture::Action::ResetScreen => {}
+            }
+        }
+        started
+    }
 }
 
 impl PtyPool {
@@ -338,17 +585,16 @@ impl PtyPool {
             .spawn(move || {
                 let mut queued = false;
                 let mut last_flush = Instant::now();
-                let mut osc = crate::status::OscParser::new();
-                let mut tracker = crate::history::Tracker::new(session_id.to_string());
-                let mut last_match = false;
-                let mut last_cwd: Option<std::path::PathBuf> = None;
-                let mut last_cwd_canonical: Option<std::path::PathBuf> = None;
                 let mut last_bracketed = false;
-                let mut last_prompt_mode: Option<bool> = None;
-                let mut capture = crate::blocks::Capture::default();
-                let mut capturing = false;
                 let mut last_checkpoint = Instant::now();
-                let mut swallow_echo = false;
+                let mut machine = capture::CaptureMachine::new(session_id.to_string());
+                let sink = ActionSink {
+                    app: app.clone(),
+                    session_id,
+                    command_event,
+                    cwd_event,
+                    prompt_mode_event,
+                };
 
                 loop {
                     let chunk = if !queued {
@@ -366,74 +612,22 @@ impl PtyPool {
                     match chunk {
                         Some(chunk) => {
                             let due = last_flush.elapsed() >= FLUSH_INTERVAL;
-                            let bracketed = {
+                            // Um lock só do parse até a fila: ver `ingest_chunk`.
+                            let (actions, bracketed, cols, rows) = {
                                 let mut screen = reader_screen.lock();
-                                screen.parser.process(&chunk);
-                                if capturing {
-                                    capture.push(&chunk);
-                                    if screen.parser.screen().alternate_screen() {
-                                        capture.saw_alt_screen();
-                                    }
-                                }
-                                let checkpoint_due = capturing
-                                    && !capture.is_alt_screen()
-                                    && last_checkpoint.elapsed() >= crate::blocks::CHECKPOINT_EVERY;
-                                let checkpoint = checkpoint_due.then(|| {
-                                    last_checkpoint = Instant::now();
-                                    let (rows, cols) = screen.parser.screen().size();
-                                    (capture.snapshot(), cols, rows)
-                                });
-                                if screen.attached() {
-                                    if swallow_echo {
-                                        // O eco do comando cai entre `133;B` e
-                                        // `133;C`, e o cartão já mostra o
-                                        // comando — na tela ao vivo ele
-                                        // aparecia duas vezes.
-                                        //
-                                        // O corte é no MARCADOR, não no chunk:
-                                        // a saída costuma vir grudada no
-                                        // `133;C`, e jogar o chunk fora levaria
-                                        // o começo dela junto.
-                                        //
-                                        // E a limpeza vai aqui, no mesmo canal
-                                        // dos bytes: pelo evento de comando ela
-                                        // chegava ANTES do eco, e limpava uma
-                                        // tela onde ele ainda não estava.
-                                        if let Some(at) = command_start_at(&chunk) {
-                                            screen.pending.clear();
-                                            screen.pending.extend_from_slice(CLEAR_SCREEN);
-                                            screen.pending.extend_from_slice(&chunk[at..]);
-                                            swallow_echo = false;
-                                        }
-                                    } else {
-                                        screen.pending.extend_from_slice(&chunk);
-                                    }
-                                }
+                                let actions =
+                                    ingest_chunk(&mut screen, &mut machine, &chunk, now_ms());
                                 if due {
                                     emit_pending(&mut screen, &app, &output_event);
                                 }
                                 queued = !screen.pending.is_empty();
-                                if let Some((bytes, cols, rows)) = checkpoint {
-                                    // Sem isto, um crash no meio de um comando
-                                    // longo perde a saída inteira: o bloco só
-                                    // nasce no `133;D`.
-                                    crate::blocks::submit(crate::blocks::Work::Save(
-                                        crate::blocks::Checkpoint {
-                                            session_id: session_id.to_string(),
-                                            command: tracker
-                                                .command()
-                                                .unwrap_or_default()
-                                                .to_string(),
-                                            started_at_ms: tracker
-                                                .started_at()
-                                                .unwrap_or_else(now_ms),
-                                            bytes,
-                                            cols,
-                                            rows,
-                                        },
-                                    ));
-                                }
-                                screen.parser.screen().bracketed_paste()
+                                let (rows, cols) = screen.parser.screen().size();
+                                (
+                                    actions,
+                                    screen.parser.screen().bracketed_paste(),
+                                    cols,
+                                    rows,
+                                )
                             };
                             if due {
                                 last_flush = Instant::now();
@@ -447,188 +641,25 @@ impl PtyPool {
                                     },
                                 );
                             }
-                            for ev in osc.feed(&chunk) {
-                                use crate::status::ShellEvent;
-                                match ev {
-                                    ShellEvent::CommandLine(cmd) => {
-                                        // O espaço à esquerda sobrevive ao parser
-                                        // (é o `ignorespace`); quem classifica o
-                                        // comando quer a linha limpa.
-                                        last_match = crate::rich_input::agent_matcher()
-                                            .matches(cmd.trim_start());
-                                        tracker.on_command_line(cmd);
-                                    }
-                                    ShellEvent::CommandStart => {
-                                        tracker.on_start(now_ms());
-                                        // Bloco só existe com o modo prompt: sem
-                                        // ele o prompt é desenhado (e repintado)
-                                        // dentro da região, e o recorte sairia
-                                        // errado. Ver features/terminal-blocks.
-                                        capturing = last_prompt_mode == Some(true);
-                                        last_checkpoint = Instant::now();
-                                        let _ = capture.take();
-                                        // Rede: se o marcador veio partido
-                                        // entre dois chunks, o corte por
-                                        // posição não achou nada e a tela ao
-                                        // vivo ficaria muda o comando inteiro.
-                                        swallow_echo = false;
-                                        if capturing {
-                                            // O estado de tela do core é o que
-                                            // reata a sessão ao trocar de aba.
-                                            // Sem limpá-lo junto com o xterm, o
-                                            // histórico inteiro voltaria dentro
-                                            // do cartão ativo no reattach.
-                                            // Sequência em vez de parser novo:
-                                            // recriar perderia os modos (como o
-                                            // bracketed paste).
-                                            reader_screen
-                                                .lock()
-                                                .parser
-                                                .process(b"\x1b[H\x1b[2J\x1b[3J");
-                                        }
-                                        let _ = app.emit(
-                                            &command_event,
-                                            SessionCommandPayload {
-                                                command: tracker.command().map(str::to_string),
-                                                running: true,
-                                                agent_match: last_match,
-                                            },
-                                        );
-                                    }
-                                    // `133;D` traz exit code; prompt novo sem ele é
-                                    // comando que não terminou (Ctrl+C no meio,
-                                    // shell reiniciado) — grava sem código em vez
-                                    // de sumir com ele.
-                                    ShellEvent::CommandEnd(_) | ShellEvent::PromptStart => {
-                                        let code = match ev {
-                                            ShellEvent::CommandEnd(code) => Some(code),
-                                            _ => None,
-                                        };
-                                        let ended_at = now_ms();
-                                        let command = tracker
-                                            .command()
-                                            .map(str::to_string)
-                                            .unwrap_or_default();
-                                        let started = tracker.started_at().unwrap_or(ended_at);
-                                        if let Some(record) = tracker.on_end(
-                                            code,
-                                            ended_at,
-                                            last_cwd_canonical.as_deref(),
-                                        ) {
-                                            crate::history::record(record);
-                                        }
-                                        if capturing {
-                                            // `vim`, `bat`, `htop`: a saída não
-                                            // vai, o bloco vai. Descartar o
-                                            // comando inteiro apagaria do
-                                            // registro algo que foi executado.
-                                            let alt_screen = capture.is_alt_screen();
-                                            let dropped = capture.dropped();
-                                            let bytes = capture.take();
-                                            let (rows, cols) = {
-                                                let screen = reader_screen.lock();
-                                                screen.parser.screen().size()
-                                            };
-                                            if crate::blocks::wipes_the_screen(&command) {
-                                                // Em modo bloco a tela É a lista
-                                                // de blocos: limpar sem levá-los
-                                                // junto é o `clear` não fazer
-                                                // nada, que foi o que aconteceu.
-                                                //
-                                                // O bloco do próprio `clear`
-                                                // continua — some o que veio
-                                                // antes, e fica quem mandou
-                                                // sumir. Sem ele a lista fica
-                                                // vazia e o painel vira um preto
-                                                // sem explicação.
-                                                crate::blocks::submit(crate::blocks::Work::Wipe(
-                                                    session_id.to_string(),
-                                                ));
-                                            }
-                                            if !command.is_empty() {
-                                                crate::blocks::finalize(crate::blocks::Finished {
-                                                    session_id: session_id.to_string(),
-                                                    command,
-                                                    exit_code: code,
-                                                    cwd: last_cwd_canonical.as_deref().map(
-                                                        |path| path.to_string_lossy().into_owned(),
-                                                    ),
-                                                    started_at_ms: started,
-                                                    finished_at_ms: ended_at,
-                                                    bytes: if alt_screen {
-                                                        Vec::new()
-                                                    } else {
-                                                        bytes
-                                                    },
-                                                    cols,
-                                                    rows,
-                                                    dropped: dropped && !alt_screen,
-                                                    alt_screen,
-                                                });
-                                            }
-                                        }
-                                        if capturing {
-                                            // O bloco assume a saída aqui. Sem
-                                            // esvaziar a tela ao vivo, a mesma
-                                            // saída fica desenhada duas vezes:
-                                            // no cartão que acabou de nascer e
-                                            // embaixo dele, no terminal.
-                                            let mut screen = reader_screen.lock();
-                                            screen.parser.process(CLEAR_SCREEN);
-                                            screen.pending.clear();
-                                            if screen.attached() {
-                                                screen.pending.extend_from_slice(CLEAR_SCREEN);
-                                            }
-                                        }
-                                        capturing = false;
-                                        let _ = capture.take();
-                                        last_match = false;
-                                        let _ = app.emit(
-                                            &command_event,
-                                            SessionCommandPayload {
-                                                command: None,
-                                                running: false,
-                                                agent_match: false,
-                                            },
-                                        );
-                                    }
-                                    ShellEvent::InputStart => {
-                                        // Daqui até o `133;C` só vem o eco do
-                                        // que foi submetido. Fora do modo
-                                        // prompt quem digitou foi o terminal, e
-                                        // aí o eco é a própria digitação.
-                                        swallow_echo = last_prompt_mode == Some(true);
-                                    }
-                                    ShellEvent::PromptMode(on) => {
-                                        last_prompt_mode = Some(on);
-                                        reader_screen.lock().prompt_mode = on;
-                                        // Emitido a CADA prompt, não só na
-                                        // mudança: um evento só chega a quem já
-                                        // estava ouvindo, e quem assinou tarde
-                                        // ficaria sem saber para sempre — foi o
-                                        // que deixou a linha de comando sem
-                                        // aparecer.
-                                        let _ = app.emit(
-                                            &prompt_mode_event,
-                                            SessionPromptModePayload { prompt_mode: on },
-                                        );
-                                    }
-                                    ShellEvent::Cwd(path) => {
-                                        if last_cwd.as_deref() != Some(path.as_path()) {
-                                            last_cwd = Some(path.clone());
-                                            let payload = SessionCwdPayload::of(&path);
-                                            // O histórico guarda o caminho
-                                            // CANÔNICO. No macOS `/tmp` é symlink
-                                            // para `/private/tmp`: gravar o cru e
-                                            // consultar pelo canônico (que é o que
-                                            // o front tem) faria o escopo nunca
-                                            // casar, em silêncio.
-                                            last_cwd_canonical =
-                                                Some(std::path::PathBuf::from(&payload.canonical));
-                                            let _ = app.emit(&cwd_event, payload);
-                                            let _ = app.emit(EVENT_CWD_CHANGED, session_id);
-                                        }
-                                    }
+                            if sink.run(actions, cols, rows) {
+                                last_checkpoint = Instant::now();
+                            }
+                            if last_checkpoint.elapsed() >= crate::blocks::CHECKPOINT_EVERY {
+                                // Sem isto, um crash no meio de um comando longo
+                                // perde a saída inteira: o bloco só nasce no
+                                // `133;D`.
+                                if let Some(snapshot) = machine.checkpoint(now_ms()) {
+                                    last_checkpoint = Instant::now();
+                                    crate::blocks::submit(crate::blocks::Work::Save(
+                                        crate::blocks::Checkpoint {
+                                            session_id: session_id.to_string(),
+                                            command: snapshot.command,
+                                            started_at_ms: snapshot.started_at_ms,
+                                            bytes: snapshot.bytes,
+                                            cols,
+                                            rows,
+                                        },
+                                    ));
                                 }
                             }
                         }
@@ -642,10 +673,20 @@ impl PtyPool {
                         }
                     }
                 }
-                {
+                // O PTY morreu. Se havia comando em voo, o `133;D` nunca vai
+                // chegar e este é o último ponto que ainda sabe disso: sem
+                // fechar aqui, o bloco fica pulsando para sempre e o front
+                // nunca ouve `running: false` — a linha do TYBA fica
+                // desabilitada pelo resto da vida da aba.
+                let actions = machine.on_eof(now_ms());
+                let (cols, rows) = {
                     let mut screen = reader_screen.lock();
+                    apply_screen(&mut screen, &[], &actions);
                     emit_pending(&mut screen, &app, &output_event);
-                }
+                    let (rows, cols) = screen.parser.screen().size();
+                    (cols, rows)
+                };
+                sink.run(actions, cols, rows);
                 let _ = app.emit(&exit_event, PtyExitPayload { code: None });
                 on_exit();
             })
@@ -718,6 +759,17 @@ impl PtyPool {
         }
     }
 
+    /// O portão do editor de linha desta sessão — ver [`LineEditorGate`].
+    ///
+    /// Devolve o `Arc` em vez de esperar aqui dentro: esperar seguraria o lock
+    /// do pool inteiro, e o portão de UMA sessão fecharia todas as outras.
+    pub fn line_editor_gate(&self, id: PtyId) -> Option<Arc<LineEditorGate>> {
+        let ptys = self.ptys.lock();
+        let handle = ptys.get(&id)?;
+        let gate = Arc::clone(&handle.screen.lock().line_editor);
+        Some(gate)
+    }
+
     /// O modo prompt reportado pelo shell, para quem chegou depois do evento.
     pub fn prompt_mode(&self, id: PtyId) -> Option<bool> {
         let ptys = self.ptys.lock();
@@ -766,13 +818,6 @@ impl PtyPool {
         let screen = self.screen_of(id)?;
         let enabled = screen.lock().parser.screen().bracketed_paste();
         Some(enabled)
-    }
-
-    pub fn scrollback_text(&self, id: PtyId) -> Result<String, PtyError> {
-        let ptys = self.ptys.lock();
-        let handle = ptys.get(&id).ok_or(PtyError::NotFound(id))?;
-        let text = handle.screen.lock().parser.screen().contents();
-        Ok(text)
     }
 
     pub fn kill(&self, id: PtyId) -> Result<(), PtyError> {
@@ -843,38 +888,6 @@ fn kill_process_group(_leader_pid: u32) -> std::io::Result<()> {
 }
 
 pub type SharedPtyPool = Arc<PtyPool>;
-
-#[cfg(test)]
-mod echo_cut_tests {
-    use super::command_start_at;
-
-    #[test]
-    fn finds_the_marker_and_keeps_what_comes_after_it() {
-        // O que vem grudado no `133;C` é a saída do comando: cortar o chunk
-        // inteiro levaria o começo dela junto.
-        let chunk = b"ls -la\r\n\x1b]133;C\x07total 0\r\n";
-        let at = command_start_at(chunk).expect("marcador inteiro no chunk");
-        assert_eq!(&chunk[at..], b"\x1b]133;C\x07total 0\r\n");
-    }
-
-    #[test]
-    fn survives_the_marker_with_parameters() {
-        let chunk = b"eco\x1b]133;C;cmdline=x\x1b\\saida";
-        assert!(command_start_at(chunk).is_some());
-    }
-
-    #[test]
-    fn says_nothing_when_the_marker_is_split_between_chunks() {
-        // Quem chama tem a rede do evento do parser: sem ela, a tela ao vivo
-        // ficaria muda o comando inteiro.
-        assert_eq!(command_start_at(b"eco\r\n\x1b]133"), None);
-    }
-
-    #[test]
-    fn says_nothing_on_a_chunk_of_plain_output() {
-        assert_eq!(command_start_at(b"total 0\r\ndrwxr-xr-x\r\n"), None);
-    }
-}
 
 #[cfg(test)]
 mod screen_state_tests {
@@ -960,6 +973,202 @@ mod screen_state_tests {
         state.drop_window("tyba-2");
         state.pending.extend_from_slice(b"live");
         assert_eq!(state.take_pending().as_deref(), Some(&b"live"[..]));
+    }
+}
+
+#[cfg(test)]
+mod ingest_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use parking_lot::Mutex;
+
+    use super::capture::CaptureMachine;
+    use super::{apply_screen, ingest_chunk, LineEditorGate, ScreenState, SCROLLBACK_LINES};
+
+    /// O que uma janela recebe ao anexar, na ordem de `PtyPool::attach`: o que
+    /// estava na fila (que sai em broadcast, e ela já está ouvindo) e depois a
+    /// foto da tela. A foto começa limpando o destino — por isso o que veio
+    /// antes dela não conta, e o que vier depois conta duas vezes.
+    fn attach_bytes(state: &mut ScreenState, window: &str) -> Vec<u8> {
+        let mut seen = state.take_pending().unwrap_or_default();
+        seen.extend_from_slice(&state.parser.screen().contents_formatted());
+        state.attach(window);
+        seen
+    }
+
+    /// A tela que esses bytes desenham num terminal virgem — é o que o webview
+    /// mostra, e a única unidade em que "desenhou duas vezes" é afirmável.
+    fn rendered(bytes: &[u8]) -> String {
+        let mut parser = vt100::Parser::new(24, 80, SCROLLBACK_LINES);
+        parser.process(bytes);
+        parser.screen().contents()
+    }
+
+    /// O portão nasce fechado: sem isso a espera passaria direto e a linha
+    /// voltaria a ser escrita num shell que ainda não lê.
+    #[test]
+    fn the_line_editor_gate_starts_closed() {
+        let gate = LineEditorGate::default();
+        assert!(!gate.wait_open(Duration::from_millis(10)));
+    }
+
+    /// O `633;P` é o sinal, e ele vale em QUALQUER modo — é o editor de linha
+    /// que abre o portão, não o modo prompt. Um shell em modo clássico também
+    /// tem `bindkey '\e='` e também aceita a injeção; exigir `tyba-prompt=1`
+    /// aqui deixaria a submissão pendurada até o teto justamente nele.
+    #[test]
+    fn any_prompt_report_opens_the_line_editor_gate() {
+        for report in [
+            b"\x1b]633;P;tyba-prompt=1\x07".as_slice(),
+            b"\x1b]633;P;tyba-prompt=0\x07",
+        ] {
+            let mut state = ScreenState::new(24, 80);
+            let gate = Arc::clone(&state.line_editor);
+            let mut machine = CaptureMachine::new("s1".into());
+            assert!(!gate.wait_open(Duration::from_millis(0)));
+            ingest_chunk(&mut state, &mut machine, report, 1_000);
+            assert!(
+                gate.wait_open(Duration::from_millis(0)),
+                "o `633;P` não abriu o portão: {report:?}"
+            );
+        }
+    }
+
+    /// Saída comum não abre o portão. É o teste que dá sentido aos outros: o rc
+    /// do usuário IMPRIME enquanto carrega — `Last login`, banner de nvm, OSC 7
+    /// —, e um portão que abrisse com byte qualquer abriria no primeiro deles,
+    /// deixando a espera valendo zero justamente na janela que ela cobre.
+    #[test]
+    fn output_during_startup_does_not_open_the_line_editor_gate() {
+        let mut state = ScreenState::new(24, 80);
+        let gate = Arc::clone(&state.line_editor);
+        let mut machine = CaptureMachine::new("s1".into());
+        for chunk in [
+            b"Last login: Fri Aug 22\r\n".as_slice(),
+            b"\x1b]7;file:///Users/tester\x07",
+            b"nvm carregando...\r\n",
+        ] {
+            ingest_chunk(&mut state, &mut machine, chunk, 1_000);
+        }
+        assert!(!gate.wait_open(Duration::from_millis(0)));
+    }
+
+    /// Quem já esperava acorda — a espera não pode depender de o portão já
+    /// estar aberto na hora de perguntar.
+    #[test]
+    fn a_waiter_wakes_when_the_shell_reaches_its_line_editor() {
+        let state = Arc::new(Mutex::new(ScreenState::new(24, 80)));
+        let gate = Arc::clone(&state.lock().line_editor);
+        let opener = Arc::clone(&state);
+        let waiter = std::thread::spawn(move || gate.wait_open(Duration::from_secs(5)));
+        let mut machine = CaptureMachine::new("s1".into());
+        std::thread::sleep(Duration::from_millis(30));
+        ingest_chunk(
+            &mut opener.lock(),
+            &mut machine,
+            b"\x1b]633;P;tyba-prompt=1\x07",
+            1_000,
+        );
+        assert!(waiter.join().unwrap());
+    }
+
+    #[test]
+    fn ingesting_a_chunk_queues_it_for_an_attached_screen() {
+        let mut state = ScreenState::new(24, 80);
+        state.attach("main");
+        let mut machine = CaptureMachine::new("s1".into());
+        ingest_chunk(&mut state, &mut machine, b"tyba", 1_000);
+        assert_eq!(state.take_pending().as_deref(), Some(&b"tyba"[..]));
+        assert!(state.parser.screen().contents().contains("tyba"));
+    }
+
+    #[test]
+    fn ingesting_a_chunk_queues_nothing_for_a_detached_screen() {
+        let mut state = ScreenState::new(24, 80);
+        let mut machine = CaptureMachine::new("s1".into());
+        ingest_chunk(&mut state, &mut machine, b"tyba", 1_000);
+        assert!(state.pending.is_empty());
+        assert!(state.parser.screen().contents().contains("tyba"));
+    }
+
+    /// O achado do review no nível do encanamento. Num comando incompleto o
+    /// `133;C` nunca chega, então nada repunha o eco engolido: o core, que vê o
+    /// chunk inteiro, ficava com a linha submetida, e a janela anexada só com o
+    /// `PS2`. Trocar de aba e voltar consertava — a foto vem do core —, ficar
+    /// olhando não.
+    #[test]
+    fn an_incomplete_command_leaves_the_window_with_the_screen_the_core_has() {
+        let mut state = ScreenState::new(24, 80);
+        state.attach("main");
+        let mut machine = CaptureMachine::new("s1".into());
+        let mut seen = Vec::new();
+        for chunk in [
+            b"\x1b]633;P;tyba-prompt=1\x07".as_slice(),
+            b"\x1b]133;B\x07",
+            b"for i in 1 2 3; do\r\nfor> ",
+        ] {
+            ingest_chunk(&mut state, &mut machine, chunk, 1_000);
+            seen.extend(state.take_pending().unwrap_or_default());
+        }
+        assert!(
+            rendered(&seen).contains("for i in 1 2 3; do"),
+            "a janela ficou sem a linha que o `PS2` espera terminar: {:?}",
+            rendered(&seen)
+        );
+        assert_eq!(rendered(&seen), state.parser.screen().contents());
+    }
+
+    /// A invariante que o lock único sustenta: só existem duas ordens em que um
+    /// `attach` pode cair em relação a um chunk — antes dele e depois dele —, e
+    /// as duas têm de deixar a janela com a mesma tela do core. É por não haver
+    /// uma terceira ordem que a duplicação some.
+    #[test]
+    fn an_attacher_sees_the_same_screen_on_either_side_of_a_chunk() {
+        let chunk = b"tyba\r\n";
+
+        let mut before = ScreenState::new(24, 80);
+        let mut machine = CaptureMachine::new("s1".into());
+        let mut seen_before = attach_bytes(&mut before, "main");
+        ingest_chunk(&mut before, &mut machine, chunk, 1_000);
+        seen_before.extend(before.take_pending().unwrap_or_default());
+
+        let mut after = ScreenState::new(24, 80);
+        let mut machine = CaptureMachine::new("s1".into());
+        ingest_chunk(&mut after, &mut machine, chunk, 1_000);
+        let mut seen_after = attach_bytes(&mut after, "main");
+        seen_after.extend(after.take_pending().unwrap_or_default());
+
+        assert_eq!(rendered(&seen_before), rendered(&seen_after));
+        assert_eq!(rendered(&seen_before), before.parser.screen().contents());
+    }
+
+    /// A terceira ordem, executada à mão: parse num lock, `attach` na fresta,
+    /// `apply_screen` noutro. A foto já traz o chunk e o `attached()` do segundo
+    /// lock manda o mesmo chunk para a fila — a janela desenha a saída duas
+    /// vezes.
+    ///
+    /// O teste existe porque a corrida em si não é testável: ela mora no
+    /// entrelaçamento de duas threads e some ao olhar. Isto é o mais perto que
+    /// dá de deixá-la executável, e é o que torna verificável o motivo de
+    /// `ingest_chunk` ser um bloco só.
+    #[test]
+    fn splitting_the_step_draws_the_chunk_twice() {
+        let chunk = b"tyba\r\n";
+        let mut state = ScreenState::new(24, 80);
+        let mut machine = CaptureMachine::new("s1".into());
+
+        state.parser.process(chunk);
+        let alt_screen = state.parser.screen().alternate_screen();
+        let actions = machine.on_chunk(chunk, 1_000, alt_screen);
+
+        let mut seen = attach_bytes(&mut state, "main");
+
+        apply_screen(&mut state, chunk, &actions);
+        seen.extend(state.take_pending().unwrap_or_default());
+
+        assert_eq!(rendered(&seen).matches("tyba").count(), 2);
+        assert_eq!(state.parser.screen().contents().matches("tyba").count(), 1);
     }
 }
 

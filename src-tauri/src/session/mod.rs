@@ -1,3 +1,4 @@
+pub mod cwd;
 pub mod redact;
 pub mod store;
 
@@ -530,15 +531,6 @@ impl SessionManager {
         let _ = self.store.remove_session(id);
     }
 
-    pub fn flush_scrollback(&self, pty_pool: &SharedPtyPool) {
-        let ids: Vec<SessionId> = self.sessions.read().keys().copied().collect();
-        for id in ids {
-            if let Ok(text) = pty_pool.scrollback_text(id) {
-                let _ = self.store.save_scrollback(id, &text);
-            }
-        }
-    }
-
     /// Traz de volta as sessões persistidas, todas mortas: o PTY não sobrevive ao
     /// processo. Antes as linhas de shell eram **apagadas** aqui — e com elas o
     /// cwd, que é justamente o que permite reabrir a sessão no mesmo lugar. Quem
@@ -630,6 +622,14 @@ pub fn expand_home(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// O `is_dir()` daqui é o que faz uma pasta que sumiu virar `$HOME` em vez de
+/// erro de spawn — inclusive no reopen do arranque, onde é o único stat que
+/// sobra para a política [`cwd::ReopenPolicy::Unchecked`]. É também onde o
+/// diálogo do TCC realmente aparece quando o caminho está sob Desktop/Documents/
+/// Downloads: `cwd::reopen_policy` classifica sem tocar no disco, mas quem
+/// reabre passa por aqui. Tirar o stat não livra do diálogo — o `chdir` do
+/// shell entra na mesma pasta em seguida — e troca "tab no home" por "tab
+/// nenhuma".
 pub fn resolve_cwd(requested: Option<&Path>) -> PathBuf {
     let home = || {
         std::env::var("HOME")
@@ -1037,9 +1037,14 @@ fn wsl_distros() -> Vec<String> {
 /// limpa em nomes de distro. Parser frágil → tem teste.
 #[cfg(windows)]
 fn decode_wsl_list(bytes: &[u8]) -> Vec<String> {
+    // `as_chunks::<2>()` e não `chunks_exact(2)`: o `chunks_exact_to_as_chunks`
+    // do clippy 1.98 recusa o segundo. O `.0` são os pares completos e o `.1` é
+    // o byte ímpar que sobra — mesmo descarte que o `chunks_exact` fazia.
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     String::from_utf16_lossy(&units)
         .lines()

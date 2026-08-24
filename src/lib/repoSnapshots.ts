@@ -1,4 +1,4 @@
-import type { RepoSnapshot } from "./ipc";
+import type { RepoSnapshot, SessionId } from "./ipc";
 
 export function snapshotForDir(
   snapshots: Record<string, RepoSnapshot>,
@@ -14,6 +14,95 @@ export function snapshotForDir(
     }
   }
   return best;
+}
+
+/**
+ * Onde uma ação de repositório da sessão vai cair — o alvo real do checkout.
+ *
+ * Espelha `session_repo_context` no core, na mesma ordem: worktree primeiro,
+ * cwd do processo depois.
+ *
+ * > [!warning] Não é o repositório do WORKSPACE. `workspaceGitDir` cai no cwd
+ * > de qualquer sessão folha, e no fim em `repo_root` — que, para uma sessão de
+ * > agente, é o repo principal, não o worktree dela. Com as duas fontes
+ * > misturadas, a barra dizia `main` do repo principal enquanto o seletor
+ * > trocava de branch dentro do worktree do agente: rótulo e alvo em
+ * > repositórios diferentes, sem nada na tela denunciando.
+ *
+ * `null` onde o core também falharia: sem worktree e sem processo vivo não há
+ * cwd para ler, e o seletor abriria só para dizer que a sessão não tem um
+ * processo ativo.
+ */
+export function sessionRepoDir(input: {
+  worktree: string | null;
+  alive: boolean;
+  cwd: string | null;
+}): string | null {
+  if (input.worktree) return input.worktree;
+  if (!input.alive) return null;
+  return input.cwd;
+}
+
+export interface BranchChipSession {
+  id: SessionId;
+  worktree: string | null;
+  alive: boolean;
+  cwd: string | null;
+}
+
+/**
+ * `unknown` é o chip que assume não saber: sem rótulo e sem ação.
+ *
+ * Existe porque o terceiro caminho — sumir — mente pior. Um chip que aparece
+ * numa sessão e some na outra lê como defeito, e o usuário não tem como saber
+ * que foi decisão. Dizer "há uma branch aqui, e eu não sei qual é" é a única
+ * afirmação verdadeira disponível nesse estado.
+ */
+export type BranchChip =
+  | { state: "known"; label: string; sessionId: SessionId | null }
+  | { state: "unknown" };
+
+/**
+ * O chip de branch da barra de status: rótulo e alvo do checkout, juntos.
+ *
+ * Juntos porque saíam de fontes diferentes e podiam ser repositórios
+ * diferentes — a barra lia o repo do WORKSPACE e o `session_checkout` resolvia
+ * o worktree da SESSÃO. O rótulo vem do repositório onde a troca de branch de
+ * fato cai.
+ *
+ * > [!warning] Snapshot ausente NÃO é o mesmo que "não é um repositório". O
+ * > core só registra em `watched_repo_roots` o `repo_root` dos workspaces e o
+ * > cwd de sessão em `SessionStatus::Running` — então toda sessão de agente
+ * > encerrada fica sem snapshot do worktree dela, o que é rotina e não exceção.
+ * > O worktree é o único dir aqui que se sabe ser git por construção: só ali o
+ * > `unknown` é afirmação, e não chute. Com cwd solto, sem snapshot pode ser
+ * > simplesmente uma pasta fora de repositório, e o chip ausente é o certo.
+ */
+export function toolbarBranchChip(input: {
+  session: BranchChipSession | null;
+  workspaceDir: string | null;
+  snapshots: Record<string, RepoSnapshot>;
+}): BranchChip | null {
+  const { session, workspaceDir, snapshots } = input;
+  const dir = session ? sessionRepoDir(session) : null;
+  if (session && dir) {
+    // Sem cair para o workspace se este repositório não tiver snapshot:
+    // rótulo emprestado de outro repo é justamente o defeito.
+    const own = snapshotForDir(snapshots, dir);
+    if (own?.branch) {
+      return { state: "known", label: own.branch, sessionId: session.id };
+    }
+    // Sem ação junto do `unknown`, de propósito: o seletor abriria, mas o
+    // checkout não teria snapshot para atualizar o rótulo depois. O usuário
+    // trocaria de branch e veria a barra igual — pior que não oferecer.
+    return session.worktree ? { state: "unknown" } : null;
+  }
+  const snap = workspaceDir
+    ? snapshotForDir(snapshots, workspaceDir)
+    : undefined;
+  return snap?.branch
+    ? { state: "known", label: snap.branch, sessionId: null }
+    : null;
 }
 
 const CHIP_IDS = [
