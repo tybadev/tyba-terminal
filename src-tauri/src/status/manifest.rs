@@ -12,8 +12,6 @@
 //! porta já está dentro do orçamento, e o laço quente não gasta nada
 //! conferindo limite.
 
-use std::path::Path;
-
 use serde::Deserialize;
 
 use crate::session::ObservedState;
@@ -228,12 +226,6 @@ impl Manifest {
             applies_to: raw.applies_to,
             rules,
         })
-    }
-
-    pub fn load(path: &Path) -> Result<Self, ManifestError> {
-        let source =
-            std::fs::read_to_string(path).map_err(|e| ManifestError::Parse(e.to_string()))?;
-        Self::parse(&source)
     }
 
     /// O manifesto reconhece esta sessão?

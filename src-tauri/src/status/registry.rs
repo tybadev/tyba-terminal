@@ -296,6 +296,36 @@ contains = ["Working"]
         assert!(ManifestRegistry::assemble(&[], Some(&dir)).is_empty());
     }
 
+    /// O teto de origem: uma pasta grande não vira uma carga grande no boot.
+    #[test]
+    fn a_pasta_para_no_teto_de_arquivos() {
+        let dir = dir_de_teste();
+        for i in 0..MAX_MANIFESTS + 5 {
+            escreve(
+                &dir,
+                // Zero à esquerda para a ordem de nome ser a ordem numérica —
+                // é ela que decide quais entram quando o teto corta.
+                &format!("m{i:03}.toml"),
+                &format!(
+                    "id = \"m{i:03}\"\nmatch = {{ title = [\"m{i:03}\"] }}\n\
+                     [[rules]]\nid = \"r\"\nstate = \"running\"\n\
+                     region = \"osc_title\"\ncontains = [\"x\"]\n"
+                ),
+            );
+        }
+
+        let registry = ManifestRegistry::assemble(&[], Some(&dir));
+
+        assert_eq!(registry.len(), MAX_MANIFESTS);
+        assert!(registry.identify(Scope::Shell, None, "m000").is_some());
+        assert!(
+            registry
+                .identify(Scope::Shell, None, &format!("m{:03}", MAX_MANIFESTS + 4))
+                .is_none(),
+            "arquivo além do teto entrou assim mesmo"
+        );
+    }
+
     #[test]
     fn pasta_inexistente_nao_e_erro() {
         let dir = std::env::temp_dir().join(format!("tyba-nao-existe-{}", uuid::Uuid::new_v4()));

@@ -296,6 +296,47 @@ contains = ["esc to interrupt"]
         assert_eq!(espiao.ultimo().unwrap().state, Some(ObservedState::Running));
     }
 
+    /// Estado herdado vale para o MESMO agente, e só.
+    ///
+    /// A tela troca de dono — o usuário sai do Codex e abre o Gemini, ou dois
+    /// manifestos reconhecem telas parecidas —, e carregar o `running` do
+    /// anterior afirmaria sobre o novo algo que ninguém observou.
+    #[test]
+    fn o_estado_nao_atravessa_de_um_agente_para_outro() {
+        const GEMINI: &str = r#"
+id = "gemini"
+match = { title = ["Gemini"] }
+
+[[rules]]
+id = "sem_estado_para_esta_tela"
+region = { bottom_lines = 3 }
+contains = ["Ready"]
+skip_state_update = true
+"#;
+        let espiao = Arc::new(Espiao::default());
+        let sink_spy = Arc::clone(&espiao);
+        let mut observer = ScreenObserver::for_session(
+            &SessionKind::Shell,
+            Arc::new(ManifestRegistry::from_sources(&[CODEX, GEMINI])),
+            Box::new(|| None),
+            Box::new(move |observed| sink_spy.publicados.lock().push(observed)),
+        )
+        .unwrap();
+
+        observer.observe(&snap("Codex", &["• esc to interrupt"]));
+        assert_eq!(espiao.ultimo().unwrap().state, Some(ObservedState::Running));
+
+        // Hold do Gemini: reconhece a tela e não diz nada sobre estado.
+        observer.observe(&snap("Gemini", &["Ready"]));
+
+        let ultimo = espiao.ultimo().unwrap();
+        assert_eq!(ultimo.agent, "gemini");
+        assert_eq!(
+            ultimo.state, None,
+            "o estado do agente anterior atravessou para o novo"
+        );
+    }
+
     /// Identidade perdida é presença perdida — o contrário deixaria um agente
     /// morto no quadro para sempre.
     #[test]
