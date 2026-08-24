@@ -4796,9 +4796,26 @@ async fn search_command_history(
     query: String,
     cwd: Option<String>,
     repo_root: Option<String>,
+    session_id: Option<String>,
+    filter: Option<history::HistoryFilter>,
     limit: usize,
 ) -> Result<Vec<HistoryHit>, String> {
-    history_hits(&state, &query, cwd.as_deref(), repo_root.as_deref(), limit)
+    // Janela que começa no futuro devolveria vazio sem explicação, e o usuário
+    // leria isso como "não tenho histórico". É erro de quem chamou: cai para
+    // sem filtro de período em vez de mentir com uma lista vazia.
+    let mut filter = filter.unwrap_or_default();
+    if !filter.since_is_sane(approvals::now_ms() as i64) {
+        filter.since_ms = None;
+    }
+    history_hits_filtered(
+        &state,
+        &query,
+        cwd.as_deref(),
+        repo_root.as_deref(),
+        session_id.as_deref(),
+        &filter,
+        limit,
+    )
 }
 
 /// O corpo do comando, síncrono, para quem já está numa thread — `suggest_line`
@@ -4810,13 +4827,34 @@ fn history_hits(
     repo_root: Option<&str>,
     limit: usize,
 ) -> Result<Vec<HistoryHit>, String> {
+    history_hits_filtered(
+        state,
+        query,
+        cwd,
+        repo_root,
+        None,
+        &history::HistoryFilter::default(),
+        limit,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn history_hits_filtered(
+    state: &AppState,
+    query: &str,
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
+    session_id: Option<&str>,
+    filter: &history::HistoryFilter,
+    limit: usize,
+) -> Result<Vec<HistoryHit>, String> {
     use fuzzy_matcher::skim::SkimMatcherV2;
     use fuzzy_matcher::FuzzyMatcher;
 
     let query = query.trim();
     let candidates = state
         .store
-        .history_candidates(Some(query), cwd, repo_root)
+        .history_candidates_filtered(Some(query), cwd, repo_root, session_id, filter)
         .map_err(|e| e.to_string())?;
     let matcher = SkimMatcherV2::default();
     let now = approvals::now_ms() as i64;
