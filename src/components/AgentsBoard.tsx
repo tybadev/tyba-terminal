@@ -12,6 +12,7 @@ import {
   wantsAttention,
   type AgentRow,
   type SessionPlace,
+  type WorkspaceGroup,
 } from "../lib/agentsBoard";
 import type { LayoutState, Session, SessionId } from "../lib/ipc";
 import { AgentIcon } from "./icons/AgentIcon";
@@ -120,6 +121,35 @@ function Row({
 }
 
 /**
+ * O cabeçalho de um grupo de workspace, igual nas duas seções.
+ *
+ * `level` existe só pela hierarquia do documento: na seção dos observados o
+ * grupo fica abaixo do cabeçalho da própria seção, então é `h4`.
+ */
+function WorkspaceHeading({
+  group,
+  level,
+}: {
+  group: WorkspaceGroup;
+  level: 3 | 4;
+}) {
+  const Tag = level === 3 ? "h3" : "h4";
+  return (
+    <Tag className="flex items-center gap-2 px-3 py-1 text-xs text-tyba-text-muted">
+      {group.workspaceColor && (
+        <span
+          className="size-2 rounded-full"
+          style={{ backgroundColor: group.workspaceColor }}
+          aria-hidden
+        />
+      )}
+      <span className="truncate">{group.workspaceName}</span>
+      <span className="text-tyba-text-faint">{group.rows.length}</span>
+    </Tag>
+  );
+}
+
+/**
  * Todos os agentes, de todos os workspaces, num lugar só.
  *
  * O componente é burro de propósito: ele não sabe o que é urgência nem o que é
@@ -143,11 +173,17 @@ export function AgentsBoard({
     () => groupByWorkspace(sections.managed),
     [sections.managed],
   );
+  // Também por workspace: "detectados na tela: 2" sem dizer de onde vêm manda o
+  // usuário procurar. O rollup continua dentro da seção — agrupar não mistura.
+  const observedGroups = useMemo(
+    () => groupByWorkspace(sections.observed),
+    [sections.observed],
+  );
   const waiting = useMemo(
     () => boardOrder(sections).filter(wantsAttention).length,
     [sections],
   );
-  const empty = groups.length === 0 && sections.observed.length === 0;
+  const empty = groups.length === 0 && observedGroups.length === 0;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -186,19 +222,7 @@ export function AgentsBoard({
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
           {groups.map((group) => (
             <section key={group.workspaceId} className="mb-3">
-              <h3 className="flex items-center gap-2 px-3 py-1 text-xs text-tyba-text-muted">
-                {group.workspaceColor && (
-                  <span
-                    className="size-2 rounded-full"
-                    style={{ backgroundColor: group.workspaceColor }}
-                    aria-hidden
-                  />
-                )}
-                <span className="truncate">{group.workspaceName}</span>
-                <span className="text-tyba-text-faint">
-                  {group.rows.length}
-                </span>
-              </h3>
+              <WorkspaceHeading group={group} level={3} />
               {group.rows.map((row) => (
                 <Row
                   key={row.session.id}
@@ -213,7 +237,7 @@ export function AgentsBoard({
           {/* Mesmo quadro, seção própria e sempre embaixo: o que o TYBA lançou
               vem primeiro, e o que ele apenas deduziu da tela vem depois, com o
               que a seção não tem dito no cabeçalho. */}
-          {sections.observed.length > 0 && (
+          {observedGroups.length > 0 && (
             <section className="mb-3 border-t border-tyba-border pt-2">
               <h3 className="flex items-center gap-2 px-3 py-1 text-xs text-tyba-text-muted">
                 <ShieldSlash
@@ -230,13 +254,18 @@ export function AgentsBoard({
               <p className="px-3 pb-1 text-[11px] leading-snug text-tyba-text-faint">
                 {t("agentsNoGate")}
               </p>
-              {sections.observed.map((row) => (
-                <Row
-                  key={row.session.id}
-                  row={row}
-                  active={row.session.id === activeSessionId}
-                  onJump={onJump}
-                />
+              {observedGroups.map((group) => (
+                <div key={group.workspaceId} className="mb-1">
+                  <WorkspaceHeading group={group} level={4} />
+                  {group.rows.map((row) => (
+                    <Row
+                      key={row.session.id}
+                      row={row}
+                      active={row.session.id === activeSessionId}
+                      onJump={onJump}
+                    />
+                  ))}
+                </div>
               ))}
             </section>
           )}
