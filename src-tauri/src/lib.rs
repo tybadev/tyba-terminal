@@ -6340,6 +6340,7 @@ mod tests {
             cwd: None,
             connection: session::ConnectionState::Live,
             agent_conversation_id: None,
+            observed: None,
         }
     }
 

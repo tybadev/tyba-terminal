@@ -114,6 +114,37 @@ pub enum ConnectionState {
     Dropped,
 }
 
+/// O que a tela sugere que um agente está fazendo.
+///
+/// Vocabulário deliberadamente menor que o de [`SessionStatus`]: não há `Failed`
+/// nem `Exited` porque a tela não sabe disso — um agente que morreu deixa a
+/// última tela dele parada, indistinguível de um que está pensando.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedState {
+    Running,
+    AwaitingInput,
+    Idle,
+}
+
+/// Agente **deduzido** da tela, numa sessão que o TYBA não lançou.
+///
+/// Mora em campo próprio, e não em [`SessionStatus`], por decisão de
+/// arquitetura — ADR `2026-08-24-palpite-de-tela-nao-divide-campo-com-fato-de-hook`.
+/// O ganho não é organização: é que "vence o último a escrever" deixa de ser
+/// possível, em vez de ser proibido por uma regra que um call site futuro pode
+/// esquecer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedAgent {
+    /// Id do manifesto que reconheceu a sessão (`codex`, `gemini`, …).
+    pub agent: String,
+    /// `None` significa **presença sem estado**: há um agente ali, e o sinal não
+    /// diz o que ele está fazendo. É o caso do opencode e do Copilot CLI, cujo
+    /// título identifica mas não carrega estado. A UI mostra "sem sinal" — nunca
+    /// um ponto colorido fingindo saber.
+    pub state: Option<ObservedState>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
     pub id: SessionId,
@@ -136,6 +167,11 @@ pub struct Session {
     /// casos não há convite de retomar.
     #[serde(default)]
     pub agent_conversation_id: Option<String>,
+    /// Agente que a tela sugere, para sessão sem hook. **Nunca persistido**: é
+    /// derivado do que está na tela agora, e ressuscitá-lo de um banco antigo
+    /// afirmaria um agente que pode ter morrido enquanto o app estava fechado.
+    #[serde(default, skip_deserializing)]
+    pub observed: Option<ObservedAgent>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -473,6 +509,7 @@ impl SessionManager {
             cwd,
             connection: ConnectionState::Live,
             agent_conversation_id: previous.and_then(|s| s.agent_conversation_id),
+            observed: None,
         };
         self.sessions.write().insert(id, session.clone());
         let _ = self.store.upsert_session(&session);
@@ -501,19 +538,59 @@ impl SessionManager {
             .collect()
     }
 
+    /// Grava o palpite de tela. **Não toca `status` nem `attention`.**
+    ///
+    /// Recusa sessão de agente lançada pelo TYBA: ali existe hook, e hook é
+    /// autoridade. Deixar as duas fontes coexistirem na mesma sessão não
+    /// corromperia nada (são campos diferentes), mas daria à UI duas respostas
+    /// para a mesma pergunta — e a de tela é a pior das duas.
+    ///
+    /// Não persiste: ver [`Session::observed`].
+    pub fn set_observed(&self, app: &AppHandle, id: SessionId, observed: Option<ObservedAgent>) {
+        if let Some(session) = self.apply_observed(id, observed) {
+            emit_status(app, &session);
+        }
+    }
+
+    /// A mutação, sem IPC. Devolve a sessão quando algo mudou — `None` quando
+    /// não há o que emitir.
+    ///
+    /// Separado do [`Self::set_observed`] para poder ser testado sem
+    /// `AppHandle`: o mock do Tauri usa `MockRuntime`, e o resto do core é
+    /// tipado em `Wry`.
+    fn apply_observed(&self, id: SessionId, observed: Option<ObservedAgent>) -> Option<Session> {
+        let mut sessions = self.sessions.write();
+        let s = sessions.get_mut(&id)?;
+        if matches!(s.kind, SessionKind::Agent { .. }) {
+            return None;
+        }
+        if s.observed == observed {
+            return None;
+        }
+        s.observed = observed;
+        Some(s.clone())
+    }
+
     pub fn set_status(&self, app: &AppHandle, id: SessionId, status: SessionStatus) {
+        if let Some(session) = self.apply_status(id, status) {
+            emit_status(app, &session);
+        }
+    }
+
+    /// A mutação de status, sem IPC — mesmo corte de [`Self::apply_observed`],
+    /// pelo mesmo motivo.
+    fn apply_status(&self, id: SessionId, status: SessionStatus) -> Option<Session> {
         let status = status.redacted();
         let mut sessions = self.sessions.write();
-        if let Some(s) = sessions.get_mut(&id) {
-            let attention = status.wants_attention() && matches!(s.kind, SessionKind::Agent { .. });
-            if s.status == status && s.attention == attention {
-                return;
-            }
-            s.attention = attention;
-            s.status = status;
-            let _ = self.store.upsert_session(s);
-            emit_status(app, s);
+        let s = sessions.get_mut(&id)?;
+        let attention = status.wants_attention() && matches!(s.kind, SessionKind::Agent { .. });
+        if s.status == status && s.attention == attention {
+            return None;
         }
+        s.attention = attention;
+        s.status = status;
+        let _ = self.store.upsert_session(s);
+        Some(s.clone())
     }
 
     /// Grava o id da conversa nativa do agente. Chamado de dentro do handler de
@@ -1122,6 +1199,7 @@ mod tests {
             cwd: Some(PathBuf::from("/tmp")),
             connection: ConnectionState::default(),
             agent_conversation_id: None,
+            observed: None,
         }
     }
 
@@ -1428,6 +1506,126 @@ echo beta
             "sem o cwd não há como reabrir a sessão no mesmo lugar"
         );
         assert_eq!(manager.dead_sessions().len(), 1);
+    }
+
+    /// A prova que dá sentido ao campo separado: o palpite não alcança o fato.
+    #[test]
+    fn o_palpite_de_tela_nao_toca_status_nem_attention() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let shell = make(SessionKind::Shell, SessionStatus::Running);
+        store.upsert_session(&shell).unwrap();
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+        let id = manager.list()[0].id;
+        let antes = manager.get(id).unwrap();
+
+        manager.apply_observed(
+            id,
+            Some(ObservedAgent {
+                agent: "codex".into(),
+                state: Some(ObservedState::AwaitingInput),
+            }),
+        );
+
+        let depois = manager.get(id).unwrap();
+        assert_eq!(
+            depois.status, antes.status,
+            "estado deduzido escreveu no campo do fato"
+        );
+        assert_eq!(depois.attention, antes.attention);
+        assert_eq!(
+            depois.observed.unwrap().state,
+            Some(ObservedState::AwaitingInput)
+        );
+    }
+
+    /// E o inverso: mexer no fato não apaga o palpite por efeito colateral.
+    #[test]
+    fn mudar_o_status_nao_limpa_o_palpite() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store
+            .upsert_session(&make(SessionKind::Shell, SessionStatus::Running))
+            .unwrap();
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+        let id = manager.list()[0].id;
+        manager.apply_observed(
+            id,
+            Some(ObservedAgent {
+                agent: "gemini".into(),
+                state: None,
+            }),
+        );
+
+        manager.apply_status(id, SessionStatus::Idle { summary: None });
+
+        let s = manager.get(id).unwrap();
+        assert_eq!(
+            s.observed.as_ref().map(|o| o.agent.as_str()),
+            Some("gemini")
+        );
+        assert_eq!(s.observed.unwrap().state, None, "presença sem estado");
+    }
+
+    /// Onde há hook, o palpite nem entra. Não é que ele corromperia algo — são
+    /// campos diferentes —, é que daria à UI duas respostas para a mesma
+    /// pergunta, e a de tela é a pior das duas.
+    #[test]
+    fn sessao_de_agente_gerenciada_recusa_o_palpite() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store
+            .upsert_session(&make(
+                SessionKind::Agent {
+                    runner: AgentRunnerKind::ClaudeCode,
+                },
+                SessionStatus::Running,
+            ))
+            .unwrap();
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+        let id = manager.list()[0].id;
+
+        manager.apply_observed(
+            id,
+            Some(ObservedAgent {
+                agent: "claude".into(),
+                state: Some(ObservedState::Running),
+            }),
+        );
+
+        assert!(
+            manager.get(id).unwrap().observed.is_none(),
+            "hook é autoridade: a tela não opina onde ele existe"
+        );
+    }
+
+    /// Palpite não sobrevive ao disco: ele descreve a tela de agora, e um agente
+    /// pode ter morrido enquanto o app estava fechado.
+    #[test]
+    fn o_palpite_nao_e_persistido() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store
+            .upsert_session(&make(SessionKind::Shell, SessionStatus::Running))
+            .unwrap();
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+        let id = manager.list()[0].id;
+        manager.apply_observed(
+            id,
+            Some(ObservedAgent {
+                agent: "codex".into(),
+                state: Some(ObservedState::Running),
+            }),
+        );
+
+        // Um manager novo sobre o MESMO store é o que acontece ao reabrir o app.
+        let renascido = SessionManager::new(Arc::clone(&store));
+        renascido.restore().unwrap();
+
+        assert!(
+            renascido.get(id).unwrap().observed.is_none(),
+            "o palpite voltou do banco e afirmaria um agente que pode ter morrido"
+        );
     }
 
     #[test]

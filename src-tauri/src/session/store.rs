@@ -2281,6 +2281,7 @@ impl RawSession {
             repo_root: self.repo_root.map(PathBuf::from),
             worktree,
             status,
+            observed: None,
             attention: false,
             created_at,
             cwd: self.cwd.map(PathBuf::from),
@@ -2375,6 +2376,7 @@ mod tests {
             cwd: Some(PathBuf::from("/repo/sub")),
             connection: crate::session::ConnectionState::default(),
             agent_conversation_id: None,
+            observed: None,
         }
     }
 
