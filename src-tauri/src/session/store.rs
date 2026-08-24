@@ -172,7 +172,8 @@ CREATE TABLE IF NOT EXISTS command_history (
     command TEXT NOT NULL,
     exit_code INTEGER,
     started_at_ms INTEGER NOT NULL,
-    duration_ms INTEGER
+    duration_ms INTEGER,
+    import_key TEXT
 );
 CREATE INDEX IF NOT EXISTS command_history_by_time ON command_history (started_at_ms DESC);
 CREATE INDEX IF NOT EXISTS command_history_by_cwd ON command_history (cwd, started_at_ms DESC);
@@ -212,8 +213,9 @@ CREATE TABLE IF NOT EXISTS snippet (
 ";
 
 /// Teto do histórico. Sem ele a tabela cresce com o uso e nunca encolhe: é a
-/// única do banco alimentada por cada Enter que o usuário dá.
-const COMMAND_HISTORY_CAP: i64 = 20_000;
+/// única do banco alimentada por cada Enter que o usuário dá. Dimensionado para
+/// caber o histórico importado de anos de shell, não só o digitado no TYBA.
+const COMMAND_HISTORY_CAP: i64 = 100_000;
 
 /// Retenção de bloco por sessão, nas duas dimensões. Contagem sozinha não
 /// protege de um bloco gigante; tamanho sozinho deixa a tabela crescer em
@@ -229,6 +231,129 @@ const BLOCK_VERSION: i64 = 1;
 /// que fica de fora é o que ninguém procuraria de qualquer forma — e o fuzzy
 /// roda sobre um conjunto limitado, não sobre a tabela inteira.
 const HISTORY_CANDIDATES: i64 = 2_000;
+
+/// Quantas linhas a lista **sem busca** agrega. Ela abre a paleta e roda sem
+/// debounce, então não pode custar a tabela inteira: com 100 000 linhas isso é
+/// 48 ms contra 10 ms sobre a janela. A busca com query ignora este limite.
+const HISTORY_RECENT_ROWS: i64 = 20_000;
+
+/// Corta o histórico no teto, mantendo as entradas **mais recentes por data**.
+///
+/// O corte não pode ser por `id`: entrada importada entra com `id` novo e data
+/// velha, então cortar por ordem de inserção expulsaria justamente as linhas
+/// vivas, que têm `id` menor. O `id` só desempata data igual, para o resultado
+/// ser determinístico.
+///
+/// A guarda de `MIN`/`MAX` existe porque isto roda a cada comando: as duas são
+/// O(1) no rowid, enquanto o `DELETE` percorre o índice de tempo até o teto.
+/// O intervalo de `id` nunca é menor que a contagem de linhas, então quando ele
+/// cabe no teto a tabela também cabe.
+fn evict_command_history(conn: &Connection, cap: i64) -> Result<(), StoreError> {
+    let span: i64 = conn.query_row(
+        "SELECT IFNULL(MAX(id) - MIN(id) + 1, 0) FROM command_history",
+        [],
+        |row| row.get(0),
+    )?;
+    if span <= cap {
+        return Ok(());
+    }
+    conn.execute(
+        "DELETE FROM command_history
+         WHERE id IN (
+             SELECT id FROM command_history
+             ORDER BY started_at_ms DESC, id DESC
+             LIMIT -1 OFFSET ?1
+         )",
+        params![cap],
+    )?;
+    Ok(())
+}
+
+/// Candidatos agregados por comando, de dentro de uma conexão já travada.
+///
+/// `recent_rows` limita **só a lista sem busca** — o "últimos comandos" que abre
+/// a paleta. Agregar a tabela inteira para isso custa 48 ms com 100 000 linhas,
+/// contra 10 ms sobre a janela; e o que sai da janela é justamente o que
+/// ninguém veria numa lista de recentes. Com busca o limite não se aplica: ali o
+/// ponto é alcançar o comando antigo, e o filtro em SQL já corta o volume.
+fn history_candidates_in(
+    conn: &Connection,
+    query: Option<&str>,
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
+    recent_rows: i64,
+) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
+    let repo_prefix = repo_root.map(|root| format!("{}/", root.trim_end_matches('/')));
+    let mut stmt = conn.prepare(
+        "SELECT command,
+                MAX(started_at_ms),
+                COUNT(*),
+                SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN exit_code IS NOT NULL THEN 1 ELSE 0 END),
+                MAX(CASE WHEN cwd IS NOT NULL AND cwd = ?1 THEN 1 ELSE 0 END),
+                MAX(CASE WHEN ?2 IS NOT NULL AND cwd IS NOT NULL
+                          AND (cwd = ?3 OR cwd LIKE ?2 ESCAPE '\\')
+                         THEN 1 ELSE 0 END),
+                MAX(cwd)
+         FROM (SELECT command, cwd, exit_code, started_at_ms
+                 FROM command_history
+                WHERE ?5 IS NULL OR command LIKE ?5 ESCAPE '\\'
+                ORDER BY started_at_ms DESC
+                LIMIT ?6)
+         GROUP BY command
+         ORDER BY MAX(started_at_ms) DESC
+         LIMIT ?4",
+    )?;
+    let like = repo_prefix
+        .as_deref()
+        .map(|prefix| format!("{}%", escape_like(prefix)));
+    let matching = query
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+        .map(subsequence_like);
+    // `-1` é "sem limite" no SQLite.
+    let scan = if matching.is_some() { -1 } else { recent_rows };
+    let rows = stmt
+        .query_map(
+            params![cwd, like, repo_root, HISTORY_CANDIDATES, matching, scan],
+            |row| {
+                Ok(crate::history::HistoryCandidate {
+                    command: row.get(0)?,
+                    last_used_at_ms: row.get(1)?,
+                    uses: row.get::<_, i64>(2)?.max(0) as u32,
+                    successes: row.get::<_, i64>(3)?.max(0) as u32,
+                    known_exit_codes: row.get::<_, i64>(4)?.max(0) as u32,
+                    in_cwd: row.get::<_, i64>(5)? != 0,
+                    in_repo: row.get::<_, i64>(6)? != 0,
+                    cwd: row.get(7)?,
+                })
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Padrão de LIKE que aceita o mesmo que o fuzzy: os caracteres da busca em
+/// ordem, com qualquer coisa entre eles.
+///
+/// Um `%termo%` cru recusaria o que o `SkimMatcherV2` aceita — `cgt` casa com
+/// `cargo test` no fuzzy e não casaria no LIKE. Como este filtro roda **antes**
+/// do fuzzy, ele precisa deixar passar um superconjunto, ou a busca perde
+/// resultado que hoje encontra.
+fn subsequence_like(query: &str) -> String {
+    let mut pattern = String::with_capacity(query.len() * 2 + 1);
+    pattern.push('%');
+    for ch in query.chars() {
+        match ch {
+            '\\' => pattern.push_str("\\\\"),
+            '%' => pattern.push_str("\\%"),
+            '_' => pattern.push_str("\\_"),
+            other => pattern.push(other),
+        }
+        pattern.push('%');
+    }
+    pattern
+}
 
 /// `_` e `%` são curinga no LIKE, e caminho de repo pode conter os dois — sem
 /// escapar, `/tmp/a_b` casaria com `/tmp/axb`.
@@ -258,12 +383,22 @@ pub enum StoreError {
 ///     tinha usado o app, as catorze falhavam, todo boot, para nada.
 /// 2 — `sessions.scrollback` sai. Ninguém lia a coluna, e output de terminal
 ///     parado no disco contraria o princípio #10 do CLAUDE.md.
-/// 3 — `sessions.agent_conversation_id` entra: o id nativo da conversa do
+/// 3 — `command_history.import_key` entra, com o índice único que dá a
+///     idempotência do import de histórico.
+/// 4 — `sessions.agent_conversation_id` entra: o id nativo da conversa do
 ///     agente, que é o que permite oferecer retomá-la depois de reabrir o app.
-///     Degrau próprio, e não linha nova na [`BASELINE_COLUMNS`], porque a base
-///     só roda em banco na versão 0 — quem já está na 2 (todo mundo que abriu o
-///     app depois da migração anterior) nunca mais passa por ela.
-const SCHEMA_VERSION: i64 = 3;
+///
+/// Degrau próprio para cada um, e nunca linha nova na [`BASELINE_COLUMNS`]: a
+/// base só roda em banco na versão 0, então quem já subiu de versão nunca mais
+/// passaria por ela e ficaria sem a coluna.
+///
+/// **Ao acrescentar um degrau, confira se outra branch em andamento não escolheu
+/// o mesmo número.** Foi o que aconteceu entre estes dois: nasceram os dois como
+/// 3, e o segundo a entrar nunca rodaria — `migrate` corta em
+/// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
+/// de cada um passa isolado, porque simula o banco na versão anterior, que é
+/// justamente o caso em que ambos rodam.
+const SCHEMA_VERSION: i64 = 4;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -327,7 +462,7 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, Stor
 /// # A versão só anda até o degrau contíguo que pegou
 ///
 /// Carimbar `SCHEMA_VERSION` com degrau pendente marcaria como concluída uma
-/// migração que não aconteceu, e ela nunca mais seria tentada. Os dois degraus
+/// migração que não aconteceu, e ela nunca mais seria tentada. Todos os degraus
 /// **rodam** de todo jeito (o 2 tira output de terminal do disco — princípio
 /// #10 —, e adiar isso porque o 1 falhou seria o pior dos dois mundos), mas a
 /// versão gravada é a do último que pegou sem buraco antes dele. O custo de
@@ -385,7 +520,45 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
-    let conversation_applied = if from < 3 {
+    // A chave que torna o import idempotente. **Não** entra em
+    // `BASELINE_COLUMNS`: quem já está na versão 2 nunca mais roda o degrau 1, e
+    // ficaria com a tabela sem a coluna enquanto o import a consulta.
+    let import_key_applied = if from < 3 {
+        let mut applied = true;
+        match has_column(conn, "command_history", "import_key") {
+            Ok(true) => {}
+            Ok(false) => {
+                if let Err(e) =
+                    conn.execute("ALTER TABLE command_history ADD COLUMN import_key TEXT", [])
+                {
+                    skipped.push(format!("command_history.import_key: {e}"));
+                    applied = false;
+                }
+            }
+            Err(e) => {
+                skipped.push(format!("command_history.import_key: {e}"));
+                applied = false;
+            }
+        }
+        // Só depois da coluna existir, e é este índice que dá a idempotência: no
+        // SQLite NULL não colide com NULL em índice UNIQUE, então a linha viva
+        // (chave nula) não é afetada por ele.
+        if applied {
+            if let Err(e) = conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS command_history_import_key
+                 ON command_history (import_key)",
+                [],
+            ) {
+                skipped.push(format!("command_history_import_key: {e}"));
+                applied = false;
+            }
+        }
+        applied
+    } else {
+        true
+    };
+
+    let conversation_applied = if from < 4 {
         match has_column(conn, "sessions", "agent_conversation_id") {
             Ok(true) => true,
             Ok(false) => match conn.execute(
@@ -407,11 +580,17 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
-    let reached = match (baseline_applied, scrollback_applied, conversation_applied) {
-        (true, true, true) => SCHEMA_VERSION,
-        (true, true, false) => 2,
-        (true, false, _) => 1,
-        (false, _, _) => from,
+    let reached = match (
+        baseline_applied,
+        scrollback_applied,
+        import_key_applied,
+        conversation_applied,
+    ) {
+        (true, true, true, true) => SCHEMA_VERSION,
+        (true, true, true, false) => 3,
+        (true, true, false, _) => 2,
+        (true, false, _, _) => 1,
+        (false, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -989,55 +1168,70 @@ impl Store {
                 record.duration_ms,
             ],
         )?;
-        conn.execute(
-            "DELETE FROM command_history
-             WHERE id <= (SELECT MAX(id) FROM command_history) - ?1",
-            params![COMMAND_HISTORY_CAP],
-        )?;
+        evict_command_history(&conn, COMMAND_HISTORY_CAP)?;
         Ok(())
+    }
+
+    /// Grava um lote de entradas importadas numa transação só.
+    ///
+    /// **Não passa por `insert_command`**, e não é economia de código: aquele
+    /// caminho faz um `SELECT` do comando anterior e um `DELETE` de eviction a
+    /// cada linha. Correto para uma linha por vez, catastrófico para 100 000.
+    ///
+    /// `INSERT OR IGNORE` contra o índice único de `import_key`: reimportar não
+    /// duplica porque o banco recusa, não porque alguém acertou a contabilidade.
+    /// Devolve quantas linhas entraram de fato.
+    pub fn insert_imported_batch(
+        &self,
+        rows: &[crate::history::import::ImportRow],
+    ) -> Result<usize, StoreError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let mut inserted = 0;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO command_history
+                     (command, started_at_ms, duration_ms, import_key)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for row in rows {
+                inserted += stmt.execute(params![
+                    row.command,
+                    row.started_at_ms,
+                    row.duration_ms,
+                    row.import_key,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
+    /// Corta o histórico no teto. O import chama uma vez, ao fim.
+    pub fn evict_command_history(&self) -> Result<(), StoreError> {
+        evict_command_history(&self.conn.lock(), COMMAND_HISTORY_CAP)
     }
 
     /// Candidatos crus do histórico, agregados por comando. O ranking (fuzzy +
     /// frecência) fica em `history::frecency` — aqui só o que o SQL faz melhor.
+    ///
+    /// Com `query`, o corte de `HISTORY_CANDIDATES` passa a valer sobre o que
+    /// casa, e não sobre a tabela inteira. Sem isso, comando importado — que tem
+    /// data velha — fica fora da janela de recentes e nunca chega ao fuzzy, por
+    /// mais exata que seja a busca.
     pub fn history_candidates(
         &self,
+        query: Option<&str>,
         cwd: Option<&str>,
         repo_root: Option<&str>,
     ) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
-        let repo_prefix = repo_root.map(|root| format!("{}/", root.trim_end_matches('/')));
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT command,
-                    MAX(started_at_ms),
-                    COUNT(*),
-                    SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END),
-                    MAX(CASE WHEN cwd IS NOT NULL AND cwd = ?1 THEN 1 ELSE 0 END),
-                    MAX(CASE WHEN ?2 IS NOT NULL AND cwd IS NOT NULL
-                              AND (cwd = ?3 OR cwd LIKE ?2 ESCAPE '\\')
-                             THEN 1 ELSE 0 END),
-                    MAX(cwd)
-             FROM command_history
-             GROUP BY command
-             ORDER BY MAX(started_at_ms) DESC
-             LIMIT ?4",
-        )?;
-        let like = repo_prefix
-            .as_deref()
-            .map(|prefix| format!("{}%", escape_like(prefix)));
-        let rows = stmt
-            .query_map(params![cwd, like, repo_root, HISTORY_CANDIDATES], |row| {
-                Ok(crate::history::HistoryCandidate {
-                    command: row.get(0)?,
-                    last_used_at_ms: row.get(1)?,
-                    uses: row.get::<_, i64>(2)?.max(0) as u32,
-                    successes: row.get::<_, i64>(3)?.max(0) as u32,
-                    in_cwd: row.get::<_, i64>(4)? != 0,
-                    in_repo: row.get::<_, i64>(5)? != 0,
-                    cwd: row.get(6)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
+        history_candidates_in(
+            &self.conn.lock(),
+            query,
+            cwd,
+            repo_root,
+            HISTORY_RECENT_ROWS,
+        )
     }
 
     /// Comandos distintos que começam com o prefixo, mais recentes primeiro.
@@ -2200,6 +2394,94 @@ mod tests {
     /// à [`BASELINE_COLUMNS`] em vez de ganhar degrau próprio, ninguém que já
     /// usa o app veria a coluna nascer — e a sessão de agente nunca guardaria a
     /// conversa. Aqui isso falha: a coluna tem de existir depois da abertura.
+    /// Cada coluna que nasce de um degrau, e em qual degrau ela nasce.
+    ///
+    /// Existe para o teste abaixo. Acrescentar degrau sem acrescentar linha aqui
+    /// deixa o degrau novo sem cobertura da combinação.
+    const STEP_COLUMNS: &[(i64, &str, &str)] = &[
+        (3, "command_history", "import_key"),
+        (4, "sessions", "agent_conversation_id"),
+    ];
+
+    /// Dois degraus não podem dividir o mesmo número.
+    ///
+    /// É a guarda contra a armadilha que este merge desarmou: duas branches
+    /// paralelas escolheram `SCHEMA_VERSION = 3` para colunas diferentes. Depois
+    /// do merge, o banco de quem já rodou a primeira está carimbado na 3, e
+    /// `migrate` corta em `from >= SCHEMA_VERSION` antes de olhar degrau
+    /// nenhum — a coluna da segunda nunca apareceria.
+    ///
+    /// O teste discriminante de cada degrau passa isolado, porque cada um simula
+    /// o banco na versão logo anterior à sua, que é justamente o caso em que ele
+    /// roda. A colisão só existe na combinação, e este teste é onde ela mora.
+    #[test]
+    fn cada_degrau_tem_um_numero_proprio() {
+        let mut versions: Vec<i64> = STEP_COLUMNS.iter().map(|(v, _, _)| *v).collect();
+        let total = versions.len();
+        versions.sort_unstable();
+        versions.dedup();
+        assert_eq!(
+            versions.len(),
+            total,
+            "dois degraus com o mesmo número: o segundo a entrar nunca roda"
+        );
+        assert_eq!(
+            versions.last().copied(),
+            Some(SCHEMA_VERSION),
+            "o último degrau tem de ser a versão atual, ou ele nunca é alcançado"
+        );
+    }
+
+    /// Nenhuma versão intermediária fica sem uma coluna.
+    ///
+    /// Para cada versão já publicada, monta o disco como ela o deixaria — com as
+    /// colunas dos degraus **anteriores** presentes e as dos seguintes ausentes —
+    /// e exige que abrir com o binário atual complete o schema.
+    #[test]
+    fn nenhuma_versao_intermediaria_perde_uma_coluna() {
+        for from in 0..SCHEMA_VERSION {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tyba.db");
+            {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch(SCHEMA).unwrap();
+                // Só as colunas que aquela versão ainda não tinha. Remover uma
+                // que ela já tinha inventaria um disco que nunca existiu.
+                for (at, table, column) in STEP_COLUMNS {
+                    if *at <= from {
+                        continue;
+                    }
+                    if (*table, *column) == ("command_history", "import_key") {
+                        conn.execute_batch("DROP INDEX IF EXISTS command_history_import_key;")
+                            .unwrap();
+                    }
+                    conn.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column};"))
+                        .unwrap();
+                }
+                conn.pragma_update(None, "user_version", from).unwrap();
+            }
+
+            let store = Store::open(&path).unwrap();
+
+            assert_eq!(
+                user_version(&store),
+                SCHEMA_VERSION,
+                "banco vindo da versão {from} não chegou na atual"
+            );
+            for (_, table, column) in STEP_COLUMNS {
+                assert!(
+                    column_exists(&store, table, column),
+                    "banco vindo da versão {from} ficou sem {table}.{column}"
+                );
+            }
+            assert_eq!(
+                store.degraded(),
+                None,
+                "versão {from} reportou degrau pulado"
+            );
+        }
+    }
+
     #[test]
     fn a_v2_database_gains_the_conversation_column_from_its_own_step() {
         let dir = tempfile::tempdir().unwrap();
@@ -2391,6 +2673,45 @@ mod tests {
 
         assert_eq!(user_version(&store), SCHEMA_VERSION);
         assert_eq!(store.load_sessions().unwrap().len(), 1);
+    }
+
+    fn index_exists(store: &Store, name: &str) -> bool {
+        let conn = store.conn.lock();
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1",
+            [name],
+            |_| Ok(()),
+        )
+        .is_ok()
+    }
+
+    /// Banco que a versão **anterior** do app já migrou: está carimbado na
+    /// versão 2, e por isso não roda mais o degrau 1. É o caso que proíbe
+    /// `import_key` de ser coluna de baseline — ali ele nunca chegaria a este
+    /// banco, e o import passaria a consultar uma coluna inexistente.
+    #[test]
+    fn a_database_already_on_version_two_still_gains_the_import_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            // Desfaz o que só o binário novo cria, para simular o disco de quem
+            // parou na versão 2.
+            conn.execute_batch(
+                "DROP INDEX IF EXISTS command_history_import_key;
+                 ALTER TABLE command_history DROP COLUMN import_key;",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 2).unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert!(column_exists(&store, "command_history", "import_key"));
+        assert!(index_exists(&store, "command_history_import_key"));
+        assert_eq!(store.degraded(), None);
     }
 
     #[test]
@@ -2604,7 +2925,7 @@ mod tests {
             .unwrap();
 
         let found = store
-            .history_candidates(Some("/repo/src"), Some("/repo"))
+            .history_candidates(None, Some("/repo/src"), Some("/repo"))
             .unwrap();
         let by = |cmd: &str| {
             found
@@ -2635,11 +2956,238 @@ mod tests {
         failed.exit_code = Some(101);
         store.insert_command(&failed).unwrap();
 
-        let found = store.history_candidates(Some("/repo"), None).unwrap();
+        let found = store.history_candidates(None, Some("/repo"), None).unwrap();
         let cargo = found.iter().find(|c| c.command == "cargo test").unwrap();
         assert_eq!(cargo.uses, 4);
         assert_eq!(cargo.successes, 3);
         assert_eq!(cargo.last_used_at_ms, 9);
+    }
+
+    /// Entrada sem exit code conta em `uses`, não em `known_exit_codes` — é o
+    /// que separa "só falhou" de "não se sabe" na frecência.
+    #[test]
+    fn history_candidates_count_known_exit_codes() {
+        let store = Store::open_in_memory().unwrap();
+        // Alternando com outro comando: entradas iguais e consecutivas são
+        // deduplicadas na escrita.
+        store
+            .insert_command(&command("deploy", Some("/repo"), 1))
+            .unwrap();
+        store
+            .insert_command(&command("pwd", Some("/repo"), 2))
+            .unwrap();
+        let mut failed = command("deploy", Some("/repo"), 3);
+        failed.exit_code = Some(101);
+        store.insert_command(&failed).unwrap();
+        store
+            .insert_command(&command("pwd", Some("/repo"), 4))
+            .unwrap();
+        let mut unknown = command("deploy", Some("/repo"), 5);
+        unknown.exit_code = None;
+        store.insert_command(&unknown).unwrap();
+
+        let found = store.history_candidates(None, Some("/repo"), None).unwrap();
+        let deploy = found.iter().find(|c| c.command == "deploy").unwrap();
+        assert_eq!(deploy.uses, 3);
+        assert_eq!(deploy.successes, 1);
+        assert_eq!(deploy.known_exit_codes, 2);
+    }
+
+    fn remaining_commands(store: &Store) -> Vec<String> {
+        let conn = store.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT command FROM command_history ORDER BY started_at_ms")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows
+    }
+
+    #[test]
+    fn eviction_keeps_the_newest_by_time() {
+        let store = Store::open_in_memory().unwrap();
+        for at in 1..=4 {
+            store
+                .insert_command(&command(&format!("cmd{at}"), None, at))
+                .unwrap();
+        }
+        evict_command_history(&store.conn.lock(), 2).unwrap();
+        assert_eq!(remaining_commands(&store), vec!["cmd3", "cmd4"]);
+    }
+
+    /// O caso do import: entrada com data velha entra por último, logo com `id`
+    /// maior. Cortar por `id` apagaria o comando vivo e guardaria o importado.
+    #[test]
+    fn eviction_drops_the_late_inserted_old_entry_not_the_live_one() {
+        let store = Store::open_in_memory().unwrap();
+        store.insert_command(&command("vivo", None, 100)).unwrap();
+        store
+            .insert_command(&command("importado", None, 1))
+            .unwrap();
+        evict_command_history(&store.conn.lock(), 1).unwrap();
+        assert_eq!(remaining_commands(&store), vec!["vivo"]);
+    }
+
+    #[test]
+    fn command_history_cap_fits_an_imported_history() {
+        assert_eq!(COMMAND_HISTORY_CAP, 100_000);
+    }
+
+    /// Sem o filtro em SQL, o corte de `HISTORY_CANDIDATES` é por recência e o
+    /// comando importado — data velha — nunca chega ao fuzzy.
+    #[test]
+    fn query_reaches_a_command_older_than_the_recent_window() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_command(&command("deploy-legacy", None, 1))
+            .unwrap();
+        for at in 0..HISTORY_CANDIDATES {
+            store
+                .insert_command(&command(&format!("recente{at}"), None, 1_000 + at))
+                .unwrap();
+        }
+
+        let sem_query = store.history_candidates(None, None, None).unwrap();
+        assert!(!sem_query.iter().any(|c| c.command == "deploy-legacy"));
+
+        let com_query = store
+            .history_candidates(Some("deploy-legacy"), None, None)
+            .unwrap();
+        assert!(com_query.iter().any(|c| c.command == "deploy-legacy"));
+    }
+
+    fn imported(command: &str, at: i64) -> crate::history::import::ImportRow {
+        use crate::history::import::{import_key, source::ImportSource, ImportRow};
+        ImportRow {
+            command: command.into(),
+            started_at_ms: at,
+            duration_ms: None,
+            import_key: import_key(ImportSource::Zsh, command, at),
+        }
+    }
+
+    #[test]
+    fn an_imported_batch_lands_with_command_date_and_key() {
+        let store = Store::open_in_memory().unwrap();
+        let inserted = store
+            .insert_imported_batch(&[imported("cargo test", 7_000)])
+            .unwrap();
+        assert_eq!(inserted, 1);
+
+        let found = store
+            .history_candidates(Some("cargo test"), None, None)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].last_used_at_ms, 7_000);
+        // Sem exit code: é o que a frecência trata como desconhecido.
+        assert_eq!(found[0].known_exit_codes, 0);
+    }
+
+    /// Reimportar é o caso normal, não a exceção: o usuário roda de novo semanas
+    /// depois para pegar o que digitou fora do TYBA nesse meio-tempo.
+    #[test]
+    fn importing_the_same_batch_twice_does_not_duplicate() {
+        let store = Store::open_in_memory().unwrap();
+        let batch = [imported("cargo test", 7_000), imported("pwd", 8_000)];
+        assert_eq!(store.insert_imported_batch(&batch).unwrap(), 2);
+        assert_eq!(store.insert_imported_batch(&batch).unwrap(), 0);
+        assert_eq!(history_count(&store), 2);
+    }
+
+    /// O índice é UNIQUE e a linha viva tem chave nula. No SQLite NULL não
+    /// colide com NULL, então a captura ao vivo não é afetada.
+    #[test]
+    fn live_rows_have_no_key_and_never_collide() {
+        let store = Store::open_in_memory().unwrap();
+        store.insert_command(&command("ls", None, 1)).unwrap();
+        store.insert_command(&command("pwd", None, 2)).unwrap();
+        store.insert_command(&command("ls", None, 3)).unwrap();
+        assert_eq!(history_count(&store), 3);
+    }
+
+    /// Entrada importada não tem `cwd`, então não pertence a repo nenhum:
+    /// limpar o histórico de um repositório não pode levá-la junto.
+    #[test]
+    fn clearing_a_repo_keeps_imported_entries_that_have_no_cwd() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_command(&command("dentro do repo", Some("/repo/src"), 1))
+            .unwrap();
+        store
+            .insert_imported_batch(&[imported("importado", 2)])
+            .unwrap();
+
+        store.clear_command_history(Some("/repo")).unwrap();
+        assert_eq!(remaining_commands(&store), vec!["importado"]);
+
+        store.clear_command_history(None).unwrap();
+        assert_eq!(history_count(&store), 0);
+    }
+
+    #[test]
+    fn the_migration_runs_twice_without_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.sqlite");
+        let first = Store::open(&path).unwrap();
+        first
+            .insert_imported_batch(&[imported("cargo test", 7_000)])
+            .unwrap();
+        drop(first);
+
+        let second = Store::open(&path).unwrap();
+        assert_eq!(history_count(&second), 1);
+        assert_eq!(
+            second
+                .insert_imported_batch(&[imported("cargo test", 7_000)])
+                .unwrap(),
+            0
+        );
+    }
+
+    /// A lista sem busca agrega só a janela recente; a busca com query, não.
+    #[test]
+    fn the_recent_window_bounds_the_list_without_a_query() {
+        let store = Store::open_in_memory().unwrap();
+        for at in 1..=3 {
+            store
+                .insert_command(&command(&format!("cmd{at}"), None, at))
+                .unwrap();
+        }
+        let conn = store.conn.lock();
+
+        let recentes = history_candidates_in(&conn, None, None, None, 2).unwrap();
+        let nomes: Vec<&str> = recentes.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(nomes, vec!["cmd3", "cmd2"]);
+
+        let buscado = history_candidates_in(&conn, Some("cmd1"), None, None, 2).unwrap();
+        assert_eq!(buscado.len(), 1);
+        assert_eq!(buscado[0].command, "cmd1");
+    }
+
+    /// O filtro roda antes do fuzzy, então precisa aceitar o que o fuzzy aceita:
+    /// os caracteres em ordem, não a substring.
+    #[test]
+    fn query_matches_the_same_subsequence_the_fuzzy_would() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_command(&command("cargo test", None, 1))
+            .unwrap();
+
+        let found = store.history_candidates(Some("cgt"), None, None).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].command, "cargo test");
+    }
+
+    #[test]
+    fn query_wildcards_are_escaped() {
+        let store = Store::open_in_memory().unwrap();
+        store.insert_command(&command("axb", None, 1)).unwrap();
+
+        let found = store.history_candidates(Some("a_b"), None, None).unwrap();
+        assert!(found.is_empty());
     }
 
     #[test]
@@ -2649,7 +3197,9 @@ mod tests {
         store
             .insert_command(&command("intruso", Some("/tmp/axb/sub"), 1))
             .unwrap();
-        let found = store.history_candidates(None, Some("/tmp/a_b")).unwrap();
+        let found = store
+            .history_candidates(None, None, Some("/tmp/a_b"))
+            .unwrap();
         assert!(!found.iter().any(|c| c.in_repo));
     }
 
@@ -2664,7 +3214,7 @@ mod tests {
             .unwrap();
         store.clear_command_history(Some("/repo")).unwrap();
 
-        let found = store.history_candidates(None, None).unwrap();
+        let found = store.history_candidates(None, None, None).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].command, "fora");
 

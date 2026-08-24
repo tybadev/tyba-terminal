@@ -89,3 +89,29 @@ pub(crate) fn exchange<Rd: BufRead, Wr: Write>(
     }
     serde_json::from_str::<ResponseEnvelope>(line.trim_end()).ok()
 }
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+
+    /// Tudo o que uma sessão de agente consegue obter do core passa por aqui, e
+    /// o conjunto é fechado: decisão sobre uma ação, nada mais.
+    ///
+    /// É esta fronteira que mantém o import de histórico fora do alcance do
+    /// agente — ele lê `~/.zsh_history`, que fica fora do worktree e é o que a
+    /// jaula existe para esconder. Ver a decisão de 2026-08-15 no cofre. Quem
+    /// adicionar uma variante a `HookAction` vai precisar mexer neste teste, e
+    /// é isso que faz a mudança aparecer na revisão.
+    #[test]
+    fn the_agent_channel_only_ever_answers_with_a_decision() {
+        let answers = [
+            build_response(HookAction::Allow { reason: None }).action,
+            build_response(HookAction::Deny {
+                reason: "não".into(),
+            })
+            .action,
+            build_response(HookAction::Ack).action,
+        ];
+        assert_eq!(answers, ["allow", "deny", "ack"]);
+    }
+}
