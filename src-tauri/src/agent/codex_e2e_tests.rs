@@ -62,7 +62,7 @@ fn codex_real_executa_o_hook_do_tyba_e_o_session_start_chega_no_core() {
             env.insert(key.to_string(), value);
         }
     }
-    let built = CodexRunner.build_command(&repo, &env, &hooks);
+    let built = CodexRunner.build_command(&repo, &env, &hooks, None);
 
     let argv: Vec<String> = built
         .get_argv()

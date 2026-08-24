@@ -129,6 +129,13 @@ pub struct Session {
     pub cwd: Option<PathBuf>,
     #[serde(default)]
     pub connection: ConnectionState,
+    /// Id da conversa nativa do agente (`claude --resume <id>`, `codex resume
+    /// <id>`), lido do transcript/rollout que a própria CLI escreve — ver
+    /// [`crate::agent::conversation`]. `None` para sessão que não é de agente e
+    /// para agente cuja conversa o TYBA não conseguiu identificar; nos dois
+    /// casos não há convite de retomar.
+    #[serde(default)]
+    pub agent_conversation_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -449,6 +456,11 @@ impl SessionManager {
             Box::new(move || on_exit(id)),
         )?;
 
+        // Re-subir a MESMA sessão (retomar a conversa de um agente) não a torna
+        // nova: o `ON CONFLICT` do store nem toca em `created_at`, e inventar um
+        // agora aqui faria a sessão pular para o fim da lista até o próximo boot
+        // devolvê-la ao lugar.
+        let previous = self.sessions.read().get(&id).cloned();
         let session = Session {
             id,
             kind,
@@ -457,9 +469,10 @@ impl SessionManager {
             worktree,
             status: SessionStatus::Running,
             attention: false,
-            created_at: Utc::now(),
+            created_at: previous.as_ref().map_or_else(Utc::now, |s| s.created_at),
             cwd,
             connection: ConnectionState::Live,
+            agent_conversation_id: previous.and_then(|s| s.agent_conversation_id),
         };
         self.sessions.write().insert(id, session.clone());
         let _ = self.store.upsert_session(&session);
@@ -501,6 +514,29 @@ impl SessionManager {
             let _ = self.store.upsert_session(s);
             emit_status(app, s);
         }
+    }
+
+    /// Grava o id da conversa nativa do agente. Chamado de dentro do handler de
+    /// hooks, que roda a cada evento: sai cedo quando nada mudou, para não
+    /// transformar `PreToolUse` num `UPDATE` por ferramenta executada.
+    ///
+    /// Id implausível é descartado em silêncio — ele viraria argumento de
+    /// `claude --resume` / `codex resume`, e o que não passa por
+    /// [`crate::agent::conversation::is_plausible`] não chega ao argv.
+    pub fn set_agent_conversation_id(&self, app: &AppHandle, id: SessionId, conversation: &str) {
+        if !crate::agent::conversation::is_plausible(conversation) {
+            return;
+        }
+        let mut sessions = self.sessions.write();
+        let Some(s) = sessions.get_mut(&id) else {
+            return;
+        };
+        if s.agent_conversation_id.as_deref() == Some(conversation) {
+            return;
+        }
+        s.agent_conversation_id = Some(conversation.to_string());
+        let _ = self.store.upsert_session(s);
+        emit_status(app, s);
     }
 
     pub fn set_connection(&self, app: &AppHandle, id: SessionId, connection: ConnectionState) {
@@ -1085,6 +1121,7 @@ mod tests {
             created_at: Utc::now(),
             cwd: Some(PathBuf::from("/tmp")),
             connection: ConnectionState::default(),
+            agent_conversation_id: None,
         }
     }
 

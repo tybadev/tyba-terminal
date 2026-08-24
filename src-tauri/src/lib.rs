@@ -678,6 +678,10 @@ fn hosts_alias(store: &Arc<session::store::Store>, host_id: &str) -> Option<Stri
 /// no boot faria um agente começar a agir sem ninguém ter pedido — a sessão volta
 /// morta, e o dono decide.
 ///
+/// O que o dono decide, hoje, tem nome: o pane restaurado mostra um convite de
+/// retomar a conversa nativa do agente (ver [`resume_agent_session`]), e ela só
+/// sobe no clique. Isto aqui continua não religando nada.
+///
 /// O cwd de cada sessão passa por [`session::cwd::reopen_policy`] antes de
 /// qualquer syscall daqui: caminho em volume que pode não estar montado não é
 /// reaberto, e pasta protegida pelo TCC é reaberta sem o `is_dir()` desta
@@ -4385,6 +4389,57 @@ async fn kill_shell_agent(
     Ok(cwd.to_string_lossy().into_owned())
 }
 
+/// Se a sessão morta ainda dá para retomar pela conversa nativa do agente.
+///
+/// O front pergunta antes de desenhar o convite: a decisão é do core, porque só
+/// ele sabe se o id foi capturado, se o binário do runner continua no PATH e se
+/// a pasta ainda existe. Falso é silêncio — nada de convite que abre em erro.
+#[tauri::command]
+async fn can_resume_agent_session(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<bool, String> {
+    let _ = wait_for_boot(Arc::clone(&state.boot)).await;
+    Ok(state
+        .sessions
+        .get(id)
+        .map(|s| agent::session::can_resume(&s))
+        .unwrap_or(false))
+}
+
+/// Retoma a conversa nativa do agente na sessão morta `id`, com o comando de
+/// resume da CLI dele.
+///
+/// Só por clique do usuário: o boot devolve a sessão de agente parada de
+/// propósito (ver `resume_startup`), porque religá-la sozinha levantaria um
+/// processo com contexto que pode voltar a agir sem ninguém ter pedido.
+#[tauri::command]
+async fn resume_agent_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    cols: u16,
+    rows: u16,
+) -> Result<Session, String> {
+    let _ = wait_for_boot(Arc::clone(&state.boot)).await;
+    // Mensagens deste caminho são texto direto, como as do resto do
+    // `agent::session`: o `translateError` do front repassa string crua.
+    let dead = state.sessions.get(id).ok_or("a sessão não existe mais")?;
+    let ctx = agent::session::AgentSessionCtx {
+        app: app.clone(),
+        sessions: Arc::clone(&state.sessions),
+        pty_pool: Arc::clone(&state.pty_pool),
+        approvals: Arc::clone(&state.approvals),
+        store: Arc::clone(&state.store),
+        servers: Arc::clone(&state.hook_servers),
+        subagents: Arc::clone(&state.subagents),
+    };
+    let handle = app.clone();
+    agent::session::resume_agent_session(&ctx, &dead, cols, rows, move |id| {
+        session_exited(&handle, id)
+    })
+}
+
 #[tauri::command]
 fn open_agents_panel(
     app: AppHandle,
@@ -5624,6 +5679,8 @@ pub fn run() {
             subagent_transcript,
             open_agents_panel,
             kill_shell_agent,
+            can_resume_agent_session,
+            resume_agent_session,
             open_subagent_viewer,
             close_agent_viewers,
             agent_repo_config,
@@ -6091,6 +6148,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             cwd: None,
             connection: session::ConnectionState::Live,
+            agent_conversation_id: None,
         }
     }
 

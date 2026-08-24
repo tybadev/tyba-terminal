@@ -112,6 +112,10 @@ struct HandlerCtx {
     runner_kind: AgentRunnerKind,
     worktree_root: PathBuf,
     turn_settle: Arc<std::sync::atomic::AtomicU64>,
+    /// Último `transcript_path` que já virou id de conversa. Existe para o
+    /// handler não reabrir o arquivo a cada `PreToolUse`: o id mora no cabeçalho
+    /// e não muda enquanto o transcript for o mesmo.
+    seen_transcript: Arc<Mutex<Option<String>>>,
 }
 
 fn main_window_focused(app: &AppHandle) -> bool {
@@ -337,7 +341,41 @@ fn deny_subagent_spawn(ctx: &HandlerCtx, spawn: &Option<(Option<String>, Option<
     }
 }
 
+/// Guarda o id da conversa nativa que o agente acabou de reportar.
+///
+/// É a única janela em que o TYBA aprende esse id: quem o escreve é a CLI, no
+/// transcript/rollout dela, e o caminho desse arquivo chega aqui pelo payload do
+/// hook. Sem isto, uma sessão de agente que morre com o app não tem como ser
+/// retomada — o histórico existe no disco, mas ninguém sabe qual conversa é.
+fn capture_conversation_id(ctx: &HandlerCtx, event: &HookEvent) {
+    let path = event
+        .raw
+        .get("transcript_path")
+        .and_then(|p| p.as_str())
+        .unwrap_or_default();
+    if ctx
+        .seen_transcript
+        .lock()
+        .expect("seen transcript lock")
+        .as_deref()
+        == Some(path)
+    {
+        return;
+    }
+    let found = crate::agent::conversation::from_hook_payload(&event.raw);
+    // Payload sem transcript e sem id não marca nada como lido: não houve o que
+    // ler, e o próximo evento ainda pode trazer a fonte.
+    if found.is_some() || !path.is_empty() {
+        *ctx.seen_transcript.lock().expect("seen transcript lock") = Some(path.to_string());
+    }
+    if let Some(id) = found {
+        ctx.sessions
+            .set_agent_conversation_id(&ctx.app, ctx.session_id, &id);
+    }
+}
+
 fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
+    capture_conversation_id(ctx, &event);
     match signal_for(&event.hook_event_name, event.notification_type.as_deref()) {
         Some(AgentSignal::Ready) => {
             let _ = ctx.app.emit(
@@ -491,7 +529,17 @@ pub fn create_agent_session(
     let root = crate::repo::canonicalize_or(&root);
     let worktree = crate::worktree::create(&root, &task)?;
 
-    let result = spawn_prepared(ctx, opts, runner, root, worktree.clone(), task, on_exit);
+    let result = spawn_prepared(
+        ctx,
+        SessionId::new_v4(),
+        opts,
+        runner,
+        root,
+        worktree.clone(),
+        task,
+        None,
+        on_exit,
+    );
     if result.is_err() {
         let _ = crate::worktree::remove(&worktree.path, true, true);
     }
@@ -535,7 +583,116 @@ pub fn attach_agent_session(
         .unwrap_or_else(|| worktree.branch.clone());
 
     // Sem `worktree::remove` no erro: a pasta é do usuário, não nossa.
-    spawn_prepared(ctx, opts, runner, root, worktree, task, on_exit)
+    spawn_prepared(
+        ctx,
+        SessionId::new_v4(),
+        opts,
+        runner,
+        root,
+        worktree,
+        task,
+        None,
+        on_exit,
+    )
+}
+
+/// Sobe o agente de novo na conversa nativa que a sessão morta deixou no disco.
+///
+/// **Nunca automático.** Só chega aqui por clique explícito: retomar levanta um
+/// processo com contexto que pode voltar a agir, e ação de agente não começa sem
+/// intenção humana — por isso o `resume_startup` continua devolvendo a sessão de
+/// agente morta, e o convite é do dono aceitar ou não.
+///
+/// Reaproveita o **mesmo `SessionId`**: é a mesma conversa, e é o que faz o pane
+/// restaurado voltar a viver onde está, sem o layout ter de reapontar nada.
+///
+/// Falha fechado. Sem id de conversa, sem runner que saiba retomar, sem binário
+/// ou sem a pasta, devolve `Err` e nada sobe — um agente meio retomado seria
+/// pior que nenhum.
+pub fn resume_agent_session(
+    ctx: &AgentSessionCtx,
+    session: &Session,
+    cols: u16,
+    rows: u16,
+    on_exit: impl FnOnce(SessionId) + Send + 'static,
+) -> Result<Session, String> {
+    let target = resume_target(session)?;
+    let runner = build_runner(&target.runner_kind)?;
+    let worktree = crate::worktree::existing(&target.path)?;
+    let root = crate::repo::toplevel(&worktree.path)
+        .map(|r| crate::repo::canonicalize_or(&r))
+        .ok_or("a pasta da sessão não é um repositório git")?;
+    let task = worktree.branch.clone();
+    let opts = CreateSessionOpts {
+        kind: session.kind.clone(),
+        title: Some(session.title.clone()),
+        cwd: Some(target.path.clone()),
+        cols,
+        rows,
+        worktree_task: None,
+        attach_existing: true,
+        shell: None,
+        initial_prompt: None,
+    };
+    spawn_prepared(
+        ctx,
+        session.id,
+        opts,
+        runner,
+        root,
+        worktree,
+        task,
+        Some(target.conversation_id),
+        on_exit,
+    )
+}
+
+struct ResumeTarget {
+    runner_kind: AgentRunnerKind,
+    conversation_id: String,
+    path: PathBuf,
+}
+
+/// Tudo que retomar exige, ou o motivo de não dar. Chamado tanto pelo
+/// [`resume_agent_session`] quanto pelo [`can_resume`], para que o convite na
+/// tela e o que acontece no clique respondam à MESMA pergunta.
+fn resume_target(session: &Session) -> Result<ResumeTarget, String> {
+    let SessionKind::Agent {
+        runner: runner_kind,
+    } = session.kind.clone()
+    else {
+        return Err("retomar conversa só vale para sessão de agente".into());
+    };
+    let conversation_id = session
+        .agent_conversation_id
+        .clone()
+        .filter(|id| crate::agent::conversation::is_plausible(id))
+        .ok_or("a sessão não tem conversa nativa registrada")?;
+    // `build_runner` recusa runner custom e binário fora do PATH — as duas
+    // razões pelas quais o clique falharia depois de o convite ter aparecido.
+    if !build_runner(&runner_kind)?.resumes_conversations() {
+        return Err("este runner não retoma conversa por id".into());
+    }
+    let path = session
+        .worktree
+        .as_ref()
+        .map(|w| w.path.clone())
+        .or_else(|| session.cwd.clone())
+        .ok_or("a sessão não guarda a pasta em que rodava")?;
+    if !path.is_dir() {
+        return Err("a pasta da sessão não existe mais".into());
+    }
+    Ok(ResumeTarget {
+        runner_kind,
+        conversation_id,
+        path,
+    })
+}
+
+/// Se o convite de retomar deve aparecer. Falso é o silêncio da decisão 3:
+/// convite que leva a erro é pior que ausência de convite.
+pub fn can_resume(session: &Session) -> bool {
+    resume_target(session).is_ok()
 }
 
 fn build_runner(kind: &AgentRunnerKind) -> Result<Box<dyn AgentRunner>, String> {
@@ -625,16 +782,18 @@ pub(crate) fn sandbox_spec(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_prepared(
     ctx: &AgentSessionCtx,
+    id: SessionId,
     opts: CreateSessionOpts,
     runner: Box<dyn AgentRunner>,
     root: PathBuf,
     worktree: crate::worktree::Worktree,
     task: String,
+    resume: Option<String>,
     on_exit: impl FnOnce(SessionId) + Send + 'static,
 ) -> Result<Session, String> {
-    let id = SessionId::new_v4();
     let runtime = runtime_dir(id)?;
     let socket_path = runtime.join(HOOK_SOCKET_FILE);
     if socket_path.as_os_str().len() > MAX_SOCKET_PATH {
@@ -660,7 +819,7 @@ fn spawn_prepared(
     let mut env = crate::repo_config::agent_env(config.as_ref(), &user_env);
     apply_git_overrides(&mut env);
 
-    let mut cmd = runner.build_command(&worktree.path, &env, &hook_setup);
+    let mut cmd = runner.build_command(&worktree.path, &env, &hook_setup, resume.as_deref());
     cmd.env("TYBA_HOOK_SOCKET", &socket_path);
     // Camada A do Windows (Opção B): a jaula se aplica no spawn (token + ConPTY),
     // não por `wrap`. `jailed_spawner` devolve `Some` só no Windows; mac/linux
@@ -695,6 +854,7 @@ fn spawn_prepared(
         runner_kind: runner.kind(),
         worktree_root: worktree.path.clone(),
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        seen_transcript: Arc::new(Mutex::new(None)),
     };
     let server = HookServer::bind(
         &socket_path,
@@ -704,6 +864,8 @@ fn spawn_prepared(
     ctx.servers.insert(id, server);
 
     let title = opts.title.clone().unwrap_or_else(|| task.clone());
+    // O id da conversa não é repassado aqui: `spawn_session` o herda da sessão
+    // que ocupava este `SessionId` — que, no caso de retomar, é a mesma conversa.
     ctx.sessions
         .spawn_session(
             ctx.app.clone(),

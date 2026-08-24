@@ -1,4 +1,5 @@
 pub mod codex_hooks;
+pub mod conversation;
 pub mod disk_observer;
 pub mod hooks_settings;
 pub mod process_probe;
@@ -56,12 +57,24 @@ pub fn submit_strategy_for(kind: &SessionKind) -> SubmitStrategy {
 pub trait AgentRunner: Send + Sync {
     fn kind(&self) -> AgentRunnerKind;
 
+    /// `resume` é o id nativo da conversa a retomar (ver
+    /// [`crate::agent::conversation`]). Quem monta o argv é o runner, e não quem
+    /// chama, porque a posição do resume é diferente em cada CLI: no Claude Code
+    /// é a opção `--resume <id>`, no Codex é o subcomando `resume <id>`, que tem
+    /// de vir antes de qualquer flag.
     fn build_command(
         &self,
         worktree_path: &Path,
         env: &HashMap<String, String>,
         hooks: &HookSetup,
+        resume: Option<&str>,
     ) -> CommandBuilder;
+
+    /// Se a CLI deste runner sabe retomar uma conversa por id. `false` não é
+    /// falha: é o convite de retomar não aparecer.
+    fn resumes_conversations(&self) -> bool {
+        false
+    }
 
     fn submit_strategy(&self) -> SubmitStrategy {
         SubmitStrategy::default()
@@ -134,16 +147,28 @@ impl AgentRunner for ClaudeCodeRunner {
         worktree_path: &Path,
         env: &HashMap<String, String>,
         hooks: &HookSetup,
+        resume: Option<&str>,
     ) -> CommandBuilder {
         let mut cmd = CommandBuilder::new("claude");
         cmd.arg("--settings");
         cmd.arg(&hooks.settings_path);
+        // `claude --help`: `-r, --resume [value]` retoma a conversa pelo id da
+        // sessão. Id desconhecido não sobe agente nenhum — a CLI imprime
+        // "No conversation found with session ID" e sai.
+        if let Some(id) = resume {
+            cmd.arg("--resume");
+            cmd.arg(id);
+        }
         cmd.cwd(worktree_path);
         cmd.env_clear();
         for (k, v) in env {
             cmd.env(k, v);
         }
         cmd
+    }
+
+    fn resumes_conversations(&self) -> bool {
+        true
     }
 
     fn supports_hooks(&self) -> bool {
@@ -211,8 +236,18 @@ impl AgentRunner for CodexRunner {
         worktree_path: &Path,
         env: &HashMap<String, String>,
         hooks: &HookSetup,
+        resume: Option<&str>,
     ) -> CommandBuilder {
         let mut cmd = CommandBuilder::new("codex");
+        // `codex resume <SESSION_ID>` é SUBCOMANDO, não opção: precisa vir antes
+        // de `--sandbox` e dos `--config`, senão o clap não o reconhece. O
+        // sandbox nativo e o `-a on-request` continuam valendo — `codex resume
+        // --help` aceita os dois — e é isso que mantém o gate de aprovação de pé
+        // numa conversa retomada.
+        if let Some(id) = resume {
+            cmd.arg("resume");
+            cmd.arg(id);
+        }
         cmd.arg("--sandbox");
         cmd.arg("workspace-write");
         cmd.arg("--ask-for-approval");
@@ -227,6 +262,10 @@ impl AgentRunner for CodexRunner {
             cmd.env(k, v);
         }
         cmd
+    }
+
+    fn resumes_conversations(&self) -> bool {
+        true
     }
 
     fn supports_hooks(&self) -> bool {
@@ -359,15 +398,55 @@ mod tests {
     #[test]
     fn build_command_uses_settings_flag_with_hook_path() {
         let env = HashMap::new();
-        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks());
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
         let argv = argv_strings(&cmd);
         assert_eq!(argv, vec!["claude", "--settings", "/tmp/hooks.json"]);
+    }
+
+    /// Sintaxe conferida contra o binário desta máquina (`claude --help`):
+    /// `-r, --resume [value]` retoma pelo id da sessão.
+    #[test]
+    fn claude_resume_passes_the_conversation_id_as_an_option() {
+        let env = HashMap::new();
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), Some("abc-123"));
+        let argv = argv_strings(&cmd);
+        assert_eq!(
+            argv,
+            vec![
+                "claude",
+                "--settings",
+                "/tmp/hooks.json",
+                "--resume",
+                "abc-123"
+            ]
+        );
+    }
+
+    /// `codex resume <SESSION_ID>` é subcomando: fora da primeira posição o clap
+    /// não o reconhece e a conversa não volta.
+    #[test]
+    fn codex_resume_is_the_first_argument_and_keeps_sandbox_and_approval() {
+        let env = HashMap::new();
+        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), Some("abc-123"));
+        let argv = argv_strings(&cmd);
+        assert_eq!(&argv[..3], ["codex", "resume", "abc-123"]);
+        let sandbox = argv.iter().position(|a| a == "--sandbox").unwrap();
+        assert_eq!(argv[sandbox + 1], "workspace-write");
+        let approval = argv.iter().position(|a| a == "--ask-for-approval").unwrap();
+        assert_eq!(argv[approval + 1], "on-request");
+        assert!(argv.iter().filter(|a| *a == "--config").count() == 5);
+    }
+
+    #[test]
+    fn both_shipped_runners_resume_conversations() {
+        assert!(ClaudeCodeRunner.resumes_conversations());
+        assert!(CodexRunner.resumes_conversations());
     }
 
     #[test]
     fn build_command_sets_cwd_to_worktree() {
         let env = HashMap::new();
-        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks());
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
         assert_eq!(cmd.get_cwd().map(OsStr::new), Some(OsStr::new("/wt")));
     }
 
@@ -375,7 +454,7 @@ mod tests {
     fn build_command_applies_env_allowlist() {
         let mut env = HashMap::new();
         env.insert("PATH".to_string(), "/usr/bin".to_string());
-        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks());
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
         assert_eq!(cmd.get_env("PATH"), Some(OsStr::new("/usr/bin")));
     }
 
@@ -383,7 +462,7 @@ mod tests {
     fn build_command_never_bypasses_permissions() {
         let mut env = HashMap::new();
         env.insert("PATH".to_string(), "/usr/bin".to_string());
-        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks());
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
         let argv = argv_strings(&cmd);
         for arg in &argv {
             assert_ne!(arg, "--dangerously-skip-permissions");
@@ -402,7 +481,7 @@ mod tests {
     #[test]
     fn codex_command_keeps_sandbox_on_and_tui_silent() {
         let env = HashMap::new();
-        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks());
+        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
         let argv = argv_strings(&cmd);
         assert_eq!(argv[0], "codex");
         let sandbox = argv.iter().position(|a| a == "--sandbox").unwrap();
@@ -415,7 +494,7 @@ mod tests {
     #[test]
     fn codex_command_injects_hooks_and_trust_via_config_overrides() {
         let env = HashMap::new();
-        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks());
+        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
         let argv = argv_strings(&cmd);
         let overrides: Vec<&String> = argv
             .iter()
@@ -571,7 +650,7 @@ mod tests {
     #[test]
     fn codex_command_never_bypasses_sandbox_or_hook_trust() {
         let env = HashMap::new();
-        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks());
+        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
         for arg in argv_strings(&cmd) {
             assert_ne!(arg, "--dangerously-bypass-approvals-and-sandbox");
             assert_ne!(arg, "--dangerously-bypass-hook-trust");
