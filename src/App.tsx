@@ -64,6 +64,7 @@ import { WindowControls, WindowResizeEdges } from "./components/WindowChrome";
 import { UpdateToast } from "./components/UpdateToast";
 import { IS_MAC } from "./lib/platform";
 import { AgentIcon } from "./components/icons/AgentIcon";
+import { AgentsBoard } from "./components/AgentsBoard";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { Clock } from "./components/Clock";
@@ -294,6 +295,12 @@ import {
 } from "./lib/workspaceCwd";
 import { findSessionLocation } from "./lib/sessionLocation";
 import {
+  buildRows as buildAgentRows,
+  nextAttention,
+  wantsAttention,
+  type SessionPlace,
+} from "./lib/agentsBoard";
+import {
   computeRects,
   findAncestorSplit,
   type DividerRect,
@@ -460,6 +467,10 @@ function isWorktreesWorkspace(w: Workspace): boolean {
 
 function isStatsWorkspace(w: Workspace): boolean {
   return w.tabs.length > 0 && w.tabs.every((t) => t.view === "stats");
+}
+
+function isAgentBoardWorkspace(w: Workspace): boolean {
+  return w.tabs.length > 0 && w.tabs.every((t) => t.view === "agent-board");
 }
 
 const AGENT_COMMAND = /^\s*(?:\S*\/)?(claude|codex|gemini)\b/;
@@ -1512,6 +1523,32 @@ export default function App() {
     [layout.workspaces],
   );
 
+  /**
+   * Salto do quadro: além do workspace e da aba, foca o painel.
+   *
+   * O `goToSession` acima para na aba, e numa aba dividida isso deixa o cursor
+   * no painel errado — o quadro já sabe qual é o painel, então não há motivo
+   * para chegar perto e não chegar.
+   */
+  const jumpToAgent = useCallback(
+    (sessionId: SessionId, place: SessionPlace) => {
+      goToSession(sessionId);
+      void focusPane(place.paneId).catch(() => {});
+    },
+    [goToSession],
+  );
+
+  const agentsWaiting = useMemo(
+    () => buildAgentRows(sessions, layout).filter(wantsAttention).length,
+    [sessions, layout],
+  );
+
+  const goToNextAttention = useCallback(() => {
+    const next = nextAttention(buildAgentRows(sessions, layout), activeId);
+    if (!next) return;
+    jumpToAgent(next.session.id, next.place);
+  }, [sessions, layout, activeId, jumpToAgent]);
+
   const typeIntoSession = useCallback(
     async (sid: SessionId, text: string, submit: boolean) => {
       let lastError: unknown = null;
@@ -1977,7 +2014,8 @@ export default function App() {
     !isConfigWorkspace(activeWorkspace) &&
     !isWorktreesWorkspace(activeWorkspace) &&
     !isConnectionsWorkspace(activeWorkspace) &&
-    !isStatsWorkspace(activeWorkspace)
+    !isStatsWorkspace(activeWorkspace) &&
+    !isAgentBoardWorkspace(activeWorkspace)
       ? activeWorkspace.name
       : "Tyba";
   const activeAgentRunning = activeWorkspace
@@ -2142,7 +2180,8 @@ export default function App() {
       isConfigWorkspace(activeWorkspace) ||
       isConnectionsWorkspace(activeWorkspace) ||
       isWorktreesWorkspace(activeWorkspace) ||
-      isStatsWorkspace(activeWorkspace)
+      isStatsWorkspace(activeWorkspace) ||
+      isAgentBoardWorkspace(activeWorkspace)
     ) {
       return;
     }
@@ -2985,6 +3024,8 @@ export default function App() {
         cycleWorkspace(-1);
       } else if (action === "nextSession") {
         cycleWorkspace(1);
+      } else if (action === "nextAttentionSession") {
+        goToNextAttention();
       } else if (action === "prevTab") {
         cycleTab(-1);
       } else if (action === "nextTab") {
@@ -4567,7 +4608,8 @@ export default function App() {
                           !isConfigWorkspace(w) &&
                           !isWorktreesWorkspace(w) &&
                           !isConnectionsWorkspace(w) &&
-                          !isStatsWorkspace(w),
+                          !isStatsWorkspace(w) &&
+                          !isAgentBoardWorkspace(w),
                       )
                       .map(renderWorkspace)}
                     <Tooltip>
@@ -4639,6 +4681,41 @@ export default function App() {
                         {t("statsTitle")}
                       </TooltipContent>
                     </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          onClick={() =>
+                            void openViewTab("agent-board").catch(() => {})
+                          }
+                          aria-label={t("agentsBoard")}
+                          className={`relative mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal ${
+                            open ? "justify-start px-2" : "justify-center px-0"
+                          } ${
+                            activeTab?.view === "agent-board"
+                              ? "bg-tyba-text/[.05] text-tyba-text"
+                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text"
+                          }`}
+                        >
+                          <AgentIcon size={14} />
+                          {open && t("agentsBoard")}
+                          {agentsWaiting > 0 && (
+                            <span
+                              className={
+                                open
+                                  ? "ml-auto text-[11px] text-tyba-amber"
+                                  : "absolute right-1 top-1 size-1.5 rounded-full bg-tyba-amber"
+                              }
+                            >
+                              {open ? agentsWaiting : null}
+                            </span>
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side={open ? "bottom" : "right"}>
+                        {t("agentsBoard")}
+                      </TooltipContent>
+                    </Tooltip>
                   </nav>
                 </aside>
               )}
@@ -4677,7 +4754,8 @@ export default function App() {
                   activeWorkspace.tabs.length > 0 &&
                   activeTab?.view !== "settings" &&
                   activeTab?.view !== "connections" &&
-                  activeTab?.view !== "stats" && (
+                  activeTab?.view !== "stats" &&
+                  activeTab?.view !== "agent-board" && (
                   <TabBar
                     tabs={activeWorkspace.tabs}
                     activeTab={activeWorkspace.active_tab}
@@ -4730,6 +4808,18 @@ export default function App() {
                   {activeTab?.view === "stats" && (
                     <div className="absolute inset-0 flex">
                       <StatsView />
+                    </div>
+                  )}
+                  {activeTab?.view === "agent-board" && (
+                    <div className="absolute inset-0 flex">
+                      <AgentsBoard
+                        sessions={sessions}
+                        layout={layout}
+                        activeSessionId={activeId}
+                        nextAttentionCombo={bindings.nextAttentionSession}
+                        onJump={jumpToAgent}
+                        onNextAttention={goToNextAttention}
+                      />
                     </div>
                   )}
                   {activeTab?.view === "workspace" && (
