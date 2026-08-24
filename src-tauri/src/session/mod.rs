@@ -481,6 +481,12 @@ impl SessionManager {
         // Sem o prefixo verbatim do Windows (`\\?\`) — é o cwd que a UI exibe.
         let cwd = cmd.get_cwd().map(|c| strip_verbatim_prefix(Path::new(c)));
 
+        // O palpite de tela nasce aqui porque é aqui que o tipo da sessão ainda
+        // está à mão: a sessão só entra no mapa depois do spawn, e o observador
+        // precisa saber, antes do primeiro chunk, se esta é uma sessão com hook
+        // — onde a tela não opina.
+        let observer = pty_pool.screen_observer(id, &kind);
+
         pty_pool.spawn(
             app.clone(),
             id,
@@ -489,6 +495,7 @@ impl SessionManager {
             jail,
             cols,
             rows,
+            observer,
             Box::new(move || on_exit(id)),
         )?;
 

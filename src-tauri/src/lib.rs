@@ -264,6 +264,50 @@ fn reconcile_repo_watchers(app: &AppHandle) {
     let _ = app.emit(repo::EVENT_RECONCILED, state.repos.snapshots());
 }
 
+/// Liga o produtor do palpite de tela: sessão sem hook — shell, ssh, container —
+/// ganha um observador que avalia manifesto na thread do próprio PTY e escreve
+/// em `Session.observed`.
+///
+/// Instalado no `setup`, antes do boot: a restauração de sessões já sobe PTY, e
+/// uma fábrica instalada depois deixaria essas sessões sem observador para
+/// sempre. É também o único lugar onde as quatro peças coexistem — registro,
+/// `SessionManager`, `AppHandle` e prober —, e por isso a fábrica mora aqui e
+/// não no `PtyPool`.
+fn install_screen_observers(
+    app: &AppHandle,
+    pty_pool: &SharedPtyPool,
+    sessions: &SharedSessionManager,
+    prober: &agent::process_probe::SharedAgentProber,
+    manifests_dir: &std::path::Path,
+) {
+    // Uma varredura só, no boot: reler o disco a cada avaliação colocaria IO no
+    // caminho quente do PTY. Trocar manifesto exige reabrir o app.
+    let registry = Arc::new(status::registry::ManifestRegistry::load(manifests_dir));
+    let app = app.clone();
+    let sessions = Arc::clone(sessions);
+    let prober = Arc::clone(prober);
+
+    pty_pool.set_screen_observers(Arc::new(move |id, kind| {
+        let probe_prober = Arc::clone(&prober);
+        let sink_app = app.clone();
+        let sink_sessions = Arc::clone(&sessions);
+        status::observer::ScreenObserver::for_session(
+            kind,
+            Arc::clone(&registry),
+            // Leitura do que o prober JÁ sabe. Quem varre a árvore de processos
+            // é o poll de 2 s; aqui só se consulta o resultado dele, senão a
+            // identidade custaria uma varredura por avaliação.
+            Box::new(move || {
+                probe_prober
+                    .detected(id)
+                    .and_then(|detected| agent::runner_binary(&detected.kind))
+                    .map(str::to_string)
+            }),
+            Box::new(move |observed| sink_sessions.set_observed(&sink_app, id, observed)),
+        )
+    }));
+}
+
 /// Um tick do poll de detecção de agente: monta a lista de shells vivos com seu
 /// `leader_pid`, sonda a árvore de processos e emite só as sessões que mudaram.
 /// Quando não há shell aberto, nem varre os processos — custo zero (só um par de
@@ -5620,13 +5664,24 @@ pub fn run() {
             let layout: layout::SharedLayout =
                 Arc::new(layout::LayoutManager::new(Arc::clone(&store)));
 
-            let themes_dir = app
+            let config_dir = app
                 .path()
                 .app_config_dir()
-                .unwrap_or_else(|_| std::env::temp_dir().join("tyba"))
-                .join("themes");
-            let themes: theme::SharedThemes =
-                Arc::new(theme::ThemeManager::new(Arc::clone(&store), themes_dir));
+                .unwrap_or_else(|_| std::env::temp_dir().join("tyba"));
+            let themes: theme::SharedThemes = Arc::new(theme::ThemeManager::new(
+                Arc::clone(&store),
+                config_dir.join("themes"),
+            ));
+
+            let agent_prober: agent::process_probe::SharedAgentProber =
+                Arc::new(agent::process_probe::AgentProber::default());
+            install_screen_observers(
+                app.handle(),
+                &pty_pool,
+                &sessions,
+                &agent_prober,
+                &config_dir.join("manifests"),
+            );
 
             let repos: repo::SharedRepoWatcher = Arc::new(repo::RepoWatcher::new());
             let (reconcile_tx, reconcile_rx) = std::sync::mpsc::channel::<()>();
@@ -5659,7 +5714,7 @@ pub fn run() {
                 worktree_files: rich_input::FilesCache::default(),
                 hook_servers: Arc::new(agent::session::HookServerRegistry::default()),
                 subagents: Arc::new(agent::subagents::SubagentTracker::new()),
-                agent_prober: Arc::new(agent::process_probe::AgentProber::default()),
+                agent_prober: Arc::clone(&agent_prober),
                 disk_observer: Arc::new(agent::disk_observer::DiskObserver::with_coordinator({
                     let coordinate_app = app.handle().clone();
                     Arc::new(move |session, coordination| {

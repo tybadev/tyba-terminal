@@ -10,6 +10,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
+use crate::session::SessionKind;
+use crate::status::observer::ScreenObserver;
+use crate::status::screen::MAX_REGION_LINES;
+
 mod capture;
 mod holdback;
 
@@ -272,9 +276,18 @@ struct PtyHandle {
     size: (u16, u16),
 }
 
+/// Como uma sessão ganha (ou não) um observador de tela.
+///
+/// Fábrica, e não um observador pronto por parâmetro, porque quem sabe montá-lo
+/// — registro de manifestos, `SessionManager`, `AppHandle`, prober de processo —
+/// só existe junto no `setup` do app. O `PtyPool` não conhece nenhum deles.
+pub type ScreenObserverFactory =
+    Arc<dyn Fn(PtyId, &SessionKind) -> Option<ScreenObserver> + Send + Sync>;
+
 #[derive(Default)]
 pub struct PtyPool {
     ptys: Mutex<HashMap<PtyId, PtyHandle>>,
+    observers: Mutex<Option<ScreenObserverFactory>>,
 }
 
 /// A parte visual das ações, sob um lock só.
@@ -374,6 +387,27 @@ fn ingest_chunk(
     actions
 }
 
+/// A única coisa que o palpite de tela faz **dentro** do lock: o recorte.
+///
+/// `MAX_REGION_LINES` e não o que o manifesto pede: um recorte só, servindo
+/// todas as regras da sessão. A região que cada regra olha é aparada de novo na
+/// avaliação, e pedir mais linhas aqui do que alguém olha só custa hash.
+fn screen_snapshot(state: &ScreenState) -> crate::status::screen::ScreenSnapshot {
+    crate::status::screen::snapshot(state.parser.screen(), MAX_REGION_LINES)
+}
+
+/// Vale recortar a tela agora? Duas perguntas baratas antes de qualquer
+/// alocação: há observador com manifesto para servir, e chegou a hora.
+///
+/// A hora é a do flush (16 ms), não a do chunk. O orçamento acordado é de 1 ms
+/// por sessão **por flush**, e um `contents()` por chunk pagaria o recorte
+/// dezenas de vezes por janela de quadro para responder sempre a mesma coisa.
+fn observe_due(observer: &Option<ScreenObserver>, due: bool) -> bool {
+    due && observer
+        .as_ref()
+        .is_some_and(ScreenObserver::wants_snapshot)
+}
+
 /// O lado não-visual das ações: eventos para o webview, histórico e blocos.
 /// Fora do lock de tela — `emit` atravessa IPC e não pode segurar o terminal.
 struct ActionSink {
@@ -451,6 +485,19 @@ impl PtyPool {
         Self::default()
     }
 
+    /// Instalada uma vez, no `setup`. Sem ela nenhuma sessão observa tela — que
+    /// é o estado de um `PtyPool` de teste.
+    pub fn set_screen_observers(&self, factory: ScreenObserverFactory) {
+        *self.observers.lock() = Some(factory);
+    }
+
+    /// O observador desta sessão, se a fábrica estiver instalada e o tipo da
+    /// sessão admitir palpite de tela.
+    pub fn screen_observer(&self, id: PtyId, kind: &SessionKind) -> Option<ScreenObserver> {
+        let factory = self.observers.lock().clone()?;
+        factory(id, kind)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         &self,
@@ -461,6 +508,7 @@ impl PtyPool {
         jail: Option<Box<dyn JailedSpawner>>,
         cols: u16,
         rows: u16,
+        observer: Option<ScreenObserver>,
         on_exit: Box<dyn FnOnce() + Send>,
     ) -> Result<(), PtyError> {
         if let Some(env) = env {
@@ -588,6 +636,13 @@ impl PtyPool {
                 let mut last_bracketed = false;
                 let mut last_checkpoint = Instant::now();
                 let mut machine = capture::CaptureMachine::new(session_id.to_string());
+                let mut observer = observer;
+                // Houve chunk depois do último recorte. Sem isto, a última tela
+                // de uma rajada — justamente a que carrega "Do you want to
+                // proceed?" — só seria observada quando o agente escrevesse de
+                // novo, que é exatamente o que ele não vai fazer enquanto
+                // espera resposta.
+                let mut unobserved = false;
                 let sink = ActionSink {
                     app: app.clone(),
                     session_id,
@@ -597,7 +652,7 @@ impl PtyPool {
                 };
 
                 loop {
-                    let chunk = if !queued {
+                    let chunk = if !queued && !unobserved {
                         match rx.recv() {
                             Ok(chunk) => Some(chunk),
                             Err(_) => break,
@@ -613,7 +668,7 @@ impl PtyPool {
                         Some(chunk) => {
                             let due = last_flush.elapsed() >= FLUSH_INTERVAL;
                             // Um lock só do parse até a fila: ver `ingest_chunk`.
-                            let (actions, bracketed, cols, rows) = {
+                            let (actions, bracketed, cols, rows, snapshot) = {
                                 let mut screen = reader_screen.lock();
                                 let actions =
                                     ingest_chunk(&mut screen, &mut machine, &chunk, now_ms());
@@ -622,13 +677,46 @@ impl PtyPool {
                                 }
                                 queued = !screen.pending.is_empty();
                                 let (rows, cols) = screen.parser.screen().size();
+                                let snapshot =
+                                    observe_due(&observer, due).then(|| screen_snapshot(&screen));
                                 (
                                     actions,
                                     screen.parser.screen().bracketed_paste(),
                                     cols,
                                     rows,
+                                    snapshot,
                                 )
                             };
+                            // FORA do lock e FORA da main thread, de propósito.
+                            //
+                            // Sob o lock sai só o RECORTE — título e até oito
+                            // linhas —, porque avaliar manifesto ali seria
+                            // segurar a tela inteira (o `attach`, o `resize`, o
+                            // `write`) por regra de terceiro. E aqui, na thread
+                            // emissora desta sessão, e não num comando do
+                            // Tauri: comando síncrono roda na main thread do
+                            // macOS, onde qualquer microssegundo é frame de UI.
+                            //
+                            // A alternativa considerada — uma thread só para
+                            // observar, comum a todas as sessões — foi
+                            // descartada por raio de alcance: aqui, um
+                            // manifesto patológico atrasa a sessão que o
+                            // carrega; lá, atrasaria a detecção de todas.
+                            match (observer.as_mut(), snapshot) {
+                                (Some(observer), Some(snapshot)) => {
+                                    observer.observe(&snapshot);
+                                    unobserved = false;
+                                }
+                                // Só fica pendente o que um dia vai ser
+                                // observado: com o registro vazio (a v1, antes
+                                // dos manifestos), marcar aqui trocaria o
+                                // `recv` bloqueante por um despertar a cada
+                                // 16 ms, por sessão, para não fazer nada.
+                                (Some(observer), None) => {
+                                    unobserved = observer.wants_snapshot();
+                                }
+                                (None, _) => {}
+                            }
                             if due {
                                 last_flush = Instant::now();
                             }
@@ -664,11 +752,17 @@ impl PtyPool {
                             }
                         }
                         None => {
-                            {
+                            let snapshot = {
                                 let mut screen = reader_screen.lock();
                                 emit_pending(&mut screen, &app, &output_event);
                                 queued = false;
+                                observe_due(&observer, unobserved).then(|| screen_snapshot(&screen))
+                            };
+                            if let (Some(observer), Some(snapshot)) = (observer.as_mut(), snapshot)
+                            {
+                                observer.observe(&snapshot);
                             }
+                            unobserved = false;
                             last_flush = Instant::now();
                         }
                     }
@@ -687,6 +781,11 @@ impl PtyPool {
                     (cols, rows)
                 };
                 sink.run(actions, cols, rows);
+                // O PTY morreu: o que estava na tela virou passado, e um
+                // palpite sobrevivente afirmaria um agente que não existe mais.
+                if let Some(observer) = observer.as_mut() {
+                    observer.clear();
+                }
                 let _ = app.emit(&exit_event, PtyExitPayload { code: None });
                 on_exit();
             })
@@ -1169,6 +1268,94 @@ mod ingest_tests {
 
         assert_eq!(rendered(&seen).matches("tyba").count(), 2);
         assert_eq!(state.parser.screen().contents().matches("tyba").count(), 1);
+    }
+}
+
+/// A emenda entre o PTY e o palpite de tela: o que sai de dentro do lock e
+/// quando ele sai. O laço emissor em si não é alcançável por teste unitário
+/// (precisa de `AppHandle`), então o que se fixa aqui são as duas decisões que
+/// ele toma.
+#[cfg(test)]
+mod observer_seam_tests {
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+
+    use super::capture::CaptureMachine;
+    use super::{ingest_chunk, observe_due, screen_snapshot, ScreenState};
+    use crate::session::{ObservedState, SessionKind};
+    use crate::status::observer::ScreenObserver;
+    use crate::status::registry::ManifestRegistry;
+
+    const CODEX: &str = r#"
+id = "codex"
+match = { title = ["Codex"] }
+
+[[rules]]
+id = "working"
+state = "running"
+region = { bottom_lines = 3 }
+contains = ["esc to interrupt"]
+"#;
+
+    fn observer(sources: &[&str], visto: &Arc<Mutex<Vec<String>>>) -> ScreenObserver {
+        let visto = Arc::clone(visto);
+        ScreenObserver::for_session(
+            &SessionKind::Shell,
+            Arc::new(ManifestRegistry::from_sources(sources)),
+            Box::new(|| None),
+            Box::new(move |observed| {
+                visto.lock().push(match observed {
+                    Some(agent) => format!("{}:{:?}", agent.agent, agent.state),
+                    None => "limpo".into(),
+                })
+            }),
+        )
+        .expect("shell recebe observador")
+    }
+
+    /// O recorte é a única coisa que o palpite faz sob o lock — e ele nem sai
+    /// quando não há observador, quando não há manifesto para servir, ou quando
+    /// ainda não é hora do flush.
+    #[test]
+    fn o_recorte_so_sai_no_flush_e_com_manifesto_para_servir() {
+        let visto = Arc::new(Mutex::new(Vec::new()));
+
+        assert!(!observe_due(&None, true), "sem observador, sem recorte");
+        assert!(
+            !observe_due(&Some(observer(&[], &visto)), true),
+            "registro vazio não justifica recortar tela"
+        );
+        assert!(
+            !observe_due(&Some(observer(&[CODEX], &visto)), false),
+            "recorte fora da hora do flush"
+        );
+        assert!(observe_due(&Some(observer(&[CODEX], &visto)), true));
+    }
+
+    /// A ponta a ponta que cabe em teste: o que o `ingest_chunk` desenhou na
+    /// tela é o que o manifesto lê.
+    #[test]
+    fn o_que_o_pty_desenha_vira_palpite() {
+        let visto = Arc::new(Mutex::new(Vec::new()));
+        let mut observer = observer(&[CODEX], &visto);
+        let mut state = ScreenState::new(24, 80);
+        let mut machine = CaptureMachine::new("s1".into());
+
+        ingest_chunk(
+            &mut state,
+            &mut machine,
+            // `\xe2\x80\xa2` é o bullet do Codex: byte string não aceita
+            // não-ASCII cru, e o que interessa é que ele atravesse o vt100.
+            b"\x1b]0;Codex\x07\xe2\x80\xa2 Working (2s \xe2\x80\xa2 esc to interrupt)\r\n",
+            1_000,
+        );
+        observer.observe(&screen_snapshot(&state));
+
+        assert_eq!(
+            visto.lock().as_slice(),
+            [format!("codex:{:?}", Some(ObservedState::Running))]
+        );
     }
 }
 
