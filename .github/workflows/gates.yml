@@ -67,7 +67,7 @@ jobs:
       - name: Enable unprivileged user namespaces (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           workspaces: src-tauri
       - run: cargo fmt --check
@@ -120,7 +120,7 @@ jobs:
       - name: Enable unprivileged user namespaces (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           workspaces: src-tauri
       - name: Baixar pins, verificar sha256 e subir na jaula
