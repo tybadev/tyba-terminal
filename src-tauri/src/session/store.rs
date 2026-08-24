@@ -231,6 +231,30 @@ const BLOCK_VERSION: i64 = 1;
 /// roda sobre um conjunto limitado, não sobre a tabela inteira.
 const HISTORY_CANDIDATES: i64 = 2_000;
 
+/// Janela + escopo de repositório de `approval_history`, para o painel de
+/// estatísticas. `?1` é o começo da janela em epoch ms, `?2` o repo (NULL =
+/// todos).
+///
+/// A tabela não tem `repo_root` — quem sabe o repo é a sessão dona da linha.
+/// Consequência que não dá para esconder: `remove_session` apaga a sessão e os
+/// blocos dela, mas NÃO o `approval_history`. As aprovações de uma sessão
+/// descartada continuam no banco sem dono, contam em "todos os repos" e somem
+/// de qualquer escopo — o contrário seria atribuí-las a um repo que ninguém
+/// tem como conferir.
+const APPROVAL_SCOPE: &str = "requested_at_ms >= ?1
+     AND (?2 IS NULL OR EXISTS (
+         SELECT 1 FROM sessions s
+         WHERE s.id = approval_history.session_id AND s.repo_root = ?2))";
+
+/// Sessão de agente, a partir do `kind` serializado (`{\"type\":\"agent\",…}`).
+///
+/// Espera a sessão no alias `s`. O `json_valid` não é zelo: `json_extract` sobre
+/// texto que não é JSON aborta a consulta INTEIRA com erro, e aí uma única linha
+/// estragada em `sessions` deixaria o painel sem nada em vez de sem uma linha.
+/// `CASE` é o único jeito garantido de curto-circuitar em SQLite — num `AND` o
+/// otimizador pode reordenar os termos.
+const AGENT_SESSION: &str =
+    "CASE WHEN json_valid(s.kind) THEN json_extract(s.kind, '$.type') END = 'agent'";
 /// Quantas linhas a lista **sem busca** agrega. Ela abre a paleta e roda sem
 /// debounce, então não pode custar a tabela inteira: com 100 000 linhas isso é
 /// 48 ms contra 10 ms sobre a janela. A busca com query ignora este limite.
@@ -1085,6 +1109,219 @@ impl Store {
             }
         };
         Ok(entries)
+    }
+
+    /// Tudo que o painel de estatísticas de agente mostra, agregado em SQL.
+    ///
+    /// Agregar aqui e não no React é o princípio #1: o webview recebe número
+    /// pronto. Trazer linha crua para somar do outro lado significaria mandar o
+    /// `approval_history` inteiro pelo IPC — e o texto de cada comando junto,
+    /// que é exatamente o que não precisa atravessar para desenhar um cartão.
+    ///
+    /// As cinco consultas rodam sob o MESMO `lock`: todo acesso ao banco passa
+    /// por ele, então nenhuma escrita entra no meio e os cartões não podem
+    /// discordar das tabelas.
+    ///
+    /// `since_ms` é o começo da janela (0 = tudo) e `repo` o escopo por
+    /// repositório. Nem `approval_history` nem `block` guardam `repo_root`:
+    /// quem sabe o repo é `sessions`, então o escopo é um `EXISTS` na sessão
+    /// dona da linha.
+    pub fn agent_stats(
+        &self,
+        since_ms: u64,
+        repo: Option<&str>,
+    ) -> Result<crate::stats::AgentStats, StoreError> {
+        let since = since_ms.min(i64::MAX as u64) as i64;
+        let conn = self.conn.lock();
+        Ok(crate::stats::AgentStats {
+            totals: Self::approval_totals(&conn, since, repo)?,
+            commands: Self::command_stats(&conn, since, repo)?,
+            sessions: Self::session_stats(&conn, since, repo)?,
+            repos: Self::stats_repos(&conn, since)?,
+        })
+    }
+
+    fn approval_totals(
+        conn: &Connection,
+        since: i64,
+        repo: Option<&str>,
+    ) -> Result<crate::stats::ApprovalTotals, StoreError> {
+        use crate::stats::{percent, AUTO_DECISIONS, HUMAN_DECISIONS};
+
+        let (requested, auto_approved, human_decided, denied): (u64, u64, u64, u64) = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*),
+                            COALESCE(SUM(decision IN ({AUTO_DECISIONS})), 0),
+                            COALESCE(SUM(decision IN ({HUMAN_DECISIONS})), 0),
+                            COALESCE(SUM(decision = 'denied'), 0)
+                     FROM approval_history
+                     WHERE {APPROVAL_SCOPE}"
+                ),
+                params![since, repo],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+
+        // Mediana em SQL, com o par e o ímpar no mesmo passo: `ROW_NUMBER` sobre
+        // a duração ordenada e a média das posições centrais. Ímpar escolhe duas
+        // vezes a mesma linha ((n+1)/2 == (n+2)/2 com divisão inteira) e a média
+        // de uma linha com ela mesma é ela. Período sem decisão humana nenhuma
+        // devolve `NULL` do `AVG` — nunca `0 / 0`.
+        //
+        // `MAX(…, 0)` porque o relógio do sistema pode andar para trás entre o
+        // pedido e a decisão, e uma espera negativa mentiria para baixo.
+        let median: Option<f64> = conn.query_row(
+            &format!(
+                "SELECT AVG(elapsed) FROM (
+                     SELECT MAX(resolved_at_ms - requested_at_ms, 0) AS elapsed,
+                            ROW_NUMBER() OVER (
+                                ORDER BY MAX(resolved_at_ms - requested_at_ms, 0)
+                            ) AS pos,
+                            COUNT(*) OVER () AS total
+                     FROM approval_history
+                     WHERE {APPROVAL_SCOPE} AND decision IN ({HUMAN_DECISIONS})
+                 )
+                 WHERE pos IN ((total + 1) / 2, (total + 2) / 2)"
+            ),
+            params![since, repo],
+            |row| row.get(0),
+        )?;
+
+        Ok(crate::stats::ApprovalTotals {
+            requested,
+            auto_approved,
+            human_decided,
+            denied,
+            auto_approved_pct: percent(auto_approved, requested),
+            human_decided_pct: percent(human_decided, requested),
+            denied_pct: percent(denied, requested),
+            median_human_ms: median.map(|ms| ms.round().max(0.0) as u64),
+        })
+    }
+
+    fn command_stats(
+        conn: &Connection,
+        since: i64,
+        repo: Option<&str>,
+    ) -> Result<Vec<crate::stats::CommandStat>, StoreError> {
+        use crate::stats::{percent, risk_from_severity, APPROVING_DECISIONS, COMMAND_ROWS};
+
+        let mut stmt = conn.prepare(&format!(
+            "SELECT command,
+                    COUNT(*) AS requests,
+                    MAX(CASE risk WHEN 'red' THEN 3 WHEN 'yellow' THEN 2 ELSE 1 END) AS severity,
+                    COALESCE(SUM(decision IN ({APPROVING_DECISIONS})), 0) AS approved
+             FROM approval_history
+             WHERE {APPROVAL_SCOPE}
+             GROUP BY command
+             ORDER BY requests DESC, command
+             LIMIT ?3"
+        ))?;
+        let rows = stmt
+            .query_map(params![since, repo, COMMAND_ROWS as i64], |row| {
+                let command: String = row.get(0)?;
+                let requests: u64 = row.get(1)?;
+                let severity: i64 = row.get(2)?;
+                let approved: u64 = row.get(3)?;
+                Ok(crate::stats::CommandStat {
+                    // Redigido de novo na saída: o `INSERT` de hoje redige, mas
+                    // o que sai daqui vai para a tela e não custa nada garantir
+                    // (princípio #10).
+                    command: redact(&command).into_owned(),
+                    requests,
+                    risk: risk_from_severity(severity).to_string(),
+                    approved,
+                    approval_rate: percent(approved, requests),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    fn session_stats(
+        conn: &Connection,
+        since: i64,
+        repo: Option<&str>,
+    ) -> Result<Vec<crate::stats::SessionStat>, StoreError> {
+        use crate::stats::SESSION_ROWS;
+
+        // Uma sessão entra na tabela se pediu aprovação no período OU se é de
+        // agente e executou comando. Só aprovação não bastaria (a sessão que
+        // rodou muito e nunca precisou de aval sumiria); só bloco também não
+        // (sessão de shell entraria como linha de zeros). Aprovação sozinha já
+        // implica agente — quem grava `approval_history` é o hook de agente.
+        let mut stmt = conn.prepare(&format!(
+            "WITH ap AS (
+                 SELECT session_id, COUNT(*) AS n
+                 FROM approval_history
+                 WHERE {APPROVAL_SCOPE}
+                 GROUP BY session_id
+             ),
+             bl AS (
+                 SELECT session_id,
+                        COUNT(*) AS n,
+                        COALESCE(SUM(MAX(finished_at_ms - started_at_ms, 0)), 0) AS ms
+                 FROM block
+                 WHERE started_at_ms >= ?1
+                   AND (?2 IS NULL OR EXISTS (
+                       SELECT 1 FROM sessions s
+                       WHERE s.id = block.session_id AND s.repo_root = ?2))
+                   AND EXISTS (
+                       SELECT 1 FROM sessions s
+                       WHERE s.id = block.session_id AND {AGENT_SESSION})
+                 GROUP BY session_id
+             )
+             SELECT ids.session_id AS session_id,
+                    COALESCE(
+                        (SELECT title FROM sessions WHERE id = ids.session_id),
+                        ids.session_id
+                    ) AS title,
+                    COALESCE(bl.n, 0) AS commands,
+                    COALESCE(ap.n, 0) AS approvals,
+                    COALESCE(bl.ms, 0) AS total_ms
+             FROM (SELECT session_id FROM ap UNION SELECT session_id FROM bl) AS ids
+             LEFT JOIN ap ON ap.session_id = ids.session_id
+             LEFT JOIN bl ON bl.session_id = ids.session_id
+             ORDER BY approvals DESC, commands DESC, title
+             LIMIT ?3"
+        ))?;
+        let rows = stmt
+            .query_map(params![since, repo, SESSION_ROWS as i64], |row| {
+                let title: String = row.get(1)?;
+                Ok(crate::stats::SessionStat {
+                    session_id: row.get(0)?,
+                    title: redact(&title).into_owned(),
+                    commands: row.get(2)?,
+                    approvals: row.get(3)?,
+                    total_ms: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Repos que aparecem no filtro.
+    ///
+    /// Deliberadamente sem o escopo de repo: a lista é a que permite trocar de
+    /// escopo, e filtrá-la pelo escopo vigente prenderia a pessoa no repo que
+    /// ela acabou de escolher.
+    fn stats_repos(conn: &Connection, since: i64) -> Result<Vec<String>, StoreError> {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT DISTINCT repo_root FROM sessions s
+             WHERE s.repo_root IS NOT NULL
+               AND s.repo_root <> ''
+               AND (EXISTS (
+                       SELECT 1 FROM approval_history a
+                       WHERE a.session_id = s.id AND a.requested_at_ms >= ?1)
+                    OR ({AGENT_SESSION} AND EXISTS (
+                       SELECT 1 FROM block b
+                       WHERE b.session_id = s.id AND b.started_at_ms >= ?1)))
+             ORDER BY repo_root"
+        ))?;
+        let rows = stmt
+            .query_map(params![since], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Redige antes de gravar: `export TOKEN=sk-…` é o caso comum de linha de

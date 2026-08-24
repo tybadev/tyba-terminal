@@ -23,6 +23,7 @@ pub mod session;
 pub mod shell_path;
 pub mod snippet;
 pub mod ssh;
+pub mod stats;
 pub mod status;
 pub mod theme;
 pub mod update;
@@ -4094,6 +4095,7 @@ fn open_view_tab(app: AppHandle, state: State<'_, AppState>, view: String) -> Re
     if view != layout::VIEW_SETTINGS
         && view != layout::VIEW_WORKSPACE
         && view != layout::VIEW_CONNECTIONS
+        && view != layout::VIEW_STATS
         && view != layout::VIEW_AGENT_BOARD
     {
         return Err(format!("view desconhecida: {view}"));
@@ -4959,6 +4961,26 @@ fn clear_command_history(
         .map_err(|e| e.to_string())
 }
 
+/// Painel de estatísticas de agente: agregação em SQL, no core (princípio #1).
+///
+/// `days` é a janela (`None` = tudo) e vira um corte em epoch ms AQUI, não no
+/// webview: "os últimos 7 dias" contados no relógio de quem desenha renderia um
+/// recorte diferente do que o banco filtrou.
+///
+/// Só leitura — este comando não executa, não re-roda e não apaga nada.
+#[tauri::command]
+async fn agent_stats(
+    state: State<'_, AppState>,
+    days: Option<u32>,
+    repo_root: Option<String>,
+) -> Result<stats::AgentStats, String> {
+    let since = stats::window_start_ms(days, approvals::now_ms());
+    state
+        .store
+        .agent_stats(since, repo_root.as_deref())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn set_history_enabled(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
     state
@@ -5685,6 +5707,7 @@ pub fn run() {
             suggest_line,
             clear_command_history,
             set_history_enabled,
+            agent_stats,
             list_snippets,
             save_snippet,
             delete_snippet,
