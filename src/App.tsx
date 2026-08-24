@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import {
   CaretDown,
   CaretRight,
+  ChartBar,
   Check,
   DotsThree,
   FolderOpen,
@@ -101,6 +102,7 @@ import { DockerIcon } from "./components/icons/DockerIcon";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
 import { WorktreesView } from "./components/WorktreesView";
+import { StatsView } from "./components/StatsView";
 import { DiffView } from "./components/DiffView";
 import { TunnelsView } from "./components/TunnelsView";
 import { FilesPanel } from "./components/FilesPanel";
@@ -454,6 +456,10 @@ function isConnectionsWorkspace(w: Workspace): boolean {
 
 function isWorktreesWorkspace(w: Workspace): boolean {
   return w.tabs.length > 0 && w.tabs.every((t) => t.view === "workspace");
+}
+
+function isStatsWorkspace(w: Workspace): boolean {
+  return w.tabs.length > 0 && w.tabs.every((t) => t.view === "stats");
 }
 
 const AGENT_COMMAND = /^\s*(?:\S*\/)?(claude|codex|gemini)\b/;
@@ -1970,7 +1976,8 @@ export default function App() {
     activeWorkspace &&
     !isConfigWorkspace(activeWorkspace) &&
     !isWorktreesWorkspace(activeWorkspace) &&
-    !isConnectionsWorkspace(activeWorkspace)
+    !isConnectionsWorkspace(activeWorkspace) &&
+    !isStatsWorkspace(activeWorkspace)
       ? activeWorkspace.name
       : "Tyba";
   const activeAgentRunning = activeWorkspace
@@ -2134,7 +2141,8 @@ export default function App() {
       activeWorkspace.kind === "docker" ||
       isConfigWorkspace(activeWorkspace) ||
       isConnectionsWorkspace(activeWorkspace) ||
-      isWorktreesWorkspace(activeWorkspace)
+      isWorktreesWorkspace(activeWorkspace) ||
+      isStatsWorkspace(activeWorkspace)
     ) {
       return;
     }
@@ -4558,7 +4566,8 @@ export default function App() {
                         (w) =>
                           !isConfigWorkspace(w) &&
                           !isWorktreesWorkspace(w) &&
-                          !isConnectionsWorkspace(w),
+                          !isConnectionsWorkspace(w) &&
+                          !isStatsWorkspace(w),
                       )
                       .map(renderWorkspace)}
                     <Tooltip>
@@ -4606,6 +4615,30 @@ export default function App() {
                         {t("connectionsTitle")}
                       </TooltipContent>
                     </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          onClick={() =>
+                            void openViewTab("stats").catch(() => {})
+                          }
+                          aria-label={t("statsTitle")}
+                          className={`mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal ${
+                            open ? "justify-start px-2" : "justify-center px-0"
+                          } ${
+                            activeTab?.view === "stats"
+                              ? "bg-tyba-text/[.05] text-tyba-text"
+                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text"
+                          }`}
+                        >
+                          <ChartBar size={14} />
+                          {open && t("statsTitle")}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side={open ? "bottom" : "right"}>
+                        {t("statsTitle")}
+                      </TooltipContent>
+                    </Tooltip>
                   </nav>
                 </aside>
               )}
@@ -4643,7 +4676,8 @@ export default function App() {
                 {activeWorkspace &&
                   activeWorkspace.tabs.length > 0 &&
                   activeTab?.view !== "settings" &&
-                  activeTab?.view !== "connections" && (
+                  activeTab?.view !== "connections" &&
+                  activeTab?.view !== "stats" && (
                   <TabBar
                     tabs={activeWorkspace.tabs}
                     activeTab={activeWorkspace.active_tab}
@@ -4691,6 +4725,11 @@ export default function App() {
                           void connectGroup(group, hosts)
                         }
                       />
+                    </div>
+                  )}
+                  {activeTab?.view === "stats" && (
+                    <div className="absolute inset-0 flex">
+                      <StatsView />
                     </div>
                   )}
                   {activeTab?.view === "workspace" && (
