@@ -4999,11 +4999,7 @@ async fn suggest_line(
     };
     let arguments = match (&arg_prefix, &arg_token) {
         (Some(prefix), Some(token)) => {
-            let commands = state
-                .store
-                .history_with_prefix(prefix, 400)
-                .map_err(|e| e.to_string())?;
-            completion::next_tokens(&commands, prefix, token)
+            argument_candidates(&state, prefix, token, cwd.as_deref(), repo_root.as_deref())?
         }
         _ => Vec::new(),
     };
@@ -5030,17 +5026,103 @@ fn complete_path(cwd: String, token: String) -> Vec<String> {
 /// Subcomando e flag vêm do histórico do próprio dono: para `git co`, os
 /// comandos que começaram com `git `. Personalizado, sem base externa e sem
 /// manutenção — a do Warp é AGPL e está fora de alcance.
+/// Candidatos vindos de quem sabe: o git, o `package.json`, o `Makefile`, o
+/// gestor de conexões.
+///
+/// Só roda quando a tabela de `completion::argument` reconhece o prefixo, o que
+/// é raro — só depois de `git checkout `, `npm run ` e afins. Fora disso não há
+/// leitura de disco nem processo novo, e a completação segue pelo histórico
+/// como antes. É o que mantém isto fora do caminho quente da digitação.
+fn provider_candidates(
+    state: &AppState,
+    prefix: &str,
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
+) -> Vec<String> {
+    use completion::argument::{find_upwards, parse_make_targets, parse_package_scripts, Provider};
+
+    let Some(provider) = completion::argument::provider_for(prefix) else {
+        return Vec::new();
+    };
+    let root = repo_root.map(std::path::Path::new);
+    let here = cwd.map(std::path::Path::new);
+
+    match provider {
+        Provider::GitBranch => {
+            let Some(repo) = root else {
+                return Vec::new();
+            };
+            worktree::branches::list(repo)
+                .map(|list| list.branches.into_iter().map(|b| b.name).collect())
+                .unwrap_or_default()
+        }
+        Provider::NpmScript => here
+            .and_then(|dir| find_upwards(dir, "package.json", root))
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|source| parse_package_scripts(&source))
+            .unwrap_or_default(),
+        Provider::MakeTarget => here
+            .and_then(|dir| find_upwards(dir, "Makefile", root))
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|source| parse_make_targets(&source))
+            .unwrap_or_default(),
+        Provider::SshHost => state
+            .store
+            .load_hosts()
+            .map(|hosts| hosts.into_iter().map(|h| h.alias).collect())
+            .unwrap_or_default(),
+    }
+}
+
+/// Os candidatos de argumento, do provedor e do histórico, sem repetir.
+///
+/// O provedor manda **quem existe**; o histórico manda **em que ordem**. O que
+/// o histórico conhece e o provedor não (flag, argumento livre) entra no fim —
+/// perder isso seria trocar um buraco por outro.
+fn argument_candidates(
+    state: &AppState,
+    prefix: &str,
+    token: &str,
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let used = state
+        .store
+        .history_with_prefix(prefix, 400)
+        .map_err(|e| e.to_string())?;
+    let from_history = completion::next_tokens(&used, prefix, token);
+
+    let mut found = completion::argument::rank(
+        provider_candidates(state, prefix, cwd, repo_root)
+            .into_iter()
+            .filter(|c| c.starts_with(token) && c != token)
+            .collect(),
+        &from_history,
+    );
+    for extra in from_history {
+        if !found.contains(&extra) {
+            found.push(extra);
+        }
+    }
+    found.truncate(40);
+    Ok(found)
+}
+
 #[tauri::command]
 fn complete_argument(
     state: State<'_, AppState>,
     prefix: String,
     token: String,
+    cwd: Option<String>,
+    repo_root: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let commands = state
-        .store
-        .history_with_prefix(&prefix, 400)
-        .map_err(|e| e.to_string())?;
-    Ok(completion::next_tokens(&commands, &prefix, &token))
+    argument_candidates(
+        &state,
+        &prefix,
+        &token,
+        cwd.as_deref(),
+        repo_root.as_deref(),
+    )
 }
 
 #[tauri::command]
