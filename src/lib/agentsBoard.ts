@@ -99,8 +99,16 @@ const isAgent = (session: Session): boolean => session.kind.type === "agent";
  * `awaiting_input` vira `reason: "reply"` porque sem gate não existe aprovação
  * pendente: o que a tela pode sugerir é um agente parado esperando alguém, e é
  * isso que o rótulo "aguardando" diz.
+ *
+ * `null` para o que este front não sabe ler — incluindo o `state` ausente e o
+ * estado que o core acrescente depois. A união do TypeScript vale na compilação
+ * e o dado vem do core em tempo de execução: um `default` que confia no tipo
+ * devolveria `undefined`, e o `statusVisual` estouraria lendo `status.state`.
+ * Como o `buildRows` roda dentro de `useMemo`, o estouro não derruba a linha —
+ * derruba a renderização inteira, e um campo novo do core viraria tela branca
+ * sem release nenhum do front.
  */
-const observedStatus = (state: ObservedState): SessionStatus => {
+const observedStatus = (state: ObservedState | null): SessionStatus | null => {
   switch (state) {
     case "awaiting_input":
       return { state: "awaiting_input", hint: null, reason: "reply" };
@@ -108,6 +116,8 @@ const observedStatus = (state: ObservedState): SessionStatus => {
       return { state: "running" };
     case "idle":
       return { state: "idle", summary: null };
+    default:
+      return null;
   }
 };
 
@@ -118,10 +128,15 @@ const observedStatus = (state: ObservedState): SessionStatus => {
  * `attention` — e `attention` é a marca de fim de turno que o hook levanta.
  * Sessão sem hook nunca a tem, então idle deduzido é repouso, não conclusão a
  * revisar.
+ *
+ * Sinal que este front não sabe ler cai no `NO_SIGNAL`, no mesmo lugar da
+ * presença sem estado: há um agente ali e o que chegou não diz o que ele faz.
+ * É a leitura honesta, e a única que não escolhe uma cor no chute.
  */
 export const observedVisual = (observed: ObservedAgent): StatusVisual => {
-  if (observed.state === null) return NO_SIGNAL;
-  return statusVisual(observedStatus(observed.state), false) ?? RESTING;
+  const status = observedStatus(observed.state);
+  if (!status) return NO_SIGNAL;
+  return statusVisual(status, false) ?? RESTING;
 };
 
 /**
@@ -246,10 +261,15 @@ export const buildRows = (
 };
 
 /**
- * As linhas na ordem em que o quadro as mostra: gerenciadas primeiro, sempre.
+ * As duas seções numa lista só, gerenciadas primeiro — a ordem que o ciclo do
+ * "ir para o próximo" percorre e que o badge conta.
  *
- * É esta ordem que o ciclo do "ir para o próximo" percorre, para o atalho andar
- * na mesma sequência que o olho lê.
+ * **Não é a ordem da tela.** Lá as linhas ainda passam pelo
+ * [`groupByWorkspace`], que junta por workspace; aqui a urgência é plana, então
+ * com mais de um workspace o ciclo visita numa sequência que a tela não mostra.
+ * O que as duas ordens têm em comum — e é o que a fronteira entre as seções
+ * existe para garantir — é que nenhum agente sem gate é visitado enquanto um
+ * gerenciado ainda pede alguém.
  */
 export const boardOrder = (sections: BoardSections): AgentRow[] => [
   ...sections.managed,

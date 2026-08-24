@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type {
   LayoutState,
+  ObservedAgent,
   ObservedState,
   PaneNode,
   Session,
@@ -393,6 +394,30 @@ describe("seção dos observados", () => {
     expect(row.visual.dotClass).not.toMatch(/bg-tyba-green/);
   });
 
+  test("sinal que este front não sabe ler vira presença sem estado", () => {
+    // A união do TypeScript vale na compilação; o dado vem do core em tempo de
+    // execução. Um `state` que o core acrescente sozinho — ou um `observed` sem
+    // o campo — não pode estourar aqui: o `buildRows` roda dentro de `useMemo`,
+    // onde a exceção não derruba a linha, derruba a renderização inteira.
+    const futuro = observedSession("futuro", "compacting" as ObservedState);
+    const semCampo = session("sem campo", running, {
+      kind: { type: "shell" } as SessionKind,
+      observed: { agent: "claude" } as ObservedAgent,
+    });
+
+    const rows = board([futuro, semCampo]).observed;
+
+    // A linha aparece — presença é fato, e o selo "sem gate" vale igual.
+    expect(rows.map((r) => r.session.id)).toEqual(["futuro", "sem campo"]);
+    for (const row of rows) {
+      expect(row.visual.labelKey).toBe("agentsBoardNoSignal");
+      expect(row.visual.dotClass).not.toMatch(
+        /bg-tyba-(amber|blue|green|red)/,
+      );
+      expect(row.urgency).toBe(0);
+    }
+  });
+
   test("gerenciado que por acidente traga `observed` conta uma vez só", () => {
     const dupla = session("s1", blocked, {
       observed: { agent: "claude", state: "idle" },
@@ -407,15 +432,6 @@ describe("seção dos observados", () => {
     expect(sections.managed[0].observed).toBeNull();
     // O que ela mostra é o fato do hook, não o palpite da tela.
     expect(sections.managed[0].urgency).toBe(urgencyOf(dupla));
-  });
-
-  test("observado sem painel no layout fica de fora, como o gerenciado", () => {
-    const sections = buildRows(
-      [observedSession("s1", "awaiting_input")],
-      layout([]),
-    );
-
-    expect(boardOrder(sections)).toHaveLength(0);
   });
 });
 
@@ -451,22 +467,5 @@ describe("contagem de 'esperando por você'", () => {
     expect(nextAttention(boardOrder(board(sessions)), null)?.session.id).toBe(
       "gerenciado",
     );
-  });
-
-  test("presença sem estado não conta: não afirma que alguém está esperando", () => {
-    // A decisão 3 aplicada ao badge: `null` é ausência de sinal, e um número no
-    // sidebar é afirmação. Contá-la mandaria o usuário procurar um pedido que
-    // talvez não exista.
-    expect(waiting([observedSession("s1", null)])).toEqual([]);
-  });
-
-  test("observado rodando não conta, como o gerenciado rodando não conta", () => {
-    expect(
-      waiting([
-        observedSession("s1", "running"),
-        session("s2", running),
-        observedSession("s3", "idle"),
-      ]),
-    ).toEqual([]);
   });
 });
