@@ -4694,6 +4694,43 @@ struct HistoryHit {
     failed: bool,
 }
 
+/// As fontes de histórico que existem no disco, com a contagem de cada uma.
+///
+/// Só conta: nada entra no banco antes de o usuário mandar importar. É o que o
+/// convite de primeiro uso mostra.
+#[tauri::command]
+fn scan_shell_history_sources() -> Result<Vec<history::import::source::SourceScan>, String> {
+    let Some(home) = ssh::home_dir() else {
+        return Ok(Vec::new());
+    };
+    let sources = history::import::source::resolve(&home, &|name| std::env::var(name).ok());
+    Ok(sources
+        .iter()
+        .filter_map(|source| history::import::source::scan(source).ok())
+        .collect())
+}
+
+/// Importa o histórico do shell para dentro do `command_history`.
+///
+/// Superfície **humana**: nenhum hook, tool ou comando de sessão de agente chega
+/// aqui. O único canal que o agente tem com o core é o socket de hook, e a
+/// resposta dele é uma decisão (`HookAction`), nunca uma ação como esta.
+#[tauri::command]
+fn import_shell_history(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<history::import::ImportReport, String> {
+    let Some(home) = ssh::home_dir() else {
+        return Err("history_import_no_home".into());
+    };
+    let sources = history::import::source::resolve(&home, &|name| std::env::var(name).ok());
+    let report = history::import::run(&state.store, &sources, &mut |progress| {
+        let _ = app.emit(history::import::EVENT_PROGRESS, progress);
+    })
+    .map_err(|error| error.to_string())?;
+    Ok(report)
+}
+
 /// Fuzzy + frecência no core: o webview recebe a lista já ordenada (princípio #1).
 #[tauri::command]
 async fn search_command_history(
@@ -4718,12 +4755,12 @@ fn history_hits(
     use fuzzy_matcher::skim::SkimMatcherV2;
     use fuzzy_matcher::FuzzyMatcher;
 
+    let query = query.trim();
     let candidates = state
         .store
-        .history_candidates(cwd, repo_root)
+        .history_candidates(Some(query), cwd, repo_root)
         .map_err(|e| e.to_string())?;
     let matcher = SkimMatcherV2::default();
-    let query = query.trim();
     let now = approvals::now_ms() as i64;
     let mut scored: Vec<(f64, HistoryHit)> = candidates
         .into_iter()
@@ -4737,7 +4774,10 @@ fn history_hits(
             Some((
                 score,
                 HistoryHit {
-                    failed: candidate.uses > 0 && candidate.successes == 0,
+                    // Mesma regra da frecência: sem exit code conhecido não há
+                    // fracasso a marcar. Comando importado não grava código, e
+                    // carimbá-lo de "falhou" seria mentira na UI.
+                    failed: candidate.known_exit_codes > 0 && candidate.successes == 0,
                     command: candidate.command,
                     cwd: candidate.cwd,
                     uses: candidate.uses,
@@ -5636,6 +5676,8 @@ pub fn run() {
             session_line_echo,
             session_blocks,
             search_command_history,
+            scan_shell_history_sources,
+            import_shell_history,
             suggest_commands,
             complete_path,
             complete_argument,

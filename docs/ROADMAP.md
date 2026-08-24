@@ -72,6 +72,14 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
   - **Não coberto**: `htop`, resize de janela e reattach de aba sob o recorte; p10k contra o repaint assíncrono. Ver [TODO](TODO.md).
 - [ ] OSC 52 com confirmação, sanitização OSC 8
 
+### Paridade de histórico de shell (2026-08-15)
+
+O motor já existe (`history/mod.rs`): captura por `OSC 633;E`/`133;D`, frecência com escopo de cwd/repo e demérito para comando que só falhou, `ignorespace` respeitado, redação antes do SQLite, writer fora do caminho quente. O que falta não é motor — é **dado de entrada** e **cobertura de shell**. Os três itens saíram de comparar o TYBA com o [atuin](https://github.com/atuinsh/atuin), e a ordem é por impacto sobre custo, não por vontade.
+
+- [ ] **Import do histórico existente** — hoje a paleta nasce vazia: a frecência leva semanas para ter o que ranquear enquanto o usuário já tem anos em `~/.zsh_history`. Importar zsh (com e sem `EXTENDED_HISTORY`), bash, fish e o `history.db` do atuin quando existir. Armadilhas conhecidas: o formato estendido do zsh (`: <epoch>:<dur>;<cmd>`) e a continuação por `\` são o que quebra parser ingênuo; a **redação de secrets precisa rodar no import**, não só na gravação ao vivo, senão o arquivo do usuário entra cru no SQLite; e o import tem de ser idempotente, ou duplica a cada execução. Parser com teste unitário é obrigatório (CLAUDE.md).
+- [ ] **Hook de shell para fish e PowerShell** — a integração OSC só existe para zsh e bash (`session/tyba-zsh-rc.sh`, `session/tyba-bash-rc.sh`). No Windows o core **lança** `pwsh`/`powershell` (`session/mod.rs:851`) e não injeta hook nenhum: sem OSC 133/633 não há histórico, bloco de comando, cwd lógico nem status de sessão — o Windows publicado é um terminal, não o TYBA. Fish é o mesmo buraco no macOS/Linux, com público maior. PowerShell não tem `precmd`/`preexec`: a emissão sai de `prompt` + `PSConsoleHostReadLine`, e a injeção precisa sobreviver a perfil de usuário que redefine `prompt`. Fish usa os eventos `fish_preexec`/`fish_postexec`.
+- [ ] **Stats de uso** — vitrine, não capacidade. Só depois dos dois acima, e só se houver folga.
+
 ## Fase 6 — Distribuição
 
 - [x] Pipeline de release: matriz macOS (Apple Silicon + Intel), Linux e Windows, gerando `.dmg`, `.deb`, `.rpm`, AppImage, `.exe`/`.msi` + SHA256SUMS; release sai como **rascunho** para conferência humana (macOS builda mas não publica até o certificado — ver abaixo)
@@ -92,7 +100,8 @@ Cada fase é usável sozinha e entrega valor antes da próxima começar. Ordem p
 - Renderer GPU próprio (xterm.js aguenta o escopo)
 - Shell próprio (o produto é o terminal/orquestrador; shell é o do usuário)
 - OAuth/GitHub App próprio (gh CLI resolve)
-- Sync em nuvem / telemetria
+- Sync em nuvem / telemetria — inclui **sync de histórico entre máquinas**, que é o que o atuin faz melhor do que nós: exige servidor, e é o "app desktop sem backend" que hoje permite dizer que o projeto não tem segredo para vazar. Decisão, não dívida.
+- Runbook executável, cliente de banco embutido, gráfico de observabilidade — o território do [Atuin Desktop](https://github.com/atuinsh/desktop). Nosso bloco é **registro do que rodou**; o deles é documento para rodar depois. São produtos diferentes, e perseguir esse custa um backend e dilui o nosso.
 - Neovim embed via msgpack-RPC (fase 7+, depois de LSP)
 
 ## Entregue fora do roadmap (refinamento do shell, 2026-07)
