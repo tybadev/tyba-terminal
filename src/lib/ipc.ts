@@ -1490,6 +1490,19 @@ export interface HistoryHit {
   lastUsedAtMs: number;
   inCwd: boolean;
   inRepo: boolean;
+  /** Nunca saiu com exit code 0, tendo algum código conhecido. */
+  failed: boolean;
+}
+
+/** Onde a busca de histórico procura. Espelha `HistoryScope` do core. */
+export type HistoryScope = "global" | "repo" | "cwd" | "session";
+
+/** Espelha `HistoryFilter` do core. Campo ausente = sem aquele filtro. */
+export interface HistoryFilter {
+  scope: HistoryScope;
+  outcome?: "failed" | "succeeded" | null;
+  minDurationMs?: number | null;
+  sinceMs?: number | null;
 }
 
 export type SnippetSource = "local" | "repo";
@@ -1512,12 +1525,16 @@ export const searchCommandHistory = (
   query: string,
   cwd: string | null,
   repoRoot: string | null,
+  sessionId: SessionId | null,
+  filter: HistoryFilter,
   limit: number,
 ) =>
   invoke<HistoryHit[]>("search_command_history", {
     query,
     cwd,
     repoRoot,
+    sessionId,
+    filter,
     limit,
   });
 

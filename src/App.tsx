@@ -3461,8 +3461,9 @@ export default function App() {
     () => ({
       cwd: activeCwdKey,
       repoRoot: activeSession?.repo_root ?? null,
+      sessionId: activeSession?.id ?? null,
     }),
-    [activeCwdKey, activeSession?.repo_root],
+    [activeCwdKey, activeSession?.repo_root, activeSession?.id],
   );
 
   // Histórico e snippet entram na linha pelo MESMO caminho do paste: bracketed
