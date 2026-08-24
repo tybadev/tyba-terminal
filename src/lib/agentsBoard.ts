@@ -1,9 +1,12 @@
 import type {
   LayoutState,
+  ObservedAgent,
+  ObservedState,
   PaneId,
   PaneNode,
   Session,
   SessionId,
+  SessionStatus,
   TabId,
   WorkspaceId,
 } from "./ipc";
@@ -31,6 +34,15 @@ export interface AgentRow {
   visual: StatusVisual;
   /** Ordena o quadro, maior primeiro. Ver [`urgencyOf`]. */
   urgency: number;
+  /**
+   * O agente deduzido da tela, e `null` na seção dos gerenciados.
+   *
+   * Sai daqui, e não de `session.observed`, porque é este campo que decide o
+   * selo "sem gate" na pintura: uma sessão gerenciada que por acidente carregue
+   * `observed` continua sendo gerenciada, e ler o campo da sessão colaria nela
+   * um selo que mente sobre as garantias que ela tem.
+   */
+  observed: ObservedAgent | null;
 }
 
 /** Estado sem cor própria no `statusVisual`: idle já visto e saída limpa. */
@@ -38,6 +50,21 @@ const RESTING: StatusVisual = {
   dotClass: "bg-tyba-bg ring-1 ring-inset ring-tyba-text-faint",
   textClass: "text-tyba-text-muted",
   labelKey: "sessionIdle",
+  rank: 0,
+};
+
+/**
+ * Presença sem estado: há um agente ali e o sinal não diz o que ele faz.
+ *
+ * Sem ponto colorido de propósito — cor é afirmação, e aqui não há o que
+ * afirmar. Fingir um estado é pior que admitir que não se sabe, porque o ponto
+ * âmbar de "esperando" e o azul de "trabalhando" mandam o usuário para lados
+ * opostos.
+ */
+export const NO_SIGNAL: StatusVisual = {
+  dotClass: "bg-tyba-bg ring-1 ring-inset ring-tyba-text-faint",
+  textClass: "text-tyba-text-faint",
+  labelKey: "agentsBoardNoSignal",
   rank: 0,
 };
 
@@ -62,12 +89,50 @@ export const urgencyOf = (session: Session): number => {
   return visual.rank * 10 + tiebreak;
 };
 
-const isAgent = (session: Session): boolean =>
-  session.kind.type === "agent" ||
-  // Sessão de shell em que um agente foi detectado ainda não entra: sem hook
-  // não há gate, e mostrá-la aqui com a mesma cara das outras diria que ela tem
-  // as mesmas garantias. Entra com a detecção por manifesto, com selo próprio.
-  false;
+/** Sessão que o TYBA lançou: tem hook, gate de aprovação, inbox e jaula. */
+const isAgent = (session: Session): boolean => session.kind.type === "agent";
+
+/**
+ * O estado deduzido dito na língua do `statusVisual`, para não abrir uma
+ * segunda paleta que sairia do lugar na primeira vez que a primeira mudasse.
+ *
+ * `awaiting_input` vira `reason: "reply"` porque sem gate não existe aprovação
+ * pendente: o que a tela pode sugerir é um agente parado esperando alguém, e é
+ * isso que o rótulo "aguardando" diz.
+ */
+const observedStatus = (state: ObservedState): SessionStatus => {
+  switch (state) {
+    case "awaiting_input":
+      return { state: "awaiting_input", hint: null, reason: "reply" };
+    case "running":
+      return { state: "running" };
+    case "idle":
+      return { state: "idle", summary: null };
+  }
+};
+
+/**
+ * O visual de uma linha observada.
+ *
+ * `idle` cai no `RESTING` porque o `statusVisual` só pinta idle quando há
+ * `attention` — e `attention` é a marca de fim de turno que o hook levanta.
+ * Sessão sem hook nunca a tem, então idle deduzido é repouso, não conclusão a
+ * revisar.
+ */
+export const observedVisual = (observed: ObservedAgent): StatusVisual => {
+  if (observed.state === null) return NO_SIGNAL;
+  return statusVisual(observedStatus(observed.state), false) ?? RESTING;
+};
+
+/**
+ * Urgência de linha observada, na mesma escala das gerenciadas — o que permite
+ * ao `wantsAttention` valer para as duas sem uma segunda régua.
+ *
+ * Sem o desempate de aprovação do [`urgencyOf`]: aprovação é coisa de quem tem
+ * gate, e essas não têm.
+ */
+export const observedUrgency = (observed: ObservedAgent): number =>
+  observedVisual(observed).rank * 10;
 
 /** Todos os painéis de uma aba, com o id do painel junto do id da sessão. */
 const placesIn = (node: PaneNode | null): Array<[SessionId, PaneId]> => {
@@ -108,37 +173,88 @@ export const placesBySession = (
 };
 
 /**
+ * As duas coleções do quadro, cada uma ordenada por dentro.
+ *
+ * Separadas na estrutura, e não só na pintura, porque é o que garante que a
+ * urgência nunca cruze a fronteira: um agente sem gate, por mais aflito que a
+ * tela o faça parecer, não empurra um gerenciado para baixo. Junta-las num
+ * array só e ordenar deixaria isso na mão de quem lê a lista.
+ */
+export interface BoardSections {
+  /** Sessões que o TYBA lançou: hook, gate de aprovação, inbox e jaula. */
+  managed: AgentRow[];
+  /**
+   * Agente deduzido da tela em sessão que o TYBA não lançou — sem gate, sem
+   * inbox e sem jaula. Mostrado com selo próprio, nunca com a mesma cara das
+   * gerenciadas: isso afirmaria garantias que a linha não tem.
+   */
+  observed: AgentRow[];
+}
+
+const byUrgencyThenName = (a: AgentRow, b: AgentRow): number =>
+  b.urgency - a.urgency ||
+  a.session.title.localeCompare(b.session.title) ||
+  a.session.id.localeCompare(b.session.id);
+
+/**
  * As linhas do quadro, ordenadas por urgência e, no empate, por nome.
  *
- * Sessão de agente sem lugar no layout fica de fora: ela existe no core mas não
- * tem para onde saltar, e uma linha que não leva a lugar nenhum é pior do que a
- * ausência dela.
+ * Sessão sem lugar no layout fica de fora: ela existe no core mas não tem para
+ * onde saltar, e uma linha que não leva a lugar nenhum é pior do que a ausência
+ * dela.
+ *
+ * A sessão gerenciada é decidida primeiro e sai da varredura: se um dia uma
+ * delas carregar `observed` — palpite de tela sobre sessão que tem hook —, ela
+ * conta uma vez só, entre as gerenciadas, que é onde estão as garantias.
  */
 export const buildRows = (
   sessions: Session[],
   layout: LayoutState,
-): AgentRow[] => {
+): BoardSections => {
   const places = placesBySession(layout);
-  const rows: AgentRow[] = [];
+  const managed: AgentRow[] = [];
+  const observed: AgentRow[] = [];
   for (const session of sessions) {
-    if (!isAgent(session)) continue;
     const place = places.get(session.id);
     if (!place) continue;
-    rows.push({
+    if (isAgent(session)) {
+      managed.push({
+        session,
+        place,
+        visual: statusVisual(session.status, session.attention) ?? RESTING,
+        urgency: urgencyOf(session),
+        observed: null,
+      });
+      continue;
+    }
+    const seen = session.observed;
+    if (!seen) continue;
+    observed.push({
       session,
       place,
-      visual: statusVisual(session.status, session.attention) ?? RESTING,
-      urgency: urgencyOf(session),
+      // Do palpite de tela, nunca do `session.status`: aquele é o estado do
+      // shell — que está sempre "rodando" — e pintaria de azul um agente que
+      // pode estar parado esperando resposta.
+      visual: observedVisual(seen),
+      urgency: observedUrgency(seen),
+      observed: seen,
     });
   }
-  rows.sort(
-    (a, b) =>
-      b.urgency - a.urgency ||
-      a.session.title.localeCompare(b.session.title) ||
-      a.session.id.localeCompare(b.session.id),
-  );
-  return rows;
+  managed.sort(byUrgencyThenName);
+  observed.sort(byUrgencyThenName);
+  return { managed, observed };
 };
+
+/**
+ * As linhas na ordem em que o quadro as mostra: gerenciadas primeiro, sempre.
+ *
+ * É esta ordem que o ciclo do "ir para o próximo" percorre, para o atalho andar
+ * na mesma sequência que o olho lê.
+ */
+export const boardOrder = (sections: BoardSections): AgentRow[] => [
+  ...sections.managed,
+  ...sections.observed,
+];
 
 export interface WorkspaceGroup {
   workspaceId: WorkspaceId;
@@ -178,7 +294,19 @@ export const groupByWorkspace = (rows: AgentRow[]): WorkspaceGroup[] => {
   );
 };
 
-/** Linha que está pedindo alguém: bloqueada, falha, ou concluída sem revisão. */
+/**
+ * Linha que está pedindo alguém: bloqueada, falha, ou concluída sem revisão.
+ *
+ * Vale também para a linha observada, e é de propósito: o badge do sidebar é o
+ * canal mais barato que existe — um número que custa uma olhada quando erra —,
+ * enquanto a notificação tem guardas próprias justamente porque interrompe. Um
+ * agente sem gate parado esperando é o caso em que ninguém mais avisa: não há
+ * inbox, não há aprovação, não há hook. Deixá-lo fora do badge seria escolher o
+ * silêncio para a única sessão que não tem outro canal.
+ *
+ * `state: null` não entra sozinho: presença sem estado não afirma que alguém
+ * está esperando, e vale urgência 0.
+ */
 export const wantsAttention = (row: AgentRow): boolean => row.urgency >= 20;
 
 /**

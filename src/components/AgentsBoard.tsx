@@ -1,11 +1,12 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowRight, GitBranch } from "@phosphor-icons/react";
+import { ArrowRight, GitBranch, ShieldSlash } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { basename } from "@/lib/utils";
 import { formatCombo } from "@/lib/keys";
 import {
+  boardOrder,
   buildRows,
   groupByWorkspace,
   wantsAttention,
@@ -49,7 +50,9 @@ function Row({
   onJump: Props["onJump"];
 }) {
   const { t } = useTranslation();
-  const detail = detailOf(row.session);
+  // Na linha observada o detalhe é o binário que a tela sugere: o título é o do
+  // shell, e sem isso a linha não diz de que agente está falando.
+  const detail = row.observed ? row.observed.agent : detailOf(row.session);
   const branch = row.session.worktree?.branch ?? null;
   const repo = row.session.repo_root ? basename(row.session.repo_root) : null;
 
@@ -75,6 +78,18 @@ function Row({
           <span className={`shrink-0 text-xs ${row.visual.textClass}`}>
             {t(row.visual.labelKey)}
           </span>
+          {row.observed && (
+            // Mesma linguagem do aviso no terminal e do painel de subagentes:
+            // escudo cortado, âmbar. O selo repete no cabeçalho da seção porque
+            // a rolagem tira o cabeçalho da tela e a linha continua valendo.
+            <span
+              className="flex shrink-0 items-center gap-1 rounded-[3px] border border-tyba-amber/40 px-1 text-[10px] text-tyba-amber"
+              title={t("agentsNoGate")}
+            >
+              <ShieldSlash size={10} weight="fill" aria-hidden />
+              {t("agentsBoardNoGate")}
+            </span>
+          )}
         </span>
         {detail && (
           <span className="mt-0.5 block truncate text-xs text-tyba-text-muted">
@@ -120,9 +135,19 @@ export function AgentsBoard({
   onNextAttention,
 }: Props) {
   const { t } = useTranslation();
-  const rows = useMemo(() => buildRows(sessions, layout), [sessions, layout]);
-  const groups = useMemo(() => groupByWorkspace(rows), [rows]);
-  const waiting = useMemo(() => rows.filter(wantsAttention).length, [rows]);
+  const sections = useMemo(
+    () => buildRows(sessions, layout),
+    [sessions, layout],
+  );
+  const groups = useMemo(
+    () => groupByWorkspace(sections.managed),
+    [sections.managed],
+  );
+  const waiting = useMemo(
+    () => boardOrder(sections).filter(wantsAttention).length,
+    [sections],
+  );
+  const empty = groups.length === 0 && sections.observed.length === 0;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -153,7 +178,7 @@ export function AgentsBoard({
         )}
       </header>
 
-      {groups.length === 0 ? (
+      {empty ? (
         <p className="px-4 py-6 text-sm text-tyba-text-muted">
           {t("agentsBoardEmpty")}
         </p>
@@ -184,6 +209,37 @@ export function AgentsBoard({
               ))}
             </section>
           ))}
+
+          {/* Mesmo quadro, seção própria e sempre embaixo: o que o TYBA lançou
+              vem primeiro, e o que ele apenas deduziu da tela vem depois, com o
+              que a seção não tem dito no cabeçalho. */}
+          {sections.observed.length > 0 && (
+            <section className="mb-3 border-t border-tyba-border pt-2">
+              <h3 className="flex items-center gap-2 px-3 py-1 text-xs text-tyba-text-muted">
+                <ShieldSlash
+                  size={12}
+                  weight="fill"
+                  className="shrink-0 text-tyba-amber"
+                  aria-hidden
+                />
+                <span className="truncate">{t("agentsBoardObserved")}</span>
+                <span className="text-tyba-text-faint">
+                  {sections.observed.length}
+                </span>
+              </h3>
+              <p className="px-3 pb-1 text-[11px] leading-snug text-tyba-text-faint">
+                {t("agentsNoGate")}
+              </p>
+              {sections.observed.map((row) => (
+                <Row
+                  key={row.session.id}
+                  row={row}
+                  active={row.session.id === activeSessionId}
+                  onJump={onJump}
+                />
+              ))}
+            </section>
+          )}
         </div>
       )}
     </div>

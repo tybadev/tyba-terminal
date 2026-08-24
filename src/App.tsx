@@ -298,6 +298,7 @@ import {
 } from "./lib/workspaceCwd";
 import { findSessionLocation } from "./lib/sessionLocation";
 import {
+  boardOrder,
   buildRows as buildAgentRows,
   nextAttention,
   wantsAttention,
@@ -1555,13 +1556,20 @@ export default function App() {
     [goToSession],
   );
 
+  // Conta as duas seções do quadro: o agente sem gate também pede alguém, e o
+  // badge é o canal mais barato — ver `wantsAttention` em `lib/agentsBoard.ts`.
   const agentsWaiting = useMemo(
-    () => buildAgentRows(sessions, layout).filter(wantsAttention).length,
+    () =>
+      boardOrder(buildAgentRows(sessions, layout)).filter(wantsAttention)
+        .length,
     [sessions, layout],
   );
 
   const goToNextAttention = useCallback(() => {
-    const next = nextAttention(buildAgentRows(sessions, layout), activeId);
+    const next = nextAttention(
+      boardOrder(buildAgentRows(sessions, layout)),
+      activeId,
+    );
     if (!next) return;
     jumpToAgent(next.session.id, next.place);
   }, [sessions, layout, activeId, jumpToAgent]);
