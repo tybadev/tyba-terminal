@@ -9,6 +9,8 @@
 //! o registro é descartado — perder uma linha de histórico é melhor do que
 //! segurar o flush de output do terminal.
 
+pub mod import;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, OnceLock};
@@ -150,6 +152,10 @@ pub struct HistoryCandidate {
     pub last_used_at_ms: i64,
     pub uses: u32,
     pub successes: u32,
+    /// Quantas entradas trazem exit code. Menor que `uses` quando o comando veio
+    /// de fonte que não grava código — histórico importado de bash e fish, ou
+    /// comando interrompido antes do `133;D`.
+    pub known_exit_codes: u32,
     pub in_cwd: bool,
     pub in_repo: bool,
 }
@@ -161,11 +167,15 @@ const DAY_MS: f64 = 86_400_000.0;
 /// Comando que só falhou vale metade — repetir o que não funcionou é o oposto do
 /// que se quer sugerir. Rodar neste diretório vale mais do que rodar neste repo,
 /// que vale mais do que ter rodado em qualquer lugar.
+///
+/// **Exit code ausente é desconhecido, não fracasso.** O demérito exige ao menos
+/// um código conhecido: sem isso, todo comando vindo de fonte que não grava
+/// código nasceria valendo metade. Ver a decisão de 2026-08-15 no cofre.
 pub fn frecency(now_ms: i64, candidate: &HistoryCandidate) -> f64 {
     let age_days = ((now_ms - candidate.last_used_at_ms).max(0) as f64) / DAY_MS;
     let recency = 1.0 / (1.0 + age_days);
     let frequency = 1.0 + (1.0 + candidate.uses as f64).ln();
-    let success = if candidate.uses > 0 && candidate.successes == 0 {
+    let success = if candidate.known_exit_codes > 0 && candidate.successes == 0 {
         0.5
     } else {
         1.0
@@ -186,6 +196,7 @@ mod tests {
             last_used_at_ms: 0,
             uses: 1,
             successes: 1,
+            known_exit_codes: 1,
             in_cwd: false,
             in_repo: false,
         }
@@ -323,6 +334,56 @@ mod tests {
         let mut works = candidate("b");
         works.last_used_at_ms = now;
         assert!(frecency(now, &broken) < frecency(now, &works));
+    }
+
+    /// Histórico importado de bash e fish não traz exit code. Sem esta regra o
+    /// corpus inteiro nasceria valendo metade, como se só tivesse falhado.
+    #[test]
+    fn command_without_known_exit_code_is_not_demoted() {
+        let now = DAY_MS as i64;
+        let mut unknown = candidate("a");
+        unknown.uses = 4;
+        unknown.successes = 0;
+        unknown.known_exit_codes = 0;
+        unknown.last_used_at_ms = now;
+        let mut works = candidate("b");
+        works.uses = 4;
+        works.successes = 4;
+        works.known_exit_codes = 4;
+        works.last_used_at_ms = now;
+        assert_eq!(frecency(now, &unknown), frecency(now, &works));
+    }
+
+    #[test]
+    fn unknown_codes_mixed_with_failures_stay_demoted() {
+        let now = DAY_MS as i64;
+        let mut broken = candidate("a");
+        broken.uses = 5;
+        broken.successes = 0;
+        broken.known_exit_codes = 2;
+        broken.last_used_at_ms = now;
+        let mut works = candidate("b");
+        works.uses = 5;
+        works.successes = 5;
+        works.known_exit_codes = 5;
+        works.last_used_at_ms = now;
+        assert_eq!(frecency(now, &broken), frecency(now, &works) * 0.5);
+    }
+
+    #[test]
+    fn one_known_success_among_unknowns_is_not_demoted() {
+        let now = DAY_MS as i64;
+        let mut mixed = candidate("a");
+        mixed.uses = 5;
+        mixed.successes = 1;
+        mixed.known_exit_codes = 2;
+        mixed.last_used_at_ms = now;
+        let mut works = candidate("b");
+        works.uses = 5;
+        works.successes = 5;
+        works.known_exit_codes = 5;
+        works.last_used_at_ms = now;
+        assert_eq!(frecency(now, &mixed), frecency(now, &works));
     }
 
     #[test]

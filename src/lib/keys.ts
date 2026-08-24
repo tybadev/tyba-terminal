@@ -17,6 +17,7 @@ export type KeyAction =
   | "openFolder"
   | "prevSession"
   | "nextSession"
+  | "nextAttentionSession"
   | "prevTab"
   | "nextTab"
   | "splitRight"
@@ -50,6 +51,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   "openFolder",
   "prevSession",
   "nextSession",
+  "nextAttentionSession",
   "prevTab",
   "nextTab",
   "splitRight",
@@ -103,6 +105,7 @@ export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
   splitDown: "panes",
   prevSession: "navigation",
   nextSession: "navigation",
+  nextAttentionSession: "navigation",
   prevTab: "navigation",
   nextTab: "navigation",
   nextPane: "navigation",
@@ -135,6 +138,7 @@ export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   openFolder: "openProjectFolder",
   prevSession: "prevSessionNav",
   nextSession: "nextSessionNav",
+  nextAttentionSession: "nextAttentionSessionNav",
   prevTab: "prevTabNav",
   nextTab: "nextTabNav",
   splitRight: "splitRight",
@@ -191,6 +195,7 @@ export const MAC_BINDINGS: Bindings = {
   openFolder: "meta+o",
   prevSession: "meta+shift+arrowup",
   nextSession: "meta+shift+arrowdown",
+  nextAttentionSession: "meta+shift+a",
   prevTab: "meta+shift+arrowleft",
   nextTab: "meta+shift+arrowright",
   splitRight: "meta+d",
@@ -225,6 +230,7 @@ export const PC_BINDINGS: Bindings = {
   openFolder: "ctrl+shift+o",
   prevSession: "ctrl+shift+arrowup",
   nextSession: "ctrl+shift+arrowdown",
+  nextAttentionSession: "ctrl+alt+shift+a",
   prevTab: "ctrl+pageup",
   nextTab: "ctrl+pagedown",
   splitRight: "ctrl+alt+d",
