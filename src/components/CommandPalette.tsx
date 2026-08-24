@@ -54,7 +54,10 @@ import {
   listThemes,
   searchCommandHistory,
   type FileSearchResult,
+  type HistoryFilter,
   type HistoryHit,
+  type HistoryScope,
+  type SessionId,
   type LaunchConfig,
   type LaunchConfigId,
   type Snippet,
@@ -135,9 +138,108 @@ interface Props {
   onNewLaunchConfig: () => void;
   onSaveWorkspaceAsLaunchConfig: () => void;
   /** Escopo do ranking do histórico: onde a sessão ativa está agora. */
-  historyScope: { cwd: string | null; repoRoot: string | null };
+  historyScope: {
+    cwd: string | null;
+    repoRoot: string | null;
+    sessionId: SessionId | null;
+  };
   onPickHistory: (command: string) => void;
   onPickSnippet: (snippet: Snippet) => void;
+}
+
+const HISTORY_SCOPES: Array<{ id: HistoryScope; label: string }> = [
+  { id: "global", label: "historyScopeGlobal" },
+  { id: "repo", label: "historyScopeRepo" },
+  { id: "cwd", label: "historyScopeCwd" },
+  { id: "session", label: "historyScopeSession" },
+];
+
+/** Demorado é acima de 5 s: abaixo disso ninguém foi buscar café. */
+const SLOW_MS = 5_000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function Chip({
+  on,
+  onClick,
+  children,
+}: {
+  on: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={on}
+      className={`shrink-0 rounded-[4px] px-2 py-0.5 text-[11px] transition-colors ${
+        on
+          ? "bg-tyba-text/[.10] text-tyba-text"
+          : "text-tyba-text-faint hover:bg-tyba-text/[.05] hover:text-tyba-text-muted"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Escopo e filtros da busca de histórico.
+ *
+ * Os dados já estavam todos em `command_history` — cwd, exit code, duração e
+ * data —; o que faltava era o usuário conseguir pedi-los. Por isso a barra é de
+ * alternar, não de configurar: cada filtro responde a uma pergunta inteira ("o
+ * que falhou", "o que me fez esperar") em um clique.
+ */
+function HistoryFilterBar({
+  value,
+  onChange,
+}: {
+  value: HistoryFilter;
+  onChange: (next: HistoryFilter) => void;
+}) {
+  const { t } = useTranslation();
+  const toggle = (patch: Partial<HistoryFilter>) =>
+    onChange({ ...value, ...patch });
+
+  return (
+    <div className="flex flex-wrap items-center gap-1 border-b border-tyba-border px-2 py-1.5">
+      {HISTORY_SCOPES.map((scope) => (
+        <Chip
+          key={scope.id}
+          on={value.scope === scope.id}
+          onClick={() => toggle({ scope: scope.id })}
+        >
+          {t(scope.label)}
+        </Chip>
+      ))}
+      <span className="mx-1 h-3 w-px bg-tyba-border" aria-hidden />
+      <Chip
+        on={value.outcome === "failed"}
+        onClick={() =>
+          toggle({ outcome: value.outcome === "failed" ? null : "failed" })
+        }
+      >
+        {t("historyOnlyFailed")}
+      </Chip>
+      <Chip
+        on={value.minDurationMs != null}
+        onClick={() =>
+          toggle({ minDurationMs: value.minDurationMs == null ? SLOW_MS : null })
+        }
+      >
+        {t("historyOnlySlow")}
+      </Chip>
+      <Chip
+        on={value.sinceMs != null}
+        onClick={() =>
+          toggle({ sinceMs: value.sinceMs == null ? Date.now() - DAY_MS : null })
+        }
+      >
+        {t("historyLastDay")}
+      </Chip>
+    </div>
+  );
 }
 
 export function CommandPalette({
@@ -174,6 +276,12 @@ export function CommandPalette({
   const [fileResults, setFileResults] = useState<string[]>([]);
   const [fileTruncated, setFileTruncated] = useState(false);
   const [historyHits, setHistoryHits] = useState<HistoryHit[]>([]);
+  // O filtro mora aqui e não em preferência: escopo de busca é decisão do
+  // momento ("o que rodei nesta pasta agora"), não ajuste que se configura uma
+  // vez. Reabrir a paleta volta ao padrão de propósito.
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>({
+    scope: "global",
+  });
   const [snippets, setSnippets] = useState<Snippet[]>([]);
 
   useEffect(() => {
@@ -225,6 +333,8 @@ export function CommandPalette({
         query,
         historyScope.cwd,
         historyScope.repoRoot,
+        historyScope.sessionId,
+        historyFilter,
         50,
       )
         .then((hits) => {
@@ -238,7 +348,21 @@ export function CommandPalette({
       alive = false;
       clearTimeout(timer);
     };
-  }, [open, mode, query, historyScope.cwd, historyScope.repoRoot]);
+  }, [
+    open,
+    mode,
+    query,
+    historyScope.cwd,
+    historyScope.repoRoot,
+    historyScope.sessionId,
+    historyFilter,
+  ]);
+
+  // Reabrir a paleta zera o filtro: filtro esquecido ligado é a forma mais fácil
+  // de a lista parecer vazia sem motivo.
+  useEffect(() => {
+    if (!open) setHistoryFilter({ scope: "global" });
+  }, [open]);
 
   useEffect(() => {
     if (!open || mode !== "snippets") return;
@@ -358,6 +482,9 @@ export function CommandPalette({
           </CommandGroup>
         )}
 
+        {mode === "history" && (
+          <HistoryFilterBar value={historyFilter} onChange={setHistoryFilter} />
+        )}
         {mode === "history" && (
           <CommandGroup heading={t("paletteHistory")}>
             {historyHits.map((hit) => (

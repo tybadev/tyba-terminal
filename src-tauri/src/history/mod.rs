@@ -171,6 +171,72 @@ const DAY_MS: f64 = 86_400_000.0;
 /// **Exit code ausente é desconhecido, não fracasso.** O demérito exige ao menos
 /// um código conhecido: sem isso, todo comando vindo de fonte que não grava
 /// código nasceria valendo metade. Ver a decisão de 2026-08-15 no cofre.
+/// Onde a busca procura.
+///
+/// A paleta nasceu só com "tudo", e num terminal de agentes isso é pouco: o
+/// mesmo `cargo test` aparece de cinco worktrees e a lista deixa de responder
+/// "o que eu rodei **aqui**". O escopo é ciclado pela UI, não configurado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HistoryScope {
+    #[default]
+    Global,
+    /// Qualquer lugar dentro do repositório atual, worktrees inclusive.
+    Repo,
+    /// Só o diretório exato.
+    Cwd,
+    /// Só a sessão atual.
+    Session,
+}
+
+/// Filtrar por como o comando terminou.
+///
+/// `Failed` não é "tem exit code diferente de zero": é isso **e** ter exit code
+/// conhecido. Histórico importado de bash e de fish não grava código, e tratar
+/// desconhecido como falha encheria a lista de comandos que ninguém sabe se
+/// falharam — o mesmo erro que o demérito da frecência já evita.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HistoryOutcome {
+    Failed,
+    Succeeded,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HistoryFilter {
+    pub scope: HistoryScope,
+    pub outcome: Option<HistoryOutcome>,
+    /// Só o que demorou pelo menos isto. Responde "o que está me fazendo
+    /// esperar", que é a pergunta que o dado de duração existe para responder.
+    pub min_duration_ms: Option<i64>,
+    /// Só a partir deste instante, em epoch ms.
+    pub since_ms: Option<i64>,
+}
+
+impl HistoryFilter {
+    /// O valor que o SQL compara com `exit_code`, ou `None` para não filtrar.
+    ///
+    /// Existe para o `store` não precisar conhecer o enum: ele recebe um número
+    /// e compara. Mantém a decisão aqui, junto do comentário que a explica.
+    pub fn outcome_tag(&self) -> Option<i64> {
+        match self.outcome {
+            Some(HistoryOutcome::Failed) => Some(1),
+            Some(HistoryOutcome::Succeeded) => Some(0),
+            None => None,
+        }
+    }
+
+    /// A janela pedida ainda faz sentido no instante `now_ms`?
+    ///
+    /// Janela que começa no futuro devolveria lista vazia sem explicação. É erro
+    /// de quem chamou, não estado legítimo — e a UI trata como "sem filtro" em
+    /// vez de mostrar um vazio que parece bug.
+    pub fn since_is_sane(&self, now_ms: i64) -> bool {
+        self.since_ms.is_none_or(|since| since <= now_ms)
+    }
+}
+
 pub fn frecency(now_ms: i64, candidate: &HistoryCandidate) -> f64 {
     let age_days = ((now_ms - candidate.last_used_at_ms).max(0) as f64) / DAY_MS;
     let recency = 1.0 / (1.0 + age_days);

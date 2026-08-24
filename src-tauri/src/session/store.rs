@@ -303,6 +303,8 @@ fn history_candidates_in(
     query: Option<&str>,
     cwd: Option<&str>,
     repo_root: Option<&str>,
+    session_id: Option<&str>,
+    filter: &crate::history::HistoryFilter,
     recent_rows: i64,
 ) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
     let repo_prefix = repo_root.map(|root| format!("{}/", root.trim_end_matches('/')));
@@ -319,7 +321,19 @@ fn history_candidates_in(
                 MAX(cwd)
          FROM (SELECT command, cwd, exit_code, started_at_ms
                  FROM command_history
-                WHERE ?5 IS NULL OR command LIKE ?5 ESCAPE '\\'
+                WHERE (?5 IS NULL OR command LIKE ?5 ESCAPE '\\')
+                  AND (?7 IS NULL OR cwd = ?7)
+                  AND (?8 IS NULL OR cwd = ?9 OR cwd LIKE ?8 ESCAPE '\\')
+                  AND (?10 IS NULL OR session_id = ?10)
+                  -- Desconhecido nunca é fracasso: bash e fish não gravam
+                  -- código, e contá-los como falha encheria a lista de comando
+                  -- que ninguém sabe se falhou.
+                  AND (?11 IS NULL
+                       OR (exit_code IS NOT NULL
+                           AND ((?11 = 1 AND exit_code != 0)
+                                OR (?11 = 0 AND exit_code = 0))))
+                  AND (?12 IS NULL OR duration_ms >= ?12)
+                  AND (?13 IS NULL OR started_at_ms >= ?13)
                 ORDER BY started_at_ms DESC
                 LIMIT ?6)
          GROUP BY command
@@ -335,9 +349,40 @@ fn history_candidates_in(
         .map(subsequence_like);
     // `-1` é "sem limite" no SQLite.
     let scan = if matching.is_some() { -1 } else { recent_rows };
+
+    // Os parâmetros do escopo são SEPARADOS dos que marcam `in_cwd`/`in_repo`:
+    // aqueles servem ao ranqueamento e valem em qualquer escopo. Escopo pedido
+    // sem o dado correspondente (cwd desconhecido, fora de repo) vira no-op —
+    // devolver vazio ali seria punir o usuário por um estado que não é dele.
+    use crate::history::HistoryScope;
+    let scope_cwd = (filter.scope == HistoryScope::Cwd).then_some(cwd).flatten();
+    let scope_repo_like = (filter.scope == HistoryScope::Repo)
+        .then_some(like.as_deref())
+        .flatten();
+    let scope_repo_root = (filter.scope == HistoryScope::Repo)
+        .then_some(repo_root)
+        .flatten();
+    let scope_session = (filter.scope == HistoryScope::Session)
+        .then_some(session_id)
+        .flatten();
+
     let rows = stmt
         .query_map(
-            params![cwd, like, repo_root, HISTORY_CANDIDATES, matching, scan],
+            params![
+                cwd,
+                like,
+                repo_root,
+                HISTORY_CANDIDATES,
+                matching,
+                scan,
+                scope_cwd,
+                scope_repo_like,
+                scope_repo_root,
+                scope_session,
+                filter.outcome_tag(),
+                filter.min_duration_ms,
+                filter.since_ms,
+            ],
             |row| {
                 Ok(crate::history::HistoryCandidate {
                     command: row.get(0)?,
@@ -1516,6 +1561,33 @@ impl Store {
             query,
             cwd,
             repo_root,
+            None,
+            &crate::history::HistoryFilter::default(),
+            HISTORY_RECENT_ROWS,
+        )
+    }
+
+    /// O mesmo, com escopo e filtros da paleta.
+    ///
+    /// Método à parte em vez de mais dois argumentos no de cima: quem alimenta o
+    /// ghost text e a sugestão de linha quer o histórico inteiro, sempre, e
+    /// obrigá-los a passar um filtro vazio só espalharia ruído por chamadas que
+    /// nunca vão filtrar.
+    pub fn history_candidates_filtered(
+        &self,
+        query: Option<&str>,
+        cwd: Option<&str>,
+        repo_root: Option<&str>,
+        session_id: Option<&str>,
+        filter: &crate::history::HistoryFilter,
+    ) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
+        history_candidates_in(
+            &self.conn.lock(),
+            query,
+            cwd,
+            repo_root,
+            session_id,
+            filter,
             HISTORY_RECENT_ROWS,
         )
     }
@@ -3160,6 +3232,239 @@ mod tests {
         }
     }
 
+    /// Entrada de histórico com tudo escolhido — o `command` acima fixa sessão,
+    /// código e duração, que é justamente o que os testes de filtro variam.
+    fn entry(
+        cmd: &str,
+        cwd: Option<&str>,
+        at: i64,
+        session: &str,
+        exit_code: Option<i32>,
+        duration_ms: Option<i64>,
+    ) -> crate::history::CommandRecord {
+        crate::history::CommandRecord {
+            session_id: session.into(),
+            cwd: cwd.map(str::to_string),
+            command: cmd.into(),
+            exit_code,
+            started_at_ms: at,
+            duration_ms,
+        }
+    }
+
+    fn filtered(
+        store: &Store,
+        cwd: Option<&str>,
+        repo: Option<&str>,
+        session: Option<&str>,
+        filter: &crate::history::HistoryFilter,
+    ) -> Vec<String> {
+        let mut found: Vec<String> = store
+            .history_candidates_filtered(None, cwd, repo, session, filter)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.command)
+            .collect();
+        found.sort();
+        found
+    }
+
+    fn com_escopo(scope: crate::history::HistoryScope) -> crate::history::HistoryFilter {
+        crate::history::HistoryFilter {
+            scope,
+            ..Default::default()
+        }
+    }
+
+    /// Corpus dos testes de filtro: dois repositórios, duas sessões, um comando
+    /// que falhou, um sem código conhecido e um demorado.
+    fn corpus() -> Store {
+        use crate::history::CommandRecord;
+        let store = Store::open_in_memory().unwrap();
+        let rows: Vec<CommandRecord> = vec![
+            entry("aqui", Some("/repo/src"), 1_000, "s1", Some(0), Some(10)),
+            entry("no-repo", Some("/repo"), 2_000, "s1", Some(0), Some(10)),
+            entry(
+                "worktree",
+                Some("/repo/wt/a"),
+                3_000,
+                "s1",
+                Some(0),
+                Some(10),
+            ),
+            entry("de-fora", Some("/outro"), 4_000, "s2", Some(0), Some(10)),
+            entry("falhou", Some("/repo"), 5_000, "s2", Some(1), Some(10)),
+            entry("sem-codigo", Some("/repo"), 6_000, "s2", None, Some(10)),
+            entry(
+                "demorado",
+                Some("/repo"),
+                7_000,
+                "s1",
+                Some(0),
+                Some(30_000),
+            ),
+        ];
+        for row in &rows {
+            store.insert_command(row).unwrap();
+        }
+        store
+    }
+
+    #[test]
+    fn escopo_global_nao_filtra_nada() {
+        use crate::history::HistoryScope;
+        let store = corpus();
+        let tudo = filtered(
+            &store,
+            Some("/repo/src"),
+            Some("/repo"),
+            Some("s1"),
+            &com_escopo(HistoryScope::Global),
+        );
+        assert_eq!(
+            tudo.len(),
+            7,
+            "o escopo global recebeu cwd, repo e sessão \
+             e mesmo assim não pode filtrar por nenhum deles"
+        );
+    }
+
+    #[test]
+    fn escopo_cwd_pega_o_diretorio_exato_e_nao_os_filhos() {
+        use crate::history::HistoryScope;
+        let store = corpus();
+        assert_eq!(
+            filtered(
+                &store,
+                Some("/repo"),
+                Some("/repo"),
+                None,
+                &com_escopo(HistoryScope::Cwd)
+            ),
+            vec!["demorado", "falhou", "no-repo", "sem-codigo"]
+        );
+    }
+
+    #[test]
+    fn escopo_repo_alcanca_worktree_e_para_no_repo_vizinho() {
+        use crate::history::HistoryScope;
+        let store = corpus();
+        let found = filtered(
+            &store,
+            Some("/repo/src"),
+            Some("/repo"),
+            None,
+            &com_escopo(HistoryScope::Repo),
+        );
+        // O worktree entra — é o caso que dá sentido ao escopo num terminal de
+        // agentes, onde o mesmo repo vive em várias pastas.
+        assert!(found.contains(&"worktree".to_string()));
+        assert!(found.contains(&"aqui".to_string()));
+        assert!(!found.contains(&"de-fora".to_string()));
+    }
+
+    #[test]
+    fn escopo_sessao_fica_na_sessao() {
+        use crate::history::HistoryScope;
+        let store = corpus();
+        assert_eq!(
+            filtered(
+                &store,
+                None,
+                None,
+                Some("s2"),
+                &com_escopo(HistoryScope::Session)
+            ),
+            vec!["de-fora", "falhou", "sem-codigo"]
+        );
+    }
+
+    #[test]
+    fn escopo_pedido_sem_o_dado_vira_no_op_em_vez_de_lista_vazia() {
+        use crate::history::HistoryScope;
+        let store = corpus();
+        // Fora de repositório, "só este repo" não tem o que comparar. Devolver
+        // vazio puniria o usuário por um estado que não é escolha dele.
+        assert_eq!(
+            filtered(&store, None, None, None, &com_escopo(HistoryScope::Repo)).len(),
+            7
+        );
+    }
+
+    #[test]
+    fn so_o_que_falhou_ignora_quem_nao_tem_codigo_conhecido() {
+        use crate::history::{HistoryFilter, HistoryOutcome};
+        let store = corpus();
+        let filtro = HistoryFilter {
+            outcome: Some(HistoryOutcome::Failed),
+            ..Default::default()
+        };
+        // `sem-codigo` NÃO entra: bash e fish não gravam exit code, e tratar
+        // desconhecido como falha encheria a lista de comando que ninguém sabe
+        // se falhou.
+        assert_eq!(filtered(&store, None, None, None, &filtro), vec!["falhou"]);
+    }
+
+    #[test]
+    fn so_o_que_deu_certo_tambem_exige_codigo_conhecido() {
+        use crate::history::{HistoryFilter, HistoryOutcome};
+        let store = corpus();
+        let filtro = HistoryFilter {
+            outcome: Some(HistoryOutcome::Succeeded),
+            ..Default::default()
+        };
+        let found = filtered(&store, None, None, None, &filtro);
+        assert!(!found.contains(&"sem-codigo".to_string()));
+        assert!(!found.contains(&"falhou".to_string()));
+        assert_eq!(found.len(), 5);
+    }
+
+    #[test]
+    fn duracao_minima_responde_o_que_me_faz_esperar() {
+        use crate::history::HistoryFilter;
+        let store = corpus();
+        let filtro = HistoryFilter {
+            min_duration_ms: Some(1_000),
+            ..Default::default()
+        };
+        assert_eq!(
+            filtered(&store, None, None, None, &filtro),
+            vec!["demorado"]
+        );
+    }
+
+    #[test]
+    fn periodo_corta_pelo_inicio_da_janela() {
+        use crate::history::HistoryFilter;
+        let store = corpus();
+        let filtro = HistoryFilter {
+            since_ms: Some(5_000),
+            ..Default::default()
+        };
+        assert_eq!(
+            filtered(&store, None, None, None, &filtro),
+            vec!["demorado", "falhou", "sem-codigo"]
+        );
+    }
+
+    #[test]
+    fn os_filtros_se_combinam_em_vez_de_o_ultimo_vencer() {
+        use crate::history::{HistoryFilter, HistoryOutcome, HistoryScope};
+        let store = corpus();
+        let filtro = HistoryFilter {
+            scope: HistoryScope::Session,
+            outcome: Some(HistoryOutcome::Failed),
+            since_ms: Some(4_500),
+            min_duration_ms: None,
+        };
+        // Só `falhou` casa com os três ao mesmo tempo: sessão s2, código != 0 e
+        // depois de 4 500.
+        assert_eq!(
+            filtered(&store, None, None, Some("s2"), &filtro),
+            vec!["falhou"]
+        );
+    }
+
     fn history_count(store: &Store) -> i64 {
         let conn = store.conn.lock();
         conn.query_row("SELECT COUNT(*) FROM command_history", [], |row| row.get(0))
@@ -3445,11 +3750,21 @@ mod tests {
         }
         let conn = store.conn.lock();
 
-        let recentes = history_candidates_in(&conn, None, None, None, 2).unwrap();
+        let recentes =
+            history_candidates_in(&conn, None, None, None, None, &Default::default(), 2).unwrap();
         let nomes: Vec<&str> = recentes.iter().map(|c| c.command.as_str()).collect();
         assert_eq!(nomes, vec!["cmd3", "cmd2"]);
 
-        let buscado = history_candidates_in(&conn, Some("cmd1"), None, None, 2).unwrap();
+        let buscado = history_candidates_in(
+            &conn,
+            Some("cmd1"),
+            None,
+            None,
+            None,
+            &Default::default(),
+            2,
+        )
+        .unwrap();
         assert_eq!(buscado.len(), 1);
         assert_eq!(buscado[0].command, "cmd1");
     }
