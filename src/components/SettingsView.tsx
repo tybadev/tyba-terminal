@@ -25,6 +25,7 @@ import appIcon from "../../src-tauri/icons/128x128.png";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { IS_MAC } from "@/lib/platform";
 import { DockerIcon } from "./icons/DockerIcon";
 import { LANGUAGES, setLanguage, type LanguageCode } from "../i18n";
 import {
@@ -266,6 +267,90 @@ function SectionHeader({ title, hint }: { title: string; hint: string }) {
     <>
       <h2 className="pb-1 text-sm font-medium">{title}</h2>
       <p className="pb-5 text-[12px] text-tyba-text-faint">{hint}</p>
+    </>
+  );
+}
+
+const MAC_SOUNDS = ["Ping", "Glass", "Submarine", "Hero", "Funk", "Blow"];
+
+/** Espelha `NotifyKind` do core. As chaves são as mesmas, e precisam continuar. */
+const NOTIFY_KINDS = [
+  {
+    id: "request",
+    label: "notifyRequest",
+    hint: "notifyRequestHint",
+    enabledKey: "pref.notify.request.enabled",
+    soundKey: "pref.notify.request.sound",
+    defaultSound: "Ping",
+  },
+  {
+    id: "done",
+    label: "notifyDone",
+    hint: "notifyDoneHint",
+    enabledKey: "pref.notify.done.enabled",
+    soundKey: "pref.notify.done.sound",
+    defaultSound: "Glass",
+  },
+] as const;
+
+/**
+ * Aviso do sistema por espécie de evento.
+ *
+ * Lê e grava a própria preferência em vez de subir por prop: quem consome estes
+ * valores é o core, na hora de notificar — nenhuma outra parte do React precisa
+ * saber deles, e passá-los pelo `App` só somaria plumbing.
+ */
+function NotifyPrefs() {
+  const { t } = useTranslation();
+  const [enabled, setEnabled] = useState<Record<string, boolean>>({});
+  const [sound, setSound] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    for (const kind of NOTIFY_KINDS) {
+      void getPref(kind.enabledKey)
+        .then((v) =>
+          setEnabled((prev) => ({ ...prev, [kind.id]: v !== "off" })),
+        )
+        .catch(() => {});
+      void getPref(kind.soundKey)
+        .then((v) =>
+          // Ausente é "nunca escolhi": a UI mostra o som de fábrica, que é o
+          // que o core vai tocar.
+          setSound((prev) => ({ ...prev, [kind.id]: v ?? kind.defaultSound })),
+        )
+        .catch(() => {});
+    }
+  }, []);
+
+  return (
+    <>
+      {NOTIFY_KINDS.map((kind) => (
+        <SettingRow key={kind.id} label={t(kind.label)} hint={t(kind.hint)}>
+          <div className="flex items-center gap-2">
+            {IS_MAC && enabled[kind.id] !== false && (
+              <Select
+                value={sound[kind.id] ?? kind.defaultSound}
+                onChange={(v) => {
+                  setSound((prev) => ({ ...prev, [kind.id]: v }));
+                  void setPref(kind.soundKey, v).catch(() => {});
+                }}
+                className="w-36"
+                options={[
+                  ...MAC_SOUNDS.map((name) => ({ value: name, label: name })),
+                  { value: "", label: t("notifySilent") },
+                ]}
+              />
+            )}
+            <Switch
+              checked={enabled[kind.id] !== false}
+              onCheckedChange={(c) => {
+                setEnabled((prev) => ({ ...prev, [kind.id]: c }));
+                void setPref(kind.enabledKey, c ? "on" : "off").catch(() => {});
+              }}
+            />
+          </div>
+        </SettingRow>
+      ))}
     </>
   );
 }
@@ -1173,6 +1258,7 @@ export function SettingsView({
                   }
                 />
               </SettingRow>
+              <NotifyPrefs />
               {RICH_INPUT_TOGGLES.map(({ field, label, hint }) => (
                 <SettingRow
                   key={field}
