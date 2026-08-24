@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import type {
   LayoutState,
+  ObservedAgent,
+  ObservedState,
   PaneNode,
   Session,
   SessionKind,
@@ -10,6 +12,7 @@ import type {
   Workspace,
 } from "./ipc";
 import {
+  boardOrder,
   buildRows,
   groupByWorkspace,
   nextAttention,
@@ -34,6 +37,24 @@ const session = (
     created_at: "",
     ...over,
   }) as Session;
+
+/**
+ * Sessão que o TYBA não lançou, com um agente deduzido da tela.
+ *
+ * O `status` é o do shell — `running`, como todo shell vivo — de propósito: é
+ * ele que a implementação ingênua leria para pintar a linha, e o teste precisa
+ * poder ver a diferença.
+ */
+const observedSession = (
+  id: string,
+  state: ObservedState | null,
+  over: Partial<Session> = {},
+): Session =>
+  session(id, running, {
+    kind: { type: "shell" } as SessionKind,
+    observed: { agent: "claude", state },
+    ...over,
+  });
 
 const leaf = (paneId: string, sessionId: string): PaneNode => ({
   type: "leaf",
@@ -152,7 +173,7 @@ describe("lugar no layout", () => {
     const rows = buildRows(
       [session("s1", running)],
       layout([workspace("w1", "w", [tab("t1", split)])]),
-    );
+    ).managed;
 
     expect(rows).toHaveLength(1);
     expect(rows[0].place.paneId).toBe("p1");
@@ -160,24 +181,25 @@ describe("lugar no layout", () => {
 });
 
 describe("linhas do quadro", () => {
-  test("sessão de shell não entra, nem quando está pedindo atenção", () => {
-    // Sem hook não há gate; mostrá-la com a mesma cara diria que ela tem as
-    // mesmas garantias das outras.
+  test("shell sem agente na tela não entra em nenhuma das seções", () => {
+    // Um shell bloqueado é um shell esperando o usuário digitar, não um agente
+    // parado. Sem sinal de agente na tela, ele não é assunto do quadro.
     const shell = session("s1", blocked, {
       kind: { type: "shell" } as SessionKind,
     });
-    const rows = buildRows(
+    const sections = buildRows(
       [shell],
       layout([workspace("w1", "w", [tab("t1", leaf("p1", "s1"))])]),
     );
 
-    expect(rows).toHaveLength(0);
+    expect(sections.managed).toHaveLength(0);
+    expect(sections.observed).toHaveLength(0);
   });
 
   test("agente sem painel no layout fica de fora — não haveria para onde saltar", () => {
-    const rows = buildRows([session("s1", blocked)], layout([]));
+    const sections = buildRows([session("s1", blocked)], layout([]));
 
-    expect(rows).toHaveLength(0);
+    expect(boardOrder(sections)).toHaveLength(0);
   });
 
   test("ordena por urgência e desempata por título", () => {
@@ -194,7 +216,7 @@ describe("linhas do quadro", () => {
           tab("t3", leaf("p3", "bloqueada")),
         ]),
       ]),
-    );
+    ).managed;
 
     expect(rows.map((r) => r.session.id)).toEqual([
       "bloqueada",
@@ -219,7 +241,7 @@ describe("rollup por workspace", () => {
         ]),
         workspace("w2", "sem bloqueio", [tab("t3", leaf("p3", "outra"))]),
       ]),
-    );
+    ).managed;
 
     const groups = groupByWorkspace(rows);
 
@@ -232,19 +254,21 @@ describe("rollup por workspace", () => {
 
 describe("saltar para quem precisa", () => {
   const rows = () =>
-    buildRows(
-      [
-        session("primeira", blocked),
-        session("segunda", blocked),
-        session("calma", running),
-      ],
-      layout([
-        workspace("w1", "w", [
-          tab("t1", leaf("p1", "primeira")),
-          tab("t2", leaf("p2", "segunda")),
-          tab("t3", leaf("p3", "calma")),
+    boardOrder(
+      buildRows(
+        [
+          session("primeira", blocked),
+          session("segunda", blocked),
+          session("calma", running),
+        ],
+        layout([
+          workspace("w1", "w", [
+            tab("t1", leaf("p1", "primeira")),
+            tab("t2", leaf("p2", "segunda")),
+            tab("t3", leaf("p3", "calma")),
+          ]),
         ]),
-      ]),
+      ),
     );
 
   test("cicla em vez de prender na mais urgente", () => {
@@ -270,10 +294,178 @@ describe("saltar para quem precisa", () => {
   });
 
   test("sem ninguém pedindo, não há para onde saltar", () => {
-    const calma = buildRows(
-      [session("calma", running)],
-      layout([workspace("w1", "w", [tab("t1", leaf("p1", "calma"))])]),
+    const calma = boardOrder(
+      buildRows(
+        [session("calma", running)],
+        layout([workspace("w1", "w", [tab("t1", leaf("p1", "calma"))])]),
+      ),
     );
     expect(nextAttention(calma, null)).toBeNull();
+  });
+});
+
+/** Um painel por sessão, tudo no mesmo workspace: o quadro sempre acha lugar. */
+const board = (sessions: Session[]) =>
+  buildRows(
+    sessions,
+    layout([
+      workspace(
+        "w1",
+        "w",
+        sessions.map((s, i) => tab(`t${i}`, leaf(`p${i}`, s.id))),
+      ),
+    ]),
+  );
+
+describe("seção dos observados", () => {
+  test("agente na tela entra, mas na coleção separada", () => {
+    const sections = board([observedSession("s1", "running")]);
+
+    expect(sections.managed).toHaveLength(0);
+    expect(sections.observed.map((r) => r.session.id)).toEqual(["s1"]);
+    expect(sections.observed[0].observed?.agent).toBe("claude");
+  });
+
+  test("observado urgente não passa na frente de gerenciado calmo", () => {
+    const sections = board([
+      session("gerenciado", running),
+      observedSession("observado", "awaiting_input"),
+    ]);
+
+    // O observado é mesmo o mais urgente dos dois — sem conferir isso o teste
+    // passaria por acidente, e não por a fronteira entre as seções estar sendo
+    // respeitada.
+    expect(sections.observed[0].urgency).toBeGreaterThan(
+      sections.managed[0].urgency,
+    );
+    // E ainda assim vem depois: um agente sem gate nunca empurra um gerenciado
+    // para baixo, por mais aflito que a tela o faça parecer.
+    expect(boardOrder(sections).map((r) => r.session.id)).toEqual([
+      "gerenciado",
+      "observado",
+    ]);
+  });
+
+  test("a urgência ordena dentro da própria seção", () => {
+    const sections = board([
+      observedSession("rodando", "running"),
+      observedSession("esperando", "awaiting_input"),
+      observedSession("sem sinal", null),
+    ]);
+
+    expect(sections.observed.map((r) => r.session.id)).toEqual([
+      "esperando",
+      "rodando",
+      "sem sinal",
+    ]);
+  });
+
+  test("presença sem estado não recebe visual de estado", () => {
+    const sections = board([
+      observedSession("sem sinal", null),
+      observedSession("rodando", "running"),
+    ]);
+    const semSinal = sections.observed.find(
+      (r) => r.session.id === "sem sinal",
+    )!;
+    const rodando = sections.observed.find((r) => r.session.id === "rodando")!;
+
+    expect(semSinal.visual.labelKey).toBe("agentsBoardNoSignal");
+    expect(semSinal.visual.dotClass).not.toMatch(
+      /bg-tyba-(amber|blue|green|red)/,
+    );
+    expect(semSinal.visual.dotClass).not.toMatch(/animate-pulse/);
+    expect(semSinal.urgency).toBe(0);
+
+    // O contraste que discrimina: estado deduzido de verdade ganha cor, e o
+    // `null` não a herda do `status` do shell — que é `running` nos dois.
+    expect(rodando.visual.dotClass).toMatch(/bg-tyba-blue/);
+    expect(semSinal.visual.dotClass).not.toBe(rodando.visual.dotClass);
+  });
+
+  test("idle deduzido repousa: sem hook não há fim de turno a revisar", () => {
+    // No gerenciado, idle só acende quando `attention` está de pé — e
+    // `attention` é a marca que o hook levanta no fim do turno. Sessão sem hook
+    // nunca a tem, então idle deduzido é repouso, não conclusão esperando
+    // alguém.
+    const [row] = board([observedSession("s1", "idle")]).observed;
+
+    expect(row.urgency).toBe(0);
+    expect(row.visual.dotClass).not.toMatch(/bg-tyba-green/);
+  });
+
+  test("sinal que este front não sabe ler vira presença sem estado", () => {
+    // A união do TypeScript vale na compilação; o dado vem do core em tempo de
+    // execução. Um `state` que o core acrescente sozinho — ou um `observed` sem
+    // o campo — não pode estourar aqui: o `buildRows` roda dentro de `useMemo`,
+    // onde a exceção não derruba a linha, derruba a renderização inteira.
+    const futuro = observedSession("futuro", "compacting" as ObservedState);
+    const semCampo = session("sem campo", running, {
+      kind: { type: "shell" } as SessionKind,
+      observed: { agent: "claude" } as ObservedAgent,
+    });
+
+    const rows = board([futuro, semCampo]).observed;
+
+    // A linha aparece — presença é fato, e o selo "sem gate" vale igual.
+    expect(rows.map((r) => r.session.id)).toEqual(["futuro", "sem campo"]);
+    for (const row of rows) {
+      expect(row.visual.labelKey).toBe("agentsBoardNoSignal");
+      expect(row.visual.dotClass).not.toMatch(
+        /bg-tyba-(amber|blue|green|red)/,
+      );
+      expect(row.urgency).toBe(0);
+    }
+  });
+
+  test("gerenciado que por acidente traga `observed` conta uma vez só", () => {
+    const dupla = session("s1", blocked, {
+      observed: { agent: "claude", state: "idle" },
+    });
+    const sections = board([dupla]);
+
+    expect(sections.managed.map((r) => r.session.id)).toEqual(["s1"]);
+    expect(sections.observed).toHaveLength(0);
+    expect(boardOrder(sections)).toHaveLength(1);
+    // E sem o selo de "sem gate": a linha tem gate, e o selo sai do `observed`
+    // da linha, nunca do da sessão.
+    expect(sections.managed[0].observed).toBeNull();
+    // O que ela mostra é o fato do hook, não o palpite da tela.
+    expect(sections.managed[0].urgency).toBe(urgencyOf(dupla));
+  });
+});
+
+describe("contagem de 'esperando por você'", () => {
+  const waiting = (sessions: Session[]) =>
+    boardOrder(board(sessions))
+      .filter(wantsAttention)
+      .map((r) => r.session.id);
+
+  test("observado esperando conta — é o único que não tem outro canal", () => {
+    // Decisão: entra. O badge do sidebar é o canal mais barato que existe — um
+    // número que custa uma olhada quando erra —, enquanto a notificação tem
+    // guardas próprias justamente porque interrompe: estado deduzido não é
+    // afirmação forte o bastante para tirar o usuário do que ele está fazendo.
+    // O agente sem gate é, porém, o único que não tem nenhum outro canal: não
+    // há inbox, não há pedido de aprovação e não há hook que avise por ele.
+    // Deixá-lo fora do badge seria escolher o silêncio exatamente para a linha
+    // sobre a qual ninguém mais fala.
+    expect(waiting([observedSession("observado", "awaiting_input")])).toEqual([
+      "observado",
+    ]);
+  });
+
+  test("contar não é promover: o gerenciado continua na frente na visita", () => {
+    // O badge soma as duas seções, mas a ordem do ciclo não mistura: quem é
+    // contado por último também é visitado por último.
+    const sessions = [
+      observedSession("observado", "awaiting_input"),
+      session("gerenciado", blocked),
+    ];
+
+    expect(waiting(sessions)).toEqual(["gerenciado", "observado"]);
+    expect(nextAttention(boardOrder(board(sessions)), null)?.session.id).toBe(
+      "gerenciado",
+    );
   });
 });
