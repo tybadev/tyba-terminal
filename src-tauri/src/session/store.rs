@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     worktree TEXT,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    cwd TEXT
+    cwd TEXT,
+    agent_conversation_id TEXT
 );
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -406,7 +407,22 @@ pub enum StoreError {
 ///     tinha usado o app, as catorze falhavam, todo boot, para nada.
 /// 2 — `sessions.scrollback` sai. Ninguém lia a coluna, e output de terminal
 ///     parado no disco contraria o princípio #10 do CLAUDE.md.
-const SCHEMA_VERSION: i64 = 3;
+/// 3 — `command_history.import_key` entra, com o índice único que dá a
+///     idempotência do import de histórico.
+/// 4 — `sessions.agent_conversation_id` entra: o id nativo da conversa do
+///     agente, que é o que permite oferecer retomá-la depois de reabrir o app.
+///
+/// Degrau próprio para cada um, e nunca linha nova na [`BASELINE_COLUMNS`]: a
+/// base só roda em banco na versão 0, então quem já subiu de versão nunca mais
+/// passaria por ela e ficaria sem a coluna.
+///
+/// **Ao acrescentar um degrau, confira se outra branch em andamento não escolheu
+/// o mesmo número.** Foi o que aconteceu entre estes dois: nasceram os dois como
+/// 3, e o segundo a entrar nunca rodaria — `migrate` corta em
+/// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
+/// de cada um passa isolado, porque simula o banco na versão anterior, que é
+/// justamente o caso em que ambos rodam.
+const SCHEMA_VERSION: i64 = 4;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -566,11 +582,39 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
-    let reached = match (baseline_applied, scrollback_applied, import_key_applied) {
-        (true, true, true) => SCHEMA_VERSION,
-        (true, true, false) => 2,
-        (true, false, _) => 1,
-        (false, _, _) => from,
+    let conversation_applied = if from < 4 {
+        match has_column(conn, "sessions", "agent_conversation_id") {
+            Ok(true) => true,
+            Ok(false) => match conn.execute(
+                "ALTER TABLE sessions ADD COLUMN agent_conversation_id TEXT",
+                [],
+            ) {
+                Ok(_) => true,
+                Err(e) => {
+                    skipped.push(format!("sessions.agent_conversation_id: {e}"));
+                    false
+                }
+            },
+            Err(e) => {
+                skipped.push(format!("sessions.agent_conversation_id: {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
+    let reached = match (
+        baseline_applied,
+        scrollback_applied,
+        import_key_applied,
+        conversation_applied,
+    ) {
+        (true, true, true, true) => SCHEMA_VERSION,
+        (true, true, true, false) => 3,
+        (true, true, false, _) => 2,
+        (true, false, _, _) => 1,
+        (false, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -673,10 +717,15 @@ impl Store {
 
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO sessions (id, kind, title, repo_root, worktree, status, created_at, cwd)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO sessions (id, kind, title, repo_root, worktree, status, created_at, cwd,
+                                   agent_conversation_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
-                kind = ?2, title = ?3, repo_root = ?4, worktree = ?5, status = ?6, cwd = ?8",
+                kind = ?2, title = ?3, repo_root = ?4, worktree = ?5, status = ?6, cwd = ?8,
+                -- Nunca apaga um id já gravado: o upsert corre a cada troca de
+                -- status, e a `Session` em memória pode ainda não ter lido o
+                -- transcript. Quem esquece a conversa é o descarte da sessão.
+                agent_conversation_id = COALESCE(?9, agent_conversation_id)",
             params![
                 s.id.to_string(),
                 kind,
@@ -686,6 +735,7 @@ impl Store {
                 status,
                 s.created_at.to_rfc3339(),
                 cwd,
+                s.agent_conversation_id,
             ],
         )?;
         Ok(())
@@ -2046,7 +2096,8 @@ impl Store {
     pub fn load_sessions(&self) -> Result<Vec<Session>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, kind, title, repo_root, worktree, status, created_at, cwd
+            "SELECT id, kind, title, repo_root, worktree, status, created_at, cwd,
+                    agent_conversation_id
              FROM sessions ORDER BY created_at",
         )?;
         let raw = stmt
@@ -2060,6 +2111,7 @@ impl Store {
                     status: row.get(5)?,
                     created_at: row.get(6)?,
                     cwd: row.get(7)?,
+                    agent_conversation_id: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -2087,6 +2139,7 @@ struct RawSession {
     status: String,
     created_at: String,
     cwd: Option<String>,
+    agent_conversation_id: Option<String>,
 }
 
 impl RawSession {
@@ -2111,6 +2164,9 @@ impl RawSession {
             created_at,
             cwd: self.cwd.map(PathBuf::from),
             connection: crate::session::ConnectionState::default(),
+            agent_conversation_id: self
+                .agent_conversation_id
+                .filter(|id| crate::agent::conversation::is_plausible(id)),
         })
     }
 }
@@ -2197,6 +2253,7 @@ mod tests {
             created_at: Utc::now(),
             cwd: Some(PathBuf::from("/repo/sub")),
             connection: crate::session::ConnectionState::default(),
+            agent_conversation_id: None,
         }
     }
 
@@ -2212,6 +2269,56 @@ mod tests {
         assert_eq!(loaded[0].title, "zsh");
         assert!(matches!(loaded[0].status, SessionStatus::Running));
         assert_eq!(loaded[0].repo_root, Some(PathBuf::from("/repo")));
+    }
+
+    #[test]
+    fn conversation_id_survives_the_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s = sample("agente");
+        s.agent_conversation_id = Some("5f2a1c40-0000-4000-8000-00000000abcd".into());
+        store.upsert_session(&s).unwrap();
+
+        assert_eq!(
+            store.load_sessions().unwrap()[0].agent_conversation_id,
+            s.agent_conversation_id
+        );
+    }
+
+    /// O upsert corre a cada troca de status. Um `Session` sem o id em memória
+    /// não pode apagar o que o hook já gravou — seria perder a conversa entre
+    /// dois eventos e o convite sumir sem motivo.
+    #[test]
+    fn a_status_upsert_never_erases_the_stored_conversation_id() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s = sample("agente");
+        s.agent_conversation_id = Some("5f2a1c40-0000-4000-8000-00000000abcd".into());
+        store.upsert_session(&s).unwrap();
+
+        s.agent_conversation_id = None;
+        s.status = SessionStatus::Exited { code: 0 };
+        store.upsert_session(&s).unwrap();
+
+        assert_eq!(
+            store.load_sessions().unwrap()[0]
+                .agent_conversation_id
+                .as_deref(),
+            Some("5f2a1c40-0000-4000-8000-00000000abcd")
+        );
+    }
+
+    /// Id implausível gravado por qualquer motivo (banco editado à mão, versão
+    /// futura) não volta como id: ele viraria argumento de `claude --resume`.
+    #[test]
+    fn an_implausible_stored_id_is_dropped_on_load() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s = sample("agente");
+        s.agent_conversation_id = Some("--dangerously-skip-permissions".into());
+        store.upsert_session(&s).unwrap();
+
+        assert_eq!(
+            store.load_sessions().unwrap()[0].agent_conversation_id,
+            None
+        );
     }
 
     fn sample_host(alias: &str) -> Host {
@@ -2503,12 +2610,163 @@ mod tests {
         .unwrap();
     }
 
+    /// Um banco parado exatamente na versão 2: a forma em que este binário
+    /// encontra a máquina de quem já abriu o app depois da migração anterior.
+    /// Fabricado à mão porque é o estado que discrimina degrau de linha de base
+    /// — a base só roda em banco na versão 0.
+    fn write_v2_database(path: &Path) {
+        write_legacy_database(path);
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE sessions DROP COLUMN scrollback;
+             PRAGMA user_version = 2;",
+        )
+        .unwrap();
+    }
+
+    /// **Este é o teste que discrimina o degrau 3.**
+    ///
+    /// O banco chega na versão 2, e o bloco da linha de base só roda com
+    /// `from < 1`. Se `sessions.agent_conversation_id` tivesse sido acrescentada
+    /// à [`BASELINE_COLUMNS`] em vez de ganhar degrau próprio, ninguém que já
+    /// usa o app veria a coluna nascer — e a sessão de agente nunca guardaria a
+    /// conversa. Aqui isso falha: a coluna tem de existir depois da abertura.
+    /// Cada coluna que nasce de um degrau, e em qual degrau ela nasce.
+    ///
+    /// Existe para o teste abaixo. Acrescentar degrau sem acrescentar linha aqui
+    /// deixa o degrau novo sem cobertura da combinação.
+    const STEP_COLUMNS: &[(i64, &str, &str)] = &[
+        (3, "command_history", "import_key"),
+        (4, "sessions", "agent_conversation_id"),
+    ];
+
+    /// Dois degraus não podem dividir o mesmo número.
+    ///
+    /// É a guarda contra a armadilha que este merge desarmou: duas branches
+    /// paralelas escolheram `SCHEMA_VERSION = 3` para colunas diferentes. Depois
+    /// do merge, o banco de quem já rodou a primeira está carimbado na 3, e
+    /// `migrate` corta em `from >= SCHEMA_VERSION` antes de olhar degrau
+    /// nenhum — a coluna da segunda nunca apareceria.
+    ///
+    /// O teste discriminante de cada degrau passa isolado, porque cada um simula
+    /// o banco na versão logo anterior à sua, que é justamente o caso em que ele
+    /// roda. A colisão só existe na combinação, e este teste é onde ela mora.
+    #[test]
+    fn cada_degrau_tem_um_numero_proprio() {
+        let mut versions: Vec<i64> = STEP_COLUMNS.iter().map(|(v, _, _)| *v).collect();
+        let total = versions.len();
+        versions.sort_unstable();
+        versions.dedup();
+        assert_eq!(
+            versions.len(),
+            total,
+            "dois degraus com o mesmo número: o segundo a entrar nunca roda"
+        );
+        assert_eq!(
+            versions.last().copied(),
+            Some(SCHEMA_VERSION),
+            "o último degrau tem de ser a versão atual, ou ele nunca é alcançado"
+        );
+    }
+
+    /// Nenhuma versão intermediária fica sem uma coluna.
+    ///
+    /// Para cada versão já publicada, monta o disco como ela o deixaria — com as
+    /// colunas dos degraus **anteriores** presentes e as dos seguintes ausentes —
+    /// e exige que abrir com o binário atual complete o schema.
+    #[test]
+    fn nenhuma_versao_intermediaria_perde_uma_coluna() {
+        for from in 0..SCHEMA_VERSION {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tyba.db");
+            {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch(SCHEMA).unwrap();
+                // Só as colunas que aquela versão ainda não tinha. Remover uma
+                // que ela já tinha inventaria um disco que nunca existiu.
+                for (at, table, column) in STEP_COLUMNS {
+                    if *at <= from {
+                        continue;
+                    }
+                    if (*table, *column) == ("command_history", "import_key") {
+                        conn.execute_batch("DROP INDEX IF EXISTS command_history_import_key;")
+                            .unwrap();
+                    }
+                    conn.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column};"))
+                        .unwrap();
+                }
+                conn.pragma_update(None, "user_version", from).unwrap();
+            }
+
+            let store = Store::open(&path).unwrap();
+
+            assert_eq!(
+                user_version(&store),
+                SCHEMA_VERSION,
+                "banco vindo da versão {from} não chegou na atual"
+            );
+            for (_, table, column) in STEP_COLUMNS {
+                assert!(
+                    column_exists(&store, table, column),
+                    "banco vindo da versão {from} ficou sem {table}.{column}"
+                );
+            }
+            assert_eq!(
+                store.degraded(),
+                None,
+                "versão {from} reportou degrau pulado"
+            );
+        }
+    }
+
+    #[test]
+    fn a_v2_database_gains_the_conversation_column_from_its_own_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        write_v2_database(&path);
+
+        // Pré-condição do teste: sem isto ele passaria por acidente.
+        {
+            let before = Connection::open(&path).unwrap();
+            assert!(!has_column(&before, "sessions", "agent_conversation_id").unwrap());
+            let version: i64 = before
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 2, "o banco tem de chegar exatamente na versão 2");
+        }
+
+        let store = Store::open(&path).unwrap();
+
+        assert!(
+            column_exists(&store, "sessions", "agent_conversation_id"),
+            "a coluna nasceu de um degrau, não da linha de base — e a linha de \
+             base não roda em banco que já está na versão 2"
+        );
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert_eq!(store.degraded(), None);
+        assert_eq!(store.load_sessions().unwrap().len(), 1);
+    }
+
+    /// O contrapeso do discriminador: a coluna nova NÃO pode estar na linha de
+    /// base. Se estiver, o teste acima passa por acidente num banco versão 0 e a
+    /// regressão só aparece na máquina do usuário.
+    #[test]
+    fn the_conversation_column_is_not_a_baseline_column() {
+        assert!(
+            !BASELINE_COLUMNS.iter().any(
+                |(table, column, _)| *table == "sessions" && *column == "agent_conversation_id"
+            ),
+            "linha de base só roda em banco na versão 0"
+        );
+    }
+
     #[test]
     fn fresh_database_lands_on_the_current_schema_version() {
         let store = Store::open_in_memory().unwrap();
 
         assert_eq!(user_version(&store), SCHEMA_VERSION);
         assert!(!column_exists(&store, "sessions", "scrollback"));
+        assert!(column_exists(&store, "sessions", "agent_conversation_id"));
         for (table, column, _) in BASELINE_COLUMNS {
             assert!(
                 column_exists(&store, table, column),

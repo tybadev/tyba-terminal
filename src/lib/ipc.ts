@@ -42,6 +42,9 @@ export interface Session {
   attention: boolean;
   created_at: string;
   connection?: ConnectionState;
+  /** Id da conversa nativa do agente, lido pelo core do transcript/rollout da
+   * CLI. Presente = existe conversa a retomar; ausente = não há convite. */
+  agent_conversation_id?: string | null;
 }
 
 export interface CreateSessionOpts {
@@ -425,6 +428,17 @@ export const detectedAgent = (sessionId: SessionId) =>
 
 export const killShellAgent = (sessionId: SessionId) =>
   invoke<string>("kill_shell_agent", { sessionId });
+
+/** Se o core consegue retomar a conversa nativa desta sessão morta — id
+ * capturado, binário do runner no PATH e pasta ainda no lugar. A decisão é do
+ * core: convite que abre em erro é pior que convite nenhum. */
+export const canResumeAgentSession = (id: SessionId) =>
+  invoke<boolean>("can_resume_agent_session", { id });
+
+/** Sobe o agente de novo na conversa que ele deixou em disco, com o comando de
+ * resume da CLI dele. Só por clique do usuário — nunca no boot. */
+export const resumeAgentSession = (id: SessionId, cols = 100, rows = 30) =>
+  invoke<Session>("resume_agent_session", { id, cols, rows });
 
 export const onAgentDetected = (
   handler: (p: {
