@@ -323,6 +323,39 @@ mod tests {
     /// `approval_history` e `block` não guardam repo: o escopo vem da sessão
     /// dona da linha. Se o `EXISTS` cair, o filtro vira decoração e o painel
     /// mostra o repo errado sem avisar.
+    /// A aprovação continua sabendo de qual repositório é depois que a sessão
+    /// dela some.
+    ///
+    /// `remove_session` apaga a sessão e os blocos dela — e antes deste degrau o
+    /// escopo por repositório era um `EXISTS` sobre `sessions`, então a
+    /// aprovação de uma sessão descartada contava no total geral e sumia de
+    /// **todo** escopo. Não era dado a mais: era dado que só aparecia quando
+    /// ninguém filtrava.
+    #[test]
+    fn a_aprovacao_sobrevive_a_remocao_da_sessao_dela() {
+        let store = Store::open_in_memory().unwrap();
+        let session = agent_session(&store, "/repo", "agente");
+        approval(&store, session, "ls", "green", "auto_allowed", 1_000, 0);
+        approval(&store, session, "rm -rf /", "red", "denied", 2_000, 500);
+
+        // Pré-condição: sem isto o teste passaria mesmo com o `EXISTS` velho.
+        let antes = store.agent_stats(0, Some("/repo")).unwrap();
+        assert_eq!(antes.totals.requested, 2);
+
+        store.remove_session(session).unwrap();
+
+        let depois = store.agent_stats(0, Some("/repo")).unwrap();
+        assert_eq!(
+            depois.totals.requested, 2,
+            "a aprovação perdeu o repositório junto com a sessão"
+        );
+        assert_eq!(depois.totals.denied, 1);
+
+        // E continua fora do escopo de outro repositório.
+        let alheio = store.agent_stats(0, Some("/outro")).unwrap();
+        assert_eq!(alheio.totals.requested, 0);
+    }
+
     #[test]
     fn the_repository_scope_actually_filters() {
         let store = Store::open_in_memory().unwrap();
@@ -470,6 +503,14 @@ mod tests {
     /// `remove_session` apaga a sessão e os blocos dela, mas não o
     /// `approval_history`: a linha sobrevive sem dono. Ela ainda conta — some
     /// da tela seria perder atenção humana que de fato foi gasta.
+    ///
+    /// O que mudou no degrau 5: ela sobrevive **com o repositório**. Antes o
+    /// escopo era um `EXISTS` sobre `sessions`, então a linha órfã contava no
+    /// total geral e sumia de todo filtro — aparecia só para quem não filtrava,
+    /// que é a pior forma de um dado existir.
+    ///
+    /// O título ainda não se recupera: ele mora em `sessions` e não foi
+    /// desnormalizado. O id é o que sobra.
     #[test]
     fn approvals_from_a_discarded_session_still_count() {
         let store = Store::open_in_memory().unwrap();
@@ -483,12 +524,21 @@ mod tests {
         assert_eq!(stats.sessions.len(), 1);
         // Sem linha em `sessions` não há título: o id é o que sobrou.
         assert_eq!(stats.sessions[0].title, session.to_string());
-        // E sem sessão não há repo: só aparece em "todos".
-        assert!(store
-            .agent_stats(0, Some("/repo"))
-            .unwrap()
-            .sessions
-            .is_empty());
+
+        // E agora ela continua no escopo do repositório de onde saiu.
+        let no_repo = store.agent_stats(0, Some("/repo")).unwrap();
+        assert_eq!(no_repo.totals.requested, 1);
+        assert_eq!(no_repo.sessions.len(), 1);
+
+        // Sem invadir o escopo de outro.
+        assert_eq!(
+            store
+                .agent_stats(0, Some("/outro"))
+                .unwrap()
+                .totals
+                .requested,
+            0
+        );
     }
 
     /// O comando já entra redigido no banco, mas o painel redige de novo na

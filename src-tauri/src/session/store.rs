@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS config_consents (
 CREATE TABLE IF NOT EXISTS approval_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
+    repo_root TEXT,
     command TEXT NOT NULL,
     cwd TEXT,
     risk TEXT NOT NULL,
@@ -242,10 +243,7 @@ const HISTORY_CANDIDATES: i64 = 2_000;
 /// descartada continuam no banco sem dono, contam em "todos os repos" e somem
 /// de qualquer escopo — o contrário seria atribuí-las a um repo que ninguém
 /// tem como conferir.
-const APPROVAL_SCOPE: &str = "requested_at_ms >= ?1
-     AND (?2 IS NULL OR EXISTS (
-         SELECT 1 FROM sessions s
-         WHERE s.id = approval_history.session_id AND s.repo_root = ?2))";
+const APPROVAL_SCOPE: &str = "requested_at_ms >= ?1 AND (?2 IS NULL OR repo_root = ?2)";
 
 /// Sessão de agente, a partir do `kind` serializado (`{\"type\":\"agent\",…}`).
 ///
@@ -411,6 +409,9 @@ pub enum StoreError {
 ///     idempotência do import de histórico.
 /// 4 — `sessions.agent_conversation_id` entra: o id nativo da conversa do
 ///     agente, que é o que permite oferecer retomá-la depois de reabrir o app.
+/// 5 — `approval_history.repo_root` entra, com backfill: a aprovação passa a
+///     saber de qual repositório ela é, em vez de perguntar a uma sessão que
+///     pode já ter sido removida.
 ///
 /// Degrau próprio para cada um, e nunca linha nova na [`BASELINE_COLUMNS`]: a
 /// base só roda em banco na versão 0, então quem já subiu de versão nunca mais
@@ -422,7 +423,7 @@ pub enum StoreError {
 /// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
 /// de cada um passa isolado, porque simula o banco na versão anterior, que é
 /// justamente o caso em que ambos rodam.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -604,17 +605,58 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
+    // A aprovação passa a carregar o repositório em vez de perguntá-lo à
+    // sessão. O backfill recupera o que ainda dá: linha cuja sessão sobreviveu
+    // ganha o repo dela; linha órfã fica com NULL, que é honesto — ninguém tem
+    // como saber a qual repositório ela pertencia.
+    let approval_repo_applied = if from < 5 {
+        let mut applied = true;
+        match has_column(conn, "approval_history", "repo_root") {
+            Ok(true) => {}
+            Ok(false) => {
+                if let Err(e) =
+                    conn.execute("ALTER TABLE approval_history ADD COLUMN repo_root TEXT", [])
+                {
+                    skipped.push(format!("approval_history.repo_root: {e}"));
+                    applied = false;
+                }
+            }
+            Err(e) => {
+                skipped.push(format!("approval_history.repo_root: {e}"));
+                applied = false;
+            }
+        }
+        if applied {
+            if let Err(e) = conn.execute(
+                "UPDATE approval_history
+                 SET repo_root = (
+                     SELECT s.repo_root FROM sessions s
+                     WHERE s.id = approval_history.session_id)
+                 WHERE repo_root IS NULL",
+                [],
+            ) {
+                skipped.push(format!("approval_history.repo_root (backfill): {e}"));
+                applied = false;
+            }
+        }
+        applied
+    } else {
+        true
+    };
+
     let reached = match (
         baseline_applied,
         scrollback_applied,
         import_key_applied,
         conversation_applied,
+        approval_repo_applied,
     ) {
-        (true, true, true, true) => SCHEMA_VERSION,
-        (true, true, true, false) => 3,
-        (true, true, false, _) => 2,
-        (true, false, _, _) => 1,
-        (false, _, _, _) => from,
+        (true, true, true, true, true) => SCHEMA_VERSION,
+        (true, true, true, true, false) => 4,
+        (true, true, true, false, _) => 3,
+        (true, true, false, _, _) => 2,
+        (true, false, _, _, _) => 1,
+        (false, _, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -1101,9 +1143,16 @@ impl Store {
         let cwd = entry.cwd.as_ref().map(|c| redact(c).into_owned());
         let conn = self.conn.lock();
         conn.execute(
+            // O repo vem da sessão AQUI, enquanto ela existe. Guardar em vez
+            // de consultar depois é o que faz a linha sobreviver ao dono: a
+            // sessão some no `remove_session`, e um `EXISTS` sobre `sessions`
+            // deixaria a aprovação sem repo nenhum — contando no total e
+            // sumindo de todo escopo.
             "INSERT INTO approval_history
-                 (session_id, command, cwd, risk, decision, requested_at_ms, resolved_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 (session_id, repo_root, command, cwd, risk, decision,
+                  requested_at_ms, resolved_at_ms)
+             VALUES (?1, (SELECT repo_root FROM sessions WHERE id = ?1),
+                     ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 entry.session_id,
                 command.as_ref(),
@@ -2638,6 +2687,7 @@ mod tests {
     const STEP_COLUMNS: &[(i64, &str, &str)] = &[
         (3, "command_history", "import_key"),
         (4, "sessions", "agent_conversation_id"),
+        (5, "approval_history", "repo_root"),
     ];
 
     /// Dois degraus não podem dividir o mesmo número.
