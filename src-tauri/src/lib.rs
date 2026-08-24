@@ -4094,6 +4094,7 @@ fn open_view_tab(app: AppHandle, state: State<'_, AppState>, view: String) -> Re
     if view != layout::VIEW_SETTINGS
         && view != layout::VIEW_WORKSPACE
         && view != layout::VIEW_CONNECTIONS
+        && view != layout::VIEW_AGENT_BOARD
     {
         return Err(format!("view desconhecida: {view}"));
     }
