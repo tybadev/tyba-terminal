@@ -28,7 +28,11 @@ use crate::status::manifest::{Manifest, Scope};
 /// `include_str!("../../manifests/<id>.toml")` por agente. A estrutura existe
 /// antes do conteúdo para que acrescentar um manifesto seja uma linha, e não
 /// uma decisão de arquitetura outra vez.
-const BUILTIN: &[&str] = &[];
+const BUILTIN: &[&str] = &[
+    include_str!("../../manifests/claude-code.toml"),
+    include_str!("../../manifests/opencode.toml"),
+    include_str!("../../manifests/github-copilot.toml"),
+];
 
 /// Teto de tamanho por arquivo. Um manifesto é declaração de algumas dezenas de
 /// regras; qualquer coisa desta ordem é engano ou abuso, e o teto do motor
@@ -159,6 +163,114 @@ fn sources_in(dir: &Path) -> Vec<(PathBuf, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::session::ObservedState;
+    use crate::status::manifest::Verdict;
+    use crate::status::screen::ScreenSnapshot;
+
+    fn tela(title: &str) -> ScreenSnapshot {
+        ScreenSnapshot {
+            title: title.into(),
+            alt_screen: false,
+            bottom_lines: Vec::new(),
+        }
+    }
+
+    /// Todo manifesto embutido tem de carregar. Um TOML quebrado no `BUILTIN` é
+    /// pulado em silêncio pelo `assemble` — o que é certo para arquivo do
+    /// usuário e péssimo para o que nós enviamos: sairia uma release com um
+    /// agente que simplesmente não é reconhecido, sem nenhum erro.
+    #[test]
+    fn todo_manifesto_embutido_carrega() {
+        let registry = ManifestRegistry::builtin();
+        assert_eq!(
+            registry.len(),
+            BUILTIN.len(),
+            "algum manifesto embutido não passou na validação e foi pulado"
+        );
+    }
+
+    /// O caso que o tmux do dono cria: com `$TMUX` visível o Claude **trava** o
+    /// título em `✳`, então o mesmo glifo aparece parado e trabalhando. Ler `✳`
+    /// como ocioso marcaria de parado um agente que está trabalhando —
+    /// justamente dentro do tmux, que é o público da feature de SSH.
+    #[test]
+    fn o_glifo_parado_do_claude_nunca_vira_ocioso() {
+        let registry = ManifestRegistry::builtin();
+        let m = registry
+            .identify(Scope::Ssh, None, "✳ Echo alo")
+            .expect("o glifo tem de identificar sozinho");
+        assert_eq!(m.id, "claude-code");
+
+        assert_eq!(
+            m.evaluate(&tela("✳ Echo alo")),
+            Verdict::Hold,
+            "`✳` só pode dizer «reconheço o agente e não sei o estado»"
+        );
+        assert_eq!(m.evaluate(&tela("✻ Cogitated for 5s")), Verdict::Hold);
+    }
+
+    #[test]
+    fn o_spinner_do_claude_e_o_unico_que_afirma_estado() {
+        let registry = ManifestRegistry::builtin();
+        let m = registry
+            .identify(Scope::Shell, Some("claude"), "")
+            .expect("o processo tem de identificar no shell local");
+        assert_eq!(
+            m.evaluate(&tela("◐ Claude Code")),
+            Verdict::State(ObservedState::Running)
+        );
+        assert_eq!(
+            m.evaluate(&tela("◑ Echo alo")),
+            Verdict::State(ObservedState::Running)
+        );
+    }
+
+    /// Medido: depois do primeiro turno o título vira o resumo (`✳ Echo alo`) e
+    /// "Claude" some. Identidade por nome de produto deixaria de reconhecer a
+    /// sessão exatamente quando ela passa a ter algo a dizer.
+    #[test]
+    fn a_identidade_do_claude_nao_depende_do_nome_do_produto() {
+        let registry = ManifestRegistry::builtin();
+        assert!(registry.identify(Scope::Ssh, None, "✳ Echo alo").is_some());
+        // E não casa com título comum.
+        assert!(registry
+            .identify(Scope::Ssh, None, "vim README.md")
+            .is_none());
+        assert!(registry.identify(Scope::Ssh, None, "~/projeto").is_none());
+    }
+
+    /// opencode e Copilot identificam e não dizem estado — é o caso de
+    /// "presença sem estado" da spec. Se um dia ganharem regra de estado, este
+    /// teste avisa que a decisão mudou.
+    #[test]
+    fn presenca_sem_estado_nao_afirma_nada() {
+        let registry = ManifestRegistry::builtin();
+        for (titulo, id) in [
+            ("OpenCode", "opencode"),
+            ("GitHub Copilot", "github-copilot"),
+        ] {
+            let m = registry
+                .identify(Scope::Ssh, None, titulo)
+                .unwrap_or_else(|| panic!("{titulo} tem de identificar"));
+            assert_eq!(m.id, id);
+            assert_eq!(
+                m.evaluate(&tela(titulo)),
+                Verdict::NoMatch,
+                "{id} não tem sinal de estado e não pode inventar um"
+            );
+        }
+    }
+
+    /// O Codex fica fora de propósito: medido, o título ocioso dele é o basename
+    /// do cwd, que não identifica nada. Casá-lo faria um `vim` numa pasta
+    /// chamada `codex` virar agente. Decisão de 2026-08-24.
+    #[test]
+    fn o_codex_nao_e_identificado_por_titulo() {
+        let registry = ManifestRegistry::builtin();
+        assert!(registry.identify(Scope::Ssh, None, "meu-projeto").is_none());
+        assert!(registry.identify(Scope::Ssh, None, "codex").is_none());
+    }
 
     const EMBUTIDO: &str = r#"
 id = "codex"

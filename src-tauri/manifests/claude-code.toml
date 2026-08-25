@@ -1,0 +1,37 @@
+# Claude Code.
+#
+# Identidade sai do GLIFO INICIAL, não do nome do produto. Medido em
+# 2026-08-24: o título é `✳ Claude Code` antes do primeiro turno e vira
+# `✳ Echo alo` depois dele — ele carrega o resumo do turno, e "Claude" some
+# exatamente quando a sessão passa a ter algo a dizer. O glifo é o que fica.
+#
+# Limitação conhecida: `title` casa por substring, não por início de linha, e o
+# motor não tem "começa com". Um título que contenha o glifo no meio casaria.
+# Aceito porque glifo em título é raro; se um dia colidir, a saída é acrescentar
+# o modo ao motor, não afrouxar isto.
+id = "claude-code"
+min_engine_version = 1
+applies_to = ["shell", "ssh", "container"]
+
+match = { process = ["claude"], title = ["✳ ", "◐ ", "◑ ", "✻ "] }
+
+# Trabalhando: o spinner alterna entre as duas metades.
+[[rules]]
+id = "title_working"
+state = "running"
+priority = 1000
+region = "osc_title"
+line_regex = '^[◐◑]\s'
+
+# `✳` e `✻` identificam e NÃO dizem estado.
+#
+# Dentro do tmux do dono o Claude trava o título em `✳` (medido: com `$TMUX`
+# visível ele nunca anima), então o mesmo glifo aparece parado e trabalhando.
+# Ler `✳` como ocioso marcaria de parado um agente que está trabalhando —
+# justamente dentro do tmux, que é o público da feature de SSH.
+[[rules]]
+id = "title_identified_no_state"
+priority = 900
+region = "osc_title"
+line_regex = '^[✳✻]\s'
+skip_state_update = true

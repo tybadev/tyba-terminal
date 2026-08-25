@@ -1,0 +1,13 @@
+# opencode.
+#
+# Título medido em 2026-08-24, ocioso: `OpenCode`. Identifica e não carrega
+# estado — é o caso de "presença sem estado" que a spec prevê: o quadro mostra
+# que há um agente sem gate ali, sem fingir saber o que ele faz.
+#
+# NÃO medido: se ele troca o título depois de um turno, como o Claude faz. Se
+# trocar, o efeito é perder a identidade — não afirmar estado errado.
+id = "opencode"
+min_engine_version = 1
+applies_to = ["shell", "ssh", "container"]
+
+match = { process = ["opencode"], title = ["OpenCode"] }

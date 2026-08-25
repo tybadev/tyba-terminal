@@ -1,0 +1,9 @@
+# GitHub Copilot CLI.
+#
+# Título medido em 2026-08-24, ocioso: `GitHub Copilot`. Mesma situação do
+# opencode: identifica, não diz estado.
+id = "github-copilot"
+min_engine_version = 1
+applies_to = ["shell", "ssh", "container"]
+
+match = { process = ["copilot"], title = ["GitHub Copilot"] }
