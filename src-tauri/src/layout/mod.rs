@@ -327,6 +327,13 @@ pub const VIEW_AGENTS_PREFIX: &str = "agents:";
 /// propósito: `VIEW_AGENTS_PREFIX` acima é o visualizador de subagente de UMA
 /// sessão, e são coisas diferentes.
 pub const VIEW_AGENT_BOARD: &str = "agent-board";
+/// A fila de agentes, como painel lateral.
+///
+/// Único `side_view` **sem sessão**: os outros (`diff:`, `files:`, `agents:`)
+/// pertencem a uma sessão e morrem com ela. Este é do workspace inteiro, e a
+/// limpeza de layout já o preserva de graça — o filtro usa `is_none_or`, ou
+/// seja, view sem sessão sobrevive por desenho.
+pub const VIEW_AGENT_QUEUE: &str = "agent-queue";
 pub const DOCKER_WORKSPACE_NAME: &str = "Docker";
 pub const FALLBACK_WORKSPACE_NAME: &str = "tyba";
 
@@ -1086,6 +1093,27 @@ impl LayoutManager {
             tab.active_pane = Some(pane_id);
         }
         inner.active = Some(ws_id);
+        drop(inner);
+        self.persist()?;
+        Ok(ws_id)
+    }
+
+    /// Abre (ou fecha) a fila de agentes no workspace ativo.
+    ///
+    /// Alterna em vez de só abrir: o atalho que a chama é o mesmo que o usuário
+    /// aperta para "ver quem me espera", e apertar de novo tem de devolver a
+    /// tela — senão o painel vira uma coisa que só se fecha com o mouse.
+    pub fn toggle_agent_queue(&self) -> Result<WorkspaceId, LayoutError> {
+        let mut inner = self.inner.write();
+        let ws_id = inner.active.ok_or(LayoutError::NoActiveWorkspace)?;
+        let idx = ws_index(&inner.workspaces, ws_id)?;
+        let ja_aberta = inner.workspaces[idx].side_view.as_deref() == Some(VIEW_AGENT_QUEUE);
+        if ja_aberta {
+            inner.workspaces[idx].side_view = None;
+            inner.workspaces[idx].side_expanded = false;
+        } else {
+            inner.workspaces[idx].side_view = Some(VIEW_AGENT_QUEUE.to_string());
+        }
         drop(inner);
         self.persist()?;
         Ok(ws_id)

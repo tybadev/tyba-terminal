@@ -64,6 +64,7 @@ import { UpdateToast } from "./components/UpdateToast";
 import { IS_MAC } from "./lib/platform";
 import { AgentIcon } from "./components/icons/AgentIcon";
 import { AgentsBoard } from "./components/AgentsBoard";
+import { AgentsQueue } from "./components/AgentsQueue";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { Clock } from "./components/Clock";
@@ -179,6 +180,7 @@ import {
   openAgentsPanel,
   openSubagentViewer,
   openViewTab,
+  toggleAgentQueue,
   paneSession,
   listSubagents,
   focusSubagent,
@@ -295,6 +297,7 @@ import {
   boardOrder,
   buildRows as buildAgentRows,
   nextAttention,
+  wantsAttention,
   agentForWorkspace,
   type SessionPlace,
 } from "./lib/agentsBoard";
@@ -1551,6 +1554,12 @@ export default function App() {
   );
 
   // Conta as duas seções do quadro: o agente sem gate também pede alguém, e o
+
+  const agentsWaiting = useMemo(
+    () => boardOrder(buildAgentRows(sessions, layout)).filter(wantsAttention)
+      .length,
+    [sessions, layout],
+  );
 
   const goToNextAttention = useCallback(() => {
     const next = nextAttention(
@@ -3090,7 +3099,7 @@ export default function App() {
       } else if (action === "nextSession") {
         cycleWorkspace(1);
       } else if (action === "nextAttentionSession") {
-        goToNextAttention();
+        void toggleAgentQueue().catch(() => {});
       } else if (action === "prevTab") {
         cycleTab(-1);
       } else if (action === "nextTab") {
@@ -4733,6 +4742,39 @@ export default function App() {
                         {t("connectionsTitle")}
                       </TooltipContent>
                     </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          onClick={() => void toggleAgentQueue().catch(() => {})}
+                          aria-label={t("agentsQueue")}
+                          className={`relative mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal ${
+                            open ? "justify-start px-2" : "justify-center px-0"
+                          } ${
+                            activeWorkspace?.side_view === "agent-queue"
+                              ? "bg-tyba-text/[.05] text-tyba-text"
+                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text"
+                          }`}
+                        >
+                          <AgentIcon size={14} />
+                          {open && t("agentsQueue")}
+                          {agentsWaiting > 0 && (
+                            <span
+                              className={
+                                open
+                                  ? "ml-auto text-[11px] text-tyba-amber"
+                                  : "absolute right-1 top-1 size-1.5 rounded-full bg-tyba-amber"
+                              }
+                            >
+                              {open ? agentsWaiting : null}
+                            </span>
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side={open ? "bottom" : "right"}>
+                        {t("agentsQueue")}
+                      </TooltipContent>
+                    </Tooltip>
                   </nav>
                 </aside>
               )}
@@ -5340,7 +5382,22 @@ export default function App() {
                           : ""
                       }`}
                     >
-                      {renderSideView?.startsWith("agents:") ? (
+                      {renderSideView === "agent-queue" ? (
+                        <AgentsQueue
+                          sessions={sessions}
+                          layout={layout}
+                          approvals={approvals}
+                          onJump={jumpToAgent}
+                          onReviewDiff={(id) =>
+                            void openDiffTab(id).catch(() => {})
+                          }
+                          onClose={() =>
+                            void closeSideView(activeWorkspace.id).catch(
+                              () => {},
+                            )
+                          }
+                        />
+                      ) : renderSideView?.startsWith("agents:") ? (
                         agentsTarget ? (
                           <AgentsPanel
                             key={agentsTarget.id}

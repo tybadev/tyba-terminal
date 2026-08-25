@@ -4508,6 +4508,17 @@ async fn resume_agent_session(
     })
 }
 
+/// Abre ou fecha a fila de agentes no workspace ativo.
+#[tauri::command]
+fn toggle_agent_queue(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .layout
+        .toggle_agent_queue()
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
 #[tauri::command]
 fn open_agents_panel(
     app: AppHandle,
@@ -5943,6 +5954,7 @@ pub fn run() {
             focus_subagent,
             subagent_transcript,
             open_agents_panel,
+            toggle_agent_queue,
             kill_shell_agent,
             can_resume_agent_session,
             resume_agent_session,

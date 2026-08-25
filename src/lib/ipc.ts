@@ -1159,6 +1159,9 @@ export const listSubagents = (sessionId: SessionId) =>
 export const focusSubagent = (sessionId: SessionId, agentId: string) =>
   invoke<SubagentSnapshot>("focus_subagent", { sessionId, agentId });
 
+/** Abre ou fecha a fila de agentes no workspace ativo. */
+export const toggleAgentQueue = () => invoke<void>("toggle_agent_queue");
+
 export const openAgentsPanel = (id: SessionId) =>
   invoke<void>("open_agents_panel", { id });
 
