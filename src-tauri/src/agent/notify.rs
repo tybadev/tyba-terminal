@@ -20,6 +20,17 @@ pub enum NotifyKind {
     Request,
     /// O turno terminou.
     Done,
+    /// O **palpite** de que um agente sem hook está esperando alguém, deduzido
+    /// da tela.
+    ///
+    /// Espécie própria, e não um `Request` de outra origem, porque a diferença
+    /// não é de urgência: é de certeza. `Request` é o agente falando por um
+    /// hook — o TYBA sabe. Este aqui é o TYBA lendo a tela de um programa que
+    /// não faz ideia de que está sendo lido, e que pode mudar a interface na
+    /// próxima versão sem avisar. Quem cansar dos palpites errados desliga só
+    /// este; misturá-los tiraria do usuário a escolha que importa, porque
+    /// desligar o palpite desligaria o fato junto.
+    ObservedRequest,
 }
 
 impl NotifyKind {
@@ -29,6 +40,7 @@ impl NotifyKind {
         match self {
             NotifyKind::Request => "pref.notify.request.enabled",
             NotifyKind::Done => "pref.notify.done.enabled",
+            NotifyKind::ObservedRequest => "pref.notify.observed_request.enabled",
         }
     }
 
@@ -36,6 +48,7 @@ impl NotifyKind {
         match self {
             NotifyKind::Request => "pref.notify.request.sound",
             NotifyKind::Done => "pref.notify.done.sound",
+            NotifyKind::ObservedRequest => "pref.notify.observed_request.sound",
         }
     }
 }
@@ -53,6 +66,11 @@ pub const fn default_sound(kind: NotifyKind) -> Option<&'static str> {
         match kind {
             NotifyKind::Request => Some("Ping"),
             NotifyKind::Done => Some("Glass"),
+            // O mesmo som do pedido de propósito: o som carrega **urgência**, e
+            // um agente esperando é igualmente urgente venha o sinal do hook ou
+            // da tela. O que separa as duas espécies é o interruptor, não o
+            // timbre — e quem quiser distinguir de ouvido troca este aqui.
+            NotifyKind::ObservedRequest => Some("Ping"),
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -132,25 +150,52 @@ mod tests {
         assert!(resolve(NotifyKind::Request, Some("talvez"), None).enabled);
     }
 
+    const ESPECIES: [NotifyKind; 3] = [
+        NotifyKind::Request,
+        NotifyKind::Done,
+        NotifyKind::ObservedRequest,
+    ];
+
     #[test]
-    fn as_chaves_das_duas_espécies_nao_colidem() {
-        assert_ne!(
-            NotifyKind::Request.enabled_key(),
-            NotifyKind::Done.enabled_key()
-        );
-        assert_ne!(
-            NotifyKind::Request.sound_key(),
-            NotifyKind::Done.sound_key()
-        );
+    fn as_chaves_das_especies_nao_colidem() {
+        let mut chaves: Vec<&str> = ESPECIES
+            .iter()
+            .flat_map(|k| [k.enabled_key(), k.sound_key()])
+            .collect();
+        let total = chaves.len();
+        chaves.sort_unstable();
+        chaves.dedup();
+        assert_eq!(chaves.len(), total, "duas espécies dividem a mesma chave");
         // Toda chave de preferência precisa do prefixo, ou `set_pref` recusa.
-        for key in [
-            NotifyKind::Request.enabled_key(),
-            NotifyKind::Request.sound_key(),
-            NotifyKind::Done.enabled_key(),
-            NotifyKind::Done.sound_key(),
-        ] {
+        for key in chaves {
             assert!(key.starts_with("pref."), "{key} sem o prefixo `pref.`");
         }
+    }
+
+    /// O ponto de o palpite ter espécie própria: desligá-lo não pode desligar o
+    /// fato.
+    ///
+    /// O teste lê **pelas chaves**, como o `notify_native` faz, e não passando
+    /// os valores na mão — é a leitura por chave que faz uma espécie alcançar a
+    /// preferência da outra quando as chaves colidem.
+    #[test]
+    fn desligar_o_palpite_nao_desliga_o_pedido_do_hook() {
+        // O banco com só a preferência do palpite gravada.
+        let gravado = [(NotifyKind::ObservedRequest.enabled_key(), "off")];
+        let leia = |kind: NotifyKind| {
+            let bruto = gravado
+                .iter()
+                .find(|(chave, _)| *chave == kind.enabled_key())
+                .map(|(_, valor)| *valor);
+            resolve(kind, bruto, None)
+        };
+
+        assert!(!leia(NotifyKind::ObservedRequest).enabled);
+        assert!(
+            leia(NotifyKind::Request).enabled,
+            "desligar o palpite levou o pedido do hook junto"
+        );
+        assert!(leia(NotifyKind::Done).enabled);
     }
 
     #[cfg(target_os = "macos")]

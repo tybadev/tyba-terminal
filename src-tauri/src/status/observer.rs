@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use crate::session::{ObservedAgent, SessionKind};
 use crate::status::manifest::{Scope, Verdict};
+use crate::status::observed_notify::ObservedNotifier;
 use crate::status::registry::ManifestRegistry;
 use crate::status::screen::ScreenSnapshot;
 
@@ -41,6 +42,11 @@ pub struct ScreenObserver {
     /// processos que o TYBA alcance, e ali identidade sai só do título.
     process: Option<ProcessProbe>,
     sink: ObservedSink,
+    /// Quando o palpite pode virar aviso do sistema. Separado do `sink` porque
+    /// as duas saídas têm exigências diferentes: mostrar no quadro é barato e
+    /// vale para todo palpite; interromper o dono da máquina passa por três
+    /// guardas — ver [`crate::status::observed_notify`].
+    notifier: ObservedNotifier,
     /// O portão de sequência. `None` antes da primeira avaliação.
     last_fingerprint: Option<u64>,
     /// O último palpite publicado. Guardado para dois motivos: não repetir IPC
@@ -61,6 +67,7 @@ impl ScreenObserver {
         registry: Arc<ManifestRegistry>,
         process: ProcessProbe,
         sink: ObservedSink,
+        notifier: ObservedNotifier,
     ) -> Option<Self> {
         let scope = scope_of(kind)?;
         Some(Self {
@@ -68,6 +75,7 @@ impl ScreenObserver {
             scope,
             process: matches!(scope, Scope::Shell).then_some(process),
             sink,
+            notifier,
             last_fingerprint: None,
             last: None,
         })
@@ -96,10 +104,14 @@ impl ScreenObserver {
             // Ninguém reconhece o que está na tela. Identidade é o que sustenta
             // a presença: sem ela não há agente a apontar, e manter o último
             // palpite deixaria um agente morto no quadro para sempre.
-            self.publish(None);
+            self.publish(None, false);
             return;
         };
         let agent = manifest.id.clone();
+        // A autorização vem do manifesto que casou **agora**, não do id do
+        // agente: é o arquivo que descreve as regras que sabe se elas separam
+        // "esperando você" de "desenhando um menu".
+        let notifies = manifest.notifies;
         let state = match manifest.evaluate(snapshot) {
             Verdict::State(state) => Some(state),
             // `Hold` é "casou, e por isso NÃO mexa no estado"; `NoMatch` é
@@ -113,16 +125,22 @@ impl ScreenObserver {
                 .filter(|observed| observed.agent == agent)
                 .and_then(|observed| observed.state),
         };
-        self.publish(Some(ObservedAgent { agent, state }));
+        self.publish(Some(ObservedAgent { agent, state }), notifies);
     }
 
     /// O PTY morreu: o que estava na tela deixou de ser notícia do presente.
     pub fn clear(&mut self) {
         self.last_fingerprint = None;
-        self.publish(None);
+        self.publish(None, false);
     }
 
-    fn publish(&mut self, observed: Option<ObservedAgent>) {
+    fn publish(&mut self, observed: Option<ObservedAgent>, notifies: bool) {
+        // Antes do corte de repetição, e de propósito: o aviso do sistema tem a
+        // própria noção de novidade — a transição —, e ela é mais estrita do que
+        // esta. Uma tela que reafirma o mesmo estado com um spinner girando
+        // muda o palpite em nada e ainda assim chega aqui; deixá-la fora faria
+        // este método decidir por um assunto que não é dele.
+        self.notifier.observed(observed.as_ref(), notifies);
         if self.last == observed {
             return;
         }
@@ -198,16 +216,26 @@ contains = ["esc to interrupt"]
     }
 
     fn observer(kind: &SessionKind, espiao: &Arc<Espiao>) -> Option<ScreenObserver> {
+        observer_com(kind, espiao, registry(), ObservedNotifier::silent())
+    }
+
+    fn observer_com(
+        kind: &SessionKind,
+        espiao: &Arc<Espiao>,
+        registry: Arc<ManifestRegistry>,
+        notifier: ObservedNotifier,
+    ) -> Option<ScreenObserver> {
         let probe_spy = Arc::clone(espiao);
         let sink_spy = Arc::clone(espiao);
         ScreenObserver::for_session(
             kind,
-            registry(),
+            registry,
             Box::new(move || {
                 probe_spy.probes.fetch_add(1, Ordering::Relaxed);
                 Some("codex".to_string())
             }),
             Box::new(move |observed| sink_spy.publicados.lock().push(observed)),
+            notifier,
         )
     }
 
@@ -320,6 +348,7 @@ skip_state_update = true
             Arc::new(ManifestRegistry::from_sources(&[CODEX, GEMINI])),
             Box::new(|| None),
             Box::new(move |observed| sink_spy.publicados.lock().push(observed)),
+            ObservedNotifier::silent(),
         )
         .unwrap();
 
@@ -350,6 +379,7 @@ skip_state_update = true
             registry(),
             Box::new(|| None),
             Box::new(move |observed| sink_spy.publicados.lock().push(observed)),
+            ObservedNotifier::silent(),
         )
         .unwrap();
 
@@ -436,6 +466,131 @@ skip_state_update = true
         assert_eq!(espiao.publicados().last().unwrap(), &None);
     }
 
+    /// O mesmo manifesto do resto do arquivo, autorizado a interromper.
+    fn registry_que_avisa() -> Arc<ManifestRegistry> {
+        let fonte = format!("notifies = true\n{CODEX}");
+        Arc::new(ManifestRegistry::from_sources(&[fonte.as_str()]))
+    }
+
+    /// O relógio e a saída do aviso, na mão do teste.
+    struct Avisos {
+        agendados: parking_lot::Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+        saidos: parking_lot::Mutex<Vec<String>>,
+    }
+
+    impl Avisos {
+        fn novo() -> (Arc<Self>, ObservedNotifier) {
+            let avisos = Arc::new(Self {
+                agendados: parking_lot::Mutex::new(Vec::new()),
+                saidos: parking_lot::Mutex::new(Vec::new()),
+            });
+            let fila = Arc::clone(&avisos);
+            let saida = Arc::clone(&avisos);
+            let notifier = ObservedNotifier::new(
+                Arc::new(move |agent: &str| saida.saidos.lock().push(agent.to_string())),
+                Arc::new(move |_, task| fila.agendados.lock().push(task)),
+            );
+            (avisos, notifier)
+        }
+
+        /// O tempo passa: o que estava agendado acorda e decide se ainda vale.
+        fn assenta(&self) {
+            let tarefas: Vec<Box<dyn FnOnce() + Send>> = self.agendados.lock().drain(..).collect();
+            for tarefa in tarefas {
+                tarefa();
+            }
+        }
+
+        fn saidos(&self) -> Vec<String> {
+            self.saidos.lock().clone()
+        }
+    }
+
+    /// A prova da fiação, e o modo de falha que motivou a guarda da transição.
+    ///
+    /// O agente saiu sem restaurar o título e a tela ficou dizendo "Action
+    /// Required". O spinner embaixo continua girando, então cada quadro é uma
+    /// tela **diferente** — o portão de sequência não segura nenhum, e cada um
+    /// reafirma o mesmo estado. Um aviso, e só um.
+    #[test]
+    fn a_tela_presa_em_action_required_avisa_uma_vez_so() {
+        let espiao = Arc::new(Espiao::default());
+        let (avisos, notifier) = Avisos::novo();
+        let mut observer =
+            observer_com(&SessionKind::Shell, &espiao, registry_que_avisa(), notifier).unwrap();
+
+        for i in 0..20 {
+            observer.observe(&snap(
+                "Codex — Action Required",
+                &[&format!("aguardando há {i}s")],
+            ));
+            avisos.assenta();
+        }
+
+        assert_eq!(
+            avisos.saidos(),
+            ["codex"],
+            "o título preso na tela rendeu um aviso por quadro"
+        );
+    }
+
+    /// O `notifies` que chega ao notificador é o do manifesto que casou. Sem
+    /// esta ligação, autorizar deixaria de significar alguma coisa.
+    #[test]
+    fn o_manifesto_sem_notifies_nao_chega_a_avisar() {
+        let espiao = Arc::new(Espiao::default());
+        let (avisos, notifier) = Avisos::novo();
+        let mut observer =
+            observer_com(&SessionKind::Shell, &espiao, registry(), notifier).unwrap();
+
+        observer.observe(&snap("Codex — Action Required", &[]));
+        avisos.assenta();
+
+        assert_eq!(
+            espiao.ultimo().unwrap().state,
+            Some(ObservedState::AwaitingInput),
+            "o palpite tinha que continuar aparecendo no quadro"
+        );
+        assert!(
+            avisos.saidos().is_empty(),
+            "manifesto sem `notifies` interrompeu o dono da máquina"
+        );
+    }
+
+    /// Trabalhando não é esperar: o estado que chega ao notificador é o de
+    /// verdade, não "algum estado".
+    #[test]
+    fn tela_de_agente_trabalhando_nao_avisa() {
+        let espiao = Arc::new(Espiao::default());
+        let (avisos, notifier) = Avisos::novo();
+        let mut observer =
+            observer_com(&SessionKind::Shell, &espiao, registry_que_avisa(), notifier).unwrap();
+
+        observer.observe(&snap("Codex", &["• esc to interrupt"]));
+        avisos.assenta();
+
+        assert_eq!(espiao.ultimo().unwrap().state, Some(ObservedState::Running));
+        assert!(avisos.saidos().is_empty());
+    }
+
+    /// O agente respondeu e voltou a esperar: notícia nova, aviso novo.
+    #[test]
+    fn responder_e_voltar_a_esperar_avisa_de_novo() {
+        let espiao = Arc::new(Espiao::default());
+        let (avisos, notifier) = Avisos::novo();
+        let mut observer =
+            observer_com(&SessionKind::Shell, &espiao, registry_que_avisa(), notifier).unwrap();
+
+        observer.observe(&snap("Codex — Action Required", &[]));
+        avisos.assenta();
+        observer.observe(&snap("Codex", &["• esc to interrupt"]));
+        avisos.assenta();
+        observer.observe(&snap("Codex — Action Required", &["de novo"]));
+        avisos.assenta();
+
+        assert_eq!(avisos.saidos(), ["codex", "codex"]);
+    }
+
     /// Registro vazio (a v1, antes da F4) não faz o PTY recortar tela nenhuma.
     #[test]
     fn sem_manifesto_nao_ha_o_que_recortar() {
@@ -444,6 +599,7 @@ skip_state_update = true
             Arc::new(ManifestRegistry::default()),
             Box::new(|| None),
             Box::new(|_| {}),
+            ObservedNotifier::silent(),
         )
         .unwrap();
 

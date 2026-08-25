@@ -1282,6 +1282,7 @@ contains = ["esc to interrupt"]
                 Arc::new(ManifestRegistry::from_sources(&[CODEX])),
                 Box::new(|| None),
                 Box::new(move |observed| do_sink.lock().push(observed)),
+                crate::status::observed_notify::ObservedNotifier::silent(),
             )
         }));
         (pool, visto)

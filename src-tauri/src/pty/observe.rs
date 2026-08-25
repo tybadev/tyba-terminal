@@ -124,6 +124,7 @@ contains = ["esc to interrupt"]
                     None => "limpo".into(),
                 })
             }),
+            crate::status::observed_notify::ObservedNotifier::silent(),
         )
         .expect("shell recebe observador");
         (ScreenPipe::new(observer), visto)

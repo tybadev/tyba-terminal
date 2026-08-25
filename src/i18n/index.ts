@@ -553,6 +553,9 @@ const resources = {
         "Aprovação pendente ou pergunta aberta. Só sai com a janela fora de foco.",
       notifyDone: "Avisar quando um agente terminar",
       notifyDoneHint: "Fim de turno. Só sai com a janela fora de foco.",
+      notifyObservedRequest: "Avisar por palpite da tela",
+      notifyObservedRequestHint:
+        "Agente sem integração, deduzido do que está na tela. Pode errar — e é por isso que liga e desliga separado do aviso acima.",
       notifySilent: "Silêncio",
       agentsBoard: "Agentes",
       agentsBoardEmpty: "Nenhuma sessão de agente aberta.",
@@ -1598,6 +1601,9 @@ const resources = {
         "Pending approval or open question. Only fires while the window is unfocused.",
       notifyDone: "Notify when an agent finishes",
       notifyDoneHint: "End of turn. Only fires while the window is unfocused.",
+      notifyObservedRequest: "Notify on a screen guess",
+      notifyObservedRequestHint:
+        "Agent with no integration, inferred from what is on screen. It can be wrong — which is why it toggles apart from the notice above.",
       notifySilent: "Silent",
       agentsBoard: "Agents",
       agentsBoardEmpty: "No agent session open.",

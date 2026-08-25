@@ -277,6 +277,7 @@ fn install_screen_observers(
     app: &AppHandle,
     pty_pool: &SharedPtyPool,
     sessions: &SharedSessionManager,
+    store: &Arc<session::store::Store>,
     prober: &agent::process_probe::SharedAgentProber,
     manifests_dir: &std::path::Path,
 ) {
@@ -285,12 +286,17 @@ fn install_screen_observers(
     let registry = Arc::new(status::registry::ManifestRegistry::load(manifests_dir));
     let app = app.clone();
     let sessions = Arc::clone(sessions);
+    let store = Arc::clone(store);
     let prober = Arc::clone(prober);
+    let scheduler = status::observed_notify::sleeping_scheduler();
 
     pty_pool.set_screen_observers(Arc::new(move |id, kind| {
         let probe_prober = Arc::clone(&prober);
         let sink_app = app.clone();
         let sink_sessions = Arc::clone(&sessions);
+        let notify_app = app.clone();
+        let notify_sessions = Arc::clone(&sessions);
+        let notify_store = Arc::clone(&store);
         status::observer::ScreenObserver::for_session(
             kind,
             Arc::clone(&registry),
@@ -304,6 +310,23 @@ fn install_screen_observers(
                     .map(str::to_string)
             }),
             Box::new(move |observed| sink_sessions.set_observed(&sink_app, id, observed)),
+            // A saída barulhenta do palpite. Passa pelo mesmo `notify_native`
+            // do agente com hook — mesma checagem de foco, mesma redação —, e
+            // por uma espécie própria de preferência: quem cansar dos palpites
+            // errados desliga só eles.
+            status::observed_notify::ObservedNotifier::new(
+                Arc::new(move |agent: &str| {
+                    agent::session::notify_native(
+                        &notify_app,
+                        &notify_sessions,
+                        &notify_store,
+                        agent::notify::NotifyKind::ObservedRequest,
+                        id,
+                        &status::observed_notify::body(agent),
+                    );
+                }),
+                Arc::clone(&scheduler),
+            ),
         )
     }));
 }
@@ -5679,6 +5702,7 @@ pub fn run() {
                 app.handle(),
                 &pty_pool,
                 &sessions,
+                &store,
                 &agent_prober,
                 &config_dir.join("manifests"),
             );

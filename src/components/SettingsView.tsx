@@ -291,6 +291,17 @@ const NOTIFY_KINDS = [
     soundKey: "pref.notify.done.sound",
     defaultSound: "Glass",
   },
+  // Linha própria porque o interruptor é próprio: o de cima é o agente falando
+  // por um hook, este é o TYBA lendo a tela de um programa que não sabe que
+  // está sendo lido. Juntá-los faria desligar o palpite desligar o fato.
+  {
+    id: "observedRequest",
+    label: "notifyObservedRequest",
+    hint: "notifyObservedRequestHint",
+    enabledKey: "pref.notify.observed_request.enabled",
+    soundKey: "pref.notify.observed_request.sound",
+    defaultSound: "Ping",
+  },
 ] as const;
 
 /**

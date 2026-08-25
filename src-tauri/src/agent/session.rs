@@ -126,7 +126,13 @@ fn main_window_focused(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-fn notify_native(
+/// O aviso do sistema, com a política já resolvida.
+///
+/// `pub(crate)` porque o palpite de tela também sai por aqui: são fontes
+/// diferentes com a mesma saída, e duplicar isto significaria duplicar o
+/// silêncio-com-janela-em-foco, a redação e a leitura de preferência — três
+/// lugares para uma delas envelhecer sozinha.
+pub(crate) fn notify_native(
     app: &AppHandle,
     sessions: &SharedSessionManager,
     store: &Store,
