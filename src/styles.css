@@ -181,9 +181,17 @@
      pode declarar (UI_KEYS do core), então só um token fora do schema
      garante que a moldura do app não muda de peso com o import. */
   --tyba-divider-line: rgba(255, 255, 255, 0.07);
-  --tyba-divider-b: 0 1px 0 0 var(--tyba-divider-line);
-  --tyba-divider-t: 0 -1px 0 0 var(--tyba-divider-line);
-  --tyba-divider-r: 1px 0 0 0 var(--tyba-divider-line);
+  /* `inset`: a divisa mora DENTRO de quem a declara.
+     Desenhada para fora, ela invade o vizinho e some quando o vizinho
+     tem pilha própria — foi o que aconteceu com a borda direita da
+     sidebar, invisível porque o painel de terminal pintava por cima.
+     Por dentro, ninguém pode cobri-la.
+     E ela ganha UMA cor: compondo sobre o próprio fundo, a linha do
+     rodapé rende o mesmo pixel na largura inteira, em vez de um valor
+     sobre a sidebar e outro sobre o terminal. */
+  --tyba-divider-b: inset 0 -1px 0 0 var(--tyba-divider-line);
+  --tyba-divider-t: inset 0 1px 0 0 var(--tyba-divider-line);
+  --tyba-divider-r: inset -1px 0 0 0 var(--tyba-divider-line);
   --tyba-focus-ring: 0 0 0 2px var(--tyba-bg), 0 0 0 4px var(--tyba-green);
 
   /* ---------- Movimento ---------- */
