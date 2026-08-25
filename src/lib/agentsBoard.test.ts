@@ -12,6 +12,7 @@ import type {
   Workspace,
 } from "./ipc";
 import {
+  NO_SIGNAL,
   boardOrder,
   buildRows,
   groupByWorkspace,
@@ -19,6 +20,7 @@ import {
   placesBySession,
   urgencyOf,
   wantsAttention,
+  agentForWorkspace,
 } from "./agentsBoard";
 
 const session = (
@@ -223,6 +225,88 @@ describe("linhas do quadro", () => {
       "alfa",
       "zebra",
     ]);
+  });
+});
+
+describe("agente do workspace, para a barra lateral", () => {
+  const mapa = (sessions: Session[]) =>
+    new Map(sessions.map((s) => [s.id, s]));
+
+  test("gerenciado ocioso vence observado bloqueado", () => {
+    // A regra que dá sentido à separação: um palpite de tela nunca representa o
+    // workspace no lugar de um agente que tem hook, gate e jaula — por mais
+    // urgente que o palpite pareça.
+    const gerenciado = session("gerenciado", done, { attention: true });
+    const observado = session("observado", running, {
+      kind: { type: "shell" } as SessionKind,
+      observed: { agent: "claude-code", state: "awaiting_input" },
+    });
+    const w = workspace("w1", "w", [
+      tab("t1", leaf("p1", "gerenciado")),
+      tab("t2", leaf("p2", "observado")),
+    ]);
+
+    expect(agentForWorkspace(w, mapa([gerenciado, observado]))?.session.id).toBe(
+      "gerenciado",
+    );
+  });
+
+  test("sem gerenciado, o observado representa o workspace", () => {
+    const observado = session("observado", running, {
+      kind: { type: "shell" } as SessionKind,
+      observed: { agent: "claude-code", state: "awaiting_input" },
+    });
+    const found = agentForWorkspace(
+      workspace("w1", "w", [tab("t1", leaf("p1", "observado"))]),
+      mapa([observado]),
+    );
+
+    expect(found?.session.id).toBe("observado");
+    expect(found?.observed?.agent).toBe("claude-code");
+  });
+
+  test("o visual do observado não vem do status da sessão", () => {
+    // Shell está SEMPRE `running`. Herdar o visual dele pintaria de azul,
+    // "trabalhando", um agente parado esperando aprovação.
+    const observado = session("observado", running, {
+      kind: { type: "shell" } as SessionKind,
+      observed: { agent: "claude-code", state: null },
+    });
+    const found = agentForWorkspace(
+      workspace("w1", "w", [tab("t1", leaf("p1", "observado"))]),
+      mapa([observado]),
+    );
+
+    expect(found?.visual.labelKey).toBe(NO_SIGNAL.labelKey);
+  });
+
+  test("shell sem agente nenhum não representa o workspace", () => {
+    const shell = session("s1", running, {
+      kind: { type: "shell" } as SessionKind,
+    });
+    expect(
+      agentForWorkspace(
+        workspace("w1", "w", [tab("t1", leaf("p1", "s1"))]),
+        mapa([shell]),
+      ),
+    ).toBeNull();
+  });
+
+  test("entre dois observados vence o mais urgente", () => {
+    const calmo = session("calmo", running, {
+      kind: { type: "shell" } as SessionKind,
+      observed: { agent: "opencode", state: null },
+    });
+    const preso = session("preso", running, {
+      kind: { type: "shell" } as SessionKind,
+      observed: { agent: "claude-code", state: "awaiting_input" },
+    });
+    const w = workspace("w1", "w", [
+      tab("t1", leaf("p1", "calmo")),
+      tab("t2", leaf("p2", "preso")),
+    ]);
+
+    expect(agentForWorkspace(w, mapa([calmo, preso]))?.session.id).toBe("preso");
   });
 });
 

@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import {
   CaretDown,
   CaretRight,
-  ChartBar,
   Check,
   DotsThree,
   FolderOpen,
@@ -255,12 +254,7 @@ import {
 import { bootFailureTitleKey } from "./lib/bootFailure";
 import { basename } from "@/lib/utils";
 import { buildConflictPrompt } from "./lib/conflicts";
-import {
-  isFinishedStatus,
-  sameSessionStatus,
-  statusVisual,
-  type StatusVisual,
-} from "./lib/sessionStatus";
+import { isFinishedStatus, sameSessionStatus } from "./lib/sessionStatus";
 import {
   AGENTS_PANEL_LINGER_MS,
   agentsPanelRunConcluded,
@@ -301,7 +295,7 @@ import {
   boardOrder,
   buildRows as buildAgentRows,
   nextAttention,
-  wantsAttention,
+  agentForWorkspace,
   type SessionPlace,
 } from "./lib/agentsBoard";
 import {
@@ -1557,13 +1551,6 @@ export default function App() {
   );
 
   // Conta as duas seções do quadro: o agente sem gate também pede alguém, e o
-  // badge é o canal mais barato — ver `wantsAttention` em `lib/agentsBoard.ts`.
-  const agentsWaiting = useMemo(
-    () =>
-      boardOrder(buildAgentRows(sessions, layout)).filter(wantsAttention)
-        .length,
-    [sessions, layout],
-  );
 
   const goToNextAttention = useCallback(() => {
     const next = nextAttention(
@@ -2079,22 +2066,11 @@ export default function App() {
     [sessionCommands],
   );
 
+  // A regra mora em `lib/agentsBoard`, testada: gerenciado nunca perde para
+  // observado, e o visual do observado não herda o `status` da sessão de shell
+  // — que está sempre `running` e pintaria de azul um agente parado.
   const workspaceAgentStatus = useCallback(
-    (w: Workspace): { session: Session; visual: StatusVisual } | null => {
-      let best: { session: Session; visual: StatusVisual } | null = null;
-      for (const tab of w.tabs) {
-        if (!tab.root) continue;
-        for (const sid of leafSessions(tab.root)) {
-          const session = sessionById.get(sid);
-          if (!session || session.kind.type !== "agent") continue;
-          const visual = statusVisual(session.status, session.attention);
-          if (visual && (!best || visual.rank > best.visual.rank)) {
-            best = { session, visual };
-          }
-        }
-      }
-      return best;
-    },
+    (w: Workspace) => agentForWorkspace(w, sessionById),
     [sessionById],
   );
 
@@ -3852,8 +3828,14 @@ export default function App() {
     const agentStatus = isConfig || isWtView ? null : workspaceAgentStatus(w);
     const agentDetail = (() => {
       if (!agentStatus) return null;
-      const status = agentStatus.session.status;
       const label = t(agentStatus.visual.labelKey);
+      // Observado não tem `hint` nem `reason`: o que a tela diz é o estado, e
+      // mais nada. O nome do agente é o que orienta — sem ele a linha diria
+      // "sem sinal" sem dizer de quem.
+      if (agentStatus.observed) {
+        return `${agentStatus.observed.agent} · ${label}`;
+      }
+      const status = agentStatus.session.status;
       if (status.state === "awaiting_input" && status.hint) {
         return `${label}: ${status.hint}`;
       }
@@ -4146,6 +4128,10 @@ export default function App() {
         onNewTab={() => void newTab()}
         onCloseActive={() => void closeActivePane()}
         onOpenSettings={() => void openViewTab("settings").catch(() => {})}
+        onOpenAgentsBoard={() =>
+          void openViewTab("agent-board").catch(() => {})
+        }
+        onOpenStats={() => void openViewTab("stats").catch(() => {})}
         onTogglePanel={toggleSidebar}
         onOpenFiles={() => {
           if (activeId) void openFilesPanel(activeId).catch(() => {});
@@ -4745,65 +4731,6 @@ export default function App() {
                       </TooltipTrigger>
                       <TooltipContent side={open ? "bottom" : "right"}>
                         {t("connectionsTitle")}
-                      </TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          onClick={() =>
-                            void openViewTab("stats").catch(() => {})
-                          }
-                          aria-label={t("statsTitle")}
-                          className={`mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal ${
-                            open ? "justify-start px-2" : "justify-center px-0"
-                          } ${
-                            activeTab?.view === "stats"
-                              ? "bg-tyba-text/[.05] text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text"
-                          }`}
-                        >
-                          <ChartBar size={14} />
-                          {open && t("statsTitle")}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side={open ? "bottom" : "right"}>
-                        {t("statsTitle")}
-                      </TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          onClick={() =>
-                            void openViewTab("agent-board").catch(() => {})
-                          }
-                          aria-label={t("agentsBoard")}
-                          className={`relative mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal ${
-                            open ? "justify-start px-2" : "justify-center px-0"
-                          } ${
-                            activeTab?.view === "agent-board"
-                              ? "bg-tyba-text/[.05] text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text"
-                          }`}
-                        >
-                          <AgentIcon size={14} />
-                          {open && t("agentsBoard")}
-                          {agentsWaiting > 0 && (
-                            <span
-                              className={
-                                open
-                                  ? "ml-auto text-[11px] text-tyba-amber"
-                                  : "absolute right-1 top-1 size-1.5 rounded-full bg-tyba-amber"
-                              }
-                            >
-                              {open ? agentsWaiting : null}
-                            </span>
-                          )}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side={open ? "bottom" : "right"}>
-                        {t("agentsBoard")}
                       </TooltipContent>
                     </Tooltip>
                   </nav>

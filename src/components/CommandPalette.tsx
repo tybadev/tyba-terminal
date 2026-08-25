@@ -3,12 +3,14 @@ import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   BracketsCurly,
+  ChartBar,
   ClockCounterClockwise,
   Desktop,
   DownloadSimple,
   FileMagnifyingGlass,
   FolderOpen,
   GearSix,
+  GitBranch,
   Globe,
   MagnifyingGlass,
   Moon,
@@ -20,8 +22,9 @@ import {
   TerminalWindow,
   TextAa,
   X,
-  GitBranch,
 } from "@phosphor-icons/react";
+
+import { AgentIcon } from "./icons/AgentIcon";
 
 import {
   CommandDialog,
@@ -130,6 +133,9 @@ interface Props {
   onNewTab: () => void;
   onCloseActive: () => void;
   onOpenSettings: () => void;
+  /** Telas de baixa frequência: saíram do sidebar e vivem aqui. */
+  onOpenAgentsBoard: () => void;
+  onOpenStats: () => void;
   onTogglePanel: () => void;
   onOpenFiles: () => void;
   onGoToWorkspace: (id: WorkspaceId) => void;
@@ -259,6 +265,8 @@ export function CommandPalette({
   onNewTab,
   onCloseActive,
   onOpenSettings,
+  onOpenAgentsBoard,
+  onOpenStats,
   onTogglePanel,
   onOpenFiles,
   onGoToWorkspace,
@@ -577,6 +585,14 @@ export function CommandPalette({
               <Shortcut combo={bindings.files} className="ml-auto" />
             </CommandItem>
           )}
+          <CommandItem onSelect={run(onOpenAgentsBoard)}>
+            <AgentIcon size={15} />
+            {t("agentsBoard")}
+          </CommandItem>
+          <CommandItem onSelect={run(onOpenStats)}>
+            <ChartBar size={15} />
+            {t("statsTitle")}
+          </CommandItem>
           <CommandItem onSelect={run(onOpenSettings)}>
             <GearSix size={15} />
             {t("settings")}
