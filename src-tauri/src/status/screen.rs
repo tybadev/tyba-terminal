@@ -272,8 +272,23 @@ mod tests {
     /// quatro linhas no topo de 80: 19,5 us antes, 21,1 us depois, porque a
     /// varredura sobe até achar texto e o vt100 não tem como dizer "linha
     /// vazia" sem percorrer as colunas. Não é regressão de valor: é o caso em
-    /// que não havia o que ganhar, e ele continua duas ordens de grandeza
-    /// abaixo do orçamento.
+    /// que não havia o que ganhar.
+    ///
+    /// # Por que a medida é relativa, e não um teto em microssegundos
+    ///
+    /// Era `por_recorte < 500 us`, e reprovou na CI do Ubuntu num PR que não
+    /// encostava neste arquivo. O teto parecia folgado por causa da linha
+    /// acima: aqueles 20 us são da tela quase vazia, não desta, que custa
+    /// **78–98 us** nesta máquina. A folga real era de 5–6x, não das duas
+    /// ordens de grandeza que o comentário sugeria — e 6x não sobrevive a um
+    /// runner compartilhado.
+    ///
+    /// Teto absoluto mede a máquina junto com o código. A regressão que
+    /// importa — voltar a renderizar a tela inteira — é uma RAZÃO: o recorte
+    /// custa 6,5–7,7x menos que `contents()`, e se ele regredir a razão cai
+    /// para ~1. Medir as duas na mesma rodada cancela a lentidão do runner,
+    /// porque ela afeta as duas igualmente. O piso de 3x fica longe dos 6,5
+    /// observados e longe do 1x da regressão.
     #[test]
     fn recortar_a_tela_cheia_cabe_no_orcamento() {
         let mut parser = vt100::Parser::new(80, 400, 0);
@@ -283,18 +298,39 @@ mod tests {
         parser.process(texto.as_bytes());
 
         const RODADAS: u32 = 200;
-        let inicio = std::time::Instant::now();
-        for _ in 0..RODADAS {
+        const TENTATIVAS: usize = 3;
+
+        // O melhor de N, e não a média: o que se quer saber é quão rápido este
+        // código CONSEGUE ser. Média mistura o custo do código com o do
+        // escalonador, e num runner compartilhado o segundo domina.
+        let melhor = |f: &dyn Fn()| {
+            (0..TENTATIVAS)
+                .map(|_| {
+                    let inicio = std::time::Instant::now();
+                    for _ in 0..RODADAS {
+                        f();
+                    }
+                    inicio.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+
+        let recorte = melhor(&|| {
             std::hint::black_box(snapshot(
                 std::hint::black_box(parser.screen()),
                 MAX_REGION_LINES,
             ));
-        }
-        let por_recorte = inicio.elapsed() / RODADAS;
+        });
+        let render = melhor(&|| {
+            std::hint::black_box(std::hint::black_box(parser.screen()).contents());
+        });
 
+        let razao = render.as_nanos() as f64 / recorte.as_nanos().max(1) as f64;
         assert!(
-            por_recorte < std::time::Duration::from_micros(500),
-            "recorte levou {por_recorte:?} — a leitura por linha voltou a renderizar a tela inteira"
+            razao >= 3.0,
+            "recorte {recorte:?} vs render {render:?} = {razao:.1}x — \
+             a leitura por linha voltou a renderizar a tela inteira"
         );
     }
 }
