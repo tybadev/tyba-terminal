@@ -242,6 +242,7 @@ import {
   onSessionPromptMode,
   sessionBlocks,
   sessionLineEcho,
+  sessionHookExpected,
   sessionPromptMode,
   togglePromptMode,
   renderSnippet,
@@ -751,6 +752,16 @@ export default function App() {
   const promptModesRef = useRef<Record<string, boolean>>({});
   promptModesRef.current = promptModes;
   const [promptModePref, setPromptModePref] = useState(false);
+  /**
+   * Sessões que subiram com o hook do TYBA injetado.
+   *
+   * Separado de `promptModes` porque as duas perguntas são diferentes:
+   * `promptModes` é o que o shell RELATOU, e ausente ali significa "ainda não
+   * relatou". Aqui é se ele algum dia vai relatar — a integração só existe
+   * para `bash` e `zsh`. Sem essa distinção, um `fish` fica para sempre com a
+   * linha do TYBA na tela dizendo "Carregando o shell…".
+   */
+  const [hookExpected, setHookExpected] = useState<Record<string, boolean>>({});
   const [blocks, setBlocks] = useState<Record<string, Block[]>>({});
   // Lido por handler de clique e de tecla; num deles é `window`, e reassinar o
   // listener a cada bloco que chega seria trabalho por nada.
@@ -3161,10 +3172,15 @@ export default function App() {
   // ficar em branco sem lugar nenhum para digitar.
   // A linha aparece sempre que a sessão é um shell em modo prompt — inclusive
   // com comando rodando ou app de tela cheia aberto. Ela só muda de estado.
+  // A preferência só vale onde o hook pode chegar. Ligada, ela adianta a linha
+  // para antes do primeiro `633;P` — que é o ponto dela, evitar a barra
+  // aparecendo do nada depois do `rc` carregar. Mas num shell sem integração
+  // não há primeiro `633;P` nenhum, e adiantar viraria promessa permanente:
+  // uma linha desabilitada dizendo "Carregando o shell…" para sempre.
   const lineVisible =
     activeId != null &&
     activeSession?.kind.type === "shell" &&
-    (promptMode || promptModePref);
+    (promptMode || (promptModePref && hookExpected[activeId] === true));
 
   const commandLineState = lineState({
     reported: activeId ? promptModes[activeId] : undefined,
@@ -3220,6 +3236,17 @@ export default function App() {
         .then((on) => {
           if (!disposed && on) {
             setPromptModes((prev) => (prev[id] ? prev : { ...prev, [id]: on }));
+          }
+        })
+        .catch(() => {});
+      // Ao contrário do modo prompt, esta resposta é definitiva no instante do
+      // spawn: não muda depois, então basta perguntar uma vez.
+      void sessionHookExpected(id)
+        .then((expected) => {
+          if (!disposed) {
+            setHookExpected((prev) =>
+              prev[id] === expected ? prev : { ...prev, [id]: expected },
+            );
           }
         })
         .catch(() => {});

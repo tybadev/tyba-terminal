@@ -114,6 +114,15 @@ struct ScreenState {
     /// Última resposta do shell sobre o modo prompt (`633;P`). Guardada para
     /// poder ser CONSULTADA: evento só é entregue a quem já estava ouvindo.
     prompt_mode: bool,
+    /// O hook chegou a ser injetado nesta sessão?
+    ///
+    /// Existe porque `prompt_mode: false` é ambíguo e responde a duas
+    /// perguntas diferentes: "o shell ainda não reportou" e "o shell nunca vai
+    /// reportar". A integração só existe para `bash` e `zsh`; num `fish` ou
+    /// PowerShell nenhum `633;P` chega jamais, e sem este campo a interface não
+    /// tem como saber a diferença — ela mostraria para sempre uma linha
+    /// dizendo que o shell está carregando.
+    hook_expected: bool,
     /// Aberto pelo mesmo `633;P` que atualiza o campo acima — ver
     /// [`LineEditorGate`].
     line_editor: Arc<LineEditorGate>,
@@ -126,6 +135,7 @@ impl ScreenState {
             pending: Vec::with_capacity(READ_BUF_SIZE),
             attachers: HashMap::new(),
             prompt_mode: false,
+            hook_expected: false,
             line_editor: Arc::new(LineEditorGate::default()),
         }
     }
@@ -880,6 +890,25 @@ impl PtyPool {
         let handle = ptys.get(&id)?;
         let gate = Arc::clone(&handle.screen.lock().line_editor);
         Some(gate)
+    }
+
+    /// Esta sessão subiu com o hook injetado?
+    ///
+    /// `false` aqui significa que `prompt_mode` nunca vai virar `true` — não
+    /// que ele ainda não virou. Ver [`ScreenState::hook_expected`].
+    pub fn hook_expected(&self, id: PtyId) -> Option<bool> {
+        let ptys = self.ptys.lock();
+        let expected = ptys.get(&id)?.screen.lock().hook_expected;
+        Some(expected)
+    }
+
+    /// Marcado pelo `SessionManager` logo depois do spawn: só ele sabe qual
+    /// shell subiu e se o arquivo de integração existia.
+    pub fn set_hook_expected(&self, id: PtyId, expected: bool) {
+        let ptys = self.ptys.lock();
+        if let Some(handle) = ptys.get(&id) {
+            handle.screen.lock().hook_expected = expected;
+        }
     }
 
     /// O modo prompt reportado pelo shell, para quem chegou depois do evento.
@@ -1714,6 +1743,32 @@ mod tests {
         pool.ptys.lock().insert(uuid::Uuid::new_v4(), handle);
 
         (leader_pid, child_pid)
+    }
+
+    #[test]
+    fn hook_expected_distingue_sem_pty_de_sem_hook() {
+        // `false` sozinho é ambíguo, e é por isso que este campo existe: sem
+        // ele a interface não separa um `zsh` que ainda está carregando o `rc`
+        // de um `fish` que jamais vai reportar `633;P`.
+        let pool = super::PtyPool::new();
+        let (_leader, _child) = pooled_session(&pool);
+        let id = *pool.ptys.lock().keys().next().expect("sessão no pool");
+
+        // Nasce falso: quem sabe qual shell subiu é o SessionManager.
+        assert_eq!(pool.hook_expected(id), Some(false));
+
+        pool.set_hook_expected(id, true);
+        assert_eq!(pool.hook_expected(id), Some(true));
+
+        pool.set_hook_expected(id, false);
+        assert_eq!(pool.hook_expected(id), Some(false));
+
+        // Sessão que não existe é `None`, e não `Some(false)`: o comando de IPC
+        // achata os dois em `false`, mas aqui a diferença tem de sobreviver.
+        let ausente = super::PtyId::new_v4();
+        assert_eq!(pool.hook_expected(ausente), None);
+
+        pool.kill_all();
     }
 
     #[test]

@@ -4786,6 +4786,20 @@ fn session_prompt_mode(state: State<'_, AppState>, id: SessionId) -> bool {
     state.pty_pool.prompt_mode(id).unwrap_or(false)
 }
 
+/// Esta sessão subiu com o hook do TYBA injetado?
+///
+/// Separado de [`session_prompt_mode`] porque `false` lá é ambíguo — responde
+/// tanto "ainda não reportou" quanto "nunca vai reportar". A integração só
+/// existe para `bash` e `zsh`; sem esta pergunta a interface não distingue um
+/// `zsh` que ainda está carregando o `rc` de um `fish` que jamais vai reportar,
+/// e acaba prometendo uma linha de comando que nunca chega.
+///
+/// `false` também para sessão inexistente ou já morta: sem PTY não há hook.
+#[tauri::command]
+fn session_hook_expected(state: State<'_, AppState>, id: SessionId) -> bool {
+    state.pty_pool.hook_expected(id).unwrap_or(false)
+}
+
 /// O tty está entregando linhas (eco ligado) ou teclas (raw)?
 ///
 /// Decide para onde vai a seta enquanto um comando roda: em modo linha ela é
@@ -5973,6 +5987,7 @@ pub fn run() {
             write_control,
             toggle_prompt_mode,
             session_prompt_mode,
+            session_hook_expected,
             session_line_echo,
             session_blocks,
             search_command_history,
