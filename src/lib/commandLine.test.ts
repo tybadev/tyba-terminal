@@ -12,6 +12,7 @@ import {
   lineToken,
   pathToken,
   programName,
+  promptModeEnabled,
   replaceToken,
   swallowsArrow,
   type LineState,
@@ -481,5 +482,26 @@ describe("boxIsMounted", () => {
     // junto com ele.
     expect(boxIsMounted("app")).toBe(false);
     expect(boxIsMounted("own")).toBe(true);
+  });
+});
+
+describe("promptModeEnabled", () => {
+  it("vem ligada em instalação nova", () => {
+    // Sem preferência gravada ninguém escolheu nada, e a escolha por omissão
+    // tem de ser a que serve a quem acabou de instalar.
+    expect(promptModeEnabled(null)).toBe(true);
+    expect(promptModeEnabled(undefined)).toBe(true);
+  });
+
+  it("respeita quem já escolheu", () => {
+    expect(promptModeEnabled("on")).toBe(true);
+    expect(promptModeEnabled("off")).toBe(false);
+  });
+
+  it("valor estranho não desliga", () => {
+    // `off` é a única resposta que desliga: preferência corrompida ou de uma
+    // versão futura não pode devolver o usuário ao terminal cru em silêncio.
+    expect(promptModeEnabled("")).toBe(true);
+    expect(promptModeEnabled("talvez")).toBe(true);
   });
 });
