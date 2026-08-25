@@ -200,7 +200,7 @@ export function Toolbar({
   if (!showRichInput && left.length === 0 && right.length === 0) return null;
 
   return (
-    <div className="tyba-divide-t flex h-6 min-w-0 shrink-0 items-center justify-between gap-3 px-3 text-[11px] text-tyba-text-muted">
+    <div className="tyba-lift-t flex h-6 min-w-0 shrink-0 items-center justify-between gap-3 px-3 text-[11px] text-tyba-text-muted">
       <div className="flex min-w-0 items-center gap-3 overflow-hidden">
         {showRichInput && (
           <button

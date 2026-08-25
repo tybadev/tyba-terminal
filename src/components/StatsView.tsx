@@ -262,7 +262,7 @@ export function StatsView() {
                   </div>
                 ) : (
                   <div className="overflow-hidden rounded-[8px] border border-tyba-border">
-                    <div className="grid grid-cols-[1fr_auto_88px_110px] items-center gap-3 border-b border-tyba-border px-4 py-2">
+                    <div className="grid grid-cols-[1fr_auto_88px_110px] items-center gap-3 tyba-divide-b px-4 py-2">
                       <HeadCell>{t("statsColCommand")}</HeadCell>
                       <HeadCell numeric>{t("statsColRequests")}</HeadCell>
                       <HeadCell numeric>{t("statsColRisk")}</HeadCell>
@@ -308,7 +308,7 @@ export function StatsView() {
                   </div>
                 ) : (
                   <div className="overflow-hidden rounded-[8px] border border-tyba-border">
-                    <div className="grid grid-cols-[1fr_96px_96px_96px] items-center gap-3 border-b border-tyba-border px-4 py-2">
+                    <div className="grid grid-cols-[1fr_96px_96px_96px] items-center gap-3 tyba-divide-b px-4 py-2">
                       <HeadCell>{t("statsColSession")}</HeadCell>
                       <HeadCell numeric>{t("statsColCommandsRun")}</HeadCell>
                       <HeadCell numeric>{t("statsColApprovals")}</HeadCell>

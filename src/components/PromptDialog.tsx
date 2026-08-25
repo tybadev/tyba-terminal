@@ -52,7 +52,7 @@ export function PromptDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{title}</DialogDescription>
         </DialogHeader>
-        <div className="flex h-10 items-center gap-2.5 border-b border-tyba-border px-3">
+        <div className="flex h-10 items-center gap-2.5 tyba-divide-b px-3">
           <span
             aria-hidden
             className="shrink-0 font-mono text-[13px] font-bold text-tyba-green"

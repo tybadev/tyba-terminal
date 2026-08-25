@@ -4257,7 +4257,7 @@ export default function App() {
         <WindowResizeEdges />
         <header
           data-tauri-drag-region
-          className={`tyba-glass tyba-divide-b flex h-9 shrink-0 items-center gap-1 pr-2.5 ${
+          className={`tyba-glass tyba-lift-b flex h-9 shrink-0 items-center gap-1 pr-2.5 ${
             IS_MAC ? "pl-20" : "pl-2.5"
           }`}
         >
@@ -4539,7 +4539,13 @@ export default function App() {
           <>
             {sidebar !== "hidden" && (
                 <aside
-                  className="tyba-glass flex shrink-0 flex-col"
+                  // `tyba-divide-r`: a sidebar nunca teve borda direita. Ela se
+                  // separava do terminal por um degrau de fundo — que existe no
+                  // `github-dark` e some no `tyba-dark`, onde `surface` e
+                  // `sunken` distam 5/255. E acima do terminal ela encosta na
+                  // faixa de abas, que é `surface` também: mesma cor, zero
+                  // separação, em TODO tema.
+                  className="tyba-lift-r tyba-glass flex shrink-0 flex-col"
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {open && (
@@ -4745,7 +4751,15 @@ export default function App() {
                       </TooltipContent>
                     </Tooltip>
                   </nav>
-                  <div className="flex shrink-0 flex-col border-t border-tyba-border px-2 pt-1 pb-2">
+                  {/* A divisa fica, e não é a mesma coisa que a do rodapé da
+                      janela: esta é fronteira de ROLAGEM. O `nav` acima rola,
+                      e sem ela o conteúdo passa por baixo destes botões sem
+                      nada dizendo onde a lista acaba.
+                      Tirá-la por um tempo foi erro meu: apoiava-se em o rodapé
+                      da janela existir sempre, e ele é condicional — some com a
+                      barra de chips desligada, com todos os chips ocultos, ou
+                      sem aba ativa. */}
+                  <div className="tyba-divide-t flex shrink-0 flex-col px-2 pt-1 pb-2">
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
@@ -4794,15 +4808,15 @@ export default function App() {
 
               <main ref={mainAreaRef} className="flex min-h-0 min-w-0 flex-1">
                 <div
-                  // `px-2`: a área de painéis não encosta na árvore nem na
-                  // borda da janela. O respiro é DAQUI, e não de dentro dos
-                  // painéis, por dois motivos: os painéis são posicionados em %
-                  // de `paneAreaRef`, que é filho deste div e por isso já nasce
-                  // deslocado; e a linha de comando é irmã do `paneAreaRef`,
-                  // então ela anda junto e continua na mesma coluna dos cartões.
-                  // Padding no próprio `paneAreaRef` não serviria: filho
-                  // `absolute` se posiciona pelo padding box, ou seja, ignora.
-                  className={`min-h-0 min-w-0 flex-col px-2 ${
+                  // Sem `px-2`, de propósito. O respiro morava AQUI, e o que
+                  // ele abria era uma faixa de 8px do fundo do app entre a
+                  // sidebar e o terminal — medido no `github-dark`: `#161b22`
+                  // até x=223, `#0d1117` de 224 a 231, `#010409` daí em diante.
+                  // Três superfícies em oito pixels, sem uma linha sequer. Um
+                  // vazamento, não uma margem.
+                  // O respiro dos cartões continua existindo: ele é do
+                  // `BlockList`, que tem o seu próprio `px-2` por dentro.
+                  className={`min-h-0 min-w-0 flex-col ${
                     sideVisible
                       ? sideExpanded
                         ? "hidden"
@@ -5332,34 +5346,6 @@ export default function App() {
                     onClose={() => closeRichInput(activeSession.id)}
                   />
                 )}
-                {activeTab && activeWorkspace && (
-                  <Toolbar
-                    pref={toolbarPref}
-                    cwd={workspaceCwd(activeWorkspace)}
-                    branch={toolbarBranch}
-                    snapshot={(() => {
-                      const dir = workspaceGitDir(activeWorkspace);
-                      return dir
-                        ? snapshotForDir(repoSnapshots, dir)
-                        : undefined;
-                    })()}
-                    hasWorktree={Boolean(
-                      activeSession?.worktree ??
-                        worktreeSessionOf(activeWorkspace)?.worktree,
-                    )}
-                    onOpenDiff={() => {
-                      const target = activeSession?.worktree
-                        ? activeSession
-                        : (worktreeSessionOf(activeWorkspace) ?? activeSession);
-                      if (target) void openDiffTab(target.id).catch(() => {});
-                    }}
-                    showRichInput={richInputEligible && !richInputVisible}
-                    richInputCombo={bindings.richInput}
-                    onOpenRichInput={() => {
-                      if (activeId) openRichInput(activeId);
-                    }}
-                  />
-                )}
                 </div>
                 {sideVisible && activeWorkspace && (
                   <>
@@ -5561,6 +5547,41 @@ export default function App() {
               />
           </>
         </div>
+        {/* Rodapé da JANELA, não da coluna do terminal. Enquanto ele morava
+            dentro da coluna, a linha dele parava no meio da tela — aqui é uma
+            só, de moldura a moldura.
+            `!sideExpanded` não é detalhe: com o painel em tela cheia a coluna
+            do terminal ganha `hidden`, e antes o rodapé sumia junto por ser
+            filho dela. Solto aqui ele sobreviveria — empilhando uma segunda
+            barra debaixo do rodapé do próprio painel, e pior, o botão de
+            entrada rica continuaria montando o `RichInput` DENTRO da coluna
+            escondida: nada aparece e o foco entra num `display: none`. */}
+        {activeTab && activeWorkspace && !(sideVisible && sideExpanded) && (
+          <Toolbar
+            pref={toolbarPref}
+            cwd={workspaceCwd(activeWorkspace)}
+            branch={toolbarBranch}
+            snapshot={(() => {
+              const dir = workspaceGitDir(activeWorkspace);
+              return dir ? snapshotForDir(repoSnapshots, dir) : undefined;
+            })()}
+            hasWorktree={Boolean(
+              activeSession?.worktree ??
+                worktreeSessionOf(activeWorkspace)?.worktree,
+            )}
+            onOpenDiff={() => {
+              const target = activeSession?.worktree
+                ? activeSession
+                : (worktreeSessionOf(activeWorkspace) ?? activeSession);
+              if (target) void openDiffTab(target.id).catch(() => {});
+            }}
+            showRichInput={richInputEligible && !richInputVisible}
+            richInputCombo={bindings.richInput}
+            onOpenRichInput={() => {
+              if (activeId) openRichInput(activeId);
+            }}
+          />
+        )}
       </div>
     </TooltipProvider>
   );

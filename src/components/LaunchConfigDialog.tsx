@@ -232,7 +232,7 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
 
         <div className="grid grid-cols-[1fr_280px] gap-4">
           <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-1 border-b border-tyba-border pb-1.5">
+            <div className="flex items-center gap-1 tyba-divide-b pb-1.5">
               {tabs.map((item, index) => (
                 <div
                   key={item.id}
@@ -315,7 +315,7 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
             </div>
           </div>
 
-          <div className="flex flex-col gap-3 border-l border-tyba-border pl-4">
+          <div className="flex flex-col gap-3 tyba-divide-l pl-4">
             {slot ? (
               <>
                 <div className="flex flex-col gap-1.5">

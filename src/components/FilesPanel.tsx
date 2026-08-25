@@ -1141,7 +1141,7 @@ export function FilesPanel({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-tyba-bg">
-      <header className="flex h-8 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
+      <header className="flex h-8 shrink-0 items-center gap-2 tyba-divide-b px-3">
         <TreeView size={14} className="shrink-0 text-tyba-text-faint" />
         <span className="min-w-0 truncate text-[12px] text-tyba-text">
           {t("filesTitle")}
@@ -1232,8 +1232,8 @@ export function FilesPanel({
           árvore → conteúdo, que é a ordem lógica de navegar arquivo, não a
           ordem em que eles aparecem na tela. */}
       <div className="flex min-h-0 flex-1 flex-row-reverse">
-        <div className="flex w-[240px] shrink-0 flex-col border-l border-tyba-border">
-          <div className="flex h-7 shrink-0 items-center gap-1 border-b border-tyba-border px-2">
+        <div className="flex w-[240px] shrink-0 flex-col tyba-divide-l">
+          <div className="flex h-6 shrink-0 items-center gap-1 tyba-divide-b px-2">
             <span
               className="min-w-0 flex-1 truncate text-[10px] uppercase tracking-wide text-tyba-text-faint"
               title={info?.root}
@@ -1419,7 +1419,7 @@ export function FilesPanel({
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {selected ? (
             <>
-              <div className="flex h-7 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
+              <div className="flex h-6 shrink-0 items-center gap-2 tyba-divide-b px-3">
                 <span className="min-w-0 truncate font-mono text-[11px] text-tyba-text-muted">
                   {selected}
                 </span>
@@ -1892,7 +1892,7 @@ export function FilesPanel({
                       </div>
                     )}
                     {content && content.kind === "text" && content.truncated && (
-                      <div className="flex items-center gap-2 border-t border-tyba-border px-4 py-2 text-[11px] text-tyba-text-faint">
+                      <div className="flex items-center gap-2 tyba-divide-t px-4 py-2 text-[11px] text-tyba-text-faint">
                         <span>{t("filesTruncatedNote")}</span>
                         <button
                           onClick={() => void loadAll()}
@@ -1907,7 +1907,7 @@ export function FilesPanel({
 
                 {conflictDiff && (
                   <div className="absolute inset-0 flex flex-col bg-tyba-bg">
-                    <div className="flex h-7 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
+                    <div className="flex h-6 shrink-0 items-center gap-2 tyba-divide-b px-3">
                       <span className="min-w-0 flex-1 truncate text-[11px] text-tyba-text-muted">
                         {t("filesConflictDiffTitle")}
                       </span>
@@ -1944,7 +1944,7 @@ export function FilesPanel({
                         ),
                       )}
                     </div>
-                    <div className="flex shrink-0 items-center gap-3 border-t border-tyba-border px-3 py-1.5 text-[10px] text-tyba-text-faint">
+                    <div className="flex shrink-0 items-center gap-3 tyba-divide-t px-3 py-1.5 text-[10px] text-tyba-text-faint">
                       <span className="text-tyba-red">− {t("filesConflictDisk")}</span>
                       <span className="text-tyba-green">
                         + {t("filesConflictEdited")}

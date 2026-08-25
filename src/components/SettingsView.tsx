@@ -355,7 +355,10 @@ function SettingRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3">
+    // Sem `px`: a caixa que justificava o recuo de 16px saiu, e o que
+    // ancora a linha agora é o `.tyba-label` do grupo, que mora na margem.
+    // Recuo sem moldura que o explique lê como desalinho.
+    <div className="flex items-center justify-between gap-4 py-2.5">
       <div className="min-w-0">
         <p className="text-[13px] text-tyba-text">{label}</p>
         {hint && (
@@ -453,7 +456,7 @@ function AboutSection({
       </div>
 
       <span className="tyba-label">{t("version")}</span>
-      <div className="mt-2 mb-6 flex items-center gap-3 rounded-[6px] border border-tyba-border px-4 py-3">
+      <div className="mt-2 mb-6 flex items-center gap-3 py-3">
         <div className="min-w-0 flex-1">
           <p className="font-mono text-[13px] text-tyba-text">
             {version || "—"}
@@ -480,7 +483,7 @@ function AboutSection({
       </div>
 
       <span className="tyba-label">{t("aboutBuild")}</span>
-      <div className="mt-2 divide-y divide-tyba-border overflow-hidden rounded-[6px] border border-tyba-border">
+      <div className="mt-2 divide-y divide-tyba-border">
         {info?.commit ? (
           <ExternalRow
             label={t("aboutCommit")}
@@ -529,7 +532,7 @@ function AboutSection({
       </div>
 
       <span className="tyba-label">{t("aboutLinks")}</span>
-      <div className="mt-2 divide-y divide-tyba-border overflow-hidden rounded-[6px] border border-tyba-border">
+      <div className="mt-2 divide-y divide-tyba-border">
         <ExternalRow
           label={t("aboutRepo")}
           value="github.com/tybadev/tyba-terminal"
@@ -821,7 +824,7 @@ export function SettingsView({
               hint={t("generalHint")}
             />
             <span className="tyba-label">{t("account")}</span>
-            <div className="mt-2 mb-6 flex items-center gap-3 rounded-[6px] border border-tyba-border px-4 py-3">
+            <div className="mt-2 mb-6 flex items-center gap-3 py-3">
               <span
                 className="rounded-full p-px"
                 style={{ background: "var(--tyba-gradient)" }}
@@ -933,7 +936,7 @@ export function SettingsView({
           <section className="mx-auto w-full max-w-lg">
             <SectionHeader title={t("settingsCode")} hint={t("codeHint")} />
             <span className="tyba-label">{t("integrations")}</span>
-            <div className="mt-2 flex items-start gap-3 rounded-[6px] border border-tyba-border p-4">
+            <div className="mt-2 flex items-start gap-3 py-3">
               <span className="mt-0.5 shrink-0 text-tyba-text-muted">
                 <DockerIcon size={18} />
               </span>
@@ -953,7 +956,7 @@ export function SettingsView({
               />
             </div>
 
-            <div className="mt-2 flex items-start gap-3 rounded-[6px] border border-tyba-border p-4">
+            <div className="mt-2 flex items-start gap-3 py-3">
               <span className="mt-0.5 shrink-0 text-tyba-text-muted">
                 <TerminalWindow size={18} />
               </span>
@@ -977,7 +980,7 @@ export function SettingsView({
             <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
               {t("defaultEditorHint")}
             </p>
-            <div className="mt-2 divide-y divide-tyba-border overflow-hidden rounded-[6px] border border-tyba-border">
+            <div className="mt-2 divide-y divide-tyba-border">
               <SettingRow
                 label={t("defaultEditor")}
                 hint={editorPath ?? t("defaultEditorSystemHint")}
@@ -998,7 +1001,7 @@ export function SettingsView({
             <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
               {t("startupHint")}
             </p>
-            <div className="mt-2 divide-y divide-tyba-border overflow-hidden rounded-[6px] border border-tyba-border">
+            <div className="mt-2 divide-y divide-tyba-border">
               <SettingRow label={t("startup")}>
                 <Select
                   value={startup}
@@ -1017,7 +1020,7 @@ export function SettingsView({
             <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
               {t("reviewAgentHint")}
             </p>
-            <div className="mt-2 divide-y divide-tyba-border overflow-hidden rounded-[6px] border border-tyba-border">
+            <div className="mt-2 divide-y divide-tyba-border">
               <SettingRow label={t("reviewAgent")}>
                 <Select
                   value={
@@ -1197,7 +1200,7 @@ export function SettingsView({
               title={t("settingsPreferences")}
               hint={t("preferencesHint")}
             />
-            <div className="divide-y divide-tyba-border overflow-hidden rounded-[8px] border border-tyba-border">
+            <div className="divide-y divide-tyba-border">
               <SettingRow
                 label={t("sidebarToggleBehavior", {
                   combo: formatCombo(bindings.panel),

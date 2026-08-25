@@ -259,12 +259,13 @@ samp {
   box-shadow: var(--tyba-focus-ring);
 }
 
-.tyba-divide-b,
-.tyba-divide-t,
-.tyba-divide-r {
-  position: relative;
-  z-index: 10;
-}
+/* Sem `position: relative; z-index: 10`. Eles existiam para levantar a
+   divisa acima do vizinho — necessário enquanto a sombra era desenhada
+   para FORA e caía no território dele. Agora ela é `inset`, mora dentro
+   do próprio elemento, e ninguém pode cobri-la.
+   O que se ganha é poder aplicar a classe em qualquer lugar: com
+   `position: relative` ela quebrava todo elemento `absolute` que também
+   precisasse de uma divisa — e havia vários. */
 .tyba-divide-b {
   box-shadow: var(--tyba-divider-b);
 }
@@ -273,6 +274,38 @@ samp {
 }
 .tyba-divide-r {
   box-shadow: var(--tyba-divider-r);
+}
+.tyba-divide-l {
+  box-shadow: var(--tyba-divider-l);
+}
+
+/* Separação por luz, para o CROMO da janela — header, sidebar, rodapé.
+   O `z-index` volta aqui, e só aqui: a parte `cast` é projetada para fora,
+   então precisa ficar acima do vizinho. São três containers simples, sem
+   filho posicionado, que é o que torna isso seguro — e é justamente por
+   não ser seguro em geral que `.tyba-divide-*` não o tem.
+   O conteúdo (faixa de abas, painéis) continua na linha: ali a divisa é
+   interrompida pela aba ativa, e isso é gesto, não moldura. */
+.tyba-lift-b,
+.tyba-lift-t,
+.tyba-lift-r {
+  position: relative;
+  z-index: 20;
+}
+.tyba-lift-b {
+  box-shadow:
+    inset 0 -1px 0 var(--tyba-lift-edge),
+    0 6px 16px -6px var(--tyba-lift-cast);
+}
+.tyba-lift-t {
+  box-shadow:
+    inset 0 1px 0 var(--tyba-lift-edge),
+    0 -6px 16px -6px var(--tyba-lift-cast);
+}
+.tyba-lift-r {
+  box-shadow:
+    inset -1px 0 0 var(--tyba-lift-edge),
+    6px 0 16px -6px var(--tyba-lift-cast);
 }
 
 /* ---------- Luz ---------- */

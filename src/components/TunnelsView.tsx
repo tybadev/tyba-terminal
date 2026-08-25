@@ -104,7 +104,7 @@ export function TunnelsView({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-tyba-bg">
-      <header className="flex h-8 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
+      <header className="flex h-8 shrink-0 items-center gap-2 tyba-divide-b px-3">
         <span className="min-w-0 truncate text-[12px] text-tyba-text">
           {t("tunnelsTitle")}
         </span>

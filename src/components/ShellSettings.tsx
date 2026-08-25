@@ -154,7 +154,7 @@ export function ShellSettings() {
       <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
         {t("historyHint")}
       </p>
-      <div className="mt-2 flex items-center gap-3 rounded-[6px] border border-tyba-border p-4">
+      <div className="mt-2 flex items-center gap-3 py-3">
         <span className="min-w-0 flex-1 text-[13px] text-tyba-text">
           {t("historyEnabled")}
         </span>
@@ -172,7 +172,7 @@ export function ShellSettings() {
       <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
         {t("historyImportHint")}
       </p>
-      <div className="mt-2 rounded-[6px] border border-tyba-border p-4">
+      <div className="mt-2 py-3">
         {importSources.length === 0 ? (
           <p className="text-[12px] text-tyba-text-faint">
             {t("historyImportNoSources")}
@@ -236,14 +236,14 @@ export function ShellSettings() {
         {t("snippetsHint")}
       </p>
 
-      <div className="mt-2 divide-y divide-tyba-border overflow-hidden rounded-[6px] border border-tyba-border">
+      <div className="mt-2 divide-y divide-tyba-border">
         {snippets.length === 0 && !draft && (
-          <p className="px-4 py-3 text-[12px] text-tyba-text-faint">
+          <p className="py-3 text-[12px] text-tyba-text-faint">
             {t("snippetsEmpty")}
           </p>
         )}
         {snippets.map((snippet) => (
-          <div key={snippet.id} className="flex items-center gap-3 px-4 py-2">
+          <div key={snippet.id} className="flex items-center gap-3 py-2">
             <BracketsCurly size={15} className="shrink-0 text-tyba-text-muted" />
             <button
               onClick={() => setDraft(snippet)}

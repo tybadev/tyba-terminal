@@ -45,7 +45,7 @@ export function SnippetArgsDialog({
   return (
     <Dialog open onOpenChange={(open) => !open && onCancel()}>
       <DialogContent className="max-w-[480px] gap-0 rounded-[6px] border-tyba-border-strong bg-tyba-surface p-0 shadow-2xl">
-        <DialogHeader className="border-b border-tyba-border px-4 py-3">
+        <DialogHeader className="tyba-divide-b px-4 py-3">
           <DialogTitle className="text-[13px] text-tyba-text">
             {snippet.name}
           </DialogTitle>
@@ -79,7 +79,7 @@ export function SnippetArgsDialog({
             </label>
           ))}
         </div>
-        <p className="border-t border-tyba-border px-4 py-2 text-[11px] text-tyba-text-faint">
+        <p className="tyba-divide-t px-4 py-2 text-[11px] text-tyba-text-faint">
           {t("snippetPreview")}
         </p>
         <div className="flex items-center justify-end gap-2 px-4 py-3">

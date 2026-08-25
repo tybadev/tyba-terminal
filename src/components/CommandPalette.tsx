@@ -209,7 +209,7 @@ function HistoryFilterBar({
     onChange({ ...value, ...patch });
 
   return (
-    <div className="flex flex-wrap items-center gap-1 border-b border-tyba-border px-2 py-1.5">
+    <div className="flex flex-wrap items-center gap-1 tyba-divide-b px-2 py-1.5">
       {HISTORY_SCOPES.map((scope) => (
         <Chip
           key={scope.id}
@@ -422,7 +422,7 @@ export function CommandPalette({
       showCloseButton={false}
       className="top-28 max-w-[560px] translate-y-0 rounded-[6px] border-tyba-border-strong bg-tyba-surface shadow-2xl"
     >
-      <div className="flex items-center gap-1 border-b border-tyba-border px-2 py-1.5">
+      <div className="flex items-center gap-1 tyba-divide-b px-2 py-1.5">
         {(
           ["actions", "files", "sessions", "history", "snippets"] as const
         ).map((m) => {
@@ -700,7 +700,7 @@ export function CommandPalette({
         </>
         )}
       </CommandList>
-      <div className="flex items-center gap-3 border-t border-tyba-border px-3 py-1.5 text-[10px] text-tyba-text-faint">
+      <div className="flex items-center gap-3 tyba-divide-t px-3 py-1.5 text-[10px] text-tyba-text-faint">
         <span className="flex items-center gap-1">
           <Kbd>↑</Kbd>
           <Kbd>↓</Kbd>

@@ -69,7 +69,7 @@ export function AgentsPanel({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-tyba-bg">
-      <header className="flex h-8 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
+      <header className="flex h-8 shrink-0 items-center gap-2 tyba-divide-b px-3">
         <TreeStructure size={13} className="shrink-0 text-tyba-text-faint" />
         <span className="min-w-0 truncate text-[12px] text-tyba-text">
           {t("agentsTitle")}
@@ -92,7 +92,7 @@ export function AgentsPanel({
       </header>
 
       {ungated && (
-        <div className="flex shrink-0 items-start gap-1.5 border-b border-tyba-border bg-tyba-amber/[.06] px-3 py-1.5">
+        <div className="flex shrink-0 items-start gap-1.5 tyba-divide-b bg-tyba-amber/[.06] px-3 py-1.5">
           <ShieldSlash
             size={12}
             weight="fill"
@@ -123,7 +123,7 @@ export function AgentsPanel({
         </div>
 
         {subagents.length === 0 ? (
-          <p className="mt-3 border-l border-tyba-border/60 pl-4 text-[12px] leading-relaxed text-tyba-text-faint">
+          <p className="mt-3 tyba-divide-l pl-4 text-[12px] leading-relaxed text-tyba-text-faint">
             {t("agentsEmpty")}
           </p>
         ) : (

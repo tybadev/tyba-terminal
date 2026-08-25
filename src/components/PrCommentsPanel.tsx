@@ -92,7 +92,7 @@ export function PrCommentsPanel({ sessionId, pr, onSendToAgent }: Props) {
   };
 
   return (
-    <div className="flex flex-col gap-2 border-t border-tyba-border p-3">
+    <div className="flex flex-col gap-2 tyba-divide-t p-3">
       <div className="flex items-center justify-between">
         <span className="tyba-label">{t("prCommentsTitle")}</span>
         {comments && comments.length > 0 && (

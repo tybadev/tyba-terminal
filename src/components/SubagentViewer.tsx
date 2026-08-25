@@ -227,7 +227,7 @@ export function SubagentViewer({
       }}
     >
       <div className="flex h-full min-h-0 flex-col">
-        <header className="flex h-8 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
+        <header className="flex h-8 shrink-0 items-center gap-2 tyba-divide-b px-3">
           <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-tyba-amber/[.1] text-tyba-amber">
             <AgentIcon size={11} />
           </span>

@@ -253,7 +253,7 @@ export function RichInput({
   };
 
   return (
-    <div className="relative shrink-0 border-t border-tyba-border bg-tyba-sunken px-3 py-2">
+    <div className="relative shrink-0 tyba-divide-t bg-tyba-sunken px-3 py-2">
       {popoverOpen && (
         <div
           className="absolute bottom-full z-20 mb-1 max-h-56 w-72 overflow-y-auto rounded-[6px] border border-tyba-border bg-tyba-raised py-1 shadow-lg"

@@ -187,7 +187,7 @@ export function AgentsBoard({
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <header className="flex items-center gap-3 border-b border-tyba-border px-4 py-3">
+      <header className="flex items-center gap-3 tyba-divide-b px-4 py-3">
         <h2 className="text-sm font-medium text-tyba-text">
           {t("agentsBoard")}
         </h2>
@@ -238,7 +238,7 @@ export function AgentsBoard({
               vem primeiro, e o que ele apenas deduziu da tela vem depois, com o
               que a seção não tem dito no cabeçalho. */}
           {observedGroups.length > 0 && (
-            <section className="mb-3 border-t border-tyba-border pt-2">
+            <section className="mb-3 tyba-divide-t pt-2">
               <h3 className="flex items-center gap-2 px-3 py-1 text-xs text-tyba-text-muted">
                 <ShieldSlash
                   size={12}
