@@ -117,6 +117,14 @@ pub struct RawManifest {
     pub matcher: Match,
     #[serde(default)]
     pub applies_to: Vec<Scope>,
+    /// O manifesto autoriza aviso do sistema a partir do palpite de tela.
+    ///
+    /// Default **false**, e é o default que importa: quem escreve um manifesto
+    /// está descrevendo como reconhecer uma tela, não pedindo para interromper
+    /// o dono da máquina. Autorizar é ato explícito de quem sabe que as regras
+    /// daquele agente distinguem "esperando você" de "desenhando um menu".
+    #[serde(default)]
+    pub notifies: bool,
     #[serde(default)]
     pub rules: Vec<RawRule>,
 }
@@ -142,6 +150,9 @@ pub struct Manifest {
     pub id: String,
     pub matcher: Match,
     pub applies_to: Vec<Scope>,
+    /// Ver [`RawManifest::notifies`]. Só quem declarou pode virar aviso do
+    /// sistema; o palpite dos outros continua existindo, calado, no quadro.
+    pub notifies: bool,
     pub rules: Vec<Rule>,
 }
 
@@ -224,6 +235,7 @@ impl Manifest {
             id: raw.id,
             matcher: raw.matcher,
             applies_to: raw.applies_to,
+            notifies: raw.notifies,
             rules,
         })
     }
@@ -340,6 +352,19 @@ priority = 500
 region = { bottom_lines = 3 }
 line_regex = 'Working \([^)]*esc to interrupt\)'
 "#;
+
+    /// O default do `notifies` é o que segura a guarda: manifesto que não fala
+    /// no assunto não interrompe ninguém.
+    #[test]
+    fn manifesto_que_nao_declara_notifies_nasce_calado() {
+        assert!(!Manifest::parse(CODEX).unwrap().notifies);
+    }
+
+    #[test]
+    fn notifies_declarado_e_respeitado() {
+        let fonte = format!("notifies = true\n{CODEX}");
+        assert!(Manifest::parse(&fonte).unwrap().notifies);
+    }
 
     #[test]
     fn a_prioridade_maior_vence() {
