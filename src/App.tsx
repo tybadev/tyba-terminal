@@ -3985,7 +3985,12 @@ export default function App() {
                       </span>
                     </span>
                   ) : null}
-                  {branch && (
+                  {/* A branch cede a linha quando há agente. Os dois cabiam em
+                      teoria e truncavam na prática — medido: `em and…` e
+                      `feat/mcp-…` lado a lado, nenhum dos dois legível. O que
+                      muda e urge é o estado; a branch é estável e está no
+                      cabeçalho. E o texto completo do estado vive no painel. */}
+                  {branch && !agentDetail && !runningCmd && (
                     <span
                       title={branch}
                       className="flex min-w-0 items-center gap-0.5 font-mono text-[10px] leading-none text-tyba-text-faint"
