@@ -27,9 +27,11 @@ pub enum NotifyKind {
     /// não é de urgência: é de certeza. `Request` é o agente falando por um
     /// hook — o TYBA sabe. Este aqui é o TYBA lendo a tela de um programa que
     /// não faz ideia de que está sendo lido, e que pode mudar a interface na
-    /// próxima versão sem avisar. Quem cansar dos palpites errados desliga só
-    /// este; misturá-los tiraria do usuário a escolha que importa, porque
-    /// desligar o palpite desligaria o fato junto.
+    /// próxima versão sem avisar. Quem quiser o palpite liga só ele, e quem
+    /// cansar dos erros desliga só ele; misturá-los tiraria do usuário a
+    /// escolha que importa, porque desligar o palpite desligaria o fato junto.
+    ///
+    /// Nasce desligada — ver [`default_enabled`].
     ObservedRequest,
 }
 
@@ -50,6 +52,27 @@ impl NotifyKind {
             NotifyKind::Done => "pref.notify.done.sound",
             NotifyKind::ObservedRequest => "pref.notify.observed_request.sound",
         }
+    }
+}
+
+/// A espécie nasce ligada?
+///
+/// `Request` e `Done` nascem ligadas: o agente com hook **declarou** que precisa
+/// de alguém, e o usuário que criou aquela sessão pelo TYBA já consentiu com o
+/// arranjo inteiro.
+///
+/// `ObservedRequest` nasce **desligada**, e a razão não é timidez. A guarda que
+/// decide quem pode interromper — o `notifies` do manifesto — é declarada por
+/// **nós**, nos manifestos embutidos. Com o padrão ligado, o usuário consentiria
+/// uma vez ao conceito e daí em diante o TYBA escolheria por release quem tem
+/// licença de interromper a máquina dele. E destoaria do resto do desenho: o
+/// agente sem gate tem seção separada no quadro, badge "sem gate" e "sem sinal"
+/// em vez de cor — tudo diz que ele é de segunda classe, e só a notificação
+/// nasceria tão barulhenta quanto a do agente com hook.
+pub const fn default_enabled(kind: NotifyKind) -> bool {
+    match kind {
+        NotifyKind::Request | NotifyKind::Done => true,
+        NotifyKind::ObservedRequest => false,
     }
 }
 
@@ -96,12 +119,23 @@ pub struct NotifyPolicy {
 /// escolhi", que cai no default de fábrica; **vazio** é "escolhi silêncio", que
 /// precisa sobreviver — senão desligar o som seria impossível, porque a string
 /// vazia voltaria a virar o default a cada leitura.
+///
+/// Valor irreconhecível cai no default **da espécie**, e não em "ligado". O
+/// #268 justificava o fail-open incondicional assim: o pior caso é um aviso a
+/// mais, e perder o aviso de um agente bloqueado é o dano maior. Para o palpite
+/// o raciocínio inverte — um valor corrompido não pode ligar uma interrupção
+/// que o usuário nunca habilitou. Cair no default serve aos dois: para
+/// `Request` nada muda de observável, porque o default dela já é ligado.
 pub fn resolve(
     kind: NotifyKind,
     enabled_raw: Option<&str>,
     sound_raw: Option<&str>,
 ) -> NotifyPolicy {
-    let enabled = !matches!(enabled_raw, Some("off") | Some("false") | Some("0"));
+    let enabled = match enabled_raw {
+        Some("on") | Some("true") | Some("1") => true,
+        Some("off") | Some("false") | Some("0") => false,
+        _ => default_enabled(kind),
+    };
     let sound = match sound_raw {
         None => default_sound(kind).map(str::to_string),
         Some("") => None,
@@ -142,12 +176,44 @@ mod tests {
         assert!(resolve(NotifyKind::Request, Some("on"), None).enabled);
     }
 
+    /// Ausente é "nunca escolhi", e o default é **por espécie**.
+    ///
+    /// O que o hook declara nasce ligado; o que o TYBA deduz da tela, não. A
+    /// guarda que autoriza o palpite a interromper (`notifies`) é escrita por
+    /// nós, nos manifestos embutidos — nascer ligado deixaria o TYBA escolher
+    /// por release quem tem licença de interromper a máquina do usuário.
     #[test]
-    fn valor_estranho_mantem_o_aviso_ligado() {
-        // Fail-open aqui é o certo, ao contrário do gate de aprovação: o pior
-        // caso é um aviso a mais, e perder o aviso de um agente bloqueado por
-        // causa de um valor corrompido é o dano maior.
+    fn o_default_de_ligado_e_por_especie() {
+        assert!(resolve(NotifyKind::Request, None, None).enabled);
+        assert!(resolve(NotifyKind::Done, None, None).enabled);
+        assert!(
+            !resolve(NotifyKind::ObservedRequest, None, None).enabled,
+            "o palpite nasceu interrompendo quem nunca pediu"
+        );
+    }
+
+    /// E dá para optar: quem quer o palpite liga, e liga só ele.
+    #[test]
+    fn ligar_o_palpite_explicitamente_funciona() {
+        assert!(resolve(NotifyKind::ObservedRequest, Some("on"), None).enabled);
+    }
+
+    /// Valor irreconhecível cai no default **da espécie**, e a prova precisa
+    /// das duas direções.
+    ///
+    /// Com o fail-open incondicional do #268, a metade do `Request` passa e a
+    /// do palpite não: um valor corrompido ligaria uma interrupção que o
+    /// usuário nunca habilitou. Aqui o fail é para o lado que a espécie
+    /// escolheu, que continua sendo aberto onde o dano de perder o aviso é
+    /// maior do que o de um aviso a mais.
+    #[test]
+    fn valor_estranho_cai_no_default_da_especie() {
         assert!(resolve(NotifyKind::Request, Some("talvez"), None).enabled);
+        assert!(resolve(NotifyKind::Done, Some("🙃"), None).enabled);
+        assert!(
+            !resolve(NotifyKind::ObservedRequest, Some("talvez"), None).enabled,
+            "lixo no banco ligou o palpite"
+        );
     }
 
     const ESPECIES: [NotifyKind; 3] = [
@@ -172,16 +238,19 @@ mod tests {
         }
     }
 
-    /// O ponto de o palpite ter espécie própria: desligá-lo não pode desligar o
-    /// fato.
+    /// O ponto de o palpite ter espécie própria: as escolhas não se alcançam.
     ///
-    /// O teste lê **pelas chaves**, como o `notify_native` faz, e não passando
-    /// os valores na mão — é a leitura por chave que faz uma espécie alcançar a
+    /// O banco guarda as duas com valores **opostos** — o usuário desligou o
+    /// pedido do hook e ligou o palpite —, e cada uma tem de ler a sua. O teste
+    /// lê **pelas chaves**, como o `notify_native` faz, e não passando os
+    /// valores na mão: é a leitura por chave que faz uma espécie alcançar a
     /// preferência da outra quando as chaves colidem.
     #[test]
-    fn desligar_o_palpite_nao_desliga_o_pedido_do_hook() {
-        // O banco com só a preferência do palpite gravada.
-        let gravado = [(NotifyKind::ObservedRequest.enabled_key(), "off")];
+    fn cada_especie_le_a_propria_preferencia() {
+        let gravado = [
+            (NotifyKind::Request.enabled_key(), "off"),
+            (NotifyKind::ObservedRequest.enabled_key(), "on"),
+        ];
         let leia = |kind: NotifyKind| {
             let bruto = gravado
                 .iter()
@@ -190,12 +259,15 @@ mod tests {
             resolve(kind, bruto, None)
         };
 
-        assert!(!leia(NotifyKind::ObservedRequest).enabled);
+        assert!(!leia(NotifyKind::Request).enabled);
         assert!(
-            leia(NotifyKind::Request).enabled,
-            "desligar o palpite levou o pedido do hook junto"
+            leia(NotifyKind::ObservedRequest).enabled,
+            "desligar o pedido do hook levou o palpite junto"
         );
-        assert!(leia(NotifyKind::Done).enabled);
+        assert!(
+            leia(NotifyKind::Done).enabled,
+            "a conclusão foi arrastada por uma escolha que não era dela"
+        );
     }
 
     #[cfg(target_os = "macos")]

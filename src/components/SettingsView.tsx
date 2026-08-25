@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { IS_MAC } from "@/lib/platform";
+import { NOTIFY_KINDS, notifyEnabled } from "@/lib/notifyPrefs";
 import { DockerIcon } from "./icons/DockerIcon";
 import { LANGUAGES, setLanguage, type LanguageCode } from "../i18n";
 import {
@@ -273,36 +274,6 @@ function SectionHeader({ title, hint }: { title: string; hint: string }) {
 
 const MAC_SOUNDS = ["Ping", "Glass", "Submarine", "Hero", "Funk", "Blow"];
 
-/** Espelha `NotifyKind` do core. As chaves são as mesmas, e precisam continuar. */
-const NOTIFY_KINDS = [
-  {
-    id: "request",
-    label: "notifyRequest",
-    hint: "notifyRequestHint",
-    enabledKey: "pref.notify.request.enabled",
-    soundKey: "pref.notify.request.sound",
-    defaultSound: "Ping",
-  },
-  {
-    id: "done",
-    label: "notifyDone",
-    hint: "notifyDoneHint",
-    enabledKey: "pref.notify.done.enabled",
-    soundKey: "pref.notify.done.sound",
-    defaultSound: "Glass",
-  },
-  // Linha própria porque o interruptor é próprio: o de cima é o agente falando
-  // por um hook, este é o TYBA lendo a tela de um programa que não sabe que
-  // está sendo lido. Juntá-los faria desligar o palpite desligar o fato.
-  {
-    id: "observedRequest",
-    label: "notifyObservedRequest",
-    hint: "notifyObservedRequestHint",
-    enabledKey: "pref.notify.observed_request.enabled",
-    soundKey: "pref.notify.observed_request.sound",
-    defaultSound: "Ping",
-  },
-] as const;
 
 /**
  * Aviso do sistema por espécie de evento.
@@ -313,14 +284,22 @@ const NOTIFY_KINDS = [
  */
 function NotifyPrefs() {
   const { t } = useTranslation();
-  const [enabled, setEnabled] = useState<Record<string, boolean>>({});
+  // O estado nasce nos defaults de fábrica, e não vazio: entre a montagem e a
+  // resposta do `getPref` a linha já aparece, e uma espécie que nasce desligada
+  // não pode piscar ligada nesse intervalo.
+  const [enabled, setEnabled] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(NOTIFY_KINDS.map((k) => [k.id, k.defaultEnabled])),
+  );
   const [sound, setSound] = useState<Record<string, string>>({});
 
   useEffect(() => {
     for (const kind of NOTIFY_KINDS) {
       void getPref(kind.enabledKey)
         .then((v) =>
-          setEnabled((prev) => ({ ...prev, [kind.id]: v !== "off" })),
+          setEnabled((prev) => ({
+            ...prev,
+            [kind.id]: notifyEnabled(v, kind.defaultEnabled),
+          })),
         )
         .catch(() => {});
       void getPref(kind.soundKey)
@@ -338,7 +317,7 @@ function NotifyPrefs() {
       {NOTIFY_KINDS.map((kind) => (
         <SettingRow key={kind.id} label={t(kind.label)} hint={t(kind.hint)}>
           <div className="flex items-center gap-2">
-            {IS_MAC && enabled[kind.id] !== false && (
+            {IS_MAC && enabled[kind.id] && (
               <Select
                 value={sound[kind.id] ?? kind.defaultSound}
                 onChange={(v) => {
@@ -353,7 +332,7 @@ function NotifyPrefs() {
               />
             )}
             <Switch
-              checked={enabled[kind.id] !== false}
+              checked={enabled[kind.id] ?? kind.defaultEnabled}
               onCheckedChange={(c) => {
                 setEnabled((prev) => ({ ...prev, [kind.id]: c }));
                 void setPref(kind.enabledKey, c ? "on" : "off").catch(() => {});
