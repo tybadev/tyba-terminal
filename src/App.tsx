@@ -65,6 +65,7 @@ import { IS_MAC } from "./lib/platform";
 import { AgentIcon } from "./components/icons/AgentIcon";
 import { AgentsBoard } from "./components/AgentsBoard";
 import { AgentsQueue } from "./components/AgentsQueue";
+import { AgentsSidebar } from "./components/AgentsSidebar";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { Clock } from "./components/Clock";
@@ -1555,20 +1556,26 @@ export default function App() {
 
   // Conta as duas seções do quadro: o agente sem gate também pede alguém, e o
 
-  const agentsWaiting = useMemo(
-    () => boardOrder(buildAgentRows(sessions, layout)).filter(wantsAttention)
-      .length,
+  // Uma lista só, consumida pelo contador e pela seção da barra lateral. Duas
+  // derivações independentes do mesmo estado dariam contador e lista que
+  // discordam — e é exatamente o número em cima da lista que denuncia.
+  const agentRows = useMemo(
+    () => boardOrder(buildAgentRows(sessions, layout)),
     [sessions, layout],
+  );
+  const agentsWaiting = useMemo(
+    () => agentRows.filter(wantsAttention).length,
+    [agentRows],
   );
 
   const goToNextAttention = useCallback(() => {
     const next = nextAttention(
-      boardOrder(buildAgentRows(sessions, layout)),
+      agentRows,
       activeId,
     );
     if (!next) return;
     jumpToAgent(next.session.id, next.place);
-  }, [sessions, layout, activeId, jumpToAgent]);
+  }, [agentRows, activeId, jumpToAgent]);
 
   const typeIntoSession = useCallback(
     async (sid: SessionId, text: string, submit: boolean) => {
@@ -4747,6 +4754,8 @@ export default function App() {
                         {t("connectionsTitle")}
                       </TooltipContent>
                     </Tooltip>
+                  </nav>
+                  <div className="flex shrink-0 flex-col border-t border-tyba-border px-2 pt-1 pb-2">
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
@@ -4780,7 +4789,16 @@ export default function App() {
                         {t("agentsQueue")}
                       </TooltipContent>
                     </Tooltip>
-                  </nav>
+                    {agentRows.length > 0 && (
+                      <div className="mt-0.5 max-h-[40vh] min-h-0 overflow-y-auto">
+                        <AgentsSidebar
+                          rows={agentRows}
+                          open={open}
+                          onSelect={jumpToAgent}
+                        />
+                      </div>
+                    )}
+                  </div>
                 </aside>
               )}
 
