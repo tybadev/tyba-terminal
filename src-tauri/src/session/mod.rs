@@ -470,6 +470,12 @@ impl SessionManager {
         cmd.env("TERM", "xterm-256color");
         cmd.env("TYBA", "1");
         cmd.env("TYBA_SESSION_ID", id.to_string());
+        // O shim de agente no rc precisa saber QUEM chamar. Sem isto ele não
+        // tem binário para invocar e se desliga sozinho — que é a falha aberta
+        // funcionando, mas também a feature inteira desligada em silêncio.
+        if let Ok(exe) = std::env::current_exe() {
+            cmd.env("TYBA_BIN", exe);
+        }
 
         if let Some(command) = self.preferred_editor_command() {
             cmd.env("EDITOR", &command);
@@ -1305,6 +1311,137 @@ mod tests {
         assert!(body.contains("trap '__tyba_preexec' DEBUG"));
         assert!(body.contains("133;C"));
         assert!(body.contains("TYBA_LOGIN_SHELL"));
+    }
+
+    /// O shim intercepta, cai fora, e a escotilha continua aberta.
+    ///
+    /// Num bash de verdade, porque nenhuma das três propriedades dá para
+    /// verificar lendo o arquivo: quem define função, quem `command` ignora e
+    /// o que sobra no `PATH` são decisões do shell em tempo de execução.
+    ///
+    /// O `claude` aqui é um stub num diretório temporário — a suíte não pode
+    /// depender de o agente estar instalado na máquina, e um teste que se
+    /// pula sozinho quando não está é um teste que não protege nada.
+    #[test]
+    #[cfg(unix)]
+    fn o_shim_intercepta_o_agente_sem_tirar_a_escotilha() {
+        let dir = std::env::temp_dir().join(format!("tyba-shim-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let stub = dir.join("claude");
+        std::fs::write(&stub, "#!/bin/sh\necho STUB-RODOU \"$@\"\n").expect("stub");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let rc = dir.join("rc.sh");
+        std::fs::write(&rc, TYBA_BASH_RC).expect("rc");
+        let log = dir.join("shim.log");
+
+        let script = format!(
+            r#"
+source {rc}
+type claude | head -1
+claude alfa
+command claude beta
+"#,
+            rc = rc.display()
+        );
+        let out = std::process::Command::new("bash")
+            .arg("-i")
+            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    dir.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("TYBA_BIN", "/nao/importa/neste/passo")
+            .env("TYBA_SHIM_LOG", &log)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child
+                    .stdin
+                    .as_mut()
+                    .expect("stdin")
+                    .write_all(script.as_bytes())?;
+                child.wait_with_output()
+            });
+        let Ok(out) = out else {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        };
+        let texto = String::from_utf8_lossy(&out.stdout).to_string();
+        let rastro = std::fs::read_to_string(&log).unwrap_or_default();
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(
+            texto.contains("claude is a function"),
+            "o shim não pegou o nome: `type claude` disse {texto:?}"
+        );
+        // Caiu fora: o binário de verdade rodou, com os argumentos intactos.
+        assert!(
+            texto.contains("STUB-RODOU alfa"),
+            "o shim engoliu a chamada em vez de repassá-la: {texto:?}"
+        );
+        // A escotilha: `command` pula a função e não deixa rastro.
+        assert!(
+            texto.contains("STUB-RODOU beta"),
+            "`command claude` deixou de alcançar o binário: {texto:?}"
+        );
+        assert_eq!(
+            rastro.lines().count(),
+            1,
+            "esperava UMA interceptação (a de `claude alfa`); \
+             `command claude` não pode passar pelo shim. Rastro: {rastro:?}"
+        );
+    }
+
+    /// Sem `TYBA_BIN` o shim não existe — a falha aberta, no caso mais banal.
+    #[test]
+    #[cfg(unix)]
+    fn sem_o_binario_do_tyba_o_shim_nao_se_instala() {
+        let dir = std::env::temp_dir().join(format!("tyba-shim-off-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let rc = dir.join("rc.sh");
+        std::fs::write(&rc, TYBA_BASH_RC).expect("rc");
+        let script = format!(
+            "source {rc}\ntype -t claude || echo SEM-FUNCAO\n",
+            rc = rc.display()
+        );
+        let out = std::process::Command::new("bash")
+            .arg("-i")
+            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env_remove("TYBA_BIN")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child
+                    .stdin
+                    .as_mut()
+                    .expect("stdin")
+                    .write_all(script.as_bytes())?;
+                child.wait_with_output()
+            });
+        let Ok(out) = out else {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        };
+        let texto = String::from_utf8_lossy(&out.stdout).to_string();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            !texto.contains("function"),
+            "sem TYBA_BIN o shim se instalou assim mesmo: {texto:?}"
+        );
     }
 
     /// O hook do bash roda de verdade, num bash interativo.
