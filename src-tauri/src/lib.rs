@@ -351,6 +351,12 @@ fn poll_agent_probers(app: &AppHandle) {
         shells.iter().copied().collect();
     let changed: std::collections::HashSet<SessionId> = changes.iter().map(|(id, _)| *id).collect();
     for (session_id, detected) in &changes {
+        // O binário mudou: a outra entrada da identidade de tela acabou de
+        // mudar sem que a tela tenha mexido. Sem esta cutucada, a thread
+        // emissora segue bloqueada no `recv` e o agente que subiu numa tela
+        // parada nunca chega à lista — era a discordância entre a faixa âmbar
+        // (que nasce aqui) e o quadro de agentes (que nasce da tela).
+        state.pty_pool.nudge_screen(*session_id);
         drive_disk_observer(
             app,
             &state,

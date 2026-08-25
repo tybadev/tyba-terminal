@@ -146,24 +146,48 @@ impl ScreenObserver {
     }
 
     /// Um recorte de tela. Fora do lock.
-    pub fn observe(&mut self, snapshot: &ScreenSnapshot) {
-        let fingerprint = snapshot.fingerprint();
+    ///
+    /// Devolve se a avaliação chegou a acontecer — `false` quando o portão de
+    /// sequência cortou. Quem chama em produção ignora; é o único jeito de um
+    /// teste separar "o portão segurou" de "avaliou e concluiu o mesmo", que
+    /// para o resto do mundo são indistinguíveis.
+    pub fn observe(&mut self, snapshot: &ScreenSnapshot) -> bool {
+        // A sonda entra ANTES do portão, e isso inverte a ordem que este
+        // arquivo pregava ("do mais barato para o mais caro").
+        //
+        // A identidade tem duas entradas — a tela e o binário —, e elas mudam
+        // por relógios independentes: a tela a cada flush, o binário a cada
+        // volta do poll de 2 s. Um portão que só olha a tela declara "nada
+        // mudou" quando o que mudou foi a outra entrada, e aí a mudança nunca é
+        // vista: `claude` cru sobe, a tela assenta, o poll descobre o processo
+        // dois segundos depois e nenhuma reavaliação acontece mais.
+        //
+        // Em tela cheia isso é pior, não melhor: ali o recorte de linhas vem
+        // vazio de propósito, então a impressão digital fica no seu estado mais
+        // ESTÁVEL justamente na tela em que o Claude Code roda — e o portão
+        // fecha para sempre. Era por isso que a faixa âmbar (que vem do poll)
+        // e a lista (que vem da tela) discordavam na mesma janela.
+        //
+        // O custo é uma leitura de estado do prober por flush (~60 Hz por
+        // sessão), não a varredura da árvore de processos — essa continua sendo
+        // do poll. Barato não vale nada quando é a resposta errada.
+        let process = self.process.as_ref().and_then(|probe| probe());
+        let fingerprint = fingerprint_with(snapshot, process.as_deref());
         if self.last_fingerprint == Some(fingerprint) {
-            return;
+            return false;
         }
         self.last_fingerprint = Some(fingerprint);
 
         // Clone do `Arc` para o empréstimo do manifesto não brigar com o
         // `publish`, que é `&mut self`.
         let registry = Arc::clone(&self.registry);
-        let process = self.process.as_ref().and_then(|probe| probe());
         let Some(manifest) = registry.identify(self.scope, process.as_deref(), &snapshot.title)
         else {
             // Ninguém reconhece o que está na tela. Identidade é o que sustenta
             // a presença: sem ela não há agente a apontar, e manter o último
             // palpite deixaria um agente morto no quadro para sempre.
             self.publish(None, false);
-            return;
+            return true;
         };
         let agent = manifest.id.clone();
         // A autorização vem do manifesto que casou **agora**, não do id do
@@ -184,6 +208,7 @@ impl ScreenObserver {
                 .and_then(|observed| observed.state),
         };
         self.publish(Some(ObservedAgent { agent, state }), notifies);
+        true
     }
 
     /// O PTY morreu: o que estava na tela deixou de ser notícia do presente.
@@ -205,6 +230,20 @@ impl ScreenObserver {
         self.last.clone_from(&observed);
         (self.sink)(observed);
     }
+}
+
+/// A impressão digital das DUAS entradas da identidade.
+///
+/// Separada de [`ScreenSnapshot::fingerprint`] porque aquela responde "a tela
+/// mudou?", que é uma pergunta legítima e de outro dono. Esta responde "a
+/// decisão pode ter mudado?", e é essa que o portão precisa.
+fn fingerprint_with(snapshot: &ScreenSnapshot, process: Option<&str>) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    snapshot.fingerprint().hash(&mut hasher);
+    process.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Onde a sessão está, na linguagem do manifesto.
@@ -253,10 +292,23 @@ region = { bottom_lines = 3 }
 contains = ["esc to interrupt"]
 "#;
 
-    #[derive(Default)]
     struct Espiao {
         probes: AtomicUsize,
+        /// O que a sonda de processo devolve. Mutável porque o poll de 2 s
+        /// muda esse valor por baixo de uma tela parada — é exatamente o caso
+        /// que o portão precisa enxergar.
+        binario: parking_lot::Mutex<Option<String>>,
         publicados: parking_lot::Mutex<Vec<Option<ObservedAgent>>>,
+    }
+
+    impl Default for Espiao {
+        fn default() -> Self {
+            Self {
+                probes: AtomicUsize::new(0),
+                binario: parking_lot::Mutex::new(Some("codex".to_string())),
+                publicados: parking_lot::Mutex::new(Vec::new()),
+            }
+        }
     }
 
     impl Espiao {
@@ -290,7 +342,7 @@ contains = ["esc to interrupt"]
             registry,
             Box::new(move || {
                 probe_spy.probes.fetch_add(1, Ordering::Relaxed);
-                Some("codex".to_string())
+                probe_spy.binario.lock().clone()
             }),
             Box::new(move |observed| sink_spy.publicados.lock().push(observed)),
             notifier,
@@ -305,28 +357,74 @@ contains = ["esc to interrupt"]
         }
     }
 
-    /// O portão de sequência não é decoração: com a tela parada, a regra de
-    /// terceiro não roda.
+    /// O portão de sequência não é decoração: com a tela parada **e** o mesmo
+    /// binário, a regra de terceiro não roda.
     ///
-    /// O contador está na sonda de processo, que é o primeiro passo DEPOIS do
-    /// portão e ANTES da avaliação — se ela não foi chamada, o manifesto não
-    /// foi avaliado.
+    /// O sensor é o retorno do `observe`, e não mais o contador de sondas: a
+    /// sonda passou para antes do portão, então ela é chamada sempre. Trocar o
+    /// sensor foi obrigatório — mantê-lo teria feito este teste ficar vermelho
+    /// por uma mudança que ele não mede.
     #[test]
     fn o_portao_de_sequencia_pula_a_avaliacao_quando_nada_muda() {
         let espiao = Arc::new(Espiao::default());
         let mut observer = observer(&SessionKind::Shell, &espiao).unwrap();
         let tela = snap("Codex — Action Required", &[]);
 
-        for _ in 0..5 {
-            observer.observe(&tela);
-        }
+        let avaliacoes = (0..5).filter(|_| observer.observe(&tela)).count();
 
         assert_eq!(
-            espiao.probes.load(Ordering::Relaxed),
-            1,
+            avaliacoes, 1,
             "a tela não mudou e o manifesto foi avaliado assim mesmo"
         );
         assert_eq!(espiao.publicados().len(), 1);
+    }
+
+    /// O bug que a lista de agentes tinha: `claude` cru sobe, a tela assenta, e
+    /// o poll de processo só descobre o binário dois segundos depois.
+    ///
+    /// Sem a sonda dentro do portão, a segunda tela — idêntica à primeira — é
+    /// cortada e o agente NUNCA entra na lista. Em tela cheia é permanente: o
+    /// recorte de linhas vem vazio, então a impressão digital nunca mais muda.
+    /// Era por isso que a faixa âmbar (poll) e a lista (tela) discordavam.
+    #[test]
+    fn binario_descoberto_depois_reavalia_com_a_tela_parada() {
+        let espiao = Arc::new(Espiao::default());
+        *espiao.binario.lock() = None;
+        let mut observer = observer(&SessionKind::Shell, &espiao).unwrap();
+        // Tela que NÃO identifica sozinha: sem o título do agente e sem linha
+        // que alguma regra reconheça. Só o binário pode identificá-la.
+        let tela = snap("~/swell-system/rio-api", &[]);
+
+        assert!(observer.observe(&tela), "primeira avaliação não aconteceu");
+        assert_eq!(espiao.ultimo(), None, "identificou sem sinal nenhum");
+
+        *espiao.binario.lock() = Some("codex".to_string());
+
+        assert!(
+            observer.observe(&tela),
+            "o portão cortou a reavaliação: o binário mudou e a tela não"
+        );
+        assert_eq!(
+            espiao.ultimo().map(|o| o.agent),
+            Some("codex".to_string()),
+            "o agente descoberto pelo poll não chegou na lista"
+        );
+    }
+
+    /// E o contrário: binário some (agente saiu), tela igual — a linha some.
+    #[test]
+    fn binario_que_some_limpa_a_linha_com_a_tela_parada() {
+        let espiao = Arc::new(Espiao::default());
+        let mut observer = observer(&SessionKind::Shell, &espiao).unwrap();
+        let tela = snap("~/swell-system/rio-api", &[]);
+
+        observer.observe(&tela);
+        assert_eq!(espiao.ultimo().map(|o| o.agent), Some("codex".to_string()));
+
+        *espiao.binario.lock() = None;
+
+        assert!(observer.observe(&tela), "o portão segurou a saída do agente");
+        assert_eq!(espiao.ultimo(), None, "agente morto ficou no quadro");
     }
 
     #[test]
