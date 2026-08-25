@@ -189,3 +189,38 @@ if [ -z "${TYBA_BASH_HOOKS:-}" ] && case "$-" in *i*) true ;; *) false ;; esac; 
 
   trap '__tyba_preexec' DEBUG
 fi
+
+# --- Shim de agente (passo 1: intercepta, registra e sai do caminho) --------
+#
+# POR QUE FUNCAO DE SHELL, e nao OSC. O gate do TYBA e montado no spawn do
+# agente: jaula, env por allowlist e a config de hook que faz ele pedir licenca
+# antes de agir. Nada disso da para pendurar num processo ja nascido, entao
+# `claude` digitado no shell fica para sempre sem gate — e a unica oferta
+# possivel depois e matar e subir de novo, que o dono nao aceita.
+#
+# Interceptar exige um ponto de BLOQUEIO antes do exec. OSC 133/633 dispara no
+# preexec, sim, mas OSC e saida, mao unica: quando o core le o byte o exec ja
+# aconteceu. Funcao de shell bloqueia, e e o idioma que direnv, nvm e pyenv
+# usam ha anos — inspecionavel com `type claude`, com escotilha conhecida.
+#
+# NESTE PASSO ela nao muda nada: chama o binario de verdade. E de proposito —
+# o risco desta feature e "o terminal nao roda o que voce digitou", entao a
+# interceptacao se prova sozinha antes de encostar em jaula ou gate.
+#
+# FALHA ABERTA e a regra permanente, nao so do passo 1: sem TYBA_BIN, sem core
+# respondendo, sem jaula, qualquer duvida — executa o binario e sai do caminho.
+# Um terminal que se recusa a rodar o que foi digitado esta quebrado, e ligado
+# por padrao o raio disso e todo mundo.
+if [ -n "${TYBA_BIN:-}" ] && [ "${TYBA_AGENT_SHIM:-1}" = "1" ]; then
+  __tyba_shim_record() {
+    # Rastro so quando alguem pede (o teste pede). Em uso normal a variavel nao
+    # existe e isto e um `[ -n "" ]` — nenhum processo, nenhum arquivo.
+    [ -n "${TYBA_SHIM_LOG:-}" ] && printf "%s\n" "$1" >> "$TYBA_SHIM_LOG"
+    return 0
+  }
+
+  claude() {
+    __tyba_shim_record "claude"
+    command claude "$@"
+  }
+fi
