@@ -423,7 +423,10 @@ contains = ["esc to interrupt"]
 
         *espiao.binario.lock() = None;
 
-        assert!(observer.observe(&tela), "o portão segurou a saída do agente");
+        assert!(
+            observer.observe(&tela),
+            "o portão segurou a saída do agente"
+        );
         assert_eq!(espiao.ultimo(), None, "agente morto ficou no quadro");
     }
 
