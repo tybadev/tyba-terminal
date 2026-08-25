@@ -20,7 +20,7 @@ import {
   type ShellHistorySource,
   type Snippet,
 } from "../lib/ipc";
-import { PROMPT_MODE_PREF_KEY } from "../lib/commandLine";
+import { PROMPT_MODE_PREF_KEY, promptModeEnabled } from "../lib/commandLine";
 import { PromptModePicker } from "./PromptModePicker";
 import { pushToast, toastError } from "../lib/toast";
 
@@ -62,8 +62,8 @@ export function ShellSettings() {
       .then((value) => setHistoryOn(value !== "off"))
       .catch(() => setHistoryOn(true));
     void getPref(PROMPT_MODE_PREF_KEY)
-      .then((value) => setPromptOn(value === "on"))
-      .catch(() => setPromptOn(false));
+      .then((value) => setPromptOn(promptModeEnabled(value)))
+      .catch(() => setPromptOn(true));
     void scanShellHistorySources()
       .then(setImportSources)
       .catch(() => setImportSources([]));

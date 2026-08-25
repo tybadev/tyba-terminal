@@ -3,6 +3,28 @@ import type { SessionCommand, SessionKind } from "./ipc";
 export const PROMPT_MODE_PREF_KEY = "pref.promptMode";
 
 /**
+ * A linha do TYBA vem LIGADA; só desliga quem pediu.
+ *
+ * Ela nasceu opt-in, e o efeito era que a instalação nova entregava um
+ * terminal cru: para ver o TYBA que o produto promete — blocos, histórico,
+ * estado de comando —, era preciso descobrir uma caixa de configuração. O
+ * padrão é o produto.
+ *
+ * Ausência de preferência é ligada, e não desligada, porque quem nunca abriu
+ * as configurações não escolheu nada — e a escolha por omissão tem de ser a
+ * que serve a quem acabou de instalar. `"off"` é a única resposta que desliga,
+ * o que também mantém a semântica de quem já gravou a preferência: quem tinha
+ * ligado continua ligado, e quem tinha desligado continua desligado.
+ *
+ * Mesma forma que `HISTORY_PREF_KEY` já usava, e vive aqui — e não nos dois
+ * pontos de leitura — porque `App.tsx` e `ShellSettings.tsx` liam a mesma
+ * chave com o próprio default cada um, que é como os dois divergem.
+ */
+export function promptModeEnabled(value: string | null | undefined): boolean {
+  return value !== "off";
+}
+
+/**
  * Quem é dono do teclado neste instante.
  *
  * `terminal` não é fallback de UX, é correção: `ssh`, `read`, `psql` e o prompt

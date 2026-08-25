@@ -388,6 +388,7 @@ import {
   swallowsArrow,
   lineState,
   PROMPT_MODE_PREF_KEY,
+  promptModeEnabled,
 } from "./lib/commandLine";
 import { changelogUrl } from "./lib/changelog";
 import { docsUrl, REPO_URL } from "./lib/links";
@@ -1062,7 +1063,7 @@ export default function App() {
     const worktreeDefaultRaw = pref(WORKTREE_DEFAULT_KEY);
     const reviewAgentRaw = pref(REVIEW_AGENT_KEY);
     const promptModeRaw = pref(PROMPT_MODE_PREF_KEY);
-    setPromptModePref(promptModeRaw === "on");
+    setPromptModePref(promptModeEnabled(promptModeRaw));
     if (togglePrefRaw === "rail" || togglePrefRaw === "hidden") {
       setTogglePref(togglePrefRaw);
     }
