@@ -4,6 +4,7 @@ import type { AgentRow } from "./agentsBoard";
 import type { ObservedAgent, Session, SessionKind, SessionStatus } from "./ipc";
 import {
   DEFAULT_AGENT_ROWS,
+  disambiguators,
   needsYou,
   rowHasValue,
   tokenValues,
@@ -19,10 +20,13 @@ const row = (
     observed?: ObservedAgent | null;
     attention?: boolean;
     workspaceName?: string;
+    id?: string;
+    workspaceId?: string;
+    order?: number;
   } = {},
 ): AgentRow => {
   const session = {
-    id: "s1",
+    id: over.id ?? "s1",
     kind: (over.observed
       ? { type: "shell" }
       : { type: "agent", runner: "claude_code" }) as SessionKind,
@@ -37,11 +41,12 @@ const row = (
   return {
     session,
     place: {
-      workspaceId: "w1",
+      workspaceId: over.workspaceId ?? "w1",
       workspaceName: over.workspaceName ?? "rio-api",
       workspaceColor: null,
       tabId: "t1",
       paneId: "p1",
+      order: over.order ?? 0,
     },
     observed: over.observed ?? null,
     visual: {
@@ -149,5 +154,60 @@ describe("a marca de precisa de você", () => {
     falhou.urgency = 40;
     expect(needsYou(falhou)).toBe(true);
     expect(falhou.visual.textClass).toBe("text-tyba-red");
+  });
+});
+
+describe("linhas que sairiam idênticas ganham desempate", () => {
+  const dois = () => [
+    row(rodando, {
+      id: "a",
+      order: 5,
+      observed: { agent: "claude-code", state: null },
+    }),
+    row(rodando, {
+      id: "b",
+      order: 2,
+      observed: { agent: "claude-code", state: null },
+    }),
+  ];
+
+  test("duas sessões do mesmo workspace viram #1 e #2", () => {
+    // O caso que apareceu na tela: mesmo workspace, mesmo agente, duas linhas
+    // com exatamente o mesmo texto.
+    const marcas = disambiguators(dois());
+    expect(marcas.get("b")).toBe("#1");
+    expect(marcas.get("a")).toBe("#2");
+  });
+
+  test("a ordem vem do layout, não da ordem da lista", () => {
+    // Invertida na entrada, o resultado é o mesmo: quem tem `order` menor é
+    // o #1. Sem isso o rótulo trocaria de linha a cada reordenação por
+    // urgência, e um número que anda sozinho engana mais do que ajuda.
+    const marcas = disambiguators(dois().reverse());
+    expect(marcas.get("b")).toBe("#1");
+    expect(marcas.get("a")).toBe("#2");
+  });
+
+  test("agente sozinho no workspace não ganha marca nenhuma", () => {
+    const marcas = disambiguators([row(rodando, { id: "a" })]);
+    expect(marcas.get("a")).toBeNull();
+  });
+
+  test("workspaces diferentes não disputam entre si", () => {
+    const marcas = disambiguators([
+      row(rodando, { id: "a", workspaceId: "w1" }),
+      row(rodando, { id: "b", workspaceId: "w2" }),
+    ]);
+    expect(marcas.get("a")).toBeNull();
+    expect(marcas.get("b")).toBeNull();
+  });
+
+  test("o desempate entra no texto do workspace", () => {
+    const values = tokenValues(row(rodando), label, "#2");
+    expect(values.workspace).toBe("rio-api #2");
+  });
+
+  test("sem desempate o nome fica limpo", () => {
+    expect(tokenValues(row(rodando), label).workspace).toBe("rio-api");
   });
 });

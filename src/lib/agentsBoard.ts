@@ -27,6 +27,18 @@ export interface SessionPlace {
   workspaceColor: string | null;
   tabId: TabId;
   paneId: PaneId;
+  /**
+   * Posição desta sessão na varredura do layout — abas na ordem da barra,
+   * painéis na ordem da árvore.
+   *
+   * Existe para desempatar linhas que ficam idênticas: duas sessões no mesmo
+   * workspace, com o mesmo agente, produzem duas linhas iguais na lista. Nome
+   * de aba não resolve, porque duas abas da mesma pasta nascem com o mesmo
+   * nome. O que sobra é a posição — e ela precisa vir do LAYOUT, nunca da
+   * ordem da lista: aquela é por urgência e mudaria de lugar a cada turno do
+   * agente, trocando o rótulo de uma linha parada.
+   */
+  order: number;
 }
 
 export interface AgentRow {
@@ -171,6 +183,7 @@ export const placesBySession = (
   layout: LayoutState,
 ): Map<SessionId, SessionPlace> => {
   const found = new Map<SessionId, SessionPlace>();
+  let order = 0;
   for (const workspace of layout.workspaces) {
     for (const tab of workspace.tabs) {
       for (const [sessionId, paneId] of placesIn(tab.root)) {
@@ -181,6 +194,7 @@ export const placesBySession = (
           workspaceColor: workspace.color,
           tabId: tab.id,
           paneId,
+          order: order++,
         });
       }
     }

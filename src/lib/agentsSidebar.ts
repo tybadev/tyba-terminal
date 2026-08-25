@@ -55,6 +55,9 @@ export interface AgentTokenValues {
 export const tokenValues = (
   row: AgentRow,
   label: (key: string) => string,
+  /** O desempate desta linha, de [`disambiguators`]. `null` quando ela já é
+   *  única no seu workspace — que é o caso comum. */
+  tie: string | null = null,
 ): AgentTokenValues => {
   const status = row.session.status;
   const detail = (() => {
@@ -67,7 +70,9 @@ export const tokenValues = (
   return {
     state_icon: true,
     state_text: label(row.visual.labelKey),
-    workspace: row.place.workspaceName,
+    workspace: tie
+      ? `${row.place.workspaceName} ${tie}`
+      : row.place.workspaceName,
     agent: row.observed?.agent ?? null,
     detail,
     no_gate: row.observed ? true : null,
@@ -101,3 +106,43 @@ export const visibleRows = (
  * vermelho e não espera ninguém; um que aguarda aprovação é âmbar e espera.
  */
 export const needsYou = (row: AgentRow): boolean => wantsAttention(row);
+
+/**
+ * O rótulo que separa linhas que sairiam idênticas.
+ *
+ * Duas sessões no mesmo workspace rodando o mesmo agente produzem duas linhas
+ * com o mesmo texto, e uma lista em que dois itens são indistinguíveis não é
+ * uma lista — é uma contagem. Foi o que apareceu na tela assim que o palpite
+ * de tela voltou a chegar.
+ *
+ * **Só aparece onde há ambiguidade.** Marcar toda linha com um número seria
+ * ruído em cima do caso comum, que é um agente por workspace; a mesma regra
+ * do herdr para linha vazia, aplicada a rótulo.
+ *
+ * O número é a posição no LAYOUT, não na lista: a lista se reordena por
+ * urgência a cada turno, e um rótulo que muda de lugar sozinho é pior que
+ * rótulo nenhum — você decoraria "o #2" e ele viraria outro.
+ *
+ * Diz só o que se sabe: posição. Não promete "aba" nem "painel", porque as
+ * duas sessões podem estar na mesma aba, em painéis divididos.
+ */
+export const disambiguators = (rows: AgentRow[]): Map<string, string | null> => {
+  const porWorkspace = new Map<string, AgentRow[]>();
+  for (const row of rows) {
+    const key = row.place.workspaceId;
+    const lista = porWorkspace.get(key);
+    if (lista) lista.push(row);
+    else porWorkspace.set(key, [row]);
+  }
+  const out = new Map<string, string | null>();
+  for (const grupo of porWorkspace.values()) {
+    if (grupo.length < 2) {
+      for (const row of grupo) out.set(row.session.id, null);
+      continue;
+    }
+    [...grupo]
+      .sort((a, b) => a.place.order - b.place.order)
+      .forEach((row, i) => out.set(row.session.id, `#${i + 1}`));
+  }
+  return out;
+};

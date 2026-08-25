@@ -1,8 +1,10 @@
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { ShieldSlash } from "@phosphor-icons/react";
 
 import {
   DEFAULT_AGENT_ROWS,
+  disambiguators,
   needsYou,
   tokenValues,
   visibleRows,
@@ -86,6 +88,9 @@ function Token({
  */
 export function AgentsSidebar({ rows, open, onSelect }: Props) {
   const { t } = useTranslation();
+  // Calculado sobre a lista inteira, e não por linha: saber se uma linha é
+  // ambígua exige olhar as outras.
+  const marcas = useMemo(() => disambiguators(rows), [rows]);
   if (rows.length === 0) return null;
 
   return (
@@ -94,7 +99,7 @@ export function AgentsSidebar({ rows, open, onSelect }: Props) {
        oito pixels de distância seria ruído. */
     <section className="flex shrink-0 flex-col">
       {rows.map((row) => {
-        const values = tokenValues(row, t);
+        const values = tokenValues(row, t, marcas.get(row.session.id) ?? null);
         const marca = needsYou(row);
         return (
           <button
