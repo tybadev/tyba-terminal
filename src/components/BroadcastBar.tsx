@@ -50,7 +50,7 @@ export function BroadcastBar({
 
   if (!enabled) {
     return (
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-tyba-border bg-tyba-surface px-3">
+      <div className="flex h-8 shrink-0 items-center gap-2 tyba-divide-b bg-tyba-surface px-3">
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -71,7 +71,7 @@ export function BroadcastBar({
   }
 
   return (
-    <div className="flex min-h-9 shrink-0 flex-wrap items-center gap-2 border-b border-tyba-amber/50 bg-tyba-amber-tint px-3 py-1.5">
+    <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 border-b border-tyba-amber/50 bg-tyba-amber-tint px-3 py-1.5">
       <button
         type="button"
         aria-pressed={true}
@@ -157,7 +157,7 @@ export function BroadcastConfirmDialog({
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onCancel()}>
       <DialogContent className="max-w-[480px] gap-0 rounded-[6px] border-tyba-red/50 bg-tyba-surface p-0 shadow-2xl">
-        <DialogHeader className="gap-1.5 border-b border-tyba-border px-4 py-3">
+        <DialogHeader className="gap-1.5 tyba-divide-b px-4 py-3">
           <DialogTitle className="flex items-center gap-2 text-[14px] text-tyba-text">
             <WarningCircle size={18} weight="fill" className="shrink-0 text-tyba-red" />
             {t("broadcastConfirmTitle")}
@@ -167,7 +167,7 @@ export function BroadcastConfirmDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex items-center gap-2 border-b border-tyba-border bg-tyba-red-tint px-4 py-2.5">
+        <div className="flex items-center gap-2 tyba-divide-b bg-tyba-red-tint px-4 py-2.5">
           <span className="rounded-[4px] border border-tyba-red/50 bg-tyba-red/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-tyba-red">
             {t("riskRed")}
           </span>
@@ -176,7 +176,7 @@ export function BroadcastConfirmDialog({
           </span>
         </div>
 
-        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all border-b border-tyba-border bg-tyba-sunken px-4 py-3 font-mono text-[12px] text-tyba-text">
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all tyba-divide-b bg-tyba-sunken px-4 py-3 font-mono text-[12px] text-tyba-text">
           {command}
         </pre>
 

@@ -102,7 +102,16 @@ export function TabBar({
             title={formatCombo(tabDigitCombo(i + 1))}
             className={`group relative flex max-w-44 min-w-24 shrink-0 items-center gap-1.5 rounded-t-[4px] px-2.5 text-[12px] transition-colors ${
               isActive
-                ? "bg-tyba-bg text-tyba-text"
+                // `sunken`, a cor do CONTEÚDO, e não `bg`. Com `bg` havia três
+                // superfícies empilhadas — a faixa em `surface`, a aba em `bg`,
+                // o painel em `sunken` — e a aba ficava boiando numa cor que
+                // não era de ninguém. No `tyba-dark` isso não aparecia porque
+                // `bg` e `sunken` distam 5/255.
+                // E é o que faz a aba ABRIR na linha: como ela ocupa a altura
+                // toda da faixa (`items-stretch`), o fundo dela cobre a divisa
+                // `inset` do container justamente sob a aba ativa. A linha
+                // deixa de passar por baixo dela.
+                ? "bg-tyba-sunken text-tyba-text"
                 : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
             }`}
           >

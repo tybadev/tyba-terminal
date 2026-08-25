@@ -29,7 +29,7 @@ export function PasteConfirmDialog({ text, onCancel, onConfirm }: Props) {
   return (
     <Dialog open onOpenChange={(open) => !open && onCancel()}>
       <DialogContent className="max-w-[520px] gap-0 rounded-[6px] border-tyba-border-strong bg-tyba-surface p-0 shadow-2xl">
-        <DialogHeader className="border-b border-tyba-border px-4 py-3">
+        <DialogHeader className="tyba-divide-b px-4 py-3">
           <DialogTitle className="text-[13px] text-tyba-text">
             {t("pasteMultilineTitle")}
           </DialogTitle>
@@ -38,11 +38,11 @@ export function PasteConfirmDialog({ text, onCancel, onConfirm }: Props) {
           </DialogDescription>
         </DialogHeader>
         {hasControls && (
-          <p className="border-b border-tyba-border bg-tyba-amber-tint px-4 py-2 text-[11px] text-tyba-amber">
+          <p className="tyba-divide-b bg-tyba-amber-tint px-4 py-2 text-[11px] text-tyba-amber">
             {t("pasteControlChars")}
           </p>
         )}
-        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-all border-b border-tyba-border bg-tyba-sunken px-4 py-3 font-mono text-[12px] text-tyba-text">
+        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-all tyba-divide-b bg-tyba-sunken px-4 py-3 font-mono text-[12px] text-tyba-text">
           {visible}
         </pre>
         <div className="flex items-center justify-end gap-2 px-4 py-3">

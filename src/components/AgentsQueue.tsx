@@ -68,7 +68,7 @@ function Row({
 
   return (
     <li
-      className={`relative border-b border-tyba-border px-3 py-2.5 last:border-b-0 ${
+      className={`relative tyba-divide-b px-3 py-2.5 last:border-b-0 ${
         espera ? "bg-tyba-amber/[.04]" : ""
       }`}
     >
@@ -205,7 +205,7 @@ export function AgentsQueue({
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
-      <header className="flex shrink-0 items-center gap-2 border-b border-tyba-border px-3 py-2">
+      <header className="flex shrink-0 items-center gap-2 tyba-divide-b px-3 py-2">
         <h2 className="text-[11px] uppercase tracking-[0.12em] text-tyba-text-muted">
           {t("agentsQueue")}
         </h2>

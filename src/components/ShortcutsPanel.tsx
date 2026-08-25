@@ -33,8 +33,8 @@ export function ShortcutsPanel({
   if (!open) return null;
 
   return (
-    <aside className="flex h-full w-72 shrink-0 flex-col border-l border-tyba-border bg-tyba-surface">
-      <header className="flex h-8 shrink-0 items-center justify-between border-b border-tyba-border px-3">
+    <aside className="flex h-full w-72 shrink-0 flex-col tyba-divide-l bg-tyba-surface">
+      <header className="flex h-8 shrink-0 items-center justify-between tyba-divide-b px-3">
         <span className="text-[12px] font-medium text-tyba-text">
           {t("shortcuts")}
         </span>

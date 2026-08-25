@@ -70,7 +70,7 @@ function CommandInput({
   return (
     <div
       data-slot="command-input-wrapper"
-      className="flex h-10 items-center gap-2.5 border-b border-tyba-border px-3"
+      className="flex h-10 items-center gap-2.5 tyba-divide-b px-3"
     >
       <span
         aria-hidden

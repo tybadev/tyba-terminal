@@ -102,7 +102,7 @@ export function NewSessionPrompt({
     >
       <CommandInput placeholder={t("newSessionWhere")} />
       {shells.length > 1 && (
-        <div className="flex items-center gap-1.5 border-b border-tyba-border px-3 py-1.5">
+        <div className="flex items-center gap-1.5 tyba-divide-b px-3 py-1.5">
           <TerminalWindow size={13} className="shrink-0 text-tyba-text-faint" />
           <div className="flex min-w-0 flex-wrap gap-1">
             {shells.map((s) => (
@@ -205,7 +205,7 @@ export function NewSessionPrompt({
           </CommandGroup>
         )}
       </CommandList>
-      <div className="flex items-center gap-4 border-t border-tyba-border px-3 py-1.5 font-mono text-[10px] text-tyba-text-faint">
+      <div className="flex items-center gap-4 tyba-divide-t px-3 py-1.5 font-mono text-[10px] text-tyba-text-faint">
         <span>↑↓ {t("hintNavigate")}</span>
         <span>↵ {t("hintRun")}</span>
         <span className="ml-auto">esc {t("hintClose")}</span>

@@ -39,7 +39,7 @@ export function SessionHoverCard({
 
   return (
     <HoverCardContent side="right" align="start" className="p-0">
-      <div className="flex items-center gap-2 border-b border-tyba-border px-3 py-2">
+      <div className="flex items-center gap-2 tyba-divide-b px-3 py-2">
         <span
           className={`size-1.5 shrink-0 rounded-full ${
             agentVisual
@@ -98,7 +98,7 @@ export function SessionHoverCard({
         )}
       </div>
 
-      <div className="flex items-center gap-3 border-t border-tyba-border px-3 py-1.5 text-[10px] text-tyba-text-faint">
+      <div className="flex items-center gap-3 tyba-divide-t px-3 py-1.5 text-[10px] text-tyba-text-faint">
         {branch && (
           <span className="flex min-w-0 items-center gap-1">
             <GitBranch size={11} className="shrink-0" />

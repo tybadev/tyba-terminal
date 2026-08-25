@@ -933,7 +933,7 @@ export function DiffView({
                 toggleFile(row.key, !row.collapsed);
               }
             }}
-            className="group/file flex w-full cursor-pointer items-center gap-2 border-t border-tyba-border bg-tyba-surface/60 px-4 py-2 text-left hover:bg-tyba-text/[.03]"
+            className="group/file flex w-full cursor-pointer items-center gap-2 tyba-divide-t bg-tyba-surface/60 px-4 py-2 text-left hover:bg-tyba-text/[.03]"
           >
             {row.collapsed ? (
               <CaretRight size={11} className="shrink-0 text-tyba-text-faint" />
@@ -1073,7 +1073,7 @@ export function DiffView({
       ref={containerRef}
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-tyba-bg"
     >
-      <header className="flex h-8 shrink-0 items-center gap-2 border-b border-tyba-border px-3">
+      <header className="flex h-8 shrink-0 items-center gap-2 tyba-divide-b px-3">
         <GitBranch size={13} className="shrink-0 text-tyba-green" />
         <span className="min-w-0 truncate text-[12px] text-tyba-text">
           {session.title}
@@ -1138,7 +1138,7 @@ export function DiffView({
 
       {conflicts && !browseBranch && (
         <div
-          className={`flex shrink-0 items-start gap-2 border-b border-tyba-border px-3 py-2 ${
+          className={`flex shrink-0 items-start gap-2 tyba-divide-b px-3 py-2 ${
             conflicts.files.length > 0 ? "bg-tyba-red/[.06]" : "bg-tyba-amber/[.06]"
           }`}
         >
@@ -1284,7 +1284,7 @@ export function DiffView({
 
       <div className="flex min-h-0 flex-1">
         <aside
-          className={`w-64 shrink-0 flex-col overflow-y-auto border-r border-tyba-border px-2 py-2 ${
+          className={`w-64 shrink-0 flex-col overflow-y-auto tyba-divide-r px-2 py-2 ${
             expanded ? "flex" : "hidden xl:flex"
           }`}
         >
@@ -1318,7 +1318,7 @@ export function DiffView({
           {stickyFile && (
             <button
               onClick={() => jumpTo(stickyFile.key)}
-              className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-tyba-border bg-tyba-bg/95 px-4 py-1.5 text-left backdrop-blur"
+              className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 tyba-divide-b bg-tyba-bg/95 px-4 py-1.5 text-left backdrop-blur"
             >
               <span
                 className={`w-3 shrink-0 text-center font-mono text-[10px] ${STATUS_COLOR[stickyFile.file.status]}`}
@@ -1375,7 +1375,7 @@ export function DiffView({
       </div>
 
       {stagedCount + unstagedCount > 0 && (
-        <div className="flex h-10 shrink-0 items-center gap-2 border-t border-tyba-border px-4">
+        <div className="flex h-8 shrink-0 items-center gap-2 tyba-divide-t px-4">
           <GitCommit size={13} className="shrink-0 text-tyba-text-faint" />
           <input
             value={commitMsg}
@@ -1405,7 +1405,7 @@ export function DiffView({
                 ? t("diffCommitMsgPlaceholder")
                 : t("diffCommitStageFirst")
             }
-            className="h-7 min-w-0 flex-1 rounded-[4px] border border-tyba-border bg-black/20 px-2 font-mono text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-green/50"
+            className="h-6 min-w-0 flex-1 rounded-[4px] border border-tyba-border bg-black/20 px-2 font-mono text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-green/50"
           />
           <Button
             variant="ghost"
@@ -1431,7 +1431,7 @@ export function DiffView({
           </Button>
           <Button
             size="sm"
-            className="h-7 gap-1.5 px-2.5 text-[11px]"
+            className="h-6 gap-1.5 px-2.5 text-[11px]"
             disabled={!commitMsg.trim() || stagedCount === 0 || busy !== null}
             title={stagedCount === 0 ? t("diffCommitStageFirst") : undefined}
             onClick={() =>
@@ -1467,7 +1467,7 @@ export function DiffView({
       </div>
       )}
 
-      <footer className="flex h-9 shrink-0 items-center gap-3 border-t border-tyba-border px-4 font-mono text-[11px] text-tyba-text-muted">
+      <footer className="flex h-6 shrink-0 items-center gap-3 tyba-divide-t px-4 font-mono text-[11px] text-tyba-text-muted">
         <GitBranch size={12} className="shrink-0" />
         <span>
           {browseBranch

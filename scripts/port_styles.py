@@ -259,12 +259,13 @@ samp {
   box-shadow: var(--tyba-focus-ring);
 }
 
-.tyba-divide-b,
-.tyba-divide-t,
-.tyba-divide-r {
-  position: relative;
-  z-index: 10;
-}
+/* Sem `position: relative; z-index: 10`. Eles existiam para levantar a
+   divisa acima do vizinho — necessário enquanto a sombra era desenhada
+   para FORA e caía no território dele. Agora ela é `inset`, mora dentro
+   do próprio elemento, e ninguém pode cobri-la.
+   O que se ganha é poder aplicar a classe em qualquer lugar: com
+   `position: relative` ela quebrava todo elemento `absolute` que também
+   precisasse de uma divisa — e havia vários. */
 .tyba-divide-b {
   box-shadow: var(--tyba-divider-b);
 }
@@ -273,6 +274,9 @@ samp {
 }
 .tyba-divide-r {
   box-shadow: var(--tyba-divider-r);
+}
+.tyba-divide-l {
+  box-shadow: var(--tyba-divider-l);
 }
 
 /* ---------- Luz ---------- */

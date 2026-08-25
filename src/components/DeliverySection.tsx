@@ -97,7 +97,7 @@ export function DeliverySection({
   };
 
   return (
-    <div className="flex flex-col border-t border-tyba-border">
+    <div className="flex flex-col tyba-divide-t">
       <div className="flex h-10 shrink-0 items-center gap-2 px-4">
         <span className="tyba-label">{t("deliveryTitle")}</span>
         <div className="flex-1" />
@@ -148,7 +148,7 @@ export function DeliverySection({
       </div>
 
       {pr && (
-        <div className="flex h-9 shrink-0 items-center gap-2 border-t border-tyba-border px-4 text-[11px]">
+        <div className="flex h-9 shrink-0 items-center gap-2 tyba-divide-t px-4 text-[11px]">
           <span className="rounded-full border border-tyba-border px-2 py-0.5 text-tyba-text-muted">
             {t(`prState_${pr.state}`, { defaultValue: pr.state })}
           </span>
