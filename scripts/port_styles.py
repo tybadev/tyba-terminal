@@ -279,6 +279,21 @@ samp {
   box-shadow: var(--tyba-divider-l);
 }
 
+/* Fronteira de ROLAGEM, para lista que corre por baixo de um bloco fixo.
+   Não é linha, e a diferença não é só de discrição: a linha afirma "aqui
+   há uma divisão" o tempo todo, e o fade só existe quando há conteúdo
+   escondido acima — ele informa "tem mais coisa aí em cima". Lista curta
+   não fade nada, porque não há o que apagar naquela faixa.
+   `mask-image`, e não os dois gradientes opacos da técnica clássica de
+   sombra de rolagem: aquela precisa da cor do fundo para se auto-esconder,
+   e sobre `.tyba-glass` a cor pintaria uma faixa sólida sobre o vidro.
+   Efeito colateral aceito: rolando até o fim, o último item fica meio
+   apagado. Se incomodar, o conserto é estado de rolagem — não outro CSS. */
+.tyba-scroll-fade {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
+}
+
 /* Separação por luz, para o CROMO da janela — header, sidebar, rodapé.
    O `z-index` volta aqui, e só aqui: a parte `cast` é projetada para fora,
    então precisa ficar acima do vizinho. São três containers simples, sem

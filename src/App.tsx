@@ -4591,7 +4591,7 @@ export default function App() {
                     </label>
                   )}
                   <nav
-                    className={`flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2 pb-2 ${
+                    className={`tyba-scroll-fade flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2 pb-2 ${
                       open ? "mt-2" : "mt-3"
                     }`}
                   >
@@ -4779,15 +4779,14 @@ export default function App() {
                       </TooltipContent>
                     </Tooltip>
                   </nav>
-                  {/* A divisa fica, e não é a mesma coisa que a do rodapé da
-                      janela: esta é fronteira de ROLAGEM. O `nav` acima rola,
-                      e sem ela o conteúdo passa por baixo destes botões sem
-                      nada dizendo onde a lista acaba.
-                      Tirá-la por um tempo foi erro meu: apoiava-se em o rodapé
-                      da janela existir sempre, e ele é condicional — some com a
-                      barra de chips desligada, com todos os chips ocultos, ou
-                      sem aba ativa. */}
-                  <div className="tyba-divide-t flex shrink-0 flex-col px-2 pt-1 pb-2">
+                  {/* Sem divisa: quem marca a fronteira de rolagem é o fade
+                      no `nav` acima. A linha aqui ficava 21px acima da borda da
+                      linha de comando — duas pilhas ancoradas embaixo, com
+                      alturas que não têm por que coincidir, então qualquer
+                      valor escolhido hoje quebra quando uma delas mudar.
+                      O fade resolve por deleção, e informa mais: ele só existe
+                      quando há conteúdo escondido acima. */}
+                  <div className="flex shrink-0 flex-col px-2 pt-1 pb-2">
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
