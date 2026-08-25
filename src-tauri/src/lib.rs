@@ -351,6 +351,12 @@ fn poll_agent_probers(app: &AppHandle) {
         shells.iter().copied().collect();
     let changed: std::collections::HashSet<SessionId> = changes.iter().map(|(id, _)| *id).collect();
     for (session_id, detected) in &changes {
+        // O binário mudou: a outra entrada da identidade de tela acabou de
+        // mudar sem que a tela tenha mexido. Sem esta cutucada, a thread
+        // emissora segue bloqueada no `recv` e o agente que subiu numa tela
+        // parada nunca chega à lista — era a discordância entre a faixa âmbar
+        // (que nasce aqui) e o quadro de agentes (que nasce da tela).
+        state.pty_pool.nudge_screen(*session_id);
         drive_disk_observer(
             app,
             &state,
@@ -4508,6 +4514,17 @@ async fn resume_agent_session(
     })
 }
 
+/// Abre ou fecha a fila de agentes no workspace ativo.
+#[tauri::command]
+fn toggle_agent_queue(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .layout
+        .toggle_agent_queue()
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
 #[tauri::command]
 fn open_agents_panel(
     app: AppHandle,
@@ -5943,6 +5960,7 @@ pub fn run() {
             focus_subagent,
             subagent_transcript,
             open_agents_panel,
+            toggle_agent_queue,
             kill_shell_agent,
             can_resume_agent_session,
             resume_agent_session,

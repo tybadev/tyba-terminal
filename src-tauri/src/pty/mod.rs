@@ -276,6 +276,21 @@ struct PtyHandle {
     leader_start: Option<u64>,
     screen: SharedScreen,
     size: (u16, u16),
+    /// Por onde o poll de processo acorda a thread emissora desta sessão.
+    ///
+    /// Existe porque o observador de tela vive DENTRO daquela thread e ela fica
+    /// bloqueada no `recv` enquanto não há saída. Um agente que subiu e deixou
+    /// a tela parada seria descoberto pelo poll e nunca reavaliado — ver
+    /// [`PtyPool::nudge_screen`].
+    ///
+    /// **Fraca, e isso não é detalhe.** A thread emissora termina quando o
+    /// canal desconecta, e desconectar exige que a ÚLTIMA ponta emissora morra
+    /// junto com a thread leitora. Uma ponta forte aqui segurava o canal aberto
+    /// para sempre: o laço nunca saía, `ScreenPipe::finish` nunca rodava, e o
+    /// palpite de um agente que já morreu ficava no quadro — além de vazar uma
+    /// thread por sessão. Pego pelo teste que afirma que a morte do PTY leva o
+    /// palpite junto.
+    nudge: std::sync::Weak<std::sync::mpsc::SyncSender<Vec<u8>>>,
 }
 
 /// Como uma sessão ganha (ou não) um observador de tela.
@@ -472,6 +487,31 @@ impl PtyPool {
         *self.observers.lock() = Some(factory);
     }
 
+    /// Acorda a thread emissora para reavaliar a tela desta sessão.
+    ///
+    /// Chamado quando o poll de processo descobre (ou perde) o binário de um
+    /// agente: a decisão de identidade tem duas entradas e só uma delas — a
+    /// tela — gera flush sozinha. Sem esta cutucada, `claude` cru que sobe e
+    /// deixa a tela parada nunca entraria na lista.
+    ///
+    /// Chunk vazio de propósito: atravessa o mesmo caminho de sempre, não
+    /// escreve byte nenhum no parser e faz o laço chegar ao recorte. `try_send`
+    /// porque fila cheia significa saída correndo — a reavaliação já vem por
+    /// conta própria, e bloquear a thread do poll para dizer "reavalie" seria
+    /// pagar caro para não mudar nada.
+    pub fn nudge_screen(&self, id: PtyId) -> bool {
+        let ptys = self.ptys.lock();
+        let Some(handle) = ptys.get(&id) else {
+            return false;
+        };
+        // `upgrade` falha quando a thread leitora já morreu — sessão encerrada
+        // que ainda não saiu do mapa não é cutucada.
+        let Some(nudge) = handle.nudge.upgrade() else {
+            return false;
+        };
+        nudge.try_send(Vec::new()).is_ok()
+    }
+
     /// O que observa a tela desta sessão, se a fábrica estiver instalada e o
     /// tipo da sessão admitir palpite de tela.
     ///
@@ -567,6 +607,13 @@ impl PtyPool {
         let screen: SharedScreen = Arc::new(Mutex::new(ScreenState::new(rows, cols)));
         let reader_screen = Arc::clone(&screen);
 
+        // Criado antes da inserção porque o handle guarda uma ponta dele. O
+        // `Arc` existe só para o handle poder guardar uma ponta FRACA: a única
+        // ponta forte vai para a thread leitora e morre com ela.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(CHANNEL_CAPACITY);
+        let tx = std::sync::Arc::new(tx);
+        let nudge = std::sync::Arc::downgrade(&tx);
+
         self.ptys.lock().insert(
             session_id,
             PtyHandle {
@@ -577,6 +624,7 @@ impl PtyPool {
                 leader_start,
                 screen,
                 size: (cols, rows),
+                nudge,
             },
         );
 
@@ -586,8 +634,6 @@ impl PtyPool {
         let cwd_event = format!("session://cwd/{session_id}");
         let bracketed_event = format!("session://bracketed/{session_id}");
         let prompt_mode_event = format!("session://prompt-mode/{session_id}");
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(CHANNEL_CAPACITY);
-
         std::thread::Builder::new()
             .name(format!("pty-reader-{session_id}"))
             .spawn(move || {
@@ -1269,7 +1315,18 @@ region = { bottom_lines = 3 }
 contains = ["esc to interrupt"]
 "#;
 
+    /// Manifesto que só reconhece pelo BINÁRIO. É o caso que a cutucada existe
+    /// para servir: nada na tela identifica, e a identidade chega pelo poll.
+    const CODEX_POR_PROCESSO: &str = r#"
+id = "codex"
+match = { process = ["codex"] }
+"#;
+
     type Visto = Arc<Mutex<Vec<Option<ObservedAgent>>>>;
+
+    /// O que a sonda de processo devolve, trocável no meio do teste — é assim
+    /// que o poll de 2 s se comporta em campo.
+    type Sonda = Arc<Mutex<Option<String>>>;
 
     fn pool_com_manifesto() -> (PtyPool, Visto) {
         let pool = PtyPool::new();
@@ -1286,6 +1343,26 @@ contains = ["esc to interrupt"]
             )
         }));
         (pool, visto)
+    }
+
+    fn pool_com_sonda() -> (PtyPool, Visto, Sonda) {
+        let pool = PtyPool::new();
+        let visto: Visto = Arc::new(Mutex::new(Vec::new()));
+        let sonda: Sonda = Arc::new(Mutex::new(None));
+        let da_fabrica = Arc::clone(&visto);
+        let sonda_da_fabrica = Arc::clone(&sonda);
+        pool.set_screen_observers(Arc::new(move |_id, kind| {
+            let do_sink = Arc::clone(&da_fabrica);
+            let do_probe = Arc::clone(&sonda_da_fabrica);
+            ScreenObserver::for_session(
+                kind,
+                Arc::new(ManifestRegistry::from_sources(&[CODEX_POR_PROCESSO])),
+                Box::new(move || do_probe.lock().clone()),
+                Box::new(move |observed| do_sink.lock().push(observed)),
+                crate::status::observed_notify::ObservedNotifier::silent(),
+            )
+        }));
+        (pool, visto, sonda)
     }
 
     /// Uma rajada com a tela do agente no FIM: o primeiro `printf` chega bem
@@ -1355,6 +1432,62 @@ contains = ["esc to interrupt"]
         assert!(
             espera(&visto, |publicados| publicados.last() == Some(&None)),
             "o palpite sobreviveu à morte do PTY: publicados={:?}",
+            visto.lock()
+        );
+    }
+
+    /// A cutucada do poll de processo, ponta a ponta.
+    ///
+    /// O caso real: o dono digita `claude` num shell, a tela assenta, e dois
+    /// segundos depois o poll descobre o binário. Nesse instante a thread
+    /// emissora está parada no `recv` e não há mais saída nenhuma vindo do
+    /// PTY — sem `nudge_screen`, ninguém reavalia e o agente jamais entra na
+    /// lista, por mais que a faixa âmbar (que nasce do mesmo poll) já esteja
+    /// na tela dizendo que ele existe.
+    ///
+    /// Sem o teste a fiação seria invisível: trocar o corpo de `nudge_screen`
+    /// por `false` deixa a suíte inteira verde.
+    #[test]
+    fn o_poll_de_processo_acorda_a_reavaliacao_com_a_tela_parada() {
+        let app = tauri::test::mock_app();
+        let (pool, visto, sonda) = pool_com_sonda();
+        let id = PtyId::new_v4();
+
+        // Fala uma vez e cala a boca: depois do `printf` não há mais flush
+        // nenhum, que é a condição em que o bug aparecia.
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("printf 'prompt\n'; sleep 3");
+
+        pool.spawn(
+            app.handle().clone(),
+            id,
+            cmd,
+            None,
+            None,
+            80,
+            24,
+            &SessionKind::Shell,
+            Box::new(|| {}),
+        )
+        .unwrap();
+
+        // Deixa a rajada inicial passar: é ela que fecha o portão de sequência.
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            visto.lock().iter().flatten().next().is_none(),
+            "identificou um agente antes de a sonda saber de algum: {:?}",
+            visto.lock()
+        );
+
+        *sonda.lock() = Some("codex".to_string());
+        assert!(pool.nudge_screen(id), "a cutucada não achou a sessão");
+
+        assert!(
+            espera_ate(&visto, Duration::from_secs(2), |publicados| {
+                publicados.iter().flatten().any(|o| o.agent == "codex")
+            }),
+            "o agente descoberto pelo poll nunca chegou ao sink: {:?}",
             visto.lock()
         );
     }
@@ -1573,6 +1706,10 @@ mod tests {
             leader_start: None,
             screen: Arc::new(parking_lot::Mutex::new(super::ScreenState::new(24, 80))),
             size: (80, 24),
+            // Sem thread emissora nesta fixture: ponta fraca sem dono, que
+            // nunca sobe — é o que se quer aqui, porque o teste é de derrubar
+            // árvore de processo, não de tela.
+            nudge: std::sync::Weak::new(),
         };
         pool.ptys.lock().insert(uuid::Uuid::new_v4(), handle);
 

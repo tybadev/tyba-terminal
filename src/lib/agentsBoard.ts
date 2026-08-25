@@ -8,6 +8,7 @@ import type {
   SessionId,
   SessionStatus,
   TabId,
+  Workspace,
   WorkspaceId,
 } from "./ipc";
 import { statusVisual, type StatusVisual } from "./sessionStatus";
@@ -26,6 +27,18 @@ export interface SessionPlace {
   workspaceColor: string | null;
   tabId: TabId;
   paneId: PaneId;
+  /**
+   * Posição desta sessão na varredura do layout — abas na ordem da barra,
+   * painéis na ordem da árvore.
+   *
+   * Existe para desempatar linhas que ficam idênticas: duas sessões no mesmo
+   * workspace, com o mesmo agente, produzem duas linhas iguais na lista. Nome
+   * de aba não resolve, porque duas abas da mesma pasta nascem com o mesmo
+   * nome. O que sobra é a posição — e ela precisa vir do LAYOUT, nunca da
+   * ordem da lista: aquela é por urgência e mudaria de lugar a cada turno do
+   * agente, trocando o rótulo de uma linha parada.
+   */
+  order: number;
 }
 
 export interface AgentRow {
@@ -170,6 +183,7 @@ export const placesBySession = (
   layout: LayoutState,
 ): Map<SessionId, SessionPlace> => {
   const found = new Map<SessionId, SessionPlace>();
+  let order = 0;
   for (const workspace of layout.workspaces) {
     for (const tab of workspace.tabs) {
       for (const [sessionId, paneId] of placesIn(tab.root)) {
@@ -180,6 +194,7 @@ export const placesBySession = (
           workspaceColor: workspace.color,
           tabId: tab.id,
           paneId,
+          order: order++,
         });
       }
     }
@@ -275,6 +290,70 @@ export const boardOrder = (sections: BoardSections): AgentRow[] => [
   ...sections.managed,
   ...sections.observed,
 ];
+
+/**
+ * O agente que representa o workspace na barra lateral.
+ *
+ * Nasceu como `useCallback` dentro do `App` e olhava só sessão de agente
+ * lançada pelo TYBA — por isso um `claude` digitado num shell não aparecia em
+ * lugar nenhum da lista que está sempre na tela, e para vê-lo era preciso
+ * navegar até uma página. Era o contrário do que a feature promete: quem tem de
+ * caçar não foi avisado.
+ *
+ * **Gerenciado sempre vence observado**, mesmo que o observado pareça mais
+ * urgente. É a mesma regra que separa as seções do quadro: um palpite de tela
+ * não empurra para baixo um agente que tem hook, gate e jaula.
+ */
+export interface WorkspaceAgent {
+  session: Session;
+  visual: StatusVisual;
+  /** Veio da tela: sem gate, sem inbox, sem jaula. */
+  observed: ObservedAgent | null;
+}
+
+export const agentForWorkspace = (
+  workspace: Workspace,
+  sessionById: Map<SessionId, Session>,
+): WorkspaceAgent | null => {
+  let best: (WorkspaceAgent & { urgency: number }) | null = null;
+  for (const tab of workspace.tabs) {
+    if (!tab.root) continue;
+    for (const [sessionId] of placesIn(tab.root)) {
+      const session = sessionById.get(sessionId);
+      if (!session) continue;
+
+      let candidate: (WorkspaceAgent & { urgency: number }) | null = null;
+      if (session.kind.type === "agent") {
+        const visual = statusVisual(session.status, session.attention);
+        if (visual) {
+          // Gerenciado entra num degrau acima de qualquer observado: somar 100
+          // é o que garante que a comparação de urgência nunca inverta a
+          // precedência, por mais urgente que o palpite pareça.
+          candidate = {
+            session,
+            visual,
+            observed: null,
+            urgency: urgencyOf(session) + 100,
+          };
+        }
+      } else if (session.observed) {
+        candidate = {
+          session,
+          visual: observedVisual(session.observed),
+          observed: session.observed,
+          urgency: observedUrgency(session.observed),
+        };
+      }
+
+      if (candidate && (!best || candidate.urgency > best.urgency)) {
+        best = candidate;
+      }
+    }
+  }
+  if (!best) return null;
+  const { session, visual, observed } = best;
+  return { session, visual, observed };
+};
 
 export interface WorkspaceGroup {
   workspaceId: WorkspaceId;

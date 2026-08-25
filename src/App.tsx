@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import {
   CaretDown,
   CaretRight,
-  ChartBar,
   Check,
   DotsThree,
   FolderOpen,
@@ -65,6 +64,8 @@ import { UpdateToast } from "./components/UpdateToast";
 import { IS_MAC } from "./lib/platform";
 import { AgentIcon } from "./components/icons/AgentIcon";
 import { AgentsBoard } from "./components/AgentsBoard";
+import { AgentsQueue } from "./components/AgentsQueue";
+import { AgentsSidebar } from "./components/AgentsSidebar";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { Clock } from "./components/Clock";
@@ -180,6 +181,7 @@ import {
   openAgentsPanel,
   openSubagentViewer,
   openViewTab,
+  toggleAgentQueue,
   paneSession,
   listSubagents,
   focusSubagent,
@@ -255,12 +257,7 @@ import {
 import { bootFailureTitleKey } from "./lib/bootFailure";
 import { basename } from "@/lib/utils";
 import { buildConflictPrompt } from "./lib/conflicts";
-import {
-  isFinishedStatus,
-  sameSessionStatus,
-  statusVisual,
-  type StatusVisual,
-} from "./lib/sessionStatus";
+import { isFinishedStatus, mergeSessionUpdate } from "./lib/sessionStatus";
 import {
   AGENTS_PANEL_LINGER_MS,
   agentsPanelRunConcluded,
@@ -302,6 +299,7 @@ import {
   buildRows as buildAgentRows,
   nextAttention,
   wantsAttention,
+  agentForWorkspace,
   type SessionPlace,
 } from "./lib/agentsBoard";
 import {
@@ -1557,22 +1555,27 @@ export default function App() {
   );
 
   // Conta as duas seções do quadro: o agente sem gate também pede alguém, e o
-  // badge é o canal mais barato — ver `wantsAttention` em `lib/agentsBoard.ts`.
-  const agentsWaiting = useMemo(
-    () =>
-      boardOrder(buildAgentRows(sessions, layout)).filter(wantsAttention)
-        .length,
+
+  // Uma lista só, consumida pelo contador e pela seção da barra lateral. Duas
+  // derivações independentes do mesmo estado dariam contador e lista que
+  // discordam — e é exatamente o número em cima da lista que denuncia.
+  const agentRows = useMemo(
+    () => boardOrder(buildAgentRows(sessions, layout)),
     [sessions, layout],
+  );
+  const agentsWaiting = useMemo(
+    () => agentRows.filter(wantsAttention).length,
+    [agentRows],
   );
 
   const goToNextAttention = useCallback(() => {
     const next = nextAttention(
-      boardOrder(buildAgentRows(sessions, layout)),
+      agentRows,
       activeId,
     );
     if (!next) return;
     jumpToAgent(next.session.id, next.place);
-  }, [sessions, layout, activeId, jumpToAgent]);
+  }, [agentRows, activeId, jumpToAgent]);
 
   const typeIntoSession = useCallback(
     async (sid: SessionId, text: string, submit: boolean) => {
@@ -1792,20 +1795,10 @@ export default function App() {
       void onSessionStatus(id, (session) => {
         setSessions((prev) => {
           const current = prev.find((c) => c.id === id);
-          if (
-            !current ||
-            (sameSessionStatus(current.status, session.status) &&
-              current.attention === session.attention) ||
-            (isFinishedStatus(current.status) &&
-              !isFinishedStatus(session.status))
-          ) {
-            return prev;
-          }
-          return prev.map((c) =>
-            c.id === id
-              ? { ...c, status: session.status, attention: session.attention }
-              : c,
-          );
+          if (!current) return prev;
+          const merged = mergeSessionUpdate(current, session);
+          if (!merged) return prev;
+          return prev.map((c) => (c.id === id ? merged : c));
         });
       }).then((un) => (disposed ? un() : unlisteners.push(un)));
     }
@@ -2079,22 +2072,11 @@ export default function App() {
     [sessionCommands],
   );
 
+  // A regra mora em `lib/agentsBoard`, testada: gerenciado nunca perde para
+  // observado, e o visual do observado não herda o `status` da sessão de shell
+  // — que está sempre `running` e pintaria de azul um agente parado.
   const workspaceAgentStatus = useCallback(
-    (w: Workspace): { session: Session; visual: StatusVisual } | null => {
-      let best: { session: Session; visual: StatusVisual } | null = null;
-      for (const tab of w.tabs) {
-        if (!tab.root) continue;
-        for (const sid of leafSessions(tab.root)) {
-          const session = sessionById.get(sid);
-          if (!session || session.kind.type !== "agent") continue;
-          const visual = statusVisual(session.status, session.attention);
-          if (visual && (!best || visual.rank > best.visual.rank)) {
-            best = { session, visual };
-          }
-        }
-      }
-      return best;
-    },
+    (w: Workspace) => agentForWorkspace(w, sessionById),
     [sessionById],
   );
 
@@ -3114,7 +3096,7 @@ export default function App() {
       } else if (action === "nextSession") {
         cycleWorkspace(1);
       } else if (action === "nextAttentionSession") {
-        goToNextAttention();
+        void toggleAgentQueue().catch(() => {});
       } else if (action === "prevTab") {
         cycleTab(-1);
       } else if (action === "nextTab") {
@@ -3852,8 +3834,14 @@ export default function App() {
     const agentStatus = isConfig || isWtView ? null : workspaceAgentStatus(w);
     const agentDetail = (() => {
       if (!agentStatus) return null;
-      const status = agentStatus.session.status;
       const label = t(agentStatus.visual.labelKey);
+      // Observado não tem `hint` nem `reason`: o que a tela diz é o estado, e
+      // mais nada. O nome do agente é o que orienta — sem ele a linha diria
+      // "sem sinal" sem dizer de quem.
+      if (agentStatus.observed) {
+        return `${agentStatus.observed.agent} · ${label}`;
+      }
+      const status = agentStatus.session.status;
       if (status.state === "awaiting_input" && status.hint) {
         return `${label}: ${status.hint}`;
       }
@@ -3994,7 +3982,12 @@ export default function App() {
                       </span>
                     </span>
                   ) : null}
-                  {branch && (
+                  {/* A branch cede a linha quando há agente. Os dois cabiam em
+                      teoria e truncavam na prática — medido: `em and…` e
+                      `feat/mcp-…` lado a lado, nenhum dos dois legível. O que
+                      muda e urge é o estado; a branch é estável e está no
+                      cabeçalho. E o texto completo do estado vive no painel. */}
+                  {branch && !agentDetail && !runningCmd && (
                     <span
                       title={branch}
                       className="flex min-w-0 items-center gap-0.5 font-mono text-[10px] leading-none text-tyba-text-faint"
@@ -4146,6 +4139,10 @@ export default function App() {
         onNewTab={() => void newTab()}
         onCloseActive={() => void closeActivePane()}
         onOpenSettings={() => void openViewTab("settings").catch(() => {})}
+        onOpenAgentsBoard={() =>
+          void openViewTab("agent-board").catch(() => {})
+        }
+        onOpenStats={() => void openViewTab("stats").catch(() => {})}
         onTogglePanel={toggleSidebar}
         onOpenFiles={() => {
           if (activeId) void openFilesPanel(activeId).catch(() => {});
@@ -4747,48 +4744,24 @@ export default function App() {
                         {t("connectionsTitle")}
                       </TooltipContent>
                     </Tooltip>
+                  </nav>
+                  <div className="flex shrink-0 flex-col border-t border-tyba-border px-2 pt-1 pb-2">
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
                           variant="ghost"
-                          onClick={() =>
-                            void openViewTab("stats").catch(() => {})
-                          }
-                          aria-label={t("statsTitle")}
-                          className={`mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal ${
-                            open ? "justify-start px-2" : "justify-center px-0"
-                          } ${
-                            activeTab?.view === "stats"
-                              ? "bg-tyba-text/[.05] text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text"
-                          }`}
-                        >
-                          <ChartBar size={14} />
-                          {open && t("statsTitle")}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side={open ? "bottom" : "right"}>
-                        {t("statsTitle")}
-                      </TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          onClick={() =>
-                            void openViewTab("agent-board").catch(() => {})
-                          }
-                          aria-label={t("agentsBoard")}
+                          onClick={() => void toggleAgentQueue().catch(() => {})}
+                          aria-label={t("agentsQueue")}
                           className={`relative mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal ${
                             open ? "justify-start px-2" : "justify-center px-0"
                           } ${
-                            activeTab?.view === "agent-board"
+                            activeWorkspace?.side_view === "agent-queue"
                               ? "bg-tyba-text/[.05] text-tyba-text"
                               : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text"
                           }`}
                         >
                           <AgentIcon size={14} />
-                          {open && t("agentsBoard")}
+                          {open && t("agentsQueue")}
                           {agentsWaiting > 0 && (
                             <span
                               className={
@@ -4803,10 +4776,19 @@ export default function App() {
                         </Button>
                       </TooltipTrigger>
                       <TooltipContent side={open ? "bottom" : "right"}>
-                        {t("agentsBoard")}
+                        {t("agentsQueue")}
                       </TooltipContent>
                     </Tooltip>
-                  </nav>
+                    {agentRows.length > 0 && (
+                      <div className="mt-0.5 max-h-[40vh] min-h-0 overflow-y-auto">
+                        <AgentsSidebar
+                          rows={agentRows}
+                          open={open}
+                          onSelect={jumpToAgent}
+                        />
+                      </div>
+                    )}
+                  </div>
                 </aside>
               )}
 
@@ -5413,7 +5395,22 @@ export default function App() {
                           : ""
                       }`}
                     >
-                      {renderSideView?.startsWith("agents:") ? (
+                      {renderSideView === "agent-queue" ? (
+                        <AgentsQueue
+                          sessions={sessions}
+                          layout={layout}
+                          approvals={approvals}
+                          onJump={jumpToAgent}
+                          onReviewDiff={(id) =>
+                            void openDiffTab(id).catch(() => {})
+                          }
+                          onClose={() =>
+                            void closeSideView(activeWorkspace.id).catch(
+                              () => {},
+                            )
+                          }
+                        />
+                      ) : renderSideView?.startsWith("agents:") ? (
                         agentsTarget ? (
                           <AgentsPanel
                             key={agentsTarget.id}
