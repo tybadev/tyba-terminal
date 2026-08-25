@@ -172,7 +172,15 @@
   --tyba-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
   --tyba-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.5);
   --tyba-shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.7);
-  --tyba-divider-line: color-mix(in srgb, var(--tyba-text) 7%, transparent);
+  /* Separação estrutural: branco/preto pela POLARIDADE, não pelo texto.
+     Derivar do texto parecia servir a qualquer pele, mas o texto carrega
+     a intenção de contraste do esquema, e ela não é a da moldura: no
+     `solarized-dark`, lavado de propósito, a linha caía para 8 e sumia.
+     Assim ela fica entre 14,7 e 17,3 nos 15 temas medidos.
+     Própria, e não `--tyba-border`: `border` é chave que tema importado
+     pode declarar (UI_KEYS do core), então só um token fora do schema
+     garante que a moldura do app não muda de peso com o import. */
+  --tyba-divider-line: rgba(255, 255, 255, 0.07);
   --tyba-divider-b: 0 1px 0 0 var(--tyba-divider-line);
   --tyba-divider-t: 0 -1px 0 0 var(--tyba-divider-line);
   --tyba-divider-r: 1px 0 0 0 var(--tyba-divider-line);
@@ -231,8 +239,8 @@
   --tyba-surface: #fbfbfd;
   --tyba-raised: #ffffff;
   --tyba-overlay: #ffffff;
-  --tyba-border: #e3e3ea;
-  --tyba-border-strong: #cfcfd8;
+  --tyba-border: rgba(0, 0, 0, 0.07);        /* espelha o :root, invertido */
+  --tyba-border-strong: rgba(0, 0, 0, 0.16);
   --tyba-sunken: #ececf0;
 
   --tyba-text: #17171c;
@@ -266,7 +274,7 @@
   --tyba-shadow-sm: 0 1px 2px rgba(23, 23, 28, 0.08);
   --tyba-shadow-md: 0 4px 16px rgba(23, 23, 28, 0.1);
   --tyba-shadow-lg: 0 12px 40px rgba(23, 23, 28, 0.14);
-  --tyba-divider-line: color-mix(in srgb, var(--tyba-text) 12%, transparent);
+  --tyba-divider-line: rgba(0, 0, 0, 0.07);
 }
 
 /* ============================================================
@@ -280,6 +288,14 @@
 
    Temas mudam COR, nunca identidade: tipografia, espaçamento,
    raios, luz e o gradiente-assinatura continuam TYBA.
+
+   Nenhum esquema declara `--tyba-border` nem `--tyba-border-strong`:
+   a MOLDURA é identidade, não cor, e herda do tyba.css pela
+   polaridade. Enquanto cada esquema escolhia a sua, o peso da linha
+   ia de 16 (tyba-dark) a 39 (monokai-light) sem ninguém ter decidido
+   isso — e os dois únicos temas em que o valor já estava certo eram
+   justamente aqueles em que a interface foi desenhada, que é por que
+   o defeito nunca apareceu para quem construiu.
 
    Convenções de mapeamento (esquemas sem paleta completa):
    - cyan derivado quando o esquema não tem um (marcado "der.");
@@ -296,8 +312,6 @@
   --tyba-surface: #073642;        /* base02 */
   --tyba-raised: #0b4251;
   --tyba-overlay: #0f4d5e;
-  --tyba-border: #164f5c;
-  --tyba-border-strong: #2a6675;
   --tyba-sunken: #00212b;
 
   --tyba-text: #93a1a1;           /* base1 */
@@ -323,8 +337,6 @@
   --tyba-surface: #faf4e4;
   --tyba-raised: #fefaef;
   --tyba-overlay: #fffcf4;
-  --tyba-border: #e0d9c4;
-  --tyba-border-strong: #c9c1a9;
   --tyba-sunken: #eee8d5;         /* base2 */
 
   --tyba-text: #073642;           /* base02 */
@@ -363,8 +375,6 @@
   --tyba-surface: #2f313f;
   --tyba-raised: #363948;
   --tyba-overlay: #3d4051;
-  --tyba-border: #44475a;         /* current line */
-  --tyba-border-strong: #6272a4;  /* comment */
   --tyba-sunken: #1e1f29;
 
   --tyba-text: #f8f8f2;
@@ -390,8 +400,6 @@
   --tyba-surface: #fcf8e8;
   --tyba-raised: #fffbeb;        /* bg oficial do Alucard */
   --tyba-overlay: #fffdf3;
-  --tyba-border: #e2deca;        /* line highlight oficial */
-  --tyba-border-strong: #c9c5b2;
   --tyba-sunken: #efead5;
 
   --tyba-text: #1f1f1f;
@@ -430,8 +438,6 @@
   --tyba-surface: #32302f;        /* bg0_s */
   --tyba-raised: #3c3836;         /* bg1 */
   --tyba-overlay: #45403d;
-  --tyba-border: #504945;         /* bg2 */
-  --tyba-border-strong: #665c54;  /* bg3 */
   --tyba-sunken: #1d2021;         /* bg0_h */
 
   --tyba-text: #ebdbb2;           /* fg1 */
@@ -457,8 +463,6 @@
   --tyba-surface: #f9f0ca;
   --tyba-raised: #f9f5d7;         /* bg0_h */
   --tyba-overlay: #fbf7e2;
-  --tyba-border: #d5c4a1;         /* bg2 */
-  --tyba-border-strong: #bdae93;  /* bg3 */
   --tyba-sunken: #ebdbb2;         /* bg1 */
 
   --tyba-text: #3c3836;           /* fg1 */
@@ -497,8 +501,6 @@
   --tyba-surface: #161b22;
   --tyba-raised: #21262d;
   --tyba-overlay: #2d333b;
-  --tyba-border: #30363d;
-  --tyba-border-strong: #484f58;
   --tyba-sunken: #010409;
 
   --tyba-text: #e6edf3;
@@ -524,8 +526,6 @@
   --tyba-surface: #ffffff;
   --tyba-raised: #ffffff;
   --tyba-overlay: #ffffff;
-  --tyba-border: #d0d7de;
-  --tyba-border-strong: #afb8c1;
   --tyba-sunken: #eaeef2;
 
   --tyba-text: #1f2328;
@@ -564,8 +564,6 @@
   --tyba-surface: #2e2f28;
   --tyba-raised: #36372e;
   --tyba-overlay: #3e3d32;        /* line highlight */
-  --tyba-border: #49483e;         /* selection */
-  --tyba-border-strong: #57564a;
   --tyba-sunken: #1e1f1a;
 
   --tyba-text: #f8f8f2;
@@ -591,8 +589,6 @@
   --tyba-surface: #353236;
   --tyba-raised: #3b383d;
   --tyba-overlay: #403e41;
-  --tyba-border: #49474b;
-  --tyba-border-strong: #5b595c;
   --tyba-sunken: #221f22;
 
   --tyba-text: #fcfcfa;
@@ -618,8 +614,6 @@
   --tyba-surface: #2d3a40;
   --tyba-raised: #35434a;
   --tyba-overlay: #3a4449;
-  --tyba-border: #43535a;
-  --tyba-border-strong: #56676e;
   --tyba-sunken: #1d2528;
 
   --tyba-text: #f2fffc;
@@ -645,8 +639,6 @@
   --tyba-surface: #2f3142;
   --tyba-raised: #363849;
   --tyba-overlay: #3a3d4b;
-  --tyba-border: #454a5c;
-  --tyba-border-strong: #585d70;
   --tyba-sunken: #1e1f2b;
 
   --tyba-text: #eaf2f1;
@@ -672,8 +664,6 @@
   --tyba-surface: #342c2c;
   --tyba-raised: #3b3232;
   --tyba-overlay: #403838;
-  --tyba-border: #4c4141;
-  --tyba-border-strong: #5f5353;
   --tyba-sunken: #211c1c;
 
   --tyba-text: #fff1f3;
@@ -699,8 +689,6 @@
   --tyba-surface: #2a2a2b;
   --tyba-raised: #313132;
   --tyba-overlay: #363537;
-  --tyba-border: #403f42;
-  --tyba-border-strong: #525053;
   --tyba-sunken: #191919;
 
   --tyba-text: #f7f1ff;
@@ -726,8 +714,6 @@
   --tyba-surface: #fdf9f7;
   --tyba-raised: #fffcfb;
   --tyba-overlay: #fffdfc;
-  --tyba-border: #d3cdcc;         /* dark2 */
-  --tyba-border-strong: #a59fa0;  /* dimmed3 */
   --tyba-sunken: #ede7e5;         /* dark1 */
 
   --tyba-text: #29242a;
@@ -766,8 +752,6 @@
   --tyba-surface: #1a1616;
   --tyba-raised: #252526;
   --tyba-overlay: #2d2d30;
-  --tyba-border: #2b2828;
-  --tyba-border-strong: #3c3c3c;
   --tyba-sunken: #0f0d0d;
 
   --tyba-text: #eeffff;
