@@ -20,7 +20,11 @@ use crate::status::screen::{ScreenSnapshot, MAX_REGION_LINES};
 /// Versão do motor. Manifesto que pede mais do que isto é recusado inteiro em
 /// vez de aplicado pela metade — regra que o motor não entende é regra cujo
 /// efeito ninguém consegue prever.
-pub const ENGINE_VERSION: u32 = 1;
+///
+/// **v2** acrescenta `applies_to` por REGRA. Um manifesto que use isso precisa
+/// declarar `min_engine_version = 2`: num motor v1 o campo seria ignorado em
+/// silêncio e a regra passaria a valer em escopo nenhum — pior que recusar.
+pub const ENGINE_VERSION: u32 = 2;
 
 pub const MAX_RULES: usize = 128;
 pub const MAX_MATCHER_CHARS: usize = 512;
@@ -39,7 +43,19 @@ pub enum ManifestError {
     BadRegex { rule: String, detail: String },
     #[error("regra `{rule}` não tem nenhum matcher")]
     EmptyRule { rule: String },
+    #[error(
+        "regra `{rule}` usa `applies_to`, que exige motor v{needs}; \
+         o manifesto declara v{declared}"
+    )]
+    RuleFeatureTooNew {
+        rule: String,
+        needs: u32,
+        declared: u32,
+    },
 }
+
+/// Versão do motor em que `applies_to` por regra passou a existir.
+const RULE_SCOPE_SINCE: u32 = 2;
 
 /// Onde a sessão pode estar para o manifesto valer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -106,6 +122,15 @@ pub struct RawRule {
     /// não ser lido como aprovação pendente.
     #[serde(default)]
     pub skip_state_update: bool,
+    /// Escopos em que ESTA regra vale. Vazio = todos, como no manifesto.
+    ///
+    /// Existe porque o mesmo sinal significa coisas diferentes conforme onde a
+    /// sessão está. O caso que forçou: o Claude Code trava o título em `✳`
+    /// dentro do tmux mesmo trabalhando, então ali `✳` não pode ser lido como
+    /// ocioso; no shell local, onde não há tmux no meio, `✳` é exatamente o
+    /// repouso. Sem isto sobrava escolher qual dos dois errar.
+    #[serde(default)]
+    pub applies_to: Vec<Scope>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -143,6 +168,8 @@ pub struct Rule {
     contains_lower: Vec<String>,
     regex: Option<regex::Regex>,
     pub skip_state_update: bool,
+    /// Ver [`RawRule::applies_to`]. Vazio = vale em todo escopo.
+    pub applies_to: Vec<Scope>,
 }
 
 #[derive(Debug)]
@@ -185,6 +212,21 @@ impl Manifest {
                 found: raw.rules.len(),
             });
         }
+        // O espelho da checagem acima, e igualmente inegociável: manifesto que
+        // USA um recurso novo sem declarar a versão que o trouxe roda torto num
+        // motor antigo — o campo é ignorado em silêncio e a regra passa a valer
+        // em escopo nenhum. Recusar aqui é o que transforma erro de autor em
+        // mensagem, em vez de comportamento que ninguém explica seis meses
+        // depois.
+        if raw.min_engine_version < RULE_SCOPE_SINCE {
+            if let Some(rule) = raw.rules.iter().find(|r| !r.applies_to.is_empty()) {
+                return Err(ManifestError::RuleFeatureTooNew {
+                    rule: rule.id.clone(),
+                    needs: RULE_SCOPE_SINCE,
+                    declared: raw.min_engine_version,
+                });
+            }
+        }
 
         let mut rules = Vec::with_capacity(raw.rules.len());
         for rule in raw.rules {
@@ -223,6 +265,7 @@ impl Manifest {
                 region: rule.region,
                 regex,
                 skip_state_update: rule.skip_state_update,
+                applies_to: rule.applies_to,
             });
         }
         // Maior prioridade primeiro; empate mantém a ordem do arquivo, que é o
@@ -259,13 +302,28 @@ impl Manifest {
     }
 
     /// A primeira regra que casa, já em ordem de prioridade.
-    pub fn evaluate(&self, snapshot: &ScreenSnapshot) -> Verdict {
-        // Tela cheia é do app que está rodando, não do agente. O snapshot já
-        // devolve região vazia ali; esta guarda evita até o laço.
-        if snapshot.alt_screen {
-            return Verdict::NoMatch;
-        }
+    pub fn evaluate(&self, snapshot: &ScreenSnapshot, scope: Scope) -> Verdict {
         for rule in &self.rules {
+            // O escopo entra porque o mesmo sinal muda de significado conforme
+            // onde a sessão está — ver [`RawRule::applies_to`].
+            if !rule.applies_to.is_empty() && !rule.applies_to.contains(&scope) {
+                continue;
+            }
+            // Em tela cheia o CORPO é do app que está rodando, não do agente —
+            // e o `snapshot` já devolve região vazia ali. O TÍTULO não: ele
+            // continua sendo escrito pelo agente, e o próprio `snapshot` o
+            // mantém preenchido justamente por isso.
+            //
+            // A guarda antiga cortava as duas regiões na entrada do laço, e
+            // com isso o estado de qualquer agente de TUI virava indetectável
+            // — que é praticamente todos. A regra `title_working` do manifesto
+            // do Claude Code (o spinner `◐◑`) nunca podia disparar: ele roda em
+            // tela cheia, e o TYBA sabe disso (é ele que escreve "app de tela
+            // cheia" no bloco). A linha aparecia no quadro dizendo "sem sinal"
+            // para sempre.
+            if snapshot.alt_screen && !matches!(rule.region, Region::OscTitle) {
+                continue;
+            }
             if !rule.matches(snapshot) {
                 continue;
             }
@@ -311,6 +369,16 @@ impl Rule {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+impl Manifest {
+    /// Avalia no escopo do shell local. Só para teste: a esmagadora maioria das
+    /// asserções não é sobre escopo, e repetir `Scope::Shell` em todas
+    /// esconderia as poucas que são.
+    fn evaluate_shell(&self, snapshot: &ScreenSnapshot) -> Verdict {
+        self.evaluate(snapshot, Scope::Shell)
     }
 }
 
@@ -370,7 +438,7 @@ line_regex = 'Working \([^)]*esc to interrupt\)'
     fn a_prioridade_maior_vence() {
         let m = Manifest::parse(CODEX).unwrap();
         // As duas casam; a de título tem prioridade 1100 contra 500.
-        let verdict = m.evaluate(&snap(
+        let verdict = m.evaluate_shell(&snap(
             "Codex — Action Required",
             &["• Working (2s • esc to interrupt)"],
         ));
@@ -384,7 +452,7 @@ line_regex = 'Working \([^)]*esc to interrupt\)'
         // ficaria bloqueada para sempre — o risco nº 2 da spec.
         let m = Manifest::parse(CODEX).unwrap();
         assert_eq!(
-            m.evaluate(&snap("Codex", &["↑/↓ to scroll", "q to quit"])),
+            m.evaluate_shell(&snap("Codex", &["↑/↓ to scroll", "q to quit"])),
             Verdict::Hold
         );
     }
@@ -393,7 +461,7 @@ line_regex = 'Working \([^)]*esc to interrupt\)'
     fn contains_e_case_insensitive_porque_ui_de_terceiro_muda_sem_avisar() {
         let m = Manifest::parse(CODEX).unwrap();
         assert_eq!(
-            m.evaluate(&snap("codex — action required", &[])),
+            m.evaluate_shell(&snap("codex — action required", &[])),
             Verdict::State(ObservedState::AwaitingInput)
         );
     }
@@ -402,17 +470,42 @@ line_regex = 'Working \([^)]*esc to interrupt\)'
     fn nenhuma_regra_casando_deixa_o_estado_como_estava() {
         let m = Manifest::parse(CODEX).unwrap();
         assert_eq!(
-            m.evaluate(&snap("Codex", &["nada de especial"])),
+            m.evaluate_shell(&snap("Codex", &["nada de especial"])),
             Verdict::NoMatch
         );
     }
 
+    /// Em tela cheia o TÍTULO ainda é do agente.
+    ///
+    /// Era `tela_cheia_nunca_opina`, e o teste codificava o bug: a guarda
+    /// cortava as duas regiões na entrada, então o estado de qualquer agente de
+    /// TUI ficava indetectável — que é praticamente todos. A regra do spinner
+    /// do Claude Code nunca podia disparar, e a linha dele no quadro dizia
+    /// "sem sinal" para sempre.
     #[test]
-    fn tela_cheia_nunca_opina() {
+    fn em_tela_cheia_a_regra_de_titulo_ainda_vale() {
         let m = Manifest::parse(CODEX).unwrap();
         let mut s = snap("Codex — Action Required", &[]);
         s.alt_screen = true;
-        assert_eq!(m.evaluate(&s), Verdict::NoMatch);
+        assert_eq!(
+            m.evaluate_shell(&s),
+            Verdict::State(ObservedState::AwaitingInput),
+            "o título é escrito pelo agente, não pelo app que ocupa a tela"
+        );
+    }
+
+    /// E o CORPO continua não valendo: ali o conteúdo é do app que está
+    /// rodando, e ler "esc to interrupt" de um `less` aberto por cima do agente
+    /// afirmaria que ele está trabalhando quando não se sabe nada.
+    ///
+    /// Na prática o `snapshot` já devolve região vazia em tela cheia; esta
+    /// asserção é a segunda tranca, para o dia em que ele deixar de devolver.
+    #[test]
+    fn em_tela_cheia_a_regra_de_corpo_nao_vale() {
+        let m = Manifest::parse(CODEX).unwrap();
+        let mut s = snap("terminal", &["• Working (2s • esc to interrupt)"]);
+        s.alt_screen = true;
+        assert_eq!(m.evaluate_shell(&s), Verdict::NoMatch);
     }
 
     #[test]
@@ -423,6 +516,32 @@ line_regex = 'Working \([^)]*esc to interrupt\)'
         assert!(m.identifies(None, "Codex — Ready"));
         assert!(!m.identifies(None, "vim README.md"));
         assert!(!m.identifies(Some("bash"), "um log qualquer"));
+    }
+
+    /// O espelho de `motor_mais_novo_recusa_o_manifesto_inteiro`: usar recurso
+    /// de v2 declarando v1 roda torto num motor antigo, em silêncio.
+    #[test]
+    fn regra_com_escopo_exige_a_versao_que_a_trouxe() {
+        let toml = r#"
+id = "x"
+min_engine_version = 1
+[[rules]]
+id = "so_no_shell"
+priority = 1
+region = "osc_title"
+contains = ["oi"]
+applies_to = ["shell"]
+"#;
+        assert_eq!(
+            Manifest::parse(toml).err(),
+            Some(ManifestError::RuleFeatureTooNew {
+                rule: "so_no_shell".into(),
+                needs: 2,
+                declared: 1,
+            })
+        );
+        // Declarando v2 o mesmo manifesto entra.
+        assert!(Manifest::parse(&toml.replace("version = 1", "version = 2")).is_ok());
     }
 
     #[test]
@@ -509,12 +628,12 @@ line_regex = 'Working \([^)]*esc to interrupt\)'
             &linhas.iter().map(String::as_str).collect::<Vec<_>>(),
         );
         // Nenhuma regra casa: é o pior caso, porque todas as 128 são avaliadas.
-        assert_eq!(m.evaluate(&tela), Verdict::NoMatch);
+        assert_eq!(m.evaluate_shell(&tela), Verdict::NoMatch);
 
         const RODADAS: u32 = 200;
         let inicio = std::time::Instant::now();
         for _ in 0..RODADAS {
-            std::hint::black_box(m.evaluate(std::hint::black_box(&tela)));
+            std::hint::black_box(m.evaluate_shell(std::hint::black_box(&tela)));
         }
         let por_avaliacao = inicio.elapsed() / RODADAS;
 
