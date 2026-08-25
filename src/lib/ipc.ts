@@ -1489,6 +1489,15 @@ export const sessionPromptMode = (id: SessionId) =>
   invoke<boolean>("session_prompt_mode", { id });
 
 /**
+ * A sessão subiu com o hook do TYBA? `false` significa que nenhum `633;P` vai
+ * chegar — não que ainda não chegou. A integração só existe para `bash` e
+ * `zsh`.
+ */
+export function sessionHookExpected(id: SessionId): Promise<boolean> {
+  return invoke<boolean>("session_hook_expected", { id });
+}
+
+/**
  * O tty está entregando linhas (eco ligado) ou teclas (raw)?
  *
  * Ligado, a seta não serve ao programa e ainda é ecoada — vira `^[[A` na saída

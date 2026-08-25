@@ -237,13 +237,28 @@ impl SessionManager {
 
     /// Desligado por padrão: trocar o dono da linha de comando é uma mudança
     /// grande demais para acontecer sem o usuário pedir.
+    /// A linha do TYBA vem LIGADA; só desliga quem pediu.
+    ///
+    /// `off` é a única resposta que desliga — mesma forma de
+    /// [`Self::shell_integration_enabled`], e a MESMA de
+    /// `promptModeEnabled` em `src/lib/commandLine.ts`.
+    ///
+    /// As duas têm de concordar, e por um tempo não concordaram: o webview
+    /// passou a mostrar a linha por padrão enquanto isto aqui continuava
+    /// `unwrap_or(false)`. O efeito era o pior dos dois mundos — o shell subia
+    /// em modo clássico e imprimia o próprio `PS1`, e a linha do TYBA aparecia
+    /// por cima dizendo que estava desligada. Dois prompts na tela, um deles
+    /// se anunciando inútil.
+    ///
+    /// Quem decide se o shell nasce em modo prompt é ESTE lado: é ele que põe
+    /// `TYBA_PROMPT_MODE` no ambiente antes do spawn. O webview só desenha.
     fn prompt_mode_enabled(&self) -> bool {
         self.store
             .get_setting("pref.promptMode")
             .ok()
             .flatten()
-            .map(|v| v == "on")
-            .unwrap_or(false)
+            .map(|v| v != "off")
+            .unwrap_or(true)
     }
 
     fn shell_integration_enabled(&self) -> bool {
@@ -297,6 +312,12 @@ impl SessionManager {
         } else {
             None
         };
+        // O hook foi mesmo injetado? Não basta a preferência estar ligada: a
+        // integração só existe para `bash` e `zsh`, e mesmo neles depende do
+        // arquivo ter sido escrito. Num `fish` ou PowerShell nenhum `633;P`
+        // chega jamais, e quem precisa saber disso é a interface — senão ela
+        // mostra para sempre uma linha dizendo que o shell está carregando.
+        let mut hook_expected = bash_rc.is_some();
 
         if cfg!(unix) {
             if let Some(rc) = bash_rc {
@@ -316,6 +337,7 @@ impl SessionManager {
 
         if label == "zsh" && integration {
             if let Some(dir) = zsh_integration_dir() {
+                hook_expected = true;
                 let user_zdotdir = std::env::var("ZDOTDIR")
                     .ok()
                     .filter(|s| !s.is_empty())
@@ -353,6 +375,9 @@ impl SessionManager {
             opts.rows,
             on_exit,
         );
+        if result.is_ok() {
+            pty_pool.set_hook_expected(id, hook_expected);
+        }
         if result.is_err() {
             if let Some(wt) = &worktree {
                 let _ = crate::worktree::remove(&wt.path, true, true);

@@ -242,6 +242,7 @@ import {
   onSessionPromptMode,
   sessionBlocks,
   sessionLineEcho,
+  sessionHookExpected,
   sessionPromptMode,
   togglePromptMode,
   renderSnippet,
@@ -751,6 +752,16 @@ export default function App() {
   const promptModesRef = useRef<Record<string, boolean>>({});
   promptModesRef.current = promptModes;
   const [promptModePref, setPromptModePref] = useState(false);
+  /**
+   * Sessões que subiram com o hook do TYBA injetado.
+   *
+   * Separado de `promptModes` porque as duas perguntas são diferentes:
+   * `promptModes` é o que o shell RELATOU, e ausente ali significa "ainda não
+   * relatou". Aqui é se ele algum dia vai relatar — a integração só existe
+   * para `bash` e `zsh`. Sem essa distinção, um `fish` fica para sempre com a
+   * linha do TYBA na tela dizendo "Carregando o shell…".
+   */
+  const [hookExpected, setHookExpected] = useState<Record<string, boolean>>({});
   const [blocks, setBlocks] = useState<Record<string, Block[]>>({});
   // Lido por handler de clique e de tecla; num deles é `window`, e reassinar o
   // listener a cada bloco que chega seria trabalho por nada.
@@ -3161,10 +3172,15 @@ export default function App() {
   // ficar em branco sem lugar nenhum para digitar.
   // A linha aparece sempre que a sessão é um shell em modo prompt — inclusive
   // com comando rodando ou app de tela cheia aberto. Ela só muda de estado.
+  // A preferência só vale onde o hook pode chegar. Ligada, ela adianta a linha
+  // para antes do primeiro `633;P` — que é o ponto dela, evitar a barra
+  // aparecendo do nada depois do `rc` carregar. Mas num shell sem integração
+  // não há primeiro `633;P` nenhum, e adiantar viraria promessa permanente:
+  // uma linha desabilitada dizendo "Carregando o shell…" para sempre.
   const lineVisible =
     activeId != null &&
     activeSession?.kind.type === "shell" &&
-    (promptMode || promptModePref);
+    (promptMode || (promptModePref && hookExpected[activeId] === true));
 
   const commandLineState = lineState({
     reported: activeId ? promptModes[activeId] : undefined,
@@ -3220,6 +3236,17 @@ export default function App() {
         .then((on) => {
           if (!disposed && on) {
             setPromptModes((prev) => (prev[id] ? prev : { ...prev, [id]: on }));
+          }
+        })
+        .catch(() => {});
+      // Ao contrário do modo prompt, esta resposta é definitiva no instante do
+      // spawn: não muda depois, então basta perguntar uma vez.
+      void sessionHookExpected(id)
+        .then((expected) => {
+          if (!disposed) {
+            setHookExpected((prev) =>
+              prev[id] === expected ? prev : { ...prev, [id]: expected },
+            );
           }
         })
         .catch(() => {});
@@ -4564,7 +4591,7 @@ export default function App() {
                     </label>
                   )}
                   <nav
-                    className={`flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2 pb-2 ${
+                    className={`tyba-scroll-fade flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2 pb-2 ${
                       open ? "mt-2" : "mt-3"
                     }`}
                   >
@@ -4752,15 +4779,14 @@ export default function App() {
                       </TooltipContent>
                     </Tooltip>
                   </nav>
-                  {/* A divisa fica, e não é a mesma coisa que a do rodapé da
-                      janela: esta é fronteira de ROLAGEM. O `nav` acima rola,
-                      e sem ela o conteúdo passa por baixo destes botões sem
-                      nada dizendo onde a lista acaba.
-                      Tirá-la por um tempo foi erro meu: apoiava-se em o rodapé
-                      da janela existir sempre, e ele é condicional — some com a
-                      barra de chips desligada, com todos os chips ocultos, ou
-                      sem aba ativa. */}
-                  <div className="tyba-divide-t flex shrink-0 flex-col px-2 pt-1 pb-2">
+                  {/* Sem divisa: quem marca a fronteira de rolagem é o fade
+                      no `nav` acima. A linha aqui ficava 21px acima da borda da
+                      linha de comando — duas pilhas ancoradas embaixo, com
+                      alturas que não têm por que coincidir, então qualquer
+                      valor escolhido hoje quebra quando uma delas mudar.
+                      O fade resolve por deleção, e informa mais: ele só existe
+                      quando há conteúdo escondido acima. */}
+                  <div className="flex shrink-0 flex-col px-2 pt-1 pb-2">
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
