@@ -271,13 +271,13 @@ const resources = {
       agentsNoGate: "sem gate — comandos não passam pela aprovação",
       agentsSessionGone: "A sessão destes agentes não existe mais.",
       shellAgentNotice:
-        "{{binary}} rodando sem o gate do TYBA — sem inbox de aprovações, sem sandbox",
-      shellAgentReopen: "Reabrir gerenciado",
-      shellAgentIgnore: "Ignorar",
-      shellAgentReopenTitle: "Reabrir gerenciado?",
+        "{{binary}} está rodando fora do TYBA. Reabrir aqui liga a inbox de aprovações e o sandbox.",
+      shellAgentReopen: "Reabrir com gate",
+      shellAgentIgnore: "Agora não",
+      shellAgentReopenTitle: "Reabrir com gate?",
       shellAgentReopenDetail:
         "O {{binary}} atual vai ser encerrado e uma sessão gerenciada — com inbox de aprovações e sandbox — abre na mesma pasta. A conversa fica no disco; retome com /resume no agente novo.",
-      shellAgentReopenFailed: "Não deu pra reabrir gerenciado",
+      shellAgentReopenFailed: "Não deu pra reabrir com gate",
       shellAgentReopenSpawnFailed:
         "O agente foi encerrado, mas a sessão gerenciada não abriu",
       agentResumeNotice:
@@ -294,7 +294,7 @@ const resources = {
       "error.agent.reopen_kill_failed":
         "Não deu pra encerrar o agente: {{detail}}",
       "error.agent.reopen_unsupported":
-        "Reabrir gerenciado ainda não está disponível nesta plataforma.",
+        "Reabrir com gate ainda não está disponível nesta plataforma.",
       subagentsTitle: "Subagente",
       subagentsSummary: "Resumo",
       subagentsViewerEmpty: "Nenhum subagente em foco.",
