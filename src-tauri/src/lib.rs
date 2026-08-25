@@ -284,50 +284,48 @@ fn install_screen_observers(
     // Uma varredura só, no boot: reler o disco a cada avaliação colocaria IO no
     // caminho quente do PTY. Trocar manifesto exige reabrir o app.
     let registry = Arc::new(status::registry::ManifestRegistry::load(manifests_dir));
-    let app = app.clone();
-    let sessions = Arc::clone(sessions);
-    let store = Arc::clone(store);
-    let prober = Arc::clone(prober);
-    let scheduler = status::observed_notify::sleeping_scheduler();
+
+    // Daqui para baixo é só adaptador: cada `Arc` traduz uma peça do Tauri para
+    // a assinatura que o `ObserverDeps` pede. A montagem em si mora no
+    // `status::observer`, onde teste alcança — ver `ObserverDeps`.
+    let probe_prober = Arc::clone(prober);
+    let observed_app = app.clone();
+    let observed_sessions = Arc::clone(sessions);
+    let notify_app = app.clone();
+    let notify_sessions = Arc::clone(sessions);
+    let notify_store = Arc::clone(store);
+
+    let deps = status::observer::ObserverDeps {
+        registry,
+        // Leitura do que o prober JÁ sabe. Quem varre a árvore de processos é o
+        // poll de 2 s; aqui só se consulta o resultado dele, senão a identidade
+        // custaria uma varredura por avaliação.
+        process: Arc::new(move |id| {
+            probe_prober
+                .detected(id)
+                .and_then(|detected| agent::runner_binary(&detected.kind))
+                .map(str::to_string)
+        }),
+        observed: Arc::new(move |id, observed| {
+            observed_sessions.set_observed(&observed_app, id, observed)
+        }),
+        // O palpite sai pelo mesmo `notify_native` do agente com hook — mesma
+        // checagem de foco, mesma redação, mesma leitura de preferência.
+        notify: Arc::new(move |id, kind, body| {
+            agent::session::notify_native(
+                &notify_app,
+                &notify_sessions,
+                &notify_store,
+                kind,
+                id,
+                body,
+            );
+        }),
+        scheduler: status::observed_notify::sleeping_scheduler(),
+    };
 
     pty_pool.set_screen_observers(Arc::new(move |id, kind| {
-        let probe_prober = Arc::clone(&prober);
-        let sink_app = app.clone();
-        let sink_sessions = Arc::clone(&sessions);
-        let notify_app = app.clone();
-        let notify_sessions = Arc::clone(&sessions);
-        let notify_store = Arc::clone(&store);
-        status::observer::ScreenObserver::for_session(
-            kind,
-            Arc::clone(&registry),
-            // Leitura do que o prober JÁ sabe. Quem varre a árvore de processos
-            // é o poll de 2 s; aqui só se consulta o resultado dele, senão a
-            // identidade custaria uma varredura por avaliação.
-            Box::new(move || {
-                probe_prober
-                    .detected(id)
-                    .and_then(|detected| agent::runner_binary(&detected.kind))
-                    .map(str::to_string)
-            }),
-            Box::new(move |observed| sink_sessions.set_observed(&sink_app, id, observed)),
-            // A saída barulhenta do palpite. Passa pelo mesmo `notify_native`
-            // do agente com hook — mesma checagem de foco, mesma redação —, e
-            // por uma espécie própria de preferência: quem cansar dos palpites
-            // errados desliga só eles.
-            status::observed_notify::ObservedNotifier::new(
-                Arc::new(move |agent: &str| {
-                    agent::session::notify_native(
-                        &notify_app,
-                        &notify_sessions,
-                        &notify_store,
-                        agent::notify::NotifyKind::ObservedRequest,
-                        id,
-                        &status::observed_notify::body(agent),
-                    );
-                }),
-                Arc::clone(&scheduler),
-            ),
-        )
+        status::observer::observer_for(&deps, id, kind)
     }));
 }
 

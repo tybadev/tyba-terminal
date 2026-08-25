@@ -18,9 +18,10 @@
 
 use std::sync::Arc;
 
-use crate::session::{ObservedAgent, SessionKind};
+use crate::agent::notify::NotifyKind;
+use crate::session::{ObservedAgent, SessionId, SessionKind};
 use crate::status::manifest::{Scope, Verdict};
-use crate::status::observed_notify::ObservedNotifier;
+use crate::status::observed_notify::{self, ObservedNotifier, Scheduler};
 use crate::status::registry::ManifestRegistry;
 use crate::status::screen::ScreenSnapshot;
 
@@ -34,6 +35,63 @@ pub type ProcessProbe = Box<dyn Fn() -> Option<String> + Send>;
 /// observador não conhece nenhum dos dois — ele produz um `ObservedAgent`, não
 /// um evento.
 pub type ObservedSink = Box<dyn Fn(Option<ObservedAgent>) + Send>;
+
+/// O que uma sessão precisa para ganhar um observador, sem nada do Tauri.
+///
+/// Existe porque a montagem é fiação, e fiação errada não aparece em teste
+/// nenhum: com o corpo desta fábrica dentro do `set_screen_observers` do
+/// `lib.rs`, trocar o aviso por um no-op deixava a suíte inteira verde. É a
+/// mesma cegueira que o PR #277 tirou do `spawn`, e a saída é a mesma —
+/// nenhuma das quatro peças aqui é um tipo do Tauri, então o teste monta todas.
+pub struct ObserverDeps {
+    pub registry: Arc<ManifestRegistry>,
+    pub process: ProcessLookup,
+    pub observed: ObservedRelay,
+    pub notify: NotifyRelay,
+    pub scheduler: Scheduler,
+}
+
+/// O binário que a sonda de processo já detectou nesta sessão. Leitura de
+/// estado, nunca a varredura: quem varre a árvore é o poll de 2 s.
+pub type ProcessLookup = Arc<dyn Fn(SessionId) -> Option<String> + Send + Sync>;
+
+/// Onde o palpite vira campo de sessão e evento de UI.
+pub type ObservedRelay = Arc<dyn Fn(SessionId, Option<ObservedAgent>) + Send + Sync>;
+
+/// Onde o palpite assentado vira aviso do sistema. A espécie viaja junto porque
+/// é ela que o usuário liga e desliga — mandar `Request` daqui faria o
+/// interruptor do palpite não desligar nada.
+pub type NotifyRelay = Arc<dyn Fn(SessionId, NotifyKind, &str) + Send + Sync>;
+
+/// O observador desta sessão, montado a partir das dependências.
+///
+/// `None` quando a sessão não pode receber palpite — ver
+/// [`ScreenObserver::for_session`].
+pub fn observer_for(
+    deps: &ObserverDeps,
+    id: SessionId,
+    kind: &SessionKind,
+) -> Option<ScreenObserver> {
+    let process = Arc::clone(&deps.process);
+    let observed = Arc::clone(&deps.observed);
+    let notify = Arc::clone(&deps.notify);
+    ScreenObserver::for_session(
+        kind,
+        Arc::clone(&deps.registry),
+        Box::new(move || process(id)),
+        Box::new(move |guess| observed(id, guess)),
+        ObservedNotifier::new(
+            Arc::new(move |agent: &str| {
+                notify(
+                    id,
+                    NotifyKind::ObservedRequest,
+                    &observed_notify::body(agent),
+                );
+            }),
+            Arc::clone(&deps.scheduler),
+        ),
+    )
+}
 
 pub struct ScreenObserver {
     registry: Arc<ManifestRegistry>,
@@ -589,6 +647,102 @@ skip_state_update = true
         avisos.assenta();
 
         assert_eq!(avisos.saidos(), ["codex", "codex"]);
+    }
+
+    /// A sonda do revisor, na tela: espera contínua com **uma piscada**.
+    ///
+    /// O agente continua parado esperando; o que mudou foi o desenho — um
+    /// repaint, uma linha empurrada para fora das `bottom_lines`, um quadro em
+    /// que o título ainda não voltou. Cada uma dessas telas é diferente da
+    /// anterior, então o portão de sequência não segura nenhuma e as três
+    /// chegam à avaliação. Ainda assim é **uma** espera, e uma espera
+    /// interrompe uma vez.
+    ///
+    /// Com o assentamento só na entrada isto dava dois avisos: soltar o alvo
+    /// era instantâneo, e a volta contava como transição nova.
+    #[test]
+    fn uma_piscada_na_tela_nao_interrompe_de_novo() {
+        let espiao = Arc::new(Espiao::default());
+        let (avisos, notifier) = Avisos::novo();
+        // Em SSH a identidade sai só do título: é ali que a piscada dói mais,
+        // porque um quadro sem o título é um quadro sem agente nenhum.
+        let mut observer = observer_com(
+            &SessionKind::Ssh {
+                host_id: "h".into(),
+            },
+            &espiao,
+            registry_que_avisa(),
+            notifier,
+        )
+        .unwrap();
+
+        observer.observe(&snap("Codex — Action Required", &["esperando"]));
+        avisos.assenta();
+
+        // Um único quadro sem o título, e a espera volta — tudo dentro da mesma
+        // janela de assentamento.
+        observer.observe(&snap("guilherme@mac: ~", &["esperando"]));
+        observer.observe(&snap("Codex — Action Required", &["esperando ainda"]));
+        avisos.assenta();
+
+        assert_eq!(
+            avisos.saidos(),
+            ["codex"],
+            "um redesenho do TUI interrompeu o usuário uma segunda vez"
+        );
+    }
+
+    /// A fiação inteira, do recorte de tela ao aviso — sem nada do Tauri.
+    ///
+    /// É o teste que faltava: com a montagem dentro do `set_screen_observers`
+    /// do `lib.rs`, trocar o aviso por um no-op deixava 1541 testes verdes.
+    /// Aqui o quadro preso entra por [`ScreenObserver::observe`] e a asserção é
+    /// sobre a tripla que chega ao adaptador — sessão, **espécie** e corpo.
+    ///
+    /// A espécie faz parte da asserção de propósito: mandar `Request` daqui
+    /// faria o interruptor do palpite não desligar coisa nenhuma, e o do hook
+    /// desligar as duas.
+    #[test]
+    fn a_fiacao_leva_o_palpite_assentado_ate_o_aviso() {
+        type Fila = Arc<parking_lot::Mutex<Vec<Box<dyn FnOnce() + Send>>>>;
+        type Avisos = Arc<parking_lot::Mutex<Vec<(SessionId, NotifyKind, String)>>>;
+        type Palpites = Arc<parking_lot::Mutex<Vec<(SessionId, Option<ObservedAgent>)>>>;
+
+        let id = SessionId::new_v4();
+        let agendados: Fila = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let avisos: Avisos = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let palpites: Palpites = Arc::new(parking_lot::Mutex::new(Vec::new()));
+
+        let fila = Arc::clone(&agendados);
+        let saida = Arc::clone(&avisos);
+        let quadro = Arc::clone(&palpites);
+        let deps = ObserverDeps {
+            registry: registry_que_avisa(),
+            process: Arc::new(|_| None),
+            observed: Arc::new(move |id, observed| quadro.lock().push((id, observed))),
+            notify: Arc::new(move |id, kind, body| saida.lock().push((id, kind, body.to_string()))),
+            scheduler: Arc::new(move |_, task| fila.lock().push(task)),
+        };
+
+        let mut observer = observer_for(&deps, id, &SessionKind::Shell).expect("shell observa");
+        observer.observe(&snap("Codex — Action Required", &[]));
+
+        // O palpite chega ao quadro na hora; o aviso, só depois do assentamento.
+        assert_eq!(palpites.lock().len(), 1, "o palpite não chegou ao quadro");
+        assert!(avisos.lock().is_empty());
+
+        for tarefa in agendados.lock().drain(..).collect::<Vec<_>>() {
+            tarefa();
+        }
+
+        assert_eq!(
+            avisos.lock().as_slice(),
+            [(
+                id,
+                NotifyKind::ObservedRequest,
+                crate::status::observed_notify::body("codex")
+            )]
+        );
     }
 
     /// Registro vazio (a v1, antes da F4) não faz o PTY recortar tela nenhuma.
