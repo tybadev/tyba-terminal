@@ -238,12 +238,12 @@ export function ShellSettings() {
 
       <div className="mt-2 divide-y divide-tyba-border">
         {snippets.length === 0 && !draft && (
-          <p className="px-4 py-3 text-[12px] text-tyba-text-faint">
+          <p className="py-3 text-[12px] text-tyba-text-faint">
             {t("snippetsEmpty")}
           </p>
         )}
         {snippets.map((snippet) => (
-          <div key={snippet.id} className="flex items-center gap-3 px-4 py-2">
+          <div key={snippet.id} className="flex items-center gap-3 py-2">
             <BracketsCurly size={15} className="shrink-0 text-tyba-text-muted" />
             <button
               onClick={() => setDraft(snippet)}

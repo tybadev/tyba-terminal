@@ -936,7 +936,7 @@ export function SettingsView({
           <section className="mx-auto w-full max-w-lg">
             <SectionHeader title={t("settingsCode")} hint={t("codeHint")} />
             <span className="tyba-label">{t("integrations")}</span>
-            <div className="mt-2 flex items-start gap-3 p-4">
+            <div className="mt-2 flex items-start gap-3 py-3">
               <span className="mt-0.5 shrink-0 text-tyba-text-muted">
                 <DockerIcon size={18} />
               </span>

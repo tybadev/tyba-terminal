@@ -123,7 +123,7 @@ export function AgentsPanel({
         </div>
 
         {subagents.length === 0 ? (
-          <p className="mt-3 tyba-divide-l/60 pl-4 text-[12px] leading-relaxed text-tyba-text-faint">
+          <p className="mt-3 tyba-divide-l pl-4 text-[12px] leading-relaxed text-tyba-text-faint">
             {t("agentsEmpty")}
           </p>
         ) : (

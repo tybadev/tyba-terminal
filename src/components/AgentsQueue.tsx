@@ -68,7 +68,7 @@ function Row({
 
   return (
     <li
-      className={`relative tyba-divide-b px-3 py-2.5 last:border-b-0 ${
+      className={`relative tyba-divide-b px-3 py-2.5 [&:last-child]:shadow-none ${
         espera ? "bg-tyba-amber/[.04]" : ""
       }`}
     >

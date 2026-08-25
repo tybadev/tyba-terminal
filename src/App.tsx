@@ -4751,11 +4751,15 @@ export default function App() {
                       </TooltipContent>
                     </Tooltip>
                   </nav>
-                  {/* Sem `border-t`: essa linha morria na largura da
-                      sidebar, 22px acima da linha do rodapé de status, e
-                      as duas juntas eram o que lia como camada empilhada.
-                      Quem fecha a coluna agora é o rodapé da janela. */}
-                  <div className="flex shrink-0 flex-col px-2 pt-1 pb-2">
+                  {/* A divisa fica, e não é a mesma coisa que a do rodapé da
+                      janela: esta é fronteira de ROLAGEM. O `nav` acima rola,
+                      e sem ela o conteúdo passa por baixo destes botões sem
+                      nada dizendo onde a lista acaba.
+                      Tirá-la por um tempo foi erro meu: apoiava-se em o rodapé
+                      da janela existir sempre, e ele é condicional — some com a
+                      barra de chips desligada, com todos os chips ocultos, ou
+                      sem aba ativa. */}
+                  <div className="tyba-divide-t flex shrink-0 flex-col px-2 pt-1 pb-2">
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
@@ -5544,10 +5548,15 @@ export default function App() {
           </>
         </div>
         {/* Rodapé da JANELA, não da coluna do terminal. Enquanto ele morava
-            dentro da coluna, a linha dele parava no meio da tela e ficava 22px
-            abaixo da linha do rodapé da sidebar — duas divisas quase na mesma
-            altura, nenhuma inteira. Aqui é uma só, de moldura a moldura. */}
-        {activeTab && activeWorkspace && (
+            dentro da coluna, a linha dele parava no meio da tela — aqui é uma
+            só, de moldura a moldura.
+            `!sideExpanded` não é detalhe: com o painel em tela cheia a coluna
+            do terminal ganha `hidden`, e antes o rodapé sumia junto por ser
+            filho dela. Solto aqui ele sobreviveria — empilhando uma segunda
+            barra debaixo do rodapé do próprio painel, e pior, o botão de
+            entrada rica continuaria montando o `RichInput` DENTRO da coluna
+            escondida: nada aparece e o foco entra num `display: none`. */}
+        {activeTab && activeWorkspace && !(sideVisible && sideExpanded) && (
           <Toolbar
             pref={toolbarPref}
             cwd={workspaceCwd(activeWorkspace)}

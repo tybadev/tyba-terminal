@@ -1421,7 +1421,7 @@ export function DiffView({
                 .catch((e) => setActionError(translateError(e, t)))
                 .finally(() => setSuggesting(false));
             }}
-            className="size-7 shrink-0"
+            className="size-6 shrink-0"
           >
             {suggesting ? (
               <CircleNotch size={13} className="animate-spin" />

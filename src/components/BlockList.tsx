@@ -231,7 +231,7 @@ const BlockHeader = memo(function BlockHeader({
       // margem e o comando dela caía 8px à esquerda do comando de todos os
       // outros — ficava lendo como outra coisa, não como o mesmo header.
       className={`group flex items-center gap-2 px-2.5 py-1 ${
-        pinned ? "pointer-events-none" : "tyba-divide-b/60"
+        pinned ? "pointer-events-none" : "tyba-divide-b"
       }`}
     >
       <span className={`shrink-0 ${broke ? "text-tyba-red" : "text-tyba-green"}`}>
@@ -410,13 +410,13 @@ const BlockCard = memo(function BlockCard({
             event.stopPropagation();
             onShowMore?.(block.id);
           }}
-          className="w-full tyba-divide-t/60 px-2.5 py-1 text-left font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
+          className="w-full tyba-divide-t px-2.5 py-1 text-left font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
         >
           {t("blockShowAll", { count: Math.min(hidden, BODY_LIMIT) })}
         </button>
       )}
       {block.truncated > 0 && (
-        <div className="tyba-divide-t/60 px-2.5 py-1 font-mono text-[10px] text-tyba-amber">
+        <div className="tyba-divide-t px-2.5 py-1 font-mono text-[10px] text-tyba-amber">
           {t("blockTruncated", { count: block.truncated })}
         </div>
       )}

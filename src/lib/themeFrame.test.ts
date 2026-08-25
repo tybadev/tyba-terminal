@@ -29,7 +29,14 @@ type Rgb = [number, number, number];
 function blocks(css: string): Map<string, string> {
   const found = new Map<string, string>();
   const re = /^(:root|\[data-theme[^\]]*\])\s*\{([\s\S]*?)^\}/gm;
-  for (const m of css.matchAll(re)) found.set(m[1], m[2]);
+  for (const m of css.matchAll(re)) {
+    // Sobrescrever em silêncio seria pior que falhar: `styles.css` é gerado
+    // fora deste repo, e um segundo `:root` no topo (uma variante de fonte,
+    // um override de reduced-motion) faria `resolve()` passar a herdar do
+    // bloco errado — a suíte mediria outra paleta e continuaria verde.
+    if (found.has(m[1])) throw new Error(`seletor repetido: ${m[1]}`);
+    found.set(m[1], m[2]);
+  }
   return found;
 }
 
@@ -120,6 +127,33 @@ describe("moldura", () => {
     }
   });
 
+  it("os quatro divisores são inset e apontam para a mesma linha", () => {
+    // `inset` é o mecanismo em que o refactor inteiro se apoia, e até aqui
+    // nada o guardava: revertê-lo para a sombra externa passava nos 23 testes.
+    // Por fora a divisa invade o vizinho e some quando o vizinho tem pilha
+    // própria — foi assim que a borda direita da sidebar não renderizou um
+    // único pixel — e compõe sobre o fundo DELE, o que dá duas cores para uma
+    // linha só.
+    const esperado: Record<string, string> = {
+      "divider-b": "inset 0 -1px 0 0 var(--tyba-divider-line)",
+      "divider-t": "inset 0 1px 0 0 var(--tyba-divider-line)",
+      "divider-r": "inset -1px 0 0 0 var(--tyba-divider-line)",
+      "divider-l": "inset 1px 0 0 0 var(--tyba-divider-line)",
+    };
+    for (const [nome, valor] of Object.entries(esperado)) {
+      expect(`${nome}: ${declared(root!, nome)}`).toBe(`${nome}: ${valor}`);
+    }
+  });
+
+  it("cada divisor tem uma classe que o consome", () => {
+    // `--tyba-divider-l` nasceu sem nenhuma asserção. Um token declarado e
+    // nunca consumido é dívida silenciosa: some numa limpeza e ninguém vê.
+    for (const lado of ["b", "t", "r", "l"]) {
+      expect(CSS).toContain(`.tyba-divide-${lado} {`);
+      expect(CSS).toContain(`box-shadow: var(--tyba-divider-${lado});`);
+    }
+  });
+
   it("nenhum esquema declara a própria borda", () => {
     // A moldura é identidade, não cor: ela herda da polaridade. Um esquema que
     // volte a declarar borda volta a ter um peso só seu.
@@ -130,13 +164,36 @@ describe("moldura", () => {
   });
 
   for (const base of [":root", "[data-theme$='light']"] as const) {
+    it(`o contorno de controle se sustenta em ${base}`, () => {
+      // `--tyba-border` e `--tyba-divider-line` hoje carregam o MESMO literal
+      // nas duas polaridades, e nada os mantém iguais — são dois tokens
+      // editados à mão que por ora concordam. Só um deles tinha banda.
+      // `--tyba-border` pinta as tabelas do StatsView, os cartões `.tyba-lit`,
+      // as regras do `.files-markdown` e a borda de topo da CommandLine;
+      // `--tyba-border-strong` dá o polegar da scrollbar e a barra de citação.
+      const body = parsed.get(base)!;
+      const border = rgba(declared(body, "border")!);
+      const strong = rgba(declared(body, "border-strong")!);
+      for (const surface of SURFACES) {
+        const bg = hex(resolve(body, surface));
+        const d = distance(over(border.rgb, border.alpha, bg), bg);
+        expect(d).toBeGreaterThanOrEqual(FLOOR);
+        expect(d).toBeLessThanOrEqual(CEILING);
+        // O forte é forte de propósito: foco e hover têm de se destacar do
+        // contorno em repouso, não empatar com ele.
+        const ds = distance(over(strong.rgb, strong.alpha, bg), bg);
+        expect(ds).toBeGreaterThan(CEILING);
+      }
+    });
+  }
+
+  for (const base of [":root", "[data-theme$='light']"] as const) {
     it(`a linha se sustenta em toda superfície de ${base}`, () => {
       const body = parsed.get(base)!;
       const line = rgba(declared(body, "divider-line")!);
       for (const surface of SURFACES) {
         const bg = hex(resolve(body, surface));
         const d = distance(over(line.rgb, line.alpha, bg), bg);
-        expect({ base, surface, d }).toMatchObject({ base, surface });
         expect(d).toBeGreaterThanOrEqual(FLOOR);
         expect(d).toBeLessThanOrEqual(CEILING);
       }
@@ -178,7 +235,6 @@ describe("moldura", () => {
       // `edge` é desenhado sobre a própria superfície; `cast` sobre a de trás.
       const viaEdge = distance(over(edge.rgb, edge.alpha, surface), surface);
       const viaCast = distance(over(cast.rgb, cast.alpha, sunken), sunken);
-      expect({ base, viaEdge, viaCast }).toMatchObject({ base });
       expect(Math.max(viaEdge, viaCast)).toBeGreaterThanOrEqual(FLOOR);
     });
   }
@@ -189,7 +245,6 @@ describe("moldura", () => {
       for (const surface of SURFACES) {
         const bg = hex(resolve(body, surface));
         const d = distance(over(line.rgb, line.alpha, bg), bg);
-        expect({ id, surface, d }).toMatchObject({ id, surface });
         expect(d).toBeGreaterThanOrEqual(FLOOR);
         expect(d).toBeLessThanOrEqual(CEILING);
       }
