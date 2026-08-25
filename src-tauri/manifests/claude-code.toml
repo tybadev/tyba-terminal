@@ -10,7 +10,7 @@
 # Aceito porque glifo em título é raro; se um dia colidir, a saída é acrescentar
 # o modo ao motor, não afrouxar isto.
 id = "claude-code"
-min_engine_version = 1
+min_engine_version = 2
 applies_to = ["shell", "ssh", "container"]
 
 match = { process = ["claude"], title = ["✳ ", "◐ ", "◑ ", "✻ "] }
@@ -23,15 +23,33 @@ priority = 1000
 region = "osc_title"
 line_regex = '^[◐◑]\s'
 
-# `✳` e `✻` identificam e NÃO dizem estado.
+# `✳` e `✻`: o MESMO glifo, dois significados, decididos pelo escopo.
 #
-# Dentro do tmux do dono o Claude trava o título em `✳` (medido: com `$TMUX`
-# visível ele nunca anima), então o mesmo glifo aparece parado e trabalhando.
-# Ler `✳` como ocioso marcaria de parado um agente que está trabalhando —
-# justamente dentro do tmux, que é o público da feature de SSH.
+# Dentro do tmux o Claude trava o título em `✳` (medido: com `$TMUX` visível ele
+# nunca anima), então lá o glifo aparece igual parado e trabalhando — e ler
+# aquilo como ocioso marcaria de parado um agente ativo, justamente no público
+# da feature de SSH.
+#
+# No shell local não há tmux no meio (o TYBA roda com `env -u TMUX`), o spinner
+# anima de verdade, e `✳` parado é exatamente o repouso. Ler como "não mexa"
+# ali deixa a linha travada em "rodando" para sempre depois do primeiro turno —
+# afirmação falsa, e falsa do lado pior: você acha que ele trabalha quando na
+# verdade ele te espera.
+#
+# Antes de `applies_to` por regra (motor v2) sobrava escolher qual dos dois
+# errar.
 [[rules]]
-id = "title_identified_no_state"
+id = "title_idle_local"
+state = "idle"
 priority = 900
 region = "osc_title"
 line_regex = '^[✳✻]\s'
+applies_to = ["shell"]
+
+[[rules]]
+id = "title_identified_no_state"
+priority = 890
+region = "osc_title"
+line_regex = '^[✳✻]\s'
+applies_to = ["ssh", "container"]
 skip_state_update = true

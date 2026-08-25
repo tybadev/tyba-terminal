@@ -194,7 +194,7 @@ impl ScreenObserver {
         // agente: é o arquivo que descreve as regras que sabe se elas separam
         // "esperando você" de "desenhando um menu".
         let notifies = manifest.notifies;
-        let state = match manifest.evaluate(snapshot) {
+        let state = match manifest.evaluate(snapshot, self.scope) {
             Verdict::State(state) => Some(state),
             // `Hold` é "casou, e por isso NÃO mexa no estado"; `NoMatch` é
             // "nenhuma regra falou". Os dois preservam o que já havia — limpar

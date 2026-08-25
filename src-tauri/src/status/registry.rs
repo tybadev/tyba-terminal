@@ -203,11 +203,45 @@ mod tests {
         assert_eq!(m.id, "claude-code");
 
         assert_eq!(
-            m.evaluate(&tela("✳ Echo alo")),
+            m.evaluate(&tela("✳ Echo alo"), Scope::Ssh),
             Verdict::Hold,
             "`✳` só pode dizer «reconheço o agente e não sei o estado»"
         );
-        assert_eq!(m.evaluate(&tela("✻ Cogitated for 5s")), Verdict::Hold);
+        assert_eq!(
+            m.evaluate(&tela("✻ Cogitated for 5s"), Scope::Ssh),
+            Verdict::Hold
+        );
+    }
+
+    /// O MESMO glifo, dois significados, decididos pelo escopo — o que o
+    /// `applies_to` por regra (motor v2) existe para permitir.
+    ///
+    /// No shell local não há tmux no meio, o spinner anima de verdade, e `✳`
+    /// parado é o repouso. Ler como "não mexa" ali deixava a linha travada em
+    /// "rodando" para sempre depois do primeiro turno — afirmação falsa, e do
+    /// lado pior: você acha que ele trabalha quando na verdade ele te espera.
+    ///
+    /// Em SSH o mesmo glifo continua sem dizer nada, porque lá o tmux congela o
+    /// título. Antes do v2 sobrava escolher qual dos dois errar.
+    #[test]
+    fn o_glifo_parado_e_ocioso_no_shell_local_e_mudo_em_ssh() {
+        let registry = ManifestRegistry::builtin();
+        let m = registry
+            .identify(Scope::Shell, Some("claude"), "")
+            .expect("o processo identifica no shell local");
+
+        assert_eq!(
+            m.evaluate(&tela("✳ Echo alo"), Scope::Shell),
+            Verdict::State(ObservedState::Idle),
+            "no shell local o glifo parado é o repouso, e dizer isso é o que \
+             impede a linha de ficar travada em «rodando» para sempre"
+        );
+        assert_eq!(
+            m.evaluate(&tela("✳ Echo alo"), Scope::Ssh),
+            Verdict::Hold,
+            "em SSH o tmux congela o título: o mesmo glifo aparece parado e \
+             trabalhando, e ali ele não pode afirmar nada"
+        );
     }
 
     #[test]
@@ -217,11 +251,11 @@ mod tests {
             .identify(Scope::Shell, Some("claude"), "")
             .expect("o processo tem de identificar no shell local");
         assert_eq!(
-            m.evaluate(&tela("◐ Claude Code")),
+            m.evaluate(&tela("◐ Claude Code"), Scope::Shell),
             Verdict::State(ObservedState::Running)
         );
         assert_eq!(
-            m.evaluate(&tela("◑ Echo alo")),
+            m.evaluate(&tela("◑ Echo alo"), Scope::Shell),
             Verdict::State(ObservedState::Running)
         );
     }
@@ -255,7 +289,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{titulo} tem de identificar"));
             assert_eq!(m.id, id);
             assert_eq!(
-                m.evaluate(&tela(titulo)),
+                m.evaluate(&tela(titulo), Scope::Ssh),
                 Verdict::NoMatch,
                 "{id} não tem sinal de estado e não pode inventar um"
             );
