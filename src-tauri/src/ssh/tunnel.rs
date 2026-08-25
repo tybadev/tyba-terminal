@@ -475,6 +475,22 @@ mod tests {
         drop(squatter);
     }
 
+    /// # Por que a metade "livre" tenta mais de uma vez
+    ///
+    /// `local_port_free` responde dando `bind`. Perguntar "esta porta está
+    /// livre?" desse jeito é sempre uma aposta contra o resto da máquina: no
+    /// intervalo entre soltar a porta e reconferir, qualquer outra coisa —
+    /// inclusive outro teste da mesma suíte pedindo `:0` — pode recebê-la do
+    /// sistema. Aconteceu: reprovou em `tunnel.rs:493`, nesta asserção.
+    ///
+    /// Um roubo transitório **não é contraexemplo** da propriedade sob teste,
+    /// que é "quando a porta está de fato livre, a função diz livre". Por isso
+    /// tenta algumas vezes, com porta efêmera nova a cada volta. Se a função
+    /// estivesse quebrada de verdade, nenhuma tentativa passaria — o teste
+    /// continua reprovando, só deixou de reprovar por azar.
+    ///
+    /// A metade "ocupada" não tenta de novo, e não precisa: o impostor está na
+    /// nossa mão, então ali não há corrida com ninguém.
     #[test]
     fn pre_voo_ve_a_porta_tomada_no_endereco_que_o_tunel_usa() {
         let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -490,13 +506,29 @@ mod tests {
              endereço aprovaria uma porta que o ssh não consegue ligar"
         );
         drop(squatter);
+
+        const TENTATIVAS: usize = 5;
+        let livre = (0..TENTATIVAS).any(|i| {
+            // A primeira volta usa a porta que acabou de ser solta; as
+            // seguintes pegam uma nova, porque insistir na mesma seria
+            // insistir com quem a roubou.
+            let porta = if i == 0 {
+                port
+            } else {
+                let s = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                let p = s.local_addr().unwrap().port();
+                drop(s);
+                p
+            };
+            local_port_free(&Tunnel {
+                listen_port: porta,
+                ..local(porta)
+            })
+        });
         assert!(
-            local_port_free(&t),
-            "solta o impostor e a porta volta a estar livre — o pré-voo lê o \
-             estado real, não um palpite. A porta vem de um bind em :0 (o SO dá \
-             uma livre e exclusiva) em vez de número fixo, senão dois testes em \
-             paralelo brigam pela mesma e um flakeia — foi o que derrubou o \
-             macOS no corte da v0.1.4"
+            livre,
+            "porta livre foi reportada como ocupada em {TENTATIVAS} tentativas \
+             — o pré-voo deixou de ler o estado real"
         );
     }
 
