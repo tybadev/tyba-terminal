@@ -143,6 +143,46 @@ describe("moldura", () => {
     });
   }
 
+  // Aqui viveu um teste de FRONTEIRA — a linha medida contra a superfície do
+  // vizinho, e não só contra a sua. Ele nasceu de um achado real: no
+  // `github-light` a linha da sidebar rende (234,234,235) contra um terminal
+  // em (235,238,242), então ali ela não separa nada; quem separa é o degrau.
+  //
+  // Foi removido porque não podia falhar sozinho. A afirmação era
+  // `max(|X−linha|, |linha−Y|) ≥ piso`, e o primeiro termo é o contraste da
+  // linha contra a PRÓPRIA superfície — exatamente o que o teste acima já
+  // exige. Provado empiricamente com um tema de meio-tom: quem acusou foi o
+  // teste de cima, e o de fronteira passou verde junto.
+  //
+  // Um teste que não pode falhar mede o próprio harness. O achado do
+  // `github-light` continua verdadeiro e está no cofre; ele só não vira
+  // asserção enquanto for consistência de mecanismo, e não de legibilidade.
+
+  /**
+   * A luz do cromo tem sempre um ingrediente vivo.
+   *
+   * `edge` morre no claro (branco sobre branco) e `cast` morre no preto
+   * absoluto do BLACKOUT. Eles convivem justamente por isso — mas nada
+   * impede um tema futuro de cair no vão onde os dois somem.
+   */
+  for (const [base, label] of [
+    [":root", "escuro"],
+    ["[data-theme$='light']", "claro"],
+  ] as const) {
+    it(`a luz do cromo tem um ingrediente vivo no ${label} padrão`, () => {
+      const body = parsed.get(base)!;
+      const edge = rgba(declared(body, "lift-edge")!);
+      const cast = rgba(declared(body, "lift-cast")!);
+      const surface = hex(resolve(body, "surface"));
+      const sunken = hex(resolve(body, "sunken"));
+      // `edge` é desenhado sobre a própria superfície; `cast` sobre a de trás.
+      const viaEdge = distance(over(edge.rgb, edge.alpha, surface), surface);
+      const viaCast = distance(over(cast.rgb, cast.alpha, sunken), sunken);
+      expect({ base, viaEdge, viaCast }).toMatchObject({ base });
+      expect(Math.max(viaEdge, viaCast)).toBeGreaterThanOrEqual(FLOOR);
+    });
+  }
+
   for (const { id, body } of SCHEMES) {
     it(`a linha se sustenta em toda superfície de ${id}`, () => {
       const line = rgba(resolve(body, "divider-line"));
