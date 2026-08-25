@@ -193,6 +193,19 @@
   --tyba-divider-t: inset 0 1px 0 0 var(--tyba-divider-line);
   --tyba-divider-r: inset -1px 0 0 0 var(--tyba-divider-line);
   --tyba-divider-l: inset 1px 0 0 0 var(--tyba-divider-line);
+
+  /* Separação por LUZ — o cromo da janela em vez de uma linha.
+     A doutrina do BLACKOUT ("quem separa é a luz, não o cinza") só vivia
+     nos overlays flutuantes; isto a traz para o shell.
+     Dois ingredientes, e a polaridade decide o peso de cada um:
+     - `edge`: a aresta que o plano da frente ilumina. É o que funciona no
+       escuro, e é quase nada sobre branco.
+     - `cast`: a sombra que ele projeta no plano de trás. É o que funciona
+       no claro, e é invisível sobre preto absoluto.
+     Por isso os dois convivem: cada tema usa o que a sua polaridade
+     permite, sem uma regra por tema. */
+  --tyba-lift-edge: rgba(255, 255, 255, 0.06);
+  --tyba-lift-cast: rgba(0, 0, 0, 0.85);
   --tyba-focus-ring: 0 0 0 2px var(--tyba-bg), 0 0 0 4px var(--tyba-green);
 
   /* ---------- Movimento ---------- */
@@ -284,6 +297,10 @@
   --tyba-shadow-md: 0 4px 16px rgba(23, 23, 28, 0.1);
   --tyba-shadow-lg: 0 12px 40px rgba(23, 23, 28, 0.14);
   --tyba-divider-line: rgba(0, 0, 0, 0.07);
+  /* No claro a aresta iluminada é branco sobre branco: some. Sobra
+     metade da linha e a sombra fazendo o resto do trabalho. */
+  --tyba-lift-edge: rgba(0, 0, 0, 0.045);
+  --tyba-lift-cast: rgba(0, 0, 0, 0.16);
 }
 
 /* ============================================================
@@ -984,6 +1001,35 @@ samp {
 }
 .tyba-divide-l {
   box-shadow: var(--tyba-divider-l);
+}
+
+/* Separação por luz, para o CROMO da janela — header, sidebar, rodapé.
+   O `z-index` volta aqui, e só aqui: a parte `cast` é projetada para fora,
+   então precisa ficar acima do vizinho. São três containers simples, sem
+   filho posicionado, que é o que torna isso seguro — e é justamente por
+   não ser seguro em geral que `.tyba-divide-*` não o tem.
+   O conteúdo (faixa de abas, painéis) continua na linha: ali a divisa é
+   interrompida pela aba ativa, e isso é gesto, não moldura. */
+.tyba-lift-b,
+.tyba-lift-t,
+.tyba-lift-r {
+  position: relative;
+  z-index: 20;
+}
+.tyba-lift-b {
+  box-shadow:
+    inset 0 -1px 0 var(--tyba-lift-edge),
+    0 6px 16px -6px var(--tyba-lift-cast);
+}
+.tyba-lift-t {
+  box-shadow:
+    inset 0 1px 0 var(--tyba-lift-edge),
+    0 -6px 16px -6px var(--tyba-lift-cast);
+}
+.tyba-lift-r {
+  box-shadow:
+    inset -1px 0 0 var(--tyba-lift-edge),
+    6px 0 16px -6px var(--tyba-lift-cast);
 }
 
 /* ---------- Luz ---------- */

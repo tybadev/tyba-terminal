@@ -4257,7 +4257,7 @@ export default function App() {
         <WindowResizeEdges />
         <header
           data-tauri-drag-region
-          className={`tyba-glass tyba-divide-b flex h-9 shrink-0 items-center gap-1 pr-2.5 ${
+          className={`tyba-glass tyba-lift-b flex h-9 shrink-0 items-center gap-1 pr-2.5 ${
             IS_MAC ? "pl-20" : "pl-2.5"
           }`}
         >
@@ -4545,7 +4545,7 @@ export default function App() {
                   // `sunken` distam 5/255. E acima do terminal ela encosta na
                   // faixa de abas, que é `surface` também: mesma cor, zero
                   // separação, em TODO tema.
-                  className="tyba-divide-r tyba-glass flex shrink-0 flex-col"
+                  className="tyba-lift-r tyba-glass flex shrink-0 flex-col"
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {open && (
