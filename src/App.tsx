@@ -257,7 +257,7 @@ import {
 import { bootFailureTitleKey } from "./lib/bootFailure";
 import { basename } from "@/lib/utils";
 import { buildConflictPrompt } from "./lib/conflicts";
-import { isFinishedStatus, sameSessionStatus } from "./lib/sessionStatus";
+import { isFinishedStatus, mergeSessionUpdate } from "./lib/sessionStatus";
 import {
   AGENTS_PANEL_LINGER_MS,
   agentsPanelRunConcluded,
@@ -1795,20 +1795,10 @@ export default function App() {
       void onSessionStatus(id, (session) => {
         setSessions((prev) => {
           const current = prev.find((c) => c.id === id);
-          if (
-            !current ||
-            (sameSessionStatus(current.status, session.status) &&
-              current.attention === session.attention) ||
-            (isFinishedStatus(current.status) &&
-              !isFinishedStatus(session.status))
-          ) {
-            return prev;
-          }
-          return prev.map((c) =>
-            c.id === id
-              ? { ...c, status: session.status, attention: session.attention }
-              : c,
-          );
+          if (!current) return prev;
+          const merged = mergeSessionUpdate(current, session);
+          if (!merged) return prev;
+          return prev.map((c) => (c.id === id ? merged : c));
         });
       }).then((un) => (disposed ? un() : unlisteners.push(un)));
     }

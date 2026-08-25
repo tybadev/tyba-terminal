@@ -1,4 +1,4 @@
-import type { SessionStatus } from "./ipc";
+import type { ObservedAgent, Session, SessionStatus } from "./ipc";
 
 export const isFinishedStatus = (status: SessionStatus): boolean =>
   status.state === "exited" || status.state === "failed";
@@ -73,4 +73,55 @@ export const statusVisual = (
     case "exited":
       return null;
   }
+};
+
+/**
+ * O palpite de tela mudou?
+ *
+ * Precisa existir porque `observed` NÃO mexe no `status`: um shell com um
+ * agente cru dentro fica `running` do primeiro ao último segundo, e a atenção
+ * também não se mexe. Comparar só status e atenção é declarar "nada mudou"
+ * justamente quando o agente apareceu.
+ */
+export const sameObserved = (
+  a: ObservedAgent | null | undefined,
+  b: ObservedAgent | null | undefined,
+): boolean => {
+  if (!a || !b) return !a && !b;
+  return a.agent === b.agent && a.state === b.state;
+};
+
+/**
+ * A sessão atualizada, ou `null` quando o evento não traz novidade.
+ *
+ * Mora aqui, e não dentro do listener no `App`, por dois motivos: é decisão,
+ * não renderização (princípio 1 — o webview é burro), e porque dentro do
+ * `setSessions` nenhum teste alcançava. Foi exatamente ali que o `observed` se
+ * perdeu: o listener comparava status e atenção para decidir se havia
+ * novidade, e depois copiava **só** esses dois campos. As duas metades
+ * ignoravam `observed`, então um agente descoberto na tela nunca chegava à
+ * lista de agentes — enquanto a faixa âmbar, que vem por outro canal, dizia
+ * que ele estava lá.
+ */
+export const mergeSessionUpdate = (
+  current: Session,
+  incoming: Session,
+): Session | null => {
+  // Sessão que já terminou não ressuscita por evento atrasado.
+  if (isFinishedStatus(current.status) && !isFinishedStatus(incoming.status)) {
+    return null;
+  }
+  if (
+    sameSessionStatus(current.status, incoming.status) &&
+    current.attention === incoming.attention &&
+    sameObserved(current.observed, incoming.observed)
+  ) {
+    return null;
+  }
+  return {
+    ...current,
+    status: incoming.status,
+    attention: incoming.attention,
+    observed: incoming.observed ?? null,
+  };
 };
