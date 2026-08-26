@@ -103,4 +103,19 @@ mod tests {
         found.sort();
         assert_eq!(found, vec!["deno", "node"]);
     }
+
+    #[test]
+    fn a_directory_that_cannot_be_read_does_not_take_the_rest_down() {
+        // `$PATH` com entrada morta é o normal, não o defeito: `~/.cargo/bin`
+        // antes do primeiro `cargo install`, um volume desmontado, um shim de
+        // ferramenta desinstalada. Uma varredura que aborta ali devolve lista
+        // vazia e o usuário perde a completação inteira por causa de um
+        // diretório que nunca importou.
+        let good = tempfile::tempdir().unwrap();
+        file(good.path(), "tyba", 0o755);
+        let missing = good.path().join("nao-existe");
+
+        // O ilegível vem PRIMEIRO: se ele abortasse, o bom nunca seria lido.
+        assert_eq!(scan(&[&missing, good.path()]), vec!["tyba"]);
+    }
 }
