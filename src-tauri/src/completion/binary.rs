@@ -11,7 +11,26 @@
 //! shell (ver a tech spec 02 no cofre).
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// O separador do `$PATH`: `:` em toda parte, `;` no Windows.
+#[cfg(windows)]
+const SEPARATOR: char = ';';
+#[cfg(not(windows))]
+const SEPARATOR: char = ':';
+
+/// Os diretórios de um `$PATH` cru, na ordem em que ele os declara.
+///
+/// Entrada vazia é descartada em vez de virar `.`: o shell interpreta `::` e o
+/// `$PATH` terminado em `:` como "o diretório atual", e herdar isso poria o cwd
+/// na varredura. Um `./deploy.sh` no repo apareceria como comando do sistema, e
+/// entrar num diretório mudaria a lista de comandos disponíveis.
+pub fn split(raw: &str) -> Vec<PathBuf> {
+    raw.split(SEPARATOR)
+        .filter(|part| !part.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
 
 /// O arquivo pode ser executado por alguém?
 ///
@@ -117,5 +136,18 @@ mod tests {
 
         // O ilegível vem PRIMEIRO: se ele abortasse, o bom nunca seria lido.
         assert_eq!(scan(&[&missing, good.path()]), vec!["tyba"]);
+    }
+
+    #[test]
+    fn the_empty_entry_never_becomes_the_current_directory() {
+        // `PATH=/a::/b` e `PATH=/a:` são o shell dizendo "e também o cwd".
+        // Herdar isso poria o diretório atual na varredura: o `./deploy.sh` de
+        // um repo apareceria como comando do sistema, e trocar de pasta mudaria
+        // a lista de comandos. O `$PATH` real vem do env de uma sessão — não é
+        // conteúdo que o TYBA escreve.
+        assert_eq!(
+            split("/usr/bin::/bin:"),
+            vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")]
+        );
     }
 }
