@@ -5238,10 +5238,19 @@ export default function App() {
                           className="pointer-events-none rounded-full"
                           style={{
                             position: "absolute",
-                            left: `${p.x}%`,
-                            top: `calc(${p.y}% + 6px)`,
-                            height: `calc(${p.h}% - 12px)`,
-                            width: 2,
+                            // No TOPO, não na aresta lateral. Vertical e de
+                            // altura inteira ela caía exatamente na fronteira
+                            // entre dois painéis e lia como DIVISOR, não como
+                            // marca — e um gradiente esticado por mil pixels
+                            // vira listra de arco-íris: o gesto só funciona
+                            // curto, que é como a aba ativa o usa.
+                            // É literalmente a mesma régua da aba (`TabBar`,
+                            // `inset-x-1 top-0 h-0.5`): no TYBA "o ativo" se
+                            // diz assim, e agora aba e painel dizem igual.
+                            left: `calc(${p.x}% + 8px)`,
+                            top: `${p.y}%`,
+                            width: `calc(${p.w}% - 16px)`,
+                            height: 2,
                             background: "var(--tyba-gradient-soft)",
                             // Acima da lista de blocos, que é `z-10`. Sem isto
                             // a marca fica DEBAIXO dos cartões — e como eles
