@@ -753,6 +753,26 @@ export default function App() {
   promptModesRef.current = promptModes;
   const [promptModePref, setPromptModePref] = useState(false);
   /**
+   * O que foi digitado e não enviado, por sessão.
+   *
+   * A linha de comando é uma só e remonta a cada troca de sessão — a `key`
+   * dela inclui o id de propósito, porque sugestão, histórico e caret são de
+   * uma sessão só e não podem vazar para a outra. O rascunho ia junto: meio
+   * comando escrito num pane, um clique no pane ao lado, e sumia sem aviso.
+   * Valia para pane, aba e sessão.
+   *
+   * `ref` e não estado: ninguém lê isto durante o render, só a próxima
+   * montagem da caixa. Como estado, cada tecla digitada re-renderizaria o
+   * `App` inteiro para guardar um valor que ninguém está olhando.
+   */
+  const drafts = useRef<Record<string, string>>({});
+  // Estável de propósito: como seta inline, ela seria uma função nova a cada
+  // render do `App`, e o efeito que guarda o rascunho re-rodaria junto —
+  // trabalho por tecla digitada para escrever o mesmo valor de novo.
+  const rememberDraft = useCallback((id: SessionId, text: string) => {
+    drafts.current[id] = text;
+  }, []);
+  /**
    * Sessões que subiram com o hook do TYBA injetado.
    *
    * Separado de `promptModes` porque as duas perguntas são diferentes:
@@ -3219,6 +3239,12 @@ export default function App() {
   // subiu (shell sem integração, subshell, container).
   useEffect(() => {
     const ids = sessions.map((s) => s.id);
+    // Rascunho de sessão que não existe mais não volta a ser lido por ninguém,
+    // e o mapa é `ref`: sem isto ele só cresce enquanto o app estiver aberto.
+    const vivos = new Set<string>(ids);
+    for (const id of Object.keys(drafts.current)) {
+      if (!vivos.has(id)) delete drafts.current[id];
+    }
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     for (const id of ids) {
@@ -5357,6 +5383,8 @@ export default function App() {
                     focusNonce={commandLineNonce}
                     state={commandLineState}
                     inject={injected}
+                    draft={drafts.current[activeSession.id] ?? ""}
+                    onDraftChange={rememberDraft}
                   />
                 )}
                 {activeSession && richInputVisible && !ownsCommandLine && (

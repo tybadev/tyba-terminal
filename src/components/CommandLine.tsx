@@ -74,6 +74,26 @@ interface Props {
    * silêncio — o destino passa a ser a caixa, que é quem edita a linha.
    */
   inject?: { text: string; nonce: number } | null;
+  /**
+   * O que estava digitado e não foi enviado, guardado por SESSÃO.
+   *
+   * A caixa é uma só para o workspace inteiro e remonta a cada troca de
+   * sessão (a `key` no `App` inclui o id, de propósito: sugestões, histórico
+   * e caret são de uma sessão só e não podem vazar para a outra). O efeito
+   * colateral era o rascunho morrer junto — meio comando escrito num pane,
+   * um clique no pane ao lado, e ele sumia sem aviso. Vale para troca de
+   * pane, de aba e de sessão.
+   *
+   * Vem de fora e não de um estado interno porque quem sobrevive à
+   * remontagem tem de morar acima dela.
+   */
+  draft?: string;
+  /**
+   * Onde devolver o rascunho. É um `ref` do lado do `App`, não estado: a
+   * caixa avisa a cada tecla, e re-renderizar o `App` inteiro por tecla
+   * digitada custaria caro sem ninguém precisar do valor até a remontagem.
+   */
+  onDraftChange?: (sessionId: SessionId, text: string) => void;
 }
 
 /**
@@ -93,6 +113,8 @@ export function CommandLine({
   focusNonce,
   state,
   inject,
+  draft = "",
+  onDraftChange,
 }: Props) {
   // Não é "a linha não é minha", é "a caixa não aceita tecla". A diferença é
   // o `waiting`: a linha ainda não é do TYBA, mas o rascunho pode ser escrito
@@ -105,8 +127,11 @@ export function CommandLine({
   const where = shortPath(cwd);
   const { t } = useTranslation();
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [text, setText] = useState("");
-  const [caret, setCaret] = useState(0);
+  const [text, setText] = useState(draft);
+  // No fim do rascunho, não no começo. Voltar para um pane e digitar no meio
+  // do que já estava escrito seria pior que ter perdido o texto: o comando sai
+  // errado e a culpa não é óbvia. Zero só quando não há rascunho.
+  const [caret, setCaret] = useState(draft.length);
   const [hits, setHits] = useState<CommandSuggestion[]>([]);
   const [index, setIndex] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -120,6 +145,18 @@ export function CommandLine({
   // ele aceita. Sem esta trava, um segundo Enter na espera enviaria o MESMO
   // texto de novo — e o shell rodaria o comando duas vezes.
   const [submitting, setSubmitting] = useState(false);
+
+  // O `caret` do React é só para as sugestões; quem posiciona o cursor de
+  // verdade é o DOM, e a textarea nasce com a seleção em zero. Sem isto o
+  // rascunho voltava com o cursor antes da primeira letra.
+  useEffect(() => {
+    if (!draft) return;
+    const el = inputRef.current;
+    if (!el) return;
+    el.setSelectionRange(draft.length, draft.length);
+    // Só na montagem: depois disso quem manda no cursor é quem está digitando.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const seenInject = useRef(inject?.nonce ?? 0);
   useEffect(() => {
@@ -271,6 +308,14 @@ export function CommandLine({
   // `useLayoutEffect` porque a medida acontece antes da pintura: com `useEffect`
   // o quadro intermediário com a altura errada chega à tela.
   useLayoutEffect(resize, [state, text]);
+
+  // Um efeito, e não um `setText` embrulhado: assim nenhum dos oito pontos que
+  // escrevem no texto precisa lembrar de avisar, e o valor guardado é sempre o
+  // que foi COMMITADO — inclusive o `""` de depois de enviar, que é o que
+  // limpa o rascunho sem ninguém pedir.
+  useEffect(() => {
+    onDraftChange?.(sessionId, text);
+  }, [sessionId, text, onDraftChange]);
 
   const apply = (next: string, nextCaret: number) => {
     setText(next);
