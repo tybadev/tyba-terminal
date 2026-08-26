@@ -103,6 +103,76 @@ impl Cache {
     }
 }
 
+/// De onde o nome veio. O `$PATH` o core lê sozinho; o resto só o shell sabe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Path,
+    Alias,
+    Function,
+    Builtin,
+}
+
+/// Um comando que existe na sessão.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Command {
+    pub name: String,
+    pub kind: Kind,
+}
+
+/// Um lote de nomes vindo do hook, em `<kind>:<nome>,<kind>:<nome>`.
+///
+/// **O conteúdo é influenciável por atacante**: qualquer processo dentro da
+/// sessão emite a sequência, exatamente como qualquer um emite o OSC 7 do `cwd`
+/// (ADR de 2026-07-08). Vale a mesma regra — display-only, nenhuma decisão de
+/// segurança sai daqui — e por isso cada nome é conferido: completar escreve
+/// texto na caixa, e um "nome" que fosse `rm -rf /` viraria uma linha pronta
+/// esperando um Enter distraído.
+///
+/// Item inválido é descartado sozinho, sem levar o lote junto: um payload
+/// meio-truncado ainda entrega os nomes que chegaram inteiros.
+pub fn parse_batch(payload: &str) -> Vec<Command> {
+    payload
+        .split(',')
+        .filter_map(|item| {
+            let (kind, name) = item.split_once(':')?;
+            let kind = match kind {
+                "alias" => Kind::Alias,
+                "function" => Kind::Function,
+                "builtin" => Kind::Builtin,
+                // `path` não vem do shell: o core lê o `$PATH` sozinho, e aceitar
+                // esse kind daqui deixaria um processo qualquer plantar nomes
+                // como se fossem binários instalados.
+                _ => return None,
+            };
+            is_name(name).then(|| Command {
+                name: name.to_string(),
+                kind,
+            })
+        })
+        .collect()
+}
+
+/// Quantos bytes um nome pode ter.
+///
+/// `NAME_MAX` da maioria dos filesystems é 255, e nome de comando não chega
+/// perto. O teto existe para que um lote forjado não encha a lista com uma
+/// entrada só, gigante.
+const MAX_NAME_LEN: usize = 128;
+
+/// Isto se parece com um nome de comando?
+///
+/// A regra é por lista de PERMISSÃO, não de proibição. Enumerar o proibido
+/// (`;`, `|`, `&`, `$`, aspas, espaço, controle) erra por omissão no dia em que
+/// aparecer um metacaractere que ninguém lembrou; enumerar o permitido erra por
+/// recusar um nome exótico, que é o lado barato.
+fn is_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_NAME_LEN
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '+' | '@'))
+}
+
 /// O arquivo pode ser executado por alguém?
 ///
 /// Basta um dos três bits: um binário instalado por outro usuário costuma vir
@@ -269,5 +339,19 @@ mod tests {
 
         file(dir.path(), "recem-instalado", 0o755);
         assert!(cache.is_stale(raw));
+    }
+
+    #[test]
+    fn a_batch_carries_where_each_name_came_from() {
+        // O `kind` não é enfeite: é o que deixa a lista distinguir o que é do
+        // dono (`gst`, que ele mesmo escreveu) do que é do sistema.
+        assert_eq!(
+            parse_batch("alias:gst,function:mkcd,builtin:cd"),
+            vec![
+                Command { name: "gst".into(), kind: Kind::Alias },
+                Command { name: "mkcd".into(), kind: Kind::Function },
+                Command { name: "cd".into(), kind: Kind::Builtin },
+            ]
+        );
     }
 }
