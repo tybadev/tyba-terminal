@@ -47,7 +47,10 @@ pub enum ShellEvent {
     Cwd(std::path::PathBuf),
 }
 
-const MAX_OSC_LEN: usize = 8 * 1024;
+/// Teto de uma sequência OSC. `pub(crate)` porque o hook do shell precisa
+/// caber aqui dentro, e um teste prende os dois juntos: quem baixar este número
+/// sem olhar o emissor descobre pelo teste, não por uma lista que sumiu.
+pub(crate) const MAX_OSC_LEN: usize = 8 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {

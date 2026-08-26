@@ -1218,6 +1218,95 @@ pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
 pub type SharedSessionManager = Arc<SessionManager>;
 
 #[cfg(test)]
+mod hook_zsh_tests {
+    use super::TYBA_ZSH_RC;
+
+    /// Roda o hook num zsh de verdade e devolve o que ele escreveu no terminal.
+    ///
+    /// `-i -c '__tyba_precmd'` porque o hook só fala no prompt: `-i` carrega o
+    /// `.zshrc` do `ZDOTDIR`, e chamar o precmd à mão dispensa fingir um TTY.
+    fn run_precmd(zshrc_prefix: &str) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".zshrc"),
+            format!("{zshrc_prefix}\n{TYBA_ZSH_RC}\n"),
+        )
+        .unwrap();
+        let out = std::process::Command::new("zsh")
+            .args(["-i", "-c", "__tyba_precmd"])
+            .env("ZDOTDIR", dir.path())
+            .output()
+            .expect("zsh");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Só roda onde o zsh é garantido. O gate de Rust inclui `macos-latest`,
+    /// então isto NÃO é um teste que some da CI — some só do runner que não tem
+    /// zsh instalado, onde ele mediria a ausência do shell, não o hook.
+    #[cfg_attr(not(target_os = "macos"), ignore)]
+    #[test]
+    fn the_hook_reports_the_alias_name_and_never_its_body() {
+        // O corpo do alias é onde mora o token de deploy — é o caso comum, não o
+        // exótico. Ele não serve para completar um nome, e transportá-lo poria
+        // secret numa sequência OSC que passa pela captura do PTY e pelo
+        // scrollback persistido (princípio #10).
+        let out = run_precmd("alias deploy='TOKEN=sk-live-NAO-PODE-VAZAR ./deploy.sh'");
+
+        assert!(
+            out.contains("tyba-commands="),
+            "o hook não reportou comando nenhum: {out:?}"
+        );
+        assert!(
+            out.contains("alias:deploy"),
+            "o nome do alias não chegou: {out:?}"
+        );
+        assert!(
+            !out.contains("sk-live-NAO-PODE-VAZAR"),
+            "O CORPO DO ALIAS ATRAVESSOU O PTY: {out:?}"
+        );
+    }
+
+    /// Cada lote cabe na sequência que o parser aceita.
+    ///
+    /// Este teste existe porque os dois lados moram em arquivos diferentes: o
+    /// teto está no `OscParser` (Rust) e o corte está no hook (zsh). Sem ele,
+    /// baixar `MAX_OSC_LEN` ou subir `__tyba_batch_max` passa verde e a lista de
+    /// comandos simplesmente encolhe em silêncio — porque lote descartado não
+    /// avisa ninguém.
+    #[cfg_attr(not(target_os = "macos"), ignore)]
+    #[test]
+    fn no_batch_is_bigger_than_the_parser_accepts() {
+        // A fixture precisa ser GRANDE, e isso não é exagero de cenário: com o
+        // zsh pelado são ~106 nomes (1,5 KB) e o teto de 8 KB nunca chega perto
+        // — o teste passaria mesmo com o corte desligado, medindo a fixture em
+        // vez do hook. Conferido: com `__tyba_batch_max` em 99999 e a fixture
+        // pequena, ele continuava verde.
+        //
+        // 800 funções de nome longo dão ~22 KB, quase 3× o teto. Uma máquina
+        // real com oh-my-zsh está nessa ordem de grandeza (1302 funções medidas
+        // em 26/08/2026), então isto reproduz o caso comum, não o extremo.
+        let out = run_precmd(
+            "for i in {1..800}; do eval \"funcao_de_teste_com_nome_longo_$i() { : ; }\"; done",
+        );
+        let batches: Vec<&str> = out
+            .split("]633;P;tyba-commands=")
+            .skip(1)
+            .filter_map(|rest| rest.split('\u{7}').next())
+            .collect();
+
+        assert!(!batches.is_empty(), "nenhum lote foi emitido: {out:?}");
+        for batch in &batches {
+            assert!(
+                batch.len() < crate::status::MAX_OSC_LEN,
+                "lote de {} bytes não cabe no teto de {}",
+                batch.len(),
+                crate::status::MAX_OSC_LEN
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
