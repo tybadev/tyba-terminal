@@ -10,6 +10,7 @@
 //! função NÃO passam por aqui — não existem em disco, e quem os conhece é o
 //! shell (ver a tech spec 02 no cofre).
 
+use std::collections::HashSet;
 use std::path::Path;
 
 /// O arquivo pode ser executado por alguém?
@@ -33,6 +34,11 @@ fn is_executable(meta: &std::fs::Metadata) -> bool {
 /// Nomes de executável encontrados nos diretórios, sem repetir.
 pub fn scan(dirs: &[&Path]) -> Vec<String> {
     let mut found = Vec::new();
+    // A ordem dos diretórios é a do `$PATH`, e ela é significativa: o primeiro
+    // que declara um nome é o que o shell vai executar. Como o que se completa é
+    // só o NOME, quem vence não muda o texto — mas manter "o primeiro vence" faz
+    // a lista contar a mesma história que o `exec` conta.
+    let mut seen: HashSet<String> = HashSet::new();
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
@@ -47,7 +53,10 @@ pub fn scan(dirs: &[&Path]) -> Vec<String> {
             if !is_executable(&meta) {
                 continue;
             }
-            found.push(entry.file_name().to_string_lossy().into_owned());
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if seen.insert(name.clone()) {
+                found.push(name);
+            }
         }
     }
     found
@@ -76,5 +85,22 @@ mod tests {
         file(dir.path(), "README.md", 0o644);
 
         assert_eq!(scan(&[dir.path()]), vec!["tyba"]);
+    }
+
+    #[test]
+    fn the_same_name_in_two_directories_is_listed_once() {
+        // É o caso comum, não a exceção: `python3` existe no shim do asdf e no
+        // `/usr/bin`, `node` no Homebrew e no nvm. Listar duas vezes mostraria
+        // uma lista com o mesmo comando repetido, sem nada que os distinga —
+        // porque o que se completa é o NOME, e ele é o mesmo.
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        file(first.path(), "node", 0o755);
+        file(second.path(), "node", 0o755);
+        file(second.path(), "deno", 0o755);
+
+        let mut found = scan(&[first.path(), second.path()]);
+        found.sort();
+        assert_eq!(found, vec!["deno", "node"]);
     }
 }
