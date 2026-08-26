@@ -1413,6 +1413,13 @@ export interface LineSuggestions {
   commands: CommandSuggestion[];
   paths: string[];
   arguments: string[];
+  binaries: BinarySuggestion[];
+}
+
+/** Um comando que existe na sessão — do `$PATH` ou contado pelo shell. */
+export interface BinarySuggestion {
+  name: string;
+  kind: "path" | "alias" | "function" | "builtin";
 }
 
 export const suggestLine = (input: {
@@ -1422,6 +1429,9 @@ export const suggestLine = (input: {
   pathToken: string | null;
   argPrefix: string | null;
   argToken: string | null;
+  sessionId: string | null;
+  /** Não-nulo só quando o caret está no PRIMEIRO token. */
+  commandPrefix: string | null;
 }) => invoke<LineSuggestions>("suggest_line", input);
 
 export const completeArgument = (

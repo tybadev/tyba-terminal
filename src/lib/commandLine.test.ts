@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  commandPrefix,
   boxAcceptsTyping,
   boxIsMounted,
   clearsDraft,
@@ -503,5 +504,36 @@ describe("promptModeEnabled", () => {
     // versão futura não pode devolver o usuário ao terminal cru em silêncio.
     expect(promptModeEnabled("")).toBe(true);
     expect(promptModeEnabled("talvez")).toBe(true);
+  });
+});
+
+describe("commandPrefix", () => {
+  it("devolve o que foi digitado quando o caret está na primeira palavra", () => {
+    expect(commandPrefix("pn", 2)).toBe("pn");
+  });
+
+  it("é nulo depois do primeiro espaço", () => {
+    // Passado o primeiro token, quem responde é caminho ou argumento. Consultar
+    // a lista de comandos ali seria oferecer `pnpm` como valor de uma flag.
+    expect(commandPrefix("git comm", 8)).toBeNull();
+    expect(commandPrefix("ls ", 3)).toBeNull();
+  });
+
+  it("é nulo com a caixa vazia", () => {
+    // Prefixo vazio casaria com tudo: os milhares de binários do $PATH
+    // despejados no instante em que o cursor chega na linha.
+    expect(commandPrefix("", 0)).toBeNull();
+  });
+
+  it("ignora o espaço à esquerda, que é o ignorespace", () => {
+    // ` comando` é a convenção "não guarde isto no histórico" — o espaço é
+    // sinal, não separador de token.
+    expect(commandPrefix("  pn", 4)).toBe("pn");
+  });
+
+  it("olha o caret, não o fim do texto", () => {
+    // Editar o começo de uma linha já escrita: o caret está no primeiro token
+    // mesmo havendo mais palavras depois dele.
+    expect(commandPrefix("pn install algo", 2)).toBe("pn");
   });
 });

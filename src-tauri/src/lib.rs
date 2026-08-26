@@ -5066,10 +5066,79 @@ fn command_suggestions(
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct BinarySuggestion {
+    name: String,
+    /// `path` | `alias` | `function` | `builtin` — o que a lista mostra ao lado
+    /// do nome para o dono distinguir o que é dele do que é do sistema.
+    kind: &'static str,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LineSuggestions {
     commands: Vec<CommandSuggestion>,
     paths: Vec<String>,
     arguments: Vec<String>,
+    binaries: Vec<BinarySuggestion>,
+}
+
+/// Os comandos que existem na sessão e começam com o prefixo.
+///
+/// Só é chamado quando o caret está no PRIMEIRO token — quem sabe disso é o
+/// front, que tem o caret, e por isso `command_prefix` chega `None` fora dali.
+/// Lista vazia não custa consulta nenhuma.
+fn binary_suggestions(
+    state: &AppState,
+    session_id: Option<&str>,
+    command_prefix: Option<&str>,
+) -> Vec<BinarySuggestion> {
+    use completion::binary::{Command as BinaryCommand, Kind};
+
+    let (Some(session_id), Some(prefix)) = (session_id, command_prefix) else {
+        return Vec::new();
+    };
+    if prefix.is_empty() {
+        return Vec::new();
+    }
+
+    let mut found: Vec<BinaryCommand> = completion::binary::reported(session_id)
+        .into_iter()
+        .filter(|c| c.name.starts_with(prefix))
+        .collect();
+    for name in completion::binary::path_names(session_id) {
+        if !name.starts_with(prefix) || found.iter().any(|seen| seen.name == name) {
+            continue;
+        }
+        found.push(BinaryCommand {
+            name,
+            kind: Kind::Path,
+        });
+    }
+
+    // A frecência que ordena é a MESMA do histórico — não há segunda régua. Só o
+    // primeiro token de cada comando interessa: o histórico guarda a linha
+    // inteira, e `git commit -m x` diz que `git` é usado, não `git commit -m x`.
+    let used: Vec<String> = state
+        .store
+        .history_with_prefix(prefix, 200)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|line| line.split_whitespace().next().map(str::to_string))
+        .collect();
+
+    completion::binary::rank(found, &used)
+        .into_iter()
+        .take(SUGGEST_LIMIT)
+        .map(|c| BinarySuggestion {
+            name: c.name,
+            kind: match c.kind {
+                Kind::Path => "path",
+                Kind::Alias => "alias",
+                Kind::Function => "function",
+                Kind::Builtin => "builtin",
+            },
+        })
+        .collect()
 }
 
 /// Uma chamada por tecla, não três.
@@ -5078,6 +5147,7 @@ struct LineSuggestions {
 /// digitação: três travessias da ponte do webview e três consultas, para uma
 /// única mudança de estado na tela.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn suggest_line(
     state: State<'_, AppState>,
     query: String,
@@ -5086,6 +5156,8 @@ async fn suggest_line(
     path_token: Option<String>,
     arg_prefix: Option<String>,
     arg_token: Option<String>,
+    session_id: Option<String>,
+    command_prefix: Option<String>,
 ) -> Result<LineSuggestions, String> {
     let paths = match (&cwd, &path_token) {
         (Some(cwd), Some(token)) if !cwd.is_empty() => {
@@ -5100,10 +5172,12 @@ async fn suggest_line(
         _ => Vec::new(),
     };
     let commands = command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref())?;
+    let binaries = binary_suggestions(&state, session_id.as_deref(), command_prefix.as_deref());
     Ok(LineSuggestions {
         commands,
         paths,
         arguments,
+        binaries,
     })
 }
 
