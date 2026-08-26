@@ -294,6 +294,91 @@ samp {
   mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
 }
 
+/* Fronteira de rolagem HORIZONTAL, com estado.
+
+   A vertical acima é estática e assume o efeito colateral do último item meio
+   apagado — numa lista isso passa. Numa faixa de ABAS não passa: o item
+   apagado pode ser a aba ATIVA, que é a única que precisa estar legível. O
+   próprio comentário de cima já dizia que o conserto seria "estado de rolagem,
+   não outro CSS"; aqui essa hora chegou.
+
+   Por isso os dois lados são independentes e ligados por classe: `--ini` fade
+   à esquerda (há aba escondida atrás), `--fim` à direita (há aba adiante).
+   Colado no fim, o `--fim` sai e a última aba fica nítida.
+
+   As máscaras compõem: com as duas classes, os dois gradientes se somam e a
+   faixa dissolve nas duas pontas. */
+.tyba-fade-x--ini {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 24px);
+  mask-image: linear-gradient(to right, transparent, #000 24px);
+}
+.tyba-fade-x--fim {
+  -webkit-mask-image: linear-gradient(to left, transparent, #000 24px);
+  mask-image: linear-gradient(to left, transparent, #000 24px);
+}
+.tyba-fade-x--ini.tyba-fade-x--fim {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 24px,
+    #000 calc(100% - 24px),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 24px,
+    #000 calc(100% - 24px),
+    transparent
+  );
+}
+
+/* A barra de rolagem some onde ela é a coisa mais chamativa da região.
+
+   Na faixa de abas a barra padrão tem 10px numa faixa de 32 — um terço da
+   altura, cinza, e mais visível que as próprias abas. Quem indica a rolagem
+   passa a ser o filete (`.tyba-filete`), que fala a linguagem do produto. */
+.tyba-sem-barra {
+  scrollbar-width: none;
+}
+.tyba-sem-barra::-webkit-scrollbar {
+  display: none;
+}
+
+/* O FILETE de rolagem: a mesma luz que marca o que está vivo, agora dizendo
+   onde você está na faixa.
+
+   Substitui a barra cinza em vez de acompanhá-la. Usa o `--tyba-flow-gradient`
+   — o filamento verde/ciano/violeta que já marca aba ativa e sessão executando
+   —, e é a doutrina do BLACKOUT aplicada a uma região que nunca a recebeu:
+   quem separa e quem informa é a LUZ, não o cinza.
+
+   Só existe enquanto se rola, e some depois. Isso não é enfeite de transição:
+   o mesmo filamento significa "vivo" no topo da aba, e deixá-lo aceso o tempo
+   todo embaixo criaria duas leituras para a mesma luz. Em repouso a única luz
+   permanente da faixa continua sendo a da aba ativa. */
+.tyba-filete {
+  position: absolute;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--tyba-flow-gradient);
+  opacity: 0;
+  transition: opacity 240ms ease-out;
+  pointer-events: none;
+}
+.tyba-filete--vivo {
+  opacity: 0.9;
+  transition: opacity 90ms ease-in;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tyba-filete,
+  .tyba-filete--vivo {
+    transition: none;
+  }
+}
+
 /* Separação por luz, para o CROMO da janela — header, sidebar, rodapé.
    O `z-index` volta aqui, e só aqui: a parte `cast` é projetada para fora,
    então precisa ficar acima do vizinho. São três containers simples, sem
