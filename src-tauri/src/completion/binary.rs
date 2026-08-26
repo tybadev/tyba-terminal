@@ -181,6 +181,33 @@ fn is_name(name: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '+' | '@'))
 }
 
+/// Ordena os candidatos: o que o dono já usou primeiro, o resto em ordem
+/// estável.
+///
+/// Fica separado de `matching` de propósito. Coletar é decidir QUEM entra —
+/// depende do disco e do shell. Ordenar é decidir EM QUE ORDEM — depende do
+/// histórico, que o `completion` não conhece e não deve conhecer. Juntas, seriam
+/// uma função que precisa de `Store` para testar qual binário é executável.
+///
+/// `used` chega ordenado por frecência (a de `history::frecency`, que já pesa
+/// recência, frequência, sucesso e escopo); esta função só preserva essa ordem.
+pub fn rank(mut found: Vec<Command>, used: &[String]) -> Vec<Command> {
+    let position = |name: &str| used.iter().position(|u| u == name);
+    // `sort_by` do Rust é estável, mas o desempate é declarado mesmo assim: a
+    // entrada vem do `read_dir`, cuja ordem é do filesystem — muda entre
+    // máquinas e pode mudar na mesma máquina entre duas leituras. Depender da
+    // estabilidade seria preservar uma ordem que não existe.
+    found.sort_by(|a, b| match (position(&a.name), position(&b.name)) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        // Usado vence não-usado, e não é preferência: o que ele roda todo dia é
+        // a resposta provável, e o resto está ali só para não sumir.
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.name.cmp(&b.name),
+    });
+    found
+}
+
 /// O que cada sessão contou, vivo enquanto ela viver.
 ///
 /// Global e não campo de `SessionManager` pelo mesmo motivo que
@@ -523,6 +550,40 @@ mod tests {
 
         let names: Vec<&str> = known.from_shell().iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["ok"]);
+    }
+
+    fn cmd(name: &str) -> Command {
+        Command {
+            name: name.into(),
+            kind: Kind::Path,
+        }
+    }
+
+    fn names(found: &[Command]) -> Vec<&str> {
+        found.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    #[test]
+    fn what_was_used_comes_before_what_was_never_used() {
+        // Sem isto a lista é o `read_dir` do `/usr/bin`: `pnpm` que o dono roda
+        // dez vezes por dia apareceria atrás de qualquer binário que veio junto
+        // de um pacote. A frecência já existe e já pesa recência, frequência,
+        // sucesso e escopo — aqui ela só é respeitada.
+        let found = vec![cmd("curl"), cmd("pnpm"), cmd("awk")];
+        let used = vec!["pnpm".to_string()];
+
+        assert_eq!(names(&rank(found, &used)), ["pnpm", "awk", "curl"]);
+    }
+
+    #[test]
+    fn two_never_used_tie_break_alphabetically_not_by_read_dir() {
+        // A ordem do `read_dir` é do filesystem: muda entre máquinas, e pode
+        // mudar na mesma máquina entre duas leituras. Uma lista que se reordena
+        // sozinha entre teclas é pior que uma lista errada — o item que o olho
+        // mirou sai do lugar antes do dedo chegar.
+        let found = vec![cmd("zoxide"), cmd("bat"), cmd("rg")];
+
+        assert_eq!(names(&rank(found, &[])), ["bat", "rg", "zoxide"]);
     }
 
     #[test]
