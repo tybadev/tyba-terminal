@@ -39,6 +39,13 @@ pub enum ShellEvent {
     /// prompt do TYBA. É a resposta do hook, não um palpite do app: sem ela o
     /// front não sabe se o `PS1` saiu mesmo da tela.
     PromptMode(bool),
+    /// `OSC 633 ; P ; tyba-path=<valor>` — o `$PATH` **efetivo** da sessão.
+    ///
+    /// Não é o que o core passou no spawn: `nvm`, `asdf` e `direnv` reescrevem
+    /// o `PATH` dentro do rc, depois do spawn, e são exatamente os shims que
+    /// importam. Quem varre os diretórios continua sendo o core — o shell só
+    /// diz QUAIS são.
+    ShellPath(String),
     /// `OSC 633 ; P ; tyba-commands=<lote>` — os comandos que só o shell
     /// conhece: alias, função e builtin.
     ///
@@ -189,6 +196,9 @@ fn parse_osc(payload: &[u8]) -> Option<ShellEvent> {
             let sub = parts.next()?;
             if sub == "P" {
                 let value = parts.next()?;
+                if let Some(path) = value.strip_prefix("tyba-path=") {
+                    return (!path.is_empty()).then(|| ShellEvent::ShellPath(path.to_string()));
+                }
                 if let Some(batch) = value.strip_prefix("tyba-commands=") {
                     // Lote vazio não vira evento: o shell não tem o que contar e
                     // acordar o core para uma lista vazia é trabalho por nada.
@@ -311,6 +321,18 @@ mod tests {
         assert_eq!(
             p.feed(b"ction:mkcd\x07"),
             vec![ShellEvent::ShellCommands("alias:gst,function:mkcd".into())]
+        );
+    }
+
+    #[test]
+    fn carries_the_effective_path_from_the_hook() {
+        // O `PATH` que o core passou no spawn não é o que vale: `nvm`, `asdf` e
+        // `direnv` o reescrevem DENTRO do rc, depois do spawn. Quem sabe o
+        // efetivo é o shell.
+        let mut p = OscParser::new();
+        assert_eq!(
+            p.feed(b"\x1b]633;P;tyba-path=/opt/shims:/usr/bin\x07"),
+            vec![ShellEvent::ShellPath("/opt/shims:/usr/bin".into())]
         );
     }
 

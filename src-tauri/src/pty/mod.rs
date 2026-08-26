@@ -443,6 +443,9 @@ impl<R: Runtime> ActionSink<R> {
                     let _ = self.app.emit(&self.command_event, state);
                 }
                 capture::Action::Record(record) => crate::history::record(record),
+                capture::Action::ShellPath(path) => {
+                    crate::completion::binary::set_path(&self.session_id.to_string(), &path);
+                }
                 capture::Action::ShellCommands(batch) => {
                     crate::completion::binary::absorb_reported(
                         &self.session_id.to_string(),

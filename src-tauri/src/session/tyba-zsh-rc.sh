@@ -113,6 +113,16 @@ if [[ -o interactive ]] && autoload -Uz add-zsh-hook 2>/dev/null; then
   #
   # O `$PATH` NAO entra: o core le o disco sozinho. Manda-lo aqui seria 30-50 KB
   # por sessao para transportar o que ele ja sabe.
+  # O `$PATH` EFETIVO, que so o shell sabe.
+  #
+  # O core sabe o PATH que passou no spawn, e nao e esse que vale: nvm, asdf e
+  # direnv reescrevem o PATH dentro do rc, DEPOIS do spawn — e sao justamente os
+  # shims que importam. Vai o valor (~500 B), nao os nomes: quem varre os
+  # diretorios continua sendo o core.
+  __tyba_path() {
+    __tyba_esc "633;P;tyba-path=$PATH"
+  }
+
   __tyba_commands() {
     local -a __names
     local __n __batch=""
@@ -152,6 +162,7 @@ if [[ -o interactive ]] && autoload -Uz add-zsh-hook 2>/dev/null; then
     # graca: o core faz uniao com dedup, entao o segundo envio nao duplica nada.
     if (( __tyba_commands_sent < 2 )); then
       (( __tyba_commands_sent++ ))
+      __tyba_path
       __tyba_commands
     fi
   }

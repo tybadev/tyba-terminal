@@ -216,6 +216,37 @@ pub fn rank(mut found: Vec<Command>, used: &[String]) -> Vec<Command> {
 static REPORTED: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, Vec<Command>>>> =
     std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
+/// O `$PATH` efetivo de cada sessão, e a varredura dele.
+///
+/// Separado do `REPORTED` porque envelhece de outro jeito: nomes do shell só
+/// crescem, e o `$PATH` é revarrido quando o carimbo de um diretório muda.
+static PATHS: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, Cache>>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+
+/// O shell contou qual é o `$PATH` de verdade daquela sessão.
+///
+/// Revarre só quando o cache se diz velho — o hook fala a cada um dos dois
+/// primeiros prompts, e varrer duas vezes o mesmo `$PATH` seria pagar o custo
+/// que o cache existe para evitar.
+pub fn set_path(session_id: &str, raw_path: &str) {
+    let mut all = PATHS.lock();
+    match all.get(session_id) {
+        Some(cache) if !cache.is_stale(raw_path) => {}
+        _ => {
+            all.insert(session_id.to_string(), Cache::build(raw_path));
+        }
+    }
+}
+
+/// Os binários do `$PATH` daquela sessão, do último cache.
+pub fn path_names(session_id: &str) -> Vec<String> {
+    PATHS
+        .lock()
+        .get(session_id)
+        .map(|c| c.names().to_vec())
+        .unwrap_or_default()
+}
+
 /// Absorve um lote reportado pelo hook daquela sessão.
 ///
 /// União com dedup: o hook emite nos dois primeiros prompts (não há canal de
@@ -242,6 +273,7 @@ pub fn reported(session_id: &str) -> Vec<Command> {
 /// worktree fechado continuaria sendo sugerido em outro.
 pub fn forget_reported(session_id: &str) {
     REPORTED.lock().remove(session_id);
+    PATHS.lock().remove(session_id);
 }
 
 /// Tudo que existe na sessão: o `$PATH` que o core varreu e o que o shell contou.
