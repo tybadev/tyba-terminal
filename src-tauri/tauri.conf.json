@@ -22,7 +22,10 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:",
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
     }
   },
   "bundle": {
@@ -37,7 +40,7 @@
     ],
     "category": "DeveloperTool",
     "shortDescription": "Seu ambiente, tudo conectado.",
-    "longDescription": "Terminal opensource orientado a agentes de IA: orquestra múltiplas sessões de agentes em git worktrees isolados, com inbox de aprovações, review de diff local e sandbox real do sistema operacional.",
+    "longDescription": "Terminal opensource orientado a agentes de IA: orquestra m\u00faltiplas sess\u00f5es de agentes em git worktrees isolados, com inbox de aprova\u00e7\u00f5es, review de diff local e sandbox real do sistema operacional.",
     "licenseFile": "../LICENSE",
     "macOS": {
       "minimumSystemVersion": "11.0",
@@ -45,10 +48,14 @@
     },
     "linux": {
       "deb": {
-        "depends": ["bubblewrap"]
+        "depends": [
+          "bubblewrap"
+        ]
       },
       "rpm": {
-        "depends": ["bubblewrap"]
+        "depends": [
+          "bubblewrap"
+        ]
       }
     }
   }
