@@ -6,6 +6,7 @@
 //! continuar descendo.
 
 pub mod argument;
+pub mod binary;
 
 use std::path::{Path, PathBuf};
 
