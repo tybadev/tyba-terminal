@@ -12,6 +12,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// O separador do `$PATH`: `:` em toda parte, `;` no Windows.
 #[cfg(windows)]
@@ -30,6 +31,76 @@ pub fn split(raw: &str) -> Vec<PathBuf> {
         .filter(|part| !part.is_empty())
         .map(PathBuf::from)
         .collect()
+}
+
+/// Quando o diretório mudou pela última vez, ou `None` se ele não pode ser lido.
+///
+/// `None` é estado legítimo e não erro: `~/.cargo/bin` antes do primeiro
+/// install. E ele COMPARA — um diretório que passa a existir muda de `None`
+/// para `Some`, e é assim que o cache descobre que ganhou entradas novas.
+fn stamp(dir: &Path) -> Option<SystemTime> {
+    std::fs::metadata(dir).ok()?.modified().ok()
+}
+
+/// A varredura e, junto dela, o que a invalida.
+///
+/// O cache é por sessão e não por tecla: `/usr/bin` tem mais de mil entradas e
+/// varrer o `$PATH` inteiro a cada caractere digitado é o tipo de custo que o
+/// core não pode pagar — ele divide CPU com os agentes.
+///
+/// Guardar o `$PATH` e o carimbo de cada diretório junto dos nomes é o que
+/// permite a invalidação ser uma pergunta barata: comparar uma string e fazer
+/// um `stat` por diretório, em vez de revarrer para descobrir se mudou.
+pub struct Cache {
+    raw_path: String,
+    stamps: Vec<Option<SystemTime>>,
+    names: Vec<String>,
+}
+
+impl Cache {
+    /// Varre o `$PATH` e carimba os diretórios no mesmo instante.
+    pub fn build(raw_path: &str) -> Self {
+        let dirs = split(raw_path);
+        // O carimbo é tirado ANTES da varredura, de propósito. Tirado depois,
+        // uma escrita que acontecesse durante a leitura ficaria com o carimbo
+        // novo e o conteúdo velho — e o cache nunca mais se veria desatualizado.
+        // Na ordem inversa o pior caso é uma revarredura a mais.
+        let stamps = dirs.iter().map(|dir| stamp(dir)).collect();
+        let refs: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
+        Self {
+            raw_path: raw_path.to_string(),
+            stamps,
+            names: scan(&refs),
+        }
+    }
+
+    /// Precisa revarrer?
+    ///
+    /// Pergunta pura e barata de propósito: uma comparação de string e um
+    /// `stat` por diretório. É o que permite chamá-la a cada prompt sem que
+    /// varrer volte a custar.
+    pub fn is_stale(&self, raw_path: &str) -> bool {
+        // O `$PATH` primeiro, e não por gosto: quando ele muda, os carimbos
+        // guardados são de OUTROS diretórios e comparar um a um não diz nada.
+        if self.raw_path != raw_path {
+            return true;
+        }
+        let dirs = split(raw_path);
+        // Comprimento diferente com a mesma string não deveria acontecer — mas
+        // `zip` para no mais curto, e um dia em que aconteça o cache passaria a
+        // ignorar em silêncio a cauda dos diretórios.
+        if dirs.len() != self.stamps.len() {
+            return true;
+        }
+        dirs.iter()
+            .zip(&self.stamps)
+            .any(|(dir, before)| stamp(dir) != *before)
+    }
+
+    /// Os nomes varridos, na ordem do `$PATH`.
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
 }
 
 /// O arquivo pode ser executado por alguém?
@@ -149,5 +220,54 @@ mod tests {
             split("/usr/bin::/bin:"),
             vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")]
         );
+    }
+
+    #[test]
+    fn the_cache_answers_with_what_it_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        file(dir.path(), "tyba", 0o755);
+
+        let cache = Cache::build(dir.path().to_str().unwrap());
+        assert_eq!(cache.names(), ["tyba"]);
+    }
+
+    #[test]
+    fn a_fresh_cache_is_not_stale() {
+        // Sem este caso o cache que sempre se diz velho passaria em todos os
+        // outros: revarrer a cada tecla está correto e é exatamente o custo que
+        // o cache existe para não pagar.
+        let dir = tempfile::tempdir().unwrap();
+        file(dir.path(), "tyba", 0o755);
+        let raw = dir.path().to_str().unwrap();
+
+        assert!(!Cache::build(raw).is_stale(raw));
+    }
+
+    #[test]
+    fn a_changed_path_makes_the_cache_stale() {
+        // O `$PATH` muda dentro da sessão, não só entre elas: `nvm use`,
+        // `direnv`, ativar um venv. Os diretórios antigos podem continuar
+        // intactos — quem mudou foi a LISTA, e nenhum carimbo denuncia isso.
+        let dir = tempfile::tempdir().unwrap();
+        file(dir.path(), "tyba", 0o755);
+        let raw = dir.path().to_str().unwrap();
+        let cache = Cache::build(raw);
+
+        assert!(cache.is_stale(&format!("{raw}:/opt/novo/bin")));
+    }
+
+    #[test]
+    fn a_binary_that_appears_makes_the_cache_stale() {
+        // `cargo install`, `brew install`, `npm i -g` no meio da sessão. Sem
+        // isto o comando recém-instalado só apareceria no próximo boot do app —
+        // e "instalei e o terminal não vê" é a forma mais visível de o cache
+        // estar mentindo.
+        let dir = tempfile::tempdir().unwrap();
+        file(dir.path(), "tyba", 0o755);
+        let raw = dir.path().to_str().unwrap();
+        let cache = Cache::build(raw);
+
+        file(dir.path(), "recem-instalado", 0o755);
+        assert!(cache.is_stale(raw));
     }
 }
