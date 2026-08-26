@@ -5220,10 +5220,10 @@ export default function App() {
                       espalhados por 1701 colunas e só 33 linhas. Uma borda
                       seria uma coluna com mil linhas seguidas.
 
-                      A barra usa o vocabulário que a sessão ativa já tem no
-                      sidebar: filete de gradiente na aresta esquerda. Um traço
-                      na tela inteira, e ele só existe para dizer uma coisa — o
-                      teclado vai para cá.
+                      O contorno volta inteiro, e em verde sólido — não em
+                      gradiente: gradiente esticado por um retângulo de mil
+                      pixels vira moldura de arco-íris. O gesto do gradiente é
+                      da ABA, curto; aqui o que se quer é cercar.
 
                       Só o painel ATIVO ganha marca. Os inativos não precisam de
                       contorno: o degrau de fundo (`pane-bg`) e o divisor já os
@@ -5235,28 +5235,22 @@ export default function App() {
                       .map((p) => (
                         <div
                           key={`pane-focus-${p.pane}`}
-                          className="pointer-events-none rounded-full"
+                          className="pointer-events-none rounded-[4px]"
                           style={{
                             position: "absolute",
-                            // No TOPO, não na aresta lateral. Vertical e de
-                            // altura inteira ela caía exatamente na fronteira
-                            // entre dois painéis e lia como DIVISOR, não como
-                            // marca — e um gradiente esticado por mil pixels
-                            // vira listra de arco-íris: o gesto só funciona
-                            // curto, que é como a aba ativa o usa.
-                            // É literalmente a mesma régua da aba (`TabBar`,
-                            // `inset-x-1 top-0 h-0.5`): no TYBA "o ativo" se
-                            // diz assim, e agora aba e painel dizem igual.
-                            left: `calc(${p.x}% + 8px)`,
+                            left: `${p.x}%`,
                             top: `${p.y}%`,
-                            width: `calc(${p.w}% - 16px)`,
-                            height: 2,
-                            background: "var(--tyba-gradient-soft)",
+                            width: `${p.w}%`,
+                            height: `${p.h}%`,
+                            border:
+                              "1px solid color-mix(in srgb, var(--tyba-green) 90%, transparent)",
+                            boxShadow:
+                              "0 0 0 1px color-mix(in srgb, var(--tyba-green) 18%, transparent), 0 0 16px -4px color-mix(in srgb, var(--tyba-green) 45%, transparent)",
                             // Acima da lista de blocos, que é `z-10`. Sem isto
                             // a marca fica DEBAIXO dos cartões — e como eles
-                            // cobrem quase todo o painel, ela some. Era isso
-                            // que fazia a moldura antiga parecer inexistente:
-                            // ela estava lá, embaixo.
+                            // cobrem quase todo o painel, ela some. Era isso, e
+                            // não o formato, que fazia o contorno antigo
+                            // parecer inexistente: ele estava lá, embaixo.
                             zIndex: 30,
                           }}
                         />
