@@ -3109,6 +3109,20 @@ export default function App() {
         toggleSidebar();
       } else if (action === "files") {
         if (activeId) void openFilesPanel(activeId).catch(() => {});
+      } else if (action === "clear") {
+        // Manda `clear` para o shell em vez de limpar por conta própria: esse
+        // caminho já existe e já leva os BLOCOS junto (`Action::Wipe`), que em
+        // modo bloco é o que "limpar" significa. Um segundo mecanismo aqui
+        // divergiria do primeiro no dia em que um dos dois mudasse.
+        //
+        // Com comando em execução não faz nada: `clear` ali não limparia
+        // coisa alguma, viraria texto na entrada do programa em voo — e o
+        // `y` que o usuário não digitou é exatamente o tipo de acidente que a
+        // regra dos três estados existe para evitar.
+        const alvo = activeId;
+        if (alvo && !sessionCommandsRef.current[alvo]?.running) {
+          void writeToSession(alvo, "clear\n").catch(() => {});
+        }
       } else if (action === "filesFinder") {
         openPalette("files");
       } else if (action === "newTab") {

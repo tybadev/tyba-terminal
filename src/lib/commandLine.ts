@@ -513,3 +513,24 @@ export function commandPrefix(text: string, caret: number): string | null {
   if (/\s/.test(typed)) return null;
   return typed;
 }
+
+/**
+ * Com a lista de sugestões visível, o Enter aplica a escolhida ou roda o que
+ * está escrito?
+ *
+ * A regra existe por segurança, não por gosto. A lista passa a abrir SOZINHA
+ * enquanto se digita o primeiro token — é assim que ela deixa de depender de
+ * um `Tab` que só quem já conhece aperta. Mas lista aberta sozinha não é lista
+ * escolhida: se o Enter aplicasse o primeiro item, o app trocaria o comando do
+ * usuário por outro no instante em que ele manda executar. Num terminal isso é
+ * inaceitável.
+ *
+ * Então o que autoriza aplicar não é a lista estar visível — é haver item
+ * ESCOLHIDO, o que só acontece depois de entrar nela com as setas.
+ */
+export function enterAplicaSugestao(estado: {
+  listaVisivel: boolean;
+  selecionado: number;
+}): boolean {
+  return estado.listaVisivel && estado.selecionado >= 0;
+}
