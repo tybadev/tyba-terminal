@@ -1266,6 +1266,29 @@ mod hook_zsh_tests {
         );
     }
 
+    /// O `$PATH` que chega é o EFETIVO, não o que o core passou no spawn.
+    ///
+    /// `nvm`, `asdf` e `direnv` reescrevem o `PATH` dentro do rc — depois do
+    /// spawn — e são justamente os shims que importam para completar o primeiro
+    /// token. Sem este teste, passar a reportar `$PATH` do env do processo
+    /// passaria despercebido: a lista continuaria funcionando, só que sem os
+    /// binários que o usuário instalou por versionador.
+    #[cfg_attr(not(target_os = "macos"), ignore)]
+    #[test]
+    fn the_reported_path_is_the_one_the_rc_left_behind() {
+        let out = run_precmd("export PATH=\"/opt/shim-de-teste:$PATH\"");
+
+        let reportado = out
+            .split("]633;P;tyba-path=")
+            .nth(1)
+            .and_then(|rest| rest.split('\u{7}').next())
+            .unwrap_or("");
+        assert!(
+            reportado.contains("/opt/shim-de-teste"),
+            "o shim que o rc adicionou nao chegou: {reportado:?}"
+        );
+    }
+
     /// Cada lote cabe na sequência que o parser aceita.
     ///
     /// Este teste existe porque os dois lados moram em arquivos diferentes: o

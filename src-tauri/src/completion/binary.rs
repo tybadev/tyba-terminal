@@ -639,6 +639,22 @@ mod tests {
     }
 
     #[test]
+    fn a_session_without_the_hook_still_answers_from_disk() {
+        // Shell sem integração — PowerShell, um subshell, um `ssh` sem hook —
+        // nunca reporta lote nenhum. Isso NÃO é falha: a fonte fica muda quanto
+        // a alias e função, e o `$PATH` continua respondendo. O modo de falha a
+        // evitar é a lista inteira sumir porque uma das fontes calou.
+        let dir = tempfile::tempdir().unwrap();
+        file(dir.path(), "pnpm", 0o755);
+        let known = Known::new(dir.path().to_str().unwrap());
+
+        let found = known.matching("pn");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, Kind::Path);
+        assert!(known.from_shell().is_empty());
+    }
+
+    #[test]
     fn matching_answers_from_both_sources_at_once() {
         // A pergunta do usuário é uma só — "que comando começa com `pn`?" — e
         // ele não sabe nem se importa se a resposta veio do disco ou do shell.
