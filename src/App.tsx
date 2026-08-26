@@ -753,6 +753,26 @@ export default function App() {
   promptModesRef.current = promptModes;
   const [promptModePref, setPromptModePref] = useState(false);
   /**
+   * O que foi digitado e não enviado, por sessão.
+   *
+   * A linha de comando é uma só e remonta a cada troca de sessão — a `key`
+   * dela inclui o id de propósito, porque sugestão, histórico e caret são de
+   * uma sessão só e não podem vazar para a outra. O rascunho ia junto: meio
+   * comando escrito num pane, um clique no pane ao lado, e sumia sem aviso.
+   * Valia para pane, aba e sessão.
+   *
+   * `ref` e não estado: ninguém lê isto durante o render, só a próxima
+   * montagem da caixa. Como estado, cada tecla digitada re-renderizaria o
+   * `App` inteiro para guardar um valor que ninguém está olhando.
+   */
+  const drafts = useRef<Record<string, string>>({});
+  // Estável de propósito: como seta inline, ela seria uma função nova a cada
+  // render do `App`, e o efeito que guarda o rascunho re-rodaria junto —
+  // trabalho por tecla digitada para escrever o mesmo valor de novo.
+  const rememberDraft = useCallback((id: SessionId, text: string) => {
+    drafts.current[id] = text;
+  }, []);
+  /**
    * Sessões que subiram com o hook do TYBA injetado.
    *
    * Separado de `promptModes` porque as duas perguntas são diferentes:
@@ -3219,6 +3239,12 @@ export default function App() {
   // subiu (shell sem integração, subshell, container).
   useEffect(() => {
     const ids = sessions.map((s) => s.id);
+    // Rascunho de sessão que não existe mais não volta a ser lido por ninguém,
+    // e o mapa é `ref`: sem isto ele só cresce enquanto o app estiver aberto.
+    const vivos = new Set<string>(ids);
+    for (const id of Object.keys(drafts.current)) {
+      if (!vivos.has(id)) delete drafts.current[id];
+    }
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     for (const id of ids) {
@@ -5182,37 +5208,53 @@ export default function App() {
                       />
                     );
                   })}
-                  {/* A moldura do painel — do PAINEL, não do que está dentro.
-                      Depois de tudo no DOM, e `pointer-events-none`.
+                  {/* Onde o foco está. Uma barra, não uma moldura.
 
-                      Antes, quem desenhava contorno eram o terminal e a lista,
-                      cada um o seu. Em modo prompt o terminal é meia altura: o
-                      painel focado aparecia com a moldura só da metade para
-                      baixo, e com dois contornos concorrentes dentro da mesma
-                      caixa. Como camada de cima ela também não some atrás de um
-                      terminal opaco — que é o caso de todo painel de agente. */}
+                      O retângulo que morava aqui tinha dois problemas. O
+                      visível: ele somava-se ao contorno do cartão de bloco, e o
+                      olho lia dois retângulos aninhados sem saber qual dizia o
+                      quê. O invisível, e pior: ele não pintava. Medido num
+                      print real de dois painéis, varrendo a área inteira pixel
+                      a pixel, não havia UMA coluna verde — os 1833 pixels
+                      esverdeados eram chevron de bloco e saída de `ls`,
+                      espalhados por 1701 colunas e só 33 linhas. Uma borda
+                      seria uma coluna com mil linhas seguidas.
+
+                      O contorno volta inteiro, e em verde sólido — não em
+                      gradiente: gradiente esticado por um retângulo de mil
+                      pixels vira moldura de arco-íris. O gesto do gradiente é
+                      da ABA, curto; aqui o que se quer é cercar.
+
+                      Só o painel ATIVO ganha marca. Os inativos não precisam de
+                      contorno: o degrau de fundo (`pane-bg`) e o divisor já os
+                      separam, e era o retângulo neutro deles que fazia o
+                      segundo tipo de linha na tela. */}
                   {(paneLayout?.panes.length ?? 0) > 1 &&
-                    paneLayout?.panes.map((p) => (
-                      <div
-                        key={`pane-frame-${p.pane}`}
-                        className="pointer-events-none rounded-[4px] border border-tyba-border"
-                        style={{
-                          position: "absolute",
-                          left: `${p.x}%`,
-                          top: `${p.y}%`,
-                          width: `${p.w}%`,
-                          height: `${p.h}%`,
-                          ...(p.session === activeId
-                            ? {
-                                borderColor:
-                                  "color-mix(in srgb, var(--tyba-green) 45%, transparent)",
-                                boxShadow:
-                                  "0 0 0 1px color-mix(in srgb, var(--tyba-green) 25%, transparent), 0 0 14px -2px var(--tyba-glow-green, rgba(124,197,68,.4))",
-                              }
-                            : {}),
-                        }}
-                      />
-                    ))}
+                    paneLayout?.panes
+                      .filter((p) => p.session === activeId)
+                      .map((p) => (
+                        <div
+                          key={`pane-focus-${p.pane}`}
+                          className="pointer-events-none rounded-[4px]"
+                          style={{
+                            position: "absolute",
+                            left: `${p.x}%`,
+                            top: `${p.y}%`,
+                            width: `${p.w}%`,
+                            height: `${p.h}%`,
+                            border:
+                              "1px solid color-mix(in srgb, var(--tyba-green) 90%, transparent)",
+                            boxShadow:
+                              "0 0 0 1px color-mix(in srgb, var(--tyba-green) 18%, transparent), 0 0 16px -4px color-mix(in srgb, var(--tyba-green) 45%, transparent)",
+                            // Acima da lista de blocos, que é `z-10`. Sem isto
+                            // a marca fica DEBAIXO dos cartões — e como eles
+                            // cobrem quase todo o painel, ela some. Era isso, e
+                            // não o formato, que fazia o contorno antigo
+                            // parecer inexistente: ele estava lá, embaixo.
+                            zIndex: 30,
+                          }}
+                        />
+                      ))}
                   {paneLayout?.agentViewers.map((v) => {
                     const owner = sessionById.get(v.session);
                     return (
@@ -5357,6 +5399,8 @@ export default function App() {
                     focusNonce={commandLineNonce}
                     state={commandLineState}
                     inject={injected}
+                    draft={drafts.current[activeSession.id] ?? ""}
+                    onDraftChange={rememberDraft}
                   />
                 )}
                 {activeSession && richInputVisible && !ownsCommandLine && (
