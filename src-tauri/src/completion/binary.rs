@@ -10,7 +10,7 @@
 //! função NÃO passam por aqui — não existem em disco, e quem os conhece é o
 //! shell (ver a tech spec 02 no cofre).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -179,6 +179,42 @@ fn is_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '+' | '@'))
+}
+
+/// O que cada sessão contou, vivo enquanto ela viver.
+///
+/// Global e não campo de `SessionManager` pelo mesmo motivo que
+/// `history::record` é: quem produz o dado é a captura do PTY, que roda numa
+/// thread própria e não tem — nem deve ter — referência ao gerenciador.
+static REPORTED: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, Vec<Command>>>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+
+/// Absorve um lote reportado pelo hook daquela sessão.
+///
+/// União com dedup: o hook emite nos dois primeiros prompts (não há canal de
+/// volta para confirmar), e sem isto o segundo envio duplicaria a lista.
+pub fn absorb_reported(session_id: &str, payload: &str) {
+    let mut all = REPORTED.lock();
+    let known = all.entry(session_id.to_string()).or_default();
+    for command in parse_batch(payload) {
+        if known.iter().any(|seen| seen.name == command.name) {
+            continue;
+        }
+        known.push(command);
+    }
+}
+
+/// O que o shell daquela sessão contou até agora.
+pub fn reported(session_id: &str) -> Vec<Command> {
+    REPORTED.lock().get(session_id).cloned().unwrap_or_default()
+}
+
+/// A sessão morreu; o que ela contou morre junto.
+///
+/// Sem isto o mapa cresce por toda sessão aberta na vida do app — e alias de um
+/// worktree fechado continuaria sendo sugerido em outro.
+pub fn forget_reported(session_id: &str) {
+    REPORTED.lock().remove(session_id);
 }
 
 /// Tudo que existe na sessão: o `$PATH` que o core varreu e o que o shell contou.
@@ -487,6 +523,26 @@ mod tests {
 
         let names: Vec<&str> = known.from_shell().iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["ok"]);
+    }
+
+    #[test]
+    fn what_a_session_reported_dies_with_it() {
+        // O registro é global e vive fora do `SessionManager` (a captura roda em
+        // thread própria e não tem referência a ele). Sem a limpeza no fim, o
+        // mapa cresce por toda sessão da vida do app — e o alias de um worktree
+        // fechado seguiria sendo sugerido em outro.
+        absorb_reported("sessao-a", "alias:gst");
+        absorb_reported("sessao-b", "alias:outro");
+        // Reenvio: o hook fala nos DOIS primeiros prompts, e sem dedup a lista
+        // dobraria.
+        absorb_reported("sessao-a", "alias:gst");
+
+        assert_eq!(reported("sessao-a").len(), 1);
+        forget_reported("sessao-a");
+        assert!(reported("sessao-a").is_empty());
+        // Fechar uma não pode levar a vizinha junto.
+        assert_eq!(reported("sessao-b").len(), 1);
+        forget_reported("sessao-b");
     }
 
     #[test]

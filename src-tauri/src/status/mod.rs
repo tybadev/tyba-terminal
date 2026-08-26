@@ -39,6 +39,14 @@ pub enum ShellEvent {
     /// prompt do TYBA. É a resposta do hook, não um palpite do app: sem ela o
     /// front não sabe se o `PS1` saiu mesmo da tela.
     PromptMode(bool),
+    /// `OSC 633 ; P ; tyba-commands=<lote>` — os comandos que só o shell
+    /// conhece: alias, função e builtin.
+    ///
+    /// Vem em LOTES, e o core faz a união — o payload não cabe numa sequência
+    /// só (1302 funções numa máquina real contra `MAX_OSC_LEN`). O conteúdo é
+    /// atacante-controlável como qualquer OSC; quem valida cada nome é
+    /// `completion::binary::parse_batch`, e o resultado é display-only.
+    ShellCommands(String),
     /// `OSC 133 ; D [ ; <code> ]` — comando terminou (exit code).
     CommandEnd(i32),
     /// `OSC 7 ; file://<host><path>` — diretório de trabalho.
@@ -180,7 +188,14 @@ fn parse_osc(payload: &[u8]) -> Option<ShellEvent> {
         "633" => {
             let sub = parts.next()?;
             if sub == "P" {
-                let value = parts.next()?.strip_prefix("tyba-prompt=")?;
+                let value = parts.next()?;
+                if let Some(batch) = value.strip_prefix("tyba-commands=") {
+                    // Lote vazio não vira evento: o shell não tem o que contar e
+                    // acordar o core para uma lista vazia é trabalho por nada.
+                    return (!batch.is_empty())
+                        .then(|| ShellEvent::ShellCommands(batch.to_string()));
+                }
+                let value = value.strip_prefix("tyba-prompt=")?;
                 return match value {
                     "1" => Some(ShellEvent::PromptMode(true)),
                     "0" => Some(ShellEvent::PromptMode(false)),
@@ -273,6 +288,29 @@ mod tests {
         assert_eq!(
             p.feed(b"\x1b]633;P;tyba-prompt=0\x07"),
             vec![ShellEvent::PromptMode(false)]
+        );
+    }
+
+    #[test]
+    fn carries_the_command_batch_from_the_hook() {
+        let mut p = OscParser::new();
+        assert_eq!(
+            p.feed(b"\x1b]633;P;tyba-commands=alias:gst,builtin:cd\x07"),
+            vec![ShellEvent::ShellCommands("alias:gst,builtin:cd".into())]
+        );
+    }
+
+    #[test]
+    fn the_command_batch_survives_arriving_in_pieces() {
+        // O lote tem ~1500 bytes e o chunk do PTY não tem tamanho garantido:
+        // chegar partido é o caso comum, não o azar. Este é o teste obrigatório
+        // do parser (convenção do repo).
+        let mut p = OscParser::new();
+        assert!(p.feed(b"\x1b]633;P;tyba-comm").is_empty());
+        assert!(p.feed(b"ands=alias:gst,fun").is_empty());
+        assert_eq!(
+            p.feed(b"ction:mkcd\x07"),
+            vec![ShellEvent::ShellCommands("alias:gst,function:mkcd".into())]
         );
     }
 
