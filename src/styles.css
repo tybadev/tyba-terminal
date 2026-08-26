@@ -212,9 +212,18 @@
      - `cast`: a sombra que ele projeta no plano de trás. É o que funciona
        no claro, e é invisível sobre preto absoluto.
      Por isso os dois convivem: cada tema usa o que a sua polaridade
-     permite, sem uma regra por tema. */
+     permite, sem uma regra por tema.
+
+     O `cast` escuro é 0.30 e não 0.85, e a diferença não é gosto. "Invisível
+     sobre preto absoluto" só vale para o BLACKOUT, onde o `bg` é #050505 —
+     e ele foi o único esquema em que o valor foi conferido. Os outros doze
+     escuros têm fundo levantado (o `monokai-machine` chega a #2f2f2f), e ali
+     0.85 não sumia: a sombra de 16px caía sobre o conteúdo como uma FAIXA de
+     ~10px, não como separação. Na sidebar isso virou uma camada visível entre
+     ela e o terminal. Ver `themeFrame.test.ts`, que mede o salto na costura
+     em todos os esquemas — no escuro quem separa continua sendo o `edge`. */
   --tyba-lift-edge: rgba(255, 255, 255, 0.06);
-  --tyba-lift-cast: rgba(0, 0, 0, 0.85);
+  --tyba-lift-cast: rgba(0, 0, 0, 0.30);
   --tyba-focus-ring: 0 0 0 2px var(--tyba-bg), 0 0 0 4px var(--tyba-green);
 
   /* ---------- Movimento ---------- */
