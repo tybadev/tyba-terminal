@@ -1073,6 +1073,27 @@ samp {
   background-color: var(--tyba-bg);
 }
 
+/* A entrelinha do editor mora AQUI, e não no tema que o CodeMirror injeta.
+
+   Ele mede a altura da linha UMA vez, na montagem, e o CSS de
+   `EditorView.theme()` é injetado por JavaScript — chegava depois dessa
+   medição. O oráculo de altura ficava com 14px (a entrelinha padrão, 12px ×
+   1.2) enquanto o DOM renderizava 18px, e ele nunca revisa: nem `resize`, nem
+   `requestMeasure()`, nem `setState` refazem a conta.
+
+   O estrago era duplo e parecia dois bugs: o gutter derivava 4px por linha
+   (144px em 36 linhas, com os números empilhando aos pares) e o conteúdo
+   sumia, porque o viewport era calculado com metade da geometria. Medido na
+   sonda em 26/08/2026 — `measureTextSize()` devolvia 18 o tempo todo, o
+   oráculo é que segurava 14.
+
+   Uma folha de estilo de verdade já está aplicada antes de o React montar, e
+   por isso a primeira medição já vê 18. Ver `cmTheme.test.ts`. */
+.cm-content,
+.cm-gutters {
+  line-height: 1.5;
+}
+
 /* Vidro sobre o void (sidebar, painéis flutuantes) */
 .tyba-glass {
   background: var(--tyba-glass-bg);

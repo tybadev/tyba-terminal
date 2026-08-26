@@ -95,6 +95,56 @@ if [[ -o interactive ]] && autoload -Uz add-zsh-hook 2>/dev/null; then
     __tyba_esc "133;C"
   }
 
+  # Quantos bytes um lote pode ter.
+  #
+  # O parser corta a sequencia em 8192, e um lote perdido custa aqueles nomes
+  # para sempre — ninguem reenvia. A folga existe porque o que se mede aqui e o
+  # payload, e o que estoura la e o payload MAIS a moldura do OSC.
+  __tyba_batch_max=1500
+  __tyba_commands_sent=0
+
+  # Os comandos que so o shell conhece.
+  #
+  # SOMENTE NOMES. `${(k)...}` devolve as CHAVES do array associativo — nunca os
+  # valores. Isso nao e detalhe de estilo: o corpo de um alias e onde mora o
+  # token de deploy (`alias deploy='TOKEN=sk-... ./deploy.sh'`), ele nao serve
+  # para completar um nome, e transporta-lo poria secret numa sequencia OSC que
+  # passa pela captura do PTY e pelo scrollback persistido.
+  #
+  # O `$PATH` NAO entra: o core le o disco sozinho. Manda-lo aqui seria 30-50 KB
+  # por sessao para transportar o que ele ja sabe.
+  # O `$PATH` EFETIVO, que so o shell sabe.
+  #
+  # O core sabe o PATH que passou no spawn, e nao e esse que vale: nvm, asdf e
+  # direnv reescrevem o PATH dentro do rc, DEPOIS do spawn — e sao justamente os
+  # shims que importam. Vai o valor (~500 B), nao os nomes: quem varre os
+  # diretorios continua sendo o core.
+  __tyba_path() {
+    __tyba_esc "633;P;tyba-path=$PATH"
+  }
+
+  __tyba_commands() {
+    local -a __names
+    local __n __batch=""
+    for __n in ${(k)aliases}; do __names+=("alias:$__n"); done
+    # Funcao com `_` e widget de completacao do zsh (`_git`, `_docker`): 1025 de
+    # 1302 numa maquina real. Ninguem as digita, e sem este corte o payload
+    # triplica.
+    for __n in ${(k)functions}; do
+      [[ $__n == _* ]] || __names+=("function:$__n")
+    done
+    for __n in ${(k)builtins}; do __names+=("builtin:$__n"); done
+    for __n in $__names; do
+      if (( ${#__batch} + ${#__n} + 1 > __tyba_batch_max )); then
+        __tyba_esc "633;P;tyba-commands=$__batch"
+        __batch=""
+      fi
+      [[ -n $__batch ]] && __batch+=","
+      __batch+="$__n"
+    done
+    [[ -n $__batch ]] && __tyba_esc "633;P;tyba-commands=$__batch"
+  }
+
   __tyba_precmd() {
     local __c=$?
     __tyba_esc "133;D;$__c"
@@ -106,6 +156,15 @@ if [[ -o interactive ]] && autoload -Uz add-zsh-hook 2>/dev/null; then
     fi
     __tyba_osc7
     __tyba_esc "633;P;tyba-prompt=$__tyba_prompt_mode"
+    # Nos DOIS primeiros prompts, nao no primeiro. Framework de prompt que
+    # repinta assincrono ja engoliu saida do precmd antes (achado de 31/07 com
+    # o Spaceship), e nao ha canal de volta para o core confirmar. Repetir e de
+    # graca: o core faz uniao com dedup, entao o segundo envio nao duplica nada.
+    if (( __tyba_commands_sent < 2 )); then
+      (( __tyba_commands_sent++ ))
+      __tyba_path
+      __tyba_commands
+    fi
   }
 
   add-zsh-hook preexec __tyba_preexec

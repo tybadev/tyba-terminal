@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import {
   submitShellLine,
   suggestLine,
+  type BinarySuggestion,
   writeControl,
   type CommandSuggestion,
   type SessionId,
@@ -16,6 +17,7 @@ import {
   clearsDraft,
   controlBytes,
   ghostFor,
+  commandPrefix,
   lineToken,
   type LineState,
   pathToken,
@@ -140,6 +142,9 @@ export function CommandLine({
   const [focused, setFocused] = useState(false);
   const [paths, setPaths] = useState<string[]>([]);
   const [args, setArgs] = useState<string[]>([]);
+  // Comandos que existem na sessão — `$PATH` e o que o shell contou. Só chega
+  // preenchido quando o caret está no primeiro token.
+  const [bins, setBins] = useState<BinarySuggestion[]>([]);
   // Uma submissão de cada vez. Ela deixou de ser instantânea: em sessão nova o
   // core segura a linha até o shell abrir a dele, e a caixa só é limpa quando
   // ele aceita. Sem esta trava, um segundo Enter na espera enviaria o MESMO
@@ -182,6 +187,9 @@ export function CommandLine({
 
   const token = pathToken(text, caret);
   const arg = lineToken(text, caret);
+  // Não-nulo só no PRIMEIRO token: passado ele, quem responde é caminho ou
+  // argumento, e oferecer um comando ali seria sugerir `pnpm` como valor de flag.
+  const cmdPrefix = commandPrefix(text, caret);
 
   // Uma chamada por tecla. Antes eram três `invoke` — histórico, caminho e
   // argumento — atravessando a ponte do webview a cada digitação para uma única
@@ -191,6 +199,7 @@ export function CommandLine({
       setHits([]);
       setPaths([]);
       setArgs([]);
+      setBins([]);
       setMenuOpen(false);
       return;
     }
@@ -203,12 +212,15 @@ export function CommandLine({
         pathToken: token?.value ?? null,
         argPrefix: arg?.prefix ?? null,
         argToken: arg?.value ?? null,
+        sessionId,
+        commandPrefix: cmdPrefix,
       })
         .then((found) => {
           if (!alive) return;
           setHits(found.commands);
           setPaths(found.paths);
           setArgs(found.arguments);
+          setBins(found.binaries);
           setIndex(0);
         })
         .catch(() => {
@@ -216,6 +228,7 @@ export function CommandLine({
           setHits([]);
           setPaths([]);
           setArgs([]);
+          setBins([]);
         });
     }, SUGGEST_DEBOUNCE_MS);
     return () => {
@@ -223,7 +236,7 @@ export function CommandLine({
       window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [waiting, text, token?.value, arg?.prefix, arg?.value, scope.cwd, scope.repoRoot]);
+  }, [waiting, text, token?.value, arg?.prefix, arg?.value, cmdPrefix, sessionId, scope.cwd, scope.repoRoot]);
 
   // ↑ abre o histórico. Com a caixa vazia não há o que sugerir enquanto se
   // digita, então a lista só é buscada quando alguém pede — que é o gesto que
@@ -236,6 +249,10 @@ export function CommandLine({
       pathToken: null,
       argPrefix: null,
       argToken: null,
+      sessionId,
+      // ↑ abre o HISTÓRICO. A lista de comandos não entra aqui: o gesto pede o
+      // que já foi rodado, não o que existe na máquina.
+      commandPrefix: null,
     })
       .then((found) => {
         if (found.commands.length === 0) return;
@@ -251,6 +268,18 @@ export function CommandLine({
     const next = replaceToken(text, arg, completion);
     apply(next.text, next.caret);
     setArgs([]);
+    setMenuOpen(false);
+    return true;
+  };
+
+  const takeBinary = (name: string) => {
+    if (!cmdPrefix) return false;
+    // Substitui só o primeiro token: editar o começo de uma linha já escrita
+    // (`pn install algo` → `pnpm install algo`) não pode apagar o resto.
+    const start = text.length - text.trimStart().length;
+    const next = `${text.slice(0, start)}${name}${text.slice(start + cmdPrefix.length)}`;
+    apply(next, start + name.length);
+    setBins([]);
     setMenuOpen(false);
     return true;
   };
@@ -280,9 +309,17 @@ export function CommandLine({
     arg && args.length > 0 && args[0].startsWith(arg.value)
       ? args[0].slice(arg.value.length)
       : "";
-  const ghost = pathGhost || argGhost || ghostFor(text, hits);
+  // Comando ganha do histórico e perde para caminho e argumento. Quem digitou
+  // `pn` na coluna 1 está escolhendo um COMANDO — e o histórico, que completa a
+  // linha inteira, ali só acertaria por coincidência.
+  const binGhost =
+    cmdPrefix && bins.length > 0 && bins[0].name.startsWith(cmdPrefix)
+      ? bins[0].name.slice(cmdPrefix.length)
+      : "";
+  const ghost = pathGhost || argGhost || binGhost || ghostFor(text, hits);
   const showMenu =
-    menuOpen && (listed.length > 0 || paths.length > 0 || args.length > 0);
+    menuOpen &&
+    (listed.length > 0 || paths.length > 0 || args.length > 0 || bins.length > 0);
 
   const resize = () => {
     const el = inputRef.current;
@@ -380,7 +417,10 @@ export function CommandLine({
     if (
       e.key === "ArrowDown" &&
       !showMenu &&
-      (listed.length > 0 || paths.length > 0 || args.length > 0)
+      (listed.length > 0 ||
+        paths.length > 0 ||
+        args.length > 0 ||
+        bins.length > 0)
     ) {
       e.preventDefault();
       setMenuOpen(true);
@@ -412,7 +452,10 @@ export function CommandLine({
       }
       if (
         !acceptGhost() &&
-        (listed.length > 0 || paths.length > 0 || args.length > 0)
+        (listed.length > 0 ||
+          paths.length > 0 ||
+          args.length > 0 ||
+          bins.length > 0)
       ) {
         setMenuOpen(true);
       }
@@ -483,6 +526,30 @@ export function CommandLine({
               className="flex w-full items-center gap-2 px-2.5 py-1 text-left font-mono text-[12px] text-tyba-text-muted hover:bg-tyba-text/[.04]"
             >
               <span className="min-w-0 flex-1 truncate">{candidate}</span>
+            </button>
+          ))}
+          {bins.map((candidate) => (
+            <button
+              key={`bin:${candidate.name}`}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                takeBinary(candidate.name);
+              }}
+              className="flex w-full items-center gap-2 px-2.5 py-1 text-left font-mono text-[12px] text-tyba-text-muted hover:bg-tyba-text/[.04]"
+            >
+              <span className="min-w-0 flex-1 truncate">{candidate.name}</span>
+              {/* Binário do `$PATH` não recebe marca — é o caso comum, e marcar
+                  todos vira ruído. A marca existe para o dono distinguir o que é
+                  DELE (o alias que ele escreveu) do que é do sistema. */}
+              {candidate.kind !== "path" && (
+                <span className="shrink-0 rounded-[3px] border border-tyba-border px-1 text-[9px] text-tyba-text-faint">
+                  {candidate.kind === "alias"
+                    ? "alias"
+                    : candidate.kind === "function"
+                      ? "fn"
+                      : "builtin"}
+                </span>
+              )}
             </button>
           ))}
           {paths.map((candidate) => (

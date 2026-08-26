@@ -493,3 +493,23 @@ function basename(word: string): string {
   const trimmed = word.replace(/\/+$/, "");
   return trimmed.slice(trimmed.lastIndexOf("/") + 1);
 }
+
+/**
+ * O prefixo do PRIMEIRO token, ou `null` se o caret não estiver nele.
+ *
+ * Só o front sabe onde está o caret, então é aqui que se decide se a lista de
+ * comandos deve ser consultada — o core recebe `null` e nem olha o registro.
+ * Passado o primeiro token quem responde é caminho ou argumento: oferecer
+ * `pnpm` como valor de uma flag seria pior que não oferecer nada.
+ */
+export function commandPrefix(text: string, caret: number): string | null {
+  const before = text.slice(0, caret);
+  // O espaço à ESQUERDA é sinal, não separador: ` comando` é a convenção
+  // `ignorespace` ("não guarde isto no histórico"), e quem a usa continua no
+  // primeiro token.
+  const typed = before.trimStart();
+  if (typed.length === 0) return null;
+  // Qualquer espaço DEPOIS do começo já encerrou o primeiro token.
+  if (/\s/.test(typed)) return null;
+  return typed;
+}

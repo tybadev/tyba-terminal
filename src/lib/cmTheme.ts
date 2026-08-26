@@ -95,7 +95,6 @@ export function cmEditorTheme(dark: boolean): ReturnType<typeof EditorView.theme
       },
       ".cm-scroller": {
         fontFamily: "var(--tyba-font-mono)",
-        lineHeight: "1.5",
       },
       ".cm-content": { caretColor: "var(--tyba-text)" },
       "&.cm-focused": { outline: "none" },

@@ -443,6 +443,15 @@ impl<R: Runtime> ActionSink<R> {
                     let _ = self.app.emit(&self.command_event, state);
                 }
                 capture::Action::Record(record) => crate::history::record(record),
+                capture::Action::ShellPath(path) => {
+                    crate::completion::binary::set_path(&self.session_id.to_string(), &path);
+                }
+                capture::Action::ShellCommands(batch) => {
+                    crate::completion::binary::absorb_reported(
+                        &self.session_id.to_string(),
+                        &batch,
+                    );
+                }
                 capture::Action::Wipe => {
                     crate::blocks::submit(crate::blocks::Work::Wipe(self.session_id.to_string()))
                 }
@@ -809,6 +818,10 @@ impl PtyPool {
                 if let Some(pipe) = pipe.as_mut() {
                     pipe.finish();
                 }
+                // O que o shell contou morre com a sessão. Sem isto o mapa
+                // cresce por toda sessão aberta na vida do app, e o alias de um
+                // worktree fechado continuaria sendo sugerido em outro.
+                crate::completion::binary::forget_reported(&session_id.to_string());
                 let _ = app.emit(&exit_event, PtyExitPayload { code: None });
                 on_exit();
             })

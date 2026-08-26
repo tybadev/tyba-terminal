@@ -98,6 +98,12 @@ pub(super) enum Action {
     Wipe,
     Finalize(FinishedBlock),
     PromptMode(bool),
+    /// O `$PATH` efetivo da sessão, do jeito que o shell o deixou.
+    ShellPath(String),
+    /// Um lote de nomes que só o shell conhece — alias, função, builtin.
+    ///
+    /// Cru como chegou: validar é do `completion::binary`, não da captura.
+    ShellCommands(String),
     Cwd(SessionCwdPayload),
 }
 
@@ -390,6 +396,15 @@ impl CaptureMachine {
                 ShellEvent::PromptMode(on) => {
                     self.prompt_mode = Some(on);
                     actions.push(Action::PromptMode(on));
+                }
+                ShellEvent::ShellPath(path) => {
+                    actions.push(Action::ShellPath(path));
+                }
+                ShellEvent::ShellCommands(batch) => {
+                    // Só repassa. Quem valida cada nome e faz a união é o
+                    // `completion::binary`, do outro lado da ação — a captura
+                    // não sabe o que é um nome de comando e não deve saber.
+                    actions.push(Action::ShellCommands(batch));
                 }
                 ShellEvent::Cwd(path) => {
                     if self.cwd.as_deref() != Some(path.as_path()) {
