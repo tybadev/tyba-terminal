@@ -134,9 +134,18 @@
      --tyba-font-ui — padrão JetBrains Mono ("mono total", decisão
      2026-07-08); alternativa Space Grotesk via [data-font="grotesk"]
      no root. Tudo "de máquina" usa --tyba-font-mono SEMPRE,
-     independente da escolha. */
+     independente da escolha.
+
+     A Nerd Font vem LOGO DEPOIS da JetBrains Mono, e não no fim: o
+     que é latim, dígito ou traço de caixa continua saindo da
+     JetBrains, e só o que ela não tem (os ícones da área privada,
+     U+E000–F8FF, que `lsd`, `eza` e prompts como o Starship emitem)
+     cai na Nerd Font. Sem ela aqui o bloco renderiza tofu no que o
+     xterm tinha acabado de desenhar certo — o mesmo byte, dois
+     renderizadores, dois stacks. Se mudar este stack, mudar junto o
+     do xterm em TerminalView.tsx. */
   --tyba-font-sans: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
-  --tyba-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --tyba-font-mono: 'JetBrains Mono', 'Symbols Nerd Font Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   --tyba-font-ui: var(--tyba-font-mono);
 
   --tyba-text-xs: 0.75rem;
@@ -867,7 +876,7 @@
   --radius-xl: calc(var(--radius) + 4px);
 
   --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-mono: "JetBrains Mono", "Symbols Nerd Font Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --font-ui: var(--tyba-font-ui);
 }
 
