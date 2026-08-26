@@ -144,6 +144,14 @@ pub fn parse_batch(payload: &str) -> Vec<Command> {
                 // como se fossem binários instalados.
                 _ => return None,
             };
+            // Função com `_` é widget de completação do zsh (`_git`, `_docker`),
+            // não comando: 1025 das 1302 funções na máquina do dono, medido em
+            // 26/08/2026. Ninguém as digita, e oferecê-las encheria a lista com
+            // o motor da completação alheia. O corte é só em FUNÇÃO — alias e
+            // builtin com `_` são raros e não têm essa convenção.
+            if kind == Kind::Function && name.starts_with('_') {
+                return None;
+            }
             is_name(name).then(|| Command {
                 name: name.to_string(),
                 kind,
@@ -171,6 +179,83 @@ fn is_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '+' | '@'))
+}
+
+/// Tudo que existe na sessão: o `$PATH` que o core varreu e o que o shell contou.
+///
+/// As duas fontes vivem juntas aqui porque a pergunta do usuário é uma só —
+/// "que comando começa com `pn`?" — mas envelhecem de formas diferentes: o
+/// `$PATH` por carimbo de diretório, o do shell por lote novo. Separá-las em
+/// dois lugares faria a completação ter de perguntar duas vezes.
+pub struct Known {
+    path: Cache,
+    from_shell: Vec<Command>,
+}
+
+impl Known {
+    pub fn new(raw_path: &str) -> Self {
+        Self {
+            path: Cache::build(raw_path),
+            from_shell: Vec::new(),
+        }
+    }
+
+    /// Absorve um lote vindo do hook.
+    ///
+    /// União, nunca substituição: o payload vem partido em lotes porque não cabe
+    /// num OSC só, e um lote que sobrescrevesse o anterior faria a lista mostrar
+    /// apenas o último pedaço — falha pior que estourar o teto, porque é
+    /// silenciosa.
+    pub fn absorb(&mut self, payload: &str) {
+        for command in parse_batch(payload) {
+            // Reenvio acontece: o hook reemite quando o core não confirmou até o
+            // segundo prompt. Sem esta guarda, cada reenvio duplicaria a lista.
+            if self.from_shell.iter().any(|seen| seen.name == command.name) {
+                continue;
+            }
+            self.from_shell.push(command);
+        }
+    }
+
+    /// O que o shell contou, na ordem em que chegou.
+    pub fn from_shell(&self) -> &[Command] {
+        &self.from_shell
+    }
+
+    /// Os comandos que começam com o prefixo, das duas fontes.
+    ///
+    /// O que veio do shell vem primeiro: alias e função são o que o dono
+    /// escreveu, e valem mais que um binário que veio junto de um pacote.
+    pub fn matching(&self, prefix: &str) -> Vec<Command> {
+        // Prefixo vazio casa com tudo no `starts_with`: seriam os milhares de
+        // binários do `$PATH` despejados na caixa no instante em que o cursor
+        // chega na linha. Isso não é sugestão, é um dump — e é a mesma decisão
+        // que `next_tokens` já toma para argumento.
+        if prefix.is_empty() {
+            return Vec::new();
+        }
+        let mut found: Vec<Command> = self
+            .from_shell
+            .iter()
+            .filter(|c| c.name.starts_with(prefix))
+            .cloned()
+            .collect();
+        for name in self.path.names() {
+            if !name.starts_with(prefix) {
+                continue;
+            }
+            // O shell vence: quem tem `alias ls='eza'` quer ver o alias, não o
+            // `/bin/ls` que ele mascarou.
+            if found.iter().any(|seen| &seen.name == name) {
+                continue;
+            }
+            found.push(Command {
+                name: name.clone(),
+                kind: Kind::Path,
+            });
+        }
+        found
+    }
 }
 
 /// O arquivo pode ser executado por alguém?
@@ -348,10 +433,104 @@ mod tests {
         assert_eq!(
             parse_batch("alias:gst,function:mkcd,builtin:cd"),
             vec![
-                Command { name: "gst".into(), kind: Kind::Alias },
-                Command { name: "mkcd".into(), kind: Kind::Function },
-                Command { name: "cd".into(), kind: Kind::Builtin },
+                Command {
+                    name: "gst".into(),
+                    kind: Kind::Alias
+                },
+                Command {
+                    name: "mkcd".into(),
+                    kind: Kind::Function
+                },
+                Command {
+                    name: "cd".into(),
+                    kind: Kind::Builtin
+                },
             ]
         );
+    }
+
+    #[test]
+    fn two_batches_add_up_instead_of_replacing_each_other() {
+        // O payload vem em LOTES porque não cabe num OSC só (1302 funções na
+        // máquina do dono contra um teto de 8 KB). Se o segundo substituísse o
+        // primeiro, o teto deixaria de estourar e a lista passaria a mostrar só
+        // o último pedaço — falha pior, porque é silenciosa.
+        let mut known = Known::new("");
+        known.absorb("alias:gst,alias:gco");
+        known.absorb("function:mkcd");
+
+        let names: Vec<&str> = known.from_shell().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["gst", "gco", "mkcd"]);
+    }
+
+    #[test]
+    fn a_completion_widget_is_not_a_command() {
+        // Medido na máquina do dono em 26/08/2026: 1302 funções no zsh, e 1025
+        // delas começam com `_`. São os widgets que completam OUTROS comandos
+        // (`_git`, `_docker`) — ninguém os digita. Oferecê-los seria encher a
+        // lista com o motor da completação alheia, e é o que faz o payload
+        // passar de 16 KB contra um teto de 8.
+        let mut known = Known::new("");
+        known.absorb("function:_git,function:mkcd,function:_docker");
+
+        let names: Vec<&str> = known.from_shell().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["mkcd"]);
+    }
+
+    #[test]
+    fn a_forged_name_never_becomes_a_suggestion() {
+        // A sequência é emitida por qualquer processo da sessão, como o OSC 7 do
+        // cwd. Completar escreve texto na caixa: um "nome" com espaço ou `;`
+        // viraria uma linha pronta esperando um Enter distraído.
+        let mut known = Known::new("");
+        known.absorb("alias:rm -rf /,alias:x;curl evil,alias:$(id),alias:ok");
+
+        let names: Vec<&str> = known.from_shell().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["ok"]);
+    }
+
+    #[test]
+    fn matching_answers_from_both_sources_at_once() {
+        // A pergunta do usuário é uma só — "que comando começa com `pn`?" — e
+        // ele não sabe nem se importa se a resposta veio do disco ou do shell.
+        let dir = tempfile::tempdir().unwrap();
+        file(dir.path(), "pnpm", 0o755);
+        file(dir.path(), "curl", 0o755);
+        let mut known = Known::new(dir.path().to_str().unwrap());
+        known.absorb("alias:pn,alias:gst");
+
+        let found = known.matching("pn");
+        let mut names: Vec<&str> = found.iter().map(|c| c.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["pn", "pnpm"]);
+    }
+
+    #[test]
+    fn an_empty_prefix_suggests_nothing() {
+        // Com `starts_with`, prefixo vazio casa com TUDO: seriam os milhares de
+        // binários do `$PATH` despejados na caixa no instante em que o cursor
+        // chega na linha. Isso não é sugestão, é um dump — e é a mesma decisão
+        // que `next_tokens` já toma para argumento.
+        let dir = tempfile::tempdir().unwrap();
+        file(dir.path(), "pnpm", 0o755);
+        let mut known = Known::new(dir.path().to_str().unwrap());
+        known.absorb("alias:gst");
+
+        assert!(known.matching("").is_empty());
+    }
+
+    #[test]
+    fn the_shell_wins_over_the_binary_it_masks() {
+        // Quem tem `alias ls='eza'` quer ver o alias. O binário mascarado
+        // aparecendo junto seria a lista mostrando duas vezes um nome que só
+        // pode significar uma coisa naquela sessão.
+        let dir = tempfile::tempdir().unwrap();
+        file(dir.path(), "ls", 0o755);
+        let mut known = Known::new(dir.path().to_str().unwrap());
+        known.absorb("alias:ls");
+
+        let found = known.matching("ls");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, Kind::Alias);
     }
 }
