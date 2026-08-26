@@ -405,60 +405,8 @@ pub fn scan(dirs: &[&Path]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     /// Cria um arquivo com o modo pedido — `0o755` executável, `0o644` não.
-    fn file(dir: &Path, name: &str, mode: u32) {
-        let path = dir.join(name);
-        std::fs::write(&path, "").unwrap();
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(mode);
-        std::fs::set_permissions(&path, perms).unwrap();
-    }
-
-    #[test]
-    fn finds_the_executable_and_ignores_what_cannot_run() {
-        // O `$PATH` tem README, LICENSE e afins em diretório de pacote. Listá-los
-        // como comando é oferecer algo que não roda.
-        let dir = tempfile::tempdir().unwrap();
-        file(dir.path(), "tyba", 0o755);
-        file(dir.path(), "README.md", 0o644);
-
-        assert_eq!(scan(&[dir.path()]), vec!["tyba"]);
-    }
-
-    #[test]
-    fn the_same_name_in_two_directories_is_listed_once() {
-        // É o caso comum, não a exceção: `python3` existe no shim do asdf e no
-        // `/usr/bin`, `node` no Homebrew e no nvm. Listar duas vezes mostraria
-        // uma lista com o mesmo comando repetido, sem nada que os distinga —
-        // porque o que se completa é o NOME, e ele é o mesmo.
-        let first = tempfile::tempdir().unwrap();
-        let second = tempfile::tempdir().unwrap();
-        file(first.path(), "node", 0o755);
-        file(second.path(), "node", 0o755);
-        file(second.path(), "deno", 0o755);
-
-        let mut found = scan(&[first.path(), second.path()]);
-        found.sort();
-        assert_eq!(found, vec!["deno", "node"]);
-    }
-
-    #[test]
-    fn a_directory_that_cannot_be_read_does_not_take_the_rest_down() {
-        // `$PATH` com entrada morta é o normal, não o defeito: `~/.cargo/bin`
-        // antes do primeiro `cargo install`, um volume desmontado, um shim de
-        // ferramenta desinstalada. Uma varredura que aborta ali devolve lista
-        // vazia e o usuário perde a completação inteira por causa de um
-        // diretório que nunca importou.
-        let good = tempfile::tempdir().unwrap();
-        file(good.path(), "tyba", 0o755);
-        let missing = good.path().join("nao-existe");
-
-        // O ilegível vem PRIMEIRO: se ele abortasse, o bom nunca seria lido.
-        assert_eq!(scan(&[&missing, good.path()]), vec!["tyba"]);
-    }
-
     #[test]
     fn the_empty_entry_never_becomes_the_current_directory() {
         // `PATH=/a::/b` e `PATH=/a:` são o shell dizendo "e também o cwd".
@@ -470,55 +418,6 @@ mod tests {
             split("/usr/bin::/bin:"),
             vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")]
         );
-    }
-
-    #[test]
-    fn the_cache_answers_with_what_it_scanned() {
-        let dir = tempfile::tempdir().unwrap();
-        file(dir.path(), "tyba", 0o755);
-
-        let cache = Cache::build(dir.path().to_str().unwrap());
-        assert_eq!(cache.names(), ["tyba"]);
-    }
-
-    #[test]
-    fn a_fresh_cache_is_not_stale() {
-        // Sem este caso o cache que sempre se diz velho passaria em todos os
-        // outros: revarrer a cada tecla está correto e é exatamente o custo que
-        // o cache existe para não pagar.
-        let dir = tempfile::tempdir().unwrap();
-        file(dir.path(), "tyba", 0o755);
-        let raw = dir.path().to_str().unwrap();
-
-        assert!(!Cache::build(raw).is_stale(raw));
-    }
-
-    #[test]
-    fn a_changed_path_makes_the_cache_stale() {
-        // O `$PATH` muda dentro da sessão, não só entre elas: `nvm use`,
-        // `direnv`, ativar um venv. Os diretórios antigos podem continuar
-        // intactos — quem mudou foi a LISTA, e nenhum carimbo denuncia isso.
-        let dir = tempfile::tempdir().unwrap();
-        file(dir.path(), "tyba", 0o755);
-        let raw = dir.path().to_str().unwrap();
-        let cache = Cache::build(raw);
-
-        assert!(cache.is_stale(&format!("{raw}:/opt/novo/bin")));
-    }
-
-    #[test]
-    fn a_binary_that_appears_makes_the_cache_stale() {
-        // `cargo install`, `brew install`, `npm i -g` no meio da sessão. Sem
-        // isto o comando recém-instalado só apareceria no próximo boot do app —
-        // e "instalei e o terminal não vê" é a forma mais visível de o cache
-        // estar mentindo.
-        let dir = tempfile::tempdir().unwrap();
-        file(dir.path(), "tyba", 0o755);
-        let raw = dir.path().to_str().unwrap();
-        let cache = Cache::build(raw);
-
-        file(dir.path(), "recem-instalado", 0o755);
-        assert!(cache.is_stale(raw));
     }
 
     #[test]
@@ -638,64 +537,174 @@ mod tests {
         forget_reported("sessao-b");
     }
 
-    #[test]
-    fn a_session_without_the_hook_still_answers_from_disk() {
-        // Shell sem integração — PowerShell, um subshell, um `ssh` sem hook —
-        // nunca reporta lote nenhum. Isso NÃO é falha: a fonte fica muda quanto
-        // a alias e função, e o `$PATH` continua respondendo. O modo de falha a
-        // evitar é a lista inteira sumir porque uma das fontes calou.
-        let dir = tempfile::tempdir().unwrap();
-        file(dir.path(), "pnpm", 0o755);
-        let known = Known::new(dir.path().to_str().unwrap());
+    /// Os testes que tocam o BIT DE EXECUÇÃO, que só existe no Unix.
+    ///
+    /// Cercados porque `PermissionsExt` não compila no Windows — e o gate
+    /// de Rust roda nas três plataformas. Os de cima não dependem de disco
+    /// e continuam rodando em todas.
+    #[cfg(unix)]
+    mod disco {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+        fn file(dir: &Path, name: &str, mode: u32) {
+            let path = dir.join(name);
+            std::fs::write(&path, "").unwrap();
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(mode);
+            std::fs::set_permissions(&path, perms).unwrap();
+        }
 
-        let found = known.matching("pn");
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].kind, Kind::Path);
-        assert!(known.from_shell().is_empty());
-    }
+        #[test]
+        fn finds_the_executable_and_ignores_what_cannot_run() {
+            // O `$PATH` tem README, LICENSE e afins em diretório de pacote. Listá-los
+            // como comando é oferecer algo que não roda.
+            let dir = tempfile::tempdir().unwrap();
+            file(dir.path(), "tyba", 0o755);
+            file(dir.path(), "README.md", 0o644);
 
-    #[test]
-    fn matching_answers_from_both_sources_at_once() {
-        // A pergunta do usuário é uma só — "que comando começa com `pn`?" — e
-        // ele não sabe nem se importa se a resposta veio do disco ou do shell.
-        let dir = tempfile::tempdir().unwrap();
-        file(dir.path(), "pnpm", 0o755);
-        file(dir.path(), "curl", 0o755);
-        let mut known = Known::new(dir.path().to_str().unwrap());
-        known.absorb("alias:pn,alias:gst");
+            assert_eq!(scan(&[dir.path()]), vec!["tyba"]);
+        }
 
-        let found = known.matching("pn");
-        let mut names: Vec<&str> = found.iter().map(|c| c.name.as_str()).collect();
-        names.sort();
-        assert_eq!(names, ["pn", "pnpm"]);
-    }
+        #[test]
+        fn the_same_name_in_two_directories_is_listed_once() {
+            // É o caso comum, não a exceção: `python3` existe no shim do asdf e no
+            // `/usr/bin`, `node` no Homebrew e no nvm. Listar duas vezes mostraria
+            // uma lista com o mesmo comando repetido, sem nada que os distinga —
+            // porque o que se completa é o NOME, e ele é o mesmo.
+            let first = tempfile::tempdir().unwrap();
+            let second = tempfile::tempdir().unwrap();
+            file(first.path(), "node", 0o755);
+            file(second.path(), "node", 0o755);
+            file(second.path(), "deno", 0o755);
 
-    #[test]
-    fn an_empty_prefix_suggests_nothing() {
-        // Com `starts_with`, prefixo vazio casa com TUDO: seriam os milhares de
-        // binários do `$PATH` despejados na caixa no instante em que o cursor
-        // chega na linha. Isso não é sugestão, é um dump — e é a mesma decisão
-        // que `next_tokens` já toma para argumento.
-        let dir = tempfile::tempdir().unwrap();
-        file(dir.path(), "pnpm", 0o755);
-        let mut known = Known::new(dir.path().to_str().unwrap());
-        known.absorb("alias:gst");
+            let mut found = scan(&[first.path(), second.path()]);
+            found.sort();
+            assert_eq!(found, vec!["deno", "node"]);
+        }
 
-        assert!(known.matching("").is_empty());
-    }
+        #[test]
+        fn a_directory_that_cannot_be_read_does_not_take_the_rest_down() {
+            // `$PATH` com entrada morta é o normal, não o defeito: `~/.cargo/bin`
+            // antes do primeiro `cargo install`, um volume desmontado, um shim de
+            // ferramenta desinstalada. Uma varredura que aborta ali devolve lista
+            // vazia e o usuário perde a completação inteira por causa de um
+            // diretório que nunca importou.
+            let good = tempfile::tempdir().unwrap();
+            file(good.path(), "tyba", 0o755);
+            let missing = good.path().join("nao-existe");
 
-    #[test]
-    fn the_shell_wins_over_the_binary_it_masks() {
-        // Quem tem `alias ls='eza'` quer ver o alias. O binário mascarado
-        // aparecendo junto seria a lista mostrando duas vezes um nome que só
-        // pode significar uma coisa naquela sessão.
-        let dir = tempfile::tempdir().unwrap();
-        file(dir.path(), "ls", 0o755);
-        let mut known = Known::new(dir.path().to_str().unwrap());
-        known.absorb("alias:ls");
+            // O ilegível vem PRIMEIRO: se ele abortasse, o bom nunca seria lido.
+            assert_eq!(scan(&[&missing, good.path()]), vec!["tyba"]);
+        }
 
-        let found = known.matching("ls");
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].kind, Kind::Alias);
+        #[test]
+        fn the_cache_answers_with_what_it_scanned() {
+            let dir = tempfile::tempdir().unwrap();
+            file(dir.path(), "tyba", 0o755);
+
+            let cache = Cache::build(dir.path().to_str().unwrap());
+            assert_eq!(cache.names(), ["tyba"]);
+        }
+
+        #[test]
+        fn a_fresh_cache_is_not_stale() {
+            // Sem este caso o cache que sempre se diz velho passaria em todos os
+            // outros: revarrer a cada tecla está correto e é exatamente o custo que
+            // o cache existe para não pagar.
+            let dir = tempfile::tempdir().unwrap();
+            file(dir.path(), "tyba", 0o755);
+            let raw = dir.path().to_str().unwrap();
+
+            assert!(!Cache::build(raw).is_stale(raw));
+        }
+
+        #[test]
+        fn a_changed_path_makes_the_cache_stale() {
+            // O `$PATH` muda dentro da sessão, não só entre elas: `nvm use`,
+            // `direnv`, ativar um venv. Os diretórios antigos podem continuar
+            // intactos — quem mudou foi a LISTA, e nenhum carimbo denuncia isso.
+            let dir = tempfile::tempdir().unwrap();
+            file(dir.path(), "tyba", 0o755);
+            let raw = dir.path().to_str().unwrap();
+            let cache = Cache::build(raw);
+
+            assert!(cache.is_stale(&format!("{raw}:/opt/novo/bin")));
+        }
+
+        #[test]
+        fn a_binary_that_appears_makes_the_cache_stale() {
+            // `cargo install`, `brew install`, `npm i -g` no meio da sessão. Sem
+            // isto o comando recém-instalado só apareceria no próximo boot do app —
+            // e "instalei e o terminal não vê" é a forma mais visível de o cache
+            // estar mentindo.
+            let dir = tempfile::tempdir().unwrap();
+            file(dir.path(), "tyba", 0o755);
+            let raw = dir.path().to_str().unwrap();
+            let cache = Cache::build(raw);
+
+            file(dir.path(), "recem-instalado", 0o755);
+            assert!(cache.is_stale(raw));
+        }
+
+        #[test]
+        fn a_session_without_the_hook_still_answers_from_disk() {
+            // Shell sem integração — PowerShell, um subshell, um `ssh` sem hook —
+            // nunca reporta lote nenhum. Isso NÃO é falha: a fonte fica muda quanto
+            // a alias e função, e o `$PATH` continua respondendo. O modo de falha a
+            // evitar é a lista inteira sumir porque uma das fontes calou.
+            let dir = tempfile::tempdir().unwrap();
+            file(dir.path(), "pnpm", 0o755);
+            let known = Known::new(dir.path().to_str().unwrap());
+
+            let found = known.matching("pn");
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].kind, Kind::Path);
+            assert!(known.from_shell().is_empty());
+        }
+
+        #[test]
+        fn matching_answers_from_both_sources_at_once() {
+            // A pergunta do usuário é uma só — "que comando começa com `pn`?" — e
+            // ele não sabe nem se importa se a resposta veio do disco ou do shell.
+            let dir = tempfile::tempdir().unwrap();
+            file(dir.path(), "pnpm", 0o755);
+            file(dir.path(), "curl", 0o755);
+            let mut known = Known::new(dir.path().to_str().unwrap());
+            known.absorb("alias:pn,alias:gst");
+
+            let found = known.matching("pn");
+            let mut names: Vec<&str> = found.iter().map(|c| c.name.as_str()).collect();
+            names.sort();
+            assert_eq!(names, ["pn", "pnpm"]);
+        }
+
+        #[test]
+        fn an_empty_prefix_suggests_nothing() {
+            // Com `starts_with`, prefixo vazio casa com TUDO: seriam os milhares de
+            // binários do `$PATH` despejados na caixa no instante em que o cursor
+            // chega na linha. Isso não é sugestão, é um dump — e é a mesma decisão
+            // que `next_tokens` já toma para argumento.
+            let dir = tempfile::tempdir().unwrap();
+            file(dir.path(), "pnpm", 0o755);
+            let mut known = Known::new(dir.path().to_str().unwrap());
+            known.absorb("alias:gst");
+
+            assert!(known.matching("").is_empty());
+        }
+
+        #[test]
+        fn the_shell_wins_over_the_binary_it_masks() {
+            // Quem tem `alias ls='eza'` quer ver o alias. O binário mascarado
+            // aparecendo junto seria a lista mostrando duas vezes um nome que só
+            // pode significar uma coisa naquela sessão.
+            let dir = tempfile::tempdir().unwrap();
+            file(dir.path(), "ls", 0o755);
+            let mut known = Known::new(dir.path().to_str().unwrap());
+            known.absorb("alias:ls");
+
+            let found = known.matching("ls");
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].kind, Kind::Alias);
+        }
     }
 }
