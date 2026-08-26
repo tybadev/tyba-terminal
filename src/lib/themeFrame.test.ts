@@ -239,6 +239,41 @@ describe("moldura", () => {
     });
   }
 
+  /**
+   * No escuro, a sombra do cromo é profundidade — nunca uma faixa.
+   *
+   * O `cast` nasceu em `rgba(0,0,0,0.85)` sob a premissa de que ele "some sobre
+   * preto absoluto". A premissa é verdadeira, e foi conferida no único esquema
+   * onde ela vale: o BLACKOUT do `:root`, com `bg` em `#050505`. Os outros doze
+   * escuros têm fundo levantado — o `monokai-machine` chega a `#2f2f2f` — e ali
+   * a sombra de 16px da `.tyba-lift-r` caía sobre o terminal como uma FAIXA de
+   * ~10px. Foi o que apareceu como uma camada entre a sidebar e o shell.
+   *
+   * O teto é o PISO da linha, e a escolha tem motivo: a linha é 1px, a sombra é
+   * uma dezena deles. Uma banda que chegue ao ponto em que uma linha já
+   * separaria sozinha deixou de ser profundidade e virou superfície. Ficando
+   * abaixo do piso ela nunca compete com a divisa — no escuro quem separa
+   * continua sendo o `edge`.
+   *
+   * `EDGE_FACTOR` é MODELO, não medição: uma borda desfocada rende perto de
+   * metade do alpha no ponto exato da costura. Serve para ordenar os esquemas
+   * entre si e para prender a regressão; não é um valor amostrado da tela.
+   */
+  const EDGE_FACTOR = 0.5;
+
+  for (const { id, body } of SCHEMES.filter(
+    ({ body }) => !/color-scheme:\s*light/.test(body),
+  )) {
+    it(`a sombra do cromo não vira faixa em ${id}`, () => {
+      const cast = rgba(resolve(body, "lift-cast"));
+      // O `bg` é o que recebe a sombra: a `.tyba-lift-r` da sidebar projeta
+      // para dentro da área de conteúdo, não sobre outra superfície de cromo.
+      const bg = hex(resolve(body, "bg"));
+      const seam = distance(over(cast.rgb, cast.alpha * EDGE_FACTOR, bg), bg);
+      expect(seam).toBeLessThan(FLOOR);
+    });
+  }
+
   for (const { id, body } of SCHEMES) {
     it(`a linha se sustenta em toda superfície de ${id}`, () => {
       const line = rgba(resolve(body, "divider-line"));

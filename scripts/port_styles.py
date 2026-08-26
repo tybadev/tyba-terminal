@@ -143,7 +143,7 @@ tail = '''
   --radius-xl: calc(var(--radius) + 4px);
 
   --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-mono: "JetBrains Mono", "Symbols Nerd Font Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --font-ui: var(--tyba-font-ui);
 }
 
