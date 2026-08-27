@@ -482,7 +482,7 @@ pub enum StoreError {
 /// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
 /// de cada um passa isolado, porque simula o banco na versão anterior, que é
 /// justamente o caso em que ambos rodam.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -763,7 +763,17 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
     // falhou e não carimbou —, a base não duplica porque o banco recusa, não
     // porque alguém acertou a contabilidade. É a mesma escolha do import de
     // histórico.
-    let spec_seed_applied = if from < 6 {
+    // O degrau 7 é a MESMA semeadura de novo, e por isso divide a variável com o
+    // degrau 6. O artefato cresce entre versões do app — os 171 `openssl`
+    // entraram depois —, e sem reesemear as linhas novas chegariam só em
+    // instalação nova: quem já usa o app está carimbado na 6, e `migrate` corta
+    // em `from >= SCHEMA_VERSION` antes de olhar degrau nenhum.
+    //
+    // Falha aqui devolve 5, não 6, e isso está certo nos dois sentidos: com
+    // `from = 0` o degrau 6 é justamente esta semeadura, que não aconteceu; com
+    // `from = 6` o `reached > from` abaixo recusa o retrocesso e o carimbo fica
+    // onde estava.
+    let spec_seed_applied = if from < 7 {
         match seed_command_spec(conn) {
             Ok(()) => true,
             Err(e) => {
@@ -2930,6 +2940,15 @@ mod tests {
     /// inventar uma coluna que ninguém quer.
     const STEP_TABLES: &[(i64, &str)] = &[(6, "command_spec")];
 
+    /// Degraus que RESEMEIAM uma tabela que já existe, e em qual número.
+    ///
+    /// Terceira lista porque o degrau 7 não nasce coluna nem tabela: ele roda a
+    /// semente de novo, para que linha acrescentada ao artefato chegue em quem
+    /// já está carimbado. A guarda de colisão precisa conhecer o número dele do
+    /// mesmo jeito — um degrau fora de todas as listas passa despercebido pela
+    /// guarda e é exatamente assim que dois degraus acabam com o mesmo número.
+    const STEP_RESEEDS: &[(i64, &str)] = &[(7, "command_spec")];
+
     /// Dois degraus não podem dividir o mesmo número.
     ///
     /// É a guarda contra a armadilha que este merge desarmou: duas branches
@@ -2947,6 +2966,7 @@ mod tests {
             .iter()
             .map(|(v, _, _)| *v)
             .chain(STEP_TABLES.iter().map(|(v, _)| *v))
+            .chain(STEP_RESEEDS.iter().map(|(v, _)| *v))
             .collect();
         let total = versions.len();
         versions.sort_unstable();
@@ -2988,6 +3008,62 @@ mod tests {
         );
     }
 
+    /// `openssl ` sozinho responde O QUE DÁ PARA FAZER com ele.
+    ///
+    /// É o pedido que originou a base: digitar o comando e não saber o próximo
+    /// passo. Com token vazio a consulta devolve a lista inteira, e o que
+    /// importa é o TOPO dela — os comandos de verdade, com descrição, antes dos
+    /// 113 nomes de algoritmo que o `openssl` também publica.
+    #[test]
+    fn openssl_sozinho_responde_o_que_da_para_fazer() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+
+        let achados = store.spec_completions("openssl", "", "", 20).unwrap();
+        let com_descricao = achados
+            .iter()
+            .filter(|(_, d)| d.as_deref().is_some_and(|d| !d.is_empty()))
+            .count();
+        assert!(
+            com_descricao >= 15,
+            "só {com_descricao} dos {} primeiros vieram com descrição — a lista \
+             abriu cheia de nome de algoritmo em vez de comando",
+            achados.len()
+        );
+    }
+
+    /// Nome de algoritmo vem DEPOIS de comando de verdade.
+    ///
+    /// `openssl` publica 113 nomes de algoritmo (`sha3-256`, `seed-cbc`,
+    /// `aria-128-ctr`) junto dos comandos. Sem ordem, digitar `openssl s`
+    /// devolve trinta cifras e enterra `s_client`, `smime` e `speed` — que é
+    /// exatamente o que a lista existe para mostrar. É o `kind` que separa, e a
+    /// ordem é alfabética invertida: `subcommand` > `option` > `algorithm`.
+    #[test]
+    fn algoritmo_nao_enterra_comando_de_verdade() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+
+        {
+            let conn = store.conn.lock();
+            conn.execute_batch(
+                "INSERT INTO command_spec (command, path, kind) VALUES
+                   ('demo','sha3-256','algorithm'),
+                   ('demo','seed-cbc','algorithm'),
+                   ('demo','s_client','subcommand');",
+            )
+            .unwrap();
+        }
+
+        let achados = store.spec_completions("demo", "", "s", 20).unwrap();
+        let nomes: Vec<&str> = achados.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            nomes.first(),
+            Some(&"s_client"),
+            "algoritmo veio antes do comando: {nomes:?}"
+        );
+    }
+
     /// Dentro de um subcomando, a base responde o que vem DEPOIS dele.
     #[test]
     fn a_base_desce_para_dentro_do_subcomando() {
@@ -3022,12 +3098,16 @@ mod tests {
     }
 
     /// Comando que não está na base devolve vazio, não erro.
+    ///
+    /// O exemplo aqui era `openssl` até ele entrar na base — e o teste virou
+    /// verde por engano, afirmando que a base não cobria o que passou a cobrir.
+    /// Um nome que nenhum artefato vai gerar não tem esse problema.
     #[test]
     fn comando_fora_da_base_nao_e_erro() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("tyba.db")).unwrap();
         assert!(store
-            .spec_completions("openssl", "", "s", 20)
+            .spec_completions("nao-existe-este-binario", "", "s", 20)
             .unwrap()
             .is_empty());
     }
@@ -3098,8 +3178,12 @@ mod tests {
                 n + 1,
                 campos.len()
             );
+            // `algorithm` é o terceiro tipo, e não é cosmético: `openssl`
+            // publica 113 nomes de ALGORITMO junto dos comandos, e é o `kind`
+            // que os manda para o fim da lista. A allowlist continua fechada —
+            // valor novo entra aqui de propósito, nunca de carona.
             assert!(
-                matches!(campos[2], "subcommand" | "option"),
+                matches!(campos[2], "subcommand" | "option" | "algorithm"),
                 "linha {}: kind desconhecido {:?}",
                 n + 1,
                 campos[2]
@@ -3130,6 +3214,51 @@ mod tests {
         assert!(
             conta_spec(&store) > 0,
             "banco na versão 5 abriu sem a base de specs"
+        );
+    }
+
+    /// Banco já carimbado na 6 recebe o que a semente GANHOU depois.
+    ///
+    /// A armadilha é a mesma de antes com uma volta a mais. O degrau 6 roda uma
+    /// vez e carimba; a partir daí `migrate` corta em `from >= SCHEMA_VERSION` e
+    /// não olha degrau nenhum. Então acrescentar linhas ao artefato — os 171
+    /// `openssl`, por exemplo — chegaria SÓ em instalação nova, e o app de quem
+    /// já usa continuaria sem, sem nenhum sinal de que faltou.
+    ///
+    /// Reesemear inteiro é seguro porque o `INSERT OR IGNORE` bate no índice
+    /// único: o que já está lá o banco recusa, e o teste abaixo é o que prova
+    /// que ele recusa em vez de duplicar.
+    #[test]
+    fn banco_carimbado_ganha_o_que_a_semente_recebeu_depois() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+
+        let antes = {
+            let store = Store::open(&path).unwrap();
+            let total = conta_spec(&store);
+            // Um banco de quem instalou a versão anterior do artefato: base
+            // cheia, `openssl` ainda não existia nela, versão já carimbada.
+            store
+                .conn
+                .lock()
+                .execute("DELETE FROM command_spec WHERE command = 'openssl'", [])
+                .unwrap();
+            store.conn.lock().pragma_update(None, "user_version", 6).unwrap();
+            total
+        };
+
+        let store = Store::open(&path).unwrap();
+        assert!(
+            !store
+                .spec_completions("openssl", "", "s_cl", 5)
+                .unwrap()
+                .is_empty(),
+            "banco carimbado na 6 reabriu sem o que a semente ganhou depois"
+        );
+        assert_eq!(
+            conta_spec(&store),
+            antes,
+            "a resemeadura duplicou o que já estava na base"
         );
     }
 

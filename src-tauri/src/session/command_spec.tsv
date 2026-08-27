@@ -6772,3 +6772,174 @@ kubectl	wait -A	option	If present, list the requested object(s) across all names
 kubectl	wait --for	option	The condition to wait on: [delete|condition=condition-name]
 kubectl	wait --timeout	option	The length of time to wait before giving up.  Zero means check once and don't wait, negative means wait for a week
 kubectl	-n	option	If present, the namespace scope for this CLI request
+openssl	aes-128-cbc	algorithm	
+openssl	aes-128-ecb	algorithm	
+openssl	aes-192-cbc	algorithm	
+openssl	aes-192-ecb	algorithm	
+openssl	aes-256-cbc	algorithm	
+openssl	aes-256-ecb	algorithm	
+openssl	aria-128-cbc	algorithm	só no OpenSSL
+openssl	aria-128-cfb	algorithm	só no OpenSSL
+openssl	aria-128-cfb1	algorithm	só no OpenSSL
+openssl	aria-128-cfb8	algorithm	só no OpenSSL
+openssl	aria-128-ctr	algorithm	só no OpenSSL
+openssl	aria-128-ecb	algorithm	só no OpenSSL
+openssl	aria-128-ofb	algorithm	só no OpenSSL
+openssl	aria-192-cbc	algorithm	só no OpenSSL
+openssl	aria-192-cfb	algorithm	só no OpenSSL
+openssl	aria-192-cfb1	algorithm	só no OpenSSL
+openssl	aria-192-cfb8	algorithm	só no OpenSSL
+openssl	aria-192-ctr	algorithm	só no OpenSSL
+openssl	aria-192-ecb	algorithm	só no OpenSSL
+openssl	aria-192-ofb	algorithm	só no OpenSSL
+openssl	aria-256-cbc	algorithm	só no OpenSSL
+openssl	aria-256-cfb	algorithm	só no OpenSSL
+openssl	aria-256-cfb1	algorithm	só no OpenSSL
+openssl	aria-256-cfb8	algorithm	só no OpenSSL
+openssl	aria-256-ctr	algorithm	só no OpenSSL
+openssl	aria-256-ecb	algorithm	só no OpenSSL
+openssl	aria-256-ofb	algorithm	só no OpenSSL
+openssl	asn1parse	subcommand	Inspeciona uma estrutura ASN.1, campo a campo
+openssl	base64	algorithm	
+openssl	bf	algorithm	
+openssl	bf-cbc	algorithm	
+openssl	bf-cfb	algorithm	
+openssl	bf-ecb	algorithm	
+openssl	bf-ofb	algorithm	
+openssl	blake2b512	algorithm	só no OpenSSL
+openssl	blake2s256	algorithm	só no OpenSSL
+openssl	ca	subcommand	Opera uma autoridade certificadora: assina e revoga certificados
+openssl	camellia-128-cbc	algorithm	
+openssl	camellia-128-ecb	algorithm	
+openssl	camellia-192-cbc	algorithm	
+openssl	camellia-192-ecb	algorithm	
+openssl	camellia-256-cbc	algorithm	
+openssl	camellia-256-ecb	algorithm	
+openssl	cast	algorithm	
+openssl	cast-cbc	algorithm	
+openssl	cast5-cbc	algorithm	
+openssl	cast5-cfb	algorithm	
+openssl	cast5-ecb	algorithm	
+openssl	cast5-ofb	algorithm	
+openssl	certhash	subcommand	Gera os links de hash de um diretório de certificados · só no LibreSSL
+openssl	chacha	algorithm	só no LibreSSL
+openssl	ciphers	subcommand	Lista as suítes de cifra que esta build suporta
+openssl	cmp	subcommand	Fala com uma autoridade certificadora pelo protocolo CMP (RFC 4210) · só no OpenSSL
+openssl	cms	subcommand	Assina, cifra e verifica mensagens CMS (sucessor do S/MIME)
+openssl	configutl	subcommand	Lê e normaliza o arquivo de configuração do OpenSSL · só no OpenSSL
+openssl	crl	subcommand	Lê e converte listas de revogação
+openssl	crl2pkcs7	subcommand	Empacota uma CRL num PKCS#7
+openssl	des	algorithm	
+openssl	des-cbc	algorithm	
+openssl	des-cfb	algorithm	
+openssl	des-ecb	algorithm	
+openssl	des-ede	algorithm	
+openssl	des-ede-cbc	algorithm	
+openssl	des-ede-cfb	algorithm	
+openssl	des-ede-ofb	algorithm	
+openssl	des-ede3	algorithm	
+openssl	des-ede3-cbc	algorithm	
+openssl	des-ede3-cfb	algorithm	
+openssl	des-ede3-ofb	algorithm	
+openssl	des-ofb	algorithm	
+openssl	des3	algorithm	
+openssl	desx	algorithm	
+openssl	dgst	subcommand	Calcula resumo (hash) e assina ou verifica com ele
+openssl	dh	subcommand	Lê e converte parâmetros Diffie-Hellman · só no LibreSSL
+openssl	dhparam	subcommand	Gera parâmetros Diffie-Hellman
+openssl	dsa	subcommand	Lê e converte chaves DSA
+openssl	dsaparam	subcommand	Gera parâmetros DSA
+openssl	ec	subcommand	Lê e converte chaves de curva elíptica
+openssl	ecparam	subcommand	Gera parâmetros de curva elíptica
+openssl	enc	subcommand	Cifra e decifra um arquivo com chave simétrica
+openssl	engine	subcommand	Lista e inspeciona engines de criptografia (obsoleto: use providers) · só no OpenSSL
+openssl	errstr	subcommand	Traduz um código de erro do OpenSSL para texto
+openssl	fipsinstall	subcommand	Prepara e valida o módulo FIPS · só no OpenSSL
+openssl	gendh	subcommand	Gera parâmetros Diffie-Hellman (obsoleto: use dhparam) · só no LibreSSL
+openssl	gendsa	subcommand	Gera uma chave DSA a partir de parâmetros
+openssl	genpkey	subcommand	Gera uma chave privada de qualquer algoritmo suportado
+openssl	genrsa	subcommand	Gera uma chave privada RSA
+openssl	gost-mac	algorithm	só no LibreSSL
+openssl	help	subcommand	Lista os comandos que esta instalação oferece · só no OpenSSL
+openssl	idea	algorithm	só no OpenSSL
+openssl	idea-cbc	algorithm	só no OpenSSL
+openssl	idea-cfb	algorithm	só no OpenSSL
+openssl	idea-ecb	algorithm	só no OpenSSL
+openssl	idea-ofb	algorithm	só no OpenSSL
+openssl	info	subcommand	Mostra caminhos e parâmetros de build desta instalação · só no OpenSSL
+openssl	kdf	subcommand	Deriva chave a partir de senha ou segredo, por KDF · só no OpenSSL
+openssl	list	subcommand	Lista o que esta build oferece: comandos, algoritmos e providers · só no OpenSSL
+openssl	mac	subcommand	Calcula um código de autenticação de mensagem (MAC) · só no OpenSSL
+openssl	md4	algorithm	
+openssl	md5	algorithm	
+openssl	md_gost94	algorithm	só no LibreSSL
+openssl	mdc2	algorithm	só no OpenSSL
+openssl	nseq	subcommand	Converte entre sequência Netscape de certificados e PEM
+openssl	ocsp	subcommand	Consulta ou responde status de certificado por OCSP
+openssl	passwd	subcommand	Calcula o hash de uma senha no formato do sistema
+openssl	pkcs12	subcommand	Lê e escreve arquivos PKCS#12 (.p12 / .pfx)
+openssl	pkcs7	subcommand	Lê e converte estruturas PKCS#7
+openssl	pkcs8	subcommand	Lê e converte chaves privadas em PKCS#8
+openssl	pkey	subcommand	Lê, converte e inspeciona chaves de qualquer algoritmo
+openssl	pkeyparam	subcommand	Lê e converte parâmetros de algoritmo
+openssl	pkeyutl	subcommand	Assina, verifica, cifra e decifra com uma chave
+openssl	prime	subcommand	Testa se um número é primo, ou gera um
+openssl	rand	subcommand	Gera bytes aleatórios criptograficamente seguros
+openssl	rc2	algorithm	
+openssl	rc2-40-cbc	algorithm	
+openssl	rc2-64-cbc	algorithm	
+openssl	rc2-cbc	algorithm	
+openssl	rc2-cfb	algorithm	
+openssl	rc2-ecb	algorithm	
+openssl	rc2-ofb	algorithm	
+openssl	rc4	algorithm	
+openssl	rc4-40	algorithm	
+openssl	rehash	subcommand	Gera os links de hash de um diretório de certificados · só no OpenSSL
+openssl	req	subcommand	Cria e inspeciona pedidos de certificado (CSR)
+openssl	ripemd160	algorithm	só no LibreSSL
+openssl	rmd160	algorithm	só no OpenSSL
+openssl	rsa	subcommand	Lê, converte e inspeciona chaves RSA
+openssl	rsautl	subcommand	Assina e cifra com RSA diretamente (obsoleto: use pkeyutl)
+openssl	s_client	subcommand	Abre uma conexão TLS de cliente para diagnosticar um servidor
+openssl	s_server	subcommand	Sobe um servidor TLS de teste
+openssl	s_time	subcommand	Mede o desempenho de handshakes TLS
+openssl	seed	algorithm	só no OpenSSL
+openssl	seed-cbc	algorithm	só no OpenSSL
+openssl	seed-cfb	algorithm	só no OpenSSL
+openssl	seed-ecb	algorithm	só no OpenSSL
+openssl	seed-ofb	algorithm	só no OpenSSL
+openssl	sess_id	subcommand	Lê e converte sessões TLS salvas
+openssl	sha1	algorithm	
+openssl	sha224	algorithm	
+openssl	sha256	algorithm	
+openssl	sha3-224	algorithm	só no OpenSSL
+openssl	sha3-256	algorithm	só no OpenSSL
+openssl	sha3-384	algorithm	só no OpenSSL
+openssl	sha3-512	algorithm	só no OpenSSL
+openssl	sha384	algorithm	
+openssl	sha512	algorithm	
+openssl	sha512-224	algorithm	só no OpenSSL
+openssl	sha512-256	algorithm	só no OpenSSL
+openssl	shake128	algorithm	só no OpenSSL
+openssl	shake256	algorithm	só no OpenSSL
+openssl	skeyutl	subcommand	Gera e administra chaves simétricas opacas de provider · só no OpenSSL
+openssl	sm3	algorithm	
+openssl	sm3WithRSAEncryption	algorithm	só no LibreSSL
+openssl	sm4	algorithm	só no LibreSSL
+openssl	sm4-cbc	algorithm	
+openssl	sm4-cfb	algorithm	
+openssl	sm4-ctr	algorithm	só no OpenSSL
+openssl	sm4-ecb	algorithm	
+openssl	sm4-ofb	algorithm	
+openssl	smime	subcommand	Assina, cifra e verifica mensagens S/MIME
+openssl	speed	subcommand	Mede a velocidade dos algoritmos desta build
+openssl	spkac	subcommand	Lê e cria blocos SPKAC
+openssl	srp	subcommand	Administra um arquivo de verificadores SRP · só no OpenSSL
+openssl	storeutl	subcommand	Lista o conteúdo de um armazenamento de objetos (URI store) · só no OpenSSL
+openssl	streebog256	algorithm	só no LibreSSL
+openssl	streebog512	algorithm	só no LibreSSL
+openssl	ts	subcommand	Cria e verifica carimbos de tempo (RFC 3161)
+openssl	verify	subcommand	Verifica uma cadeia de certificados
+openssl	version	subcommand	Mostra a versão do OpenSSL e como ele foi compilado
+openssl	whirlpool	algorithm	só no LibreSSL
+openssl	x509	subcommand	Lê, converte, assina e inspeciona certificados X.509
