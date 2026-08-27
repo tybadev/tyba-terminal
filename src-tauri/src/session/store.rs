@@ -1703,6 +1703,76 @@ impl Store {
         Ok(rows)
     }
 
+    /// O que a base oferece depois de `<comando> <escopo>`, filtrado pelo token.
+    ///
+    /// Devolve o **segmento seguinte**, não o caminho inteiro: quem digita
+    /// `git com` está escolhendo o subcomando, e oferecer `commit --amend`
+    /// junto pularia um passo que ele ainda não deu.
+    ///
+    /// `escopo` é o que já foi digitado depois do comando — vazio na raiz,
+    /// `container` dentro de `docker container`. O filtro por segmento acontece
+    /// em Rust e não em SQL: exprimir "exatamente mais uma palavra" em `LIKE`
+    /// exigiria negar espaço com `GLOB`, que não usa o índice.
+    ///
+    /// A descrição vem junto porque é metade do valor da base — saber que
+    /// `cherry-pick` existe ajuda menos do que saber o que ele faz.
+    pub fn spec_completions(
+        &self,
+        command: &str,
+        escopo: &str,
+        token: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, Option<String>)>, StoreError> {
+        if command.is_empty() {
+            return Ok(Vec::new());
+        }
+        let escopo = escopo.trim();
+        let prefixo = if escopo.is_empty() {
+            token.to_string()
+        } else {
+            format!("{escopo} {token}")
+        };
+        // `escape_like` porque `_` casa com qualquer caractere em SQL — e nome
+        // de flag tem `_` o tempo todo. Sem isto, digitar `_` traria tudo que
+        // tem uma letra naquela posição.
+        let padrao = format!("{}%", escape_like(&prefixo));
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT path, description FROM command_spec
+             WHERE command = ?1 AND path LIKE ?2 ESCAPE '\\'
+             ORDER BY kind DESC, path
+             LIMIT ?3",
+        )?;
+        let cortar = if escopo.is_empty() {
+            0
+        } else {
+            escopo.len() + 1
+        };
+        let linhas = stmt
+            .query_map(params![command, padrao, limit * 4], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut achados = Vec::new();
+        for (path, descricao) in linhas {
+            let Some(resto) = path.get(cortar..) else {
+                continue;
+            };
+            // Exatamente mais um segmento: `container ls` responde a
+            // `docker container l`, mas `container ls --all` não — aquela flag
+            // é de outro passo.
+            if resto.is_empty() || resto.contains(' ') {
+                continue;
+            }
+            achados.push((resto.to_string(), descricao));
+            if achados.len() as i64 >= limit {
+                break;
+            }
+        }
+        Ok(achados)
+    }
+
     pub fn clear_command_history(&self, repo_root: Option<&str>) -> Result<(), StoreError> {
         let conn = self.conn.lock();
         match repo_root {
@@ -2899,6 +2969,93 @@ mod tests {
             .lock()
             .query_row("SELECT COUNT(*) FROM command_spec", [], |r| r.get(0))
             .unwrap()
+    }
+
+    /// A base responde o segmento seguinte, não o caminho inteiro.
+    #[test]
+    fn a_base_devolve_o_proximo_segmento() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+
+        let achados = store.spec_completions("git", "", "com", 20).unwrap();
+        let nomes: Vec<&str> = achados.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(nomes.contains(&"commit"), "faltou commit: {nomes:?}");
+        // `commit` e não `commit --amend`: quem digita `git com` está
+        // escolhendo o subcomando, e oferecer a flag junto pularia um passo.
+        assert!(
+            !nomes.iter().any(|n| n.contains(' ')),
+            "veio caminho com espaço: {nomes:?}"
+        );
+    }
+
+    /// Dentro de um subcomando, a base responde o que vem DEPOIS dele.
+    #[test]
+    fn a_base_desce_para_dentro_do_subcomando() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+
+        let achados = store
+            .spec_completions("docker", "container", "l", 20)
+            .unwrap();
+        let nomes: Vec<&str> = achados.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            nomes.contains(&"ls"),
+            "faltou ls em `docker container l`: {nomes:?}"
+        );
+    }
+
+    /// A descrição vem junto — é metade do valor da base.
+    #[test]
+    fn a_base_traz_a_descricao() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+
+        let achados = store.spec_completions("git", "", "commit", 5).unwrap();
+        let (_, descricao) = achados
+            .iter()
+            .find(|(n, _)| n == "commit")
+            .expect("commit não veio");
+        assert!(
+            descricao.as_deref().is_some_and(|d| !d.is_empty()),
+            "commit veio sem descrição"
+        );
+    }
+
+    /// Comando que não está na base devolve vazio, não erro.
+    #[test]
+    fn comando_fora_da_base_nao_e_erro() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+        assert!(store
+            .spec_completions("openssl", "", "s", 20)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// O token filtra, e o `_` do LIKE não vira curinga.
+    ///
+    /// `_` casa com qualquer caractere em SQL. Sem escapar, digitar `_` traria
+    /// tudo que tem uma letra ali — e nome de flag tem `_` o tempo todo.
+    #[test]
+    fn o_underscore_do_token_nao_e_curinga() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+        {
+            let conn = store.conn.lock();
+            conn.execute(
+                "INSERT INTO command_spec (command, path, kind) VALUES ('demo','a_b','subcommand')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO command_spec (command, path, kind) VALUES ('demo','axb','subcommand')",
+                [],
+            )
+            .unwrap();
+        }
+        let achados = store.spec_completions("demo", "", "a_", 20).unwrap();
+        let nomes: Vec<&str> = achados.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(nomes, vec!["a_b"], "o `_` casou como curinga: {nomes:?}");
     }
 
     /// A semente não cresce sem alguém decidir.

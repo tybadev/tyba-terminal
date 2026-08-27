@@ -5078,7 +5078,7 @@ struct BinarySuggestion {
 struct LineSuggestions {
     commands: Vec<CommandSuggestion>,
     paths: Vec<String>,
-    arguments: Vec<String>,
+    arguments: Vec<ArgumentSuggestion>,
     binaries: Vec<BinarySuggestion>,
 }
 
@@ -5250,13 +5250,36 @@ fn provider_candidates(
 /// O provedor manda **quem existe**; o histórico manda **em que ordem**. O que
 /// o histórico conhece e o provedor não (flag, argumento livre) entra no fim —
 /// perder isso seria trocar um buraco por outro.
+/// Um candidato de argumento, com a descrição quando a base a conhece.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArgumentSuggestion {
+    value: String,
+    description: Option<String>,
+}
+
+/// O comando e o que já foi digitado depois dele.
+///
+/// `git ` → `("git", "")`; `docker container ` → `("docker", "container")`.
+/// Flag é descartada pelo mesmo motivo que em `argument::provider_for`:
+/// `git -c x checkout ` continua sendo um checkout.
+fn command_and_scope(prefix: &str) -> (String, String) {
+    let mut palavras = prefix.split_whitespace().filter(|w| !w.starts_with('-'));
+    let comando = palavras.next().unwrap_or_default();
+    let escopo: Vec<&str> = palavras.collect();
+    (
+        comando.rsplit('/').next().unwrap_or(comando).to_string(),
+        escopo.join(" "),
+    )
+}
+
 fn argument_candidates(
     state: &AppState,
     prefix: &str,
     token: &str,
     cwd: Option<&str>,
     repo_root: Option<&str>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<ArgumentSuggestion>, String> {
     let used = state
         .store
         .history_with_prefix(prefix, 400)
@@ -5275,8 +5298,42 @@ fn argument_candidates(
             found.push(extra);
         }
     }
+
+    // A base entra por ÚLTIMO na ordem e PRIMEIRO na descrição.
+    //
+    // Por último porque provedor e histórico são mais específicos: o provedor
+    // sabe quais branches existem agora, o histórico sabe o que o dono faz. A
+    // base sabe o que o comando oferece, que é o mais genérico dos três.
+    //
+    // Mas ela não é só uma quarta lista: quem já usou `git commit` o tem no
+    // histórico, e é a base que sabe o que `commit` FAZ. Então ela enriquece o
+    // que já está lá antes de acrescentar o que falta.
+    let (comando, escopo) = command_and_scope(prefix);
+    let da_base = state
+        .store
+        .spec_completions(&comando, &escopo, token, 40)
+        .unwrap_or_default();
+    let mut descricoes: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for (nome, descricao) in &da_base {
+        if let Some(d) = descricao {
+            descricoes.insert(nome.clone(), d.clone());
+        }
+    }
+    for (nome, _) in da_base {
+        if !found.contains(&nome) && nome != token {
+            found.push(nome);
+        }
+    }
+
     found.truncate(40);
-    Ok(found)
+    Ok(found
+        .into_iter()
+        .map(|value| ArgumentSuggestion {
+            description: descricoes.remove(&value),
+            value,
+        })
+        .collect())
 }
 
 /// Assíncrono **de propósito**: o provedor de Docker pode custar um `docker ps`
@@ -5290,7 +5347,7 @@ async fn complete_argument(
     token: String,
     cwd: Option<String>,
     repo_root: Option<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<ArgumentSuggestion>, String> {
     argument_candidates(
         &state,
         &prefix,

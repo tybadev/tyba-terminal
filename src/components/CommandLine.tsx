@@ -5,6 +5,7 @@ import {
   submitShellLine,
   suggestLine,
   type BinarySuggestion,
+  type ArgumentSuggestion,
   writeControl,
   type CommandSuggestion,
   type SessionId,
@@ -147,7 +148,7 @@ export function CommandLine({
   // não alcança um irmão, e o anel mora na moldura em volta.
   const [focused, setFocused] = useState(false);
   const [paths, setPaths] = useState<string[]>([]);
-  const [args, setArgs] = useState<string[]>([]);
+  const [args, setArgs] = useState<ArgumentSuggestion[]>([]);
   // Comandos que existem na sessão — `$PATH` e o que o shell contou. Só chega
   // preenchido quando o caret está no primeiro token.
   const [bins, setBins] = useState<BinarySuggestion[]>([]);
@@ -312,8 +313,8 @@ export function CommandLine({
   // Flag nunca é caminho: `--l` não existe em disco, e tentar completá-lo como
   // arquivo só produziria silêncio.
   const argGhost =
-    arg && args.length > 0 && args[0].startsWith(arg.value)
-      ? args[0].slice(arg.value.length)
+    arg && args.length > 0 && args[0].value.startsWith(arg.value)
+      ? args[0].value.slice(arg.value.length)
       : "";
   // Comando ganha do histórico e perde para caminho e argumento. Quem digitou
   // `pn` na coluna 1 está escolhendo um COMANDO — e o histórico, que completa a
@@ -544,14 +545,22 @@ export function CommandLine({
         <div className="absolute bottom-full left-2.5 right-2.5 z-20 mb-1 max-h-56 overflow-y-auto rounded-[6px] border border-tyba-border bg-tyba-raised py-1 shadow-lg">
           {args.map((candidate) => (
             <button
-              key={`arg:${candidate}`}
+              key={`arg:${candidate.value}`}
               onMouseDown={(event) => {
                 event.preventDefault();
-                takeArg(candidate);
+                takeArg(candidate.value);
               }}
               className="flex w-full items-center gap-2 px-2.5 py-1 text-left font-mono text-[12px] text-tyba-text-muted hover:bg-tyba-text/[.04]"
             >
-              <span className="min-w-0 flex-1 truncate">{candidate}</span>
+              <span className="shrink-0">{candidate.value}</span>
+              {/* A descrição é o que a base acrescenta ao que o histórico já
+                  sabia. Ela encolhe primeiro: quando falta espaço, o nome do
+                  argumento é o que precisa continuar legível. */}
+              {candidate.description && (
+                <span className="min-w-0 flex-1 truncate text-right text-[11px] text-tyba-text-faint">
+                  {candidate.description}
+                </span>
+              )}
             </button>
           ))}
           {bins.map((candidate) => (
