@@ -14,3 +14,4 @@ src-tauri/gen/schemas/
 
 # Mintlify CLI (preview local da doc)
 docs-site/.mintlify/
+.fig-cache/

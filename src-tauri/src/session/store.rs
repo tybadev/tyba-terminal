@@ -566,6 +566,23 @@ const COMMAND_SPEC_SEED: &str = include_str!("command_spec.tsv");
 
 /// Enche a `command_spec`, uma vez, no degrau 6.
 fn seed_command_spec(conn: &Connection) -> Result<(), StoreError> {
+    // Uma transação para as 6.774 linhas. Sem ela cada `INSERT` vira uma
+    // transação própria, com o fsync que vem junto — e o degrau, que roda uma
+    // vez na vida do banco do usuário, passou a rodar em TODO teste que abre um
+    // `Store`. A suíte foi de 1,1s para 7,5s, e foi assim que isto apareceu.
+    conn.execute_batch("BEGIN")?;
+    let resultado = seed_rows(conn);
+    match resultado {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+fn seed_rows(conn: &Connection) -> Result<(), StoreError> {
     let mut stmt = conn.prepare(
         "INSERT OR IGNORE INTO command_spec (command, path, kind, description)
          VALUES (?1, ?2, ?3, ?4)",
@@ -2882,6 +2899,55 @@ mod tests {
             .lock()
             .query_row("SELECT COUNT(*) FROM command_spec", [], |r| r.get(0))
             .unwrap()
+    }
+
+    /// A semente não cresce sem alguém decidir.
+    ///
+    /// Ela vai para o banco do usuário, e o banco dele tem 4,6 MB. Passar de 15
+    /// para os 715 comandos da base do Fig é trocar um número no script de
+    /// geração — trivial de fazer sem perceber o efeito. Este teto existe para
+    /// que esse passo exija uma decisão explícita, não um `git push`.
+    ///
+    /// 1 MB de TSV é o dobro do que as 6.774 entradas de hoje ocupam: cabe
+    /// crescimento normal, e não cabe a base inteira.
+    #[test]
+    fn a_semente_nao_cresce_sem_decisao() {
+        const TETO: usize = 1024 * 1024;
+        assert!(
+            COMMAND_SPEC_SEED.len() <= TETO,
+            "a semente tem {} KB, acima do teto de {} KB — se o crescimento é \
+             desejado, o teto sobe junto, e aí é decisão de alguém",
+            COMMAND_SPEC_SEED.len() / 1024,
+            TETO / 1024
+        );
+    }
+
+    /// A semente é DADO, e nada nela executa.
+    ///
+    /// O ADR recusou os `generators` do Fig porque rodam comando no shell. O
+    /// extrator os descarta, mas quem garante que o artefato commitado
+    /// corresponde ao extrator é este teste: TSV com quatro campos por linha,
+    /// sem SQL, sem função, sem script.
+    #[test]
+    fn a_semente_e_dado_e_nada_nela_executa() {
+        for (n, linha) in COMMAND_SPEC_SEED.lines().enumerate() {
+            if linha.is_empty() {
+                continue;
+            }
+            let campos: Vec<&str> = linha.split('\t').collect();
+            assert!(
+                campos.len() == 3 || campos.len() == 4,
+                "linha {} tem {} campos",
+                n + 1,
+                campos.len()
+            );
+            assert!(
+                matches!(campos[2], "subcommand" | "option"),
+                "linha {}: kind desconhecido {:?}",
+                n + 1,
+                campos[2]
+            );
+        }
     }
 
     /// Banco que JÁ EXISTE recebe a semente, não só banco novo.
