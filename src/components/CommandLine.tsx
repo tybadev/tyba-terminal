@@ -5,6 +5,7 @@ import {
   submitShellLine,
   suggestLine,
   type BinarySuggestion,
+  type ArgumentSuggestion,
   writeControl,
   type CommandSuggestion,
   type SessionId,
@@ -16,6 +17,7 @@ import {
   boxIsMounted,
   clearsDraft,
   controlBytes,
+  ghostDoToken,
   ghostFor,
   commandPrefix,
   enterAplicaSugestao,
@@ -147,7 +149,7 @@ export function CommandLine({
   // não alcança um irmão, e o anel mora na moldura em volta.
   const [focused, setFocused] = useState(false);
   const [paths, setPaths] = useState<string[]>([]);
-  const [args, setArgs] = useState<string[]>([]);
+  const [args, setArgs] = useState<ArgumentSuggestion[]>([]);
   // Comandos que existem na sessão — `$PATH` e o que o shell contou. Só chega
   // preenchido quando o caret está no primeiro token.
   const [bins, setBins] = useState<BinarySuggestion[]>([]);
@@ -312,8 +314,8 @@ export function CommandLine({
   // Flag nunca é caminho: `--l` não existe em disco, e tentar completá-lo como
   // arquivo só produziria silêncio.
   const argGhost =
-    arg && args.length > 0 && args[0].startsWith(arg.value)
-      ? args[0].slice(arg.value.length)
+    arg && args.length > 0 && args[0].value.startsWith(arg.value)
+      ? args[0].value.slice(arg.value.length)
       : "";
   // Comando ganha do histórico e perde para caminho e argumento. Quem digitou
   // `pn` na coluna 1 está escolhendo um COMANDO — e o histórico, que completa a
@@ -322,7 +324,13 @@ export function CommandLine({
     cmdPrefix && bins.length > 0 && bins[0].name.startsWith(cmdPrefix)
       ? bins[0].name.slice(cmdPrefix.length)
       : "";
-  const ghost = pathGhost || argGhost || binGhost || ghostFor(text, hits);
+  // Caminho perdia para nada e ganhava de tudo — e num home com `skills/`,
+  // digitar `openssl s` virava `openssl skills/` em vez de `s_client`. O nome de
+  // pasta é palpite genérico sobre o diretório; a base sabe o que o COMANDO
+  // oferece, e conhecimento específico ganha. Só que quem digitou `./s` já disse
+  // que quer arquivo, e ali a ordem se inverte de volta.
+  const escolhido = ghostDoToken(token?.value ?? "", pathGhost, argGhost);
+  const ghost = escolhido.texto || binGhost || ghostFor(text, hits);
   const temItem =
     listed.length > 0 || paths.length > 0 || args.length > 0 || bins.length > 0;
   // A lista se anuncia enquanto se digita o PRIMEIRO token, e só ali. Antes,
@@ -377,8 +385,15 @@ export function CommandLine({
 
   const acceptGhost = () => {
     if (!ghost) return false;
-    if (pathGhost && token) return takePath(token.value + pathGhost);
-    if (argGhost && arg) return takeArg(arg.value + argGhost);
+    // A FONTE vem de `ghostDoToken` em vez de ser redecidida aqui: enquanto os
+    // dois lugares refaziam a conta, havia como o cinza mostrar uma coisa e o
+    // `Tab` aplicar outra.
+    if (escolhido.fonte === "caminho" && token) {
+      return takePath(token.value + escolhido.texto);
+    }
+    if (escolhido.fonte === "argumento" && arg) {
+      return takeArg(arg.value + escolhido.texto);
+    }
     apply(text + ghost, text.length + ghost.length);
     return true;
   };
@@ -544,14 +559,22 @@ export function CommandLine({
         <div className="absolute bottom-full left-2.5 right-2.5 z-20 mb-1 max-h-56 overflow-y-auto rounded-[6px] border border-tyba-border bg-tyba-raised py-1 shadow-lg">
           {args.map((candidate) => (
             <button
-              key={`arg:${candidate}`}
+              key={`arg:${candidate.value}`}
               onMouseDown={(event) => {
                 event.preventDefault();
-                takeArg(candidate);
+                takeArg(candidate.value);
               }}
               className="flex w-full items-center gap-2 px-2.5 py-1 text-left font-mono text-[12px] text-tyba-text-muted hover:bg-tyba-text/[.04]"
             >
-              <span className="min-w-0 flex-1 truncate">{candidate}</span>
+              <span className="shrink-0">{candidate.value}</span>
+              {/* A descrição é o que a base acrescenta ao que o histórico já
+                  sabia. Ela encolhe primeiro: quando falta espaço, o nome do
+                  argumento é o que precisa continuar legível. */}
+              {candidate.description && (
+                <span className="min-w-0 flex-1 truncate text-right text-[11px] text-tyba-text-faint">
+                  {candidate.description}
+                </span>
+              )}
             </button>
           ))}
           {bins.map((candidate) => (

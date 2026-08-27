@@ -4911,6 +4911,9 @@ async fn search_command_history(
         session_id.as_deref(),
         &filter,
         limit,
+        // A paleta é um REGISTRO: a pergunta ali é "o que eu rodei", e o mais
+        // recente vem primeiro.
+        history::Ordem::Recencia,
     )
 }
 
@@ -4931,6 +4934,10 @@ fn history_hits(
         None,
         &history::HistoryFilter::default(),
         limit,
+        // O ghost PREVÊ: "o que você provavelmente vai rodar". Aqui o que se
+        // usa todo dia vale mais que o que rodou uma vez — trocar por recência
+        // faria o cinza sugerir o último comando em vez do provável.
+        history::Ordem::Frecencia,
     )
 }
 
@@ -4943,6 +4950,7 @@ fn history_hits_filtered(
     session_id: Option<&str>,
     filter: &history::HistoryFilter,
     limit: usize,
+    ordem: history::Ordem,
 ) -> Result<Vec<HistoryHit>, String> {
     use fuzzy_matcher::skim::SkimMatcherV2;
     use fuzzy_matcher::FuzzyMatcher;
@@ -4954,16 +4962,25 @@ fn history_hits_filtered(
         .map_err(|e| e.to_string())?;
     let matcher = SkimMatcherV2::default();
     let now = approvals::now_ms() as i64;
+    // O fuzzy FILTRA — decide quem aparece. Quem ordena é a `ordem`, e ela
+    // depende da pergunta que a superfície faz. Multiplicar a relevância do
+    // fuzzy pela frecência, como era antes, misturava as duas coisas e fazia a
+    // paleta responder "o que você provavelmente quer" quando a pergunta era
+    // "o que eu acabei de rodar".
+    let mut candidates: Vec<history::HistoryCandidate> = candidates
+        .into_iter()
+        .filter(|candidate| {
+            query.is_empty() || matcher.fuzzy_match(&candidate.command, query).is_some()
+        })
+        .collect();
+    history::ordenar(&mut candidates, ordem, now);
     let mut scored: Vec<(f64, HistoryHit)> = candidates
         .into_iter()
-        .filter_map(|candidate| {
-            let fuzzy = if query.is_empty() {
-                1.0
-            } else {
-                matcher.fuzzy_match(&candidate.command, query)? as f64
-            };
-            let score = fuzzy * history::frecency(now, &candidate);
-            Some((
+        .enumerate()
+        .map(|(posicao, candidate)| {
+            // A ordem já está decidida acima; o score aqui só a preserva.
+            let score = -(posicao as f64);
+            (
                 score,
                 HistoryHit {
                     // Mesma regra da frecência: sem exit code conhecido não há
@@ -4977,7 +4994,7 @@ fn history_hits_filtered(
                     in_cwd: candidate.in_cwd,
                     in_repo: candidate.in_repo,
                 },
-            ))
+            )
         })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -5078,7 +5095,7 @@ struct BinarySuggestion {
 struct LineSuggestions {
     commands: Vec<CommandSuggestion>,
     paths: Vec<String>,
-    arguments: Vec<String>,
+    arguments: Vec<ArgumentSuggestion>,
     binaries: Vec<BinarySuggestion>,
 }
 
@@ -5250,13 +5267,36 @@ fn provider_candidates(
 /// O provedor manda **quem existe**; o histórico manda **em que ordem**. O que
 /// o histórico conhece e o provedor não (flag, argumento livre) entra no fim —
 /// perder isso seria trocar um buraco por outro.
+/// Um candidato de argumento, com a descrição quando a base a conhece.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArgumentSuggestion {
+    value: String,
+    description: Option<String>,
+}
+
+/// O comando e o que já foi digitado depois dele.
+///
+/// `git ` → `("git", "")`; `docker container ` → `("docker", "container")`.
+/// Flag é descartada pelo mesmo motivo que em `argument::provider_for`:
+/// `git -c x checkout ` continua sendo um checkout.
+fn command_and_scope(prefix: &str) -> (String, String) {
+    let mut palavras = prefix.split_whitespace().filter(|w| !w.starts_with('-'));
+    let comando = palavras.next().unwrap_or_default();
+    let escopo: Vec<&str> = palavras.collect();
+    (
+        comando.rsplit('/').next().unwrap_or(comando).to_string(),
+        escopo.join(" "),
+    )
+}
+
 fn argument_candidates(
     state: &AppState,
     prefix: &str,
     token: &str,
     cwd: Option<&str>,
     repo_root: Option<&str>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<ArgumentSuggestion>, String> {
     let used = state
         .store
         .history_with_prefix(prefix, 400)
@@ -5275,8 +5315,42 @@ fn argument_candidates(
             found.push(extra);
         }
     }
+
+    // A base entra por ÚLTIMO na ordem e PRIMEIRO na descrição.
+    //
+    // Por último porque provedor e histórico são mais específicos: o provedor
+    // sabe quais branches existem agora, o histórico sabe o que o dono faz. A
+    // base sabe o que o comando oferece, que é o mais genérico dos três.
+    //
+    // Mas ela não é só uma quarta lista: quem já usou `git commit` o tem no
+    // histórico, e é a base que sabe o que `commit` FAZ. Então ela enriquece o
+    // que já está lá antes de acrescentar o que falta.
+    let (comando, escopo) = command_and_scope(prefix);
+    let da_base = state
+        .store
+        .spec_completions(&comando, &escopo, token, 40)
+        .unwrap_or_default();
+    let mut descricoes: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for (nome, descricao) in &da_base {
+        if let Some(d) = descricao {
+            descricoes.insert(nome.clone(), d.clone());
+        }
+    }
+    for (nome, _) in da_base {
+        if !found.contains(&nome) && nome != token {
+            found.push(nome);
+        }
+    }
+
     found.truncate(40);
-    Ok(found)
+    Ok(found
+        .into_iter()
+        .map(|value| ArgumentSuggestion {
+            description: descricoes.remove(&value),
+            value,
+        })
+        .collect())
 }
 
 /// Assíncrono **de propósito**: o provedor de Docker pode custar um `docker ps`
@@ -5290,7 +5364,7 @@ async fn complete_argument(
     token: String,
     cwd: Option<String>,
     repo_root: Option<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<ArgumentSuggestion>, String> {
     argument_candidates(
         &state,
         &prefix,
@@ -6148,6 +6222,55 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `openssl ` sozinho é pergunta, não linha pela metade.
+    ///
+    /// É o caminho do pedido "o que dá para fazer com `openssl`": o token está
+    /// vazio, e é o PREFIXO que carrega o comando. Se esta função devolvesse o
+    /// comando vazio aqui, a consulta à base sairia sem `command` e a lista
+    /// abriria sem nada — que era o sintoma relatado.
+    #[test]
+    fn comando_sozinho_com_espaco_ainda_e_o_comando() {
+        assert_eq!(
+            command_and_scope("openssl "),
+            ("openssl".to_string(), String::new())
+        );
+    }
+
+    /// Caminho absoluto responde pelo nome do binário.
+    ///
+    /// Quem digita `/usr/bin/openssl ` está pedindo `openssl` — e a base é
+    /// indexada por nome. Sem o `rsplit('/')`, a consulta procuraria um comando
+    /// chamado `/usr/bin/openssl` e voltaria vazia.
+    #[test]
+    fn caminho_absoluto_responde_pelo_nome_do_binario() {
+        assert_eq!(
+            command_and_scope("/usr/bin/openssl "),
+            ("openssl".to_string(), String::new())
+        );
+    }
+
+    /// Dentro de um subcomando, o escopo é o que já foi escolhido.
+    #[test]
+    fn o_escopo_acumula_o_que_ja_foi_escolhido() {
+        assert_eq!(
+            command_and_scope("docker container "),
+            ("docker".to_string(), "container".to_string())
+        );
+    }
+
+    /// Flag digitada antes do subcomando não vira escopo.
+    ///
+    /// `git --no-pager log ` continua sendo `log` dentro de `git`. Sem o filtro,
+    /// o escopo viraria `--no-pager log` e não casaria com nada na base — a
+    /// lista fecharia justamente para quem digitou mais.
+    #[test]
+    fn flag_antes_do_subcomando_nao_vira_escopo() {
+        assert_eq!(
+            command_and_scope("git --no-pager log "),
+            ("git".to_string(), "log".to_string())
+        );
+    }
 
     /// Guarda de compilação, não teste: os dois comandos abaixo esperam o boot,
     /// e comando síncrono roda na main thread. Devolvê-los para `fn` congela o

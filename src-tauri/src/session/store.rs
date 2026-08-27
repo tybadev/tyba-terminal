@@ -201,6 +201,15 @@ CREATE TABLE IF NOT EXISTS block_checkpoint (
     rows INTEGER NOT NULL,
     bytes BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS command_spec (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    command TEXT NOT NULL,
+    path TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    description TEXT,
+    UNIQUE(command, path, kind)
+);
+CREATE INDEX IF NOT EXISTS command_spec_by_command ON command_spec (command, path);
 CREATE TABLE IF NOT EXISTS snippet (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -457,6 +466,11 @@ pub enum StoreError {
 /// 5 — `approval_history.repo_root` entra, com backfill: a aprovação passa a
 ///     saber de qual repositório ela é, em vez de perguntar a uma sessão que
 ///     pode já ter sido removida.
+/// 6 — `command_spec` é SEMEADA. A tabela nasce no [`SCHEMA`] (que roda em toda
+///     abertura), mas encher só pode acontecer uma vez — e num degrau, não a
+///     cada boot, senão o app paga a conferência de milhares de linhas para
+///     nada. Degrau próprio também porque banco que já existe está carimbado
+///     na 5: sem ele, só quem instalasse do zero teria a base.
 ///
 /// Degrau próprio para cada um, e nunca linha nova na [`BASELINE_COLUMNS`]: a
 /// base só roda em banco na versão 0, então quem já subiu de versão nunca mais
@@ -468,7 +482,7 @@ pub enum StoreError {
 /// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
 /// de cada um passa isolado, porque simula o banco na versão anterior, que é
 /// justamente o caso em que ambos rodam.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 7;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -538,6 +552,58 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, Stor
 /// versão gravada é a do último que pegou sem buraco antes dele. O custo de
 /// ficar para trás é reexecutar um punhado de `PRAGMA table_info` por abertura,
 /// até a próxima que der certo.
+/// A base de subcomando e flag, extraída dos specs do Fig em tempo de build.
+///
+/// Formato: uma linha por entrada, campos separados por TAB — `command`,
+/// `path`, `kind`, `description`. TAB porque nenhum nome de comando, caminho ou
+/// flag o contém, e descrição com tabulação seria a exceção que o extrator já
+/// não produz.
+///
+/// Texto e não SQL: o `INSERT` fica aqui, num lugar só, em vez de repetido
+/// milhares de vezes no artefato gerado — e o artefato deixa de poder executar
+/// qualquer coisa que não seja dado.
+const COMMAND_SPEC_SEED: &str = include_str!("command_spec.tsv");
+
+/// Enche a `command_spec`, uma vez, no degrau 6.
+fn seed_command_spec(conn: &Connection) -> Result<(), StoreError> {
+    // Uma transação para as 6.774 linhas. Sem ela cada `INSERT` vira uma
+    // transação própria, com o fsync que vem junto — e o degrau, que roda uma
+    // vez na vida do banco do usuário, passou a rodar em TODO teste que abre um
+    // `Store`. A suíte foi de 1,1s para 7,5s, e foi assim que isto apareceu.
+    conn.execute_batch("BEGIN")?;
+    let resultado = seed_rows(conn);
+    match resultado {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+fn seed_rows(conn: &Connection) -> Result<(), StoreError> {
+    let mut stmt = conn.prepare(
+        "INSERT OR IGNORE INTO command_spec (command, path, kind, description)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for linha in COMMAND_SPEC_SEED.lines() {
+        if linha.is_empty() {
+            continue;
+        }
+        let mut campos = linha.split('\t');
+        let (Some(command), Some(path), Some(kind)) = (campos.next(), campos.next(), campos.next())
+        else {
+            continue;
+        };
+        // Descrição ausente é `None`, não string vazia: a lista mostra coluna
+        // quando há texto, e `""` faria aparecer uma coluna vazia.
+        let description = campos.next().filter(|d| !d.is_empty());
+        stmt.execute(params![command, path, kind, description])?;
+    }
+    Ok(())
+}
+
 fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
     let from: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if from >= SCHEMA_VERSION {
@@ -689,19 +755,51 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
+    // A semente da base de specs. A tabela já nasceu no `SCHEMA`; aqui ela
+    // ENCHE, e uma vez só.
+    //
+    // `INSERT OR IGNORE` contra o índice único `(command, path, kind)`: se este
+    // degrau rodar duas vezes — banco restaurado de backup, degrau anterior que
+    // falhou e não carimbou —, a base não duplica porque o banco recusa, não
+    // porque alguém acertou a contabilidade. É a mesma escolha do import de
+    // histórico.
+    // O degrau 7 é a MESMA semeadura de novo, e por isso divide a variável com o
+    // degrau 6. O artefato cresce entre versões do app — os 171 `openssl`
+    // entraram depois —, e sem reesemear as linhas novas chegariam só em
+    // instalação nova: quem já usa o app está carimbado na 6, e `migrate` corta
+    // em `from >= SCHEMA_VERSION` antes de olhar degrau nenhum.
+    //
+    // Falha aqui devolve 5, não 6, e isso está certo nos dois sentidos: com
+    // `from = 0` o degrau 6 é justamente esta semeadura, que não aconteceu; com
+    // `from = 6` o `reached > from` abaixo recusa o retrocesso e o carimbo fica
+    // onde estava.
+    let spec_seed_applied = if from < 7 {
+        match seed_command_spec(conn) {
+            Ok(()) => true,
+            Err(e) => {
+                skipped.push(format!("command_spec: {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
     let reached = match (
         baseline_applied,
         scrollback_applied,
         import_key_applied,
         conversation_applied,
         approval_repo_applied,
+        spec_seed_applied,
     ) {
-        (true, true, true, true, true) => SCHEMA_VERSION,
-        (true, true, true, true, false) => 4,
-        (true, true, true, false, _) => 3,
-        (true, true, false, _, _) => 2,
-        (true, false, _, _, _) => 1,
-        (false, _, _, _, _) => from,
+        (true, true, true, true, true, true) => SCHEMA_VERSION,
+        (true, true, true, true, true, false) => 5,
+        (true, true, true, true, false, _) => 4,
+        (true, true, true, false, _, _) => 3,
+        (true, true, false, _, _, _) => 2,
+        (true, false, _, _, _, _) => 1,
+        (false, _, _, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -1613,6 +1711,76 @@ impl Store {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// O que a base oferece depois de `<comando> <escopo>`, filtrado pelo token.
+    ///
+    /// Devolve o **segmento seguinte**, não o caminho inteiro: quem digita
+    /// `git com` está escolhendo o subcomando, e oferecer `commit --amend`
+    /// junto pularia um passo que ele ainda não deu.
+    ///
+    /// `escopo` é o que já foi digitado depois do comando — vazio na raiz,
+    /// `container` dentro de `docker container`. O filtro por segmento acontece
+    /// em Rust e não em SQL: exprimir "exatamente mais uma palavra" em `LIKE`
+    /// exigiria negar espaço com `GLOB`, que não usa o índice.
+    ///
+    /// A descrição vem junto porque é metade do valor da base — saber que
+    /// `cherry-pick` existe ajuda menos do que saber o que ele faz.
+    pub fn spec_completions(
+        &self,
+        command: &str,
+        escopo: &str,
+        token: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, Option<String>)>, StoreError> {
+        if command.is_empty() {
+            return Ok(Vec::new());
+        }
+        let escopo = escopo.trim();
+        let prefixo = if escopo.is_empty() {
+            token.to_string()
+        } else {
+            format!("{escopo} {token}")
+        };
+        // `escape_like` porque `_` casa com qualquer caractere em SQL — e nome
+        // de flag tem `_` o tempo todo. Sem isto, digitar `_` traria tudo que
+        // tem uma letra naquela posição.
+        let padrao = format!("{}%", escape_like(&prefixo));
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT path, description FROM command_spec
+             WHERE command = ?1 AND path LIKE ?2 ESCAPE '\\'
+             ORDER BY kind DESC, path
+             LIMIT ?3",
+        )?;
+        let cortar = if escopo.is_empty() {
+            0
+        } else {
+            escopo.len() + 1
+        };
+        let linhas = stmt
+            .query_map(params![command, padrao, limit * 4], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut achados = Vec::new();
+        for (path, descricao) in linhas {
+            let Some(resto) = path.get(cortar..) else {
+                continue;
+            };
+            // Exatamente mais um segmento: `container ls` responde a
+            // `docker container l`, mas `container ls --all` não — aquela flag
+            // é de outro passo.
+            if resto.is_empty() || resto.contains(' ') {
+                continue;
+            }
+            achados.push((resto.to_string(), descricao));
+            if achados.len() as i64 >= limit {
+                break;
+            }
+        }
+        Ok(achados)
     }
 
     pub fn clear_command_history(&self, repo_root: Option<&str>) -> Result<(), StoreError> {
@@ -2764,6 +2932,23 @@ mod tests {
         (5, "approval_history", "repo_root"),
     ];
 
+    /// Degraus que nascem uma TABELA em vez de uma coluna, e em qual número.
+    ///
+    /// A lista de cima só conhece coluna, e o degrau 6 semeia a base de specs —
+    /// uma tabela inteira. Sem esta segunda lista, a guarda de colisão exigiria
+    /// que o último degrau fosse uma coluna, e o jeito de satisfazê-la seria
+    /// inventar uma coluna que ninguém quer.
+    const STEP_TABLES: &[(i64, &str)] = &[(6, "command_spec")];
+
+    /// Degraus que RESEMEIAM uma tabela que já existe, e em qual número.
+    ///
+    /// Terceira lista porque o degrau 7 não nasce coluna nem tabela: ele roda a
+    /// semente de novo, para que linha acrescentada ao artefato chegue em quem
+    /// já está carimbado. A guarda de colisão precisa conhecer o número dele do
+    /// mesmo jeito — um degrau fora de todas as listas passa despercebido pela
+    /// guarda e é exatamente assim que dois degraus acabam com o mesmo número.
+    const STEP_RESEEDS: &[(i64, &str)] = &[(7, "command_spec")];
+
     /// Dois degraus não podem dividir o mesmo número.
     ///
     /// É a guarda contra a armadilha que este merge desarmou: duas branches
@@ -2777,7 +2962,12 @@ mod tests {
     /// roda. A colisão só existe na combinação, e este teste é onde ela mora.
     #[test]
     fn cada_degrau_tem_um_numero_proprio() {
-        let mut versions: Vec<i64> = STEP_COLUMNS.iter().map(|(v, _, _)| *v).collect();
+        let mut versions: Vec<i64> = STEP_COLUMNS
+            .iter()
+            .map(|(v, _, _)| *v)
+            .chain(STEP_TABLES.iter().map(|(v, _)| *v))
+            .chain(STEP_RESEEDS.iter().map(|(v, _)| *v))
+            .collect();
         let total = versions.len();
         versions.sort_unstable();
         versions.dedup();
@@ -2791,6 +2981,318 @@ mod tests {
             Some(SCHEMA_VERSION),
             "o último degrau tem de ser a versão atual, ou ele nunca é alcançado"
         );
+    }
+
+    fn conta_spec(store: &Store) -> i64 {
+        store
+            .conn
+            .lock()
+            .query_row("SELECT COUNT(*) FROM command_spec", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// A base responde o segmento seguinte, não o caminho inteiro.
+    #[test]
+    fn a_base_devolve_o_proximo_segmento() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+
+        let achados = store.spec_completions("git", "", "com", 20).unwrap();
+        let nomes: Vec<&str> = achados.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(nomes.contains(&"commit"), "faltou commit: {nomes:?}");
+        // `commit` e não `commit --amend`: quem digita `git com` está
+        // escolhendo o subcomando, e oferecer a flag junto pularia um passo.
+        assert!(
+            !nomes.iter().any(|n| n.contains(' ')),
+            "veio caminho com espaço: {nomes:?}"
+        );
+    }
+
+    /// `openssl ` sozinho responde O QUE DÁ PARA FAZER com ele.
+    ///
+    /// É o pedido que originou a base: digitar o comando e não saber o próximo
+    /// passo. Com token vazio a consulta devolve a lista inteira, e o que
+    /// importa é o TOPO dela — os comandos de verdade, com descrição, antes dos
+    /// 113 nomes de algoritmo que o `openssl` também publica.
+    #[test]
+    fn openssl_sozinho_responde_o_que_da_para_fazer() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+
+        let achados = store.spec_completions("openssl", "", "", 20).unwrap();
+        let com_descricao = achados
+            .iter()
+            .filter(|(_, d)| d.as_deref().is_some_and(|d| !d.is_empty()))
+            .count();
+        assert!(
+            com_descricao >= 15,
+            "só {com_descricao} dos {} primeiros vieram com descrição — a lista \
+             abriu cheia de nome de algoritmo em vez de comando",
+            achados.len()
+        );
+    }
+
+    /// Nome de algoritmo vem DEPOIS de comando de verdade.
+    ///
+    /// `openssl` publica 113 nomes de algoritmo (`sha3-256`, `seed-cbc`,
+    /// `aria-128-ctr`) junto dos comandos. Sem ordem, digitar `openssl s`
+    /// devolve trinta cifras e enterra `s_client`, `smime` e `speed` — que é
+    /// exatamente o que a lista existe para mostrar. É o `kind` que separa, e a
+    /// ordem é alfabética invertida: `subcommand` > `option` > `algorithm`.
+    #[test]
+    fn algoritmo_nao_enterra_comando_de_verdade() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+
+        {
+            let conn = store.conn.lock();
+            conn.execute_batch(
+                "INSERT INTO command_spec (command, path, kind) VALUES
+                   ('demo','sha3-256','algorithm'),
+                   ('demo','seed-cbc','algorithm'),
+                   ('demo','s_client','subcommand');",
+            )
+            .unwrap();
+        }
+
+        let achados = store.spec_completions("demo", "", "s", 20).unwrap();
+        let nomes: Vec<&str> = achados.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            nomes.first(),
+            Some(&"s_client"),
+            "algoritmo veio antes do comando: {nomes:?}"
+        );
+    }
+
+    /// Dentro de um subcomando, a base responde o que vem DEPOIS dele.
+    #[test]
+    fn a_base_desce_para_dentro_do_subcomando() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+
+        let achados = store
+            .spec_completions("docker", "container", "l", 20)
+            .unwrap();
+        let nomes: Vec<&str> = achados.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            nomes.contains(&"ls"),
+            "faltou ls em `docker container l`: {nomes:?}"
+        );
+    }
+
+    /// A descrição vem junto — é metade do valor da base.
+    #[test]
+    fn a_base_traz_a_descricao() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+
+        let achados = store.spec_completions("git", "", "commit", 5).unwrap();
+        let (_, descricao) = achados
+            .iter()
+            .find(|(n, _)| n == "commit")
+            .expect("commit não veio");
+        assert!(
+            descricao.as_deref().is_some_and(|d| !d.is_empty()),
+            "commit veio sem descrição"
+        );
+    }
+
+    /// Comando que não está na base devolve vazio, não erro.
+    ///
+    /// O exemplo aqui era `openssl` até ele entrar na base — e o teste virou
+    /// verde por engano, afirmando que a base não cobria o que passou a cobrir.
+    /// Um nome que nenhum artefato vai gerar não tem esse problema.
+    #[test]
+    fn comando_fora_da_base_nao_e_erro() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+        assert!(store
+            .spec_completions("nao-existe-este-binario", "", "s", 20)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// O token filtra, e o `_` do LIKE não vira curinga.
+    ///
+    /// `_` casa com qualquer caractere em SQL. Sem escapar, digitar `_` traria
+    /// tudo que tem uma letra ali — e nome de flag tem `_` o tempo todo.
+    #[test]
+    fn o_underscore_do_token_nao_e_curinga() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+        {
+            let conn = store.conn.lock();
+            conn.execute(
+                "INSERT INTO command_spec (command, path, kind) VALUES ('demo','a_b','subcommand')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO command_spec (command, path, kind) VALUES ('demo','axb','subcommand')",
+                [],
+            )
+            .unwrap();
+        }
+        let achados = store.spec_completions("demo", "", "a_", 20).unwrap();
+        let nomes: Vec<&str> = achados.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(nomes, vec!["a_b"], "o `_` casou como curinga: {nomes:?}");
+    }
+
+    /// A semente não cresce sem alguém decidir.
+    ///
+    /// Ela vai para o banco do usuário, e o banco dele tem 4,6 MB. Passar de 15
+    /// para os 715 comandos da base do Fig é trocar um número no script de
+    /// geração — trivial de fazer sem perceber o efeito. Este teto existe para
+    /// que esse passo exija uma decisão explícita, não um `git push`.
+    ///
+    /// 1 MB de TSV é o dobro do que as 6.774 entradas de hoje ocupam: cabe
+    /// crescimento normal, e não cabe a base inteira.
+    #[test]
+    fn a_semente_nao_cresce_sem_decisao() {
+        const TETO: usize = 1024 * 1024;
+        assert!(
+            COMMAND_SPEC_SEED.len() <= TETO,
+            "a semente tem {} KB, acima do teto de {} KB — se o crescimento é \
+             desejado, o teto sobe junto, e aí é decisão de alguém",
+            COMMAND_SPEC_SEED.len() / 1024,
+            TETO / 1024
+        );
+    }
+
+    /// A semente é DADO, e nada nela executa.
+    ///
+    /// O ADR recusou os `generators` do Fig porque rodam comando no shell. O
+    /// extrator os descarta, mas quem garante que o artefato commitado
+    /// corresponde ao extrator é este teste: TSV com quatro campos por linha,
+    /// sem SQL, sem função, sem script.
+    #[test]
+    fn a_semente_e_dado_e_nada_nela_executa() {
+        for (n, linha) in COMMAND_SPEC_SEED.lines().enumerate() {
+            if linha.is_empty() {
+                continue;
+            }
+            let campos: Vec<&str> = linha.split('\t').collect();
+            assert!(
+                campos.len() == 3 || campos.len() == 4,
+                "linha {} tem {} campos",
+                n + 1,
+                campos.len()
+            );
+            // `algorithm` é o terceiro tipo, e não é cosmético: `openssl`
+            // publica 113 nomes de ALGORITMO junto dos comandos, e é o `kind`
+            // que os manda para o fim da lista. A allowlist continua fechada —
+            // valor novo entra aqui de propósito, nunca de carona.
+            assert!(
+                matches!(campos[2], "subcommand" | "option" | "algorithm"),
+                "linha {}: kind desconhecido {:?}",
+                n + 1,
+                campos[2]
+            );
+        }
+    }
+
+    /// Banco que JÁ EXISTE recebe a semente, não só banco novo.
+    ///
+    /// É a armadilha que a tech-spec 03 registrou. A tabela nasce no `SCHEMA`,
+    /// que roda em toda abertura — então ela apareceria vazia para quem já usa
+    /// o app, e a base só existiria para quem instalasse do zero. O degrau é o
+    /// que conserta isso, e este teste é o que prova que ele roda.
+    #[test]
+    fn banco_ja_existente_ganha_a_semente() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            // Um banco de quem já usava o app: schema completo, versão anterior,
+            // e a tabela vazia porque o degrau ainda não existia.
+            conn.execute("DELETE FROM command_spec", []).unwrap();
+            conn.pragma_update(None, "user_version", 5).unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert!(
+            conta_spec(&store) > 0,
+            "banco na versão 5 abriu sem a base de specs"
+        );
+    }
+
+    /// Banco já carimbado na 6 recebe o que a semente GANHOU depois.
+    ///
+    /// A armadilha é a mesma de antes com uma volta a mais. O degrau 6 roda uma
+    /// vez e carimba; a partir daí `migrate` corta em `from >= SCHEMA_VERSION` e
+    /// não olha degrau nenhum. Então acrescentar linhas ao artefato — os 171
+    /// `openssl`, por exemplo — chegaria SÓ em instalação nova, e o app de quem
+    /// já usa continuaria sem, sem nenhum sinal de que faltou.
+    ///
+    /// Reesemear inteiro é seguro porque o `INSERT OR IGNORE` bate no índice
+    /// único: o que já está lá o banco recusa, e o teste abaixo é o que prova
+    /// que ele recusa em vez de duplicar.
+    #[test]
+    fn banco_carimbado_ganha_o_que_a_semente_recebeu_depois() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+
+        let antes = {
+            let store = Store::open(&path).unwrap();
+            let total = conta_spec(&store);
+            // Um banco de quem instalou a versão anterior do artefato: base
+            // cheia, `openssl` ainda não existia nela, versão já carimbada.
+            store
+                .conn
+                .lock()
+                .execute("DELETE FROM command_spec WHERE command = 'openssl'", [])
+                .unwrap();
+            store
+                .conn
+                .lock()
+                .pragma_update(None, "user_version", 6)
+                .unwrap();
+            total
+        };
+
+        let store = Store::open(&path).unwrap();
+        assert!(
+            !store
+                .spec_completions("openssl", "", "s_cl", 5)
+                .unwrap()
+                .is_empty(),
+            "banco carimbado na 6 reabriu sem o que a semente ganhou depois"
+        );
+        assert_eq!(
+            conta_spec(&store),
+            antes,
+            "a resemeadura duplicou o que já estava na base"
+        );
+    }
+
+    /// Reabrir não duplica a base.
+    #[test]
+    fn reabrir_nao_duplica_a_semente() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        let primeira = {
+            let store = Store::open(&path).unwrap();
+            conta_spec(&store)
+        };
+        let store = Store::open(&path).unwrap();
+        assert_eq!(conta_spec(&store), primeira);
+    }
+
+    /// Limpar o histórico não apaga a base.
+    ///
+    /// São fontes diferentes: o histórico é o que o dono fez, a base é o que os
+    /// comandos oferecem. Uma consulta une as duas — mas limpar uma não pode
+    /// levar a outra, senão "limpar meu histórico" viraria "perder a
+    /// completação".
+    #[test]
+    fn limpar_o_historico_nao_apaga_a_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+        let antes = conta_spec(&store);
+        assert!(antes > 0);
+        store.clear_command_history(None).unwrap();
+        assert_eq!(conta_spec(&store), antes);
     }
 
     /// Nenhuma versão intermediária fica sem uma coluna.

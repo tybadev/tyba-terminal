@@ -1412,8 +1412,15 @@ export const completePath = (cwd: string, token: string) =>
 export interface LineSuggestions {
   commands: CommandSuggestion[];
   paths: string[];
-  arguments: string[];
+  arguments: ArgumentSuggestion[];
   binaries: BinarySuggestion[];
+}
+
+/** Um argumento — de provedor, do histórico, ou da base de specs. */
+export interface ArgumentSuggestion {
+  value: string;
+  /** Só a base conhece; provedor e histórico vêm sem. */
+  description: string | null;
 }
 
 /** Um comando que existe na sessão — do `$PATH` ou contado pelo shell. */
@@ -1439,7 +1446,7 @@ export const completeArgument = (
   token: string,
   cwd: string | null,
   repoRoot: string | null,
-) => invoke<string[]>("complete_argument", { prefix, token, cwd, repoRoot });
+) => invoke<ArgumentSuggestion[]>("complete_argument", { prefix, token, cwd, repoRoot });
 
 export type BlockColor =
   | { kind: "default" }
