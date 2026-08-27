@@ -237,6 +237,42 @@ impl HistoryFilter {
     }
 }
 
+/// Por que a lista está ordenada assim.
+///
+/// As duas superfícies que consultam o histórico fazem perguntas diferentes, e
+/// responder as duas com a mesma conta foi o que colocou um comando recém
+/// executado no meio da lista.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ordem {
+    /// **O ghost prevê**: "o que você provavelmente vai rodar?". O que se usa
+    /// todo dia vale mais que o que rodou uma vez.
+    Frecencia,
+    /// **A paleta registra**: "o que eu rodei?". Cronológico, como o `Ctrl-R`
+    /// do shell e como o Atuin — que ordena por `timestamp` deduplicado por
+    /// comando. Aqui o fuzzy FILTRA quais aparecem; não reordena.
+    Recencia,
+}
+
+/// Ordena a lista no lugar, pela pergunta que a superfície faz.
+///
+/// O desempate por comando não é enfeite: import de histórico grava lotes com o
+/// mesmo carimbo, e sem ele a ordem entre eles muda a cada consulta — a lista
+/// dança sob o dedo de quem já estava mirando um item.
+pub fn ordenar(lista: &mut [HistoryCandidate], ordem: Ordem, now_ms: i64) {
+    match ordem {
+        Ordem::Frecencia => lista.sort_by(|a, b| {
+            frecency(now_ms, b)
+                .total_cmp(&frecency(now_ms, a))
+                .then_with(|| a.command.cmp(&b.command))
+        }),
+        Ordem::Recencia => lista.sort_by(|a, b| {
+            b.last_used_at_ms
+                .cmp(&a.last_used_at_ms)
+                .then_with(|| a.command.cmp(&b.command))
+        }),
+    }
+}
+
 pub fn frecency(now_ms: i64, candidate: &HistoryCandidate) -> f64 {
     let age_days = ((now_ms - candidate.last_used_at_ms).max(0) as f64) / DAY_MS;
     let recency = 1.0 / (1.0 + age_days);
@@ -367,6 +403,86 @@ mod tests {
         let mut tracker = Tracker::new("s1".into());
         tracker.on_command_line("  claude --continue".into());
         assert_eq!(tracker.command(), Some("claude --continue"));
+    }
+
+    #[test]
+    fn a_paleta_ordena_pelo_que_foi_rodado_por_ultimo() {
+        // A paleta é um REGISTRO, não uma previsão: a pergunta ali é "o que eu
+        // rodei", e a resposta é cronológica. O `Ctrl-R` do shell e o Atuin
+        // fazem assim.
+        //
+        // Sem isto, um comando rodado 50 vezes ontem passa na frente do que
+        // acabou de rodar — foi o que o dono viu: `cd` no meio da lista logo
+        // depois de executá-lo.
+        let agora = 1_000_000_000_i64;
+        let recem = HistoryCandidate {
+            last_used_at_ms: agora,
+            uses: 1,
+            ..candidate("cd algo")
+        };
+        // 200 usos, não 50: a conta importa. Com `uses` baixo a frecência já
+        // põe o recente na frente sozinha, e o teste passaria sem provar nada —
+        // foi o que a matriz de mutação flagrou. O ponto de virada fica perto
+        // de 59 usos, então o cenário precisa estar claramente acima dele.
+        let antigo_e_usado = HistoryCandidate {
+            last_used_at_ms: agora - 2 * DAY_MS as i64,
+            uses: 200,
+            ..candidate("ls -la")
+        };
+
+        // O cenário do dono, confirmado pela conta: pela frecência o antigo e
+        // muito usado GANHA do que acabou de rodar. É por isso que o `cd`
+        // aparecia no meio da lista.
+        assert!(
+            frecency(agora, &antigo_e_usado) > frecency(agora, &recem),
+            "o cenário do dono não se reproduz: a frecência já separaria os dois"
+        );
+
+        // Pela recência, quem rodou por último vem primeiro. Sempre.
+        let mut lista = vec![antigo_e_usado.clone(), recem.clone()];
+        ordenar(&mut lista, Ordem::Recencia, agora);
+        assert_eq!(lista[0].command, "cd algo");
+    }
+
+    #[test]
+    fn o_ghost_continua_prevendo_pela_frecencia() {
+        // A outra metade da separação: o ghost responde "o que você
+        // provavelmente vai rodar", e ali o que se usa todo dia vale mais que o
+        // que rodou uma vez. Trocar isto por recência faria o cinza sugerir o
+        // último comando em vez do provável.
+        let agora = 1_000_000_000_i64;
+        let raro = HistoryCandidate {
+            last_used_at_ms: agora,
+            uses: 1,
+            ..candidate("comando-raro")
+        };
+        let diario = HistoryCandidate {
+            last_used_at_ms: agora - 3_600_000,
+            uses: 200,
+            ..candidate("git status")
+        };
+        let mut lista = vec![raro, diario];
+        ordenar(&mut lista, Ordem::Frecencia, agora);
+        assert_eq!(lista[0].command, "git status");
+    }
+
+    #[test]
+    fn empate_de_instante_nao_embaralha_a_lista() {
+        // Import de histórico grava lotes com o mesmo carimbo. Sem desempate, a
+        // ordem entre eles muda a cada consulta e a lista dança sob o dedo.
+        let agora = 1_000_000_000_i64;
+        let mut lista = vec![
+            HistoryCandidate {
+                last_used_at_ms: agora,
+                ..candidate("b")
+            },
+            HistoryCandidate {
+                last_used_at_ms: agora,
+                ..candidate("a")
+            },
+        ];
+        ordenar(&mut lista, Ordem::Recencia, agora);
+        assert_eq!(lista[0].command, "a");
     }
 
     #[test]

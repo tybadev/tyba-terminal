@@ -4911,6 +4911,9 @@ async fn search_command_history(
         session_id.as_deref(),
         &filter,
         limit,
+        // A paleta é um REGISTRO: a pergunta ali é "o que eu rodei", e o mais
+        // recente vem primeiro.
+        history::Ordem::Recencia,
     )
 }
 
@@ -4931,6 +4934,10 @@ fn history_hits(
         None,
         &history::HistoryFilter::default(),
         limit,
+        // O ghost PREVÊ: "o que você provavelmente vai rodar". Aqui o que se
+        // usa todo dia vale mais que o que rodou uma vez — trocar por recência
+        // faria o cinza sugerir o último comando em vez do provável.
+        history::Ordem::Frecencia,
     )
 }
 
@@ -4943,6 +4950,7 @@ fn history_hits_filtered(
     session_id: Option<&str>,
     filter: &history::HistoryFilter,
     limit: usize,
+    ordem: history::Ordem,
 ) -> Result<Vec<HistoryHit>, String> {
     use fuzzy_matcher::skim::SkimMatcherV2;
     use fuzzy_matcher::FuzzyMatcher;
@@ -4954,16 +4962,25 @@ fn history_hits_filtered(
         .map_err(|e| e.to_string())?;
     let matcher = SkimMatcherV2::default();
     let now = approvals::now_ms() as i64;
+    // O fuzzy FILTRA — decide quem aparece. Quem ordena é a `ordem`, e ela
+    // depende da pergunta que a superfície faz. Multiplicar a relevância do
+    // fuzzy pela frecência, como era antes, misturava as duas coisas e fazia a
+    // paleta responder "o que você provavelmente quer" quando a pergunta era
+    // "o que eu acabei de rodar".
+    let mut candidates: Vec<history::HistoryCandidate> = candidates
+        .into_iter()
+        .filter(|candidate| {
+            query.is_empty() || matcher.fuzzy_match(&candidate.command, query).is_some()
+        })
+        .collect();
+    history::ordenar(&mut candidates, ordem, now);
     let mut scored: Vec<(f64, HistoryHit)> = candidates
         .into_iter()
-        .filter_map(|candidate| {
-            let fuzzy = if query.is_empty() {
-                1.0
-            } else {
-                matcher.fuzzy_match(&candidate.command, query)? as f64
-            };
-            let score = fuzzy * history::frecency(now, &candidate);
-            Some((
+        .enumerate()
+        .map(|(posicao, candidate)| {
+            // A ordem já está decidida acima; o score aqui só a preserva.
+            let score = -(posicao as f64);
+            (
                 score,
                 HistoryHit {
                     // Mesma regra da frecência: sem exit code conhecido não há
@@ -4977,7 +4994,7 @@ fn history_hits_filtered(
                     in_cwd: candidate.in_cwd,
                     in_repo: candidate.in_repo,
                 },
-            ))
+            )
         })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
