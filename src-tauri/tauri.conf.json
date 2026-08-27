@@ -40,11 +40,26 @@
     ],
     "category": "DeveloperTool",
     "shortDescription": "Seu ambiente, tudo conectado.",
-    "longDescription": "Terminal opensource orientado a agentes de IA: orquestra m\u00faltiplas sess\u00f5es de agentes em git worktrees isolados, com inbox de aprova\u00e7\u00f5es, review de diff local e sandbox real do sistema operacional.",
+    "longDescription": "Terminal opensource orientado a agentes de IA: orquestra múltiplas sessões de agentes em git worktrees isolados, com inbox de aprovações, review de diff local e sandbox real do sistema operacional.",
     "licenseFile": "../LICENSE",
     "macOS": {
       "minimumSystemVersion": "11.0",
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "dmg": {
+        "background": "icons/dmg-background.png",
+        "windowSize": {
+          "width": 660,
+          "height": 360
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        }
+      }
     },
     "linux": {
       "deb": {
