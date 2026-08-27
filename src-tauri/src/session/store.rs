@@ -3243,7 +3243,11 @@ mod tests {
                 .lock()
                 .execute("DELETE FROM command_spec WHERE command = 'openssl'", [])
                 .unwrap();
-            store.conn.lock().pragma_update(None, "user_version", 6).unwrap();
+            store
+                .conn
+                .lock()
+                .pragma_update(None, "user_version", 6)
+                .unwrap();
             total
         };
 
