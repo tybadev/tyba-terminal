@@ -18,6 +18,7 @@ import {
   controlBytes,
   ghostFor,
   commandPrefix,
+  enterAplicaSugestao,
   lineToken,
   type LineState,
   pathToken,
@@ -135,8 +136,13 @@ export function CommandLine({
   // errado e a culpa não é óbvia. Zero só quando não há rascunho.
   const [caret, setCaret] = useState(draft.length);
   const [hits, setHits] = useState<CommandSuggestion[]>([]);
-  const [index, setIndex] = useState(0);
+  // -1 = NADA escolhido. A lista pode estar visível sem seleção — é o estado
+  // em que ela abriu sozinha, e nele o Enter roda o que está escrito.
+  const [index, setIndex] = useState(-1);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Esc não pode ser desfeito pela própria abertura automática: sem isto a
+  // lista reabriria no próximo caractere e o Esc viraria um piscar.
+  const [dispensada, setDispensada] = useState(false);
   // Só para o anel: o foco do DOM já está na caixa, mas o CSS `:focus-within`
   // não alcança um irmão, e o anel mora na moldura em volta.
   const [focused, setFocused] = useState(false);
@@ -221,7 +227,7 @@ export function CommandLine({
           setPaths(found.paths);
           setArgs(found.arguments);
           setBins(found.binaries);
-          setIndex(0);
+          setIndex(-1);
         })
         .catch(() => {
           if (!alive) return;
@@ -317,9 +323,14 @@ export function CommandLine({
       ? bins[0].name.slice(cmdPrefix.length)
       : "";
   const ghost = pathGhost || argGhost || binGhost || ghostFor(text, hits);
-  const showMenu =
-    menuOpen &&
-    (listed.length > 0 || paths.length > 0 || args.length > 0 || bins.length > 0);
+  const temItem =
+    listed.length > 0 || paths.length > 0 || args.length > 0 || bins.length > 0;
+  // A lista se anuncia enquanto se digita o PRIMEIRO token, e só ali. Antes,
+  // ela só existia atrás de `Tab` — e ninguém aperta Tab para descobrir algo
+  // que não sabe que existe. Passado o primeiro token o cinza já basta: ali o
+  // usuário sabe o que está completando.
+  const anuncia = !dispensada && cmdPrefix !== null && bins.length > 0;
+  const showMenu = (menuOpen || anuncia) && temItem;
 
   const resize = () => {
     const el = inputRef.current;
@@ -409,9 +420,16 @@ export function CommandLine({
 
     if (showMenu && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
-      const delta = e.key === "ArrowDown" ? 1 : -1;
       if (listed.length === 0) return;
-      setIndex((prev) => (prev + delta + listed.length) % listed.length);
+      // Entrar na lista é o gesto que autoriza o Enter a aplicar. Vindo de
+      // `-1`, a primeira seta escolhe o primeiro item em vez de pular para o
+      // último.
+      setMenuOpen(true);
+      setIndex((prev) => {
+        if (prev < 0) return e.key === "ArrowDown" ? 0 : listed.length - 1;
+        const delta = e.key === "ArrowDown" ? 1 : -1;
+        return (prev + delta + listed.length) % listed.length;
+      });
       return;
     }
     if (
@@ -441,12 +459,17 @@ export function CommandLine({
     if (e.key === "Escape") {
       e.preventDefault();
       setMenuOpen(false);
+      setDispensada(true);
+      setIndex(-1);
       return;
     }
     if (e.key === "Tab") {
       e.preventDefault();
-      if (showMenu) {
-        apply(listed[index].command, listed[index].command.length);
+      if (showMenu && listed.length > 0) {
+        // Tab é gesto explícito: aqui aplicar é o que se pede. Sem seleção,
+        // aplica o primeiro — indexar `-1` daria `undefined`.
+        const escolhido = listed[index >= 0 ? index : 0];
+        apply(escolhido.command, escolhido.command.length);
         setMenuOpen(false);
         return;
       }
@@ -470,7 +493,10 @@ export function CommandLine({
     if (e.key === "Enter") {
       if (e.shiftKey) return;
       e.preventDefault();
-      if (showMenu && listed.length > 0) {
+      if (
+        enterAplicaSugestao({ listaVisivel: showMenu, selecionado: index }) &&
+        listed.length > 0
+      ) {
         apply(listed[index].command, listed[index].command.length);
         setMenuOpen(false);
         return;
@@ -678,6 +704,7 @@ export function CommandLine({
               setText(e.target.value);
               setCaret(e.target.selectionStart ?? 0);
               setMenuOpen(false);
+              setDispensada(false);
             }}
             onKeyDown={onKeyDown}
             onKeyUp={() => setCaret(inputRef.current?.selectionStart ?? 0)}

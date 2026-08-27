@@ -7,6 +7,7 @@ export type KeyAction =
   | "paletteSnippets"
   | "panel"
   | "files"
+  | "clear"
   | "filesFinder"
   | "settings"
   | "newSession"
@@ -42,6 +43,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   "panel",
   "files",
   "filesFinder",
+  "clear",
   "settings",
   "newSession",
   "newWorktreeSession",
@@ -93,6 +95,7 @@ export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
   paletteSnippets: "general",
   panel: "general",
   files: "general",
+  clear: "general",
   filesFinder: "general",
   settings: "general",
   newSession: "sessions",
@@ -128,6 +131,7 @@ export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   paletteSnippets: "paletteSnippets",
   panel: "togglePanel",
   files: "filesPanel",
+  clear: "clearScreen",
   filesFinder: "filesFinder",
   settings: "settings",
   newSession: "newSession",
@@ -185,6 +189,7 @@ export const MAC_BINDINGS: Bindings = {
   paletteSnippets: "meta+shift+r",
   panel: "meta+b",
   files: "meta+shift+e",
+  clear: "meta+l",
   filesFinder: "meta+e",
   settings: "meta+,",
   newSession: "meta+n",
@@ -220,6 +225,7 @@ export const PC_BINDINGS: Bindings = {
   paletteSnippets: "ctrl+alt+shift+r",
   panel: "ctrl+shift+b",
   files: "ctrl+shift+e",
+  clear: "ctrl+alt+l",
   filesFinder: "ctrl+alt+e",
   settings: "ctrl+,",
   newSession: "ctrl+shift+n",

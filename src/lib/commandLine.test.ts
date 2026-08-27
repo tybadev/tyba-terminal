@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  enterAplicaSugestao,
   commandPrefix,
   boxAcceptsTyping,
   boxIsMounted,
@@ -535,5 +536,29 @@ describe("commandPrefix", () => {
     // Editar o começo de uma linha já escrita: o caret está no primeiro token
     // mesmo havendo mais palavras depois dele.
     expect(commandPrefix("pn install algo", 2)).toBe("pn");
+  });
+});
+
+describe("enterAplicaSugestao", () => {
+  it("com a lista aberta e um item escolhido, aplica", () => {
+    expect(enterAplicaSugestao({ listaVisivel: true, selecionado: 0 })).toBe(true);
+  });
+
+  it("com a lista aberta e NADA escolhido, roda o que está escrito", () => {
+    // Este é o caso que a lista automática cria. Ela abre sozinha, sem nada
+    // marcado, e o Enter tem de rodar o comando digitado. Aplicar aqui seria o
+    // app trocar o comando do usuário por outro no instante em que ele manda
+    // executar — inaceitável num terminal.
+    expect(enterAplicaSugestao({ listaVisivel: true, selecionado: -1 })).toBe(false);
+  });
+
+  it("com a lista fechada, roda", () => {
+    expect(enterAplicaSugestao({ listaVisivel: false, selecionado: 0 })).toBe(false);
+  });
+
+  it("lista fechada com item marcado ainda roda", () => {
+    // Estado que aparece ao fechar com Esc sem limpar o índice: o que manda é
+    // a lista estar visível, não haver resquício de seleção.
+    expect(enterAplicaSugestao({ listaVisivel: false, selecionado: 2 })).toBe(false);
   });
 });
