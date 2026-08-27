@@ -6223,6 +6223,55 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    /// `openssl ` sozinho é pergunta, não linha pela metade.
+    ///
+    /// É o caminho do pedido "o que dá para fazer com `openssl`": o token está
+    /// vazio, e é o PREFIXO que carrega o comando. Se esta função devolvesse o
+    /// comando vazio aqui, a consulta à base sairia sem `command` e a lista
+    /// abriria sem nada — que era o sintoma relatado.
+    #[test]
+    fn comando_sozinho_com_espaco_ainda_e_o_comando() {
+        assert_eq!(
+            command_and_scope("openssl "),
+            ("openssl".to_string(), String::new())
+        );
+    }
+
+    /// Caminho absoluto responde pelo nome do binário.
+    ///
+    /// Quem digita `/usr/bin/openssl ` está pedindo `openssl` — e a base é
+    /// indexada por nome. Sem o `rsplit('/')`, a consulta procuraria um comando
+    /// chamado `/usr/bin/openssl` e voltaria vazia.
+    #[test]
+    fn caminho_absoluto_responde_pelo_nome_do_binario() {
+        assert_eq!(
+            command_and_scope("/usr/bin/openssl "),
+            ("openssl".to_string(), String::new())
+        );
+    }
+
+    /// Dentro de um subcomando, o escopo é o que já foi escolhido.
+    #[test]
+    fn o_escopo_acumula_o_que_ja_foi_escolhido() {
+        assert_eq!(
+            command_and_scope("docker container "),
+            ("docker".to_string(), "container".to_string())
+        );
+    }
+
+    /// Flag digitada antes do subcomando não vira escopo.
+    ///
+    /// `git --no-pager log ` continua sendo `log` dentro de `git`. Sem o filtro,
+    /// o escopo viraria `--no-pager log` e não casaria com nada na base — a
+    /// lista fecharia justamente para quem digitou mais.
+    #[test]
+    fn flag_antes_do_subcomando_nao_vira_escopo() {
+        assert_eq!(
+            command_and_scope("git --no-pager log "),
+            ("git".to_string(), "log".to_string())
+        );
+    }
+
     /// Guarda de compilação, não teste: os dois comandos abaixo esperam o boot,
     /// e comando síncrono roda na main thread. Devolvê-los para `fn` congela o
     /// webview por até `BOOT_WAIT` em quem apertar ⌘T na fresta entre o splash
