@@ -10,6 +10,10 @@ src-tauri/gen/schemas/
 # árvore de pastas e nomes de outros projetos. `*.local` acima não pega
 # `settings.local.json` — só nomes terminados em `.local`.
 .claude/settings.local.json
+# Backup do arquivo acima carrega o mesmo conteúdo com outro nome, e a linha
+# anterior não pega `.bak`. Um `cp` antes de editar já bastou para ele aparecer
+# como untracked num repo público.
+.claude/*.bak*
 .claude/worktrees/
 
 # Mintlify CLI (preview local da doc)
