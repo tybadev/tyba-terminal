@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Plus,
@@ -22,6 +23,13 @@ import {
   type TabId,
 } from "../lib/ipc";
 import { compactPath } from "../lib/workspaceCwd";
+import {
+  filete,
+  rodaParaHorizontal,
+  temAntes,
+  temDepois,
+  trazerParaVista,
+} from "../lib/tabScroll";
 
 interface Props {
   tabs: Tab[];
@@ -91,13 +99,78 @@ export function TabBar({
   const { t } = useTranslation();
   const byId = new Map(sessions.map((s) => [s.id, s]));
 
+  const faixaRef = useRef<HTMLDivElement>(null);
+  const ativaRef = useRef<HTMLButtonElement>(null);
+  const apagarRef = useRef<number | undefined>(undefined);
+  const [borda, setBorda] = useState({ antes: false, depois: false });
+  const [marca, setMarca] = useState({ esquerda: 0, largura: 100 });
+  const [rolando, setRolando] = useState(false);
+
+  const medir = useCallback(() => {
+    const el = faixaRef.current;
+    if (!el) return;
+    setBorda({ antes: temAntes(el), depois: temDepois(el) });
+    setMarca(filete(el));
+  }, []);
+
+  // O filete acende ao rolar e apaga sozinho. O mesmo filamento significa
+  // "vivo" no topo da aba; deixá-lo aceso embaixo o tempo todo daria duas
+  // leituras para a mesma luz.
+  const aoRolar = useCallback(() => {
+    medir();
+    setRolando(true);
+    window.clearTimeout(apagarRef.current);
+    apagarRef.current = window.setTimeout(() => setRolando(false), 700);
+  }, [medir]);
+
+  // A faixa muda de tamanho sem ninguém rolar: abrir a sidebar, dividir o
+  // painel, redimensionar a janela. Sem observar isso, o fade fica aceso
+  // apontando para abas que passaram a caber.
+  useEffect(() => {
+    const el = faixaRef.current;
+    if (!el) return;
+    medir();
+    const observador = new ResizeObserver(medir);
+    observador.observe(el);
+    return () => observador.disconnect();
+  }, [medir, tabs.length]);
+
+  useEffect(() => () => window.clearTimeout(apagarRef.current), []);
+
+  // Trocar de aba por atalho (⌘1…⌘9) podia ativar uma aba fora da vista: o
+  // conteúdo mudava e a faixa não dava sinal de onde ele foi parar.
+  useEffect(() => {
+    const el = faixaRef.current;
+    const alvo = ativaRef.current;
+    if (!el || !alvo) return;
+    const destino = trazerParaVista(el, {
+      esquerda: alvo.offsetLeft,
+      largura: alvo.offsetWidth,
+    });
+    if (destino === null) return;
+    el.scrollTo({ left: destino, behavior: "smooth" });
+  }, [activeTab, tabs.length]);
+
   return (
-    <div className="tyba-divide-b flex h-8 shrink-0 items-stretch gap-px overflow-x-auto bg-tyba-surface px-1">
+    <div className="tyba-divide-b relative bg-tyba-surface">
+      <div
+        ref={faixaRef}
+        onScroll={aoRolar}
+        onWheel={(e) => {
+          const passo = rodaParaHorizontal(e.nativeEvent);
+          if (passo === 0 || !faixaRef.current) return;
+          faixaRef.current.scrollLeft += passo;
+        }}
+        className={`tyba-sem-barra flex h-8 items-stretch gap-px overflow-x-auto px-1 ${
+          borda.antes ? "tyba-fade-x--ini" : ""
+        } ${borda.depois ? "tyba-fade-x--fim" : ""}`}
+      >
       {tabs.map((tab, i) => {
         const isActive = tab.id === activeTab;
         return (
           <button
             key={tab.id}
+            ref={isActive ? ativaRef : undefined}
             onClick={() => onActivate(tab.id)}
             title={formatCombo(tabDigitCombo(i + 1))}
             className={`group relative flex max-w-44 min-w-24 shrink-0 items-center gap-1.5 rounded-t-[4px] px-2.5 text-[12px] transition-colors ${
@@ -153,6 +226,18 @@ export function TabBar({
       >
         <Plus size={13} weight="bold" />
       </button>
+      </div>
+      {/* Fora da faixa que rola: dentro dele o filete rolaria junto e a
+          posição deixaria de significar posição. E fora da máscara, senão o
+          fade das bordas o apagaria justamente nas pontas, que é onde ele
+          precisa ser lido. */}
+      {(borda.antes || borda.depois) && (
+        <div
+          aria-hidden
+          className={`tyba-filete ${rolando ? "tyba-filete--vivo" : ""}`}
+          style={{ left: `${marca.esquerda}%`, width: `${marca.largura}%` }}
+        />
+      )}
     </div>
   );
 }
