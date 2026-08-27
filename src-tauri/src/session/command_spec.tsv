@@ -1,0 +1,2 @@
+git	commit	subcommand	Grava as mudancas no repositorio
+git	commit --amend	option	Refaz o ultimo commit

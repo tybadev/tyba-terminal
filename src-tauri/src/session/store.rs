@@ -201,6 +201,15 @@ CREATE TABLE IF NOT EXISTS block_checkpoint (
     rows INTEGER NOT NULL,
     bytes BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS command_spec (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    command TEXT NOT NULL,
+    path TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    description TEXT,
+    UNIQUE(command, path, kind)
+);
+CREATE INDEX IF NOT EXISTS command_spec_by_command ON command_spec (command, path);
 CREATE TABLE IF NOT EXISTS snippet (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -457,6 +466,11 @@ pub enum StoreError {
 /// 5 — `approval_history.repo_root` entra, com backfill: a aprovação passa a
 ///     saber de qual repositório ela é, em vez de perguntar a uma sessão que
 ///     pode já ter sido removida.
+/// 6 — `command_spec` é SEMEADA. A tabela nasce no [`SCHEMA`] (que roda em toda
+///     abertura), mas encher só pode acontecer uma vez — e num degrau, não a
+///     cada boot, senão o app paga a conferência de milhares de linhas para
+///     nada. Degrau próprio também porque banco que já existe está carimbado
+///     na 5: sem ele, só quem instalasse do zero teria a base.
 ///
 /// Degrau próprio para cada um, e nunca linha nova na [`BASELINE_COLUMNS`]: a
 /// base só roda em banco na versão 0, então quem já subiu de versão nunca mais
@@ -468,7 +482,7 @@ pub enum StoreError {
 /// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
 /// de cada um passa isolado, porque simula o banco na versão anterior, que é
 /// justamente o caso em que ambos rodam.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -538,6 +552,41 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, Stor
 /// versão gravada é a do último que pegou sem buraco antes dele. O custo de
 /// ficar para trás é reexecutar um punhado de `PRAGMA table_info` por abertura,
 /// até a próxima que der certo.
+/// A base de subcomando e flag, extraída dos specs do Fig em tempo de build.
+///
+/// Formato: uma linha por entrada, campos separados por TAB — `command`,
+/// `path`, `kind`, `description`. TAB porque nenhum nome de comando, caminho ou
+/// flag o contém, e descrição com tabulação seria a exceção que o extrator já
+/// não produz.
+///
+/// Texto e não SQL: o `INSERT` fica aqui, num lugar só, em vez de repetido
+/// milhares de vezes no artefato gerado — e o artefato deixa de poder executar
+/// qualquer coisa que não seja dado.
+const COMMAND_SPEC_SEED: &str = include_str!("command_spec.tsv");
+
+/// Enche a `command_spec`, uma vez, no degrau 6.
+fn seed_command_spec(conn: &Connection) -> Result<(), StoreError> {
+    let mut stmt = conn.prepare(
+        "INSERT OR IGNORE INTO command_spec (command, path, kind, description)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for linha in COMMAND_SPEC_SEED.lines() {
+        if linha.is_empty() {
+            continue;
+        }
+        let mut campos = linha.split('\t');
+        let (Some(command), Some(path), Some(kind)) = (campos.next(), campos.next(), campos.next())
+        else {
+            continue;
+        };
+        // Descrição ausente é `None`, não string vazia: a lista mostra coluna
+        // quando há texto, e `""` faria aparecer uma coluna vazia.
+        let description = campos.next().filter(|d| !d.is_empty());
+        stmt.execute(params![command, path, kind, description])?;
+    }
+    Ok(())
+}
+
 fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
     let from: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if from >= SCHEMA_VERSION {
@@ -689,19 +738,41 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
+    // A semente da base de specs. A tabela já nasceu no `SCHEMA`; aqui ela
+    // ENCHE, e uma vez só.
+    //
+    // `INSERT OR IGNORE` contra o índice único `(command, path, kind)`: se este
+    // degrau rodar duas vezes — banco restaurado de backup, degrau anterior que
+    // falhou e não carimbou —, a base não duplica porque o banco recusa, não
+    // porque alguém acertou a contabilidade. É a mesma escolha do import de
+    // histórico.
+    let spec_seed_applied = if from < 6 {
+        match seed_command_spec(conn) {
+            Ok(()) => true,
+            Err(e) => {
+                skipped.push(format!("command_spec: {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
     let reached = match (
         baseline_applied,
         scrollback_applied,
         import_key_applied,
         conversation_applied,
         approval_repo_applied,
+        spec_seed_applied,
     ) {
-        (true, true, true, true, true) => SCHEMA_VERSION,
-        (true, true, true, true, false) => 4,
-        (true, true, true, false, _) => 3,
-        (true, true, false, _, _) => 2,
-        (true, false, _, _, _) => 1,
-        (false, _, _, _, _) => from,
+        (true, true, true, true, true, true) => SCHEMA_VERSION,
+        (true, true, true, true, true, false) => 5,
+        (true, true, true, true, false, _) => 4,
+        (true, true, true, false, _, _) => 3,
+        (true, true, false, _, _, _) => 2,
+        (true, false, _, _, _, _) => 1,
+        (false, _, _, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -2764,6 +2835,14 @@ mod tests {
         (5, "approval_history", "repo_root"),
     ];
 
+    /// Degraus que nascem uma TABELA em vez de uma coluna, e em qual número.
+    ///
+    /// A lista de cima só conhece coluna, e o degrau 6 semeia a base de specs —
+    /// uma tabela inteira. Sem esta segunda lista, a guarda de colisão exigiria
+    /// que o último degrau fosse uma coluna, e o jeito de satisfazê-la seria
+    /// inventar uma coluna que ninguém quer.
+    const STEP_TABLES: &[(i64, &str)] = &[(6, "command_spec")];
+
     /// Dois degraus não podem dividir o mesmo número.
     ///
     /// É a guarda contra a armadilha que este merge desarmou: duas branches
@@ -2777,7 +2856,11 @@ mod tests {
     /// roda. A colisão só existe na combinação, e este teste é onde ela mora.
     #[test]
     fn cada_degrau_tem_um_numero_proprio() {
-        let mut versions: Vec<i64> = STEP_COLUMNS.iter().map(|(v, _, _)| *v).collect();
+        let mut versions: Vec<i64> = STEP_COLUMNS
+            .iter()
+            .map(|(v, _, _)| *v)
+            .chain(STEP_TABLES.iter().map(|(v, _)| *v))
+            .collect();
         let total = versions.len();
         versions.sort_unstable();
         versions.dedup();
@@ -2791,6 +2874,69 @@ mod tests {
             Some(SCHEMA_VERSION),
             "o último degrau tem de ser a versão atual, ou ele nunca é alcançado"
         );
+    }
+
+    fn conta_spec(store: &Store) -> i64 {
+        store
+            .conn
+            .lock()
+            .query_row("SELECT COUNT(*) FROM command_spec", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Banco que JÁ EXISTE recebe a semente, não só banco novo.
+    ///
+    /// É a armadilha que a tech-spec 03 registrou. A tabela nasce no `SCHEMA`,
+    /// que roda em toda abertura — então ela apareceria vazia para quem já usa
+    /// o app, e a base só existiria para quem instalasse do zero. O degrau é o
+    /// que conserta isso, e este teste é o que prova que ele roda.
+    #[test]
+    fn banco_ja_existente_ganha_a_semente() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            // Um banco de quem já usava o app: schema completo, versão anterior,
+            // e a tabela vazia porque o degrau ainda não existia.
+            conn.execute("DELETE FROM command_spec", []).unwrap();
+            conn.pragma_update(None, "user_version", 5).unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert!(
+            conta_spec(&store) > 0,
+            "banco na versão 5 abriu sem a base de specs"
+        );
+    }
+
+    /// Reabrir não duplica a base.
+    #[test]
+    fn reabrir_nao_duplica_a_semente() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        let primeira = {
+            let store = Store::open(&path).unwrap();
+            conta_spec(&store)
+        };
+        let store = Store::open(&path).unwrap();
+        assert_eq!(conta_spec(&store), primeira);
+    }
+
+    /// Limpar o histórico não apaga a base.
+    ///
+    /// São fontes diferentes: o histórico é o que o dono fez, a base é o que os
+    /// comandos oferecem. Uma consulta une as duas — mas limpar uma não pode
+    /// levar a outra, senão "limpar meu histórico" viraria "perder a
+    /// completação".
+    #[test]
+    fn limpar_o_historico_nao_apaga_a_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+        let antes = conta_spec(&store);
+        assert!(antes > 0);
+        store.clear_command_history(None).unwrap();
+        assert_eq!(conta_spec(&store), antes);
     }
 
     /// Nenhuma versão intermediária fica sem uma coluna.
