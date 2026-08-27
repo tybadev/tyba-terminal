@@ -534,3 +534,37 @@ export function enterAplicaSugestao(estado: {
 }): boolean {
   return estado.listaVisivel && estado.selecionado >= 0;
 }
+
+/** De onde veio o cinza que está na tela. */
+export interface GhostEscolhido {
+  texto: string;
+  fonte: "caminho" | "argumento" | null;
+}
+
+/**
+ * Qual dos dois cinzas ganha, e de onde ele veio.
+ *
+ * Devolve a FONTE junto porque quem desenha e quem aceita com `Tab` são dois
+ * lugares diferentes, e enquanto cada um refazia a conta havia como o cinza
+ * mostrar uma coisa e o `Tab` aplicar outra.
+ */
+export function ghostDoToken(
+  tokenValue: string,
+  caminho: string,
+  argumento: string,
+): GhostEscolhido {
+  // Token que JÁ é caminho não tem dúvida a resolver: quem digitou `./s` ou
+  // `src/i` disse com todas as letras que quer um arquivo, e ali é o argumento
+  // que seria palpite.
+  const ehCaminho = PATHISH.test(tokenValue) || tokenValue.includes("/");
+  const ordem: GhostEscolhido[] = ehCaminho
+    ? [
+        { texto: caminho, fonte: "caminho" },
+        { texto: argumento, fonte: "argumento" },
+      ]
+    : [
+        { texto: argumento, fonte: "argumento" },
+        { texto: caminho, fonte: "caminho" },
+      ];
+  return ordem.find((g) => g.texto !== "") ?? { texto: "", fonte: null };
+}

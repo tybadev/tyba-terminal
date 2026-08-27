@@ -7,6 +7,7 @@ import {
   boxIsMounted,
   clearsDraft,
   controlBytes,
+  ghostDoToken,
   ghostFor,
   isArrowKey,
   keyboardOwner,
@@ -560,5 +561,39 @@ describe("enterAplicaSugestao", () => {
     // Estado que aparece ao fechar com Esc sem limpar o índice: o que manda é
     // a lista estar visível, não haver resquício de seleção.
     expect(enterAplicaSugestao({ listaVisivel: false, selecionado: 2 })).toBe(false);
+  });
+});
+
+describe("qual cinza ganha: caminho ou argumento", () => {
+  it("token comum: o que a base sabe do comando ganha do nome de pasta", () => {
+    // `openssl s` estava virando `openssl skills/` porque existe uma pasta
+    // `skills/` no home. O caminho é um palpite genérico sobre o diretório; a
+    // base sabe que `openssl` tem `s_client`. Conhecimento específico ganha.
+    expect(ghostDoToken("s", "kills/", "_client")).toEqual({
+      texto: "_client",
+      fonte: "argumento",
+    });
+  });
+
+  it("token que JÁ é caminho: o caminho ganha de volta", () => {
+    // Quem digitou `./s` ou `src/i` disse com todas as letras que quer um
+    // arquivo. Ali o histórico completando outra coisa é que seria o palpite.
+    for (const t of ["./s", "../s", "~/s", "/us", "src/i"]) {
+      expect(ghostDoToken(t, "rc/", "ubcomando").fonte).toBe("caminho");
+    }
+  });
+
+  it("sem argumento, o caminho continua servindo em token comum", () => {
+    // O conserto do `openssl skills/` não pode desligar o cinza de caminho:
+    // `cat R` → `README.md` é o caso que a completação de arquivo existe para
+    // atender, e ali não há argumento nenhum competindo.
+    expect(ghostDoToken("R", "EADME.md", "")).toEqual({
+      texto: "EADME.md",
+      fonte: "caminho",
+    });
+  });
+
+  it("sem nenhum dos dois, não inventa cinza", () => {
+    expect(ghostDoToken("x", "", "")).toEqual({ texto: "", fonte: null });
   });
 });

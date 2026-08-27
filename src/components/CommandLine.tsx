@@ -17,6 +17,7 @@ import {
   boxIsMounted,
   clearsDraft,
   controlBytes,
+  ghostDoToken,
   ghostFor,
   commandPrefix,
   enterAplicaSugestao,
@@ -323,7 +324,13 @@ export function CommandLine({
     cmdPrefix && bins.length > 0 && bins[0].name.startsWith(cmdPrefix)
       ? bins[0].name.slice(cmdPrefix.length)
       : "";
-  const ghost = pathGhost || argGhost || binGhost || ghostFor(text, hits);
+  // Caminho perdia para nada e ganhava de tudo — e num home com `skills/`,
+  // digitar `openssl s` virava `openssl skills/` em vez de `s_client`. O nome de
+  // pasta é palpite genérico sobre o diretório; a base sabe o que o COMANDO
+  // oferece, e conhecimento específico ganha. Só que quem digitou `./s` já disse
+  // que quer arquivo, e ali a ordem se inverte de volta.
+  const escolhido = ghostDoToken(token?.value ?? "", pathGhost, argGhost);
+  const ghost = escolhido.texto || binGhost || ghostFor(text, hits);
   const temItem =
     listed.length > 0 || paths.length > 0 || args.length > 0 || bins.length > 0;
   // A lista se anuncia enquanto se digita o PRIMEIRO token, e só ali. Antes,
@@ -378,8 +385,15 @@ export function CommandLine({
 
   const acceptGhost = () => {
     if (!ghost) return false;
-    if (pathGhost && token) return takePath(token.value + pathGhost);
-    if (argGhost && arg) return takeArg(arg.value + argGhost);
+    // A FONTE vem de `ghostDoToken` em vez de ser redecidida aqui: enquanto os
+    // dois lugares refaziam a conta, havia como o cinza mostrar uma coisa e o
+    // `Tab` aplicar outra.
+    if (escolhido.fonte === "caminho" && token) {
+      return takePath(token.value + escolhido.texto);
+    }
+    if (escolhido.fonte === "argumento" && arg) {
+      return takeArg(arg.value + escolhido.texto);
+    }
     apply(text + ghost, text.length + ghost.length);
     return true;
   };
