@@ -22,11 +22,14 @@ Cortar um release ligando uma feature sem doc de produto entrega ao usuário alg
 
 ## O que entra na doc de produto (e o que não)
 
-Nunca escreva de memória. Levante do repo o que a versão liga:
+Nunca escreva de memória. Levante do repo o que a versão liga.
+
+Os comandos rodam na **raiz do `tyba-terminal`**. Se você já navegou para outro
+repo, volte antes — senão o `git log` responde pelo errado, sem reclamar.
 
 ```bash
-git -C /Users/guilherme/swell-system/tyba-terminal fetch --tags
-git -C /Users/guilherme/swell-system/tyba-terminal log <última-tag>..main --merges --oneline
+git fetch --tags
+git log <última-tag>..main --merges --oneline
 gh pr list --repo tybadev/tyba-terminal --state merged --limit 50 \
   --json number,title,body --jq '.[] | "\(.number) \(.title)"'
 ```

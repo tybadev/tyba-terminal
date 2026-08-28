@@ -11,18 +11,23 @@ Por isso esta skill existe: escrever o changelog não é o passo depois do relea
 
 ## Onde mora
 
-- **Dados**: `/Users/guilherme/swell-system/tyba-site/src/lib/changelog.ts` — array `CHANGELOG`, **mais recente primeiro**.
+- **Dados**: `../tyba-site/src/lib/changelog.ts` — array `CHANGELOG`, **mais recente primeiro**.
 - **Página**: `src/app/[lang]/changelog/page.tsx` (só renderiza; não mexer pra adicionar versão).
 - Cada entrada: `{ version, date, items: { 'pt-br': string[], en: string[] } }`.
 - `date` no formato `'2026-07'` (ano-mês, sem dia).
 
 ## Como levantar o que entrou
 
-Nunca escreva de memória. Levante do repo `tyba-terminal`:
+Nunca escreva de memória. Levante do repo `tyba-terminal`.
+
+Todo caminho nesta skill é relativo à **raiz do `tyba-terminal`**, e é de lá que os
+comandos rodam — `tyba-site` é uma checkout irmã, em `../tyba-site`. Se você já
+navegou para o site, volte antes de levantar os commits, senão o `git log` abaixo
+responde pelo repo errado e a versão sai com a lista de mudanças de outro projeto.
 
 ```bash
-git -C /Users/guilherme/swell-system/tyba-terminal fetch --tags
-git -C /Users/guilherme/swell-system/tyba-terminal log <última-tag>..main --merges --oneline
+git fetch --tags
+git log <última-tag>..main --merges --oneline
 gh pr list --repo tybadev/tyba-terminal --state merged --limit 50 \
   --json number,title,mergedAt,body --jq '.[] | "\(.number) \(.title)"'
 ```
