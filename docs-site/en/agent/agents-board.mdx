@@ -1,0 +1,50 @@
+---
+title: "Agents board and queue"
+sidebarTitle: "Agents board"
+description: "Every agent across every workspace in one place, ordered by who needs you first."
+---
+
+An agent's state has always existed **per session** — the colour in the sidebar, the inbox, the notification. What was missing was answering "who is blocked right now, in any worktree" without switching workspace by hand to find out.
+
+## Two surfaces, and they are different
+
+| | What it is | How to open |
+| --- | --- | --- |
+| **Agents board** | A tab, covering **every** workspace | Command palette → *Agents* |
+| **Agents queue** | A sidebar panel, covering this window | `⌘⇧A` (`Ctrl+Alt+Shift+A` off macOS), or the *Agents* button in the bar |
+
+The queue is for the corner of your eye while you work. The board is for when you want to see everything.
+
+## The order is not arrival order
+
+What sorts it is who needs you first:
+
+| First | |
+| --- | --- |
+| **Waiting on approval** | A risk decision is parked in your hands |
+| **Waiting on an answer** | The agent asked and cannot move |
+| **Finished, nobody looked** | It is done, and the result has not been reviewed |
+| **Running** | Does not need you right now |
+
+<Note>
+Approval outranks a question on purpose. Both stall the agent, but only one is waiting on **you deciding about a risk** — and that is the one that must not sit at the bottom.
+</Note>
+
+A workspace inherits its worst child, not the average: one blocked agent among ten makes the workspace blocked, because that is where you have to look first.
+
+## Go to next
+
+Inside the board, **Go to next** walks to the next session asking for attention and jumps to it — the right tab, pane and workspace.
+
+It **cycles** from where you are, rather than always going to the most urgent one. With two blocked sessions, "always the most urgent" would pin you to the first and the second would never be reached.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Notifications" icon="bell" href="/en/agent/notifications">
+    How TYBA calls you when the window is out of focus.
+  </Card>
+  <Card title="Agent stats" icon="chart-bar" href="/en/agent/statistics">
+    What the agents cost you in attention, over time.
+  </Card>
+</CardGroup>

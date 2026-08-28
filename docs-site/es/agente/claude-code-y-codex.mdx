@@ -80,6 +80,20 @@ Dos cosas que vale la pena saber:
 
 El status aparece en la **entrada de la sidebar** y en el **hover card** — no en la pestaña. Cuando un workspace tiene varias sesiones, la sidebar muestra la más urgente: falló > bloqueado/esperando > terminado > en curso.
 
+## Reanudar la conversación al reabrir
+
+Cuando la app reabre, restaura workspaces, pestañas, paneles, carpeta y layout. El panel que era sesión de agente volvía como un shell pelado, y la conversación se perdía — incluso con Claude Code o Codex todavía guardando su historial en disco.
+
+Ahora el panel vuelve como shell, igual que antes, y **ofrece reanudar**.
+
+<Note>
+**Nunca automático.** Reanudar levanta un proceso con historial y contexto que puede volver a actuar. La acción de un agente no empieza sin intención tuya — ni en el arranque.
+</Note>
+
+Si la conversación ya no existe en disco, o si reanudar fallaría, **no hay invitación**. Una invitación que lleva a un error es peor que ninguna invitación.
+
+El id de la conversación se lee del propio transcript del agente, no se inventa a partir del nombre del archivo.
+
 ## El agente de review
 
 En **Settings → Code**, el campo **"Review agent"** decide quién recibe los comentarios que escribes en un diff **cuando no hay una sesión viva en ese worktree**. Si hay sesión, el prompt va hacia ella.

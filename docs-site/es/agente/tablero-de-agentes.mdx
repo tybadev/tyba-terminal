@@ -1,0 +1,50 @@
+---
+title: "Tablero y cola de agentes"
+sidebarTitle: "Tablero de agentes"
+description: "Todos los agentes de todos los workspaces en un solo lugar, ordenados por quién te necesita primero."
+---
+
+El estado de un agente siempre existió **por sesión** — el color en la barra lateral, el inbox, la notificación. Lo que faltaba era responder "quién está bloqueado ahora, en cualquier worktree" sin cambiar de workspace a mano para averiguarlo.
+
+## Dos superficies, y son distintas
+
+| | Qué es | Cómo se abre |
+| --- | --- | --- |
+| **Tablero de agentes** | Una pestaña, con **todos** los workspaces | Paleta de comandos → *Agentes* |
+| **Cola de agentes** | Un panel en la barra lateral, con los de esta ventana | `⌘⇧A` (`Ctrl+Alt+Shift+A` fuera de macOS), o el botón *Agentes* en la barra |
+
+La cola es para el rabillo del ojo mientras trabajas. El tablero es para cuando quieres verlo todo.
+
+## El orden no es el de llegada
+
+Lo que ordena es quién te necesita primero:
+
+| Primero | |
+| --- | --- |
+| **Espera aprobación** | Tienes una decisión de riesgo detenida en tus manos |
+| **Espera respuesta** | El agente preguntó y no puede avanzar |
+| **Terminó y nadie miró** | Acabó, y el resultado todavía no fue revisado |
+| **Corriendo** | No te necesita ahora |
+
+<Note>
+La aprobación va antes que la pregunta a propósito. Las dos frenan al agente, pero solo una está esperando que **tú decidas sobre un riesgo** — y esa es la que no debe quedar abajo.
+</Note>
+
+El workspace hereda al peor hijo, no el promedio: un agente bloqueado entre diez vuelve bloqueado al workspace, porque es ahí donde tienes que mirar primero.
+
+## Ir al siguiente
+
+Dentro del tablero, **Ir al siguiente** lleva a la próxima sesión que pide atención y salta hacia ella — la pestaña, el panel y el workspace correctos.
+
+**Cicla** desde donde estás, en vez de ir siempre a la más urgente. Con dos sesiones bloqueadas, "siempre la más urgente" te dejaría atrapado en la primera y la segunda nunca se alcanzaría.
+
+## Mira también
+
+<CardGroup cols={2}>
+  <Card title="Notificaciones" icon="bell" href="/es/agente/notificaciones">
+    Cómo TYBA te llama cuando la ventana está fuera de foco.
+  </Card>
+  <Card title="Estadísticas de agentes" icon="chart-bar" href="/es/agente/estadisticas">
+    Cuánto te cuestan los agentes en atención, a lo largo del tiempo.
+  </Card>
+</CardGroup>

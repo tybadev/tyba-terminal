@@ -80,6 +80,20 @@ Two things worth knowing:
 
 The status shows on the **sidebar entry** and on the **hover card** — not on the tab. When a workspace has several sessions, the sidebar shows the most urgent one: failed > blocked/awaiting > finished > in progress.
 
+## Resuming the conversation on reopen
+
+When the app reopens, it restores workspaces, tabs, panes, folder and layout. A pane that was an agent session used to come back as a bare shell, and the conversation was lost — even with Claude Code or Codex still holding its history on disk.
+
+Now the pane comes back as a shell, just as before, and **offers to resume**.
+
+<Note>
+**Never automatic.** Resuming starts a process with history and context that can act again. Agent action does not begin without your intent — not even at boot.
+</Note>
+
+If the conversation is no longer on disk, or resuming would fail, **there is no offer**. An offer that leads to an error is worse than no offer at all.
+
+The conversation id is read from the agent's own transcript, not guessed from the file name.
+
 ## The review agent
 
 In **Settings → Code**, the **"Review agent"** field decides who receives the comments you write on a diff **when there is no live session in that worktree**. If there is a session, the prompt goes to it.

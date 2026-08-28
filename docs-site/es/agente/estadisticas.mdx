@@ -1,0 +1,48 @@
+---
+title: "Estadísticas de agentes"
+sidebarTitle: "Estadísticas"
+description: "Cuántas aprobaciones pidieron los agentes, cuántas tuviste que decidir, y cuánto tardaste en decidir."
+---
+
+TYBA ya guardaba dos acervos que nadie miraba: cada pedido de aprobación — con el comando, el riesgo, la decisión y los horarios del pedido y de la resolución — y cada comando ejecutado, con código de salida y duración.
+
+La pregunta que responden no es "qué comando uso más". Es **cuánto te cuestan los agentes en atención**.
+
+Se abre desde la paleta de comandos, en *Estadísticas de agentes*.
+
+<Note>
+**Solo lectura.** Nada en esta pantalla ejecuta, vuelve a ejecutar ni borra. Es una foto de lo que ya pasó.
+</Note>
+
+## Las tarjetas
+
+| | |
+| --- | --- |
+| **Aprobaciones pedidas** | Todo lo que pasó por el gate en el período |
+| **Auto-aprobadas** | Riesgo verde, o algo ya liberado antes en esa sesión |
+| **Decididas por humano** | Alguien tuvo que parar y mirar |
+| **Negadas** | Dijiste que no |
+| **Tiempo mediano hasta decidir** | Cuánto estuvo el agente detenido esperándote |
+
+El tiempo mediano es el número que cambia decisiones: si crece, el agente está bloqueado más tiempo del que imaginas, y vale revisar qué sigue cayendo en el gate.
+
+## Las tablas
+
+**Comandos que el agente más pide** — con el riesgo de cada uno y la tasa con que se aprueba. Un comando pedido todo el tiempo y siempre aprobado es candidato a regla; uno pedido todo el tiempo y a veces negado es el que merece atención.
+
+**Sesiones de agente** — cuántos comandos corrieron, cuántas aprobaciones pasaron por ahí y cuánto duró la sesión.
+
+## Filtros
+
+Período de **7 días**, **30 días** o **todo**, y por **repositorio**, porque un agente que trabaja en un repo con mucha escritura se comporta distinto de uno que solo lee.
+
+## Mira también
+
+<CardGroup cols={2}>
+  <Card title="Tablero de agentes" icon="squares-four" href="/es/agente/tablero-de-agentes">
+    Quién te necesita ahora, en vez de lo que ya pasó.
+  </Card>
+  <Card title="Claude Code y Codex" icon="robot" href="/es/agente/claude-code-y-codex">
+    De dónde vienen los pedidos de aprobación.
+  </Card>
+</CardGroup>

@@ -8,7 +8,7 @@ Ajuda de digitação — sugestão em cinza, lista enquanto você escreve — **
 A saída é não deixar o shell desenhar a linha. É isso que a **linha de comando do TYBA** faz: o `PS1` sai da tela e a caixa onde você digita passa a ser do app.
 
 <Note>
-**Vem desligada.** Ligue em **Configurações → Code → Linha de comando do TYBA**, na chave *Usar a linha do TYBA*. Vale para sessões **novas** — o modo entra no nascimento do shell.
+**Vem ligada.** Instalação nova já abre com ela. Para desligar, use **Configurações → Code → Linha de comando do TYBA**, na chave *Usar a linha do TYBA*. A escolha vale para sessões **novas** — o modo entra no nascimento do shell, então a sessão já aberta segue como está.
 </Note>
 
 ## O que você ganha
@@ -16,10 +16,36 @@ A saída é não deixar o shell desenhar a linha. É isso que a **linha de coman
 | | |
 | --- | --- |
 | **Sugestão em cinza** | O resto de um comando que você já rodou aparece à frente do cursor. `Tab` ou `→` aceita. |
+| **Completar comandos** | Desde a primeira letra, não só o que você repete — veja abaixo. |
 | **Histórico e snippets na própria linha** | `↑` e `↓` percorrem a lista sem abrir nada. Snippets aparecem marcados. |
 | **Caminhos do diretório atual** | Arquivos e pastas de onde você está também completam. |
 | **Edição de verdade** | Um comando longo se edita como texto, não como linha de terminal. |
 | **Blocos de comando** | Cada comando vira um cartão — veja [blocos de comando](/pt-br/terminal/blocos-de-comando). |
+
+## Completar comandos
+
+A sugestão não depende mais de você já ter rodado aquilo. Cada parte da linha é completada por quem sabe dela:
+
+| O que você está digitando | De onde vem a sugestão |
+| --- | --- |
+| **A primeira palavra** | Os binários do seu `$PATH`, mais os alias, funções e builtins que só o shell daquela sessão conhece |
+| **O subcomando** | Uma base por comando — `git switch`, `docker compose`, `openssl s_client` |
+| **A flag** | A mesma base, com a descrição do que cada uma faz |
+| **O argumento** | Quem sabe dele: nome de branch no `git`, nome de container no `docker` |
+
+A ordem não é alfabética. O que você usa mais, e usou há menos tempo, sobe.
+
+<Note>
+A primeira palavra vem de duas fontes porque nenhuma das duas sozinha basta. O app lê o `$PATH` do disco, que não custa nada ao shell. Mas `nvm`, `asdf` e `direnv` reescrevem o `$PATH` **depois** que a sessão nasce, e alias e função não existem em disco — esses o próprio shell informa, por sessão. O resultado é a lista que você veria digitando no seu terminal, não a que o app imaginaria.
+</Note>
+
+`⌘L` (`Ctrl+Alt+L` fora do macOS) limpa a tela sem fechar a sessão.
+
+## O histórico que você já tem
+
+Na primeira vez, o TYBA **importa o histórico do seu shell** — zsh, bash e fish — para a sugestão nascer sabendo o que você roda, em vez de esperar você digitar tudo de novo.
+
+É só leitura: os arquivos de histórico do seu shell não são alterados. Para procurar dentro dele com escopo e filtro, veja a [paleta de comandos](/pt-br/interface/paleta-de-comandos).
 
 ## Quem recebe a tecla
 

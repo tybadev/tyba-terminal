@@ -80,6 +80,20 @@ Duas coisas que valem saber:
 
 O status aparece na **entrada da sidebar** e no **hover card** — não na aba. Quando um workspace tem várias sessões, a sidebar mostra a mais urgente: falhou > bloqueado/aguardando > concluído > em andamento.
 
+## Retomar a conversa ao reabrir
+
+Quando o app reabre, ele restaura workspaces, abas, painéis, pasta e layout. O painel que era sessão de agente voltava como um shell nu, e a conversa se perdia — mesmo com o Claude Code ou o Codex ainda tendo o histórico dela em disco.
+
+Agora o painel volta como shell, igual antes, e **oferece retomar**.
+
+<Note>
+**Nunca automático.** Retomar sobe um processo com histórico e contexto que pode voltar a agir. Ação de agente não começa sem intenção sua — nem no boot.
+</Note>
+
+Se a conversa não existe mais em disco, ou se retomar falharia, **não há convite**. Um convite que leva a erro é pior que convite nenhum.
+
+O id da conversa é lido do próprio transcript do agente, não inventado a partir do nome do arquivo.
+
 ## O agente de review
 
 Em **Configurações → Code**, o campo **"Agente de review"** decide quem recebe os comentários que você escreve num diff **quando não há sessão viva naquele worktree**. Havendo sessão, o prompt vai para ela.

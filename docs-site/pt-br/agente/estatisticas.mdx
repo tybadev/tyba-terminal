@@ -1,0 +1,48 @@
+---
+title: "Estatísticas de agentes"
+sidebarTitle: "Estatísticas"
+description: "Quantas aprovações os agentes pediram, quantas você teve de decidir, e quanto tempo levou até você decidir."
+---
+
+O TYBA já gravava dois acervos que ninguém olhava: cada pedido de aprovação — com comando, risco, decisão e os horários do pedido e da resolução — e cada comando executado, com código de saída e duração.
+
+A pergunta que eles respondem não é "qual comando eu mais uso". É **quanto os agentes custam da sua atenção**.
+
+Abre pela paleta de comandos, em *Estatísticas de agentes*.
+
+<Note>
+**Só leitura.** Nada nesta tela executa, re-roda ou apaga. É um retrato do que já aconteceu.
+</Note>
+
+## Os cartões
+
+| | |
+| --- | --- |
+| **Aprovações pedidas** | Tudo que passou pelo gate no período |
+| **Auto-aprovadas** | Risco verde, ou algo já liberado antes naquela sessão |
+| **Decididas por humano** | Alguém teve de parar e olhar |
+| **Negadas** | Você disse não |
+| **Tempo mediano até decidir** | Quanto o agente ficou parado esperando você |
+
+O tempo mediano é o número que muda decisão: se ele cresce, o agente está bloqueado mais tempo do que você imagina, e vale rever o que está caindo no gate.
+
+## As tabelas
+
+**Comandos mais pedidos pelo agente** — com o risco de cada um e a taxa com que ele é aprovado. Um comando pedido toda hora e sempre aprovado é candidato a regra; um pedido toda hora e às vezes negado é o que merece atenção.
+
+**Sessões de agente** — quantos comandos rodaram, quantas aprovações passaram por ali e quanto tempo a sessão durou.
+
+## Filtros
+
+Período de **7 dias**, **30 dias** ou **tudo**, e por **repositório** — porque o agente que trabalha num repo com muita escrita se comporta diferente do que só lê.
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Quadro de agentes" icon="squares-four" href="/pt-br/agente/quadro-de-agentes">
+    Quem precisa de você agora, em vez do que já aconteceu.
+  </Card>
+  <Card title="Claude Code e Codex" icon="robot" href="/pt-br/agente/claude-code-e-codex">
+    De onde vêm os pedidos de aprovação.
+  </Card>
+</CardGroup>

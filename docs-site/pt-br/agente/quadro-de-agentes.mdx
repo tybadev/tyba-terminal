@@ -1,0 +1,50 @@
+---
+title: "Quadro e fila de agentes"
+sidebarTitle: "Quadro de agentes"
+description: "Todos os agentes de todos os workspaces num lugar só, ordenados por quem precisa de você primeiro."
+---
+
+O estado de um agente sempre existiu **por sessão** — a cor na barra lateral, o inbox, a notificação. O que faltava era responder "quem está bloqueado agora, em qualquer worktree" sem trocar de workspace na mão para descobrir.
+
+## Duas superfícies, e elas são diferentes
+
+| | O que é | Como abre |
+| --- | --- | --- |
+| **Quadro de agentes** | Uma aba, com **todos** os workspaces | Paleta de comandos → *Agentes* |
+| **Fila de agentes** | Um painel na barra lateral, com os desta janela | `⌘⇧A` (`Ctrl+Alt+Shift+A` fora do macOS), ou o botão *Agentes* na barra |
+
+A fila é para o canto do olho enquanto você trabalha. O quadro é para quando você quer ver tudo.
+
+## A ordem não é a de chegada
+
+O que ordena é quem precisa de você primeiro:
+
+| Primeiro | |
+| --- | --- |
+| **Espera aprovação** | Você tem uma decisão de risco parada na sua mão |
+| **Espera resposta** | O agente perguntou e não pode andar |
+| **Terminou e ninguém olhou** | Acabou, e o resultado ainda não foi revisado |
+| **Rodando** | Não precisa de você agora |
+
+<Note>
+Aprovação vem antes de pergunta de propósito. As duas travam o agente, mas só uma delas está esperando que **você decida sobre um risco** — e essa é a que não deve ficar embaixo.
+</Note>
+
+O workspace inteiro herda o pior filho, não a média: um agente bloqueado entre dez torna o workspace bloqueado, porque é para lá que você tem de olhar primeiro.
+
+## Ir para o próximo
+
+Dentro do quadro, **Ir para o próximo** leva à próxima sessão que pede atenção e salta para ela — a aba, o painel e o workspace certos.
+
+Ele **cicla** a partir de onde você está, em vez de ir sempre à mais urgente. Com duas sessões bloqueadas, "sempre a mais urgente" prenderia você na primeira e a segunda nunca seria alcançada.
+
+## Veja também
+
+<CardGroup cols={2}>
+  <Card title="Notificações" icon="bell" href="/pt-br/agente/notificacoes">
+    Como o TYBA te chama quando a janela está fora de foco.
+  </Card>
+  <Card title="Estatísticas de agentes" icon="chart-bar" href="/pt-br/agente/estatisticas">
+    Quanto os agentes custam de atenção, ao longo do tempo.
+  </Card>
+</CardGroup>
