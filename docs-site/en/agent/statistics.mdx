@@ -1,0 +1,48 @@
+---
+title: "Agent stats"
+sidebarTitle: "Stats"
+description: "How many approvals the agents asked for, how many you had to decide, and how long you took to decide."
+---
+
+TYBA was already recording two sets of data nobody looked at: every approval request — with the command, its risk, the decision, and the times of the request and its resolution — and every command run, with exit code and duration.
+
+The question they answer is not "which command do I use most". It is **how much of your attention the agents cost**.
+
+Open it from the command palette, under *Agent stats*.
+
+<Note>
+**Read-only.** Nothing on this screen runs, re-runs or deletes. It is a picture of what already happened.
+</Note>
+
+## The cards
+
+| | |
+| --- | --- |
+| **Approvals requested** | Everything that went through the gate in the period |
+| **Auto-approved** | Green risk, or something already cleared earlier in that session |
+| **Decided by a human** | Someone had to stop and look |
+| **Denied** | You said no |
+| **Median time to decide** | How long the agent sat waiting on you |
+
+The median time is the number that changes decisions: if it grows, the agent is blocked longer than you think, and it is worth reviewing what keeps landing in the gate.
+
+## The tables
+
+**Commands the agent asks for most** — with each one's risk and how often it gets approved. A command asked for constantly and always approved is a candidate for a rule; one asked for constantly and sometimes denied is the one that deserves attention.
+
+**Agent sessions** — how many commands ran, how many approvals passed through, and how long the session lasted.
+
+## Filters
+
+By period — **7 days**, **30 days** or **everything** — and by **repository**, because an agent working in a write-heavy repo behaves differently from one that only reads.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Agents board" icon="squares-four" href="/en/agent/agents-board">
+    Who needs you now, rather than what already happened.
+  </Card>
+  <Card title="Claude Code and Codex" icon="robot" href="/en/agent/claude-code-and-codex">
+    Where the approval requests come from.
+  </Card>
+</CardGroup>

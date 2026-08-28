@@ -8,7 +8,7 @@ Typing help — grey suggestions, a list while you write — **is not a terminal
 The way out is to stop letting the shell draw the line. That is what the **TYBA command line** does: `PS1` leaves the screen and the box you type in belongs to the app.
 
 <Note>
-**It ships off.** Turn it on in **Settings → Code → TYBA command line**, on the *Use the TYBA line* switch. It applies to **new** sessions — the mode is set when the shell is born.
+**It ships on.** A fresh install already opens with it. To turn it off, use **Settings → Code → TYBA command line**, on the *Use the TYBA line* switch. The choice applies to **new** sessions — the mode is set when the shell is born, so a session already open stays as it is.
 </Note>
 
 ## What you get
@@ -16,10 +16,36 @@ The way out is to stop letting the shell draw the line. That is what the **TYBA 
 | | |
 | --- | --- |
 | **Grey suggestion** | The rest of a command you have already run appears ahead of the cursor. `Tab` or `→` accepts it. |
+| **Command completion** | From the first letter, not just what you repeat — see below. |
 | **History and snippets in the line itself** | `↑` and `↓` walk the list without opening anything. Snippets are marked as such. |
 | **Paths from the current directory** | Files and folders where you are complete too. |
 | **Real editing** | A long command is edited like text, not like a terminal line. |
 | **Command blocks** | Every command becomes a card — see [command blocks](/en/terminal/command-blocks). |
+
+## Command completion
+
+Suggestions no longer depend on you having run the thing before. Each part of the line is completed by whoever knows about it:
+
+| What you are typing | Where the suggestion comes from |
+| --- | --- |
+| **The first word** | The binaries on your `$PATH`, plus the aliases, functions and builtins that only that session's shell knows |
+| **The subcommand** | A per-command base — `git switch`, `docker compose`, `openssl s_client` |
+| **The flag** | The same base, with a description of what each one does |
+| **The argument** | Whoever knows it: branch names for `git`, container names for `docker` |
+
+The order is not alphabetical. What you use more, and used more recently, rises.
+
+<Note>
+The first word comes from two sources because neither is enough on its own. The app reads `$PATH` from disk, which costs the shell nothing. But `nvm`, `asdf` and `direnv` rewrite `$PATH` **after** the session is born, and aliases and functions do not exist on disk — those the shell itself reports, per session. The result is the list you would see typing in your own terminal, not the one the app would guess.
+</Note>
+
+`⌘L` (`Ctrl+Alt+L` off macOS) clears the screen without closing the session.
+
+## The history you already have
+
+On first run, TYBA **imports your shell history** — zsh, bash and fish — so suggestions start out knowing what you run, instead of waiting for you to type it all again.
+
+It is read-only: your shell's history files are not modified. To search inside it with scope and filters, see the [command palette](/en/interface/command-palette).
 
 ## Who gets the keystroke
 
