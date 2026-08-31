@@ -30,6 +30,7 @@ const TERMINAL_VIEW = readFileSync(
   join(HERE, "..", "components", "TerminalView.tsx"),
   "utf8",
 );
+const MAIN = readFileSync(join(HERE, "..", "main.tsx"), "utf8");
 
 const NERD = "Symbols Nerd Font Mono";
 const PRIMARY = "JetBrains Mono";
@@ -90,19 +91,34 @@ describe("stack mono do terminal", () => {
 
   // A fonte PADRÃO precisa vir embarcada — numa máquina sem ela instalada, o
   // app media com uma métrica (a fonte declarada) e desenhava com outra (o
-  // fallback que o navegador escolhe). Os quatro cortes cobrem o que o
-  // terminal realmente desenha: texto normal, negrito, itálico do prompt e
-  // negrito+itálico.
-  it("a JetBrains Mono vem embarcada nos quatro cortes — regular, bold, italic, bold italic", () => {
+  // fallback que o navegador escolhe).
+  //
+  // Regular e Bold JÁ vêm embarcados pelo `@fontsource/jetbrains-mono`
+  // (`main.tsx`), com os 6 subsets (latin/latin-ext/cyrillic/cyrillic-ext/
+  // greek/vietnamese) e `font-display: swap`. Redeclarar um `@font-face`
+  // PRÓPRIO pra essas mesmas família+peso+estilo em `fonts.css` — carregado
+  // DEPOIS do fontsource — vence a cascata pra TODO codepoint (um
+  // `@font-face` sem `unicode-range` cobre `U+0-10FFFF` por padrão) e some
+  // com o subsetting e o swap: foi o bug real desta rodada de review. Só
+  // Italic e Bold Italic ficam por conta deste arquivo — o fontsource não
+  // os inclui, e é aí que a máquina sem a fonte instalada desenhava com o
+  // itálico SINTÉTICO do navegador em vez do risco de verdade da fonte.
+  it("regular e bold vêm do @fontsource, não duplicados aqui", () => {
+    expect(MAIN).toMatch(/@fontsource\/jetbrains-mono\/400\.css/);
+    expect(MAIN).toMatch(/@fontsource\/jetbrains-mono\/700\.css/);
+    const face = readFileSync(join(HERE, "..", "fonts.css"), "utf8");
+    expect(face).not.toMatch(/JetBrainsMono-Regular/);
+    expect(face).not.toMatch(/JetBrainsMono-Bold\.woff2/);
+  });
+
+  it("italic e bold italic vêm embarcados localmente — o corte que o @fontsource não cobre", () => {
     const face = readFileSync(join(HERE, "..", "fonts.css"), "utf8");
     expect(face).toContain(PRIMARY);
-    expect(face).toMatch(/url\([^)]*JetBrainsMono-Regular\.woff2[^)]*\)/);
-    expect(face).toMatch(/url\([^)]*JetBrainsMono-Bold\.woff2[^)]*\)/);
     expect(face).toMatch(/url\([^)]*JetBrainsMono-Italic\.woff2[^)]*\)/);
     expect(face).toMatch(/url\([^)]*JetBrainsMono-BoldItalic\.woff2[^)]*\)/);
   });
 
-  it("cada corte da JetBrains Mono declara o peso e o estilo certos — senão o browser sintetiza o negrito/itálico", () => {
+  it("os dois cortes locais declaram o peso e o estilo certos — senão o browser sintetiza o negrito/itálico", () => {
     const face = readFileSync(join(HERE, "..", "fonts.css"), "utf8");
     const blockFor = (file: string) => {
       const found = face.match(
@@ -111,19 +127,18 @@ describe("stack mono do terminal", () => {
       if (!found) throw new Error(`bloco @font-face ausente para ${file}`);
       return found[0];
     };
-    expect(blockFor("JetBrainsMono-Regular")).toMatch(/font-weight:\s*400/);
-    expect(blockFor("JetBrainsMono-Regular")).toMatch(/font-style:\s*normal/);
-    expect(blockFor("JetBrainsMono-Bold")).toMatch(/font-weight:\s*700/);
-    expect(blockFor("JetBrainsMono-Bold")).toMatch(/font-style:\s*normal/);
     expect(blockFor("JetBrainsMono-Italic")).toMatch(/font-weight:\s*400/);
     expect(blockFor("JetBrainsMono-Italic")).toMatch(/font-style:\s*italic/);
     expect(blockFor("JetBrainsMono-BoldItalic")).toMatch(/font-weight:\s*700/);
     expect(blockFor("JetBrainsMono-BoldItalic")).toMatch(/font-style:\s*italic/);
   });
 
-  // OFL exige que a licença acompanhe a fonte redistribuída.
-  it("a licença OFL acompanha os woff2 embarcados", () => {
-    const licensePath = join(HERE, "..", "assets", "fonts", "OFL.txt");
+  // OFL exige que a licença acompanhe a fonte redistribuída. Em `public/`,
+  // não em `src/`: é a única pasta que o Vite copia VERBATIM pro bundle
+  // (`src/` só vira dist através de um import de código, e um comentário em
+  // CSS não é isso) — ver MAJOR 4 da rodada de review.
+  it("a licença OFL acompanha os woff2 locais E está onde o build de fato embarca", () => {
+    const licensePath = join(HERE, "..", "..", "public", "fonts", "OFL.txt");
     const license = readFileSync(licensePath, "utf8");
     expect(license).toContain("SIL OPEN FONT LICENSE");
   });
