@@ -87,4 +87,44 @@ describe("stack mono do terminal", () => {
     expect(face).toContain(NERD);
     expect(face).toMatch(/url\([^)]*SymbolsNerdFontMono[^)]*\)/);
   });
+
+  // A fonte PADRÃO precisa vir embarcada — numa máquina sem ela instalada, o
+  // app media com uma métrica (a fonte declarada) e desenhava com outra (o
+  // fallback que o navegador escolhe). Os quatro cortes cobrem o que o
+  // terminal realmente desenha: texto normal, negrito, itálico do prompt e
+  // negrito+itálico.
+  it("a JetBrains Mono vem embarcada nos quatro cortes — regular, bold, italic, bold italic", () => {
+    const face = readFileSync(join(HERE, "..", "fonts.css"), "utf8");
+    expect(face).toContain(PRIMARY);
+    expect(face).toMatch(/url\([^)]*JetBrainsMono-Regular\.woff2[^)]*\)/);
+    expect(face).toMatch(/url\([^)]*JetBrainsMono-Bold\.woff2[^)]*\)/);
+    expect(face).toMatch(/url\([^)]*JetBrainsMono-Italic\.woff2[^)]*\)/);
+    expect(face).toMatch(/url\([^)]*JetBrainsMono-BoldItalic\.woff2[^)]*\)/);
+  });
+
+  it("cada corte da JetBrains Mono declara o peso e o estilo certos — senão o browser sintetiza o negrito/itálico", () => {
+    const face = readFileSync(join(HERE, "..", "fonts.css"), "utf8");
+    const blockFor = (file: string) => {
+      const found = face.match(
+        new RegExp(`@font-face\\s*{[^}]*${file}[^}]*}`, "s"),
+      );
+      if (!found) throw new Error(`bloco @font-face ausente para ${file}`);
+      return found[0];
+    };
+    expect(blockFor("JetBrainsMono-Regular")).toMatch(/font-weight:\s*400/);
+    expect(blockFor("JetBrainsMono-Regular")).toMatch(/font-style:\s*normal/);
+    expect(blockFor("JetBrainsMono-Bold")).toMatch(/font-weight:\s*700/);
+    expect(blockFor("JetBrainsMono-Bold")).toMatch(/font-style:\s*normal/);
+    expect(blockFor("JetBrainsMono-Italic")).toMatch(/font-weight:\s*400/);
+    expect(blockFor("JetBrainsMono-Italic")).toMatch(/font-style:\s*italic/);
+    expect(blockFor("JetBrainsMono-BoldItalic")).toMatch(/font-weight:\s*700/);
+    expect(blockFor("JetBrainsMono-BoldItalic")).toMatch(/font-style:\s*italic/);
+  });
+
+  // OFL exige que a licença acompanhe a fonte redistribuída.
+  it("a licença OFL acompanha os woff2 embarcados", () => {
+    const licensePath = join(HERE, "..", "assets", "fonts", "OFL.txt");
+    const license = readFileSync(licensePath, "utf8");
+    expect(license).toContain("SIL OPEN FONT LICENSE");
+  });
 });

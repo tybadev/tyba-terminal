@@ -1,3 +1,50 @@
+/*
+ * JetBrains Mono — fonte PADRÃO do terminal, embarcada.
+ *
+ * Antes só a Nerd Font (símbolos) vinha junto; o texto media com uma
+ * métrica (o stack declara "JetBrains Mono" primeiro) e desenhava com
+ * outra numa máquina sem ela instalada — a classe de bug por trás do corte
+ * da última linha no Linux. Ver D1 na tech-spec.
+ *
+ * Quatro cortes, os que o terminal de fato desenha: texto normal, negrito,
+ * itálico (prompt de agente, `git log --oneline --decorate`) e
+ * negrito+itálico. Sem um corte, o browser SINTETIZA (engorda/inclina o
+ * glifo Regular) — métrica de novo divergente da fonte de verdade.
+ *
+ * v2.304, JetBrains/JetBrainsMono, licença OFL-1.1 — ./assets/fonts/OFL.txt.
+ */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("./assets/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url("./assets/fonts/JetBrainsMono-Bold.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: block;
+  src: url("./assets/fonts/JetBrainsMono-Italic.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: italic;
+  font-weight: 700;
+  font-display: block;
+  src: url("./assets/fonts/JetBrainsMono-BoldItalic.woff2") format("woff2");
+}
+
 @font-face {
   font-family: "Symbols Nerd Font Mono";
   font-style: normal;
