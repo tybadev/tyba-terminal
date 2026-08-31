@@ -474,6 +474,55 @@ export function TerminalView({
       void detachSession(sessionId).catch(() => {});
     };
 
+    // O xterm mede o glifo UMA VEZ, no `term.open()`, e não tem hook de
+    // font-load: se a JetBrains Mono embarcada ainda não tinha terminado de
+    // carregar naquele instante, ele fica preso na métrica do fallback pelo
+    // resto da sessão. Reatribuir a option força o `CharSizeService` interno
+    // a remedir — mas o setter do xterm ignora valor IGUAL ao atual (não
+    // dispara nada), por isso o vai-e-volta: o espaço extra é invisível pro
+    // CSS (trailing whitespace num valor de `font-family` é ignorado), mas
+    // muda a STRING o bastante pra passar no `!==` do xterm duas vezes. Ver
+    // D2 na tech-spec.
+    const forceRemeasure = () => {
+      if (disposed || !opened) return;
+      const family = term.options.fontFamily;
+      term.options.fontFamily = `${family} `;
+      term.options.fontFamily = family;
+      term.clearTextureAtlas();
+      refitRef.current?.();
+    };
+    void document.fonts.ready.then(forceRemeasure);
+    // `ready` cobre o carregamento em curso na abertura; famílias que só
+    // entram em uso depois (bold/italic do primeiro texto nesse peso, por
+    // exemplo) dependem deste evento, que dispara a cada lote que termina.
+    const onFontsLoadingDone = () => forceRemeasure();
+    document.fonts.addEventListener("loadingdone", onFontsLoadingDone);
+
+    // Sem escala fracionária (GNOME 1.25/1.5/1.75) ou ao arrastar a janela
+    // entre monitores, `css.cell.height` muda até 0,8px/linha — ~1 linha
+    // inteira a cada ~30 — e NADA acorda: o container não muda de tamanho
+    // CSS, o `ResizeObserver` não dispara, e a última linha some sob o
+    // `overflow-hidden`. `matchMedia("(resolution: <dpr>dppx)")` é o padrão
+    // canônico pra ouvir DPR: a query só dispara UMA VEZ (fica falsa depois),
+    // por isso se re-arma a cada disparo com o DPR atual. Ver D3 na tech-spec.
+    let dprQuery: MediaQueryList | null = null;
+    const armDprListener = () => {
+      dprQuery = window.matchMedia(
+        `(resolution: ${window.devicePixelRatio}dppx)`,
+      );
+      dprQuery.addEventListener("change", onDprChange);
+    };
+    const onDprChange = () => {
+      dprQuery?.removeEventListener("change", onDprChange);
+      forceRemeasure();
+      armDprListener();
+    };
+    armDprListener();
+    addUnlistener(() => {
+      document.fonts.removeEventListener("loadingdone", onFontsLoadingDone);
+      dprQuery?.removeEventListener("change", onDprChange);
+    });
+
     const attached = (async () => {
       addUnlistener(
         await onPtyOutput(sessionId, (bytes) => {
