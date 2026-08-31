@@ -1,5 +1,6 @@
 pub mod codex_hooks;
 pub mod conversation;
+pub mod credentials;
 pub mod disk_observer;
 pub mod hooks_settings;
 pub mod notify;
@@ -183,6 +184,57 @@ const SENSITIVE_CLAUDE_FILES_IF_PRESENT: [&str; 4] = [
 /// está em nenhuma lista fixa — só na configuração dele).
 const SCRIPT_EXTENSIONS: [&str; 12] = [
     "sh", "bash", "zsh", "py", "js", "mjs", "cjs", "ts", "rb", "pl", "php", "lua",
+];
+
+/// §2.4 — explicitamente NÃO sombreados, de propósito: é estado, fica
+/// gravável. Vocabulário de V7 (o que existe hoje em produção) mais o que o
+/// design lista à parte com razão escrita (backups/ por causa de M9, jobs/
+/// por causa de M6). Usado só pelo alarme de deriva (`credentials.rs`) para
+/// distinguir "estado conhecido" de "nome novo que ninguém classificou" — não
+/// tem papel na política de sandbox em si (essa é a denylist acima).
+pub(crate) const CLAUDE_STATE_TOP_LEVEL_NAMES: [&str; 42] = [
+    ".credentials.json",
+    "history.jsonl",
+    "file-history",
+    "dump-prompts",
+    "todos",
+    "shell-snapshots",
+    "session-env",
+    "statsig",
+    "debug",
+    "ide",
+    "logs",
+    "sessions",
+    "backups",
+    "cache",
+    "chrome",
+    "downloads",
+    "paste-cache",
+    "state",
+    "tasks",
+    "plans",
+    "jobs",
+    "telemetry",
+    "traces",
+    "usage-data",
+    "startup-perf",
+    "themes",
+    "uploads",
+    "shares",
+    "feedback",
+    "feedback-bundles",
+    "agent-memory",
+    "local",
+    "teams",
+    "ccr",
+    "seed-admin",
+    "stats-cache.json",
+    "daemon.status.json",
+    "daemon.scheduled.status.json",
+    ".last-cleanup",
+    ".last-update-result.json",
+    "mcp-discovery-cache",
+    "mcp-needs-auth-cache.json",
 ];
 
 /// Os filhos de `~/.claude` que ficam sombreados no write (§2 da entrega B).

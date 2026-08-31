@@ -872,6 +872,12 @@ fn spawn_prepared(
             &socket_path,
             &exe,
         )?;
+        // Entrega B: só no Linux, só pro Claude Code — é onde a credencial
+        // depende da inversão da política (§2). Nunca bloqueia o spawn (§6).
+        #[cfg(target_os = "linux")]
+        if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+            crate::agent::credentials::emit_warnings(&ctx.app, id, &env, &spec);
+        }
         match sandbox.jailed_spawner(&spec)? {
             Some(spawner) => (cmd, Some(spawner)),
             None => (sandbox.wrap(cmd, &spec)?, None),
