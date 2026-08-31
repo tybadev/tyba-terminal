@@ -66,6 +66,26 @@ export function usedFraction(
 }
 
 /**
+ * Quantas linhas a saída ocupa nesta faixa — cursor e última linha escrita,
+ * a que for mais alta.
+ *
+ * O cursor sozinho mente quando o programa o reposiciona ACIMA do que já
+ * escreveu — barra de progresso que volta pro início da linha com `\r`, por
+ * exemplo. Sem este `max`, `usedFraction` recortaria antes do fim real da
+ * saída e a última linha escrita ficaria invisível.
+ *
+ * `lastNonEmptyRow` é o índice (0-based) da última linha com texto, visto
+ * num scan de baixo pra cima do viewport (ver `TerminalView.measureLive`);
+ * `-1` quando a viewport inteira está vazia.
+ */
+export function usedRowsFromLastLine(
+  cursorRow: number,
+  lastNonEmptyRow: number,
+): number {
+  return Math.max(cursorRow, lastNonEmptyRow) + 1;
+}
+
+/**
  * O quanto a imagem do terminal desce, em fração da altura DELE.
  *
  * Serve aos dois lados da mesma conta: `translateY` desloca a faixa para que seu
@@ -98,6 +118,26 @@ export function liveHeight(pane: SeamRect, used: number): number {
 export function padSlackPx(padY: number, used: number): number {
   if (!Number.isFinite(padY) || padY <= 0) return 0;
   return padY * hiddenFraction(used);
+}
+
+/**
+ * Dois rects representam a mesma geometria?
+ *
+ * O `rect` que o `App` passa ao `TerminalView` é um objeto literal novo A
+ * CADA render — e o App re-renderiza a ~60Hz durante um comando. Comparar
+ * por IDENTIDADE faz o efeito de fit rodar a cada frame mesmo quando o
+ * painel não se moveu; comparar por VALOR (aqui) é o que deixa o fit rodar
+ * só quando a geometria muda de verdade.
+ */
+export function sameRect(a: SeamRect | null, b: SeamRect | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.left === b.left &&
+    a.top === b.top &&
+    a.width === b.width &&
+    a.height === b.height
+  );
 }
 
 /**

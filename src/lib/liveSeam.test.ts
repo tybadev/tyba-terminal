@@ -7,8 +7,10 @@ import {
   liveRect,
   LIVE_FRACTION,
   padSlackPx,
+  sameRect,
   termRect,
   usedFraction,
+  usedRowsFromLastLine,
   type SeamRect,
 } from "./liveSeam";
 
@@ -62,6 +64,34 @@ describe("padSlackPx", () => {
   });
 });
 
+describe("usedRowsFromLastLine", () => {
+  it("cobre a última linha escrita quando o cursor volta pra cima dela — caso progress-bar", () => {
+    // `\r` sem `\n`: o programa reescreve a MESMA linha, cursor fica em cima
+    // dela, mas já tinha escrito até a linha 9 antes. Sem o scan, a faixa
+    // recortaria em 2 (cursorRow=1) e cortaria a saída real.
+    expect(usedRowsFromLastLine(1, 9)).toBe(10);
+  });
+
+  it("com o cursor NA última linha escrita, é idêntico ao antigo cursorRow+1 — pinado", () => {
+    // Nenhuma divergência entre cursor e última linha: o comportamento não
+    // pode mudar para o caso comum (`seq`, `for`, qualquer saída que termina
+    // com o cursor onde parou de escrever).
+    expect(usedRowsFromLastLine(9, 9)).toBe(10);
+    expect(usedRowsFromLastLine(9, 9)).toBe(9 + 1);
+  });
+
+  it("viewport vazio (nada escrito, sem cursor útil) devolve zero", () => {
+    expect(usedRowsFromLastLine(-1, -1)).toBe(0);
+  });
+
+  it("com `scrolled`, o valor entra em usedFraction mas não muda o resultado — latch inalterado", () => {
+    // `scrolled` satura em 1 não importa o que o scan encontrou: a saída
+    // passou da tela e não há o que recortar. Ver `usedFraction`.
+    const used = usedRowsFromLastLine(1, 9);
+    expect(usedFraction(used, 24, true)).toBe(1);
+  });
+});
+
 describe("hiddenFraction", () => {
   it("é o complemento do que aparece", () => {
     expect(hiddenFraction(0.25)).toBeCloseTo(0.75);
@@ -105,6 +135,29 @@ describe("liveRect", () => {
 
   it("com a faixa cheia coincide com a caixa do terminal", () => {
     expect(liveRect(pane, 1)).toEqual(termRect(pane));
+  });
+});
+
+describe("sameRect", () => {
+  it("dois rects com os mesmos quatro campos são o mesmo rect", () => {
+    const a: SeamRect = { left: 0, top: 10, width: 100, height: 50 };
+    const b: SeamRect = { left: 0, top: 10, width: 100, height: 50 };
+    expect(sameRect(a, b)).toBe(true);
+  });
+
+  it("qualquer campo diferente já é rect novo — o painel se moveu de verdade", () => {
+    const a: SeamRect = { left: 0, top: 10, width: 100, height: 50 };
+    expect(sameRect(a, { ...a, left: 1 })).toBe(false);
+    expect(sameRect(a, { ...a, top: 11 })).toBe(false);
+    expect(sameRect(a, { ...a, width: 101 })).toBe(false);
+    expect(sameRect(a, { ...a, height: 51 })).toBe(false);
+  });
+
+  it("null nos dois lados é igual; null de um lado só nunca é", () => {
+    const a: SeamRect = { left: 0, top: 10, width: 100, height: 50 };
+    expect(sameRect(null, null)).toBe(true);
+    expect(sameRect(a, null)).toBe(false);
+    expect(sameRect(null, a)).toBe(false);
   });
 });
 
