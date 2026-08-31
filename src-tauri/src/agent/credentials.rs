@@ -137,7 +137,10 @@ pub fn diagnose_state_writability(
 pub fn preflight_claude_dir_writable(claude: &Path) -> Result<(), String> {
     let probe_tmp = claude.join(format!(".tyba-write-probe.tmp.{}", std::process::id()));
     let probe = claude.join(".tyba-write-probe");
-    let fail = |e: std::io::Error| format!("{}: {e}", claude.display());
+    // Path primeiro, causa entre parênteses (review r1, NIT): "detail" vira
+    // um fragmento pronto pra encaixar no FIM de uma frase pt-BR
+    // ("...é gravável ({detail})"), sem o errno cortando a sentença ao meio.
+    let fail = |e: std::io::Error| format!("{} ({e})", claude.display());
 
     std::fs::write(&probe_tmp, b"").map_err(fail)?;
     if let Err(e) = std::fs::rename(&probe_tmp, &probe) {
@@ -420,6 +423,29 @@ mod tests {
         let claude = tmp.path().join("nao-existe/.claude");
         let err = preflight_claude_dir_writable(&claude).unwrap_err();
         assert!(err.contains(&claude.display().to_string()), "{err}");
+    }
+
+    /// NIT do review r1: path primeiro, causa entre parênteses -- pra
+    /// "detail" render num FIM de frase pt-BR ("...é gravável ({detail})")
+    /// sem o errno cortando a sentença no meio (era "{path}: {errno}", que
+    /// interpolado no meio de "...confirmar que {{detail}} é gravável"
+    /// lia "...confirmar que /home/x/.claude: Permission denied é
+    /// gravável" -- a causa aparecia antes do verbo).
+    #[test]
+    fn preflight_error_puts_the_path_first_and_the_cause_in_parens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("nao-existe/.claude");
+        let err = preflight_claude_dir_writable(&claude).unwrap_err();
+        let path = claude.display().to_string();
+        assert!(
+            err.starts_with(&path),
+            "path precisa vir primeiro, causa depois: {err}"
+        );
+        let rest = &err[path.len()..];
+        assert!(
+            rest.trim_start().starts_with('('),
+            "a causa precisa vir entre parênteses, separada do path: {err}"
+        );
     }
 
     #[test]

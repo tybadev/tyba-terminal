@@ -1082,7 +1082,7 @@ const resources = {
       sandboxWarningCredencialSombreadaDepois:
         "A credencial do Claude ficou protegida por engano dentro da jaula — o login pode não persistir na próxima sessão.",
       sandboxWarningCredencialHostNaoGrava:
-        "Não foi possível confirmar que {{detail}} é gravável — o login pode não persistir.",
+        "Não foi possível confirmar que a pasta da credencial é gravável — o login pode não persistir ({{detail}}).",
       sandboxWarningHomeRoClaudeJsonNaoPersiste:
         "Sua pasta pessoal (~) foi liberada só para leitura para o agente — o arquivo .claude.json pode parar de salvar.",
       sandboxWarningFilhoDesconhecidoEmClaude:
@@ -2145,7 +2145,7 @@ const resources = {
       sandboxWarningCredencialSombreadaDepois:
         "The Claude credential got shadowed by mistake inside the cage — the login may not persist to the next session.",
       sandboxWarningCredencialHostNaoGrava:
-        "Could not confirm that {{detail}} is writable — the login may not persist.",
+        "Could not confirm the credential folder is writable — the login may not persist ({{detail}}).",
       sandboxWarningHomeRoClaudeJsonNaoPersiste:
         "Your home folder (~) was granted read-only to the agent — .claude.json may stop saving.",
       sandboxWarningFilhoDesconhecidoEmClaude:
