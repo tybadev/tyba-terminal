@@ -777,8 +777,6 @@ export function TerminalView({
     const unchanged =
       lastFitVisibleRef.current === visible &&
       sameRect(lastFitRectRef.current, rect);
-    lastFitVisibleRef.current = visible;
-    lastFitRectRef.current = rect;
     if (unchanged) return;
     const raf = requestAnimationFrame(() => {
       if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
@@ -786,6 +784,15 @@ export function TerminalView({
       // o PTY. Ver D4 na tech-spec.
       refitRef.current?.();
       term.refresh(0, term.rows - 1);
+      // Só marca "visto" DEPOIS do fit ter rodado de verdade — nunca antes
+      // de agendar o rAF. O core flusha PTY a cada 8-16ms (princípio 3): dois
+      // renders no mesmo frame cancelam o rAF do primeiro no cleanup do
+      // segundo, e se a marca já tivesse sido gravada na hora de agendar, o
+      // segundo render veria "unchanged" (mesmo valor já visto) e desistiria
+      // sem reagendar — o fit nunca rodaria, e sem mudança de tamanho CSS
+      // (só `top`) o ResizeObserver nem dispara pra corrigir depois.
+      lastFitVisibleRef.current = visible;
+      lastFitRectRef.current = rect;
     });
     return () => cancelAnimationFrame(raf);
   }, [visible, rect]);
