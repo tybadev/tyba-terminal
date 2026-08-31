@@ -619,6 +619,151 @@ fn claude_agent_dirs_follow_the_granular_rules() {
     assert!(session_env.join("env.sh").exists());
 }
 
+// ---------------------------------------------------------------------------
+// Entrega B — a credencial do agente sobrevive à jaula no Linux (§12, item 19:
+// mesmo par positivo/negativo dos itens 3-9 no Seatbelt). `seatbelt.rs` não
+// muda de código nenhum para B (§8) — a política é a mesma AgentAccess do
+// Linux, só renderizada em SBPL; estes testes provam que a tradução para
+// sandbox-exec produz o mesmo resultado observável.
+// ---------------------------------------------------------------------------
+
+/// Contrato de cobertura itens 3 e 4 (par macOS): settings.json,
+/// settings.local.json, daemon.json, CLAUDE.md (arquivos sombreados
+/// obrigatórios) e um representante de cada diretório somente-leitura
+/// (plugins/, hooks/, agents/) nunca são graváveis — nem um arquivo que já
+/// existia, nem um novo dentro de um diretório já sombreado.
+#[test]
+fn claude_config_and_hook_surfaces_are_never_writable_on_macos() {
+    require_seatbelt!();
+    let mut f = fixture();
+    let claude = f.home.join(".claude");
+    std::fs::create_dir_all(claude.join("plugins/x")).unwrap();
+    std::fs::write(claude.join("plugins/x/hook.sh"), "#!/bin/sh\necho pwn\n").unwrap();
+    std::fs::create_dir_all(claude.join("hooks")).unwrap();
+    std::fs::write(claude.join("settings.json"), "{}").unwrap();
+    std::fs::write(claude.join("settings.local.json"), "{}").unwrap();
+    std::fs::write(claude.join("daemon.json"), "{}").unwrap();
+    std::fs::write(claude.join("CLAUDE.md"), "memória do dono").unwrap();
+    f.spec.agent = ClaudeCodeRunner.sandbox_access(&f.home, &f.worktree);
+
+    for target in [
+        "settings.json",
+        "settings.local.json",
+        "daemon.json",
+        "CLAUDE.md",
+        "plugins/x/hook.sh",
+        "plugins/novo-plugin.json",
+        "hooks/pre-commit.sh",
+    ] {
+        let path = claude.join(target);
+        let before = std::fs::read(&path).ok();
+        let out = run_in_sandbox(
+            &f.spec,
+            &f.worktree,
+            &format!("echo pwn > {}", path.display()),
+        );
+        assert_denied(&out, target);
+        assert_eq!(
+            std::fs::read(&path).ok(),
+            before,
+            "{target} mudou de conteúdo apesar do write ter falhado"
+        );
+    }
+}
+
+/// Contrato de cobertura item 6 (par macOS): `file-write*` no Seatbelt cobre a
+/// família inteira (create/unlink/rename/data), então `rm` e `mv` por cima de
+/// um filho sombreado também precisam falhar — não só a escrita in-place.
+#[test]
+fn shadowed_children_resist_rm_and_move_over_on_macos() {
+    require_seatbelt!();
+    let mut f = fixture();
+    let claude = f.home.join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(claude.join("settings.json"), "{}").unwrap();
+    f.spec.agent = ClaudeCodeRunner.sandbox_access(&f.home, &f.worktree);
+    let settings = claude.join("settings.json");
+
+    let rm = run_in_sandbox(&f.spec, &f.worktree, &format!("rm {}", settings.display()));
+    assert_denied(&rm, "rm sobre settings.json sombreado");
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "{}");
+
+    let mv = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!(
+            "echo pwn > /tmp/pwn-{}.json && mv /tmp/pwn-{}.json {}",
+            std::process::id(),
+            std::process::id(),
+            settings.display()
+        ),
+    );
+    assert_denied(&mv, "mv por cima de settings.json sombreado");
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "{}");
+}
+
+/// Contrato de cobertura item 8 (par macOS) — PAR POSITIVO, não opcional: sem
+/// ele, "passa" tendo quebrado tudo (o mesmo V8 que motivou a inversão no
+/// Linux vale para a política compartilhada).
+#[test]
+fn previously_denied_state_dirs_are_writable_on_macos() {
+    require_seatbelt!();
+    let mut f = fixture();
+    let claude = f.home.join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    f.spec.agent = ClaudeCodeRunner.sandbox_access(&f.home, &f.worktree);
+
+    for dir in [
+        "backups",
+        "jobs",
+        "cache",
+        "paste-cache",
+        "sessions",
+        "chrome",
+        "downloads",
+    ] {
+        let dir_path = claude.join(dir);
+        let target = dir_path.join("novo.txt");
+        let out = run_in_sandbox(
+            &f.spec,
+            &f.worktree,
+            &format!(
+                "mkdir -p {} && echo ok > {}",
+                dir_path.display(),
+                target.display()
+            ),
+        );
+        assert!(
+            out.status.success(),
+            "{dir} precisa ser gravável: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap().trim(), "ok");
+    }
+}
+
+/// Contrato de cobertura item 9 (par macOS): completa
+/// `claude_agent_dirs_follow_the_granular_rules` (que já prova leitura negada)
+/// com a metade que faltava — escrita em `projects/<outro>` também precisa
+/// falhar.
+#[test]
+fn other_project_is_not_writable_on_macos() {
+    require_seatbelt!();
+    let mut f = fixture();
+    let claude = f.home.join(".claude");
+    std::fs::create_dir_all(claude.join("projects/-other-repo")).unwrap();
+    f.spec.agent = ClaudeCodeRunner.sandbox_access(&f.home, &f.worktree);
+
+    let target = claude.join("projects/-other-repo/pwn.txt");
+    let out = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!("echo pwn > {}", target.display()),
+    );
+    assert_denied(&out, "escrita em projects/<outro>");
+    assert!(!target.exists());
+}
+
 #[test]
 #[ignore = "exige ./target/debug/tyba compilado (cargo build antes)"]
 fn tyba_hook_crosses_the_sandbox_and_gets_a_real_decision() {

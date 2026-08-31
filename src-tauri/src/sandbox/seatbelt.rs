@@ -488,32 +488,74 @@ mod tests {
         }
     }
 
+    /// Entrega B (§2/§3.1): o write vira denylist também no macOS — mesma
+    /// `AgentAccess` do Linux, só renderizada em SBPL. Substitui
+    /// `policy_write_grants_claude_session_env_as_anchored_node_only`: com a
+    /// allowlist antiga a linha de write nunca continha `(subpath
+    /// "~/.claude")` nem a palavra "settings" em lugar nenhum; sob a nova
+    /// política ambas aparecem — "settings" dentro do `require-not`, que é
+    /// exatamente onde precisa estar. A promessa desta entrega é a razão da
+    /// mudança (mesmo raciocínio do teste irmão em `agent/mod.rs`).
     #[test]
-    fn policy_write_grants_claude_session_env_as_anchored_node_only() {
+    fn policy_write_shadows_config_and_hook_surfaces_but_keeps_state_writable() {
         use crate::agent::{AgentRunner, ClaudeCodeRunner};
         let mut s = spec();
         s.agent = ClaudeCodeRunner.sandbox_access(&s.home, &s.writable_root);
         let policy = build_policy(&s);
-        let write_lines: Vec<&str> = policy
+
+        let claude_line = policy
             .lines()
-            .filter(|l| l.starts_with("(allow file-write*"))
-            .collect();
-        let joined = write_lines.join("\n");
+            .find(|l| l.starts_with("(allow file-write*") && l.contains("require-not"))
+            .expect("faltou a linha de write com except de ~/.claude");
+        let (allow_part, except_part) = claude_line
+            .split_once("(require-not")
+            .expect("a linha precisa ter require-not");
+
         assert!(
-            joined.contains(r#"(regex #"^/Users/nobody/\.claude/session-env(/.*)?$")"#),
-            "session-env precisa entrar como node ancorado gravável"
+            allow_part.contains(r#"(subpath "/Users/nobody/.claude")"#),
+            "~/.claude precisa virar gravável por default: {allow_part}"
         );
-        for line in &write_lines {
+
+        for shadowed in [
+            r#"(literal "/Users/nobody/.claude/settings.json")"#,
+            r#"(literal "/Users/nobody/.claude/settings.local.json")"#,
+            r#"(literal "/Users/nobody/.claude/daemon.json")"#,
+            r#"(literal "/Users/nobody/.claude/mcp.json")"#,
+            r#"(literal "/Users/nobody/.claude/CLAUDE.md")"#,
+            r#"(subpath "/Users/nobody/.claude/plugins")"#,
+            r#"(subpath "/Users/nobody/.claude/hooks")"#,
+            r#"(subpath "/Users/nobody/.claude/agents")"#,
+            r#"(subpath "/Users/nobody/.claude/commands")"#,
+            r#"(subpath "/Users/nobody/.claude/skills")"#,
+            r#"(subpath "/Users/nobody/.claude/daemon")"#,
+            r#"(subpath "/Users/nobody/.claude/projects")"#,
+        ] {
             assert!(
-                !line.contains(r#"(subpath "/Users/nobody/.claude")"#),
-                "session-env não pode abrir ~/.claude inteiro pra escrita: {line}"
+                except_part.contains(shadowed),
+                "faltou sombra de {shadowed}: {except_part}"
             );
-            assert!(
-                !line.contains("settings"),
-                "settings nunca gravável: {line}"
-            );
-            assert!(!line.contains("plugins"), "plugins nunca gravável: {line}");
         }
+
+        for still_writable in ["session-env", "backups", "cache", "jobs"] {
+            assert!(
+                !except_part.contains(&format!(".claude/{still_writable}")),
+                "{still_writable} não pode estar sombreado: {except_part}"
+            );
+        }
+
+        // §3.3: o re-grant de projects/<este> precisa ser uma allow LINE
+        // própria, sem except — no mesmo RuleSet o require-not mataria o
+        // próprio allow também no macOS.
+        let project_name = crate::agent::claude_project_dir_name(&s.writable_root);
+        let regrant = policy
+            .lines()
+            .find(|l| {
+                l.starts_with("(allow file-write*")
+                    && l.contains(&project_name)
+                    && !l.contains("require-not")
+            })
+            .expect("o re-grant do projeto atual precisa ser uma allow linha própria, sem except");
+        assert!(regrant.contains(&project_name));
     }
 
     #[test]
