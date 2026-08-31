@@ -87,6 +87,7 @@ import {
 } from "./lib/closeGuard";
 import { pushToast, toastError } from "./lib/toast";
 import { sandboxWarningTitleKey } from "./lib/sandboxWarning";
+import { agentOpenUrlToastInput } from "./lib/agentOpenUrlToast";
 import {
   LaunchConfigDialog,
   type LaunchConfigDraftState,
@@ -1169,25 +1170,7 @@ export default function App() {
   // contrato) — nunca acontece sozinho.
   useEffect(() => {
     const unlisten = onAgentOpenUrl((payload) => {
-      pushToast({
-        tone: "info",
-        title: payload.known_login
-          ? t("agentOpenUrlKnownLoginTitle")
-          : t("agentOpenUrlUnknownTitle", { host: payload.host }),
-        // known_login=true: corpo é o nome curto e confiável (claude.ai),
-        // não a URL de authorize inteira. known_login=false: a URL completa
-        // fica no corpo (break-words já é o estilo padrão do ToastDescription)
-        // -- é o consentimento informado, §5.3.
-        detail: payload.known_login
-          ? t("agentOpenUrlKnownLoginBody")
-          : payload.url,
-        action: {
-          label: t("agentOpenUrlAction"),
-          run: () => {
-            void openExternalUrl(payload.url);
-          },
-        },
-      });
+      pushToast(agentOpenUrlToastInput(payload, t));
     });
     return () => {
       void unlisten.then((off) => off());

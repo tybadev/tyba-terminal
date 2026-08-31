@@ -1074,8 +1074,7 @@ const resources = {
       broadcastConfirmCount_one: "{{count}} host",
       broadcastConfirmCount_other: "{{count}} hosts",
       broadcastConfirmAction: "Rodar em todos",
-      agentOpenUrlKnownLoginTitle: "Concluir o login do Claude",
-      agentOpenUrlKnownLoginBody: "claude.ai",
+      agentOpenUrlKnownLoginTitle: "Concluir o login do Claude — {{host}}",
       agentOpenUrlUnknownTitle: "O agente pediu para abrir {{host}}",
       agentOpenUrlAction: "Abrir no navegador",
       sandboxWarningCredencialPaiNaoEhRw:
@@ -2138,8 +2137,7 @@ const resources = {
       broadcastConfirmCount_one: "{{count}} host",
       broadcastConfirmCount_other: "{{count}} hosts",
       broadcastConfirmAction: "Run on all",
-      agentOpenUrlKnownLoginTitle: "Finish signing in to Claude",
-      agentOpenUrlKnownLoginBody: "claude.ai",
+      agentOpenUrlKnownLoginTitle: "Finish signing in to Claude — {{host}}",
       agentOpenUrlUnknownTitle: "The agent asked to open {{host}}",
       agentOpenUrlAction: "Open in browser",
       sandboxWarningCredencialPaiNaoEhRw:
