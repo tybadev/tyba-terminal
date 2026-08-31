@@ -1,3 +1,4 @@
+pub mod browser_bridge;
 pub mod codex_hooks;
 pub mod conversation;
 pub mod credentials;
