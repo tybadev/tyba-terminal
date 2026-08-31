@@ -7,6 +7,7 @@ use std::process::{Command, Output};
 use super::bwrap::{build_args, BwrapSandbox, BWRAP};
 use super::policy::AgentAccess;
 use super::SandboxSpec;
+use crate::agent::{AgentRunner, ClaudeCodeRunner};
 
 fn bwrap_unavailable(test: &str) -> bool {
     match BwrapSandbox::new() {
@@ -108,6 +109,64 @@ fn fixture() -> Fixture {
         spec,
         sibling_worktree: sibling,
     }
+}
+
+/// Entrega B: `~/.claude` povoado como o do dono (V7/V8) — populado o
+/// suficiente para exercitar cada linha do §2 (sombreados e não-sombreados) —
+/// e `spec.agent` vem do `ClaudeCodeRunner` real (`sandbox_access`), não de
+/// uma política de teste escrita à mão: o que está sob prova é a política de
+/// produção, não uma paráfrase dela. Fixture SINTÉTICA (CLAUDE.md) — nenhum
+/// conteúdo aqui vem de uma sessão real.
+fn claude_fixture() -> Fixture {
+    let mut f = fixture();
+    let claude = f.spec.home.join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+
+    std::fs::write(claude.join("settings.json"), r#"{"hooks":{}}"#).unwrap();
+    std::fs::write(claude.join("settings.local.json"), "{}").unwrap();
+    std::fs::write(claude.join("daemon.json"), "{}").unwrap();
+    std::fs::create_dir_all(claude.join("daemon")).unwrap();
+    std::fs::write(claude.join("daemon/schedule.json"), "{}").unwrap();
+    std::fs::create_dir_all(claude.join("plugins/x")).unwrap();
+    std::fs::write(claude.join("plugins/x/hook.sh"), "#!/bin/sh\necho pwn\n").unwrap();
+    std::fs::create_dir_all(claude.join("cowork_plugins")).unwrap();
+    std::fs::create_dir_all(claude.join("hooks")).unwrap();
+    std::fs::write(claude.join("mcp.json"), "{}").unwrap();
+    std::fs::create_dir_all(claude.join("agents")).unwrap();
+    std::fs::create_dir_all(claude.join("commands")).unwrap();
+    std::fs::create_dir_all(claude.join("skills")).unwrap();
+    std::fs::create_dir_all(claude.join("output-styles")).unwrap();
+    std::fs::create_dir_all(claude.join("rules")).unwrap();
+    std::fs::create_dir_all(claude.join("workflows")).unwrap();
+    std::fs::write(claude.join("CLAUDE.md"), "memória do dono").unwrap();
+
+    // V9: o nome real não está em nenhuma lista fixa — só a forma (executável)
+    // classifica.
+    std::fs::write(
+        claude.join("statusline-command.sh"),
+        "#!/bin/sh\necho status\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            claude.join("statusline-command.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+
+    std::fs::write(claude.join("history.jsonl"), "linha-privada\n").unwrap();
+    std::fs::create_dir_all(claude.join("projects/-other-repo")).unwrap();
+    std::fs::write(
+        claude.join("projects/-other-repo/secret.txt"),
+        "segredo do outro repo",
+    )
+    .unwrap();
+
+    f.spec.agent = ClaudeCodeRunner.sandbox_access(&f.spec.home, &f.spec.writable_root);
+    f
 }
 
 fn run_argv(spec: &SandboxSpec, argv: &[&str]) -> Output {
@@ -534,4 +593,281 @@ fn shell_gets_a_real_tty() {
         out.contains("TTY_OK"),
         "sem isatty o shell vira não-interativo e TUIs quebram: {out}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Entrega B — a credencial do agente sobrevive à jaula no Linux (§12, T1)
+// ---------------------------------------------------------------------------
+
+/// Contrato de cobertura item 2 / claim C3 parcial: a credencial usa o mesmo
+/// padrão tmp+rename que o resto do binário (M2), e agora o pai é um bind rw
+/// de verdade (não mountpoint do $HOME) — o rename funciona de ponta a ponta,
+/// dentro da jaula, e o conteúdo chega ao host.
+#[test]
+fn credential_survives_atomic_rename_and_reaches_host() {
+    if bwrap_unavailable("credential_survives_atomic_rename_and_reaches_host") {
+        return;
+    }
+    let f = claude_fixture();
+    let claude = f.spec.home.join(".claude");
+    let cred = claude.join(".credentials.json");
+    assert!(!cred.exists(), "fixture precisa nascer sem credencial");
+
+    let out = run_sh(
+        &f.spec,
+        &format!(
+            "echo '{{\"token\":\"novo\"}}' > {0}/.credentials.json.tmp.abc12345 && \
+             mv {0}/.credentials.json.tmp.abc12345 {0}/.credentials.json && \
+             cat {0}/.credentials.json",
+            claude.display()
+        ),
+    );
+    assert_cage_booted(&out);
+    assert!(
+        out.status.success(),
+        "a credencial precisa sobreviver ao padrão tmp+rename do próprio Claude Code: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout(&out).contains("novo"));
+    let on_host = std::fs::read_to_string(&cred).unwrap();
+    assert!(
+        on_host.contains("novo"),
+        "a escrita atômica precisa chegar ao host: {on_host}"
+    );
+}
+
+/// Contrato de cobertura itens 3, 4 e 5: settings.json, settings.local.json,
+/// daemon.json, daemon/, plugins/, plugins/x/hook.sh, hooks/, mcp.json,
+/// agents/, commands/, skills/, output-styles/, rules/, workflows/, CLAUDE.md
+/// e o statusline-command.sh do dono (V9, achado por forma, não por nome) —
+/// nenhum gravável, mesmo com `~/.claude` inteiro virando bind rw. Inclui
+/// caminhos que NÃO existiam na fixture (daemon/novo.json,
+/// plugins/novo-plugin.json): o diretório sombreado bloqueia criar filho
+/// novo, não só reescrever o que já tinha.
+#[test]
+fn claude_config_and_hook_surfaces_are_never_writable() {
+    if bwrap_unavailable("claude_config_and_hook_surfaces_are_never_writable") {
+        return;
+    }
+    let f = claude_fixture();
+    let claude = f.spec.home.join(".claude");
+    let targets = [
+        "settings.json",
+        "settings.local.json",
+        "daemon.json",
+        "daemon/schedule.json",
+        "daemon/novo.json",
+        "plugins/x/hook.sh",
+        "plugins/novo-plugin.json",
+        "hooks/pre-commit.sh",
+        "mcp.json",
+        "agents/reviewer.md",
+        "commands/deploy.md",
+        "skills/x/SKILL.md",
+        "output-styles/terse.md",
+        "rules/security.md",
+        "workflows/ci.yaml",
+        "CLAUDE.md",
+        "statusline-command.sh",
+    ];
+    for target in targets {
+        let path = claude.join(target);
+        let before = std::fs::read(&path).ok();
+        let out = run_sh(&f.spec, &format!("echo pwn > {}", path.display()));
+        assert_cage_booted(&out);
+        assert!(
+            !out.status.success(),
+            "{target} não pode ser gravável: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            std::fs::read(&path).ok(),
+            before,
+            "{target} mudou de conteúdo apesar do write ter falhado"
+        );
+    }
+}
+
+/// Contrato de cobertura item 6 / M1: sobre filho sombreado, `rm` e `mv` por
+/// cima também falham (EBUSY) — a sombra de arquivo dentro de pai rw não
+/// resiste só à escrita in-place, resiste a substituição e a remoção.
+#[test]
+fn shadowed_children_resist_rm_and_move_over() {
+    if bwrap_unavailable("shadowed_children_resist_rm_and_move_over") {
+        return;
+    }
+    let f = claude_fixture();
+    let claude = f.spec.home.join(".claude");
+    let settings = claude.join("settings.json");
+    let before = std::fs::read_to_string(&settings).unwrap();
+
+    let out = run_sh(&f.spec, &format!("rm {}", settings.display()));
+    assert_cage_booted(&out);
+    assert!(
+        !out.status.success(),
+        "rm sobre sombra precisa falhar (EBUSY, M1)"
+    );
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), before);
+
+    let out = run_sh(
+        &f.spec,
+        &format!(
+            "echo pwn > /tmp/pwn.json && mv /tmp/pwn.json {}",
+            settings.display()
+        ),
+    );
+    assert_cage_booted(&out);
+    assert!(
+        !out.status.success(),
+        "mv por cima da sombra precisa falhar (EBUSY, M1)"
+    );
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), before);
+
+    let plugins = claude.join("plugins");
+    let out = run_sh(&f.spec, &format!("rmdir {}", plugins.display()));
+    assert_cage_booted(&out);
+    assert!(
+        !out.status.success(),
+        "rmdir sobre diretório sombreado precisa falhar"
+    );
+    assert!(plugins.is_dir());
+}
+
+/// Contrato de cobertura item 8 — PAR POSITIVO, não opcional: sem ele, "passa"
+/// tendo quebrado tudo (V8: estes sete diretórios falhavam EROFS em silêncio
+/// sob a allowlist antiga).
+#[test]
+fn previously_erofs_state_dirs_are_now_writable() {
+    if bwrap_unavailable("previously_erofs_state_dirs_are_now_writable") {
+        return;
+    }
+    let f = claude_fixture();
+    let claude = f.spec.home.join(".claude");
+    for dir in [
+        "backups",
+        "jobs",
+        "cache",
+        "paste-cache",
+        "sessions",
+        "chrome",
+        "downloads",
+    ] {
+        let dir_path = claude.join(dir);
+        let target = dir_path.join("novo.txt");
+        let out = run_sh(
+            &f.spec,
+            &format!(
+                "mkdir -p {} && echo ok > {}",
+                dir_path.display(),
+                target.display()
+            ),
+        );
+        assert_cage_booted(&out);
+        assert!(
+            out.status.success(),
+            "{dir} precisa ser gravável (V8 — falhava EROFS em silêncio): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap().trim(),
+            "ok",
+            "{dir} não persistiu no host"
+        );
+    }
+}
+
+/// Contrato de cobertura item 7: session-env continua gravável — é onde os
+/// hooks SessionStart do próprio Claude Code criam estado; regredir aqui
+/// quebra hooks que já funcionavam antes de B.
+#[test]
+fn session_env_is_still_writable_no_regression() {
+    if bwrap_unavailable("session_env_is_still_writable_no_regression") {
+        return;
+    }
+    let f = claude_fixture();
+    let claude = f.spec.home.join(".claude");
+    let dir = claude.join("session-env/uuid-1");
+    let token = dir.join("token");
+    let out = run_sh(
+        &f.spec,
+        &format!(
+            "mkdir -p {} && echo tok > {}",
+            dir.display(),
+            token.display()
+        ),
+    );
+    assert_cage_booted(&out);
+    assert!(
+        out.status.success(),
+        "session-env não pode regredir: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(&token).unwrap().trim(), "tok");
+}
+
+/// Contrato de cobertura item 9 / furo F4: `projects/<outro>` nem lê nem
+/// escreve; `projects/<este>` lê e escreve, via re-grant por cima da sombra.
+#[test]
+fn other_project_is_invisible_current_project_is_readable_and_writable() {
+    if bwrap_unavailable("other_project_is_invisible_current_project_is_readable_and_writable") {
+        return;
+    }
+    let f = claude_fixture();
+    let claude = f.spec.home.join(".claude");
+    let other = claude.join("projects/-other-repo/secret.txt");
+    let out = run_sh(
+        &f.spec,
+        &format!("test ! -e {} && echo ISOLADO", other.display()),
+    );
+    assert_cage_booted(&out);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        stdout(&out),
+        "ISOLADO",
+        "projects/<outro> não pode ser legível nem gravável (F4)"
+    );
+
+    let project_name = crate::agent::claude_project_dir_name(&f.spec.writable_root);
+    let current = claude.join("projects").join(&project_name);
+    let marker = current.join("marca.jsonl");
+    let out = run_sh(
+        &f.spec,
+        &format!(
+            "mkdir -p {} && echo x > {} && cat {}",
+            current.display(),
+            marker.display(),
+            marker.display()
+        ),
+    );
+    assert_cage_booted(&out);
+    assert!(
+        out.status.success(),
+        "projects/<este> precisa ser gravável (e legível, via cat): {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stdout(&out), "x");
+}
+
+/// Contrato de cobertura item 10: history.jsonl mascarado mesmo com o pai
+/// (`~/.claude`) inteiro virando bind rw — não regride o furo que a leitura já
+/// fechava antes de B.
+#[test]
+fn history_jsonl_is_masked_even_with_writable_parent() {
+    if bwrap_unavailable("history_jsonl_is_masked_even_with_writable_parent") {
+        return;
+    }
+    let f = claude_fixture();
+    let history = f.spec.home.join(".claude/history.jsonl");
+    let before = std::fs::read_to_string(&history).unwrap();
+    let out = run_sh(&f.spec, &format!("echo pwn > {}", history.display()));
+    assert_cage_booted(&out);
+    assert!(
+        !out.status.success(),
+        "history.jsonl não pode ser gravável mesmo com ~/.claude rw"
+    );
+    assert_eq!(std::fs::read_to_string(&history).unwrap(), before);
 }
