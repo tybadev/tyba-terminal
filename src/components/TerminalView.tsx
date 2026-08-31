@@ -45,7 +45,12 @@ import {
   hasOpenModifier,
 } from "../lib/terminalLinks";
 import { IS_MAC } from "../lib/platform";
-import { hiddenFraction, sameRect, usedRowsFromLastLine } from "../lib/liveSeam";
+import {
+  hiddenFraction,
+  nonEmptyLine,
+  sameRect,
+  usedRowsFromLastLine,
+} from "../lib/liveSeam";
 import { isArrowKey } from "../lib/commandLine";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
@@ -567,14 +572,20 @@ export function TerminalView({
     let lastUsed = -1;
     let lastTotal = -1;
     let lastScrolled: boolean | null = null;
-    // Índice (0-based) da última linha com texto, de baixo pra cima. Só
-    // roda quando não está `scrolled` (aí a conta satura em 1 de qualquer
-    // jeito) e no tick batched do `onRender` — nunca por byte.
+    // Índice (0-based, relativo à VIEWPORT — a mesma unidade de cursorY) da
+    // última linha com texto, de baixo pra cima. Só roda quando não está
+    // `scrolled` (aí a conta satura em 1 de qualquer jeito) e no tick
+    // batched do `onRender` — nunca por byte.
+    //
+    // `getLine` recebe índice ABSOLUTO no buffer (baseY + y), não o da
+    // viewport: hoje `baseY` é sempre 0 neste ramo (`scrolled` cobre o
+    // resto), mas escrever a conta certa evita a mina pra quando um caminho
+    // futuro chamar isto com `scrolled === true`.
     const lastNonEmptyRow = (): number => {
       const buffer = term.buffer.active;
       for (let y = term.rows - 1; y >= 0; y--) {
-        const line = buffer.getLine(y);
-        if (line && line.translateToString(true).length > 0) return y;
+        const line = buffer.getLine(buffer.baseY + y);
+        if (line && nonEmptyLine(line)) return y;
       }
       return -1;
     };
@@ -634,7 +645,16 @@ export function TerminalView({
     let lastRows = -1;
     let timer: number | null = null;
     const refit = () => {
-      timer = null;
+      // `refit()` agora é chamado de 4 pontos, não só do próprio
+      // `setTimeout` de 80ms do ResizeObserver — sem cancelar o timer
+      // pendente aqui, um chamador direto (font-load, DPR) zera `timer` sem
+      // desarmar o `setTimeout` real, que dispara depois e refaz o fit de
+      // novo pro MESMO evento de geometria. Dois fits pra um evento só é o
+      // padrão que já reabriu o vim com altura errada.
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
       if (!opened) return; // o rAF de open ainda não rodou — nada a ajustar
       if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
       const buffer = term.buffer.active;
@@ -646,10 +666,22 @@ export function TerminalView({
       }
       if (term.cols !== lastCols || term.rows !== lastRows) {
         const rowsChanged = term.rows !== lastRows;
-        lastCols = term.cols;
-        lastRows = term.rows;
+        const cols = term.cols;
+        const rows = term.rows;
         if (wasAtBottom && rowsChanged) term.scrollToBottom();
-        void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
+        // `lastCols`/`lastRows` só avançam depois do PTY CONFIRMAR — não no
+        // disparo da chamada. `resize_session` devolve NotFound se o PTY
+        // ainda não estiver no pool (pty/mod.rs `resize`); gravar antes e
+        // engolir a rejeição faria o xterm achar que o PTY já sabe do
+        // tamanho novo quando na verdade não sabe, e nenhum fit futuro
+        // tentaria de novo — PTY preso na geometria do spawn, wrap errado,
+        // últimas linhas perdidas, o próprio sintoma da entrega.
+        void resizeSession(sessionId, cols, rows)
+          .then(() => {
+            lastCols = cols;
+            lastRows = rows;
+          })
+          .catch(() => {});
       }
     };
     // Único ponto de saída deste efeito para fora dele: o efeito de
@@ -774,9 +806,11 @@ export function TerminalView({
     const term = termRef.current;
     const el = containerRef.current;
     if (!term || !el) return;
+    // `visible` já é `true` neste ponto (early return acima cobre o `false`)
+    // — a metade que importa é só `lastFitVisibleRef.current`: se o último
+    // fit aplicado já era visível, só o valor de `rect` decide.
     const unchanged =
-      lastFitVisibleRef.current === visible &&
-      sameRect(lastFitRectRef.current, rect);
+      lastFitVisibleRef.current && sameRect(lastFitRectRef.current, rect);
     if (unchanged) return;
     const raf = requestAnimationFrame(() => {
       if (el.offsetWidth === 0 || el.offsetHeight === 0) return;

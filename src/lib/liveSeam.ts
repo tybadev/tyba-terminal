@@ -1,3 +1,5 @@
+import type { IBufferLine } from "@xterm/xterm";
+
 /**
  * A emenda entre a saída ao vivo e o cartão do bloco.
  *
@@ -83,6 +85,25 @@ export function usedRowsFromLastLine(
   lastNonEmptyRow: number,
 ): number {
   return Math.max(cursorRow, lastNonEmptyRow) + 1;
+}
+
+/**
+ * A linha tem conteúdo — texto ou um FUNDO diferente do padrão nalguma
+ * célula.
+ *
+ * `translateToString(true)` faz trim à direita: uma barra de progresso
+ * feita só de espaços com fundo colorido (`\x1b[42m      \x1b[0m`, o idioma
+ * mais comum pra isso) tem comprimento 0 depois do trim e passaria por
+ * "vazia" — cortando exatamente a linha que motivou esta entrega. Usada
+ * pelo scan de {@link usedRowsFromLastLine} em `TerminalView.measureLive`.
+ */
+export function nonEmptyLine(line: IBufferLine): boolean {
+  if (line.translateToString(true).length > 0) return true;
+  for (let x = 0; x < line.length; x++) {
+    const cell = line.getCell(x);
+    if (cell && !cell.isBgDefault()) return true;
+  }
+  return false;
 }
 
 /**

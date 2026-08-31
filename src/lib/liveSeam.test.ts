@@ -1,11 +1,14 @@
 import { describe, expect, it } from "bun:test";
 
+import type { IBufferCell, IBufferLine } from "@xterm/xterm";
+
 import {
   blocksRect,
   hiddenFraction,
   liveHeight,
   liveRect,
   LIVE_FRACTION,
+  nonEmptyLine,
   padSlackPx,
   sameRect,
   termRect,
@@ -13,6 +16,18 @@ import {
   usedRowsFromLastLine,
   type SeamRect,
 } from "./liveSeam";
+
+/** Uma IBufferLine mínima, só com o que `nonEmptyLine` lê. */
+function fakeLine(text: string, bgDefault: boolean[] = []): IBufferLine {
+  const cells: IBufferCell[] = bgDefault.map(
+    (isDefault) => ({ isBgDefault: () => isDefault }) as IBufferCell,
+  );
+  return {
+    length: cells.length,
+    translateToString: () => text,
+    getCell: (x: number) => cells[x],
+  } as unknown as IBufferLine;
+}
 
 const pane: SeamRect = { left: 0, top: 0, width: 100, height: 100 };
 
@@ -80,7 +95,19 @@ describe("usedRowsFromLastLine", () => {
     expect(usedRowsFromLastLine(9, 9)).toBe(9 + 1);
   });
 
-  it("viewport vazio (nada escrito, sem cursor útil) devolve zero", () => {
+  it("viewport recém-aberta, nada escrito: só a linha do cursor conta — o piso é 1, não 0", () => {
+    // Estado real e alcançável: xterm nunca reporta cursorRow negativo, e o
+    // scan (nenhuma linha não-vazia) devolve -1. O piso é a própria linha do
+    // cursor — é o que faz o cursor piscando continuar visível num prompt em
+    // branco (ver `MIN_USED`/`usedFraction`, que garante o mesmo piso mais
+    // abaixo na cadeia).
+    expect(usedRowsFromLastLine(0, -1)).toBe(1);
+  });
+
+  it("entrada degenerada (defensiva, não alcançável no uso real) não estoura — devolve zero", () => {
+    // cursorRow negativo nunca acontece com um buffer xterm de verdade; este
+    // teste é só uma defesa de robustez da função pura, no mesmo espírito
+    // dos casos de NaN/Infinity de `usedFraction` acima.
     expect(usedRowsFromLastLine(-1, -1)).toBe(0);
   });
 
@@ -89,6 +116,29 @@ describe("usedRowsFromLastLine", () => {
     // passou da tela e não há o que recortar. Ver `usedFraction`.
     const used = usedRowsFromLastLine(1, 9);
     expect(usedFraction(used, 24, true)).toBe(1);
+  });
+});
+
+describe("nonEmptyLine", () => {
+  it("linha com texto é não-vazia", () => {
+    expect(nonEmptyLine(fakeLine("olá"))).toBe(true);
+  });
+
+  it("linha em branco, sem nenhuma célula, é vazia", () => {
+    expect(nonEmptyLine(fakeLine(""))).toBe(false);
+  });
+
+  it("barra de progresso feita só de espaços com FUNDO colorido é não-vazia — review MINOR 7", () => {
+    // `\x1b[42m      \x1b[0m`: o texto pós-trim é "" (translateToString
+    // corta o espaço à direita), mas a célula tem fundo != default. Sem
+    // este ramo, a barra de progresso mais comum vira "linha vazia" e o
+    // scan da última linha escrita (D6) a ignora — o próprio caso que
+    // motivou a entrega.
+    expect(nonEmptyLine(fakeLine("", [false]))).toBe(true);
+  });
+
+  it("linha sem texto e com todas as células no fundo padrão é vazia", () => {
+    expect(nonEmptyLine(fakeLine("", [true, true, true]))).toBe(false);
   });
 });
 
