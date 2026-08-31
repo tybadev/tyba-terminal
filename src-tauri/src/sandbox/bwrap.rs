@@ -848,6 +848,16 @@ mod tests {
         assert!(argv.contains(&"--unshare-net".to_string()));
     }
 
+    /// §3.7 da entrega B (M3, medido em bwrap real): o `$HOME` nunca pode
+    /// virar um mount explícito (bind OU ro-bind) — é o próprio mountpoint
+    /// do bwrap sobre o tmpfs raiz, e é POR ISSO que a criação do irmão
+    /// `.tmp` do `~/.claude.json` funciona (o write cria o tmp DENTRO do
+    /// $HOME gravável, sem precisar montar nada ali). Ro-bindar o $HOME
+    /// (ex.: um `read_allow = ["~"]` do dono, suportado e pinado à parte)
+    /// dá EROFS na criação do tmp, e EROFS não habilita o braço in-place do
+    /// writer — o write morre sem fallback, em silêncio (o buraco de UX que
+    /// `HomeRoClaudeJsonNaoPersiste`, em `credentials.rs`, existe pra
+    /// avisar). Este teste é o que pina a premissa; nunca remover.
     #[test]
     fn home_is_never_bound_whole() {
         let (_tmp, spec) = fixture();
@@ -1207,6 +1217,18 @@ mod tests {
         assert!(triple_pos(&argv, "--ro-bind", "/dev/null", &h).is_some());
     }
 
+    /// §3.5 da entrega B: continua pinando que `Family` no Linux só alcança
+    /// irmãos que JÁ EXISTIAM no spawn — o `.tmp.<hex>` do writer nasce
+    /// DEPOIS, e um rename sobre um mountpoint dá EBUSY (medido, 100%).
+    /// Comentário trocado de propósito (era premissa, virou limitação
+    /// registrada, não objetivo): a credencial (`.credentials.json`) NÃO
+    /// depende mais desta regra — mora num pai gravável de verdade
+    /// (`~/.claude`, depois da inversão), provada por
+    /// `credential_survives_atomic_rename_and_reaches_host` no exec test.
+    /// Quem ainda depende de `Family` é só `~/.claude.json`, cujo pai é o
+    /// `$HOME` e NUNCA pode virar bind rw (`home_is_never_bound_whole`,
+    /// M3) — ali a persistência funciona pelo braço in-place do writer
+    /// quando o rename dá EBUSY (§4, M2).
     #[test]
     fn family_rule_binds_existing_siblings_rw() {
         let (_tmp, mut spec) = fixture();
