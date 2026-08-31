@@ -6,6 +6,38 @@ use sha2::Digest;
 
 pub const AGENT_ENV_BASELINE: [&str; 6] = ["PATH", "HOME", "USER", "LANG", "TMPDIR", "SHELL"];
 
+/// §7 da entrega B (ADR 2026-08-31): nomes que `env_allow` NUNCA concede,
+/// mesmo com consent explícito do dono — o consent autoriza o repo a PEDIR
+/// uma var, não a receber qualquer uma. Cada um tem motivo concreto: DISPLAY/
+/// WAYLAND_DISPLAY/XAUTHORITY/XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS (X11
+/// não isola clientes entre si — dar DISPLAY entrega o teclado, a tela e o
+/// clipboard do desktop inteiro; Wayland e o barramento de sessão são a mesma
+/// classe de furo); SSH_AUTH_SOCK (o agente SSH do dono passa a assinar o que
+/// o agente pedir); LD_PRELOAD/LD_LIBRARY_PATH/LD_AUDIT (injeção de código em
+/// qualquer binário que o agente rode); NODE_OPTIONS (o mesmo pra Node —
+/// `--require` arbitrário); BROWSER (§5.2 — é o shim do TYBA, nunca escolha
+/// do repo); PATH (já blindado por override em `agent_env`; aqui por defesa
+/// em profundidade — o teste que principalmente prova isso continua sendo
+/// `agent_env_allowlist_nunca_sequestra_o_path`); CLAUDE_CONFIG_DIR (moveria
+/// a credencial/estado pra fora de onde a jaula sabe procurar, §4);
+/// GIT_SSH_COMMAND (troca o binário `ssh` que o git invoca).
+pub const ENV_ALLOW_DENYLIST: [&str; 14] = [
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "SSH_AUTH_SOCK",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "NODE_OPTIONS",
+    "BROWSER",
+    "PATH",
+    "CLAUDE_CONFIG_DIR",
+    "GIT_SSH_COMMAND",
+];
+
 pub const CONFIG_REL: &str = ".tyba/config.toml";
 
 /// Teto de snippets vindos do repositório. Sem ele, um repo hostil (ou só
@@ -141,6 +173,9 @@ pub fn agent_env(
     }
     if let Some(config) = config {
         for key in &config.env_allow {
+            if ENV_ALLOW_DENYLIST.contains(&key.as_str()) {
+                continue;
+            }
             if let Some(value) = user_env.get(key) {
                 env.entry(key.clone()).or_insert_with(|| value.clone());
             }
@@ -413,6 +448,95 @@ mod tests {
             "o PATH do core sempre vence o do repo — senão o repo escolhe o binário do agente"
         );
         assert!(!out.values().any(|v| v == "/repo/injetado"));
+    }
+
+    /// Item 29 do contrato de cobertura (T3): nenhum nome da denylist entra
+    /// em `agent_env`, mesmo com consent explícito do dono (`env_allow`
+    /// listando o nome de propósito) e a variável presente no ambiente real.
+    /// A lista aqui é LITERAL, não `ENV_ALLOW_DENYLIST` — iterar a própria
+    /// const faria o teste passar mesmo se um nome fosse removido dela
+    /// (confirmado por mutação: tirar `GIT_SSH_COMMAND` da const não
+    /// reprovava um teste que iterasse a const).
+    #[test]
+    fn env_allow_denylist_never_reaches_the_agent_even_with_consent() {
+        for name in [
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "SSH_AUTH_SOCK",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
+            "NODE_OPTIONS",
+            "BROWSER",
+            "PATH",
+            "CLAUDE_CONFIG_DIR",
+            "GIT_SSH_COMMAND",
+        ] {
+            let user = env(&[(name, "valor-perigoso"), ("PATH", "/bin")]);
+            let config = RepoConfig {
+                default_agent: None,
+                env_allow: vec![name.to_string()],
+                snippets: Vec::new(),
+            };
+            let out = agent_env(Some(&config), &user);
+            assert_ne!(
+                out.get(name).map(String::as_str),
+                Some("valor-perigoso"),
+                "{name} vazou pro agente apesar da denylist"
+            );
+        }
+    }
+
+    /// Item 30: uma var legítima que NÃO está na denylist continua passando
+    /// normalmente — a denylist não vira allowlist disfarçada.
+    #[test]
+    fn env_allow_still_passes_through_names_outside_the_denylist() {
+        let user = env(&[("DATABASE_URL", "postgres://x"), ("PATH", "/bin")]);
+        let config = RepoConfig {
+            default_agent: None,
+            env_allow: vec!["DATABASE_URL".to_string()],
+            snippets: Vec::new(),
+        };
+        let out = agent_env(Some(&config), &user);
+        assert_eq!(
+            out.get("DATABASE_URL").map(String::as_str),
+            Some("postgres://x")
+        );
+    }
+
+    /// Item 31: um nome barrado na denylist não derruba a config inteira nem
+    /// impede a sessão de nascer — `parse` continua aceitando (é um nome de
+    /// env sintaticamente válido; a denylist é semântica, não sintática) e
+    /// `agent_env` produz a baseline normalmente, só sem a var barrada.
+    #[test]
+    fn a_denylisted_name_in_config_does_not_break_parsing_or_the_session() {
+        let content = "[agent.env]\nallow = [\"DATABASE_URL\", \"DISPLAY\", \"LD_PRELOAD\"]\n";
+        let config = parse(content).expect("nome barrado não é erro de parse");
+        assert_eq!(
+            config.env_allow,
+            vec!["DATABASE_URL", "DISPLAY", "LD_PRELOAD"]
+        );
+
+        let user = env(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("DISPLAY", ":0"),
+            ("LD_PRELOAD", "/evil.so"),
+            ("PATH", "/bin"),
+        ]);
+        let out = agent_env(Some(&config), &user);
+        assert!(
+            out.contains_key("PATH"),
+            "a sessão precisa nascer normalmente"
+        );
+        assert_eq!(
+            out.get("DATABASE_URL").map(String::as_str),
+            Some("postgres://x")
+        );
+        assert!(!out.contains_key("DISPLAY"));
+        assert!(!out.contains_key("LD_PRELOAD"));
     }
 
     #[test]
