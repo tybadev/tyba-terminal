@@ -1051,6 +1051,65 @@ mod tests {
         );
     }
 
+    /// M4: `--ro-bind SRC DEST` com `SRC` ausente ABORTA o bwrap (rc=1) — a
+    /// sessão nem sobe. Por isso a pré-criação do mountpoint de write-except
+    /// não é higiene, é condição de lançamento (§3.4). Este teste usa um
+    /// `~/.claude` totalmente ausente no disco (nem o diretório existe) para
+    /// provar que `build_args` nunca devolve `Err` por causa disso, e que os
+    /// mountpoints nascem no formato certo: `{}` para JSON, vazio para o
+    /// resto, dir 0755 para diretório, arquivo 0644 — nunca `/dev/null`
+    /// (que deixaria 0444, ilegível pro próprio dono depois que a jaula
+    /// morre).
+    #[test]
+    fn write_except_precreates_missing_mountpoints_before_ro_bind() {
+        let (_tmp, mut spec) = fixture();
+        let claude = spec.home.join(".claude");
+        let settings = claude.join("settings.json");
+        let claude_md = claude.join("CLAUDE.md");
+        let plugins = claude.join("plugins");
+        assert!(!claude.exists(), "fixture precisa nascer sem ~/.claude");
+
+        spec.agent = AgentAccess {
+            read: vec![],
+            write: vec![RuleSet {
+                allow: vec![Rule::Node(claude.clone())],
+                except: vec![
+                    Rule::Literal(settings.clone()),
+                    Rule::Literal(claude_md.clone()),
+                    Rule::Node(plugins.clone()),
+                ],
+            }],
+        };
+
+        let argv = strs(&build_args(&spec).unwrap());
+
+        assert!(
+            settings.is_file(),
+            "settings.json precisa nascer pré-criado"
+        );
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), "{}");
+        assert!(claude_md.is_file(), "CLAUDE.md precisa nascer pré-criado");
+        assert_eq!(std::fs::read_to_string(&claude_md).unwrap(), "");
+        assert!(plugins.is_dir(), "plugins/ precisa nascer pré-criado");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o644, "settings.json pré-criado não pode nascer 0444");
+        }
+
+        assert!(has_triple(&argv, "--ro-bind", &settings));
+        assert!(has_triple(&argv, "--ro-bind", &claude_md));
+        assert!(has_triple(&argv, "--ro-bind", &plugins));
+        for p in [&settings, &claude_md, &plugins] {
+            assert!(
+                triple_pos(&argv, "--ro-bind", "/dev/null", &p.to_string_lossy()).is_none(),
+                "pré-criação de write-except nunca usa /dev/null (M4): {p:?}"
+            );
+        }
+    }
+
     #[test]
     fn agent_access_shadows_then_regrants_project() {
         let (_tmp, mut spec) = fixture();
