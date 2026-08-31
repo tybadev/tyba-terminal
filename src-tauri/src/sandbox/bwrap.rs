@@ -975,6 +975,52 @@ mod tests {
         );
     }
 
+    /// Item 14 do contrato de cobertura, review r1: o teste acima roda com
+    /// `AgentAccess::default()` (agente vazio) -- não é o cruzamento que
+    /// importa. Este roda com a política REAL da entrega B (`~/.claude`
+    /// virando `--bind` rw) por cima de `read_allow=["~"]`: os segredos
+    /// (secret_shadow_dirs) são emitidos DEPOIS de `agent_access` em
+    /// `build_args`, incondicionalmente -- não entram na ordenação por
+    /// profundidade (§3.2: "secret_shadow no fim") -- então continuam
+    /// vencendo mesmo com a inversão de write. Prova a interseção, não cada
+    /// metade isolada.
+    #[test]
+    fn secrets_stay_shadowed_under_the_real_claude_write_policy_with_home_allowed() {
+        use crate::agent::{AgentRunner, ClaudeCodeRunner};
+        let (_tmp, mut spec) = fixture();
+        // secret_shadow_dirs só emite tmpfs pra quem já existe no disco
+        // (`dir.is_dir()` em build_args) -- a fixture base só cria .ssh e
+        // .cargo; .aws e o data dir do TYBA precisam existir de verdade pra
+        // este teste provar algo (senão "sombreado" e "ausente" ficam
+        // indistinguíveis no argv).
+        std::fs::create_dir_all(spec.home.join(".aws")).unwrap();
+        std::fs::create_dir_all(&spec.tyba_data_dir).unwrap();
+        spec.read_allow_extra = vec![spec.home.clone()];
+        spec.agent = ClaudeCodeRunner.sandbox_access(&spec.home, &spec.writable_root);
+        let argv = strs(&build_args(&spec).unwrap());
+
+        let home = spec.home.to_string_lossy().into_owned();
+        let allow = triple_pos(&argv, "--ro-bind-try", &home, &home)
+            .expect("read_allow do dono precisa continuar valendo pro resto da home");
+
+        for secret_dir in [
+            spec.home.join(".ssh"),
+            spec.home.join(".aws"),
+            spec.tyba_data_dir.clone(),
+        ] {
+            let s = secret_dir.to_string_lossy().into_owned();
+            let shadow = argv
+                .windows(2)
+                .position(|w| w[0] == "--tmpfs" && w[1] == s)
+                .unwrap_or_else(|| panic!("{s} precisa continuar sombreado (tmpfs): {argv:?}"));
+            assert!(
+                shadow > allow,
+                "{s}: o sombreamento precisa vencer o read_allow do dono mesmo com \
+                 ~/.claude virando bind rw pela política real da entrega B"
+            );
+        }
+    }
+
     #[test]
     fn cargo_credentials_masked_with_dev_null() {
         let (_tmp, spec) = fixture();
