@@ -115,6 +115,28 @@ describe("toast store", () => {
     un();
   });
 
+  it("carrega a action até o assinante, quando informada", () => {
+    const run = () => {};
+    pushToast({ title: "login", action: { label: "Abrir no navegador", run } });
+    let seen: ToastMessage[] = [];
+    const un = subscribeToasts((all) => {
+      seen = all;
+    });
+    expect(seen[0].action?.label).toBe("Abrir no navegador");
+    expect(seen[0].action?.run).toBe(run);
+    un();
+  });
+
+  it("sem action, o campo fica ausente", () => {
+    pushToast({ title: "sem botão" });
+    let seen: ToastMessage[] = [];
+    const un = subscribeToasts((all) => {
+      seen = all;
+    });
+    expect(seen[0].action).toBeUndefined();
+    un();
+  });
+
   it("substitui a lista em vez de mutar, para o React ver a mudança", () => {
     pushToast({ title: "um" });
     let first: ToastMessage[] = [];

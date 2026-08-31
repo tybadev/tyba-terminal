@@ -86,6 +86,7 @@ import {
   workspaceRunningAgent,
 } from "./lib/closeGuard";
 import { pushToast, toastError } from "./lib/toast";
+import { sandboxWarningTitleKey } from "./lib/sandboxWarning";
 import {
   LaunchConfigDialog,
   type LaunchConfigDraftState,
@@ -151,6 +152,8 @@ import {
   dockerOpenDashboard,
   bootGate,
   bootSnapshot,
+  onAgentOpenUrl,
+  onAgentSandboxWarning,
   onAppReady,
   onBootFailed,
   focusPane,
@@ -1159,6 +1162,53 @@ export default function App() {
       void unlisten.then((off) => off());
     };
   }, [reportBootFailure]);
+
+  // Entrega B (§5.3): o toast é a superfície PRIMÁRIA do 1-clique — com
+  // $BROWSER setado, o fallback na tela do próprio Claude só aparece depois
+  // de 3s (M8). O clique é a única coisa que abre o navegador (item 26 do
+  // contrato) — nunca acontece sozinho.
+  useEffect(() => {
+    const unlisten = onAgentOpenUrl((payload) => {
+      pushToast({
+        tone: "info",
+        title: payload.known_login
+          ? t("agentOpenUrlKnownLoginTitle")
+          : t("agentOpenUrlUnknownTitle", { host: payload.host }),
+        // known_login=true: corpo é o nome curto e confiável (claude.ai),
+        // não a URL de authorize inteira. known_login=false: a URL completa
+        // fica no corpo (break-words já é o estilo padrão do ToastDescription)
+        // -- é o consentimento informado, §5.3.
+        detail: payload.known_login
+          ? t("agentOpenUrlKnownLoginBody")
+          : payload.url,
+        action: {
+          label: t("agentOpenUrlAction"),
+          run: () => {
+            void openExternalUrl(payload.url);
+          },
+        },
+      });
+    });
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [t]);
+
+  // Aviso sem ação (ao contrário do toast acima) -- cada SandboxWarningKind
+  // vira um toast warning com o texto do §6 (item 35 do contrato).
+  useEffect(() => {
+    const unlisten = onAgentSandboxWarning((payload) => {
+      pushToast({
+        tone: "warning",
+        title: t(sandboxWarningTitleKey(payload.kind), {
+          detail: payload.detail ?? "",
+        }),
+      });
+    });
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [t]);
 
   // O core avisa quando a thread de boot termina. Só então o que veio vazio
   // vira estado — antes disso é transitório.

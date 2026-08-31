@@ -1074,6 +1074,20 @@ const resources = {
       broadcastConfirmCount_one: "{{count}} host",
       broadcastConfirmCount_other: "{{count}} hosts",
       broadcastConfirmAction: "Rodar em todos",
+      agentOpenUrlKnownLoginTitle: "Concluir o login do Claude",
+      agentOpenUrlKnownLoginBody: "claude.ai",
+      agentOpenUrlUnknownTitle: "O agente pediu para abrir {{host}}",
+      agentOpenUrlAction: "Abrir no navegador",
+      sandboxWarningCredencialPaiNaoEhRw:
+        "O diretório da credencial do Claude não ficou gravável dentro da jaula — o login pode não persistir na próxima sessão.",
+      sandboxWarningCredencialSombreadaDepois:
+        "A credencial do Claude ficou protegida por engano dentro da jaula — o login pode não persistir na próxima sessão.",
+      sandboxWarningCredencialHostNaoGrava:
+        "Não foi possível confirmar que {{detail}} é gravável — o login pode não persistir.",
+      sandboxWarningHomeRoClaudeJsonNaoPersiste:
+        "Sua pasta pessoal (~) foi liberada só para leitura para o agente — o arquivo .claude.json pode parar de salvar.",
+      sandboxWarningFilhoDesconhecidoEmClaude:
+        "O TYBA encontrou item(ns) novo(s) em ~/.claude que ainda não conhece: {{detail}}. Ficaram graváveis por padrão.",
     },
   },
   en: {
@@ -2124,6 +2138,20 @@ const resources = {
       broadcastConfirmCount_one: "{{count}} host",
       broadcastConfirmCount_other: "{{count}} hosts",
       broadcastConfirmAction: "Run on all",
+      agentOpenUrlKnownLoginTitle: "Finish signing in to Claude",
+      agentOpenUrlKnownLoginBody: "claude.ai",
+      agentOpenUrlUnknownTitle: "The agent asked to open {{host}}",
+      agentOpenUrlAction: "Open in browser",
+      sandboxWarningCredencialPaiNaoEhRw:
+        "The Claude credential directory didn't become writable inside the cage — the login may not persist to the next session.",
+      sandboxWarningCredencialSombreadaDepois:
+        "The Claude credential got shadowed by mistake inside the cage — the login may not persist to the next session.",
+      sandboxWarningCredencialHostNaoGrava:
+        "Could not confirm that {{detail}} is writable — the login may not persist.",
+      sandboxWarningHomeRoClaudeJsonNaoPersiste:
+        "Your home folder (~) was granted read-only to the agent — .claude.json may stop saving.",
+      sandboxWarningFilhoDesconhecidoEmClaude:
+        "TYBA found new item(s) in ~/.claude it doesn't recognize yet: {{detail}}. They stayed writable by default.",
     },
   },
 } as const;

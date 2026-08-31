@@ -3,6 +3,7 @@ import { Info, Warning, WarningOctagon } from "@phosphor-icons/react";
 
 import {
   Toast,
+  ToastAction,
   ToastDescription,
   ToastProvider,
   ToastTitle,
@@ -58,6 +59,15 @@ export function ToastHost() {
                       {toast.detail}
                     </span>
                   </ToastDescription>
+                )}
+                {toast.action && (
+                  <ToastAction
+                    altText={toast.action.label}
+                    onClick={toast.action.run}
+                    className="tyba-label mt-2 inline-flex w-fit items-center rounded-md border border-tyba-border px-2 py-1 text-tyba-blue hover:bg-tyba-blue/10"
+                  >
+                    {toast.action.label}
+                  </ToastAction>
                 )}
               </div>
             </div>
