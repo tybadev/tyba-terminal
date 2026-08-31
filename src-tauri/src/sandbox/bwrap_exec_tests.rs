@@ -669,6 +669,16 @@ fn claude_config_and_hook_surfaces_are_never_writable() {
         "workflows/ci.yaml",
         "CLAUDE.md",
         "statusline-command.sh",
+        // review r1, MINOR seg 2: promovidos de IF_PRESENT a mandatório --
+        // claude_fixture() NÃO cria nenhum dos dois, então este é exatamente
+        // o contra-caso "nem quando ausente no spawn" (mesmo padrão de
+        // daemon/novo.json e plugins/novo-plugin.json acima). .config.json é
+        // o caminho legado do .claude.json (mcpServers, V5);
+        // remote-settings.json carrega hooks/permissions -- deixá-los
+        // IF_PRESENT abria exec diferido fora da jaula sem disparar o
+        // alarme de deriva.
+        "remote-settings.json",
+        ".config.json",
     ];
     for target in targets {
         let path = claude.join(target);

@@ -162,23 +162,28 @@ const SENSITIVE_CLAUDE_READONLY_DIRS: [&str; 10] = [
 /// bwrap.rs os torna sempre presentes (M4: `--ro-bind` de path ausente aborta
 /// o bwrap). `daemon.json` é o item mais grave (cron/slash commands rodados
 /// pelo daemon no HOST, fora da jaula, com watcher que reconcilia — §2.3/M6).
-const SENSITIVE_CLAUDE_FILES_MANDATORY: [&str; 5] = [
+/// `.config.json` e `remote-settings.json` (review r1, MINOR seg 2) são o
+/// segundo item mais grave, e por pouco: `.config.json` é o caminho LEGADO do
+/// `.claude.json` (V5 — o binário carrega `mcpServers` dele) e
+/// `remote-settings.json` carrega hooks/permissions. Deixá-los IF_PRESENT
+/// abria exec diferido — com `~/.claude` rw, o agente cria um dos dois num
+/// `~/.claude` que ainda não os tinha, com `mcpServers` apontando pra um
+/// comando; a próxima vez que o dono roda `claude` FORA do TYBA, executa —
+/// sem disparar o alarme de deriva, porque o nome já está classificado.
+const SENSITIVE_CLAUDE_FILES_MANDATORY: [&str; 7] = [
     "settings.json",
     "settings.local.json",
     "daemon.json",
     "mcp.json",
     "CLAUDE.md",
+    "remote-settings.json",
+    ".config.json",
 ];
 
 /// Arquivos sombreados só se já existirem — sem pré-criação, porque não têm
 /// papel de segurança forte o bastante para justificar nascer no disco do
 /// dono por conta do TYBA (§2.3, §3.4: "ou não é emitido").
-const SENSITIVE_CLAUDE_FILES_IF_PRESENT: [&str; 4] = [
-    "remote-settings.json",
-    ".config.json",
-    "keybindings.json",
-    "loop.md",
-];
+const SENSITIVE_CLAUDE_FILES_IF_PRESENT: [&str; 2] = ["keybindings.json", "loop.md"];
 
 /// Extensões que classificam um arquivo do topo de `~/.claude` como "cara de
 /// script" mesmo sem nome conhecido (V9: `statusline-command.sh` do dono não
@@ -756,6 +761,10 @@ mod tests {
             "workflows",
             "workflows/ci.yaml",
             "CLAUDE.md",
+            // review r1, MINOR seg 2: promovidos de IF_PRESENT a mandatório —
+            // nunca graváveis, nem quando ainda não existiam no spawn.
+            "remote-settings.json",
+            ".config.json",
         ] {
             assert!(
                 !write_grants(&access, &claude.join(forbidden)),
@@ -834,6 +843,16 @@ mod tests {
             "daemon.json",
             "mcp.json",
             "CLAUDE.md",
+            // review r1, MINOR seg 2: .config.json é o caminho LEGADO do
+            // .claude.json (V5 — o binário carrega mcpServers dele) e
+            // remote-settings.json carrega hooks/permissions. Com ~/.claude
+            // rw, deixá-los IF_PRESENT abre exec diferido: o agente cria um
+            // desses num ~/.claude que ainda não os tinha, com mcpServers
+            // apontando pra um comando, e o próximo `claude` do dono FORA do
+            // TYBA executa — sem disparar o alarme de deriva (nome já
+            // classificado). Promovidos a mandatório.
+            "remote-settings.json",
+            ".config.json",
         ] {
             assert!(
                 rules.contains(&Rule::Literal(claude.join(file))),
@@ -848,12 +867,7 @@ mod tests {
         let claude = tmp.path().join(".claude");
         std::fs::create_dir_all(&claude).unwrap();
         let absent = sensitive_claude_children(&claude);
-        for file in [
-            "remote-settings.json",
-            ".config.json",
-            "keybindings.json",
-            "loop.md",
-        ] {
+        for file in ["keybindings.json", "loop.md"] {
             assert!(
                 !absent.contains(&Rule::Literal(claude.join(file))),
                 "{file} não é mandatório: sem pré-criação, então só entra se já existir"
