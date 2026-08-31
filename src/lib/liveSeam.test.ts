@@ -111,6 +111,23 @@ describe("usedRowsFromLastLine", () => {
     expect(usedRowsFromLastLine(-1, -1)).toBe(0);
   });
 
+  it("com o cursor na última linha POSSÍVEL da viewport, o resultado independe do scan — base do atalho de performance em TerminalView", () => {
+    // Nenhuma `lastNonEmptyRow` pode exceder `rows - 1` (é o próprio índice
+    // máximo da viewport): se o cursor já está lá, o `max` sempre escolhe o
+    // cursor, não importa o que o scan encontraria. `measureLive` usa
+    // exatamente esta propriedade pra PULAR o scan quando `cursorRow ===
+    // rows - 1` — review MINOR A (rodada 2): sem isso, todo `onRender`
+    // (inclusive o piscar do cursor, sem saída nova nenhuma) varria a
+    // viewport inteira, célula por célula.
+    const lastPossibleRow = 47; // rows - 1 numa viewport de 48 linhas
+    expect(usedRowsFromLastLine(lastPossibleRow, -1)).toBe(
+      usedRowsFromLastLine(lastPossibleRow, 30),
+    );
+    expect(usedRowsFromLastLine(lastPossibleRow, -1)).toBe(
+      lastPossibleRow + 1,
+    );
+  });
+
   it("com `scrolled`, o valor entra em usedFraction mas não muda o resultado — latch inalterado", () => {
     // `scrolled` satura em 1 não importa o que o scan encontrou: a saída
     // passou da tela e não há o que recortar. Ver `usedFraction`.

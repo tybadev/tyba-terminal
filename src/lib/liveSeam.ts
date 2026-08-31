@@ -9,9 +9,11 @@ import type { IBufferLine } from "@xterm/xterm";
  * faixa tem altura fixa e a saída não.
  *
  * A conta aqui recorta a faixa na altura da saída real. O xterm continua com o
- * MESMO tamanho: quem se move é a imagem dele, por `transform` e `clip-path`,
- * que não entram no layout e portanto não acordam o `ResizeObserver` que
- * redimensionaria o PTY.
+ * MESMO tamanho: quem se move é a imagem dele, por `top` e `clip-path` — de
+ * propósito, não `transform` (que promoveria a camada e rasterizaria o canvas
+ * WebGL fora do pixel ratio da tela; ver `TerminalView.tsx`) —, que não entram
+ * no layout e portanto não acordam o `ResizeObserver` que redimensionaria o
+ * PTY.
  */
 
 export interface SeamRect {

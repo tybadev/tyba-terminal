@@ -236,7 +236,7 @@ interface Props {
    * Recorta a faixa ao vivo na altura da saída real, para o cartão do bloco
    * nascer onde ela estava. `undefined` mostra o terminal inteiro.
    *
-   * Nunca vira tamanho: entra como `transform` e `clip-path`, que ficam de fora
+   * Nunca vira tamanho: entra como `top` e `clip-path`, que ficam de fora
    * do layout e por isso não acordam o `ResizeObserver` que redimensionaria o
    * PTY. Trocar isto por altura é reintroduzir o `vim` reabrindo torto.
    */
@@ -594,9 +594,19 @@ export function TerminalView({
       if (!report) return;
       const buffer = term.buffer.active;
       const scrolled = buffer.baseY > 0;
-      const used = scrolled
-        ? buffer.cursorY + 1
-        : usedRowsFromLastLine(buffer.cursorY, lastNonEmptyRow());
+      const cursorRow = buffer.cursorY;
+      // `usedRowsFromLastLine` é um `max(cursorRow, lastNonEmptyRow)`, e
+      // `lastNonEmptyRow` nunca passa de `rows - 1` — o próprio índice
+      // máximo da viewport. Se o cursor JÁ está lá, o scan não tem como
+      // mudar o resultado (ver o teste "última linha POSSÍVEL" em
+      // `liveSeam.test.ts`), então pula: `onRender` dispara a cada piscar
+      // de cursor, sem saída nova nenhuma, e sem este atalho cada piscar
+      // varria a viewport inteira célula por célula. Ver MINOR A, rodada 2
+      // de review.
+      const used =
+        scrolled || cursorRow === term.rows - 1
+          ? cursorRow + 1
+          : usedRowsFromLastLine(cursorRow, lastNonEmptyRow());
       if (used === lastUsed && term.rows === lastTotal && scrolled === lastScrolled) {
         return;
       }
@@ -681,7 +691,23 @@ export function TerminalView({
             lastCols = cols;
             lastRows = rows;
           })
-          .catch(() => {});
+          .catch((error) => {
+            // "pty not found" (pty/mod.rs PtyError::NotFound) é o caso
+            // coberto pelo comentário acima: PTY ainda não está no pool, o
+            // retry silencioso no próximo evento de fit resolve. QUALQUER
+            // outro erro (PtyError::Open/Spawn/Io — master.resize falhou de
+            // verdade) é permanente: lastCols/lastRows nunca avançam, todo
+            // fit futuro tenta de novo sem sinal nenhum, e o usuário vê
+            // wrap errado sem saber que o PTY travou — o próprio sintoma da
+            // entrega, silenciado. Sem UI (não é vermelho, é diagnóstico):
+            // só para de engolir cego.
+            const message = String(error);
+            if (message.includes("pty not found")) return;
+            console.warn(
+              `[terminal] resize_session falhou para ${sessionId}:`,
+              error,
+            );
+          });
       }
     };
     // Único ponto de saída deste efeito para fora dele: o efeito de
