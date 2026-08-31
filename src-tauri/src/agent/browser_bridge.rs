@@ -187,6 +187,17 @@ mod tests {
         assert!(v.known_login);
     }
 
+    /// Item 24 do contrato de cobertura, review r1: só claude.ai e
+    /// platform.claude.com estavam pinados -- claude.com (redirect que o
+    /// dono às vezes vê, §1.2) fica sem teste dedicado, e sair da lista sem
+    /// nenhum teste reprovar é exatamente o risco que motivou o fix de
+    /// phishing do toast (item MAJOR).
+    #[test]
+    fn claude_com_is_known_login() {
+        let v = validate_open_url("https://claude.com/login").unwrap();
+        assert!(v.known_login);
+    }
+
     #[test]
     fn rejects_file_scheme() {
         assert!(validate_open_url("file:///etc/passwd").is_err());
