@@ -234,11 +234,19 @@ fn collect_write(pending: &mut Vec<(usize, Phase, MountOp)>, set: &RuleSet) -> R
                 // M4: --ro-bind de path inexistente ABORTA o bwrap — a sessão nem
                 // sobe. Por isso o mountpoint é condição de lançamento, não higiene.
                 ensure_dir(p)?;
-                pending.push((path_depth(p), Phase::WriteExcept, MountOp::RoBind(p.clone())));
+                pending.push((
+                    path_depth(p),
+                    Phase::WriteExcept,
+                    MountOp::RoBind(p.clone()),
+                ));
             }
             Rule::Literal(p) => {
                 ensure_inert_file(p)?;
-                pending.push((path_depth(p), Phase::WriteExcept, MountOp::RoBind(p.clone())));
+                pending.push((
+                    path_depth(p),
+                    Phase::WriteExcept,
+                    MountOp::RoBind(p.clone()),
+                ));
             }
             Rule::Family(_) | Rule::Prefix(_) => {
                 for m in expand_matches(rule) {
