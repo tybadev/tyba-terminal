@@ -48,46 +48,6 @@ pub enum SandboxWarningKind {
     FilhoDesconhecidoEmClaude,
 }
 
-/// Texto em pt-BR por `kind` (§12/§13 do design não fixam a cópia literal —
-/// decisão do engineer, registrada no report). `detail` entra quando o kind
-/// carrega um dado concreto (path do preflight, nomes da deriva).
-pub fn warning_message(kind: SandboxWarningKind, detail: Option<&str>) -> String {
-    match kind {
-        SandboxWarningKind::CredencialPaiNaoEhRw => {
-            "O diretório da credencial do Claude não ficou gravável dentro da jaula — o login \
-             pode não persistir na próxima sessão."
-                .to_string()
-        }
-        SandboxWarningKind::CredencialSombreadaDepois => {
-            "A credencial do Claude ficou protegida por engano dentro da jaula — o login pode \
-             não persistir na próxima sessão."
-                .to_string()
-        }
-        SandboxWarningKind::CredencialHostNaoGrava => match detail {
-            Some(d) => format!(
-                "Não foi possível confirmar que {d} é gravável — o login pode não persistir."
-            ),
-            None => "Não foi possível confirmar que a pasta da credencial é gravável — o login \
-                      pode não persistir."
-                .to_string(),
-        },
-        SandboxWarningKind::HomeRoClaudeJsonNaoPersiste => {
-            "Sua pasta pessoal (~) foi liberada só para leitura para o agente — o arquivo \
-             .claude.json pode parar de salvar."
-                .to_string()
-        }
-        SandboxWarningKind::FilhoDesconhecidoEmClaude => match detail {
-            Some(d) => format!(
-                "O TYBA encontrou item(ns) novo(s) em ~/.claude que ainda não conhece: {d}. \
-                 Ficaram graváveis por padrão."
-            ),
-            None => "O TYBA encontrou um item novo em ~/.claude que ainda não conhece. Ficou \
-                      gravável por padrão."
-                .to_string(),
-        },
-    }
-}
-
 /// V5: `CLAUDE_CONFIG_DIR` sobrepõe `~/.claude` tanto para `.claude.json`
 /// quanto para a credencial.
 pub fn claude_config_dir(home: &Path, env: &HashMap<String, String>) -> PathBuf {
@@ -448,21 +408,18 @@ mod tests {
         );
     }
 
-    /// Item 16: preflight acusa dir sem escrita com mensagem pt-BR + o path.
-    /// ENOENT (pai ausente) falha independente de uid — inclusive rodando como
-    /// root, ao contrário de um `chmod` (root ignora bits DAC).
+    /// Item 16: preflight acusa dir sem escrita com o path no detalhe. ENOENT
+    /// (pai ausente) falha independente de uid — inclusive rodando como root,
+    /// ao contrário de um `chmod` (root ignora bits DAC). O `detail` viaja
+    /// cru até o webview (`SandboxWarningPayload`) — quem monta a frase em
+    /// pt-BR é o front (T4, `sandboxWarning.ts`), o mesmo desenho do
+    /// `OpenUrlPayload`, cuja cópia também é decidida do lado do webview.
     #[test]
-    fn preflight_fails_with_pt_br_message_and_path_when_parent_is_missing() {
+    fn preflight_error_carries_the_path_for_the_frontend_to_render() {
         let tmp = tempfile::tempdir().unwrap();
         let claude = tmp.path().join("nao-existe/.claude");
         let err = preflight_claude_dir_writable(&claude).unwrap_err();
         assert!(err.contains(&claude.display().to_string()), "{err}");
-        let msg = warning_message(SandboxWarningKind::CredencialHostNaoGrava, Some(&err));
-        assert!(msg.contains(&err), "{msg}");
-        assert!(
-            msg.chars().any(|c| "áãçõ".contains(c)) || msg.contains("gravável"),
-            "mensagem precisa estar em pt-BR: {msg}"
-        );
     }
 
     #[test]
