@@ -764,6 +764,66 @@ fn other_project_is_not_writable_on_macos() {
     assert!(!target.exists());
 }
 
+/// Contrato de cobertura item 5 (par macOS), review r1: o statusline do dono
+/// não tem nome fixo em nenhuma lista -- só a FORMA (extensão de script ou
+/// bit de execução, V9) classifica. Prova que a mesma detecção por forma que
+/// `sensitive_claude_children` usa no Linux (agent/mod.rs) também sombreia
+/// no Seatbelt, já que os dois SOs compartilham a mesma `AgentAccess`.
+#[test]
+fn statusline_command_sh_is_not_writable_by_shape_on_macos() {
+    require_seatbelt!();
+    let mut f = fixture();
+    let claude = f.home.join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    let statusline = claude.join("statusline-command.sh");
+    std::fs::write(&statusline, "#!/bin/sh\necho status\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&statusline, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    f.spec.agent = ClaudeCodeRunner.sandbox_access(&f.home, &f.worktree);
+
+    let out = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!("echo pwn > {}", statusline.display()),
+    );
+    assert_denied(&out, "escrita no statusline-command.sh");
+    assert_eq!(
+        std::fs::read_to_string(&statusline).unwrap(),
+        "#!/bin/sh\necho status\n"
+    );
+}
+
+/// Contrato de cobertura item 7 (par macOS), review r1: dedicado e nomeado
+/// pra este item -- `claude_agent_dirs_follow_the_granular_rules` (acima)
+/// já prova o mesmo fato de passagem, mas sem nome que aponte pro item 7.
+#[test]
+fn session_env_is_writable_on_macos() {
+    require_seatbelt!();
+    let mut f = fixture();
+    let claude = f.home.join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    f.spec.agent = ClaudeCodeRunner.sandbox_access(&f.home, &f.worktree);
+
+    let session_env = claude.join("session-env/11111111-fake-uuid");
+    let out = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!(
+            "mkdir -p {d} && echo 'export X=1' > {d}/env.sh && cat {d}/env.sh",
+            d = session_env.display()
+        ),
+    );
+    assert!(
+        out.status.success(),
+        "session-env não pode regredir no macOS: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(session_env.join("env.sh").exists());
+}
+
 #[test]
 #[ignore = "exige ./target/debug/tyba compilado (cargo build antes)"]
 fn tyba_hook_crosses_the_sandbox_and_gets_a_real_decision() {
