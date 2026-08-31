@@ -20,8 +20,15 @@ pub const AGENT_ENV_BASELINE: [&str; 6] = ["PATH", "HOME", "USER", "LANG", "TMPD
 /// em profundidade — o teste que principalmente prova isso continua sendo
 /// `agent_env_allowlist_nunca_sequestra_o_path`); CLAUDE_CONFIG_DIR (moveria
 /// a credencial/estado pra fora de onde a jaula sabe procurar, §4);
-/// GIT_SSH_COMMAND (troca o binário `ssh` que o git invoca).
-pub const ENV_ALLOW_DENYLIST: [&str; 14] = [
+/// GIT_SSH_COMMAND e GIT_SSH (o git cai no `GIT_SSH` legado quando
+/// `GIT_SSH_COMMAND` não está setado — mesmo efeito de trocar o binário
+/// `ssh`, mesma razão, review r1 seg 1); BASH_ENV/ENV (sourced por shell
+/// não-interativo antes de rodar o script — injeta comando em qualquer
+/// invocação de `sh`/`bash` que o agente fizer); PERL5OPT/RUBYOPT/PYTHONPATH
+/// (o mesmo vetor de `NODE_OPTIONS`/`LD_PRELOAD` pros três outros
+/// interpretadores que aparecem em toolchain de repo — defesa em
+/// profundidade coerente com a racional do §7, review r1 seg 1).
+pub const ENV_ALLOW_DENYLIST: [&str; 20] = [
     "DISPLAY",
     "WAYLAND_DISPLAY",
     "XAUTHORITY",
@@ -36,6 +43,12 @@ pub const ENV_ALLOW_DENYLIST: [&str; 14] = [
     "PATH",
     "CLAUDE_CONFIG_DIR",
     "GIT_SSH_COMMAND",
+    "GIT_SSH",
+    "BASH_ENV",
+    "ENV",
+    "PERL5OPT",
+    "RUBYOPT",
+    "PYTHONPATH",
 ];
 
 pub const CONFIG_REL: &str = ".tyba/config.toml";
@@ -474,6 +487,12 @@ mod tests {
             "PATH",
             "CLAUDE_CONFIG_DIR",
             "GIT_SSH_COMMAND",
+            "GIT_SSH",
+            "BASH_ENV",
+            "ENV",
+            "PERL5OPT",
+            "RUBYOPT",
+            "PYTHONPATH",
         ] {
             let user = env(&[(name, "valor-perigoso"), ("PATH", "/bin")]);
             let config = RepoConfig {
