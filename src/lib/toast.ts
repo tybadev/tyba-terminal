@@ -1,16 +1,25 @@
 export type ToastTone = "info" | "warning" | "error";
 
+/** Entrega B (§5.3): a única ação de um toast é o clique que abre o
+ * navegador -- run() nunca é chamado sozinho, só pela mão do dono. */
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+
 export interface ToastMessage {
   id: string;
   tone: ToastTone;
   title: string;
   detail?: string;
+  action?: ToastAction;
 }
 
 export interface ToastInput {
   tone?: ToastTone;
   title: string;
   detail?: string;
+  action?: ToastAction;
 }
 
 type Listener = (toasts: ToastMessage[]) => void;

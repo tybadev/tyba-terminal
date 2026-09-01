@@ -8,7 +8,8 @@ mod server;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub use client::run_client;
+pub use client::{request, run_client};
+pub use protocol::ResponseEnvelope;
 pub use server::HookServer;
 
 pub type Handler = Arc<dyn Fn(HookEvent) -> HookAction + Send + Sync>;

@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::json;
 use tempfile::TempDir;
 
-use super::client::{run_client, run_client_inner, RetryPlan};
+use super::client::{request, run_client, run_client_inner, RetryPlan};
 use super::server::{HookServer, MAX_INFLIGHT};
 use super::{HookAction, HookEvent};
 
@@ -292,6 +292,48 @@ fn allow_pretooluse_with_null_reason_emits_empty_string() {
     assert_eq!(v["hookSpecificOutput"]["permissionDecisionReason"], "");
 
     server.shutdown();
+}
+
+/// `request` é a peça que o modo `_open-url` (T2, browser_bridge.rs) usa em
+/// vez de `run_client` — este teste é da FUNÇÃO em si, não do `_hook`. Os
+/// testes acima (inalterados após a extração) já provam que `run_client`
+/// continua byte a byte o mesmo.
+#[test]
+fn request_returns_the_envelope_on_ack() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "s.sock");
+    let server = HookServer::bind(&path, Arc::new(|_e: HookEvent| HookAction::Ack)).unwrap();
+
+    let response = request(&path, &json!({"hook_event_name": "TybaOpenUrl"})).unwrap();
+    assert_eq!(response.action, "ack");
+
+    server.shutdown();
+}
+
+#[test]
+fn request_returns_the_envelope_on_deny() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "s.sock");
+    let server = HookServer::bind(
+        &path,
+        Arc::new(|_e: HookEvent| HookAction::Deny {
+            reason: "host não confiável".into(),
+        }),
+    )
+    .unwrap();
+
+    let response = request(&path, &json!({"hook_event_name": "TybaOpenUrl"})).unwrap();
+    assert_eq!(response.action, "deny");
+    assert_eq!(response.reason.as_deref(), Some("host não confiável"));
+
+    server.shutdown();
+}
+
+#[test]
+fn request_returns_none_when_the_socket_is_unreachable() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "nope.sock");
+    assert!(request(&path, &json!({"hook_event_name": "TybaOpenUrl"})).is_none());
 }
 
 #[test]

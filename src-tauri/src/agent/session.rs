@@ -513,6 +513,9 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
         None => {}
     }
 
+    if event.hook_event_name == "TybaOpenUrl" {
+        return handle_open_url(ctx, &event);
+    }
     if matches!(
         event.hook_event_name.as_str(),
         "PreToolUse" | "PermissionRequest"
@@ -520,6 +523,33 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
         return on_pre_tool_use(ctx, &event);
     }
     HookAction::Ack
+}
+
+/// Entrega B (§1.2/§5): a validação da URL é do core, nunca do shim — o shim
+/// roda dentro da jaula e o agente pode falar com o socket direto. Ack só
+/// depois de validar; deny cai no fallback de tela do próprio Claude (V4),
+/// nunca num estado pior que o de hoje.
+fn handle_open_url(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
+    let Some(raw) = event.raw.get("url").and_then(|u| u.as_str()) else {
+        return HookAction::Deny {
+            reason: "TybaOpenUrl sem url".into(),
+        };
+    };
+    match crate::agent::browser_bridge::validate_open_url(raw) {
+        Ok(v) => {
+            let _ = ctx.app.emit(
+                crate::agent::browser_bridge::EVENT_AGENT_OPEN_URL,
+                crate::agent::browser_bridge::OpenUrlPayload {
+                    session_id: ctx.session_id,
+                    url: v.url,
+                    host: v.host,
+                    known_login: v.known_login,
+                },
+            );
+            HookAction::Ack
+        }
+        Err(reason) => HookAction::Deny { reason },
+    }
 }
 
 fn runtime_dir(id: SessionId) -> Result<PathBuf, String> {
@@ -856,6 +886,15 @@ fn spawn_prepared(
 
     let mut cmd = runner.build_command(&worktree.path, &env, &hook_setup, resume.as_deref());
     cmd.env("TYBA_HOOK_SOCKET", &socket_path);
+    // Entrega B (§5.2): setado pra TODA sessão de agente, sem branch por
+    // runner — bônus por construção (gh/vercel login também passam a
+    // funcionar); só o fluxo do Claude está sob a promessa. Falha silenciosa
+    // aqui é aceitável (fs quebrado no runtime_dir já quebraria a sessão em
+    // outro lugar) e não piora nada: sem BROWSER, o Claude só volta a cair no
+    // fallback de tela de hoje.
+    if let Ok(shim) = crate::agent::browser_bridge::write_browser_shim(&runtime, &exe) {
+        crate::agent::browser_bridge::set_browser_env(&mut cmd, &shim);
+    }
     // Camada A do Windows (Opção B): a jaula se aplica no spawn (token + ConPTY),
     // não por `wrap`. `jailed_spawner` devolve `Some` só no Windows; mac/linux
     // seguem reescrevendo argv via `wrap` e `jail` fica `None`.
@@ -872,6 +911,12 @@ fn spawn_prepared(
             &socket_path,
             &exe,
         )?;
+        // Entrega B: só no Linux, só pro Claude Code — é onde a credencial
+        // depende da inversão da política (§2). Nunca bloqueia o spawn (§6).
+        #[cfg(target_os = "linux")]
+        if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+            crate::agent::credentials::emit_warnings(&ctx.app, id, &env, &spec);
+        }
         match sandbox.jailed_spawner(&spec)? {
             Some(spawner) => (cmd, Some(spawner)),
             None => (sandbox.wrap(cmd, &spec)?, None),

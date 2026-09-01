@@ -73,6 +73,36 @@ fn ensure_file(p: &Path) -> Result<(), String> {
         .map_err(|e| format!("preparação do sandbox ({}): {e}", p.display()))
 }
 
+/// Pré-criação obrigatória de um write-except (§3.4, M4): `--ro-bind` de um
+/// path ausente ABORTA o bwrap (rc=1, "Can't find source path") — a sessão nem
+/// sobe. Não é higiene, é condição de lançamento. Conteúdo inerte por
+/// extensão: `{}` para JSON (é o que o dono do arquivo espera encontrar se
+/// abrir fora do TYBA), vazio para o resto (CLAUDE.md); nunca `/dev/null`
+/// (M4: isso funciona mas deixa um arquivo 0444 no host, ilegível para o
+/// próprio dono depois que a jaula morre). Modo 0644.
+fn ensure_inert_file(p: &Path) -> Result<(), String> {
+    if p.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = p.parent() {
+        ensure_dir(parent)?;
+    }
+    let content = if p.extension().and_then(|e| e.to_str()) == Some("json") {
+        "{}"
+    } else {
+        ""
+    };
+    std::fs::write(p, content)
+        .map_err(|e| format!("preparação do sandbox ({}): {e}", p.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o644))
+            .map_err(|e| format!("preparação do sandbox ({}): {e}", p.display()))?;
+    }
+    Ok(())
+}
+
 fn expand_matches(rule: &Rule) -> Vec<PathBuf> {
     let p = rule.path();
     match rule {
@@ -108,22 +138,47 @@ fn expand_matches(rule: &Rule) -> Vec<PathBuf> {
     }
 }
 
-fn read_allows(args: &mut Args, set: &RuleSet) {
+/// Onde, dentro do argv final, uma operação de `agent_access` pousa quando duas
+/// disputam a MESMA profundidade de path (ordenação estável, ver `agent_access`).
+/// A ordem numérica IMPORTA: bwrap aplica mounts em sequência e o último que
+/// toca um path vence — então em profundidade igual quem vem depois nesta
+/// enumeração cobre quem vem antes.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Phase {
+    ReadAllow = 0,
+    WriteAllow = 1,
+    ReadExcept = 2,
+    WriteExcept = 3,
+}
+
+#[derive(Debug)]
+enum MountOp {
+    RoBind(PathBuf),
+    Bind(PathBuf),
+    Tmpfs(PathBuf),
+    MaskFile(PathBuf),
+}
+
+fn path_depth(p: &Path) -> usize {
+    p.components().count()
+}
+
+fn collect_read(pending: &mut Vec<(usize, Phase, MountOp)>, set: &RuleSet) {
     for rule in &set.allow {
         match rule {
             Rule::Subpath(p) | Rule::Node(p) => {
                 if p.exists() {
-                    args.ro_bind(p);
+                    pending.push((path_depth(p), Phase::ReadAllow, MountOp::RoBind(p.clone())));
                 }
             }
             Rule::Literal(p) => {
                 if p.is_file() {
-                    args.ro_bind(p);
+                    pending.push((path_depth(p), Phase::ReadAllow, MountOp::RoBind(p.clone())));
                 }
             }
             Rule::Family(_) | Rule::Prefix(_) => {
                 for m in expand_matches(rule) {
-                    args.ro_bind(&m);
+                    pending.push((path_depth(&m), Phase::ReadAllow, MountOp::RoBind(m)));
                 }
             }
         }
@@ -131,24 +186,30 @@ fn read_allows(args: &mut Args, set: &RuleSet) {
     for rule in &set.except {
         for m in expand_matches(rule) {
             if m.is_dir() {
-                args.tmpfs(&m);
+                pending.push((path_depth(&m), Phase::ReadExcept, MountOp::Tmpfs(m)));
             } else if m.exists() {
-                args.mask_file(&m);
+                pending.push((path_depth(&m), Phase::ReadExcept, MountOp::MaskFile(m)));
             }
         }
     }
 }
 
-fn write_allows(args: &mut Args, set: &RuleSet) -> Result<(), String> {
+/// Diferença deliberada de `Rule::Node` vs `Rule::Subpath` no except de escrita
+/// (§2/§3.4 da entrega B): `Node` continua LEGÍVEL — vira `--ro-bind` do
+/// diretório real, porque é config/hook que o agente ainda precisa ler (só não
+/// pode reescrever). `Subpath` é isolamento total (hoje só `projects/`, furo
+/// F4) — vira `--tmpfs`, igual ao except de leitura, porque o problema ali não
+/// é só escrita, é visibilidade cruzada entre repos.
+fn collect_write(pending: &mut Vec<(usize, Phase, MountOp)>, set: &RuleSet) -> Result<(), String> {
     for rule in &set.allow {
         match rule {
             Rule::Subpath(p) | Rule::Node(p) => {
                 ensure_dir(p)?;
-                args.bind(p);
+                pending.push((path_depth(p), Phase::WriteAllow, MountOp::Bind(p.clone())));
             }
             Rule::Literal(p) => {
                 if p.is_file() {
-                    args.bind(p);
+                    pending.push((path_depth(p), Phase::WriteAllow, MountOp::Bind(p.clone())));
                 } else if !p.exists() {
                     ensure_dir(p)?;
                 }
@@ -156,28 +217,76 @@ fn write_allows(args: &mut Args, set: &RuleSet) -> Result<(), String> {
             Rule::Family(_) | Rule::Prefix(_) => {
                 for m in expand_matches(rule) {
                     if m.is_file() {
-                        args.bind(&m);
+                        pending.push((path_depth(&m), Phase::WriteAllow, MountOp::Bind(m)));
                     }
                 }
             }
         }
     }
     for rule in &set.except {
-        for m in expand_matches(rule) {
-            if m.exists() {
-                args.ro_bind(&m);
+        match rule {
+            Rule::Subpath(p) => {
+                // Bwrap cria o mountpoint do tmpfs sozinho mesmo se ausente (M4) —
+                // sem pré-criação aqui, ao contrário dos outros dois braços.
+                pending.push((path_depth(p), Phase::WriteExcept, MountOp::Tmpfs(p.clone())));
+            }
+            Rule::Node(p) => {
+                // M4: --ro-bind de path inexistente ABORTA o bwrap — a sessão nem
+                // sobe. Por isso o mountpoint é condição de lançamento, não higiene.
+                ensure_dir(p)?;
+                pending.push((
+                    path_depth(p),
+                    Phase::WriteExcept,
+                    MountOp::RoBind(p.clone()),
+                ));
+            }
+            Rule::Literal(p) => {
+                ensure_inert_file(p)?;
+                pending.push((
+                    path_depth(p),
+                    Phase::WriteExcept,
+                    MountOp::RoBind(p.clone()),
+                ));
+            }
+            Rule::Family(_) | Rule::Prefix(_) => {
+                for m in expand_matches(rule) {
+                    if m.exists() {
+                        pending.push((path_depth(&m), Phase::WriteExcept, MountOp::RoBind(m)));
+                    }
+                }
             }
         }
     }
     Ok(())
 }
 
+/// Entrega B / M1: `~/.claude` vira `--bind` rw (write allow), e isso é RASO —
+/// menos componentes de path que qualquer sombra dentro dele. Bwrap aplica
+/// mounts na ordem do argv, e um mount raso aplicado DEPOIS de um mount fundo
+/// enterra esse mount fundo (a view inteira daquele path é substituída). Por
+/// isso as operações de `read` e `write` não podem mais ser emitidas em dois
+/// laços sequenciais (o de antes: todo `read` primeiro, todo `write` depois) —
+/// têm de ser coletadas juntas e emitidas ordenadas por (profundidade
+/// crescente, depois fase), ordenação ESTÁVEL para manter o determinismo dos
+/// testes de argv (M1, medido em bwrap real). Mounts fora de `agent_access`
+/// (git/worktree, segredos, read_allow_extra) não entram nesta ordenação — eles
+/// continuam na posição sequencial de sempre em `build_args`.
 fn agent_access(args: &mut Args, access: &AgentAccess) -> Result<(), String> {
+    let mut pending: Vec<(usize, Phase, MountOp)> = Vec::new();
     for set in &access.read {
-        read_allows(args, set);
+        collect_read(&mut pending, set);
     }
     for set in &access.write {
-        write_allows(args, set)?;
+        collect_write(&mut pending, set)?;
+    }
+    pending.sort_by_key(|(depth, phase, _)| (*depth, *phase));
+    for (_, _, op) in pending {
+        match op {
+            MountOp::RoBind(p) => args.ro_bind(&p),
+            MountOp::Bind(p) => args.bind(&p),
+            MountOp::Tmpfs(p) => args.tmpfs(&p),
+            MountOp::MaskFile(p) => args.mask_file(&p),
+        }
     }
     Ok(())
 }
@@ -739,6 +848,16 @@ mod tests {
         assert!(argv.contains(&"--unshare-net".to_string()));
     }
 
+    /// §3.7 da entrega B (M3, medido em bwrap real): o `$HOME` nunca pode
+    /// virar um mount explícito (bind OU ro-bind) — é o próprio mountpoint
+    /// do bwrap sobre o tmpfs raiz, e é POR ISSO que a criação do irmão
+    /// `.tmp` do `~/.claude.json` funciona (o write cria o tmp DENTRO do
+    /// $HOME gravável, sem precisar montar nada ali). Ro-bindar o $HOME
+    /// (ex.: um `read_allow = ["~"]` do dono, suportado e pinado à parte)
+    /// dá EROFS na criação do tmp, e EROFS não habilita o braço in-place do
+    /// writer — o write morre sem fallback, em silêncio (o buraco de UX que
+    /// `HomeRoClaudeJsonNaoPersiste`, em `credentials.rs`, existe pra
+    /// avisar). Este teste é o que pina a premissa; nunca remover.
     #[test]
     fn home_is_never_bound_whole() {
         let (_tmp, spec) = fixture();
@@ -866,6 +985,52 @@ mod tests {
         );
     }
 
+    /// Item 14 do contrato de cobertura, review r1: o teste acima roda com
+    /// `AgentAccess::default()` (agente vazio) -- não é o cruzamento que
+    /// importa. Este roda com a política REAL da entrega B (`~/.claude`
+    /// virando `--bind` rw) por cima de `read_allow=["~"]`: os segredos
+    /// (secret_shadow_dirs) são emitidos DEPOIS de `agent_access` em
+    /// `build_args`, incondicionalmente -- não entram na ordenação por
+    /// profundidade (§3.2: "secret_shadow no fim") -- então continuam
+    /// vencendo mesmo com a inversão de write. Prova a interseção, não cada
+    /// metade isolada.
+    #[test]
+    fn secrets_stay_shadowed_under_the_real_claude_write_policy_with_home_allowed() {
+        use crate::agent::{AgentRunner, ClaudeCodeRunner};
+        let (_tmp, mut spec) = fixture();
+        // secret_shadow_dirs só emite tmpfs pra quem já existe no disco
+        // (`dir.is_dir()` em build_args) -- a fixture base só cria .ssh e
+        // .cargo; .aws e o data dir do TYBA precisam existir de verdade pra
+        // este teste provar algo (senão "sombreado" e "ausente" ficam
+        // indistinguíveis no argv).
+        std::fs::create_dir_all(spec.home.join(".aws")).unwrap();
+        std::fs::create_dir_all(&spec.tyba_data_dir).unwrap();
+        spec.read_allow_extra = vec![spec.home.clone()];
+        spec.agent = ClaudeCodeRunner.sandbox_access(&spec.home, &spec.writable_root);
+        let argv = strs(&build_args(&spec).unwrap());
+
+        let home = spec.home.to_string_lossy().into_owned();
+        let allow = triple_pos(&argv, "--ro-bind-try", &home, &home)
+            .expect("read_allow do dono precisa continuar valendo pro resto da home");
+
+        for secret_dir in [
+            spec.home.join(".ssh"),
+            spec.home.join(".aws"),
+            spec.tyba_data_dir.clone(),
+        ] {
+            let s = secret_dir.to_string_lossy().into_owned();
+            let shadow = argv
+                .windows(2)
+                .position(|w| w[0] == "--tmpfs" && w[1] == s)
+                .unwrap_or_else(|| panic!("{s} precisa continuar sombreado (tmpfs): {argv:?}"));
+            assert!(
+                shadow > allow,
+                "{s}: o sombreamento precisa vencer o read_allow do dono mesmo com \
+                 ~/.claude virando bind rw pela política real da entrega B"
+            );
+        }
+    }
+
     #[test]
     fn cargo_credentials_masked_with_dev_null() {
         let (_tmp, spec) = fixture();
@@ -879,6 +1044,126 @@ mod tests {
             triple_pos(&argv, "--ro-bind", "/dev/null", &cred).is_some(),
             "credentials do cargo precisa virar /dev/null"
         );
+    }
+
+    /// Entrega B (M1): com `~/.claude` virando `--bind` rw, o mount raso enterra
+    /// qualquer sombra funda emitida ANTES dele (bwrap aplica mounts em ordem —
+    /// mount raso por cima cobre o que tinha por baixo). A correção é emitir tudo
+    /// que passa por `agent_access` ordenado por profundidade crescente,
+    /// independente de vir de `read` ou de `write`. Este teste é adversarial:
+    /// mistura um allow de write raso (`~/.claude`) com sombras fundas de read
+    /// (`projects/`) e de write (`settings.json`), e um re-grant mais fundo
+    /// ainda (`projects/<este>`) — a ordem final tem de ser rasa→funda sempre.
+    #[test]
+    fn claude_dir_e_rw_e_as_sombras_vem_depois() {
+        let (_tmp, mut spec) = fixture();
+        let claude = spec.home.join(".claude");
+        let projects = claude.join("projects");
+        let project = projects.join("-wt-session-a");
+        let settings = claude.join("settings.json");
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::write(&settings, "{}").unwrap();
+
+        spec.agent = AgentAccess {
+            read: vec![RuleSet {
+                allow: vec![Rule::Subpath(claude.clone())],
+                except: vec![Rule::Subpath(projects.clone())],
+            }],
+            write: vec![
+                RuleSet {
+                    allow: vec![Rule::Node(claude.clone())],
+                    except: vec![Rule::Literal(settings.clone())],
+                },
+                RuleSet::allow(vec![Rule::Node(project.clone())]),
+            ],
+        };
+
+        let argv = strs(&build_args(&spec).unwrap());
+        let claude_s = claude.to_string_lossy().into_owned();
+        let settings_s = settings.to_string_lossy().into_owned();
+        let project_s = project.to_string_lossy().into_owned();
+
+        let claude_rw = triple_pos(&argv, "--bind", &claude_s, &claude_s)
+            .expect("~/.claude precisa virar bind rw");
+        let projects_shadow =
+            tmpfs_pos(&argv, &projects).expect("projects/ precisa continuar sombreado (tmpfs)");
+        let settings_shadow = triple_pos(&argv, "--ro-bind", &settings_s, &settings_s)
+            .expect("settings.json precisa continuar somente-leitura");
+        let project_regrant = triple_pos(&argv, "--bind", &project_s, &project_s)
+            .expect("o projeto atual precisa ser re-liberado");
+
+        assert!(
+            projects_shadow > claude_rw,
+            "o bind rw de ~/.claude precisa vir ANTES do tmpfs de projects/, senão o mount \
+             raso enterra a sombra funda que veio antes dele no argv: {argv:?}"
+        );
+        assert!(
+            settings_shadow > claude_rw,
+            "settings.json precisa continuar sombreado depois que ~/.claude vira rw: {argv:?}"
+        );
+        assert!(
+            project_regrant > projects_shadow,
+            "o re-grant do projeto atual precisa vir depois do tmpfs de projects/, por cima: {argv:?}"
+        );
+    }
+
+    /// M4: `--ro-bind SRC DEST` com `SRC` ausente ABORTA o bwrap (rc=1) — a
+    /// sessão nem sobe. Por isso a pré-criação do mountpoint de write-except
+    /// não é higiene, é condição de lançamento (§3.4). Este teste usa um
+    /// `~/.claude` totalmente ausente no disco (nem o diretório existe) para
+    /// provar que `build_args` nunca devolve `Err` por causa disso, e que os
+    /// mountpoints nascem no formato certo: `{}` para JSON, vazio para o
+    /// resto, dir 0755 para diretório, arquivo 0644 — nunca `/dev/null`
+    /// (que deixaria 0444, ilegível pro próprio dono depois que a jaula
+    /// morre).
+    #[test]
+    fn write_except_precreates_missing_mountpoints_before_ro_bind() {
+        let (_tmp, mut spec) = fixture();
+        let claude = spec.home.join(".claude");
+        let settings = claude.join("settings.json");
+        let claude_md = claude.join("CLAUDE.md");
+        let plugins = claude.join("plugins");
+        assert!(!claude.exists(), "fixture precisa nascer sem ~/.claude");
+
+        spec.agent = AgentAccess {
+            read: vec![],
+            write: vec![RuleSet {
+                allow: vec![Rule::Node(claude.clone())],
+                except: vec![
+                    Rule::Literal(settings.clone()),
+                    Rule::Literal(claude_md.clone()),
+                    Rule::Node(plugins.clone()),
+                ],
+            }],
+        };
+
+        let argv = strs(&build_args(&spec).unwrap());
+
+        assert!(
+            settings.is_file(),
+            "settings.json precisa nascer pré-criado"
+        );
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), "{}");
+        assert!(claude_md.is_file(), "CLAUDE.md precisa nascer pré-criado");
+        assert_eq!(std::fs::read_to_string(&claude_md).unwrap(), "");
+        assert!(plugins.is_dir(), "plugins/ precisa nascer pré-criado");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o644, "settings.json pré-criado não pode nascer 0444");
+        }
+
+        assert!(has_triple(&argv, "--ro-bind", &settings));
+        assert!(has_triple(&argv, "--ro-bind", &claude_md));
+        assert!(has_triple(&argv, "--ro-bind", &plugins));
+        for p in [&settings, &claude_md, &plugins] {
+            assert!(
+                triple_pos(&argv, "--ro-bind", "/dev/null", &p.to_string_lossy()).is_none(),
+                "pré-criação de write-except nunca usa /dev/null (M4): {p:?}"
+            );
+        }
     }
 
     #[test]
@@ -932,6 +1217,18 @@ mod tests {
         assert!(triple_pos(&argv, "--ro-bind", "/dev/null", &h).is_some());
     }
 
+    /// §3.5 da entrega B: continua pinando que `Family` no Linux só alcança
+    /// irmãos que JÁ EXISTIAM no spawn — o `.tmp.<hex>` do writer nasce
+    /// DEPOIS, e um rename sobre um mountpoint dá EBUSY (medido, 100%).
+    /// Comentário trocado de propósito (era premissa, virou limitação
+    /// registrada, não objetivo): a credencial (`.credentials.json`) NÃO
+    /// depende mais desta regra — mora num pai gravável de verdade
+    /// (`~/.claude`, depois da inversão), provada por
+    /// `credential_survives_atomic_rename_and_reaches_host` no exec test.
+    /// Quem ainda depende de `Family` é só `~/.claude.json`, cujo pai é o
+    /// `$HOME` e NUNCA pode virar bind rw (`home_is_never_bound_whole`,
+    /// M3) — ali a persistência funciona pelo braço in-place do writer
+    /// quando o rename dá EBUSY (§4, M2).
     #[test]
     fn family_rule_binds_existing_siblings_rw() {
         let (_tmp, mut spec) = fixture();

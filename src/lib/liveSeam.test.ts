@@ -1,16 +1,33 @@
 import { describe, expect, it } from "bun:test";
 
+import type { IBufferCell, IBufferLine } from "@xterm/xterm";
+
 import {
   blocksRect,
   hiddenFraction,
   liveHeight,
   liveRect,
   LIVE_FRACTION,
+  nonEmptyLine,
   padSlackPx,
+  sameRect,
   termRect,
   usedFraction,
+  usedRowsFromLastLine,
   type SeamRect,
 } from "./liveSeam";
+
+/** Uma IBufferLine mínima, só com o que `nonEmptyLine` lê. */
+function fakeLine(text: string, bgDefault: boolean[] = []): IBufferLine {
+  const cells: IBufferCell[] = bgDefault.map(
+    (isDefault) => ({ isBgDefault: () => isDefault }) as IBufferCell,
+  );
+  return {
+    length: cells.length,
+    translateToString: () => text,
+    getCell: (x: number) => cells[x],
+  } as unknown as IBufferLine;
+}
 
 const pane: SeamRect = { left: 0, top: 0, width: 100, height: 100 };
 
@@ -62,6 +79,86 @@ describe("padSlackPx", () => {
   });
 });
 
+describe("usedRowsFromLastLine", () => {
+  it("cobre a última linha escrita quando o cursor volta pra cima dela — caso progress-bar", () => {
+    // `\r` sem `\n`: o programa reescreve a MESMA linha, cursor fica em cima
+    // dela, mas já tinha escrito até a linha 9 antes. Sem o scan, a faixa
+    // recortaria em 2 (cursorRow=1) e cortaria a saída real.
+    expect(usedRowsFromLastLine(1, 9)).toBe(10);
+  });
+
+  it("com o cursor NA última linha escrita, é idêntico ao antigo cursorRow+1 — pinado", () => {
+    // Nenhuma divergência entre cursor e última linha: o comportamento não
+    // pode mudar para o caso comum (`seq`, `for`, qualquer saída que termina
+    // com o cursor onde parou de escrever).
+    expect(usedRowsFromLastLine(9, 9)).toBe(10);
+    expect(usedRowsFromLastLine(9, 9)).toBe(9 + 1);
+  });
+
+  it("viewport recém-aberta, nada escrito: só a linha do cursor conta — o piso é 1, não 0", () => {
+    // Estado real e alcançável: xterm nunca reporta cursorRow negativo, e o
+    // scan (nenhuma linha não-vazia) devolve -1. O piso é a própria linha do
+    // cursor — é o que faz o cursor piscando continuar visível num prompt em
+    // branco (ver `MIN_USED`/`usedFraction`, que garante o mesmo piso mais
+    // abaixo na cadeia).
+    expect(usedRowsFromLastLine(0, -1)).toBe(1);
+  });
+
+  it("entrada degenerada (defensiva, não alcançável no uso real) não estoura — devolve zero", () => {
+    // cursorRow negativo nunca acontece com um buffer xterm de verdade; este
+    // teste é só uma defesa de robustez da função pura, no mesmo espírito
+    // dos casos de NaN/Infinity de `usedFraction` acima.
+    expect(usedRowsFromLastLine(-1, -1)).toBe(0);
+  });
+
+  it("com o cursor na última linha POSSÍVEL da viewport, o resultado independe do scan — base do atalho de performance em TerminalView", () => {
+    // Nenhuma `lastNonEmptyRow` pode exceder `rows - 1` (é o próprio índice
+    // máximo da viewport): se o cursor já está lá, o `max` sempre escolhe o
+    // cursor, não importa o que o scan encontraria. `measureLive` usa
+    // exatamente esta propriedade pra PULAR o scan quando `cursorRow ===
+    // rows - 1` — review MINOR A (rodada 2): sem isso, todo `onRender`
+    // (inclusive o piscar do cursor, sem saída nova nenhuma) varria a
+    // viewport inteira, célula por célula.
+    const lastPossibleRow = 47; // rows - 1 numa viewport de 48 linhas
+    expect(usedRowsFromLastLine(lastPossibleRow, -1)).toBe(
+      usedRowsFromLastLine(lastPossibleRow, 30),
+    );
+    expect(usedRowsFromLastLine(lastPossibleRow, -1)).toBe(
+      lastPossibleRow + 1,
+    );
+  });
+
+  it("com `scrolled`, o valor entra em usedFraction mas não muda o resultado — latch inalterado", () => {
+    // `scrolled` satura em 1 não importa o que o scan encontrou: a saída
+    // passou da tela e não há o que recortar. Ver `usedFraction`.
+    const used = usedRowsFromLastLine(1, 9);
+    expect(usedFraction(used, 24, true)).toBe(1);
+  });
+});
+
+describe("nonEmptyLine", () => {
+  it("linha com texto é não-vazia", () => {
+    expect(nonEmptyLine(fakeLine("olá"))).toBe(true);
+  });
+
+  it("linha em branco, sem nenhuma célula, é vazia", () => {
+    expect(nonEmptyLine(fakeLine(""))).toBe(false);
+  });
+
+  it("barra de progresso feita só de espaços com FUNDO colorido é não-vazia — review MINOR 7", () => {
+    // `\x1b[42m      \x1b[0m`: o texto pós-trim é "" (translateToString
+    // corta o espaço à direita), mas a célula tem fundo != default. Sem
+    // este ramo, a barra de progresso mais comum vira "linha vazia" e o
+    // scan da última linha escrita (D6) a ignora — o próprio caso que
+    // motivou a entrega.
+    expect(nonEmptyLine(fakeLine("", [false]))).toBe(true);
+  });
+
+  it("linha sem texto e com todas as células no fundo padrão é vazia", () => {
+    expect(nonEmptyLine(fakeLine("", [true, true, true]))).toBe(false);
+  });
+});
+
 describe("hiddenFraction", () => {
   it("é o complemento do que aparece", () => {
     expect(hiddenFraction(0.25)).toBeCloseTo(0.75);
@@ -105,6 +202,29 @@ describe("liveRect", () => {
 
   it("com a faixa cheia coincide com a caixa do terminal", () => {
     expect(liveRect(pane, 1)).toEqual(termRect(pane));
+  });
+});
+
+describe("sameRect", () => {
+  it("dois rects com os mesmos quatro campos são o mesmo rect", () => {
+    const a: SeamRect = { left: 0, top: 10, width: 100, height: 50 };
+    const b: SeamRect = { left: 0, top: 10, width: 100, height: 50 };
+    expect(sameRect(a, b)).toBe(true);
+  });
+
+  it("qualquer campo diferente já é rect novo — o painel se moveu de verdade", () => {
+    const a: SeamRect = { left: 0, top: 10, width: 100, height: 50 };
+    expect(sameRect(a, { ...a, left: 1 })).toBe(false);
+    expect(sameRect(a, { ...a, top: 11 })).toBe(false);
+    expect(sameRect(a, { ...a, width: 101 })).toBe(false);
+    expect(sameRect(a, { ...a, height: 51 })).toBe(false);
+  });
+
+  it("null nos dois lados é igual; null de um lado só nunca é", () => {
+    const a: SeamRect = { left: 0, top: 10, width: 100, height: 50 };
+    expect(sameRect(null, null)).toBe(true);
+    expect(sameRect(a, null)).toBe(false);
+    expect(sameRect(null, a)).toBe(false);
   });
 });
 

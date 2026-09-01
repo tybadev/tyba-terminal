@@ -45,7 +45,12 @@ import {
   hasOpenModifier,
 } from "../lib/terminalLinks";
 import { IS_MAC } from "../lib/platform";
-import { hiddenFraction } from "../lib/liveSeam";
+import {
+  hiddenFraction,
+  nonEmptyLine,
+  sameRect,
+  usedRowsFromLastLine,
+} from "../lib/liveSeam";
 import { isArrowKey } from "../lib/commandLine";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
@@ -231,7 +236,7 @@ interface Props {
    * Recorta a faixa ao vivo na altura da saída real, para o cartão do bloco
    * nascer onde ela estava. `undefined` mostra o terminal inteiro.
    *
-   * Nunca vira tamanho: entra como `transform` e `clip-path`, que ficam de fora
+   * Nunca vira tamanho: entra como `top` e `clip-path`, que ficam de fora
    * do layout e por isso não acordam o `ResizeObserver` que redimensionaria o
    * PTY. Trocar isto por altura é reintroduzir o `vim` reabrindo torto.
    */
@@ -302,7 +307,6 @@ export function TerminalView({
   broadcastRef.current = onBroadcastInput;
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
   const webglRef = useRef<WebglAddon | null>(null);
   const onFocusRef = useRef(onFocus);
   onFocusRef.current = onFocus;
@@ -327,6 +331,15 @@ export function TerminalView({
   const onCellWidthRef = useRef(onCellWidth);
   onCellWidthRef.current = onCellWidth;
   const measureLineHeightRef = useRef<(() => void) | null>(null);
+  // Único caminho que compara `cols`/`rows` contra o PTY e avisa
+  // `resizeSession` — todo fit() cru passa por aqui, nunca chama
+  // `fit.fit()` sozinho. Ver D4 na tech-spec.
+  const refitRef = useRef<(() => void) | null>(null);
+  // Última geometria (por VALOR) em que o efeito de `[visible, rect]`
+  // realmente refez o fit. `rect` é objeto literal novo a cada render do
+  // App — comparar por identidade faria o fit rodar por frame.
+  const lastFitVisibleRef = useRef(false);
+  const lastFitRectRef = useRef<PaneRectStyle | null>(null);
   // O handler de tecla é assinado uma vez no mount: sem ref, ficaria preso no
   // valor do primeiro render e a seta pararia de acompanhar o modo do tty.
   const swallowArrowsRef = useRef(false);
@@ -409,13 +422,10 @@ export function TerminalView({
       term.open(el);
       opened = true;
       syncWebglRef.current?.();
-      if (el.offsetWidth > 0 && el.offsetHeight > 0) {
-        try {
-          fit.fit();
-        } catch {
-          /* dimensões ainda não prontas — o ResizeObserver refaz o fit */
-        }
-      }
+      // Por `refit()`, não `fit.fit()` cru: é o único jeito do PTY saber o
+      // tamanho inicial sem esperar os ~80ms de debounce do ResizeObserver.
+      // Ver D4 na tech-spec — todo fit avisa o PTY.
+      refitRef.current?.();
       // Mede já na abertura: os blocos precisam da altura da linha desde o
       // primeiro render, e esperar o `onRender` deixaria a lista com a altura
       // provisória enquanto nenhum comando rodasse.
@@ -431,7 +441,6 @@ export function TerminalView({
     });
 
     termRef.current = term;
-    fitRef.current = fit;
 
     const bufferSub = term.buffer.onBufferChange((buffer) => {
       onAltScreenRef.current?.(buffer.type === "alternate");
@@ -470,6 +479,55 @@ export function TerminalView({
       void detachSession(sessionId).catch(() => {});
     };
 
+    // O xterm mede o glifo UMA VEZ, no `term.open()`, e não tem hook de
+    // font-load: se a JetBrains Mono embarcada ainda não tinha terminado de
+    // carregar naquele instante, ele fica preso na métrica do fallback pelo
+    // resto da sessão. Reatribuir a option força o `CharSizeService` interno
+    // a remedir — mas o setter do xterm ignora valor IGUAL ao atual (não
+    // dispara nada), por isso o vai-e-volta: o espaço extra é invisível pro
+    // CSS (trailing whitespace num valor de `font-family` é ignorado), mas
+    // muda a STRING o bastante pra passar no `!==` do xterm duas vezes. Ver
+    // D2 na tech-spec.
+    const forceRemeasure = () => {
+      if (disposed || !opened) return;
+      const family = term.options.fontFamily;
+      term.options.fontFamily = `${family} `;
+      term.options.fontFamily = family;
+      term.clearTextureAtlas();
+      refitRef.current?.();
+    };
+    void document.fonts.ready.then(forceRemeasure);
+    // `ready` cobre o carregamento em curso na abertura; famílias que só
+    // entram em uso depois (bold/italic do primeiro texto nesse peso, por
+    // exemplo) dependem deste evento, que dispara a cada lote que termina.
+    const onFontsLoadingDone = () => forceRemeasure();
+    document.fonts.addEventListener("loadingdone", onFontsLoadingDone);
+
+    // Sem escala fracionária (GNOME 1.25/1.5/1.75) ou ao arrastar a janela
+    // entre monitores, `css.cell.height` muda até 0,8px/linha — ~1 linha
+    // inteira a cada ~30 — e NADA acorda: o container não muda de tamanho
+    // CSS, o `ResizeObserver` não dispara, e a última linha some sob o
+    // `overflow-hidden`. `matchMedia("(resolution: <dpr>dppx)")` é o padrão
+    // canônico pra ouvir DPR: a query só dispara UMA VEZ (fica falsa depois),
+    // por isso se re-arma a cada disparo com o DPR atual. Ver D3 na tech-spec.
+    let dprQuery: MediaQueryList | null = null;
+    const armDprListener = () => {
+      dprQuery = window.matchMedia(
+        `(resolution: ${window.devicePixelRatio}dppx)`,
+      );
+      dprQuery.addEventListener("change", onDprChange);
+    };
+    const onDprChange = () => {
+      dprQuery?.removeEventListener("change", onDprChange);
+      forceRemeasure();
+      armDprListener();
+    };
+    armDprListener();
+    addUnlistener(() => {
+      document.fonts.removeEventListener("loadingdone", onFontsLoadingDone);
+      dprQuery?.removeEventListener("change", onDprChange);
+    });
+
     const attached = (async () => {
       addUnlistener(
         await onPtyOutput(sessionId, (bytes) => {
@@ -503,8 +561,10 @@ export function TerminalView({
     }).then(addUnlistener);
 
     // Mede a saída do comando em curso para recortar a faixa ao vivo na altura
-    // dela. `cursorY` é a linha onde o shell parou de escrever; `baseY > 0`
-    // significa que a saída passou da tela e não há o que recortar.
+    // dela. `cursorY` sozinho mente quando o programa reposiciona o cursor
+    // ACIMA da última linha que escreveu — barra de progresso que volta pro
+    // início da linha com `\r`, por exemplo. `baseY > 0` significa que a
+    // saída passou da tela e não há o que recortar.
     //
     // Só reporta quando o número muda: `onRender` dispara a cada repintura, e
     // um evento por repintura atravessaria o React inteiro a cada linha de
@@ -512,12 +572,41 @@ export function TerminalView({
     let lastUsed = -1;
     let lastTotal = -1;
     let lastScrolled: boolean | null = null;
+    // Índice (0-based, relativo à VIEWPORT — a mesma unidade de cursorY) da
+    // última linha com texto, de baixo pra cima. Só roda quando não está
+    // `scrolled` (aí a conta satura em 1 de qualquer jeito) e no tick
+    // batched do `onRender` — nunca por byte.
+    //
+    // `getLine` recebe índice ABSOLUTO no buffer (baseY + y), não o da
+    // viewport: hoje `baseY` é sempre 0 neste ramo (`scrolled` cobre o
+    // resto), mas escrever a conta certa evita a mina pra quando um caminho
+    // futuro chamar isto com `scrolled === true`.
+    const lastNonEmptyRow = (): number => {
+      const buffer = term.buffer.active;
+      for (let y = term.rows - 1; y >= 0; y--) {
+        const line = buffer.getLine(buffer.baseY + y);
+        if (line && nonEmptyLine(line)) return y;
+      }
+      return -1;
+    };
     const measureLive = () => {
       const report = onLiveRowsRef.current;
       if (!report) return;
       const buffer = term.buffer.active;
-      const used = buffer.cursorY + 1;
       const scrolled = buffer.baseY > 0;
+      const cursorRow = buffer.cursorY;
+      // `usedRowsFromLastLine` é um `max(cursorRow, lastNonEmptyRow)`, e
+      // `lastNonEmptyRow` nunca passa de `rows - 1` — o próprio índice
+      // máximo da viewport. Se o cursor JÁ está lá, o scan não tem como
+      // mudar o resultado (ver o teste "última linha POSSÍVEL" em
+      // `liveSeam.test.ts`), então pula: `onRender` dispara a cada piscar
+      // de cursor, sem saída nova nenhuma, e sem este atalho cada piscar
+      // varria a viewport inteira célula por célula. Ver MINOR A, rodada 2
+      // de review.
+      const used =
+        scrolled || cursorRow === term.rows - 1
+          ? cursorRow + 1
+          : usedRowsFromLastLine(cursorRow, lastNonEmptyRow());
       if (used === lastUsed && term.rows === lastTotal && scrolled === lastScrolled) {
         return;
       }
@@ -566,20 +655,65 @@ export function TerminalView({
     let lastRows = -1;
     let timer: number | null = null;
     const refit = () => {
-      timer = null;
+      // `refit()` agora é chamado de 4 pontos, não só do próprio
+      // `setTimeout` de 80ms do ResizeObserver — sem cancelar o timer
+      // pendente aqui, um chamador direto (font-load, DPR) zera `timer` sem
+      // desarmar o `setTimeout` real, que dispara depois e refaz o fit de
+      // novo pro MESMO evento de geometria. Dois fits pra um evento só é o
+      // padrão que já reabriu o vim com altura errada.
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
       if (!opened) return; // o rAF de open ainda não rodou — nada a ajustar
       if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
       const buffer = term.buffer.active;
       const wasAtBottom = buffer.viewportY === buffer.baseY;
-      fit.fit();
+      try {
+        fit.fit();
+      } catch {
+        return; // dimensões ainda não prontas — o ResizeObserver refaz
+      }
       if (term.cols !== lastCols || term.rows !== lastRows) {
         const rowsChanged = term.rows !== lastRows;
-        lastCols = term.cols;
-        lastRows = term.rows;
+        const cols = term.cols;
+        const rows = term.rows;
         if (wasAtBottom && rowsChanged) term.scrollToBottom();
-        void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
+        // `lastCols`/`lastRows` só avançam depois do PTY CONFIRMAR — não no
+        // disparo da chamada. `resize_session` devolve NotFound se o PTY
+        // ainda não estiver no pool (pty/mod.rs `resize`); gravar antes e
+        // engolir a rejeição faria o xterm achar que o PTY já sabe do
+        // tamanho novo quando na verdade não sabe, e nenhum fit futuro
+        // tentaria de novo — PTY preso na geometria do spawn, wrap errado,
+        // últimas linhas perdidas, o próprio sintoma da entrega.
+        void resizeSession(sessionId, cols, rows)
+          .then(() => {
+            lastCols = cols;
+            lastRows = rows;
+          })
+          .catch((error) => {
+            // "pty not found" (pty/mod.rs PtyError::NotFound) é o caso
+            // coberto pelo comentário acima: PTY ainda não está no pool, o
+            // retry silencioso no próximo evento de fit resolve. QUALQUER
+            // outro erro (PtyError::Open/Spawn/Io — master.resize falhou de
+            // verdade) é permanente: lastCols/lastRows nunca avançam, todo
+            // fit futuro tenta de novo sem sinal nenhum, e o usuário vê
+            // wrap errado sem saber que o PTY travou — o próprio sintoma da
+            // entrega, silenciado. Sem UI (não é vermelho, é diagnóstico):
+            // só para de engolir cego.
+            const message = String(error);
+            if (message.includes("pty not found")) return;
+            console.warn(
+              `[terminal] resize_session falhou para ${sessionId}:`,
+              error,
+            );
+          });
       }
     };
+    // Único ponto de saída deste efeito para fora dele: o efeito de
+    // `[visible, rect]`, abaixo, chama por aqui — nunca `fit.fit()` cru. Ver
+    // D4 na tech-spec: todo fit avisa o PTY.
+    refitRef.current = refit;
     const schedule = () => {
       if (timer !== null) window.clearTimeout(timer);
       timer = window.setTimeout(refit, 80);
@@ -649,6 +783,7 @@ export function TerminalView({
       unregisterTerm(sessionId);
       showExitBannerRef.current = null;
       syncWebglRef.current = null;
+      refitRef.current = null;
       disposeWebgl(webglRef.current);
       webglRef.current = null;
       term.dispose();
@@ -683,19 +818,41 @@ export function TerminalView({
   // tamanho, mas o canvas do xterm ainda está nas dimensões antigas — a CSS o
   // estica até o ResizeObserver refazer o fit (com debounce de 80ms). Refaz o fit
   // e re-renderiza JÁ (no próximo frame) pra não aparecer o frame esticado.
+  //
+  // `rect` é objeto literal novo A CADA render do App, que re-renderiza a
+  // ~60Hz durante um comando — sem o guard de igualdade por VALOR abaixo,
+  // este efeito rodaria (fit + getComputedStyle síncrono + refresh) a cada
+  // frame, não só quando o painel muda de geometria de verdade. Ver D5 na
+  // tech-spec.
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      lastFitVisibleRef.current = false;
+      return;
+    }
     const term = termRef.current;
     const el = containerRef.current;
     if (!term || !el) return;
+    // `visible` já é `true` neste ponto (early return acima cobre o `false`)
+    // — a metade que importa é só `lastFitVisibleRef.current`: se o último
+    // fit aplicado já era visível, só o valor de `rect` decide.
+    const unchanged =
+      lastFitVisibleRef.current && sameRect(lastFitRectRef.current, rect);
+    if (unchanged) return;
     const raf = requestAnimationFrame(() => {
       if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
-      try {
-        fitRef.current?.fit();
-      } catch {
-        /* dimensões ainda não prontas — o ResizeObserver refaz */
-      }
+      // Por `refit()`, não `fit.fit()` cru: fecha o mesmo caminho que avisa
+      // o PTY. Ver D4 na tech-spec.
+      refitRef.current?.();
       term.refresh(0, term.rows - 1);
+      // Só marca "visto" DEPOIS do fit ter rodado de verdade — nunca antes
+      // de agendar o rAF. O core flusha PTY a cada 8-16ms (princípio 3): dois
+      // renders no mesmo frame cancelam o rAF do primeiro no cleanup do
+      // segundo, e se a marca já tivesse sido gravada na hora de agendar, o
+      // segundo render veria "unchanged" (mesmo valor já visto) e desistiria
+      // sem reagendar — o fit nunca rodaria, e sem mudança de tamanho CSS
+      // (só `top`) o ResizeObserver nem dispara pra corrigir depois.
+      lastFitVisibleRef.current = visible;
+      lastFitRectRef.current = rect;
     });
     return () => cancelAnimationFrame(raf);
   }, [visible, rect]);
