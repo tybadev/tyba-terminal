@@ -163,8 +163,9 @@ pub fn preflight_claude_dir_writable(claude: &Path) -> Result<(), String> {
 /// estado, por default), mas o dono passa a saber que existe.
 ///
 /// `cfg(linux)`: todo o alarme de deriva (esta função + `is_classified_
-/// claude_child` + `WARNED_UNCLASSIFIED` + `drift_alarm_names`) só é
-/// alcançado por `emit_warnings`, chamado só em `session.rs` sob o mesmo
+/// claude_child` + `drift_toast_worthy` + `load_warned`/`save_warned` +
+/// `drift_alarm_names`) só é alcançado por `emit_warnings`, chamado só em
+/// `session.rs` sob o mesmo
 /// `#[cfg(target_os = "linux")]` — a jaula/credencial de B é Linux (mac já
 /// tinha o Keychain corrigido em separado, #194). Sem o gate aqui, esses
 /// símbolos ficam sem nenhum chamador em produção fora do Linux e o clippy
@@ -215,24 +216,101 @@ fn is_classified_claude_child(name: &str, path: &Path) -> bool {
     false
 }
 
-/// Dedupe em processo: uma vez por nome por execução do TYBA (§6). Reiniciar
-/// o app rearma o aviso de propósito — é o certo para item de segurança não
-/// classificado, ao contrário de um toast comum.
+/// Chave no `settings` (key/value) que guarda os nomes de filho
+/// não-classificado JÁ avisados por toast (v0.6.2, item 1 do contrato de
+/// cobertura de "polir o alarme de deriva"). Substitui o antigo
+/// `WARNED_UNCLASSIFIED` in-process: aquele rearmava a cada reinício do TYBA
+/// de propósito, mas isso virou o barulho que o dono relatou — o mesmo nome
+/// (ex.: `vercel-plugin-device-id`) voltava a gritar toda vez que o app
+/// abria. Não é `pref.*` (não é preferência editável pelo dono em UI, é
+/// estado interno do alarme) — mesma convenção de `theme::KEY_MODE` /
+/// `update::KEY_LATEST`, que também não passam pelo allowlist de
+/// `get_pref`/`set_pref`.
 #[cfg(target_os = "linux")]
-static WARNED_UNCLASSIFIED: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashSet<String>>,
-> = std::sync::OnceLock::new();
+const DRIFT_WARNED_KEY: &str = "drift.warned_unclassified_children";
+
+/// Puro — recebe o que já foi avisado e devolve só os nomes NOVOS. Separado
+/// da leitura/escrita no store para ficar testável sem SQLite (a fronteira
+/// de I/O é o que se isola, não a lista em si).
+pub(crate) fn names_not_yet_warned(
+    candidates: &[String],
+    already_warned: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    candidates
+        .iter()
+        .filter(|n| !already_warned.contains(n.as_str()))
+        .cloned()
+        .collect()
+}
 
 #[cfg(target_os = "linux")]
-pub(crate) fn drift_alarm_names(claude: &Path) -> Vec<String> {
+fn load_warned(store: &crate::session::store::Store) -> std::collections::HashSet<String> {
+    store
+        .get_setting(DRIFT_WARNED_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .map(|v| v.into_iter().collect())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn save_warned(store: &crate::session::store::Store, warned: &std::collections::HashSet<String>) {
+    // Ordenado antes de serializar: sem isso a ordem de um HashSet varia
+    // entre execuções e o JSON persistido muda mesmo quando o conjunto é o
+    // mesmo — ruído no diff, nada de comportamento.
+    let mut list: Vec<&String> = warned.iter().collect();
+    list.sort();
+    if let Ok(json) = serde_json::to_string(&list) {
+        let _ = store.set_setting(DRIFT_WARNED_KEY, &json);
+    }
+}
+
+/// Item 2/3 do contrato: o toast de deriva só dispara pra nome com "cara de
+/// risco de execução" — diretório (pode carregar hook/script dentro) ou
+/// arquivo com forma de script (mesma extensão/bit de execução que
+/// `sensitive_claude_children` usa para achar o statusline do dono, V9).
+/// Arquivo de estado sem essa forma (ex.: `vercel-plugin-device-id`) some do
+/// toast mas continua em `unclassified_claude_children` — a detecção não
+/// muda, só o que vira barulho.
+#[cfg(target_os = "linux")]
+fn drift_toast_worthy(name: &str, claude: &Path) -> bool {
+    let path = claude.join(name);
+    if path.is_dir() {
+        return true;
+    }
+    if path.is_file() {
+        let script_ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|ext| SCRIPT_EXTENSIONS.contains(&ext))
+            .unwrap_or(false);
+        return script_ext || super::is_executable(&path);
+    }
+    false
+}
+
+/// Nomes de filho não-classificado que merecem TOAST agora: shape de risco
+/// (`drift_toast_worthy`, item 2/3) E ainda não avisados (dedupe durável no
+/// store, item 1). `unclassified_claude_children` continua a detecção
+/// completa e sem filtro — só este passo decide o que vira barulho.
+#[cfg(target_os = "linux")]
+pub(crate) fn drift_alarm_names(
+    claude: &Path,
+    store: &crate::session::store::Store,
+) -> Vec<String> {
     let unknown = unclassified_claude_children(claude);
-    let seen =
-        WARNED_UNCLASSIFIED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-    let mut guard = seen.lock().expect("drift alarm lock");
-    unknown
+    let risky: Vec<String> = unknown
         .into_iter()
-        .filter(|n| guard.insert(n.clone()))
-        .collect()
+        .filter(|n| drift_toast_worthy(n, claude))
+        .collect();
+    let mut warned = load_warned(store);
+    let fresh = names_not_yet_warned(&risky, &warned);
+    if !fresh.is_empty() {
+        warned.extend(fresh.iter().cloned());
+        save_warned(store, &warned);
+    }
+    fresh
 }
 
 /// Fio de produção (§6, chamado por `session::spawn_prepared` — Linux, só
@@ -246,6 +324,7 @@ pub(crate) fn emit_warnings(
     session_id: crate::session::SessionId,
     env: &HashMap<String, String>,
     spec: &crate::sandbox::SandboxSpec,
+    store: &crate::session::store::Store,
 ) {
     use tauri::Emitter;
 
@@ -264,7 +343,7 @@ pub(crate) fn emit_warnings(
         findings.push((SandboxWarningKind::CredencialHostNaoGrava, Some(detail)));
     }
 
-    let unknown = drift_alarm_names(&claude);
+    let unknown = drift_alarm_names(&claude, store);
     if !unknown.is_empty() {
         findings.push((
             SandboxWarningKind::FilhoDesconhecidoEmClaude,
@@ -477,36 +556,157 @@ mod tests {
         assert_eq!(std::fs::read_dir(&claude).unwrap().count(), 0);
     }
 
-    /// Item 18: dispara para nome não classificado, e só uma vez por nome por
-    /// execução — nomes com UUID pra não colidir com outro teste do mesmo
-    /// binário (o dedupe é global-por-processo, de propósito, §6).
+    /// v0.6.2, item 1/5 do contrato "polir o alarme de deriva": dispara para
+    /// nome não classificado com cara de risco (aqui, script), e só uma vez
+    /// — dedupe agora é DURÁVEL via store, não mais por processo. Nome com
+    /// UUID pra não colidir com outro teste do mesmo binário.
     ///
-    /// `cfg(linux)`: testa `drift_alarm_names`, que só existe no Linux (ver o
-    /// gate na definição) — sem este cfg aqui o mac/windows nem compilam o
-    /// `cargo test` (função inexistente), trocando o dead_code por um erro
-    /// de compilação (achado do review r2 na CI do PR #299).
+    /// Substitui `drift_alarm_fires_once_per_unclassified_name_per_process`:
+    /// aquele testava dedupe IN-PROCESS (rearmava a cada reinício, de
+    /// propósito) — exatamente o comportamento que o dono reportou como
+    /// barulho e que esta entrega reverte. Ver
+    /// `drift_alarm_dedupe_survives_a_restart_of_the_app` para a prova de
+    /// que sobrevive a um restart de verdade (store reaberto do zero).
+    ///
+    /// `cfg(linux)`: testa `drift_alarm_names`, linux-only (ver o gate na
+    /// definição) — sem este cfg aqui o mac/windows nem compilam o `cargo
+    /// test` (função inexistente), trocando o dead_code por um erro de
+    /// compilação (achado do review r2 na CI do PR #299).
     #[test]
     #[cfg(target_os = "linux")]
-    fn drift_alarm_fires_once_per_unclassified_name_per_process() {
+    fn drift_alarm_names_fires_once_per_toast_worthy_name_then_dedupes() {
         let tmp = tempfile::tempdir().unwrap();
         let claude = tmp.path().join(".claude");
         std::fs::create_dir_all(&claude).unwrap();
-        let mystery = format!("mystery-{}", uuid::Uuid::new_v4());
-        std::fs::write(claude.join(&mystery), "x").unwrap();
+        // Diretório, não arquivo `.sh`: um arquivo com cara de script no topo
+        // já é classificado por `is_classified_claude_child` (mesma checagem
+        // de forma que `sensitive_claude_children` usa pra sombrear, V9) —
+        // ele NUNCA chega a "não classificado", então nunca alcançaria
+        // `drift_alarm_names` por esse caminho. Diretório desconhecido é o
+        // shape que sobrevive até aqui; ver `drift_toast_worthy_flags_dirs_
+        // and_script_shaped_or_executable_files` para a checagem de forma em
+        // isolamento, sem depender desse acaso do pipeline.
+        let mystery = format!("mystery-dir-{}", uuid::Uuid::new_v4());
+        std::fs::create_dir_all(claude.join(&mystery)).unwrap();
         std::fs::create_dir_all(claude.join("backups")).unwrap();
+        let store = crate::session::store::Store::open_in_memory().unwrap();
 
-        let first = drift_alarm_names(&claude);
+        let first = drift_alarm_names(&claude, &store);
         assert!(first.contains(&mystery), "{first:?}");
         assert!(
             !first.contains(&"backups".to_string()),
             "estado conhecido não dispara alarme: {first:?}"
         );
 
-        let second = drift_alarm_names(&claude);
+        let second = drift_alarm_names(&claude, &store);
         assert!(
             !second.contains(&mystery),
-            "o mesmo nome não pode reavisar na mesma execução: {second:?}"
+            "o mesmo nome não pode reavisar de novo (dedupe durável): {second:?}"
         );
+    }
+
+    /// v0.6.2, item 1 do contrato: o CORAÇÃO da mudança — o nome avisado
+    /// sobrevive a um restart de verdade do app (store fechado e reaberto do
+    /// zero, arquivo em disco, não `open_in_memory`), não só a duas
+    /// chamadas na mesma execução.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn drift_alarm_dedupe_survives_a_restart_of_the_app() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        let db = tmp.path().join("tyba.db");
+        std::fs::create_dir_all(&claude).unwrap();
+        let mystery_dir = format!("mystery-dir-{}", uuid::Uuid::new_v4());
+        std::fs::create_dir_all(claude.join(&mystery_dir)).unwrap();
+
+        {
+            let store = crate::session::store::Store::open(&db).unwrap();
+            let first = drift_alarm_names(&claude, &store);
+            assert!(first.contains(&mystery_dir), "{first:?}");
+        }
+
+        // "Reinicia o app": Store novo, do zero, sobre o MESMO arquivo —
+        // nada em memória sobrevive além do que foi persistido.
+        let store = crate::session::store::Store::open(&db).unwrap();
+        let after_restart = drift_alarm_names(&claude, &store);
+        assert!(
+            !after_restart.contains(&mystery_dir),
+            "nome já avisado antes do restart não pode reavisar depois: {after_restart:?}"
+        );
+    }
+
+    /// v0.6.2, item 3 do contrato: `names_not_yet_warned` é a peça pura do
+    /// dedupe — testável sem SQLite.
+    #[test]
+    fn names_not_yet_warned_filters_out_already_warned() {
+        let mut warned = std::collections::HashSet::new();
+        warned.insert("a".to_string());
+        let out = names_not_yet_warned(&["a".to_string(), "b".to_string()], &warned);
+        assert_eq!(out, vec!["b".to_string()]);
+    }
+
+    /// v0.6.2, item 2/5 do contrato: o toast só dispara pra shape de risco
+    /// (diretório ou script) — um arquivo de estado benigno tipo
+    /// `vercel-plugin-device-id` (sem extensão de script, sem bit de
+    /// execução) continua DETECTADO por `unclassified_claude_children`
+    /// (nunca some da visibilidade), mas não vira barulho.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn drift_alarm_only_toasts_dir_or_script_shaped_unclassified_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join("vercel-plugin-device-id"), "abc123").unwrap();
+        let risky_dir = format!("plugin-{}", uuid::Uuid::new_v4());
+        std::fs::create_dir_all(claude.join(&risky_dir)).unwrap();
+
+        let unknown = unclassified_claude_children(&claude);
+        assert!(
+            unknown.contains(&"vercel-plugin-device-id".to_string()),
+            "estado benigno precisa continuar detectado, mesmo sem gritar: {unknown:?}"
+        );
+        assert!(unknown.contains(&risky_dir));
+
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+        let toasted = drift_alarm_names(&claude, &store);
+        assert!(
+            !toasted.contains(&"vercel-plugin-device-id".to_string()),
+            "arquivo de estado benigno não pode virar toast: {toasted:?}"
+        );
+        assert!(toasted.contains(&risky_dir), "{toasted:?}");
+    }
+
+    /// v0.6.2: `drift_toast_worthy` em isolamento, sem depender de o
+    /// pipeline de `unclassified_claude_children` conseguir produzir um
+    /// arquivo de forma script (hoje não consegue -- ver o comentário de
+    /// `drift_alarm_names_fires_once_per_toast_worthy_name_then_dedupes`).
+    /// Trava a semântica da função mesmo que essa coincidência do pipeline
+    /// mude no futuro.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn drift_toast_worthy_flags_dirs_and_script_shaped_or_executable_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::create_dir_all(claude.join("some-dir")).unwrap();
+        std::fs::write(claude.join("script.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::write(claude.join("state-file"), "abc").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(claude.join("exec-no-ext"), "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(
+                claude.join("exec-no-ext"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            assert!(drift_toast_worthy("exec-no-ext", &claude));
+        }
+
+        assert!(drift_toast_worthy("some-dir", &claude));
+        assert!(drift_toast_worthy("script.sh", &claude));
+        assert!(!drift_toast_worthy("state-file", &claude));
+        assert!(!drift_toast_worthy("does-not-exist", &claude));
     }
 
     /// `cfg(linux)`: testa `unclassified_claude_children`, linux-only —
