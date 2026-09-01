@@ -968,7 +968,10 @@ fn oauth_account_written_to_config_json_persists_to_host() {
     let f = claude_fixture();
     let claude = f.spec.home.join(".claude");
     let config_json = claude.join(".config.json");
-    assert!(!config_json.exists(), "fixture precisa nascer sem .config.json");
+    assert!(
+        !config_json.exists(),
+        "fixture precisa nascer sem .config.json"
+    );
 
     let out = run_sh(
         &f.spec,
@@ -1011,10 +1014,7 @@ fn remote_settings_json_absent_is_not_created_and_stays_writable() {
     let remote_settings = claude.join("remote-settings.json");
     assert!(!remote_settings.exists());
 
-    let out = run_sh(
-        &f.spec,
-        &format!("echo ok > {}", remote_settings.display()),
-    );
+    let out = run_sh(&f.spec, &format!("echo ok > {}", remote_settings.display()));
     assert_cage_booted(&out);
     assert!(
         out.status.success(),
@@ -1022,7 +1022,8 @@ fn remote_settings_json_absent_is_not_created_and_stays_writable() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        !remote_settings.exists() || std::fs::read_to_string(&remote_settings).unwrap().trim() == "ok",
+        !remote_settings.exists()
+            || std::fs::read_to_string(&remote_settings).unwrap().trim() == "ok",
         "se o arquivo aparece, tem que ser o que a jaula escreveu -- não uma pré-criação"
     );
 }
