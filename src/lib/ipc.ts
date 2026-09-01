@@ -77,6 +77,10 @@ export interface CreateSessionOpts {
   attach_existing?: boolean;
   /** Id do shell escolhido no picker (ver `listShells`). Ausente = default do OS. */
   shell?: string;
+  /** A sessão de agente nasce pelo gate (reabrir um shell-agent gerenciado),
+   * não por review, resolução de conflito ou clique manual. Controla se a
+   * aba se recolhe sozinha quando o agente sai depois de trabalhar. */
+  opened_by_gate?: boolean;
 }
 
 /** Um shell disponível para abrir uma sessão (ver `listShells`). */

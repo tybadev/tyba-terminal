@@ -1686,7 +1686,12 @@ export default function App() {
   // sandbox, com o env inteiro do usuário e, sobretudo, sem os hooks: sem
   // PreToolUse não há gate, e um agente fora do inbox faz o que quiser.
   const spawnAgentSession = useCallback(
-    async (title: string, cwd: string, runner?: AgentRunner) => {
+    async (
+      title: string,
+      cwd: string,
+      runner?: AgentRunner,
+      openedByGate = false,
+    ) => {
       const fresh = await createSession({
         kind: { type: "agent", runner: runner ?? runnerFromCommand(reviewAgent) },
         cwd,
@@ -1694,6 +1699,7 @@ export default function App() {
         attach_existing: true,
         cols: 100,
         rows: 30,
+        opened_by_gate: openedByGate,
       });
       setSessions((prev) => [...prev, fresh]);
       try {
@@ -1770,7 +1776,12 @@ export default function App() {
         }
         try {
           const title = cwd.split("/").filter(Boolean).pop() ?? binary;
-          const sid = await spawnAgentSession(title, cwd, detected.kind);
+          // A aba que o TYBA abre aqui é a que ele mesmo se propõe a fechar
+          // de novo quando o agente sair depois de trabalhar — ver
+          // `opened_by_gate` no core. Review e resolução de conflitos NÃO
+          // marcam isto: só este fluxo reabre por trás de uma confirmação
+          // explícita ("gate") e é dono da aba que criou.
+          const sid = await spawnAgentSession(title, cwd, detected.kind, true);
           goToSession(sid);
         } catch (e) {
           toastError(t("shellAgentReopenSpawnFailed"), translateError(e, t));
