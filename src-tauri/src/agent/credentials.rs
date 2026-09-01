@@ -232,6 +232,11 @@ const DRIFT_WARNED_KEY: &str = "drift.warned_unclassified_children";
 /// Puro — recebe o que já foi avisado e devolve só os nomes NOVOS. Separado
 /// da leitura/escrita no store para ficar testável sem SQLite (a fronteira
 /// de I/O é o que se isola, não a lista em si).
+///
+/// `cfg(linux)`: só `drift_alarm_names` chama esta função, e ela é
+/// linux-only — mesmo motivo do gate em `unclassified_claude_children` logo
+/// abaixo (achado do clippy --all-targets cross windows-gnu, v0.6.2).
+#[cfg(target_os = "linux")]
 pub(crate) fn names_not_yet_warned(
     candidates: &[String],
     already_warned: &std::collections::HashSet<String>,
@@ -637,7 +642,12 @@ mod tests {
 
     /// v0.6.2, item 3 do contrato: `names_not_yet_warned` é a peça pura do
     /// dedupe — testável sem SQLite.
+    ///
+    /// `cfg(linux)`: `names_not_yet_warned` é linux-only (ver o gate na
+    /// definição) — sem este cfg aqui o mac/windows nem compilam o `cargo
+    /// test` (função inexistente).
     #[test]
+    #[cfg(target_os = "linux")]
     fn names_not_yet_warned_filters_out_already_warned() {
         let mut warned = std::collections::HashSet::new();
         warned.insert("a".to_string());
