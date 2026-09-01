@@ -698,6 +698,10 @@ pub fn resume_agent_session(
         attach_existing: true,
         shell: None,
         initial_prompt: None,
+        // Nunca `true` aqui: a origem do gate não é desta chamada, é da
+        // sessão anterior que ocupava o mesmo `SessionId` — `spawn_session`
+        // é quem herda de `previous`. Ver `Session::opened_by_gate`.
+        opened_by_gate: false,
     };
     spawn_prepared(
         ctx,
@@ -961,6 +965,7 @@ fn spawn_prepared(
             jail,
             opts.cols,
             opts.rows,
+            opts.opened_by_gate,
             on_exit,
         )
         .map_err(|e| {

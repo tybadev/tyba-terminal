@@ -2457,6 +2457,11 @@ impl RawSession {
             agent_conversation_id: self
                 .agent_conversation_id
                 .filter(|id| crate::agent::conversation::is_plausible(id)),
+            // In-memory como `attention`: o restore não sabe se a sessão
+            // morta veio do gate nem se chegou a trabalhar — afirmar
+            // qualquer um dos dois aqui seria palpite, não fato.
+            opened_by_gate: false,
+            did_work: false,
         })
     }
 }
@@ -2545,6 +2550,8 @@ mod tests {
             connection: crate::session::ConnectionState::default(),
             agent_conversation_id: None,
             observed: None,
+            opened_by_gate: false,
+            did_work: false,
         }
     }
 

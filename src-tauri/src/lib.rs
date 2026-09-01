@@ -522,6 +522,18 @@ fn dispose_all(app: &AppHandle, state: &State<'_, AppState>, ids: &[SessionId]) 
     }
 }
 
+/// Entrega F: a aba que o TYBA abriu pelo gate se recolhe sozinha quando o
+/// agente sai — mas só se ele chegou a trabalhar. Os dois fatos, e só eles:
+/// nunca o exit code, que **não existe** neste ponto (`session_exited` não o
+/// recebe; o `-1` do ramo abaixo é sentinela hard-coded, não um código real).
+///
+/// Separada do `else` de [`session_exited`] para poder testar a decisão sem
+/// `AppState` inteiro — que exige um `AppHandle` de runtime real e não se
+/// constrói só com `tauri::test::mock_app()`.
+fn should_auto_close_gate_tab(session: &Session) -> bool {
+    session.opened_by_gate && session.did_work
+}
+
 fn session_exited(app: &AppHandle, id: SessionId) {
     let state = app.state::<AppState>();
     let Some(session) = state.sessions.get(id) else {
@@ -537,10 +549,19 @@ fn session_exited(app: &AppHandle, id: SessionId) {
         let _ = state.layout.session_disposed(id);
         emit_layout(app, &state);
     } else {
+        let should_close = should_auto_close_gate_tab(&session);
         state
             .sessions
             .set_status(app, id, SessionStatus::Exited { code: -1 });
         let _ = state.repo_reconcile.send(());
+        // Só o LAYOUT: `session_disposed` tira a aba do workspace sem tocar a
+        // linha da sessão. NUNCA `sessions.dispose` aqui — apagaria a linha
+        // e, com ela, `agent_conversation_id`: mataria o resume da MESMA
+        // conversa que este fechamento automático existe para não estragar.
+        if should_close {
+            let _ = state.layout.session_disposed(id);
+            emit_layout(app, &state);
+        }
     }
 }
 
@@ -855,6 +876,7 @@ fn resume_startup(
             attach_existing: false,
             shell: None,
             initial_prompt: None,
+            opened_by_gate: false,
         };
         match sessions.create_shell_session(app.clone(), pty_pool, opts, move |id| {
             session_exited(&handle, id)
@@ -3257,6 +3279,7 @@ async fn spawn_slot(
                 attach_existing: true,
                 shell: None,
                 initial_prompt: slot.initial_prompt.clone(),
+                opened_by_gate: false,
             },
         )
         .await;
@@ -3303,6 +3326,7 @@ async fn spawn_slot(
             attach_existing: true,
             shell: None,
             initial_prompt: slot.initial_prompt.clone(),
+            opened_by_gate: false,
         },
     )
     .await
@@ -4287,6 +4311,7 @@ fn docker_open_project(
                 attach_existing: false,
                 shell: None,
                 initial_prompt: None,
+                opened_by_gate: false,
             },
             move |id| session_exited(&handle, id),
         )
@@ -6664,6 +6689,8 @@ mod tests {
             connection: session::ConnectionState::Live,
             agent_conversation_id: None,
             observed: None,
+            opened_by_gate: false,
+            did_work: false,
         }
     }
 
@@ -6868,5 +6895,96 @@ mod tests {
         let json = serde_json::to_string(&info).expect("serializa sem git");
         assert!(json.contains("\"commit\":\"\""));
         assert!(json.contains("\"commit_date\":\"\""));
+    }
+
+    /// A costura do `session_exited`, Entrega F: item 1 do contrato de
+    /// cobertura — agente de gate que trabalhou (atingiu `Idle`) e saiu fecha
+    /// a própria aba sozinho.
+    #[test]
+    fn gate_agent_that_did_work_auto_closes() {
+        let mut s = agent_session(uuid::Uuid::new_v4(), None);
+        s.opened_by_gate = true;
+        s.did_work = true;
+        assert!(should_auto_close_gate_tab(&s));
+    }
+
+    /// Item 2: agente de gate que nunca atingiu `Idle` (não trabalhou) sai —
+    /// a aba fica.
+    #[test]
+    fn gate_agent_that_never_worked_stays_open() {
+        let mut s = agent_session(uuid::Uuid::new_v4(), None);
+        s.opened_by_gate = true;
+        s.did_work = false;
+        assert!(!should_auto_close_gate_tab(&s));
+    }
+
+    /// Item 3: sessão de review (`opened_by_gate=false`) que trabalhou e saiu
+    /// — a aba fica. Trabalhar sozinho não basta; a origem tem de ser o gate.
+    #[test]
+    fn review_session_that_worked_stays_open() {
+        let mut s = agent_session(uuid::Uuid::new_v4(), None);
+        s.opened_by_gate = false;
+        s.did_work = true;
+        assert!(!should_auto_close_gate_tab(&s));
+    }
+
+    /// Item 4: mesma coisa para resolução de conflitos — a chamada que a
+    /// origina nunca passa `opened_by_gate: true`.
+    #[test]
+    fn conflict_resolution_session_that_worked_stays_open() {
+        let mut s = agent_session(uuid::Uuid::new_v4(), None);
+        s.opened_by_gate = false;
+        s.did_work = true;
+        assert!(!should_auto_close_gate_tab(&s));
+    }
+
+    /// Item 5: sessão de agente aberta manualmente (nunca passa por
+    /// `opened_by_gate: true`) que trabalhou e saiu — a aba fica.
+    #[test]
+    fn manually_opened_agent_session_that_worked_stays_open() {
+        let mut s = agent_session(uuid::Uuid::new_v4(), None);
+        s.did_work = true;
+        assert!(!s.opened_by_gate);
+        assert!(!should_auto_close_gate_tab(&s));
+    }
+
+    /// Item 6: nem `opened_by_gate` nem `did_work` chegam a `true` fora de
+    /// sessão de agente (o latch de `did_work` está preso a
+    /// `SessionKind::Agent` em `apply_status`) — então o `else` de
+    /// `session_exited`, que também recebe `Container`, nunca autofecha um.
+    #[test]
+    fn container_kind_never_auto_closes_even_if_the_gate_flag_were_set() {
+        let s = Session {
+            kind: SessionKind::Container {
+                host_id: None,
+                container_id: "c1".into(),
+            },
+            // Hipotético — não há call site que ligue isto para Container —,
+            // mas mesmo assim a decisão não fecha sem `did_work`, que este
+            // kind nunca latcha.
+            opened_by_gate: true,
+            did_work: false,
+            ..agent_session(uuid::Uuid::new_v4(), None)
+        };
+        assert!(!should_auto_close_gate_tab(&s));
+    }
+
+    /// Item 12: a decisão é EXCLUSIVAMENTE `opened_by_gate && did_work` — o
+    /// exit code (aqui sempre o sentinela `-1`, mas a função nem o recebe)
+    /// nunca entra na conta. Varre a tabela-verdade inteira.
+    #[test]
+    fn the_decision_is_exclusively_the_two_flags() {
+        for opened_by_gate in [false, true] {
+            for did_work in [false, true] {
+                let mut s = agent_session(uuid::Uuid::new_v4(), None);
+                s.opened_by_gate = opened_by_gate;
+                s.did_work = did_work;
+                assert_eq!(
+                    should_auto_close_gate_tab(&s),
+                    opened_by_gate && did_work,
+                    "opened_by_gate={opened_by_gate} did_work={did_work}"
+                );
+            }
+        }
     }
 }
