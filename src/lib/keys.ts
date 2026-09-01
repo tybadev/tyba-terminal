@@ -344,6 +344,17 @@ export function comboKeys(combo: string): string[] {
     .map((part) => SYMBOLS[part] ?? part.toUpperCase());
 }
 
+/**
+ * B2: um combo casa com QUALQUER binding gravado na tabela ativa — não só
+ * pane-nav. `comboOf` já devolve `null` pra tecla sem modificador (setas
+ * puras seguem pro terminal como sempre), então este helper só precisa
+ * comparar strings.
+ */
+export function isBoundCombo(bindings: Bindings, combo: string | null): boolean {
+  if (!combo) return false;
+  return (Object.values(bindings) as string[]).includes(combo);
+}
+
 export function parseBindings(raw: string | null): Bindings {
   if (!raw) return { ...DEFAULT_BINDINGS };
   try {

@@ -5189,6 +5189,7 @@ export default function App() {
                           lineEcho: lineEcho[s.id] ?? false,
                           altScreen: altScreens[s.id] ?? false,
                         })}
+                        bindings={bindings}
                         onLineHeight={(px) => reportLineHeight(s.id, px)}
                         onCellWidth={(px) => reportCellWidth(s.id, px)}
                         onLiveRows={

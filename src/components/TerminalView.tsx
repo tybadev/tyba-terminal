@@ -52,6 +52,7 @@ import {
   usedRowsFromLastLine,
 } from "../lib/liveSeam";
 import { isArrowKey } from "../lib/commandLine";
+import { comboOf, DEFAULT_BINDINGS, isBoundCombo, type Bindings } from "../lib/keys";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
 export const RELAYOUT_EVENT = "tyba:relayout";
@@ -267,6 +268,14 @@ interface Props {
    * ainda é ecoada, virando `^[[A` na saída que o bloco grava no disco.
    */
   swallowArrows?: boolean;
+  /**
+   * Tabela de atalhos ativa (B2). Precisa pra o `attachCustomKeyEventHandler`
+   * saber quando uma seta com modificador é atalho do APP (pane-nav,
+   * prevSession/nextSession...) e não deve ir pro PTY, mesmo com
+   * `swallowArrows` desligado (agente rodando). Default = tabela padrão da
+   * plataforma, pro caso raro do prop faltar.
+   */
+  bindings?: Bindings;
 }
 
 export function TerminalView({
@@ -299,6 +308,7 @@ export function TerminalView({
   onLineHeight,
   onCellWidth,
   swallowArrows,
+  bindings,
 }: Props) {
   const [gotOutput, setGotOutput] = useState(false);
   // O onData é assinado uma vez no mount: sem ref, a rajada ficaria presa no
@@ -344,6 +354,11 @@ export function TerminalView({
   // valor do primeiro render e a seta pararia de acompanhar o modo do tty.
   const swallowArrowsRef = useRef(false);
   swallowArrowsRef.current = Boolean(swallowArrows);
+  // Mesmo motivo do swallowArrowsRef acima: o handler de tecla é assinado
+  // uma vez no mount, então sem ref a tabela de atalhos ficaria presa na do
+  // primeiro render (B2).
+  const bindingsRef = useRef<Bindings>(bindings ?? DEFAULT_BINDINGS);
+  bindingsRef.current = bindings ?? DEFAULT_BINDINGS;
   const hoveredLinkRef = useRef<string | null>(null);
   const [menuHasSelection, setMenuHasSelection] = useState(false);
   const [menuMouseMode, setMenuMouseMode] = useState(false);
@@ -451,9 +466,21 @@ export function TerminalView({
     // No evento de TECLADO, não no `onData`: ali a seta já virou `\x1b[A`, que
     // é indistinguível de um ESC vindo de paste ou de rajada. Barrar por bytes
     // engoliria escape legítimo de outra origem.
+    //
+    // B2: antes desta checagem, uma seta com modificador que bate um atalho
+    // do app (pane-nav Ctrl+Alt+Seta, prevSession/nextSession Ctrl+Shift+
+    // Seta...) só olhava `isArrowKey` — ignorava os modificadores — e com
+    // agente rodando (`swallowArrows` false) voltava `true`: o xterm mandava
+    // pro PTY e o Claude comia a tecla antes do listener de `keydown` do App
+    // (que decide o atalho) rodar. `isBoundCombo` reconhece QUALQUER combo
+    // gravado na tabela ativa, não só pane-nav — devolver `false` aqui não
+    // manda a tecla pro PTY, mas o evento de DOM continua subindo pro
+    // listener do App normalmente (`attachCustomKeyEventHandler` só decide o
+    // que o xterm faz, não `stopPropagation`).
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
       if (!isArrowKey(event.key)) return true;
+      if (isBoundCombo(bindingsRef.current, comboOf(event))) return false;
       return !swallowArrowsRef.current;
     });
 
