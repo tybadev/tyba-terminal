@@ -224,7 +224,16 @@ const SCRIPT_EXTENSIONS: [&str; 12] = [
 /// exclusiva do alarme, e por isso fica dead_code fora do Linux sem o gate
 /// (achado do clippy no macOS/Windows da CI do PR #299).
 #[cfg(target_os = "linux")]
-pub(crate) const CLAUDE_STATE_TOP_LEVEL_NAMES: [&str; 42] = [
+pub(crate) const CLAUDE_STATE_TOP_LEVEL_NAMES: [&str; 43] = [
+    // Review de segurança r2 (v0.6.2, NIT): `.config.json` não está em
+    // NENHUMA lista de sombreamento (v0.6.2, corrige a regressão de login —
+    // ver `SENSITIVE_CLAUDE_FILES_MANDATORY`), então SEM esta entrada
+    // `is_classified_claude_child` o via como "não classificado" e o alarme
+    // de deriva emitia a linha de "estado benigno" (stderr) a cada spawn,
+    // pra TODO usuário logado (que sempre tem `.config.json`). Entra aqui
+    // como estado CONHECIDO — mesmo papel de `.credentials.json` logo
+    // abaixo — continua gravável, só para de ser "desconhecido".
+    ".config.json",
     ".credentials.json",
     "history.jsonl",
     "file-history",
