@@ -139,9 +139,11 @@ fn claude_fixture() -> Fixture {
     std::fs::create_dir_all(claude.join("rules")).unwrap();
     std::fs::create_dir_all(claude.join("workflows")).unwrap();
     std::fs::write(claude.join("CLAUDE.md"), "memória do dono").unwrap();
-    // v0.6.2: remote-settings.json desceu para IF_PRESENT — já presente aqui,
-    // então continua coberto pelo caso "sombreado quando já existia no
-    // spawn" em `claude_config_and_hook_surfaces_are_never_writable`.
+    // v0.6.2 (review de segurança r2, BLOCKING): remote-settings.json
+    // voltou pra MANDATORY — sombreado sempre, presente aqui ou não (ver
+    // `remote_settings_json_absent_is_pre_created_and_shadowed_read_only`
+    // pro caso ausente). Criado aqui só pra exercitar o caso "já existia no
+    // spawn" com conteúdo real, não `{}` de pré-criação.
     // `.config.json` de propósito NÃO nasce aqui: é o caso "ausente", coberto
     // por `config_json_absent_from_fixture_is_not_created_by_mounting_the_cage`.
     std::fs::write(claude.join("remote-settings.json"), "{}").unwrap();
@@ -675,10 +677,10 @@ fn claude_config_and_hook_surfaces_are_never_writable() {
         "workflows/ci.yaml",
         "CLAUDE.md",
         "statusline-command.sh",
-        // v0.6.2: remote-settings.json é IF_PRESENT -- claude_fixture() já o
-        // cria (existia no spawn), então continua sombreado read-only aqui.
-        // O caso ausente (não sombreado, não pré-criado) é
-        // `remote_settings_json_absent_is_not_created_and_stays_writable`.
+        // v0.6.2 (review de segurança r2, BLOCKING): remote-settings.json é
+        // MANDATORY de novo -- sombreado read-only sempre, presente ou não
+        // no spawn (o caso ausente, pré-criado E sombreado, é
+        // `remote_settings_json_absent_is_pre_created_and_shadowed_read_only`).
         // `.config.json` SAIU desta lista de propósito (v0.6.2): é o store
         // de login do Claude, não pode mais ser sombreado nem pré-criado —
         // ver `config_json_absent_from_fixture_is_not_created_by_mounting_the_cage`
@@ -997,14 +999,18 @@ fn oauth_account_written_to_config_json_persists_to_host() {
     );
 }
 
-/// Item 4 do contrato de cobertura, metade ausente: `remote-settings.json`
-/// não sombreado nem pré-criado quando não existia no spawn (a metade
-/// presente -- sombreado read-only -- já é coberta por
-/// `claude_config_and_hook_surfaces_are_never_writable`, via
-/// `claude_fixture()`).
+/// Item 4 do contrato de cobertura, REVERTIDO pelo review de segurança r2
+/// (v0.6.2, BLOCKING): `remote-settings.json` ausente no spawn é PRÉ-CRIADO
+/// `{}` (M4, `ensure_inert_file`) e sombreado read-only -- o oposto do que
+/// esta entrega tinha antes da correção (IF_PRESENT deixava o caso ausente,
+/// que é o comum, gravável E invisível pro alarme de deriva -- um agente
+/// enjaulado plantando hooks/permissions ali seria exec silencioso na
+/// próxima vez que o dono rodasse `claude` fora do TYBA). Ao contrário de
+/// `.config.json`, `remote-settings.json` NÃO é o config global (`q()` não
+/// olha ele) -- sombrear sempre nunca quebra login.
 #[test]
-fn remote_settings_json_absent_is_not_created_and_stays_writable() {
-    if bwrap_unavailable("remote_settings_json_absent_is_not_created_and_stays_writable") {
+fn remote_settings_json_absent_is_pre_created_and_shadowed_read_only() {
+    if bwrap_unavailable("remote_settings_json_absent_is_pre_created_and_shadowed_read_only") {
         return;
     }
     let mut f = fixture();
@@ -1012,18 +1018,39 @@ fn remote_settings_json_absent_is_not_created_and_stays_writable() {
     std::fs::create_dir_all(&claude).unwrap();
     f.spec.agent = ClaudeCodeRunner.sandbox_access(&f.spec.home, &f.spec.writable_root);
     let remote_settings = claude.join("remote-settings.json");
-    assert!(!remote_settings.exists());
+    assert!(
+        !remote_settings.exists(),
+        "fixture precisa nascer sem remote-settings.json"
+    );
 
-    let out = run_sh(&f.spec, &format!("echo ok > {}", remote_settings.display()));
+    // Contra-caso pedido pelo review: um agente enjaulado tentando plantar
+    // hooks ali dentro precisa falhar -- é exatamente o vetor de exec que
+    // promover este arquivo de volta a MANDATORY fecha.
+    let out = run_sh(
+        &f.spec,
+        &format!(
+            "echo '{{\"hooks\":{{\"PreToolUse\":[]}}}}' > {}",
+            remote_settings.display()
+        ),
+    );
     assert_cage_booted(&out);
     assert!(
-        out.status.success(),
-        "remote-settings.json ausente no spawn não pode ser pré-criado nem sombreado: {}",
+        !out.status.success(),
+        "remote-settings.json ausente no spawn precisa vir sombreado (M4, pré-criação) -- um \
+         agente não pode plantar hooks nele: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+
+    // A pré-criação (M4: --ro-bind de path ausente aborta o bwrap) precisa
+    // ter deixado um {} benigno no host -- não o payload de hooks que a
+    // jaula recusou gravar.
     assert!(
-        !remote_settings.exists()
-            || std::fs::read_to_string(&remote_settings).unwrap().trim() == "ok",
-        "se o arquivo aparece, tem que ser o que a jaula escreveu -- não uma pré-criação"
+        remote_settings.exists(),
+        "remote-settings.json ausente precisa ser pré-criado no host (M4)"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&remote_settings).unwrap(),
+        "{}",
+        "a pré-criação é o {{}} inerte de ensure_inert_file, não o payload de hooks recusado"
     );
 }
