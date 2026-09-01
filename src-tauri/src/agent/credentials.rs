@@ -307,9 +307,64 @@ pub(crate) fn ack_drift_names(store: &crate::session::store::Store, names: &[Str
     if names.is_empty() {
         return;
     }
+    let allowed = only_emitted_this_run(names);
+    if allowed.is_empty() {
+        return;
+    }
     let mut warned = load_warned(store);
-    warned.extend(names.iter().cloned());
+    warned.extend(allowed);
     save_warned(store, &warned);
+}
+
+/// Review de segurança r2 (v0.6.2), OPCIONAL — defesa em profundidade: o
+/// webview é confiável (não é a fronteira de ameaça real; quem já
+/// conseguisse rodar JS arbitrário ali comprometeu o app inteiro, não só
+/// este comando), então isto não é obrigatório — mas é barato. Sem isto,
+/// `ack_drift_warning` (comando Tauri) aceitaria QUALQUER `names` que o
+/// front mandasse, sem checar que o core de fato ofereceu aquele nome como
+/// toast. Com isto, só nomes que passaram por `record_emitted_drift_names`
+/// (chamado de `emit_warnings`, junto com o emit do evento) podem virar
+/// durável — um ack pra um nome nunca emitido é descartado em silêncio.
+static EMITTED_DRIFT_NAMES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::OnceLock::new();
+
+fn emitted_drift_names_set() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    EMITTED_DRIFT_NAMES.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Chamado por `emit_warnings` (nunca pelo comando de ack): registra que o
+/// core OFERECEU este nome como toast nesta execução do app. Em processo,
+/// não durável de propósito — é só o allowlist do ack, não o dedupe (esse
+/// já é o store, via `load_warned`/`save_warned`).
+///
+/// `cfg(linux)`: o único chamador é `drift_alarm_names`, linux-only (ver o
+/// gate na definição dela) — sem este cfg aqui o clippy --all-targets do
+/// mac/windows reprova com dead_code (mesmo achado do cross windows-gnu que
+/// já pegou `names_not_yet_warned`). `only_emitted_this_run`/
+/// `emitted_drift_names_set`/`EMITTED_DRIFT_NAMES` continuam SEM cfg: são
+/// chamados também por `ack_drift_names`, que é cross-platform (o comando
+/// Tauri precisa existir em todo SO).
+#[cfg(target_os = "linux")]
+fn record_emitted_drift_names(names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    let mut guard = emitted_drift_names_set()
+        .lock()
+        .expect("emitted drift names lock");
+    guard.extend(names.iter().cloned());
+}
+
+fn only_emitted_this_run(names: &[String]) -> Vec<String> {
+    let guard = emitted_drift_names_set()
+        .lock()
+        .expect("emitted drift names lock");
+    names
+        .iter()
+        .filter(|n| guard.contains(n.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// Item 2/3 do contrato: o toast de deriva só dispara pra nome com "cara de
@@ -373,7 +428,15 @@ pub(crate) fn drift_alarm_names(
         }
     }
     let warned = load_warned(store);
-    names_not_yet_warned(&risky, &warned)
+    let fresh = names_not_yet_warned(&risky, &warned);
+    // Review de segurança r2, OPCIONAL: registra AQUI, não em
+    // `emit_warnings` — é o ponto único onde "o core decidiu oferecer X
+    // como toast" é verdade, e `drift_alarm_names` é chamada direto pelos
+    // testes (sem passar por `emit_warnings`), então gravar aqui casa o
+    // allowlist do ack com o que a função realmente devolve, produção ou
+    // teste.
+    record_emitted_drift_names(&fresh);
+    fresh
 }
 
 /// Fio de produção (§6, chamado por `session::spawn_prepared` — Linux, só
@@ -738,30 +801,71 @@ mod tests {
     }
 
     /// Review r1 (v0.6.2), MAJOR: `ack_drift_names` é a ÚNICA escrita real
-    /// do dedupe — round-trip puro (sem `drift_alarm_names`/Linux no meio),
-    /// prova que persiste e que `load_warned` enxerga depois. Não é
-    /// `cfg(linux)`: nem a função nem `Store` são linux-only (ver o
-    /// comentário de `DRIFT_WARNED_KEY`).
+    /// do dedupe — round-trip puro (sem `drift_alarm_names` no meio), prova
+    /// que persiste e que `load_warned` enxerga depois. `ack_drift_names`
+    /// em si NÃO é linux-only (comando Tauri precisa existir em todo SO —
+    /// ver o comentário de `DRIFT_WARNED_KEY`), mas este teste PRECISA do
+    /// gate porque usa `record_emitted_drift_names` (o allowlist do review
+    /// de segurança r2, OPCIONAL), que é linux-only — ver o comentário na
+    /// definição dela.
+    ///
+    /// `record_emitted_drift_names` primeiro: sem isso, `ack_drift_names`
+    /// descartaria os dois nomes por nunca terem sido "oferecidos" nesta
+    /// execução — ver `ack_drift_names_ignores_names_the_core_never_emitted`
+    /// pra prova dedicada desse allowlist. UUID nos nomes:
+    /// `EMITTED_DRIFT_NAMES` é `static` global, compartilhado entre testes
+    /// rodando em paralelo no mesmo binário — sem nome único, um teste
+    /// poderia "herdar" o registro de outro.
     #[test]
+    #[cfg(target_os = "linux")]
     fn ack_drift_names_persists_and_load_warned_sees_it() {
         let store = crate::session::store::Store::open_in_memory().unwrap();
         assert!(load_warned(&store).is_empty());
+        let um = format!("um-{}", uuid::Uuid::new_v4());
+        let dois = format!("dois-{}", uuid::Uuid::new_v4());
+        record_emitted_drift_names(&[um.clone(), dois.clone()]);
 
-        ack_drift_names(&store, &["um".to_string(), "dois".to_string()]);
+        ack_drift_names(&store, &[um.clone(), dois.clone()]);
         let warned = load_warned(&store);
-        assert!(warned.contains("um"));
-        assert!(warned.contains("dois"));
+        assert!(warned.contains(&um));
+        assert!(warned.contains(&dois));
     }
 
     /// Review r1: lista vazia é no-op — não grava um `[]` por cima do que já
     /// existia (defesa contra um ack tardio/duplicado limpar o store).
+    /// `cfg(linux)`: usa `record_emitted_drift_names`, linux-only.
     #[test]
+    #[cfg(target_os = "linux")]
     fn ack_drift_names_with_empty_list_does_not_touch_the_store() {
         let store = crate::session::store::Store::open_in_memory().unwrap();
-        ack_drift_names(&store, &["um".to_string()]);
+        let um = format!("um-{}", uuid::Uuid::new_v4());
+        record_emitted_drift_names(std::slice::from_ref(&um));
+        ack_drift_names(&store, std::slice::from_ref(&um));
         ack_drift_names(&store, &[]);
         let warned = load_warned(&store);
-        assert!(warned.contains("um"), "{warned:?}");
+        assert!(warned.contains(&um), "{warned:?}");
+    }
+
+    /// Review de segurança r2 (v0.6.2), OPCIONAL: o ack só marca durável
+    /// nomes que o core de fato registrou como emitidos nesta execução —
+    /// uma string arbitrária que o webview mandasse sem o core ter
+    /// oferecido aquele nome é descartada em silêncio, não vira durável.
+    /// `cfg(linux)`: usa `record_emitted_drift_names`, linux-only.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn ack_drift_names_ignores_names_the_core_never_emitted() {
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+        let emitted = format!("emitted-{}", uuid::Uuid::new_v4());
+        let forged = format!("forged-{}", uuid::Uuid::new_v4());
+        record_emitted_drift_names(std::slice::from_ref(&emitted));
+
+        ack_drift_names(&store, &[emitted.clone(), forged.clone()]);
+        let warned = load_warned(&store);
+        assert!(warned.contains(&emitted), "{warned:?}");
+        assert!(
+            !warned.contains(&forged),
+            "nome nunca emitido pelo core não pode virar durável: {warned:?}"
+        );
     }
 
     /// v0.6.2, item 2/5 do contrato: o toast só dispara pra shape de risco
