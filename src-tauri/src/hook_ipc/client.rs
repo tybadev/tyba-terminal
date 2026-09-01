@@ -86,6 +86,29 @@ pub fn run_client<R: Read, W: Write>(stdin: R, stdout: W, socket_path: Option<&P
     run_client_inner(stdin, stdout, socket_path, RetryPlan::default())
 }
 
+/// Conexão-com-retry + framing, extraído de `run_client_inner` pra servir o
+/// modo `_open-url` do shim de navegador (entrega B, §5.2) sem reusar
+/// `run_client`: aquele SEMPRE devolve exit 0 (fail-closed pro gate de
+/// PreToolUse/PermissionRequest — nunca pode travar uma tool), e o modo
+/// `_open-url` precisa distinguir ack de deny/timeout no próprio exit code
+/// (§1.2 — exit≠0 é o que faz o Claude cair no fallback de tela, V4). Retry
+/// fixo em `RetryPlan::default()`: nenhum chamador de fora do módulo precisa
+/// customizar o backoff. `run_client_inner` continua chamando o mesmo par
+/// connect+exchange por baixo — o comportamento dele não muda (ver
+/// hook_ipc::tests, que pinam a saída byte a byte e continuam verdes).
+pub fn request(socket_path: &Path, event: &serde_json::Value) -> Option<ResponseEnvelope> {
+    connect_and_exchange(socket_path, event, RetryPlan::default())
+}
+
+fn connect_and_exchange(
+    socket_path: &Path,
+    event: &serde_json::Value,
+    retry: RetryPlan,
+) -> Option<ResponseEnvelope> {
+    let stream = connect_with_retry(socket_path, retry)?;
+    exchange(stream, event)
+}
+
 pub fn run_client_inner<R: Read, W: Write>(
     mut stdin: R,
     mut stdout: W,
@@ -111,12 +134,7 @@ pub fn run_client_inner<R: Read, W: Write>(
         return 0;
     };
 
-    let Some(stream) = connect_with_retry(socket_path, retry) else {
-        emit_transport_failure(&mut stdout, kind);
-        return 0;
-    };
-
-    match exchange(stream, &event) {
+    match connect_and_exchange(socket_path, &event, retry) {
         Some(response) => emit_response(&mut stdout, &response, kind, event.get("tool_input")),
         None => emit_transport_failure(&mut stdout, kind),
     }

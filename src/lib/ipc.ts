@@ -433,6 +433,44 @@ export const onAnyAgentReady = (
     handler(e.payload.session_id),
   );
 
+/** Entrega B (§1.2) -- espelha `OpenUrlPayload` do core. `host` já vem
+ * extraído do core (o webview é burro, princípio 1): exibir o host em
+ * destaque é decisão de segurança, não pode depender de parsing do lado
+ * fraco. */
+export interface AgentOpenUrlPayload {
+  session_id: SessionId;
+  url: string;
+  host: string;
+  known_login: boolean;
+}
+
+export const onAgentOpenUrl = (
+  handler: (payload: AgentOpenUrlPayload) => void,
+): Promise<UnlistenFn> =>
+  listen<AgentOpenUrlPayload>("agent://open-url", (e) => handler(e.payload));
+
+/** Espelha `SandboxWarningKind` do core (`agent/credentials.rs`) -- aviso sem
+ * ação, ao contrário do `AgentOpenUrlPayload` acima. */
+export type SandboxWarningKind =
+  | "CredencialPaiNaoEhRw"
+  | "CredencialSombreadaDepois"
+  | "CredencialHostNaoGrava"
+  | "HomeRoClaudeJsonNaoPersiste"
+  | "FilhoDesconhecidoEmClaude";
+
+export interface AgentSandboxWarningPayload {
+  session_id: SessionId;
+  kind: SandboxWarningKind;
+  detail: string | null;
+}
+
+export const onAgentSandboxWarning = (
+  handler: (payload: AgentSandboxWarningPayload) => void,
+): Promise<UnlistenFn> =>
+  listen<AgentSandboxWarningPayload>("agent://sandbox-warning", (e) =>
+    handler(e.payload),
+  );
+
 export type AgentRunner = "claude_code" | "codex" | { custom: string };
 
 export interface DetectedAgent {

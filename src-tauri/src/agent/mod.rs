@@ -1,5 +1,7 @@
+pub mod browser_bridge;
 pub mod codex_hooks;
 pub mod conversation;
+pub mod credentials;
 pub mod disk_observer;
 pub mod hooks_settings;
 pub mod notify;
@@ -136,6 +138,158 @@ fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
+/// Diretórios de `~/.claude` que dão ao agente enjaulado poder de executar
+/// código ou de mudar a decisão de permissão — hooks, MCP, prompts, comandos
+/// (§2.1/§2.2 da entrega B). Ficam somente-LEITURA: `Rule::Node` no except de
+/// escrita vira `--ro-bind` do diretório real (bwrap.rs), preservando leitura.
+/// `projects/` NÃO entra aqui — é isolamento total (furo F4), tratado à parte
+/// como `Rule::Subpath` porque o problema não é execução, é visibilidade
+/// cruzada entre repos.
+const SENSITIVE_CLAUDE_READONLY_DIRS: [&str; 10] = [
+    "plugins",
+    "cowork_plugins",
+    "hooks",
+    "agents",
+    "commands",
+    "skills",
+    "output-styles",
+    "rules",
+    "workflows",
+    "daemon",
+];
+
+/// Arquivos sombreados mesmo que ainda não existam — a pré-criação em
+/// bwrap.rs os torna sempre presentes (M4: `--ro-bind` de path ausente aborta
+/// o bwrap). `daemon.json` é o item mais grave (cron/slash commands rodados
+/// pelo daemon no HOST, fora da jaula, com watcher que reconcilia — §2.3/M6).
+/// `.config.json` e `remote-settings.json` (review r1, MINOR seg 2) são o
+/// segundo item mais grave, e por pouco: `.config.json` é o caminho LEGADO do
+/// `.claude.json` (V5 — o binário carrega `mcpServers` dele) e
+/// `remote-settings.json` carrega hooks/permissions. Deixá-los IF_PRESENT
+/// abria exec diferido — com `~/.claude` rw, o agente cria um dos dois num
+/// `~/.claude` que ainda não os tinha, com `mcpServers` apontando pra um
+/// comando; a próxima vez que o dono roda `claude` FORA do TYBA, executa —
+/// sem disparar o alarme de deriva, porque o nome já está classificado.
+const SENSITIVE_CLAUDE_FILES_MANDATORY: [&str; 7] = [
+    "settings.json",
+    "settings.local.json",
+    "daemon.json",
+    "mcp.json",
+    "CLAUDE.md",
+    "remote-settings.json",
+    ".config.json",
+];
+
+/// Arquivos sombreados só se já existirem — sem pré-criação, porque não têm
+/// papel de segurança forte o bastante para justificar nascer no disco do
+/// dono por conta do TYBA (§2.3, §3.4: "ou não é emitido").
+const SENSITIVE_CLAUDE_FILES_IF_PRESENT: [&str; 2] = ["keybindings.json", "loop.md"];
+
+/// Extensões que classificam um arquivo do topo de `~/.claude` como "cara de
+/// script" mesmo sem nome conhecido (V9: `statusline-command.sh` do dono não
+/// está em nenhuma lista fixa — só na configuração dele).
+const SCRIPT_EXTENSIONS: [&str; 12] = [
+    "sh", "bash", "zsh", "py", "js", "mjs", "cjs", "ts", "rb", "pl", "php", "lua",
+];
+
+/// §2.4 — explicitamente NÃO sombreados, de propósito: é estado, fica
+/// gravável. Vocabulário de V7 (o que existe hoje em produção) mais o que o
+/// design lista à parte com razão escrita (backups/ por causa de M9, jobs/
+/// por causa de M6). Usado só pelo alarme de deriva (`credentials.rs`) para
+/// distinguir "estado conhecido" de "nome novo que ninguém classificou" — não
+/// tem papel na política de sandbox em si (essa é a denylist acima).
+pub(crate) const CLAUDE_STATE_TOP_LEVEL_NAMES: [&str; 42] = [
+    ".credentials.json",
+    "history.jsonl",
+    "file-history",
+    "dump-prompts",
+    "todos",
+    "shell-snapshots",
+    "session-env",
+    "statsig",
+    "debug",
+    "ide",
+    "logs",
+    "sessions",
+    "backups",
+    "cache",
+    "chrome",
+    "downloads",
+    "paste-cache",
+    "state",
+    "tasks",
+    "plans",
+    "jobs",
+    "telemetry",
+    "traces",
+    "usage-data",
+    "startup-perf",
+    "themes",
+    "uploads",
+    "shares",
+    "feedback",
+    "feedback-bundles",
+    "agent-memory",
+    "local",
+    "teams",
+    "ccr",
+    "seed-admin",
+    "stats-cache.json",
+    "daemon.status.json",
+    "daemon.scheduled.status.json",
+    ".last-cleanup",
+    ".last-update-result.json",
+    "mcp-discovery-cache",
+    "mcp-needs-auth-cache.json",
+];
+
+/// Os filhos de `~/.claude` que ficam sombreados no write (§2 da entrega B).
+/// Tudo que NÃO está aqui é estado e fica gravável por default — é o ônus que
+/// o alarme de deriva paga (§2.5, `unclassified_claude_children`): o nome novo
+/// nasce gravável e denunciado, nunca gravável e silencioso.
+pub(crate) fn sensitive_claude_children(claude: &Path) -> Vec<Rule> {
+    let mut rules: Vec<Rule> = vec![Rule::Subpath(claude.join("projects"))];
+    for dir in SENSITIVE_CLAUDE_READONLY_DIRS {
+        rules.push(Rule::Node(claude.join(dir)));
+    }
+    for file in SENSITIVE_CLAUDE_FILES_MANDATORY {
+        rules.push(Rule::Literal(claude.join(file)));
+    }
+
+    let mut named_files: std::collections::HashSet<&str> =
+        SENSITIVE_CLAUDE_FILES_MANDATORY.into_iter().collect();
+    for file in SENSITIVE_CLAUDE_FILES_IF_PRESENT {
+        named_files.insert(file);
+        let p = claude.join(file);
+        if p.is_file() {
+            rules.push(Rule::Literal(p));
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(claude) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if named_files.contains(name.as_ref()) {
+                continue;
+            }
+            let script_ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|ext| SCRIPT_EXTENSIONS.contains(&ext))
+                .unwrap_or(false);
+            if script_ext || is_executable(&path) {
+                rules.push(Rule::Literal(path));
+            }
+        }
+    }
+    rules
+}
+
 pub struct ClaudeCodeRunner;
 
 impl AgentRunner for ClaudeCodeRunner {
@@ -200,20 +354,16 @@ impl AgentRunner for ClaudeCodeRunner {
                     Rule::Family(home.join(".claude.json")),
                 ]),
             ],
-            write: vec![RuleSet::allow(vec![
-                Rule::Literal(claude.clone()),
-                Rule::Literal(claude.join("projects")),
-                Rule::Node(project),
-                Rule::Node(claude.join("todos")),
-                Rule::Node(claude.join("shell-snapshots")),
-                Rule::Node(claude.join("session-env")),
-                Rule::Node(claude.join("statsig")),
-                Rule::Node(claude.join("debug")),
-                Rule::Node(claude.join("ide")),
-                Rule::Node(claude.join("logs")),
-                Rule::Family(claude.join(".credentials.json")),
-                Rule::Family(home.join(".claude.json")),
-            ])],
+            write: vec![
+                RuleSet {
+                    allow: vec![
+                        Rule::Node(claude.clone()),
+                        Rule::Family(home.join(".claude.json")),
+                    ],
+                    except: sensitive_claude_children(&claude),
+                },
+                RuleSet::allow(vec![Rule::Node(project)]),
+            ],
         }
     }
 }
@@ -569,49 +719,206 @@ mod tests {
         })
     }
 
+    /// Entrega B (§2/§3.1): o write vira denylist — `~/.claude` inteiro é
+    /// gravável por default, e só o que dá poder de execução ou muda a decisão
+    /// de permissão fica sombreado. Substitui
+    /// `claude_sandbox_access_never_writes_settings_or_plugins`: com a
+    /// allowlist antiga, `unknown-dir` e `session-env-evil` NÃO eram
+    /// graváveis por não estarem listados — esse era exatamente o bug (V8:
+    /// backups/cache/chrome/... falhavam EROFS em silêncio por não estar na
+    /// lista). Sob a nova política, estado não-classificado é gravável por
+    /// default (o ônus é o alarme de deriva, testado à parte), então essas
+    /// duas asserções mudaram de sentido — a promessa desta entrega é a razão.
     #[test]
-    fn claude_sandbox_access_never_writes_settings_or_plugins() {
+    fn claude_write_access_shadows_config_and_hook_surfaces_but_keeps_state_writable() {
         let access =
             ClaudeCodeRunner.sandbox_access(Path::new("/Users/x"), Path::new("/private/wt/a"));
-        for set in &access.write {
-            for rule in &set.allow {
-                let s = rule.path().to_string_lossy();
-                assert!(!s.contains("settings"), "{s}");
-                assert!(!s.ends_with("plugins"), "{s}");
-                let dir_node = matches!(rule, Rule::Literal(_));
-                assert!(
-                    dir_node || !s.ends_with(".claude"),
-                    "escrita recursiva em ~/.claude: {s}"
-                );
-            }
-        }
-
         let claude = Path::new("/Users/x/.claude");
-        assert!(
-            write_grants(&access, &claude.join("session-env")),
-            "session-env é estado nativo do Claude Code; hooks SessionStart precisam criá-lo"
-        );
-        assert!(
-            write_grants(&access, &claude.join("session-env/8f3-uuid")),
-            "cada sessão cria seu próprio subdir sob session-env"
-        );
-        assert!(
-            !write_grants(&access, &claude.join("session-env-evil")),
-            "o node session-env é ancorado: não vaza pra irmãos com prefixo comum"
-        );
+
         for forbidden in [
             "settings.json",
             "settings.local.json",
+            "daemon.json",
+            "daemon",
+            "daemon/schedule.json",
             "plugins",
             "plugins/x/hook.sh",
+            "cowork_plugins",
+            "cowork_plugins/x/hook.sh",
             "hooks",
+            "hooks/pre-commit.sh",
             "mcp.json",
+            "agents",
+            "agents/reviewer.md",
+            "commands",
+            "commands/deploy.md",
+            "skills",
+            "skills/x/SKILL.md",
+            "output-styles",
+            "output-styles/terse.md",
+            "rules",
+            "rules/security.md",
+            "workflows",
+            "workflows/ci.yaml",
+            "CLAUDE.md",
+            // review r1, MINOR seg 2: promovidos de IF_PRESENT a mandatório —
+            // nunca graváveis, nem quando ainda não existiam no spawn.
+            "remote-settings.json",
+            ".config.json",
+        ] {
+            assert!(
+                !write_grants(&access, &claude.join(forbidden)),
+                "config/hook nunca gravável, mesmo pré-existente: {forbidden}"
+            );
+        }
+
+        for still_writable in [
+            "session-env",
+            "session-env/8f3-uuid",
+            "backups",
+            "backups/.claude.json.backup.123",
+            "jobs",
+            "jobs/abc",
+            "cache",
+            "cache/x",
+            "paste-cache",
+            "sessions",
+            "chrome",
+            "downloads",
+            "todos",
+            "shell-snapshots",
+            "statsig",
+            "debug",
+            "ide",
+            "logs",
+            ".credentials.json",
             "unknown-dir",
             "unknown-dir/deep/file",
         ] {
             assert!(
-                !write_grants(&access, &claude.join(forbidden)),
-                "config/hook e subpath genérico de ~/.claude nunca graváveis: {forbidden}"
+                write_grants(&access, &claude.join(still_writable)),
+                "estado do Claude Code precisa continuar gravável (senão volta o EROFS \
+                 silencioso de hoje, V8): {still_writable}"
+            );
+        }
+
+        assert!(
+            !write_grants(&access, &claude.join("projects").join("-other-repo")),
+            "projects/<outro> não pode ser gravável (furo F4)"
+        );
+        assert!(
+            write_grants(&access, &claude.join("projects").join("-private-wt-a")),
+            "projects/<este> precisa continuar gravável, via re-grant"
+        );
+    }
+
+    #[test]
+    fn sensitive_claude_children_lists_the_classified_dirs_and_mandatory_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let rules = sensitive_claude_children(&claude);
+
+        assert!(rules.contains(&Rule::Subpath(claude.join("projects"))));
+        for dir in [
+            "plugins",
+            "cowork_plugins",
+            "hooks",
+            "agents",
+            "commands",
+            "skills",
+            "output-styles",
+            "rules",
+            "workflows",
+            "daemon",
+        ] {
+            assert!(
+                rules.contains(&Rule::Node(claude.join(dir))),
+                "{dir} precisa estar classificado como Node (somente-leitura)"
+            );
+        }
+        for file in [
+            "settings.json",
+            "settings.local.json",
+            "daemon.json",
+            "mcp.json",
+            "CLAUDE.md",
+            // review r1, MINOR seg 2: .config.json é o caminho LEGADO do
+            // .claude.json (V5 — o binário carrega mcpServers dele) e
+            // remote-settings.json carrega hooks/permissions. Com ~/.claude
+            // rw, deixá-los IF_PRESENT abre exec diferido: o agente cria um
+            // desses num ~/.claude que ainda não os tinha, com mcpServers
+            // apontando pra um comando, e o próximo `claude` do dono FORA do
+            // TYBA executa — sem disparar o alarme de deriva (nome já
+            // classificado). Promovidos a mandatório.
+            "remote-settings.json",
+            ".config.json",
+        ] {
+            assert!(
+                rules.contains(&Rule::Literal(claude.join(file))),
+                "{file} precisa estar classificado mesmo sem existir ainda (pré-criação, M4)"
+            );
+        }
+    }
+
+    #[test]
+    fn sensitive_claude_children_only_lists_optional_files_when_they_already_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let absent = sensitive_claude_children(&claude);
+        for file in ["keybindings.json", "loop.md"] {
+            assert!(
+                !absent.contains(&Rule::Literal(claude.join(file))),
+                "{file} não é mandatório: sem pré-criação, então só entra se já existir"
+            );
+        }
+
+        std::fs::write(claude.join("keybindings.json"), "{}").unwrap();
+        let present = sensitive_claude_children(&claude);
+        assert!(present.contains(&Rule::Literal(claude.join("keybindings.json"))));
+    }
+
+    /// V9: o script do statusline do dono não tem nome fixo — a classificação
+    /// tem que achá-lo por forma (extensão de script ou bit de execução), não
+    /// por lista de nomes.
+    #[test]
+    fn sensitive_claude_children_detects_script_looking_files_at_the_top_by_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join("statusline-command.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::write(claude.join("notes.txt"), "não é script").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let exec_no_ext = claude.join("run-me");
+            std::fs::write(&exec_no_ext, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&exec_no_ext, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let rules = sensitive_claude_children(&claude);
+        assert!(rules.contains(&Rule::Literal(claude.join("statusline-command.sh"))));
+        assert!(!rules.contains(&Rule::Literal(claude.join("notes.txt"))));
+        #[cfg(unix)]
+        assert!(rules.contains(&Rule::Literal(claude.join("run-me"))));
+    }
+
+    /// §5.5/R7: se algum dia o TYBA passar a subir o claude em modo attach ou
+    /// background, o shim BROWSER é contornado em silêncio (M8 — o Claude
+    /// injeta BROWSER:"true" nesse modo, tratado como não-setado). O único
+    /// lugar que monta o argv é `build_command`; esta guarda pina que ele
+    /// nunca emite flag de attach/background.
+    #[test]
+    fn build_command_never_enables_attach_or_background_mode() {
+        let env = HashMap::new();
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
+        let argv = argv_strings(&cmd);
+        for flag in ["--attach", "--background", "-a", "--daemon"] {
+            assert!(
+                !argv.contains(&flag.to_string()),
+                "argv não pode conter {flag}: {argv:?}"
             );
         }
     }
