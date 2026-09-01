@@ -503,10 +503,21 @@ mod tests {
         s.agent = ClaudeCodeRunner.sandbox_access(&s.home, &s.writable_root);
         let policy = build_policy(&s);
 
+        // A linha certa é a da RuleSet de `~/.claude` — não basta "primeira
+        // allow-write com require-not": o próprio worktree também tem sombras
+        // (`.git/refs`), então casa por engano. Seleciona pela allow part que
+        // concede `~/.claude`. Se nenhuma linha assim existir, o `.expect`
+        // denuncia uma regressão real da política (o macOS deixou de tornar
+        // `~/.claude` gravável), não um teste frouxo.
         let claude_line = policy
             .lines()
-            .find(|l| l.starts_with("(allow file-write*") && l.contains("require-not"))
-            .expect("faltou a linha de write com except de ~/.claude");
+            .find(|l| {
+                l.starts_with("(allow file-write*")
+                    && l.split_once("(require-not").is_some_and(|(allow, _)| {
+                        allow.contains(r#"(subpath "/Users/nobody/.claude")"#)
+                    })
+            })
+            .expect("faltou a linha de write de ~/.claude com sombras (except)");
         let (allow_part, except_part) = claude_line
             .split_once("(require-not")
             .expect("a linha precisa ter require-not");
