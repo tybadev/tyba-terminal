@@ -1,6 +1,6 @@
 [package]
 name = "tyba"
-version = "0.6.2"
+version = "0.6.3"
 description = "TYBA — seu ambiente, tudo conectado. Terminal orientado a agentes."
 authors = ["TYBA contributors"]
 license = "Apache-2.0"
