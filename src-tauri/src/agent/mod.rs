@@ -198,6 +198,15 @@ const SCRIPT_EXTENSIONS: [&str; 12] = [
 /// por causa de M6). Usado só pelo alarme de deriva (`credentials.rs`) para
 /// distinguir "estado conhecido" de "nome novo que ninguém classificou" — não
 /// tem papel na política de sandbox em si (essa é a denylist acima).
+///
+/// `cfg(linux)`: o único consumidor é `credentials::is_classified_claude_child`
+/// (o alarme de deriva, C1/C2/deriva — Linux, §6). As outras quatro listas de
+/// nomes deste módulo (`SENSITIVE_CLAUDE_READONLY_DIRS` e afins) continuam
+/// sem cfg porque `sensitive_claude_children` — quem elas alimentam — roda
+/// nos dois SOs (§3.1: a política de write é compartilhada); só esta é
+/// exclusiva do alarme, e por isso fica dead_code fora do Linux sem o gate
+/// (achado do clippy no macOS/Windows da CI do PR #299).
+#[cfg(target_os = "linux")]
 pub(crate) const CLAUDE_STATE_TOP_LEVEL_NAMES: [&str; 42] = [
     ".credentials.json",
     "history.jsonl",

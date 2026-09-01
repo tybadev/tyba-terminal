@@ -20,6 +20,11 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+// Só consumido pelo alarme de deriva (linux-only, ver o bloco cfg mais
+// abaixo) -- gated junto, senão vira `unused_imports` no mac/windows (os
+// quatro nomes sem cfg em mod.rs continuam existindo lá, só ficam sem uso
+// neste arquivo).
+#[cfg(target_os = "linux")]
 use super::{
     CLAUDE_STATE_TOP_LEVEL_NAMES, SCRIPT_EXTENSIONS, SENSITIVE_CLAUDE_FILES_IF_PRESENT,
     SENSITIVE_CLAUDE_FILES_MANDATORY, SENSITIVE_CLAUDE_READONLY_DIRS,
@@ -156,6 +161,17 @@ pub fn preflight_claude_dir_writable(claude: &Path) -> Result<(), String> {
 /// mesma detecção por forma que `sensitive_claude_children` usa para scripts
 /// sem nome fixo, V9) é "novo e não classificado" — continua gravável (é
 /// estado, por default), mas o dono passa a saber que existe.
+///
+/// `cfg(linux)`: todo o alarme de deriva (esta função + `is_classified_
+/// claude_child` + `WARNED_UNCLASSIFIED` + `drift_alarm_names`) só é
+/// alcançado por `emit_warnings`, chamado só em `session.rs` sob o mesmo
+/// `#[cfg(target_os = "linux")]` — a jaula/credencial de B é Linux (mac já
+/// tinha o Keychain corrigido em separado, #194). Sem o gate aqui, esses
+/// símbolos ficam sem nenhum chamador em produção fora do Linux e o clippy
+/// -D warnings do mac/windows reprova com dead_code (achado da CI do PR
+/// #299) — eles são `pub(crate)`/privados, não `pub`, então não entram na
+/// isenção que o lint dá pra API pública de uma lib crate.
+#[cfg(target_os = "linux")]
 pub(crate) fn unclassified_claude_children(claude: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(claude) else {
         return Vec::new();
@@ -176,6 +192,7 @@ pub(crate) fn unclassified_claude_children(claude: &Path) -> Vec<String> {
     unknown
 }
 
+#[cfg(target_os = "linux")]
 fn is_classified_claude_child(name: &str, path: &Path) -> bool {
     if name == "projects"
         || SENSITIVE_CLAUDE_READONLY_DIRS.contains(&name)
@@ -201,10 +218,12 @@ fn is_classified_claude_child(name: &str, path: &Path) -> bool {
 /// Dedupe em processo: uma vez por nome por execução do TYBA (§6). Reiniciar
 /// o app rearma o aviso de propósito — é o certo para item de segurança não
 /// classificado, ao contrário de um toast comum.
+#[cfg(target_os = "linux")]
 static WARNED_UNCLASSIFIED: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashSet<String>>,
 > = std::sync::OnceLock::new();
 
+#[cfg(target_os = "linux")]
 pub(crate) fn drift_alarm_names(claude: &Path) -> Vec<String> {
     let unknown = unclassified_claude_children(claude);
     let seen =
@@ -221,6 +240,7 @@ pub(crate) fn drift_alarm_names(claude: &Path) -> Vec<String> {
 /// `agent://sandbox-warning` por achado. Nunca devolve erro, nunca bloqueia o
 /// spawn — item 17 do contrato de cobertura: a sessão sobe mesmo com
 /// preflight falho, só com aviso.
+#[cfg(target_os = "linux")]
 pub(crate) fn emit_warnings(
     app: &tauri::AppHandle,
     session_id: crate::session::SessionId,
@@ -460,7 +480,13 @@ mod tests {
     /// Item 18: dispara para nome não classificado, e só uma vez por nome por
     /// execução — nomes com UUID pra não colidir com outro teste do mesmo
     /// binário (o dedupe é global-por-processo, de propósito, §6).
+    ///
+    /// `cfg(linux)`: testa `drift_alarm_names`, que só existe no Linux (ver o
+    /// gate na definição) — sem este cfg aqui o mac/windows nem compilam o
+    /// `cargo test` (função inexistente), trocando o dead_code por um erro
+    /// de compilação (achado do review r2 na CI do PR #299).
     #[test]
+    #[cfg(target_os = "linux")]
     fn drift_alarm_fires_once_per_unclassified_name_per_process() {
         let tmp = tempfile::tempdir().unwrap();
         let claude = tmp.path().join(".claude");
@@ -483,7 +509,10 @@ mod tests {
         );
     }
 
+    /// `cfg(linux)`: testa `unclassified_claude_children`, linux-only —
+    /// mesmo motivo do teste anterior.
     #[test]
+    #[cfg(target_os = "linux")]
     fn unclassified_claude_children_ignores_script_shaped_files_by_shape_not_name() {
         let tmp = tempfile::tempdir().unwrap();
         let claude = tmp.path().join(".claude");
