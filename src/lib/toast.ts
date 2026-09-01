@@ -60,6 +60,18 @@ export function clearToasts() {
   emit();
 }
 
+/** Item 0 do contrato ("polir o alarme de deriva"): todo toast sem ação
+ * precisa sumir sozinho depois de um tempo sensato, além do X — senão fica
+ * preso na tela pra sempre (o bug que o dono reportou). ~8-10s dá tempo de
+ * ler sem virar ruído acumulado. */
+export const TOAST_AUTO_DISMISS_MS = 9000;
+
+/** Toast com ação (ex.: login) mantém duração infinita: só some no clique da
+ * ação ou no X — nunca pode sumir sozinho antes de o dono decidir. */
+export function toastDuration(toast: Pick<ToastMessage, "action">): number {
+  return toast.action ? Infinity : TOAST_AUTO_DISMISS_MS;
+}
+
 export function toastError(title: string, detail?: unknown) {
   return pushToast({
     tone: "error",

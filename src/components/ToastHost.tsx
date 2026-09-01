@@ -4,6 +4,7 @@ import { Info, Warning, WarningOctagon } from "@phosphor-icons/react";
 import {
   Toast,
   ToastAction,
+  ToastClose,
   ToastDescription,
   ToastProvider,
   ToastTitle,
@@ -12,6 +13,7 @@ import {
 import {
   dismissToast,
   subscribeToasts,
+  toastDuration,
   type ToastMessage,
   type ToastTone,
 } from "@/lib/toast";
@@ -40,11 +42,13 @@ export function ToastHost() {
         return (
           <Toast
             key={toast.id}
+            duration={toastDuration(toast)}
             onOpenChange={(open) => {
               if (!open) dismissToast(toast.id);
             }}
           >
-            <div className="flex items-start gap-2">
+            <ToastClose />
+            <div className="flex items-start gap-2 pr-4">
               <Icon
                 aria-hidden="true"
                 size={16}

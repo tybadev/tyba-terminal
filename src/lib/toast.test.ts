@@ -4,6 +4,7 @@ import {
   dismissToast,
   pushToast,
   subscribeToasts,
+  toastDuration,
   toastError,
   type ToastMessage,
 } from "./toast";
@@ -135,6 +136,16 @@ describe("toast store", () => {
     });
     expect(seen[0].action).toBeUndefined();
     un();
+  });
+
+  it("toast sem action expõe duração finita — auto-dismiss (item 0 do contrato)", () => {
+    expect(Number.isFinite(toastDuration({ action: undefined }))).toBe(true);
+  });
+
+  it("toast com action expõe duração infinita — não some sozinho antes do clique", () => {
+    expect(toastDuration({ action: { label: "x", run: () => {} } })).toBe(
+      Infinity,
+    );
   });
 
   it("substitui a lista em vez de mutar, para o React ver a mudança", () => {
