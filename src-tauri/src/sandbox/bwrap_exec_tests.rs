@@ -139,6 +139,12 @@ fn claude_fixture() -> Fixture {
     std::fs::create_dir_all(claude.join("rules")).unwrap();
     std::fs::create_dir_all(claude.join("workflows")).unwrap();
     std::fs::write(claude.join("CLAUDE.md"), "memória do dono").unwrap();
+    // v0.6.2: remote-settings.json desceu para IF_PRESENT — já presente aqui,
+    // então continua coberto pelo caso "sombreado quando já existia no
+    // spawn" em `claude_config_and_hook_surfaces_are_never_writable`.
+    // `.config.json` de propósito NÃO nasce aqui: é o caso "ausente", coberto
+    // por `config_json_absent_from_fixture_is_not_created_by_mounting_the_cage`.
+    std::fs::write(claude.join("remote-settings.json"), "{}").unwrap();
 
     // V9: o nome real não está em nenhuma lista fixa — só a forma (executável)
     // classifica.
@@ -669,16 +675,15 @@ fn claude_config_and_hook_surfaces_are_never_writable() {
         "workflows/ci.yaml",
         "CLAUDE.md",
         "statusline-command.sh",
-        // review r1, MINOR seg 2: promovidos de IF_PRESENT a mandatório --
-        // claude_fixture() NÃO cria nenhum dos dois, então este é exatamente
-        // o contra-caso "nem quando ausente no spawn" (mesmo padrão de
-        // daemon/novo.json e plugins/novo-plugin.json acima). .config.json é
-        // o caminho legado do .claude.json (mcpServers, V5);
-        // remote-settings.json carrega hooks/permissions -- deixá-los
-        // IF_PRESENT abria exec diferido fora da jaula sem disparar o
-        // alarme de deriva.
+        // v0.6.2: remote-settings.json é IF_PRESENT -- claude_fixture() já o
+        // cria (existia no spawn), então continua sombreado read-only aqui.
+        // O caso ausente (não sombreado, não pré-criado) é
+        // `remote_settings_json_absent_is_not_created_and_stays_writable`.
+        // `.config.json` SAIU desta lista de propósito (v0.6.2): é o store
+        // de login do Claude, não pode mais ser sombreado nem pré-criado —
+        // ver `config_json_absent_from_fixture_is_not_created_by_mounting_the_cage`
+        // e `oauth_account_written_to_config_json_persists_to_host`.
         "remote-settings.json",
-        ".config.json",
     ];
     for target in targets {
         let path = claude.join(target);
@@ -880,4 +885,144 @@ fn history_jsonl_is_masked_even_with_writable_parent() {
         "history.jsonl não pode ser gravável mesmo com ~/.claude rw"
     );
     assert_eq!(std::fs::read_to_string(&history).unwrap(), before);
+}
+
+// ---------------------------------------------------------------------------
+// v0.6.2 — fix da regressão de login: `.config.json` não pode ser sombreado
+// nem pré-criado (ver o comentário de `SENSITIVE_CLAUDE_FILES_MANDATORY` em
+// agent/mod.rs para a causa raiz completa). Estes quatro testes são o par
+// positivo que faltou na entrega B original e deixou o bug passar: sem eles,
+// a jaula podia sombrear/pré-criar `.config.json` e nenhum teste acusava.
+// ---------------------------------------------------------------------------
+
+/// Item 1 do contrato de cobertura: `.config.json` não pode aparecer como
+/// alvo de `--ro-bind`/`--ro-bind-try` no argv REAL da política de produção
+/// (`ClaudeCodeRunner::sandbox_access` -> `build_args`) — nem quando já
+/// existe no host no momento do spawn. Não precisa do binário `bwrap`: o
+/// argv é computado antes de qualquer exec, mas mora aqui porque usa o mesmo
+/// `claude_fixture()` das outras provas deste arquivo (a política de
+/// produção de verdade, não uma paráfrase escrita à mão).
+#[test]
+fn config_json_is_never_a_ro_bind_target_in_the_real_argv() {
+    let f = claude_fixture();
+    let claude = f.spec.home.join(".claude");
+    std::fs::write(claude.join(".config.json"), r#"{"oauthAccount":{"x":1}}"#).unwrap();
+
+    let argv = build_args(&f.spec).unwrap();
+    let config_json = claude.join(".config.json");
+    let mut i = 0;
+    while i < argv.len() {
+        let op = argv[i].as_os_str();
+        if (op == "--ro-bind" || op == "--ro-bind-try") && i + 2 < argv.len() {
+            assert_ne!(
+                Path::new(&argv[i + 2]),
+                config_json,
+                ".config.json não pode ser --ro-bind: {argv:?}"
+            );
+            i += 3;
+            continue;
+        }
+        i += 1;
+    }
+}
+
+/// Item 2 do contrato de cobertura: fixture SEM `.config.json` -> depois de
+/// montar a jaula real (o mesmo `run_sh` que todo o resto deste arquivo usa
+/// para provar a política em bwrap de verdade), o host não ganhou um
+/// `.config.json`. Antes do fix, `ensure_inert_file` (bwrap.rs) escrevia
+/// `{}` ali sempre que ausente -- e esse `{}` passava a vencer o
+/// `.claude.json` real do dono via `q()` no binário do Claude, inclusive
+/// fora do TYBA.
+#[test]
+fn config_json_absent_from_fixture_is_not_created_by_mounting_the_cage() {
+    if bwrap_unavailable("config_json_absent_from_fixture_is_not_created_by_mounting_the_cage") {
+        return;
+    }
+    let f = claude_fixture();
+    let config_json = f.spec.home.join(".claude/.config.json");
+    assert!(
+        !config_json.exists(),
+        "fixture precisa nascer sem .config.json"
+    );
+
+    let out = run_sh(&f.spec, "true");
+    assert_cage_booted(&out);
+    assert!(out.status.success());
+    assert!(
+        !config_json.exists(),
+        ".config.json não pode nascer no host só por a jaula ter subido"
+    );
+}
+
+/// Item 3 do contrato de cobertura -- o PAR POSITIVO que faltou: dentro da
+/// jaula real, escrever `oauthAccount` em `.config.json` (o mesmo padrão
+/// tmp+rename que `credential_survives_atomic_rename_and_reaches_host` já
+/// prova para `.credentials.json`) precisa persistir no host. Sem este
+/// teste, "passar" só provava ausência de erro -- nunca provou que o login
+/// realmente sobrevive ao resume.
+#[test]
+fn oauth_account_written_to_config_json_persists_to_host() {
+    if bwrap_unavailable("oauth_account_written_to_config_json_persists_to_host") {
+        return;
+    }
+    let f = claude_fixture();
+    let claude = f.spec.home.join(".claude");
+    let config_json = claude.join(".config.json");
+    assert!(!config_json.exists(), "fixture precisa nascer sem .config.json");
+
+    let out = run_sh(
+        &f.spec,
+        &format!(
+            "echo '{{\"oauthAccount\":{{\"emailAddress\":\"dono@tyba.dev\"}}}}' > \
+             {0}/.config.json.tmp.abc12345 && \
+             mv {0}/.config.json.tmp.abc12345 {0}/.config.json && \
+             cat {0}/.config.json",
+            claude.display()
+        ),
+    );
+    assert_cage_booted(&out);
+    assert!(
+        out.status.success(),
+        "o login precisa sobreviver ao padrão tmp+rename do próprio Claude Code: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout(&out).contains("dono@tyba.dev"));
+    let on_host = std::fs::read_to_string(&config_json).unwrap();
+    assert!(
+        on_host.contains("oauthAccount"),
+        "o login gravado dentro da jaula precisa chegar ao host: {on_host}"
+    );
+}
+
+/// Item 4 do contrato de cobertura, metade ausente: `remote-settings.json`
+/// não sombreado nem pré-criado quando não existia no spawn (a metade
+/// presente -- sombreado read-only -- já é coberta por
+/// `claude_config_and_hook_surfaces_are_never_writable`, via
+/// `claude_fixture()`).
+#[test]
+fn remote_settings_json_absent_is_not_created_and_stays_writable() {
+    if bwrap_unavailable("remote_settings_json_absent_is_not_created_and_stays_writable") {
+        return;
+    }
+    let mut f = fixture();
+    let claude = f.spec.home.join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    f.spec.agent = ClaudeCodeRunner.sandbox_access(&f.spec.home, &f.spec.writable_root);
+    let remote_settings = claude.join("remote-settings.json");
+    assert!(!remote_settings.exists());
+
+    let out = run_sh(
+        &f.spec,
+        &format!("echo ok > {}", remote_settings.display()),
+    );
+    assert_cage_booted(&out);
+    assert!(
+        out.status.success(),
+        "remote-settings.json ausente no spawn não pode ser pré-criado nem sombreado: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !remote_settings.exists() || std::fs::read_to_string(&remote_settings).unwrap().trim() == "ok",
+        "se o arquivo aparece, tem que ser o que a jaula escreveu -- não uma pré-criação"
+    );
 }
