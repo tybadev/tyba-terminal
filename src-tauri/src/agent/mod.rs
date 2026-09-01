@@ -284,6 +284,14 @@ pub(crate) fn sensitive_claude_children(claude: &Path) -> Vec<Rule> {
 
     let mut named_files: std::collections::HashSet<&str> =
         SENSITIVE_CLAUDE_FILES_MANDATORY.into_iter().collect();
+    // Review r1 (v0.6.2), MINOR: `.config.json` não está em NENHUMA das duas
+    // listas nomeadas de propósito (é o store de login, nunca sombreado —
+    // ver o comentário de `SENSITIVE_CLAUDE_FILES_MANDATORY`), o que o
+    // deixaria cair na varredura por FORMA logo abaixo (V9) se o dono tiver
+    // esse arquivo com bit +x (patológico, mas real) — reabrindo o mesmo bug
+    // de login por um caminho diferente. Entra em `named_files` só pra ser
+    // PULADO pela varredura por forma, não por ser mandatório ou opcional.
+    named_files.insert(".config.json");
     for file in SENSITIVE_CLAUDE_FILES_IF_PRESENT {
         named_files.insert(file);
         let p = claude.join(file);
@@ -908,6 +916,35 @@ mod tests {
         assert!(
             !present.contains(&Rule::Literal(claude.join(".config.json"))),
             ".config.json já existente não pode ser sombreado — o login precisa persistir nele"
+        );
+    }
+
+    /// Review r1 (v0.6.2), MINOR: `.config.json` não está em nenhuma das
+    /// duas listas nomeadas (MANDATORY/IF_PRESENT), então cairia na
+    /// varredura genérica por FORMA (V9) igual a `statusline-command.sh` do
+    /// dono -- se o dono tiver `.config.json` com bit +x (patológico, mas
+    /// real), a varredura o classificaria como "cara de script" e voltaria
+    /// a sombreá-lo, reabrindo o bug de login que a remoção de
+    /// `SENSITIVE_CLAUDE_FILES_MANDATORY` corrigiu.
+    #[test]
+    #[cfg(unix)]
+    fn sensitive_claude_children_never_shadows_config_json_even_with_exec_bit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join(".config.json"), r#"{"oauthAccount":{}}"#).unwrap();
+        std::fs::set_permissions(
+            claude.join(".config.json"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        let rules = sensitive_claude_children(&claude);
+        assert!(
+            !rules.contains(&Rule::Literal(claude.join(".config.json"))),
+            ".config.json com +x não pode virar --ro-bind pela varredura por forma: {rules:?}"
         );
     }
 
