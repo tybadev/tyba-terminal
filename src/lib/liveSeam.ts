@@ -1,3 +1,5 @@
+import type { IBufferLine } from "@xterm/xterm";
+
 /**
  * A emenda entre a saída ao vivo e o cartão do bloco.
  *
@@ -7,9 +9,11 @@
  * faixa tem altura fixa e a saída não.
  *
  * A conta aqui recorta a faixa na altura da saída real. O xterm continua com o
- * MESMO tamanho: quem se move é a imagem dele, por `transform` e `clip-path`,
- * que não entram no layout e portanto não acordam o `ResizeObserver` que
- * redimensionaria o PTY.
+ * MESMO tamanho: quem se move é a imagem dele, por `top` e `clip-path` — de
+ * propósito, não `transform` (que promoveria a camada e rasterizaria o canvas
+ * WebGL fora do pixel ratio da tela; ver `TerminalView.tsx`) —, que não entram
+ * no layout e portanto não acordam o `ResizeObserver` que redimensionaria o
+ * PTY.
  */
 
 export interface SeamRect {
@@ -66,6 +70,45 @@ export function usedFraction(
 }
 
 /**
+ * Quantas linhas a saída ocupa nesta faixa — cursor e última linha escrita,
+ * a que for mais alta.
+ *
+ * O cursor sozinho mente quando o programa o reposiciona ACIMA do que já
+ * escreveu — barra de progresso que volta pro início da linha com `\r`, por
+ * exemplo. Sem este `max`, `usedFraction` recortaria antes do fim real da
+ * saída e a última linha escrita ficaria invisível.
+ *
+ * `lastNonEmptyRow` é o índice (0-based) da última linha com texto, visto
+ * num scan de baixo pra cima do viewport (ver `TerminalView.measureLive`);
+ * `-1` quando a viewport inteira está vazia.
+ */
+export function usedRowsFromLastLine(
+  cursorRow: number,
+  lastNonEmptyRow: number,
+): number {
+  return Math.max(cursorRow, lastNonEmptyRow) + 1;
+}
+
+/**
+ * A linha tem conteúdo — texto ou um FUNDO diferente do padrão nalguma
+ * célula.
+ *
+ * `translateToString(true)` faz trim à direita: uma barra de progresso
+ * feita só de espaços com fundo colorido (`\x1b[42m      \x1b[0m`, o idioma
+ * mais comum pra isso) tem comprimento 0 depois do trim e passaria por
+ * "vazia" — cortando exatamente a linha que motivou esta entrega. Usada
+ * pelo scan de {@link usedRowsFromLastLine} em `TerminalView.measureLive`.
+ */
+export function nonEmptyLine(line: IBufferLine): boolean {
+  if (line.translateToString(true).length > 0) return true;
+  for (let x = 0; x < line.length; x++) {
+    const cell = line.getCell(x);
+    if (cell && !cell.isBgDefault()) return true;
+  }
+  return false;
+}
+
+/**
  * O quanto a imagem do terminal desce, em fração da altura DELE.
  *
  * Serve aos dois lados da mesma conta: `translateY` desloca a faixa para que seu
@@ -98,6 +141,26 @@ export function liveHeight(pane: SeamRect, used: number): number {
 export function padSlackPx(padY: number, used: number): number {
   if (!Number.isFinite(padY) || padY <= 0) return 0;
   return padY * hiddenFraction(used);
+}
+
+/**
+ * Dois rects representam a mesma geometria?
+ *
+ * O `rect` que o `App` passa ao `TerminalView` é um objeto literal novo A
+ * CADA render — e o App re-renderiza a ~60Hz durante um comando. Comparar
+ * por IDENTIDADE faz o efeito de fit rodar a cada frame mesmo quando o
+ * painel não se moveu; comparar por VALOR (aqui) é o que deixa o fit rodar
+ * só quando a geometria muda de verdade.
+ */
+export function sameRect(a: SeamRect | null, b: SeamRect | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.left === b.left &&
+    a.top === b.top &&
+    a.width === b.width &&
+    a.height === b.height
+  );
 }
 
 /**

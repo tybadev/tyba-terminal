@@ -1,3 +1,40 @@
+/*
+ * JetBrains Mono — fonte PADRÃO do terminal, embarcada.
+ *
+ * Regular (400/normal) e Bold (700/normal) JÁ vêm embarcados por
+ * `@fontsource/jetbrains-mono` (`main.tsx`, `400.css`+`700.css`), com os 6
+ * subsets (latin, latin-ext, cyrillic, cyrillic-ext, greek, vietnamese) e
+ * `font-display: swap`. NÃO redeclarar `@font-face` pra essa mesma
+ * família+peso+estilo aqui: um `@font-face` local sem `unicode-range` cobre
+ * `U+0-10FFFF` por padrão e, carregado DEPOIS do fontsource, venceria a
+ * cascata pra TODO codepoint — apagando o subsetting inteiro e trocando
+ * `swap` por qualquer coisa que se declare aqui, pra fonte inteira do app
+ * (`--tyba-font-ui` é mono). Foi exatamente esse bug numa rodada anterior.
+ *
+ * O gap real — o que o `@fontsource` não cobre — é Italic e Bold Italic:
+ * sem eles, uma máquina sem a JetBrains Mono instalada tinha o itálico
+ * SINTÉTICO do navegador (inclinação de raster no glifo Regular) em vez do
+ * risco de verdade da fonte. Ver D1 na tech-spec.
+ *
+ * v2.304, JetBrains/JetBrainsMono, licença OFL-1.1 — public/fonts/OFL.txt
+ * (não em src/: é a pasta que o Vite copia verbatim pro build).
+ */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/JetBrainsMono-Italic.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./assets/fonts/JetBrainsMono-BoldItalic.woff2") format("woff2");
+}
+
 @font-face {
   font-family: "Symbols Nerd Font Mono";
   font-style: normal;
