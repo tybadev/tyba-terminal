@@ -51,8 +51,7 @@ import {
   sameRect,
   usedRowsFromLastLine,
 } from "../lib/liveSeam";
-import { isArrowKey } from "../lib/commandLine";
-import { comboOf, DEFAULT_BINDINGS, isBoundCombo, type Bindings } from "../lib/keys";
+import { DEFAULT_BINDINGS, keydownGoesToPty, type Bindings } from "../lib/keys";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
 export const RELAYOUT_EVENT = "tyba:relayout";
@@ -469,19 +468,23 @@ export function TerminalView({
     //
     // B2: antes desta checagem, uma seta com modificador que bate um atalho
     // do app (pane-nav Ctrl+Alt+Seta, prevSession/nextSession Ctrl+Shift+
-    // Seta...) só olhava `isArrowKey` — ignorava os modificadores — e com
-    // agente rodando (`swallowArrows` false) voltava `true`: o xterm mandava
-    // pro PTY e o Claude comia a tecla antes do listener de `keydown` do App
-    // (que decide o atalho) rodar. `isBoundCombo` reconhece QUALQUER combo
-    // gravado na tabela ativa, não só pane-nav — devolver `false` aqui não
-    // manda a tecla pro PTY, mas o evento de DOM continua subindo pro
-    // listener do App normalmente (`attachCustomKeyEventHandler` só decide o
-    // que o xterm faz, não `stopPropagation`).
+    // Seta, resize de painel Ctrl+Alt+Shift+Seta...) só olhava `isArrowKey`
+    // — ignorava os modificadores — e com agente rodando (`swallowArrows`
+    // false) voltava `true`: o xterm mandava pro PTY e o Claude comia a
+    // tecla antes do listener de `keydown` do App (que decide o atalho)
+    // rodar. `keydownGoesToPty` reconhece QUALQUER combo gravado na tabela
+    // ativa (`isBoundCombo`) OU o chord de resize (`isPaneResizeChord`, que
+    // fica FORA do mapa `Bindings` — review r1 v0.6.2) — devolver `false`
+    // aqui não manda a tecla pro PTY, mas o evento de DOM continua subindo
+    // pro listener do App normalmente (`attachCustomKeyEventHandler` só
+    // decide o que o xterm faz, não `stopPropagation`).
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
-      if (!isArrowKey(event.key)) return true;
-      if (isBoundCombo(bindingsRef.current, comboOf(event))) return false;
-      return !swallowArrowsRef.current;
+      return keydownGoesToPty(
+        event,
+        bindingsRef.current,
+        swallowArrowsRef.current,
+      );
     });
 
     const dataSub = term.onData((data) => {

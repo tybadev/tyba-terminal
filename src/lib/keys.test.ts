@@ -14,6 +14,7 @@ import {
   isBoundCombo,
   isPaneResizeChord,
   isTabDigitChord,
+  keydownGoesToPty,
   parseBindings,
   tabDigitCombo,
   type Bindings,
@@ -238,5 +239,37 @@ describe("isBoundCombo", () => {
   it("seta pura, sem modificador, não é atalho do app (segue pro PTY)", () => {
     const combo = comboOf(chord({ key: "ArrowDown" }));
     expect(isBoundCombo(PC_BINDINGS, combo)).toBe(false);
+  });
+});
+
+describe("keydownGoesToPty", () => {
+  // Review r1 (v0.6.2), MINOR: pane-resize (Ctrl+Alt+Shift+Seta no PC,
+  // Meta+Ctrl+Seta no mac) fica FORA do mapa Bindings -- isBoundCombo
+  // sozinho não pegava esse caso, e sofria do mesmo bug do B2 (ia pro PTY,
+  // o agente comia a tecla).
+  it("Ctrl+Alt+Shift+ArrowLeft (resize) não vai pro PTY mesmo com agente rodando", () => {
+    const event = chord({
+      key: "ArrowLeft",
+      ctrlKey: true,
+      altKey: true,
+      shiftKey: true,
+    });
+    expect(keydownGoesToPty(event, PC_BINDINGS, false)).toBe(false);
+  });
+
+  it("Ctrl+Alt+ArrowDown (pane-nav, via Bindings) não vai pro PTY", () => {
+    const event = chord({ key: "ArrowDown", ctrlKey: true, altKey: true });
+    expect(keydownGoesToPty(event, PC_BINDINGS, false)).toBe(false);
+  });
+
+  it("seta pura, sem modificador, segue a regra de swallowArrows", () => {
+    const event = chord({ key: "ArrowDown" });
+    expect(keydownGoesToPty(event, PC_BINDINGS, false)).toBe(true);
+    expect(keydownGoesToPty(event, PC_BINDINGS, true)).toBe(false);
+  });
+
+  it("tecla que não é seta sempre vai pro PTY, mesmo com swallowArrows", () => {
+    const event = chord({ key: "a", ctrlKey: true, altKey: true });
+    expect(keydownGoesToPty(event, PC_BINDINGS, true)).toBe(true);
   });
 });
