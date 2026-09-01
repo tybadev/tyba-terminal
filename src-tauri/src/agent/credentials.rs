@@ -39,6 +39,14 @@ pub struct SandboxWarningPayload {
     pub session_id: crate::session::SessionId,
     pub kind: SandboxWarningKind,
     pub detail: Option<String>,
+    /// Só populado para `FilhoDesconhecidoEmClaude` (review r1, v0.6.2): os
+    /// mesmos nomes de `detail` (que é só pra exibição, `join(", ")`), mas
+    /// estruturados — é o que o front devolve pro comando `ack_drift_warning`
+    /// quando o dono dispensa o toast, pra `ack_drift_names` marcar durável
+    /// SÓ o que foi de fato visto. Separado de `detail` pra não depender de
+    /// fazer `split(", ")` num nome de arquivo que, em tese, pode conter
+    /// vírgula.
+    pub names: Option<Vec<String>>,
 }
 
 /// Espelha o enum do contrato core→webview (§1.2 do design). `Copy` porque é
@@ -162,16 +170,19 @@ pub fn preflight_claude_dir_writable(claude: &Path) -> Result<(), String> {
 /// sem nome fixo, V9) é "novo e não classificado" — continua gravável (é
 /// estado, por default), mas o dono passa a saber que existe.
 ///
-/// `cfg(linux)`: todo o alarme de deriva (esta função + `is_classified_
-/// claude_child` + `drift_toast_worthy` + `load_warned`/`save_warned` +
-/// `drift_alarm_names`) só é alcançado por `emit_warnings`, chamado só em
-/// `session.rs` sob o mesmo
-/// `#[cfg(target_os = "linux")]` — a jaula/credencial de B é Linux (mac já
-/// tinha o Keychain corrigido em separado, #194). Sem o gate aqui, esses
-/// símbolos ficam sem nenhum chamador em produção fora do Linux e o clippy
-/// -D warnings do mac/windows reprova com dead_code (achado da CI do PR
-/// #299) — eles são `pub(crate)`/privados, não `pub`, então não entram na
-/// isenção que o lint dá pra API pública de uma lib crate.
+/// `cfg(linux)`: a parte de DETECÇÃO do alarme de deriva (esta função +
+/// `is_classified_claude_child` + `drift_toast_worthy` + `drift_alarm_names`)
+/// só é alcançada por `emit_warnings`, chamado só em `session.rs` sob o
+/// mesmo `#[cfg(target_os = "linux")]` — a jaula/credencial de B é Linux
+/// (mac já tinha o Keychain corrigido em separado, #194). Sem o gate aqui,
+/// esses símbolos ficam sem nenhum chamador em produção fora do Linux e o
+/// clippy -D warnings do mac/windows reprova com dead_code (achado da CI do
+/// PR #299) — eles são `pub(crate)`/privados, não `pub`, então não entram na
+/// isenção que o lint dá pra API pública de uma lib crate. `load_warned` /
+/// `save_warned` / `ack_drift_names` NÃO entram nesse gate (review r1,
+/// v0.6.2): a ESCRITA do dedupe precisa existir em todo SO porque o comando
+/// Tauri `ack_drift_warning` é registrado sem cfg (ver o comentário de
+/// `DRIFT_WARNED_KEY`).
 #[cfg(target_os = "linux")]
 pub(crate) fn unclassified_claude_children(claude: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(claude) else {
@@ -226,7 +237,12 @@ fn is_classified_claude_child(name: &str, path: &Path) -> bool {
 /// estado interno do alarme) — mesma convenção de `theme::KEY_MODE` /
 /// `update::KEY_LATEST`, que também não passam pelo allowlist de
 /// `get_pref`/`set_pref`.
-#[cfg(target_os = "linux")]
+///
+/// Não é `cfg(linux)`: `ack_drift_names` (chamada pelo comando Tauri
+/// `ack_drift_warning`, registrado em todo SO) precisa compilar em
+/// mac/windows mesmo que `FilhoDesconhecidoEmClaude` nunca seja emitido lá —
+/// senão o `invoke` do front não resolveria o comando fora do Linux (review
+/// r1, v0.6.2).
 const DRIFT_WARNED_KEY: &str = "drift.warned_unclassified_children";
 
 /// Puro — recebe o que já foi avisado e devolve só os nomes NOVOS. Separado
@@ -248,7 +264,6 @@ pub(crate) fn names_not_yet_warned(
         .collect()
 }
 
-#[cfg(target_os = "linux")]
 fn load_warned(store: &crate::session::store::Store) -> std::collections::HashSet<String> {
     store
         .get_setting(DRIFT_WARNED_KEY)
@@ -259,7 +274,6 @@ fn load_warned(store: &crate::session::store::Store) -> std::collections::HashSe
         .unwrap_or_default()
 }
 
-#[cfg(target_os = "linux")]
 fn save_warned(store: &crate::session::store::Store, warned: &std::collections::HashSet<String>) {
     // Ordenado antes de serializar: sem isso a ordem de um HashSet varia
     // entre execuções e o JSON persistido muda mesmo quando o conjunto é o
@@ -269,6 +283,33 @@ fn save_warned(store: &crate::session::store::Store, warned: &std::collections::
     if let Ok(json) = serde_json::to_string(&list) {
         let _ = store.set_setting(DRIFT_WARNED_KEY, &json);
     }
+}
+
+/// Review r1 (v0.6.2), MAJOR: o ÚNICO lugar que marca um nome como
+/// "avisado" pra valer — chamado pelo comando Tauri `ack_drift_warning`
+/// quando o FRONT confirma que o toast de `FilhoDesconhecidoEmClaude`
+/// realmente apareceu na tela e foi dispensado (X, clique ou auto-dismiss
+/// depois de renderizado — nunca antes disso). `drift_alarm_names` (abaixo)
+/// só LÊ o que já foi confirmado; nunca persiste sozinho.
+///
+/// Por quê: `drift_alarm_names` persistia direto na DETECÇÃO, antes de
+/// `emit_warnings` sequer tentar emitir o evento — e `app.emit` é
+/// descartado (`let _ = `) se não houver listener no instante exato (a
+/// mesma janela de corrida do `app://ready` documentada no listener de
+/// `App.tsx`). Resultado: o toast se perdia E, por ser durável, nunca mais
+/// reaparecia — um alarme de segurança podia ficar permanentemente mudo por
+/// pura corrida de evento, sem o dono nunca ter visto nada. Marcar só no ack
+/// do front devolve a rede segura que o dedupe in-process antigo tinha
+/// (reaparecia a cada restart): agora reaparece a cada SPAWN de sessão até
+/// realmente ser visto — o ônus é ficar re-oferecendo o toast até a
+/// confirmação chegar, nunca o oposto.
+pub(crate) fn ack_drift_names(store: &crate::session::store::Store, names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    let mut warned = load_warned(store);
+    warned.extend(names.iter().cloned());
+    save_warned(store, &warned);
 }
 
 /// Item 2/3 do contrato: o toast de deriva só dispara pra nome com "cara de
@@ -300,22 +341,39 @@ fn drift_toast_worthy(name: &str, claude: &Path) -> bool {
 /// store, item 1). `unclassified_claude_children` continua a detecção
 /// completa e sem filtro — só este passo decide o que vira barulho.
 #[cfg(target_os = "linux")]
+/// Review r1 (v0.6.2), MAJOR: só LÊ o store (`load_warned`) — nunca
+/// escreve. A escrita é `ack_drift_names`, chamada só depois que o front
+/// confirma que o dono viu o toast (ver o comentário lá). Um nome pode
+/// voltar aqui em toda chamada até o ack chegar — é o comportamento
+/// correto, não um bug: reoferece até ser realmente visto.
+///
+/// Review r1, MINOR: os nomes benignos filtrados por `drift_toast_worthy`
+/// (item 2/3, sem cara de risco) não somem — `unclassified_claude_children`
+/// já os detecta, e aqui cada um vira uma linha em stderr (mesma convenção
+/// de diagnóstico do resto do binário, ex. `disk_observer.rs`,
+/// `boot.rs` — não há `log`/`tracing` neste crate). Satisfaz "continua
+/// detectado e REGISTRADO — nunca deixa de ser visto, só deixa de gritar"
+/// (critério 2 da spec de deriva) sem inventar dependência de log nova pra
+/// um MINOR.
+#[cfg(target_os = "linux")]
 pub(crate) fn drift_alarm_names(
     claude: &Path,
     store: &crate::session::store::Store,
 ) -> Vec<String> {
     let unknown = unclassified_claude_children(claude);
-    let risky: Vec<String> = unknown
-        .into_iter()
-        .filter(|n| drift_toast_worthy(n, claude))
-        .collect();
-    let mut warned = load_warned(store);
-    let fresh = names_not_yet_warned(&risky, &warned);
-    if !fresh.is_empty() {
-        warned.extend(fresh.iter().cloned());
-        save_warned(store, &warned);
+    let mut risky = Vec::new();
+    for name in unknown {
+        if drift_toast_worthy(&name, claude) {
+            risky.push(name);
+        } else {
+            eprintln!(
+                "[tyba] alarme de deriva: \"{name}\" é estado benigno em ~/.claude (sem cara \
+                 de risco) — continua gravável, registrado, sem toast"
+            );
+        }
     }
-    fresh
+    let warned = load_warned(store);
+    names_not_yet_warned(&risky, &warned)
 }
 
 /// Fio de produção (§6, chamado por `session::spawn_prepared` — Linux, só
@@ -334,18 +392,25 @@ pub(crate) fn emit_warnings(
     use tauri::Emitter;
 
     let claude = claude_config_dir(&spec.home, env);
-    let mut findings: Vec<(SandboxWarningKind, Option<String>)> = Vec::new();
+    // `names` só é `Some` pro achado de deriva (review r1, v0.6.2) — é o que
+    // `ack_drift_names` precisa de volta do front pra marcar durável só o
+    // que foi realmente visto (ver o comentário de `drift_alarm_names`).
+    let mut findings: Vec<(SandboxWarningKind, Option<String>, Option<Vec<String>>)> = Vec::new();
 
     if let Ok(argv) = crate::sandbox::bwrap::build_args(spec) {
         findings.extend(
             diagnose_state_writability(&argv, &spec.home, &claude)
                 .into_iter()
-                .map(|kind| (kind, None)),
+                .map(|kind| (kind, None, None)),
         );
     }
 
     if let Err(detail) = preflight_claude_dir_writable(&claude) {
-        findings.push((SandboxWarningKind::CredencialHostNaoGrava, Some(detail)));
+        findings.push((
+            SandboxWarningKind::CredencialHostNaoGrava,
+            Some(detail),
+            None,
+        ));
     }
 
     let unknown = drift_alarm_names(&claude, store);
@@ -353,16 +418,18 @@ pub(crate) fn emit_warnings(
         findings.push((
             SandboxWarningKind::FilhoDesconhecidoEmClaude,
             Some(unknown.join(", ")),
+            Some(unknown),
         ));
     }
 
-    for (kind, detail) in findings {
+    for (kind, detail, names) in findings {
         let _ = app.emit(
             EVENT_SANDBOX_WARNING,
             SandboxWarningPayload {
                 session_id,
                 kind,
                 detail,
+                names,
             },
         );
     }
@@ -561,25 +628,28 @@ mod tests {
         assert_eq!(std::fs::read_dir(&claude).unwrap().count(), 0);
     }
 
-    /// v0.6.2, item 1/5 do contrato "polir o alarme de deriva": dispara para
-    /// nome não classificado com cara de risco (aqui, script), e só uma vez
-    /// — dedupe agora é DURÁVEL via store, não mais por processo. Nome com
-    /// UUID pra não colidir com outro teste do mesmo binário.
+    /// Review r1 (v0.6.2), MAJOR — o teste que o review pediu: "nome
+    /// detectado mas emit sem listener → NÃO fica marcado durável
+    /// (re-avisaria)". `drift_alarm_names` sozinho (sem `ack_drift_names`)
+    /// NUNCA persiste — chamar duas, três vezes seguidas continua
+    /// oferecendo o mesmo nome, porque nenhuma delas é "o dono viu". Só
+    /// depois do ack explícito é que some.
     ///
-    /// Substitui `drift_alarm_fires_once_per_unclassified_name_per_process`:
-    /// aquele testava dedupe IN-PROCESS (rearmava a cada reinício, de
-    /// propósito) — exatamente o comportamento que o dono reportou como
-    /// barulho e que esta entrega reverte. Ver
-    /// `drift_alarm_dedupe_survives_a_restart_of_the_app` para a prova de
-    /// que sobrevive a um restart de verdade (store reaberto do zero).
+    /// Substitui `drift_alarm_names_fires_once_per_toast_worthy_name_then_
+    /// dedupes` (que assumia dedupe na própria detecção): aquele
+    /// comportamento tinha o furo que este review achou — `emit_warnings`
+    /// descarta o evento (`let _ = app.emit(...)`) se não houver listener no
+    /// instante exato (a mesma corrida do `app://ready` documentada no
+    /// listener de `App.tsx`), e persistir ANTES de saber se o toast
+    /// realmente chegou silenciava o alarme pra sempre sem o dono nunca ter
+    /// visto nada.
     ///
     /// `cfg(linux)`: testa `drift_alarm_names`, linux-only (ver o gate na
     /// definição) — sem este cfg aqui o mac/windows nem compilam o `cargo
-    /// test` (função inexistente), trocando o dead_code por um erro de
-    /// compilação (achado do review r2 na CI do PR #299).
+    /// test` (função inexistente).
     #[test]
     #[cfg(target_os = "linux")]
-    fn drift_alarm_names_fires_once_per_toast_worthy_name_then_dedupes() {
+    fn drift_alarm_names_keeps_reoffering_until_acked() {
         let tmp = tempfile::tempdir().unwrap();
         let claude = tmp.path().join(".claude");
         std::fs::create_dir_all(&claude).unwrap();
@@ -603,20 +673,30 @@ mod tests {
             "estado conhecido não dispara alarme: {first:?}"
         );
 
+        // Simula o emit se perder (sem listener): NENHUM ack aconteceu.
         let second = drift_alarm_names(&claude, &store);
         assert!(
-            !second.contains(&mystery),
-            "o mesmo nome não pode reavisar de novo (dedupe durável): {second:?}"
+            second.contains(&mystery),
+            "sem ack, o nome precisa continuar sendo oferecido — a detecção sozinha não pode \
+             marcar durável, senão um evento perdido silencia o alarme pra sempre: {second:?}"
+        );
+
+        // Só agora o front "viu e dispensou" o toast.
+        ack_drift_names(&store, std::slice::from_ref(&mystery));
+        let third = drift_alarm_names(&claude, &store);
+        assert!(
+            !third.contains(&mystery),
+            "depois do ack, o nome não pode reaparecer: {third:?}"
         );
     }
 
-    /// v0.6.2, item 1 do contrato: o CORAÇÃO da mudança — o nome avisado
-    /// sobrevive a um restart de verdade do app (store fechado e reaberto do
-    /// zero, arquivo em disco, não `open_in_memory`), não só a duas
-    /// chamadas na mesma execução.
+    /// v0.6.2, item 1 do contrato + review r1: o nome avisado sobrevive a um
+    /// restart de verdade do app (store fechado e reaberto do zero, arquivo
+    /// em disco, não `open_in_memory`) — mas SÓ depois de `ack_drift_names`,
+    /// que é o único jeito de marcar durável desde o review r1 (MAJOR).
     #[test]
     #[cfg(target_os = "linux")]
-    fn drift_alarm_dedupe_survives_a_restart_of_the_app() {
+    fn drift_alarm_dedupe_survives_a_restart_of_the_app_once_acked() {
         let tmp = tempfile::tempdir().unwrap();
         let claude = tmp.path().join(".claude");
         let db = tmp.path().join("tyba.db");
@@ -628,6 +708,8 @@ mod tests {
             let store = crate::session::store::Store::open(&db).unwrap();
             let first = drift_alarm_names(&claude, &store);
             assert!(first.contains(&mystery_dir), "{first:?}");
+            // "O dono viu e dispensou o toast" — sem isto, nada persiste.
+            ack_drift_names(&store, &first);
         }
 
         // "Reinicia o app": Store novo, do zero, sobre o MESMO arquivo —
@@ -636,7 +718,7 @@ mod tests {
         let after_restart = drift_alarm_names(&claude, &store);
         assert!(
             !after_restart.contains(&mystery_dir),
-            "nome já avisado antes do restart não pode reavisar depois: {after_restart:?}"
+            "nome já ACKED antes do restart não pode reavisar depois: {after_restart:?}"
         );
     }
 
@@ -653,6 +735,33 @@ mod tests {
         warned.insert("a".to_string());
         let out = names_not_yet_warned(&["a".to_string(), "b".to_string()], &warned);
         assert_eq!(out, vec!["b".to_string()]);
+    }
+
+    /// Review r1 (v0.6.2), MAJOR: `ack_drift_names` é a ÚNICA escrita real
+    /// do dedupe — round-trip puro (sem `drift_alarm_names`/Linux no meio),
+    /// prova que persiste e que `load_warned` enxerga depois. Não é
+    /// `cfg(linux)`: nem a função nem `Store` são linux-only (ver o
+    /// comentário de `DRIFT_WARNED_KEY`).
+    #[test]
+    fn ack_drift_names_persists_and_load_warned_sees_it() {
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+        assert!(load_warned(&store).is_empty());
+
+        ack_drift_names(&store, &["um".to_string(), "dois".to_string()]);
+        let warned = load_warned(&store);
+        assert!(warned.contains("um"));
+        assert!(warned.contains("dois"));
+    }
+
+    /// Review r1: lista vazia é no-op — não grava um `[]` por cima do que já
+    /// existia (defesa contra um ack tardio/duplicado limpar o store).
+    #[test]
+    fn ack_drift_names_with_empty_list_does_not_touch_the_store() {
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+        ack_drift_names(&store, &["um".to_string()]);
+        ack_drift_names(&store, &[]);
+        let warned = load_warned(&store);
+        assert!(warned.contains("um"), "{warned:?}");
     }
 
     /// v0.6.2, item 2/5 do contrato: o toast só dispara pra shape de risco

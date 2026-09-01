@@ -151,6 +151,7 @@ import {
   dockerAvailable,
   dockerListContainers,
   dockerOpenDashboard,
+  ackDriftWarning,
   bootGate,
   bootSnapshot,
   onAgentOpenUrl,
@@ -1179,13 +1180,30 @@ export default function App() {
 
   // Aviso sem ação (ao contrário do toast acima) -- cada SandboxWarningKind
   // vira um toast warning com o texto do §6 (item 35 do contrato).
+  //
+  // Review r1 (v0.6.2), MAJOR: pro `FilhoDesconhecidoEmClaude` (alarme de
+  // deriva), `onDismiss` manda o ack pro core (`ackDriftWarning`) SÓ quando
+  // este toast é de fato dispensado -- nunca na mera chegada do evento. É o
+  // que garante que o dedupe durável (`drift.warned_unclassified_children`
+  // no core) só marca "visto" depois que o dono realmente viu: se o evento
+  // se perder antes de virar toast (sem listener no instante do emit), o
+  // `onDismiss` nunca roda, o ack nunca acontece, e o core volta a oferecer
+  // o mesmo nome no próximo spawn de sessão.
   useEffect(() => {
     const unlisten = onAgentSandboxWarning((payload) => {
+      const names =
+        payload.kind === "FilhoDesconhecidoEmClaude" ? payload.names : null;
       pushToast({
         tone: "warning",
         title: t(sandboxWarningTitleKey(payload.kind), {
           detail: payload.detail ?? "",
         }),
+        onDismiss:
+          names && names.length > 0
+            ? () => {
+                void ackDriftWarning(names).catch(() => {});
+              }
+            : undefined,
       });
     });
     return () => {

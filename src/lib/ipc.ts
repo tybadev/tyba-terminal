@@ -462,6 +462,10 @@ export interface AgentSandboxWarningPayload {
   session_id: SessionId;
   kind: SandboxWarningKind;
   detail: string | null;
+  /** Só populado para `FilhoDesconhecidoEmClaude` (review r1, v0.6.2) --
+   * devolver exatamente isto pra `ackDriftWarning` quando o toast é
+   * dispensado é o que marca o nome como durável visto. */
+  names: string[] | null;
 }
 
 export const onAgentSandboxWarning = (
@@ -1077,6 +1081,14 @@ export const getPref = (key: string) =>
 
 export const setPref = (key: string, value: string) =>
   invoke<void>("set_pref", { key, value });
+
+/** Review r1 (v0.6.2), MAJOR: chamar SÓ quando o toast de
+ * `FilhoDesconhecidoEmClaude` foi de fato dispensado (renderizado e
+ * fechado) -- marca os nomes como avisados de vez no core, pra não
+ * re-gritar depois de um restart. Nunca chamar na mera detecção do
+ * evento. */
+export const ackDriftWarning = (names: string[]) =>
+  invoke<void>("ack_drift_warning", { names });
 
 export const closeTab = (id: TabId) => invoke<void>("close_tab", { id });
 

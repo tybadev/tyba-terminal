@@ -13,6 +13,12 @@ export interface ToastMessage {
   title: string;
   detail?: string;
   action?: ToastAction;
+  /** Review r1 (v0.6.2), MAJOR: roda quando ESTE toast é dispensado -- X,
+   * clique na ação, ou auto-dismiss. Nunca roda se o toast nunca chegou a
+   * ser criado (ex.: evento de core perdido) -- é exatamente a distinção
+   * que o ack do alarme de deriva precisa: só marcar durável o que o dono
+   * de fato viu. */
+  onDismiss?: () => void;
 }
 
 export interface ToastInput {
@@ -20,6 +26,7 @@ export interface ToastInput {
   title: string;
   detail?: string;
   action?: ToastAction;
+  onDismiss?: () => void;
 }
 
 type Listener = (toasts: ToastMessage[]) => void;
@@ -48,10 +55,12 @@ export function pushToast(input: ToastInput): string {
 }
 
 export function dismissToast(id: string) {
+  const dismissed = toasts.find((t) => t.id === id);
   const next = toasts.filter((t) => t.id !== id);
   if (next.length === toasts.length) return;
   toasts = next;
   emit();
+  dismissed?.onDismiss?.();
 }
 
 export function clearToasts() {

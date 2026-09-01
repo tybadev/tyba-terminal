@@ -73,6 +73,28 @@ describe("toast store", () => {
     un();
   });
 
+  // Review r1 (v0.6.2), MAJOR: o ack do alarme de deriva depende de saber
+  // quando o dono realmente viu/fechou o toast -- `onDismiss` é o gancho.
+  it("dismiss chama onDismiss só do toast fechado", () => {
+    let fired = 0;
+    const id = pushToast({ title: "alvo", onDismiss: () => (fired += 1) });
+    pushToast({ title: "outro" });
+    dismissToast(id);
+    expect(fired).toBe(1);
+  });
+
+  it("dismiss de id inexistente não chama onDismiss de ninguém", () => {
+    let fired = 0;
+    pushToast({ title: "alvo", onDismiss: () => (fired += 1) });
+    dismissToast("fantasma");
+    expect(fired).toBe(0);
+  });
+
+  it("toast sem onDismiss dispensa normalmente, sem estourar", () => {
+    const id = pushToast({ title: "sem callback" });
+    expect(() => dismissToast(id)).not.toThrow();
+  });
+
   it("mantém a ordem de chegada", () => {
     pushToast({ title: "um" });
     pushToast({ title: "dois" });
