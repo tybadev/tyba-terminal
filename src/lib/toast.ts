@@ -19,6 +19,13 @@ export interface ToastMessage {
    * que o ack do alarme de deriva precisa: só marcar durável o que o dono
    * de fato viu. */
   onDismiss?: () => void;
+  /** Review de segurança r2 (v0.6.2), MAJOR: toast de alarme de segurança
+   * (`agent://sandbox-warning`) NÃO tem `action`, mas não pode sumir
+   * sozinho -- um auto-dismiss de 9s dispararia `onDismiss` (e o ack
+   * durável do alarme de deriva) sem o dono ter visto nada, num produto de
+   * agente sem supervisão. `sticky` força duração infinita igual a
+   * `action`, mas sem exigir um botão -- some só no X. */
+  sticky?: boolean;
 }
 
 export interface ToastInput {
@@ -27,6 +34,7 @@ export interface ToastInput {
   detail?: string;
   action?: ToastAction;
   onDismiss?: () => void;
+  sticky?: boolean;
 }
 
 type Listener = (toasts: ToastMessage[]) => void;
@@ -75,10 +83,14 @@ export function clearToasts() {
  * ler sem virar ruído acumulado. */
 export const TOAST_AUTO_DISMISS_MS = 9000;
 
-/** Toast com ação (ex.: login) mantém duração infinita: só some no clique da
- * ação ou no X — nunca pode sumir sozinho antes de o dono decidir. */
-export function toastDuration(toast: Pick<ToastMessage, "action">): number {
-  return toast.action ? Infinity : TOAST_AUTO_DISMISS_MS;
+/** Toast com ação (ex.: login) OU `sticky` (ex.: alarme de segurança) mantém
+ * duração infinita: só some no clique da ação ou no X — nunca pode sumir
+ * sozinho antes de o dono decidir. Info benigna sem nenhum dos dois continua
+ * com auto-dismiss finito. */
+export function toastDuration(
+  toast: Pick<ToastMessage, "action" | "sticky">,
+): number {
+  return toast.action || toast.sticky ? Infinity : TOAST_AUTO_DISMISS_MS;
 }
 
 export function toastError(title: string, detail?: unknown) {

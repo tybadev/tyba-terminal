@@ -86,7 +86,10 @@ import {
   workspaceRunningAgent,
 } from "./lib/closeGuard";
 import { pushToast, toastError } from "./lib/toast";
-import { sandboxWarningTitleKey } from "./lib/sandboxWarning";
+import {
+  sandboxWarningTitleKey,
+  sandboxWarningToastInput,
+} from "./lib/sandboxWarning";
 import { agentOpenUrlToastInput } from "./lib/agentOpenUrlToast";
 import {
   LaunchConfigDialog,
@@ -1189,22 +1192,23 @@ export default function App() {
   // se perder antes de virar toast (sem listener no instante do emit), o
   // `onDismiss` nunca roda, o ack nunca acontece, e o core volta a oferecer
   // o mesmo nome no próximo spawn de sessão.
+  //
+  // Review de segurança r2 (v0.6.2), MAJOR: e SE o toast chegar a aparecer,
+  // não pode sumir sozinho -- nenhum `SandboxWarningKind` tem `action`, e
+  // sem `sticky` o auto-dismiss de ~9s (`toastDuration`) dispararia o
+  // `onDismiss` (e o ack durável) sem o dono ter visto nada. A montagem
+  // inteira do `ToastInput` (sticky + onDismiss condicional) mora em
+  // `sandboxWarningToastInput` -- testável sem i18n/IPC reais.
   useEffect(() => {
     const unlisten = onAgentSandboxWarning((payload) => {
-      const names =
-        payload.kind === "FilhoDesconhecidoEmClaude" ? payload.names : null;
-      pushToast({
-        tone: "warning",
-        title: t(sandboxWarningTitleKey(payload.kind), {
-          detail: payload.detail ?? "",
-        }),
-        onDismiss:
-          names && names.length > 0
-            ? () => {
-                void ackDriftWarning(names).catch(() => {});
-              }
-            : undefined,
+      const title = t(sandboxWarningTitleKey(payload.kind), {
+        detail: payload.detail ?? "",
       });
+      pushToast(
+        sandboxWarningToastInput(payload, title, (names) => {
+          void ackDriftWarning(names).catch(() => {});
+        }),
+      );
     });
     return () => {
       void unlisten.then((off) => off());

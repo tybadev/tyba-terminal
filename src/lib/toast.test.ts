@@ -170,6 +170,24 @@ describe("toast store", () => {
     );
   });
 
+  // Review de segurança r2 (v0.6.2), MAJOR: o toast de FilhoDesconhecidoEmClaude
+  // (alarme de deriva) não tem action -- sem isto, auto-fechava em 9s e o
+  // onDismiss disparava o ack durável mesmo que o dono nunca tivesse visto a
+  // tela. Num produto de agente sem supervisão, isso silencia um alarme de
+  // segurança pra sempre.
+  it("toast sticky (sandbox-warning) expõe duração infinita mesmo sem action", () => {
+    expect(toastDuration({ action: undefined, sticky: true })).toBe(Infinity);
+  });
+
+  it("toast info benigna (sem sticky, sem action) continua com duração finita", () => {
+    expect(
+      Number.isFinite(toastDuration({ action: undefined, sticky: false })),
+    ).toBe(true);
+    expect(
+      Number.isFinite(toastDuration({ action: undefined })),
+    ).toBe(true);
+  });
+
   it("substitui a lista em vez de mutar, para o React ver a mudança", () => {
     pushToast({ title: "um" });
     let first: ToastMessage[] = [];
