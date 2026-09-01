@@ -4,6 +4,7 @@ import {
   dismissToast,
   pushToast,
   subscribeToasts,
+  toastDuration,
   toastError,
   type ToastMessage,
 } from "./toast";
@@ -72,6 +73,28 @@ describe("toast store", () => {
     un();
   });
 
+  // Review r1 (v0.6.2), MAJOR: o ack do alarme de deriva depende de saber
+  // quando o dono realmente viu/fechou o toast -- `onDismiss` é o gancho.
+  it("dismiss chama onDismiss só do toast fechado", () => {
+    let fired = 0;
+    const id = pushToast({ title: "alvo", onDismiss: () => (fired += 1) });
+    pushToast({ title: "outro" });
+    dismissToast(id);
+    expect(fired).toBe(1);
+  });
+
+  it("dismiss de id inexistente não chama onDismiss de ninguém", () => {
+    let fired = 0;
+    pushToast({ title: "alvo", onDismiss: () => (fired += 1) });
+    dismissToast("fantasma");
+    expect(fired).toBe(0);
+  });
+
+  it("toast sem onDismiss dispensa normalmente, sem estourar", () => {
+    const id = pushToast({ title: "sem callback" });
+    expect(() => dismissToast(id)).not.toThrow();
+  });
+
   it("mantém a ordem de chegada", () => {
     pushToast({ title: "um" });
     pushToast({ title: "dois" });
@@ -135,6 +158,34 @@ describe("toast store", () => {
     });
     expect(seen[0].action).toBeUndefined();
     un();
+  });
+
+  it("toast sem action expõe duração finita — auto-dismiss (item 0 do contrato)", () => {
+    expect(Number.isFinite(toastDuration({ action: undefined }))).toBe(true);
+  });
+
+  it("toast com action expõe duração infinita — não some sozinho antes do clique", () => {
+    expect(toastDuration({ action: { label: "x", run: () => {} } })).toBe(
+      Infinity,
+    );
+  });
+
+  // Review de segurança r2 (v0.6.2), MAJOR: o toast de FilhoDesconhecidoEmClaude
+  // (alarme de deriva) não tem action -- sem isto, auto-fechava em 9s e o
+  // onDismiss disparava o ack durável mesmo que o dono nunca tivesse visto a
+  // tela. Num produto de agente sem supervisão, isso silencia um alarme de
+  // segurança pra sempre.
+  it("toast sticky (sandbox-warning) expõe duração infinita mesmo sem action", () => {
+    expect(toastDuration({ action: undefined, sticky: true })).toBe(Infinity);
+  });
+
+  it("toast info benigna (sem sticky, sem action) continua com duração finita", () => {
+    expect(
+      Number.isFinite(toastDuration({ action: undefined, sticky: false })),
+    ).toBe(true);
+    expect(
+      Number.isFinite(toastDuration({ action: undefined })),
+    ).toBe(true);
   });
 
   it("substitui a lista em vez de mutar, para o React ver a mudança", () => {

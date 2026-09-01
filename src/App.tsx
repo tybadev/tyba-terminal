@@ -86,7 +86,10 @@ import {
   workspaceRunningAgent,
 } from "./lib/closeGuard";
 import { pushToast, toastError } from "./lib/toast";
-import { sandboxWarningTitleKey } from "./lib/sandboxWarning";
+import {
+  sandboxWarningTitleKey,
+  sandboxWarningToastInput,
+} from "./lib/sandboxWarning";
 import { agentOpenUrlToastInput } from "./lib/agentOpenUrlToast";
 import {
   LaunchConfigDialog,
@@ -151,6 +154,7 @@ import {
   dockerAvailable,
   dockerListContainers,
   dockerOpenDashboard,
+  ackDriftWarning,
   bootGate,
   bootSnapshot,
   onAgentOpenUrl,
@@ -1179,14 +1183,32 @@ export default function App() {
 
   // Aviso sem ação (ao contrário do toast acima) -- cada SandboxWarningKind
   // vira um toast warning com o texto do §6 (item 35 do contrato).
+  //
+  // Review r1 (v0.6.2), MAJOR: pro `FilhoDesconhecidoEmClaude` (alarme de
+  // deriva), `onDismiss` manda o ack pro core (`ackDriftWarning`) SÓ quando
+  // este toast é de fato dispensado -- nunca na mera chegada do evento. É o
+  // que garante que o dedupe durável (`drift.warned_unclassified_children`
+  // no core) só marca "visto" depois que o dono realmente viu: se o evento
+  // se perder antes de virar toast (sem listener no instante do emit), o
+  // `onDismiss` nunca roda, o ack nunca acontece, e o core volta a oferecer
+  // o mesmo nome no próximo spawn de sessão.
+  //
+  // Review de segurança r2 (v0.6.2), MAJOR: e SE o toast chegar a aparecer,
+  // não pode sumir sozinho -- nenhum `SandboxWarningKind` tem `action`, e
+  // sem `sticky` o auto-dismiss de ~9s (`toastDuration`) dispararia o
+  // `onDismiss` (e o ack durável) sem o dono ter visto nada. A montagem
+  // inteira do `ToastInput` (sticky + onDismiss condicional) mora em
+  // `sandboxWarningToastInput` -- testável sem i18n/IPC reais.
   useEffect(() => {
     const unlisten = onAgentSandboxWarning((payload) => {
-      pushToast({
-        tone: "warning",
-        title: t(sandboxWarningTitleKey(payload.kind), {
-          detail: payload.detail ?? "",
-        }),
+      const title = t(sandboxWarningTitleKey(payload.kind), {
+        detail: payload.detail ?? "",
       });
+      pushToast(
+        sandboxWarningToastInput(payload, title, (names) => {
+          void ackDriftWarning(names).catch(() => {});
+        }),
+      );
     });
     return () => {
       void unlisten.then((off) => off());
@@ -5189,6 +5211,7 @@ export default function App() {
                           lineEcho: lineEcho[s.id] ?? false,
                           altScreen: altScreens[s.id] ?? false,
                         })}
+                        bindings={bindings}
                         onLineHeight={(px) => reportLineHeight(s.id, px)}
                         onCellWidth={(px) => reportCellWidth(s.id, px)}
                         onLiveRows={

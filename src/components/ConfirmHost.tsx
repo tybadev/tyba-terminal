@@ -49,7 +49,7 @@ export function ConfirmHost() {
           </Button>
           <Button
             autoFocus
-            className={request.destructive ? "bg-tyba-red text-white" : ""}
+            variant={request.destructive ? "destructive" : "default"}
             onClick={() => answerConfirm(request.id, true)}
           >
             {request.confirmLabel ?? t("confirm")}

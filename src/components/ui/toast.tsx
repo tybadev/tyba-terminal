@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Toast as ToastPrimitive } from "radix-ui";
+import { X } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
 
@@ -85,9 +86,32 @@ function ToastAction({
   );
 }
 
+/** Item 0 do contrato ("polir o alarme de deriva"): todo toast precisa de um
+ * affordance ÓBVIO de fechar, não só swipe. `Toast.Close` do Radix já fecha
+ * o toast (dispara `onOpenChange(false)`) sem precisar de handler próprio. */
+function ToastClose({
+  className,
+  ...props
+}: React.ComponentProps<typeof ToastPrimitive.Close>) {
+  return (
+    <ToastPrimitive.Close
+      data-slot="toast-close"
+      aria-label="Fechar"
+      className={cn(
+        "absolute right-1.5 top-1.5 rounded-[3px] p-0.5 text-tyba-text-faint transition-colors hover:bg-tyba-text/[.08] hover:text-tyba-text",
+        className,
+      )}
+      {...props}
+    >
+      <X size={12} weight="bold" />
+    </ToastPrimitive.Close>
+  );
+}
+
 export {
   Toast,
   ToastAction,
+  ToastClose,
   ToastDescription,
   ToastProvider,
   ToastTitle,

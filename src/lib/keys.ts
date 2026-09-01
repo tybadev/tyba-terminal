@@ -1,3 +1,4 @@
+import { isArrowKey } from "./commandLine";
 import { IS_MAC } from "./platform";
 
 export type KeyAction =
@@ -342,6 +343,43 @@ export function comboKeys(combo: string): string[] {
   return combo
     .split("+")
     .map((part) => SYMBOLS[part] ?? part.toUpperCase());
+}
+
+/**
+ * B2: um combo casa com QUALQUER binding gravado na tabela ativa — não só
+ * pane-nav. `comboOf` já devolve `null` pra tecla sem modificador (setas
+ * puras seguem pro terminal como sempre), então este helper só precisa
+ * comparar strings.
+ */
+export function isBoundCombo(bindings: Bindings, combo: string | null): boolean {
+  if (!combo) return false;
+  return (Object.values(bindings) as string[]).includes(combo);
+}
+
+/**
+ * Review r1 (v0.6.2), MINOR: a decisão INTEIRA de
+ * `TerminalView.attachCustomKeyEventHandler` pro caso de seta, extraída pra
+ * função pura testável — sem isso só dava pra testar `isBoundCombo` isolado,
+ * não o handler de verdade. `isBoundCombo` sozinho não bastava: o resize de
+ * painel (Ctrl+Alt+Shift+Seta no PC, Meta+Ctrl+Seta no mac —
+ * `isPaneResizeChord`/`PANE_RESIZE_COMBO_PREFIX`) fica FORA do mapa
+ * `Bindings` (App.tsx reconhece por modificador, não por entrada na
+ * tabela), então sofria do MESMO bug do B2 sem que `isBoundCombo` pudesse
+ * pegá-lo.
+ *
+ * Devolve `false` quando a tecla NÃO pode ir pro PTY (é atalho do app ou
+ * resize de painel); `true` quando pode (segue a regra antiga de
+ * `swallowArrows`).
+ */
+export function keydownGoesToPty(
+  event: KeyboardEvent,
+  bindings: Bindings,
+  swallowArrows: boolean,
+): boolean {
+  if (!isArrowKey(event.key)) return true;
+  if (isBoundCombo(bindings, comboOf(event))) return false;
+  if (isPaneResizeChord(event)) return false;
+  return !swallowArrows;
 }
 
 export function parseBindings(raw: string | null): Bindings {

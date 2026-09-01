@@ -3749,6 +3749,21 @@ async fn set_pref(state: State<'_, AppState>, key: String, value: String) -> Res
         .map_err(|e| e.to_string())
 }
 
+/// Review r1 (v0.6.2), MAJOR: o front chama isto quando o toast de
+/// `FilhoDesconhecidoEmClaude` (alarme de deriva) é dispensado — X, clique
+/// ou auto-dismiss, mas só DEPOIS de o toast ter sido de fato renderizado.
+/// É o único lugar que marca durável um nome como "avisado"
+/// (`agent::credentials::ack_drift_names`); `drift_alarm_names` só lê. Sem
+/// isso, marcar na DETECÇÃO deixava um alarme de segurança mudo pra sempre
+/// se o evento `agent://sandbox-warning` se perdesse (sem listener no
+/// instante do emit — a mesma corrida do `app://ready` documentada no
+/// listener de `App.tsx`).
+#[tauri::command]
+async fn ack_drift_warning(state: State<'_, AppState>, names: Vec<String>) -> Result<(), String> {
+    agent::credentials::ack_drift_names(&state.store, &names);
+    Ok(())
+}
+
 #[tauri::command]
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -6182,6 +6197,7 @@ pub fn run() {
             focus_pane,
             set_split_ratio,
             get_pref,
+            ack_drift_warning,
             app_version,
             app_build_info,
             update_check,

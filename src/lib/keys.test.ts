@@ -9,9 +9,12 @@ import {
   PANE_RESIZE_COMBO_PREFIX,
   PC_BINDINGS,
   comboKeys,
+  comboOf,
   formatCombo,
+  isBoundCombo,
   isPaneResizeChord,
   isTabDigitChord,
+  keydownGoesToPty,
   parseBindings,
   tabDigitCombo,
   type Bindings,
@@ -202,5 +205,71 @@ describe("parseBindings", () => {
     );
     expect(parsed.panel).toBe(DEFAULT_BINDINGS.panel);
     expect(parsed.newTab).toBe("ctrl+shift+y");
+  });
+});
+
+describe("isBoundCombo", () => {
+  // B2: TerminalView só engole Ctrl+Alt+Seta/Ctrl+Shift+Seta (pane-nav,
+  // prevSession etc.) pro PTY quando NENHUM binding do app casa com o
+  // combo — a checagem tem que valer pra QUALQUER atalho que use seta como
+  // tecla-base, não só pane-nav (paneLeft/Right/Up/Down usam Ctrl+Alt+Seta
+  // no PC/Meta+Alt+Seta no mac; prevSession/nextSession usam
+  // Ctrl+Shift+Seta/Meta+Shift+Seta) — todos sofriam do mesmo bug.
+  it("reconhece um combo que bate com algum binding da tabela ativa", () => {
+    expect(isBoundCombo(DEFAULT_BINDINGS, DEFAULT_BINDINGS.paneDown)).toBe(
+      true,
+    );
+  });
+
+  it("não reconhece combo nenhum, nunca gravado na tabela", () => {
+    expect(isBoundCombo(DEFAULT_BINDINGS, "ctrl+alt+shift+z")).toBe(false);
+  });
+
+  it("combo nulo (comboOf sem modificador) nunca é atalho do app", () => {
+    expect(isBoundCombo(DEFAULT_BINDINGS, null)).toBe(false);
+  });
+
+  it("Ctrl+Alt+ArrowDown (pane-nav) é reconhecido via comboOf real", () => {
+    const combo = comboOf(
+      chord({ key: "ArrowDown", ctrlKey: true, altKey: true }),
+    );
+    expect(isBoundCombo(PC_BINDINGS, combo)).toBe(true);
+  });
+
+  it("seta pura, sem modificador, não é atalho do app (segue pro PTY)", () => {
+    const combo = comboOf(chord({ key: "ArrowDown" }));
+    expect(isBoundCombo(PC_BINDINGS, combo)).toBe(false);
+  });
+});
+
+describe("keydownGoesToPty", () => {
+  // Review r1 (v0.6.2), MINOR: pane-resize (Ctrl+Alt+Shift+Seta no PC,
+  // Meta+Ctrl+Seta no mac) fica FORA do mapa Bindings -- isBoundCombo
+  // sozinho não pegava esse caso, e sofria do mesmo bug do B2 (ia pro PTY,
+  // o agente comia a tecla).
+  it("Ctrl+Alt+Shift+ArrowLeft (resize) não vai pro PTY mesmo com agente rodando", () => {
+    const event = chord({
+      key: "ArrowLeft",
+      ctrlKey: true,
+      altKey: true,
+      shiftKey: true,
+    });
+    expect(keydownGoesToPty(event, PC_BINDINGS, false)).toBe(false);
+  });
+
+  it("Ctrl+Alt+ArrowDown (pane-nav, via Bindings) não vai pro PTY", () => {
+    const event = chord({ key: "ArrowDown", ctrlKey: true, altKey: true });
+    expect(keydownGoesToPty(event, PC_BINDINGS, false)).toBe(false);
+  });
+
+  it("seta pura, sem modificador, segue a regra de swallowArrows", () => {
+    const event = chord({ key: "ArrowDown" });
+    expect(keydownGoesToPty(event, PC_BINDINGS, false)).toBe(true);
+    expect(keydownGoesToPty(event, PC_BINDINGS, true)).toBe(false);
+  });
+
+  it("tecla que não é seta sempre vai pro PTY, mesmo com swallowArrows", () => {
+    const event = chord({ key: "a", ctrlKey: true, altKey: true });
+    expect(keydownGoesToPty(event, PC_BINDINGS, true)).toBe(true);
   });
 });

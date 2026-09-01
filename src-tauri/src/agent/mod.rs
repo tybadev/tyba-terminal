@@ -162,22 +162,48 @@ const SENSITIVE_CLAUDE_READONLY_DIRS: [&str; 10] = [
 /// bwrap.rs os torna sempre presentes (M4: `--ro-bind` de path ausente aborta
 /// o bwrap). `daemon.json` é o item mais grave (cron/slash commands rodados
 /// pelo daemon no HOST, fora da jaula, com watcher que reconcilia — §2.3/M6).
-/// `.config.json` e `remote-settings.json` (review r1, MINOR seg 2) são o
-/// segundo item mais grave, e por pouco: `.config.json` é o caminho LEGADO do
-/// `.claude.json` (V5 — o binário carrega `mcpServers` dele) e
-/// `remote-settings.json` carrega hooks/permissions. Deixá-los IF_PRESENT
-/// abria exec diferido — com `~/.claude` rw, o agente cria um dos dois num
-/// `~/.claude` que ainda não os tinha, com `mcpServers` apontando pra um
-/// comando; a próxima vez que o dono roda `claude` FORA do TYBA, executa —
-/// sem disparar o alarme de deriva, porque o nome já está classificado.
-const SENSITIVE_CLAUDE_FILES_MANDATORY: [&str; 7] = [
+///
+/// `.config.json` NÃO está nesta lista, de propósito (v0.6.2, reabertura da
+/// entrega B): é o caminho LEGADO do `.claude.json` — mas, ao contrário do
+/// `.claude.json` (que é config só de projeto/MCP), é onde o binário do
+/// Claude GRAVA `oauthAccount` no login, e `q()` no binário (2.1.252) prefere
+/// `.config.json` sobre `.claude.json` quando os dois existem
+/// (legacyPath > configPath). O review r1/r2 anterior promoveu `.config.json`
+/// a MANDATORY pelo mesmo motivo do `remote-settings.json` (fechar o vetor
+/// `mcpServers`) — mas isso quebrou dois jeitos: (a) `ensure_inert_file`
+/// pré-criava um `.config.json` `{}` no HOST quando ausente, e esse `{}`
+/// passava a vencer o `.claude.json` real do dono via `q()` — inclusive FORA
+/// do TYBA; (b) `--ro-bind` dentro da jaula impedia o login de persistir
+/// `oauthAccount` no resume. Tirado da lista: fica dentro do `~/.claude` que
+/// já é `--bind` rw (write allow), então o login persiste, e `.config.json`
+/// nunca mais nasce sozinho no host. O vetor `mcpServers` continua coberto do
+/// MESMO jeito que já cobre `.claude.json` hoje (que também nunca foi
+/// sombreado): a aprovação de MCP do próprio Claude + o alarme de deriva
+/// (`credentials.rs`) — consistente entre os dois arquivos com o mesmo
+/// schema, em vez do read-only que só um dos dois tinha.
+///
+/// `remote-settings.json` CONTINUA aqui (review de segurança r2, v0.6.2,
+/// BLOCKING): o round anterior baixou pra IF_PRESENT pelo raciocínio errado
+/// — tratou os dois arquivos como equivalentes só porque os dois foram
+/// promovidos juntos no round 1. Mas `remote-settings.json` NÃO é o config
+/// global (`q()` só olha `.config.json`/`.claude.json`), então sombreá-lo
+/// sempre NUNCA quebra login — e ele carrega hooks/permissions, exatamente
+/// o vetor de exec que `daemon.json`/`mcp.json`/`settings.json` fecham. Com
+/// IF_PRESENT, no caso comum (ausente no spawn) ele ficava gravável E
+/// `is_classified_claude_child` (`credentials.rs`) o marcava "já
+/// classificado" — o alarme de deriva NUNCA disparava pra ele. Um agente
+/// enjaulado plantando hooks/permissions ali seria silencioso: exec no host
+/// na próxima vez que o dono rodasse `claude` fora do TYBA. O `{}` vazio
+/// pré-criado é o mesmo trade-off de poluição já aceito pros outros cinco
+/// arquivos desta lista (R6) — benigno, porque `remote-settings.json` não
+/// tem papel de login. Só `.config.json` devia ter saído de MANDATORY.
+const SENSITIVE_CLAUDE_FILES_MANDATORY: [&str; 6] = [
     "settings.json",
     "settings.local.json",
     "daemon.json",
     "mcp.json",
     "CLAUDE.md",
     "remote-settings.json",
-    ".config.json",
 ];
 
 /// Arquivos sombreados só se já existirem — sem pré-criação, porque não têm
@@ -207,7 +233,16 @@ const SCRIPT_EXTENSIONS: [&str; 12] = [
 /// exclusiva do alarme, e por isso fica dead_code fora do Linux sem o gate
 /// (achado do clippy no macOS/Windows da CI do PR #299).
 #[cfg(target_os = "linux")]
-pub(crate) const CLAUDE_STATE_TOP_LEVEL_NAMES: [&str; 42] = [
+pub(crate) const CLAUDE_STATE_TOP_LEVEL_NAMES: [&str; 43] = [
+    // Review de segurança r2 (v0.6.2, NIT): `.config.json` não está em
+    // NENHUMA lista de sombreamento (v0.6.2, corrige a regressão de login —
+    // ver `SENSITIVE_CLAUDE_FILES_MANDATORY`), então SEM esta entrada
+    // `is_classified_claude_child` o via como "não classificado" e o alarme
+    // de deriva emitia a linha de "estado benigno" (stderr) a cada spawn,
+    // pra TODO usuário logado (que sempre tem `.config.json`). Entra aqui
+    // como estado CONHECIDO — mesmo papel de `.credentials.json` logo
+    // abaixo — continua gravável, só para de ser "desconhecido".
+    ".config.json",
     ".credentials.json",
     "history.jsonl",
     "file-history",
@@ -267,6 +302,14 @@ pub(crate) fn sensitive_claude_children(claude: &Path) -> Vec<Rule> {
 
     let mut named_files: std::collections::HashSet<&str> =
         SENSITIVE_CLAUDE_FILES_MANDATORY.into_iter().collect();
+    // Review r1 (v0.6.2), MINOR: `.config.json` não está em NENHUMA das duas
+    // listas nomeadas de propósito (é o store de login, nunca sombreado —
+    // ver o comentário de `SENSITIVE_CLAUDE_FILES_MANDATORY`), o que o
+    // deixaria cair na varredura por FORMA logo abaixo (V9) se o dono tiver
+    // esse arquivo com bit +x (patológico, mas real) — reabrindo o mesmo bug
+    // de login por um caminho diferente. Entra em `named_files` só pra ser
+    // PULADO pela varredura por forma, não por ser mandatório ou opcional.
+    named_files.insert(".config.json");
     for file in SENSITIVE_CLAUDE_FILES_IF_PRESENT {
         named_files.insert(file);
         let p = claude.join(file);
@@ -770,10 +813,13 @@ mod tests {
             "workflows",
             "workflows/ci.yaml",
             "CLAUDE.md",
-            // review r1, MINOR seg 2: promovidos de IF_PRESENT a mandatório —
-            // nunca graváveis, nem quando ainda não existiam no spawn.
+            // Review de segurança r2 (v0.6.2, BLOCKING): remote-settings.json
+            // voltou pra MANDATORY — carrega hooks/permissions, e IF_PRESENT
+            // deixava o caso comum (ausente no spawn) gravável E classificado
+            // (o alarme de deriva nunca disparava pra ele). Nunca gravável,
+            // nem quando ainda não existia no spawn — ver o comentário de
+            // `SENSITIVE_CLAUDE_FILES_MANDATORY`.
             "remote-settings.json",
-            ".config.json",
         ] {
             assert!(
                 !write_grants(&access, &claude.join(forbidden)),
@@ -803,6 +849,10 @@ mod tests {
             ".credentials.json",
             "unknown-dir",
             "unknown-dir/deep/file",
+            // v0.6.2: `.config.json` saiu de MANDATORY (causa raiz do bug de
+            // login — ver o comentário de `SENSITIVE_CLAUDE_FILES_MANDATORY`)
+            // e nunca é sombreado, presente ou não.
+            ".config.json",
         ] {
             assert!(
                 write_grants(&access, &claude.join(still_writable)),
@@ -852,22 +902,73 @@ mod tests {
             "daemon.json",
             "mcp.json",
             "CLAUDE.md",
-            // review r1, MINOR seg 2: .config.json é o caminho LEGADO do
-            // .claude.json (V5 — o binário carrega mcpServers dele) e
-            // remote-settings.json carrega hooks/permissions. Com ~/.claude
-            // rw, deixá-los IF_PRESENT abre exec diferido: o agente cria um
-            // desses num ~/.claude que ainda não os tinha, com mcpServers
-            // apontando pra um comando, e o próximo `claude` do dono FORA do
-            // TYBA executa — sem disparar o alarme de deriva (nome já
-            // classificado). Promovidos a mandatório.
+            // Review de segurança r2 (v0.6.2, BLOCKING): de volta a
+            // MANDATORY — ver o comentário de
+            // `SENSITIVE_CLAUDE_FILES_MANDATORY`.
             "remote-settings.json",
-            ".config.json",
         ] {
             assert!(
                 rules.contains(&Rule::Literal(claude.join(file))),
                 "{file} precisa estar classificado mesmo sem existir ainda (pré-criação, M4)"
             );
         }
+    }
+
+    /// v0.6.2, item 1/5 do contrato de cobertura da Track A: `.config.json` é
+    /// o store de login do Claude (`oauthAccount`) — não pode ser
+    /// pré-criado nem sombreado, nem quando já existe no disco (é exatamente
+    /// o caso do dono depois do fork: `.config.json` já presente, precisa
+    /// continuar gravável para o resume funcionar). Contraste com
+    /// `sensitive_claude_children_only_lists_optional_files_when_they_already_exist`,
+    /// onde "já existir" LIGA a sombra — para `.config.json` isso nunca
+    /// acontece, em nenhum dos dois estados.
+    #[test]
+    fn sensitive_claude_children_never_shadows_config_json_present_or_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+
+        let absent = sensitive_claude_children(&claude);
+        assert!(
+            !absent.contains(&Rule::Literal(claude.join(".config.json"))),
+            ".config.json ausente não pode virar Rule::Literal (isso pré-criaria {{}} no host)"
+        );
+
+        std::fs::write(claude.join(".config.json"), r#"{"oauthAccount":{}}"#).unwrap();
+        let present = sensitive_claude_children(&claude);
+        assert!(
+            !present.contains(&Rule::Literal(claude.join(".config.json"))),
+            ".config.json já existente não pode ser sombreado — o login precisa persistir nele"
+        );
+    }
+
+    /// Review r1 (v0.6.2), MINOR: `.config.json` não está em nenhuma das
+    /// duas listas nomeadas (MANDATORY/IF_PRESENT), então cairia na
+    /// varredura genérica por FORMA (V9) igual a `statusline-command.sh` do
+    /// dono -- se o dono tiver `.config.json` com bit +x (patológico, mas
+    /// real), a varredura o classificaria como "cara de script" e voltaria
+    /// a sombreá-lo, reabrindo o bug de login que a remoção de
+    /// `SENSITIVE_CLAUDE_FILES_MANDATORY` corrigiu.
+    #[test]
+    #[cfg(unix)]
+    fn sensitive_claude_children_never_shadows_config_json_even_with_exec_bit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join(".config.json"), r#"{"oauthAccount":{}}"#).unwrap();
+        std::fs::set_permissions(
+            claude.join(".config.json"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        let rules = sensitive_claude_children(&claude);
+        assert!(
+            !rules.contains(&Rule::Literal(claude.join(".config.json"))),
+            ".config.json com +x não pode virar --ro-bind pela varredura por forma: {rules:?}"
+        );
     }
 
     #[test]

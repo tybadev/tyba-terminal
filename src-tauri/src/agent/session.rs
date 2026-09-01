@@ -915,7 +915,7 @@ fn spawn_prepared(
         // depende da inversão da política (§2). Nunca bloqueia o spawn (§6).
         #[cfg(target_os = "linux")]
         if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
-            crate::agent::credentials::emit_warnings(&ctx.app, id, &env, &spec);
+            crate::agent::credentials::emit_warnings(&ctx.app, id, &env, &spec, &ctx.store);
         }
         match sandbox.jailed_spawner(&spec)? {
             Some(spawner) => (cmd, Some(spawner)),
