@@ -710,7 +710,7 @@ mod tests {
             let prefix = format!("{real}/");
             let nodes = self.nodes.lock();
             let mut out = Vec::new();
-            for (k, _) in nodes.iter() {
+            for k in nodes.keys() {
                 if let Some(rest) = k.strip_prefix(&prefix) {
                     if !rest.is_empty() && !rest.contains('/') {
                         out.push(k.clone());
