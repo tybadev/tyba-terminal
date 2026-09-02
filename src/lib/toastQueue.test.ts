@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
-import { addApprovalToast, removeApprovalToast } from "./toastQueue";
+import {
+  addApprovalToast,
+  removeApprovalToast,
+  visibleApprovalToasts,
+} from "./toastQueue";
 import type { ApprovalRequest } from "./ipc";
 
 const makeApproval = (
@@ -43,5 +47,17 @@ describe("removeApprovalToast", () => {
   test("é no-op quando o id não está na fila", () => {
     const toasts = addApprovalToast([], makeApproval({ id: 1 }));
     expect(removeApprovalToast(toasts, 999)).toEqual(toasts);
+  });
+});
+
+describe("visibleApprovalToasts", () => {
+  test("some quando o painel de notificações está aberto", () => {
+    const toasts = addApprovalToast([], makeApproval({ id: 1 }));
+    expect(visibleApprovalToasts(toasts, true)).toEqual([]);
+  });
+
+  test("continua visível quando o painel está fechado", () => {
+    const toasts = addApprovalToast([], makeApproval({ id: 1 }));
+    expect(visibleApprovalToasts(toasts, false)).toEqual(toasts);
   });
 });

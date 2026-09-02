@@ -4304,6 +4304,7 @@ export default function App() {
           sessions={sessions}
           activeSessionId={activeId}
           agentReadyWarnings={agentReadyWarnings}
+          notificationsOpen={inboxOpen}
           onDismissAgentReady={(sessionId) =>
             setAgentReadyWarnings((prev) => {
               const next = { ...prev };

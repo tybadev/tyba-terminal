@@ -16,13 +16,12 @@ import {
 import {
   RISK_DOT,
   RISK_LABEL,
-  approvalChoices,
-  choiceForKey,
+  approvalActions,
+  decideApproval,
   shouldAutoClosePopover,
   toNotificationItems,
 } from "@/lib/notifications";
 import { Textarea } from "@/components/ui/textarea";
-import { Kbd } from "@/components/ui/kbd";
 import {
   resolveApproval,
   type ApprovalDecision,
@@ -49,33 +48,31 @@ export function NotificationsInbox({
   const [feedbackFor, setFeedbackFor] = useState<number | null>(null);
   const [feedback, setFeedback] = useState("");
 
+  // Mesmo caminho de decisão do toast (lib/notifications#decideApproval) —
+  // qualquer superfície que resolve uma aprovação passa por aqui, então o
+  // gate de risco vermelho e o resolveApproval de fato chamado são
+  // idênticos nas duas.
   const decide = (
     request: ApprovalRequest,
     decision: ApprovalDecision,
     withFeedback?: string,
   ) => {
-    if (
-      decision === "approved" &&
-      request.risk === "red" &&
-      confirming !== request.id
-    ) {
-      setConfirming(request.id);
+    const effect = decideApproval({
+      request,
+      decision,
+      confirmingId: confirming,
+      feedback: withFeedback,
+    });
+    if (effect.type === "armRedConfirm") {
+      setConfirming(effect.requestId);
       return;
     }
     setConfirming(null);
     setFeedbackFor(null);
     setFeedback("");
-    resolveApproval(request.id, decision, withFeedback).catch(() => {});
-  };
-
-  const pickByKey = (request: ApprovalRequest, key: string) => {
-    const choice = choiceForKey(request.risk, key);
-    if (!choice) return;
-    if (choice.wantsFeedback) {
-      setFeedbackFor(request.id);
-      return;
-    }
-    decide(request, choice.decision);
+    resolveApproval(effect.requestId, effect.decision, effect.feedback).catch(
+      () => {},
+    );
   };
 
   const sessionTitle = (id: SessionId) =>
@@ -98,22 +95,6 @@ export function NotificationsInbox({
   }, [count, open, onOpenChange]);
 
   const items = toNotificationItems(approvals);
-  const first = items[0]?.approval;
-
-  useEffect(() => {
-    if (!open || !first || feedbackFor !== null) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const target = e.target as HTMLElement | null;
-      if (target && ["INPUT", "TEXTAREA"].includes(target.tagName)) return;
-      const choice = choiceForKey(first.risk, e.key);
-      if (!choice) return;
-      e.preventDefault();
-      pickByKey(first, e.key);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
 
   return (
     <Popover
@@ -209,43 +190,50 @@ export function NotificationsInbox({
                         </div>
                       )}
                       <div className="mt-2 flex flex-wrap gap-2">
-                        {approvalChoices(request.risk).map((choice) => {
-                          const isRedConfirm =
-                            choice.decision === "approved" &&
+                        {approvalActions(request.risk).map((action) => {
+                          const isConfirmApprove =
+                            action.id === "approve" &&
                             request.risk === "red" &&
                             confirming === request.id;
+                          const label = isConfirmApprove
+                            ? t("confirmApprove")
+                            : t(action.labelKey);
+                          const onClick = () => {
+                            if (action.id === "denyWithReason") {
+                              setFeedbackFor(request.id);
+                              return;
+                            }
+                            const decision: ApprovalDecision =
+                              action.id === "alwaysAllow"
+                                ? "approved_always"
+                                : action.id === "deny"
+                                  ? "denied"
+                                  : "approved";
+                            decide(request, decision);
+                          };
                           const button = (
                             <Button
-                              key={choice.index}
+                              key={action.id}
                               size="sm"
                               variant={
-                                choice.decision === "approved"
-                                  ? "default"
-                                  : "outline"
+                                action.id === "approve" ? "default" : "outline"
                               }
-                              onClick={() =>
-                                choice.wantsFeedback
-                                  ? setFeedbackFor(request.id)
-                                  : decide(request, choice.decision)
-                              }
+                              onClick={onClick}
                               className={`h-6 gap-1.5 rounded-[4px] px-2.5 text-[11px] ${
-                                choice.decision === "approved"
+                                action.id === "approve"
                                   ? ""
                                   : "text-tyba-text-muted"
                               } ${
-                                isRedConfirm
+                                isConfirmApprove
                                   ? "bg-tyba-red text-white hover:bg-tyba-red/90"
                                   : ""
                               }`}
                             >
-                              <Kbd>{choice.index}</Kbd>
-                              {isRedConfirm
-                                ? t("confirmApprove")
-                                : t(choice.labelKey)}
+                              {label}
                             </Button>
                           );
-                          return choice.decision === "approved_always" ? (
-                            <Tooltip key={choice.index}>
+                          return action.id === "alwaysAllow" ? (
+                            <Tooltip key={action.id}>
                               <TooltipTrigger asChild>{button}</TooltipTrigger>
                               <TooltipContent side="bottom">
                                 {t("alwaysAllowHint")}

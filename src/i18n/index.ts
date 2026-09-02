@@ -842,8 +842,6 @@ const resources = {
       reviewApprovals: "Revisar",
       approve: "Aprovar",
       deny: "Recusar",
-      approvalChoiceYes: "Sim",
-      approvalChoiceAlways: "Sim, e não perguntar de novo",
       approvalChoiceNo: "Não, e dizer o que fazer",
       denyAndTell: "Recusar e enviar",
       denyFeedbackPlaceholder:
@@ -1928,8 +1926,6 @@ const resources = {
       reviewApprovals: "Review",
       approve: "Approve",
       deny: "Deny",
-      approvalChoiceYes: "Yes",
-      approvalChoiceAlways: "Yes, and don't ask again",
       approvalChoiceNo: "No, and tell it what to do",
       denyAndTell: "Deny and send",
       denyFeedbackPlaceholder:
