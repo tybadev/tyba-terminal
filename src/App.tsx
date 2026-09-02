@@ -90,6 +90,13 @@ import {
   sandboxWarningTitleKey,
   sandboxWarningToastInput,
 } from "./lib/sandboxWarning";
+import {
+  authAlertMessageKey,
+  authAlertToastInput,
+  withRuntimeAuthAlert,
+  withoutAuthAlert,
+  withoutRecoveredAuthAlerts,
+} from "./lib/authAlert";
 import { agentOpenUrlToastInput } from "./lib/agentOpenUrlToast";
 import {
   LaunchConfigDialog,
@@ -159,6 +166,8 @@ import {
   bootSnapshot,
   onAgentOpenUrl,
   onAgentSandboxWarning,
+  onAgentAuthAlert,
+  type AuthAlertKind,
   onAppReady,
   onBootFailed,
   focusPane,
@@ -583,6 +592,13 @@ export default function App() {
   const [dismissedResumeInvites, setDismissedResumeInvites] = useState<
     Set<SessionId>
   >(() => new Set());
+  // Entrega C, F2/F3: a faixa de auth de RUNTIME (fase preflight vira toast,
+  // não entra aqui -- ver o listener de `agent://auth-alert`). Some da tela
+  // por dois caminhos: dispensa manual (`dismissAuthAlert`) ou a sessão
+  // voltar a `running` -- o mesmo "recovery" que zera o dedupe no core.
+  const [runtimeAuthAlerts, setRuntimeAuthAlerts] = useState<
+    Map<SessionId, AuthAlertKind>
+  >(() => new Map());
   // Quantas vezes o core re-subiu um processo NESTE mesmo id de sessão. Entra na
   // `key` do TerminalView: sem isso o xterm continuaria montado sobre um PTY que
   // não existe mais, sem reatar no novo e sem nunca receber saída.
@@ -1215,6 +1231,41 @@ export default function App() {
     };
   }, [t]);
 
+  // Entrega C: `agent://auth-alert` roteia por `phase` (F1/F2 do contrato de
+  // cobertura). Preflight roda ANTES de o agente falar -- a sessão ainda nem
+  // tem prompt na tela, então vira toast (sticky, sem ação: a URL de login
+  // da Entrega B chega depois, por `agent://open-url`, e não é este evento).
+  // Runtime é a faixa por sessão (F2/F8) -- o `useEffect` seguinte, que já
+  // observa `sessions`, cuida do "some" por recovery.
+  useEffect(() => {
+    const unlisten = onAgentAuthAlert((payload) => {
+      if (payload.phase === "preflight") {
+        pushToast(
+          authAlertToastInput(
+            t(authAlertMessageKey(payload.kind, payload.phase)),
+          ),
+        );
+        return;
+      }
+      setRuntimeAuthAlerts((prev) =>
+        withRuntimeAuthAlert(prev, payload.session_id, payload.kind),
+      );
+    });
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [t]);
+
+  // F3: metade "recovery" do dismiss -- a mesma sessão que carrega a faixa
+  // volta a `running` (o dono rodou `/login` e o agente seguiu). `sessions`
+  // já chega atualizado por `onSessionStatus` (ver o efeito que popula esse
+  // state), então este efeito só precisa reagir à mudança, nunca escutar
+  // IPC por conta própria.
+  useEffect(() => {
+    if (runtimeAuthAlerts.size === 0) return;
+    setRuntimeAuthAlerts((prev) => withoutRecoveredAuthAlerts(prev, sessions));
+  }, [sessions, runtimeAuthAlerts.size]);
+
   // O core avisa quando a thread de boot termina. Só então o que veio vazio
   // vira estado — antes disso é transitório.
   //
@@ -1686,7 +1737,12 @@ export default function App() {
   // sandbox, com o env inteiro do usuário e, sobretudo, sem os hooks: sem
   // PreToolUse não há gate, e um agente fora do inbox faz o que quiser.
   const spawnAgentSession = useCallback(
-    async (title: string, cwd: string, runner?: AgentRunner) => {
+    async (
+      title: string,
+      cwd: string,
+      runner?: AgentRunner,
+      openedByGate = false,
+    ) => {
       const fresh = await createSession({
         kind: { type: "agent", runner: runner ?? runnerFromCommand(reviewAgent) },
         cwd,
@@ -1694,6 +1750,7 @@ export default function App() {
         attach_existing: true,
         cols: 100,
         rows: 30,
+        opened_by_gate: openedByGate,
       });
       setSessions((prev) => [...prev, fresh]);
       try {
@@ -1746,6 +1803,13 @@ export default function App() {
     [detectedBySession],
   );
 
+  // Entrega C, F3: a outra metade do "some" -- dispensa manual. A metade de
+  // recovery (sessão volta a `running`) mora no `useEffect` que observa
+  // `sessions` logo abaixo, porque só ele já escuta status de sessão.
+  const dismissRuntimeAuthAlert = useCallback((sessionId: SessionId) => {
+    setRuntimeAuthAlerts((prev) => withoutAuthAlert(prev, sessionId));
+  }, []);
+
   const reopeningShellAgents = useRef<Set<SessionId>>(new Set());
   const reopenShellAgentManaged = useCallback(
     async (sessionId: SessionId) => {
@@ -1770,7 +1834,12 @@ export default function App() {
         }
         try {
           const title = cwd.split("/").filter(Boolean).pop() ?? binary;
-          const sid = await spawnAgentSession(title, cwd, detected.kind);
+          // A aba que o TYBA abre aqui é a que ele mesmo se propõe a fechar
+          // de novo quando o agente sair depois de trabalhar — ver
+          // `opened_by_gate` no core. Review e resolução de conflitos NÃO
+          // marcam isto: só este fluxo reabre por trás de uma confirmação
+          // explícita ("gate") e é dono da aba que criou.
+          const sid = await spawnAgentSession(title, cwd, detected.kind, true);
           goToSession(sid);
         } catch (e) {
           toastError(t("shellAgentReopenSpawnFailed"), translateError(e, t));
@@ -5167,6 +5236,14 @@ export default function App() {
                           void resumeAgentConversation(s.id)
                         }
                         onDismissResume={() => dismissResumeInvite(s.id)}
+                        authAlert={
+                          runtimeAuthAlerts.has(s.id)
+                            ? { kind: runtimeAuthAlerts.get(s.id)! }
+                            : null
+                        }
+                        onDismissAuthAlert={() =>
+                          dismissRuntimeAuthAlert(s.id)
+                        }
                         onPaste={deliverPaste}
                         onSearch={() => setSearchOpen(true)}
                         readOnly={s.id === activeId && ownsCommandLine}

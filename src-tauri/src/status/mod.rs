@@ -13,6 +13,7 @@ pub mod agent_events;
 pub mod subagent_transcript;
 pub mod transcript;
 
+pub mod auth_scan;
 pub mod manifest;
 pub mod observed_notify;
 pub mod observer;

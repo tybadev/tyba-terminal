@@ -77,6 +77,10 @@ export interface CreateSessionOpts {
   attach_existing?: boolean;
   /** Id do shell escolhido no picker (ver `listShells`). Ausente = default do OS. */
   shell?: string;
+  /** A sessão de agente nasce pelo gate (reabrir um shell-agent gerenciado),
+   * não por review, resolução de conflito ou clique manual. Controla se a
+   * aba se recolhe sozinha quando o agente sai depois de trabalhar. */
+  opened_by_gate?: boolean;
 }
 
 /** Um shell disponível para abrir uma sessão (ver `listShells`). */
@@ -474,6 +478,32 @@ export const onAgentSandboxWarning = (
   listen<AgentSandboxWarningPayload>("agent://sandbox-warning", (e) =>
     handler(e.payload),
   );
+
+/** Entrega C -- espelha `AuthAlertKind` do core (`agent/auth_alert.rs`). */
+export type AuthAlertKind =
+  | "NotLoggedIn"
+  | "TokenExpiredOrRevoked"
+  | "CreditBalanceLow"
+  | "InvalidApiKey";
+
+/** Espelha `AuthPhase`: preflight roda ANTES do agente falar (silêncio puro,
+ * sem prompt na tela); runtime vem do stream depois que o turno já começou.
+ * O front roteia por isto -- ver `authAlert.ts`. */
+export type AuthPhase = "preflight" | "runtime";
+
+/** Só `kind` e `phase` viajam pro webview (princípio #10 do CLAUDE.md) --
+ * nunca a string crua do stdout/stderr do `claude`, que pode carregar dado
+ * de conta. Quem monta a frase em pt-BR é o front (`authAlert.ts`). */
+export interface AgentAuthAlertPayload {
+  session_id: SessionId;
+  phase: AuthPhase;
+  kind: AuthAlertKind;
+}
+
+export const onAgentAuthAlert = (
+  handler: (payload: AgentAuthAlertPayload) => void,
+): Promise<UnlistenFn> =>
+  listen<AgentAuthAlertPayload>("agent://auth-alert", (e) => handler(e.payload));
 
 export type AgentRunner = "claude_code" | "codex" | { custom: string };
 
