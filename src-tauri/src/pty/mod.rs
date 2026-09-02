@@ -10,6 +10,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
 use uuid::Uuid;
 
+use crate::agent::auth_watch::AuthWatch;
 use crate::session::SessionKind;
 use crate::status::observer::ScreenObserver;
 
@@ -311,10 +312,16 @@ struct PtyHandle {
 pub type ScreenObserverFactory =
     Arc<dyn Fn(PtyId, &SessionKind) -> Option<ScreenObserver> + Send + Sync>;
 
+/// Entrega C — gêmeo de `ScreenObserverFactory`: quem sabe montar o
+/// `AuthWatch` (`SessionManager`, `AppHandle`) só existe junto no `setup` do
+/// app; o `PtyPool` não conhece nenhum dos dois.
+pub type AuthWatchFactory = Arc<dyn Fn(PtyId, &SessionKind) -> Option<AuthWatch> + Send + Sync>;
+
 #[derive(Default)]
 pub struct PtyPool {
     ptys: Mutex<HashMap<PtyId, PtyHandle>>,
     observers: Mutex<Option<ScreenObserverFactory>>,
+    auth_watchers: Mutex<Option<AuthWatchFactory>>,
 }
 
 /// A parte visual das ações, sob um lock só.
@@ -506,6 +513,13 @@ impl PtyPool {
         *self.observers.lock() = Some(factory);
     }
 
+    /// Entrega C — gêmeo de `set_screen_observers`: instalada uma vez, no
+    /// `setup`. Sem ela nenhuma sessão de agente Claude ganha o scanner de
+    /// auth de runtime.
+    pub fn set_auth_watchers(&self, factory: AuthWatchFactory) {
+        *self.auth_watchers.lock() = Some(factory);
+    }
+
     /// Acorda a thread emissora para reavaliar a tela desta sessão.
     ///
     /// Chamado quando o poll de processo descobre (ou perde) o binário de um
@@ -542,6 +556,15 @@ impl PtyPool {
         factory(id, kind).map(ScreenPipe::new)
     }
 
+    /// Entrega C — o que escuta o stream cru desta sessão pra auth de
+    /// runtime, se a fábrica estiver instalada e a sessão admitir
+    /// (`SessionKind::Agent` com tabela não-vazia — ver `AuthWatch::new` /
+    /// `patterns_for`, R10 do contrato de cobertura).
+    fn auth_pipe(&self, id: PtyId, kind: &SessionKind) -> Option<AuthWatch> {
+        let factory = self.auth_watchers.lock().clone()?;
+        factory(id, kind)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn spawn<R: Runtime>(
         &self,
@@ -558,6 +581,9 @@ impl PtyPool {
         // O palpite de tela nasce com o PTY e morre com ele. Sessão de agente
         // do TYBA não recebe nenhum: onde há hook, a tela não opina.
         let pipe = self.screen_pipe(session_id, kind);
+        // Entrega C: o inverso do palpite de tela acima — só sessão de
+        // AGENTE (Claude Code, hoje) ganha o scanner de auth de runtime.
+        let auth_watch = self.auth_pipe(session_id, kind);
         if let Some(env) = env {
             cmd.env_clear();
             for (k, v) in env {
@@ -658,10 +684,18 @@ impl PtyPool {
             .spawn(move || {
                 let mut buf = [0u8; READ_BUF_SIZE];
                 let mut hold_back = holdback::HoldBack::new();
+                let mut auth_watch = auth_watch;
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
+                            // Entrega C: bytes CRUS, antes de qualquer coisa
+                            // que `hold_back` faça com eles — o scanner
+                            // precisa do stream tal como o processo escreveu,
+                            // não do que sobra depois da retenção de OSC.
+                            if let Some(w) = auth_watch.as_mut() {
+                                w.feed(&buf[..n]);
+                            }
                             let ready = hold_back.feed(&buf[..n]);
                             if !ready.is_empty() && tx.send(ready).is_err() {
                                 break;

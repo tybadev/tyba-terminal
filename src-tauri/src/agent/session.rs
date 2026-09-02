@@ -921,6 +921,21 @@ fn spawn_prepared(
         if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
             crate::agent::credentials::emit_warnings(&ctx.app, id, &env, &spec, &ctx.store);
         }
+        // Entrega C, mecanismo 1 (preflight): mesmo ponto/condição do
+        // `emit_warnings` acima, mas CROSS-PLATFORM (sem `cfg(linux)`) — a
+        // ausência de login não é um problema só da jaula do Linux — e
+        // ASSÍNCRONO: `spawn_preflight` devolve na hora, o trabalho de
+        // verdade corre numa thread à parte e nunca atrasa a subida da
+        // sessão (P3 do contrato de cobertura).
+        if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+            crate::agent::auth_preflight::spawn_preflight(
+                ctx.app.clone(),
+                id,
+                crate::agent::resolved_binary(&AgentRunnerKind::ClaudeCode),
+                env.clone(),
+                worktree.path.clone(),
+            );
+        }
         match sandbox.jailed_spawner(&spec)? {
             Some(spawner) => (cmd, Some(spawner)),
             None => (sandbox.wrap(cmd, &spec)?, None),

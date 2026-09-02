@@ -329,6 +329,34 @@ fn install_screen_observers(
     }));
 }
 
+/// Entrega C — gêmeo de `install_screen_observers`: liga o scanner de auth
+/// de runtime ao `PtyPool`. `Some` só pra `SessionKind::Agent` cujo runner
+/// tem tabela não-vazia (`AuthWatch::new`/`patterns_for` — R10 do contrato
+/// de cobertura: hoje só Claude Code, Codex e Custom ficam sem scanner).
+///
+/// Instalado no `setup`, junto do palpite de tela: as mesmas duas peças que
+/// faltam pro `PtyPool` (`AppHandle`, `SharedSessionManager`) só coexistem
+/// aqui — ver o comentário de `install_screen_observers`.
+fn install_auth_watchers(
+    app: &AppHandle,
+    pty_pool: &SharedPtyPool,
+    sessions: &SharedSessionManager,
+) {
+    let watch_app = app.clone();
+    let watch_sessions = Arc::clone(sessions);
+    pty_pool.set_auth_watchers(Arc::new(move |id, kind| {
+        let SessionKind::Agent { runner } = kind else {
+            return None;
+        };
+        agent::auth_watch::AuthWatch::new(
+            watch_app.clone(),
+            Arc::clone(&watch_sessions),
+            id,
+            runner,
+        )
+    }));
+}
+
 /// Um tick do poll de detecção de agente: monta a lista de shells vivos com seu
 /// `leader_pid`, sonda a árvore de processos e emite só as sessões que mudaram.
 /// Quando não há shell aberto, nem varre os processos — custo zero (só um par de
@@ -5923,6 +5951,7 @@ pub fn run() {
                 &agent_prober,
                 &config_dir.join("manifests"),
             );
+            install_auth_watchers(app.handle(), &pty_pool, &sessions);
 
             let repos: repo::SharedRepoWatcher = Arc::new(repo::RepoWatcher::new());
             let (reconcile_tx, reconcile_rx) = std::sync::mpsc::channel::<()>();

@@ -664,7 +664,13 @@ impl SessionManager {
 
     /// A mutação de status, sem IPC — mesmo corte de [`Self::apply_observed`],
     /// pelo mesmo motivo.
-    fn apply_status(&self, id: SessionId, status: SessionStatus) -> Option<Session> {
+    ///
+    /// `pub(crate)` (Entrega C): os testes de `agent::auth_watch` precisam
+    /// mover uma sessão de `Idle`/`AwaitingInput` de volta pra `Running` sem
+    /// passar por `set_status`, que exige um `AppHandle` concreto (Wry) —
+    /// `tauri::test::mock_app()` devolve `AppHandle<MockRuntime>`, um tipo
+    /// diferente. Continua sem IPC, mesmo comportamento de antes.
+    pub(crate) fn apply_status(&self, id: SessionId, status: SessionStatus) -> Option<Session> {
         let status = status.redacted();
         let mut sessions = self.sessions.write();
         let s = sessions.get_mut(&id)?;
