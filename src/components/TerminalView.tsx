@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowCounterClockwise,
   CircleNotch,
   ShieldSlash,
+  WarningOctagon,
 } from "@phosphor-icons/react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -34,7 +35,9 @@ import {
   writeToSession,
   type SessionId,
   type ConnectionState,
+  type AuthAlertKind,
 } from "../lib/ipc";
+import { authAlertMessageKey } from "../lib/authAlert";
 import {
   nativePasteSuppressed,
   registerTerm,
@@ -231,6 +234,17 @@ interface Props {
   onResumeAgent?: () => void;
   onDismissResume?: () => void;
   /**
+   * Entrega C -- faixa de auth de RUNTIME (F2/F8 do contrato de cobertura).
+   * `null` some da tela: o dono dispensou (`onDismissAuthAlert`) ou a
+   * sessão voltou a `running` (recovery), decidido em `App.tsx` -- este
+   * componente só desenha o que recebe, nunca decide quando limpar.
+   *
+   * Preflight NÃO aparece aqui: vira toast (`authAlertToastInput`), não
+   * faixa -- a sessão ainda nem tem prompt na tela nesse ponto.
+   */
+  authAlert?: { kind: AuthAlertKind } | null;
+  onDismissAuthAlert?: () => void;
+  /**
    * Quanto da tela a saída do comando em curso ocupa, de 0 a 1.
    *
    * Recorta a faixa ao vivo na altura da saída real, para o cartão do bloco
@@ -277,6 +291,104 @@ interface Props {
   bindings?: Bindings;
 }
 
+type NoticeTone = "amber" | "cyan" | "red";
+
+/** Cada classe é uma string LITERAL completa -- não um template dinâmico
+ * (`` `text-tyba-${tone}` ``) -- porque o scanner do Tailwind v4 procura por
+ * strings de classe inteiras no código-fonte; uma classe montada em runtime
+ * não aparece no CSS gerado. Mesmo desenho de `TONE_CLASS`/`TONE_ICON` em
+ * `ToastHost.tsx`. */
+const NOTICE_TONE_CLASSES: Record<
+  NoticeTone,
+  { border: string; icon: string; action: string }
+> = {
+  amber: {
+    border: "border-tyba-amber/30",
+    icon: "text-tyba-amber",
+    action: "border-tyba-amber/40 text-tyba-amber hover:bg-tyba-amber/10",
+  },
+  cyan: {
+    border: "border-tyba-cyan/30",
+    icon: "text-tyba-cyan",
+    action: "border-tyba-cyan/40 text-tyba-cyan hover:bg-tyba-cyan/10",
+  },
+  red: {
+    border: "border-tyba-red/30",
+    icon: "text-tyba-red",
+    action: "border-tyba-red/40 text-tyba-red hover:bg-tyba-red/10",
+  },
+};
+
+interface SessionNoticeBarProps {
+  rect: { left: number; top: number; width: number };
+  tone: NoticeTone;
+  icon: ReactNode;
+  message: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  dismissLabel?: string;
+  onDismiss?: () => void;
+}
+
+/**
+ * Uma faixa fixa no topo do painel do terminal: ícone + mensagem truncada +
+ * até dois botões opcionais (ação e dispensa), posicionada pelo `rect` do
+ * layout de painéis.
+ *
+ * Terceira ocorrência do mesmo desenho inline (`agentNotice`, `resumeNotice`
+ * -- e agora a faixa de auth de runtime da Entrega C): a regra do
+ * `ui-component` é extrair um componente na terceira repetição, não copiar
+ * de novo. As duas faixas antigas passaram a usar este componente sem
+ * mudar de marcação (mesmas classes, só vindas de `NOTICE_TONE_CLASSES` em
+ * vez de escritas duas vezes).
+ */
+function SessionNoticeBar({
+  rect,
+  tone,
+  icon,
+  message,
+  actionLabel,
+  onAction,
+  dismissLabel,
+  onDismiss,
+}: SessionNoticeBarProps) {
+  const classes = NOTICE_TONE_CLASSES[tone];
+  return (
+    <div
+      className={`z-10 flex items-center gap-2 border-b ${classes.border} bg-tyba-sunken px-2 py-1`}
+      style={{
+        position: "absolute",
+        left: `${rect.left}%`,
+        top: `${rect.top}%`,
+        width: `${rect.width}%`,
+      }}
+    >
+      <span className={`shrink-0 ${classes.icon}`}>{icon}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-tyba-text-muted">
+        {message}
+      </span>
+      {onAction && actionLabel && (
+        <button
+          type="button"
+          onClick={onAction}
+          className={`shrink-0 rounded-[3px] border px-2 py-0.5 font-mono text-[10px] ${classes.action}`}
+        >
+          {actionLabel}
+        </button>
+      )}
+      {onDismiss && dismissLabel && (
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="shrink-0 rounded-[3px] px-1.5 py-0.5 font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
+        >
+          {dismissLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function TerminalView({
   sessionId,
   visible,
@@ -302,6 +414,8 @@ export function TerminalView({
   resumeNotice,
   onResumeAgent,
   onDismissResume,
+  authAlert,
+  onDismissAuthAlert,
   liveUsed,
   onLiveRows,
   onLineHeight,
@@ -939,76 +1053,40 @@ export function TerminalView({
   return (
     <>
     {agentNotice && rect && visible && !exited && (
-      <div
-        className="z-10 flex items-center gap-2 border-b border-tyba-amber/30 bg-tyba-sunken px-2 py-1"
-        style={{
-          position: "absolute",
-          left: `${rect.left}%`,
-          top: `${rect.top}%`,
-          width: `${rect.width}%`,
-        }}
-      >
-        <ShieldSlash size={12} weight="fill" className="shrink-0 text-tyba-amber" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-tyba-text-muted">
-          {i18n.t("shellAgentNotice", { binary: agentNotice.binary })}
-        </span>
-        {onReopenManaged && (
-          <button
-            type="button"
-            onClick={onReopenManaged}
-            className="shrink-0 rounded-[3px] border border-tyba-amber/40 px-2 py-0.5 font-mono text-[10px] text-tyba-amber hover:bg-tyba-amber/10"
-          >
-            {i18n.t("shellAgentReopen")}
-          </button>
-        )}
-        {onDismissNotice && (
-          <button
-            type="button"
-            onClick={onDismissNotice}
-            className="shrink-0 rounded-[3px] px-1.5 py-0.5 font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
-          >
-            {i18n.t("shellAgentIgnore")}
-          </button>
-        )}
-      </div>
+      <SessionNoticeBar
+        rect={rect}
+        tone="amber"
+        icon={<ShieldSlash size={12} weight="fill" />}
+        message={i18n.t("shellAgentNotice", { binary: agentNotice.binary })}
+        actionLabel={onReopenManaged ? i18n.t("shellAgentReopen") : undefined}
+        onAction={onReopenManaged}
+        dismissLabel={onDismissNotice ? i18n.t("shellAgentIgnore") : undefined}
+        onDismiss={onDismissNotice}
+      />
     )}
     {resumeNotice && rect && visible && exited && (
-      <div
-        className="z-10 flex items-center gap-2 border-b border-tyba-cyan/30 bg-tyba-sunken px-2 py-1"
-        style={{
-          position: "absolute",
-          left: `${rect.left}%`,
-          top: `${rect.top}%`,
-          width: `${rect.width}%`,
-        }}
-      >
-        <ArrowCounterClockwise
-          size={12}
-          weight="bold"
-          className="shrink-0 text-tyba-cyan"
-        />
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-tyba-text-muted">
-          {i18n.t("agentResumeNotice", { binary: resumeNotice.binary })}
-        </span>
-        {onResumeAgent && (
-          <button
-            type="button"
-            onClick={onResumeAgent}
-            className="shrink-0 rounded-[3px] border border-tyba-cyan/40 px-2 py-0.5 font-mono text-[10px] text-tyba-cyan hover:bg-tyba-cyan/10"
-          >
-            {i18n.t("agentResume")}
-          </button>
-        )}
-        {onDismissResume && (
-          <button
-            type="button"
-            onClick={onDismissResume}
-            className="shrink-0 rounded-[3px] px-1.5 py-0.5 font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
-          >
-            {i18n.t("agentResumeIgnore")}
-          </button>
-        )}
-      </div>
+      <SessionNoticeBar
+        rect={rect}
+        tone="cyan"
+        icon={<ArrowCounterClockwise size={12} weight="bold" />}
+        message={i18n.t("agentResumeNotice", { binary: resumeNotice.binary })}
+        actionLabel={onResumeAgent ? i18n.t("agentResume") : undefined}
+        onAction={onResumeAgent}
+        dismissLabel={onDismissResume ? i18n.t("agentResumeIgnore") : undefined}
+        onDismiss={onDismissResume}
+      />
+    )}
+    {authAlert && rect && visible && !exited && (
+      <SessionNoticeBar
+        rect={rect}
+        tone="red"
+        icon={<WarningOctagon size={12} weight="fill" />}
+        message={i18n.t(authAlertMessageKey(authAlert.kind, "runtime"))}
+        dismissLabel={
+          onDismissAuthAlert ? i18n.t("authAlertDismiss") : undefined
+        }
+        onDismiss={onDismissAuthAlert}
+      />
     )}
     {showPipe && rect && (
       <div

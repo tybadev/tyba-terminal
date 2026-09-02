@@ -1087,6 +1087,17 @@ const resources = {
         "Sua pasta pessoal (~) foi liberada só para leitura para o agente — o arquivo .claude.json pode parar de salvar.",
       sandboxWarningFilhoDesconhecidoEmClaude:
         "O TYBA encontrou item(ns) novo(s) em ~/.claude que ainda não conhece: {{detail}}. Ficaram graváveis por padrão.",
+      authAlertNotLoggedInPreflight:
+        "Esta sessão de agente não tem login utilizável. Rode `/login` na sessão — ou clique no aviso de navegador que vai aparecer.",
+      authAlertNotLoggedInRuntime:
+        "O agente parou por falta de login. Rode `/login` na sessão para entrar.",
+      authAlertTokenExpiredOrRevoked:
+        "Sua credencial do Claude expirou ou foi revogada. Rode `/login` na sessão para reautenticar.",
+      authAlertCreditBalanceLow:
+        "Sua conta do Claude está sem crédito. Recarregue em console.anthropic.com (ou troque de conta) e rode a tarefa de novo.",
+      authAlertInvalidApiKey:
+        "A `ANTHROPIC_API_KEY` configurada é inválida. Corrija a chave no `.tyba/config.toml` do repo — ou rode `/login` para usar sua assinatura.",
+      authAlertDismiss: "Dispensar",
     },
   },
   en: {
@@ -2150,6 +2161,17 @@ const resources = {
         "Your home folder (~) was granted read-only to the agent — .claude.json may stop saving.",
       sandboxWarningFilhoDesconhecidoEmClaude:
         "TYBA found new item(s) in ~/.claude it doesn't recognize yet: {{detail}}. They stayed writable by default.",
+      authAlertNotLoggedInPreflight:
+        "This agent session has no usable login. Run `/login` in the session — or click the browser prompt that's about to show up.",
+      authAlertNotLoggedInRuntime:
+        "The agent stopped for lack of login. Run `/login` in the session to sign in.",
+      authAlertTokenExpiredOrRevoked:
+        "Your Claude credential expired or was revoked. Run `/login` in the session to re-authenticate.",
+      authAlertCreditBalanceLow:
+        "Your Claude account is out of credit. Top up at console.anthropic.com (or switch accounts) and run the task again.",
+      authAlertInvalidApiKey:
+        "The configured `ANTHROPIC_API_KEY` is invalid. Fix the key in the repo's `.tyba/config.toml` — or run `/login` to use your subscription.",
+      authAlertDismiss: "Dismiss",
     },
   },
 } as const;
