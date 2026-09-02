@@ -179,6 +179,45 @@ pub fn find_agent(
     best
 }
 
+/// Limite de saltos que [`find_owning_session`] sobe pela árvore de
+/// processos. Existe para que um ciclo de `ppid` no snapshot (pid reciclado
+/// no meio da varredura) nunca gire para sempre — pior caso é devolver `None`
+/// (a requisição é recusada, nunca escala).
+const OWNING_SESSION_MAX_HOPS: u32 = 16;
+
+/// Resolve a sessão de shell DONA de um pid, subindo `ppid` a partir dele até
+/// achar o líder de uma sessão conhecida (canal shim↔core, §4.2). O pid de
+/// entrada é sempre o do PEER autenticado por `SO_PEERCRED` — nunca algo que o
+/// pedido afirma —, e é por isso que este é o núcleo da autenticação por
+/// sessão do canal: quem conectou só pode hospedar agente na sessão cujo
+/// líder está na ancestralidade dele.
+///
+/// Pura sobre um snapshot já colhido e a lista de líderes já resolvida — a
+/// mesma forma de `find_agent`, para o mesmo motivo: testável sem processos
+/// de verdade, e um pid que sumiu no meio da varredura simplesmente encerra a
+/// subida (`None`), nunca panic.
+pub fn find_owning_session(
+    peer_pid: u32,
+    shells: &[(SessionId, u32)],
+    rows: &[ProcRow],
+) -> Option<SessionId> {
+    let ppid_of: HashMap<u32, u32> = rows.iter().map(|r| (r.pid, r.ppid)).collect();
+    let leader_session: HashMap<u32, SessionId> =
+        shells.iter().map(|&(id, pid)| (pid, id)).collect();
+
+    let mut pid = peer_pid;
+    for _ in 0..OWNING_SESSION_MAX_HOPS {
+        if let Some(&id) = leader_session.get(&pid) {
+            return Some(id);
+        }
+        if pid == 1 {
+            return None;
+        }
+        pid = *ppid_of.get(&pid)?;
+    }
+    None
+}
+
 /// Estado de detecção por sessão de shell, mantido no core e consultável por
 /// command. O poll periódico chama `reconcile`; a UI escuta [`EVENT_CHANGED`].
 #[derive(Default)]
@@ -611,6 +650,60 @@ mod tests {
     fn a_leader_absent_from_the_snapshot_yields_none_without_panicking() {
         let rows = vec![row(200, 100, "claude", 20)];
         assert_eq!(find_agent(999, &rows, &comm_only), None);
+    }
+
+    // --- find_owning_session (canal shim↔core, §4.2) ---
+    //
+    // Sobe a árvore de processos a partir do pid do PEER (o cliente `tyba
+    // _jail`, nunca o que o pedido afirma) até achar o líder de uma sessão de
+    // shell conhecida. Ver o `[!danger]` da spec: é a peça que autentica QUAL
+    // sessão pediu o agente hospedado.
+
+    #[test]
+    fn owning_session_resolves_a_direct_child_of_the_shell_leader() {
+        let s = session();
+        let rows = vec![row(100, 1, "zsh", 10), row(200, 100, "tyba", 20)];
+        assert_eq!(
+            find_owning_session(200, &[(s, 100)], &rows),
+            Some(s),
+            "o peer é filho direto do líder do shell"
+        );
+    }
+
+    #[test]
+    fn owning_session_walks_up_multiple_hops() {
+        let s = session();
+        // shell(100) -> node(150) -> tyba(200): dois saltos até o líder.
+        let rows = vec![
+            row(100, 1, "zsh", 10),
+            row(150, 100, "node", 15),
+            row(200, 150, "tyba", 20),
+        ];
+        assert_eq!(find_owning_session(200, &[(s, 100)], &rows), Some(s));
+    }
+
+    #[test]
+    fn owning_session_is_none_for_a_pid_unrelated_to_any_shell() {
+        let s = session();
+        let rows = vec![row(100, 1, "zsh", 10), row(999, 1, "tyba", 5)];
+        assert_eq!(find_owning_session(999, &[(s, 100)], &rows), None);
+    }
+
+    #[test]
+    fn owning_session_stops_at_pid_1_without_matching() {
+        let s = session();
+        // 50 é filho direto do init (pid 1) — nunca escala além dele.
+        let rows = vec![row(100, 1, "zsh", 10), row(50, 1, "orphan", 5)];
+        assert_eq!(find_owning_session(50, &[(s, 100)], &rows), None);
+    }
+
+    #[test]
+    fn owning_session_is_bounded_and_survives_a_ppid_cycle() {
+        let s = session();
+        // 10 <-> 20 se apontam mutuamente (pid reciclado no meio do scan): sem
+        // limite de saltos isto giraria para sempre.
+        let rows = vec![row(10, 20, "a", 1), row(20, 10, "b", 2)];
+        assert_eq!(find_owning_session(10, &[(s, 100)], &rows), None);
     }
 
     #[test]

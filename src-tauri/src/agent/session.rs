@@ -661,6 +661,182 @@ pub fn attach_agent_session(
     )
 }
 
+const LAUNCH_PLAN_FILE: &str = "launch.json";
+
+struct HostedCommand {
+    cmd: portable_pty::CommandBuilder,
+    jailed: bool,
+    /// Raiz usada para classificar risco (`HandlerCtx.worktree_root`) e para
+    /// consultar consentimento de `.tyba/config.toml` — o toplevel jaulado
+    /// quando há um, a cwd crua quando não há (§5).
+    worktree_root: PathBuf,
+}
+
+/// A parte de [`prepare_hosted_agent`] que NÃO precisa de `AgentSessionCtx`
+/// (logo, nem de `AppHandle`): monta env filtrado + `argv`, jaulando quando
+/// `jail_target` é `Some`. Separado para ficar testável sem um app Tauri de
+/// verdade — só `Store` (que já tem `open_in_memory` para teste) entra por
+/// referência, não o `ctx` inteiro. `runner` chega já resolvido (o chamador
+/// já pagou o `build_runner`/`binary_available`, que shella pra fora via
+/// `shell_path::agent_path` — memoizado por processo, e por isso não dá pra
+/// simular com um binário fake dentro de um teste isolado).
+#[allow(clippy::too_many_arguments)]
+fn build_hosted_command(
+    store: &Store,
+    runner: &dyn AgentRunner,
+    cwd: &Path,
+    jail_target: Option<PathBuf>,
+    hook_setup: &HookSetup,
+    socket_path: &Path,
+    runtime: &Path,
+    exe: &Path,
+) -> Result<HostedCommand, String> {
+    let user_env: HashMap<String, String> = std::env::vars().collect();
+    // Repo faltando (gate-sem-jaula por não ser git, ou por estar fora da
+    // allowlist) usa a cwd crua como raiz de config: `repo_config::load`
+    // simplesmente não acha `.tyba/config.toml` ali e devolve `None` — sem
+    // isto o consentimento do repo real nunca seria consultado no caso
+    // jaulado.
+    let worktree_root = jail_target.clone().unwrap_or_else(|| cwd.to_path_buf());
+    let config = consented_config(store, &worktree_root);
+    let mut env = crate::repo_config::agent_env(config.as_ref(), &user_env);
+    apply_git_overrides(&mut env);
+
+    let mut cmd = runner.build_command(cwd, &env, hook_setup, None);
+    cmd.env("TYBA_HOOK_SOCKET", socket_path);
+    // Track C consome estes dois via `/proc/<agente>/environ` — NUNCA via
+    // cmdline, que o `exec` da cadeia bwrap apaga (§7 do tech-spec).
+    cmd.env("TYBA_HOSTED", "1");
+    let jailed = jail_target.is_some();
+    cmd.env("TYBA_JAILED", if jailed { "1" } else { "0" });
+
+    let cmd = match &jail_target {
+        Some(target) => {
+            let sandbox = crate::sandbox::platform_sandbox()?;
+            let spec = sandbox_spec(runner, &env, target, target, runtime, socket_path, exe)?;
+            sandbox.wrap(cmd, &spec)?
+        }
+        None => cmd,
+    };
+    Ok(HostedCommand {
+        cmd,
+        jailed,
+        worktree_root,
+    })
+}
+
+/// `argv`/`env`/`cwd` já resolvidos, na forma que `HostedPlan` serializa —
+/// só o mapeamento, sem decisão nenhuma: `get_argv()` inclui o programa em
+/// `[0]`, `iter_extra_env_as_str()` devolve só o que foi setado depois do
+/// `env_clear()` do `build_command` (o env FILTRADO, nunca o herdado).
+fn hosted_plan_from(
+    cmd: &portable_pty::CommandBuilder,
+    cwd: &Path,
+) -> crate::hook_ipc::channel::HostedPlan {
+    crate::hook_ipc::channel::HostedPlan {
+        argv: cmd
+            .get_argv()
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect(),
+        env: cmd
+            .iter_extra_env_as_str()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        cwd: cwd.to_string_lossy().into_owned(),
+    }
+}
+
+/// A metade "prepare" de [`spawn_prepared`] para o canal shim↔core (tech-spec
+/// §5): a MESMA fiação — hooks.json, env filtrado, sandbox quando cabe — até
+/// o ponto em que `spawn_prepared` subiria um PTY; aqui não sobe nada. Quem
+/// executa é o PRÓPRIO processo do shim, do lado de fora, lendo o
+/// `launch.json` que esta função escreve e depois apaga.
+///
+/// `id` é o `SessionId` da sessão de SHELL dona da conexão — nunca um id
+/// novo — porque é o que faz `approval_history` (e todo o resto do hook)
+/// ficar atribuído à sessão que o usuário já está olhando: o critério de
+/// sucesso da v2 (ver tech-spec §5, "HookServer bound keyed pela sessão
+/// SHELL").
+///
+/// `jail_target: Some(T)` monta a MESMA [`SandboxSpec`] de hoje sobre `T` —
+/// `readable_root` E `writable_root` os dois, porque não há worktree
+/// separado (decisão 2 da spec: sobe na pasta onde o usuário digitou, sem
+/// mover nada). `None` é gate-sem-jaula: `argv` sai cru, sem `sandbox.wrap`.
+/// `SandboxSpec` em si fica INTOCADO — a allowlist (§1) eliminou o refactor
+/// `git: Option<_>` que a primeira versão do design cogitou.
+///
+/// Devolve o caminho do plano escrito (0600 via [`crate::session::write_private_bytes`])
+/// e se a sessão saiu jaulada.
+pub fn prepare_hosted_agent(
+    ctx: &AgentSessionCtx,
+    id: SessionId,
+    cwd: PathBuf,
+    jail_target: Option<PathBuf>,
+) -> Result<(PathBuf, bool), String> {
+    let runtime = runtime_dir(id)?;
+    let socket_path = runtime.join(HOOK_SOCKET_FILE);
+    if socket_path.as_os_str().len() > MAX_SOCKET_PATH {
+        return Err("path do socket de hooks excede o limite do sistema".into());
+    }
+
+    let runner = build_runner(&AgentRunnerKind::ClaudeCode)?;
+    let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
+    let hook_cmd = hook_command(&exe);
+    let settings = hooks_settings_json(&hook_cmd);
+    let settings_body =
+        serde_json::to_string_pretty(&settings).map_err(|e| format!("settings de hooks: {e}"))?;
+    crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
+        .map_err(|e| format!("escrita dos settings de hooks: {e}"))?;
+    let hook_setup = HookSetup {
+        settings_path: runtime.join(HOOK_SETTINGS_FILE),
+        hook_command: hook_cmd,
+    };
+
+    let HostedCommand {
+        cmd,
+        jailed,
+        worktree_root,
+    } = build_hosted_command(
+        &ctx.store,
+        runner.as_ref(),
+        &cwd,
+        jail_target,
+        &hook_setup,
+        &socket_path,
+        &runtime,
+        &exe,
+    )?;
+
+    ctx.subagents.register_session(id);
+    let handler_ctx = HandlerCtx {
+        app: ctx.app.clone(),
+        sessions: ctx.sessions.clone(),
+        approvals: ctx.approvals.clone(),
+        store: ctx.store.clone(),
+        subagents: ctx.subagents.clone(),
+        session_id: id,
+        runner_kind: AgentRunnerKind::ClaudeCode,
+        worktree_root,
+        turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        seen_transcript: Arc::new(Mutex::new(None)),
+    };
+    let server = HookServer::bind(
+        &socket_path,
+        Arc::new(move |event| handle_event(&handler_ctx, event)),
+    )
+    .map_err(|e| format!("socket de hooks: {e}"))?;
+    ctx.servers.insert(id, server);
+
+    let plan = hosted_plan_from(&cmd, &cwd);
+    let plan_body = serde_json::to_vec(&plan).map_err(|e| format!("serialização do plano: {e}"))?;
+    if let Err(e) = crate::session::write_private_bytes(&runtime, LAUNCH_PLAN_FILE, &plan_body) {
+        ctx.servers.shutdown(id);
+        return Err(format!("escrita do plano de execução: {e}"));
+    }
+    Ok((runtime.join(LAUNCH_PLAN_FILE), jailed))
+}
+
 /// Sobe o agente de novo na conversa nativa que a sessão morta deixou no disco.
 ///
 /// **Nunca automático.** Só chega aqui por clique explícito: retomar levanta um
@@ -993,4 +1169,176 @@ fn spawn_prepared(
             ctx.servers.shutdown(id);
             e.to_string()
         })
+}
+
+#[cfg(test)]
+mod build_hosted_command_tests {
+    use super::*;
+
+    /// `prepare_hosted_agent` inteiro precisa de `AgentSessionCtx` — e
+    /// `AgentSessionCtx.app: AppHandle` não é genérico em `R` (ao contrário de
+    /// `spawn_preflight`/`PtyPool::spawn`), então `tauri::test::mock_app()`
+    /// (que devolve `AppHandle<MockRuntime>`) não serve aqui. Por isso a
+    /// decisão de env/argv/jaula foi extraída para `build_hosted_command`,
+    /// que só precisa de `Store` — testável sem app nenhum, e é onde mora
+    /// TODA a lógica de negócio; o resto de `prepare_hosted_agent` é fiação
+    /// (`HookServer::bind`, `ctx.servers.insert`), do mesmo jeito que
+    /// `spawn_prepared` já fica sem teste unitário nesta base de código.
+    fn store() -> Store {
+        Store::open_in_memory().unwrap()
+    }
+
+    fn hook_setup(runtime: &Path) -> HookSetup {
+        HookSetup {
+            settings_path: runtime.join(HOOK_SETTINGS_FILE),
+            hook_command: "tyba _hook".into(),
+        }
+    }
+
+    fn init_git_repo(dir: &Path) {
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?} falhou");
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "test"]);
+        std::fs::write(dir.join("README.md"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "init"]);
+    }
+
+    #[test]
+    fn gate_without_jail_produces_a_bare_argv_with_hosted_markers() {
+        let store = store();
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
+        let setup = hook_setup(runtime.path());
+        let exe = std::env::current_exe().unwrap();
+
+        let hosted = build_hosted_command(
+            &store,
+            &ClaudeCodeRunner,
+            cwd.path(),
+            None,
+            &setup,
+            &socket_path,
+            runtime.path(),
+            &exe,
+        )
+        .expect("gate-sem-jaula não deveria falhar");
+
+        assert!(!hosted.jailed, "sem jail_target, a sessão não sai jaulada");
+        assert_eq!(hosted.worktree_root, cwd.path());
+        let plan = hosted_plan_from(&hosted.cmd, cwd.path());
+        assert_eq!(
+            plan.argv.first().map(String::as_str),
+            Some("claude"),
+            "gate-sem-jaula roda o binário cru — argv[0] é literalmente `claude`, sem wrapper: {:?}",
+            plan.argv
+        );
+        assert!(
+            plan.argv.iter().any(|a| a == "--settings"),
+            "settings de hooks continuam presentes mesmo sem jaula: {:?}",
+            plan.argv
+        );
+        assert!(plan
+            .env
+            .contains(&("TYBA_HOSTED".to_string(), "1".to_string())));
+        assert!(plan
+            .env
+            .contains(&("TYBA_JAILED".to_string(), "0".to_string())));
+        assert_eq!(plan.cwd, cwd.path().to_string_lossy());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_jailed_branch_wraps_argv_through_the_real_sandbox() {
+        let store = store();
+        let repo = tempfile::tempdir().unwrap();
+        init_git_repo(repo.path());
+        let target = crate::repo::canonicalize_or(repo.path());
+        let runtime = tempfile::tempdir().unwrap();
+        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
+        let setup = hook_setup(runtime.path());
+        let exe = std::env::current_exe().unwrap();
+
+        let hosted = build_hosted_command(
+            &store,
+            &ClaudeCodeRunner,
+            &target,
+            Some(target.clone()),
+            &setup,
+            &socket_path,
+            runtime.path(),
+            &exe,
+        )
+        .expect("branch jaulado deveria montar com bwrap real");
+
+        assert!(hosted.jailed);
+        assert_eq!(hosted.worktree_root, target);
+        let plan = hosted_plan_from(&hosted.cmd, &target);
+        assert!(
+            plan.argv.iter().any(|a| a.contains("bwrap")),
+            "o argv jaulado precisa passar pelo bwrap: {:?}",
+            plan.argv
+        );
+        assert!(
+            plan.argv.iter().any(|a| a == "claude"),
+            "o comando original continua no argv, depois do prefixo de jaula: {:?}",
+            plan.argv
+        );
+        assert!(plan
+            .env
+            .contains(&("TYBA_JAILED".to_string(), "1".to_string())));
+        assert!(
+            plan.env
+                .contains(&("TYBA_SANDBOX".to_string(), "bwrap".to_string())),
+            "wrap_command marca TYBA_SANDBOX — prova de que passou pelo sandbox de verdade: {:?}",
+            plan.env
+        );
+    }
+
+    #[test]
+    fn hosted_plan_from_carries_only_the_env_set_after_env_clear() {
+        // `iter_extra_env_as_str` nunca deveria vazar o env HERDADO do
+        // processo core — só o que `build_command`/`build_hosted_command`
+        // setaram explicitamente. Prova direta, sem precisar de sandbox.
+        let store = store();
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
+        let setup = hook_setup(runtime.path());
+        let exe = std::env::current_exe().unwrap();
+
+        // Um valor que certamente NÃO está na allowlist de env do agente.
+        std::env::set_var("TYBA_TEST_SHOULD_NEVER_LEAK", "segredo");
+        let hosted = build_hosted_command(
+            &store,
+            &ClaudeCodeRunner,
+            cwd.path(),
+            None,
+            &setup,
+            &socket_path,
+            runtime.path(),
+            &exe,
+        )
+        .unwrap();
+        std::env::remove_var("TYBA_TEST_SHOULD_NEVER_LEAK");
+
+        let plan = hosted_plan_from(&hosted.cmd, cwd.path());
+        assert!(
+            !plan
+                .env
+                .iter()
+                .any(|(k, _)| k == "TYBA_TEST_SHOULD_NEVER_LEAK"),
+            "o env hospedado vazou algo fora da allowlist: {:?}",
+            plan.env
+        );
+    }
 }
