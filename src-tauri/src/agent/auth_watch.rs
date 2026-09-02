@@ -340,7 +340,18 @@ mod tests {
         w.feed(b"not logged in"); // janela já foi limpa pelo 1º match -- o
                                   // 2º precisa do texto de novo pra casar
         std::thread::sleep(TEST_SETTLE * 4);
-        assert_eq!(seen.lock().len(), 1, "dedupe falhou: {:?}", seen.lock());
+        // `assert_eq!` expande para um `match` sobre os dois lados, e um
+        // `match` estende a vida de QUALQUER temporário criado ao avaliar o
+        // scrutinee até o fim do bloco inteiro -- inclusive o `MutexGuard`
+        // intermediário de `seen.lock()` usado só pra ler `.len()`. Chamar
+        // `seen.lock()` DE NOVO dentro do `{:?}` do painel de falha, com o
+        // primeiro guard ainda vivo, autotrava o `parking_lot::Mutex` (não
+        // reentrante) -- só se manifesta quando a asserção FALHA de verdade,
+        // e nesse ponto o teste trava para sempre em vez de reportar
+        // vermelho. O `let` separado abaixo solta o primeiro guard antes do
+        // `assert_eq!` sequer começar.
+        let matched = seen.lock().len();
+        assert_eq!(matched, 1, "dedupe falhou: {:?}", seen.lock());
     }
 
     /// R7 continuado: depois que a sessão volta a `Running` (progresso), o
