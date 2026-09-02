@@ -5995,6 +5995,47 @@ pub fn run() {
                 boot: Arc::clone(&boot_gate),
             });
 
+            // O canal shim↔core (shim v2, passo 2, tech-spec §3/§4): socket por
+            // usuário, ligado uma vez no boot, depois do `app.manage` acima —
+            // `channel_app` fecha só o `AppHandle`, e cada conexão relê
+            // `app.state::<AppState>()` na hora (o mesmo padrão de
+            // `resume_agent_session`), porque `sessions`/`pty_pool`/... só
+            // existem a partir daqui. Bind escopo Linux (`ChannelServer` só
+            // existe sob `cfg(unix)`, §15); falha em bind NÃO é fatal — o
+            // cliente (`tyba _jail`) já é fail-open por construção (§6): sem
+            // socket, roda o binário de verdade e sai do caminho.
+            #[cfg(unix)]
+            {
+                let channel_app = app.handle().clone();
+                let channel_handler: hook_ipc::channel::ChannelHandler =
+                    Arc::new(move |peer_pid, request| {
+                        let state = channel_app.state::<AppState>();
+                        let ctx = agent::session::AgentSessionCtx {
+                            app: channel_app.clone(),
+                            sessions: Arc::clone(&state.sessions),
+                            pty_pool: Arc::clone(&state.pty_pool),
+                            approvals: Arc::clone(&state.approvals),
+                            store: Arc::clone(&state.store),
+                            servers: Arc::clone(&state.hook_servers),
+                            subagents: Arc::clone(&state.subagents),
+                        };
+                        agent::channel_host::handle(&ctx, peer_pid, request)
+                    });
+                let channel_socket_path = hook_ipc::channel::resolve_channel_socket_path();
+                match hook_ipc::channel::ChannelServer::bind(&channel_socket_path, channel_handler)
+                {
+                    Ok(server) => {
+                        app.manage(server);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[tyba] canal shim↔core não ligou ({e}) — `claude` digitado no shell \
+                             segue sem jaula/gate automático; o shim é fail-open por construção"
+                        );
+                    }
+                }
+            }
+
             // Fim de subagente async detectado por arquivo desce a sessão a Idle
             // — mas só se ela ainda estiver segurada em Running (não pisa em
             // AwaitingInput/Exited nem em turno novo já iniciado).
