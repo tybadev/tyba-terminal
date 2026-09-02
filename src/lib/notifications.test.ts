@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  anyApprovalSurfaceOpen,
   approvalActions,
   availableApprovalActions,
   canAlwaysAllow,
@@ -106,6 +107,35 @@ describe("approvalActions", () => {
       "deny",
       "denyWithReason",
     ]);
+  });
+});
+
+describe("anyApprovalSurfaceOpen", () => {
+  test("fila de agentes aberta sozinha já conta como superfície aberta", () => {
+    expect(
+      anyApprovalSurfaceOpen({
+        notificationsOpen: false,
+        agentQueueOpen: true,
+      }),
+    ).toBe(true);
+  });
+
+  test("painel de notificações aberto sozinho também conta", () => {
+    expect(
+      anyApprovalSurfaceOpen({
+        notificationsOpen: true,
+        agentQueueOpen: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("nenhuma das duas aberta: falso", () => {
+    expect(
+      anyApprovalSurfaceOpen({
+        notificationsOpen: false,
+        agentQueueOpen: false,
+      }),
+    ).toBe(false);
   });
 });
 

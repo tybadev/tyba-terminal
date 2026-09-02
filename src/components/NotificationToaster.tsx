@@ -78,10 +78,12 @@ interface Props {
   agentReadyWarnings: Record<SessionId, boolean>;
   onDismissAgentReady: (sessionId: SessionId) => void;
   onGoToSession: (sessionId: SessionId) => void;
-  // Quando o painel de notificações está aberto, o pedido já está acionável
-  // lá — o toast some para não duplicar o ponto de ação. Ver
+  // Quando QUALQUER superfície que já mostra a aprovação ao vivo está
+  // aberta — painel de notificações ou fila de agentes — o pedido já está
+  // acionável lá, e o toast some para não duplicar o ponto de ação. App.tsx
+  // combina as superfícies via anyApprovalSurfaceOpen; ver também
   // visibleApprovalToasts em lib/toastQueue.
-  notificationsOpen: boolean;
+  approvalSurfaceOpen: boolean;
 }
 
 export function NotificationToaster({
@@ -90,7 +92,7 @@ export function NotificationToaster({
   agentReadyWarnings,
   onDismissAgentReady,
   onGoToSession,
-  notificationsOpen,
+  approvalSurfaceOpen,
 }: Props) {
   const { t } = useTranslation();
   const [toasts, setToasts] = useState<ApprovalToastItem[]>([]);
@@ -323,17 +325,18 @@ export function NotificationToaster({
     };
   }, []);
 
-  // O painel assumiu o ponto de ação — qualquer confirmação armada ou
-  // motivo de recusa em digitação aqui fica obsoleto. Se o painel fechar
-  // sem resolver, o toast reaparece do zero, não no meio do fluxo antigo.
+  // A outra superfície assumiu o ponto de ação — qualquer confirmação
+  // armada ou motivo de recusa em digitação aqui fica obsoleto. Se ela
+  // fechar sem resolver, o toast reaparece do zero, não no meio do fluxo
+  // antigo.
   useEffect(() => {
-    if (!notificationsOpen) return;
+    if (!approvalSurfaceOpen) return;
     setConfirmingId(null);
     setFeedbackFor(null);
     setFeedback("");
-  }, [notificationsOpen]);
+  }, [approvalSurfaceOpen]);
 
-  const visibleToasts = visibleApprovalToasts(toasts, notificationsOpen);
+  const visibleToasts = visibleApprovalToasts(toasts, approvalSurfaceOpen);
 
   const sessionTitle = (id: SessionId) =>
     sessions.find((s) => s.id === id)?.title ?? id.slice(0, 8);

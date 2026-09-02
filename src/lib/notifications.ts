@@ -101,6 +101,17 @@ export function decideApproval(params: {
     : { type: "resolve", requestId: request.id, decision, feedback };
 }
 
+// A aprovação é acionável em UM lugar só, sem exceção — não só toast vs.
+// painel de notificações, mas qualquer superfície que já a mostra ao vivo
+// (a fila de agentes inclusa). Cada uma vira um campo aqui; o toast some
+// se qualquer uma estiver aberta.
+export function anyApprovalSurfaceOpen(surfaces: {
+  notificationsOpen: boolean;
+  agentQueueOpen: boolean;
+}): boolean {
+  return surfaces.notificationsOpen || surfaces.agentQueueOpen;
+}
+
 export function shouldAutoClosePopover(params: {
   open: boolean;
   previousCount: number;

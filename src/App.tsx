@@ -273,6 +273,7 @@ import {
   type BootFailure,
 } from "./lib/ipc";
 import { bootFailureTitleKey } from "./lib/bootFailure";
+import { anyApprovalSurfaceOpen } from "./lib/notifications";
 import { basename } from "@/lib/utils";
 import { buildConflictPrompt } from "./lib/conflicts";
 import { isFinishedStatus, mergeSessionUpdate } from "./lib/sessionStatus";
@@ -4304,7 +4305,10 @@ export default function App() {
           sessions={sessions}
           activeSessionId={activeId}
           agentReadyWarnings={agentReadyWarnings}
-          notificationsOpen={inboxOpen}
+          approvalSurfaceOpen={anyApprovalSurfaceOpen({
+            notificationsOpen: inboxOpen,
+            agentQueueOpen: sideView === "agent-queue",
+          })}
           onDismissAgentReady={(sessionId) =>
             setAgentReadyWarnings((prev) => {
               const next = { ...prev };
