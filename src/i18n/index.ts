@@ -1098,6 +1098,14 @@ const resources = {
       authAlertInvalidApiKey:
         "A `ANTHROPIC_API_KEY` configurada é inválida. Corrija a chave no `.tyba/config.toml` do repo — ou rode `/login` para usar sua assinatura.",
       authAlertDismiss: "Dispensar",
+      authAlertExitedNotLoggedIn:
+        "O agente saiu porque não tinha login. Rode `/login` e retome a conversa.",
+      authAlertExitedTokenExpiredOrRevoked:
+        "O agente saiu porque a credencial expirou ou foi revogada. Rode `/login` e retome a conversa.",
+      authAlertExitedCreditBalanceLow:
+        "O agente saiu porque a conta ficou sem crédito. Recarregue em console.anthropic.com e retome a conversa.",
+      authAlertExitedInvalidApiKey:
+        "O agente saiu porque a `ANTHROPIC_API_KEY` configurada é inválida. Corrija a chave e retome a conversa.",
     },
   },
   en: {
@@ -2172,6 +2180,14 @@ const resources = {
       authAlertInvalidApiKey:
         "The configured `ANTHROPIC_API_KEY` is invalid. Fix the key in the repo's `.tyba/config.toml` — or run `/login` to use your subscription.",
       authAlertDismiss: "Dismiss",
+      authAlertExitedNotLoggedIn:
+        "The agent exited because it had no login. Run `/login` and resume the conversation.",
+      authAlertExitedTokenExpiredOrRevoked:
+        "The agent exited because its credential expired or was revoked. Run `/login` and resume the conversation.",
+      authAlertExitedCreditBalanceLow:
+        "The agent exited because the account ran out of credit. Top up at console.anthropic.com and resume the conversation.",
+      authAlertExitedInvalidApiKey:
+        "The agent exited because the configured `ANTHROPIC_API_KEY` is invalid. Fix the key and resume the conversation.",
     },
   },
 } as const;

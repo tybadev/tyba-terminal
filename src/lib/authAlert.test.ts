@@ -2,8 +2,10 @@ import { describe, expect, it } from "bun:test";
 
 import type { AuthAlertKind, Session } from "./ipc";
 import {
+  authAlertExitedMessageKey,
   authAlertMessageKey,
   authAlertToastInput,
+  exitedSessionNotice,
   withRuntimeAuthAlert,
   withoutAuthAlert,
   withoutRecoveredAuthAlerts,
@@ -123,9 +125,40 @@ describe("withoutRecoveredAuthAlerts (F3, metade recovery)", () => {
     }
   });
 
-  it("sessão ausente da lista (fechada) não é tocada -- só `running` limpa", () => {
+  // Review round 1, Fix 1 (achado do reviewer): o core pode emitir
+  // `{Runtime, kind}` com o settle já vendo `sessions.get` == `None` --
+  // "ausente" é um dos braços de R6 no core
+  // (`absent_session_at_settle_time_emits_runtime_alert`), real quando o
+  // dono fecha uma sessão travada antes dos 2500ms do settle. Sem limpar
+  // aqui, essa entrada nunca sai do `Map` -- nenhuma sessão vai "voltar a
+  // running" pra acionar o braço de recovery de uma sessão que não existe
+  // mais. Cresce sem teto numa sessão longa com vários agentes
+  // travados-e-fechados.
+  it("sessão que sumiu da lista (fechada/descartada) é limpa -- entrada órfã não vaza", () => {
     const prev = new Map([["s1", "NotLoggedIn" as AuthAlertKind]]);
-    expect(withoutRecoveredAuthAlerts(prev, [])).toBe(prev);
+    const next = withoutRecoveredAuthAlerts(prev, []);
+    expect(next.has("s1")).toBe(false);
+  });
+
+  // O contraste que dá sentido ao Fix 1: uma sessão `exited` mas AINDA
+  // presente na lista (`sessions` guarda as mortas -- `SessionManager`)
+  // NÃO é órfã -- é exatamente a entrada que `exitedSessionNotice` (Fix 2)
+  // precisa pra mostrar a razão do auth na faixa de "saiu por quê". Só
+  // quem SOME da lista de verdade é limpo.
+  it("sessão exited mas AINDA na lista sobrevive -- ela alimenta a razão do Fix 2", () => {
+    const prev = new Map([["s1", "CreditBalanceLow" as AuthAlertKind]]);
+    const next = withoutRecoveredAuthAlerts(prev, [sessionOf("s1", "exited")]);
+    expect(next.get("s1")).toBe("CreditBalanceLow");
+  });
+
+  it("entrada órfã some, entrada de sessão presente sobrevive -- no mesmo Map", () => {
+    const prev = new Map([
+      ["orphan", "NotLoggedIn" as AuthAlertKind],
+      ["s2", "InvalidApiKey" as AuthAlertKind],
+    ]);
+    const next = withoutRecoveredAuthAlerts(prev, [sessionOf("s2", "exited")]);
+    expect(next.has("orphan")).toBe(false);
+    expect(next.get("s2")).toBe("InvalidApiKey");
   });
 
   it("nada muda: devolve a MESMA referência (sem re-render à toa)", () => {
@@ -145,5 +178,65 @@ describe("withoutRecoveredAuthAlerts (F3, metade recovery)", () => {
     ]);
     expect(next.has("s1")).toBe(false);
     expect(next.get("s2")).toBe("CreditBalanceLow");
+  });
+});
+
+describe("authAlertExitedMessageKey (review round 1, Fix 2)", () => {
+  it("todo kind mapeia pra uma chave authAlertExited*, sem repetir", () => {
+    const keys = ALL_KINDS.map(authAlertExitedMessageKey);
+    for (const key of keys) expect(key).toStartWith("authAlertExited");
+    expect(new Set(keys).size).toBe(ALL_KINDS.length);
+  });
+
+  it("é uma chave DIFERENTE da mensagem de runtime -- registro muda de 'aja agora' pra 'foi por isso'", () => {
+    for (const kind of ALL_KINDS) {
+      expect(authAlertExitedMessageKey(kind)).not.toBe(
+        authAlertMessageKey(kind, "runtime"),
+      );
+    }
+  });
+});
+
+describe("exitedSessionNotice (review round 1, Fix 2)", () => {
+  // O teste que o reviewer pediu: sessão saída com auth-alert de runtime
+  // mostra a RAZÃO -- não fica só no convite genérico de retomar.
+  it("sessão saída com auth-alert: mostra a razão, não só o resume-invite genérico", () => {
+    const notice = exitedSessionNotice("CreditBalanceLow", {
+      binary: "claude",
+    });
+    expect(notice).not.toBeNull();
+    expect(notice?.messageKey).toBe(
+      authAlertExitedMessageKey("CreditBalanceLow"),
+    );
+    expect(notice?.messageKey).not.toBe("agentResumeNotice");
+    expect(notice?.tone).toBe("red");
+  });
+
+  it("com auth-alert MAS sem convite de retomar (core não achou conversa retomável): razão aparece, sem ação", () => {
+    const notice = exitedSessionNotice("InvalidApiKey", null);
+    expect(notice?.messageKey).toBe(authAlertExitedMessageKey("InvalidApiKey"));
+    expect(notice?.showResumeAction).toBe(false);
+  });
+
+  it("com auth-alert E convite: a razão manda, mas o botão de retomar continua disponível", () => {
+    const notice = exitedSessionNotice("TokenExpiredOrRevoked", {
+      binary: "claude",
+    });
+    expect(notice?.tone).toBe("red");
+    expect(notice?.showResumeAction).toBe(true);
+  });
+
+  it("sem auth-alert, só convite: comportamento de sempre (cyan, texto de resume, com binary)", () => {
+    const notice = exitedSessionNotice(null, { binary: "codex" });
+    expect(notice).toEqual({
+      tone: "cyan",
+      messageKey: "agentResumeNotice",
+      messageParams: { binary: "codex" },
+      showResumeAction: true,
+    });
+  });
+
+  it("nem auth-alert nem convite: nada pra mostrar", () => {
+    expect(exitedSessionNotice(null, null)).toBeNull();
   });
 });

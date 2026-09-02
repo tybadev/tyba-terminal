@@ -37,7 +37,10 @@ import {
   type ConnectionState,
   type AuthAlertKind,
 } from "../lib/ipc";
-import { authAlertMessageKey } from "../lib/authAlert";
+import {
+  authAlertMessageKey,
+  exitedSessionNotice,
+} from "../lib/authAlert";
 import {
   nativePasteSuppressed,
   registerTerm,
@@ -1049,6 +1052,14 @@ export function TerminalView({
   const droppedPipe = connection === "dropped";
   const showPipe =
     (connection === "reconnecting" || droppedPipe) && visible && !!rect;
+  // Review round 1, Fix 2: uma sessão SAÍDA que morreu por auth precisa
+  // mostrar a razão junto do convite de retomar, não só "retomar conversa"
+  // sem dizer por quê -- ver `exitedSessionNotice`. A razão tem prioridade
+  // (tone red) quando existe; sem ela, cai no convite puro de sempre.
+  const exitedNotice = exitedSessionNotice(
+    authAlert?.kind ?? null,
+    resumeNotice ?? null,
+  );
 
   return (
     <>
@@ -1064,16 +1075,36 @@ export function TerminalView({
         onDismiss={onDismissNotice}
       />
     )}
-    {resumeNotice && rect && visible && exited && (
+    {exitedNotice && rect && visible && exited && (
       <SessionNoticeBar
         rect={rect}
-        tone="cyan"
-        icon={<ArrowCounterClockwise size={12} weight="bold" />}
-        message={i18n.t("agentResumeNotice", { binary: resumeNotice.binary })}
-        actionLabel={onResumeAgent ? i18n.t("agentResume") : undefined}
-        onAction={onResumeAgent}
-        dismissLabel={onDismissResume ? i18n.t("agentResumeIgnore") : undefined}
-        onDismiss={onDismissResume}
+        tone={exitedNotice.tone}
+        icon={
+          exitedNotice.tone === "red" ? (
+            <WarningOctagon size={12} weight="fill" />
+          ) : (
+            <ArrowCounterClockwise size={12} weight="bold" />
+          )
+        }
+        message={i18n.t(exitedNotice.messageKey, exitedNotice.messageParams)}
+        actionLabel={
+          exitedNotice.showResumeAction && onResumeAgent
+            ? i18n.t("agentResume")
+            : undefined
+        }
+        onAction={exitedNotice.showResumeAction ? onResumeAgent : undefined}
+        dismissLabel={i18n.t(
+          exitedNotice.tone === "red" ? "authAlertDismiss" : "agentResumeIgnore",
+        )}
+        // A faixa mesclada dispensa as DUAS fontes de uma vez -- deixar só
+        // uma sairia e a outra reapareceria sozinha no próximo render com
+        // conteúdo diferente, parecendo que "dispensar" não funcionou.
+        // Chamar o handler que não tem nada pra dispensar é um no-op seguro
+        // (`withoutAuthAlert`/dismissedResumeInvites já tratam isso).
+        onDismiss={() => {
+          onDismissAuthAlert?.();
+          onDismissResume?.();
+        }}
       />
     )}
     {authAlert && rect && visible && !exited && (
