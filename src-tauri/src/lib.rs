@@ -411,11 +411,20 @@ fn poll_agent_probers(app: &AppHandle) {
         .disk_observer
         .retain_live(app, &state.subagents, &live);
     for (session_id, detected) in changes {
+        // Track C (tech-spec §7): derivado do env do PID detectado a cada
+        // mudança — nunca armazenado (§5 da spec, decisão 5). `(false,
+        // false)` quando não há mais agente nenhum.
+        let (hosting, jailed) = detected
+            .as_ref()
+            .map(|d| agent::process_probe::hosting_markers(d.pid))
+            .unwrap_or((false, false));
         let _ = app.emit(
             agent::process_probe::EVENT_CHANGED,
             agent::process_probe::AgentDetectedPayload {
                 session_id,
                 detected,
+                hosting,
+                jailed,
             },
         );
     }
@@ -4690,13 +4699,28 @@ async fn agent_binary_available(runner: crate::session::AgentRunnerKind) -> bool
 }
 
 /// Agente (claude/codex) detectado rodando na sessão de shell `session_id`, se
-/// houver. Estado alimentado pelo poll de [`poll_agent_probers`].
+/// houver. Estado alimentado pelo poll de [`poll_agent_probers`]. Mesma forma
+/// de payload que `agent-detected://changed` (Track C, tech-spec §7) — o
+/// front consome os dois pelo mesmo tipo: esta é a leitura sob demanda (nova
+/// sessão de shell ainda não sondada), o evento é a atualização contínua.
 #[tauri::command]
 async fn detected_agent(
     state: State<'_, AppState>,
     session_id: SessionId,
-) -> Result<Option<agent::process_probe::DetectedAgent>, String> {
-    Ok(state.agent_prober.detected(session_id))
+) -> Result<Option<agent::process_probe::AgentDetectedPayload>, String> {
+    let detected = state.agent_prober.detected(session_id);
+    let (hosting, jailed) = detected
+        .as_ref()
+        .map(|d| agent::process_probe::hosting_markers(d.pid))
+        .unwrap_or((false, false));
+    Ok(
+        detected.map(|detected| agent::process_probe::AgentDetectedPayload {
+            session_id,
+            detected: Some(detected),
+            hosting,
+            jailed,
+        }),
+    )
 }
 
 #[tauri::command]
