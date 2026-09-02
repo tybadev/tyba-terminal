@@ -78,6 +78,7 @@ import {
   agentBinaryName,
   noticeKey,
   showShellAgentNotice,
+  showUnjailedNotice,
 } from "./lib/shellAgentNotice";
 import { resumeCandidates, showAgentResumeInvite } from "./lib/agentResume";
 import {
@@ -86,6 +87,10 @@ import {
   workspaceRunningAgent,
 } from "./lib/closeGuard";
 import { pushToast, toastError } from "./lib/toast";
+import {
+  hostingIntroToastInput,
+  shouldShowHostingIntroToast,
+} from "./lib/hostingIntroToast";
 import {
   sandboxWarningTitleKey,
   sandboxWarningToastInput,
@@ -209,6 +214,7 @@ import {
   resumeAgentSession,
   type AgentRunner,
   onAgentDetected,
+  type AgentDetectedPayload,
   type DetectedAgent,
   type SubagentSnapshot,
   renameWorkspace,
@@ -569,6 +575,24 @@ function IconAction({
   );
 }
 
+/**
+ * Shim v2, Track C (tech-spec §7): o que `detectedBySession` guarda por
+ * sessão. `hosting`/`jailed` chegam junto do `detected` (evento ou probe sob
+ * demanda, mesma forma — ver `AgentDetectedPayload`) e nunca são persistidos
+ * à parte: são derivados a cada leitura, e viajam sempre COM a identidade do
+ * processo a que pertencem.
+ */
+type DetectedAgentState = DetectedAgent & { hosting: boolean; jailed: boolean };
+
+const withHostingState = (p: AgentDetectedPayload): DetectedAgentState | null =>
+  p.detected ? { ...p.detected, hosting: p.hosting, jailed: p.jailed } : null;
+
+/** Shim v2 (tech-spec §9): flag local de "já mostrou o toast de introdução",
+ * uma vez por usuário. Durabilidade local — pior caso de perder o flag
+ * (reinstall, limpar dados do app) é mostrar o toast de novo, nunca um gate
+ * a menos: não é decisão de segurança. */
+const HOSTING_INTRO_TOAST_SEEN_KEY = "tyba.shim-v2-hosting-intro-seen";
+
 export default function App() {
   const { t, i18n } = useTranslation();
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -577,7 +601,7 @@ export default function App() {
     Map<SessionId, SubagentSnapshot>
   >(() => new Map());
   const [detectedBySession, setDetectedBySession] = useState<
-    Map<SessionId, DetectedAgent>
+    Map<SessionId, DetectedAgentState>
   >(() => new Map());
   // F2/F3 do detectar-agente-no-shell: "Ignorar" esconde o aviso só pra
   // aquela instância de processo (pid+start) — um agente novo re-avisa.
@@ -1601,7 +1625,8 @@ export default function App() {
     void onAgentDetected((p) => {
       if (cancelled) return;
       setDetectedBySession((prev) => {
-        if (p.detected) return new Map(prev).set(p.session_id, p.detected);
+        const state = withHostingState(p);
+        if (state) return new Map(prev).set(p.session_id, state);
         if (!prev.has(p.session_id)) return prev;
         const next = new Map(prev);
         next.delete(p.session_id);
@@ -1649,15 +1674,29 @@ export default function App() {
       if (s.kind.type !== "shell" || probedDetection.current.has(s.id)) continue;
       probedDetection.current.add(s.id);
       void detectedAgent(s.id)
-        .then((d) => {
-          if (!d) return;
+        .then((p) => {
+          const state = p ? withHostingState(p) : null;
+          if (!state) return;
           setDetectedBySession((prev) =>
-            prev.has(s.id) ? prev : new Map(prev).set(s.id, d),
+            prev.has(s.id) ? prev : new Map(prev).set(s.id, state),
           );
         })
         .catch(() => probedDetection.current.delete(s.id));
     }
   }, [sessions]);
+
+  // Shim v2, Track C (tech-spec §9): toast único, na primeira transição
+  // hosting=false -> true que o app vê. Não é gatilho de abertura de sessão
+  // (não colide com a ADR 2026-08-22) — dispara de `detectedBySession`, que
+  // só muda quando o poll do core detecta ou perde um agente.
+  useEffect(() => {
+    const anyHosting = [...detectedBySession.values()].some((d) => d.hosting);
+    const alreadySeen =
+      localStorage.getItem(HOSTING_INTRO_TOAST_SEEN_KEY) === "1";
+    if (!shouldShowHostingIntroToast(alreadySeen, anyHosting)) return;
+    localStorage.setItem(HOSTING_INTRO_TOAST_SEEN_KEY, "1");
+    pushToast(hostingIntroToastInput(t));
+  }, [detectedBySession, t]);
 
   const worktreeRepoRoots = useMemo(() => {
     const roots = new Set<string>();
@@ -5204,10 +5243,19 @@ export default function App() {
                     const terminalBox =
                       pane && blocked ? termRect(pane) : pane;
                     const detected = detectedBySession.get(s.id) ?? null;
+                    const hosting = detected?.hosting ?? false;
+                    const jailed = detected?.jailed ?? false;
                     const notice = showShellAgentNotice(
                       s.kind,
                       detected,
+                      hosting,
                       dismissedShellNotices.get(s.id),
+                    );
+                    const unjailedNotice = showUnjailedNotice(
+                      s.kind,
+                      detected,
+                      hosting,
+                      jailed,
                     );
                     const resumeInvite = showAgentResumeInvite(
                       s,
@@ -5227,6 +5275,11 @@ export default function App() {
                           void reopenShellAgentManaged(s.id)
                         }
                         onDismissNotice={() => dismissShellAgentNotice(s.id)}
+                        unjailedNotice={
+                          unjailedNotice && detected
+                            ? { binary: agentBinaryName(detected.kind) }
+                            : null
+                        }
                         resumeNotice={
                           resumeInvite && s.kind.type === "agent"
                             ? { binary: agentBinaryName(s.kind.runner) }
