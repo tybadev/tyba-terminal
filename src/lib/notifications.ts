@@ -103,13 +103,26 @@ export function decideApproval(params: {
 
 // A aprovação é acionável em UM lugar só, sem exceção — não só toast vs.
 // painel de notificações, mas qualquer superfície que já a mostra ao vivo
-// (a fila de agentes inclusa). Cada uma vira um campo aqui; o toast some
-// se qualquer uma estiver aberta.
-export function anyApprovalSurfaceOpen(surfaces: {
+// (a fila de agentes inclusa). Cada superfície aberta contribui com os ids
+// que ELA de fato renderiza, nunca com "todos os pendentes" por padrão: o
+// painel é 1:1 (mostra todo approval), mas a fila colapsa pra um por sessão
+// — esconder todos os pendentes enquanto só a fila está aberta deixaria um
+// pedido sem NENHUM ponto de ação visível (agentQueueVisibleApprovalIds em
+// lib/agentsBoard é quem sabe quais são esses ids).
+export function hiddenApprovalIds(params: {
+  approvals: ApprovalRequest[];
   notificationsOpen: boolean;
   agentQueueOpen: boolean;
-}): boolean {
-  return surfaces.notificationsOpen || surfaces.agentQueueOpen;
+  agentQueueVisibleIds: ReadonlySet<number>;
+}): Set<number> {
+  const ids = new Set<number>();
+  if (params.notificationsOpen) {
+    for (const approval of params.approvals) ids.add(approval.id);
+  }
+  if (params.agentQueueOpen) {
+    for (const id of params.agentQueueVisibleIds) ids.add(id);
+  }
+  return ids;
 }
 
 export function shouldAutoClosePopover(params: {

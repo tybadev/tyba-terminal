@@ -51,13 +51,27 @@ describe("removeApprovalToast", () => {
 });
 
 describe("visibleApprovalToasts", () => {
-  test("some quando o painel de notificações está aberto", () => {
+  test("some quando o próprio id está no conjunto escondido", () => {
     const toasts = addApprovalToast([], makeApproval({ id: 1 }));
-    expect(visibleApprovalToasts(toasts, true)).toEqual([]);
+    expect(visibleApprovalToasts(toasts, new Set([1]))).toEqual([]);
   });
 
-  test("continua visível quando o painel está fechado", () => {
+  test("continua visível quando o conjunto escondido está vazio", () => {
     const toasts = addApprovalToast([], makeApproval({ id: 1 }));
-    expect(visibleApprovalToasts(toasts, false)).toEqual(toasts);
+    expect(visibleApprovalToasts(toasts, new Set())).toEqual(toasts);
+  });
+
+  test("filtra só quem está no conjunto — não é tudo ou nada", () => {
+    // A fila de agentes esconde só o que ela de fato mostra: sessão com dois
+    // pedidos pendentes, a fila colapsa pro mais antigo (#10) e o mais novo
+    // (#11) precisa continuar com o toast, senão fica sem ponto de ação
+    // nenhum enquanto a fila está aberta.
+    const toasts = addApprovalToast(
+      addApprovalToast([], makeApproval({ id: 10 })),
+      makeApproval({ id: 11 }),
+    );
+    expect(visibleApprovalToasts(toasts, new Set([10]))).toEqual([
+      { id: 11, approval: expect.objectContaining({ id: 11 }) },
+    ]);
   });
 });

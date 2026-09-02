@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  anyApprovalSurfaceOpen,
   approvalActions,
   availableApprovalActions,
   canAlwaysAllow,
   decideApproval,
+  hiddenApprovalIds,
   shouldAutoClosePopover,
   toNotificationItems,
 } from "./notifications";
@@ -110,32 +110,57 @@ describe("approvalActions", () => {
   });
 });
 
-describe("anyApprovalSurfaceOpen", () => {
-  test("fila de agentes aberta sozinha já conta como superfície aberta", () => {
-    expect(
-      anyApprovalSurfaceOpen({
-        notificationsOpen: false,
-        agentQueueOpen: true,
-      }),
-    ).toBe(true);
+describe("hiddenApprovalIds", () => {
+  test("nenhuma superfície aberta: nada escondido, todo toast aparece", () => {
+    const approvals = [
+      makeApproval({ id: 10 }),
+      makeApproval({ id: 11 }),
+    ];
+    const ids = hiddenApprovalIds({
+      approvals,
+      notificationsOpen: false,
+      agentQueueOpen: false,
+      agentQueueVisibleIds: new Set([10]),
+    });
+    expect(ids.size).toBe(0);
   });
 
-  test("painel de notificações aberto sozinho também conta", () => {
-    expect(
-      anyApprovalSurfaceOpen({
-        notificationsOpen: true,
-        agentQueueOpen: false,
-      }),
-    ).toBe(true);
+  test("painel de notificações aberto esconde TODOS os pendentes — é 1:1", () => {
+    const approvals = [
+      makeApproval({ id: 10 }),
+      makeApproval({ id: 11 }),
+    ];
+    const ids = hiddenApprovalIds({
+      approvals,
+      notificationsOpen: true,
+      agentQueueOpen: false,
+      agentQueueVisibleIds: new Set(),
+    });
+    expect(ids).toEqual(new Set([10, 11]));
   });
 
-  test("nenhuma das duas aberta: falso", () => {
-    expect(
-      anyApprovalSurfaceOpen({
-        notificationsOpen: false,
-        agentQueueOpen: false,
-      }),
-    ).toBe(false);
+  test("fila aberta esconde só os ids que ELA renderiza — o resto continua com toast", () => {
+    const approvals = [
+      makeApproval({ id: 10 }),
+      makeApproval({ id: 11 }),
+    ];
+    const ids = hiddenApprovalIds({
+      approvals,
+      notificationsOpen: false,
+      agentQueueOpen: true,
+      agentQueueVisibleIds: new Set([10]),
+    });
+    expect(ids).toEqual(new Set([10]));
+  });
+
+  test("fila fechada ignora agentQueueVisibleIds mesmo que venha preenchido", () => {
+    const ids = hiddenApprovalIds({
+      approvals: [makeApproval({ id: 10 })],
+      notificationsOpen: false,
+      agentQueueOpen: false,
+      agentQueueVisibleIds: new Set([10]),
+    });
+    expect(ids.size).toBe(0);
   });
 });
 

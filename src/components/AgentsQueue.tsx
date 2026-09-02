@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   buildRows,
   boardOrder,
+  oldestApprovalBySession,
   wantsAttention,
   type AgentRow,
   type SessionPlace,
@@ -270,17 +271,14 @@ export function AgentsQueue({
     [sessions, layout],
   );
   const esperando = useMemo(() => rows.filter(wantsAttention).length, [rows]);
-  const porSessao = useMemo(() => {
-    const mapa = new Map<SessionId, ApprovalRequest>();
-    // O mais antigo primeiro: se houver dois pedidos da mesma sessão, o que
-    // está esperando há mais tempo é o que a linha mostra.
-    for (const approval of [...approvals].sort(
-      (a, b) => a.requested_at_ms - b.requested_at_ms,
-    )) {
-      if (!mapa.has(approval.session_id)) mapa.set(approval.session_id, approval);
-    }
-    return mapa;
-  }, [approvals]);
+  // Mesma função que o toaster usa (via agentQueueVisibleApprovalIds em
+  // App.tsx) para saber quais ids a fila torna acionáveis — uma cópia
+  // divergente aqui era exatamente o defeito que deixava um segundo pedido
+  // pendente da mesma sessão sem toast E sem linha na fila.
+  const porSessao = useMemo(
+    () => oldestApprovalBySession(approvals),
+    [approvals],
+  );
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">

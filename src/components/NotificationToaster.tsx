@@ -78,12 +78,14 @@ interface Props {
   agentReadyWarnings: Record<SessionId, boolean>;
   onDismissAgentReady: (sessionId: SessionId) => void;
   onGoToSession: (sessionId: SessionId) => void;
-  // Quando QUALQUER superfície que já mostra a aprovação ao vivo está
-  // aberta — painel de notificações ou fila de agentes — o pedido já está
-  // acionável lá, e o toast some para não duplicar o ponto de ação. App.tsx
-  // combina as superfícies via anyApprovalSurfaceOpen; ver também
+  // Os ids de aprovação que já estão acionáveis em outra superfície aberta
+  // (painel de notificações ou fila de agentes) — o toast some só para
+  // ESSES ids, nunca para todos por padrão: o painel é 1:1, mas a fila
+  // colapsa pra um pedido por sessão, e esconder um id que a fila não
+  // mostra deixaria aquele pedido sem ponto de ação nenhum. App.tsx monta o
+  // conjunto via hiddenApprovalIds (lib/notifications); ver também
   // visibleApprovalToasts em lib/toastQueue.
-  approvalSurfaceOpen: boolean;
+  hiddenApprovalIds: ReadonlySet<number>;
 }
 
 export function NotificationToaster({
@@ -92,7 +94,7 @@ export function NotificationToaster({
   agentReadyWarnings,
   onDismissAgentReady,
   onGoToSession,
-  approvalSurfaceOpen,
+  hiddenApprovalIds,
 }: Props) {
   const { t } = useTranslation();
   const [toasts, setToasts] = useState<ApprovalToastItem[]>([]);
@@ -325,18 +327,23 @@ export function NotificationToaster({
     };
   }, []);
 
-  // A outra superfície assumiu o ponto de ação — qualquer confirmação
-  // armada ou motivo de recusa em digitação aqui fica obsoleto. Se ela
-  // fechar sem resolver, o toast reaparece do zero, não no meio do fluxo
-  // antigo.
+  // Outra superfície assumiu o ponto de ação PARA ESTE id — qualquer
+  // confirmação armada ou motivo de recusa em digitação aqui fica obsoleto.
+  // Só reseta quando o próprio id confirmando/em-digitação está escondido
+  // (não o conjunto inteiro): a fila pode esconder um id de uma sessão sem
+  // mexer no toast, ainda visível, de outra. Se a superfície fechar sem
+  // resolver, o toast reaparece do zero, não no meio do fluxo antigo.
   useEffect(() => {
-    if (!approvalSurfaceOpen) return;
-    setConfirmingId(null);
-    setFeedbackFor(null);
-    setFeedback("");
-  }, [approvalSurfaceOpen]);
+    if (confirmingId !== null && hiddenApprovalIds.has(confirmingId)) {
+      setConfirmingId(null);
+    }
+    if (feedbackFor !== null && hiddenApprovalIds.has(feedbackFor)) {
+      setFeedbackFor(null);
+      setFeedback("");
+    }
+  }, [hiddenApprovalIds, confirmingId, feedbackFor]);
 
-  const visibleToasts = visibleApprovalToasts(toasts, approvalSurfaceOpen);
+  const visibleToasts = visibleApprovalToasts(toasts, hiddenApprovalIds);
 
   const sessionTitle = (id: SessionId) =>
     sessions.find((s) => s.id === id)?.title ?? id.slice(0, 8);
