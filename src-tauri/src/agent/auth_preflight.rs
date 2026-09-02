@@ -33,7 +33,8 @@ pub(crate) fn run_status_json(
     cwd: &Path,
     timeout: Duration,
 ) -> Option<(String, Option<i32>)> {
-    let mut child = Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .arg("auth")
         .arg("status")
         .arg("--json")
@@ -42,16 +43,31 @@ pub(crate) fn run_status_json(
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    // Defesa em profundidade (review de segurança round 2, MINOR): o filho
+    // vira líder do PRÓPRIO grupo (pgid == pid dele), decidido ANTES do
+    // `exec` — não é uma corrida de `setpgid` chamado pelo pai depois do
+    // `fork`, que poderia perder pro filho já ter saído. Sem isto, um neto
+    // que o `claude auth status` chegasse a subir (por ex. um helper
+    // interno) sobreviveria ao timeout como órfão vivo — contra o espírito
+    // da invariante #9 (kill mata o GRUPO, não só o pai). Barato aqui
+    // porque o probe é o único filho direto que este `Command` sobe; não é
+    // a mesma máquina do `kill_process_group` do PTY (aquele resolve o
+    // pgid de um líder que talvez não tenhamos criado nós — aqui criamos,
+    // então já sabemos o pgid de cara).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().ok()?;
 
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
+                kill_probe_group(&mut child);
                 let _ = child.wait();
                 return None;
             }
@@ -67,6 +83,58 @@ pub(crate) fn run_status_json(
     ))
 }
 
+/// Mata o grupo inteiro do probe no timeout, não só o processo direto —
+/// ver o comentário de `process_group(0)` acima. `killpg` já alcança o
+/// líder (o próprio `child`), então não há `child.kill()` redundante aqui.
+#[cfg(unix)]
+fn kill_probe_group(child: &mut std::process::Child) {
+    let pgid = child.id() as libc::pid_t;
+    // SAFETY: `pgid` é o pid do nosso próprio filho, que por construção
+    // (`process_group(0)`) é também o pgid do grupo dele — não há aliasing
+    // com pid/pgid de outro processo do sistema.
+    unsafe {
+        libc::killpg(pgid, libc::SIGKILL);
+    }
+}
+
+/// Windows não tem grupo de processo POSIX — mata só o filho direto, o
+/// mesmo braço que já existia antes deste fix. Nenhuma sessão passa pelo
+/// preflight na Camada A do Windows de um jeito que dependa disto: o
+/// probe é efêmero (stdin null, sem tty), e não é aqui que a invariante
+/// #9 vale — ela é sobre matar SESSÃO, não sobre este processo avulso.
+#[cfg(not(unix))]
+fn kill_probe_group(child: &mut std::process::Child) {
+    let _ = child.kill();
+}
+
+/// Review de segurança round 2, REQUERIDO: o cwd do probe NUNCA é o
+/// worktree (a área não-confiável — `writable_root` do sandbox, repo que o
+/// dono pode não ter escrito). O probe roda FORA da jaula (é irmão de
+/// `binary_available()`, não de uma sessão que AGE — §6 do design), e o
+/// estado que `claude auth status` lê vem do `HOME` (já presente no `env`
+/// filtrado que o chamador passa), nunca do cwd — então apontar o cwd pro
+/// worktree é exposição desnecessária: se o binário `claude` chegar a ler
+/// config de projeto a partir do cwd (`.claude/settings.json` com hooks,
+/// `.mcp.json`), um repo hostil ganharia execução de código no HOST, fora
+/// do sandbox, só por o dono ter aberto a sessão — e não dependemos de
+/// saber se a versão de hoje faz isso: o `claude` se auto-atualiza, e isto
+/// fecha por construção (nenhum diretório de projeto chega a ser cwd).
+///
+/// Dir dedicado (não reusa o `runtime_dir` da sessão, que serve o socket de
+/// hooks e tem outro ciclo de vida): mesma disciplina de criação
+/// (`create_private_dir`/`verify_private_dir`, modo 0700 + dono conferido
+/// no Unix) que os demais diretórios privados do TYBA. `None` em qualquer
+/// falha de criação — o preflight silencia e não roda (P5: ambiguidade é
+/// silêncio, nunca acusação, e aqui nem sequer é uma acusação, é a
+/// impossibilidade de preparar um cwd seguro).
+fn neutral_preflight_cwd(session_id: SessionId) -> Option<PathBuf> {
+    let short = session_id.simple().to_string();
+    let dir = std::env::temp_dir().join(format!("tyba-preflight-{}", &short[..12]));
+    crate::session::create_private_dir(&dir).ok()?;
+    crate::session::verify_private_dir(&dir).ok()?;
+    Some(dir)
+}
+
 /// Fio de produção, chamado de `session::spawn_prepared` no mesmo
 /// ponto/condição do `credentials::emit_warnings` da Entrega B, mas
 /// cross-platform e assíncrono: TUDO roda dentro do `std::thread::spawn`, e a
@@ -79,18 +147,31 @@ pub(crate) fn run_status_json(
 /// paralelo -- receber `Option<PathBuf>` pronto deixa `spawn_preflight`
 /// testável com um binário fake sem tocar nesse cache. `None` é "binário
 /// ausente" (P5): silêncio, nem tenta spawnar.
+///
+/// Sem parâmetro de `cwd`: de propósito, desde o review de segurança round
+/// 2 -- o chamador NÃO decide mais o cwd do probe (era assim que
+/// `worktree.path` vazava pra cá). `neutral_preflight_cwd` é a única fonte.
 pub(crate) fn spawn_preflight<R: Runtime>(
     app: AppHandle<R>,
     session_id: SessionId,
     binary: Option<PathBuf>,
     env: HashMap<String, String>,
-    cwd: PathBuf,
 ) {
     std::thread::spawn(move || {
         let Some(binary) = binary else {
             return;
         };
-        let Some((stdout, exit)) = run_status_json(&binary, &env, &cwd, PREFLIGHT_TIMEOUT) else {
+        let Some(cwd) = neutral_preflight_cwd(session_id) else {
+            return;
+        };
+        let result = run_status_json(&binary, &env, &cwd, PREFLIGHT_TIMEOUT);
+        // Dir efêmero, dedicado só a este probe -- nada escreve nele de
+        // propósito, e ele não precisa sobreviver ao processo (ao contrário
+        // do `runtime_dir`, que serve o socket de hooks pela vida da
+        // sessão). `remove_dir` falha em silêncio se não estiver vazio ou
+        // já tiver sumido -- não é um caminho de erro que importa aqui.
+        let _ = std::fs::remove_dir(&cwd);
+        let Some((stdout, exit)) = result else {
             return;
         };
         if classify_status_json(&stdout, exit) == Some(AuthAlertKind::NotLoggedIn) {
@@ -206,6 +287,70 @@ mod tests {
         );
     }
 
+    /// Review de segurança round 2, MINOR (defesa em profundidade): sem
+    /// `process_group(0)` + `killpg`, o timeout matava só o processo
+    /// direto -- um "neto" que ele tivesse subido em background sobreviveria
+    /// como órfão vivo. O script fake sobe um neto em background que faz
+    /// BATIMENTO (append num arquivo a cada 50ms) em vez de só dormir.
+    ///
+    /// `kill(pid, 0)` foi cogitado e DESCARTADO como sensor: um zumbi (já
+    /// morto por SIGKILL, ainda não colhido pelo pai) continua respondendo
+    /// `kill(pid, 0) == 0` até algum `wait()` o colher -- e o container de
+    /// teste roda `sleep infinity` como PID 1, que nunca colhe órfão nenhum
+    /// (achado ao investigar um falso positivo real: o zumbi aparecia como
+    /// "vivo" na checagem por PID mesmo tendo recebido o SIGKILL). O
+    /// batimento mede a coisa que importa de verdade -- o processo ainda
+    /// está FAZENDO algo? -- e não depende de reaping nem é Linux-only
+    /// (`/proc` não existe no macOS, que também roda esta suíte no CI).
+    #[test]
+    #[cfg(unix)]
+    fn run_status_json_timeout_kills_the_whole_group_not_just_the_direct_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_binary(
+            dir.path(),
+            "claude",
+            "#!/bin/sh\n\
+             (i=0; while [ $i -lt 200 ]; do echo tick >> heartbeat; i=$((i+1)); sleep 0.05; done) &\n\
+             echo $! > grandchild-pid\n\
+             sleep 10\n",
+        );
+        let pid_file = dir.path().join("grandchild-pid");
+        let heartbeat = dir.path().join("heartbeat");
+
+        let result = run_status_json(
+            &bin,
+            &HashMap::new(),
+            dir.path(),
+            Duration::from_millis(500),
+        );
+        assert!(result.is_none());
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !pid_file.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(pid_file.exists(), "o neto nunca chegou a subir");
+
+        let ticks_at = || {
+            std::fs::read_to_string(&heartbeat)
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        let before = ticks_at();
+        assert!(
+            before > 0,
+            "o neto não bateu nenhuma vez antes do timeout -- o teste não provaria nada"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        let after = ticks_at();
+        assert_eq!(
+            before, after,
+            "o neto seguiu batendo depois do timeout ({before} -> {after} ticks) -- \
+             killpg não alcançou o grupo"
+        );
+    }
+
     /// P3: `spawn_preflight` devolve o controle na hora, mesmo que o
     /// "binário" demore mais que o teto inteiro -- ele nunca é esperado
     /// nesta thread. É a prova de que o preflight não atrasa a subida da
@@ -223,7 +368,6 @@ mod tests {
             crate::session::SessionId::new_v4(),
             Some(bin),
             HashMap::new(),
-            dir.path().to_path_buf(),
         );
         assert!(
             started.elapsed() < Duration::from_millis(200),
@@ -236,7 +380,6 @@ mod tests {
     /// `claude` não está no PATH) -- silêncio, sem tentar spawnar nada.
     #[test]
     fn spawn_preflight_with_no_binary_does_nothing_and_returns_immediately() {
-        let dir = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_app();
         let started = std::time::Instant::now();
         spawn_preflight(
@@ -244,9 +387,90 @@ mod tests {
             crate::session::SessionId::new_v4(),
             None,
             HashMap::new(),
-            dir.path().to_path_buf(),
         );
         assert!(started.elapsed() < Duration::from_millis(200));
+    }
+
+    /// Review de segurança round 2, REQUERIDO: o cwd do probe fica sob o
+    /// tempdir do SO, namespaced pelo `session_id` -- nunca um diretório de
+    /// projeto (worktree, repo) que o chamador poderia ter passado. Prova
+    /// isolada da função pura, sem depender do fim-a-fim (que prova a
+    /// FIAÇÃO, este prova o CÁLCULO).
+    #[test]
+    #[cfg(unix)]
+    fn neutral_preflight_cwd_lives_under_the_os_tmp_dir_privately() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let id = crate::session::SessionId::new_v4();
+        let dir = neutral_preflight_cwd(id).expect("cwd neutro deveria ter sido criado");
+
+        let tmp = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::temp_dir());
+        assert!(
+            dir.canonicalize()
+                .unwrap_or_else(|_| dir.clone())
+                .starts_with(&tmp),
+            "cwd neutro fora do tempdir do SO: {}",
+            dir.display()
+        );
+        let meta = std::fs::metadata(&dir).unwrap();
+        assert!(meta.is_dir());
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o700,
+            "cwd neutro precisa ser privado (0700), como os outros dirs do TYBA"
+        );
+
+        // Recém-criado: vazio. Nenhum `.claude/settings.json`/`.mcp.json`
+        // de projeto nenhum pode estar em escopo aqui -- é justamente o
+        // ponto do fix.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    /// Review de segurança round 2, REQUERIDO -- o teste fim-a-fim: o
+    /// "binário" fake grava o PRÓPRIO `$PWD` (canal separado do stdout, que
+    /// precisa seguir parecendo `{"loggedIn": ...}` pro `classify`) e o
+    /// teste confirma que o cwd de verdade usado pelo processo filho é
+    /// EXATAMENTE o que `neutral_preflight_cwd` calcula pro mesmo
+    /// `session_id` -- nunca um diretório de projeto. Como `spawn_preflight`
+    /// não recebe mais `cwd` nenhum do chamador (o parâmetro foi removido),
+    /// não há mais como um worktree entrar aqui por acidente -- fechado por
+    /// construção, não só por convenção de chamada.
+    #[test]
+    #[cfg(unix)]
+    fn spawn_preflight_runs_the_probe_with_the_neutral_cwd_not_a_project_dir() {
+        let session_id = crate::session::SessionId::new_v4();
+        let expected_cwd = neutral_preflight_cwd(session_id).expect("cwd neutro deveria existir");
+
+        let bin = fake_binary(
+            &expected_cwd,
+            "claude",
+            "#!/bin/sh\npwd > cwd-seen\nprintf '{\"loggedIn\": true}'\n",
+        );
+        let app = tauri::test::mock_app();
+
+        spawn_preflight(app.handle().clone(), session_id, Some(bin), HashMap::new());
+
+        let marker = expected_cwd.join("cwd-seen");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let seen_cwd =
+            std::fs::read_to_string(&marker).unwrap_or_else(|e| panic!("o probe nunca rodou: {e}"));
+        assert_eq!(
+            seen_cwd.trim(),
+            expected_cwd
+                .canonicalize()
+                .unwrap_or(expected_cwd.clone())
+                .to_string_lossy(),
+            "o cwd de verdade do processo não bateu com o cwd neutro calculado"
+        );
+
+        std::fs::remove_dir_all(&expected_cwd).ok();
     }
 
     /// P2 fim-a-fim: com um binário fake que responde exatamente como o
@@ -278,13 +502,7 @@ mod tests {
             },
         );
 
-        spawn_preflight(
-            handle,
-            session_id,
-            Some(bin),
-            HashMap::new(),
-            dir.path().to_path_buf(),
-        );
+        spawn_preflight(handle, session_id, Some(bin), HashMap::new());
 
         // Teto generoso (bem além do `PREFLIGHT_TIMEOUT` de produção): a
         // suíte inteira roda em paralelo sob `cargo test`, e este teste

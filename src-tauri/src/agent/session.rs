@@ -927,13 +927,19 @@ fn spawn_prepared(
         // ASSÍNCRONO: `spawn_preflight` devolve na hora, o trabalho de
         // verdade corre numa thread à parte e nunca atrasa a subida da
         // sessão (P3 do contrato de cobertura).
+        //
+        // Review de segurança round 2, REQUERIDO: SEM `worktree.path` aqui
+        // -- o probe roda fora da jaula, e apontar o cwd pra área
+        // não-confiável do repo seria exposição desnecessária de um
+        // processo sem sandbox a config de projeto que o dono pode não ter
+        // escrito. `spawn_preflight` resolve o próprio cwd neutro por
+        // dentro (`neutral_preflight_cwd`); não recebe mais o worktree.
         if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
             crate::agent::auth_preflight::spawn_preflight(
                 ctx.app.clone(),
                 id,
                 crate::agent::resolved_binary(&AgentRunnerKind::ClaudeCode),
                 env.clone(),
-                worktree.path.clone(),
             );
         }
         match sandbox.jailed_spawner(&spec)? {
