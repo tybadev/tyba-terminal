@@ -190,7 +190,7 @@ if [ -z "${TYBA_BASH_HOOKS:-}" ] && case "$-" in *i*) true ;; *) false ;; esac; 
   trap '__tyba_preexec' DEBUG
 fi
 
-# --- Shim de agente (passo 1: intercepta, registra e sai do caminho) --------
+# --- Shim de agente v2 (passo 2: canal shim<->core) -------------------------
 #
 # POR QUE FUNCAO DE SHELL, e nao OSC. O gate do TYBA e montado no spawn do
 # agente: jaula, env por allowlist e a config de hook que faz ele pedir licenca
@@ -203,14 +203,21 @@ fi
 # aconteceu. Funcao de shell bloqueia, e e o idioma que direnv, nvm e pyenv
 # usam ha anos — inspecionavel com `type claude`, com escotilha conhecida.
 #
-# NESTE PASSO ela nao muda nada: chama o binario de verdade. E de proposito —
-# o risco desta feature e "o terminal nao roda o que voce digitou", entao a
-# interceptacao se prova sozinha antes de encostar em jaula ou gate.
+# SO `claude` PURO, SEM ARGUMENTO NENHUM, GATEIA (Q1, ADR 2026-09-02):
+# `claude <args>` cai cru pra `command claude "$@"`. Encaminhar "$@" pro canal
+# reabriria a superfície que o teste anti-bypass fecha — o pedido ao core e
+# sempre "hospede claude", nunca "execute isto com estes argumentos".
 #
-# FALHA ABERTA e a regra permanente, nao so do passo 1: sem TYBA_BIN, sem core
-# respondendo, sem jaula, qualquer duvida — executa o binario e sai do caminho.
-# Um terminal que se recusa a rodar o que foi digitado esta quebrado, e ligado
-# por padrao o raio disso e todo mundo.
+# SEM exec: `"$TYBA_BIN" _jail` roda como FILHO desta funcao, no MESMO pane. O
+# `exec` substituiria o PROPRIO shell — sair do agente mataria a aba. A cadeia
+# tyba -> _seccomp-exec -> bwrap -> claude e mutacao-exec de UM UNICO filho da
+# shell; a shell em si nunca e tocada.
+#
+# FALHA ABERTA e a regra permanente: sem TYBA_BIN, o shim inteiro nem se
+# instala (bloco abaixo). Com TYBA_BIN setado mas inalcancavel/quebrado, ou
+# sem o core respondendo, ou sem jaula — o `||` final cai pro binario de
+# verdade e sai do caminho. Um terminal que se recusa a rodar o que foi
+# digitado esta quebrado, e ligado por padrao o raio disso e todo mundo.
 if [ -n "${TYBA_BIN:-}" ] && [ "${TYBA_AGENT_SHIM:-1}" = "1" ]; then
   __tyba_shim_record() {
     # Rastro so quando alguem pede (o teste pede). Em uso normal a variavel nao
@@ -221,6 +228,10 @@ if [ -n "${TYBA_BIN:-}" ] && [ "${TYBA_AGENT_SHIM:-1}" = "1" ]; then
 
   claude() {
     __tyba_shim_record "claude"
-    command claude "$@"
+    if [ "$#" -eq 0 ]; then
+      "$TYBA_BIN" _jail || command claude
+    else
+      command claude "$@"
+    fi
   }
 fi

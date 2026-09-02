@@ -1661,6 +1661,274 @@ command claude beta
         );
     }
 
+    // --- Shim v2 (canal shim↔core, tech-spec §6): bare `claude` gateia,
+    // `claude <args>` cai cru --------------------------------------------
+
+    /// Roda um shell interativo de verdade (`bash -i`/`zsh -i`) com o script
+    /// dado no stdin. `None` quando o binário do shell não existe nesta
+    /// máquina — o chamador decide se isso é "pula o teste" (zsh pode faltar)
+    /// ou um erro (bash é obrigatório).
+    #[cfg(unix)]
+    fn run_interactive_shell(
+        shell: &str,
+        extra_path: &Path,
+        script: &str,
+        envs: &[(&str, &str)],
+    ) -> Option<String> {
+        let mut cmd = std::process::Command::new(shell);
+        cmd.arg("-i")
+            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    extra_path.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let out = cmd
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child
+                    .stdin
+                    .as_mut()
+                    .expect("stdin")
+                    .write_all(script.as_bytes())?;
+                child.wait_with_output()
+            })
+            .ok()?;
+        Some(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
+    /// Um par de stubs (`claude`, `tyba`) num diretório privado de teste. O
+    /// stub `tyba` só entende `_jail`: registra a chamada em `$TYBA_BIN_LOG`
+    /// e faz o MESMO que o binário de verdade faria no caminho feliz —
+    /// `exec claude` sem argumento nenhum (Q1: só `claude` puro chega até
+    /// aqui) — para que o teste prove a cadeia inteira, não só o primeiro
+    /// salto.
+    #[cfg(unix)]
+    fn write_shim_v2_stubs() -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("dir de stubs");
+
+        let claude = dir.path().join("claude");
+        std::fs::write(&claude, "#!/bin/sh\necho STUB-RODOU \"$@\"\n").unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let tyba = dir.path().join("tyba");
+        std::fs::write(
+            &tyba,
+            "#!/bin/sh\n\
+             [ \"$1\" = \"_jail\" ] || exit 1\n\
+             echo \"TYBA-BIN-CALLED $*\" >> \"$TYBA_BIN_LOG\"\n\
+             exec claude\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&tyba, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let bin_path = dir.path().to_path_buf();
+        (dir, bin_path)
+    }
+
+    /// Item 26: `claude` puro, sem argumento nenhum, gateia — chama
+    /// `"$TYBA_BIN" _jail`, nunca `command claude` direto.
+    #[test]
+    #[cfg(unix)]
+    fn bare_claude_routes_through_tyba_jail_not_the_real_binary() {
+        let (dir, bin_path) = write_shim_v2_stubs();
+        let rc = dir.path().join("rc.sh");
+        std::fs::write(&rc, TYBA_BASH_RC).unwrap();
+        let tyba_bin = bin_path.join("tyba");
+        let bin_log = dir.path().join("tyba-bin.log");
+
+        let script = format!("source {}\nclaude\n", rc.display());
+        let out = run_interactive_shell(
+            "bash",
+            &bin_path,
+            &script,
+            &[
+                ("TYBA_BIN", tyba_bin.to_str().unwrap()),
+                ("TYBA_BIN_LOG", bin_log.to_str().unwrap()),
+            ],
+        );
+        let Some(texto) = out else { return };
+        let bin_log_body = std::fs::read_to_string(&bin_log).unwrap_or_default();
+
+        assert!(
+            bin_log_body.contains("TYBA-BIN-CALLED _jail"),
+            "`claude` sem args deveria ter chamado `$TYBA_BIN _jail`: log={bin_log_body:?} stdout={texto:?}"
+        );
+        assert!(
+            texto.contains("STUB-RODOU"),
+            "a cadeia tyba _jail -> claude deveria ter chegado ao binário real: {texto:?}"
+        );
+    }
+
+    /// Item 27: `claude <args>` cai cru — nunca toca o canal, mesmo com
+    /// `TYBA_BIN` presente. Encaminhar `"$@"` reabriria o canal
+    /// anti-bypass que este teste fecha (ADR 2026-09-02, Q1).
+    #[test]
+    #[cfg(unix)]
+    fn claude_with_args_never_touches_the_channel() {
+        let (dir, bin_path) = write_shim_v2_stubs();
+        let rc = dir.path().join("rc.sh");
+        std::fs::write(&rc, TYBA_BASH_RC).unwrap();
+        let tyba_bin = bin_path.join("tyba");
+        let bin_log = dir.path().join("tyba-bin.log");
+
+        let script = format!("source {}\nclaude --resume alfa\n", rc.display());
+        let out = run_interactive_shell(
+            "bash",
+            &bin_path,
+            &script,
+            &[
+                ("TYBA_BIN", tyba_bin.to_str().unwrap()),
+                ("TYBA_BIN_LOG", bin_log.to_str().unwrap()),
+            ],
+        );
+        let Some(texto) = out else { return };
+
+        assert!(
+            texto.contains("STUB-RODOU --resume alfa"),
+            "`claude --resume alfa` deveria ter chegado cru ao binário real: {texto:?}"
+        );
+        assert!(
+            !bin_log.exists(),
+            "`claude` COM args nunca deveria chamar `$TYBA_BIN _jail` — reabriria o canal anti-bypass"
+        );
+    }
+
+    /// Item 28: sem `exec` — o processo do shell nunca é substituído, e o
+    /// pane continua vivo depois do agente sair. Prova comportamental: o
+    /// script CONTINUA rodando depois de `claude`, no MESMO `$$` — se o
+    /// shim tivesse feito `exec "$TYBA_BIN" _jail`, o interpretador teria
+    /// sido substituído e a linha seguinte do script jamais rodaria.
+    #[test]
+    #[cfg(unix)]
+    fn the_shim_never_execs_the_shell_survives_to_run_more_commands() {
+        let (dir, bin_path) = write_shim_v2_stubs();
+        let rc = dir.path().join("rc.sh");
+        std::fs::write(&rc, TYBA_BASH_RC).unwrap();
+        let tyba_bin = bin_path.join("tyba");
+        let bin_log = dir.path().join("tyba-bin.log");
+
+        let script = format!(
+            "source {}\necho BEFORE:$$\nclaude\necho AFTER:$$\n",
+            rc.display()
+        );
+        let out = run_interactive_shell(
+            "bash",
+            &bin_path,
+            &script,
+            &[
+                ("TYBA_BIN", tyba_bin.to_str().unwrap()),
+                ("TYBA_BIN_LOG", bin_log.to_str().unwrap()),
+            ],
+        );
+        let Some(texto) = out else { return };
+
+        // Os hooks OSC 133/633 prefixam a MESMA linha antes do texto ecoado
+        // (terminam em BEL, não em `\n`), então `BEFORE:<pid>` não começa a
+        // linha — precisa procurar a substring em qualquer posição.
+        fn pid_after<'a>(texto: &'a str, marker: &str) -> Option<&'a str> {
+            let start = texto.find(marker)? + marker.len();
+            let rest = &texto[start..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            (end > 0).then(|| &rest[..end])
+        }
+
+        let before = pid_after(&texto, "BEFORE:");
+        let after = pid_after(&texto, "AFTER:");
+        assert!(
+            before.is_some() && before == after,
+            "o pane não sobreviveu ao shim — o shell deveria continuar com o MESMO $$ depois de `claude`: {texto:?}"
+        );
+    }
+
+    /// Item 29: `TYBA_BIN` inalcançável (arquivo sumiu, permissão, etc.) —
+    /// mesmo assim `claude` puro roda o binário de verdade. Fail-open não é
+    /// só "sem TYBA_BIN setado" (esse caso já desliga o shim inteiro, testado
+    /// em `sem_o_binario_do_tyba_o_shim_nao_se_instala`); é também "TYBA_BIN
+    /// setado mas quebrado" — um terminal que se recusa a rodar o que foi
+    /// digitado está quebrado, e isso vale também quando o próprio
+    /// lançador falha.
+    #[test]
+    #[cfg(unix)]
+    fn an_unreachable_tyba_bin_still_falls_open_to_the_real_binary() {
+        let (dir, bin_path) = write_shim_v2_stubs();
+        let rc = dir.path().join("rc.sh");
+        std::fs::write(&rc, TYBA_BASH_RC).unwrap();
+
+        let script = format!("source {}\nclaude\n", rc.display());
+        let out = run_interactive_shell(
+            "bash",
+            &bin_path,
+            &script,
+            &[("TYBA_BIN", "/tyba/nao/existe/neste/caminho")],
+        );
+        let Some(texto) = out else { return };
+
+        assert!(
+            texto.contains("STUB-RODOU"),
+            "`$TYBA_BIN` inalcançável deveria cair para o binário real, não travar o terminal: {texto:?}"
+        );
+    }
+
+    /// Item 30: o mesmo par de decisões (bare gateia, com args cai cru) vale
+    /// em zsh — shell diferente, mesmo idioma de função. Pula em silêncio
+    /// quando zsh não está instalado na máquina (reserva de aceitação —
+    /// ver o report da entrega).
+    #[test]
+    #[cfg(unix)]
+    fn zsh_mirrors_the_same_bare_vs_args_routing() {
+        if std::process::Command::new("zsh")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let (dir, bin_path) = write_shim_v2_stubs();
+        let rc = dir.path().join("rc.sh");
+        std::fs::write(&rc, TYBA_ZSH_RC).unwrap();
+        let tyba_bin = bin_path.join("tyba");
+        let bin_log = dir.path().join("tyba-bin.log");
+
+        let script = format!(
+            "source {}\nclaude\ncommand claude direto\nclaude com args\n",
+            rc.display()
+        );
+        let out = run_interactive_shell(
+            "zsh",
+            &bin_path,
+            &script,
+            &[
+                ("TYBA_BIN", tyba_bin.to_str().unwrap()),
+                ("TYBA_BIN_LOG", bin_log.to_str().unwrap()),
+            ],
+        );
+        let Some(texto) = out else { return };
+        let bin_log_body = std::fs::read_to_string(&bin_log).unwrap_or_default();
+
+        assert_eq!(
+            bin_log_body.lines().count(),
+            1,
+            "só o `claude` bare deveria ter passado por `$TYBA_BIN _jail`: {bin_log_body:?}"
+        );
+        assert!(texto.contains("STUB-RODOU"));
+        assert!(texto.contains("STUB-RODOU direto"));
+        assert!(texto.contains("STUB-RODOU com args"));
+    }
+
     /// O hook do bash roda de verdade, num bash interativo.
     ///
     /// A lógica não dá para verificar lendo o arquivo: o que quebrava era o
