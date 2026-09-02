@@ -1,5 +1,7 @@
+pub mod channel;
 mod client;
 mod framing;
+pub mod peercred;
 #[cfg(windows)]
 mod pipe;
 mod protocol;

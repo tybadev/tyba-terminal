@@ -548,6 +548,15 @@ impl SessionManager {
         if let Ok(exe) = std::env::current_exe() {
             cmd.env("TYBA_BIN", exe);
         }
+        // Endereço do canal shim↔core (shim v2, passo 2): o shell precisa dele
+        // para `tyba _jail` conectar sem ter que recalcular XDG_RUNTIME_DIR/uid
+        // em POSIX sh — o mesmo raciocínio de `TYBA_BIN` acima. Setado para
+        // TODA sessão (não só shell): custa uma var de env e mantém uma única
+        // regra, sem branch por `SessionKind`.
+        cmd.env(
+            "TYBA_CHANNEL_SOCK",
+            crate::hook_ipc::channel::resolve_channel_socket_path(),
+        );
 
         if let Some(command) = self.preferred_editor_command() {
             cmd.env("EDITOR", &command);
