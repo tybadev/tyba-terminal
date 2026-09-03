@@ -38,19 +38,31 @@ pub struct HookServerRegistry {
 }
 
 impl HookServerRegistry {
+    /// Review round 1 (correção/contrato), achado BLOQUEANTE: `if let Some(old)
+    /// = self.servers.lock()...insert(...) { old.shutdown() }` estende o
+    /// tempo de vida do `MutexGuard` temporário até o FIM do `if let` — o
+    /// `shutdown()` (que faz `join()` bloqueante na accept-thread antiga)
+    /// corre com o Mutex de `servers` AINDA TRANCADO. Se esse `join()`
+    /// travar (ver `stop()` em `hook_ipc/server.rs` — `UnixStream::connect`
+    /// só acorda a accept-loop antiga se o path ainda for DELA), todo o
+    /// resto do registry — `insert`/`shutdown` de QUALQUER outra sessão —
+    /// trava atrás do mesmo Mutex, para sempre. Solta o guard ANTES de
+    /// chamar `shutdown()`: mesmo que o `join()` demore ou trave, o Mutex
+    /// segue destravado para o resto do app.
     pub fn insert(&self, id: SessionId, server: HookServer) {
-        if let Some(old) = self
+        let old = self
             .servers
             .lock()
             .expect("hook servers lock")
-            .insert(id, server)
-        {
+            .insert(id, server);
+        if let Some(old) = old {
             old.shutdown();
         }
     }
 
     pub fn shutdown(&self, id: SessionId) {
-        if let Some(server) = self.servers.lock().expect("hook servers lock").remove(&id) {
+        let removed = self.servers.lock().expect("hook servers lock").remove(&id);
+        if let Some(server) = removed {
             server.shutdown();
         }
     }
@@ -821,6 +833,20 @@ pub fn prepare_hosted_agent(
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
     };
+    // Review round 1, achado BLOQUEANTE: derruba o HookServer ANTIGO desta
+    // sessão ANTES de religar em `socket_path` — nunca depois. `runtime_dir(id)`
+    // é determinístico por `SessionId`: hospedar `claude` de novo no MESMO pane
+    // (sem que o hospedado anterior tenha passado por `on_exit` nenhum — ele
+    // não tem, ao contrário do caminho gerenciado, que já derruba o servidor em
+    // `teardown_agent_session` antes de qualquer resume) reusa o MESMO
+    // `socket_path`. Se o `HookServer::bind` novo acontecesse primeiro, o
+    // `remove_file`+`UnixListener::bind` dele rouba o path ANTES de o antigo
+    // ser avisado: o `UnixStream::connect` do `stop()` do antigo acordaria o
+    // listener NOVO (mesmo path, inode diferente), nunca a accept-loop antiga
+    // — que travaria para sempre em `accept()`, e o `join()` de `stop()` nunca
+    // retornaria. Derrubar antes garante que o `connect` ainda acorda o dono
+    // certo do path.
+    ctx.servers.shutdown(id);
     let server = HookServer::bind(
         &socket_path,
         Arc::new(move |event| handle_event(&handler_ctx, event)),
@@ -1169,6 +1195,115 @@ fn spawn_prepared(
             ctx.servers.shutdown(id);
             e.to_string()
         })
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod hook_server_registry_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn no_op_handler() -> crate::hook_ipc::Handler {
+        Arc::new(|_event| HookAction::Ack)
+    }
+
+    /// Review round 1 (correção/contrato), achado BLOQUEANTE: reproduz a
+    /// sequência real de `prepare_hosted_agent` — hospedar `claude` puro,
+    /// ele SAIR sem `on_exit` nenhum (o caminho hospedado não tem), e
+    /// hospedar de novo no MESMO pane, que reusa o MESMO `socket_path`
+    /// (`runtime_dir(id)` é determinístico por `SessionId`). Com o fix
+    /// (`ctx.servers.shutdown(id)` ANTES do `HookServer::bind`), a 2ª
+    /// hospedagem religa sem travar, e um 3º acesso ao registry prova que o
+    /// Mutex não ficou preso em nenhum dos dois passos.
+    #[test]
+    fn rehosting_the_same_session_without_an_on_exit_does_not_deadlock_the_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("hook.sock");
+        let registry = HookServerRegistry::default();
+        let id = SessionId::new_v4();
+
+        // 1ª hospedagem: liga e registra. Ninguém chama shutdown depois —
+        // é exatamente o caso do agente hospedado que saiu sozinho.
+        let server1 = HookServer::bind(&socket_path, no_op_handler()).expect("bind 1");
+        registry.insert(id, server1);
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            // A sequência FIXA que `prepare_hosted_agent` agora segue:
+            // derruba o antigo ANTES de religar no mesmo path.
+            registry.shutdown(id);
+            let server2 = HookServer::bind(&socket_path, no_op_handler()).expect("bind 2");
+            registry.insert(id, server2);
+            // Um terceiro acesso prova que o Mutex não ficou preso em
+            // nenhum dos passos acima.
+            registry.shutdown(id);
+            let _ = tx.send(());
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "religar a mesma sessão travou — exatamente o achado bloqueante \
+             do review round 1 (join() de HookServer::stop preso, ou o Mutex \
+             do registry preso atrás dele)"
+        );
+    }
+
+    /// A metade que a reprodução acima não alcança: quando ALGUÉM (uma
+    /// chamada errada, um caminho futuro que não segue a disciplina
+    /// shutdown-antes-do-bind) trava um `shutdown()` de verdade — path
+    /// roubado por um bind concorrente, o cenário exato do achado —, esse
+    /// travamento tem que ficar CONTIDO na sessão travada, nunca vazar para
+    /// o registry inteiro. Reproduz a ORDEM ERRADA de propósito (bind do
+    /// novo servidor ANTES de avisar o registry) para travar o
+    /// `old.shutdown()` por dentro do `insert` — aceito e esperado nesta
+    /// prova — e confere que uma sessão DIFERENTE, no MESMO registry,
+    /// continua funcionando. A thread travada nunca é joinada (não tem como
+    /// — é o próprio bug sendo provado); o processo do teste a descarta ao
+    /// sair.
+    #[test]
+    fn a_stuck_shutdown_never_blocks_the_registry_for_other_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("hook.sock");
+        let registry = Arc::new(HookServerRegistry::default());
+        let stuck_id = SessionId::new_v4();
+
+        let server1 = HookServer::bind(&socket_path, no_op_handler()).expect("bind 1");
+        registry.insert(stuck_id, server1);
+        // Rouba o path ANTES de avisar o registry — a ordem que
+        // `prepare_hosted_agent` tinha antes do fix. O `insert` abaixo vai
+        // disparar `old.shutdown()` sobre um servidor cujo path já não é
+        // mais dele: o `join()` nunca retorna.
+        let server2 =
+            HookServer::bind(&socket_path, no_op_handler()).expect("bind 2 (rouba o path)");
+
+        let stuck_registry = Arc::clone(&registry);
+        std::thread::spawn(move || {
+            stuck_registry.insert(stuck_id, server2);
+        });
+        // Tempo para o `insert` acima começar e travar dentro do
+        // `old.shutdown()`.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let other_id = SessionId::new_v4();
+        let other_dir = tempfile::tempdir().unwrap();
+        let other_path = other_dir.path().join("hook.sock");
+        let other_server = HookServer::bind(&other_path, no_op_handler()).expect("bind 3");
+        let (tx, rx) = mpsc::channel();
+        let other_registry = Arc::clone(&registry);
+        std::thread::spawn(move || {
+            other_registry.insert(other_id, other_server);
+            other_registry.shutdown(other_id);
+            let _ = tx.send(());
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "uma sessão travada no shutdown travou o registry inteiro — o \
+             Mutex ficou preso atrás de um join() bloqueante (achado \
+             bloqueante do review round 1)"
+        );
+    }
 }
 
 #[cfg(test)]
