@@ -84,6 +84,20 @@ pub type ChannelHandler =
 const HOST_AGENT_OP: &str = "host_agent";
 #[cfg(unix)]
 pub const MAX_INFLIGHT: usize = 32;
+/// Review round 2, achado MINOR (invariante #8, bounded reads): um pedido
+/// de verdade é uma linha JSON minúscula (`{"v":1,"op":"host_agent",
+/// "agent":"claude"}`, bem sob 100 bytes). O peer é same-uid mas NÃO é
+/// confiável — pode mandar um stream gigante sem `\n` de propósito. Sem
+/// teto, `read_line` cresce sem limite; combinado com `MAX_INFLIGHT`
+/// conexões lentas, as threads do accept-loop ficam presas e o canal fica
+/// surdo — um `claude` legítimo cai em fail-open cru.
+#[cfg(unix)]
+const MAX_REQUEST_BYTES: u64 = 8 * 1024;
+/// Mesmo achado: sem timeout de leitura, um peer que conecta e nunca manda
+/// nada (nem dados nem EOF) trava a thread para sempre, e o teto de bytes
+/// sozinho não ajuda nesse caso.
+#[cfg(unix)]
+const REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[cfg(unix)]
 struct InflightGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
@@ -204,12 +218,19 @@ fn dispatch(
 
 #[cfg(unix)]
 fn serve_connection(stream: std::os::unix::net::UnixStream, handler: &ChannelHandler) {
-    use std::io::{BufRead, Write};
+    use std::io::{BufRead, Read, Write};
 
+    // Achado MINOR do review round 2: timeout ANTES de ler nada — o peer
+    // pode conectar e nunca mandar um byte.
+    let _ = stream.set_read_timeout(Some(REQUEST_READ_TIMEOUT));
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
-    let mut reader = std::io::BufReader::new(read_half);
+    // `.take(MAX_REQUEST_BYTES)` teta o total lido: sem `\n` dentro do
+    // teto, `read_line` para (o `Take` sinaliza EOF), a linha meio-lida
+    // falha o parse de JSON logo abaixo e a conexão fecha sem resposta —
+    // o mesmo caminho que já existe para qualquer linha malformada.
+    let mut reader = std::io::BufReader::new(read_half.take(MAX_REQUEST_BYTES));
     let mut line = String::new();
     match reader.read_line(&mut line) {
         Ok(0) | Err(_) => return,
@@ -351,18 +372,35 @@ fn exchange(
     }
 }
 
+/// O endereço REAL que `tyba _jail` usa para conectar — sempre o canônico
+/// (`resolve_channel_socket_path`, o MESMO cálculo que o core usa para
+/// bindar, no MESMO binário), nunca o valor de `TYBA_CHANNEL_SOCK` do env.
+///
+/// Review round 2, achado MINOR: todo o hardening do canal (SO_PEERCRED,
+/// recheck de starttime, allowlist, plano 0600) é do lado do SERVIDOR — o
+/// cliente não validava a origem do endereço. Um `.envrc` (`direnv allow`)
+/// ou profile sourceado com `export TYBA_CHANNEL_SOCK=/tmp/x.sock` faria o
+/// `_jail` conectar cegamente num socket de OUTRO uid, ler o `plan_path`
+/// que esse socket devolvesse e dar `exec` como o usuário — sem jaula, sem
+/// nenhuma das checagens do servidor de verdade. `TYBA_CHANNEL_SOCK`
+/// continua indo no env da sessão (`session::spawn_session`) como sinal de
+/// "shim ligado" para o script do rc; só não é mais lido aqui.
+#[cfg(unix)]
+pub fn jail_connect_socket_path() -> PathBuf {
+    resolve_channel_socket_path()
+}
+
 /// Ponto de entrada do binário quando invocado como `tyba _jail` — o alvo do
 /// `exec` que o shim faz depois de o shell interceptar `claude` puro (§6).
-/// Fail-open vive INTEIRAMENTE aqui: qualquer dúvida (sem env, sem socket,
-/// recusado, plano ilegível, exec falhou) cai no binário de verdade, sem
-/// argumento nenhum — Q1 já garantiu que só `claude` sem args chega até aqui.
+/// Fail-open vive INTEIRAMENTE aqui: qualquer dúvida (sem socket, recusado,
+/// plano ilegível, exec falhou) cai no binário de verdade, sem argumento
+/// nenhum — Q1 já garantiu que só `claude` sem args chega até aqui.
 #[cfg(unix)]
 pub fn maybe_run_jail_mode() -> Option<i32> {
     if std::env::args().nth(1).as_deref() != Some("_jail") {
         return None;
     }
-    let socket = std::env::var_os("TYBA_CHANNEL_SOCK").map(PathBuf::from);
-    Some(run_jail_client(socket.as_deref()))
+    Some(run_jail_client(Some(&jail_connect_socket_path())))
 }
 
 #[cfg(not(unix))]
@@ -607,6 +645,79 @@ mod server_tests {
         server.shutdown();
     }
 
+    /// Review round 2, achado MINOR (invariante #8, bounded reads): um peer
+    /// same-uid mas NÃO confiável manda um stream gigante sem `\n` de
+    /// propósito. Sem o teto de `MAX_REQUEST_BYTES` + `set_read_timeout`,
+    /// essa conexão prenderia a thread do accept-loop para sempre — e com
+    /// `MAX_INFLIGHT` delas, o canal inteiro fica surdo e um `claude`
+    /// legítimo cai em fail-open cru. Prova as DUAS metades: a conexão
+    /// gigante é cortada sem travar (limitada por `recv_timeout`, pra virar
+    /// FALHA de teste, nunca um hang de verdade, se o fix for revertido) E
+    /// o servidor segue respondendo normalmente depois — nada ficou preso
+    /// atrás dela.
+    #[test]
+    fn an_oversized_request_without_a_newline_is_cut_off_without_blocking_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = socket_in(&dir, "channel.sock");
+        let server = ChannelServer::bind(
+            &path,
+            Arc::new(|_pid, _req| ChannelResponse::Host {
+                plan_path: "/tmp/launch.json".into(),
+                jailed: false,
+            }),
+        )
+        .unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let giant_path = path.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&giant_path) else {
+                let _ = tx.send(Vec::new());
+                return;
+            };
+            // Bem maior que MAX_REQUEST_BYTES, e SEM "\n" nenhum.
+            let filler = vec![b'x'; (MAX_REQUEST_BYTES * 4) as usize];
+            // Pode falhar no meio (EPIPE) se o servidor já tiver fechado a
+            // conexão ao bater o teto — aceitável, é exatamente o efeito
+            // esperado do corte.
+            let _ = stream.write_all(&filler);
+            let mut out = Vec::new();
+            let _ = stream.read_to_end(&mut out);
+            let _ = tx.send(out);
+        });
+
+        let out = rx.recv_timeout(std::time::Duration::from_secs(10)).expect(
+            "a conexão gigante sem \\n travou o servidor — achado MINOR do \
+             review round 2 (bounded reads, invariante #8)",
+        );
+        assert!(
+            out.is_empty(),
+            "pedido cortado não pode gerar resposta nenhuma: {out:?}"
+        );
+
+        // O servidor segue vivo: um pedido normal, DEPOIS do gigante,
+        // responde como sempre — nada ficou preso atrás dele.
+        let response = connect_and_request(
+            &path,
+            &ChannelRequest {
+                v: CHANNEL_PROTOCOL_VERSION,
+                op: "host_agent".into(),
+                agent: "claude".into(),
+            },
+        );
+        assert_eq!(
+            response,
+            Some(ChannelResponse::Host {
+                plan_path: "/tmp/launch.json".into(),
+                jailed: false,
+            }),
+            "o servidor precisa continuar respondendo normalmente depois do pedido cortado"
+        );
+
+        server.shutdown();
+    }
+
     /// Helper de teste: conecta, escreve o pedido, lê a resposta — o mesmo
     /// papel que o cliente `tyba _jail` cumpre, mas sem a política de
     /// fail-open (o teste quer distinguir "sem resposta" de "resposta X").
@@ -657,6 +768,37 @@ mod address_tests {
             path,
             std::env::temp_dir().join("tyba-channel-1000/channel.sock"),
             "XDG_RUNTIME_DIR vazio não é um diretório utilizável"
+        );
+    }
+
+    /// Review round 2, achado MINOR: `_jail` conecta no socket CANÔNICO
+    /// mesmo com `TYBA_CHANNEL_SOCK` apontando para outro lugar — o env não
+    /// pode ser a fonte de verdade do endereço de connect, senão um
+    /// `.envrc`/profile hostil aponta o cliente para o socket de outro uid.
+    /// `resolve_channel_socket_path` nem olha `TYBA_CHANNEL_SOCK` (só
+    /// `XDG_RUNTIME_DIR` + uid), então esta prova é uma barreira de
+    /// regressão: se alguém no futuro reintroduzir a leitura do env aqui,
+    /// este teste denuncia o desvio comparando os dois valores.
+    #[test]
+    #[cfg(unix)]
+    fn jail_connect_socket_path_ignores_a_spoofed_tyba_channel_sock() {
+        // Não precisa nem mutar o env de verdade: o ponto é que a função
+        // nunca lê essa variável — mas se ela existir no ambiente deste
+        // processo de teste apontando para outro lugar, o comportamento
+        // continua o mesmo.
+        std::env::set_var("TYBA_CHANNEL_SOCK", "/tmp/socket-de-outro-uid.sock");
+        let canonical = resolve_channel_socket_path();
+        let used_by_jail = jail_connect_socket_path();
+        std::env::remove_var("TYBA_CHANNEL_SOCK");
+
+        assert_eq!(
+            used_by_jail, canonical,
+            "_jail tem que usar o endereço canônico, nunca o do env"
+        );
+        assert_ne!(
+            used_by_jail,
+            PathBuf::from("/tmp/socket-de-outro-uid.sock"),
+            "o endereço de connect não pode ser influenciável pelo env"
         );
     }
 }

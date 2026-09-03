@@ -684,14 +684,61 @@ struct HostedCommand {
     worktree_root: PathBuf,
 }
 
+/// Tenta montar o `cmd` jaulado — `sandbox_spec` + `sandbox.wrap` de verdade,
+/// nunca uma versão fake. Devolve `Err` em QUALQUER falha (sandbox
+/// indisponível, spec inválida, wrap recusado); quem chama decide a
+/// degradação — nunca `?` sozinho daqui pra cima, que é exatamente o achado
+/// MAJOR do review round 2 (§4.7: "degradar para gate-sem-jaula, nunca para
+/// nada"). `platform_sandbox()` refaz o probe do bwrap a cada chamada (não é
+/// memoizado como `userns_usable()`), então pode falhar mesmo com
+/// `decide_jail` já tendo dito Some — pressão de recurso, binário sumido
+/// entre o probe e agora.
+#[allow(clippy::too_many_arguments)]
+fn try_jail(
+    cmd: portable_pty::CommandBuilder,
+    runner: &dyn AgentRunner,
+    env: &HashMap<String, String>,
+    target: &Path,
+    runtime: &Path,
+    socket_path: &Path,
+    exe: &Path,
+) -> Result<portable_pty::CommandBuilder, String> {
+    let sandbox = crate::sandbox::platform_sandbox()?;
+    let spec = sandbox_spec(runner, env, target, target, runtime, socket_path, exe)?;
+    sandbox.wrap(cmd, &spec)
+}
+
+/// O ponto de decisão do achado MAJOR, extraído para ficar testável sem
+/// precisar derrubar o bwrap de verdade: dado o `cmd` BARE (o mesmo que o
+/// ramo gate-sem-jaula usaria) e o resultado JÁ CALCULADO da tentativa de
+/// jaula, devolve o `cmd` final e se saiu jaulado. Sucesso mantém a jaula;
+/// QUALQUER erro degrada para o `cmd` bare com `jailed = false` — nunca
+/// propaga o erro (isso viraria `Refused` no canal e `claude` cru, sem
+/// jaula E sem gate, no cliente fail-open). `bare` precisa ter sido
+/// CLONADO antes da tentativa: `Sandbox::wrap` consome o `CommandBuilder`
+/// por valor e não devolve nada utilizável em caso de erro.
+fn degrade_to_gate_only_on_sandbox_failure(
+    bare: portable_pty::CommandBuilder,
+    jailed_attempt: Result<portable_pty::CommandBuilder, String>,
+) -> (portable_pty::CommandBuilder, bool) {
+    match jailed_attempt {
+        Ok(wrapped) => (wrapped, true),
+        Err(_) => (bare, false),
+    }
+}
+
 /// A parte de [`prepare_hosted_agent`] que NÃO precisa de `AgentSessionCtx`
 /// (logo, nem de `AppHandle`): monta env filtrado + `argv`, jaulando quando
-/// `jail_target` é `Some`. Separado para ficar testável sem um app Tauri de
-/// verdade — só `Store` (que já tem `open_in_memory` para teste) entra por
-/// referência, não o `ctx` inteiro. `runner` chega já resolvido (o chamador
-/// já pagou o `build_runner`/`binary_available`, que shella pra fora via
+/// `jail_target` é `Some` e a jaula de fato monta. Separado para ficar
+/// testável sem um app Tauri de verdade — só `Store` (que já tem
+/// `open_in_memory` para teste) entra por referência, não o `ctx` inteiro.
+/// `runner` chega já resolvido (o chamador já pagou o
+/// `build_runner`/`binary_available`, que shella pra fora via
 /// `shell_path::agent_path` — memoizado por processo, e por isso não dá pra
-/// simular com um binário fake dentro de um teste isolado).
+/// simular com um binário fake dentro de um teste isolado). `user_env`
+/// também chega por parâmetro (não `std::env::vars()` direto) para que um
+/// teste consiga forçar uma falha REAL de `sandbox_spec` (ex.: sem `HOME`)
+/// sem precisar mutar o env global do processo de teste.
 #[allow(clippy::too_many_arguments)]
 fn build_hosted_command(
     store: &Store,
@@ -702,8 +749,8 @@ fn build_hosted_command(
     socket_path: &Path,
     runtime: &Path,
     exe: &Path,
+    user_env: &HashMap<String, String>,
 ) -> Result<HostedCommand, String> {
-    let user_env: HashMap<String, String> = std::env::vars().collect();
     // Repo faltando (gate-sem-jaula por não ser git, ou por estar fora da
     // allowlist) usa a cwd crua como raiz de config: `repo_config::load`
     // simplesmente não acha `.tyba/config.toml` ali e devolve `None` — sem
@@ -711,7 +758,7 @@ fn build_hosted_command(
     // jaulado.
     let worktree_root = jail_target.clone().unwrap_or_else(|| cwd.to_path_buf());
     let config = consented_config(store, &worktree_root);
-    let mut env = crate::repo_config::agent_env(config.as_ref(), &user_env);
+    let mut env = crate::repo_config::agent_env(config.as_ref(), user_env);
     apply_git_overrides(&mut env);
 
     let mut cmd = runner.build_command(cwd, &env, hook_setup, None);
@@ -719,17 +766,20 @@ fn build_hosted_command(
     // Track C consome estes dois via `/proc/<agente>/environ` — NUNCA via
     // cmdline, que o `exec` da cadeia bwrap apaga (§7 do tech-spec).
     cmd.env("TYBA_HOSTED", "1");
-    let jailed = jail_target.is_some();
+
+    let (mut cmd, jailed) = match &jail_target {
+        Some(target) => {
+            let bare = cmd.clone();
+            let attempt = try_jail(cmd, runner, &env, target, runtime, socket_path, exe);
+            degrade_to_gate_only_on_sandbox_failure(bare, attempt)
+        }
+        None => (cmd, false),
+    };
+    // Setado DEPOIS da decisão de degradação — reflete o `jailed` FINAL
+    // (pode ter caído de `true` para `false` se a jaula falhou), nunca o
+    // que `decide_jail` tinha pedido.
     cmd.env("TYBA_JAILED", if jailed { "1" } else { "0" });
 
-    let cmd = match &jail_target {
-        Some(target) => {
-            let sandbox = crate::sandbox::platform_sandbox()?;
-            let spec = sandbox_spec(runner, &env, target, target, runtime, socket_path, exe)?;
-            sandbox.wrap(cmd, &spec)?
-        }
-        None => cmd,
-    };
     Ok(HostedCommand {
         cmd,
         jailed,
@@ -818,6 +868,7 @@ pub fn prepare_hosted_agent(
         &socket_path,
         &runtime,
         &exe,
+        &std::env::vars().collect(),
     )?;
 
     ctx.subagents.register_session(id);
@@ -1347,6 +1398,105 @@ mod build_hosted_command_tests {
         run(&["commit", "-q", "-m", "init"]);
     }
 
+    // --- Review round 2, achado MAJOR: falha de sandbox degrada, nunca propaga ---
+
+    #[test]
+    fn degrade_keeps_the_wrapped_cmd_and_jailed_true_on_success() {
+        let bare = portable_pty::CommandBuilder::new("claude");
+        let mut wrapped = portable_pty::CommandBuilder::new("bwrap");
+        wrapped.arg("--marker-do-wrap");
+        let (cmd, jailed) = degrade_to_gate_only_on_sandbox_failure(bare, Ok(wrapped));
+        assert!(jailed);
+        assert_eq!(cmd.get_argv().first().unwrap(), "bwrap");
+    }
+
+    #[test]
+    fn degrade_falls_back_to_the_bare_cmd_and_jailed_false_on_any_sandbox_error() {
+        let bare = portable_pty::CommandBuilder::new("claude");
+        let (cmd, jailed) =
+            degrade_to_gate_only_on_sandbox_failure(bare, Err("bwrap sumiu".into()));
+        assert!(
+            !jailed,
+            "qualquer erro na tentativa de jaula tem que virar jailed=false, nunca propagar"
+        );
+        assert_eq!(
+            cmd.get_argv().first().unwrap(),
+            "claude",
+            "o cmd degradado é o BARE original, não um resto do wrap que falhou"
+        );
+    }
+
+    /// A prova de ponta a ponta que o achado pediu: `decide_jail` manda
+    /// jaular (repo visível na home), mas `sandbox_spec` falha de VERDADE
+    /// (sem `HOME` no env — não precisa derrubar bwrap nem mockar
+    /// `platform_sandbox()` para reproduzir uma falha real do caminho de
+    /// jaula). O plano resultante tem que ser gate-sem-jaula — hook socket
+    /// presente, `TYBA_JAILED=0`, argv SEM bwrap — nunca um `Err`
+    /// (que viraria `Refused` no canal e `claude` cru, sem jaula E sem
+    /// gate, no `tyba _jail` fail-open).
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_real_sandbox_spec_failure_degrades_the_whole_plan_to_gate_only_never_to_an_error() {
+        let store = store();
+        let repo = tempfile::tempdir().unwrap();
+        init_git_repo(repo.path());
+        let target = crate::repo::canonicalize_or(repo.path());
+        let runtime = tempfile::tempdir().unwrap();
+        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
+        let setup = hook_setup(runtime.path());
+        let exe = std::env::current_exe().unwrap();
+
+        let mut user_env: HashMap<String, String> = std::env::vars().collect();
+        user_env.remove("HOME");
+
+        let hosted = build_hosted_command(
+            &store,
+            &ClaudeCodeRunner,
+            &target,
+            Some(target.clone()),
+            &setup,
+            &socket_path,
+            runtime.path(),
+            &exe,
+            &user_env,
+        )
+        .expect(
+            "uma falha de sandbox_spec tem que degradar pro plano gate-sem-jaula, \
+             NUNCA propagar como Err — achado MAJOR do review round 2",
+        );
+
+        assert!(
+            !hosted.jailed,
+            "sandbox_spec falhou (sem HOME) — o plano tem que sair gate-sem-jaula, não jaulado"
+        );
+        let plan = hosted_plan_from(&hosted.cmd, &target);
+        assert_eq!(
+            plan.argv.first().map(String::as_str),
+            Some("claude"),
+            "gate-sem-jaula é o binário cru, sem prefixo de bwrap: {:?}",
+            plan.argv
+        );
+        assert!(
+            !plan.argv.iter().any(|a| a.contains("bwrap")),
+            "não pode ter sobrado nada do wrap que falhou: {:?}",
+            plan.argv
+        );
+        assert!(
+            plan.env.contains(&(
+                "TYBA_HOOK_SOCKET".to_string(),
+                socket_path.to_string_lossy().into_owned()
+            )),
+            "o hook socket continua presente — é gate-sem-jaula, não claude cru sem gate: {:?}",
+            plan.env
+        );
+        assert!(
+            plan.env
+                .contains(&("TYBA_JAILED".to_string(), "0".to_string())),
+            "TYBA_JAILED precisa refletir a degradação, não o jail_target original pedido: {:?}",
+            plan.env
+        );
+    }
+
     #[test]
     fn gate_without_jail_produces_a_bare_argv_with_hosted_markers() {
         let store = store();
@@ -1365,6 +1515,7 @@ mod build_hosted_command_tests {
             &socket_path,
             runtime.path(),
             &exe,
+            &std::env::vars().collect(),
         )
         .expect("gate-sem-jaula não deveria falhar");
 
@@ -1412,6 +1563,7 @@ mod build_hosted_command_tests {
             &socket_path,
             runtime.path(),
             &exe,
+            &std::env::vars().collect(),
         )
         .expect("branch jaulado deveria montar com bwrap real");
 
@@ -1462,6 +1614,7 @@ mod build_hosted_command_tests {
             &socket_path,
             runtime.path(),
             &exe,
+            &std::env::vars().collect(),
         )
         .unwrap();
         std::env::remove_var("TYBA_TEST_SHOULD_NEVER_LEAK");
