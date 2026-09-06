@@ -279,6 +279,7 @@ import {
   type BootFailure,
 } from "./lib/ipc";
 import { bootFailureTitleKey } from "./lib/bootFailure";
+import { hiddenApprovalIds as computeHiddenApprovalIds } from "./lib/notifications";
 import { basename } from "@/lib/utils";
 import { buildConflictPrompt } from "./lib/conflicts";
 import { isFinishedStatus, mergeSessionUpdate } from "./lib/sessionStatus";
@@ -319,6 +320,7 @@ import {
 } from "./lib/workspaceCwd";
 import { findSessionLocation } from "./lib/sessionLocation";
 import {
+  agentQueueVisibleApprovalIds,
   boardOrder,
   buildRows as buildAgentRows,
   nextAttention,
@@ -1743,6 +1745,26 @@ export default function App() {
   const agentsWaiting = useMemo(
     () => agentRows.filter(wantsAttention).length,
     [agentRows],
+  );
+
+  // Reaproveita agentRows — não recalcula buildAgentRows/boardOrder — pela
+  // mesma razão do comentário acima: uma segunda derivação divergiria do
+  // que a fila realmente mostra. A fila colapsa pra um pedido por sessão;
+  // esconder todo pendente enquanto ela está aberta deixaria o segundo
+  // pedido de uma sessão sem NENHUM ponto de ação visível.
+  const agentQueueVisibleIds = useMemo(
+    () => agentQueueVisibleApprovalIds(agentRows, approvals),
+    [agentRows, approvals],
+  );
+  const approvalHiddenIds = useMemo(
+    () =>
+      computeHiddenApprovalIds({
+        approvals,
+        notificationsOpen: inboxOpen,
+        agentQueueOpen: sideView === "agent-queue",
+        agentQueueVisibleIds,
+      }),
+    [approvals, inboxOpen, sideView, agentQueueVisibleIds],
   );
 
   const goToNextAttention = useCallback(() => {
@@ -4343,6 +4365,7 @@ export default function App() {
           sessions={sessions}
           activeSessionId={activeId}
           agentReadyWarnings={agentReadyWarnings}
+          hiddenApprovalIds={approvalHiddenIds}
           onDismissAgentReady={(sessionId) =>
             setAgentReadyWarnings((prev) => {
               const next = { ...prev };

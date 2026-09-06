@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowRight, CheckCircle, Warning, XCircle } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Toast,
   ToastAction,
@@ -16,7 +17,7 @@ import {
   comboKeys,
   comboOf,
 } from "@/lib/keys";
-import { RISK_DOT, RISK_LABEL, canAlwaysAllow } from "@/lib/notifications";
+import { RISK_DOT, RISK_LABEL, approvalActions, decideApproval } from "@/lib/notifications";
 import {
   onApprovalRequested,
   onApprovalResolved,
@@ -32,6 +33,7 @@ import {
 import {
   addApprovalToast,
   removeApprovalToast,
+  visibleApprovalToasts,
   type ApprovalToastItem,
 } from "@/lib/toastQueue";
 
@@ -76,6 +78,14 @@ interface Props {
   agentReadyWarnings: Record<SessionId, boolean>;
   onDismissAgentReady: (sessionId: SessionId) => void;
   onGoToSession: (sessionId: SessionId) => void;
+  // Os ids de aprovação que já estão acionáveis em outra superfície aberta
+  // (painel de notificações ou fila de agentes) — o toast some só para
+  // ESSES ids, nunca para todos por padrão: o painel é 1:1, mas a fila
+  // colapsa pra um pedido por sessão, e esconder um id que a fila não
+  // mostra deixaria aquele pedido sem ponto de ação nenhum. App.tsx monta o
+  // conjunto via hiddenApprovalIds (lib/notifications); ver também
+  // visibleApprovalToasts em lib/toastQueue.
+  hiddenApprovalIds: ReadonlySet<number>;
 }
 
 export function NotificationToaster({
@@ -84,10 +94,13 @@ export function NotificationToaster({
   agentReadyWarnings,
   onDismissAgentReady,
   onGoToSession,
+  hiddenApprovalIds,
 }: Props) {
   const { t } = useTranslation();
   const [toasts, setToasts] = useState<ApprovalToastItem[]>([]);
   const [confirmingId, setConfirmingId] = useState<number | null>(null);
+  const [feedbackFor, setFeedbackFor] = useState<number | null>(null);
+  const [feedback, setFeedback] = useState("");
   const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
   const agentReadyTimers = useRef(new Map<SessionId, ReturnType<typeof setTimeout>>());
   const [failedTunnels, setFailedTunnels] = useState<
@@ -231,6 +244,10 @@ export function NotificationToaster({
     }
     setToasts((prev) => removeApprovalToast(prev, id));
     setConfirmingId((prev) => (prev === id ? null : prev));
+    if (feedbackFor === id) {
+      setFeedbackFor(null);
+      setFeedback("");
+    }
   };
 
   const dismissAgentReady = (sessionId: SessionId) => {
@@ -310,25 +327,51 @@ export function NotificationToaster({
     };
   }, []);
 
+  // Outra superfície assumiu o ponto de ação PARA ESTE id — qualquer
+  // confirmação armada ou motivo de recusa em digitação aqui fica obsoleto.
+  // Só reseta quando o próprio id confirmando/em-digitação está escondido
+  // (não o conjunto inteiro): a fila pode esconder um id de uma sessão sem
+  // mexer no toast, ainda visível, de outra. Se a superfície fechar sem
+  // resolver, o toast reaparece do zero, não no meio do fluxo antigo.
+  useEffect(() => {
+    if (confirmingId !== null && hiddenApprovalIds.has(confirmingId)) {
+      setConfirmingId(null);
+    }
+    if (feedbackFor !== null && hiddenApprovalIds.has(feedbackFor)) {
+      setFeedbackFor(null);
+      setFeedback("");
+    }
+  }, [hiddenApprovalIds, confirmingId, feedbackFor]);
+
+  const visibleToasts = visibleApprovalToasts(toasts, hiddenApprovalIds);
+
   const sessionTitle = (id: SessionId) =>
     sessions.find((s) => s.id === id)?.title ?? id.slice(0, 8);
 
-  const decide = (request: ApprovalRequest, decision: ApprovalDecision) => {
-    if (
-      decision === "approved" &&
-      request.risk === "red" &&
-      confirmingId !== request.id
-    ) {
-      setConfirmingId(request.id);
+  const decide = (
+    request: ApprovalRequest,
+    decision: ApprovalDecision,
+    withFeedback?: string,
+  ) => {
+    const effect = decideApproval({
+      request,
+      decision,
+      confirmingId,
+      feedback: withFeedback,
+    });
+    if (effect.type === "armRedConfirm") {
+      setConfirmingId(effect.requestId);
       return;
     }
-    dismiss(request.id);
-    resolveApproval(request.id, decision).catch(() => {});
+    dismiss(effect.requestId);
+    resolveApproval(effect.requestId, effect.decision, effect.feedback).catch(
+      () => {},
+    );
   };
 
   return (
     <ToastProvider swipeDirection="right" duration={Infinity}>
-      {toasts.map(({ id, approval }) => (
+      {visibleToasts.map(({ id, approval }) => (
         <Toast
           key={id}
           onOpenChange={(nextOpen) => {
@@ -359,44 +402,90 @@ export function NotificationToaster({
                 </span>
               )}
               <div className="mt-2 flex flex-wrap gap-2">
-                <ToastAction altText={t("approve")} asChild>
-                  <Button
-                    size="sm"
-                    onClick={() => decide(approval, "approved")}
-                    className={`h-6 rounded-[4px] px-2.5 text-[11px] ${
-                      approval.risk === "red" && confirmingId === id
-                        ? "bg-tyba-red text-white hover:bg-tyba-red/90"
-                        : ""
-                    }`}
-                  >
-                    {approval.risk === "red" && confirmingId === id
-                      ? t("confirmApprove")
-                      : t("approve")}
-                  </Button>
-                </ToastAction>
-                <ToastAction altText={t("deny")} asChild>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => decide(approval, "denied")}
-                    className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
-                  >
-                    {t("deny")}
-                  </Button>
-                </ToastAction>
-                {canAlwaysAllow(approval.risk) && (
-                  <ToastAction altText={t("alwaysAllow")} asChild>
+                {approvalActions(approval.risk).map((action) => {
+                  const isConfirmApprove =
+                    action.id === "approve" &&
+                    approval.risk === "red" &&
+                    confirmingId === id;
+                  const label = isConfirmApprove
+                    ? t("confirmApprove")
+                    : t(action.labelKey);
+                  const onClick = () => {
+                    if (action.id === "denyWithReason") {
+                      setFeedbackFor(id);
+                      return;
+                    }
+                    const decision: ApprovalDecision =
+                      action.id === "alwaysAllow"
+                        ? "approved_always"
+                        : action.id === "deny"
+                          ? "denied"
+                          : "approved";
+                    decide(approval, decision);
+                  };
+                  return (
+                    <ToastAction key={action.id} altText={label} asChild>
+                      <Button
+                        size="sm"
+                        variant={action.id === "approve" ? "default" : "outline"}
+                        onClick={onClick}
+                        className={`h-6 rounded-[4px] px-2.5 text-[11px] ${
+                          action.id === "approve"
+                            ? isConfirmApprove
+                              ? "bg-tyba-red text-white hover:bg-tyba-red/90"
+                              : ""
+                            : "text-tyba-text-muted"
+                        }`}
+                      >
+                        {label}
+                      </Button>
+                    </ToastAction>
+                  );
+                })}
+              </div>
+              {feedbackFor === id && (
+                <div className="motion-safe:animate-tyba-pop-in mt-2 space-y-1.5">
+                  <Textarea
+                    autoFocus
+                    rows={2}
+                    value={feedback}
+                    onChange={(e) => setFeedback(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        decide(approval, "denied", feedback);
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setFeedbackFor(null);
+                        setFeedback("");
+                      }
+                    }}
+                    placeholder={t("denyFeedbackPlaceholder")}
+                    className="min-h-0 resize-none text-[11px]"
+                  />
+                  <div className="flex gap-2">
                     <Button
                       size="sm"
-                      variant="outline"
-                      onClick={() => decide(approval, "approved_always")}
+                      onClick={() => decide(approval, "denied", feedback)}
+                      className="h-6 rounded-[4px] px-2.5 text-[11px]"
+                    >
+                      {t("denyAndTell")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        setFeedbackFor(null);
+                        setFeedback("");
+                      }}
                       className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
                     >
-                      {t("alwaysAllow")}
+                      {t("cancel")}
                     </Button>
-                  </ToastAction>
-                )}
-              </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </Toast>

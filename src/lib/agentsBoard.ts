@@ -1,4 +1,5 @@
 import type {
+  ApprovalRequest,
   LayoutState,
   ObservedAgent,
   ObservedState,
@@ -424,4 +425,50 @@ export const nextAttention = (
   const at = wanting.findIndex((row) => row.session.id === current);
   if (at === -1) return wanting[0];
   return wanting[(at + 1) % wanting.length];
+};
+
+/**
+ * O pedido que a fila mostra por sessão, quando ela tem mais de um pendente.
+ *
+ * O mais antigo primeiro: se uma sessão acumula dois pedidos, o que está
+ * esperando há mais tempo é o que a linha da fila mostra — é a mesma regra
+ * que a fila (`AgentsQueue`) já aplicava inline; sai daqui para não haver
+ * uma segunda cópia da regra em outro lugar, com risco de as duas
+ * divergirem.
+ */
+export const oldestApprovalBySession = (
+  approvals: ApprovalRequest[],
+): Map<SessionId, ApprovalRequest> => {
+  const bySession = new Map<SessionId, ApprovalRequest>();
+  for (const approval of [...approvals].sort(
+    (a, b) => a.requested_at_ms - b.requested_at_ms,
+  )) {
+    if (!bySession.has(approval.session_id)) {
+      bySession.set(approval.session_id, approval);
+    }
+  }
+  return bySession;
+};
+
+/**
+ * Os ids de aprovação que a fila de agentes torna acionáveis ao vivo — nunca
+ * todos os pendentes.
+ *
+ * A fila colapsa pra um pedido por sessão (o mais antigo) e só mostra
+ * sessões com linha no quadro (`rows`, já filtradas por lugar no layout).
+ * Uma sessão com dois pedidos pendentes deixa o segundo de fora — e é
+ * exatamente por isso que o toast dele não pode ser escondido junto: ele
+ * ficaria sem NENHUM ponto de ação visível enquanto a fila está aberta.
+ */
+export const agentQueueVisibleApprovalIds = (
+  rows: AgentRow[],
+  approvals: ApprovalRequest[],
+): Set<number> => {
+  const bySession = oldestApprovalBySession(approvals);
+  const ids = new Set<number>();
+  for (const row of rows) {
+    const approval = bySession.get(row.session.id);
+    if (approval) ids.add(approval.id);
+  }
+  return ids;
 };
