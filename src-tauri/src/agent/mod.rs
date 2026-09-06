@@ -149,11 +149,28 @@ fn is_executable(path: &Path) -> bool {
 /// `projects/` NÃO entra aqui — é isolamento total (furo F4), tratado à parte
 /// como `Rule::Subpath` porque o problema não é execução, é visibilidade
 /// cruzada entre repos.
-const SENSITIVE_CLAUDE_READONLY_DIRS: [&str; 10] = [
+///
+/// `"agents"` NÃO está mais aqui, de propósito (fix/claude-agents-writable —
+/// decisão do dono, root-caused com evidência de bwrap real): era a causa do
+/// bug que quebrava `/agents` do Claude Code inteiro dentro do TYBA — criar,
+/// editar ou lockar uma definição de subagente batia em EROFS, porque
+/// `sensitive_claude_children` (abaixo) virava esse nome num `Rule::Node`
+/// (somente-leitura). A diferença que justifica tirá-lo desta lista e manter
+/// os outros nove: um `.md` de subagente é frontmatter + system prompt + tool
+/// allowlist — superfície de PROMPT/PRIVILÉGIO (prompt injection, permissão
+/// que o subagente herda), não execução de código no HOST como um hook, um
+/// script de plugin ou um `mcp.json`/`daemon.json` são. Read-only é a
+/// ferramenta certa pra fechar execução; é a ferramenta ERRADA pra um
+/// arquivo que só é lido por um LLM. `~/.claude/agents` cai no `--bind` rw de
+/// `~/.claude` como qualquer outro estado — e o alarme de deriva
+/// (`credentials::agent_definition_drift`, `credentials::drift_alarm_names`)
+/// ganhou visibilidade sobre o CONTEÚDO dele especificamente, pra fechar o
+/// mesmo raciocínio que já vale pra `.claude.json`/`mcpServers`: gravável,
+/// mas visível — nunca gravável e silencioso. Ver `docs/SECURITY.md`.
+const SENSITIVE_CLAUDE_READONLY_DIRS: [&str; 9] = [
     "plugins",
     "cowork_plugins",
     "hooks",
-    "agents",
     "commands",
     "skills",
     "output-styles",
@@ -237,7 +254,23 @@ const SCRIPT_EXTENSIONS: [&str; 12] = [
 /// exclusiva do alarme, e por isso fica dead_code fora do Linux sem o gate
 /// (achado do clippy no macOS/Windows da CI do PR #299).
 #[cfg(target_os = "linux")]
-pub(crate) const CLAUDE_STATE_TOP_LEVEL_NAMES: [&str; 43] = [
+pub(crate) const CLAUDE_STATE_TOP_LEVEL_NAMES: [&str; 44] = [
+    // fix/claude-agents-writable: "agents" SAIU de
+    // `SENSITIVE_CLAUDE_READONLY_DIRS` (decisão do dono — ver o comentário
+    // lá). Diferente dos outros nomes desta lista, "agents" NÃO é estado
+    // benigno sem papel de segurança — é onde o dono guarda um `.md` de
+    // subagente (prompt + tool allowlist), que É superfície sensível. Entra
+    // aqui só pra o NOME do diretório parar de gritar alarme de deriva a
+    // cada spawn (ele sempre existe, então virar "desconhecido" seria puro
+    // ruído — mesmo raciocínio do `.config.json` abaixo). A visibilidade de
+    // verdade não é perdida: migra pro CONTEÚDO, via
+    // `credentials::agent_definition_drift`, que varre `agents/` inteiro
+    // (recursivamente, não só o nível de topo) por identidade caminho
+    // relativo + SHA-256 COMPLETO (nunca um prefixo truncado — seria
+    // força-brutável, review de segurança MAJOR 1) e alarma em arquivo novo
+    // OU alterado, em qualquer profundidade — cobertura mais fina do que o
+    // alarme de topo já dava pros outros nomes desta lista.
+    "agents",
     // Review de segurança r2 (v0.6.2, NIT): `.config.json` não está em
     // NENHUMA lista de sombreamento (v0.6.2, corrige a regressão de login —
     // ver `SENSITIVE_CLAUDE_FILES_MANDATORY`), então SEM esta entrada
@@ -804,8 +837,6 @@ mod tests {
             "hooks",
             "hooks/pre-commit.sh",
             "mcp.json",
-            "agents",
-            "agents/reviewer.md",
             "commands",
             "commands/deploy.md",
             "skills",
@@ -832,6 +863,18 @@ mod tests {
         }
 
         for still_writable in [
+            // fix/claude-agents-writable (decisão do dono): "agents" SAIU de
+            // `SENSITIVE_CLAUDE_READONLY_DIRS` -- um `.md` de subagente
+            // (frontmatter + system prompt + tool allowlist) é superfície de
+            // prompt/privilégio, não execução de código no host, então
+            // read-only era a ferramenta errada pro `/agents` do Claude Code
+            // (criar/editar/lockar um subagente batia em EROFS dentro da
+            // jaula). A mitigação agora é visibilidade, não bloqueio -- ver
+            // `credentials::agent_definition_drift` (o alarme de deriva
+            // ganhou um nível a mais: não só o nome do topo de `~/.claude`,
+            // mas o CONTEÚDO de cada `agents/*.md`).
+            "agents",
+            "agents/reviewer.md",
             "session-env",
             "session-env/8f3-uuid",
             "backups",
@@ -887,7 +930,6 @@ mod tests {
             "plugins",
             "cowork_plugins",
             "hooks",
-            "agents",
             "commands",
             "skills",
             "output-styles",
@@ -900,6 +942,14 @@ mod tests {
                 "{dir} precisa estar classificado como Node (somente-leitura)"
             );
         }
+        // fix/claude-agents-writable: "agents" SAIU da lista sombreada (ver o
+        // comentário de `SENSITIVE_CLAUDE_READONLY_DIRS`) -- não pode voltar a
+        // aparecer como `Rule::Node` aqui, senão o `/agents` do Claude Code
+        // volta a bater em EROFS dentro da jaula.
+        assert!(
+            !rules.contains(&Rule::Node(claude.join("agents"))),
+            "agents precisa ter saído da lista somente-leitura"
+        );
         for file in [
             "settings.json",
             "settings.local.json",

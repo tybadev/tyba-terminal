@@ -439,6 +439,154 @@ pub(crate) fn drift_alarm_names(
     fresh
 }
 
+/// fix/claude-agents-writable (decisão do dono): "agents" saiu de
+/// `SENSITIVE_CLAUDE_READONLY_DIRS` — ficou gravável, porque um `.md` de
+/// subagente é superfície de prompt/privilégio, não execução de código no
+/// host (ver o comentário em `agent/mod.rs`). A visibilidade que paga por
+/// essa escolha é ESTA função: `drift_alarm_names`/`unclassified_claude_
+/// children` acima só enxergam o NOME do topo de `~/.claude` (`read_dir`,
+/// não recursivo) — e "agents" agora está em `CLAUDE_STATE_TOP_LEVEL_NAMES`
+/// de propósito (não vira ruído só por existir, ver o comentário lá), então
+/// nem o nome do diretório chega ali. Um `.md` novo ou ALTERADO dentro de
+/// `agents/` nunca apareceria em nenhum dos dois — este é o mecanismo
+/// dedicado que fecha esse furo indo um nível a mais.
+///
+/// Identidade de dedupe é "agents/<caminho relativo>@<hash>" (sha2 completo
+/// do conteúdo, já dependência do crate) — NÃO só o nome. Uma edição do
+/// mesmo arquivo produz uma identidade nova, que nunca bate com o que já foi
+/// acked antes, e volta a alarmar mesmo que o NOME já tenha sido visto e
+/// dispensado uma vez — central pro caso "agente enjaulado reescreve uma
+/// definição existente". Reaproveita a mesma infra de dedupe/ack do resto do
+/// alarme (`load_warned` / `names_not_yet_warned` / `record_emitted_drift_
+/// names`) — ela é genérica sobre `String`, e as duas formas (nome de topo
+/// vs. `agents/<caminho>@<hash>`) nunca colidem porque só a segunda contém
+/// `@`.
+///
+/// Devolve pares (nome de exibição, identidade): o primeiro é o que o dono lê
+/// no toast (`detail`); o segundo é o que viaja em `names` — o que o front
+/// devolve no ack, e o que fica de fato gravado no store (ver o comentário
+/// de `SandboxWarningPayload.names`).
+///
+/// Review de segurança (MAJOR 2): a varredura é RECURSIVA sobre `agents/`
+/// inteiro, não só o nível de topo — ver `collect_agent_definition_files`. O
+/// que foi CONFIRMADO (strings do binário instalado nesta máquina, `claude`
+/// v2.1.258): o texto embutido no bundle diz literalmente
+/// "`.claude/agents/*.md` frontmatter" — glob de nível único, só `.md`. Mas
+/// essa evidência vem de UMA versão específica, não é um contrato garantido
+/// entre versões, e o que importa pra segurança não é só o que o Claude Code
+/// lê hoje: `agents/` inteiro ficou gravável (via `Rule::Node(claude)` sem
+/// except, ver `agent/mod.rs`), então qualquer `.md` plantado em qualquer
+/// profundidade É uma escrita que o dono precisa ver, independente de onde o
+/// loader atual procura. Cobrir a subárvore inteira é o default seguro —
+/// melhor um alarme a mais do que um furo silencioso.
+#[cfg(target_os = "linux")]
+pub(crate) fn agent_definition_drift(
+    claude: &Path,
+    store: &crate::session::store::Store,
+) -> Vec<(String, String)> {
+    use sha2::{Digest, Sha256};
+
+    let agents_dir = claude.join("agents");
+    let mut files: Vec<(PathBuf, String)> = Vec::new();
+    collect_agent_definition_files(&agents_dir, "", 0, &mut files);
+    files.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    for (path, rel) in files {
+        let Ok(content) = std::fs::read(&path) else {
+            continue;
+        };
+        let hash = format!("{:x}", Sha256::digest(&content));
+        let display = format!("agents/{rel}");
+        // Review de segurança (MAJOR 1): identidade carrega o hash SHA-256
+        // COMPLETO (64 hex) -- NUNCA um prefixo truncado. Um prefixo de 8
+        // hex (32 bits) é força-brutável de dentro da jaula (~2^32
+        // tentativas, minutos num core / segundos com GPU): um agente
+        // injetado padeia conteúdo malicioso até colidir com os 8 hex já
+        // ackados, e a edição passaria filtrada sem NUNCA re-alarmar --
+        // derrota o próprio ponto da identidade por hash. O hash completo
+        // só entra na IDENTIDADE (dedupe/ack); o `display` continua sem
+        // hash nenhum (é só o caminho, o que o dono lê no toast).
+        let identity = format!("{display}@{hash}");
+        candidates.push((display, identity));
+    }
+
+    let warned = load_warned(store);
+    let identities: Vec<String> = candidates.iter().map(|(_, id)| id.clone()).collect();
+    let fresh = names_not_yet_warned(&identities, &warned);
+    record_emitted_drift_names(&fresh);
+
+    candidates
+        .into_iter()
+        .filter(|(_, id)| fresh.contains(id))
+        .collect()
+}
+
+/// Teto de profundidade da varredura — insurance extra além do corte por
+/// symlink logo abaixo (que já garante, por si só, que a recursão termina:
+/// só entramos em diretório REAL, e um diretório real não pode ser seu
+/// próprio ancestral no POSIX). Nenhuma instalação de `agents/` real chega
+/// perto disto; existe só pra nunca depender só de um raciocínio sobre
+/// symlinks se algum bind mount exótico criar a aparência de um ciclo.
+#[cfg(target_os = "linux")]
+const AGENT_DEFINITION_SCAN_MAX_DEPTH: usize = 16;
+
+/// Review de segurança (MAJOR 2): varredura RECURSIVA de `agents/`, com o
+/// caminho relativo (`prefix`) acumulado pra virar a identidade de cada
+/// `.md` achado. Duas decisões deliberadas contra loop de symlink:
+///
+/// - **Só recursa em diretório REAL** — `entry.file_type()` não segue
+///   symlink (é o tipo da entrada em si, equivalente a `lstat`, ao contrário
+///   de `path.is_dir()`, que segue). Um symlink pra diretório NUNCA é
+///   percorrido: elimina qualquer ciclo por symlink de propósito (um
+///   diretório real jamais é seu próprio ancestral no POSIX — sem seguir
+///   symlink, a recursão termina garantido) e também evita que um symlink
+///   plantado em `agents/` escape a varredura pra fora da árvore que ficou
+///   gravável.
+/// - **Arquivo, sim, segue symlink** (`path.is_file()`) — é o shape REAL
+///   observado nesta própria máquina: todo `~/.claude/agents/*.md` de
+///   produção aqui é link simbólico pros dotfiles do dono
+///   (`~/code/dotfiles/claude/agents/`). Recusar symlink-pra-arquivo
+///   quebraria o caso comum, não só o caso de ataque.
+///
+/// `depth` + `AGENT_DEFINITION_SCAN_MAX_DEPTH` é cinto-e-suspensório: com o
+/// corte de symlink acima já não existe ciclo possível, mas o teto garante
+/// que a função sempre retorna mesmo que essa premissa se prove errada no
+/// futuro (ex.: um bind mount criando uma aparência de ciclo sem symlink).
+#[cfg(target_os = "linux")]
+fn collect_agent_definition_files(
+    dir: &Path,
+    prefix: &str,
+    depth: usize,
+    out: &mut Vec<(PathBuf, String)>,
+) {
+    if depth > AGENT_DEFINITION_SCAN_MAX_DEPTH {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let rel = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+
+        let is_real_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_real_dir {
+            collect_agent_definition_files(&path, &rel, depth + 1, out);
+            continue;
+        }
+
+        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
+            out.push((path, rel));
+        }
+    }
+}
+
 /// Fio de produção (§6, chamado por `session::spawn_prepared` — Linux, só
 /// Claude Code): roda C1 + C2 + o alarme de deriva e emite um
 /// `agent://sandbox-warning` por achado. Nunca devolve erro, nunca bloqueia o
@@ -482,6 +630,35 @@ pub(crate) fn emit_warnings(
             SandboxWarningKind::FilhoDesconhecidoEmClaude,
             Some(unknown.join(", ")),
             Some(unknown),
+        ));
+    }
+
+    // fix/claude-agents-writable: achado SEPARADO do de cima, de propósito —
+    // "agents" não aparece em `drift_alarm_names` (o nome do diretório está
+    // em `CLAUDE_STATE_TOP_LEVEL_NAMES`, e o alarme de topo não é recursivo).
+    // Mesmo `SandboxWarningKind` (é conceitualmente o mesmo aviso — "algo em
+    // ~/.claude que o dono ainda não viu" —, e reaproveitar evita adicionar
+    // variante nova ao contrato core→webview só pra isto), mas `detail`/
+    // `names` vêm só dos defs de subagente, nunca misturados com o achado de
+    // topo.
+    //
+    // Review de segurança (minor): esta chamada roda aqui, em `emit_warnings`
+    // — que só é acionada no SPAWN de sessão (§6, ver o doc da função). É um
+    // snapshot, não vigilância contínua: um `.md` criado ou alterado DURANTE
+    // a sessão N só é visto no spawn da sessão N+1 — há uma janela
+    // intra-sessão em que a escrita já aconteceu mas o dono ainda não foi
+    // avisado. Risco residual aceito e documentado em `docs/SECURITY.md`
+    // (mesma classe do resto do alarme de deriva, que também só corre no
+    // spawn); fechar a janela exigiria um watcher de filesystem, fora do
+    // escopo deste fix.
+    let agent_defs = agent_definition_drift(&claude, store);
+    if !agent_defs.is_empty() {
+        let display: Vec<String> = agent_defs.iter().map(|(d, _)| d.clone()).collect();
+        let identities: Vec<String> = agent_defs.into_iter().map(|(_, id)| id).collect();
+        findings.push((
+            SandboxWarningKind::FilhoDesconhecidoEmClaude,
+            Some(display.join(", ")),
+            Some(identities),
         ));
     }
 
@@ -932,6 +1109,28 @@ mod tests {
         assert!(!drift_toast_worthy("does-not-exist", &claude));
     }
 
+    /// fix/claude-agents-writable: "agents" SAIU de
+    /// `SENSITIVE_CLAUDE_READONLY_DIRS` (ver `agent/mod.rs`) -- sem entrar no
+    /// vocabulário de estado conhecido (`CLAUDE_STATE_TOP_LEVEL_NAMES`), o
+    /// diretório em si (que existe em toda instalação com pelo menos um
+    /// subagente configurado) viraria "não classificado" e gritaria alarme
+    /// de deriva a CADA spawn de sessão, só pela sua presença -- ruído puro,
+    /// nada a ver com o ponto real da mitigação (ver
+    /// `agent_definition_drift_fires_for_a_new_md_file_in_agents` pra ONDE a
+    /// visibilidade de fato mora: no CONTEÚDO, não no nome do diretório).
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn unclassified_claude_children_does_not_flag_the_agents_dir_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        std::fs::create_dir_all(claude.join("agents")).unwrap();
+        let unknown = unclassified_claude_children(&claude);
+        assert!(
+            !unknown.contains(&"agents".to_string()),
+            "o diretório agents/ em si não pode virar ruído de deriva: {unknown:?}"
+        );
+    }
+
     /// `cfg(linux)`: testa `unclassified_claude_children`, linux-only —
     /// mesmo motivo do teste anterior.
     #[test]
@@ -946,6 +1145,223 @@ mod tests {
             !unknown.contains(&"statusline-command.sh".to_string()),
             "script já classificado por sensitive_claude_children não pode reaparecer como \
              deriva: {unknown:?}"
+        );
+    }
+
+    /// fix/claude-agents-writable: prova central do que a decisão do dono
+    /// pede -- "agents" ficou gravável (item 1 do fix), e ISTO é a
+    /// visibilidade que paga por essa escolha (item 2): um `.md` novo dentro
+    /// de `agents/` precisa aparecer no alarme. `unclassified_claude_children`
+    /// (acima) não alcança isto -- é `read_dir(claude)`, não recursivo, e
+    /// "agents" agora está em `CLAUDE_STATE_TOP_LEVEL_NAMES` (não aparece
+    /// nem pelo nome do diretório). `agent_definition_drift` é o mecanismo
+    /// dedicado que fecha esse furo indo um nível a mais.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_definition_drift_fires_for_a_new_md_file_in_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        let agents = claude.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("reviewer.md"), "system prompt v1").unwrap();
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+
+        let found = agent_definition_drift(&claude, &store);
+        let display: Vec<&String> = found.iter().map(|(d, _)| d).collect();
+        assert!(
+            display.contains(&&"agents/reviewer.md".to_string()),
+            "uma definição de subagente nova precisa disparar o alarme: {found:?}"
+        );
+    }
+
+    /// Mesma peça, o resto do fluxo de ack: sem confirmação do dono, a
+    /// definição continua sendo oferecida (mesmo raciocínio de
+    /// `drift_alarm_names_keeps_reoffering_until_acked` — um evento perdido
+    /// não pode silenciar o alarme pra sempre); depois do ack, some.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_definition_drift_stops_after_ack_but_keeps_reoffering_before_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        let agents = claude.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("reviewer.md"), "system prompt v1").unwrap();
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+
+        let first = agent_definition_drift(&claude, &store);
+        assert!(!first.is_empty(), "{first:?}");
+
+        let second = agent_definition_drift(&claude, &store);
+        assert_eq!(
+            first, second,
+            "sem ack, a mesma definição precisa continuar sendo oferecida"
+        );
+
+        let identities: Vec<String> = second.iter().map(|(_, id)| id.clone()).collect();
+        ack_drift_names(&store, &identities);
+        let after_ack = agent_definition_drift(&claude, &store);
+        assert!(
+            after_ack.is_empty(),
+            "depois do ack, a mesma definição (mesmo conteúdo) não pode reaparecer: {after_ack:?}"
+        );
+    }
+
+    /// O ponto do hash na identidade, não só o nome: um dono edita o system
+    /// prompt (ou um agente enjaulado reescreve por cima de uma definição já
+    /// vista e acked) — precisa voltar a alarmar, porque o CONTEÚDO mudou,
+    /// mesmo o nome do arquivo sendo o mesmo de antes.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_definition_drift_fires_again_when_content_changes_after_an_ack() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        let agents = claude.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let path = agents.join("reviewer.md");
+        std::fs::write(&path, "system prompt v1").unwrap();
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+
+        let first = agent_definition_drift(&claude, &store);
+        let identities: Vec<String> = first.iter().map(|(_, id)| id.clone()).collect();
+        ack_drift_names(&store, &identities);
+        assert!(agent_definition_drift(&claude, &store).is_empty());
+
+        std::fs::write(&path, "system prompt v2 -- injetado").unwrap();
+        let after_edit = agent_definition_drift(&claude, &store);
+        assert!(
+            after_edit
+                .iter()
+                .any(|(display, _)| display == "agents/reviewer.md"),
+            "conteúdo alterado precisa voltar a alarmar mesmo já tendo sido acked antes: \
+             {after_edit:?}"
+        );
+    }
+
+    /// Review de segurança (MAJOR 1, fix/claude-agents-writable): a
+    /// identidade de dedupe/ack precisa carregar o hash SHA-256 COMPLETO (64
+    /// hex), não um prefixo truncado -- um prefixo de 8 hex (32 bits) é
+    /// força-brutável de DENTRO da jaula em minutos/segundos (um agente
+    /// injetado pode padear um conteúdo malicioso até colidir com os
+    /// primeiros 8 hex do hash já ackado, e a edição maliciosa passaria
+    /// filtrada por `names_not_yet_warned` sem NUNCA re-alarmar -- o oposto
+    /// do que `agent_definition_drift_fires_again_when_content_changes_
+    /// after_an_ack` prova). O truncamento, se existir, só pode estar no
+    /// DISPLAY (o que o dono lê) -- nunca na identidade que decide dedupe.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_definition_drift_identity_carries_the_full_sha256_not_a_truncated_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        let agents = claude.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("reviewer.md"), "system prompt v1").unwrap();
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+
+        let found = agent_definition_drift(&claude, &store);
+        let (_, identity) = found
+            .iter()
+            .find(|(display, _)| display == "agents/reviewer.md")
+            .expect("a definição precisa estar nos achados");
+        let hash_part = identity
+            .rsplit_once('@')
+            .map(|(_, hash)| hash)
+            .expect("identidade precisa ter o formato display@hash");
+        assert_eq!(
+            hash_part.len(),
+            64,
+            "identidade precisa carregar o SHA-256 completo (64 hex), não um prefixo \
+             força-brutável: {identity}"
+        );
+        assert!(
+            hash_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "a parte depois de '@' precisa ser hex puro: {identity}"
+        );
+    }
+
+    /// Review de segurança (MAJOR 2, fix/claude-agents-writable): o scan não
+    /// pode depender de uma suposição não verificada sobre profundidade --
+    /// `agents/` inteiro ficou gravável (via `Rule::Node(claude)` sem
+    /// except), então um `.md` plantado num subdiretório também é uma
+    /// escrita que o dono precisa ver, mesmo que a versão de hoje do Claude
+    /// Code só leia o nível de topo (ver o comentário de
+    /// `agent_definition_drift` pro que foi confirmado no binário
+    /// instalado). Cobrir a subárvore inteira é o default seguro: melhor um
+    /// alarme a mais do que um furo silencioso.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_definition_drift_surfaces_a_definition_nested_in_a_subdirectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        let nested = claude.join("agents/sub");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("x.md"), "definição escondida num subdir").unwrap();
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+
+        let found = agent_definition_drift(&claude, &store);
+        let display: Vec<&String> = found.iter().map(|(d, _)| d).collect();
+        assert!(
+            display.contains(&&"agents/sub/x.md".to_string()),
+            "definição num subdiretório de agents/ precisa ser vista: {found:?}"
+        );
+    }
+
+    /// Review de segurança (MAJOR 2, "cuidado com loop de symlink no walk"):
+    /// um symlink de diretório que aponta pra si mesmo (ciclo de verdade, não
+    /// só profundidade) precisa ser ignorado pela recursão, não travar o
+    /// scan nem estourar a pilha -- e o resto da varredura (um `.md` real,
+    /// fora do ciclo) precisa continuar funcionando normalmente. Se este
+    /// teste travar, o corte por `entry.file_type()` (que não segue
+    /// symlink) parou de funcionar.
+    #[test]
+    #[cfg(all(target_os = "linux", unix))]
+    fn agent_definition_drift_does_not_follow_a_symlinked_directory_cycle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        let looped = claude.join("agents/loop");
+        std::fs::create_dir_all(&looped).unwrap();
+        // `agents/loop/back` -> `agents/loop` -- entrar aqui reapresentaria o
+        // próprio diretório pra sempre, se a recursão seguisse o link.
+        std::os::unix::fs::symlink(&looped, looped.join("back")).unwrap();
+        std::fs::write(claude.join("agents/reviewer.md"), "def real, fora do ciclo").unwrap();
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+
+        let found = agent_definition_drift(&claude, &store);
+        let display: Vec<&String> = found.iter().map(|(d, _)| d).collect();
+        assert!(
+            display.contains(&&"agents/reviewer.md".to_string()),
+            "o ciclo não pode impedir de achar a definição real: {found:?}"
+        );
+        assert!(
+            !display.iter().any(|d| d.contains("back")),
+            "o symlink de diretório não pode ser tratado como um achado: {found:?}"
+        );
+    }
+
+    /// O shape REAL observado nesta própria máquina (`~/.claude/agents/*.md`
+    /// de produção é link simbólico pros dotfiles do dono,
+    /// `~/code/dotfiles/claude/agents/`): symlink-pra-ARQUIVO precisa
+    /// continuar sendo achado -- só symlink-pra-DIRETÓRIO é que não é
+    /// seguido (ver o teste de ciclo acima). Recusar isto quebraria o caso
+    /// comum, não só o caso de ataque.
+    #[test]
+    #[cfg(all(target_os = "linux", unix))]
+    fn agent_definition_drift_follows_a_symlinked_md_file_like_a_real_dotfiles_setup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        std::fs::create_dir_all(claude.join("agents")).unwrap();
+        let dotfiles = tmp.path().join("dotfiles/claude/agents");
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        let target = dotfiles.join("reviewer.md");
+        std::fs::write(&target, "system prompt do dono, versionado nos dotfiles").unwrap();
+        std::os::unix::fs::symlink(&target, claude.join("agents/reviewer.md")).unwrap();
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+
+        let found = agent_definition_drift(&claude, &store);
+        let display: Vec<&String> = found.iter().map(|(d, _)| d).collect();
+        assert!(
+            display.contains(&&"agents/reviewer.md".to_string()),
+            "um .md que é symlink pra fora de agents/ precisa ser achado, como no setup real: \
+             {found:?}"
         );
     }
 }
