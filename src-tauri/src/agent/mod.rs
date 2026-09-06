@@ -263,10 +263,12 @@ pub(crate) const CLAUDE_STATE_TOP_LEVEL_NAMES: [&str; 44] = [
     // cada spawn (ele sempre existe, então virar "desconhecido" seria puro
     // ruído — mesmo raciocínio do `.config.json` abaixo). A visibilidade de
     // verdade não é perdida: migra pro CONTEÚDO, via
-    // `credentials::agent_definition_drift`, que varre `agents/*.md` por
-    // identidade nome+hash e alarma em arquivo novo OU alterado — cobertura
-    // mais fina do que o alarme de topo já dava pros outros nomes desta
-    // lista.
+    // `credentials::agent_definition_drift`, que varre `agents/` inteiro
+    // (recursivamente, não só o nível de topo) por identidade caminho
+    // relativo + SHA-256 COMPLETO (nunca um prefixo truncado — seria
+    // força-brutável, review de segurança MAJOR 1) e alarma em arquivo novo
+    // OU alterado, em qualquer profundidade — cobertura mais fina do que o
+    // alarme de topo já dava pros outros nomes desta lista.
     "agents",
     // Review de segurança r2 (v0.6.2, NIT): `.config.json` não está em
     // NENHUMA lista de sombreamento (v0.6.2, corrige a regressão de login —
