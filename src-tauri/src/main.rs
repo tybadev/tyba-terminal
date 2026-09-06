@@ -8,6 +8,9 @@ fn main() {
     if let Some(code) = tyba_lib::agent::browser_bridge::maybe_run_open_url_mode() {
         std::process::exit(code);
     }
+    if let Some(code) = tyba_lib::hook_ipc::channel::maybe_run_jail_mode() {
+        std::process::exit(code);
+    }
     if let Some(code) = tyba_lib::sandbox::bwrap::maybe_run_seccomp_exec() {
         std::process::exit(code);
     }

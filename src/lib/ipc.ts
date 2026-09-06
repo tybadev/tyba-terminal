@@ -513,8 +513,23 @@ export interface DetectedAgent {
   kind: AgentRunner;
 }
 
+/**
+ * Shim v2, Track C (tech-spec §7): `hosting`/`jailed` derivados de
+ * `/proc/<pid>/environ` a cada mudança — nunca persistidos (spec.md decisão
+ * 5), então `false`/`false` quando `detected` é `null`. A MESMA forma sai do
+ * evento (`onAgentDetected`) e da leitura sob demanda (`detectedAgent`), de
+ * propósito: o front nunca precisa reconciliar dois formatos para a mesma
+ * pergunta.
+ */
+export interface AgentDetectedPayload {
+  session_id: SessionId;
+  detected: DetectedAgent | null;
+  hosting: boolean;
+  jailed: boolean;
+}
+
 export const detectedAgent = (sessionId: SessionId) =>
-  invoke<DetectedAgent | null>("detected_agent", { sessionId });
+  invoke<AgentDetectedPayload | null>("detected_agent", { sessionId });
 
 export const killShellAgent = (sessionId: SessionId) =>
   invoke<string>("kill_shell_agent", { sessionId });
@@ -531,14 +546,10 @@ export const resumeAgentSession = (id: SessionId, cols = 100, rows = 30) =>
   invoke<Session>("resume_agent_session", { id, cols, rows });
 
 export const onAgentDetected = (
-  handler: (p: {
-    session_id: SessionId;
-    detected: DetectedAgent | null;
-  }) => void,
+  handler: (p: AgentDetectedPayload) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ session_id: SessionId; detected: DetectedAgent | null }>(
-    "agent-detected://changed",
-    (e) => handler(e.payload),
+  listen<AgentDetectedPayload>("agent-detected://changed", (e) =>
+    handler(e.payload),
   );
 
 // --- base64 <-> bytes (chunks de PTY podem quebrar UTF-8 no meio) ---

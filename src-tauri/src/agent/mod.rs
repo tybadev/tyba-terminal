@@ -2,6 +2,7 @@ pub mod auth_alert;
 pub mod auth_preflight;
 pub mod auth_watch;
 pub mod browser_bridge;
+pub mod channel_host;
 pub mod codex_hooks;
 pub mod conversation;
 pub mod credentials;
