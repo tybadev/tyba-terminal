@@ -281,6 +281,10 @@ const resources = {
       shellAgentReopenFailed: "Não deu pra reabrir com gate",
       shellAgentReopenSpawnFailed:
         "O agente foi encerrado, mas a sessão gerenciada não abriu",
+      shellUnjailedNotice:
+        "{{binary}} está com gate, mas sem jaula — a pasta não está sob um repositório visível na home.",
+      shimV2IntroToast:
+        "Agora o TYBA dá jaula + gate quando você roda claude. Para rodar sem, use command claude.",
       agentResumeNotice:
         "A conversa deste agente continua no disco. Retomar sobe o {{binary}} com o histórico dela.",
       agentResume: "Retomar conversa",
@@ -842,8 +846,6 @@ const resources = {
       reviewApprovals: "Revisar",
       approve: "Aprovar",
       deny: "Recusar",
-      approvalChoiceYes: "Sim",
-      approvalChoiceAlways: "Sim, e não perguntar de novo",
       approvalChoiceNo: "Não, e dizer o que fazer",
       denyAndTell: "Recusar e enviar",
       denyFeedbackPlaceholder:
@@ -1371,6 +1373,10 @@ const resources = {
       shellAgentReopenFailed: "Could not reopen managed",
       shellAgentReopenSpawnFailed:
         "The agent was terminated, but the managed session did not open",
+      shellUnjailedNotice:
+        "{{binary}} is gated, but not jailed — the folder isn't under a repo visible under home.",
+      shimV2IntroToast:
+        "TYBA now jails + gates when you run claude. To run without it, use command claude.",
       agentResumeNotice:
         "This agent's conversation is still on disk. Resuming starts {{binary}} with its history.",
       agentResume: "Resume conversation",
@@ -1928,8 +1934,6 @@ const resources = {
       reviewApprovals: "Review",
       approve: "Approve",
       deny: "Deny",
-      approvalChoiceYes: "Yes",
-      approvalChoiceAlways: "Yes, and don't ask again",
       approvalChoiceNo: "No, and tell it what to do",
       denyAndTell: "Deny and send",
       denyFeedbackPlaceholder:

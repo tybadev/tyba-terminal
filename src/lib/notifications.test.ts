@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  approvalChoices,
+  approvalActions,
   availableApprovalActions,
   canAlwaysAllow,
-  choiceForKey,
+  decideApproval,
+  hiddenApprovalIds,
   shouldAutoClosePopover,
   toNotificationItems,
 } from "./notifications";
@@ -88,30 +89,124 @@ describe("toNotificationItems", () => {
   });
 });
 
-describe("approvalChoices", () => {
-  test("amarelo numera 1 sim, 2 sempre, 3 nao-com-feedback", () => {
-    const choices = approvalChoices("yellow");
-    expect(choices.map((c) => [c.index, c.decision])).toEqual([
-      [1, "approved"],
-      [2, "approved_always"],
-      [3, "denied"],
+describe("approvalActions", () => {
+  test("amarelo e verde oferecem aprovar, sempre permitir, recusar e recusar com motivo", () => {
+    const actions = approvalActions("yellow");
+    expect(actions.map((a) => a.id)).toEqual([
+      "approve",
+      "alwaysAllow",
+      "deny",
+      "denyWithReason",
     ]);
-    expect(choices[2].wantsFeedback).toBe(true);
   });
 
-  test("vermelho pula sempre-permitir e o nao vira 2", () => {
-    const choices = approvalChoices("red");
-    expect(choices.map((c) => [c.index, c.decision])).toEqual([
-      [1, "approved"],
-      [2, "denied"],
+  test("vermelho nunca oferece sempre permitir, mas mantém o resto do conjunto", () => {
+    const actions = approvalActions("red");
+    expect(actions.map((a) => a.id)).toEqual([
+      "approve",
+      "deny",
+      "denyWithReason",
     ]);
-    expect(choices.some((c) => c.decision === "approved_always")).toBe(false);
+  });
+});
+
+describe("hiddenApprovalIds", () => {
+  test("nenhuma superfície aberta: nada escondido, todo toast aparece", () => {
+    const approvals = [
+      makeApproval({ id: 10 }),
+      makeApproval({ id: 11 }),
+    ];
+    const ids = hiddenApprovalIds({
+      approvals,
+      notificationsOpen: false,
+      agentQueueOpen: false,
+      agentQueueVisibleIds: new Set([10]),
+    });
+    expect(ids.size).toBe(0);
   });
 
-  test("choiceForKey mapeia a tecla para a decisao do risco", () => {
-    expect(choiceForKey("yellow", "2")?.decision).toBe("approved_always");
-    expect(choiceForKey("red", "2")?.decision).toBe("denied");
-    expect(choiceForKey("red", "3")).toBeNull();
-    expect(choiceForKey("yellow", "x")).toBeNull();
+  test("painel de notificações aberto esconde TODOS os pendentes — é 1:1", () => {
+    const approvals = [
+      makeApproval({ id: 10 }),
+      makeApproval({ id: 11 }),
+    ];
+    const ids = hiddenApprovalIds({
+      approvals,
+      notificationsOpen: true,
+      agentQueueOpen: false,
+      agentQueueVisibleIds: new Set(),
+    });
+    expect(ids).toEqual(new Set([10, 11]));
+  });
+
+  test("fila aberta esconde só os ids que ELA renderiza — o resto continua com toast", () => {
+    const approvals = [
+      makeApproval({ id: 10 }),
+      makeApproval({ id: 11 }),
+    ];
+    const ids = hiddenApprovalIds({
+      approvals,
+      notificationsOpen: false,
+      agentQueueOpen: true,
+      agentQueueVisibleIds: new Set([10]),
+    });
+    expect(ids).toEqual(new Set([10]));
+  });
+
+  test("fila fechada ignora agentQueueVisibleIds mesmo que venha preenchido", () => {
+    const ids = hiddenApprovalIds({
+      approvals: [makeApproval({ id: 10 })],
+      notificationsOpen: false,
+      agentQueueOpen: false,
+      agentQueueVisibleIds: new Set([10]),
+    });
+    expect(ids.size).toBe(0);
+  });
+});
+
+describe("decideApproval", () => {
+  test("risco não-vermelho resolve direto, sem passo de confirmação", () => {
+    const request = makeApproval({ id: 5, risk: "green" });
+    expect(
+      decideApproval({ request, decision: "denied", confirmingId: null }),
+    ).toEqual({ type: "resolve", requestId: 5, decision: "denied" });
+  });
+
+  test("aprovar risco vermelho arma a confirmação no primeiro clique", () => {
+    const request = makeApproval({ id: 8, risk: "red" });
+    expect(
+      decideApproval({ request, decision: "approved", confirmingId: null }),
+    ).toEqual({ type: "armRedConfirm", requestId: 8 });
+  });
+
+  test("aprovar risco vermelho resolve no segundo clique, já armado", () => {
+    const request = makeApproval({ id: 8, risk: "red" });
+    expect(
+      decideApproval({ request, decision: "approved", confirmingId: 8 }),
+    ).toEqual({ type: "resolve", requestId: 8, decision: "approved" });
+  });
+
+  test("recusar risco vermelho não passa pela confirmação", () => {
+    const request = makeApproval({ id: 8, risk: "red" });
+    expect(
+      decideApproval({ request, decision: "denied", confirmingId: null }),
+    ).toEqual({ type: "resolve", requestId: 8, decision: "denied" });
+  });
+
+  test("recusar com motivo carrega o feedback no efeito de resolver", () => {
+    const request = makeApproval({ id: 3, risk: "yellow" });
+    expect(
+      decideApproval({
+        request,
+        decision: "denied",
+        confirmingId: null,
+        feedback: "usa o outro branch",
+      }),
+    ).toEqual({
+      type: "resolve",
+      requestId: 3,
+      decision: "denied",
+      feedback: "usa o outro branch",
+    });
   });
 });

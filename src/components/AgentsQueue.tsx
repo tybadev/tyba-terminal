@@ -3,20 +3,24 @@ import { useTranslation } from "react-i18next";
 import { GitDiff, ShieldSlash, X } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
   buildRows,
   boardOrder,
+  oldestApprovalBySession,
   wantsAttention,
   type AgentRow,
   type SessionPlace,
 } from "../lib/agentsBoard";
 import {
   resolveApproval,
+  type ApprovalDecision,
   type ApprovalRequest,
   type LayoutState,
   type Session,
   type SessionId,
 } from "../lib/ipc";
+import { approvalActions, decideApproval } from "../lib/notifications";
 import { AgentIcon } from "./icons/AgentIcon";
 
 interface Props {
@@ -48,18 +52,36 @@ function Row({
   onReviewDiff: Props["onReviewDiff"];
 }) {
   const { t } = useTranslation();
-  // Aprovar vermelho pede segunda confirmação, como no toaster. Ação vermelha
-  // nunca é automática (princípio 4 do CLAUDE.md), e a lista não compra
-  // exceção: um clique a menos aqui seria um clique a menos para `git push`.
-  const [confirmando, setConfirmando] = useState(false);
-  const aprovar = () => {
+  // Mesmo caminho de decisão do toast e do painel de notificações
+  // (lib/notifications#decideApproval) — o gate de risco vermelho (arma
+  // confirmação no 1º clique, resolve no 2º) e o resolveApproval de fato
+  // chamado são idênticos nas três superfícies; só o layout aqui é o da
+  // fila, inline por natureza. Ação vermelha nunca é automática (princípio
+  // 4 do CLAUDE.md), e a lista não compra exceção.
+  const [confirmingId, setConfirmingId] = useState<number | null>(null);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedback, setFeedback] = useState("");
+
+  const decide = (decision: ApprovalDecision, withFeedback?: string) => {
     if (!approval) return;
-    if (approval.risk === "red" && !confirmando) {
-      setConfirmando(true);
+    const effect = decideApproval({
+      request: approval,
+      decision,
+      confirmingId,
+      feedback: withFeedback,
+    });
+    if (effect.type === "armRedConfirm") {
+      setConfirmingId(effect.requestId);
       return;
     }
-    void resolveApproval(approval.id, "approved").catch(() => {});
+    setConfirmingId(null);
+    setFeedbackOpen(false);
+    setFeedback("");
+    resolveApproval(effect.requestId, effect.decision, effect.feedback).catch(
+      () => {},
+    );
   };
+
   const espera = wantsAttention(row);
   const concluiu =
     row.session.status.state === "idle" && row.session.attention === true;
@@ -115,34 +137,49 @@ function Row({
         </p>
       )}
 
-      <div className="mt-1.5 ml-4 flex items-center gap-1">
-        {approval && (
-          <>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={aprovar}
-              className={`h-6 px-2 text-[11px] ${
-                confirmando
-                  ? "bg-tyba-red/15 text-tyba-red"
-                  : "text-tyba-green hover:bg-tyba-green/10"
-              }`}
-            >
-              {confirmando ? t("confirmApprove") : t("approve")}
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setConfirmando(false);
-                void resolveApproval(approval.id, "denied").catch(() => {});
-              }}
-              className="h-6 px-2 text-[11px] text-tyba-red hover:bg-tyba-red/10"
-            >
-              {t("deny")}
-            </Button>
-          </>
-        )}
+      <div className="mt-1.5 ml-4 flex flex-wrap items-center gap-1">
+        {approval &&
+          approvalActions(approval.risk).map((action) => {
+            const isConfirmApprove =
+              action.id === "approve" &&
+              approval.risk === "red" &&
+              confirmingId === approval.id;
+            const label = isConfirmApprove
+              ? t("confirmApprove")
+              : t(action.labelKey);
+            const onClick = () => {
+              if (action.id === "denyWithReason") {
+                setFeedbackOpen(true);
+                return;
+              }
+              const decision: ApprovalDecision =
+                action.id === "alwaysAllow"
+                  ? "approved_always"
+                  : action.id === "deny"
+                    ? "denied"
+                    : "approved";
+              decide(decision);
+            };
+            return (
+              <Button
+                key={action.id}
+                size="sm"
+                variant="ghost"
+                onClick={onClick}
+                className={`h-6 px-2 text-[11px] ${
+                  action.id === "approve"
+                    ? isConfirmApprove
+                      ? "bg-tyba-red/15 text-tyba-red"
+                      : "text-tyba-green hover:bg-tyba-green/10"
+                    : action.id === "deny"
+                      ? "text-tyba-red hover:bg-tyba-red/10"
+                      : "text-tyba-text-faint hover:bg-tyba-text/[.05] hover:text-tyba-text"
+                }`}
+              >
+                {label}
+              </Button>
+            );
+          })}
         {concluiu && !row.observed && (
           <Button
             size="sm"
@@ -163,6 +200,49 @@ function Row({
           {t("agentsQueueGoTo")}
         </Button>
       </div>
+      {approval && feedbackOpen && (
+        <div className="motion-safe:animate-tyba-pop-in mt-1.5 ml-4 space-y-1.5">
+          <Textarea
+            autoFocus
+            rows={2}
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                decide("denied", feedback);
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setFeedbackOpen(false);
+                setFeedback("");
+              }
+            }}
+            placeholder={t("denyFeedbackPlaceholder")}
+            className="min-h-0 resize-none text-[11px]"
+          />
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              onClick={() => decide("denied", feedback)}
+              className="h-6 rounded-[4px] px-2.5 text-[11px]"
+            >
+              {t("denyAndTell")}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setFeedbackOpen(false);
+                setFeedback("");
+              }}
+              className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
+            >
+              {t("cancel")}
+            </Button>
+          </div>
+        </div>
+      )}
     </li>
   );
 }
@@ -191,17 +271,14 @@ export function AgentsQueue({
     [sessions, layout],
   );
   const esperando = useMemo(() => rows.filter(wantsAttention).length, [rows]);
-  const porSessao = useMemo(() => {
-    const mapa = new Map<SessionId, ApprovalRequest>();
-    // O mais antigo primeiro: se houver dois pedidos da mesma sessão, o que
-    // está esperando há mais tempo é o que a linha mostra.
-    for (const approval of [...approvals].sort(
-      (a, b) => a.requested_at_ms - b.requested_at_ms,
-    )) {
-      if (!mapa.has(approval.session_id)) mapa.set(approval.session_id, approval);
-    }
-    return mapa;
-  }, [approvals]);
+  // Mesma função que o toaster usa (via agentQueueVisibleApprovalIds em
+  // App.tsx) para saber quais ids a fila torna acionáveis — uma cópia
+  // divergente aqui era exatamente o defeito que deixava um segundo pedido
+  // pendente da mesma sessão sem toast E sem linha na fila.
+  const porSessao = useMemo(
+    () => oldestApprovalBySession(approvals),
+    [approvals],
+  );
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">

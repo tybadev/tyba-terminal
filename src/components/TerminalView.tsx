@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowCounterClockwise,
   CircleNotch,
+  LockOpen,
   ShieldSlash,
   WarningOctagon,
 } from "@phosphor-icons/react";
@@ -226,6 +227,14 @@ interface Props {
   onReopenManaged?: () => void;
   onDismissNotice?: () => void;
   /**
+   * Shim v2, Track C (tech-spec §7/§9): agente HOSPEDADO (o gate já ligou
+   * pelo canal shim↔core) mas fora da jaula — allowlist não bateu ou sem
+   * userns. Sinal próprio, nunca o `agentNotice` de "sem gate" — os dois
+   * nunca aparecem juntos (`hosting` em polaridades opostas). Sem ação nem
+   * dispensa: é informativo, igual ao badge "sem gate" do painel.
+   */
+  unjailedNotice?: { binary: string } | null;
+  /**
    * Convite de retomar a conversa nativa do agente numa sessão que morreu com o
    * app anterior. Só o core decide se ele aparece — ver `canResumeAgentSession`.
    *
@@ -414,6 +423,7 @@ export function TerminalView({
   agentNotice,
   onReopenManaged,
   onDismissNotice,
+  unjailedNotice,
   resumeNotice,
   onResumeAgent,
   onDismissResume,
@@ -1073,6 +1083,16 @@ export function TerminalView({
         onAction={onReopenManaged}
         dismissLabel={onDismissNotice ? i18n.t("shellAgentIgnore") : undefined}
         onDismiss={onDismissNotice}
+      />
+    )}
+    {unjailedNotice && rect && visible && !exited && (
+      <SessionNoticeBar
+        rect={rect}
+        tone="amber"
+        icon={<LockOpen size={12} weight="fill" />}
+        message={i18n.t("shellUnjailedNotice", {
+          binary: unjailedNotice.binary,
+        })}
       />
     )}
     {exitedNotice && rect && visible && exited && (

@@ -664,14 +664,24 @@ pub fn run_setup(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::*;
 
+    // Achado fora do escopo do canal shim v2 (0.8.0), pré-existente na 0.7.0 e
+    // sem relação com nenhuma das 3 branches mergeadas aqui: `cargo clippy
+    // --target x86_64-pc-windows-gnu --lib --tests` é a primeira vez que
+    // compila os testes deste arquivo para Windows (antes só `--lib` sem
+    // `--tests`), e os únicos `#[test]` que usam este grupo já eram
+    // `#[cfg(any(target_os = "macos", target_os = "linux"))]` — sem o mesmo
+    // gate aqui, sobra dead_code no Windows (`-D warnings`).
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     enum AttrSource {
         WorktreeRoot,
         WorktreeSubdir,
         GitDirInfo,
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn hostile_repo(tag: &str, source: AttrSource) -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!("tyba-attr-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -728,11 +738,12 @@ mod tests {
     fn cage_available() -> bool {
         crate::sandbox::bwrap::userns_usable()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn cage_available() -> bool {
         true
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn assert_filter_never_ran(tag: &str, source: AttrSource) {
         if !cage_available() {
             eprintln!("SKIP {tag}: kernel sem user namespace — a op é recusada por desenho");

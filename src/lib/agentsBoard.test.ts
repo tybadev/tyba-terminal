@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type {
+  ApprovalRequest,
   LayoutState,
   ObservedAgent,
   ObservedState,
@@ -13,10 +14,12 @@ import type {
 } from "./ipc";
 import {
   NO_SIGNAL,
+  agentQueueVisibleApprovalIds,
   boardOrder,
   buildRows,
   groupByWorkspace,
   nextAttention,
+  oldestApprovalBySession,
   placesBySession,
   urgencyOf,
   wantsAttention,
@@ -551,5 +554,54 @@ describe("contagem de 'esperando por você'", () => {
     expect(nextAttention(boardOrder(board(sessions)), null)?.session.id).toBe(
       "gerenciado",
     );
+  });
+});
+
+const approval = (
+  id: number,
+  sessionId: string,
+  requestedAtMs: number,
+): ApprovalRequest => ({
+  id,
+  session_id: sessionId,
+  command: "rm -rf build",
+  cwd: null,
+  risk: "green",
+  context: null,
+  requested_at_ms: requestedAtMs,
+});
+
+describe("oldestApprovalBySession", () => {
+  test("sessão com dois pedidos pendentes: mapeia para o mais antigo", () => {
+    const bySession = oldestApprovalBySession([
+      approval(11, "s1", 200),
+      approval(10, "s1", 100),
+    ]);
+    expect(bySession.get("s1")?.id).toBe(10);
+  });
+
+  test("sessões diferentes não se misturam", () => {
+    const bySession = oldestApprovalBySession([
+      approval(10, "s1", 100),
+      approval(20, "s2", 50),
+    ]);
+    expect(bySession.get("s1")?.id).toBe(10);
+    expect(bySession.get("s2")?.id).toBe(20);
+  });
+});
+
+describe("agentQueueVisibleApprovalIds", () => {
+  test("sessão com dois pedidos pendentes: só o mais antigo tem linha na fila — o mais novo fica sem ponto de ação ali", () => {
+    const rows = boardOrder(board([session("s1", blocked)]));
+    const ids = agentQueueVisibleApprovalIds(rows, [
+      approval(11, "s1", 200),
+      approval(10, "s1", 100),
+    ]);
+    expect(ids).toEqual(new Set([10]));
+  });
+
+  test("sessão sem linha na fila (sem lugar no layout) não esconde o próprio pedido", () => {
+    const ids = agentQueueVisibleApprovalIds([], [approval(10, "s1", 100)]);
+    expect(ids.size).toBe(0);
   });
 });

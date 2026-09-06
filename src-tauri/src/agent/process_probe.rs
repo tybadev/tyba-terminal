@@ -35,6 +35,12 @@ pub struct DetectedAgent {
 pub struct AgentDetectedPayload {
     pub session_id: SessionId,
     pub detected: Option<DetectedAgent>,
+    /// Derivado de `/proc/<pid>/environ`, nunca de `/proc/<pid>/cmdline` —
+    /// `_seccomp-exec` faz `.exec()` (bwrap.rs), que reescreve o cmdline mas
+    /// preserva o env (tech-spec §7, FIX C9). `false`/`false` quando
+    /// `detected` é `None`: sem agente, não há o que hospedar.
+    pub hosting: bool,
+    pub jailed: bool,
 }
 
 /// Mapeia o nome do processo para o runner conhecido, reusando `runner_binary`
@@ -116,6 +122,55 @@ pub fn detect_kind(row: &ProcRow) -> Option<AgentRunnerKind> {
     })
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const TYBA_HOSTED_MARKER: &[u8] = b"TYBA_HOSTED=1";
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const TYBA_JAILED_MARKER: &[u8] = b"TYBA_JAILED=1";
+
+/// A leitura pura: dado o conteúdo cru de `/proc/<pid>/environ` (pares
+/// `KEY=VALUE` separados por NUL — nunca por `\n`, um valor pode conter
+/// qualquer byte exceto NUL), devolve `(hosting, jailed)`. Separado de
+/// [`hosting_markers`] pelo mesmo motivo de sempre: testável com bytes
+/// sintéticos, sem precisar de um processo de verdade rodando. Fora do Linux
+/// (§15) `hosting_markers` nunca chama isto — `cfg_attr` silencia o
+/// dead-code sem esconder a função do teste, que roda em qualquer
+/// plataforma.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_environ_markers(environ: &[u8]) -> (bool, bool) {
+    let mut hosting = false;
+    let mut jailed = false;
+    for entry in environ.split(|b| *b == 0) {
+        if entry == TYBA_HOSTED_MARKER {
+            hosting = true;
+        } else if entry == TYBA_JAILED_MARKER {
+            jailed = true;
+        }
+    }
+    (hosting, jailed)
+}
+
+/// Deriva `hosting`/`jailed` do env do processo — NUNCA do `cmdline` (tech-spec
+/// §7, FIX C9): a cadeia `_seccomp-exec` faz `.exec()` (bwrap.rs), que
+/// reescreve o cmdline visível em `/proc` mas preserva o env através do
+/// `execve`, medido. `/proc/<pid>/environ` é `0400` same-uid — o mesmo uid que
+/// já lê `/proc/<pid>/cwd` para a allowlist do canal. Pid que sumiu ou
+/// environ ilegível (permissão, corrida) degrada para `(false, false)`: nunca
+/// panic, nunca promessa de gate que não existe.
+#[cfg(target_os = "linux")]
+pub fn hosting_markers(pid: u32) -> (bool, bool) {
+    match std::fs::read(format!("/proc/{pid}/environ")) {
+        Ok(bytes) => parse_environ_markers(&bytes),
+        Err(_) => (false, false),
+    }
+}
+
+/// O canal shim↔core (shim v2) é escopo Linux (tech-spec §15): fora dele
+/// não há shim, não há marcador, e `hosting` nunca é verdadeiro.
+#[cfg(not(target_os = "linux"))]
+pub fn hosting_markers(_pid: u32) -> (bool, bool) {
+    (false, false)
+}
+
 /// Anda a árvore de processos a partir do `leader_pid` do shell (BFS pelos
 /// filhos) e devolve o agente mais relevante: menor profundidade vence; empate
 /// de profundidade é desempatado pelo mais recente (`start_ms`). O próprio líder
@@ -177,6 +232,45 @@ pub fn find_agent(
     }
 
     best
+}
+
+/// Limite de saltos que [`find_owning_session`] sobe pela árvore de
+/// processos. Existe para que um ciclo de `ppid` no snapshot (pid reciclado
+/// no meio da varredura) nunca gire para sempre — pior caso é devolver `None`
+/// (a requisição é recusada, nunca escala).
+const OWNING_SESSION_MAX_HOPS: u32 = 16;
+
+/// Resolve a sessão de shell DONA de um pid, subindo `ppid` a partir dele até
+/// achar o líder de uma sessão conhecida (canal shim↔core, §4.2). O pid de
+/// entrada é sempre o do PEER autenticado por `SO_PEERCRED` — nunca algo que o
+/// pedido afirma —, e é por isso que este é o núcleo da autenticação por
+/// sessão do canal: quem conectou só pode hospedar agente na sessão cujo
+/// líder está na ancestralidade dele.
+///
+/// Pura sobre um snapshot já colhido e a lista de líderes já resolvida — a
+/// mesma forma de `find_agent`, para o mesmo motivo: testável sem processos
+/// de verdade, e um pid que sumiu no meio da varredura simplesmente encerra a
+/// subida (`None`), nunca panic.
+pub fn find_owning_session(
+    peer_pid: u32,
+    shells: &[(SessionId, u32)],
+    rows: &[ProcRow],
+) -> Option<SessionId> {
+    let ppid_of: HashMap<u32, u32> = rows.iter().map(|r| (r.pid, r.ppid)).collect();
+    let leader_session: HashMap<u32, SessionId> =
+        shells.iter().map(|&(id, pid)| (pid, id)).collect();
+
+    let mut pid = peer_pid;
+    for _ in 0..OWNING_SESSION_MAX_HOPS {
+        if let Some(&id) = leader_session.get(&pid) {
+            return Some(id);
+        }
+        if pid == 1 {
+            return None;
+        }
+        pid = *ppid_of.get(&pid)?;
+    }
+    None
 }
 
 /// Estado de detecção por sessão de shell, mantido no core e consultável por
@@ -611,6 +705,152 @@ mod tests {
     fn a_leader_absent_from_the_snapshot_yields_none_without_panicking() {
         let rows = vec![row(200, 100, "claude", 20)];
         assert_eq!(find_agent(999, &rows, &comm_only), None);
+    }
+
+    // --- find_owning_session (canal shim↔core, §4.2) ---
+    //
+    // Sobe a árvore de processos a partir do pid do PEER (o cliente `tyba
+    // _jail`, nunca o que o pedido afirma) até achar o líder de uma sessão de
+    // shell conhecida. Ver o `[!danger]` da spec: é a peça que autentica QUAL
+    // sessão pediu o agente hospedado.
+
+    #[test]
+    fn owning_session_resolves_a_direct_child_of_the_shell_leader() {
+        let s = session();
+        let rows = vec![row(100, 1, "zsh", 10), row(200, 100, "tyba", 20)];
+        assert_eq!(
+            find_owning_session(200, &[(s, 100)], &rows),
+            Some(s),
+            "o peer é filho direto do líder do shell"
+        );
+    }
+
+    #[test]
+    fn owning_session_walks_up_multiple_hops() {
+        let s = session();
+        // shell(100) -> node(150) -> tyba(200): dois saltos até o líder.
+        let rows = vec![
+            row(100, 1, "zsh", 10),
+            row(150, 100, "node", 15),
+            row(200, 150, "tyba", 20),
+        ];
+        assert_eq!(find_owning_session(200, &[(s, 100)], &rows), Some(s));
+    }
+
+    #[test]
+    fn owning_session_is_none_for_a_pid_unrelated_to_any_shell() {
+        let s = session();
+        let rows = vec![row(100, 1, "zsh", 10), row(999, 1, "tyba", 5)];
+        assert_eq!(find_owning_session(999, &[(s, 100)], &rows), None);
+    }
+
+    #[test]
+    fn owning_session_stops_at_pid_1_without_matching() {
+        let s = session();
+        // 50 é filho direto do init (pid 1) — nunca escala além dele.
+        let rows = vec![row(100, 1, "zsh", 10), row(50, 1, "orphan", 5)];
+        assert_eq!(find_owning_session(50, &[(s, 100)], &rows), None);
+    }
+
+    #[test]
+    fn owning_session_is_bounded_and_survives_a_ppid_cycle() {
+        let s = session();
+        // 10 <-> 20 se apontam mutuamente (pid reciclado no meio do scan): sem
+        // limite de saltos isto giraria para sempre.
+        let rows = vec![row(10, 20, "a", 1), row(20, 10, "b", 2)];
+        assert_eq!(find_owning_session(10, &[(s, 100)], &rows), None);
+    }
+
+    // --- hosting/jailed via marcador de env (tech-spec §7) ------------------
+
+    fn environ_of(pairs: &[&str]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for pair in pairs {
+            bytes.extend_from_slice(pair.as_bytes());
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    #[test]
+    fn parse_environ_detects_both_markers_together() {
+        let environ = environ_of(&["HOME=/root", "TYBA_HOSTED=1", "TYBA_JAILED=1", "PATH=/bin"]);
+        assert_eq!(parse_environ_markers(&environ), (true, true));
+    }
+
+    #[test]
+    fn parse_environ_detects_hosted_without_jailed() {
+        // Gate-sem-jaula (§1): hospedado, mas fora da allowlist ou sem userns.
+        let environ = environ_of(&["TYBA_HOSTED=1", "TYBA_JAILED=0"]);
+        assert_eq!(parse_environ_markers(&environ), (true, false));
+    }
+
+    #[test]
+    fn parse_environ_without_any_marker_is_neither() {
+        // `claude` cru, sem passar pelo shim v2 nenhum — o caso do v1.
+        let environ = environ_of(&["HOME=/root", "PATH=/bin", "SHELL=/bin/zsh"]);
+        assert_eq!(parse_environ_markers(&environ), (false, false));
+    }
+
+    #[test]
+    fn parse_environ_ignores_a_value_that_merely_contains_the_marker_as_substring() {
+        // Um valor de env de OUTRA variável não pode ser confundido com o
+        // marcador — a comparação é da entrada NUL-delimitada inteira, nunca
+        // `contains`.
+        let environ = environ_of(&["SOME_VAR=xTYBA_HOSTED=1x", "OTHER=TYBA_HOSTED=10"]);
+        assert_eq!(parse_environ_markers(&environ), (false, false));
+    }
+
+    /// Prova viva (não só o parser): um processo real, com os dois marcadores
+    /// no env, lido pelo `hosting_markers` de produção via `/proc/<pid>/environ`
+    /// de verdade — a mesma dupla que `prepare_hosted_agent` (Track B) grava.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hosting_markers_reads_a_real_process_environ() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .env_clear()
+            .env("TYBA_HOSTED", "1")
+            .env("TYBA_JAILED", "1")
+            .spawn()
+            .expect("spawn sleep marcado");
+        let pid = child.id();
+
+        let mut seen = (false, false);
+        for _ in 0..50 {
+            seen = hosting_markers(pid);
+            if seen == (true, true) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert_eq!(
+            seen,
+            (true, true),
+            "hosting_markers deveria ler os dois marcadores do /proc/<pid>/environ real"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hosting_markers_of_a_process_without_any_marker_is_neither() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .env_clear()
+            .env("HOME", "/root")
+            .spawn()
+            .expect("spawn sleep sem marcador");
+        let pid = child.id();
+        std::thread::sleep(Duration::from_millis(50));
+
+        let seen = hosting_markers(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert_eq!(seen, (false, false));
     }
 
     #[test]
