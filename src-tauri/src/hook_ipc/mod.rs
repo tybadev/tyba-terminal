@@ -1,6 +1,11 @@
 pub mod channel;
 mod client;
 mod framing;
+// O canal shim↔core (shim v2) é escopo Linux nesta entrega (§15 do
+// tech-spec): `peer_cred` via SO_PEERCRED só existe no Linux — macOS pede
+// LOCAL_PEERCRED/getpeereid (follow-on) e o único chamador
+// (`hook_ipc::channel::serve_connection`) já é `target_os = "linux"`.
+#[cfg(target_os = "linux")]
 pub mod peercred;
 #[cfg(windows)]
 mod pipe;

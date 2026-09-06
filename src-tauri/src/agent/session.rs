@@ -673,8 +673,16 @@ pub fn attach_agent_session(
     )
 }
 
+// A partir daqui, e até o fim de `prepare_hosted_agent`, todo o código é
+// exclusivo do canal shim↔core (shim v2, passo 2) — escopo Linux nesta
+// entrega (§15 do tech-spec, mesmo motivo de `hook_ipc::channel`/
+// `agent::channel_host`). Nunca o caminho gerenciado normal (`spawn_prepared`
+// e o resto deste arquivo), que macOS e Windows continuam usando sem gate
+// nenhum.
+#[cfg(target_os = "linux")]
 const LAUNCH_PLAN_FILE: &str = "launch.json";
 
+#[cfg(target_os = "linux")]
 struct HostedCommand {
     cmd: portable_pty::CommandBuilder,
     jailed: bool,
@@ -693,6 +701,7 @@ struct HostedCommand {
 /// memoizado como `userns_usable()`), então pode falhar mesmo com
 /// `decide_jail` já tendo dito Some — pressão de recurso, binário sumido
 /// entre o probe e agora.
+#[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
 fn try_jail(
     cmd: portable_pty::CommandBuilder,
@@ -717,6 +726,7 @@ fn try_jail(
 /// jaula E sem gate, no cliente fail-open). `bare` precisa ter sido
 /// CLONADO antes da tentativa: `Sandbox::wrap` consome o `CommandBuilder`
 /// por valor e não devolve nada utilizável em caso de erro.
+#[cfg(target_os = "linux")]
 fn degrade_to_gate_only_on_sandbox_failure(
     bare: portable_pty::CommandBuilder,
     jailed_attempt: Result<portable_pty::CommandBuilder, String>,
@@ -739,6 +749,7 @@ fn degrade_to_gate_only_on_sandbox_failure(
 /// também chega por parâmetro (não `std::env::vars()` direto) para que um
 /// teste consiga forçar uma falha REAL de `sandbox_spec` (ex.: sem `HOME`)
 /// sem precisar mutar o env global do processo de teste.
+#[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
 fn build_hosted_command(
     store: &Store,
@@ -791,6 +802,7 @@ fn build_hosted_command(
 /// só o mapeamento, sem decisão nenhuma: `get_argv()` inclui o programa em
 /// `[0]`, `iter_extra_env_as_str()` devolve só o que foi setado depois do
 /// `env_clear()` do `build_command` (o env FILTRADO, nunca o herdado).
+#[cfg(target_os = "linux")]
 fn hosted_plan_from(
     cmd: &portable_pty::CommandBuilder,
     cwd: &Path,
@@ -830,6 +842,7 @@ fn hosted_plan_from(
 ///
 /// Devolve o caminho do plano escrito (0600 via [`crate::session::write_private_bytes`])
 /// e se a sessão saiu jaulada.
+#[cfg(target_os = "linux")]
 pub fn prepare_hosted_agent(
     ctx: &AgentSessionCtx,
     id: SessionId,
@@ -1357,7 +1370,11 @@ mod hook_server_registry_tests {
     }
 }
 
+// Exercita `build_hosted_command`/`hosted_plan_from`/
+// `degrade_to_gate_only_on_sandbox_failure` — a cadeia exclusiva do canal
+// shim↔core, escopo Linux (§15, mesmo motivo do gate acima).
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 mod build_hosted_command_tests {
     use super::*;
 

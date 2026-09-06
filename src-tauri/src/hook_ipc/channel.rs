@@ -76,13 +76,13 @@ pub enum ChannelResponse {
 /// autenticado (uid conferido) e o pedido já desserializado, decide o que
 /// responder. `find_owning_session`, o `TOCTOU` recheck, a allowlist e
 /// `prepare_hosted_agent` moram do lado de dentro deste fecho — não aqui.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub type ChannelHandler =
     std::sync::Arc<dyn Fn(u32, ChannelRequest) -> ChannelResponse + Send + Sync>;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 const HOST_AGENT_OP: &str = "host_agent";
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub const MAX_INFLIGHT: usize = 32;
 /// Review round 2, achado MINOR (invariante #8, bounded reads): um pedido
 /// de verdade é uma linha JSON minúscula (`{"v":1,"op":"host_agent",
@@ -91,42 +91,45 @@ pub const MAX_INFLIGHT: usize = 32;
 /// teto, `read_line` cresce sem limite; combinado com `MAX_INFLIGHT`
 /// conexões lentas, as threads do accept-loop ficam presas e o canal fica
 /// surdo — um `claude` legítimo cai em fail-open cru.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 const MAX_REQUEST_BYTES: u64 = 8 * 1024;
 /// Mesmo achado: sem timeout de leitura, um peer que conecta e nunca manda
 /// nada (nem dados nem EOF) trava a thread para sempre, e o teto de bytes
 /// sozinho não ajuda nesse caso.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 const REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 struct InflightGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl Drop for InflightGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn current_uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
 // O canal (servidor) é escopo Linux nesta entrega (§15 do tech-spec): em
 // qualquer outra plataforma nada faz `bind`, então o tipo inteiro — junto
-// com o accept loop, o inflight guard e o dispatch — só existe sob `unix`.
-// Windows fica só com o protocolo (`ChannelRequest`/`ChannelResponse`) e a
-// resolução de endereço, que `session::spawn_session` usa sem branch de SO.
-#[cfg(unix)]
+// com o accept loop, o inflight guard e o dispatch — só existe sob
+// `target_os = "linux"` (não `cfg(unix)`: macOS é unix e o peer cred via
+// SO_PEERCRED que o servidor exige é Linux-only, ver `hook_ipc::peercred`).
+// Windows E macOS ficam só com o protocolo (`ChannelRequest`/
+// `ChannelResponse`) e a resolução de endereço, que `session::spawn_session`
+// usa sem branch de SO.
+#[cfg(target_os = "linux")]
 pub struct ChannelServer {
     socket_path: PathBuf,
     shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
     accept_handle: Option<std::thread::JoinHandle<()>>,
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl ChannelServer {
     /// Liga o socket sob um diretório PRIVADO 0700 (a defesa primária — FIX
     /// C6) e ainda assim aplica 0600 no PRÓPRIO arquivo do socket (defesa em
@@ -188,14 +191,14 @@ impl ChannelServer {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl Drop for ChannelServer {
     fn drop(&mut self) {
         self.stop();
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn dispatch(
     stream: std::os::unix::net::UnixStream,
     handler: &ChannelHandler,
@@ -216,7 +219,7 @@ fn dispatch(
     });
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn serve_connection(stream: std::os::unix::net::UnixStream, handler: &ChannelHandler) {
     use std::io::{BufRead, Read, Write};
 
@@ -290,12 +293,12 @@ pub enum JailOutcome {
 /// Um app que não está rodando falha a conexão na hora (ECONNREFUSED/ENOENT);
 /// a única corrida que a retentativa cobre é o app subindo bem naquele
 /// instante — por isso poucas tentativas, não a espera longa do hook.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 const JAIL_CONNECT_ATTEMPTS: u32 = 3;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 const JAIL_CONNECT_BASE: std::time::Duration = std::time::Duration::from_millis(20);
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn connect_with_retry(socket_path: &Path) -> Option<std::os::unix::net::UnixStream> {
     for attempt in 0..JAIL_CONNECT_ATTEMPTS {
         if let Ok(stream) = std::os::unix::net::UnixStream::connect(socket_path) {
@@ -308,7 +311,7 @@ fn connect_with_retry(socket_path: &Path) -> Option<std::os::unix::net::UnixStre
     None
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn read_and_unlink_plan(plan_path: &str) -> Option<HostedPlan> {
     let path = Path::new(plan_path);
     let contents = std::fs::read(path).ok();
@@ -322,7 +325,7 @@ fn read_and_unlink_plan(plan_path: &str) -> Option<HostedPlan> {
 /// executa nada — quem chama decide se roda [`JailOutcome::Exec`] ou cai no
 /// binário de verdade. Separado de `run_jail_client` para que o teste prove
 /// a decisão sem substituir o processo de teste por um exec real.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn resolve_jail_outcome(socket_path: Option<&Path>) -> JailOutcome {
     let Some(socket_path) = socket_path else {
         return JailOutcome::RunReal;
@@ -351,7 +354,7 @@ pub fn resolve_jail_outcome(socket_path: Option<&Path>) -> JailOutcome {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn exchange(
     stream: std::os::unix::net::UnixStream,
     request: &ChannelRequest,
@@ -385,7 +388,7 @@ fn exchange(
 /// nenhuma das checagens do servidor de verdade. `TYBA_CHANNEL_SOCK`
 /// continua indo no env da sessão (`session::spawn_session`) como sinal de
 /// "shim ligado" para o script do rc; só não é mais lido aqui.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn jail_connect_socket_path() -> PathBuf {
     resolve_channel_socket_path()
 }
@@ -395,7 +398,7 @@ pub fn jail_connect_socket_path() -> PathBuf {
 /// Fail-open vive INTEIRAMENTE aqui: qualquer dúvida (sem socket, recusado,
 /// plano ilegível, exec falhou) cai no binário de verdade, sem argumento
 /// nenhum — Q1 já garantiu que só `claude` sem args chega até aqui.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn maybe_run_jail_mode() -> Option<i32> {
     if std::env::args().nth(1).as_deref() != Some("_jail") {
         return None;
@@ -403,12 +406,12 @@ pub fn maybe_run_jail_mode() -> Option<i32> {
     Some(run_jail_client(Some(&jail_connect_socket_path())))
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "linux"))]
 pub fn maybe_run_jail_mode() -> Option<i32> {
     None
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn run_jail_client(socket_path: Option<&Path>) -> i32 {
     use std::os::unix::process::CommandExt;
 
@@ -434,7 +437,14 @@ fn run_jail_client(socket_path: Option<&Path>) -> i32 {
     126
 }
 
+// Gate consistente com o servidor/cliente que exercitam (§15): sem ele,
+// Windows não compila estes testes (`ChannelServer`/`resolve_jail_outcome`/
+// `MAX_REQUEST_BYTES` não existem lá) e macOS os compila mas os faz falhar
+// em RUNTIME — `hook_ipc::peercred::peer_cred` real (SO_PEERCRED) é
+// Linux-only, então o handshake completo que estes testes fazem de ponta a
+// ponta não tem como funcionar fora do Linux.
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 mod client_tests {
     use super::*;
 
@@ -527,7 +537,10 @@ mod client_tests {
     }
 }
 
+// Mesmo motivo de `client_tests`: exercita `ChannelServer`/peer cred real de
+// ponta a ponta, escopo Linux (§15).
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 mod server_tests {
     use super::*;
     use std::sync::Arc;
@@ -780,7 +793,7 @@ mod address_tests {
     /// regressão: se alguém no futuro reintroduzir a leitura do env aqui,
     /// este teste denuncia o desvio comparando os dois valores.
     #[test]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn jail_connect_socket_path_ignores_a_spoofed_tyba_channel_sock() {
         // Não precisa nem mutar o env de verdade: o ponto é que a função
         // nunca lê essa variável — mas se ela existir no ambiente deste

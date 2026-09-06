@@ -2,6 +2,11 @@ pub mod auth_alert;
 pub mod auth_preflight;
 pub mod auth_watch;
 pub mod browser_bridge;
+// O handler do canal shim↔core (shim v2) é escopo Linux nesta entrega (§15 do
+// tech-spec): o socket (`hook_ipc::channel::ChannelServer`) só liga sob
+// `target_os = "linux"`, e este módulo só existe para atendê-lo — gate
+// consistente, não `cfg(unix)` (macOS é unix e não deve compilar isto).
+#[cfg(target_os = "linux")]
 pub mod channel_host;
 pub mod codex_hooks;
 pub mod conversation;

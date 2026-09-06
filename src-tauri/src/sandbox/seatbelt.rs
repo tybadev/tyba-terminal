@@ -535,7 +535,6 @@ mod tests {
             r#"(literal "/Users/nobody/.claude/CLAUDE.md")"#,
             r#"(subpath "/Users/nobody/.claude/plugins")"#,
             r#"(subpath "/Users/nobody/.claude/hooks")"#,
-            r#"(subpath "/Users/nobody/.claude/agents")"#,
             r#"(subpath "/Users/nobody/.claude/commands")"#,
             r#"(subpath "/Users/nobody/.claude/skills")"#,
             r#"(subpath "/Users/nobody/.claude/daemon")"#,
@@ -547,7 +546,16 @@ mod tests {
             );
         }
 
-        for still_writable in ["session-env", "backups", "cache", "jobs"] {
+        // fix/claude-agents-writable: "agents" SAIU de
+        // `SENSITIVE_CLAUDE_READONLY_DIRS` (compartilhada com o bwrap do
+        // Linux — ver o comentário lá), então a RuleSet que `sandbox_access`
+        // devolve para de sombrear `~/.claude/agents` nos dois sandboxes. O
+        // par negativo acima não pode mais listar "agents"; o par positivo
+        // entra na mesma checagem de "ainda gravável" logo abaixo, ao lado
+        // de session-env/backups/cache/jobs — a feature `/agents` precisa
+        // funcionar no macOS também, não só no Linux (`bwrap_exec_tests.rs`,
+        // `agents_dir_is_writable_while_other_claude_surfaces_stay_locked`).
+        for still_writable in ["session-env", "backups", "cache", "jobs", "agents"] {
             assert!(
                 !except_part.contains(&format!(".claude/{still_writable}")),
                 "{still_writable} não pode estar sombreado: {except_part}"

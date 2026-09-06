@@ -6025,10 +6025,12 @@ pub fn run() {
             // `app.state::<AppState>()` na hora (o mesmo padrão de
             // `resume_agent_session`), porque `sessions`/`pty_pool`/... só
             // existem a partir daqui. Bind escopo Linux (`ChannelServer` só
-            // existe sob `cfg(unix)`, §15); falha em bind NÃO é fatal — o
-            // cliente (`tyba _jail`) já é fail-open por construção (§6): sem
-            // socket, roda o binário de verdade e sai do caminho.
-            #[cfg(unix)]
+            // existe sob `target_os = "linux"`, §15 — não `cfg(unix)`: macOS é
+            // unix e o peer cred via SO_PEERCRED que o servidor exige é
+            // Linux-only, ver `hook_ipc::peercred`); falha em bind NÃO é
+            // fatal — o cliente (`tyba _jail`) já é fail-open por construção
+            // (§6): sem socket, roda o binário de verdade e sai do caminho.
+            #[cfg(target_os = "linux")]
             {
                 let channel_app = app.handle().clone();
                 let channel_handler: hook_ipc::channel::ChannelHandler =
