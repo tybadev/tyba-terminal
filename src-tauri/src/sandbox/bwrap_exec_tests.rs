@@ -646,12 +646,19 @@ fn credential_survives_atomic_rename_and_reaches_host() {
 
 /// Contrato de cobertura itens 3, 4 e 5: settings.json, settings.local.json,
 /// daemon.json, daemon/, plugins/, plugins/x/hook.sh, hooks/, mcp.json,
-/// agents/, commands/, skills/, output-styles/, rules/, workflows/, CLAUDE.md
-/// e o statusline-command.sh do dono (V9, achado por forma, não por nome) —
+/// commands/, skills/, output-styles/, rules/, workflows/, CLAUDE.md e o
+/// statusline-command.sh do dono (V9, achado por forma, não por nome) —
 /// nenhum gravável, mesmo com `~/.claude` inteiro virando bind rw. Inclui
 /// caminhos que NÃO existiam na fixture (daemon/novo.json,
 /// plugins/novo-plugin.json): o diretório sombreado bloqueia criar filho
 /// novo, não só reescrever o que já tinha.
+///
+/// `agents/reviewer.md` SAIU desta lista (fix/claude-agents-writable): não é
+/// mais um destes surfaces travados, de propósito — ver
+/// `agents_dir_is_writable_while_other_claude_surfaces_stay_locked` pro par
+/// positivo, e o comentário de `SENSITIVE_CLAUDE_READONLY_DIRS` em
+/// `agent/mod.rs` pra razão da mudança (superfície de prompt, não de
+/// execução de código no host).
 #[test]
 fn claude_config_and_hook_surfaces_are_never_writable() {
     if bwrap_unavailable("claude_config_and_hook_surfaces_are_never_writable") {
@@ -669,7 +676,6 @@ fn claude_config_and_hook_surfaces_are_never_writable() {
         "plugins/novo-plugin.json",
         "hooks/pre-commit.sh",
         "mcp.json",
-        "agents/reviewer.md",
         "commands/deploy.md",
         "skills/x/SKILL.md",
         "output-styles/terse.md",
@@ -703,6 +709,67 @@ fn claude_config_and_hook_surfaces_are_never_writable() {
             "{target} mudou de conteúdo apesar do write ter falhado"
         );
     }
+}
+
+/// fix/claude-agents-writable: o par POSITIVO de
+/// `claude_config_and_hook_surfaces_are_never_writable` — sem ele, a remoção
+/// de "agents" de `SENSITIVE_CLAUDE_READONLY_DIRS` poderia regredir
+/// silenciosamente (ex.: alguém devolve o Node por engano num refactor) sem
+/// nenhum teste vermelho, porque o teste negativo só prova "os outros
+/// continuam travados", nunca "este ficou destravado". Cria um `.md` NOVO
+/// (o shape exato do bug reportado: `/agents` criando uma definição) e
+/// também RE-ESCREVE a definição que já existia na fixture — as duas
+/// operações que o fluxo `/agents` faz (criar, editar) — e confirma que as
+/// duas persistem no host, no MESMO spawn em que `hooks/` (superfície de
+/// execução de código, não de prompt) continua bloqueado.
+#[test]
+fn agents_dir_is_writable_while_other_claude_surfaces_stay_locked() {
+    if bwrap_unavailable("agents_dir_is_writable_while_other_claude_surfaces_stay_locked") {
+        return;
+    }
+    let f = claude_fixture();
+    let claude = f.spec.home.join(".claude");
+    let novo = claude.join("agents/reviewer.md");
+    let out = run_sh(
+        &f.spec,
+        &format!("echo 'Revise o diff.' > {}", novo.display()),
+    );
+    assert_cage_booted(&out);
+    assert!(
+        out.status.success(),
+        "agents/reviewer.md (definição NOVA) precisa ser gravável: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(&novo).unwrap().contains("Revise"),
+        "a escrita de uma definição nova precisa persistir no host"
+    );
+
+    let out = run_sh(
+        &f.spec,
+        &format!("echo 'Revise o diff, versão 2.' >> {}", novo.display()),
+    );
+    assert_cage_booted(&out);
+    assert!(
+        out.status.success(),
+        "editar uma definição já existente (fluxo /agents) precisa ser gravável: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(&novo).unwrap().contains("versão 2"),
+        "a edição precisa persistir no host"
+    );
+
+    // No MESMO spawn, uma superfície de execução de código continua travada
+    // -- a mudança é só do "agents", não uma folga geral do write-except.
+    let hook = claude.join("hooks/pre-commit.sh");
+    let out = run_sh(&f.spec, &format!("echo pwn > {}", hook.display()));
+    assert_cage_booted(&out);
+    assert!(
+        !out.status.success(),
+        "hooks/ precisa continuar travado mesmo com agents/ liberado: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Contrato de cobertura item 6 / M1: sobre filho sombreado, `rm` e `mv` por

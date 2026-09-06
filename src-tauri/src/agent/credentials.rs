@@ -439,6 +439,83 @@ pub(crate) fn drift_alarm_names(
     fresh
 }
 
+/// fix/claude-agents-writable (decisão do dono): "agents" saiu de
+/// `SENSITIVE_CLAUDE_READONLY_DIRS` — ficou gravável, porque um `.md` de
+/// subagente é superfície de prompt/privilégio, não execução de código no
+/// host (ver o comentário em `agent/mod.rs`). A visibilidade que paga por
+/// essa escolha é ESTA função: `drift_alarm_names`/`unclassified_claude_
+/// children` acima só enxergam o NOME do topo de `~/.claude` (`read_dir`,
+/// não recursivo) — e "agents" agora está em `CLAUDE_STATE_TOP_LEVEL_NAMES`
+/// de propósito (não vira ruído só por existir, ver o comentário lá), então
+/// nem o nome do diretório chega ali. Um `.md` novo ou ALTERADO dentro de
+/// `agents/` nunca apareceria em nenhum dos dois — este é o mecanismo
+/// dedicado que fecha esse furo indo um nível a mais.
+///
+/// Identidade de dedupe é "agents/<nome>@<hash8>" (sha2 do conteúdo, já
+/// dependência do crate) — NÃO só o nome. Uma edição do mesmo arquivo produz
+/// uma identidade nova, que nunca bate com o que já foi acked antes, e volta
+/// a alarmar mesmo que o NOME já tenha sido visto e dispensado uma vez —
+/// central pro caso "agente enjaulado reescreve uma definição existente".
+/// Reaproveita a mesma infra de dedupe/ack do resto do alarme (`load_warned`
+/// / `names_not_yet_warned` / `record_emitted_drift_names`) — ela é genérica
+/// sobre `String`, e as duas formas (nome de topo vs. `agents/<nome>@<hash>`)
+/// nunca colidem porque só a segunda contém `@`.
+///
+/// Devolve pares (nome de exibição, identidade): o primeiro é o que o dono lê
+/// no toast (`detail`); o segundo é o que viaja em `names` — o que o front
+/// devolve no ack, e o que fica de fato gravado no store (ver o comentário
+/// de `SandboxWarningPayload.names`). Só nível único de `agents/` — é o shape
+/// que o Claude Code usa hoje pra definição de subagente; subdiretório
+/// dentro de `agents/` não é um caso conhecido em produção.
+#[cfg(target_os = "linux")]
+pub(crate) fn agent_definition_drift(
+    claude: &Path,
+    store: &crate::session::store::Store,
+) -> Vec<(String, String)> {
+    use sha2::{Digest, Sha256};
+
+    let agents_dir = claude.join("agents");
+    let Ok(entries) = std::fs::read_dir(&agents_dir) else {
+        return Vec::new();
+    };
+
+    let mut files: Vec<(PathBuf, String)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_file() {
+                return None;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                return None;
+            }
+            Some((path, entry.file_name().to_string_lossy().into_owned()))
+        })
+        .collect();
+    files.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    for (path, name) in files {
+        let Ok(content) = std::fs::read(&path) else {
+            continue;
+        };
+        let hash = format!("{:x}", Sha256::digest(&content));
+        let display = format!("agents/{name}");
+        let identity = format!("{display}@{}", &hash[..8]);
+        candidates.push((display, identity));
+    }
+
+    let warned = load_warned(store);
+    let identities: Vec<String> = candidates.iter().map(|(_, id)| id.clone()).collect();
+    let fresh = names_not_yet_warned(&identities, &warned);
+    record_emitted_drift_names(&fresh);
+
+    candidates
+        .into_iter()
+        .filter(|(_, id)| fresh.contains(id))
+        .collect()
+}
+
 /// Fio de produção (§6, chamado por `session::spawn_prepared` — Linux, só
 /// Claude Code): roda C1 + C2 + o alarme de deriva e emite um
 /// `agent://sandbox-warning` por achado. Nunca devolve erro, nunca bloqueia o
@@ -482,6 +559,25 @@ pub(crate) fn emit_warnings(
             SandboxWarningKind::FilhoDesconhecidoEmClaude,
             Some(unknown.join(", ")),
             Some(unknown),
+        ));
+    }
+
+    // fix/claude-agents-writable: achado SEPARADO do de cima, de propósito —
+    // "agents" não aparece em `drift_alarm_names` (o nome do diretório está
+    // em `CLAUDE_STATE_TOP_LEVEL_NAMES`, e o alarme de topo não é recursivo).
+    // Mesmo `SandboxWarningKind` (é conceitualmente o mesmo aviso — "algo em
+    // ~/.claude que o dono ainda não viu" —, e reaproveitar evita adicionar
+    // variante nova ao contrato core→webview só pra isto), mas `detail`/
+    // `names` vêm só dos defs de subagente, nunca misturados com o achado de
+    // topo.
+    let agent_defs = agent_definition_drift(&claude, store);
+    if !agent_defs.is_empty() {
+        let display: Vec<String> = agent_defs.iter().map(|(d, _)| d.clone()).collect();
+        let identities: Vec<String> = agent_defs.into_iter().map(|(_, id)| id).collect();
+        findings.push((
+            SandboxWarningKind::FilhoDesconhecidoEmClaude,
+            Some(display.join(", ")),
+            Some(identities),
         ));
     }
 
@@ -932,6 +1028,28 @@ mod tests {
         assert!(!drift_toast_worthy("does-not-exist", &claude));
     }
 
+    /// fix/claude-agents-writable: "agents" SAIU de
+    /// `SENSITIVE_CLAUDE_READONLY_DIRS` (ver `agent/mod.rs`) -- sem entrar no
+    /// vocabulário de estado conhecido (`CLAUDE_STATE_TOP_LEVEL_NAMES`), o
+    /// diretório em si (que existe em toda instalação com pelo menos um
+    /// subagente configurado) viraria "não classificado" e gritaria alarme
+    /// de deriva a CADA spawn de sessão, só pela sua presença -- ruído puro,
+    /// nada a ver com o ponto real da mitigação (ver
+    /// `agent_definition_drift_fires_for_a_new_md_file_in_agents` pra ONDE a
+    /// visibilidade de fato mora: no CONTEÚDO, não no nome do diretório).
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn unclassified_claude_children_does_not_flag_the_agents_dir_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        std::fs::create_dir_all(claude.join("agents")).unwrap();
+        let unknown = unclassified_claude_children(&claude);
+        assert!(
+            !unknown.contains(&"agents".to_string()),
+            "o diretório agents/ em si não pode virar ruído de deriva: {unknown:?}"
+        );
+    }
+
     /// `cfg(linux)`: testa `unclassified_claude_children`, linux-only —
     /// mesmo motivo do teste anterior.
     #[test]
@@ -946,6 +1064,95 @@ mod tests {
             !unknown.contains(&"statusline-command.sh".to_string()),
             "script já classificado por sensitive_claude_children não pode reaparecer como \
              deriva: {unknown:?}"
+        );
+    }
+
+    /// fix/claude-agents-writable: prova central do que a decisão do dono
+    /// pede -- "agents" ficou gravável (item 1 do fix), e ISTO é a
+    /// visibilidade que paga por essa escolha (item 2): um `.md` novo dentro
+    /// de `agents/` precisa aparecer no alarme. `unclassified_claude_children`
+    /// (acima) não alcança isto -- é `read_dir(claude)`, não recursivo, e
+    /// "agents" agora está em `CLAUDE_STATE_TOP_LEVEL_NAMES` (não aparece
+    /// nem pelo nome do diretório). `agent_definition_drift` é o mecanismo
+    /// dedicado que fecha esse furo indo um nível a mais.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_definition_drift_fires_for_a_new_md_file_in_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        let agents = claude.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("reviewer.md"), "system prompt v1").unwrap();
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+
+        let found = agent_definition_drift(&claude, &store);
+        let display: Vec<&String> = found.iter().map(|(d, _)| d).collect();
+        assert!(
+            display.contains(&&"agents/reviewer.md".to_string()),
+            "uma definição de subagente nova precisa disparar o alarme: {found:?}"
+        );
+    }
+
+    /// Mesma peça, o resto do fluxo de ack: sem confirmação do dono, a
+    /// definição continua sendo oferecida (mesmo raciocínio de
+    /// `drift_alarm_names_keeps_reoffering_until_acked` — um evento perdido
+    /// não pode silenciar o alarme pra sempre); depois do ack, some.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_definition_drift_stops_after_ack_but_keeps_reoffering_before_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        let agents = claude.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("reviewer.md"), "system prompt v1").unwrap();
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+
+        let first = agent_definition_drift(&claude, &store);
+        assert!(!first.is_empty(), "{first:?}");
+
+        let second = agent_definition_drift(&claude, &store);
+        assert_eq!(
+            first, second,
+            "sem ack, a mesma definição precisa continuar sendo oferecida"
+        );
+
+        let identities: Vec<String> = second.iter().map(|(_, id)| id.clone()).collect();
+        ack_drift_names(&store, &identities);
+        let after_ack = agent_definition_drift(&claude, &store);
+        assert!(
+            after_ack.is_empty(),
+            "depois do ack, a mesma definição (mesmo conteúdo) não pode reaparecer: {after_ack:?}"
+        );
+    }
+
+    /// O ponto do hash na identidade, não só o nome: um dono edita o system
+    /// prompt (ou um agente enjaulado reescreve por cima de uma definição já
+    /// vista e acked) — precisa voltar a alarmar, porque o CONTEÚDO mudou,
+    /// mesmo o nome do arquivo sendo o mesmo de antes.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_definition_drift_fires_again_when_content_changes_after_an_ack() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join(".claude");
+        let agents = claude.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let path = agents.join("reviewer.md");
+        std::fs::write(&path, "system prompt v1").unwrap();
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+
+        let first = agent_definition_drift(&claude, &store);
+        let identities: Vec<String> = first.iter().map(|(_, id)| id.clone()).collect();
+        ack_drift_names(&store, &identities);
+        assert!(agent_definition_drift(&claude, &store).is_empty());
+
+        std::fs::write(&path, "system prompt v2 -- injetado").unwrap();
+        let after_edit = agent_definition_drift(&claude, &store);
+        assert!(
+            after_edit
+                .iter()
+                .any(|(display, _)| display == "agents/reviewer.md"),
+            "conteúdo alterado precisa voltar a alarmar mesmo já tendo sido acked antes: \
+             {after_edit:?}"
         );
     }
 }
