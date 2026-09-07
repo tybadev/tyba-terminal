@@ -1559,6 +1559,52 @@ mod build_hosted_command_tests {
         assert_eq!(plan.cwd, cwd.path().to_string_lossy());
     }
 
+    /// Bug do retest da shim v2: o `claude` hospedado saía sem cor porque
+    /// `TERM`/`COLORTERM` não atravessavam `agent_env` → `build_command` →
+    /// `hosted_plan_from`. Prova a cadeia inteira, não só `agent_env`
+    /// isolado — é o plano que de fato vira `launch.json` e chega ao `exec`
+    /// do `tyba _jail`.
+    #[test]
+    fn hosted_plan_carries_term_and_colorterm_from_the_user_shell() {
+        let store = store();
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
+        let setup = hook_setup(runtime.path());
+        let exe = std::env::current_exe().unwrap();
+
+        let mut user_env: HashMap<String, String> = std::env::vars().collect();
+        user_env.insert("TERM".into(), "xterm-kitty".into());
+        user_env.insert("COLORTERM".into(), "truecolor".into());
+
+        let hosted = build_hosted_command(
+            &store,
+            &ClaudeCodeRunner,
+            cwd.path(),
+            None,
+            &setup,
+            &socket_path,
+            runtime.path(),
+            &exe,
+            &user_env,
+        )
+        .expect("gate-sem-jaula não deveria falhar");
+
+        let plan = hosted_plan_from(&hosted.cmd, cwd.path());
+        assert!(
+            plan.env
+                .contains(&("TERM".to_string(), "xterm-kitty".to_string())),
+            "TERM do shell do dono precisa chegar ao plano: {:?}",
+            plan.env
+        );
+        assert!(
+            plan.env
+                .contains(&("COLORTERM".to_string(), "truecolor".to_string())),
+            "COLORTERM do shell do dono precisa chegar ao plano: {:?}",
+            plan.env
+        );
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
     fn the_jailed_branch_wraps_argv_through_the_real_sandbox() {

@@ -430,10 +430,28 @@ fn poll_agent_probers(app: &AppHandle) {
     }
 }
 
+/// A decisão pura de quando o disk observer (F1→F2) entra em ação: só para
+/// Claude Code CRU — sem hook —, nunca para uma sessão HOSPEDADA (shim v2,
+/// `TYBA_HOSTED=1`). Hospedado já tem `HookServer` de verdade entregando
+/// `SubagentStarted`/`SubagentEnded` pelo socket (`prepare_hosted_agent`);
+/// sem este corte as duas fontes chamam `SubagentTracker::on_subagent_started`
+/// para o MESMO subagente, e `SessionSubagents::promote()` (que não
+/// deduplica por `agent_id` fora do slot "Starting" pendente) empilha uma
+/// segunda entrada — o "agente iniciado duas vezes" do retest do dono.
+/// Codex fica de fora independente de `hosted`: disk-driven pra ele "fica
+/// para depois", regra que já valia antes deste fix.
+fn wants_disk_observer(kind: &crate::session::AgentRunnerKind, hosted: bool) -> bool {
+    matches!(kind, crate::session::AgentRunnerKind::ClaudeCode) && !hosted
+}
+
 /// Liga a detecção de processo da F1 ao disk observer da F2. Claude cru num shell
 /// ganha captura de subagentes por disco; agente sumido congela o painel. Só
 /// Claude Code por ora (Codex disk-driven fica para depois). O cwd do transcript
 /// é o do próprio processo do agente, com o líder do shell como reserva.
+///
+/// Hospedado (shim v2) nunca entra aqui — ver [`wants_disk_observer`]: ele já
+/// tem hook de verdade, e ligar o disk observer por cima duplicaria a
+/// contagem de subagente iniciado.
 fn drive_disk_observer(
     app: &AppHandle,
     state: &AppState,
@@ -441,8 +459,12 @@ fn drive_disk_observer(
     session_id: SessionId,
     detected: Option<&agent::process_probe::DetectedAgent>,
 ) {
-    match detected {
-        Some(agent) if matches!(agent.kind, crate::session::AgentRunnerKind::ClaudeCode) => {
+    let wants = detected.is_some_and(|agent| {
+        let hosted = agent::process_probe::hosting_markers(agent.pid).0;
+        wants_disk_observer(&agent.kind, hosted)
+    });
+    match detected.filter(|_| wants) {
+        Some(agent) => {
             let cwd = repo::process_cwd(agent.pid).or_else(|| {
                 leader_by_session
                     .get(&session_id)
@@ -458,7 +480,7 @@ fn drive_disk_observer(
                 );
             }
         }
-        _ => state.disk_observer.stop(app, &state.subagents, session_id),
+        None => state.disk_observer.stop(app, &state.subagents, session_id),
     }
 }
 
@@ -7081,6 +7103,53 @@ mod tests {
                     "opened_by_gate={opened_by_gate} did_work={did_work}"
                 );
             }
+        }
+    }
+
+    // --- Bug do retest: `claude` hospedado (shim v2) contava subagente
+    // duas vezes ---------------------------------------------------------
+    //
+    // Raiz: `drive_disk_observer` ligava o disk observer (F1→F2, síntese de
+    // subagente por ARQUIVO) para QUALQUER Claude Code detectado num shell,
+    // hospedado ou não. Um hospedado já tem `HookServer` de verdade
+    // entregando `SubagentStarted`/`SubagentEnded` pelo socket
+    // (`prepare_hosted_agent`) — com o disk observer TAMBÉM ligado, as duas
+    // fontes chamam `SubagentTracker::on_subagent_started` para o MESMO
+    // `agent_id`, e `SessionSubagents::promote()` (que não deduplica por id
+    // fora do slot "Starting" pendente) empilha uma segunda `SubagentRun` —
+    // o "agente iniciado duas vezes" que o dono viu no painel. A própria doc
+    // de `drive_disk_observer` já dizia "Claude cru num shell ganha captura
+    // por disco": o corte por `hosted` só nunca tinha sido escrito.
+
+    #[test]
+    fn wants_disk_observer_is_true_for_a_bare_claude_code_without_hosting() {
+        assert!(wants_disk_observer(
+            &crate::session::AgentRunnerKind::ClaudeCode,
+            false
+        ));
+    }
+
+    /// A correção: hospedado (shim v2, `TYBA_HOSTED=1`) já tem hook de
+    /// verdade — o disk observer teria que ficar de fora, nunca duplicando a
+    /// fonte de `SubagentStarted`.
+    #[test]
+    fn wants_disk_observer_is_false_for_a_hosted_claude_code_even_though_it_is_claude() {
+        assert!(!wants_disk_observer(
+            &crate::session::AgentRunnerKind::ClaudeCode,
+            true
+        ));
+    }
+
+    /// Codex fica de fora do disk observer independente de hosting — "Codex
+    /// disk-driven fica para depois" já era a regra antes deste fix, e o
+    /// corte por `hosted` não pode mudar isso.
+    #[test]
+    fn wants_disk_observer_is_false_for_codex_regardless_of_hosting() {
+        for hosted in [false, true] {
+            assert!(!wants_disk_observer(
+                &crate::session::AgentRunnerKind::Codex,
+                hosted
+            ));
         }
     }
 }

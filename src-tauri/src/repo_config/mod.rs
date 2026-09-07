@@ -4,7 +4,30 @@ use std::path::Path;
 use serde::Deserialize;
 use sha2::Digest;
 
-pub const AGENT_ENV_BASELINE: [&str; 6] = ["PATH", "HOME", "USER", "LANG", "TMPDIR", "SHELL"];
+/// `TERM`/`COLORTERM` entraram para o bug do retest da shim v2: `agent_env`
+/// faz `env_clear()` + allowlist, e sem os dois o `claude` hospedado não via
+/// nenhum sinal de terminal e caía no fallback sem cor. São strings de
+/// CAPACIDADE de terminal — tipo do terminal e sinalização de truecolor —,
+/// nunca segredo nem vetor de injeção (não aparecem no `ENV_ALLOW_DENYLIST`,
+/// e não deveriam: não abrem X11/D-Bus, não trocam interpretador, não
+/// reescrevem `ssh`/PATH).
+pub const AGENT_ENV_BASELINE: [&str; 8] = [
+    "PATH",
+    "HOME",
+    "USER",
+    "LANG",
+    "TMPDIR",
+    "SHELL",
+    "TERM",
+    "COLORTERM",
+];
+
+/// Fallback de `TERM` quando o shell não tem NENHUM: o mesmo valor que
+/// `session::spawn_session` já força no PTY da sessão gerenciada. Preferir
+/// sempre o `TERM` real do shell (copiado pela baseline acima) — isto só
+/// entra no caso degenerado em que a var nem existe, para que o agente
+/// hospedado nunca saia colorless por ausência de sinal.
+const TERM_FALLBACK: &str = "xterm-256color";
 
 /// §7 da entrega B (ADR 2026-08-31): nomes que `env_allow` NUNCA concede,
 /// mesmo com consent explícito do dono — o consent autoriza o repo a PEDIR
@@ -198,6 +221,8 @@ pub fn agent_env(
     // binário de agente existe. O PATH do shell de login é o que o usuário
     // realmente tem (ver shell_path).
     env.insert("PATH".to_string(), crate::shell_path::agent_path());
+    env.entry("TERM".to_string())
+        .or_insert_with(|| TERM_FALLBACK.to_string());
     if let Some(dir) = developer_dir(user_env) {
         env.insert("DEVELOPER_DIR".to_string(), dir);
     }
@@ -396,6 +421,36 @@ mod tests {
         assert!(out.contains_key("PATH"));
         assert_eq!(out.get("HOME").map(String::as_str), Some("/home/x"));
         assert!(!out.contains_key("IGNORED"));
+    }
+
+    /// Bug do retest da shim v2: o `claude` hospedado saía sem cor (preto e
+    /// branco) porque `agent_env` fazia `env_clear()` + allowlist e a
+    /// baseline não carregava `TERM`/`COLORTERM` — strings de capacidade de
+    /// terminal, benignas, sem relação com segredo ou injeção. A sessão
+    /// gerenciada nunca sentiu isso porque sobrescreve `TERM` explicitamente
+    /// no spawn do PTY (`session::spawn_session`); a shim v2 não passa por lá.
+    #[test]
+    fn agent_env_carrega_term_e_colorterm_do_shell_do_usuario() {
+        let user = env(&[
+            ("PATH", "/bin"),
+            ("TERM", "xterm-kitty"),
+            ("COLORTERM", "truecolor"),
+        ]);
+        let out = agent_env(None, &user);
+        assert_eq!(out.get("TERM").map(String::as_str), Some("xterm-kitty"));
+        assert_eq!(out.get("COLORTERM").map(String::as_str), Some("truecolor"));
+    }
+
+    /// Sem `TERM` nenhum no shell (raro, mas acontece com launcher que não
+    /// herda terminal nenhum), o agente hospedado não pode ficar sem cor por
+    /// ausência de sinal — `xterm-256color` é o mesmo fallback que a sessão
+    /// gerenciada já usa no PTY spawn (`session::spawn_session`), então o
+    /// comportamento não diverge entre os dois caminhos no caso degenerado.
+    #[test]
+    fn agent_env_cai_num_term_seguro_quando_o_shell_nao_tem_nenhum() {
+        let user = env(&[("PATH", "/bin")]);
+        let out = agent_env(None, &user);
+        assert_eq!(out.get("TERM").map(String::as_str), Some("xterm-256color"));
     }
 
     /// Lançado pelo Dock, o processo herda o PATH do launchd — onde nenhum
