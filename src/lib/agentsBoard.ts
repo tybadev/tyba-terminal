@@ -84,6 +84,18 @@ export interface AgentRow {
 export const rowShowsNoGate = (row: AgentRow): boolean =>
   row.observed != null && !row.hosting;
 
+/**
+ * A seção dos observados tem algum agente de fato sem gate?
+ *
+ * Governa qualquer aviso que fale pela seção inteira — nota de texto E o
+ * ícone do cabeçalho —, nunca só o selo por linha. Duas sessões observadas,
+ * as duas hospedadas pelo shim v2, é seção sem nenhum "sem gate": o ícone
+ * âmbar de aviso no cabeçalho não pode sobrar sozinho quando `rowShowsNoGate`
+ * já reprovou todo mundo por dentro.
+ */
+export const sectionShowsNoGate = (sections: BoardSections): boolean =>
+  sections.observed.some(rowShowsNoGate);
+
 /** Estado sem cor própria no `statusVisual`: idle já visto e saída limpa. */
 const RESTING: StatusVisual = {
   dotClass: "bg-tyba-bg ring-1 ring-inset ring-tyba-text-faint",

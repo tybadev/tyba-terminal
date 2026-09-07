@@ -10,6 +10,7 @@ import {
   buildRows,
   groupByWorkspace,
   rowShowsNoGate,
+  sectionShowsNoGate,
   wantsAttention,
   type AgentRow,
   type SessionPlace,
@@ -190,6 +191,14 @@ export function AgentsBoard({
     () => groupByWorkspace(sections.observed),
     [sections.observed],
   );
+  // Governa o aviso da seção inteira — ícone do cabeçalho E nota de texto,
+  // nunca só o selo por linha. Duas sessões observadas hospedadas pelo shim
+  // v2 é seção sem nenhum "sem gate": o ícone âmbar não pode sobrar sozinho
+  // quando `rowShowsNoGate` já reprovou todo mundo por dentro.
+  const observedHasNoGate = useMemo(
+    () => sectionShowsNoGate(sections),
+    [sections],
+  );
   const waiting = useMemo(
     () => boardOrder(sections).filter(wantsAttention).length,
     [sections],
@@ -251,21 +260,25 @@ export function AgentsBoard({
           {observedGroups.length > 0 && (
             <section className="mb-3 tyba-divide-t pt-2">
               <h3 className="flex items-center gap-2 px-3 py-1 text-xs text-tyba-text-muted">
-                <ShieldSlash
-                  size={12}
-                  weight="fill"
-                  className="shrink-0 text-tyba-amber"
-                  aria-hidden
-                />
+                {/* Só quando a seção tem de fato algum agente sem gate — um
+                    hospedado pelo shim v2 (tech-spec §7) já está dentro do
+                    gate, e o próprio ícone de aviso mentiria sobre ele. */}
+                {observedHasNoGate && (
+                  <ShieldSlash
+                    size={12}
+                    weight="fill"
+                    className="shrink-0 text-tyba-amber"
+                    aria-hidden
+                  />
+                )}
                 <span className="truncate">{t("agentsBoardObserved")}</span>
                 <span className="text-tyba-text-faint">
                   {sections.observed.length}
                 </span>
               </h3>
-              {/* Só quando alguma linha da seção realmente não tem gate — um
-                  hospedado pelo shim v2 (tech-spec §7) já está dentro do
-                  gate, e a nota mentiria se falasse por ele também. */}
-              {sections.observed.some(rowShowsNoGate) && (
+              {/* Mesma condição do ícone acima: nota fala pela seção, então só
+                  aparece quando a seção tem de fato algum agente sem gate. */}
+              {observedHasNoGate && (
                 <p className="px-3 pb-1 text-[11px] leading-snug text-tyba-text-faint">
                   {t("agentsNoGate")}
                 </p>

@@ -22,6 +22,7 @@ import {
   oldestApprovalBySession,
   placesBySession,
   rowShowsNoGate,
+  sectionShowsNoGate,
   urgencyOf,
   wantsAttention,
   agentForWorkspace,
@@ -547,6 +548,50 @@ describe("selo 'sem gate' respeita o hosting do shim v2 (tech-spec §7)", () => 
     const [row] = board([session("gerenciado", running)]).managed;
 
     expect(rowShowsNoGate(row)).toBe(false);
+  });
+
+  test("seção com todos os observados hospedados: nenhum aviso de 'sem gate' — nem no cabeçalho", () => {
+    // O caso que o review pegou: cabeçalho da seção ficou incondicional
+    // enquanto a nota e o selo por linha já respeitavam hosting. Duas
+    // sessões observadas, as duas hospedadas — o mesmo ícone âmbar de
+    // "sem gate" não pode sobrar em lugar nenhum, nem no `<h3>`.
+    const sections = buildRows(
+      [
+        observedSession("s1", "running"),
+        observedSession("s2", "awaiting_input"),
+      ],
+      layout([
+        workspace("w1", "w", [
+          tab("t1", leaf("p1", "s1")),
+          tab("t2", leaf("p2", "s2")),
+        ]),
+      ]),
+      new Map([
+        ["s1", true],
+        ["s2", true],
+      ]),
+    );
+
+    expect(sections.observed).toHaveLength(2);
+    expect(sectionShowsNoGate(sections)).toBe(false);
+  });
+
+  test("um observado cru entre hospedados basta para o aviso da seção aparecer", () => {
+    const sections = buildRows(
+      [
+        observedSession("hospedado", "running"),
+        observedSession("cru", "awaiting_input"),
+      ],
+      layout([
+        workspace("w1", "w", [
+          tab("t1", leaf("p1", "hospedado")),
+          tab("t2", leaf("p2", "cru")),
+        ]),
+      ]),
+      new Map([["hospedado", true]]),
+    );
+
+    expect(sectionShowsNoGate(sections)).toBe(true);
   });
 });
 
