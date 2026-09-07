@@ -21,6 +21,7 @@ import {
   nextAttention,
   oldestApprovalBySession,
   placesBySession,
+  rowShowsNoGate,
   urgencyOf,
   wantsAttention,
   agentForWorkspace,
@@ -519,6 +520,33 @@ describe("seção dos observados", () => {
     expect(sections.managed[0].observed).toBeNull();
     // O que ela mostra é o fato do hook, não o palpite da tela.
     expect(sections.managed[0].urgency).toBe(urgencyOf(dupla));
+  });
+});
+
+describe("selo 'sem gate' respeita o hosting do shim v2 (tech-spec §7)", () => {
+  test("observado sem hosting no mapa → linha sem gate (comportamento de sempre)", () => {
+    const [row] = board([observedSession("s1", "running")]).observed;
+
+    expect(row.hosting).toBe(false);
+    expect(rowShowsNoGate(row)).toBe(true);
+  });
+
+  test("observado hospedado (hosting=true) → linha NÃO mostra sem gate", () => {
+    const sections = buildRows(
+      [observedSession("s1", "running")],
+      layout([workspace("w1", "w", [tab("t1", leaf("p1", "s1"))])]),
+      new Map([["s1", true]]),
+    );
+    const [row] = sections.observed;
+
+    expect(row.hosting).toBe(true);
+    expect(rowShowsNoGate(row)).toBe(false);
+  });
+
+  test("gerenciado nunca mostra sem gate, mesmo sem entrada no mapa de hosting", () => {
+    const [row] = board([session("gerenciado", running)]).managed;
+
+    expect(rowShowsNoGate(row)).toBe(false);
   });
 });
 

@@ -18,6 +18,7 @@ const row = (
   status: SessionStatus,
   over: {
     observed?: ObservedAgent | null;
+    hosting?: boolean;
     attention?: boolean;
     workspaceName?: string;
     id?: string;
@@ -49,6 +50,7 @@ const row = (
       order: over.order ?? 0,
     },
     observed: over.observed ?? null,
+    hosting: over.hosting ?? false,
     visual: {
       dotClass: "bg-tyba-amber",
       textClass: "text-tyba-amber",
@@ -89,6 +91,18 @@ describe("valores dos tokens", () => {
 
   test("concluído traz o resumo do turno", () => {
     expect(tokenValues(row(concluiu), label).detail).toBe("ajustei o parser");
+  });
+
+  test("observado hospedado pelo shim v2 (hosting) não leva o selo sem gate (tech-spec §7)", () => {
+    const values = tokenValues(
+      row(rodando, {
+        observed: { agent: "claude-code", state: "running" },
+        hosting: true,
+      }),
+      label,
+    );
+    expect(values.agent).toBe("claude-code");
+    expect(values.no_gate).toBeNull();
   });
 });
 

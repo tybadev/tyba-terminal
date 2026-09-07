@@ -9,6 +9,7 @@ import {
   boardOrder,
   buildRows,
   groupByWorkspace,
+  rowShowsNoGate,
   wantsAttention,
   type AgentRow,
   type SessionPlace,
@@ -21,6 +22,13 @@ interface Props {
   sessions: Session[];
   layout: LayoutState;
   activeSessionId: SessionId | null;
+  /**
+   * `hosting` do shim v2 (tech-spec §7), por sessão — o `Session.observed`
+   * não carrega isto. Ver `agentsBoard.rowShowsNoGate`: sem entrada aqui,
+   * a linha observada é tratada como sem hosting (mesmo "sem gate" de
+   * sempre).
+   */
+  hostingBySession: Map<SessionId, boolean>;
   /** Atalho do "ir para o próximo", só para exibir ao lado do botão. */
   nextAttentionCombo: string | null;
   onJump: (sessionId: SessionId, place: SessionPlace) => void;
@@ -79,10 +87,12 @@ function Row({
           <span className={`shrink-0 text-xs ${row.visual.textClass}`}>
             {t(row.visual.labelKey)}
           </span>
-          {row.observed && (
+          {rowShowsNoGate(row) && (
             // Mesma linguagem do aviso no terminal e do painel de subagentes:
             // escudo cortado, âmbar. O selo repete no cabeçalho da seção porque
             // a rolagem tira o cabeçalho da tela e a linha continua valendo.
+            // Não aparece para quem o shim v2 já hospedou (tech-spec §7): o
+            // gate está de pé, e o selo mentiria dizendo o contrário.
             <span
               className="flex shrink-0 items-center gap-1 rounded-[3px] border border-tyba-amber/40 px-1 text-[10px] text-tyba-amber"
               title={t("agentsNoGate")}
@@ -160,14 +170,15 @@ export function AgentsBoard({
   sessions,
   layout,
   activeSessionId,
+  hostingBySession,
   nextAttentionCombo,
   onJump,
   onNextAttention,
 }: Props) {
   const { t } = useTranslation();
   const sections = useMemo(
-    () => buildRows(sessions, layout),
-    [sessions, layout],
+    () => buildRows(sessions, layout, hostingBySession),
+    [sessions, layout, hostingBySession],
   );
   const groups = useMemo(
     () => groupByWorkspace(sections.managed),
@@ -251,9 +262,14 @@ export function AgentsBoard({
                   {sections.observed.length}
                 </span>
               </h3>
-              <p className="px-3 pb-1 text-[11px] leading-snug text-tyba-text-faint">
-                {t("agentsNoGate")}
-              </p>
+              {/* Só quando alguma linha da seção realmente não tem gate — um
+                  hospedado pelo shim v2 (tech-spec §7) já está dentro do
+                  gate, e a nota mentiria se falasse por ele também. */}
+              {sections.observed.some(rowShowsNoGate) && (
+                <p className="px-3 pb-1 text-[11px] leading-snug text-tyba-text-faint">
+                  {t("agentsNoGate")}
+                </p>
+              )}
               {observedGroups.map((group) => (
                 <div key={group.workspaceId} className="mb-1">
                   <WorkspaceHeading group={group} level={4} />

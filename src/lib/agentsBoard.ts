@@ -51,13 +51,38 @@ export interface AgentRow {
   /**
    * O agente deduzido da tela, e `null` na seção dos gerenciados.
    *
-   * Sai daqui, e não de `session.observed`, porque é este campo que decide o
-   * selo "sem gate" na pintura: uma sessão gerenciada que por acidente carregue
-   * `observed` continua sendo gerenciada, e ler o campo da sessão colaria nela
-   * um selo que mente sobre as garantias que ela tem.
+   * Sai daqui, e não de `session.observed`, porque é este campo (junto de
+   * `hosting`, ver [`rowShowsNoGate`]) que decide o selo "sem gate" na
+   * pintura: uma sessão gerenciada que por acidente carregue `observed`
+   * continua sendo gerenciada, e ler o campo da sessão colaria nela um selo
+   * que mente sobre as garantias que ela tem.
    */
   observed: ObservedAgent | null;
+  /**
+   * O shim v2 já gateou este agente pelo canal shim↔core (tech-spec §7),
+   * mesmo que `observed` continue vindo do palpite de tela — hospedar não
+   * muda o `kind` da sessão, que segue `shell`.
+   *
+   * Não é campo do core: `Session.observed` não carrega isto (só
+   * `agent`/`state`), então vem de fora, de um mapa que quem chama
+   * `buildRows` monta a partir do `AgentDetectedPayload` (`hostingBySession`).
+   * `false` é o default seguro quando não há dado ainda — mesmo
+   * comportamento de antes desta linha existir. Usar sempre via
+   * [`rowShowsNoGate`], nunca reler `observed` sozinho para decidir o selo.
+   */
+  hosting: boolean;
 }
+
+/**
+ * Mostra o selo "sem gate" nesta linha?
+ *
+ * Tech-spec §7: `!hosting && detected` é o único caso de "sem gate" —
+ * hospedado (o gate ligou) nunca mostra este selo, jaulado ou não. Única
+ * fonte da regra: `AgentsBoard`, `AgentsQueue` e o token `no_gate` da barra
+ * lateral chamam esta função, nunca reescrevem a condição.
+ */
+export const rowShowsNoGate = (row: AgentRow): boolean =>
+  row.observed != null && !row.hosting;
 
 /** Estado sem cor própria no `statusVisual`: idle já visto e saída limpa. */
 const RESTING: StatusVisual = {
@@ -237,10 +262,16 @@ const byUrgencyThenName = (a: AgentRow, b: AgentRow): number =>
  * A sessão gerenciada é decidida primeiro e sai da varredura: se um dia uma
  * delas carregar `observed` — palpite de tela sobre sessão que tem hook —, ela
  * conta uma vez só, entre as gerenciadas, que é onde estão as garantias.
+ *
+ * `hostingBySession` é o `hosting` do shim v2 (tech-spec §7) por sessão — vem
+ * de fora, do `AgentDetectedPayload`, porque `Session.observed` não o carrega.
+ * Default vazio: sem dado, toda linha observada é tratada como sem hosting —
+ * o mesmo "sem gate" de sempre, nunca o contrário.
  */
 export const buildRows = (
   sessions: Session[],
   layout: LayoutState,
+  hostingBySession: Map<SessionId, boolean> = new Map(),
 ): BoardSections => {
   const places = placesBySession(layout);
   const managed: AgentRow[] = [];
@@ -255,6 +286,7 @@ export const buildRows = (
         visual: statusVisual(session.status, session.attention) ?? RESTING,
         urgency: urgencyOf(session),
         observed: null,
+        hosting: false,
       });
       continue;
     }
@@ -267,6 +299,7 @@ export const buildRows = (
       // shell — que está sempre "rodando" — e pintaria de azul um agente que
       // pode estar parado esperando resposta.
       visual: observedVisual(seen),
+      hosting: hostingBySession.get(session.id) ?? false,
       urgency: observedUrgency(seen),
       observed: seen,
     });

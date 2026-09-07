@@ -159,14 +159,21 @@ describe("showAgentsButton", () => {
 });
 
 describe("agentsPanelUngated", () => {
-  test("shell com claude detectado é não-gerenciada → badge sem gate", () => {
-    expect(agentsPanelUngated({ type: "shell" })).toBe(true);
+  test("shell com claude detectado, sem hosting → badge sem gate", () => {
+    expect(agentsPanelUngated({ type: "shell" }, false)).toBe(true);
   });
 
-  test("sessão de agente é gerenciada → sem badge", () => {
-    expect(agentsPanelUngated({ type: "agent", runner: "claude_code" })).toBe(
-      false,
-    );
+  test("shell com claude hospedado pelo shim v2 (hosting) → sem badge, o gate está de pé (tech-spec §7)", () => {
+    expect(agentsPanelUngated({ type: "shell" }, true)).toBe(false);
+  });
+
+  test("sessão de agente é gerenciada → sem badge, com ou sem hosting", () => {
+    expect(
+      agentsPanelUngated({ type: "agent", runner: "claude_code" }, false),
+    ).toBe(false);
+    expect(
+      agentsPanelUngated({ type: "agent", runner: "claude_code" }, true),
+    ).toBe(false);
   });
 });
 
