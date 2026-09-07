@@ -47,8 +47,20 @@ export const showAgentsButton = (
   return false;
 };
 
-export const agentsPanelUngated = (kind: SessionKind): boolean =>
-  kind.type !== "agent";
+/**
+ * Mostra o selo "sem gate" no painel de agentes?
+ *
+ * Shim v2 (tech-spec §7): `hosting` é o que decide, não só o `kind`. Um
+ * `claude` hospedado pelo shim continua com `kind.type === "shell"` — o shim
+ * mora dentro do shell, não vira sessão de agente —, mas já está dentro do
+ * gate (princípios 1/4/6/10 do CLAUDE.md), jaulado ou não. Badge "sem gate"
+ * é só para o caso `!hosting && detected`; hospedado é o sinal âmbar "sem
+ * jaula" (`showUnjailedNotice`), nunca este.
+ */
+export const agentsPanelUngated = (
+  kind: SessionKind,
+  hosting: boolean,
+): boolean => kind.type !== "agent" && !hosting;
 
 const anyActive = (subagents: SubagentRun[]): boolean =>
   subagents.some((s) => s.status === "running" || s.status === "starting");

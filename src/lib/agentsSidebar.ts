@@ -1,5 +1,5 @@
 import type { AgentRow } from "./agentsBoard";
-import { wantsAttention } from "./agentsBoard";
+import { rowShowsNoGate, wantsAttention } from "./agentsBoard";
 
 /**
  * O que uma linha da seção de agentes pode mostrar.
@@ -75,7 +75,10 @@ export const tokenValues = (
       : row.place.workspaceName,
     agent: row.observed?.agent ?? null,
     detail,
-    no_gate: row.observed ? true : null,
+    // Shim v2 (tech-spec §7): hospedado (hosting) já está dentro do gate,
+    // então não mostra "sem gate" — ver `rowShowsNoGate`, fonte única desta
+    // regra também no quadro e na fila.
+    no_gate: rowShowsNoGate(row) ? true : null,
   };
 };
 

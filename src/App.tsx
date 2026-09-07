@@ -1733,14 +1733,26 @@ export default function App() {
     [goToSession],
   );
 
+  // O `hosting` do shim v2 (tech-spec §7), por sessão — projeção de
+  // `detectedBySession` porque `agentsBoard.buildRows`/`AgentRow` só
+  // precisam do booleano, nunca do `pid`/`start_ms`/`jailed` que o resto do
+  // App usa. É o que decide o selo "sem gate" no quadro, na fila e na barra
+  // lateral (ver `agentsBoard.rowShowsNoGate`): hospedado já está dentro do
+  // gate, mesmo continuando `kind.type === "shell"`.
+  const hostingBySession = useMemo(() => {
+    const map = new Map<SessionId, boolean>();
+    for (const [id, d] of detectedBySession) map.set(id, d.hosting);
+    return map;
+  }, [detectedBySession]);
+
   // Conta as duas seções do quadro: o agente sem gate também pede alguém, e o
 
   // Uma lista só, consumida pelo contador e pela seção da barra lateral. Duas
   // derivações independentes do mesmo estado dariam contador e lista que
   // discordam — e é exatamente o número em cima da lista que denuncia.
   const agentRows = useMemo(
-    () => boardOrder(buildAgentRows(sessions, layout)),
-    [sessions, layout],
+    () => boardOrder(buildAgentRows(sessions, layout, hostingBySession)),
+    [sessions, layout, hostingBySession],
   );
   const agentsWaiting = useMemo(
     () => agentRows.filter(wantsAttention).length,
@@ -5155,6 +5167,7 @@ export default function App() {
                         sessions={sessions}
                         layout={layout}
                         activeSessionId={activeId}
+                        hostingBySession={hostingBySession}
                         nextAttentionCombo={bindings.nextAttentionSession}
                         onJump={jumpToAgent}
                         onNextAttention={goToNextAttention}
@@ -5680,6 +5693,7 @@ export default function App() {
                           sessions={sessions}
                           layout={layout}
                           approvals={approvals}
+                          hostingBySession={hostingBySession}
                           onJump={jumpToAgent}
                           onReviewDiff={(id) =>
                             void openDiffTab(id).catch(() => {})
@@ -5698,7 +5712,10 @@ export default function App() {
                             snapshot={
                               subagentsBySession.get(agentsTarget.id) ?? null
                             }
-                            ungated={agentsPanelUngated(agentsTarget.kind)}
+                            ungated={agentsPanelUngated(
+                              agentsTarget.kind,
+                              hostingBySession.get(agentsTarget.id) ?? false,
+                            )}
                             orchestratorTitle={
                               agentsTarget.kind.type === "shell"
                                 ? (() => {

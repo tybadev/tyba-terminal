@@ -8,6 +8,7 @@ import {
   buildRows,
   boardOrder,
   oldestApprovalBySession,
+  rowShowsNoGate,
   wantsAttention,
   type AgentRow,
   type SessionPlace,
@@ -27,6 +28,12 @@ interface Props {
   sessions: Session[];
   layout: LayoutState;
   approvals: ApprovalRequest[];
+  /**
+   * `hosting` do shim v2 (tech-spec §7), por sessão — ver
+   * `AgentsBoard`/`agentsBoard.rowShowsNoGate` para o porquê de não vir de
+   * `Session.observed`.
+   */
+  hostingBySession: Map<SessionId, boolean>;
   onJump: (sessionId: SessionId, place: SessionPlace) => void;
   onReviewDiff: (sessionId: SessionId) => void;
   onClose: () => void;
@@ -115,7 +122,7 @@ function Row({
         <span className={`shrink-0 text-[11px] ${row.visual.textClass}`}>
           {t(row.visual.labelKey)}
         </span>
-        {row.observed && (
+        {rowShowsNoGate(row) && (
           <ShieldSlash
             size={12}
             className="shrink-0 text-tyba-amber"
@@ -261,14 +268,15 @@ export function AgentsQueue({
   sessions,
   layout,
   approvals,
+  hostingBySession,
   onJump,
   onReviewDiff,
   onClose,
 }: Props) {
   const { t } = useTranslation();
   const rows = useMemo(
-    () => boardOrder(buildRows(sessions, layout)),
-    [sessions, layout],
+    () => boardOrder(buildRows(sessions, layout, hostingBySession)),
+    [sessions, layout, hostingBySession],
   );
   const esperando = useMemo(() => rows.filter(wantsAttention).length, [rows]);
   // Mesma função que o toaster usa (via agentQueueVisibleApprovalIds em

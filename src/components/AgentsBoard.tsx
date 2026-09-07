@@ -9,6 +9,8 @@ import {
   boardOrder,
   buildRows,
   groupByWorkspace,
+  rowShowsNoGate,
+  sectionShowsNoGate,
   wantsAttention,
   type AgentRow,
   type SessionPlace,
@@ -21,6 +23,13 @@ interface Props {
   sessions: Session[];
   layout: LayoutState;
   activeSessionId: SessionId | null;
+  /**
+   * `hosting` do shim v2 (tech-spec §7), por sessão — o `Session.observed`
+   * não carrega isto. Ver `agentsBoard.rowShowsNoGate`: sem entrada aqui,
+   * a linha observada é tratada como sem hosting (mesmo "sem gate" de
+   * sempre).
+   */
+  hostingBySession: Map<SessionId, boolean>;
   /** Atalho do "ir para o próximo", só para exibir ao lado do botão. */
   nextAttentionCombo: string | null;
   onJump: (sessionId: SessionId, place: SessionPlace) => void;
@@ -79,10 +88,12 @@ function Row({
           <span className={`shrink-0 text-xs ${row.visual.textClass}`}>
             {t(row.visual.labelKey)}
           </span>
-          {row.observed && (
+          {rowShowsNoGate(row) && (
             // Mesma linguagem do aviso no terminal e do painel de subagentes:
             // escudo cortado, âmbar. O selo repete no cabeçalho da seção porque
             // a rolagem tira o cabeçalho da tela e a linha continua valendo.
+            // Não aparece para quem o shim v2 já hospedou (tech-spec §7): o
+            // gate está de pé, e o selo mentiria dizendo o contrário.
             <span
               className="flex shrink-0 items-center gap-1 rounded-[3px] border border-tyba-amber/40 px-1 text-[10px] text-tyba-amber"
               title={t("agentsNoGate")}
@@ -160,14 +171,15 @@ export function AgentsBoard({
   sessions,
   layout,
   activeSessionId,
+  hostingBySession,
   nextAttentionCombo,
   onJump,
   onNextAttention,
 }: Props) {
   const { t } = useTranslation();
   const sections = useMemo(
-    () => buildRows(sessions, layout),
-    [sessions, layout],
+    () => buildRows(sessions, layout, hostingBySession),
+    [sessions, layout, hostingBySession],
   );
   const groups = useMemo(
     () => groupByWorkspace(sections.managed),
@@ -178,6 +190,14 @@ export function AgentsBoard({
   const observedGroups = useMemo(
     () => groupByWorkspace(sections.observed),
     [sections.observed],
+  );
+  // Governa o aviso da seção inteira — ícone do cabeçalho E nota de texto,
+  // nunca só o selo por linha. Duas sessões observadas hospedadas pelo shim
+  // v2 é seção sem nenhum "sem gate": o ícone âmbar não pode sobrar sozinho
+  // quando `rowShowsNoGate` já reprovou todo mundo por dentro.
+  const observedHasNoGate = useMemo(
+    () => sectionShowsNoGate(sections),
+    [sections],
   );
   const waiting = useMemo(
     () => boardOrder(sections).filter(wantsAttention).length,
@@ -240,20 +260,29 @@ export function AgentsBoard({
           {observedGroups.length > 0 && (
             <section className="mb-3 tyba-divide-t pt-2">
               <h3 className="flex items-center gap-2 px-3 py-1 text-xs text-tyba-text-muted">
-                <ShieldSlash
-                  size={12}
-                  weight="fill"
-                  className="shrink-0 text-tyba-amber"
-                  aria-hidden
-                />
+                {/* Só quando a seção tem de fato algum agente sem gate — um
+                    hospedado pelo shim v2 (tech-spec §7) já está dentro do
+                    gate, e o próprio ícone de aviso mentiria sobre ele. */}
+                {observedHasNoGate && (
+                  <ShieldSlash
+                    size={12}
+                    weight="fill"
+                    className="shrink-0 text-tyba-amber"
+                    aria-hidden
+                  />
+                )}
                 <span className="truncate">{t("agentsBoardObserved")}</span>
                 <span className="text-tyba-text-faint">
                   {sections.observed.length}
                 </span>
               </h3>
-              <p className="px-3 pb-1 text-[11px] leading-snug text-tyba-text-faint">
-                {t("agentsNoGate")}
-              </p>
+              {/* Mesma condição do ícone acima: nota fala pela seção, então só
+                  aparece quando a seção tem de fato algum agente sem gate. */}
+              {observedHasNoGate && (
+                <p className="px-3 pb-1 text-[11px] leading-snug text-tyba-text-faint">
+                  {t("agentsNoGate")}
+                </p>
+              )}
               {observedGroups.map((group) => (
                 <div key={group.workspaceId} className="mb-1">
                   <WorkspaceHeading group={group} level={4} />
