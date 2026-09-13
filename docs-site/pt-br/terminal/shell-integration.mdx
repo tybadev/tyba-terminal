@@ -16,6 +16,7 @@ A **shell integration** resolve isso: o TYBA injeta um punhado de hooks no shell
 | **A descrição da sessão na sidebar** | O comando em execução aparece embaixo do nome do workspace, com o ponto verde pulsando. É o que te deixa olhar a sidebar e saber o que cada sessão está fazendo, estilo Warp. |
 | **Executando / Ocioso** | O status na aba e no hover card sai daqui. |
 | **O diretório atual** | O shell avisa quando você faz `cd`. |
+| **Gate no `claude` digitado** | No Linux, `claude` sem argumentos sobe com inbox de aprovações e, num repositório git dentro da sua home, jaula — ver [Agente iniciado no shell](/pt-br/agente/agente-no-shell). |
 
 Sem isso, uma sessão parada e uma sessão compilando há três minutos são visualmente idênticas.
 
@@ -64,6 +65,8 @@ O agente avisa por conta própria: a ferramenta que vai rodar vira `Running`, o 
 
 O que a shell integration dá para agentes é outra coisa: a **detecção de agente rodando dentro de um shell comum**. Você digitou `claude` num pane de shell — o TYBA descobre isso pela linha de comando que o shell reporta, e é a integração que reporta.
 
+No Linux ela vai além de detectar: define no shell da sessão uma função `claude`, e é essa função que faz o `claude` digitado subir **com gate** em vez de cru.
+
 ## Desligar
 
 **Configurações → Code → Shell integration**, toggle off. Vale para as sessões **novas** — os hooks entram no nascimento do shell, então as sessões já abertas continuam como estão até você abrir outra.
@@ -77,6 +80,7 @@ O que você perde:
 | **A descrição na sidebar** | Some. A sessão vira só o nome. |
 | **Executando / Ocioso** | Some. |
 | **Status de agente** | Fica só com o que o runner reportar, sem o fallback. |
+| **Gate no `claude` digitado** | Some, no Linux. `claude` num shell volta a subir cru, e o TYBA só avisa. |
 | **O terminal** | Nada. Continua idêntico — colar, buscar, copiar, splits, tudo. |
 
 ## Veja também

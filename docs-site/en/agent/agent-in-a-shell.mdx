@@ -1,26 +1,73 @@
 ---
 title: "Agent started in a shell"
-description: "Typing `claude` in a plain terminal runs the agent with none of TYBA's protections — and what the app does when it notices."
+description: "Typing `claude` in a TYBA shell starts the agent with a gate — where that applies, when the jail kicks in, and what the app does when an agent starts unprotected."
 ---
 
-There are two ways an agent can start inside TYBA, and they are not equivalent:
+There are three ways an agent can start inside TYBA, and they don't give you the same protection:
 
 | How it starts | What you get |
 | --- | --- |
-| **TYBA runs it** — agent session, launch config, reopen managed | Approval inbox, sandbox, filtered env, subagent capture |
-| **You type `claude` in a shell** | None of that. The shell started the process, not TYBA |
+| **TYBA runs it** — agent session, launch config, reopen managed | Approval inbox, jail, filtered env, subagent capture, its own worktree |
+| **You type `claude` in a shell** — Linux, bash or zsh | Approval inbox, filtered env and subagent capture, always. A jail when the folder is inside a git repository in your home |
+| **Anything else** — `claude` with arguments, `command claude`, `codex`, other shells, Windows | None of that. The shell started the process, not TYBA |
+
+## Typing `claude` turns the gate on
+
+On Linux, in a bash or zsh shell with [shell integration](/en/terminal/shell-integration) on (the default), typing `claude` with no arguments doesn't start a raw agent. TYBA intercepts the command **before the process is born** and starts `claude` with the approval hooks, a filtered env and, when the folder allows it, a jail.
+
+Everything happens **in the same pane**: no button, nothing ended, no new session. The agent runs as a child of your shell — when it exits, you're back at the prompt you typed from.
+
+The first time, a toast explains the change:
+
+> TYBA now jails + gates when you run claude. To run without it, use command claude.
+
+<Note>
+Intercepting first is what makes this possible. The approval hooks and the jail are only set up **at the moment the process is born**; a `claude` that already started raw can't have them attached afterwards. To get there first, shell integration defines a shell function called `claude` — `type claude` shows what it does.
+</Note>
+
+### When the jail kicks in
+
+The **gate always applies**: a risky command asks for approval in any folder. The **jail**, which limits what the agent reads and writes, only kicks in when the folder is inside a **git repository whose root is a visible folder in your home**:
+
+| Where you typed `claude` | Gate | Jail |
+| --- | --- | --- |
+| In a repository at `~/projects/app` | Yes | Yes |
+| In a folder without git | Yes | No |
+| In a repository at your home itself (`~`) | Yes | No |
+| In a repository under a hidden folder (`~/.config/…`) | Yes | No |
+| In a repository outside your home (`/tmp`, `/opt`…) | Yes | No |
+
+In the other cases there is no safe root for the jail. Without a repository there is no boundary to draw; and a repository at your home, under a hidden folder or outside your home would put within the agent's reach exactly what the jail protects — keys, tokens, other programs' config. TYBA doesn't fake protection: it starts with a gate and no jail, and says so in an **amber strip at the top of the session**:
+
+> claude is gated, but not jailed — the folder isn't under a repo visible under home.
+
+The same strip shows up when the system won't let the jail be set up — no user namespaces, for instance. The gate still applies.
 
 <Warning>
-An agent typed into a shell runs **with no gate**: no approval for risky commands, no jail limiting what it reads and writes, no subagent capture. It has exactly the powers your shell has.
+**Without a jail, the agent has your user's reach.** The gate keeps asking for approval on risky commands, but whatever goes through without approval isn't confined to a folder.
 </Warning>
 
-This is not a hole — it follows from where the protections live. The approval hooks and the jail are set up **at the moment the process is born**, and only TYBA knows how to set them up. A `claude` the shell started was already born without them.
+### Running it without TYBA
 
-## TYBA notices and warns you
+Two ways, and both start the agent **with no gate**, as in a plain terminal:
 
-When a known agent (`claude`, `codex`) starts running inside a shell session, an **amber strip appears at the top of that session**:
+- **`command claude`** skips the function and runs the binary directly.
+- **`claude` with any argument** — `claude --resume`, `claude -p "…"` — also starts raw. Only a bare `claude` goes through the gate: arguments change how the agent starts, and TYBA doesn't pass them into the protected path.
 
-> ⚠ Agent running without TYBA's gate — no inbox, no sandbox, no subagent capture.
+If TYBA can't prepare the session (the app isn't responding, the folder no longer exists), `claude` starts raw instead of not starting at all: a terminal that refuses to run what you typed is broken. In all these cases TYBA notices the ungated agent and warns you, as described below.
+
+### Where it doesn't apply
+
+- **Windows and macOS** — typing `claude` in a shell doesn't go through the gate.
+- **fish, PowerShell and cmd** — the function only exists in bash and zsh.
+- **Shell integration off** — the function isn't installed, in zsh or in bash.
+- **`codex`** — only `claude` goes through the gate when typed.
+
+## Ungated agent: TYBA notices and warns you
+
+When a known agent (`claude`, `codex`) starts running **with no gate** inside a shell session, an **amber strip appears at the top of that session**:
+
+> ⚠ claude running without TYBA's gate — no approval inbox, no sandbox
 > **[Reopen managed]** **[Ignore]**
 
 The strip is **per session**, not per window: if you have a split with two shells, only the one running the agent shows the warning.
@@ -59,14 +106,15 @@ The folder has to be a **git repository**. A managed session is repo-centric —
 
 Hides the warning **for that process**. A new agent in the same shell warns again — and reloading the window brings the warning back, deliberately: the session is still ungated, and TYBA will not pretend otherwise.
 
-What does **not** go away is the **no gate** badge in the session panel. As long as that agent runs unprotected, the badge stays.
+What does **not** go away is the **no gate** badge in the session panel. As long as that agent runs unprotected, the badge stays. A `claude` that TYBA started with a gate doesn't get the badge — jailed or not.
 
-## The Agents panel works here too
+## The Agents panel works in both cases
 
-Even with no gate, subagents of a `claude` typed into a shell show up in the **Agents** panel — TYBA reads the transcript from disk instead of relying on the hooks. It is the one protection that survives the raw path, and it is read-only: it shows what is happening, it does not intercept anything.
+Subagents of a `claude` typed into a shell show up in the **Agents** panel, gated or not. With a gate, they arrive through the hooks, as in an agent session. Without one, TYBA reads the transcript from disk — it is the one protection that survives the raw path, and it is read-only: it shows what is happening, it does not intercept anything.
 
 ## See also
 
 - [Claude Code and Codex](/en/agent/claude-code-and-codex) — how TYBA starts a managed agent
+- [Shell integration](/en/terminal/shell-integration) — what it injects into the shell, and how to turn it off
 - [Subagents](/en/agent/subagents) — the Agents panel and the execution tree
 - [Risk classification](/en/security/risk-classification) — what the approval gate holds back
