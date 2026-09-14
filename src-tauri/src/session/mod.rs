@@ -1557,6 +1557,9 @@ command claude beta
         );
         let out = std::process::Command::new("bash")
             .arg("-i")
+            // `type claude` é lido como texto; num bash em pt-BR ele diz
+            // "claude é uma função" e o teste quebrava na máquina do dono.
+            .env("LC_ALL", "C")
             .env("HOME", std::env::var("HOME").unwrap_or_default())
             .env(
                 "PATH",
