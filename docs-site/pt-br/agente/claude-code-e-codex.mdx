@@ -42,7 +42,7 @@ Com a preferência ligada, os dois atalhos fazem a mesma coisa.
 <Note>
 **Sessão de agente é sempre sessão em worktree.** Não é uma amarração acidental: worktree, jaula, env por allowlist e inbox nascem juntos, no mesmo passo. O caminho inteiro está em [Primeira sessão](/pt-br/primeira-sessao).
 
-Rodar `claude` digitando o nome dele num shell é outra coisa: o agente sobe sem gate nenhum. O TYBA percebe e oferece reabrir gerenciado — ver [Agente iniciado no shell](/pt-br/agente/agente-no-shell).
+Digitar `claude` num shell é outra coisa: não cria worktree, e o agente roda na pasta onde o shell está. No Linux, em bash ou zsh, o TYBA ainda assim sobe esse `claude` com gate — e com jaula, se a pasta está num repositório git dentro da sua home. Nos outros casos o agente sobe sem gate, e o TYBA percebe e oferece reabrir com gate — ver [Agente iniciado no shell](/pt-br/agente/agente-no-shell).
 </Note>
 
 A preferência **"Pasta padrão para novas sessões"** (Configurações → Geral) coloca uma pasta como **primeira opção** da lista, marcada com a etiqueta `pasta padrão`. Vazia = sem padrão.

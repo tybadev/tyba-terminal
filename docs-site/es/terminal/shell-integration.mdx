@@ -16,6 +16,7 @@ La **shell integration** resuelve eso: TYBA inyecta un puñado de hooks en el sh
 | **La descripción de la sesión en la sidebar** | El comando en ejecución aparece debajo del nombre del workspace, con el punto verde pulsando. Es lo que te deja mirar la sidebar y saber qué está haciendo cada sesión, al estilo Warp. |
 | **Running / Idle** | El estado en la pestaña y en la hover card sale de aquí. |
 | **El directorio actual** | El shell avisa cuando haces `cd`. |
+| **Gate en el `claude` que escribes** | En Linux, `claude` sin argumentos arranca con el inbox de aprobaciones y, dentro de un repositorio git en tu home, con jaula — ver [Agente iniciado en el shell](/es/agente/agente-en-el-shell). |
 
 Sin eso, una sesión parada y una sesión compilando desde hace tres minutos son visualmente idénticas.
 
@@ -64,6 +65,8 @@ El agente avisa por su cuenta: la herramienta que va a ejecutarse se vuelve `Run
 
 Lo que la shell integration sí le da a los agentes es otra cosa: la **detección de un agente corriendo dentro de un shell común**. Escribiste `claude` en un pane de shell — TYBA lo descubre por la línea de comando que el shell reporta, y es la integración la que reporta.
 
+En Linux va más allá de detectar: define una función `claude` en el shell de la sesión, y es esa función la que hace que el `claude` que escribes arranque **con gate** en vez de crudo.
+
 ## Apagar
 
 **Settings → Code → Shell integration**, toggle off. Vale para las sesiones **nuevas** — los hooks entran en el nacimiento del shell, así que las sesiones ya abiertas siguen como están hasta que abras otra.
@@ -77,6 +80,7 @@ Lo que pierdes:
 | **La descripción en la sidebar** | Desaparece. La sesión se vuelve solo el nombre. |
 | **Running / Idle** | Desaparece. |
 | **Estado de agente** | Queda solo con lo que el runner reporte, sin el fallback. |
+| **Gate en el `claude` que escribes** | Desaparece, en Linux. `claude` en un shell vuelve a arrancar crudo, y TYBA solo avisa. |
 | **La terminal** | Nada. Sigue idéntica — pegar, buscar, copiar, splits, todo. |
 
 ## Ver también

@@ -16,6 +16,7 @@ An ordinary terminal has no idea what's going on inside it. It sees bytes. "Is s
 | **The session description in the sidebar** | The running command appears under the workspace name, with the green dot pulsing. It's what lets you glance at the sidebar and know what each session is doing, Warp-style. |
 | **Running / Idle** | The status on the tab and in the hover card comes from here. |
 | **The current directory** | The shell reports when you `cd`. |
+| **A gate on a typed `claude`** | On Linux, `claude` with no arguments starts with the approval inbox and, inside a git repository in your home, a jail — see [Agent started in a shell](/en/agent/agent-in-a-shell). |
 
 Without it, an idle session and a session that's been compiling for three minutes look identical.
 
@@ -64,6 +65,8 @@ The agent reports on its own: the tool about to run becomes `Running`, the end o
 
 What shell integration does give agents is something else: **detecting an agent running inside an ordinary shell**. You typed `claude` in a shell pane — TYBA finds that out from the command line the shell reports, and it's the integration doing the reporting.
 
+On Linux it goes beyond detecting: it defines a `claude` function in the session's shell, and that function is what makes a typed `claude` start **with a gate** instead of raw.
+
 ## Turning it off
 
 **Settings → Code → Shell integration**, toggle off. It applies to **new** sessions — the hooks go in when the shell is born, so sessions already open stay as they are until you open another.
@@ -77,6 +80,7 @@ What you lose:
 | **The sidebar description** | Gone. The session becomes just the name. |
 | **Running / Idle** | Gone. |
 | **Agent status** | Left with only what the runner reports, without the fallback. |
+| **A gate on a typed `claude`** | Gone, on Linux. `claude` in a shell starts raw again, and TYBA only warns you. |
 | **The terminal** | Nothing. Identical — pasting, searching, copying, splits, everything. |
 
 ## See also

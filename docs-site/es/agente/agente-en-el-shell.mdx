@@ -1,27 +1,74 @@
 ---
 title: "Agente iniciado en el shell"
-description: "Escribir `claude` en una terminal común ejecuta el agente sin ninguna de las protecciones de TYBA — y qué hace la app cuando lo detecta."
+description: "Escribir `claude` en un shell de TYBA arranca el agente con gate — dónde aplica, cuándo entra la jaula, y qué hace la app cuando un agente arranca sin protección."
 ---
 
-Hay dos formas de que un agente arranque dentro de TYBA, y no son equivalentes:
+Hay tres formas de que un agente arranque dentro de TYBA, y no dan la misma protección:
 
 | Cómo arranca | Qué tenés |
 | --- | --- |
-| **TYBA lo ejecuta** — sesión de agente, launch config, reabrir gestionado | Inbox de aprobaciones, sandbox, env filtrado, captura de subagentes |
-| **Escribís `claude` en un shell** | Nada de eso. El proceso lo arrancó el shell, no TYBA |
+| **TYBA lo ejecuta** — sesión de agente, launch config, reabrir gestionado | Inbox de aprobaciones, jaula, env filtrado, captura de subagentes, worktree propio |
+| **Escribís `claude` en un shell** — Linux, bash o zsh | Inbox de aprobaciones, env filtrado y captura de subagentes, siempre. Jaula cuando la carpeta está en un repositorio git dentro de tu home |
+| **Cualquier otro caso** — `claude` con argumentos, `command claude`, `codex`, otros shells, Windows | Nada de eso. El proceso lo arrancó el shell, no TYBA |
+
+## Escribir `claude` ya activa el gate
+
+En Linux, en un shell bash o zsh con la [shell integration](/es/terminal/shell-integration) activada (viene así por defecto), escribir `claude` sin argumentos no arranca el agente crudo. TYBA intercepta el comando **antes de que nazca el proceso** y arranca `claude` con los hooks de aprobación, env filtrado y, cuando la carpeta lo permite, jaula.
+
+Todo pasa **en el mismo panel**: sin botón, sin cerrar nada, sin sesión nueva. El agente corre como hijo de tu shell — cuando sale, volvés al prompt desde donde lo escribiste.
+
+La primera vez, un toast avisa del cambio:
+
+> TYBA now jails + gates when you run claude. To run without it, use command claude.
+
+<Note>
+Interceptar antes es lo que lo hace posible. Los hooks de aprobación y la jaula solo se montan **en el momento en que nace el proceso**; a un `claude` que ya arrancó crudo no hay forma de colgárselos después. Para llegar antes, la shell integration define una función de shell llamada `claude` — `type claude` muestra lo que hace.
+</Note>
+
+### Cuándo entra la jaula
+
+El **gate aplica siempre**: un comando de riesgo pide aprobación en cualquier carpeta. La **jaula**, que limita lo que el agente lee y escribe, solo entra cuando la carpeta está dentro de un **repositorio git cuya raíz es una carpeta visible de tu home**:
+
+| Dónde escribiste `claude` | Gate | Jaula |
+| --- | --- | --- |
+| En un repositorio en `~/proyectos/app` | Sí | Sí |
+| En una carpeta sin git | Sí | No |
+| En un repositorio en la home misma (`~`) | Sí | No |
+| En un repositorio bajo una carpeta oculta (`~/.config/…`) | Sí | No |
+| En un repositorio fuera de la home (`/tmp`, `/opt`…) | Sí | No |
+
+En los otros casos no existe una raíz segura para la jaula. Sin repositorio no hay límite que trazar; y un repositorio en la home, bajo una carpeta oculta o fuera de la home dejaría al alcance del agente justo lo que la jaula protege — claves, tokens, la config de otros programas. TYBA no finge protección: arranca con gate, sin jaula, y lo dice en una **franja ámbar arriba de la sesión**:
+
+> claude is gated, but not jailed — the folder isn't under a repo visible under home.
+
+La misma franja aparece cuando el sistema no deja montar la jaula — sin user namespaces, por ejemplo. El gate sigue aplicando.
 
 <Warning>
-Un agente escrito en el shell corre **sin gate**: sin aprobación para comandos de riesgo, sin jaula limitando lo que lee y escribe, sin captura de subagentes. Tiene exactamente los poderes que tiene tu shell.
+**Sin jaula, el agente tiene el alcance de tu usuario.** El gate sigue pidiendo aprobación para comandos de riesgo, pero lo que pasa sin necesitar aprobación no queda limitado a una carpeta.
 </Warning>
 
-No es un agujero — es consecuencia de dónde viven las protecciones. Los hooks de aprobación y la jaula se montan **en el momento en que nace el proceso**, y solo TYBA sabe montarlos. Un `claude` que arrancó el shell ya nació sin ellos.
+### Correrlo sin TYBA
 
-## TYBA lo detecta y avisa
+Dos formas, y las dos arrancan el agente **sin gate**, como en una terminal común:
 
-Cuando un agente conocido (`claude`, `codex`) empieza a correr dentro de una sesión de shell, aparece una **franja ámbar arriba de esa sesión**:
+- **`command claude`** saltea la función y ejecuta el binario directo.
+- **`claude` con cualquier argumento** — `claude --resume`, `claude -p "…"` — también arranca crudo. Solo el `claude` pelado pasa por el gate: los argumentos cambian cómo arranca el agente, y TYBA no los pasa al camino protegido.
 
-> ⚠ Agente corriendo sin el gate de TYBA — sin inbox, sin sandbox, sin captura de subagentes.
-> **[Reabrir gestionado]** **[Ignorar]**
+Si TYBA no logra preparar la sesión (la app no responde, la carpeta dejó de existir), `claude` arranca crudo en vez de no arrancar: una terminal que se niega a ejecutar lo que escribiste está rota. En todos esos casos TYBA detecta el agente sin gate y avisa, como se describe abajo.
+
+### Dónde no aplica
+
+- **Windows y macOS** — escribir `claude` en el shell no pasa por el gate.
+- **fish, PowerShell y cmd** — la función solo existe en bash y zsh.
+- **Shell integration desactivada** — la función no se instala, ni en zsh ni en bash.
+- **`codex`** — solo `claude` pasa por el gate cuando se escribe.
+
+## Agente sin gate: TYBA lo detecta y avisa
+
+Cuando un agente conocido (`claude`, `codex`) empieza a correr **sin gate** dentro de una sesión de shell, aparece una **franja ámbar arriba de esa sesión**:
+
+> ⚠ claude running without TYBA's gate — no approval inbox, no sandbox
+> **[Reopen managed]** **[Ignore]**
 
 La franja es **por sesión**, no por ventana: si tenés un split con dos shells, solo el que está corriendo el agente muestra el aviso.
 
@@ -31,7 +78,7 @@ La detección observa los procesos de la terminal — **no depende de shell inte
 
 ## Reabrir gestionado
 
-El botón hace el único camino que existe para darle gate a un agente que ya está corriendo: **termina el proceso crudo y arranca uno nuevo, gestionado, en la misma carpeta**. No hay forma de inyectar las protecciones en un proceso que ya arrancó — los hooks se leen cuando el agente bootea.
+El botón *Reopen managed* hace el único camino que existe para darle gate a un agente que ya está corriendo: **termina el proceso crudo y arranca uno nuevo, gestionado, en la misma carpeta**. No hay forma de inyectar las protecciones en un proceso que ya arrancó — los hooks se leen cuando el agente bootea.
 
 Por eso pide confirmación antes. Qué pasa:
 
@@ -57,16 +104,17 @@ La carpeta tiene que ser un **repositorio git**. Una sesión gestionada es repo-
 
 ## Ignorar
 
-Esconde el aviso **para ese proceso**. Un agente nuevo en el mismo shell avisa de nuevo — y recargar la ventana trae el aviso de vuelta, a propósito: la sesión sigue sin gate, y TYBA no finge lo contrario.
+*Ignore* esconde el aviso **para ese proceso**. Un agente nuevo en el mismo shell avisa de nuevo — y recargar la ventana trae el aviso de vuelta, a propósito: la sesión sigue sin gate, y TYBA no finge lo contrario.
 
-Lo que **no** desaparece es el sello **sin gate** en el panel de sesiones. Mientras ese agente corra sin protección, el sello queda.
+Lo que **no** desaparece es el sello **sin gate** en el panel de sesiones. Mientras ese agente corra sin protección, el sello queda. Un `claude` que TYBA arrancó con gate no muestra el sello — con o sin jaula.
 
-## El panel Agentes también funciona acá
+## El panel Agentes funciona en los dos casos
 
-Incluso sin gate, los subagentes de un `claude` escrito en el shell aparecen en el panel **Agentes** — TYBA lee el transcript del disco en vez de depender de los hooks. Es la única protección que sobrevive al camino crudo, y es de solo lectura: muestra lo que pasa, no intercepta nada.
+Los subagentes de un `claude` escrito en el shell aparecen en el panel **Agentes**, con o sin gate. Con gate, llegan por los hooks, como en una sesión de agente. Sin gate, TYBA lee el transcript del disco — es la única protección que sobrevive al camino crudo, y es de solo lectura: muestra lo que pasa, no intercepta nada.
 
 ## Ver también
 
 - [Claude Code y Codex](/es/agente/claude-code-y-codex) — cómo TYBA arranca un agente gestionado
+- [Shell integration](/es/terminal/shell-integration) — qué inyecta en el shell, y cómo desactivarla
 - [Subagentes](/es/agente/subagentes) — el panel Agentes y el árbol de ejecución
 - [Clasificación de riesgo](/es/seguridad/clasificacion-de-riesgo) — qué frena el gate de aprobación

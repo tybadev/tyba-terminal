@@ -42,7 +42,7 @@ Con la preferencia activada, los dos atajos hacen lo mismo.
 <Note>
 **Una sesión de agente es siempre una sesión en worktree.** No es un acoplamiento accidental: worktree, jaula, env por allowlist e inbox nacen juntos, en el mismo paso. El camino entero está en [Primera sesión](/es/primera-sesion).
 
-Ejecutar `claude` escribiendo su nombre en un shell es otra cosa: el agente arranca sin ningún gate. TYBA lo detecta y ofrece reabrirlo gestionado — ver [Agente iniciado en el shell](/es/agente/agente-en-el-shell).
+Escribir `claude` en un shell es otra cosa: no crea worktree, y el agente corre en la carpeta donde está el shell. En Linux, en bash o zsh, TYBA igual arranca ese `claude` con gate — y con jaula, si la carpeta está en un repositorio git dentro de tu home. En los otros casos el agente arranca sin gate, y TYBA lo detecta y ofrece reabrirlo gestionado — ver [Agente iniciado en el shell](/es/agente/agente-en-el-shell).
 </Note>
 
 La preferencia **"Default folder for new sessions"** (Settings → General) pone una carpeta como **primera opción** de la lista, marcada con la etiqueta `default folder`. Vacía = sin valor por defecto.
