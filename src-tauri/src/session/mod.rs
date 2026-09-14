@@ -548,15 +548,6 @@ impl SessionManager {
         if let Ok(exe) = std::env::current_exe() {
             cmd.env("TYBA_BIN", exe);
         }
-        // Endereço do canal shim↔core (shim v2, passo 2): o shell precisa dele
-        // para `tyba _jail` conectar sem ter que recalcular XDG_RUNTIME_DIR/uid
-        // em POSIX sh — o mesmo raciocínio de `TYBA_BIN` acima. Setado para
-        // TODA sessão (não só shell): custa uma var de env e mantém uma única
-        // regra, sem branch por `SessionKind`.
-        cmd.env(
-            "TYBA_CHANNEL_SOCK",
-            crate::hook_ipc::channel::resolve_channel_socket_path(),
-        );
 
         if let Some(command) = self.preferred_editor_command() {
             cmd.env("EDITOR", &command);
@@ -1566,6 +1557,9 @@ command claude beta
         );
         let out = std::process::Command::new("bash")
             .arg("-i")
+            // `type claude` é lido como texto; num bash em pt-BR ele diz
+            // "claude é uma função" e o teste quebrava na máquina do dono.
+            .env("LC_ALL", "C")
             .env("HOME", std::env::var("HOME").unwrap_or_default())
             .env(
                 "PATH",
@@ -1737,6 +1731,21 @@ command claude beta
         (dir, bin_path)
     }
 
+    /// Troca o stub `claude` por um que sai com `code` — simula o claude
+    /// HOSPEDADO terminando com erro (o `exec` do `tyba _jail` faz o status
+    /// dele ser o status que a shell vê).
+    #[cfg(unix)]
+    fn make_stub_claude_exit_with(bin_path: &Path, code: i32) {
+        use std::os::unix::fs::PermissionsExt;
+        let claude = bin_path.join("claude");
+        std::fs::write(
+            &claude,
+            format!("#!/bin/sh\necho STUB-RODOU \"$@\"\nexit {code}\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     /// Item 26: `claude` puro, sem argumento nenhum, gateia — chama
     /// `"$TYBA_BIN" _jail`, nunca `command claude` direto.
     #[test]
@@ -1881,6 +1890,87 @@ command claude beta
             texto.contains("STUB-RODOU"),
             "`$TYBA_BIN` inalcançável deveria cair para o binário real, não travar o terminal: {texto:?}"
         );
+    }
+
+    /// Um claude HOSPEDADO que sai com código diferente de zero (erro,
+    /// Ctrl-C, crash) NUNCA relança o binário cru. `tyba _jail` dá `exec` na
+    /// cadeia hospedada, então o status que volta pra shell é o do claude
+    /// hospedado — o shim antigo (`"$TYBA_BIN" _jail || command claude`)
+    /// lia esse status como "o lançador falhou" e subia um segundo claude
+    /// sem gate e sem jaula, sem ninguém ter digitado nada. A prova: o stub
+    /// roda UMA vez, e o status de saída chega intacto à shell.
+    #[test]
+    #[cfg(unix)]
+    fn a_hosted_claude_exiting_nonzero_never_relaunches_the_raw_binary() {
+        let (dir, bin_path) = write_shim_v2_stubs();
+        let rc = dir.path().join("rc.sh");
+        std::fs::write(&rc, TYBA_BASH_RC).unwrap();
+        let tyba_bin = bin_path.join("tyba");
+        let bin_log = dir.path().join("tyba-bin.log");
+        make_stub_claude_exit_with(&bin_path, 3);
+
+        let script = format!("source {}\nclaude\necho RC:$?\n", rc.display());
+        let out = run_interactive_shell(
+            "bash",
+            &bin_path,
+            &script,
+            &[
+                ("TYBA_BIN", tyba_bin.to_str().unwrap()),
+                ("TYBA_BIN_LOG", bin_log.to_str().unwrap()),
+            ],
+        );
+        let Some(texto) = out else { return };
+        let bin_log_body = std::fs::read_to_string(&bin_log).unwrap_or_default();
+
+        assert_eq!(
+            bin_log_body.lines().count(),
+            1,
+            "`$TYBA_BIN _jail` deveria ter sido chamado exatamente uma vez: {bin_log_body:?}"
+        );
+        assert_eq!(
+            texto.matches("STUB-RODOU").count(),
+            1,
+            "o claude hospedado saiu com erro e o shim relançou um claude CRU (sem gate): {texto:?}"
+        );
+        assert!(
+            texto.contains("RC:3"),
+            "o status do claude hospedado deveria chegar intacto à shell: {texto:?}"
+        );
+    }
+
+    /// O mesmo em zsh: status diferente de zero do hospedado não vira um
+    /// segundo claude cru. Pula em silêncio sem zsh na máquina.
+    #[test]
+    #[cfg(unix)]
+    fn zsh_hosted_claude_exiting_nonzero_never_relaunches_the_raw_binary() {
+        if std::process::Command::new("zsh")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let (dir, bin_path) = write_shim_v2_stubs();
+        let rc = dir.path().join("rc.sh");
+        std::fs::write(&rc, TYBA_ZSH_RC).unwrap();
+        let tyba_bin = bin_path.join("tyba");
+        let bin_log = dir.path().join("tyba-bin.log");
+        make_stub_claude_exit_with(&bin_path, 3);
+
+        let script = format!("source {}\nclaude\necho RC:$?\n", rc.display());
+        let out = run_interactive_shell(
+            "zsh",
+            &bin_path,
+            &script,
+            &[
+                ("TYBA_BIN", tyba_bin.to_str().unwrap()),
+                ("TYBA_BIN_LOG", bin_log.to_str().unwrap()),
+            ],
+        );
+        let Some(texto) = out else { return };
+
+        assert_eq!(texto.matches("STUB-RODOU").count(), 1, "{texto:?}");
+        assert!(texto.contains("RC:3"), "{texto:?}");
     }
 
     /// Item 30: o mesmo par de decisões (bare gateia, com args cai cru) vale

@@ -205,10 +205,19 @@ fi
 # shell; a shell em si nunca e tocada.
 #
 # FALHA ABERTA e a regra permanente: sem TYBA_BIN, o shim inteiro nem se
-# instala (bloco abaixo). Com TYBA_BIN setado mas inalcancavel/quebrado, ou
-# sem o core respondendo, ou sem jaula — o `||` final cai pro binario de
-# verdade e sai do caminho. Um terminal que se recusa a rodar o que foi
-# digitado esta quebrado, e ligado por padrao o raio disso e todo mundo.
+# instala (bloco abaixo). Com TYBA_BIN setado mas inalcancavel (arquivo sumiu,
+# sem permissao de execucao), o `else` cai pro binario de verdade e sai do
+# caminho. Sem o core respondendo, ou sem jaula, quem cai pro binario de
+# verdade e o PROPRIO `tyba _jail` (ele faz `exec claude` por dentro). Um
+# terminal que se recusa a rodar o que foi digitado esta quebrado, e ligado
+# por padrao o raio disso e todo mundo.
+#
+# NUNCA `"$TYBA_BIN" _jail || command claude`: o `_jail` da `exec` na cadeia
+# hospedada, entao o status que volta pra shell e o do claude HOSPEDADO. Um
+# agente que saiu com codigo diferente de zero (erro, Ctrl-C, crash) faria o
+# `||` relancar um claude CRU, sem gate e sem jaula, sem ninguem ter digitado
+# nada — e a sessao seguinte nasceria fora do gate. A decisao de cair pro
+# binario de verdade e tomada ANTES de lancar, nunca pelo status de saida.
 if [ -n "${TYBA_BIN:-}" ] && [ "${TYBA_AGENT_SHIM:-1}" = "1" ]; then
   __tyba_shim_record() {
     # Rastro so quando alguem pede (o teste pede). Em uso normal a variavel nao
@@ -220,7 +229,11 @@ if [ -n "${TYBA_BIN:-}" ] && [ "${TYBA_AGENT_SHIM:-1}" = "1" ]; then
   claude() {
     __tyba_shim_record "claude"
     if [ "$#" -eq 0 ]; then
-      "$TYBA_BIN" _jail || command claude
+      if [ -x "$TYBA_BIN" ]; then
+        "$TYBA_BIN" _jail
+      else
+        command claude
+      fi
     else
       command claude "$@"
     fi

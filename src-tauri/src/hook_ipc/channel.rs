@@ -385,9 +385,10 @@ fn exchange(
 /// ou profile sourceado com `export TYBA_CHANNEL_SOCK=/tmp/x.sock` faria o
 /// `_jail` conectar cegamente num socket de OUTRO uid, ler o `plan_path`
 /// que esse socket devolvesse e dar `exec` como o usuário — sem jaula, sem
-/// nenhuma das checagens do servidor de verdade. `TYBA_CHANNEL_SOCK`
-/// continua indo no env da sessão (`session::spawn_session`) como sinal de
-/// "shim ligado" para o script do rc; só não é mais lido aqui.
+/// nenhuma das checagens do servidor de verdade. Depois desse achado a
+/// variável virou env morto (o rc nunca a leu — só olha `TYBA_BIN`), então
+/// o core parou de exportá-la; o teste abaixo continua provando que, mesmo
+/// que alguém a injete, ela é ignorada.
 #[cfg(target_os = "linux")]
 pub fn jail_connect_socket_path() -> PathBuf {
     resolve_channel_socket_path()
@@ -406,7 +407,27 @@ pub fn maybe_run_jail_mode() -> Option<i32> {
     Some(run_jail_client(Some(&jail_connect_socket_path())))
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Fora do Linux o canal não existe, mas o shim do rc é o mesmo em todo unix
+/// e chama `tyba _jail` sem `||` de volta (a shell decide ANTES de lançar,
+/// nunca pelo status de saída — ver o comentário do shim). Então `_jail`
+/// tem que ser fail-open AQUI também: `exec claude` sem argumento (Q1).
+/// Deixar cair em `tyba_lib::run()` abriria a janela do app em vez de rodar
+/// o que foi digitado.
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn maybe_run_jail_mode() -> Option<i32> {
+    use std::os::unix::process::CommandExt;
+
+    if std::env::args().nth(1).as_deref() != Some("_jail") {
+        return None;
+    }
+    let err = std::process::Command::new("claude").exec();
+    eprintln!("tyba _jail: exec de claude falhou: {err}");
+    Some(126)
+}
+
+/// Windows não tem shim (PowerShell não passa por função de shell), então
+/// `_jail` nunca é invocado aqui.
+#[cfg(windows)]
 pub fn maybe_run_jail_mode() -> Option<i32> {
     None
 }
