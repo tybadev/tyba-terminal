@@ -1,0 +1,155 @@
+# Mapa de blocos — ssh-conexao-confiavel
+#
+# Validado por check-block-map.py antes de fase-impl começar:
+#   write-sets disjuntos, testes incluídos · ordem contígua começando em 1 ·
+#   interface consumida produzida por um bloco anterior · com dois ou mais blocos, o último é `integration`.
+#
+# Por que o núcleo em Rust é UM bloco só: o crate compila inteiro, e esta entrega
+# acrescenta campos a `Host` (ssh/mod.rs) e a `Session` (session/mod.rs). Os
+# literais dessas structs vivem em lib.rs, session/store.rs, stats/mod.rs e
+# agent/auth_watch.rs, e o driver do Cano também precisa do lib.rs. Qualquer
+# divisão deixava o build quebrado entre um bloco e o seguinte — e aí nenhum
+# teste de bloco roda sozinho. Medido em 2026-09-16 (grep dos literais).
+#
+# A fronteira que sobra é a do IPC: comandos, eventos e tipos declarados no
+# `Contract` da spec. A UI é construída contra esse contrato e testada sem o core.
+
+slug: ssh-conexao-confiavel
+
+blocos:
+  - id: 01-core-conexao-confiavel
+    ordem: 1
+    objetivo: >-
+      Todo o núcleo: Host com método de autenticação materializado no tyba.conf
+      (chaves públicas, keepalive, validar antes de gravar); construtor único de ssh
+      com PATH/SSH_AUTH_SOCK do login shell e o guarda que o impõe; lista de chaves
+      do agente; teste de conexão; classificador de falha; migração 8; marco de login
+      com nonce no wrap do tmux e observador na thread leitora; máquina do Cano pura
+      com relógio injetado e o driver no lib.rs; respawn herdando attachers e
+      tamanho; boot esquecendo sessão sem login; "precisa de senha" nas chamadas de
+      fundo; comandos list_agent_keys e test_host_connection. Regras 1–7, 9–20, 22–28.
+    write_set:
+      - src-tauri/src/lib.rs
+      - src-tauri/src/shell_path.rs
+      - src-tauri/src/ssh/mod.rs
+      - src-tauri/src/ssh/config.rs
+      - src-tauri/src/ssh/command.rs
+      - src-tauri/src/ssh/agent_keys.rs
+      - src-tauri/src/ssh/classify.rs
+      - src-tauri/src/ssh/test_conn.rs
+      - src-tauri/src/ssh/tmux.rs
+      - src-tauri/src/ssh/tunnel.rs
+      - src-tauri/src/files/remote/mod.rs
+      - src-tauri/src/files/remote/sftpwire.rs
+      - src-tauri/src/docker/mod.rs
+      - src-tauri/src/session/mod.rs
+      - src-tauri/src/session/cano.rs
+      - src-tauri/src/session/store.rs
+      - src-tauri/src/pty/mod.rs
+      - src-tauri/src/stats/mod.rs
+      - src-tauri/src/agent/auth_watch.rs
+    expoe:
+      - ipc::list_agent_keys
+      - ipc::test_host_connection
+      - ipc::create_host
+      - ipc::update_host
+      - ipc::reconnect_ssh
+      - ipc::event::session_status
+      - ssh::AuthMethod
+      - ssh::AgentKey
+      - ssh::command::std_command
+      - ssh::command::pty_command
+      - ssh::classify::classify
+      - ssh::classify::FailureReason
+      - ssh::classify::CanoFailure
+      - ssh::test_conn::ConnectionTest
+      - ssh::agent_keys::AgentKeyListing
+      - ssh::tmux::wrap_command_with_nonce
+      - ssh::tmux::login_marker
+      - session::ConnectionState
+      - session::Session.connection_failure
+      - session::cano::CanoLifecycle
+      - session::cano::CanoWatch
+    consome: []
+    testes:
+      - src-tauri/src/shell_path.rs
+      - src-tauri/src/ssh/config.rs
+      - src-tauri/src/ssh/command.rs
+      - src-tauri/src/ssh/agent_keys.rs
+      - src-tauri/src/ssh/classify.rs
+      - src-tauri/src/ssh/test_conn.rs
+      - src-tauri/src/ssh/tmux.rs
+      - src-tauri/src/session/cano.rs
+      - src-tauri/src/session/store.rs
+      - src-tauri/src/pty/mod.rs
+      - src-tauri/src/lib.rs
+
+  - id: 02-ui-conexao-confiavel
+    ordem: 2
+    objetivo: >-
+      Formulário do Host com método de autenticação, seletor de chave do agente,
+      seletor de arquivo, aviso de maiúscula e Testar conexão; pane com as fases do
+      Cano e o motivo da falha (Tentar de novo / Editar host, sem ação sobre digital);
+      estado de conexão propagado por evento; Input/Textarea sem autocapitalização.
+      Regras 8, 14 e 19 (lado da tela), 21, 23 (exibição) e 29.
+    write_set:
+      - src/lib/ipc.ts
+      - src/i18n/index.ts
+      - src/lib/sessionStatus.ts
+      - src/lib/sessionStatus.test.ts
+      - src/lib/hostForm.ts
+      - src/lib/hostForm.test.ts
+      - src/lib/canoFailure.ts
+      - src/lib/canoFailure.test.ts
+      - src/components/ui/input.tsx
+      - src/components/ui/textarea.tsx
+      - src/components/ui/textFieldDefaults.test.tsx
+      - src/components/HostFormDialog.tsx
+      - src/components/HostAuthField.tsx
+      - src/components/CanoStatus.tsx
+      - src/components/ConnectionsView.tsx
+      - src/components/TerminalView.tsx
+      - src/components/OpenPrDialog.tsx
+      - src/App.tsx
+    expoe: []
+    consome:
+      - ipc::list_agent_keys
+      - ipc::test_host_connection
+      - ipc::create_host
+      - ipc::update_host
+      - ipc::reconnect_ssh
+      - ipc::event::session_status
+      - ssh::AuthMethod
+      - ssh::AgentKey
+      - ssh::classify::FailureReason
+      - ssh::classify::CanoFailure
+      - ssh::test_conn::ConnectionTest
+      - ssh::agent_keys::AgentKeyListing
+      - session::ConnectionState
+      - session::Session.connection_failure
+    testes:
+      - src/lib/sessionStatus.test.ts
+      - src/lib/hostForm.test.ts
+      - src/lib/canoFailure.test.ts
+      - src/components/ui/textFieldDefaults.test.tsx
+
+  - id: integration
+    ordem: 3
+    objetivo: >-
+      Exercita as costuras contra um host real pela API pública: o ssh construído
+      pelo construtor único, o wrap com nonce e o observador reconhecendo o login;
+      usuário errado classificado como auth_refused sem marco; teste de conexão nos
+      desfechos ok, auth_refused e password. Ignorado sem as variáveis de E2E. O E2E
+      de tela (VPS do dono) roda na sessão principal, não aqui.
+    write_set:
+      - src-tauri/tests/ssh_real_host.rs
+    expoe: []
+    consome:
+      - ssh::command::std_command
+      - ssh::tmux::wrap_command_with_nonce
+      - ssh::tmux::login_marker
+      - ssh::classify::classify
+      - ssh::test_conn::ConnectionTest
+      - session::cano::CanoWatch
+    testes:
+      - src-tauri/tests/ssh_real_host.rs
