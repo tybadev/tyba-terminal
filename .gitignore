@@ -19,3 +19,7 @@ src-tauri/gen/schemas/
 # Mintlify CLI (preview local da doc)
 docs-site/.mintlify/
 .fig-cache/
+
+# estado do pipeline de fases — efêmero, por máquina.
+# A spec congelada, o mapa de blocos e os findings ao lado dele ficam versionados.
+.pipeline/*/state.json

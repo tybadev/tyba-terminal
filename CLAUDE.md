@@ -42,6 +42,8 @@ tyba/
 
 ## Docs de referência
 
+vault_path: ~/swell-system/swell-docs (pasta do projeto: `tyba/`)
+
 - `docs/ARCHITECTURE.md` — modelo de dados, IPC, ciclo de vida de sessão, diff local
 - `docs/SECURITY.md` — modelo de ameaça, classificação de risco de comandos, regras
 - `docs/ROADMAP.md` — fases do MVP e ordem de construção
