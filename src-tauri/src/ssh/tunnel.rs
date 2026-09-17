@@ -201,7 +201,7 @@ pub fn control_master_available() -> bool {
 
 fn control(alias: &str, op: &str, t: &Tunnel) -> Result<std::process::Output, AppError> {
     let args = t.cli_args()?;
-    std::process::Command::new("ssh")
+    crate::ssh::command::std_command()
         .args(["-O", op])
         .args(&args)
         .arg(alias)
@@ -211,6 +211,7 @@ fn control(alias: &str, op: &str, t: &Tunnel) -> Result<std::process::Output, Ap
 }
 
 pub fn open_on_master(alias: &str, t: &Tunnel) -> Result<(), AppError> {
+    crate::ssh::command::require_session_if_password(alias)?;
     let out = control(alias, "forward", t)?;
     if out.status.success() {
         return Ok(());

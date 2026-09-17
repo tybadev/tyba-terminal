@@ -1,5 +1,5 @@
 use std::io::{BufReader, Read, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
 use parking_lot::Mutex;
 
@@ -412,7 +412,7 @@ impl SshRemote {
     /// -s sftp` reusa o ControlMaster do ssh_config — zero handshake novo). Faz o
     /// INIT/VERSION do protocolo v3.
     pub fn connect(alias: &str) -> RemoteResult<Self> {
-        let mut child = Command::new("ssh")
+        let mut child = crate::ssh::command::std_command()
             .args(SSH_LIVENESS_OPTS)
             .arg(alias)
             .arg("-s")
@@ -613,7 +613,7 @@ impl RemoteFs for SshRemote {
             .map(|a| sh_quote(a))
             .collect::<Vec<_>>()
             .join(" ");
-        let out = Command::new("ssh")
+        let out = crate::ssh::command::std_command()
             .args(SSH_LIVENESS_OPTS)
             .arg(&self.alias)
             .arg(&cmd_string)

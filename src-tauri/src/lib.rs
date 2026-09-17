@@ -599,10 +599,6 @@ fn session_exited(app: &AppHandle, id: SessionId) {
         return;
     };
     teardown_agent_session(app, &state, id);
-    if matches!(session.kind, SessionKind::Ssh { .. }) {
-        reattach_or_finish(app.clone(), id);
-        return;
-    }
     if matches!(session.kind, SessionKind::Shell) {
         state.sessions.dispose(&state.pty_pool, id);
         let _ = state.layout.session_disposed(id);
@@ -681,72 +677,159 @@ fn restore_session_tunnels(app: &AppHandle, id: SessionId, alias: &str) {
     emit_session_tunnels(app, id, &tunnels);
 }
 
-fn reattach_or_finish(app: AppHandle, id: SessionId) {
-    std::thread::spawn(move || {
-        let Some((host_id, alias, name)) = ssh_target(&app.state::<AppState>(), id) else {
-            return;
-        };
-
-        let mut attempt = 0u32;
-        loop {
-            if app.state::<AppState>().sessions.get(id).is_none() {
-                return;
-            }
-
-            let verdict = crate::ssh::tmux::probe(&alias, &name);
-            if !verdict.should_reattach() {
-                let state = app.state::<AppState>();
-                if verdict == crate::ssh::tmux::Probe::NoTmux {
-                    eprintln!("{alias}: host sem tmux — sessão sem persistência");
-                }
-                state.sessions.dispose(&state.pty_pool, id);
-                let _ = state.layout.session_disposed(id);
-                emit_layout(&app, &state);
-                return;
-            }
-
-            let Some(delay) = crate::ssh::tmux::retry_delay(attempt) else {
-                app.state::<AppState>().sessions.set_connection(
-                    &app,
-                    id,
-                    session::ConnectionState::Dropped,
-                );
-                return;
-            };
-            app.state::<AppState>().sessions.set_connection(
-                &app,
-                id,
-                session::ConnectionState::Reconnecting,
-            );
-            std::thread::sleep(delay);
-
-            if reattach_now(&app, id, &host_id, &alias).is_ok() {
-                restore_session_tunnels(&app, id, &alias);
-                return;
-            }
-            attempt += 1;
-        }
-    });
+/// Sobe um Cano com os dois avisos que alimentam a máquina (`session::cano`):
+/// o marco de login e a saída com o desfecho.
+#[allow(clippy::too_many_arguments)]
+fn spawn_cano(
+    app: &AppHandle,
+    sessions: &SharedSessionManager,
+    pty_pool: &SharedPtyPool,
+    id: SessionId,
+    host_id: String,
+    alias: &str,
+    cols: u16,
+    rows: u16,
+    lifecycle: Option<session::cano::CanoLifecycle>,
+) -> Result<Session, crate::pty::PtyError> {
+    let login_app = app.clone();
+    let exit_app = app.clone();
+    let home = crate::ssh::home_dir();
+    sessions.spawn_ssh(
+        app.clone(),
+        pty_pool,
+        id,
+        host_id,
+        alias,
+        home.as_deref(),
+        cols,
+        rows,
+        lifecycle,
+        move |id| cano_logged_in(&login_app, id),
+        move |id, outcome| cano_exited(&exit_app, id, outcome),
+    )
 }
 
-fn reattach_now(app: &AppHandle, id: SessionId, host_id: &str, alias: &str) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let handle = app.clone();
-    state
+/// Primeira conexão de uma sessão nova (criar sessão, abrir grupo).
+fn open_ssh_session(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    host: &crate::ssh::Host,
+    cols: u16,
+    rows: u16,
+) -> Result<Session, String> {
+    let login_app = app.clone();
+    let exit_app = app.clone();
+    let home = crate::ssh::home_dir();
+    let session = state
         .sessions
-        .spawn_ssh(
+        .create_ssh_session(
             app.clone(),
             &state.pty_pool,
+            host.id.clone(),
+            &host.alias,
+            home.as_deref(),
+            cols,
+            rows,
+            move |id| cano_logged_in(&login_app, id),
+            move |id, outcome| cano_exited(&exit_app, id, outcome),
+        )
+        .map_err(|e| e.to_string())?;
+    gc_host(state, &host.alias);
+    Ok(session)
+}
+
+fn cano_logged_in(app: &AppHandle, id: SessionId) {
+    let state = app.state::<AppState>();
+    state.sessions.cano_logged_in(app, id, chrono::Utc::now());
+    // Túnel de sessão pede o master, e o master só existe depois do login.
+    if let Some((_, alias, _)) = ssh_target(&state, id) {
+        let app = app.clone();
+        std::thread::spawn(move || restore_session_tunnels(&app, id, &alias));
+    }
+}
+
+fn cano_exited(app: &AppHandle, id: SessionId, outcome: session::cano::CanoOutcome) {
+    let state = app.state::<AppState>();
+    if state.sessions.get(id).is_none() {
+        return;
+    }
+    teardown_agent_session(app, &state, id);
+    let decision = state
+        .sessions
+        .cano(app, id, |c| c.exited(&outcome, chrono::Utc::now()));
+    run_cano_decision(app.clone(), id, decision);
+}
+
+/// As portas do condutor do Cano (`session::cano::conduct`) sobre o app real.
+#[derive(Clone)]
+struct AppCanoPorts(AppHandle);
+
+impl session::cano::CanoPorts for AppCanoPorts {
+    /// `(host_id, alias, nome da SSH Session)`.
+    type Target = (String, String, String);
+
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now()
+    }
+
+    fn target(&self, id: SessionId) -> Option<Self::Target> {
+        ssh_target(&self.0.state::<AppState>(), id)
+    }
+
+    fn apply(
+        &self,
+        id: SessionId,
+        event: impl FnOnce(&mut session::cano::CanoLifecycle) -> session::cano::CanoDecision,
+    ) -> session::cano::CanoDecision {
+        self.0.state::<AppState>().sessions.cano(&self.0, id, event)
+    }
+
+    fn probe(&self, (_, alias, name): &Self::Target) -> crate::ssh::tmux::Probe {
+        let verdict = crate::ssh::tmux::probe(alias, name);
+        if verdict == crate::ssh::tmux::Probe::NoTmux {
+            eprintln!("{alias}: host sem tmux — sessão sem persistência");
+        }
+        verdict
+    }
+
+    fn background(&self, job: session::cano::Job) {
+        std::thread::spawn(job);
+    }
+
+    fn after(&self, delay: std::time::Duration, job: session::cano::Job) {
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            job();
+        });
+    }
+
+    fn respawn(&self, id: SessionId, (host_id, alias, _): Self::Target) -> Result<(), String> {
+        let state = self.0.state::<AppState>();
+        spawn_cano(
+            &self.0,
+            &state.sessions,
+            &state.pty_pool,
             id,
-            host_id.to_string(),
-            alias,
-            None,
+            host_id,
+            &alias,
             100,
             30,
-            move |id| session_exited(&handle, id),
+            None,
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
+    }
+
+    fn dispose(&self, id: SessionId) {
+        let state = self.0.state::<AppState>();
+        state.sessions.dispose(&state.pty_pool, id);
+        let _ = state.layout.session_disposed(id);
+        emit_layout(&self.0, &state);
+    }
+}
+
+fn run_cano_decision(app: AppHandle, id: SessionId, decision: session::cano::CanoDecision) {
+    session::cano::conduct(&AppCanoPorts(app), id, decision);
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -862,6 +945,12 @@ fn resume_startup(
     // acrescentaria nada.
     let home = session::cwd::home();
 
+    let mut reattach = sessions.boot_ssh(mode, chrono::Utc::now());
+    let dead = dead
+        .into_iter()
+        .filter(|s| sessions.get(s.id).is_some())
+        .collect::<Vec<_>>();
+
     if mode == session::StartupMode::Fresh {
         for s in dead {
             if !s.kind.forgettable_on_fresh() {
@@ -877,27 +966,24 @@ fn resume_startup(
 
     for old in dead {
         if let SessionKind::Ssh { host_id } = &old.kind {
+            let Some(lifecycle) = reattach.remove(&old.id) else {
+                continue;
+            };
             let Some(alias) = hosts_alias(store, host_id) else {
                 continue;
             };
-            let handle = app.clone();
-            if let Err(e) = sessions.spawn_ssh(
-                app.clone(),
+            if let Err(e) = spawn_cano(
+                app,
+                sessions,
                 pty_pool,
                 old.id,
                 host_id.clone(),
                 &alias,
-                None,
                 100,
                 30,
-                move |id| session_exited(&handle, id),
+                Some(lifecycle),
             ) {
                 eprintln!("reattach da sessão {}: {e}", old.id);
-            } else {
-                let handle = app.clone();
-                let alias = alias.clone();
-                let id = old.id;
-                std::thread::spawn(move || restore_session_tunnels(&handle, id, &alias));
             }
             continue;
         }
@@ -1015,25 +1101,7 @@ async fn create_session(
                         .with("id", host_id.clone())
                         .to_string()
                 })?;
-            let home = crate::ssh::home_dir();
-            let session = state
-                .sessions
-                .create_ssh_session(
-                    app.clone(),
-                    &state.pty_pool,
-                    host.id.clone(),
-                    &host.alias,
-                    home.as_deref(),
-                    opts.cols,
-                    opts.rows,
-                    move |id| session_exited(&handle, id),
-                )
-                .map_err(|e| e.to_string())?;
-            let _ = state
-                .store
-                .touch_host_connected(&host.id, chrono::Utc::now());
-            gc_host(&state, &host.alias);
-            session
+            open_ssh_session(&app, &state, &host, opts.cols, opts.rows)?
         }
     };
     run_setup_if_consented(&app, &state, &session);
@@ -1066,10 +1134,72 @@ fn validate_tunnels(host: &crate::ssh::Host) -> Result<(), crate::error::AppErro
 
 fn rematerialize_hosts(state: &State<'_, AppState>) -> Result<(), crate::error::AppError> {
     let hosts = state.store.load_hosts().map_err(store_err)?;
-    if let Some(home) = crate::ssh::home_dir() {
-        crate::ssh::config::materialize(&home, &hosts)?;
+    install_hosts(crate::ssh::home_dir().as_deref(), &hosts)
+}
+
+/// Sem payload: a UI relê `list_hosts`/`list_host_groups`, e o core segue dono
+/// da lista.
+const EVENT_HOSTS_CHANGED: &str = "ssh://hosts-changed";
+
+/// Chamado logo depois da gravação no banco, antes de instalar os derivados:
+/// se a instalação falhar, a lista já mudou e a UI precisa reler mesmo assim.
+fn notify_hosts_changed(app: &AppHandle) {
+    let _ = app.emit(EVENT_HOSTS_CHANGED, ());
+}
+
+/// Derivados do banco: `tyba.conf`, `.pub` das chaves de agente e o registro
+/// de Hosts de senha que as conexões de fundo consultam.
+fn install_hosts(
+    home: Option<&std::path::Path>,
+    hosts: &[crate::ssh::Host],
+) -> Result<(), crate::error::AppError> {
+    crate::ssh::command::set_password_aliases(
+        hosts
+            .iter()
+            .filter(|h| h.auth_method == crate::ssh::AuthMethod::Password)
+            .map(|h| h.alias.clone()),
+    );
+    if let Some(home) = home {
+        crate::ssh::config::materialize(home, hosts)?;
     }
     Ok(())
+}
+
+/// Regra 10: a lista inteira, com o Host novo no lugar, passa pelo render e
+/// pelo `ssh -G` antes de o banco ser tocado. Nenhuma transação aberta aqui.
+fn validate_host_list(
+    home: Option<&std::path::Path>,
+    existing: &[crate::ssh::Host],
+    host: &crate::ssh::Host,
+) -> Result<(), crate::error::AppError> {
+    let mut next: Vec<crate::ssh::Host> = existing
+        .iter()
+        .filter(|h| h.id != host.id)
+        .cloned()
+        .collect();
+    next.push(host.clone());
+    next.sort_by(|a, b| a.position.cmp(&b.position).then(a.alias.cmp(&b.alias)));
+    match home {
+        Some(home) => crate::ssh::config::validate_hosts(home, &next),
+        None => crate::ssh::config::render_tyba_conf(&next).map(|_| ()),
+    }
+}
+
+/// Campos de autenticação na forma que o core guarda: vazio vira `None` e a
+/// chave de agente sai conferida.
+fn normalize_auth(mut host: crate::ssh::Host) -> Result<crate::ssh::Host, crate::error::AppError> {
+    if host
+        .identity_file
+        .as_deref()
+        .is_some_and(|v| v.trim().is_empty())
+    {
+        host.identity_file = None;
+    }
+    if let Some(key) = &host.agent_key {
+        host.agent_key = Some(crate::ssh::agent_keys::validate_agent_key(key)?);
+    }
+    crate::ssh::config::validate_auth(&host)?;
+    Ok(host)
 }
 
 #[tauri::command]
@@ -1104,46 +1234,61 @@ fn gate_new_risky_tunnels(
 
 #[tauri::command]
 fn create_host(
+    app: AppHandle,
     state: State<'_, AppState>,
     input: crate::ssh::HostInput,
     confirmed: Option<bool>,
 ) -> Result<crate::ssh::Host, crate::error::AppError> {
-    validate_alias(&input.alias)?;
-    let existing = state.store.load_hosts().map_err(store_err)?;
-    if existing.iter().any(|h| h.alias == input.alias) {
-        return Err(crate::error::AppError::new("ssh.alias_duplicate").with("alias", input.alias));
-    }
-    let host = crate::ssh::Host {
-        id: uuid::Uuid::new_v4().to_string(),
-        alias: input.alias,
-        hostname: input.hostname,
-        port: input.port,
-        username: input.username,
-        identity_file: input.identity_file,
-        proxy_jump: input.proxy_jump,
-        group_id: input.group_id,
-        color: input.color,
-        notes: input.notes,
-        position: existing.len() as i64,
-        tunnels: input.tunnels,
-        created_at: chrono::Utc::now(),
-        last_connected_at: None,
-    };
-    validate_tunnels(&host)?;
-    gate_new_risky_tunnels(&[], &host.tunnels, confirmed)?;
-    state.store.upsert_host(&host).map_err(store_err)?;
-    rematerialize_hosts(&state)?;
-    Ok(host)
+    let home = crate::ssh::home_dir();
+    save_new_host(&state.store, home.as_deref(), input, confirmed, &|| {
+        notify_hosts_changed(&app)
+    })
 }
 
 #[tauri::command]
 fn update_host(
+    app: AppHandle,
     state: State<'_, AppState>,
     host: crate::ssh::Host,
     confirmed: Option<bool>,
 ) -> Result<crate::ssh::Host, crate::error::AppError> {
+    let home = crate::ssh::home_dir();
+    save_host(&state.store, home.as_deref(), host, confirmed, &|| {
+        notify_hosts_changed(&app)
+    })
+}
+
+fn save_new_host(
+    store: &Store,
+    home: Option<&std::path::Path>,
+    input: crate::ssh::HostInput,
+    confirmed: Option<bool>,
+    written: &dyn Fn(),
+) -> Result<crate::ssh::Host, crate::error::AppError> {
+    validate_alias(&input.alias)?;
+    let existing = store.load_hosts().map_err(store_err)?;
+    if existing.iter().any(|h| h.alias == input.alias) {
+        return Err(crate::error::AppError::new("ssh.alias_duplicate").with("alias", input.alias));
+    }
+    let host = input.into_host(
+        uuid::Uuid::new_v4().to_string(),
+        existing.len() as i64,
+        chrono::Utc::now(),
+    );
+    validate_tunnels(&host)?;
+    gate_new_risky_tunnels(&[], &host.tunnels, confirmed)?;
+    persist_host(store, home, &existing, host, written)
+}
+
+fn save_host(
+    store: &Store,
+    home: Option<&std::path::Path>,
+    host: crate::ssh::Host,
+    confirmed: Option<bool>,
+    written: &dyn Fn(),
+) -> Result<crate::ssh::Host, crate::error::AppError> {
     validate_alias(&host.alias)?;
-    let existing = state.store.load_hosts().map_err(store_err)?;
+    let existing = store.load_hosts().map_err(store_err)?;
     if existing
         .iter()
         .any(|h| h.alias == host.alias && h.id != host.id)
@@ -1157,8 +1302,24 @@ fn update_host(
         .unwrap_or(&[]);
     validate_tunnels(&host)?;
     gate_new_risky_tunnels(prev, &host.tunnels, confirmed)?;
-    state.store.upsert_host(&host).map_err(store_err)?;
-    rematerialize_hosts(&state)?;
+    persist_host(store, home, &existing, host, written)
+}
+
+/// Regra 10: validar → gravar → instalar. Se instalar falhar depois do
+/// `upsert`, a próxima mutação e o boot regeneram os derivados.
+fn persist_host(
+    store: &Store,
+    home: Option<&std::path::Path>,
+    existing: &[crate::ssh::Host],
+    host: crate::ssh::Host,
+    written: &dyn Fn(),
+) -> Result<crate::ssh::Host, crate::error::AppError> {
+    let host = normalize_auth(host)?;
+    validate_host_list(home, existing, &host)?;
+    store.upsert_host(&host).map_err(store_err)?;
+    written();
+    let hosts = store.load_hosts().map_err(store_err)?;
+    install_hosts(home, &hosts)?;
     Ok(host)
 }
 
@@ -1215,8 +1376,10 @@ fn open_session_tunnel(
     state.store.add_session_tunnel(&entry).map_err(store_err)?;
     state.tunnel_states.set(&entry.id, entry.state.clone());
 
+    // Sem master o túnel só entra num Cano novo. `terminate` e não `kill`: o
+    // handle fica, e o Cano religado herda o pane.
     if !master {
-        let _ = state.pty_pool.kill(session_id);
+        let _ = state.pty_pool.terminate(session_id);
     }
     Ok(entry)
 }
@@ -1244,15 +1407,52 @@ fn close_session_tunnel(
         .map_err(store_err)
 }
 
+/// Regra 28. Fora da thread do command: `ssh -G` e `ssh-add` são processos.
 #[tauri::command]
-fn delete_host(state: State<'_, AppState>, id: String) -> Result<(), crate::error::AppError> {
+async fn list_agent_keys(
+    alias: Option<String>,
+) -> Result<crate::ssh::agent_keys::AgentKeyListing, crate::error::AppError> {
+    tauri::async_runtime::spawn_blocking(move || crate::ssh::agent_keys::list(alias.as_deref()))
+        .await
+        .map_err(|e| {
+            crate::error::AppError::new("ssh.agent_unreachable").with("detail", e.to_string())
+        })?
+}
+
+/// Regra 22: testa os valores do formulário, sem gravar nada. Até 30 s, por
+/// isso fora da thread do command.
+#[tauri::command]
+async fn test_host_connection(
+    input: crate::ssh::HostInput,
+) -> Result<crate::ssh::test_conn::ConnectionTest, crate::error::AppError> {
+    crate::ssh::test_conn::validate(&input)?;
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        crate::ssh::test_conn::run(&input, crate::ssh::test_conn::TEST_DEADLINE)
+    })
+    .await;
+    Ok(
+        outcome.unwrap_or_else(|e| crate::ssh::test_conn::ConnectionTest::Failed {
+            reason: crate::ssh::classify::FailureReason::Unknown,
+            detail: e.to_string(),
+        }),
+    )
+}
+
+#[tauri::command]
+fn delete_host(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), crate::error::AppError> {
     state.store.remove_host(&id).map_err(store_err)?;
+    notify_hosts_changed(&app);
     rematerialize_hosts(&state)?;
     Ok(())
 }
 
 #[tauri::command]
 fn create_host_group(
+    app: AppHandle,
     state: State<'_, AppState>,
     input: crate::ssh::HostGroupInput,
 ) -> Result<crate::ssh::HostGroup, crate::error::AppError> {
@@ -1266,21 +1466,29 @@ fn create_host_group(
         created_at: chrono::Utc::now(),
     };
     state.store.upsert_host_group(&group).map_err(store_err)?;
+    notify_hosts_changed(&app);
     Ok(group)
 }
 
 #[tauri::command]
 fn update_host_group(
+    app: AppHandle,
     state: State<'_, AppState>,
     group: crate::ssh::HostGroup,
 ) -> Result<crate::ssh::HostGroup, crate::error::AppError> {
     state.store.upsert_host_group(&group).map_err(store_err)?;
+    notify_hosts_changed(&app);
     Ok(group)
 }
 
 #[tauri::command]
-fn delete_host_group(state: State<'_, AppState>, id: String) -> Result<(), crate::error::AppError> {
+fn delete_host_group(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), crate::error::AppError> {
     state.store.remove_host_group(&id).map_err(store_err)?;
+    notify_hosts_changed(&app);
     Ok(())
 }
 
@@ -2761,29 +2969,11 @@ fn connect_host_group(
         return Err(crate::error::AppError::new("ssh.host_not_found").to_string());
     }
 
-    let home = crate::ssh::home_dir();
     let mut opened: Vec<Session> = Vec::new();
     let mut last_pane: Option<layout::PaneId> = None;
 
     for host in picked {
-        let handle = app.clone();
-        let session = state
-            .sessions
-            .create_ssh_session(
-                app.clone(),
-                &state.pty_pool,
-                host.id.clone(),
-                &host.alias,
-                home.as_deref(),
-                100,
-                30,
-                move |id| session_exited(&handle, id),
-            )
-            .map_err(|e| e.to_string())?;
-        let _ = state
-            .store
-            .touch_host_connected(&host.id, chrono::Utc::now());
-        gc_host(&state, &host.alias);
+        let session = open_ssh_session(&app, &state, host, 100, 30)?;
 
         match last_pane {
             None => {
@@ -3735,7 +3925,8 @@ fn reconnect_ssh(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> R
     // (teardown unificado) para a próxima operação reconstruí-lo sobre a conexão
     // remultiplexada.
     close_files_panel(&state, id);
-    reattach_or_finish(app, id);
+    let decision = state.sessions.cano_retry(&app, id, chrono::Utc::now());
+    run_cano_decision(app.clone(), id, decision);
     Ok(())
 }
 
@@ -4083,6 +4274,9 @@ fn open_container_tab(
         None => Some(state.layout.docker_workspace().map_err(|e| e.to_string())?),
     };
 
+    if let Some(alias) = host {
+        crate::ssh::command::require_session_if_password(alias).map_err(|e| e.to_string())?;
+    }
     let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
     let (args, title) = match tab {
         docker::ContainerTab::Logs => (
@@ -5717,9 +5911,9 @@ fn run_boot(
     // cadastrou host numa versão antiga recebe o que mudou no formato
     // (multiplexing, p.ex.) sem ter que reeditar host por host.
     let span = boot::Span::start("ssh.materialize");
-    if let (Ok(hosts), Some(home)) = (store.load_hosts(), ssh::home_dir()) {
+    if let Ok(hosts) = store.load_hosts() {
         if !hosts.is_empty() {
-            if let Err(e) = ssh::config::materialize(&home, &hosts) {
+            if let Err(e) = install_hosts(ssh::home_dir().as_deref(), &hosts) {
                 eprintln!("tyba: ssh config não materializou: {e}");
             }
         }
@@ -6173,6 +6367,8 @@ pub fn run() {
             broadcast_submit,
             connect_host_group,
             reconnect_ssh,
+            list_agent_keys,
+            test_host_connection,
             list_hosts,
             list_host_groups,
             create_host,
@@ -6381,6 +6577,131 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn host_form(alias: &str) -> crate::ssh::HostInput {
+        crate::ssh::HostInput {
+            alias: alias.into(),
+            hostname: format!("{alias}.example.test"),
+            port: None,
+            username: Some("root".into()),
+            identity_file: None,
+            proxy_jump: None,
+            group_id: None,
+            color: None,
+            notes: None,
+            tunnels: Vec::new(),
+            auth_method: crate::ssh::AuthMethod::Auto,
+            agent_key: None,
+        }
+    }
+
+    #[test]
+    fn host_que_o_ssh_recusa_nao_chega_ao_banco_nem_ao_tyba_conf() {
+        let store = Store::open_in_memory().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let conf = home.path().join(".ssh/config.d/tyba.conf");
+        save_new_host(&store, Some(home.path()), host_form("bom"), None, &|| {}).unwrap();
+        let before = std::fs::read_to_string(&conf).unwrap();
+
+        let mut ruim = host_form("ruim");
+        ruim.port = Some(0);
+        let err = save_new_host(&store, Some(home.path()), ruim, None, &|| {}).unwrap_err();
+        assert_eq!(err.code, "ssh.config_invalid");
+        assert_eq!(
+            store.load_hosts().unwrap().len(),
+            1,
+            "a linha não pode entrar"
+        );
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), before);
+
+        let mut editado = store.load_hosts().unwrap().remove(0);
+        editado.port = Some(0);
+        let err = save_host(&store, Some(home.path()), editado, None, &|| {}).unwrap_err();
+        assert_eq!(err.code, "ssh.config_invalid");
+        assert_eq!(store.load_hosts().unwrap()[0].port, None);
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), before);
+    }
+
+    #[test]
+    fn so_a_gravacao_bem_sucedida_avisa_que_os_hosts_mudaram() {
+        let store = Store::open_in_memory().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let notices = std::cell::Cell::new(0);
+        let written = || notices.set(notices.get() + 1);
+
+        save_new_host(&store, Some(home.path()), host_form("a"), None, &written).unwrap();
+        assert_eq!(notices.get(), 1);
+
+        let dup = save_new_host(&store, Some(home.path()), host_form("a"), None, &written);
+        assert_eq!(dup.unwrap_err().code, "ssh.alias_duplicate");
+        let mut ruim = host_form("b");
+        ruim.port = Some(0);
+        let invalid = save_new_host(&store, Some(home.path()), ruim, None, &written);
+        assert_eq!(invalid.unwrap_err().code, "ssh.config_invalid");
+        assert_eq!(notices.get(), 1, "falha de validação não avisa");
+
+        let mut edited = store.load_hosts().unwrap().remove(0);
+        edited.username = Some("outro".into());
+        save_host(&store, Some(home.path()), edited, None, &written).unwrap();
+        assert_eq!(notices.get(), 2);
+    }
+
+    #[test]
+    fn host_com_metodo_invalido_devolve_o_erro_do_contrato() {
+        let store = Store::open_in_memory().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let code = |form: crate::ssh::HostInput| {
+            save_new_host(&store, Some(home.path()), form, None, &|| {})
+                .unwrap_err()
+                .code
+        };
+        let mut form = host_form("a");
+        form.auth_method = crate::ssh::AuthMethod::File;
+        form.identity_file = Some(" ".into());
+        assert_eq!(code(form), "ssh.identity_file_required");
+        let mut form = host_form("b");
+        form.auth_method = crate::ssh::AuthMethod::Password;
+        form.identity_file = Some("/k".into());
+        assert_eq!(code(form), "ssh.auth_fields_conflict");
+        let mut form = host_form("c");
+        form.auth_method = crate::ssh::AuthMethod::Agent;
+        form.agent_key = Some(crate::ssh::AgentKey {
+            public_key: crate::ssh::agent_keys::tests::synthetic_key(1),
+            name: "k".into(),
+            fingerprint: "SHA256:forjada".into(),
+        });
+        assert_eq!(code(form), "ssh.agent_key_invalid");
+        assert!(store.load_hosts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn host_de_agente_instala_o_pub_e_guarda_a_chave_conferida() {
+        let store = Store::open_in_memory().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let public_key = format!(
+            "{} comentario",
+            crate::ssh::agent_keys::tests::synthetic_key(8)
+        );
+        let mut form = host_form("vps");
+        form.auth_method = crate::ssh::AuthMethod::Agent;
+        form.agent_key = Some(crate::ssh::AgentKey {
+            fingerprint: crate::ssh::agent_keys::fingerprint_of(&public_key).unwrap(),
+            public_key,
+            name: "Chave".into(),
+        });
+        let saved = save_new_host(&store, Some(home.path()), form, None, &|| {}).unwrap();
+        let key = saved.agent_key.clone().unwrap();
+        assert_eq!(
+            key.public_key,
+            crate::ssh::agent_keys::tests::synthetic_key(8)
+        );
+        assert_eq!(store.load_hosts().unwrap()[0].agent_key, Some(key.clone()));
+        let pub_file = home.path().join(format!(
+            ".ssh/config.d/tyba-keys/{}.pub",
+            crate::ssh::config::key_file_stem(&key.fingerprint)
+        ));
+        assert!(pub_file.exists());
+    }
 
     /// `openssl ` sozinho é pergunta, não linha pela metade.
     ///
@@ -6805,6 +7126,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             cwd: None,
             connection: session::ConnectionState::Live,
+            connection_failure: None,
             agent_conversation_id: None,
             observed: None,
             opened_by_gate: false,

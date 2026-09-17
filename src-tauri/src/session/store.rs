@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     cwd TEXT,
-    agent_conversation_id TEXT
+    agent_conversation_id TEXT,
+    ssh_logged_in INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -148,7 +149,9 @@ CREATE TABLE IF NOT EXISTS host (
     position INTEGER NOT NULL DEFAULT 0,
     tunnels TEXT,
     created_at TEXT NOT NULL,
-    last_connected_at TEXT
+    last_connected_at TEXT,
+    auth_method TEXT NOT NULL DEFAULT 'auto',
+    agent_key TEXT
 );
 CREATE TABLE IF NOT EXISTS session_tunnel (
     id TEXT PRIMARY KEY,
@@ -471,6 +474,11 @@ pub enum StoreError {
 ///     cada boot, senão o app paga a conferência de milhares de linhas para
 ///     nada. Degrau próprio também porque banco que já existe está carimbado
 ///     na 5: sem ele, só quem instalasse do zero teria a base.
+/// 7 — `command_spec` é resemeada com o que o artefato ganhou depois.
+/// 8 — `host.auth_method` e `host.agent_key` entram, e `sessions.ssh_logged_in`
+///     com backfill `1` para toda sessão SSH que já existe: elas estavam vivas
+///     antes da coluna, e sem o backfill o boot as esqueceria. Conferido em
+///     2026-09-16: nenhuma branch remota usava versão acima de 7.
 ///
 /// Degrau próprio para cada um, e nunca linha nova na [`BASELINE_COLUMNS`]: a
 /// base só roda em banco na versão 0, então quem já subiu de versão nunca mais
@@ -482,7 +490,7 @@ pub enum StoreError {
 /// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
 /// de cada um passa isolado, porque simula o banco na versão anterior, que é
 /// justamente o caso em que ambos rodam.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -600,6 +608,44 @@ fn seed_rows(conn: &Connection) -> Result<(), StoreError> {
         // quando há texto, e `""` faria aparecer uma coluna vazia.
         let description = campos.next().filter(|d| !d.is_empty());
         stmt.execute(params![command, path, kind, description])?;
+    }
+    Ok(())
+}
+
+/// Degrau 8 numa transação só: coluna sem backfill seria pior que coluna
+/// nenhuma — a próxima tentativa veria a coluna pronta, pularia o backfill, e
+/// as sessões SSH vivas seriam esquecidas no boot.
+fn migrate_ssh_auth(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> Result<(), StoreError> {
+        if !has_column(conn, "host", "auth_method")? {
+            conn.execute(
+                "ALTER TABLE host ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'auto'",
+                [],
+            )?;
+        }
+        if !has_column(conn, "host", "agent_key")? {
+            conn.execute("ALTER TABLE host ADD COLUMN agent_key TEXT", [])?;
+        }
+        if !has_column(conn, "sessions", "ssh_logged_in")? {
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN ssh_logged_in INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE sessions SET ssh_logged_in = 1
+                 WHERE json_valid(kind) AND json_extract(kind, '$.type') = 'ssh'",
+                [],
+            )?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
     }
     Ok(())
 }
@@ -785,6 +831,18 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
+    let ssh_auth_applied = if from < 8 {
+        match migrate_ssh_auth(conn) {
+            Ok(()) => true,
+            Err(e) => {
+                skipped.push(format!("ssh auth (degrau 8): {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
     let reached = match (
         baseline_applied,
         scrollback_applied,
@@ -792,14 +850,16 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         conversation_applied,
         approval_repo_applied,
         spec_seed_applied,
+        ssh_auth_applied,
     ) {
-        (true, true, true, true, true, true) => SCHEMA_VERSION,
-        (true, true, true, true, true, false) => 5,
-        (true, true, true, true, false, _) => 4,
-        (true, true, true, false, _, _) => 3,
-        (true, true, false, _, _, _) => 2,
-        (true, false, _, _, _, _) => 1,
-        (false, _, _, _, _, _) => from,
+        (true, true, true, true, true, true, true) => SCHEMA_VERSION,
+        (true, true, true, true, true, true, false) => 7,
+        (true, true, true, true, true, false, _) => 5,
+        (true, true, true, true, false, _, _) => 4,
+        (true, true, true, false, _, _, _) => 3,
+        (true, true, false, _, _, _, _) => 2,
+        (true, false, _, _, _, _, _) => 1,
+        (false, _, _, _, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -951,14 +1011,22 @@ impl Store {
 
     pub fn upsert_host(&self, h: &Host) -> Result<(), StoreError> {
         let tunnels = serde_json::to_string(&h.tunnels)?;
+        let auth_method = serde_json::to_value(h.auth_method)?
+            .as_str()
+            .unwrap_or("auto")
+            .to_string();
+        let agent_key = match &h.agent_key {
+            Some(k) => Some(serde_json::to_string(k)?),
+            None => None,
+        };
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO host (id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at, tunnels)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "INSERT INTO host (id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at, tunnels, auth_method, agent_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET
                 alias = ?2, hostname = ?3, port = ?4, username = ?5, identity_file = ?6,
                 proxy_jump = ?7, group_id = ?8, color = ?9, notes = ?10, position = ?11,
-                last_connected_at = ?13, tunnels = ?14",
+                last_connected_at = ?13, tunnels = ?14, auth_method = ?15, agent_key = ?16",
             params![
                 h.id,
                 h.alias,
@@ -974,6 +1042,8 @@ impl Store {
                 h.created_at.to_rfc3339(),
                 h.last_connected_at.map(|t| t.to_rfc3339()),
                 tunnels,
+                auth_method,
+                agent_key,
             ],
         )?;
         Ok(())
@@ -982,7 +1052,7 @@ impl Store {
     pub fn load_hosts(&self) -> Result<Vec<Host>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at, tunnels
+            "SELECT id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at, tunnels, auth_method, agent_key
              FROM host ORDER BY position, alias",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -1001,6 +1071,8 @@ impl Store {
                 created_at: row.get(11)?,
                 last_connected_at: row.get(12)?,
                 tunnels: row.get(13)?,
+                auth_method: row.get(14)?,
+                agent_key: row.get(15)?,
             })
         })?;
         let mut out = Vec::new();
@@ -1091,6 +1163,31 @@ impl Store {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM host WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// O Cano desta sessão chegou a autenticar alguma vez. É o que decide, no
+    /// boot, entre religar a sessão e esquecê-la.
+    pub fn mark_ssh_logged_in(&self, id: SessionId) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE sessions SET ssh_logged_in = 1 WHERE id = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn ssh_logged_in(&self, id: SessionId) -> Result<bool, StoreError> {
+        let conn = self.conn.lock();
+        let found = conn.query_row(
+            "SELECT ssh_logged_in FROM sessions WHERE id = ?1",
+            params![id.to_string()],
+            |row| row.get::<_, i64>(0),
+        );
+        match found {
+            Ok(v) => Ok(v != 0),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn touch_host_connected(&self, id: &str, when: DateTime<Utc>) -> Result<(), StoreError> {
@@ -2454,6 +2551,7 @@ impl RawSession {
             created_at,
             cwd: self.cwd.map(PathBuf::from),
             connection: crate::session::ConnectionState::default(),
+            connection_failure: None,
             agent_conversation_id: self
                 .agent_conversation_id
                 .filter(|id| crate::agent::conversation::is_plausible(id)),
@@ -2481,6 +2579,8 @@ struct RawHost {
     created_at: String,
     last_connected_at: Option<String>,
     tunnels: Option<String>,
+    auth_method: String,
+    agent_key: Option<String>,
 }
 
 impl RawHost {
@@ -2501,6 +2601,14 @@ impl RawHost {
             color: self.color,
             notes: self.notes,
             position: self.position,
+            // Valor desconhecido (banco de uma versão mais nova) cai em `auto`:
+            // melhor um Host que ainda conecta como antes do que sumir da lista.
+            auth_method: serde_json::from_value(serde_json::Value::String(self.auth_method))
+                .unwrap_or_default(),
+            agent_key: match self.agent_key.as_deref() {
+                Some(j) => serde_json::from_str(j).ok(),
+                None => None,
+            },
             created_at: DateTime::parse_from_rfc3339(&self.created_at)?.with_timezone(&Utc),
             last_connected_at: match self.last_connected_at {
                 Some(s) => Some(DateTime::parse_from_rfc3339(&s)?.with_timezone(&Utc)),
@@ -2548,6 +2656,7 @@ mod tests {
             created_at: Utc::now(),
             cwd: Some(PathBuf::from("/repo/sub")),
             connection: crate::session::ConnectionState::default(),
+            connection_failure: None,
             agent_conversation_id: None,
             observed: None,
             opened_by_gate: false,
@@ -2633,9 +2742,55 @@ mod tests {
             notes: None,
             position: 0,
             tunnels: Vec::new(),
+            auth_method: crate::ssh::AuthMethod::Auto,
+            agent_key: None,
             created_at: Utc::now(),
             last_connected_at: None,
         }
+    }
+
+    #[test]
+    fn metodo_e_chave_do_agente_sobrevivem_ao_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let mut h = sample_host("vps");
+        h.auth_method = crate::ssh::AuthMethod::Agent;
+        h.agent_key = Some(crate::ssh::AgentKey {
+            public_key:
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeFakeFakeFakeFakeFakeFakeFakeFakeFakeFake"
+                    .into(),
+            name: "Chave de teste".into(),
+            fingerprint: "SHA256:fake".into(),
+        });
+        store.upsert_host(&h).unwrap();
+        let loaded = &store.load_hosts().unwrap()[0];
+        assert_eq!(loaded.auth_method, crate::ssh::AuthMethod::Agent);
+        assert_eq!(loaded.agent_key, h.agent_key);
+
+        h.auth_method = crate::ssh::AuthMethod::Password;
+        h.agent_key = None;
+        store.upsert_host(&h).unwrap();
+        let loaded = &store.load_hosts().unwrap()[0];
+        assert_eq!(loaded.auth_method, crate::ssh::AuthMethod::Password);
+        assert_eq!(loaded.agent_key, None, "trocar de método apaga a chave");
+    }
+
+    #[test]
+    fn login_concluido_da_sessao_e_gravado_e_lido() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s = sample("ssh vps");
+        s.kind = SessionKind::Ssh {
+            host_id: "h".into(),
+        };
+        store.upsert_session(&s).unwrap();
+        assert!(!store.ssh_logged_in(s.id).unwrap());
+        store.mark_ssh_logged_in(s.id).unwrap();
+        assert!(store.ssh_logged_in(s.id).unwrap());
+        store.upsert_session(&s).unwrap();
+        assert!(
+            store.ssh_logged_in(s.id).unwrap(),
+            "upsert de status não apaga o login concluído"
+        );
+        assert!(!store.ssh_logged_in(SessionId::new_v4()).unwrap());
     }
 
     #[test]
@@ -2937,7 +3092,13 @@ mod tests {
         (3, "command_history", "import_key"),
         (4, "sessions", "agent_conversation_id"),
         (5, "approval_history", "repo_root"),
+        (8, "sessions", "ssh_logged_in"),
     ];
+
+    /// Colunas que nascem num degrau que já tem linha em [`STEP_COLUMNS`]. Lista
+    /// à parte porque a guarda de colisão exige um número por linha de lá.
+    const STEP_EXTRA_COLUMNS: &[(i64, &str, &str)] =
+        &[(8, "host", "auth_method"), (8, "host", "agent_key")];
 
     /// Degraus que nascem uma TABELA em vez de uma coluna, e em qual número.
     ///
@@ -3317,7 +3478,7 @@ mod tests {
                 conn.execute_batch(SCHEMA).unwrap();
                 // Só as colunas que aquela versão ainda não tinha. Remover uma
                 // que ela já tinha inventaria um disco que nunca existiu.
-                for (at, table, column) in STEP_COLUMNS {
+                for (at, table, column) in STEP_COLUMNS.iter().chain(STEP_EXTRA_COLUMNS) {
                     if *at <= from {
                         continue;
                     }
@@ -3338,7 +3499,7 @@ mod tests {
                 SCHEMA_VERSION,
                 "banco vindo da versão {from} não chegou na atual"
             );
-            for (_, table, column) in STEP_COLUMNS {
+            for (_, table, column) in STEP_COLUMNS.iter().chain(STEP_EXTRA_COLUMNS) {
                 assert!(
                     column_exists(&store, table, column),
                     "banco vindo da versão {from} ficou sem {table}.{column}"
@@ -3350,6 +3511,50 @@ mod tests {
                 "versão {from} reportou degrau pulado"
             );
         }
+    }
+
+    /// Degrau 8 a partir de um banco na 7, com o formato real de `kind`.
+    #[test]
+    fn banco_na_7_ganha_metodo_auto_e_login_concluido_nas_sessoes_ssh() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        let ssh = {
+            let mut s = sample("ssh vps");
+            s.kind = SessionKind::Ssh {
+                host_id: "h1".into(),
+            };
+            s
+        };
+        let shell = sample("zsh");
+        {
+            let store = Store::open(&path).unwrap();
+            store.upsert_session(&ssh).unwrap();
+            store.upsert_session(&shell).unwrap();
+            let mut h = sample_host("legado");
+            h.identity_file = Some("/home/u/.ssh/legado".into());
+            store.upsert_host(&h).unwrap();
+            let conn = store.conn.lock();
+            conn.execute_batch(
+                "ALTER TABLE host DROP COLUMN auth_method;
+                 ALTER TABLE host DROP COLUMN agent_key;
+                 ALTER TABLE sessions DROP COLUMN ssh_logged_in;",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 7).unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert_eq!(store.degraded(), None);
+        let host = &store.load_hosts().unwrap()[0];
+        assert_eq!(host.auth_method, crate::ssh::AuthMethod::Auto);
+        assert_eq!(host.identity_file.as_deref(), Some("/home/u/.ssh/legado"));
+        assert!(
+            store.ssh_logged_in(ssh.id).unwrap(),
+            "sessão SSH de antes da entrega estava viva: sem o backfill o boot a esqueceria"
+        );
+        assert!(!store.ssh_logged_in(shell.id).unwrap());
     }
 
     #[test]
