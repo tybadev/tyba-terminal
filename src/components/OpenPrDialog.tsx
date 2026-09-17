@@ -150,8 +150,12 @@ export function OpenPrDialog({
           <>
             <div className="flex flex-col gap-1.5">
               <span className="tyba-label">{t("prDialogFieldTitle")}</span>
+              {/* Prosa: religa o que o `Input` base desliga (regra 29). */}
               <Input
                 autoFocus
+                autoCapitalize="sentences"
+                autoCorrect="on"
+                spellCheck
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
               />

@@ -30,7 +30,28 @@ export interface Worktree {
   base_ref: string;
 }
 
-export type ConnectionState = "live" | "reconnecting" | "dropped";
+/** Fase do Cano (o `ssh` local) de uma SSH Session. Espelha `ConnectionState`. */
+export type ConnectionState =
+  | "live"
+  | "connecting"
+  | "reconnecting"
+  | "dropped"
+  | "failed";
+
+/** Por que o Cano terminou antes do login. Espelha `ssh::classify::FailureReason`. */
+export type FailureReason =
+  | "auth_refused"
+  | "host_key_changed"
+  | "host_key_rejected"
+  | "host_unresolved"
+  | "no_route"
+  | "unknown";
+
+/** `detail` é a última linha que o `ssh` deixou antes de morrer. */
+export interface CanoFailure {
+  reason: FailureReason;
+  detail: string;
+}
 
 /** O que a tela sugere. Espelha `ObservedState` do core. */
 export type ObservedState = "running" | "awaiting_input" | "idle";
@@ -58,6 +79,8 @@ export interface Session {
   attention: boolean;
   created_at: string;
   connection?: ConnectionState;
+  /** Presente só com `connection === "failed"`. */
+  connection_failure?: CanoFailure | null;
   /** Id da conversa nativa do agente, lido pelo core do transcript/rollout da
    * CLI. Presente = existe conversa a retomar; ausente = não há convite. */
   agent_conversation_id?: string | null;
@@ -578,6 +601,15 @@ export const detachSession = (id: SessionId) =>
 
 // --- SSH: gestor de conexões (Host / Host Group) ---
 
+export type AuthMethod = "auto" | "agent" | "file" | "password";
+
+/** Só a parte pública da chave; a privada nunca sai do agente. */
+export interface AgentKey {
+  public_key: string;
+  name: string;
+  fingerprint: string;
+}
+
 export interface Host {
   id: string;
   alias: string;
@@ -591,6 +623,9 @@ export interface Host {
   notes: string | null;
   position: number;
   tunnels: Tunnel[];
+  /** O core sempre envia; opcional só para quem monta `Host` à mão (ausente = `auto`). */
+  auth_method?: AuthMethod;
+  agent_key?: AgentKey | null;
   created_at: string;
   last_connected_at: string | null;
 }
@@ -661,6 +696,8 @@ export interface HostInput {
   color?: string | null;
   notes?: string | null;
   tunnels?: Tunnel[];
+  auth_method?: AuthMethod;
+  agent_key?: AgentKey | null;
 }
 
 export interface HostGroupInput {
@@ -671,10 +708,39 @@ export interface HostGroupInput {
 
 export const listHosts = () => invoke<Host[]>("list_hosts");
 export const listHostGroups = () => invoke<HostGroup[]>("list_host_groups");
+
+/** Host ou grupo gravado com sucesso. Sem payload: quem escuta relê as listas. */
+export const EVENT_HOSTS_CHANGED = "ssh://hosts-changed";
+
+export const onHostsChanged = (handler: () => void): Promise<UnlistenFn> =>
+  listen(EVENT_HOSTS_CHANGED, () => handler());
 export const createHost = (input: HostInput, confirmed = false) =>
   invoke<Host>("create_host", { input, confirmed });
 export const updateHost = (host: Host, confirmed = false) =>
   invoke<Host>("update_host", { host, confirmed });
+/** `socket: null` = nenhum agente configurado nem no login shell. */
+export interface AgentKeyListing {
+  socket: string | null;
+  keys: AgentKey[];
+}
+
+/** Chaves que o `ssh` usaria para o alias (ou para um Host ainda sem alias). */
+export const listAgentKeys = (alias: string | null) =>
+  invoke<AgentKeyListing>("list_agent_keys", { alias });
+
+export type ConnectionTest =
+  | { outcome: "ok"; user: string; elapsed_ms: number }
+  | { outcome: "host_unknown"; key_type: string; fingerprint: string }
+  | { outcome: "passphrase_required" }
+  | { outcome: "password_accepted"; elapsed_ms: number }
+  | { outcome: "password_not_offered"; methods: string[] }
+  | { outcome: "failed"; reason: FailureReason; detail: string }
+  | { outcome: "timed_out" };
+
+/** Testa os valores do formulário sem gravar nada (até 30 s). */
+export const testHostConnection = (input: HostInput) =>
+  invoke<ConnectionTest>("test_host_connection", { input });
+
 export const deleteHost = (id: string) => invoke<void>("delete_host", { id });
 export const createHostGroup = (input: HostGroupInput) =>
   invoke<HostGroup>("create_host_group", { input });

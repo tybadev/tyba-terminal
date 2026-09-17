@@ -1,4 +1,9 @@
-import type { ObservedAgent, Session, SessionStatus } from "./ipc";
+import type {
+  CanoFailure,
+  ObservedAgent,
+  Session,
+  SessionStatus,
+} from "./ipc";
 
 export const isFinishedStatus = (status: SessionStatus): boolean =>
   status.state === "exited" || status.state === "failed";
@@ -91,6 +96,14 @@ export const sameObserved = (
   return a.agent === b.agent && a.state === b.state;
 };
 
+export const sameCanoFailure = (
+  a: CanoFailure | null | undefined,
+  b: CanoFailure | null | undefined,
+): boolean => {
+  if (!a || !b) return !a && !b;
+  return a.reason === b.reason && a.detail === b.detail;
+};
+
 /**
  * A sessão atualizada, ou `null` quando o evento não traz novidade.
  *
@@ -114,7 +127,9 @@ export const mergeSessionUpdate = (
   if (
     sameSessionStatus(current.status, incoming.status) &&
     current.attention === incoming.attention &&
-    sameObserved(current.observed, incoming.observed)
+    sameObserved(current.observed, incoming.observed) &&
+    current.connection === incoming.connection &&
+    sameCanoFailure(current.connection_failure, incoming.connection_failure)
   ) {
     return null;
   }
@@ -123,5 +138,7 @@ export const mergeSessionUpdate = (
     status: incoming.status,
     attention: incoming.attention,
     observed: incoming.observed ?? null,
+    connection: incoming.connection,
+    connection_failure: incoming.connection_failure ?? null,
   };
 };

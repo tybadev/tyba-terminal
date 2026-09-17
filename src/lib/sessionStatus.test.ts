@@ -2,10 +2,11 @@ import { describe, expect, test } from "bun:test";
 
 import {
   isFinishedStatus,
+  mergeSessionUpdate,
   sameSessionStatus,
   statusVisual,
 } from "./sessionStatus";
-import type { SessionStatus } from "./ipc";
+import type { Session, SessionStatus } from "./ipc";
 
 describe("isFinishedStatus", () => {
   test("exited e failed são terminais", () => {
@@ -133,5 +134,66 @@ describe("statusVisual", () => {
       statusVisual({ state: "running" }, false)?.rank ?? 0,
     ];
     expect(ranks).toEqual([...ranks].sort((a, b) => b - a));
+  });
+});
+
+// A fase do Cano só chegava à tela num refresh incidental da lista: o listener
+// descartava o evento como "nada mudou" porque status e atenção não mexem.
+describe("mergeSessionUpdate e a fase do Cano", () => {
+  const ssh = (over: Partial<Session> = {}): Session => ({
+    id: "s1",
+    kind: { type: "ssh", host_id: "h1" },
+    title: "vps",
+    repo_root: null,
+    worktree: null,
+    status: { state: "running" },
+    attention: false,
+    created_at: "",
+    observed: null,
+    connection: "connecting",
+    connection_failure: null,
+    ...over,
+  });
+
+  test("mudança de connection é novidade e chega à sessão", () => {
+    const merged = mergeSessionUpdate(ssh(), ssh({ connection: "live" }));
+    expect(merged?.connection).toBe("live");
+  });
+
+  // "Tentar de novo" pode falhar de novo com outro motivo: a fase continua
+  // `failed` e só o motivo muda — o cartão não pode ficar com o antigo.
+  test("motivo novo com a mesma fase é novidade", () => {
+    const before = ssh({
+      connection: "failed",
+      connection_failure: { reason: "no_route", detail: "Connection refused" },
+    });
+    const after = ssh({
+      connection: "failed",
+      connection_failure: {
+        reason: "auth_refused",
+        detail: "root@203.0.113.7: Permission denied (publickey).",
+      },
+    });
+    expect(mergeSessionUpdate(before, after)?.connection_failure).toEqual({
+      reason: "auth_refused",
+      detail: "root@203.0.113.7: Permission denied (publickey).",
+    });
+  });
+
+  test("motivo que some ao sair de failed some da sessão", () => {
+    const before = ssh({
+      connection: "failed",
+      connection_failure: { reason: "no_route", detail: "x" },
+    });
+    const merged = mergeSessionUpdate(before, ssh({ connection: "connecting" }));
+    expect(merged?.connection).toBe("connecting");
+    expect(merged?.connection_failure ?? null).toBeNull();
+  });
+
+  test("mesmo motivo com objeto novo não é novidade", () => {
+    const failure = () => ({ reason: "no_route" as const, detail: "x" });
+    const before = ssh({ connection: "failed", connection_failure: failure() });
+    const after = ssh({ connection: "failed", connection_failure: failure() });
+    expect(mergeSessionUpdate(before, after)).toBeNull();
   });
 });
