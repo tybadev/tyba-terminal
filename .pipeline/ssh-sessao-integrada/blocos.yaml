@@ -1,0 +1,151 @@
+# Mapa de blocos — ssh-sessao-integrada
+#
+# Validado por check-block-map.py antes de fase-impl começar:
+#   write-sets disjuntos, testes incluídos · ordem contígua começando em 1 ·
+#   interface consumida produzida por um bloco anterior · com dois ou mais blocos, o último é `integration`.
+#
+# O corte aqui foi possível porque o transporte tem uma costura estreita: toda
+# escrita na sessão passa por `PtyPool::write` e todo redimensionamento por
+# `PtyPool::resize` (conferido em 2026-09-17: 8 chamadas, todas no lib.rs). O
+# protocolo do tmux cabe inteiro dentro do módulo de PTY, sem tocar em quem
+# chama — por isso ele é um bloco só dele, testável com fluxos sintéticos.
+#
+# O bloco 2 continua grande pelo mesmo motivo da entrega anterior: `Host` ganha
+# campo e os literais de `Host`/`Session` vivem em lib.rs, store.rs, stats e
+# auth_watch; dividir deixaria o crate sem compilar entre um bloco e o seguinte.
+#
+# 2026-09-17: o bloco 2 voltou `blocked` porque o mapa esquecera três fixtures que
+# também constroem `Host`/`HostInput` (ssh/config.rs, ssh/test_conn.rs e o teste de
+# host real da entrega anterior). Entraram no write-set do bloco 2.
+
+slug: ssh-sessao-integrada
+
+blocos:
+  - id: 01-transporte-controle
+    ordem: 1
+    objetivo: >-
+      O núcleo aprende a falar o protocolo de controle do tmux: decodificar
+      `%output` (escape octal, payload partido entre leituras) num fluxo de bytes
+      igual ao de um PTY cru, consumir as notificações sem deixá-las chegar à
+      tela, montar `send-keys -H`, `refresh-client -C` e `capture-pane`, e
+      escolher o transporte por sessão sem mudar a assinatura de `write`,
+      `resize` e do caminho de leitura. Regras 2–6 da spec.
+    write_set:
+      - src-tauri/src/pty/mod.rs
+      - src-tauri/src/pty/tmux_control.rs
+    expoe:
+      - pty::Transport
+      - pty::PtyPool::spawn_with_transport
+      - pty::PtyPool::redraw_from_capture
+      - pty::tmux_control::ControlDecoder
+      - pty::tmux_control::ControlEvent
+      - pty::tmux_control::send_keys
+      - pty::tmux_control::refresh_client
+      - pty::tmux_control::capture_pane
+    consome: []
+    testes:
+      - src-tauri/src/pty/tmux_control.rs
+      - src-tauri/src/pty/mod.rs
+
+  - id: 02-sessao-remota-integrada
+    ordem: 2
+    objetivo: >-
+      A SSH Session passa a nascer integrada: comando remoto com o rc de bash/zsh
+      que não deixa rastro, chave por Host, transporte de controle escolhido no
+      spawn, evento de integração com o motivo, canal próprio por Host (nomes de
+      comando e git), histórico com `host_id`, completar caminho remoto por SFTP,
+      chips vindos do servidor, aviso de agente sem jaula e migração 9.
+      Regras 1, 7–14, 16, 18–26 da spec.
+    write_set:
+      - src-tauri/src/lib.rs
+      - src-tauri/src/ssh/mod.rs
+      - src-tauri/src/ssh/remote_rc.rs
+      - src-tauri/src/ssh/query.rs   # usa files::remote::RemoteFs::exec, não abre ssh próprio
+      - src-tauri/src/ssh/tmux.rs
+      - src-tauri/src/ssh/command.rs
+      # Corrigido em 2026-09-17, depois de o bloco voltar `blocked`: estes três
+      # constroem `Host`/`HostInput` em fixture de teste, e campo novo na struct
+      # quebra o build de TESTE do crate inteiro (`cargo build --lib --tests` = 101).
+      # Sem eles o bloco não consegue rodar nem os próprios testes.
+      - src-tauri/src/ssh/config.rs
+      - src-tauri/src/ssh/test_conn.rs
+      - src-tauri/tests/ssh_real_host.rs
+      - src-tauri/src/session/mod.rs
+      - src-tauri/src/session/store.rs
+      - src-tauri/src/history/mod.rs
+      - src-tauri/src/completion/mod.rs
+      - src-tauri/src/completion/binary.rs
+      - src-tauri/src/files/remote/mod.rs
+      - src-tauri/src/stats/mod.rs
+      - src-tauri/src/agent/auth_watch.rs
+    expoe:
+      - ssh::remote_rc::remote_command
+      - ssh::remote_rc::RemoteShell
+      - ssh::query::HostQuery
+      - ssh::Host.integration_enabled
+      - ipc::event::ssh_integration
+      - ipc::session_chips_remote
+      - Store::migration_9
+    consome:
+      - pty::Transport
+      - pty::PtyPool::spawn_with_transport
+      - pty::PtyPool::redraw_from_capture
+      - pty::tmux_control::send_keys
+      - pty::tmux_control::capture_pane
+    testes:
+      - src-tauri/src/ssh/remote_rc.rs
+      - src-tauri/src/ssh/query.rs
+      - src-tauri/src/ssh/tmux.rs
+      - src-tauri/src/session/store.rs
+      - src-tauri/src/history/mod.rs
+      - src-tauri/src/completion/binary.rs
+      - src-tauri/src/lib.rs
+
+  - id: 03-ui-sessao-integrada
+    ordem: 3
+    objetivo: >-
+      A tela deixa de tratar sessão SSH como terminal cru: linha de comando e
+      blocos valem para sessão integrada, os chips passam a ler os valores do
+      servidor, o pane explica numa linha quando a sessão é comum (chave
+      desligada, shell não suportado, sessão de antes, host sem tmux), o
+      formulário do Host ganha a chave de integração e o aviso de agente sem
+      jaula aparece. Regras 8, 12, 13, 15, 17, 23, 26 (lado da tela).
+    write_set:
+      - src/App.tsx
+      - src/lib/ipc.ts
+      - src/lib/commandLine.ts
+      - src/lib/commandLine.test.ts
+      - src/lib/remoteSession.ts
+      - src/lib/remoteSession.test.ts
+      - src/i18n/index.ts
+      - src/components/TerminalView.tsx
+      - src/components/HostFormDialog.tsx
+      - src/components/ConnectionsView.tsx
+      - src/components/Toolbar.tsx
+    expoe: []
+    consome:
+      - ssh::Host.integration_enabled
+      - ipc::event::ssh_integration
+      - ipc::session_chips_remote
+    testes:
+      - src/lib/commandLine.test.ts
+      - src/lib/remoteSession.test.ts
+
+  - id: integration
+    ordem: 4
+    objetivo: >-
+      Exercita as costuras contra um host real pela API pública: sessão integrada
+      sobe com bash, o rc some do servidor, blocos e prompt chegam pelo
+      transporte de controle, reatar redesenha por `capture-pane`, o canal
+      próprio devolve nomes de comando e git, e a sessão remota do dono continua
+      viva depois. Ignorado sem as variáveis de E2E. O E2E de tela roda na
+      sessão principal.
+    write_set:
+      - src-tauri/tests/ssh_integrated_real_host.rs
+    expoe: []
+    consome:
+      - pty::tmux_control::ControlDecoder
+      - ssh::remote_rc::remote_command
+      - ssh::query::HostQuery
+    testes:
+      - src-tauri/tests/ssh_integrated_real_host.rs
