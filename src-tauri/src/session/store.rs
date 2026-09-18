@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL,
     cwd TEXT,
     agent_conversation_id TEXT,
-    ssh_logged_in INTEGER NOT NULL DEFAULT 0
+    ssh_logged_in INTEGER NOT NULL DEFAULT 0,
+    ssh_integration TEXT
 );
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -151,7 +152,8 @@ CREATE TABLE IF NOT EXISTS host (
     created_at TEXT NOT NULL,
     last_connected_at TEXT,
     auth_method TEXT NOT NULL DEFAULT 'auto',
-    agent_key TEXT
+    agent_key TEXT,
+    integration_enabled INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS session_tunnel (
     id TEXT PRIMARY KEY,
@@ -177,7 +179,8 @@ CREATE TABLE IF NOT EXISTS command_history (
     exit_code INTEGER,
     started_at_ms INTEGER NOT NULL,
     duration_ms INTEGER,
-    import_key TEXT
+    import_key TEXT,
+    host_id TEXT
 );
 CREATE INDEX IF NOT EXISTS command_history_by_time ON command_history (started_at_ms DESC);
 CREATE INDEX IF NOT EXISTS command_history_by_cwd ON command_history (cwd, started_at_ms DESC);
@@ -310,12 +313,14 @@ fn evict_command_history(conn: &Connection, cap: i64) -> Result<(), StoreError> 
 /// contra 10 ms sobre a janela; e o que sai da janela é justamente o que
 /// ninguém veria numa lista de recentes. Com busca o limite não se aplica: ali o
 /// ponto é alcançar o comando antigo, e o filtro em SQL já corta o volume.
+#[allow(clippy::too_many_arguments)]
 fn history_candidates_in(
     conn: &Connection,
     query: Option<&str>,
     cwd: Option<&str>,
     repo_root: Option<&str>,
     session_id: Option<&str>,
+    host_id: Option<&str>,
     filter: &crate::history::HistoryFilter,
     recent_rows: i64,
 ) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
@@ -330,10 +335,15 @@ fn history_candidates_in(
                 MAX(CASE WHEN ?2 IS NOT NULL AND cwd IS NOT NULL
                           AND (cwd = ?3 OR cwd LIKE ?2 ESCAPE '\\')
                          THEN 1 ELSE 0 END),
-                MAX(cwd)
-         FROM (SELECT command, cwd, exit_code, started_at_ms
+                MAX(cwd),
+                MAX(CASE WHEN ?14 IS NOT NULL AND host_id = ?14 THEN 1 ELSE 0 END)
+         FROM (SELECT command, cwd, exit_code, started_at_ms, host_id
                  FROM command_history
-                WHERE (?5 IS NULL OR command LIKE ?5 ESCAPE '\\')
+                -- Regra 19: numa sessão do Host entra o dele e o local; numa
+                -- sessão local, comando que só existe no remoto NÃO é
+                -- sugerido — rodá-lo aqui seria rodar outra coisa.
+                WHERE (host_id IS NULL OR host_id = ?14)
+                  AND (?5 IS NULL OR command LIKE ?5 ESCAPE '\\')
                   AND (?7 IS NULL OR cwd = ?7)
                   AND (?8 IS NULL OR cwd = ?9 OR cwd LIKE ?8 ESCAPE '\\')
                   AND (?10 IS NULL OR session_id = ?10)
@@ -394,6 +404,7 @@ fn history_candidates_in(
                 filter.outcome_tag(),
                 filter.min_duration_ms,
                 filter.since_ms,
+                host_id,
             ],
             |row| {
                 Ok(crate::history::HistoryCandidate {
@@ -405,6 +416,7 @@ fn history_candidates_in(
                     in_cwd: row.get::<_, i64>(5)? != 0,
                     in_repo: row.get::<_, i64>(6)? != 0,
                     cwd: row.get(7)?,
+                    in_host: row.get::<_, i64>(8)? != 0,
                 })
             },
         )?
@@ -453,6 +465,8 @@ pub enum StoreError {
     Uuid(#[from] uuid::Error),
     #[error("time: {0}")]
     Time(#[from] chrono::ParseError),
+    #[error("sessão inexistente: {0}")]
+    NoSuchSession(SessionId),
 }
 
 /// Versão de schema que este binário espera, em `PRAGMA user_version`.
@@ -490,7 +504,7 @@ pub enum StoreError {
 /// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
 /// de cada um passa isolado, porque simula o banco na versão anterior, que é
 /// justamente o caso em que ambos rodam.
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -638,6 +652,54 @@ fn migrate_ssh_auth(conn: &Connection) -> Result<(), StoreError> {
                 [],
             )?;
         }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// Degrau 9, numa transação só, pelo mesmo motivo do 8: a coluna e o índice do
+/// histórico por Host nascem juntos ou não nascem — o ranking da regra 19
+/// consulta os dois.
+///
+/// Conferido em 2026-09-17: nenhuma branch remota usava versão acima de 8.
+fn migrate_ssh_integration(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> Result<(), StoreError> {
+        if !has_column(conn, "host", "integration_enabled")? {
+            // Ligada por padrão: o Host que já existia passa a integrar sem o
+            // dono precisar reabrir o formulário.
+            conn.execute(
+                "ALTER TABLE host ADD COLUMN integration_enabled INTEGER NOT NULL DEFAULT 1",
+                [],
+            )?;
+        }
+        if !has_column(conn, "sessions", "ssh_integration")? {
+            // SEM backfill, e é o ponto: linha ausente = sessão que já estava
+            // viva quando esta versão chegou (regra 12). Preencher aqui com
+            // qualquer valor apagaria justamente o que distingue as duas.
+            conn.execute("ALTER TABLE sessions ADD COLUMN ssh_integration TEXT", [])?;
+        }
+        if !has_column(conn, "command_history", "host_id")? {
+            conn.execute("ALTER TABLE command_history ADD COLUMN host_id TEXT", [])?;
+        }
+        // O índice nasce AQUI e nunca no `SCHEMA`, como o de `import_key`.
+        // `SCHEMA` roda a cada abertura, ANTES desta migração: num banco na
+        // versão 8 a coluna ainda não existe, o `CREATE INDEX` devolve "no such
+        // column: host_id" e o `Store::open` inteiro vira `Err` — que é o
+        // caminho que derruba o usuário para um banco em memória, sem sessão,
+        // sem layout e sem histórico. Pego pelo teste do degrau 8 → 9.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS command_history_by_host
+             ON command_history (host_id, started_at_ms DESC)",
+            [],
+        )?;
         Ok(())
     })();
     match result {
@@ -843,6 +905,18 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
+    let ssh_integration_applied = if from < 9 {
+        match migrate_ssh_integration(conn) {
+            Ok(()) => true,
+            Err(e) => {
+                skipped.push(format!("ssh integration (degrau 9): {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
     let reached = match (
         baseline_applied,
         scrollback_applied,
@@ -851,15 +925,17 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         approval_repo_applied,
         spec_seed_applied,
         ssh_auth_applied,
+        ssh_integration_applied,
     ) {
-        (true, true, true, true, true, true, true) => SCHEMA_VERSION,
-        (true, true, true, true, true, true, false) => 7,
-        (true, true, true, true, true, false, _) => 5,
-        (true, true, true, true, false, _, _) => 4,
-        (true, true, true, false, _, _, _) => 3,
-        (true, true, false, _, _, _, _) => 2,
-        (true, false, _, _, _, _, _) => 1,
-        (false, _, _, _, _, _, _) => from,
+        (true, true, true, true, true, true, true, true) => SCHEMA_VERSION,
+        (true, true, true, true, true, true, true, false) => 8,
+        (true, true, true, true, true, true, false, _) => 7,
+        (true, true, true, true, true, false, _, _) => 5,
+        (true, true, true, true, false, _, _, _) => 4,
+        (true, true, true, false, _, _, _, _) => 3,
+        (true, true, false, _, _, _, _, _) => 2,
+        (true, false, _, _, _, _, _, _) => 1,
+        (false, _, _, _, _, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -1021,12 +1097,13 @@ impl Store {
         };
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO host (id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at, tunnels, auth_method, agent_key)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            "INSERT INTO host (id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at, tunnels, auth_method, agent_key, integration_enabled)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(id) DO UPDATE SET
                 alias = ?2, hostname = ?3, port = ?4, username = ?5, identity_file = ?6,
                 proxy_jump = ?7, group_id = ?8, color = ?9, notes = ?10, position = ?11,
-                last_connected_at = ?13, tunnels = ?14, auth_method = ?15, agent_key = ?16",
+                last_connected_at = ?13, tunnels = ?14, auth_method = ?15, agent_key = ?16,
+                integration_enabled = ?17",
             params![
                 h.id,
                 h.alias,
@@ -1044,6 +1121,7 @@ impl Store {
                 tunnels,
                 auth_method,
                 agent_key,
+                h.integration_enabled,
             ],
         )?;
         Ok(())
@@ -1052,7 +1130,7 @@ impl Store {
     pub fn load_hosts(&self) -> Result<Vec<Host>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at, tunnels, auth_method, agent_key
+            "SELECT id, alias, hostname, port, username, identity_file, proxy_jump, group_id, color, notes, position, created_at, last_connected_at, tunnels, auth_method, agent_key, integration_enabled
              FROM host ORDER BY position, alias",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -1073,6 +1151,7 @@ impl Store {
                 tunnels: row.get(13)?,
                 auth_method: row.get(14)?,
                 agent_key: row.get(15)?,
+                integration_enabled: row.get(16)?,
             })
         })?;
         let mut out = Vec::new();
@@ -1173,6 +1252,53 @@ impl Store {
             "UPDATE sessions SET ssh_logged_in = 1 WHERE id = ?1",
             params![id.to_string()],
         )?;
+        Ok(())
+    }
+
+    /// O que o core decidiu sobre a integração desta sessão, no spawn.
+    ///
+    /// `None` é "não decidiu nada" — a sessão nasceu antes desta entrega e
+    /// segue como terminal comum até ser fechada (regra 12).
+    pub fn session_integration(
+        &self,
+        id: SessionId,
+    ) -> Result<Option<crate::ssh::IntegrationPlan>, StoreError> {
+        let conn = self.conn.lock();
+        let found = conn.query_row(
+            "SELECT ssh_integration FROM sessions WHERE id = ?1",
+            params![id.to_string()],
+            |row| row.get::<_, Option<String>>(0),
+        );
+        match found {
+            Ok(Some(json)) => Ok(serde_json::from_str(&json).ok()),
+            Ok(None) => Ok(None),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Grava a decisão de integração da sessão.
+    ///
+    /// **A linha da sessão tem de existir antes.** É `UPDATE`, e `UPDATE` em
+    /// linha inexistente não falha no SQLite — some. Foi o que aconteceu quando
+    /// o `spawn_ssh` gravava a decisão ANTES de registrar a sessão: a gravação
+    /// se perdia em silêncio, e a mesma sessão reatava depois como "veio de
+    /// antes da versão", pela regra 12, sem nunca ter vindo. Por isso zero linha
+    /// afetada é erro aqui.
+    pub fn set_session_integration(
+        &self,
+        id: SessionId,
+        plan: &crate::ssh::IntegrationPlan,
+    ) -> Result<(), StoreError> {
+        let json = serde_json::to_string(plan)?;
+        let conn = self.conn.lock();
+        let afetadas = conn.execute(
+            "UPDATE sessions SET ssh_integration = ?2 WHERE id = ?1",
+            params![id.to_string(), json],
+        )?;
+        if afetadas == 0 {
+            return Err(StoreError::NoSuchSession(id));
+        }
         Ok(())
     }
 
@@ -1683,8 +1809,8 @@ impl Store {
         }
         conn.execute(
             "INSERT INTO command_history
-                 (session_id, cwd, command, exit_code, started_at_ms, duration_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (session_id, cwd, command, exit_code, started_at_ms, duration_ms, host_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 record.session_id,
                 cwd,
@@ -1692,6 +1818,7 @@ impl Store {
                 record.exit_code,
                 record.started_at_ms,
                 record.duration_ms,
+                record.host_id,
             ],
         )?;
         evict_command_history(&conn, COMMAND_HISTORY_CAP)?;
@@ -1751,12 +1878,29 @@ impl Store {
         cwd: Option<&str>,
         repo_root: Option<&str>,
     ) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
+        self.history_candidates_of_host(query, cwd, repo_root, None)
+    }
+
+    /// O mesmo, do ponto de vista de uma sessão de Host (regra 19).
+    ///
+    /// Método à parte, e não mais um argumento no de cima, pelo mesmo motivo do
+    /// `history_candidates_filtered`: quase toda chamada é de sessão local, e
+    /// obrigá-las a passar `None` espalharia ruído por caminhos que nunca vão
+    /// perguntar por Host.
+    pub fn history_candidates_of_host(
+        &self,
+        query: Option<&str>,
+        cwd: Option<&str>,
+        repo_root: Option<&str>,
+        host_id: Option<&str>,
+    ) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
         history_candidates_in(
             &self.conn.lock(),
             query,
             cwd,
             repo_root,
             None,
+            host_id,
             &crate::history::HistoryFilter::default(),
             HISTORY_RECENT_ROWS,
         )
@@ -1776,12 +1920,27 @@ impl Store {
         session_id: Option<&str>,
         filter: &crate::history::HistoryFilter,
     ) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
+        self.history_candidates_filtered_of_host(query, cwd, repo_root, session_id, None, filter)
+    }
+
+    /// O mesmo, do ponto de vista de uma sessão de Host (regra 19).
+    #[allow(clippy::too_many_arguments)]
+    pub fn history_candidates_filtered_of_host(
+        &self,
+        query: Option<&str>,
+        cwd: Option<&str>,
+        repo_root: Option<&str>,
+        session_id: Option<&str>,
+        host_id: Option<&str>,
+        filter: &crate::history::HistoryFilter,
+    ) -> Result<Vec<crate::history::HistoryCandidate>, StoreError> {
         history_candidates_in(
             &self.conn.lock(),
             query,
             cwd,
             repo_root,
             session_id,
+            host_id,
             filter,
             HISTORY_RECENT_ROWS,
         )
@@ -1790,6 +1949,16 @@ impl Store {
     /// Comandos distintos que começam com o prefixo, mais recentes primeiro.
     /// Alimenta a completação de subcomando e flag.
     pub fn history_with_prefix(&self, prefix: &str, limit: i64) -> Result<Vec<String>, StoreError> {
+        self.history_with_prefix_of_host(prefix, limit, None)
+    }
+
+    /// O mesmo, do ponto de vista de uma sessão de Host (regra 19).
+    pub fn history_with_prefix_of_host(
+        &self,
+        prefix: &str,
+        limit: i64,
+        host_id: Option<&str>,
+    ) -> Result<Vec<String>, StoreError> {
         if prefix.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -1798,14 +1967,16 @@ impl Store {
             "SELECT command, MAX(started_at_ms) AS last_ms
              FROM command_history
              WHERE command LIKE ?1 ESCAPE '\\'
+               AND (host_id IS NULL OR host_id = ?3)
              GROUP BY command
              ORDER BY last_ms DESC
              LIMIT ?2",
         )?;
         let rows = stmt
-            .query_map(params![format!("{}%", escape_like(prefix)), limit], |row| {
-                row.get::<_, String>(0)
-            })?
+            .query_map(
+                params![format!("{}%", escape_like(prefix)), limit, host_id],
+                |row| row.get::<_, String>(0),
+            )?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -2581,6 +2752,7 @@ struct RawHost {
     tunnels: Option<String>,
     auth_method: String,
     agent_key: Option<String>,
+    integration_enabled: bool,
 }
 
 impl RawHost {
@@ -2609,6 +2781,7 @@ impl RawHost {
                 Some(j) => serde_json::from_str(j).ok(),
                 None => None,
             },
+            integration_enabled: self.integration_enabled,
             created_at: DateTime::parse_from_rfc3339(&self.created_at)?.with_timezone(&Utc),
             last_connected_at: match self.last_connected_at {
                 Some(s) => Some(DateTime::parse_from_rfc3339(&s)?.with_timezone(&Utc)),
@@ -2730,6 +2903,7 @@ mod tests {
 
     fn sample_host(alias: &str) -> Host {
         Host {
+            integration_enabled: true,
             id: uuid::Uuid::new_v4().to_string(),
             alias: alias.to_string(),
             hostname: format!("{alias}.example.com"),
@@ -3093,12 +3267,17 @@ mod tests {
         (4, "sessions", "agent_conversation_id"),
         (5, "approval_history", "repo_root"),
         (8, "sessions", "ssh_logged_in"),
+        (9, "command_history", "host_id"),
     ];
 
     /// Colunas que nascem num degrau que já tem linha em [`STEP_COLUMNS`]. Lista
     /// à parte porque a guarda de colisão exige um número por linha de lá.
-    const STEP_EXTRA_COLUMNS: &[(i64, &str, &str)] =
-        &[(8, "host", "auth_method"), (8, "host", "agent_key")];
+    const STEP_EXTRA_COLUMNS: &[(i64, &str, &str)] = &[
+        (8, "host", "auth_method"),
+        (8, "host", "agent_key"),
+        (9, "host", "integration_enabled"),
+        (9, "sessions", "ssh_integration"),
+    ];
 
     /// Degraus que nascem uma TABELA em vez de uma coluna, e em qual número.
     ///
@@ -3486,6 +3665,10 @@ mod tests {
                         conn.execute_batch("DROP INDEX IF EXISTS command_history_import_key;")
                             .unwrap();
                     }
+                    if (*table, *column) == ("command_history", "host_id") {
+                        conn.execute_batch("DROP INDEX IF EXISTS command_history_by_host;")
+                            .unwrap();
+                    }
                     conn.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column};"))
                         .unwrap();
                 }
@@ -3555,6 +3738,53 @@ mod tests {
             "sessão SSH de antes da entrega estava viva: sem o backfill o boot a esqueceria"
         );
         assert!(!store.ssh_logged_in(shell.id).unwrap());
+    }
+
+    /// Degrau 9 a partir de um banco na 8: a chave de integração nasce ligada e
+    /// o histórico ganha a dimensão de Host sem perder o que já estava lá.
+    #[test]
+    fn banco_na_8_ganha_a_chave_de_integracao_e_o_host_no_historico() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        {
+            let store = Store::open(&path).unwrap();
+            store.upsert_host(&sample_host("vps")).unwrap();
+            store
+                .insert_command(&crate::history::CommandRecord {
+                    session_id: "s1".into(),
+                    cwd: Some("/repo".into()),
+                    command: "cargo test".into(),
+                    exit_code: Some(0),
+                    started_at_ms: 1,
+                    duration_ms: Some(2),
+                    host_id: None,
+                })
+                .unwrap();
+            let conn = store.conn.lock();
+            conn.execute_batch(
+                "DROP INDEX IF EXISTS command_history_by_host;
+                 ALTER TABLE command_history DROP COLUMN host_id;
+                 ALTER TABLE host DROP COLUMN integration_enabled;",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 8).unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert_eq!(store.degraded(), None);
+        let host = &store.load_hosts().unwrap()[0];
+        assert!(
+            host.integration_enabled,
+            "a chave nasce LIGADA: o Host de antes desta entrega passa a integrar \
+             sem ninguém precisar abrir o formulário"
+        );
+        assert_eq!(
+            store.history_candidates(None, None, None).unwrap().len(),
+            1,
+            "o degrau não pode perder o histórico que já existia"
+        );
     }
 
     #[test]
@@ -3945,7 +4175,173 @@ mod tests {
             exit_code: Some(0),
             started_at_ms: at,
             duration_ms: Some(10),
+            host_id: None,
         }
+    }
+
+    /// Regra 12: a sessão que já estava viva quando esta versão chegou não tem
+    /// integração gravada — e é exatamente isso que a identifica. Adivinhar pela
+    /// versão do binário seria palpite; a ausência da linha é fato.
+    #[test]
+    fn sessao_de_antes_da_versao_nao_tem_integracao_gravada() {
+        let store = Store::open_in_memory().unwrap();
+        let antiga = sample("ssh vps");
+        store.upsert_session(&antiga).unwrap();
+
+        assert_eq!(
+            store.session_integration(antiga.id).unwrap(),
+            None,
+            "sem linha gravada, a sessão veio de antes"
+        );
+
+        let nova = sample("ssh vps 2");
+        store.upsert_session(&nova).unwrap();
+        let decidido = crate::ssh::IntegrationPlan::decide(
+            false,
+            crate::ssh::remote_rc::RemoteShell::Bash,
+            crate::ssh::Persistence::Persistent,
+        );
+        store.set_session_integration(nova.id, &decidido).unwrap();
+
+        assert_eq!(
+            store.session_integration(nova.id).unwrap(),
+            Some(decidido.clone()),
+            "sessão comum POR ESCOLHA é distinta de sessão comum por ser antiga"
+        );
+
+        let fantasma = SessionId::new_v4();
+        assert!(
+            store.set_session_integration(fantasma, &decidido).is_err(),
+            "gravar decisão de sessão que ainda não existe some em silêncio no \
+             SQLite; aqui isso tem de doer"
+        );
+    }
+
+    /// Linha gravada ANTES da persistência entrar no plano: o JSON não tem o
+    /// campo. Tem de continuar legível — cair em `None` aqui faria a sessão ser
+    /// reportada como "de antes da versão" (regra 12) sem nunca ter sido, e o
+    /// `.ok()` da leitura engoliria o erro em silêncio.
+    #[test]
+    fn plano_gravado_antes_da_persistencia_continua_legivel() {
+        let store = Store::open_in_memory().unwrap();
+        let sessao = sample("ssh vps");
+        store.upsert_session(&sessao).unwrap();
+        store
+            .conn
+            .lock()
+            .execute(
+                "UPDATE sessions SET ssh_integration = ?2 WHERE id = ?1",
+                params![
+                    sessao.id.to_string(),
+                    r#"{"integration":{"state":"integrated","reason":"ok"},"shell":"bash"}"#
+                ],
+            )
+            .unwrap();
+
+        let plano = store
+            .session_integration(sessao.id)
+            .unwrap()
+            .expect("a decisão gravada antes da correção continua sendo uma decisão");
+
+        assert!(plano.integration.is_integrated());
+        assert_eq!(
+            plano.integration.persistence,
+            crate::ssh::Persistence::Unknown,
+            "ninguém apurou o tmux naquela sessão: o pane não pode afirmar que ela persiste"
+        );
+    }
+
+    fn remote_command_row(cmd: &str, host: &str, at: i64) -> crate::history::CommandRecord {
+        crate::history::CommandRecord {
+            host_id: Some(host.into()),
+            ..command(cmd, Some("/srv"), at)
+        }
+    }
+
+    /// Regra 19, primeira metade: o que só existe no servidor não é sugerido na
+    /// máquina local. Rodar ali seria rodar outra coisa — ou coisa nenhuma.
+    #[test]
+    fn sessao_local_nunca_sugere_comando_que_so_existe_no_remoto() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_command(&command("cargo test", None, 1))
+            .unwrap();
+        store
+            .insert_command(&remote_command_row("systemctl restart nginx", "h1", 2))
+            .unwrap();
+
+        let local: Vec<String> = store
+            .history_candidates(None, None, None)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.command)
+            .collect();
+        assert_eq!(local, vec!["cargo test"]);
+
+        let no_host: Vec<String> = store
+            .history_candidates_of_host(None, None, None, Some("h1"))
+            .unwrap()
+            .into_iter()
+            .map(|c| c.command)
+            .collect();
+        assert!(
+            no_host.contains(&"systemctl restart nginx".to_string())
+                && no_host.contains(&"cargo test".to_string()),
+            "na sessão do Host valem os dois mundos; got {no_host:?}"
+        );
+    }
+
+    /// Regra 19, segunda metade: na sessão daquele Host, o histórico DELE vem
+    /// primeiro — mesmo contra um comando local muito mais usado.
+    #[test]
+    fn na_sessao_do_host_o_historico_dele_vem_primeiro() {
+        let store = Store::open_in_memory().unwrap();
+        // O local roda muito mais vezes: sem o peso de Host, a frecência o
+        // colocaria na frente e o teste passaria sem provar nada.
+        for at in 1..=40 {
+            store
+                .insert_command(&command("ls -la", None, at * 10))
+                .unwrap();
+            store
+                .insert_command(&command("outro", None, at * 10 + 1))
+                .unwrap();
+        }
+        store
+            .insert_command(&remote_command_row("journalctl -f", "h1", 500))
+            .unwrap();
+
+        let mut candidatos = store
+            .history_candidates_of_host(None, None, None, Some("h1"))
+            .unwrap();
+        crate::history::ordenar(&mut candidatos, crate::history::Ordem::Frecencia, 600);
+
+        assert_eq!(
+            candidatos[0].command,
+            "journalctl -f",
+            "o histórico do Host tem de vir primeiro na sessão dele; got {:?}",
+            candidatos.iter().map(|c| &c.command).collect::<Vec<_>>()
+        );
+        assert!(candidatos.iter().any(|c| c.command == "ls -la"));
+    }
+
+    /// A completação de primeiro token obedece à mesma fronteira.
+    #[test]
+    fn o_prefixo_tambem_respeita_a_fronteira_entre_local_e_remoto() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_command(&remote_command_row("systemctl status", "h1", 1))
+            .unwrap();
+
+        assert!(store
+            .history_with_prefix("systemctl", 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .history_with_prefix_of_host("systemctl", 10, Some("h1"))
+                .unwrap(),
+            vec!["systemctl status"]
+        );
     }
 
     /// Entrada de histórico com tudo escolhido — o `command` acima fixa sessão,
@@ -3965,6 +4361,7 @@ mod tests {
             exit_code,
             started_at_ms: at,
             duration_ms,
+            host_id: None,
         }
     }
 
@@ -4205,6 +4602,75 @@ mod tests {
         };
         assert!(!stored.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"));
         assert!(stored.contains("[REDACTED]"));
+    }
+
+    /// Um segredo digitado numa sessão INTEGRADA não chega ao disco.
+    ///
+    /// O que este teste acrescenta ao de cima não é a redação — é o caminho.
+    /// Numa sessão integrada os bytes do shell remoto não chegam crus: vêm
+    /// embrulhados em `%output`, com escape octal, e só existem depois do
+    /// decodificador do transporte de controle. Se um dia o transporte passar a
+    /// entregar a linha de comando por fora do `OscParser`/`Tracker`, a redação
+    /// continua de pé no `insert_command` e não protege mais nada — é esse
+    /// desvio que o teste pega.
+    #[test]
+    fn segredo_que_vem_pelo_transporte_de_controle_nao_chega_ao_historico() {
+        use base64::Engine as _;
+        const SEGREDO: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let digitado = format!("export TOKEN={SEGREDO}");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&digitado);
+
+        // O fluxo como o tmux entrega: uma notificação por linha, ESC e BEL em
+        // escape octal.
+        let fluxo = format!(
+            "%output %1 \\033]133;A\\007\\033]633;E;{b64}\\007\\033]133;C\\007\n\
+             %output %1 TOKEN={SEGREDO}\\015\\012\n\
+             %output %1 \\033]133;D;0\\007\n"
+        );
+        let mut decoder = crate::pty::tmux_control::ControlDecoder::new();
+        let mut bytes = Vec::new();
+        for evento in decoder.feed(fluxo.as_bytes()) {
+            if let crate::pty::tmux_control::ControlEvent::Output(saida) = evento {
+                bytes.extend_from_slice(&saida);
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&bytes).contains(SEGREDO),
+            "o transporte tem de entregar os bytes originais: sem isto o teste \
+             mediria o decodificador, não a redação"
+        );
+
+        let mut tracker = crate::history::Tracker::new("s1".into());
+        let mut registro = None;
+        for evento in crate::status::OscParser::new().feed(&bytes) {
+            match evento {
+                crate::status::ShellEvent::CommandLine(raw) => tracker.on_command_line(raw),
+                crate::status::ShellEvent::CommandStart => tracker.on_start(1_000),
+                crate::status::ShellEvent::CommandEnd(code) => {
+                    registro = tracker.on_end(Some(code), 2_000, Some(std::path::Path::new("/srv")))
+                }
+                _ => {}
+            }
+        }
+        let registro = registro.expect("o comando digitado no servidor vira registro");
+        assert!(
+            registro.command.contains(SEGREDO),
+            "é o que o shell remoto reportou; a redação é do outro lado"
+        );
+
+        let store = Store::open_in_memory().unwrap();
+        store.insert_command(&registro).unwrap();
+
+        let gravado: String = {
+            let conn = store.conn.lock();
+            conn.query_row("SELECT command FROM command_history", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert!(
+            !gravado.contains(SEGREDO),
+            "o segredo atravessou o transporte e foi parar no disco: {gravado}"
+        );
+        assert!(gravado.contains("[REDACTED]"));
     }
 
     #[test]
@@ -4467,13 +4933,15 @@ mod tests {
         let conn = store.conn.lock();
 
         let recentes =
-            history_candidates_in(&conn, None, None, None, None, &Default::default(), 2).unwrap();
+            history_candidates_in(&conn, None, None, None, None, None, &Default::default(), 2)
+                .unwrap();
         let nomes: Vec<&str> = recentes.iter().map(|c| c.command.as_str()).collect();
         assert_eq!(nomes, vec!["cmd3", "cmd2"]);
 
         let buscado = history_candidates_in(
             &conn,
             Some("cmd1"),
+            None,
             None,
             None,
             None,

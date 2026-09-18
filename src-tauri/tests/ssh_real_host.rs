@@ -308,6 +308,7 @@ fn usuario_errado_sai_sem_marco_e_classificado_como_auth_refused() {
 
 fn form(env: &E2eEnv, user: &str, method: AuthMethod, agent_key: Option<AgentKey>) -> HostInput {
     HostInput {
+        integration_enabled: true,
         alias: "tyba-e2e-form".into(),
         hostname: env.hostname.clone(),
         port: None,

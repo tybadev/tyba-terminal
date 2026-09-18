@@ -21,7 +21,7 @@ pub fn session_name(install_id: &str, session_id: Uuid) -> String {
     format!("tyba-{install_id}-{}", session_id.simple())
 }
 
-fn sh_c(script: &str) -> String {
+pub(crate) fn sh_c(script: &str) -> String {
     assert!(
         !script.contains('\''),
         "aspas simples fecham o envelope: {script}"
@@ -37,6 +37,14 @@ pub fn login_marker(nonce: &str) -> Vec<u8> {
     format!("\x1b]633;P;{LOGIN_MARKER_KEY}{nonce}\x07").into_bytes()
 }
 
+/// O `printf` do marco de login, para quem monta outro comando remoto. Um lugar
+/// só: o marco é o único sinal de login concluído que o core aceita, e duas
+/// grafias dele seriam duas formas de a sessão nunca sair de "conectando".
+pub(crate) fn login_marker_printf(nonce: &str) -> String {
+    assert!(valid_nonce(nonce), "nonce fora do formato: {nonce}");
+    format!("printf \"\\033]633;P;{LOGIN_MARKER_KEY}%s\\007\" {nonce};")
+}
+
 fn valid_nonce(nonce: &str) -> bool {
     nonce.len() == 32
         && nonce
@@ -49,13 +57,14 @@ fn valid_nonce(nonce: &str) -> bool {
 pub fn wrap_command_with_nonce(name: &str, nonce: &str) -> String {
     assert!(valid_nonce(nonce), "nonce fora do formato: {nonce}");
     sh_c(&format!(
-        "printf \"\\033]633;P;{LOGIN_MARKER_KEY}%s\\007\" {nonce}; \
+        "{login} \
          command -v tmux >/dev/null 2>&1 && \
          exec tmux new-session -A -s {name} \"exec env -u TMUX \\\"${{SHELL:-/bin/sh}}\\\" -l\" \\; \
          set-option -t {name} status off \\; \
          set-option -t {name} prefix None \\; \
          set-option -t {name} history-limit 5000 || \
-         exec \"${{SHELL:-/bin/sh}}\" -l"
+         exec \"${{SHELL:-/bin/sh}}\" -l",
+        login = login_marker_printf(nonce),
     ))
 }
 
@@ -158,6 +167,7 @@ pub fn kill_command(name: &str) -> String {
     sh_c(&format!(
         "tmux kill-session -t {name} 2>/dev/null; \
          pkill -f \"[t]mux new-session -A -s {name}\" 2>/dev/null; \
+         pkill -f \"[t]mux -C attach-session -t {name}\" 2>/dev/null; \
          true"
     ))
 }
@@ -186,6 +196,20 @@ mod tests {
         assert!(
             cmd.ends_with("true'"),
             "não achar o que matar é sucesso, não erro: {cmd}"
+        );
+    }
+
+    /// O cliente de controle que REATOU não roda `new-session`: o comando dele
+    /// é `tmux -C attach-session -t <nome>` (ver `remote_rc::attach_branch`).
+    /// Sem este segundo padrão, o órfão do reatar ficaria pendurado no servidor
+    /// — exatamente o processo que o primeiro padrão existe para recolher.
+    #[test]
+    fn kill_alcanca_tambem_o_cliente_que_reatou() {
+        let name = session_name("a3f", uuid(0x9f3a));
+        let cmd = kill_command(&name);
+        assert!(
+            cmd.contains(&format!("pkill -f \"[t]mux -C attach-session -t {name}\"")),
+            "got: {cmd}"
         );
     }
 

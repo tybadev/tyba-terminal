@@ -392,6 +392,7 @@ mod tests {
 
     fn host(alias: &str, hostname: &str) -> Host {
         Host {
+            integration_enabled: true,
             id: alias.to_string(),
             alias: alias.to_string(),
             hostname: hostname.to_string(),

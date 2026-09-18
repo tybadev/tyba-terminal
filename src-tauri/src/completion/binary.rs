@@ -240,11 +240,34 @@ pub fn set_path(session_id: &str, raw_path: &str) {
 
 /// Os binários do `$PATH` daquela sessão, do último cache.
 pub fn path_names(session_id: &str) -> Vec<String> {
+    // Sessão remota tem fonte própria e ela GANHA: o `$PATH` que o shell do
+    // servidor reporta é do servidor, e varrê-lo no disco local listaria os
+    // binários da máquina errada — que o dono aceitaria com um Tab. Lista vazia
+    // é resposta honesta (regra 25); a local, não.
+    if let Some(remote) = remote_names(session_id) {
+        return remote;
+    }
     PATHS
         .lock()
         .get(session_id)
         .map(|c| c.names().to_vec())
         .unwrap_or_default()
+}
+
+/// Os nomes que o canal próprio leu do servidor, por sessão.
+static REMOTE: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, Vec<String>>>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+
+pub fn set_remote_names(session_id: &str, names: Vec<String>) {
+    REMOTE.lock().insert(session_id.to_string(), names);
+}
+
+pub fn remote_names(session_id: &str) -> Option<Vec<String>> {
+    REMOTE.lock().get(session_id).cloned()
+}
+
+pub fn has_remote_names(session_id: &str) -> bool {
+    REMOTE.lock().contains_key(session_id)
 }
 
 /// Absorve um lote reportado pelo hook daquela sessão.
@@ -274,6 +297,7 @@ pub fn reported(session_id: &str) -> Vec<Command> {
 pub fn forget_reported(session_id: &str) {
     REPORTED.lock().remove(session_id);
     PATHS.lock().remove(session_id);
+    REMOTE.lock().remove(session_id);
 }
 
 /// Tudo que existe na sessão: o `$PATH` que o core varreu e o que o shell contou.
@@ -706,5 +730,47 @@ mod tests {
             assert_eq!(found.len(), 1);
             assert_eq!(found[0].kind, Kind::Alias);
         }
+    }
+}
+
+#[cfg(test)]
+mod remoto {
+    use super::*;
+
+    /// Regra 20: numa sessão SSH os nomes vêm do SERVIDOR, pelo canal próprio.
+    /// O `$PATH` que o shell remoto reporta é do servidor — varrê-lo aqui seria
+    /// listar os binários da máquina errada, e o dono aceitaria a sugestão com
+    /// um Tab.
+    #[test]
+    fn a_sessao_remota_nao_varre_o_disco_local() {
+        let session = "sessao-remota-de-teste";
+        // O `$PATH` do servidor, apontado para uma pasta que existe AQUI: sem a
+        // troca de fonte, a varredura local acharia algo.
+        let local = std::env::temp_dir();
+        set_path(session, &local.to_string_lossy());
+        set_remote_names(
+            session,
+            vec!["systemctl".to_string(), "journalctl".to_string()],
+        );
+
+        let nomes = path_names(session);
+
+        assert_eq!(nomes, vec!["systemctl", "journalctl"]);
+        forget_reported(session);
+        assert!(
+            remote_names(session).is_none(),
+            "a sessão morreu: os nomes do servidor morrem junto"
+        );
+    }
+
+    /// Regra 25: sem canal não há nomes — e a lista fica vazia, não local.
+    #[test]
+    fn sem_canal_a_sessao_remota_fica_sem_nomes_e_nunca_com_os_locais() {
+        let session = "sessao-remota-sem-canal";
+        set_path(session, &std::env::temp_dir().to_string_lossy());
+        set_remote_names(session, Vec::new());
+
+        assert!(path_names(session).is_empty());
+        forget_reported(session);
     }
 }

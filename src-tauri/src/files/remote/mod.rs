@@ -401,6 +401,63 @@ pub fn resolve_remote_root(
     }
 }
 
+/// Completa um caminho **no servidor**, pelo mesmo SFTP do explorador remoto
+/// (regra 21).
+///
+/// Repete a regra de exibição da completação local — diretório antes de
+/// arquivo, oculto só depois do ponto, teto de entradas — porque a promessa é
+/// que a sessão SSH se comporte como a local. Nada aqui decide segurança: o
+/// `cwd` vem do `OSC 7` do shell remoto e é display-only.
+pub fn complete_remote_path(fs: &dyn RemoteFs, cwd: &str, token: &str) -> Vec<String> {
+    let (dir_part, base) = match token.rfind('/') {
+        Some(at) => (&token[..=at], &token[at + 1..]),
+        None => ("", token),
+    };
+    let dir = if dir_part.is_empty() {
+        cwd.to_string()
+    } else if let Some(rest) = dir_part.strip_prefix('~') {
+        // `~` é do servidor, e quem o resolve é o realpath dele.
+        match fs.realpath(&format!(".{rest}")) {
+            Ok(path) => path,
+            Err(_) => return Vec::new(),
+        }
+    } else if dir_part.starts_with('/') {
+        dir_part.trim_end_matches('/').to_string()
+    } else {
+        join(cwd, dir_part.trim_end_matches('/'))
+    };
+
+    let Ok(entries) = fs.readdir(&dir) else {
+        return Vec::new();
+    };
+    let wants_hidden = base.starts_with('.');
+    let lower = base.to_lowercase();
+
+    let mut exact: Vec<(bool, String)> = Vec::new();
+    let mut loose: Vec<(bool, String)> = Vec::new();
+    for entry in entries {
+        if entry.name == "." || entry.name == ".." {
+            continue;
+        }
+        if entry.name.starts_with('.') && !wants_hidden {
+            continue;
+        }
+        let is_dir = entry.stat.is_dir();
+        let suffix = if is_dir { "/" } else { "" };
+        let completed = format!("{dir_part}{}{suffix}", entry.name);
+        if entry.name.starts_with(base) {
+            exact.push((is_dir, completed));
+        } else if !base.is_empty() && entry.name.to_lowercase().starts_with(&lower) {
+            loose.push((is_dir, completed));
+        }
+    }
+
+    let mut found = if exact.is_empty() { loose } else { exact };
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    found.truncate(crate::completion::MAX_ENTRIES);
+    found.into_iter().map(|(_, name)| name).collect()
+}
+
 pub struct RemotePanel {
     fs: Arc<dyn RemoteFs>,
     alias: String,
@@ -540,6 +597,16 @@ impl RemotePanel {
 
     pub fn gutter(&self, rel: &str) -> Vec<GutterMarker> {
         self.backend().gutter(rel)
+    }
+
+    /// Completa caminho do servidor a partir do `cwd` do shell remoto.
+    ///
+    /// **Fora do confinamento do painel, e de propósito**: o confinamento
+    /// protege escrita e leitura de arquivo dentro da raiz aberta; a linha de
+    /// comando não tem raiz — o dono pode `cd /etc` e completar ali, como faria
+    /// digitando à mão. Nada aqui decide segurança.
+    pub fn complete_path(&self, cwd: &str, token: &str) -> Vec<String> {
+        complete_remote_path(&*self.fs, cwd, token)
     }
 
     pub fn set_open(&self, rel: Option<String>) {
@@ -826,6 +893,64 @@ mod tests {
 
     fn panel(mock: MockRemote, root: &str, ctx: RemoteContext) -> RemotePanel {
         RemotePanel::new(Arc::new(mock), "mock".into(), root.to_string(), ctx)
+    }
+
+    /// Regra 21: caminho remoto completa pelo MESMO SFTP do explorador. O que
+    /// está no servidor é o que aparece — nada do disco local atravessa.
+    #[test]
+    fn caminho_remoto_completa_pelo_sftp_e_diretorio_vem_primeiro() {
+        let mock = MockRemote::with(&[
+            ("/srv/app", Node::Dir),
+            ("/srv/app/src", Node::Dir),
+            (
+                "/srv/app/setup.sh",
+                Node::File {
+                    bytes: Vec::new(),
+                    perm: 0o644,
+                },
+            ),
+            (
+                "/srv/app/README.md",
+                Node::File {
+                    bytes: Vec::new(),
+                    perm: 0o644,
+                },
+            ),
+            ("/srv/app/.env", Node::Dir),
+        ]);
+
+        let achados = complete_remote_path(&mock, "/srv/app", "s");
+
+        assert_eq!(
+            achados,
+            vec!["src/", "setup.sh"],
+            "diretório antes de arquivo, e o oculto fora: mesma regra da local"
+        );
+        assert!(
+            complete_remote_path(&mock, "/srv/app", "")
+                .iter()
+                .all(|n| n != ".env/"),
+            "oculto só aparece quando o dono já escreveu o ponto"
+        );
+        assert_eq!(complete_remote_path(&mock, "/srv/app", "."), vec![".env/"]);
+    }
+
+    #[test]
+    fn caminho_remoto_absoluto_nao_e_resolvido_contra_o_cwd() {
+        let mock = MockRemote::with(&[
+            ("/etc", Node::Dir),
+            (
+                "/etc/hosts",
+                Node::File {
+                    bytes: Vec::new(),
+                    perm: 0o644,
+                },
+            ),
+        ]);
+        assert_eq!(
+            complete_remote_path(&mock, "/srv/app", "/etc/ho"),
+            vec!["/etc/hosts"]
+        );
     }
 
     #[test]
