@@ -626,6 +626,14 @@ export interface Host {
   /** O core sempre envia; opcional só para quem monta `Host` à mão (ausente = `auto`). */
   auth_method?: AuthMethod;
   agent_key?: AgentKey | null;
+  /**
+   * A integração do TYBA no shell do servidor (regra 11), ligada por padrão.
+   *
+   * Opcional aqui pelo mesmo motivo de `auth_method`: o core sempre envia, mas
+   * quem monta um `Host` à mão não precisa saber do campo — ausente vale o
+   * mesmo `true` que o `serde(default)` do Rust dá.
+   */
+  integration_enabled?: boolean;
   created_at: string;
   last_connected_at: string | null;
 }
@@ -698,6 +706,7 @@ export interface HostInput {
   tunnels?: Tunnel[];
   auth_method?: AuthMethod;
   agent_key?: AgentKey | null;
+  integration_enabled?: boolean;
 }
 
 export interface HostGroupInput {
@@ -740,6 +749,122 @@ export type ConnectionTest =
 /** Testa os valores do formulário sem gravar nada (até 30 s). */
 export const testHostConnection = (input: HostInput) =>
   invoke<ConnectionTest>("test_host_connection", { input });
+
+// --- SSH Session integrada: o plano da sessão, os chips do servidor ---
+
+/**
+ * Por onde a sessão fala (`pty::TransportKind`).
+ *
+ * `tmux_control` muda o que a TELA pode fazer: num transporte de controle o
+ * tmux remoto já responde às consultas do programa (DA, DSR, DECRQM…) e ainda
+ * encaminha os bytes crus da consulta ao cliente de controle. A resposta do
+ * xterm.js seria a SEGUNDA, e só pode voltar como `send-keys` — digitação no
+ * pane.
+ */
+export type SessionTransport = "raw" | "tmux_control";
+
+export interface SessionTransportEvent {
+  /**
+   * `string` de propósito, como `IntegrationReason`: um transporte que o core
+   * aprender depois desta versão chega sem quebrar o build, e `nextTransport`
+   * mantém o estado atual em vez de adivinhar.
+   */
+  transport: SessionTransport | (string & {});
+}
+
+/**
+ * O transporte da sessão, anunciado pelo core.
+ *
+ * Sai duas vezes por sessão no máximo: o estado inicial no spawn e a transição
+ * para o protocolo de controle. Não há comando de consulta equivalente ao
+ * `session_integration` — quem assinar depois do spawn só vê a transição.
+ */
+export const onSessionTransport = (
+  id: SessionId,
+  handler: (transport: string) => void,
+): Promise<UnlistenFn> =>
+  listen<SessionTransportEvent>(`session://transport/${id}`, (e) =>
+    handler(e.payload.transport),
+  );
+
+/** `integrated` = o shell remoto subiu com o rc do TYBA; `plain` = terminal cru. */
+export type IntegrationState = "integrated" | "plain";
+
+/**
+ * Por que a sessão é o que é — o código vem do core (`ssh::IntegrationReason`),
+ * a frase é da tela.
+ *
+ * Tipado como `string` de propósito: um motivo que o core aprender depois desta
+ * versão chega aqui sem quebrar o build, e `integrationNotice` tem a linha
+ * genérica para ele. Fechar a união trocaria "o app não sabe explicar" por "o
+ * app não compila".
+ */
+export type IntegrationReason =
+  | "ok"
+  | "host-switch-off"
+  | "unsupported-shell"
+  | "undetected"
+  | "from-before";
+
+/**
+ * A SSH Session sobrevive à queda do Cano? (`ssh::Persistence`, regra 13)
+ *
+ * `unknown` é "o core não conseguiu perguntar" — sem canal, Host de senha sem
+ * master, chave desligada. A tela não afirma nada nesse caso: dizer "sem
+ * persistência" por falta de resposta seria inventar um fato sobre o servidor.
+ */
+export type Persistence = "persistent" | "ephemeral" | "unknown";
+
+export interface Integration {
+  state: IntegrationState;
+  reason: IntegrationReason | (string & {});
+  /**
+   * Ortogonal ao estado: uma sessão INTEGRADA pode ser efêmera (servidor sem
+   * tmux). Opcional porque o evento gravado antes desta versão não o traz — ali
+   * vale `unknown`.
+   */
+  persistence?: Persistence | (string & {});
+  /** O shell recusado, quando há um: é o que faz a linha dizer "fish". */
+  detail?: string | null;
+}
+
+/** O plano da sessão, para quem chega depois do evento (primeira pintura). */
+export const sessionIntegration = (id: SessionId) =>
+  invoke<Integration | null>("session_integration", { id });
+
+export const onSessionIntegration = (
+  id: SessionId,
+  handler: (integration: Integration) => void,
+): Promise<UnlistenFn> =>
+  listen<Integration>(`ssh://integration/${id}`, (e) => handler(e.payload));
+
+/** Os chips vindos do SERVIDOR (regra 23) — nunca os da máquina local. */
+export interface RemoteChips {
+  cwd: string | null;
+  git: { branch: string | null; changed: number };
+}
+
+/**
+ * O puxão dos chips remotos. `null` é "não agora": sessão que não é SSH, sem
+ * canal (regra 25) ou recusada pelo teto de frequência.
+ */
+export const sessionRemoteChips = (id: SessionId) =>
+  invoke<RemoteChips | null>("session_remote_chips", { id });
+
+export const onSessionRemoteChips = (
+  id: SessionId,
+  handler: (chips: RemoteChips) => void,
+): Promise<UnlistenFn> =>
+  listen<RemoteChips>(`session://chips/${id}`, (e) => handler(e.payload));
+
+/**
+ * Regra 26: o comando que subiu no servidor é um agente?
+ *
+ * Quem decide é o core, com o mesmo matcher do resto do app — a tela só desenha
+ * a faixa.
+ */
+export const remoteAgentWithoutJail = (id: SessionId, command: string) =>
+  invoke<boolean>("remote_agent_without_jail", { id, command });
 
 export const deleteHost = (id: string) => invoke<void>("delete_host", { id });
 export const createHostGroup = (input: HostGroupInput) =>

@@ -208,6 +208,7 @@ const resources = {
       toolbarBranchUnknownHint:
         "O TYBA acompanha a branch do repositório enquanto a sessão está em execução. Esta sessão tem um worktree, mas a branch dele não está sendo lida agora.",
       toolbarDiff: "Alterações não commitadas",
+      toolbarRemoteDiff: "Alterações não commitadas no servidor",
       toolbarReviewDiff: "Revisar diff do worktree",
       toolbarAheadBehind: "Commits à frente e atrás do upstream",
       toolbarClock: "Relógio",
@@ -283,6 +284,21 @@ const resources = {
         "O agente foi encerrado, mas a sessão gerenciada não abriu",
       shellUnjailedNotice:
         "{{binary}} está com gate, mas sem jaula — a pasta não está sob um repositório visível na home.",
+      sshIntegrationOffSwitch:
+        "Terminal comum: a integração do TYBA está desligada neste host.",
+      sshIntegrationUnsupportedShell:
+        "Terminal comum: o TYBA integra bash e zsh, e o shell do servidor é {{shell}}.",
+      sshIntegrationUnsupportedShellUnnamed:
+        "Terminal comum: o shell do servidor não é bash nem zsh.",
+      sshIntegrationUndetected:
+        "Terminal comum: não deu para descobrir qual é o shell do servidor.",
+      sshIntegrationFromBefore:
+        "Terminal comum: esta sessão é anterior à integração. A próxima que você abrir já vem integrada.",
+      sshIntegrationPlain: "Terminal comum: esta sessão não está integrada.",
+      sshIntegrationEphemeral:
+        "Sessão integrada, sem persistência: o servidor não tem tmux, e o que está aqui morre se a conexão cair ou se você fechar o TYBA.",
+      sshRemoteAgentNotice:
+        "{{binary}} está rodando no servidor — sem jaula e sem inbox de aprovações.",
       shimV2IntroToast:
         "Agora o TYBA dá jaula + gate quando você roda claude. Para rodar sem, use command claude.",
       agentResumeNotice:
@@ -1045,6 +1061,9 @@ const resources = {
       hostFieldTunnels: "Túneis",
       hostFieldTunnelsHint:
         "Abrem em toda conexão a este host e valem fora do TYBA (ssh, scp, DBeaver).",
+      hostFieldIntegration: "Integração do TYBA",
+      hostFieldIntegrationHint:
+        "Liga blocos por comando, linha do TYBA, histórico e completar no shell do servidor. Nada fica no servidor depois que a sessão sobe. Desligada, a sessão abre como terminal comum.",
       hostTunnelRemove: "Remover túnel",
       hostTunnelInvalid: "Túnel incompleto — confira porta e destino.",
       hostTunnelConfirmSave: "Salvar mesmo assim",
@@ -1378,6 +1397,7 @@ const resources = {
       toolbarBranchUnknownHint:
         "TYBA tracks the repository branch while the session is running. This session has a worktree, but its branch is not being read right now.",
       toolbarDiff: "Uncommitted changes",
+      toolbarRemoteDiff: "Uncommitted changes on the server",
       toolbarReviewDiff: "Review worktree diff",
       toolbarAheadBehind: "Commits ahead and behind upstream",
       toolbarClock: "Clock",
@@ -1454,6 +1474,21 @@ const resources = {
         "The agent was terminated, but the managed session did not open",
       shellUnjailedNotice:
         "{{binary}} is gated, but not jailed — the folder isn't under a repo visible under home.",
+      sshIntegrationOffSwitch:
+        "Plain terminal: TYBA's integration is off for this host.",
+      sshIntegrationUnsupportedShell:
+        "Plain terminal: TYBA integrates bash and zsh, and the server's shell is {{shell}}.",
+      sshIntegrationUnsupportedShellUnnamed:
+        "Plain terminal: the server's shell is neither bash nor zsh.",
+      sshIntegrationUndetected:
+        "Plain terminal: could not find out which shell the server uses.",
+      sshIntegrationFromBefore:
+        "Plain terminal: this session predates the integration. The next one you open comes integrated.",
+      sshIntegrationPlain: "Plain terminal: this session is not integrated.",
+      sshIntegrationEphemeral:
+        "Integrated session, no persistence: the server has no tmux, so what is here dies if the connection drops or you close TYBA.",
+      sshRemoteAgentNotice:
+        "{{binary}} is running on the server — no jail, no approval inbox.",
       shimV2IntroToast:
         "TYBA now jails + gates when you run claude. To run without it, use command claude.",
       agentResumeNotice:
@@ -2208,6 +2243,9 @@ const resources = {
       hostFieldTunnels: "Tunnels",
       hostFieldTunnelsHint:
         "Open on every connection to this host and work outside TYBA (ssh, scp, DBeaver).",
+      hostFieldIntegration: "TYBA integration",
+      hostFieldIntegrationHint:
+        "Turns on command blocks, the TYBA line, history and completion in the server's shell. Nothing is left on the server once the session is up. Off, the session opens as a plain terminal.",
       hostTunnelRemove: "Remove tunnel",
       hostTunnelInvalid: "Incomplete tunnel — check port and target.",
       hostTunnelConfirmSave: "Save anyway",

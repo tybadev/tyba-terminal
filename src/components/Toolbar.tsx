@@ -32,6 +32,14 @@ interface Props {
    */
   branch: BranchChip | null;
   snapshot: RepoSnapshot | undefined;
+  /**
+   * Arquivos mudados no SERVIDOR, numa sessão SSH (regra 23).
+   *
+   * Vem à parte de `snapshot` porque o canal do servidor devolve a contagem e
+   * nada mais — não há `+n/−n` do outro lado. `null` é "não mostrar": sessão
+   * local, servidor limpo, ou sem canal para perguntar.
+   */
+  remoteChanged?: number | null;
   hasWorktree: boolean;
   onOpenDiff: () => void;
   showRichInput: boolean;
@@ -64,6 +72,7 @@ export function Toolbar({
   cwd,
   branch,
   snapshot,
+  remoteChanged,
   hasWorktree,
   onOpenDiff,
   showRichInput,
@@ -134,6 +143,21 @@ export function Toolbar({
           </span>
         );
       case "diffCount": {
+        // O servidor responde quantos arquivos mudaram, e só. Sem botão: o
+        // diff local abriria o repositório da máquina de cá.
+        if (remoteChanged != null) {
+          return (
+            <span
+              key={id}
+              title={t("toolbarRemoteDiff")}
+              aria-label={t("toolbarRemoteDiff")}
+              className="flex items-center gap-1 font-mono"
+            >
+              <GitDiff size={12} className="shrink-0" />
+              {remoteChanged}
+            </span>
+          );
+        }
         const status = snapshot?.status;
         if (!status?.dirty) return null;
         return (

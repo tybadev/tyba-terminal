@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowCounterClockwise,
+  Info,
   LockOpen,
   ShieldSlash,
   WarningOctagon,
@@ -38,11 +39,19 @@ import {
   type CanoFailure,
   type ConnectionState,
   type AuthAlertKind,
+  type SessionTransport,
 } from "../lib/ipc";
 import {
   authAlertMessageKey,
   exitedSessionNotice,
 } from "../lib/authAlert";
+import {
+  COLOR_QUERY_OSC,
+  QUERY_SEQUENCES,
+  silenceOscReply,
+  silenceReply,
+  type PaneNotice,
+} from "../lib/remoteSession";
 import {
   nativePasteSuppressed,
   registerTerm,
@@ -200,6 +209,14 @@ interface Props {
    * que o dono teme ter perdido trabalho.
    */
   reattaches?: boolean;
+  /**
+   * Por onde a sessão fala, dito pelo core (`session://transport`).
+   *
+   * Num transporte de modo de controle o pane não responde a consulta nenhuma:
+   * quem responde é o tmux remoto. Chega por prop porque o anúncio é do App —
+   * um pane que ainda não montou perderia o evento.
+   */
+  transport?: SessionTransport;
   /** Fase do Cano; só SSH Session tem. */
   connection?: ConnectionState;
   connectionFailure?: CanoFailure | null;
@@ -238,6 +255,14 @@ interface Props {
    * dispensa: é informativo, igual ao badge "sem gate" do painel.
    */
   unjailedNotice?: { binary: string } | null;
+  /**
+   * A faixa da SSH Session: por que a sessão abriu como terminal comum (regras
+   * 8, 12 e 13) ou que há um agente rodando no servidor sem jaula (regra 26).
+   *
+   * Uma só, já escolhida por `paneNotice` — as duas ocupariam o mesmo lugar.
+   * Sem ação e sem dispensa: descreve a sessão, não pede nada.
+   */
+  remoteNotice?: PaneNotice | null;
   /**
    * Convite de retomar a conversa nativa do agente numa sessão que morreu com o
    * app anterior. Só o core decide se ele aparece — ver `canResumeAgentSession`.
@@ -412,6 +437,7 @@ export function TerminalView({
   rect,
   exited,
   reattaches,
+  transport,
   connection,
   connectionFailure,
   knownHostsCommand,
@@ -430,6 +456,7 @@ export function TerminalView({
   onReopenManaged,
   onDismissNotice,
   unjailedNotice,
+  remoteNotice,
   resumeNotice,
   onResumeAgent,
   onDismissResume,
@@ -446,6 +473,11 @@ export function TerminalView({
   // callback do primeiro render.
   const broadcastRef = useRef(onBroadcastInput);
   broadcastRef.current = onBroadcastInput;
+  // Os handlers de consulta são assinados uma vez, no mount do xterm: sem ref
+  // ficariam presos no transporte do primeiro render — que é sempre o cru,
+  // porque o anúncio do modo de controle chega depois do login.
+  const transportRef = useRef<SessionTransport>(transport ?? "raw");
+  transportRef.current = transport ?? "raw";
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const webglRef = useRef<WebglAddon | null>(null);
@@ -550,6 +582,40 @@ export function TerminalView({
         leave: () => clearLink(),
       }),
     );
+
+    // Consulta de terminal (DA, DSR, DECRQM, DECRQSS, XTWINOPS de relatório,
+    // cor por OSC) num transporte de modo de controle: o tmux remoto JÁ
+    // respondeu por conta própria e ainda encaminhou os bytes crus da consulta
+    // até aqui. Responder de novo manda a resposta de volta como `send-keys` —
+    // digitação no pane (`1;2c0;276;0c` no prompt; dentro do vim, comandos).
+    // Os handlers ficam assinados a sessão inteira e consultam o transporte na
+    // hora: assinar e desassinar a cada anúncio perderia a consulta que
+    // chegasse no meio. `false` devolve a sequência ao handler padrão.
+    const queryHandlers = [
+      ...QUERY_SEQUENCES.map((q) =>
+        q.kind === "dcs"
+          ? term.parser.registerDcsHandler(q.id, (_data, params) =>
+              silenceReply({
+                transport: transportRef.current,
+                kind: "dcs",
+                id: q.id,
+                params,
+              }),
+            )
+          : term.parser.registerCsiHandler(q.id, (params) =>
+              silenceReply({
+                transport: transportRef.current,
+                id: q.id,
+                params,
+              }),
+            ),
+      ),
+      ...COLOR_QUERY_OSC.map((ident) =>
+        term.parser.registerOscHandler(ident, (data) =>
+          silenceOscReply({ transport: transportRef.current, ident, data }),
+        ),
+      ),
+    ];
 
     let disposed = false;
     let opened = false;
@@ -938,6 +1004,7 @@ export function TerminalView({
       el.removeEventListener("paste", onNativePaste, true);
       offTheme();
       linkProvider.dispose();
+      queryHandlers.forEach((h) => h.dispose());
       bufferSub.dispose();
       dataSub.dispose();
       unlisteners.forEach((un) => un());
@@ -1093,6 +1160,20 @@ export function TerminalView({
         message={i18n.t("shellUnjailedNotice", {
           binary: unjailedNotice.binary,
         })}
+      />
+    )}
+    {remoteNotice && rect && visible && !exited && (
+      <SessionNoticeBar
+        rect={rect}
+        tone={remoteNotice.tone}
+        icon={
+          remoteNotice.tone === "amber" ? (
+            <ShieldSlash size={12} weight="fill" />
+          ) : (
+            <Info size={12} weight="fill" />
+          )
+        }
+        message={i18n.t(remoteNotice.messageKey, remoteNotice.params)}
       />
     )}
     {exitedNotice && rect && visible && exited && (

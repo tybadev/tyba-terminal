@@ -199,7 +199,16 @@ import {
   onLayoutChanged,
   onSessionCommand,
   onSessionCwd,
+  onSessionIntegration,
+  onSessionRemoteChips,
   onSessionStatus,
+  onSessionTransport,
+  remoteAgentWithoutJail,
+  sessionIntegration as fetchSessionIntegration,
+  sessionRemoteChips,
+  type Integration,
+  type RemoteChips,
+  type SessionTransport,
   filesSearch,
   type FileSearchResult,
   openDiffTab,
@@ -419,9 +428,19 @@ import {
   programName,
   swallowsArrow,
   lineState,
+  lineVisible,
   PROMPT_MODE_PREF_KEY,
   promptModeEnabled,
 } from "./lib/commandLine";
+import {
+  INITIAL_TRANSPORT,
+  isIntegratedSession,
+  nextTransport,
+  paneNotice,
+  remoteAgentNotice,
+  sidebarChips,
+  toolbarChips,
+} from "./lib/remoteSession";
 import { changelogUrl } from "./lib/changelog";
 import { docsUrl, REPO_URL } from "./lib/links";
 import {
@@ -2136,6 +2155,150 @@ export default function App() {
     };
   }, [sessionIds]);
 
+  // --- SSH Session integrada: o plano da sessão e os chips do servidor ---
+
+  /** O que o core decidiu para cada SSH Session (`ssh://integration`). */
+  const [integrations, setIntegrations] = useState<Record<string, Integration>>(
+    {},
+  );
+  /**
+   * Os chips do servidor. `null` é resposta: não há canal (regra 25), e o chip
+   * some em vez de ficar carregando para sempre.
+   */
+  const [remoteChips, setRemoteChips] = useState<
+    Record<string, RemoteChips | null>
+  >({});
+  /**
+   * Por onde cada sessão fala, dito pelo core (`session://transport`).
+   *
+   * Vive aqui, e não no pane: o anúncio sai uma vez, e um pane que ainda não
+   * montou (sessão sem painel em aba nenhuma) perderia o evento e montaria
+   * depois achando que o transporte é cru.
+   */
+  const [transports, setTransports] = useState<
+    Record<string, SessionTransport>
+  >({});
+  /** O comando remoto que o core confirmou ser um agente (regra 26). */
+  const [remoteAgents, setRemoteAgents] = useState<Record<string, string>>({});
+  // O que já foi PERGUNTADO, que não é o que foi confirmado: sem isto, um
+  // comando longo que não é agente seria reperguntado a cada evento de comando
+  // de qualquer sessão.
+  const remoteAgentAsked = useRef<Record<string, string>>({});
+
+  /**
+   * Guarda o plano só quando ele muda de fato.
+   *
+   * O puxão inicial responde por sessão, e um objeto novo a cada resposta
+   * remontaria os ouvintes de bloco (que dependem deste mapa) uma vez por
+   * sessão SSH aberta.
+   */
+  const rememberIntegration = useCallback(
+    (id: SessionId, integration: Integration) =>
+      setIntegrations((prev) => {
+        const old = prev[id];
+        if (
+          old?.state === integration.state &&
+          old.reason === integration.reason &&
+          (old.detail ?? null) === (integration.detail ?? null)
+        ) {
+          return prev;
+        }
+        return { ...prev, [id]: integration };
+      }),
+    [],
+  );
+
+  const sshSessionIds = sessions
+    .filter((s) => s.kind.type === "ssh")
+    .map((s) => s.id)
+    .join("\n");
+
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    for (const id of sshSessionIds.split("\n").filter(Boolean)) {
+      void onSessionIntegration(id, (integration) =>
+        rememberIntegration(id, integration),
+      ).then((un) => (disposed ? un() : unlisteners.push(un)));
+      // Puxão além da assinatura: o evento sai no spawn, antes deste listener
+      // existir, e sem ele o pane ficaria sem a linha de explicação.
+      void fetchSessionIntegration(id)
+        .then((integration) => {
+          if (disposed || !integration) return;
+          rememberIntegration(id, integration);
+        })
+        .catch(() => {});
+      void onSessionRemoteChips(id, (chips) =>
+        setRemoteChips((prev) => ({ ...prev, [id]: chips })),
+      ).then((un) => (disposed ? un() : unlisteners.push(un)));
+      void sessionRemoteChips(id)
+        .then((chips) => {
+          if (disposed) return;
+          setRemoteChips((prev) => (prev[id] ? prev : { ...prev, [id]: chips }));
+        })
+        .catch(() => {});
+    }
+    return () => {
+      disposed = true;
+      unlisteners.forEach((un) => un());
+    };
+  }, [sshSessionIds, rememberIntegration]);
+
+  const sessionIdsForTransport = sessions.map((s) => s.id).join("\n");
+
+  /**
+   * Por onde cada sessão fala.
+   *
+   * De todas as sessões, não só as SSH: quem decide o transporte é o core, e a
+   * tela não deduz "é de controle" a partir do tipo da sessão nem da
+   * integração. O que muda com isto é quem responde às consultas do terminal —
+   * ver `silenceReply`.
+   */
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    for (const id of sessionIdsForTransport.split("\n").filter(Boolean)) {
+      void onSessionTransport(id, (announced) =>
+        setTransports((prev) => {
+          const next = nextTransport(prev[id] ?? INITIAL_TRANSPORT, announced);
+          return prev[id] === next ? prev : { ...prev, [id]: next };
+        }),
+      ).then((un) => (disposed ? un() : unlisteners.push(un)));
+    }
+    return () => {
+      disposed = true;
+      unlisteners.forEach((un) => un());
+    };
+  }, [sessionIdsForTransport]);
+
+  /**
+   * Regra 26: quem diz que o comando remoto é um agente é o core.
+   *
+   * Uma pergunta por comando que COMEÇA numa sessão SSH — o matcher vive lá,
+   * junto do resto do app, e o front não reimplementa a lista de agentes.
+   */
+  useEffect(() => {
+    let disposed = false;
+    for (const id of sshSessionIds.split("\n").filter(Boolean)) {
+      const command = sessionCommands[id];
+      if (!command?.running || !command.command) continue;
+      const asked = command.command;
+      if (remoteAgentAsked.current[id] === asked) continue;
+      remoteAgentAsked.current[id] = asked;
+      void remoteAgentWithoutJail(id, asked)
+        .then((isAgent) => {
+          if (disposed || !isAgent) return;
+          setRemoteAgents((prev) =>
+            prev[id] === asked ? prev : { ...prev, [id]: asked },
+          );
+        })
+        .catch(() => {});
+    }
+    return () => {
+      disposed = true;
+    };
+  }, [sshSessionIds, sessionCommands]);
+
   useEffect(() => {
     const live = new Set(sessions.map((s) => s.id));
     const prune = <T,>(prev: Record<string, T>): Record<string, T> => {
@@ -2147,6 +2310,12 @@ export default function App() {
     };
     setSessionCommands(prune);
     setSessionCwds(prune);
+    setIntegrations(prune);
+    setRemoteChips(prune);
+    setRemoteAgents(prune);
+    for (const id of Object.keys(remoteAgentAsked.current)) {
+      if (!live.has(id)) delete remoteAgentAsked.current[id];
+    }
   }, [sessions]);
 
   const [activeGitStatus, setActiveGitStatus] = useState<
@@ -2442,6 +2611,34 @@ export default function App() {
     workspaceGitDir,
   ]);
 
+  // De onde os chips da barra vêm (regra 23). Numa SSH Session, do SERVIDOR —
+  // a decisão mora em `toolbarChips`, testada; aqui só se junta o estado.
+  const activeChips = useMemo(
+    () =>
+      toolbarChips({
+        remote: activeSession?.kind.type === "ssh",
+        chips: activeId ? remoteChips[activeId] : undefined,
+        local: {
+          cwd: activeWorkspace ? workspaceCwd(activeWorkspace) : null,
+          branch: toolbarBranch,
+          snapshot: (() => {
+            const dir = activeWorkspace ? workspaceGitDir(activeWorkspace) : null;
+            return dir ? snapshotForDir(repoSnapshots, dir) : undefined;
+          })(),
+        },
+      }),
+    [
+      activeId,
+      activeSession,
+      activeWorkspace,
+      remoteChips,
+      repoSnapshots,
+      toolbarBranch,
+      workspaceCwd,
+      workspaceGitDir,
+    ],
+  );
+
   // Sessão SSH roda o `ssh` localmente: o cwd do processo fica no home e nunca
   // reflete o `cd` do outro lado. Mostrar caminho local seria mentira — o que
   // localiza o usuário é o destino.
@@ -2482,6 +2679,37 @@ export default function App() {
       return host.username ? `${host.username}@${host.hostname}` : host.hostname;
     },
     [workspaceSshHostId, sshHosts],
+  );
+
+  /**
+   * A SSH Session que a linha da barra lateral descreve, quando há uma.
+   *
+   * A linha fala da aba ativa — é de lá que `resolveWorkspaceCwd` tira o cwd, e
+   * portanto de lá que sairia o snapshot local. Achar uma SSH Session ali basta
+   * para a fonte deixar de ser a máquina local (regra 23): errar para "remota"
+   * só esconde um chip, e errar para "local" mostra a branch de outro
+   * computador.
+   *
+   * `ssh` digitado à mão num shell local não entra (regra 27): aquela sessão É
+   * local, e o repositório que ela mostra é mesmo o de cá — por isso a pergunta
+   * é pelo `kind`, e não pelo Host como em `workspaceSshHostId`.
+   */
+  const workspaceRemoteSessionId = useCallback(
+    (w: Workspace): SessionId | null => {
+      const tab = w.tabs.find((tb) => tb.id === w.active_tab) ?? w.tabs[0];
+      if (!tab?.root) return null;
+      const focused = tab.active_pane
+        ? paneSession(tab.root, tab.active_pane)
+        : null;
+      if (focused && sessionById.get(focused)?.kind.type === "ssh") {
+        return focused;
+      }
+      for (const sid of leafSessions(tab.root)) {
+        if (sessionById.get(sid)?.kind.type === "ssh") return sid;
+      }
+      return null;
+    },
+    [sessionById],
   );
 
   const detailsFor = useCallback(
@@ -3463,15 +3691,33 @@ export default function App() {
   // aparecendo do nada depois do `rc` carregar. Mas num shell sem integração
   // não há primeiro `633;P` nenhum, e adiantar viraria promessa permanente:
   // uma linha desabilitada dizendo "Carregando o shell…" para sempre.
-  const lineVisible =
+  // O plano da sessão ativa: é ele que trocou o gate `kind === "shell"` da
+  // linha do TYBA pela pergunta "esta sessão é integrada?" (regra 15).
+  const activeIntegration = activeId ? integrations[activeId] : undefined;
+  const lineIsVisible =
     activeId != null &&
-    activeSession?.kind.type === "shell" &&
-    (promptMode || (promptModePref && hookExpected[activeId] === true));
+    lineVisible({
+      kind: activeSession?.kind,
+      sessionIntegration: activeIntegration,
+      promptMode,
+      promptModePref,
+      hookExpected: hookExpected[activeId],
+    });
+
+  // A rajada é interceptada no xterm; a linha do TYBA o deixa somente-leitura.
+  // Ver `OwnerInput.broadcasting`.
+  const activeBroadcasting =
+    broadcastOn &&
+    activeSession?.kind.type === "ssh" &&
+    activeId != null &&
+    broadcastSet.includes(activeId);
 
   const commandLineState = lineState({
     reported: activeId ? promptModes[activeId] : undefined,
     promptMode,
     kind: activeSession?.kind,
+    sessionIntegration: activeIntegration,
+    broadcasting: activeBroadcasting,
     altScreen: activeId ? (altScreens[activeId] ?? false) : false,
     command: activeCommand,
     integrated: promptMode,
@@ -3480,9 +3726,11 @@ export default function App() {
     keyboardOwner({
       promptMode,
       kind: activeSession?.kind,
+      sessionIntegration: activeIntegration,
       altScreen: activeId ? (altScreens[activeId] ?? false) : false,
       command: activeCommand,
       integrated: promptMode,
+      broadcasting: activeBroadcasting,
     }) === "tybaLine";
 
   ownsCommandLineRef.current = ownsCommandLine;
@@ -3552,7 +3800,13 @@ export default function App() {
   // Histórico persistido + os que chegam agora. O bloco vem pronto do core: o
   // front não parseia saída, só desenha os spans.
   useEffect(() => {
-    const ids = sessions.filter((s) => s.kind.type === "shell").map((s) => s.id);
+    // A SSH Session integrada grava bloco pelo mesmo caminho do shell local
+    // (regra 14) — é o mesmo `133;A/B/C/D`, vindo do servidor.
+    const ids = sessions
+      .filter((s) =>
+        isIntegratedSession({ kind: s.kind, integration: integrations[s.id] }),
+      )
+      .map((s) => s.id);
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     for (const id of ids) {
@@ -3583,7 +3837,7 @@ export default function App() {
       disposed = true;
       unlisteners.forEach((un) => un());
     };
-  }, [sessions]);
+  }, [sessions, integrations]);
 
   // Blocos marcados para copiar de uma vez. Estado de tela, não de sessão: é
   // qual cartão está aceso, e morre com a janela.
@@ -4144,10 +4398,18 @@ export default function App() {
         ? basename(displayDir)
         : w.name;
     const snapshot = gitDir ? snapshotForDir(repoSnapshots, gitDir) : undefined;
-    const branch = snapshot?.branch ?? undefined;
-    const gitStatus = showGitStatus
-      ? (snapshot?.status ?? undefined)
-      : undefined;
+    // De onde branch e diff desta linha vêm (regra 23) — a decisão mora em
+    // `sidebarChips`, testada; aqui só se junta o estado.
+    const remoteSessionId =
+      isConfig || isWtView ? null : workspaceRemoteSessionId(w);
+    const chips = sidebarChips({
+      remote: remoteSessionId !== null,
+      showStatus: showGitStatus,
+      chips: remoteSessionId ? remoteChips[remoteSessionId] : undefined,
+      local: { branch: snapshot?.branch, status: snapshot?.status },
+    });
+    const branch = chips.branch ?? undefined;
+    const gitStatus = chips.status;
     const runner = isConfig || isWtView ? null : workspaceAgent(w);
     const runningCmd = isConfig || isWtView ? null : workspaceCommand(w);
     const hoverAgent = runner ?? agentFromCommand(runningCmd);
@@ -4316,13 +4578,27 @@ export default function App() {
                       <span className="truncate">{branch}</span>
                     </span>
                   )}
-                  {gitStatus?.dirty && (
+                  {(gitStatus?.dirty || chips.remoteChanged != null) && (
                     <span
-                      title={t("gitChanges", { count: gitStatus.changed })}
+                      title={
+                        gitStatus?.dirty
+                          ? t("gitChanges", { count: gitStatus.changed })
+                          : t("toolbarRemoteDiff")
+                      }
                       className="flex shrink-0 items-center gap-1 rounded-[3px] bg-tyba-amber-tint px-1 py-px"
                     >
                       <span className="size-1 shrink-0 rounded-full bg-tyba-amber" />
-                      <DiffStat status={gitStatus} />
+                      {gitStatus?.dirty ? (
+                        <DiffStat status={gitStatus} />
+                      ) : (
+                        // O servidor responde só quantos arquivos mudaram
+                        // (regra 24): sem linhas somadas nem removidas, o
+                        // número sozinho é exatamente o que o `DiffStat` já
+                        // desenha quando não há linhas a mostrar.
+                        <span className="font-mono text-[9px] leading-none text-tyba-amber">
+                          {chips.remoteChanged}
+                        </span>
+                      )}
                     </span>
                   )}
                 </span>
@@ -5364,10 +5640,23 @@ export default function App() {
                       resumableAgents.get(s.id),
                       dismissedResumeInvites.has(s.id),
                     );
+                    // A faixa da sessão remota: a linha que explica por que ela
+                    // é comum, ou o agente rodando no servidor sem jaula. Uma
+                    // só — as duas ocupam o mesmo lugar do pane.
+                    const remoteNotice = sshHostId
+                      ? paneNotice({
+                          integration: integrations[s.id],
+                          agent: remoteAgentNotice({
+                            command: sessionCommands[s.id],
+                            confirmed: remoteAgents[s.id],
+                          }),
+                        })
+                      : null;
                     return (
                       <TerminalView
                         key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
                         sessionId={s.id}
+                        transport={transports[s.id] ?? INITIAL_TRANSPORT}
                         agentNotice={
                           notice && detected
                             ? { binary: agentBinaryName(detected.kind) }
@@ -5382,6 +5671,7 @@ export default function App() {
                             ? { binary: agentBinaryName(detected.kind) }
                             : null
                         }
+                        remoteNotice={remoteNotice}
                         resumeNotice={
                           resumeInvite && s.kind.type === "agent"
                             ? { binary: agentBinaryName(s.kind.runner) }
@@ -5704,7 +5994,7 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                {activeSession && lineVisible && (
+                {activeSession && lineIsVisible && (
                   <CommandLine
                     key={`${activeSession.id}:line`}
                     sessionId={activeSession.id}
@@ -5950,12 +6240,10 @@ export default function App() {
         {activeTab && activeWorkspace && !(sideVisible && sideExpanded) && (
           <Toolbar
             pref={toolbarPref}
-            cwd={workspaceCwd(activeWorkspace)}
-            branch={toolbarBranch}
-            snapshot={(() => {
-              const dir = workspaceGitDir(activeWorkspace);
-              return dir ? snapshotForDir(repoSnapshots, dir) : undefined;
-            })()}
+            cwd={activeChips.cwd}
+            branch={activeChips.branch}
+            snapshot={activeChips.snapshot}
+            remoteChanged={activeChips.remoteChanged}
             hasWorktree={Boolean(
               activeSession?.worktree ??
                 worktreeSessionOf(activeWorkspace)?.worktree,

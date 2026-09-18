@@ -1,4 +1,5 @@
-import type { SessionCommand, SessionKind } from "./ipc";
+import type { Integration, SessionCommand, SessionKind } from "./ipc";
+import { isIntegratedSession } from "./remoteSession";
 
 export const PROMPT_MODE_PREF_KEY = "pref.promptMode";
 
@@ -43,6 +44,22 @@ export interface OwnerInput {
   command: SessionCommand | undefined;
   /** Sem `133;A` não há como saber que o shell está no prompt. */
   integrated: boolean;
+  /**
+   * O plano de integração da SSH Session, vindo do core (`ssh://integration`).
+   *
+   * Só sessão SSH tem; num shell local é `undefined` e não muda nada. É o que
+   * substituiu o gate `kind === "shell"`: a linha do TYBA vale para a sessão
+   * remota que subiu com o rc do TYBA (regra 15).
+   */
+  sessionIntegration?: Integration | null | undefined;
+  /**
+   * A rajada do broadcast está ligada nesta sessão.
+   *
+   * O broadcast é interceptado no `onData` do xterm (ver `TerminalView`), e a
+   * linha do TYBA deixa o xterm somente-leitura: sem esta saída, ligar o
+   * broadcast numa sessão integrada não mandaria tecla nenhuma.
+   */
+  broadcasting?: boolean;
 }
 
 /**
@@ -125,15 +142,50 @@ export function boxAcceptsTyping(state: LineState): boolean {
   return state === "own" || state === "waiting";
 }
 
+/**
+ * A linha do TYBA está na tela desta sessão?
+ *
+ * Diferente de {@link keyboardOwner}, que decide de quem é o TECLADO: aqui se
+ * decide se a caixa existe. Ver `lineState` para os estados dela.
+ *
+ * > [!warning] A preferência só adianta a linha onde o core sabe responder se
+ * > o hook subiu (`hookExpected`), e ele só sabe do shell LOCAL. Na sessão
+ * > remota a linha espera o `633;P` de verdade: adiantar ali deixaria
+ * > "Carregando o shell…" para sempre se o rc não tivesse subido do outro lado.
+ */
+export function lineVisible(input: {
+  kind: SessionKind | undefined;
+  sessionIntegration?: Integration | null | undefined;
+  /** O shell reportou modo prompt. */
+  promptMode: boolean;
+  promptModePref: boolean;
+  hookExpected: boolean | undefined;
+}): boolean {
+  if (
+    !isIntegratedSession({
+      kind: input.kind,
+      integration: input.sessionIntegration,
+    })
+  ) {
+    return false;
+  }
+  return input.promptMode || (input.promptModePref && input.hookExpected === true);
+}
+
 export function keyboardOwner({
   promptMode,
   kind,
   altScreen,
   command,
   integrated,
+  sessionIntegration,
+  broadcasting,
 }: OwnerInput): KeyboardOwner {
   if (!promptMode || !integrated) return "terminal";
-  if (kind?.type !== "shell") return "terminal";
+  if (broadcasting) return "terminal";
+  if (!isIntegratedSession({ kind, integration: sessionIntegration })) {
+    return "terminal";
+  }
   if (altScreen) return "terminal";
   if (command?.running) return "terminal";
   // O shell está no meio de um comando multi-linha, esperando o resto.
