@@ -20,6 +20,7 @@ use observe::ScreenPipe;
 mod capture;
 mod holdback;
 mod observe;
+pub mod tmux_control;
 
 #[cfg(target_os = "windows")]
 pub mod conpty_jailed;
@@ -146,6 +147,24 @@ impl ScreenState {
         !self.attachers.is_empty()
     }
 
+    /// O modo prompt reposto de fora, sem `633;P` no fluxo — reatar uma sessão
+    /// integrada, ou religar o Cano no mesmo id. Nos dois casos quem repõe é a
+    /// camada de sessão, no marco de LOGIN: o respawn em si não herda nada
+    /// disso, porque até o login o terminal ainda pode estar pedindo senha.
+    ///
+    /// Ligado, abre o portão junto: o `633;P` que o shell remoto emitiu abriu o
+    /// portão da tela ANTERIOR, e repor um sem o outro deixaria a sessão num
+    /// estado que shell nenhum produz — modo prompt ligado com o editor de
+    /// linha dado como ausente, o que faz a primeira submissão esperar o teto
+    /// inteiro. Desligar não afirma nada: o portão responde "o editor de linha
+    /// está vivo", não "o modo prompt está ligado".
+    fn restore_prompt_mode(&mut self, on: bool) {
+        self.prompt_mode = on;
+        if on {
+            self.line_editor.mark_open();
+        }
+    }
+
     fn attach(&mut self, window: &str) {
         *self.attachers.entry(window.to_string()).or_insert(0) += 1;
     }
@@ -182,6 +201,21 @@ impl ScreenState {
 
 type SharedScreen = Arc<Mutex<ScreenState>>;
 
+/// O que sobrevive a um respawn no mesmo id — ver [`PtyPool::inherited_screen`].
+///
+/// Nem `prompt_mode` nem `hook_expected` entram, e pelo mesmo motivo: a camada
+/// de sessão é quem os reafirma depois do spawn — `hook_expected` já no spawn
+/// (`mark_hook_expected`) e o modo prompt só no marco de LOGIN
+/// (`restore_integrated_prompt_mode`, que chama [`PtyPool::set_prompt_mode`]).
+/// Repor o modo prompt aqui seria repor na fase CRUA do religar, antes do
+/// login: com o teclado na linha de comando do TYBA, o pedido de senha do `ssh`
+/// cairia numa caixa que segura o que foi digitado em vez de entregar ao
+/// terminal.
+struct Inherited {
+    size: (u16, u16),
+    attachers: HashMap<String, usize>,
+}
+
 /// Par (master, child) de um spawn enjaulado. Alias porque a tupla de dois trait
 /// objects boxed dispara `clippy::type_complexity` no gate.
 type JailedPtyPair = (Box<dyn MasterPty + Send>, Box<dyn Child + Send + Sync>);
@@ -201,6 +235,10 @@ fn now_ms() -> i64 {
 
 /// Apaga tela e scrollback e volta o cursor ao topo.
 const CLEAR_SCREEN: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
+
+/// Volta do buffer alternativo ao normal — ver `Action::ResetScreen` em
+/// [`apply_screen`].
+const LEAVE_ALT_SCREEN: &[u8] = b"\x1b[?1049l";
 
 fn emit_pending<R: Runtime>(state: &mut ScreenState, app: &AppHandle<R>, event: &str) {
     if let Some(bytes) = state.take_pending() {
@@ -280,9 +318,78 @@ pub struct SessionPromptModePayload {
     pub prompt_mode: bool,
 }
 
+/// Por onde a sessão fala, do ponto de vista de quem renderiza.
+///
+/// Existe porque o front precisa PARAR de responder às consultas do terminal
+/// (DA, DSR, DECRQM) quando o transporte é de controle: o tmux remoto responde
+/// a elas sozinho e ainda encaminha os bytes crus da consulta ao cliente de
+/// controle. A resposta do xterm.js seria a segunda, e só pode voltar como
+/// `send-keys` — digitação no pane (visto na tela: `1;2c0;276;0c` no prompt).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportKind {
+    Raw,
+    TmuxControl,
+}
+
+impl TransportKind {
+    fn of(in_control: bool) -> Self {
+        if in_control {
+            Self::TmuxControl
+        } else {
+            Self::Raw
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+pub struct SessionTransportPayload {
+    pub transport: TransportKind,
+}
+
+/// Por onde a sessão fala com o processo do outro lado.
+///
+/// O `PtyPool` é quem possui o handle e quem troca de transporte; nenhum outro
+/// módulo escreve no PTY de uma sessão em modo de controle (ver §7 do desenho).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Transport {
+    /// O PTY como sempre foi: byte entra, byte sai.
+    Raw,
+    /// Modo de controle do tmux (`tmux -C`): a saída vem embrulhada em
+    /// `%output` e a entrada vai por comando.
+    TmuxControl {
+        /// Alvo de `send-keys`/`capture-pane`. Vale qualquer alvo que o tmux
+        /// entenda — o nome da sessão resolve para o pane ativo dela, o que
+        /// evita depender do `%N` que só se descobre em voo.
+        pane: String,
+        /// Nome da sessão remota, para quem precisar identificá-la.
+        session: String,
+        /// O marco que anuncia a troca de protocolo (regra 1 da spec).
+        /// `None` = o primeiro byte já é protocolo (um `tmux -C` local);
+        /// `Some(m)` = tudo antes de `m` é byte cru do ssh (banner, senha e o
+        /// marco de login do Cano) e só depois dele começa o protocolo.
+        control_marker: Option<String>,
+    },
+}
+
+impl Transport {
+    fn tmux_target(&self) -> Option<&str> {
+        match self {
+            Transport::Raw => None,
+            Transport::TmuxControl { pane, .. } => Some(pane),
+        }
+    }
+}
+
+/// O escritor do PTY é compartilhado porque a thread leitora também escreve:
+/// é ela que descobre a troca de protocolo e manda ali mesmo o `refresh-client`
+/// (e a captura que ficou pendurada). Ela nunca toma o lock do mapa de PTYs,
+/// então não há ciclo com quem chama `write`.
+type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
 struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    writer: SharedWriter,
     child: Box<dyn Child + Send + Sync>,
     leader_pid: Option<u32>,
     leader_start: Option<u64>,
@@ -303,7 +410,34 @@ struct PtyHandle {
     /// thread por sessão. Pego pelo teste que afirma que a morte do PTY leva o
     /// palpite junto.
     nudge: std::sync::Weak<std::sync::mpsc::SyncSender<Vec<u8>>>,
+    transport: Transport,
+    /// A ponta compartilhada com o decodificador desta sessão. `None` no
+    /// transporte cru.
+    control: Option<tmux_control::ControlLink>,
 }
+
+impl PtyHandle {
+    fn write_raw(&self, data: &[u8]) -> Result<(), PtyError> {
+        let mut writer = self.writer.lock();
+        writer.write_all(data)?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    /// O alvo do tmux, só quando o protocolo já começou. Enquanto a sessão
+    /// está no prelúdio cru — banner, pedido de senha — a resposta é `None` e
+    /// o que o dono digita vai como byte, que é o que o `ssh` espera ali.
+    fn tmux_target(&self) -> Option<&str> {
+        if !self.control.as_ref()?.in_control() {
+            return None;
+        }
+        self.transport.tmux_target()
+    }
+}
+
+/// Um `send-keys` por lote: colar 200 KB numa linha só daria um comando de
+/// meio mega para o lexer do tmux. A ordem entre lotes é a da escrita.
+const SEND_KEYS_CHUNK: usize = 512;
 
 /// Como uma sessão ganha (ou não) um observador de tela.
 ///
@@ -372,9 +506,31 @@ fn apply_screen(state: &mut ScreenState, chunk: &[u8], actions: &[capture::Actio
             // o bracketed paste).
             capture::Action::ClearCoreScreen => state.parser.process(CLEAR_SCREEN),
             capture::Action::ResetScreen => {
+                // A fila ao vivo é esvaziada porque o bloco assume a saída —
+                // mas ela carrega junto as trocas de MODO que o comando fez, e
+                // essas não são saída: são estado do terminal.
+                //
+                // A que dói é a tela alternativa. O `?1049l` do app que morreu
+                // costuma cair no MESMO chunk do `133;D` — no transporte de
+                // controle é a regra, porque uma leitura do socket traz vários
+                // `%output` de uma vez — e some aqui dentro. O core, que viu o
+                // chunk inteiro, volta à tela normal; o webview fica desenhando
+                // no buffer alternativo: pane em branco, e o front (que lê
+                // `buffer.type` do xterm.js) continua dando o teclado a um app
+                // que já não existe. Medido com um tmux ANINHADO dentro de uma
+                // sessão SSH integrada, contra o VPS do dono, 2026-09-18.
+                //
+                // O caminho contrário é silêncio de propósito: repetir um
+                // `?1049h` salvaria o cursor de novo (DECSC) e estragaria a
+                // volta seguinte, e um bloco que termina DENTRO da tela
+                // alternativa já deixa os dois lados no mesmo buffer.
+                let left_alt_screen = !state.parser.screen().alternate_screen();
                 state.parser.process(CLEAR_SCREEN);
                 state.pending.clear();
                 if state.attached() {
+                    if left_alt_screen {
+                        state.pending.extend_from_slice(LEAVE_ALT_SCREEN);
+                    }
                     state.pending.extend_from_slice(CLEAR_SCREEN);
                 }
             }
@@ -589,7 +745,40 @@ impl PtyPool {
         on_exit: Box<dyn FnOnce() + Send>,
     ) -> Result<(), PtyError> {
         self.spawn_inner(
-            app, session_id, cmd, env, jail, cols, rows, kind, None, on_exit,
+            app,
+            session_id,
+            cmd,
+            env,
+            jail,
+            cols,
+            rows,
+            kind,
+            None,
+            Transport::Raw,
+            on_exit,
+        )
+    }
+
+    /// O `spawn` com o transporte na mão — é por aqui que uma SSH Session
+    /// integrada nasce falando o protocolo de controle do tmux. `spawn` e
+    /// `spawn_cano` são este mesmo caminho com [`Transport::Raw`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_transport<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        session_id: PtyId,
+        cmd: CommandBuilder,
+        env: Option<&HashMap<String, String>>,
+        jail: Option<Box<dyn JailedSpawner>>,
+        cols: u16,
+        rows: u16,
+        kind: &SessionKind,
+        login: Option<LoginPipe>,
+        transport: Transport,
+        on_exit: Box<dyn FnOnce() + Send>,
+    ) -> Result<(), PtyError> {
+        self.spawn_inner(
+            app, session_id, cmd, env, jail, cols, rows, kind, login, transport, on_exit,
         )
     }
 
@@ -617,6 +806,7 @@ impl PtyPool {
             rows,
             kind,
             Some(login),
+            Transport::Raw,
             on_exit,
         )
     }
@@ -624,18 +814,17 @@ impl PtyPool {
     /// Um Cano religado no mesmo id é a mesma SSH Session na tela: o pane
     /// continua anexado e o PTY novo nasce do tamanho que o pane tem agora.
     /// Sem isso o `ScreenState` novo nasce sem janelas e o pane fica mudo.
-    fn inherited_screen(
-        &self,
-        id: PtyId,
-        kind: &SessionKind,
-    ) -> Option<((u16, u16), HashMap<String, usize>)> {
+    fn inherited_screen(&self, id: PtyId, kind: &SessionKind) -> Option<Inherited> {
         if !matches!(kind, SessionKind::Ssh { .. }) {
             return None;
         }
         let ptys = self.ptys.lock();
         let previous = ptys.get(&id)?;
-        let attachers = previous.screen.lock().attachers.clone();
-        Some((previous.size, attachers))
+        let screen = previous.screen.lock();
+        Some(Inherited {
+            size: previous.size,
+            attachers: screen.attachers.clone(),
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -650,10 +839,11 @@ impl PtyPool {
         rows: u16,
         kind: &SessionKind,
         login: Option<LoginPipe>,
+        transport: Transport,
         on_exit: Box<dyn FnOnce() + Send>,
     ) -> Result<(), PtyError> {
         let inherited = self.inherited_screen(session_id, kind);
-        let (cols, rows) = inherited.as_ref().map_or((cols, rows), |(size, _)| *size);
+        let (cols, rows) = inherited.as_ref().map_or((cols, rows), |i| i.size);
         // O palpite de tela nasce com o PTY e morre com ele. Sessão de agente
         // do TYBA não recebe nenhum: onde há hook, a tela não opina.
         let pipe = self.screen_pipe(session_id, kind);
@@ -721,13 +911,34 @@ impl PtyPool {
         let mut reader = master
             .try_clone_reader()
             .map_err(|e| PtyError::Open(e.to_string()))?;
-        let writer = master
-            .take_writer()
-            .map_err(|e| PtyError::Open(e.to_string()))?;
+        let writer: SharedWriter = Arc::new(Mutex::new(
+            master
+                .take_writer()
+                .map_err(|e| PtyError::Open(e.to_string()))?,
+        ));
+
+        // Nasce antes do handle porque o handle guarda a outra ponta: quem
+        // chama `write` precisa saber em que fase o fluxo está.
+        let mut decoder = match &transport {
+            Transport::Raw => None,
+            Transport::TmuxControl { control_marker, .. } => Some(
+                tmux_control::ControlDecoder::with_marker(control_marker.as_deref()),
+            ),
+        };
+        let control = decoder.as_ref().map(|d| d.link());
+        if let Some(link) = control.as_ref() {
+            link.set_size(cols, rows);
+        }
+        let control_writer = Arc::clone(&writer);
+        let tmux_target = transport.tmux_target().unwrap_or_default().to_string();
+        let control_link = control.clone();
+        // Um `tmux -C` local nasce falando o protocolo (sem marco): ali não há
+        // transição para anunciar, e o estado inicial já é o definitivo.
+        let starts_in_control = control.as_ref().is_some_and(|link| link.in_control());
 
         let mut state = ScreenState::new(rows, cols);
-        if let Some((_, attachers)) = inherited {
-            state.attachers = attachers;
+        if let Some(inherited) = inherited {
+            state.attachers = inherited.attachers;
         }
         let screen: SharedScreen = Arc::new(Mutex::new(state));
         let reader_screen = Arc::clone(&screen);
@@ -750,6 +961,8 @@ impl PtyPool {
                 screen,
                 size: (cols, rows),
                 nudge,
+                transport,
+                control,
             },
         );
 
@@ -759,6 +972,18 @@ impl PtyPool {
         let cwd_event = format!("session://cwd/{session_id}");
         let bracketed_event = format!("session://bracketed/{session_id}");
         let prompt_mode_event = format!("session://prompt-mode/{session_id}");
+        let transport_event = format!("session://transport/{session_id}");
+        // O estado inicial sai aqui, e não na primeira leitura: sem ele, uma
+        // sessão crua — que nunca transiciona — jamais anunciaria nada, e o
+        // front ficaria sem resposta para sempre.
+        let _ = app.emit(
+            &transport_event,
+            SessionTransportPayload {
+                transport: TransportKind::of(starts_in_control),
+            },
+        );
+        let reader_app = app.clone();
+        let reader_transport_event = transport_event.clone();
         std::thread::Builder::new()
             .name(format!("pty-reader-{session_id}"))
             .spawn(move || {
@@ -769,14 +994,87 @@ impl PtyPool {
                 let mut on_login = login
                     .as_mut()
                     .map(|l| std::mem::replace(&mut l.on_login, Box::new(|| {})));
+                let mut handshaked = false;
+                let mut announced_oddity = false;
+                let mut decoded = Vec::new();
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
+                            // O transporte é o primeiro a ver o byte: no modo
+                            // de controle, o que os três ouvintes abaixo
+                            // esperam é o fluxo do PANE, não o protocolo.
+                            // Um `Vec` por leitura, e não um evento por
+                            // `%output`: o lote de ~16 ms para o webview
+                            // continua sendo do emissor (princípio #3).
+                            let bytes: &[u8] = match decoder.as_mut() {
+                                None => &buf[..n],
+                                Some(decoder) => {
+                                    decoded.clear();
+                                    for event in decoder.feed(&buf[..n]) {
+                                        match event {
+                                            tmux_control::ControlEvent::Output(chunk) => {
+                                                decoded.extend_from_slice(&chunk)
+                                            }
+                                            // Regra 6: uma linha por sessão no
+                                            // log e a sessão segue viva.
+                                            tmux_control::ControlEvent::Notification(what)
+                                            | tmux_control::ControlEvent::Unparsed(what) => {
+                                                if !announced_oddity {
+                                                    announced_oddity = true;
+                                                    eprintln!(
+                                                        "tyba: sessão {session_id} — modo de \
+                                                         controle do tmux com linha não \
+                                                         reconhecida (a sessão segue): {what}"
+                                                    );
+                                                }
+                                            }
+                                            tmux_control::ControlEvent::Exit => {}
+                                        }
+                                    }
+                                    &decoded
+                                }
+                            };
+                            if let Some(link) = control_link.as_ref() {
+                                if !handshaked && link.in_control() {
+                                    handshaked = true;
+                                    let (cols, rows) = link.size();
+                                    let mut commands =
+                                        format!("{}\n", tmux_control::refresh_client(cols, rows));
+                                    // O pedido de redesenho de quem reatou
+                                    // esperou aqui: mandá-lo antes do marco
+                                    // seria escrever comando de tmux no meio
+                                    // do prelúdio do ssh.
+                                    if link.take_queued_capture() {
+                                        link.arm_capture();
+                                        commands.push_str(&tmux_control::capture_pane(
+                                            &tmux_target,
+                                            tmux_control::CAPTURE_LINES,
+                                        ));
+                                        commands.push('\n');
+                                    }
+                                    let mut writer = control_writer.lock();
+                                    let _ = writer.write_all(commands.as_bytes());
+                                    let _ = writer.flush();
+                                    drop(writer);
+                                    // Uma vez por sessão, na transição — nunca
+                                    // por `%output` (princípio #3). Quem já
+                                    // nasceu em modo de controle foi anunciado
+                                    // no spawn e não anuncia de novo aqui.
+                                    if !starts_in_control {
+                                        let _ = reader_app.emit(
+                                            &reader_transport_event,
+                                            SessionTransportPayload {
+                                                transport: TransportKind::TmuxControl,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
                             // Bytes crus também: o marco não pode depender do
                             // que a retenção de OSC faz com ele.
                             if let Some(l) = login.as_mut() {
-                                if l.watch.feed(&buf[..n]) {
+                                if l.watch.feed(bytes) {
                                     if let Some(notify) = on_login.take() {
                                         notify();
                                     }
@@ -787,9 +1085,12 @@ impl PtyPool {
                             // precisa do stream tal como o processo escreveu,
                             // não do que sobra depois da retenção de OSC.
                             if let Some(w) = auth_watch.as_mut() {
-                                w.feed(&buf[..n]);
+                                w.feed(bytes);
                             }
-                            let ready = hold_back.feed(&buf[..n]);
+                            if bytes.is_empty() {
+                                continue;
+                            }
+                            let ready = hold_back.feed(bytes);
                             if !ready.is_empty() && tx.send(ready).is_err() {
                                 break;
                             }
@@ -966,12 +1267,23 @@ impl PtyPool {
         Ok(())
     }
 
+    /// Quem chama continua escrevendo bytes; o transporte decide se eles vão
+    /// como bytes ou como `send-keys`.
     pub fn write(&self, id: PtyId, data: &[u8]) -> Result<(), PtyError> {
-        let mut ptys = self.ptys.lock();
-        let handle = ptys.get_mut(&id).ok_or(PtyError::NotFound(id))?;
-        handle.writer.write_all(data)?;
-        handle.writer.flush()?;
-        Ok(())
+        let ptys = self.ptys.lock();
+        let handle = ptys.get(&id).ok_or(PtyError::NotFound(id))?;
+        let Some(target) = handle.tmux_target() else {
+            return handle.write_raw(data);
+        };
+        if data.is_empty() {
+            return Ok(());
+        }
+        let mut commands = String::new();
+        for chunk in data.chunks(SEND_KEYS_CHUNK) {
+            commands.push_str(&tmux_control::send_keys(target, chunk));
+            commands.push('\n');
+        }
+        handle.write_raw(commands.as_bytes())
     }
 
     pub fn resize(&self, id: PtyId, cols: u16, rows: u16) -> Result<(), PtyError> {
@@ -980,18 +1292,62 @@ impl PtyPool {
         if handle.size == (cols, rows) {
             return Ok(());
         }
-        handle
-            .master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| PtyError::Open(e.to_string()))?;
+        // No modo de controle o tamanho do cliente NÃO vem do tty (`man tmux`,
+        // `refresh-client -C`): mexer no master faria o `ssh` levar um
+        // SIGWINCH que briga com o tamanho declarado pelo comando.
+        match handle.control.clone() {
+            None => handle
+                .master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| PtyError::Open(e.to_string()))?,
+            Some(link) => {
+                link.set_size(cols, rows);
+                // Antes do marco não há tmux para ouvir: o tamanho viaja no
+                // `refresh-client` que a troca de protocolo dispara.
+                if link.in_control() {
+                    handle.write_raw(
+                        format!("{}\n", tmux_control::refresh_client(cols, rows)).as_bytes(),
+                    )?;
+                }
+            }
+        }
         handle.size = (cols, rows);
         handle.screen.lock().parser.set_size(rows, cols);
         Ok(())
+    }
+
+    /// Redesenha a tela de uma sessão reatada a partir do que o tmux guardou
+    /// (regra 5) — um cliente de controle que ataca não recebe nada por conta
+    /// própria (medido em 2026-09-17).
+    ///
+    /// O texto capturado volta como corpo de bloco `%begin`/`%end`, e é por
+    /// isso que a captura é *armada* antes de o comando sair: só com a captura
+    /// armada o decodificador deixa um corpo de bloco virar tela. Chamar isto
+    /// num transporte cru é um no-op.
+    pub fn redraw_from_capture(&self, id: PtyId) -> Result<(), PtyError> {
+        let ptys = self.ptys.lock();
+        let handle = ptys.get(&id).ok_or(PtyError::NotFound(id))?;
+        let (Some(target), Some(link)) = (handle.transport.tmux_target(), handle.control.as_ref())
+        else {
+            return Ok(());
+        };
+        if !link.in_control() {
+            link.queue_capture();
+            return Ok(());
+        }
+        link.arm_capture();
+        handle.write_raw(
+            format!(
+                "{}\n",
+                tmux_control::capture_pane(target, tmux_control::CAPTURE_LINES)
+            )
+            .as_bytes(),
+        )
     }
 
     fn screen_of(&self, id: PtyId) -> Option<SharedScreen> {
@@ -1054,6 +1410,17 @@ impl PtyPool {
         let ptys = self.ptys.lock();
         if let Some(handle) = ptys.get(&id) {
             handle.screen.lock().hook_expected = expected;
+        }
+    }
+
+    /// O par de escrita de [`Self::prompt_mode`], para quem REATA uma sessão
+    /// integrada: o `capture-pane` devolve só o texto do pane, e o `633;P` que
+    /// o shell remoto emitiu ficou no tmux — a tela nova nasceria em modo
+    /// clássico até o próximo prompt de verdade.
+    pub fn set_prompt_mode(&self, id: PtyId, on: bool) {
+        let ptys = self.ptys.lock();
+        if let Some(handle) = ptys.get(&id) {
+            handle.screen.lock().restore_prompt_mode(on);
         }
     }
 
@@ -1832,6 +2199,498 @@ mod cano_tests {
     }
 }
 
+#[cfg(all(test, unix))]
+mod transport_tests {
+    use tauri::Listener;
+
+    use super::tmux_control::{capture_pane, refresh_client, send_keys, CAPTURE_LINES};
+    use super::*;
+
+    const MARKER: &str = "\x1b]633;P;tyba-ctl=0123456789abcdef0123456789abcdef\x07";
+    const TARGET: &str = "tyba-teste";
+
+    fn kind() -> SessionKind {
+        SessionKind::Ssh {
+            host_id: "h".into(),
+        }
+    }
+
+    /// Um tmux de mentira: escreve o prelúdio cru, troca para o protocolo e
+    /// devolve cada comando recebido como saída do pane — é assim que o teste
+    /// vê o que o transporte escreveu.
+    fn fake_tmux() -> CommandBuilder {
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(format!(
+            "printf 'Last login\\r\\n'; printf '{MARKER}'; \
+             printf '%%output %%0 pronto\\\\015\\\\012\\n'; \
+             while IFS= read -r linha; do \
+               printf '%%output %%0 [%s]\\\\015\\\\012\\n' \"$linha\"; \
+             done"
+        ));
+        cmd
+    }
+
+    fn control() -> Transport {
+        Transport::TmuxControl {
+            pane: TARGET.into(),
+            session: TARGET.into(),
+            control_marker: Some(MARKER.into()),
+        }
+    }
+
+    fn spawn(pool: &PtyPool, id: PtyId, transport: Transport, cmd: CommandBuilder) {
+        let app = tauri::test::mock_app();
+        spawn_em(app.handle(), pool, id, transport, cmd);
+    }
+
+    /// O mesmo spawn com o app na mão de quem chama — é o que permite escutar
+    /// os eventos da sessão.
+    fn spawn_em(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        pool: &PtyPool,
+        id: PtyId,
+        transport: Transport,
+        cmd: CommandBuilder,
+    ) {
+        pool.spawn_with_transport(
+            app.clone(),
+            id,
+            cmd,
+            None,
+            None,
+            100,
+            30,
+            &kind(),
+            None,
+            transport,
+            Box::new(|| {}),
+        )
+        .unwrap();
+    }
+
+    type Anuncios = Arc<Mutex<Vec<String>>>;
+
+    /// Tudo que a sessão anunciar sobre o transporte, na ordem — assinado
+    /// ANTES do spawn, que é a única forma de ouvir o estado inicial.
+    fn escutar_transporte(app: &tauri::AppHandle<tauri::test::MockRuntime>, id: PtyId) -> Anuncios {
+        let anuncios: Anuncios = Arc::default();
+        let sink = Arc::clone(&anuncios);
+        app.listen(format!("session://transport/{id}"), move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            sink.lock()
+                .push(payload["transport"].as_str().unwrap().to_string());
+        });
+        anuncios
+    }
+
+    fn esperar_anuncios(anuncios: &Anuncios, quantos: usize) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while anuncios.lock().len() < quantos && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        anuncios.lock().clone()
+    }
+
+    fn wait_for_screen(pool: &PtyPool, id: PtyId, what: &str) -> String {
+        let screen = pool.screen_of(id).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let contents = screen.lock().parser.screen().contents();
+            if contents.contains(what) || Instant::now() >= deadline {
+                return contents;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn o_transporte_cru_entrega_o_byte_como_sempre() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("printf 'cru\\r\\n'; while IFS= read -r l; do printf '[%s]\\r\\n' \"$l\"; done");
+        spawn(&pool, id, Transport::Raw, cmd);
+        wait_for_screen(&pool, id, "cru");
+        pool.write(id, b"oi\r").unwrap();
+        let contents = wait_for_screen(&pool, id, "[oi]");
+        assert!(contents.contains("cru"), "{contents:?}");
+        assert!(
+            contents.contains("[oi]"),
+            "o byte escrito chega inteiro ao processo: {contents:?}"
+        );
+        pool.kill(id).unwrap();
+    }
+
+    #[test]
+    fn o_preludio_cru_aparece_e_o_protocolo_nao() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        spawn(&pool, id, control(), fake_tmux());
+        let contents = wait_for_screen(&pool, id, "pronto");
+        assert!(
+            contents.contains("Last login"),
+            "o banner do ssh é byte cru: {contents:?}"
+        );
+        assert!(
+            contents.contains("pronto"),
+            "depois do marco, o %output vira tela: {contents:?}"
+        );
+        assert!(
+            !contents.contains("%output"),
+            "o protocolo nunca chega à tela: {contents:?}"
+        );
+        pool.kill(id).unwrap();
+    }
+
+    #[test]
+    fn ao_trocar_de_protocolo_o_transporte_declara_o_tamanho() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        spawn(&pool, id, control(), fake_tmux());
+        let contents = wait_for_screen(&pool, id, &refresh_client(100, 30));
+        assert!(
+            contents.contains(&refresh_client(100, 30)),
+            "o cliente de controle não herda tamanho de tty: {contents:?}"
+        );
+        pool.kill(id).unwrap();
+    }
+
+    #[test]
+    fn escrita_em_modo_de_controle_vira_send_keys() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        spawn(&pool, id, control(), fake_tmux());
+        wait_for_screen(&pool, id, "pronto");
+        pool.write(id, "é\r".as_bytes()).unwrap();
+        let esperado = send_keys(TARGET, "é\r".as_bytes());
+        let contents = wait_for_screen(&pool, id, &esperado);
+        assert!(contents.contains(&esperado), "{contents:?}");
+        pool.kill(id).unwrap();
+    }
+
+    #[test]
+    fn redimensionar_em_modo_de_controle_vira_refresh_client() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        spawn(&pool, id, control(), fake_tmux());
+        wait_for_screen(&pool, id, "pronto");
+        pool.resize(id, 90, 25).unwrap();
+        let contents = wait_for_screen(&pool, id, &refresh_client(90, 25));
+        assert!(contents.contains(&refresh_client(90, 25)), "{contents:?}");
+        assert_eq!(
+            pool.ptys.lock().get(&id).unwrap().size,
+            (90, 25),
+            "o tamanho que o core guarda acompanha o pane"
+        );
+        pool.kill(id).unwrap();
+    }
+
+    #[test]
+    fn redesenhar_pede_a_captura_ao_tmux() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        spawn(&pool, id, control(), fake_tmux());
+        wait_for_screen(&pool, id, "pronto");
+        pool.redraw_from_capture(id).unwrap();
+        let esperado = capture_pane(TARGET, CAPTURE_LINES);
+        let contents = wait_for_screen(&pool, id, &esperado);
+        assert!(contents.contains(&esperado), "{contents:?}");
+        pool.kill(id).unwrap();
+    }
+
+    /// Reatar chama o redesenho antes de o tmux existir: o pedido espera a
+    /// troca de protocolo em vez de virar lixo no meio do prelúdio do ssh.
+    #[test]
+    fn redesenho_pedido_antes_do_marco_espera_o_protocolo_comecar() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(format!(
+            "printf 'Last login\\r\\n'; sleep 0.5; printf '{MARKER}'; \
+             while IFS= read -r linha; do \
+               printf '%%output %%0 [%s]\\\\015\\\\012\\n' \"$linha\"; \
+             done"
+        ));
+        spawn(&pool, id, control(), cmd);
+        wait_for_screen(&pool, id, "Last login");
+        pool.redraw_from_capture(id).unwrap();
+        let esperado = capture_pane(TARGET, CAPTURE_LINES);
+        let contents = wait_for_screen(&pool, id, &esperado);
+        assert!(
+            contents.contains(&esperado),
+            "a captura sai depois do marco, nunca antes: {contents:?}"
+        );
+        pool.kill(id).unwrap();
+    }
+
+    /// O transporte contra um tmux de verdade, na máquina local e numa sessão
+    /// descartável com socket próprio — nunca contra host remoto.
+    ///
+    /// `cargo test --lib pty::transport_tests::contra_o_tmux_de_verdade -- --ignored`
+    #[test]
+    #[ignore = "precisa do binário do tmux; não roda na suíte padrão"]
+    fn contra_o_tmux_de_verdade_a_tela_vem_do_output_e_o_redesenho_da_captura() {
+        let tmux = "/opt/homebrew/bin/tmux";
+        assert!(
+            std::path::Path::new(tmux).exists(),
+            "sem tmux em {tmux} este teste não tem o que exercitar"
+        );
+        /// Servidor de tmux descartável: morre mesmo se o teste estourar no
+        /// meio, para não deixar um `sh` pendurado na máquina do dono.
+        struct ServidorDescartavel {
+            tmux: &'static str,
+            socket: String,
+        }
+        impl Drop for ServidorDescartavel {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new(self.tmux)
+                    .args(["-L", &self.socket, "kill-server"])
+                    .status();
+            }
+        }
+
+        let socket = format!("tyba-blk1-{}", Uuid::new_v4().simple());
+        let _servidor = ServidorDescartavel {
+            tmux,
+            socket: socket.clone(),
+        };
+        let name = format!("tyba-blk1-{}", Uuid::new_v4().simple());
+
+        let mut cmd = CommandBuilder::new(tmux);
+        for arg in ["-L", &socket, "-C", "new-session", "-A", "-s", &name] {
+            cmd.arg(arg);
+        }
+        cmd.arg("/bin/sh");
+        cmd.env("TERM", "xterm-256color");
+
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        spawn(
+            &pool,
+            id,
+            Transport::TmuxControl {
+                pane: name.clone(),
+                session: name.clone(),
+                // Sem prelúdio de ssh: o primeiro byte já é protocolo.
+                control_marker: None,
+            },
+            cmd,
+        );
+
+        let prompt = wait_for_screen(&pool, id, "$");
+        assert!(
+            !prompt.contains("%output") && !prompt.contains("%begin"),
+            "o protocolo não chega à tela: {prompt:?}"
+        );
+        pool.write(id, b"printf 'OLA-DO-TMUX\\n'\r").unwrap();
+        let depois = wait_for_screen(&pool, id, "OLA-DO-TMUX");
+        assert!(
+            depois.matches("OLA-DO-TMUX").count() >= 2,
+            "o eco do comando e a saída dele: {depois:?}"
+        );
+
+        // Reatar: o `capture-pane` é o único jeito de a tela voltar.
+        pool.kill(id).unwrap();
+        let id = PtyId::new_v4();
+        let mut cmd = CommandBuilder::new(tmux);
+        for arg in ["-L", &socket, "-C", "new-session", "-A", "-s", &name] {
+            cmd.arg(arg);
+        }
+        cmd.arg("/bin/sh");
+        spawn(
+            &pool,
+            id,
+            Transport::TmuxControl {
+                pane: name.clone(),
+                session: name.clone(),
+                control_marker: None,
+            },
+            cmd,
+        );
+        pool.redraw_from_capture(id).unwrap();
+        let reatado = wait_for_screen(&pool, id, "OLA-DO-TMUX");
+        assert!(
+            reatado.contains("OLA-DO-TMUX"),
+            "o redesenho traz o que a sessão já tinha: {reatado:?}"
+        );
+        assert!(
+            !reatado.contains("%begin"),
+            "o embrulho do bloco fica fora da tela: {reatado:?}"
+        );
+
+        pool.kill(id).unwrap();
+    }
+
+    #[test]
+    fn a_senha_digitada_antes_do_marco_vai_crua_ao_ssh() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(format!(
+            "printf 'Password: '; IFS= read -r senha; printf '<%s>\\r\\n' \"$senha\"; \
+             printf '{MARKER}'; sleep 0.3"
+        ));
+        spawn(&pool, id, control(), cmd);
+        wait_for_screen(&pool, id, "Password:");
+        pool.write(id, b"segredo\r").unwrap();
+        let contents = wait_for_screen(&pool, id, "<segredo>");
+        assert!(
+            contents.contains("<segredo>"),
+            "antes do marco o transporte é cru — send-keys aqui seria lixo: {contents:?}"
+        );
+        pool.kill(id).unwrap();
+    }
+
+    /// O par de escrita de `prompt_mode`. Quem reata uma sessão integrada sabe
+    /// que ela era integrada, mas o `capture-pane` devolve só o texto do pane:
+    /// nenhum `633;P` volta com ele, e sem esta marca a aparência integrada só
+    /// reapareceria depois do próximo prompt de verdade.
+    #[test]
+    fn marcar_o_modo_prompt_mexe_so_na_sessao_pedida() {
+        let pool = PtyPool::new();
+        let (um, outro) = (PtyId::new_v4(), PtyId::new_v4());
+        spawn(&pool, um, control(), fake_tmux());
+        spawn(&pool, outro, control(), fake_tmux());
+
+        pool.set_prompt_mode(um, true);
+
+        assert_eq!(pool.prompt_mode(um), Some(true));
+        assert_eq!(
+            pool.prompt_mode(outro),
+            Some(false),
+            "a marca é de uma sessão, não do pool"
+        );
+        pool.kill(um).unwrap();
+        pool.kill(outro).unwrap();
+    }
+
+    /// Ligar o modo prompt é dizer que o `633;P` aconteceu — e é ele que abre o
+    /// portão do editor de linha (ver [`LineEditorGate`]). Sem isso a primeira
+    /// submissão numa sessão reatada esperaria o teto inteiro de
+    /// `LINE_EDITOR_WAIT` antes de sair, num shell que já está no prompt há
+    /// minutos.
+    #[test]
+    fn ligar_o_modo_prompt_abre_o_portao_do_editor_de_linha() {
+        let pool = PtyPool::new();
+        let (aberto, fechado) = (PtyId::new_v4(), PtyId::new_v4());
+        spawn(&pool, aberto, control(), fake_tmux());
+        spawn(&pool, fechado, control(), fake_tmux());
+
+        pool.set_prompt_mode(aberto, true);
+        pool.set_prompt_mode(fechado, false);
+
+        assert!(pool
+            .line_editor_gate(aberto)
+            .unwrap()
+            .wait_open(Duration::from_millis(10)));
+        assert!(
+            !pool
+                .line_editor_gate(fechado)
+                .unwrap()
+                .wait_open(Duration::from_millis(10)),
+            "desligar o modo prompt não afirma nada sobre o editor de linha"
+        );
+        pool.kill(aberto).unwrap();
+        pool.kill(fechado).unwrap();
+    }
+
+    /// Critério novo: o religar NÃO repõe mais o modo prompt — quem repõe é o
+    /// `SessionManager`, no marco de LOGIN, via [`PtyPool::set_prompt_mode`].
+    ///
+    /// Armadilha que mudou o critério: todo religar nasce cru, e a fase crua
+    /// vem ANTES do login — banner do ssh, chave do host, pedido de senha. Com
+    /// o modo prompt reposto já no spawn, o teclado pertence à linha de comando
+    /// do TYBA, e num Host com senha o dono digitaria a senha numa caixa que a
+    /// segura em vez de no prompt do `ssh`.
+    #[test]
+    fn religar_em_modo_de_controle_nao_repoe_o_modo_prompt() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        spawn(&pool, id, control(), fake_tmux());
+        wait_for_screen(&pool, id, "pronto");
+        pool.set_prompt_mode(id, true);
+        pool.terminate(id).unwrap();
+
+        spawn(&pool, id, control(), fake_tmux());
+
+        assert_eq!(
+            pool.prompt_mode(id),
+            Some(false),
+            "o modo prompt do religar volta no login, não no spawn"
+        );
+        assert!(
+            !pool
+                .line_editor_gate(id)
+                .unwrap()
+                .wait_open(Duration::from_millis(10)),
+            "sem modo prompt reposto, o portão do editor de linha nasce fechado"
+        );
+        pool.kill(id).unwrap();
+    }
+
+    /// O mesmo critério pelo transporte cru: a sessão que volta COMUM também
+    /// não herda a aparência integrada da anterior. Ali nasce shell novo, sem
+    /// tmux nem hook, e um modo prompt herdado pintaria blocos de uma sessão
+    /// que já não existe.
+    #[test]
+    fn religar_cru_nao_herda_o_modo_prompt_da_sessao_anterior() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        spawn(&pool, id, control(), fake_tmux());
+        wait_for_screen(&pool, id, "pronto");
+        pool.set_prompt_mode(id, true);
+        pool.terminate(id).unwrap();
+
+        let mut cru = CommandBuilder::new("/bin/sh");
+        cru.arg("-c");
+        cru.arg("printf 'comum\\r\\n'; sleep 0.3");
+        spawn(&pool, id, Transport::Raw, cru);
+
+        assert_eq!(pool.prompt_mode(id), Some(false));
+        pool.kill(id).unwrap();
+    }
+
+    /// Quem responde consulta do terminal (DA, DSR, DECRQM) precisa saber por
+    /// onde a sessão fala: em modo de controle o tmux remoto já responde
+    /// sozinho E ainda encaminha a consulta crua ao cliente, então uma segunda
+    /// resposta só pode voltar como `send-keys` — ou seja, vira digitação no
+    /// pane. O front não tem como descobrir isso; o core anuncia.
+    #[test]
+    fn a_sessao_crua_anuncia_o_transporte_no_spawn() {
+        let app = tauri::test::mock_app();
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        let anuncios = escutar_transporte(app.handle(), id);
+
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("printf 'cru\\r\\n'; sleep 0.3");
+        spawn_em(app.handle(), &pool, id, Transport::Raw, cmd);
+
+        assert_eq!(esperar_anuncios(&anuncios, 1), ["raw"]);
+        pool.kill(id).unwrap();
+    }
+
+    /// A sessão integrada nasce crua — banner do ssh, pedido de senha — e só
+    /// vira modo de controle no marco. O anúncio acompanha as duas fases.
+    #[test]
+    fn a_troca_de_protocolo_anuncia_o_modo_de_controle() {
+        let app = tauri::test::mock_app();
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        let anuncios = escutar_transporte(app.handle(), id);
+
+        spawn_em(app.handle(), &pool, id, control(), fake_tmux());
+
+        assert_eq!(esperar_anuncios(&anuncios, 2), ["raw", "tmux_control"]);
+        pool.kill(id).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod screen_tests {
     #[test]
@@ -1853,6 +2712,170 @@ mod screen_tests {
         assert!(text.contains("hello"));
         assert!(text.contains("red"));
         assert!(text.contains("world"));
+    }
+}
+
+/// A tela alternativa atravessando o transporte de controle inteiro: protocolo
+/// do tmux → retenção de OSC → máquina de captura → fila do webview.
+///
+/// O fluxo é o do `tmux -C` de verdade, gravado contra o VPS do dono em
+/// 2026-09-18 com um cliente de controle puro (sem o app no meio) enquanto um
+/// tmux ANINHADO subia e saía dentro da sessão integrada. Os marcadores `133`
+/// são da integração local — o cliente da gravação rodava sem o rc do TYBA.
+#[cfg(test)]
+mod alt_screen_tests {
+    use super::*;
+
+    const COLS: u16 = 100;
+    const ROWS: u16 = 38;
+
+    /// O tmux aninhado entrando em tela alternativa. Repare no `\033[1;24r`:
+    /// a região de rolagem que ele declara é a do tamanho que ELE conhece.
+    const ENTRA_ALT: &str = "%output %0 \\033[?1049h\\033[?1h\\033=\\033[H\\033[J\\033[34h\\033[?25h\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l\\033[?1005l\\033[?2004h\\033[m\\017\\033[34h\\033[?25h\\033[?1006l\\033[?1000l\\033[?1002l\\033[?1003l\\033[1;1H\\033[1;24r\\033[c\\033[>c\\033[>q\\033]10;?\\033\\134\\033]11;?\\033\\134\\033[1;1H\\033[?25l\\033[K\\015\\012\\033[K\\015\\012\\033[K\\015\\012\\033[K\\015\\012\\033[K\\015\\012\\033[K\\015\\012\\033[K\\015\\012\\033[K\\033[30m\\033[42m\\015\\012[1] 0:bash*                                         \"srv1084118\" 14:06 18-Sep-26\\033[m\\017\\033[34h\\033[?25h\\033[1;1H\n";
+
+    /// A saída dele — `\033[1;24r` de novo e o `\033[?1049l` no fim.
+    const SAI_ALT: &str = "%output %0 \\033[1;24r\\033[m\\017\\033[?1l\\033>\\033[H\\033[J\\033[34h\\033[?25h\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l\\033[?1005l\\033[?2004l\\033[?7727l\\033[?1004l\\033[?1049l\n";
+
+    /// O que o tmux imprime ao fechar, e o prompt do servidor logo atrás.
+    const VOLTA_O_PROMPT: &str =
+        "%output %0 [exited]\\015\\012\\033[?2004hroot@srv1084118:~# \\033]133;D;0\\007\\033]133;A\\007\n";
+
+    /// O caminho de leitura de uma sessão integrada, do byte do socket até o
+    /// que o webview desenha — o xterm.js do front modelado por um `vt100` do
+    /// mesmo tamanho do pane.
+    struct Pane {
+        decoder: tmux_control::ControlDecoder,
+        hold_back: holdback::HoldBack,
+        state: ScreenState,
+        machine: capture::CaptureMachine,
+        webview: vt100::Parser,
+    }
+
+    impl Pane {
+        fn new() -> Self {
+            let mut state = ScreenState::new(ROWS, COLS);
+            state.attach("janela");
+            Self {
+                decoder: tmux_control::ControlDecoder::new(),
+                hold_back: holdback::HoldBack::new(),
+                state,
+                machine: capture::CaptureMachine::new("sessao".into()),
+                webview: vt100::Parser::new(ROWS, COLS, 0),
+            }
+        }
+
+        /// Uma leitura do PTY, exatamente como a thread leitora a trata.
+        fn read(&mut self, bytes: &[u8]) {
+            let mut decoded = Vec::new();
+            for event in self.decoder.feed(bytes) {
+                if let tmux_control::ControlEvent::Output(chunk) = event {
+                    decoded.extend_from_slice(&chunk);
+                }
+            }
+            if decoded.is_empty() {
+                return;
+            }
+            let ready = self.hold_back.feed(&decoded);
+            if ready.is_empty() {
+                return;
+            }
+            ingest_chunk(&mut self.state, &mut self.machine, &ready, 0);
+            if let Some(pending) = self.state.take_pending() {
+                self.webview.process(&pending);
+            }
+        }
+
+        /// O que o webview vê, linha a linha.
+        fn linhas(&self) -> Vec<String> {
+            self.webview
+                .screen()
+                .contents()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        }
+    }
+
+    /// Sessão integrada com o modo prompt ligado, o dono no prompt do servidor
+    /// e o `tmux` aninhado submetido — o estado de onde o defeito parte.
+    fn no_tmux_aninhado() -> Pane {
+        let mut pane = Pane::new();
+        pane.read(b"%output %0 \\033]633;P;tyba-prompt=1\\007\\033]133;A\\007root@srv1084118:~# \\033]133;B\\007\n");
+        pane.read(b"%output %0 tmux\\015\\012\n");
+        pane.read(b"%output %0 \\033]633;E;dG11eA==\\007\\033]133;C\\007\n");
+        pane.read(ENTRA_ALT.as_bytes());
+        assert!(
+            pane.webview.screen().alternate_screen(),
+            "o aninhado subiu: o webview está em tela alternativa"
+        );
+        pane
+    }
+
+    /// O critério em jogo: o tmux do dono aninhado dentro da sessão integrada
+    /// continua funcionando — sair dele devolve a tela normal ao webview.
+    ///
+    /// O `?1049l` e o `133;D` chegam na MESMA leitura de propósito: é o que o
+    /// transporte de controle produz (uma leitura do socket carrega vários
+    /// `%output`), e é onde o defeito mora.
+    #[test]
+    fn sair_do_tmux_aninhado_tira_o_webview_da_tela_alternativa() {
+        let mut pane = no_tmux_aninhado();
+        pane.read(format!("{SAI_ALT}{VOLTA_O_PROMPT}").as_bytes());
+        assert!(
+            !pane.webview.screen().alternate_screen(),
+            "o webview ficou preso na tela alternativa: teclado do app, tela em branco"
+        );
+    }
+
+    /// O mesmo, com a leitura partida NO MEIO da sequência de saída — o corte
+    /// que uma leitura de socket produz naturalmente e que some em teste.
+    #[test]
+    fn a_saida_partida_no_meio_ainda_devolve_a_tela_normal() {
+        let saida = SAI_ALT.as_bytes();
+        let corte = saida.len() / 2;
+        let mut pane = no_tmux_aninhado();
+        pane.read(&saida[..corte]);
+        pane.read(format!("{}{VOLTA_O_PROMPT}", &SAI_ALT[corte..]).as_bytes());
+        assert!(
+            !pane.webview.screen().alternate_screen(),
+            "o payload partido não pode perder a volta da tela alternativa"
+        );
+    }
+
+    /// Não basta o booleano virar: a região de rolagem que o aninhado deixou
+    /// (`1;24` num pane de 38 linhas) tem de voltar a cobrir o pane inteiro,
+    /// senão a saída seguinte rola dentro de uma janela de 24 linhas e as de
+    /// baixo ficam congeladas.
+    #[test]
+    fn depois_da_saida_a_rolagem_cobre_o_pane_inteiro() {
+        let mut pane = no_tmux_aninhado();
+        pane.read(format!("{SAI_ALT}{VOLTA_O_PROMPT}").as_bytes());
+
+        // Sem quebra de linha no fim: a última escrita tem de ficar na última
+        // LINHA do pane, e uma quebra sobrando deixaria o cursor numa linha
+        // vazia que o `contents()` apara.
+        let ultima = ROWS + 1;
+        let mut leitura = b"%output %0 ".to_vec();
+        for i in 0..=ultima {
+            leitura.extend_from_slice(format!("L{i}").as_bytes());
+            if i < ultima {
+                leitura.extend_from_slice(b"\\015\\012");
+            }
+        }
+        leitura.push(b'\n');
+        pane.read(&leitura);
+
+        let linhas = pane.linhas();
+        assert_eq!(
+            linhas.last().map(String::as_str),
+            Some(format!("L{ultima}").as_str()),
+            "a última linha escrita fica na última linha do pane: {linhas:?}"
+        );
+        assert_eq!(
+            linhas.len(),
+            usize::from(ROWS),
+            "o pane rolou inteiro, sem linhas congeladas fora da região: {linhas:?}"
+        );
     }
 }
 
@@ -2008,7 +3031,7 @@ mod tests {
         let writer = pair.master.take_writer().expect("writer");
         let handle = super::PtyHandle {
             master: pair.master,
-            writer,
+            writer: Arc::new(parking_lot::Mutex::new(writer)),
             leader_pid: child.process_id(),
             child,
             leader_start: None,
@@ -2018,6 +3041,8 @@ mod tests {
             // nunca sobe — é o que se quer aqui, porque o teste é de derrubar
             // árvore de processo, não de tela.
             nudge: std::sync::Weak::new(),
+            transport: super::Transport::Raw,
+            control: None,
         };
         pool.ptys.lock().insert(uuid::Uuid::new_v4(), handle);
 

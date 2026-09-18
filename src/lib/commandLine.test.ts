@@ -12,6 +12,7 @@ import {
   isArrowKey,
   keyboardOwner,
   lineState,
+  lineVisible,
   lineToken,
   pathToken,
   programName,
@@ -68,12 +69,82 @@ describe("keyboardOwner", () => {
     expect(keyboardOwner(agent)).toBe("terminal");
   });
 
-  it("não toma a linha de sessão ssh", () => {
+  // Regra 15 da spec `ssh-sessao-integrada`: a linha do TYBA passa a valer
+  // para a SSH Session INTEGRADA. O critério anterior ("nunca em sessão ssh")
+  // valia enquanto o shell remoto era cru; com o rc do TYBA do outro lado, o
+  // `133;A` que autoriza a linha vem do servidor.
+  it("toma a linha da sessão ssh integrada", () => {
+    const ssh: OwnerInput = {
+      ...atPrompt,
+      kind: { type: "ssh", host_id: "h1" },
+      sessionIntegration: { state: "integrated", reason: "ok" },
+    };
+    expect(keyboardOwner(ssh)).toBe("tybaLine");
+  });
+
+  it("não toma a linha de sessão ssh comum", () => {
+    const ssh: OwnerInput = {
+      ...atPrompt,
+      kind: { type: "ssh", host_id: "h1" },
+      sessionIntegration: { state: "plain", reason: "unsupported-shell" },
+    };
+    expect(keyboardOwner(ssh)).toBe("terminal");
+  });
+
+  it("nem enquanto o core não disse se a sessão ssh é integrada", () => {
     const ssh: OwnerInput = {
       ...atPrompt,
       kind: { type: "ssh", host_id: "h1" },
     };
     expect(keyboardOwner(ssh)).toBe("terminal");
+  });
+
+  it("na sessão ssh integrada as três situações valem igual", () => {
+    // Critério de aceite: a linha aparece na sessão integrada E respeita os
+    // três estados de teclado. O `sudo` que pede senha do outro lado do ssh lê
+    // stdin do mesmo jeito que o local.
+    const remote: OwnerInput = {
+      ...atPrompt,
+      kind: { type: "ssh", host_id: "h1" },
+      sessionIntegration: { state: "integrated", reason: "ok" },
+    };
+    expect(keyboardOwner({ ...remote, altScreen: true })).toBe("terminal");
+    expect(
+      keyboardOwner({
+        ...remote,
+        command: {
+          command: "sudo apt update",
+          running: true,
+          agent_match: false,
+          continuation: false,
+        },
+      }),
+    ).toBe("terminal");
+    expect(
+      keyboardOwner({
+        ...remote,
+        command: {
+          command: "for i in 1 2 3",
+          running: false,
+          agent_match: false,
+          continuation: true,
+        },
+      }),
+    ).toBe("terminal");
+  });
+
+  it("a rajada do broadcast fica com o terminal", () => {
+    // Regra 17: o broadcast é interceptado no xterm (`onData`). Com a linha do
+    // TYBA dona do teclado o xterm vira somente-leitura, e a rajada não sairia
+    // de lugar nenhum — a sessão integrada seria a única onde o broadcast
+    // deixou de funcionar.
+    const remote: OwnerInput = {
+      ...atPrompt,
+      kind: { type: "ssh", host_id: "h1" },
+      sessionIntegration: { state: "integrated", reason: "ok" },
+      broadcasting: true,
+    };
+    expect(keyboardOwner(remote)).toBe("terminal");
   });
 
   it("respeita a válvula de escape do usuário", () => {
@@ -595,5 +666,47 @@ describe("qual cinza ganha: caminho ou argumento", () => {
 
   it("sem nenhum dos dois, não inventa cinza", () => {
     expect(ghostDoToken("x", "", "")).toEqual({ texto: "", fonte: null });
+  });
+});
+
+describe("lineVisible", () => {
+  const base = {
+    kind: { type: "ssh", host_id: "h1" } as const,
+    sessionIntegration: { state: "integrated", reason: "ok" } as const,
+    promptMode: false,
+    promptModePref: true,
+    hookExpected: false,
+  };
+
+  it("a sessão ssh integrada mostra a linha quando o shell remoto reporta o prompt", () => {
+    expect(lineVisible({ ...base, promptMode: true })).toBe(true);
+  });
+
+  it("antes disso não mostra nada na sessão remota", () => {
+    // Local, a preferência adianta a linha porque o core sabe se o hook foi
+    // injetado. Do outro lado do ssh essa resposta não existe, e adiantar
+    // deixaria "Carregando o shell…" para sempre se o rc não subisse.
+    expect(lineVisible(base)).toBe(false);
+  });
+
+  it("sessão ssh comum nunca mostra a linha", () => {
+    expect(
+      lineVisible({
+        ...base,
+        promptMode: true,
+        sessionIntegration: { state: "plain", reason: "from-before" },
+      }),
+    ).toBe(false);
+  });
+
+  it("shell local continua adiantando a linha pela preferência", () => {
+    expect(
+      lineVisible({
+        ...base,
+        kind: { type: "shell" },
+        sessionIntegration: undefined,
+        hookExpected: true,
+      }),
+    ).toBe(true);
   });
 });

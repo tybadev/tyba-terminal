@@ -11,6 +11,7 @@
 
 pub mod import;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, OnceLock};
@@ -27,6 +28,9 @@ pub struct CommandRecord {
     pub exit_code: Option<i32>,
     pub started_at_ms: i64,
     pub duration_ms: Option<i64>,
+    /// O Host em cujo servidor o comando foi digitado (regra 18). `None` é o
+    /// comando local — e é o que separa os dois mundos na regra 19.
+    pub host_id: Option<String>,
 }
 
 struct Recorder {
@@ -69,6 +73,29 @@ pub fn record(record: CommandRecord) {
         return;
     }
     let _ = recorder.tx.try_send(record);
+}
+
+/// De qual Host é cada sessão SSH integrada.
+///
+/// Registro à parte, e não um campo a mais no [`Tracker`], porque quem constrói
+/// o tracker é a máquina de captura dentro do PTY — ela só conhece o id da
+/// sessão. O `SessionManager` é quem sabe o Host, e é ele quem registra aqui no
+/// spawn.
+static SESSION_HOST: std::sync::LazyLock<parking_lot::RwLock<HashMap<String, String>>> =
+    std::sync::LazyLock::new(|| parking_lot::RwLock::new(HashMap::new()));
+
+pub fn bind_session_host(session_id: &str, host_id: &str) {
+    SESSION_HOST
+        .write()
+        .insert(session_id.to_string(), host_id.to_string());
+}
+
+pub fn forget_session_host(session_id: &str) {
+    SESSION_HOST.write().remove(session_id);
+}
+
+pub fn session_host(session_id: &str) -> Option<String> {
+    SESSION_HOST.read().get(session_id).cloned()
 }
 
 /// Comando que não entra no histórico.
@@ -135,6 +162,7 @@ impl Tracker {
             return None;
         }
         Some(CommandRecord {
+            host_id: session_host(&self.session_id),
             session_id: self.session_id.clone(),
             cwd: cwd.map(|path| path.to_string_lossy().into_owned()),
             command: raw.trim().to_string(),
@@ -158,6 +186,8 @@ pub struct HistoryCandidate {
     pub known_exit_codes: u32,
     pub in_cwd: bool,
     pub in_repo: bool,
+    /// O comando veio do histórico do Host desta sessão (regra 19).
+    pub in_host: bool,
 }
 
 const DAY_MS: f64 = 86_400_000.0;
@@ -282,8 +312,14 @@ pub fn frecency(now_ms: i64, candidate: &HistoryCandidate) -> f64 {
     } else {
         1.0
     };
-    let scope =
-        1.0 + if candidate.in_cwd { 1.0 } else { 0.0 } + if candidate.in_repo { 0.5 } else { 0.0 };
+    // Regra 19: na sessão de um Host, o histórico DELE vem primeiro. O peso é o
+    // maior da conta de escopo de propósito — "rodei isto neste servidor" prevê
+    // melhor que "rodei isto nesta pasta", porque a pasta local e a remota não
+    // são a mesma máquina.
+    let scope = 1.0
+        + if candidate.in_cwd { 1.0 } else { 0.0 }
+        + if candidate.in_repo { 0.5 } else { 0.0 }
+        + if candidate.in_host { 2.0 } else { 0.0 };
     recency * frequency * success * scope
 }
 
@@ -301,6 +337,7 @@ mod tests {
             known_exit_codes: 1,
             in_cwd: false,
             in_repo: false,
+            in_host: false,
         }
     }
 

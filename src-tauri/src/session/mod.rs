@@ -254,16 +254,64 @@ pub struct SessionManager {
     /// Fase do Cano de cada sessão SSH. Fora de `Session` porque não é
     /// serializada: só `connection` e `connection_failure` chegam à tela.
     canos: parking_lot::Mutex<HashMap<SessionId, cano::CanoLifecycle>>,
+    /// Os canais próprios por Host, ligados no boot.
+    ///
+    /// Ligados depois da construção, e não recebidos em `new`, porque o
+    /// `SessionManager` nasce antes do `AppState` — e porque o construtor é o
+    /// mesmo que os testes de outros módulos usam.
+    host_queries: OnceLock<crate::ssh::query::SharedHostQueries>,
 }
 
 impl SessionManager {
-    fn tmux_wrap(&self, id: SessionId, nonce: &str) -> Result<String, PtyError> {
+    fn tmux_name(&self, id: SessionId) -> Result<String, PtyError> {
         let install = crate::ssh::tmux::install_id(&self.store)
             .map_err(|e| PtyError::Spawn(format!("install_id: {e}")))?;
-        Ok(crate::ssh::tmux::wrap_command_with_nonce(
-            &crate::ssh::tmux::session_name(&install, id),
+        Ok(crate::ssh::tmux::session_name(&install, id))
+    }
+
+    /// O comando remoto desta sessão. Integrada ou comum, o marco de login sai
+    /// no mesmo lugar — o ciclo do Cano não muda de regra por causa disto.
+    fn tmux_wrap(
+        &self,
+        id: SessionId,
+        nonce: &str,
+        plan: &crate::ssh::IntegrationPlan,
+    ) -> Result<String, PtyError> {
+        Ok(crate::ssh::remote_rc::remote_command_with(
+            plan.shell.clone(),
             nonce,
+            &self.tmux_name(id)?,
+            plan.integration.is_integrated(),
+            self.prompt_mode_enabled(),
         ))
+    }
+
+    /// O plano que vale para ESTA sessão, com a regra 12 por cima da decisão do
+    /// Host.
+    ///
+    /// Sessão que o banco já conhece carrega a decisão que ela teve no começo:
+    /// trocar de transporte no meio da vida de um pane remoto seria reabrir uma
+    /// sessão viva como integrada, que está fora de escopo. Sessão que o banco
+    /// conhece **sem** decisão gravada é a de antes desta versão — comum, e o
+    /// pane diz por quê.
+    fn plan_for(
+        &self,
+        id: SessionId,
+        fresh: crate::ssh::IntegrationPlan,
+    ) -> crate::ssh::IntegrationPlan {
+        if self.get(id).is_none() {
+            return fresh;
+        }
+        match self.store.session_integration(id) {
+            Ok(Some(gravado)) => gravado,
+            _ => crate::ssh::IntegrationPlan {
+                integration: crate::ssh::Integration::plain(
+                    crate::ssh::IntegrationReason::FromBefore,
+                    None,
+                ),
+                shell: fresh.shell,
+            },
+        }
     }
 
     fn baked_tunnel_args(&self, id: SessionId) -> Vec<String> {
@@ -289,7 +337,14 @@ impl SessionManager {
             sessions: RwLock::new(HashMap::new()),
             store,
             canos: parking_lot::Mutex::new(HashMap::new()),
+            host_queries: OnceLock::new(),
         }
+    }
+
+    /// Liga os canais próprios por Host, no boot. Sem eles o `dispose` não tem
+    /// a quem avisar — e é só isso que muda: nada aqui abre conexão.
+    pub fn attach_host_queries(&self, queries: crate::ssh::query::SharedHostQueries) {
+        let _ = self.host_queries.set(queries);
     }
 
     /// Desligado por padrão: trocar o dono da linha de comando é uma mudança
@@ -491,6 +546,7 @@ impl SessionManager {
         cwd: Option<&std::path::Path>,
         cols: u16,
         rows: u16,
+        plan: crate::ssh::IntegrationPlan,
         on_login: impl FnOnce(SessionId) + Send + 'static,
         on_exit: impl FnOnce(SessionId, cano::CanoOutcome) + Send + 'static,
     ) -> Result<Session, PtyError> {
@@ -505,6 +561,7 @@ impl SessionManager {
             cols,
             rows,
             Some(cano::CanoLifecycle::connecting()),
+            plan,
             on_login,
             on_exit,
         );
@@ -529,9 +586,14 @@ impl SessionManager {
         cols: u16,
         rows: u16,
         lifecycle: Option<cano::CanoLifecycle>,
+        plan: crate::ssh::IntegrationPlan,
         on_login: impl FnOnce(SessionId) + Send + 'static,
         on_exit: impl FnOnce(SessionId, cano::CanoOutcome) + Send + 'static,
     ) -> Result<Session, PtyError> {
+        // Reatar é a sessão que o core já conhece — boot com o tmux vivo, ou
+        // religar depois de uma queda. Sessão nova não tem o que redesenhar.
+        let reattach = self.get(id).is_some();
+        let plan = self.plan_for(id, plan);
         let mut cmd = crate::ssh::command::pty_command();
         cmd.arg("-t");
         for arg in self.baked_tunnel_args(id) {
@@ -542,7 +604,7 @@ impl SessionManager {
         // Nonce novo a cada spawn: um marco que sobrou de outro Cano (num log,
         // num scrollback impresso) não conclui o login deste.
         let nonce = Uuid::new_v4().simple().to_string();
-        cmd.arg(self.tmux_wrap(id, &nonce)?);
+        cmd.arg(self.tmux_wrap(id, &nonce, &plan)?);
         if let Some(cwd) = cwd {
             cmd.cwd(cwd);
         }
@@ -567,19 +629,56 @@ impl SessionManager {
 
         let outcome: Arc<parking_lot::Mutex<Option<cano::CanoOutcome>>> = Arc::default();
         let slot = Arc::clone(&outcome);
+        // A aparência integrada de quem reata volta no marco de LOGIN — ver
+        // `restore_integrated_prompt_mode`. `None` para sessão nova: ali o shell
+        // remoto ainda não reportou nada.
+        let prompt_pool = reattach.then(|| Arc::clone(pty_pool));
+        let prompt_pref = self.prompt_mode_enabled();
+        let login_plan = plan.clone();
+        let login_app = app.clone();
+        // Regra 18: o histórico do que for digitado ali é do Host, e quem monta
+        // o `Tracker` lá dentro do PTY só conhece o id da sessão.
+        crate::history::bind_session_host(&id.to_string(), &host_id);
         let kind = SessionKind::Ssh { host_id };
-        pty_pool.spawn_cano(
+        let transport = if plan.integration.is_integrated() {
+            let name = self.tmux_name(id)?;
+            crate::pty::Transport::TmuxControl {
+                pane: name.clone(),
+                session: name,
+                // Tudo antes do marco é byte cru do ssh — banner, pedido de
+                // senha, o marco de login do Cano. Só depois dele começa o
+                // protocolo (regra 1).
+                control_marker: Some(crate::ssh::remote_rc::control_marker(&nonce)),
+            }
+        } else {
+            crate::pty::Transport::Raw
+        };
+        pty_pool.spawn_with_transport(
             app.clone(),
             id,
             cmd,
+            None,
+            None,
             cols,
             rows,
             &kind,
-            crate::pty::LoginPipe {
+            Some(crate::pty::LoginPipe {
                 watch: cano::CanoWatch::new(&nonce),
-                on_login: Box::new(move || on_login(id)),
+                on_login: Box::new(move || {
+                    if let Some(pool) = prompt_pool {
+                        restore_integrated_prompt_mode(
+                            &login_app,
+                            &pool,
+                            id,
+                            &login_plan,
+                            prompt_pref,
+                        );
+                    }
+                    on_login(id)
+                }),
                 on_finish: Box::new(move |seen| *slot.lock() = Some(seen)),
-            },
+            }),
+            transport,
             Box::new(move || {
                 let seen = outcome
                     .lock()
@@ -588,8 +687,11 @@ impl SessionManager {
                 on_exit(id, seen);
             }),
         )?;
+        mark_hook_expected(pty_pool, id, &plan);
 
-        Ok(self.register_spawned(
+        // Depois de `register_spawned` a linha existe; antes dela o `UPDATE` se
+        // perderia em silêncio — e a sessão reataria como "de antes da versão".
+        let session = self.register_spawned(
             &app,
             id,
             kind,
@@ -600,7 +702,23 @@ impl SessionManager {
             false,
             connection,
             connection_failure,
-        ))
+        );
+        if let Err(e) = self.store.set_session_integration(id, &plan) {
+            eprintln!("sessão {id}: decisão de integração não gravada ({e})");
+        }
+
+        // Regra 5: quem reata redesenha do que o tmux guardou, sem reexecutar
+        // nada. Fica pendurado até a troca de protocolo — antes dela não há
+        // para quem mandar `capture-pane`.
+        //
+        // A marca de hook esperado já foi posta acima e vale para os dois casos:
+        // a captura desenha texto na tela e não mexe nela (ver
+        // `mark_hook_expected`).
+        if reattach && plan.integration.is_integrated() {
+            let _ = pty_pool.redraw_from_capture(id);
+        }
+
+        Ok(session)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -983,6 +1101,13 @@ impl SessionManager {
     pub fn dispose(&self, pty_pool: &SharedPtyPool, id: SessionId) {
         self.sessions.write().remove(&id);
         self.canos.lock().remove(&id);
+        crate::history::forget_session_host(&id.to_string());
+        // O canal por Host sobrevive à sessão (ele é do Host), então o que é
+        // por sessão sai daqui — senão cada SSH Session que já existiu deixa um
+        // teto pendurado pela vida do app.
+        if let Some(queries) = self.host_queries.get() {
+            queries.forget_session(id);
+        }
         let _ = pty_pool.kill(id);
         let _ = self.store.remove_session(id);
     }
@@ -1063,6 +1188,60 @@ impl StartupMode {
 
 fn emit_status(app: &AppHandle, session: &Session) {
     let _ = app.emit(&format!("session://status/{}", session.id), session.clone());
+}
+
+/// Quem sabe se o shell que subiu fala o protocolo do TYBA é quem montou o
+/// comando — no shell local isso já acontecia, e na SSH Session integrada é
+/// aqui.
+///
+/// Armadilha do reatar: `capture-pane` devolve só o TEXTO do pane. Os `133`/
+/// `633` que o shell remoto emitiu foram consumidos pelo tmux e não voltam, e
+/// a tela do PTY renasce com `prompt_mode` e `hook_expected` em `false`. Sem
+/// esta marca, o front não distingue "shell que ainda não reportou" de "shell
+/// que jamais vai reportar", e a linha de comando do TYBA só reapareceria
+/// depois do próximo prompt — ou seja, depois de um Enter.
+fn mark_hook_expected(pty_pool: &SharedPtyPool, id: SessionId, plan: &crate::ssh::IntegrationPlan) {
+    pty_pool.set_hook_expected(id, plan.integration.is_integrated());
+}
+
+/// O par da marca acima para quem REATA: repõe o modo prompt que o shell remoto
+/// já reportou uma vez e cujo `633;P` ficou guardado no tmux.
+///
+/// Sem isto o reatar redesenhava o texto do pane com a tela em modo clássico:
+/// blocos e título só voltariam depois do próximo prompt de verdade — um Enter
+/// que o dono não pediu.
+///
+/// Duas coisas que esta função de propósito NÃO faz:
+///
+/// - **Nunca escreve `false`.** "Não repor" e "o shell disse que não está em
+///   modo prompt" são afirmações diferentes, e só o shell pode fazer a segunda.
+/// - **Não vale para sessão nova.** Ali nada foi reportado ainda, e antecipar
+///   seria o core afirmando pelo shell remoto o que ele ainda não disse.
+///
+/// Chamada no login concluído, e não no spawn: até o marco de login o terminal
+/// ainda pode estar pedindo senha ou a confirmação da chave do host, e com o
+/// modo prompt ligado o teclado pertence à linha do TYBA — o dono digitaria a
+/// senha numa caixa que a segura em vez de no prompt do `ssh`.
+///
+/// O evento sai junto porque o webview pergunta o modo prompt uma vez, quando a
+/// sessão entra na lista, e depois só escuta: no arranque essa pergunta chega
+/// antes do login. É o MESMO evento que o `633;P` emite, para o front não ter
+/// dois caminhos para o mesmo estado.
+fn restore_integrated_prompt_mode<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pty_pool: &SharedPtyPool,
+    id: SessionId,
+    plan: &crate::ssh::IntegrationPlan,
+    prompt_mode_pref: bool,
+) {
+    if !plan.integration.is_integrated() || !prompt_mode_pref {
+        return;
+    }
+    pty_pool.set_prompt_mode(id, true);
+    let _ = app.emit(
+        &format!("session://prompt-mode/{id}"),
+        crate::pty::SessionPromptModePayload { prompt_mode: true },
+    );
 }
 
 pub fn expand_home(path: &Path) -> PathBuf {
@@ -1225,7 +1404,7 @@ pub(crate) fn write_private_bytes(dir: &Path, name: &str, contents: &[u8]) -> st
     std::fs::rename(&tmp, dir.join(name))
 }
 
-fn zsh_chain(file: &str) -> String {
+pub(crate) fn zsh_chain(file: &str) -> String {
     format!(
         "__tyba_self_zdotdir=\"$ZDOTDIR\"\n\
          if [[ -f \"$TYBA_USER_ZDOTDIR/{file}\" ]]; then\n  \
@@ -1247,7 +1426,7 @@ fn zsh_chain(file: &str) -> String {
 /// starship é síncrono e não precisa de nada. p10k ainda não foi verificado.
 const PROMPT_FRAMEWORK_SYNC: &[(&str, &str)] = &[("SPACESHIP_PROMPT_ASYNC", "false")];
 
-const TYBA_ZSH_RC: &str = include_str!("tyba-zsh-rc.sh");
+pub(crate) const TYBA_ZSH_RC: &str = include_str!("tyba-zsh-rc.sh");
 
 fn write_zsh_integration() -> std::io::Result<PathBuf> {
     let dir = integration_dir("zsh")?;
@@ -1271,7 +1450,7 @@ fn bash_integration_file() -> Option<&'static Path> {
     cached_integration_path(&FILE, write_bash_integration, "bash")
 }
 
-const TYBA_BASH_RC: &str = include_str!("tyba-bash-rc.sh");
+pub(crate) const TYBA_BASH_RC: &str = include_str!("tyba-bash-rc.sh");
 const TYBA_BASH_RC_NAME: &str = "tyba-bash-rc.sh";
 
 fn write_bash_integration() -> std::io::Result<PathBuf> {
@@ -2694,6 +2873,7 @@ echo beta
     fn ssh_manager(logged_in: bool) -> (Arc<Store>, SessionManager, SessionId) {
         let store = Arc::new(Store::open_in_memory().unwrap());
         let host = crate::ssh::HostInput {
+            integration_enabled: true,
             alias: "vps".into(),
             hostname: "vps.example.test".into(),
             port: None,
@@ -2722,6 +2902,291 @@ echo beta
         let manager = SessionManager::new(Arc::clone(&store));
         manager.restore().unwrap();
         (store, manager, s.id)
+    }
+
+    use crate::ssh::remote_rc::RemoteShell;
+    use crate::ssh::Persistence;
+
+    /// Regra 12: a sessão que o banco já conhece SEM decisão gravada veio de
+    /// antes desta versão e segue comum até ser fechada — mesmo com o Host de
+    /// integração ligada.
+    #[test]
+    fn sessao_restaurada_sem_decisao_gravada_continua_comum() {
+        let (_, manager, id) = ssh_manager(true);
+        let fresco =
+            crate::ssh::IntegrationPlan::decide(true, RemoteShell::Bash, Persistence::Persistent);
+
+        let vale = manager.plan_for(id, fresco);
+
+        assert!(!vale.integration.is_integrated());
+        assert_eq!(
+            vale.integration.reason,
+            crate::ssh::IntegrationReason::FromBefore,
+            "reabrir sessão viva como integrada está fora de escopo; o pane explica"
+        );
+    }
+
+    /// Sessão nova grava a decisão, e é essa gravação que dá sentido à ausência
+    /// no caso de cima.
+    #[test]
+    fn sessao_nova_grava_a_decisao_e_a_reusa_no_religar() {
+        let (store, manager, _) = ssh_manager(true);
+        let nova = Uuid::new_v4();
+        let fresco =
+            crate::ssh::IntegrationPlan::decide(true, RemoteShell::Zsh, Persistence::Persistent);
+
+        let vale = manager.plan_for(nova, fresco.clone());
+
+        assert_eq!(vale, fresco, "sessão que o core não conhece decide agora");
+        // E a decisão só pode ser gravada DEPOIS que a linha existe — é o que o
+        // `spawn_ssh` faz, e o que o store recusa fazer antes.
+        assert!(store.set_session_integration(nova, &fresco).is_err());
+    }
+
+    /// O comando remoto sai do plano: integrado vira `tmux -C`, e a decisão de
+    /// não integrar devolve o comando de sempre.
+    #[test]
+    fn o_comando_remoto_segue_o_plano_da_sessao() {
+        let (_, manager, id) = ssh_manager(true);
+        let nonce = "0123456789abcdef0123456789abcdef";
+
+        let integrado = manager
+            .tmux_wrap(
+                id,
+                nonce,
+                &crate::ssh::IntegrationPlan::decide(
+                    true,
+                    RemoteShell::Bash,
+                    Persistence::Persistent,
+                ),
+            )
+            .unwrap();
+        assert!(
+            integrado.contains("exec tmux -C new-session"),
+            "{integrado}"
+        );
+        assert!(integrado.contains("tyba-ctl="), "{integrado}");
+
+        let comum = manager
+            .tmux_wrap(
+                id,
+                nonce,
+                &crate::ssh::IntegrationPlan::decide(
+                    false,
+                    RemoteShell::Bash,
+                    Persistence::Persistent,
+                ),
+            )
+            .unwrap();
+        assert!(!comum.contains("tmux -C"), "{comum}");
+        assert!(!comum.contains("tyba-ctl="), "{comum}");
+        assert!(
+            comum.contains("tyba-ssh-login="),
+            "o marco de login sai nos dois: o ciclo do Cano não muda de regra"
+        );
+    }
+
+    /// Uma sessão no pool, com um processo inofensivo, só para poder perguntar
+    /// o que o core marcou nela.
+    #[cfg(unix)]
+    fn pooled<R: tauri::Runtime>(app: tauri::AppHandle<R>, pool: &SharedPtyPool, id: SessionId) {
+        let mut cmd = CommandBuilder::new("sleep");
+        cmd.arg("30");
+        pool.spawn(
+            app,
+            id,
+            cmd,
+            None,
+            None,
+            80,
+            24,
+            &SessionKind::Ssh {
+                host_id: "h1".into(),
+            },
+            Box::new(|| {}),
+        )
+        .unwrap();
+    }
+
+    /// Regra 15: ao reatar, a aparência integrada tem de voltar junto com o
+    /// texto — e não só no próximo Enter.
+    ///
+    /// `capture-pane` redesenha o pane, mas os `133`/`633` que o shell remoto
+    /// emitiu foram consumidos pelo tmux e não voltam. Sem esta marca o front
+    /// não tem como saber que o shell fala o protocolo do TYBA, e a linha de
+    /// comando só reapareceria depois do próximo prompt.
+    #[test]
+    #[cfg(unix)]
+    fn sessao_integrada_reporta_hook_esperado_e_a_comum_nao() {
+        let app = tauri::test::mock_app();
+        let pool: SharedPtyPool = Arc::new(crate::pty::PtyPool::new());
+        let id = SessionId::new_v4();
+        pooled(app.handle().clone(), &pool, id);
+
+        mark_hook_expected(
+            &pool,
+            id,
+            &crate::ssh::IntegrationPlan::decide(true, RemoteShell::Bash, Persistence::Persistent),
+        );
+        assert_eq!(
+            pool.hook_expected(id),
+            Some(true),
+            "sessão integrada (nova ou reatada) fala o protocolo do TYBA desde o \
+             primeiro byte que o front vê"
+        );
+
+        mark_hook_expected(
+            &pool,
+            id,
+            &crate::ssh::IntegrationPlan::decide(
+                false,
+                RemoteShell::Unsupported("fish".into()),
+                Persistence::Persistent,
+            ),
+        );
+        assert_eq!(
+            pool.hook_expected(id),
+            Some(false),
+            "sessão comum nunca vai reportar modo prompt: afirmar o contrário \
+             deixaria a linha do TYBA pendurada para sempre"
+        );
+
+        pool.kill_all();
+    }
+
+    /// Regra 15 no reatar, o outro lado da marca de hook: o `capture-pane`
+    /// devolve texto, e o `633;P` que o shell remoto emitiu ficou no tmux. Sem
+    /// repor o modo prompt, a aparência integrada — blocos, título — só voltaria
+    /// no próximo prompt de verdade, ou seja, depois de um Enter.
+    #[test]
+    #[cfg(unix)]
+    fn sessao_integrada_reatada_reporta_modo_prompt_e_a_comum_nao() {
+        let app = tauri::test::mock_app();
+        let pool: SharedPtyPool = Arc::new(crate::pty::PtyPool::new());
+        let id = SessionId::new_v4();
+        pooled(app.handle().clone(), &pool, id);
+
+        let integrada =
+            crate::ssh::IntegrationPlan::decide(true, RemoteShell::Bash, Persistence::Persistent);
+        let comum = crate::ssh::IntegrationPlan::decide(
+            false,
+            RemoteShell::Unsupported("fish".into()),
+            Persistence::Persistent,
+        );
+
+        restore_integrated_prompt_mode(app.handle(), &pool, id, &comum, true);
+        assert_eq!(
+            pool.prompt_mode(id),
+            Some(false),
+            "sessão comum não herda modo prompt: o shell dela nunca vai reportar um"
+        );
+
+        restore_integrated_prompt_mode(app.handle(), &pool, id, &integrada, false);
+        assert_eq!(
+            pool.prompt_mode(id),
+            Some(false),
+            "com a preferência desligada o shell remoto nasceu sem TYBA_PROMPT_MODE: \
+             repor aqui inventaria um modo que o outro lado não tem"
+        );
+
+        restore_integrated_prompt_mode(app.handle(), &pool, id, &integrada, true);
+        assert_eq!(
+            pool.prompt_mode(id),
+            Some(true),
+            "reatar devolve a aparência integrada sem depender do próximo prompt"
+        );
+
+        pool.kill_all();
+    }
+
+    /// Repor no core e não avisar o front seria repor no escuro: o webview
+    /// pergunta o modo prompt UMA vez, quando a sessão entra na lista, e o resto
+    /// do tempo ele escuta o evento. No reatar do arranque a pergunta acontece
+    /// antes do login concluir — sem este evento, a linha do TYBA só apareceria
+    /// no próximo prompt de verdade, que é justamente o que se está evitando.
+    #[test]
+    #[cfg(unix)]
+    fn o_reatar_avisa_o_front_que_o_modo_prompt_voltou() {
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let pool: SharedPtyPool = Arc::new(crate::pty::PtyPool::new());
+        let id = SessionId::new_v4();
+        pooled(app.handle().clone(), &pool, id);
+
+        let avisado = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+        let recebendo = Arc::clone(&avisado);
+        app.handle()
+            .listen(format!("session://prompt-mode/{id}"), move |e| {
+                recebendo.lock().push(e.payload().to_string());
+            });
+
+        restore_integrated_prompt_mode(
+            app.handle(),
+            &pool,
+            id,
+            &crate::ssh::IntegrationPlan::decide(
+                false,
+                RemoteShell::Unsupported("fish".into()),
+                Persistence::Persistent,
+            ),
+            true,
+        );
+        assert!(
+            avisado.lock().is_empty(),
+            "sessão comum não anuncia modo nenhum"
+        );
+
+        restore_integrated_prompt_mode(
+            app.handle(),
+            &pool,
+            id,
+            &crate::ssh::IntegrationPlan::decide(true, RemoteShell::Bash, Persistence::Persistent),
+            true,
+        );
+        assert_eq!(
+            avisado.lock().len(),
+            1,
+            "o front é avisado uma vez, com o mesmo evento do `633;P`"
+        );
+        assert!(
+            avisado.lock()[0].contains("\"prompt_mode\":true"),
+            "got: {:?}",
+            avisado.lock()
+        );
+
+        pool.kill_all();
+    }
+
+    /// A sessão morre num lugar só, e toda limpeza por sessão sai de lá.
+    ///
+    /// O canal próprio guarda um `Gate` por sessão SSH: sem esta ligação ele
+    /// acumularia um por sessão que já existiu, pela vida do app — a mesma
+    /// limpeza que `history::forget_session_host` já fazia aqui do lado.
+    #[test]
+    fn a_sessao_que_morre_leva_o_gate_do_canal_junto() {
+        let (_, manager, id) = ssh_manager(true);
+        let queries = Arc::new(crate::ssh::query::HostQueries::new());
+        let canal = Arc::new(crate::ssh::query::HostQuery::new(
+            "vps",
+            // Sem canal: a consulta é recusada, mas o gate da sessão nasce —
+            // e é ele que vazava.
+            Box::new(|_| Err(crate::error::AppError::new("ssh.query_failed"))),
+            Arc::new(crate::ssh::query::SystemClock),
+        ));
+        queries.track_for_test("h1", Arc::clone(&canal));
+        manager.attach_host_queries(Arc::clone(&queries));
+        assert!(canal.git_chips_gated(id, "/srv").is_none());
+        assert_eq!(canal.tracked_sessions(), 1);
+
+        let pool: SharedPtyPool = Arc::new(crate::pty::PtyPool::new());
+        manager.dispose(&pool, id);
+
+        assert_eq!(
+            canal.tracked_sessions(),
+            0,
+            "o canal continuou acompanhando uma sessão que não existe mais"
+        );
     }
 
     #[test]

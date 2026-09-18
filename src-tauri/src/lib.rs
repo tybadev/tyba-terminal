@@ -65,6 +65,8 @@ struct AppState {
     agent_prober: agent::process_probe::SharedAgentProber,
     disk_observer: agent::disk_observer::SharedDiskObserver,
     tunnel_states: crate::ssh::tunnel::SharedTunnelStates,
+    /// O canal próprio de cada Host (regras 20, 24 e 25).
+    host_queries: crate::ssh::query::SharedHostQueries,
     /// Fecha em `false` e abre quando a thread de boot termina. Ver [`boot`].
     boot: Arc<boot::BootGate>,
 }
@@ -620,7 +622,7 @@ fn session_exited(app: &AppHandle, id: SessionId) {
     }
 }
 
-fn ssh_target(state: &State<'_, AppState>, id: SessionId) -> Option<(String, String, String)> {
+fn ssh_target(state: &AppState, id: SessionId) -> Option<(String, String, String)> {
     let session = state.sessions.get(id)?;
     let SessionKind::Ssh { host_id } = &session.kind else {
         return None;
@@ -690,11 +692,12 @@ fn spawn_cano(
     cols: u16,
     rows: u16,
     lifecycle: Option<session::cano::CanoLifecycle>,
+    plan: crate::ssh::IntegrationPlan,
 ) -> Result<Session, crate::pty::PtyError> {
     let login_app = app.clone();
     let exit_app = app.clone();
     let home = crate::ssh::home_dir();
-    sessions.spawn_ssh(
+    let session = sessions.spawn_ssh(
         app.clone(),
         pty_pool,
         id,
@@ -704,9 +707,48 @@ fn spawn_cano(
         cols,
         rows,
         lifecycle,
+        plan,
         move |id| cano_logged_in(&login_app, id),
         move |id, outcome| cano_exited(&exit_app, id, outcome),
-    )
+    )?;
+    emit_integration(app, id);
+    Ok(session)
+}
+
+/// O evento `ssh://integration/<sessão>`: é o que a tela renderiza na linha de
+/// explicação do pane. Sai do que FICOU gravado, não do que foi pedido — a
+/// regra 12 pode ter trocado a decisão por "sessão de antes".
+fn emit_integration(app: &AppHandle, id: SessionId) {
+    let state = app.state::<AppState>();
+    let decidido = state
+        .store
+        .session_integration(id)
+        .ok()
+        .flatten()
+        .map(|plano| plano.integration)
+        .unwrap_or_else(|| {
+            crate::ssh::Integration::plain(crate::ssh::IntegrationReason::FromBefore, None)
+        });
+    let _ = app.emit(&format!("ssh://integration/{id}"), decidido);
+}
+
+/// O plano de integração de um Host: a chave dele, e o que o canal próprio
+/// conseguiu apurar do servidor — shell (regra 8) e tmux (regra 13), na mesma
+/// ida.
+///
+/// Com a chave desligada nem se pergunta — a resposta não mudaria a decisão, e
+/// o probe custa uma conexão. O preço é a persistência ficar `Unknown` ali, que
+/// é o que o core de fato sabe: ninguém perguntou.
+fn integration_plan(state: &AppState, host: &crate::ssh::Host) -> crate::ssh::IntegrationPlan {
+    if !host.integration_enabled {
+        return crate::ssh::IntegrationPlan::decide(
+            false,
+            crate::ssh::remote_rc::RemoteShell::Unsupported("desconhecido".into()),
+            crate::ssh::Persistence::Unknown,
+        );
+    }
+    let probe = state.host_queries.get(&host.id, &host.alias).host_probe();
+    crate::ssh::IntegrationPlan::from_probe(true, probe)
 }
 
 /// Primeira conexão de uma sessão nova (criar sessão, abrir grupo).
@@ -730,10 +772,12 @@ fn open_ssh_session(
             home.as_deref(),
             cols,
             rows,
+            integration_plan(state, host),
             move |id| cano_logged_in(&login_app, id),
             move |id, outcome| cano_exited(&exit_app, id, outcome),
         )
         .map_err(|e| e.to_string())?;
+    emit_integration(app, session.id);
     gc_host(state, &host.alias);
     Ok(session)
 }
@@ -745,6 +789,54 @@ fn cano_logged_in(app: &AppHandle, id: SessionId) {
     if let Some((_, alias, _)) = ssh_target(&state, id) {
         let app = app.clone();
         std::thread::spawn(move || restore_session_tunnels(&app, id, &alias));
+    }
+    // Regra 20: os nomes do servidor, uma vez por conexão, pelo canal próprio —
+    // em thread, porque nada disso pode segurar o login.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        load_remote_command_names(&app, id);
+        emit_remote_chips(&app, id);
+    });
+}
+
+/// Os nomes de comando do servidor entram na completação daquela sessão.
+///
+/// Sem canal (Windows, Host de senha sem master) a lista fica **vazia**, e
+/// vazia é o certo: a alternativa seria sugerir os binários da máquina local
+/// numa sessão que roda no servidor (regra 25).
+fn load_remote_command_names(app: &AppHandle, id: SessionId) {
+    let state = app.state::<AppState>();
+    let key = id.to_string();
+    if crate::completion::binary::has_remote_names(&key) {
+        return;
+    }
+    let Some((host_id, alias, _)) = ssh_target(&state, id) else {
+        return;
+    };
+    let names = state
+        .host_queries
+        .get(&host_id, &alias)
+        .command_names()
+        .map(|n| n.as_ref().clone())
+        .unwrap_or_default();
+    crate::completion::binary::set_remote_names(&key, names);
+}
+
+/// Os chips daquela sessão SSH, vindos do servidor (regra 23).
+///
+/// Recusado pelo teto de 2 s (regra 24) não vira evento: o chip continua com o
+/// que já mostrava, que é mais honesto do que piscar um valor velho.
+fn emit_remote_chips(app: &AppHandle, id: SessionId) {
+    let state = app.state::<AppState>();
+    let Some((host_id, alias, name)) = ssh_target(&state, id) else {
+        return;
+    };
+    if let Some(chips) = state
+        .host_queries
+        .get(&host_id, &alias)
+        .session_chips(id, &name)
+    {
+        let _ = app.emit(&format!("session://chips/{id}"), chips);
     }
 }
 
@@ -805,6 +897,9 @@ impl session::cano::CanoPorts for AppCanoPorts {
 
     fn respawn(&self, id: SessionId, (host_id, alias, _): Self::Target) -> Result<(), String> {
         let state = self.0.state::<AppState>();
+        // Religar não redecide nada: o plano gravado da sessão é quem manda
+        // (`plan_for`), e o shell vem dele.
+        let plan = crate::ssh::IntegrationPlan::undetected();
         spawn_cano(
             &self.0,
             &state.sessions,
@@ -815,6 +910,7 @@ impl session::cano::CanoPorts for AppCanoPorts {
             100,
             30,
             None,
+            plan,
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -982,6 +1078,7 @@ fn resume_startup(
                 100,
                 30,
                 Some(lifecycle),
+                crate::ssh::IntegrationPlan::undetected(),
             ) {
                 eprintln!("reattach da sessão {}: {e}", old.id);
             }
@@ -1253,6 +1350,9 @@ fn update_host(
     confirmed: Option<bool>,
 ) -> Result<crate::ssh::Host, crate::error::AppError> {
     let home = crate::ssh::home_dir();
+    // O canal em cache fala pelo Host de ANTES da edição: alias, autenticação e
+    // a chave de integração podem ter mudado, e o shell detectado com eles.
+    state.host_queries.forget_host(&host.id);
     save_host(&state.store, home.as_deref(), host, confirmed, &|| {
         notify_hosts_changed(&app)
     })
@@ -1445,6 +1545,7 @@ fn delete_host(
     id: String,
 ) -> Result<(), crate::error::AppError> {
     state.store.remove_host(&id).map_err(store_err)?;
+    state.host_queries.forget_host(&id);
     notify_hosts_changed(&app);
     rematerialize_hosts(&state)?;
     Ok(())
@@ -3105,6 +3206,63 @@ fn submit_rich_input(
 #[tauri::command]
 fn set_agent_match_pattern(pattern: String) -> bool {
     rich_input::agent_matcher().set_pattern(&pattern)
+}
+
+/// Os chips do servidor, quando a tela pede (primeira pintura, troca de aba).
+///
+/// O empurrão vem por `session://chips/<sessão>`; este é o puxão. `None` é
+/// "não agora" — sessão que não é SSH, ou teto de frequência.
+#[tauri::command]
+async fn session_remote_chips(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<Option<crate::ssh::query::RemoteChips>, String> {
+    let Some((host_id, alias, name)) = ssh_target(&state, id) else {
+        return Ok(None);
+    };
+    Ok(state
+        .host_queries
+        .get(&host_id, &alias)
+        .session_chips(id, &name))
+}
+
+/// A integração daquela sessão, para a tela desenhar a linha do pane sem ter de
+/// ter ouvido o evento na hora certa.
+#[tauri::command]
+fn session_integration(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Option<crate::ssh::Integration> {
+    if !matches!(
+        state.sessions.get(id).map(|s| s.kind),
+        Some(SessionKind::Ssh { .. })
+    ) {
+        return None;
+    }
+    Some(
+        state
+            .store
+            .session_integration(id)
+            .ok()
+            .flatten()
+            .map(|plano| plano.integration)
+            .unwrap_or_else(|| {
+                crate::ssh::Integration::plain(crate::ssh::IntegrationReason::FromBefore, None)
+            }),
+    )
+}
+
+/// Regra 26: o comando que está subindo no SERVIDOR é um agente?
+///
+/// Quem decide é o core, com o mesmo matcher do resto do app — a tela só
+/// desenha a faixa. Nada é instalado, interceptado ou bloqueado no servidor: a
+/// faixa diz que ali não há jaula nem inbox de aprovações, e é só o que ela faz.
+#[tauri::command]
+fn remote_agent_without_jail(state: State<'_, AppState>, id: SessionId, command: String) -> bool {
+    matches!(
+        state.sessions.get(id).map(|s| s.kind),
+        Some(SessionKind::Ssh { .. })
+    ) && rich_input::agent_matcher().matches(&command)
 }
 
 #[tauri::command]
@@ -5407,6 +5565,39 @@ struct LineSuggestions {
     binaries: Vec<BinarySuggestion>,
 }
 
+/// Caminhos do servidor para uma sessão SSH. `None` quando a sessão não é SSH
+/// — aí quem responde é a completação local, como sempre.
+///
+/// Sem canal (regra 25) devolve lista vazia, e vazia é o certo: sugerir o que
+/// existe na máquina local seria responder sobre outro disco.
+fn remote_path_suggestions(
+    state: &AppState,
+    session_id: Option<&str>,
+    cwd: &str,
+    token: &str,
+) -> Option<Vec<String>> {
+    let id = SessionId::parse_str(session_id?).ok()?;
+    let (host_id, alias, _) = ssh_target(state, id)?;
+    let panel = state
+        .remote_files
+        .ensure(id, || files::remote::build_panel(&alias, None))
+        .ok();
+    let _ = host_id;
+    Some(match panel {
+        Some(panel) => panel.complete_path(cwd, token),
+        None => Vec::new(),
+    })
+}
+
+/// O Host de uma sessão SSH, pelo id que o front manda como texto.
+fn host_of_session(state: &AppState, session_id: &str) -> Option<String> {
+    let id = SessionId::parse_str(session_id).ok()?;
+    match state.sessions.get(id)?.kind {
+        SessionKind::Ssh { host_id } => Some(host_id),
+        _ => None,
+    }
+}
+
 /// Os comandos que existem na sessão e começam com o prefixo.
 ///
 /// Só é chamado quando o caret está no PRIMEIRO token — quem sabe disso é o
@@ -5445,7 +5636,7 @@ fn binary_suggestions(
     // inteira, e `git commit -m x` diz que `git` é usado, não `git commit -m x`.
     let used: Vec<String> = state
         .store
-        .history_with_prefix(prefix, 200)
+        .history_with_prefix_of_host(prefix, 200, host_of_session(state, session_id).as_deref())
         .unwrap_or_default()
         .into_iter()
         .filter_map(|line| line.split_whitespace().next().map(str::to_string))
@@ -5485,8 +5676,14 @@ async fn suggest_line(
     command_prefix: Option<String>,
 ) -> Result<LineSuggestions, String> {
     let paths = match (&cwd, &path_token) {
+        // Regra 21: numa sessão SSH o caminho é do servidor, pelo SFTP que o
+        // explorador remoto já usa. Nunca o disco local: o `cwd` que chega aqui
+        // é o do shell REMOTO, e listá-lo aqui responderia sobre outra máquina.
         (Some(cwd), Some(token)) if !cwd.is_empty() => {
-            completion::complete_path(std::path::Path::new(cwd), token)
+            match remote_path_suggestions(&state, session_id.as_deref(), cwd, token) {
+                Some(found) => found,
+                None => completion::complete_path(std::path::Path::new(cwd), token),
+            }
         }
         _ => Vec::new(),
     };
@@ -6169,6 +6366,12 @@ pub fn run() {
             let pty_pool: SharedPtyPool = Arc::new(pty::PtyPool::new());
             let sessions: SharedSessionManager =
                 Arc::new(session::SessionManager::new(Arc::clone(&store)));
+            let host_queries: crate::ssh::query::SharedHostQueries =
+                Arc::new(crate::ssh::query::HostQueries::new());
+            // Quem morre é a sessão, e quem sabe disso é o `SessionManager`: o
+            // canal por Host precisa ser avisado de lá, não de cada um dos
+            // pontos que fecham sessão.
+            sessions.attach_host_queries(Arc::clone(&host_queries));
             let layout: layout::SharedLayout =
                 Arc::new(layout::LayoutManager::new(Arc::clone(&store)));
 
@@ -6232,6 +6435,7 @@ pub fn run() {
                     })
                 })),
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
+                host_queries,
                 boot: Arc::clone(&boot_gate),
             });
 
@@ -6302,8 +6506,27 @@ pub fn run() {
             }
 
             let cwd_tx = reconcile_tx.clone();
-            app.listen_any(pty::EVENT_CWD_CHANGED, move |_| {
+            let chips_handle = app.handle().clone();
+            app.listen_any(pty::EVENT_CWD_CHANGED, move |event| {
                 let _ = cwd_tx.send(());
+                // A pasta mudou — numa sessão SSH os chips do servidor mudaram
+                // junto (regra 23). O teto de 2 s por sessão mora no canal, não
+                // aqui: aqui o evento é barato e a recusa é dele.
+                let Ok(id) = serde_json::from_str::<SessionId>(event.payload()) else {
+                    return;
+                };
+                // A checagem de tipo vem ANTES da thread: cwd de sessão local
+                // muda a cada prompt, e uma thread por prompt só para descobrir
+                // que não há nada a fazer é custo no caminho quente.
+                let state = chips_handle.state::<AppState>();
+                if !matches!(
+                    state.sessions.get(id).map(|s| s.kind),
+                    Some(SessionKind::Ssh { .. })
+                ) {
+                    return;
+                }
+                let app = chips_handle.clone();
+                std::thread::spawn(move || emit_remote_chips(&app, id));
             });
 
             let reconcile_handle = app.handle().clone();
@@ -6385,6 +6608,9 @@ pub fn run() {
             set_agent_match_pattern,
             prompt_mentions_sensitive,
             session_bracketed_paste,
+            session_remote_chips,
+            session_integration,
+            remote_agent_without_jail,
             session_rel_path,
             list_worktree_files,
             attach_session,
@@ -6580,6 +6806,7 @@ mod tests {
 
     fn host_form(alias: &str) -> crate::ssh::HostInput {
         crate::ssh::HostInput {
+            integration_enabled: true,
             alias: alias.into(),
             hostname: format!("{alias}.example.test"),
             port: None,

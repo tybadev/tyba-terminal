@@ -10,7 +10,7 @@ pub mod binary;
 
 use std::path::{Path, PathBuf};
 
-const MAX_ENTRIES: usize = 40;
+pub const MAX_ENTRIES: usize = 40;
 
 fn expand_home(raw: &str) -> Option<PathBuf> {
     let rest = raw.strip_prefix('~')?;

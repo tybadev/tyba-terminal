@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -203,6 +204,9 @@ export function HostFormDialog({
 }) {
   const { t, i18n } = useTranslation();
   const [values, setValues] = useState<HostFormValues>(emptyHostForm());
+  // Fora de `HostFormValues` de propósito: a chave não passa por validação nem
+  // pelo teste de conexão, e entra no `HostInput` só na hora de gravar.
+  const [integrationEnabled, setIntegrationEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tunnelError, setTunnelError] = useState<string | null>(null);
@@ -215,6 +219,11 @@ export function HostFormDialog({
   useEffect(() => {
     if (state === null) return;
     setValues(state.mode === "edit" ? hostToForm(state.host) : emptyHostForm());
+    // Host gravado antes desta versão chega sem o campo, e ausente é LIGADA —
+    // o mesmo default do serde no core (regra 11).
+    setIntegrationEnabled(
+      state.mode === "edit" ? (state.host.integration_enabled ?? true) : true,
+    );
     setError(null);
     setBusy(false);
     setTunnelError(null);
@@ -286,10 +295,21 @@ export function HostFormDialog({
     setValues((v) => ({ ...v, tunnels }));
     setBusy(true);
     try {
+      // A chave entra aqui, e não em `formToInput`: `applyInputToHost` copia
+      // campo a campo e devolveria o valor GRAVADO, não o que está na tela.
       const saved =
         state.mode === "create"
-          ? await createHost(input, confirmed)
-          : await updateHost(applyInputToHost(state.host, input), confirmed);
+          ? await createHost(
+              { ...input, integration_enabled: integrationEnabled },
+              confirmed,
+            )
+          : await updateHost(
+              {
+                ...applyInputToHost(state.host, input),
+                integration_enabled: integrationEnabled,
+              },
+              confirmed,
+            );
       onSaved(saved);
     } catch (e) {
       const err = e as { code?: string; params?: Record<string, string> };
@@ -513,6 +533,24 @@ export function HostFormDialog({
             />
           </FormField>
         </div>
+
+        <FormField
+          label={t("hostFieldIntegration")}
+          htmlFor="host-integration"
+          hint={t("hostFieldIntegrationHint")}
+        >
+          <div className="flex items-center justify-between gap-3 rounded-[6px] border border-tyba-border px-3 py-2">
+            <span className="text-[12px] text-tyba-text">
+              {t("hostFieldIntegration")}
+            </span>
+            <Switch
+              id="host-integration"
+              aria-label={t("hostFieldIntegration")}
+              checked={integrationEnabled}
+              onCheckedChange={setIntegrationEnabled}
+            />
+          </div>
+        </FormField>
 
         <FormField label={t("hostFieldNotes")} htmlFor="host-notes">
           {/* Prosa: religa o que o `Textarea` base desliga (regra 29). */}

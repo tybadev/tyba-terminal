@@ -728,6 +728,7 @@ mod tests {
 
     fn form(method: AuthMethod) -> HostInput {
         HostInput {
+            integration_enabled: true,
             alias: "vps".into(),
             hostname: "vps.example.test".into(),
             port: None,
