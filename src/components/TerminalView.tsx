@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowCounterClockwise,
-  CircleNotch,
   LockOpen,
   ShieldSlash,
   WarningOctagon,
@@ -14,6 +13,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import i18n from "../i18n";
+import { CanoStatus } from "./CanoStatus";
 
 import {
   ContextMenu,
@@ -35,6 +35,7 @@ import {
   detachSession,
   writeToSession,
   type SessionId,
+  type CanoFailure,
   type ConnectionState,
   type AuthAlertKind,
 } from "../lib/ipc";
@@ -199,10 +200,13 @@ interface Props {
    * que o dono teme ter perdido trabalho.
    */
   reattaches?: boolean;
-  /** Sessão SSH: o handshake demora e a tela fica preta até o servidor falar. */
-  connecting?: boolean;
+  /** Fase do Cano; só SSH Session tem. */
   connection?: ConnectionState;
+  connectionFailure?: CanoFailure | null;
+  /** `ssh-keygen -R …` do Host, mostrado quando a digital muda. */
+  knownHostsCommand?: string | null;
   onReconnect?: () => void;
+  onEditHost?: () => void;
   /** Devolve true quando a rajada consumiu a tecla (não vai para este PTY). */
   onBroadcastInput?: (data: string) => boolean;
   onExit?: () => void;
@@ -408,9 +412,11 @@ export function TerminalView({
   rect,
   exited,
   reattaches,
-  connecting,
   connection,
+  connectionFailure,
+  knownHostsCommand,
   onReconnect,
+  onEditHost,
   onBroadcastInput,
   onExit,
   onFocus,
@@ -436,7 +442,6 @@ export function TerminalView({
   swallowArrows,
   bindings,
 }: Props) {
-  const [gotOutput, setGotOutput] = useState(false);
   // O onData é assinado uma vez no mount: sem ref, a rajada ficaria presa no
   // callback do primeiro render.
   const broadcastRef = useRef(onBroadcastInput);
@@ -690,7 +695,6 @@ export function TerminalView({
         await onPtyOutput(sessionId, (bytes) => {
           if (disposed) return;
           term.write(bytes);
-          setGotOutput(true);
         }),
       );
       if (disposed) return;
@@ -1058,10 +1062,6 @@ export function TerminalView({
       .catch(() => {});
   };
 
-  const showConnecting = Boolean(connecting) && !gotOutput && visible && !!rect;
-  const droppedPipe = connection === "dropped";
-  const showPipe =
-    (connection === "reconnecting" || droppedPipe) && visible && !!rect;
   // Review round 1, Fix 2: uma sessão SAÍDA que morreu por auth precisa
   // mostrar a razão junto do convite de retomar, não só "retomar conversa"
   // sem dizer por quê -- ver `exitedSessionNotice`. A razão tem prioridade
@@ -1139,61 +1139,16 @@ export function TerminalView({
         onDismiss={onDismissAuthAlert}
       />
     )}
-    {showPipe && rect && (
-      <div
-        className="z-10 flex flex-col items-center justify-center gap-2 rounded-[4px] bg-tyba-sunken/90"
-        style={{
-          position: "absolute",
-          left: `${rect.left}%`,
-          top: `${rect.top}%`,
-          width: `${rect.width}%`,
-          height: `${rect.height}%`,
-        }}
-      >
-        {!droppedPipe && (
-          <CircleNotch
-            size={14}
-            className="animate-spin text-tyba-text-faint"
-            weight="bold"
-          />
-        )}
-        <span className="font-mono text-[11px] text-tyba-text-faint">
-          {i18n.t(droppedPipe ? "sshDropped" : "sshReconnecting")}
-        </span>
-        <span className="font-mono text-[10px] text-tyba-text-faint/70">
-          {i18n.t("sshSessionAlive")}
-        </span>
-        {droppedPipe && onReconnect && (
-          <button
-            type="button"
-            onClick={onReconnect}
-            className="mt-1 rounded-[3px] border border-tyba-border px-2 py-1 font-mono text-[10px] text-tyba-text hover:bg-tyba-raised"
-          >
-            {i18n.t("sshReconnect")}
-          </button>
-        )}
-      </div>
-    )}
-    {showConnecting && rect && (
-      <div
-        className="pointer-events-none z-10 flex items-center justify-center gap-2 rounded-[4px] bg-tyba-sunken"
-        style={{
-          position: "absolute",
-          left: `${rect.left}%`,
-          top: `${rect.top}%`,
-          width: `${rect.width}%`,
-          height: `${rect.height}%`,
-        }}
-      >
-        <CircleNotch
-          size={14}
-          className="animate-spin text-tyba-text-faint"
-          weight="bold"
-        />
-        <span className="font-mono text-[11px] text-tyba-text-faint">
-          {i18n.t("sshConnecting")}
-        </span>
-      </div>
+    {connection && (
+      <CanoStatus
+        rect={rect}
+        visible={visible}
+        connection={connection}
+        failure={connectionFailure}
+        knownHostsCommand={knownHostsCommand ?? null}
+        onRetry={onReconnect}
+        onEditHost={onEditHost}
+      />
     )}
     <ContextMenu
       onOpenChange={(o) => {

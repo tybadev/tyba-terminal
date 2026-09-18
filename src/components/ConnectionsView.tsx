@@ -9,7 +9,6 @@ import {
   Plug,
   Plugs,
   Plus,
-  Prohibit,
   Trash,
   Warning,
 } from "@phosphor-icons/react";
@@ -17,11 +16,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Select } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -41,69 +38,29 @@ import { translateError } from "@/lib/errors";
 import {
   listHosts,
   listHostGroups,
-  createHost,
-  updateHost,
+  onHostsChanged,
   deleteHost,
   createHostGroup,
   updateHostGroup,
   deleteHostGroup,
   type Host,
   type HostGroup,
-  type HostInput,
   type HostGroupInput,
-  type Tunnel,
-  type TunnelKind,
 } from "@/lib/ipc";
-import { BLANK_TUNNEL, addedRiskyTunnels } from "@/lib/tunnels";
-import { RiskyTunnelConfirm } from "@/components/RiskyTunnelConfirm";
+import {
+  ColorPicker,
+  FormField,
+  HostFormDialog,
+  type HostDialogState,
+} from "@/components/HostFormDialog";
 
 const UNGROUPED_KEY = "__ungrouped__";
-const NO_GROUP_VALUE = "__none__";
 const ACTION_ERROR_MS = 8000;
-
-const CONNECTION_COLORS = [
-  "green",
-  "amber",
-  "magenta",
-  "violet",
-  "blue",
-  "cyan",
-  "red",
-];
 
 interface Props {
   onConnect: (host: Host) => void;
   /** Abre o grupo como panes de um workspace só (base do broadcast). */
   onConnectGroup?: (group: HostGroup | null, hosts: Host[]) => void;
-}
-
-interface HostFormValues {
-  alias: string;
-  hostname: string;
-  port: string;
-  username: string;
-  identity_file: string;
-  proxy_jump: string;
-  group_id: string;
-  color: string | null;
-  notes: string;
-  tunnels: Tunnel[];
-}
-
-function validPort(p: number | null): boolean {
-  return p !== null && Number.isInteger(p) && p >= 1 && p <= 65535;
-}
-
-function normalizeTunnelDraft(d: Tunnel): Tunnel | null {
-  if (!validPort(d.listen_port)) return null;
-  if (d.kind === "dynamic") return { ...d, target_host: null, target_port: null };
-  const target = d.target_host?.trim();
-  if (!target || !validPort(d.target_port)) return null;
-  return { ...d, target_host: target };
-}
-
-function tunnelRowHasInput(d: Tunnel): boolean {
-  return d.listen_port > 0 || (d.target_port ?? 0) > 0;
 }
 
 interface HostGroupFormValues {
@@ -112,45 +69,10 @@ interface HostGroupFormValues {
   notes: string;
 }
 
-type HostDialogState =
-  | { mode: "create" }
-  | { mode: "edit"; host: Host }
-  | null;
-
 type GroupDialogState =
   | { mode: "create" }
   | { mode: "edit"; group: HostGroup }
   | null;
-
-function emptyHostForm(): HostFormValues {
-  return {
-    alias: "",
-    hostname: "",
-    port: "",
-    username: "",
-    identity_file: "",
-    proxy_jump: "",
-    group_id: NO_GROUP_VALUE,
-    color: null,
-    notes: "",
-    tunnels: [],
-  };
-}
-
-function hostToForm(host: Host): HostFormValues {
-  return {
-    alias: host.alias,
-    hostname: host.hostname,
-    port: host.port === null ? "" : String(host.port),
-    username: host.username ?? "",
-    identity_file: host.identity_file ?? "",
-    proxy_jump: host.proxy_jump ?? "",
-    group_id: host.group_id ?? NO_GROUP_VALUE,
-    color: host.color,
-    notes: host.notes ?? "",
-    tunnels: host.tunnels,
-  };
-}
 
 function emptyGroupForm(): HostGroupFormValues {
   return { name: "", color: null, notes: "" };
@@ -206,450 +128,6 @@ function PanelAction({
       </TooltipTrigger>
       <TooltipContent side="bottom">{label}</TooltipContent>
     </Tooltip>
-  );
-}
-
-function ColorPicker({
-  value,
-  onChange,
-  noColorLabel,
-}: {
-  value: string | null;
-  onChange: (value: string | null) => void;
-  noColorLabel: string;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <button
-        type="button"
-        aria-label={noColorLabel}
-        onClick={() => onChange(null)}
-        className={`flex size-5 shrink-0 items-center justify-center rounded-full border text-tyba-text-faint ${
-          value === null ? "border-tyba-text-muted" : "border-tyba-border-strong"
-        }`}
-      >
-        <Prohibit size={11} />
-      </button>
-      {CONNECTION_COLORS.map((c) => (
-        <button
-          key={c}
-          type="button"
-          aria-label={c}
-          onClick={() => onChange(c)}
-          className={`size-5 shrink-0 rounded-full border ${
-            value === c ? "border-tyba-text" : "border-transparent"
-          }`}
-          style={{ background: `var(--tyba-${c})` }}
-        />
-      ))}
-    </div>
-  );
-}
-
-function FormField({
-  label,
-  htmlFor,
-  hint,
-  children,
-}: {
-  label: string;
-  htmlFor: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={htmlFor} className="tyba-label">
-        {label}
-      </label>
-      {children}
-      {hint && <span className="text-[11px] text-tyba-text-faint">{hint}</span>}
-    </div>
-  );
-}
-
-function HostDialog({
-  state,
-  groups,
-  onClose,
-  onSaved,
-}: {
-  state: HostDialogState;
-  groups: HostGroup[];
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const { t } = useTranslation();
-  const [values, setValues] = useState<HostFormValues>(emptyHostForm());
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [tunnelError, setTunnelError] = useState<string | null>(null);
-  const [confirmRisky, setConfirmRisky] = useState<Tunnel[] | null>(null);
-
-  useEffect(() => {
-    if (state === null) return;
-    setValues(state.mode === "edit" ? hostToForm(state.host) : emptyHostForm());
-    setError(null);
-    setBusy(false);
-    setTunnelError(null);
-    setConfirmRisky(null);
-  }, [state]);
-
-  if (state === null) return null;
-
-  const groupOptions = [
-    { value: NO_GROUP_VALUE, label: t("connectionsNoGroup") },
-    ...groups.map((g) => ({ value: g.id, label: g.name })),
-  ];
-
-  const addTunnelRow = () => {
-    setTunnelError(null);
-    setConfirmRisky(null);
-    setValues((v) => ({ ...v, tunnels: [...v.tunnels, BLANK_TUNNEL] }));
-  };
-
-  const patchTunnel = (index: number, patch: Partial<Tunnel>) => {
-    setTunnelError(null);
-    setConfirmRisky(null);
-    setValues((v) => ({
-      ...v,
-      tunnels: v.tunnels.map((tn, i) => (i === index ? { ...tn, ...patch } : tn)),
-    }));
-  };
-
-  const removeTunnel = (index: number) => {
-    setTunnelError(null);
-    setConfirmRisky(null);
-    setValues((v) => ({
-      ...v,
-      tunnels: v.tunnels.filter((_, i) => i !== index),
-    }));
-  };
-
-  const save = async (confirmed: boolean) => {
-    const alias = values.alias.trim();
-    const hostname = values.hostname.trim();
-    if (!alias) {
-      setError(t("hostFieldAliasRequired"));
-      return;
-    }
-    if (!hostname) {
-      setError(t("hostFieldHostnameRequired"));
-      return;
-    }
-    let port: number | null = null;
-    const portTrimmed = values.port.trim();
-    if (portTrimmed) {
-      port = Number(portTrimmed);
-      if (!validPort(port)) {
-        setError(t("hostFieldPortInvalid"));
-        return;
-      }
-    }
-    const tunnels: Tunnel[] = [];
-    for (const row of values.tunnels) {
-      if (!tunnelRowHasInput(row)) continue;
-      const norm = normalizeTunnelDraft(row);
-      if (norm === null) {
-        setTunnelError(t("hostTunnelInvalid"));
-        return;
-      }
-      tunnels.push(norm);
-    }
-    setTunnelError(null);
-    setValues((v) => ({ ...v, tunnels }));
-    const groupId = values.group_id === NO_GROUP_VALUE ? null : values.group_id;
-    const username = values.username.trim() || null;
-    const identityFile = values.identity_file.trim() || null;
-    const proxyJump = values.proxy_jump.trim() || null;
-    const notes = values.notes.trim() || null;
-
-    setBusy(true);
-    setError(null);
-    try {
-      if (state.mode === "create") {
-        const input: HostInput = {
-          alias,
-          hostname,
-          port,
-          username,
-          identity_file: identityFile,
-          proxy_jump: proxyJump,
-          group_id: groupId,
-          color: values.color,
-          notes,
-          tunnels,
-        };
-        await createHost(input, confirmed);
-      } else {
-        const updated: Host = {
-          ...state.host,
-          alias,
-          hostname,
-          port,
-          username,
-          identity_file: identityFile,
-          proxy_jump: proxyJump,
-          group_id: groupId,
-          color: values.color,
-          notes,
-          tunnels,
-        };
-        await updateHost(updated, confirmed);
-      }
-      onSaved();
-    } catch (e) {
-      const err = e as { code?: string; params?: Record<string, string> };
-      if (err.code === "ssh.tunnel_needs_confirmation") {
-        const prev = state.mode === "edit" ? state.host.tunnels : [];
-        const risky = addedRiskyTunnels(prev, tunnels);
-        setConfirmRisky(
-          risky.length > 0
-            ? risky
-            : [
-                {
-                  kind: err.params?.kind === "-D" ? "dynamic" : "remote",
-                  listen_port: Number(err.params?.port ?? 0),
-                  listen_host: null,
-                  target_host: null,
-                  target_port: null,
-                },
-              ],
-        );
-        setBusy(false);
-        return;
-      }
-      setError(translateError(e, t));
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-[520px] border-tyba-border-strong bg-tyba-surface">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-[14px]">
-            <Plug size={16} className="text-tyba-cyan" />
-            {state.mode === "create"
-              ? t("hostDialogTitleCreate")
-              : t("hostDialogTitleEdit")}
-          </DialogTitle>
-          <DialogDescription className="text-[12px] text-tyba-text-faint">
-            {t("hostDialogDescription")}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="grid grid-cols-2 gap-3">
-          <FormField label={t("hostFieldAlias")} htmlFor="host-alias">
-            <Input
-              id="host-alias"
-              autoFocus
-              value={values.alias}
-              placeholder={t("hostFieldAliasPlaceholder")}
-              onChange={(e) => setValues((v) => ({ ...v, alias: e.target.value }))}
-            />
-          </FormField>
-          <FormField label={t("hostFieldHostname")} htmlFor="host-hostname">
-            <Input
-              id="host-hostname"
-              value={values.hostname}
-              placeholder={t("hostFieldHostnamePlaceholder")}
-              onChange={(e) =>
-                setValues((v) => ({ ...v, hostname: e.target.value }))
-              }
-            />
-          </FormField>
-          <FormField label={t("hostFieldPort")} htmlFor="host-port">
-            <Input
-              id="host-port"
-              type="number"
-              min={1}
-              max={65535}
-              value={values.port}
-              placeholder="22"
-              onChange={(e) => setValues((v) => ({ ...v, port: e.target.value }))}
-            />
-          </FormField>
-          <FormField label={t("hostFieldUsername")} htmlFor="host-username">
-            <Input
-              id="host-username"
-              value={values.username}
-              placeholder={t("hostFieldUsernamePlaceholder")}
-              onChange={(e) =>
-                setValues((v) => ({ ...v, username: e.target.value }))
-              }
-            />
-          </FormField>
-        </div>
-
-        <FormField
-          label={t("hostFieldIdentityFile")}
-          htmlFor="host-identity-file"
-          hint={t("hostFieldIdentityFileHint")}
-        >
-          <Input
-            id="host-identity-file"
-            value={values.identity_file}
-            placeholder={t("hostFieldIdentityFilePlaceholder")}
-            onChange={(e) =>
-              setValues((v) => ({ ...v, identity_file: e.target.value }))
-            }
-          />
-        </FormField>
-
-        <FormField label={t("hostFieldProxyJump")} htmlFor="host-proxy-jump">
-          <Input
-            id="host-proxy-jump"
-            value={values.proxy_jump}
-            placeholder={t("hostFieldProxyJumpPlaceholder")}
-            onChange={(e) =>
-              setValues((v) => ({ ...v, proxy_jump: e.target.value }))
-            }
-          />
-        </FormField>
-
-        <FormField
-          label={t("hostFieldTunnels")}
-          htmlFor="host-tunnels"
-          hint={t("hostFieldTunnelsHint")}
-        >
-          <div id="host-tunnels" className="flex flex-col gap-1.5">
-            {values.tunnels.map((tn, i) => (
-              <div key={i} className="flex items-center gap-1.5">
-                <select
-                  aria-label={t("tunnelsKind")}
-                  value={tn.kind}
-                  onChange={(e) => {
-                    const kind = e.target.value as TunnelKind;
-                    patchTunnel(i, {
-                      kind,
-                      target_host: kind === "dynamic" ? null : (tn.target_host ?? "localhost"),
-                      target_port: kind === "dynamic" ? null : tn.target_port,
-                    });
-                  }}
-                  className="h-7 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 text-[11px] text-tyba-text"
-                >
-                  <option value="local">-L</option>
-                  <option value="remote">-R</option>
-                  <option value="dynamic">-D</option>
-                </select>
-                <input
-                  aria-label={t("tunnelsListenPort")}
-                  type="number"
-                  min={1}
-                  max={65535}
-                  placeholder={t("tunnelsListenPort")}
-                  value={tn.listen_port || ""}
-                  onChange={(e) =>
-                    patchTunnel(i, { listen_port: Number(e.target.value) })
-                  }
-                  className="h-7 w-20 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
-                />
-                {tn.kind !== "dynamic" && (
-                  <>
-                    <input
-                      aria-label={t("tunnelsTargetHost")}
-                      placeholder="localhost"
-                      value={tn.target_host ?? ""}
-                      onChange={(e) =>
-                        patchTunnel(i, { target_host: e.target.value })
-                      }
-                      className="h-7 min-w-0 flex-1 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
-                    />
-                    <input
-                      aria-label={t("tunnelsTargetPort")}
-                      type="number"
-                      min={1}
-                      max={65535}
-                      placeholder={t("tunnelsTargetPort")}
-                      value={tn.target_port || ""}
-                      onChange={(e) =>
-                        patchTunnel(i, { target_port: Number(e.target.value) })
-                      }
-                      className="h-7 w-20 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
-                    />
-                  </>
-                )}
-                <button
-                  type="button"
-                  aria-label={t("hostTunnelRemove")}
-                  onClick={() => removeTunnel(i)}
-                  className="shrink-0 text-tyba-text-faint hover:text-tyba-red"
-                >
-                  <Trash size={12} />
-                </button>
-              </div>
-            ))}
-            {tunnelError && (
-              <p className="text-[11px] text-tyba-red">{tunnelError}</p>
-            )}
-            <button
-              type="button"
-              onClick={addTunnelRow}
-              className="flex items-center gap-1.5 px-1 text-[11px] text-tyba-text-faint hover:text-tyba-text"
-            >
-              <Plus size={11} />
-              {t("tunnelsNew")}
-            </button>
-          </div>
-        </FormField>
-
-        <div className="grid grid-cols-2 gap-3">
-          <FormField label={t("hostFieldGroup")} htmlFor="host-group">
-            <Select
-              value={values.group_id}
-              options={groupOptions}
-              onChange={(value) => setValues((v) => ({ ...v, group_id: value }))}
-            />
-          </FormField>
-          <FormField label={t("hostFieldColor")} htmlFor="host-color">
-            <ColorPicker
-              value={values.color}
-              onChange={(color) => setValues((v) => ({ ...v, color }))}
-              noColorLabel={t("noColor")}
-            />
-          </FormField>
-        </div>
-
-        <FormField label={t("hostFieldNotes")} htmlFor="host-notes">
-          <Textarea
-            id="host-notes"
-            rows={2}
-            value={values.notes}
-            placeholder={t("hostFieldNotesPlaceholder")}
-            onChange={(e) => setValues((v) => ({ ...v, notes: e.target.value }))}
-          />
-        </FormField>
-
-        {error && (
-          <div className="rounded-[4px] border border-tyba-red/40 bg-tyba-red/10 p-2 text-[12px] text-tyba-red">
-            {error}
-          </div>
-        )}
-
-        {confirmRisky ? (
-          <RiskyTunnelConfirm
-            tunnels={confirmRisky}
-            host={values.alias.trim() || values.hostname.trim()}
-            confirmLabel={
-              busy ? t("connectionsSaving") : t("hostTunnelConfirmSave")
-            }
-            busy={busy}
-            onConfirm={() => void save(true)}
-            onCancel={() => setConfirmRisky(null)}
-          />
-        ) : (
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
-              {t("cancel")}
-            </Button>
-            <Button size="sm" onClick={() => void save(false)} disabled={busy}>
-              {busy ? t("connectionsSaving") : t("connectionsSave")}
-            </Button>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
   );
 }
 
@@ -740,6 +218,9 @@ function GroupDialog({
           <Textarea
             id="group-notes"
             rows={2}
+            autoCapitalize="sentences"
+            autoCorrect="on"
+            spellCheck
             value={values.notes}
             placeholder={t("groupFieldNotesPlaceholder")}
             onChange={(e) => setValues((v) => ({ ...v, notes: e.target.value }))}
@@ -797,6 +278,14 @@ export function ConnectionsView({ onConnect, onConnectGroup }: Props) {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // Edição feita pelo pane não passa por aqui; só o evento do core avisa.
+  useEffect(() => {
+    const unlisten = onHostsChanged(() => void load());
+    return () => {
+      void unlisten.then((off) => off());
+    };
   }, [load]);
 
   useEffect(() => {
@@ -1120,7 +609,7 @@ export function ConnectionsView({ onConnect, onConnectGroup }: Props) {
         )}
       </div>
 
-      <HostDialog
+      <HostFormDialog
         state={hostDialog}
         groups={groups ?? []}
         onClose={() => setHostDialog(null)}

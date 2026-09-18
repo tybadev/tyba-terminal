@@ -176,6 +176,7 @@ mod tests {
             created_at: Utc::now(),
             cwd: Some(PathBuf::from(repo)),
             connection: crate::session::ConnectionState::default(),
+            connection_failure: None,
             opened_by_gate: false,
             did_work: false,
         };
@@ -488,6 +489,7 @@ mod tests {
                 created_at: Utc::now(),
                 cwd: None,
                 connection: crate::session::ConnectionState::default(),
+                connection_failure: None,
                 opened_by_gate: false,
                 did_work: false,
             })

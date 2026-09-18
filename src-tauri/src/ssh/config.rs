@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::error::AppError;
-use crate::ssh::Host;
+use crate::ssh::{AuthMethod, Host};
 
 const HEADER: &str =
     "# Gerado pelo TYBA — não editar à mão. A fonte de verdade é o app.\n# https://github.com/tybadev/tyba-terminal\n\n";
@@ -22,7 +22,7 @@ fn config_path(home: &Path) -> PathBuf {
     ssh_dir(home).join("config")
 }
 
-fn valid_alias(alias: &str) -> bool {
+pub(crate) fn valid_alias(alias: &str) -> bool {
     // `-` inicial vira opção do `ssh` (`-oProxyCommand=...` = exec local); barra
     // aqui também, não só na entrada da UI.
     !alias.is_empty() && !alias.starts_with('-') && !alias.chars().any(|c| c.is_whitespace())
@@ -67,33 +67,123 @@ fn push_field(out: &mut String, key: &str, val: Option<&str>, alias: &str) -> Re
 const MULTIPLEX: &str =
     "    ControlMaster auto\n    ControlPath ~/.ssh/tyba-cm-%C\n    ControlPersist 10m\n";
 
+/// Onde moram os `.pub` das chaves de agente, como o `ssh` os lê no bloco.
+const KEY_DIR_IN_CONF: &str = "~/.ssh/config.d/tyba-keys";
+
+const KEEPALIVE: &str = "    ServerAliveInterval 15\n    ServerAliveCountMax 3\n";
+
+/// Nome do `.pub` a partir da digital: base64 sem `/` nem `+`, que não cabem
+/// (ou atrapalham) num nome de arquivo.
+pub fn key_file_stem(fingerprint: &str) -> String {
+    fingerprint
+        .trim_start_matches("SHA256:")
+        .chars()
+        .filter_map(|c| match c {
+            '+' => Some('-'),
+            '/' => Some('_'),
+            '=' => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
+/// A chave de agente, conferida, com o nome do arquivo derivado da digital que
+/// o core calcula — nunca da que veio gravada.
+fn checked_agent_key(h: &Host) -> Result<(crate::ssh::AgentKey, String), AppError> {
+    let key = h
+        .agent_key
+        .as_ref()
+        .ok_or_else(|| AppError::new("ssh.agent_key_invalid"))?;
+    let key = crate::ssh::agent_keys::validate_agent_key(key)?;
+    let stem = key_file_stem(&key.fingerprint);
+    Ok((key, stem))
+}
+
+fn blank(v: &Option<String>) -> bool {
+    v.as_deref().is_none_or(|v| v.trim().is_empty())
+}
+
+/// Regras 2–5: cada método com os campos que ele admite.
+pub fn validate_auth(h: &Host) -> Result<(), AppError> {
+    let conflict = || Err(AppError::new("ssh.auth_fields_conflict").with("alias", h.alias.clone()));
+    match h.auth_method {
+        AuthMethod::Auto if h.agent_key.is_some() => conflict(),
+        AuthMethod::Auto => Ok(()),
+        AuthMethod::Agent if !blank(&h.identity_file) => conflict(),
+        AuthMethod::Agent => checked_agent_key(h).map(|_| ()),
+        AuthMethod::File if h.agent_key.is_some() => conflict(),
+        AuthMethod::File if blank(&h.identity_file) => {
+            Err(AppError::new("ssh.identity_file_required").with("alias", h.alias.clone()))
+        }
+        AuthMethod::File => Ok(()),
+        AuthMethod::Password if h.agent_key.is_some() || !blank(&h.identity_file) => conflict(),
+        AuthMethod::Password => Ok(()),
+    }
+}
+
+fn push_raw(out: &mut String, line: &str) {
+    out.push_str("    ");
+    out.push_str(line);
+    out.push('\n');
+}
+
+/// Um bloco `Host`. Ordem estável (regra 9): `HostName`, `Port`, `User`,
+/// autenticação, `ProxyJump`, forwards, keepalive, multiplex.
+pub(crate) fn render_host_block(
+    h: &Host,
+    multiplex: bool,
+    key_dir: &str,
+) -> Result<String, AppError> {
+    if !valid_alias(&h.alias) {
+        return Err(AppError::new("ssh.alias_invalid").with("alias", h.alias.clone()));
+    }
+    validate_auth(h)?;
+    let mut out = String::new();
+    out.push_str("Host ");
+    out.push_str(&h.alias);
+    out.push('\n');
+    push_field(&mut out, "HostName", Some(&h.hostname), &h.alias)?;
+    if let Some(port) = h.port {
+        out.push_str(&format!("    Port {port}\n"));
+    }
+    push_field(&mut out, "User", h.username.as_deref(), &h.alias)?;
+    let identity = h.identity_file.as_deref().filter(|v| !v.trim().is_empty());
+    match h.auth_method {
+        AuthMethod::Auto => push_field(&mut out, "IdentityFile", identity, &h.alias)?,
+        AuthMethod::Agent => {
+            let (_, stem) = checked_agent_key(h)?;
+            let path = format!("{key_dir}/{stem}.pub");
+            push_field(&mut out, "IdentityFile", Some(&path), &h.alias)?;
+            push_raw(&mut out, "IdentitiesOnly yes");
+        }
+        AuthMethod::File => {
+            push_field(&mut out, "IdentityFile", identity, &h.alias)?;
+            push_raw(&mut out, "IdentitiesOnly yes");
+            push_raw(&mut out, "AddKeysToAgent yes");
+        }
+        AuthMethod::Password => {
+            push_raw(&mut out, "PubkeyAuthentication no");
+            push_raw(
+                &mut out,
+                "PreferredAuthentications keyboard-interactive,password",
+            );
+        }
+    }
+    push_field(&mut out, "ProxyJump", h.proxy_jump.as_deref(), &h.alias)?;
+    for t in &h.tunnels {
+        out.push_str(&t.config_line()?);
+    }
+    out.push_str(KEEPALIVE);
+    if multiplex {
+        out.push_str(MULTIPLEX);
+    }
+    Ok(out)
+}
+
 fn render_with(hosts: &[Host], multiplex: bool) -> Result<String, AppError> {
     let mut out = String::from(HEADER);
     for h in hosts {
-        if !valid_alias(&h.alias) {
-            return Err(AppError::new("ssh.alias_invalid").with("alias", h.alias.clone()));
-        }
-        out.push_str("Host ");
-        out.push_str(&h.alias);
-        out.push('\n');
-        push_field(&mut out, "HostName", Some(&h.hostname), &h.alias)?;
-        if let Some(port) = h.port {
-            out.push_str(&format!("    Port {port}\n"));
-        }
-        push_field(&mut out, "User", h.username.as_deref(), &h.alias)?;
-        push_field(
-            &mut out,
-            "IdentityFile",
-            h.identity_file.as_deref(),
-            &h.alias,
-        )?;
-        push_field(&mut out, "ProxyJump", h.proxy_jump.as_deref(), &h.alias)?;
-        for t in &h.tunnels {
-            out.push_str(&t.config_line()?);
-        }
-        if multiplex {
-            out.push_str(MULTIPLEX);
-        }
+        out.push_str(&render_host_block(h, multiplex, KEY_DIR_IN_CONF)?);
         out.push('\n');
     }
     Ok(out)
@@ -145,7 +235,7 @@ pub fn write_tyba_conf(home: &Path, content: &str) -> Result<(), AppError> {
 }
 
 fn ssh_parses(path: &Path) -> Result<(), AppError> {
-    let out = Command::new("ssh")
+    let out = crate::ssh::command::std_command()
         .arg("-F")
         .arg(path)
         .args(["-G", "tyba-config-check"])
@@ -187,11 +277,70 @@ pub fn ensure_include_line(home: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Materializa: render + write + ensure include. Ponto de entrada chamado após
-/// cada mutação de Host.
+fn key_dir(home: &Path) -> PathBuf {
+    ssh_dir(home).join("config.d").join("tyba-keys")
+}
+
+/// Grava o `.pub` de cada chave de agente referenciada e devolve os nomes. Só a
+/// parte pública: o `IdentityFile` de um `.pub` faz o `ssh` pedir ao agente
+/// justamente essa chave.
+pub(crate) fn write_key_files(
+    dir: &Path,
+    hosts: &[Host],
+) -> Result<std::collections::HashSet<String>, AppError> {
+    let mut wanted = std::collections::HashSet::new();
+    for h in hosts.iter().filter(|h| h.auth_method == AuthMethod::Agent) {
+        let (key, stem) = checked_agent_key(h)?;
+        if wanted.is_empty() {
+            fs::create_dir_all(dir).map_err(write_failed)?;
+            set_mode(dir, 0o700)?;
+        }
+        let name = format!("{stem}.pub");
+        crate::session::write_private(dir, &name, &format!("{} {}\n", key.public_key, key.name))
+            .map_err(write_failed)?;
+        wanted.insert(name);
+    }
+    Ok(wanted)
+}
+
+/// Depois do `tyba.conf` novo instalado: o antigo ainda podia apontar para
+/// estes arquivos.
+fn prune_key_files(dir: &Path, wanted: &std::collections::HashSet<String>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !wanted.contains(&name) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+/// Regra 10, primeira metade: renderiza e passa pelo `ssh -G` num arquivo à
+/// parte, sem tocar no `tyba.conf` nem nas chaves. Quem chama grava no banco
+/// só depois disto.
+pub fn validate_hosts(home: &Path, hosts: &[Host]) -> Result<(), AppError> {
+    let content = render_tyba_conf(hosts)?;
+    let dir = ssh_dir(home).join("config.d");
+    fs::create_dir_all(&dir).map_err(write_failed)?;
+    set_mode(&ssh_dir(home), 0o700)?;
+    set_mode(&dir, 0o700)?;
+    let staged = dir.join(format!("tyba.conf.check-{}", uuid::Uuid::new_v4().simple()));
+    let result = fs::write(&staged, content)
+        .map_err(write_failed)
+        .and_then(|()| set_mode(&staged, 0o600))
+        .and_then(|()| ssh_parses(&staged));
+    let _ = fs::remove_file(&staged);
+    result
+}
+
+/// Materializa: render + chaves + write + ensure include. Ponto de entrada
+/// chamado após cada mutação de Host e no boot.
 pub fn materialize(home: &Path, hosts: &[Host]) -> Result<(), AppError> {
     let content = render_tyba_conf(hosts)?;
+    let wanted = write_key_files(&key_dir(home), hosts)?;
     write_tyba_conf(home, &content)?;
+    prune_key_files(&key_dir(home), &wanted);
     ensure_include_line(home)?;
     Ok(())
 }
@@ -255,6 +404,8 @@ mod tests {
             notes: None,
             position: 0,
             tunnels: Vec::new(),
+            auth_method: crate::ssh::AuthMethod::Auto,
+            agent_key: None,
             created_at: Utc::now(),
             last_connected_at: None,
         }
@@ -295,7 +446,8 @@ mod tests {
         let expected = "Host a\n    HostName a.host\n    \
              LocalForward 127.0.0.1:5432 localhost:5432\n    \
              RemoteForward 127.0.0.1:8000 localhost:3000\n    \
-             DynamicForward 127.0.0.1:1080\n\nHost b\n";
+             DynamicForward 127.0.0.1:1080\n    \
+             ServerAliveInterval 15\n    ServerAliveCountMax 3\n\nHost b\n";
         assert!(
             out.contains(expected),
             "os forwards têm que sair ancorados no bloco do host que os declarou: \
@@ -350,7 +502,7 @@ mod tests {
         materialize(home.path(), &[h]).unwrap();
         let conf = conf_path(home.path());
 
-        let mut cmd = Command::new("ssh");
+        let mut cmd = crate::ssh::command::std_command();
         cmd.arg("-F")
             .arg(&conf)
             .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
@@ -364,7 +516,7 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
 
-        let g = Command::new("ssh")
+        let g = crate::ssh::command::std_command()
             .arg("-F")
             .arg(&conf)
             .args(["-G", &alias])
@@ -377,7 +529,7 @@ mod tests {
              `ssh -G` mostra o que ele de fato aplicaria, já normalizado. got:\n{rendered}"
         );
 
-        let mut piped = Command::new("ssh");
+        let mut piped = crate::ssh::command::std_command();
         piped
             .arg("-F")
             .arg(&conf)
@@ -427,6 +579,177 @@ mod tests {
             "o alvo do túnel entra num arquivo que é Include do ~/.ssh/config: \
              injeção aqui reescreve o ssh da máquina inteira"
         );
+    }
+
+    fn agent_key(seed: u8) -> crate::ssh::AgentKey {
+        use base64::Engine;
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&11u32.to_be_bytes());
+        blob.extend_from_slice(b"ssh-ed25519");
+        blob.extend_from_slice(&32u32.to_be_bytes());
+        blob.extend_from_slice(&[seed; 32]);
+        let public_key = format!(
+            "ssh-ed25519 {}",
+            base64::engine::general_purpose::STANDARD.encode(blob)
+        );
+        crate::ssh::AgentKey {
+            fingerprint: crate::ssh::agent_keys::fingerprint_of(&public_key).unwrap(),
+            public_key,
+            name: format!("Chave {seed}"),
+        }
+    }
+
+    fn block(out: &str, alias: &str) -> String {
+        let start = out.find(&format!("Host {alias}\n")).expect("bloco do host");
+        let rest = &out[start..];
+        let end = rest.find("\n\n").unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+
+    #[test]
+    fn metodo_agente_oferece_so_a_chave_escolhida_pelo_pub() {
+        let mut h = host("vps", "vps.example.test");
+        h.username = Some("root".into());
+        h.auth_method = crate::ssh::AuthMethod::Agent;
+        h.agent_key = Some(agent_key(9));
+        let out = render_with(&[h.clone()], false).unwrap();
+        let stem = key_file_stem(&h.agent_key.unwrap().fingerprint);
+        assert_eq!(
+            block(&out, "vps"),
+            format!(
+                "Host vps\n    HostName vps.example.test\n    User root\n    \
+                 IdentityFile ~/.ssh/config.d/tyba-keys/{stem}.pub\n    IdentitiesOnly yes\n    \
+                 ServerAliveInterval 15\n    ServerAliveCountMax 3"
+            )
+        );
+    }
+
+    #[test]
+    fn metodo_arquivo_fixa_a_chave_e_a_entrega_ao_agente() {
+        let mut h = host("db", "db.example.test");
+        h.auth_method = crate::ssh::AuthMethod::File;
+        h.identity_file = Some("/Users/dono/.ssh/id_db".into());
+        let out = render_with(&[h], false).unwrap();
+        assert_eq!(
+            block(&out, "db"),
+            "Host db\n    HostName db.example.test\n    IdentityFile /Users/dono/.ssh/id_db\n    \
+             IdentitiesOnly yes\n    AddKeysToAgent yes\n    \
+             ServerAliveInterval 15\n    ServerAliveCountMax 3"
+        );
+    }
+
+    #[test]
+    fn metodo_senha_desliga_chave_e_pede_senha() {
+        let mut h = host("legado", "legado.example.test");
+        h.auth_method = crate::ssh::AuthMethod::Password;
+        let out = render_with(&[h], false).unwrap();
+        assert_eq!(
+            block(&out, "legado"),
+            "Host legado\n    HostName legado.example.test\n    PubkeyAuthentication no\n    \
+             PreferredAuthentications keyboard-interactive,password\n    \
+             ServerAliveInterval 15\n    ServerAliveCountMax 3"
+        );
+    }
+
+    #[test]
+    fn auto_legado_so_ganha_keepalive() {
+        let mut h = host("velho", "velho.example.test");
+        h.identity_file = Some("/Users/dono/.ssh/velho".into());
+        let out = render_with(&[h], false).unwrap();
+        assert_eq!(
+            block(&out, "velho"),
+            "Host velho\n    HostName velho.example.test\n    IdentityFile /Users/dono/.ssh/velho\n    \
+             ServerAliveInterval 15\n    ServerAliveCountMax 3"
+        );
+        let out = render_with(&[host("novo", "novo.example.test")], false).unwrap();
+        assert_eq!(
+            block(&out, "novo"),
+            "Host novo\n    HostName novo.example.test\n    \
+             ServerAliveInterval 15\n    ServerAliveCountMax 3"
+        );
+    }
+
+    #[test]
+    fn keepalive_vem_depois_dos_forwards_e_antes_do_multiplex() {
+        let mut h = host("db", "10.0.0.5");
+        h.port = Some(2222);
+        h.username = Some("deploy".into());
+        h.proxy_jump = Some("bastion".into());
+        h.auth_method = crate::ssh::AuthMethod::Password;
+        h.tunnels = vec![tunnels().remove(0)];
+        let out = render_with(&[h], true).unwrap();
+        let order = [
+            "HostName",
+            "Port",
+            "User",
+            "PubkeyAuthentication",
+            "ProxyJump",
+            "LocalForward",
+            "ServerAliveInterval 15",
+            "ServerAliveCountMax 3",
+            "ControlMaster",
+        ];
+        let positions: Vec<usize> = order.iter().map(|k| out.find(k).expect(k)).collect();
+        assert!(positions.windows(2).all(|w| w[0] < w[1]), "got:\n{out}");
+    }
+
+    #[test]
+    fn nenhuma_combinacao_escreve_usekeychain_nem_ignoreunknown() {
+        use crate::ssh::AuthMethod::*;
+        for method in [Auto, Agent, File, Password] {
+            for multiplex in [false, true] {
+                let mut h = host("x", "x.example.test");
+                h.auth_method = method;
+                h.tunnels = tunnels();
+                match method {
+                    Agent => h.agent_key = Some(agent_key(1)),
+                    File => h.identity_file = Some("/k".into()),
+                    _ => {}
+                }
+                let out = render_with(&[h], multiplex).unwrap();
+                assert!(!out.contains("UseKeychain"), "{method:?}: {out}");
+                assert!(!out.contains("IgnoreUnknown"), "{method:?}: {out}");
+                assert!(!out.contains("StrictHostKeyChecking"), "{method:?}: {out}");
+            }
+        }
+    }
+
+    #[test]
+    fn campos_que_o_metodo_nao_admite_barram_o_render() {
+        use crate::ssh::AuthMethod::*;
+        let code = |h: Host| render_with(&[h], false).unwrap_err().code;
+
+        let mut h = host("x", "h");
+        h.auth_method = File;
+        assert_eq!(code(h.clone()), "ssh.identity_file_required");
+        h.identity_file = Some("  ".into());
+        assert_eq!(code(h), "ssh.identity_file_required");
+
+        let mut h = host("x", "h");
+        h.auth_method = Password;
+        h.identity_file = Some("/k".into());
+        assert_eq!(code(h), "ssh.auth_fields_conflict");
+
+        let mut h = host("x", "h");
+        h.auth_method = Password;
+        h.agent_key = Some(agent_key(1));
+        assert_eq!(code(h), "ssh.auth_fields_conflict");
+
+        let mut h = host("x", "h");
+        h.agent_key = Some(agent_key(1));
+        assert_eq!(
+            code(h),
+            "ssh.auth_fields_conflict",
+            "auto não carrega chave de agente"
+        );
+
+        let mut h = host("x", "h");
+        h.auth_method = Agent;
+        assert_eq!(code(h.clone()), "ssh.agent_key_invalid");
+        let mut forged = agent_key(1);
+        forged.fingerprint = agent_key(2).fingerprint;
+        h.agent_key = Some(forged);
+        assert_eq!(code(h), "ssh.agent_key_invalid");
     }
 
     #[test]
@@ -586,6 +909,76 @@ mod tests {
         ensure_include_line(home.path()).unwrap();
         let got = fs::read_to_string(ssh.join("config")).unwrap();
         assert_eq!(got.matches(INCLUDE_TOKEN).count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pub_das_chaves_de_agente_nasce_privado_e_o_que_sobra_sai() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tmp_home();
+        let mut h = host("vps", "vps.example.test");
+        h.auth_method = crate::ssh::AuthMethod::Agent;
+        let key = agent_key(5);
+        h.agent_key = Some(key.clone());
+        let dir = home.path().join(".ssh/config.d/tyba-keys");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("velha.pub"), "ssh-ed25519 AAAA velha\n").unwrap();
+
+        materialize(home.path(), &[h]).unwrap();
+
+        let file = dir.join(format!("{}.pub", key_file_stem(&key.fingerprint)));
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            format!("{} {}\n", key.public_key, key.name)
+        );
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&file), 0o600);
+        assert_eq!(mode(&dir), 0o700);
+        assert!(
+            !dir.join("velha.pub").exists(),
+            "chave que nenhum Host usa sai"
+        );
+
+        materialize(home.path(), &[host("outro", "o.example.test")]).unwrap();
+        assert!(
+            !file.exists(),
+            "Host que trocou de método leva o .pub junto"
+        );
+    }
+
+    #[test]
+    fn validar_nao_instala_nada_e_barra_o_que_o_ssh_recusa() {
+        let home = tmp_home();
+        materialize(home.path(), &[host("bom", "ok.example.test")]).unwrap();
+        let before = fs::read_to_string(conf_path(home.path())).unwrap();
+
+        let mut ruim = host("ruim", "ruim.example.test");
+        ruim.port = Some(0);
+        let err = validate_hosts(home.path(), &[host("bom", "ok.example.test"), ruim]);
+        assert_eq!(err.unwrap_err().code, "ssh.config_invalid");
+
+        let mut novo = host("novo", "novo.example.test");
+        novo.auth_method = crate::ssh::AuthMethod::Agent;
+        novo.agent_key = Some(agent_key(3));
+        validate_hosts(home.path(), &[novo]).unwrap();
+
+        assert_eq!(fs::read_to_string(conf_path(home.path())).unwrap(), before);
+        assert!(!home.path().join(".ssh/config.d/tyba-keys").exists());
+        let leftovers: Vec<_> = fs::read_dir(home.path().join(".ssh/config.d"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(leftovers, vec![std::ffi::OsString::from("tyba.conf")]);
+    }
+
+    #[test]
+    fn nome_do_pub_vem_da_digital_sem_caracteres_de_caminho() {
+        assert_eq!(
+            key_file_stem("SHA256:ab+cd/ef=="),
+            "ab-cd_ef",
+            "barra no nome viraria subdiretório"
+        );
     }
 
     #[test]

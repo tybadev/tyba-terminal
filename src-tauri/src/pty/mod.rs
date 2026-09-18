@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 use uuid::Uuid;
 
 use crate::agent::auth_watch::AuthWatch;
+use crate::session::cano::{CanoOutcome, CanoWatch};
 use crate::session::SessionKind;
 use crate::status::observer::ScreenObserver;
 
@@ -317,6 +318,15 @@ pub type ScreenObserverFactory =
 /// app; o `PtyPool` não conhece nenhum dos dois.
 pub type AuthWatchFactory = Arc<dyn Fn(PtyId, &SessionKind) -> Option<AuthWatch> + Send + Sync>;
 
+/// O observador do marco de login de um Cano, com o que fazer quando ele
+/// aparece e quando o processo acaba. Roda na thread leitora: `on_finish` é
+/// chamado antes do `on_exit` da sessão, sempre.
+pub struct LoginPipe {
+    pub watch: CanoWatch,
+    pub on_login: Box<dyn FnOnce() + Send>,
+    pub on_finish: Box<dyn FnOnce(CanoOutcome) + Send>,
+}
+
 #[derive(Default)]
 pub struct PtyPool {
     ptys: Mutex<HashMap<PtyId, PtyHandle>>,
@@ -570,7 +580,7 @@ impl PtyPool {
         &self,
         app: AppHandle<R>,
         session_id: PtyId,
-        mut cmd: CommandBuilder,
+        cmd: CommandBuilder,
         env: Option<&HashMap<String, String>>,
         jail: Option<Box<dyn JailedSpawner>>,
         cols: u16,
@@ -578,6 +588,72 @@ impl PtyPool {
         kind: &SessionKind,
         on_exit: Box<dyn FnOnce() + Send>,
     ) -> Result<(), PtyError> {
+        self.spawn_inner(
+            app, session_id, cmd, env, jail, cols, rows, kind, None, on_exit,
+        )
+    }
+
+    /// Spawn de um Cano: igual ao [`Self::spawn`], com o observador do marco de
+    /// login na thread leitora.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_cano<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        session_id: PtyId,
+        cmd: CommandBuilder,
+        cols: u16,
+        rows: u16,
+        kind: &SessionKind,
+        login: LoginPipe,
+        on_exit: Box<dyn FnOnce() + Send>,
+    ) -> Result<(), PtyError> {
+        self.spawn_inner(
+            app,
+            session_id,
+            cmd,
+            None,
+            None,
+            cols,
+            rows,
+            kind,
+            Some(login),
+            on_exit,
+        )
+    }
+
+    /// Um Cano religado no mesmo id é a mesma SSH Session na tela: o pane
+    /// continua anexado e o PTY novo nasce do tamanho que o pane tem agora.
+    /// Sem isso o `ScreenState` novo nasce sem janelas e o pane fica mudo.
+    fn inherited_screen(
+        &self,
+        id: PtyId,
+        kind: &SessionKind,
+    ) -> Option<((u16, u16), HashMap<String, usize>)> {
+        if !matches!(kind, SessionKind::Ssh { .. }) {
+            return None;
+        }
+        let ptys = self.ptys.lock();
+        let previous = ptys.get(&id)?;
+        let attachers = previous.screen.lock().attachers.clone();
+        Some((previous.size, attachers))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_inner<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        session_id: PtyId,
+        mut cmd: CommandBuilder,
+        env: Option<&HashMap<String, String>>,
+        jail: Option<Box<dyn JailedSpawner>>,
+        cols: u16,
+        rows: u16,
+        kind: &SessionKind,
+        login: Option<LoginPipe>,
+        on_exit: Box<dyn FnOnce() + Send>,
+    ) -> Result<(), PtyError> {
+        let inherited = self.inherited_screen(session_id, kind);
+        let (cols, rows) = inherited.as_ref().map_or((cols, rows), |(size, _)| *size);
         // O palpite de tela nasce com o PTY e morre com ele. Sessão de agente
         // do TYBA não recebe nenhum: onde há hook, a tela não opina.
         let pipe = self.screen_pipe(session_id, kind);
@@ -649,7 +725,11 @@ impl PtyPool {
             .take_writer()
             .map_err(|e| PtyError::Open(e.to_string()))?;
 
-        let screen: SharedScreen = Arc::new(Mutex::new(ScreenState::new(rows, cols)));
+        let mut state = ScreenState::new(rows, cols);
+        if let Some((_, attachers)) = inherited {
+            state.attachers = attachers;
+        }
+        let screen: SharedScreen = Arc::new(Mutex::new(state));
         let reader_screen = Arc::clone(&screen);
 
         // Criado antes da inserção porque o handle guarda uma ponta dele. O
@@ -685,10 +765,23 @@ impl PtyPool {
                 let mut buf = [0u8; READ_BUF_SIZE];
                 let mut hold_back = holdback::HoldBack::new();
                 let mut auth_watch = auth_watch;
+                let mut login = login;
+                let mut on_login = login
+                    .as_mut()
+                    .map(|l| std::mem::replace(&mut l.on_login, Box::new(|| {})));
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
+                            // Bytes crus também: o marco não pode depender do
+                            // que a retenção de OSC faz com ele.
+                            if let Some(l) = login.as_mut() {
+                                if l.watch.feed(&buf[..n]) {
+                                    if let Some(notify) = on_login.take() {
+                                        notify();
+                                    }
+                                }
+                            }
                             // Entrega C: bytes CRUS, antes de qualquer coisa
                             // que `hold_back` faça com eles — o scanner
                             // precisa do stream tal como o processo escreveu,
@@ -709,6 +802,12 @@ impl PtyPool {
                 if !tail.is_empty() {
                     let _ = tx.send(tail);
                 }
+                // Antes do `tx` cair: é a queda do canal que leva a thread
+                // emissora ao `on_exit`, e o desfecho tem de estar pronto antes.
+                if let Some(l) = login {
+                    (l.on_finish)(l.watch.finish());
+                }
+                drop(tx);
             })
             .map_err(|e| {
                 let _ = self.kill(session_id);
@@ -1006,6 +1105,18 @@ impl PtyPool {
         let screen = self.screen_of(id)?;
         let enabled = screen.lock().parser.screen().bracketed_paste();
         Some(enabled)
+    }
+
+    /// Derruba o processo e deixa o handle no mapa: o próximo spawn no mesmo id
+    /// herda as janelas (ver [`Self::inherited_screen`]).
+    pub fn terminate(&self, id: PtyId) -> Result<(), PtyError> {
+        let mut ptys = self.ptys.lock();
+        let handle = ptys.get_mut(&id).ok_or(PtyError::NotFound(id))?;
+        if let Some(pid) = handle.leader_pid {
+            let _ = kill_process_group(pid);
+        }
+        let _ = handle.child.kill();
+        Ok(())
     }
 
     pub fn kill(&self, id: PtyId) -> Result<(), PtyError> {
@@ -1596,6 +1707,127 @@ match = { process = ["codex"] }
             }),
             "sessão com hook recebeu palpite de tela: publicados={:?}",
             visto.lock()
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod cano_tests {
+    use super::*;
+    use crate::session::cano::{CanoOutcome, CanoWatch};
+    use crate::ssh::tmux::login_marker;
+
+    const NONCE: &str = "0123456789abcdef0123456789abcdef";
+
+    fn ssh_kind() -> SessionKind {
+        SessionKind::Ssh {
+            host_id: "h".into(),
+        }
+    }
+
+    fn shell(script: &str) -> CommandBuilder {
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(script);
+        cmd
+    }
+
+    type Events = Arc<Mutex<Vec<String>>>;
+
+    fn spawn_cano(pool: &PtyPool, id: PtyId, script: &str, events: &Events) {
+        let app = tauri::test::mock_app();
+        let (on_login, on_finish, on_exit) =
+            (Arc::clone(events), Arc::clone(events), Arc::clone(events));
+        pool.spawn_cano(
+            app.handle().clone(),
+            id,
+            shell(script),
+            100,
+            30,
+            &ssh_kind(),
+            LoginPipe {
+                watch: CanoWatch::new(NONCE),
+                on_login: Box::new(move || on_login.lock().push("login".into())),
+                on_finish: Box::new(move |outcome| {
+                    let label = match outcome {
+                        CanoOutcome::LoggedIn => "finish:logged_in".to_string(),
+                        CanoOutcome::NotLoggedIn { tail } => {
+                            format!("finish:{}", String::from_utf8_lossy(&tail).trim())
+                        }
+                    };
+                    on_finish.lock().push(label);
+                }),
+            },
+            Box::new(move || on_exit.lock().push("exit".into())),
+        )
+        .unwrap();
+    }
+
+    fn wait_for(events: &Events, what: &str) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if events.lock().iter().any(|e| e == what) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        events.lock().clone()
+    }
+
+    #[test]
+    fn marco_do_cano_avisa_o_login_e_a_saida_chega_depois_do_desfecho() {
+        let pool = PtyPool::new();
+        let events: Events = Arc::default();
+        let marker = String::from_utf8(login_marker(NONCE)).unwrap();
+        let script = format!("printf 'Last login\\r\\n'; printf '%s' '{marker}'; sleep 0.1");
+        spawn_cano(&pool, PtyId::new_v4(), &script, &events);
+        let seen = wait_for(&events, "exit");
+        assert_eq!(seen, ["login", "finish:logged_in", "exit"]);
+    }
+
+    #[test]
+    fn saida_sem_marco_entrega_o_que_o_ssh_escreveu() {
+        let pool = PtyPool::new();
+        let events: Events = Arc::default();
+        spawn_cano(
+            &pool,
+            PtyId::new_v4(),
+            "echo 'root@vps.example.test: Permission denied (publickey).'; exit 255",
+            &events,
+        );
+        let seen = wait_for(&events, "exit");
+        assert_eq!(
+            seen,
+            [
+                "finish:root@vps.example.test: Permission denied (publickey).",
+                "exit"
+            ]
+        );
+    }
+
+    #[test]
+    fn religar_o_cano_no_mesmo_id_herda_janelas_e_tamanho() {
+        let pool = PtyPool::new();
+        let events: Events = Arc::default();
+        let id = PtyId::new_v4();
+        spawn_cano(&pool, id, "sleep 0.3", &events);
+        pool.screen_of(id).unwrap().lock().attach("main");
+        pool.resize(id, 132, 41).unwrap();
+        wait_for(&events, "exit");
+
+        let again: Events = Arc::default();
+        spawn_cano(&pool, id, "stty size; sleep 0.3", &again);
+        let screen = pool.screen_of(id).unwrap();
+        assert!(
+            screen.lock().attached(),
+            "o pane que mostrava o Cano antigo continua recebendo a saída"
+        );
+        assert_eq!(pool.ptys.lock().get(&id).unwrap().size, (132, 41));
+        wait_for(&again, "exit");
+        let contents = screen.lock().parser.screen().contents();
+        assert!(
+            contents.contains("41 132"),
+            "o PTY novo nasce no tamanho do pane: {contents:?}"
         );
     }
 }

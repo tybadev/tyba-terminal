@@ -49,6 +49,8 @@ pub enum DockerError {
     Timeout,
     #[error("docker falhou: {0}")]
     Failed(String),
+    #[error("{0}")]
+    Ssh(crate::error::AppError),
     #[error("container desconhecido: {0}")]
     UnknownContainer(String),
     #[error("projeto compose desconhecido: {0}")]
@@ -430,11 +432,14 @@ fn run_docker(args: &[&str], timeout: Duration, host: Option<&str>) -> Result<St
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Limite conhecido do docker-over-ssh: o helper chama o `ssh` com stdin
-    // nulo, então host que só aceita senha não conecta — precisa de chave. Não
-    // dá pra forçar BatchMode sem mexer no ssh_config do usuário (o que
-    // quebraria a sessão interativa dele), então o caso cai no timeout.
+    // O helper do docker chama o `ssh` com stdin nulo: host de senha só
+    // conecta pelo master de uma sessão aberta. Sem master, falha na hora
+    // (`ssh.password_needs_session`) em vez de esperar o timeout.
     if let Some(target) = docker_host_env(host) {
+        if let Some(alias) = host {
+            crate::ssh::command::require_session_if_password(alias).map_err(DockerError::Ssh)?;
+        }
+        crate::ssh::command::apply_env(&mut cmd);
         cmd.env("DOCKER_HOST", target);
     }
     crate::repo::no_console_window(&mut cmd);

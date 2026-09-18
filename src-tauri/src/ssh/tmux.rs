@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::time::Duration;
 
 use uuid::Uuid;
 
@@ -30,9 +29,28 @@ fn sh_c(script: &str) -> String {
     format!("sh -c '{script}'")
 }
 
-pub fn wrap_command(name: &str) -> String {
+const LOGIN_MARKER_KEY: &str = "tyba-ssh-login=";
+
+/// O que o comando remoto imprime quando o `sshd` o executa — ou seja, depois
+/// da autenticação. É o único sinal de "login concluído" que o core aceita.
+pub fn login_marker(nonce: &str) -> Vec<u8> {
+    format!("\x1b]633;P;{LOGIN_MARKER_KEY}{nonce}\x07").into_bytes()
+}
+
+fn valid_nonce(nonce: &str) -> bool {
+    nonce.len() == 32
+        && nonce
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// O marco sai antes do `command -v tmux`, então vale para os dois ramos: o
+/// `exec tmux` e o shell de login do fallback.
+pub fn wrap_command_with_nonce(name: &str, nonce: &str) -> String {
+    assert!(valid_nonce(nonce), "nonce fora do formato: {nonce}");
     sh_c(&format!(
-        "command -v tmux >/dev/null 2>&1 && \
+        "printf \"\\033]633;P;{LOGIN_MARKER_KEY}%s\\007\" {nonce}; \
+         command -v tmux >/dev/null 2>&1 && \
          exec tmux new-session -A -s {name} \"exec env -u TMUX \\\"${{SHELL:-/bin/sh}}\\\" -l\" \\; \
          set-option -t {name} status off \\; \
          set-option -t {name} prefix None \\; \
@@ -72,21 +90,6 @@ impl Probe {
     }
 }
 
-const BACKOFF_CEILING: Duration = Duration::from_secs(30);
-const GIVE_UP_AFTER: Duration = Duration::from_secs(300);
-
-pub fn retry_delay(attempt: u32) -> Option<Duration> {
-    let delay = Duration::from_secs(1u64 << attempt.min(5));
-    let delay = delay.min(BACKOFF_CEILING);
-    (elapsed_before(attempt) < GIVE_UP_AFTER).then_some(delay)
-}
-
-fn elapsed_before(attempt: u32) -> Duration {
-    (0..attempt)
-        .map(|a| Duration::from_secs(1u64 << a.min(5)).min(BACKOFF_CEILING))
-        .sum()
-}
-
 pub fn orphans(listed: &[String], install_id: &str, known: &HashSet<Uuid>) -> Vec<String> {
     let prefix = format!("tyba-{install_id}-");
     listed
@@ -101,7 +104,7 @@ pub fn orphans(listed: &[String], install_id: &str, known: &HashSet<Uuid>) -> Ve
 }
 
 pub fn probe(alias: &str, name: &str) -> Probe {
-    let status = std::process::Command::new("ssh")
+    let status = crate::ssh::command::std_command()
         .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias])
         .arg(has_session_command(name))
         .stdin(std::process::Stdio::null())
@@ -115,7 +118,7 @@ pub fn probe(alias: &str, name: &str) -> Probe {
 }
 
 pub fn kill_remote(alias: &str, name: &str) -> std::io::Result<std::process::ExitStatus> {
-    std::process::Command::new("ssh")
+    crate::ssh::command::std_command()
         .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias])
         .arg(kill_command(name))
         .stdin(std::process::Stdio::null())
@@ -125,7 +128,7 @@ pub fn kill_remote(alias: &str, name: &str) -> std::io::Result<std::process::Exi
 }
 
 pub fn list_sessions(alias: &str) -> Vec<String> {
-    let out = std::process::Command::new("ssh")
+    let out = crate::ssh::command::std_command()
         .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias])
         .arg(list_sessions_command())
         .stdin(std::process::Stdio::null())
@@ -233,9 +236,31 @@ mod tests {
         assert!(name.contains(&uuid(0x9f3a).simple().to_string()));
     }
 
+    const NONCE: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn marco_de_login_sai_antes_do_tmux_e_antes_do_shell_sem_tmux() {
+        let cmd = wrap_command_with_nonce("tyba-a3f-9f3a", NONCE);
+        let marker = format!("printf \"\\033]633;P;tyba-ssh-login=%s\\007\" {NONCE};");
+        let at = cmd.find(&marker).expect("o marco tem de estar no comando");
+        assert!(at < cmd.find("command -v tmux").unwrap(), "{cmd}");
+        assert!(at < cmd.find("exec tmux").unwrap(), "{cmd}");
+        assert!(at < cmd.rfind("exec \"${SHELL").unwrap(), "{cmd}");
+        assert_eq!(
+            login_marker(NONCE),
+            format!("\x1b]633;P;tyba-ssh-login={NONCE}\x07").into_bytes()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "nonce fora do formato")]
+    fn nonce_fora_do_formato_nunca_chega_ao_shell_remoto() {
+        wrap_command_with_nonce("tyba-a3f-9f3a", "x; rm -rf ~ #0123456789abcdef0123");
+    }
+
     #[test]
     fn wrap_cai_no_shell_quando_nao_ha_tmux() {
-        let cmd = wrap_command("tyba-a3f-9f3a");
+        let cmd = wrap_command_with_nonce("tyba-a3f-9f3a", NONCE);
         assert!(cmd.contains("command -v tmux"), "got: {cmd}");
         assert!(
             cmd.ends_with("|| exec \"${SHELL:-/bin/sh}\" -l'"),
@@ -245,7 +270,7 @@ mod tests {
 
     #[test]
     fn wrap_e_invisivel_para_o_dono() {
-        let cmd = wrap_command("tyba-a3f-9f3a");
+        let cmd = wrap_command_with_nonce("tyba-a3f-9f3a", NONCE);
         assert!(cmd.contains("status off"), "status bar é do dono: {cmd}");
         assert!(
             cmd.contains("prefix None"),
@@ -255,7 +280,7 @@ mod tests {
 
     #[test]
     fn wrap_limpa_tmux_no_shell_dentro_do_nosso_tmux() {
-        let cmd = wrap_command("tyba-a3f-9f3a");
+        let cmd = wrap_command_with_nonce("tyba-a3f-9f3a", NONCE);
         assert!(
             cmd.contains("new-session -A -s tyba-a3f-9f3a \"exec env -u TMUX "),
             "verificado na VPS: o env tem que ser o comando do pane, porque é o \
@@ -266,7 +291,7 @@ mod tests {
 
     #[test]
     fn wrap_reata_em_vez_de_criar_outra() {
-        let cmd = wrap_command("tyba-a3f-9f3a");
+        let cmd = wrap_command_with_nonce("tyba-a3f-9f3a", NONCE);
         assert!(
             cmd.contains("new-session -A -s tyba-a3f-9f3a"),
             "-A reata a existente; sem ele o reattach criaria uma sessão nova: {cmd}"
@@ -311,26 +336,6 @@ mod tests {
                  errar para o outro lado descarta trabalho vivo"
             );
         }
-    }
-
-    #[test]
-    fn backoff_dobra_ate_o_teto() {
-        let seen: Vec<u64> = (0..6).map(|a| retry_delay(a).unwrap().as_secs()).collect();
-        assert_eq!(seen, vec![1, 2, 4, 8, 16, 30]);
-    }
-
-    #[test]
-    fn backoff_desiste_e_deixa_o_botao() {
-        let mut attempt = 0;
-        while retry_delay(attempt).is_some() {
-            attempt += 1;
-            assert!(attempt < 100, "backoff não pode insistir para sempre");
-        }
-        let total: u64 = elapsed_before(attempt).as_secs();
-        assert!(
-            (240..=360).contains(&total),
-            "desiste perto de ~5min, cobrindo sleep de laptop; got {total}s"
-        );
     }
 
     #[test]
@@ -386,7 +391,7 @@ mod tests {
     fn remote_commands() -> Vec<(&'static str, String)> {
         let name = session_name("a3f", uuid(0x9f3a));
         vec![
-            ("wrap", wrap_command(&name)),
+            ("wrap", wrap_command_with_nonce(&name, NONCE)),
             ("has_session", has_session_command(&name)),
             ("list", list_sessions_command()),
             ("kill", kill_command(&name)),
@@ -445,6 +450,42 @@ mod tests {
                 .code()
         }
 
+        fn stdout_as_login_shell(login_shell: &str, cmd: &str) -> Vec<u8> {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            std::os::unix::fs::symlink("/bin/sh", bin.join("sh")).unwrap();
+            let fake = dir.path().join("login-shell");
+            std::fs::write(&fake, "#!/bin/sh\nexit 42\n").unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Command::new(login_shell)
+                .arg("-c")
+                .arg(cmd)
+                .env_clear()
+                .env("PATH", &bin)
+                .env("SHELL", &fake)
+                .env("HOME", dir.path())
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .unwrap()
+                .stdout
+        }
+
+        #[test]
+        fn marco_chega_intacto_sob_qualquer_login_shell() {
+            let name = session_name("a3f", uuid(0x9f3a));
+            for shell in installed_login_shells() {
+                let out = stdout_as_login_shell(&shell, &wrap_command_with_nonce(&name, NONCE));
+                assert_eq!(
+                    out,
+                    login_marker(NONCE),
+                    "sob {shell} o printf tem de emitir o marco byte a byte: \
+                     é o único sinal de login concluído"
+                );
+            }
+        }
+
         fn installed_login_shells() -> Vec<String> {
             let mut found = vec!["/bin/sh".to_string()];
             for shell in ["bash", "zsh", "dash", "fish", "csh", "tcsh"] {
@@ -481,7 +522,7 @@ mod tests {
             let name = session_name("a3f", uuid(0x9f3a));
             for shell in installed_login_shells() {
                 assert_eq!(
-                    run_as_login_shell(&shell, &wrap_command(&name)),
+                    run_as_login_shell(&shell, &wrap_command_with_nonce(&name, NONCE)),
                     Some(42),
                     "medido no Arch do usuário: com login shell fish o wrap morria \
                      no parse (`${{` não é fish) e a sessão sumia — o shell do host \

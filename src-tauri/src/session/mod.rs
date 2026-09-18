@@ -1,3 +1,4 @@
+pub mod cano;
 pub mod cwd;
 pub mod redact;
 pub mod store;
@@ -15,6 +16,7 @@ use uuid::Uuid;
 
 use crate::pty::{PtyError, SharedPtyPool};
 use crate::session::store::{Store, StoreError};
+use crate::ssh::classify::CanoFailure;
 
 pub const EDITOR_PREF_KEY: &str = "pref.editor";
 use crate::worktree::Worktree;
@@ -105,13 +107,15 @@ impl SessionStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionState {
     #[default]
     Live,
+    Connecting,
     Reconnecting,
     Dropped,
+    Failed,
 }
 
 /// O que a tela sugere que um agente está fazendo.
@@ -160,6 +164,10 @@ pub struct Session {
     pub cwd: Option<PathBuf>,
     #[serde(default)]
     pub connection: ConnectionState,
+    /// Por que o Cano não chegou a autenticar. `Some` só com `connection`
+    /// em `failed`; campo à parte para `connection` continuar uma string.
+    #[serde(default)]
+    pub connection_failure: Option<CanoFailure>,
     /// Id da conversa nativa do agente (`claude --resume <id>`, `codex resume
     /// <id>`), lido do transcript/rollout que a própria CLI escreve — ver
     /// [`crate::agent::conversation`]. `None` para sessão que não é de agente e
@@ -243,14 +251,18 @@ fn inherit_session_origin(opened_by_gate: bool, previous: Option<&Session>) -> (
 pub struct SessionManager {
     sessions: RwLock<HashMap<SessionId, Session>>,
     store: Arc<Store>,
+    /// Fase do Cano de cada sessão SSH. Fora de `Session` porque não é
+    /// serializada: só `connection` e `connection_failure` chegam à tela.
+    canos: parking_lot::Mutex<HashMap<SessionId, cano::CanoLifecycle>>,
 }
 
 impl SessionManager {
-    fn tmux_wrap(&self, id: SessionId) -> Result<String, PtyError> {
+    fn tmux_wrap(&self, id: SessionId, nonce: &str) -> Result<String, PtyError> {
         let install = crate::ssh::tmux::install_id(&self.store)
             .map_err(|e| PtyError::Spawn(format!("install_id: {e}")))?;
-        Ok(crate::ssh::tmux::wrap_command(
+        Ok(crate::ssh::tmux::wrap_command_with_nonce(
             &crate::ssh::tmux::session_name(&install, id),
+            nonce,
         ))
     }
 
@@ -276,6 +288,7 @@ impl SessionManager {
         Self {
             sessions: RwLock::new(HashMap::new()),
             store,
+            canos: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -452,6 +465,17 @@ impl SessionManager {
         if let Some(cwd) = cwd {
             cmd.cwd(cwd);
         }
+        // Container de Host: o `docker` chama o `ssh` por baixo e precisa do
+        // mesmo agente que o Cano usa.
+        if matches!(
+            kind,
+            SessionKind::Container {
+                host_id: Some(_),
+                ..
+            }
+        ) {
+            crate::ssh::command::apply_pty_env(&mut cmd);
+        }
         self.spawn_session(
             app, pty_pool, id, cmd, kind, title, None, None, None, cols, rows, false, on_exit,
         )
@@ -467,21 +491,32 @@ impl SessionManager {
         cwd: Option<&std::path::Path>,
         cols: u16,
         rows: u16,
-        on_exit: impl FnOnce(SessionId) + Send + 'static,
+        on_login: impl FnOnce(SessionId) + Send + 'static,
+        on_exit: impl FnOnce(SessionId, cano::CanoOutcome) + Send + 'static,
     ) -> Result<Session, PtyError> {
-        self.spawn_ssh(
+        let id = Uuid::new_v4();
+        let result = self.spawn_ssh(
             app,
             pty_pool,
-            Uuid::new_v4(),
+            id,
             host_id,
             alias,
             cwd,
             cols,
             rows,
+            Some(cano::CanoLifecycle::connecting()),
+            on_login,
             on_exit,
-        )
+        );
+        if result.is_err() {
+            self.canos.lock().remove(&id);
+        }
+        result
     }
 
+    /// Sobe um Cano. `lifecycle` é `Some` para quem começa um ciclo (primeira
+    /// conexão, boot); o respawn de uma queda passa `None` e herda o que está
+    /// em curso. `on_exit` recebe o desfecho que o observador do marco viu.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_ssh(
         &self,
@@ -493,33 +528,79 @@ impl SessionManager {
         cwd: Option<&std::path::Path>,
         cols: u16,
         rows: u16,
-        on_exit: impl FnOnce(SessionId) + Send + 'static,
+        lifecycle: Option<cano::CanoLifecycle>,
+        on_login: impl FnOnce(SessionId) + Send + 'static,
+        on_exit: impl FnOnce(SessionId, cano::CanoOutcome) + Send + 'static,
     ) -> Result<Session, PtyError> {
-        let mut cmd = CommandBuilder::new("ssh");
+        let mut cmd = crate::ssh::command::pty_command();
         cmd.arg("-t");
         for arg in self.baked_tunnel_args(id) {
             cmd.arg(arg);
         }
+        cmd.arg("--");
         cmd.arg(alias);
-        cmd.arg(self.tmux_wrap(id)?);
+        // Nonce novo a cada spawn: um marco que sobrou de outro Cano (num log,
+        // num scrollback impresso) não conclui o login deste.
+        let nonce = Uuid::new_v4().simple().to_string();
+        cmd.arg(self.tmux_wrap(id, &nonce)?);
         if let Some(cwd) = cwd {
             cmd.cwd(cwd);
         }
-        self.spawn_session(
-            app,
-            pty_pool,
+        let cwd = self.prepare_env(&mut cmd, id);
+
+        let (connection, connection_failure) = {
+            let mut canos = self.canos.lock();
+            let current = match lifecycle {
+                Some(fresh) => {
+                    canos.insert(id, fresh);
+                    canos.get(&id)
+                }
+                None => Some(
+                    &*canos
+                        .entry(id)
+                        .or_insert_with(cano::CanoLifecycle::connecting),
+                ),
+            };
+            let current = current.expect("ciclo acabou de ser inserido");
+            (current.state(), current.failure().cloned())
+        };
+
+        let outcome: Arc<parking_lot::Mutex<Option<cano::CanoOutcome>>> = Arc::default();
+        let slot = Arc::clone(&outcome);
+        let kind = SessionKind::Ssh { host_id };
+        pty_pool.spawn_cano(
+            app.clone(),
             id,
             cmd,
-            SessionKind::Ssh { host_id },
+            cols,
+            rows,
+            &kind,
+            crate::pty::LoginPipe {
+                watch: cano::CanoWatch::new(&nonce),
+                on_login: Box::new(move || on_login(id)),
+                on_finish: Box::new(move |seen| *slot.lock() = Some(seen)),
+            },
+            Box::new(move || {
+                let seen = outcome
+                    .lock()
+                    .take()
+                    .unwrap_or(cano::CanoOutcome::NotLoggedIn { tail: Vec::new() });
+                on_exit(id, seen);
+            }),
+        )?;
+
+        Ok(self.register_spawned(
+            &app,
+            id,
+            kind,
             format!("ssh {alias}"),
             None,
             None,
-            None,
-            cols,
-            rows,
+            cwd,
             false,
-            on_exit,
-        )
+            connection,
+            connection_failure,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -539,6 +620,39 @@ impl SessionManager {
         opened_by_gate: bool,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
+        let cwd = self.prepare_env(&mut cmd, id);
+
+        // O tipo vai junto porque o palpite de tela depende dele: sessão de
+        // agente do TYBA não recebe nenhum, e a sessão só entra no mapa DEPOIS
+        // do spawn — quem resolve isso lá dentro não teria onde perguntar.
+        pty_pool.spawn(
+            app.clone(),
+            id,
+            cmd,
+            None,
+            jail,
+            cols,
+            rows,
+            &kind,
+            Box::new(move || on_exit(id)),
+        )?;
+
+        Ok(self.register_spawned(
+            &app,
+            id,
+            kind,
+            title,
+            repo_root,
+            worktree,
+            cwd,
+            opened_by_gate,
+            ConnectionState::Live,
+            None,
+        ))
+    }
+
+    /// Ambiente comum a todo spawn. Devolve o cwd que a sessão vai exibir.
+    fn prepare_env(&self, cmd: &mut CommandBuilder, id: SessionId) -> Option<PathBuf> {
         cmd.env("TERM", "xterm-256color");
         cmd.env("TYBA", "1");
         cmd.env("TYBA_SESSION_ID", id.to_string());
@@ -557,23 +671,23 @@ impl SessionManager {
         // Lido do próprio comando: pega todo caminho de spawn (shell, agente,
         // tab de container) sem espalhar mais um parâmetro por todos eles.
         // Sem o prefixo verbatim do Windows (`\\?\`) — é o cwd que a UI exibe.
-        let cwd = cmd.get_cwd().map(|c| strip_verbatim_prefix(Path::new(c)));
+        cmd.get_cwd().map(|c| strip_verbatim_prefix(Path::new(c)))
+    }
 
-        // O tipo vai junto porque o palpite de tela depende dele: sessão de
-        // agente do TYBA não recebe nenhum, e a sessão só entra no mapa DEPOIS
-        // do spawn — quem resolve isso lá dentro não teria onde perguntar.
-        pty_pool.spawn(
-            app.clone(),
-            id,
-            cmd,
-            None,
-            jail,
-            cols,
-            rows,
-            &kind,
-            Box::new(move || on_exit(id)),
-        )?;
-
+    #[allow(clippy::too_many_arguments)]
+    fn register_spawned(
+        &self,
+        app: &AppHandle,
+        id: SessionId,
+        kind: SessionKind,
+        title: String,
+        repo_root: Option<PathBuf>,
+        worktree: Option<crate::worktree::Worktree>,
+        cwd: Option<PathBuf>,
+        opened_by_gate: bool,
+        connection: ConnectionState,
+        connection_failure: Option<CanoFailure>,
+    ) -> Session {
         // Re-subir a MESMA sessão (retomar a conversa de um agente) não a torna
         // nova: o `ON CONFLICT` do store nem toca em `created_at`, e inventar um
         // agora aqui faria a sessão pular para o fim da lista até o próximo boot
@@ -590,7 +704,8 @@ impl SessionManager {
             attention: false,
             created_at: previous.as_ref().map_or_else(Utc::now, |s| s.created_at),
             cwd,
-            connection: ConnectionState::Live,
+            connection,
+            connection_failure,
             agent_conversation_id: previous.and_then(|s| s.agent_conversation_id),
             observed: None,
             opened_by_gate,
@@ -598,8 +713,8 @@ impl SessionManager {
         };
         self.sessions.write().insert(id, session.clone());
         let _ = self.store.upsert_session(&session);
-        emit_status(&app, &session);
-        Ok(session)
+        emit_status(app, &session);
+        session
     }
 
     pub fn list(&self) -> Vec<Session> {
@@ -720,15 +835,138 @@ impl SessionManager {
         emit_status(app, s);
     }
 
-    pub fn set_connection(&self, app: &AppHandle, id: SessionId, connection: ConnectionState) {
-        let mut sessions = self.sessions.write();
-        if let Some(s) = sessions.get_mut(&id) {
-            if s.connection == connection {
-                return;
-            }
-            s.connection = connection;
-            emit_status(app, s);
+    /// Começa (ou recomeça) o ciclo do Cano de uma sessão, e leva a fase dele
+    /// para a sessão pelo mesmo caminho de qualquer decisão.
+    pub(crate) fn track_cano(
+        &self,
+        id: SessionId,
+        lifecycle: cano::CanoLifecycle,
+    ) -> Option<Session> {
+        self.canos.lock().insert(id, lifecycle);
+        self.apply_cano(id, |_| cano::CanoDecision::Nothing).1
+    }
+
+    /// Única escrita de `connection` e `connection_failure`: roda um evento na
+    /// máquina do Cano e copia o resultado para a sessão. Sem IPC — mesmo corte
+    /// de [`Self::apply_observed`]. `None` na sessão quando nada mudou.
+    pub(crate) fn apply_cano(
+        &self,
+        id: SessionId,
+        event: impl FnOnce(&mut cano::CanoLifecycle) -> cano::CanoDecision,
+    ) -> (cano::CanoDecision, Option<Session>) {
+        let mut canos = self.canos.lock();
+        let Some(lifecycle) = canos.get_mut(&id) else {
+            return (cano::CanoDecision::Nothing, None);
+        };
+        let decision = event(lifecycle);
+        let connection = lifecycle.state();
+        let failure = lifecycle.failure().cloned().map(|f| CanoFailure {
+            detail: redact::redact(&f.detail).into_owned(),
+            ..f
+        });
+        if decision == cano::CanoDecision::Dispose {
+            canos.remove(&id);
         }
+        drop(canos);
+
+        let mut sessions = self.sessions.write();
+        let Some(s) = sessions.get_mut(&id) else {
+            return (decision, None);
+        };
+        if s.connection == connection && s.connection_failure == failure {
+            return (decision, None);
+        }
+        s.connection = connection;
+        s.connection_failure = failure;
+        (decision, Some(s.clone()))
+    }
+
+    pub fn cano(
+        &self,
+        app: &AppHandle,
+        id: SessionId,
+        event: impl FnOnce(&mut cano::CanoLifecycle) -> cano::CanoDecision,
+    ) -> cano::CanoDecision {
+        let (decision, changed) = self.apply_cano(id, event);
+        if let Some(session) = changed {
+            emit_status(app, &session);
+        }
+        decision
+    }
+
+    /// O marco apareceu: conexão no ar, e só agora o login conta como fato —
+    /// para o boot (`ssh_logged_in`) e para o card (`last_connected_at`).
+    pub(crate) fn apply_cano_login(
+        &self,
+        id: SessionId,
+        now: DateTime<Utc>,
+    ) -> (cano::CanoDecision, Option<Session>) {
+        let result = self.apply_cano(id, |c| c.logged_in(now));
+        let host_id = match self.get(id).map(|s| s.kind) {
+            Some(SessionKind::Ssh { host_id }) => host_id,
+            _ => return result,
+        };
+        let _ = self.store.mark_ssh_logged_in(id);
+        let _ = self.store.touch_host_connected(&host_id, now);
+        result
+    }
+
+    pub fn cano_logged_in(&self, app: &AppHandle, id: SessionId, now: DateTime<Utc>) {
+        if let (_, Some(session)) = self.apply_cano_login(id, now) {
+            emit_status(app, &session);
+        }
+    }
+
+    /// Tentativa pedida pelo dono. Sessão sem ciclo em memória (layout mantido
+    /// no boot, sem Cano) ganha um ciclo novo.
+    pub fn cano_retry(
+        &self,
+        app: &AppHandle,
+        id: SessionId,
+        now: DateTime<Utc>,
+    ) -> cano::CanoDecision {
+        let has_cycle = self.canos.lock().contains_key(&id);
+        if !has_cycle {
+            if !matches!(self.get(id).map(|s| s.kind), Some(SessionKind::Ssh { .. })) {
+                return cano::CanoDecision::Nothing;
+            }
+            if let Some(session) = self.track_cano(id, cano::CanoLifecycle::connecting()) {
+                emit_status(app, &session);
+            }
+            return cano::CanoDecision::Respawn;
+        }
+        self.cano(app, id, |c| c.retry(now))
+    }
+
+    /// Regra 19 no boot: esquece as SSH Sessions cujo Cano nunca autenticou
+    /// (o tmux só sobe depois do login) e devolve o ciclo das que religam.
+    pub fn boot_ssh(
+        &self,
+        mode: StartupMode,
+        now: DateTime<Utc>,
+    ) -> HashMap<SessionId, cano::CanoLifecycle> {
+        let candidates: Vec<(SessionId, SessionKind)> = self
+            .sessions
+            .read()
+            .values()
+            .map(|s| (s.id, s.kind.clone()))
+            .collect();
+        let mut reattach = HashMap::new();
+        for (id, kind) in candidates {
+            if !matches!(kind, SessionKind::Ssh { .. }) {
+                continue;
+            }
+            // Erro de leitura não apaga: na dúvida a sessão fica como estava.
+            let logged_in = self.store.ssh_logged_in(id).unwrap_or(true);
+            match cano::ssh_boot(&kind, logged_in, mode, now) {
+                Some(cano::SshBoot::Forget) => self.forget(id),
+                Some(cano::SshBoot::Reattach(lifecycle)) => {
+                    reattach.insert(id, lifecycle);
+                }
+                Some(cano::SshBoot::Keep) | None => {}
+            }
+        }
+        reattach
     }
 
     pub fn mark_seen(&self, app: &AppHandle, id: SessionId) {
@@ -744,6 +982,7 @@ impl SessionManager {
 
     pub fn dispose(&self, pty_pool: &SharedPtyPool, id: SessionId) {
         self.sessions.write().remove(&id);
+        self.canos.lock().remove(&id);
         let _ = pty_pool.kill(id);
         let _ = self.store.remove_session(id);
     }
@@ -787,6 +1026,7 @@ impl SessionManager {
 
     pub fn forget(&self, id: SessionId) {
         self.sessions.write().remove(&id);
+        self.canos.lock().remove(&id);
         let _ = self.store.remove_session(id);
     }
 }
@@ -1414,6 +1654,7 @@ mod tests {
             created_at: Utc::now(),
             cwd: Some(PathBuf::from("/tmp")),
             connection: ConnectionState::default(),
+            connection_failure: None,
             agent_conversation_id: None,
             observed: None,
             opened_by_gate: false,
@@ -2448,6 +2689,142 @@ echo beta
              que a feature existe para representar"
         );
         assert_eq!(s.connection, ConnectionState::Dropped);
+    }
+
+    fn ssh_manager(logged_in: bool) -> (Arc<Store>, SessionManager, SessionId) {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let host = crate::ssh::HostInput {
+            alias: "vps".into(),
+            hostname: "vps.example.test".into(),
+            port: None,
+            username: None,
+            identity_file: None,
+            proxy_jump: None,
+            group_id: None,
+            color: None,
+            notes: None,
+            tunnels: Vec::new(),
+            auth_method: crate::ssh::AuthMethod::Auto,
+            agent_key: None,
+        }
+        .into_host("h1".into(), 0, Utc::now());
+        store.upsert_host(&host).unwrap();
+        let s = make(
+            SessionKind::Ssh {
+                host_id: "h1".into(),
+            },
+            SessionStatus::Running,
+        );
+        store.upsert_session(&s).unwrap();
+        if logged_in {
+            store.mark_ssh_logged_in(s.id).unwrap();
+        }
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+        (store, manager, s.id)
+    }
+
+    #[test]
+    fn marco_de_login_poe_no_ar_e_grava_login_e_ultimo_acesso() {
+        let (store, manager, id) = ssh_manager(false);
+        manager.track_cano(id, cano::CanoLifecycle::connecting());
+        assert!(store.load_hosts().unwrap()[0].last_connected_at.is_none());
+
+        let when = Utc::now();
+        let (decision, changed) = manager.apply_cano_login(id, when);
+        assert_eq!(decision, cano::CanoDecision::Nothing);
+        let session = changed.expect("mudou a conexão: tem de emitir");
+        assert_eq!(session.connection, ConnectionState::Live);
+        assert!(store.ssh_logged_in(id).unwrap());
+        assert_eq!(
+            store.load_hosts().unwrap()[0]
+                .last_connected_at
+                .map(|t| t.timestamp()),
+            Some(when.timestamp())
+        );
+    }
+
+    #[test]
+    fn falha_de_conexao_vai_para_a_sessao_com_o_motivo() {
+        let (_store, manager, id) = ssh_manager(false);
+        manager.track_cano(id, cano::CanoLifecycle::connecting());
+        let outcome = cano::CanoOutcome::NotLoggedIn {
+            tail: b"Root@vps.example.test: Permission denied (publickey).\r\n".to_vec(),
+        };
+        let (decision, changed) = manager.apply_cano(id, |c| c.exited(&outcome, Utc::now()));
+        assert_eq!(decision, cano::CanoDecision::Failed);
+        let session = changed.unwrap();
+        assert_eq!(session.connection, ConnectionState::Failed);
+        assert_eq!(
+            session.connection_failure.map(|f| f.reason),
+            Some(crate::ssh::classify::FailureReason::AuthRefused)
+        );
+        let json = serde_json::to_value(manager.get(id).unwrap()).unwrap();
+        assert_eq!(json["connection"], "failed");
+        assert_eq!(json["connection_failure"]["reason"], "auth_refused");
+
+        let (decision, changed) = manager.apply_cano(id, |c| c.retry(Utc::now()));
+        assert_eq!(decision, cano::CanoDecision::Respawn);
+        let session = changed.unwrap();
+        assert_eq!(session.connection, ConnectionState::Connecting);
+        assert!(session.connection_failure.is_none());
+    }
+
+    #[test]
+    fn sessao_sem_ciclo_nao_decide_nada() {
+        let (_store, manager, id) = ssh_manager(true);
+        let (decision, changed) = manager.apply_cano(id, |c| c.retry(Utc::now()));
+        assert_eq!(decision, cano::CanoDecision::Nothing);
+        assert!(changed.is_none());
+    }
+
+    #[test]
+    fn boot_esquece_sessao_ssh_que_nunca_autenticou() {
+        let (store, manager, never) = ssh_manager(false);
+        let logged = make(
+            SessionKind::Ssh {
+                host_id: "h1".into(),
+            },
+            SessionStatus::Running,
+        );
+        store.upsert_session(&logged).unwrap();
+        store.mark_ssh_logged_in(logged.id).unwrap();
+        let shell = make(SessionKind::Shell, SessionStatus::Running);
+        store.upsert_session(&shell).unwrap();
+        manager.restore().unwrap();
+
+        let reattach = manager.boot_ssh(StartupMode::Resume, Utc::now());
+
+        assert!(manager.get(never).is_none());
+        assert!(store.load_sessions().unwrap().iter().all(|s| s.id != never));
+        assert!(manager.get(logged.id).is_some());
+        assert!(manager.get(shell.id).is_some());
+        assert_eq!(
+            reattach.keys().copied().collect::<Vec<_>>(),
+            vec![logged.id],
+            "só a SSH com login religa; shell não é desta decisão"
+        );
+        assert_eq!(reattach[&logged.id].state(), ConnectionState::Connecting);
+    }
+
+    #[test]
+    fn boot_que_mantem_o_layout_esquece_sem_login_e_nao_religa_nada() {
+        let (store, manager, never) = ssh_manager(false);
+        let logged = make(
+            SessionKind::Ssh {
+                host_id: "h1".into(),
+            },
+            SessionStatus::Running,
+        );
+        store.upsert_session(&logged).unwrap();
+        store.mark_ssh_logged_in(logged.id).unwrap();
+        manager.restore().unwrap();
+
+        let reattach = manager.boot_ssh(StartupMode::KeepLayout, Utc::now());
+
+        assert!(reattach.is_empty());
+        assert!(manager.get(never).is_none());
+        assert!(manager.get(logged.id).is_some());
     }
 
     #[test]

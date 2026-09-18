@@ -5,6 +5,9 @@ import { cn } from "@/lib/utils"
 function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
   return (
     <textarea
+      autoCapitalize="off"
+      autoCorrect="off"
+      spellCheck={false}
       data-slot="textarea"
       className={cn(
         "w-full min-w-0 resize-y rounded-md border border-input bg-transparent px-3 py-2 text-base shadow-xs transition-[color,box-shadow] outline-none selection:bg-primary selection:text-primary-foreground placeholder:text-muted-foreground disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:bg-input/30",

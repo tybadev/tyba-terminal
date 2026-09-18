@@ -1048,6 +1048,73 @@ const resources = {
       hostTunnelRemove: "Remover túnel",
       hostTunnelInvalid: "Túnel incompleto — confira porta e destino.",
       hostTunnelConfirmSave: "Salvar mesmo assim",
+      hostAuthMethod: "Autenticação",
+      hostAuthAuto: "Automático",
+      hostAuthAgent: "Chave do agente",
+      hostAuthFile: "Arquivo de chave",
+      hostAuthPassword: "Senha",
+      hostAuthAutoHint:
+        "O ssh decide sozinho, com a sua configuração (~/.ssh/config e agente).",
+      hostAuthAgentHint:
+        "Só a chave escolhida é oferecida ao servidor. O TYBA guarda apenas a chave pública.",
+      hostAuthAgentLoading: "Lendo as chaves do agente…",
+      hostAuthAgentNoAgent:
+        "Nenhum agente SSH encontrado. Configure um IdentityAgent no ~/.ssh/config ou exporte SSH_AUTH_SOCK no seu shell.",
+      hostAuthAgentEmpty:
+        "O agente não tem nenhuma chave. Adicione uma (ssh-add ou o app do seu gerenciador de senhas) e atualize a lista.",
+      hostAuthAgentRefresh: "Atualizar lista",
+      hostAuthAgentSocket: "Agente: {{socket}}",
+      hostAuthAgentKeyMissing:
+        "A chave escolhida não aparece no agente agora; o ssh não vai conseguir usá-la.",
+      hostAuthAgentKeyRequired: "Escolha uma chave do agente.",
+      hostAuthFileBrowse: "Escolher arquivo…",
+      hostAuthFileHint:
+        "O TYBA guarda só o caminho. Chave com passphrase: o ssh pede no terminal uma vez e ela fica no agente.",
+      hostAuthIdentityFileRequired: "Informe o arquivo da chave.",
+      hostAuthPasswordHint:
+        "A senha é pedida no terminal a cada conexão e nunca é guardada pelo TYBA.",
+      hostUsernameUppercase:
+        "Usuário com letra maiúscula. No Linux, root e Root são usuários diferentes — confira antes de salvar.",
+      hostTestAction: "Testar conexão",
+      hostTestRunning:
+        "Testando… se o seu agente pedir aprovação (1Password, por exemplo), confirme por lá.",
+      hostTestOk: "Conectou como {{user}} em {{elapsed}}.",
+      hostTestHostUnknown: "Servidor ainda não conhecido: chave {{keyType}} {{fingerprint}}",
+      hostTestHostUnknownHint:
+        "O TYBA não aceita digital por você. Na primeira conexão o ssh pergunta no terminal; confira a digital antes de responder yes.",
+      hostTestPassphrase: "A chave tem passphrase e não está no agente.",
+      hostTestPassphraseHint:
+        "Conecte uma vez: o ssh pede a passphrase no terminal e a chave passa a ficar no agente.",
+      hostTestPasswordAccepted: "O servidor aceita senha (respondeu em {{elapsed}}).",
+      hostTestPasswordAcceptedHint:
+        "O teste não envia senha nenhuma; ela é pedida no terminal ao conectar.",
+      hostTestPasswordNotOffered:
+        "O servidor não aceita senha. Métodos aceitos: {{methods}}.",
+      hostTestTimedOut: "O teste passou de 30 segundos e foi interrompido.",
+      hostTestTimedOutHint:
+        "Se o agente pediu aprovação, ela pode ter demorado — confirme e teste de novo. Senão, o servidor não respondeu.",
+      canoFailAuthRefused: "Autenticação recusada",
+      canoFailAuthRefusedHint:
+        "O servidor recusou o usuário ou a chave. Confira o usuário (maiúsculas contam) e o método de autenticação.",
+      canoFailHostKeyChanged: "A identidade do servidor mudou",
+      canoFailHostKeyChangedHint:
+        "A digital apresentada é diferente da que está no known_hosts. Pode ser um ataque (alguém no meio do caminho) ou uma reinstalação do servidor. Só remova a digital antiga se tiver certeza de que foi reinstalação:",
+      canoFailHostKeyRejected: "Identidade do servidor não confirmada",
+      canoFailHostKeyRejectedHint:
+        "O ssh não conseguiu confirmar a digital do servidor. Tente de novo e responda ao prompt do ssh no terminal.",
+      canoFailHostUnresolved: "Endereço do host não encontrado",
+      canoFailHostUnresolvedHint:
+        "O DNS não resolveu o nome. Confira o campo Host e a sua rede.",
+      canoFailNoRoute: "Servidor inalcançável",
+      canoFailNoRouteHint:
+        "A conexão foi recusada ou não chegou ao servidor. Confira endereço, porta e rede.",
+      canoFailUnknown: "A conexão falhou",
+      canoFailUnknownHint: "O ssh terminou antes de entrar.",
+      canoNoAutoRetry: "O TYBA não tenta de novo sozinho.",
+      canoRetry: "Tentar de novo",
+      canoEditHost: "Editar host",
+      canoCopyCommand: "Copiar comando",
+      canoCopied: "Copiado",
       connectionsTunnels_one: "{{count}} túnel",
       connectionsTunnels_other: "{{count}} túneis",
       groupDialogTitleCreate: "Novo grupo",
@@ -1060,6 +1127,18 @@ const resources = {
       groupFieldNotesPlaceholder: "Observações internas sobre este grupo",
       "error.ssh.alias_invalid": "Apelido inválido.",
       "error.ssh.alias_duplicate": "Já existe uma conexão com esse apelido.",
+      "error.ssh.agent_key_invalid":
+        "A chave do agente não confere. Escolha a chave de novo na lista.",
+      "error.ssh.identity_file_required":
+        "Informe o arquivo da chave para o método Arquivo de chave.",
+      "error.ssh.auth_fields_conflict":
+        "Os campos de autenticação não combinam com o método escolhido.",
+      "error.ssh.agent_unreachable":
+        "Não foi possível ler as chaves do agente SSH: {{detail}}",
+      "error.ssh.password_needs_session":
+        "{{alias}} usa senha: abra uma sessão SSH nesse host antes.",
+      "error.ssh.field_invalid":
+        "O campo {{field}} tem um caractere que o ssh não aceita (quebra de linha ou aspas).",
       broadcastToggle: "Broadcast",
       broadcastEnable: "Ativar broadcast",
       broadcastEnableHint: "Digite uma vez, envie para vários hosts ao mesmo tempo.",
@@ -2132,6 +2211,73 @@ const resources = {
       hostTunnelRemove: "Remove tunnel",
       hostTunnelInvalid: "Incomplete tunnel — check port and target.",
       hostTunnelConfirmSave: "Save anyway",
+      hostAuthMethod: "Authentication",
+      hostAuthAuto: "Automatic",
+      hostAuthAgent: "Agent key",
+      hostAuthFile: "Key file",
+      hostAuthPassword: "Password",
+      hostAuthAutoHint:
+        "ssh decides on its own, using your configuration (~/.ssh/config and agent).",
+      hostAuthAgentHint:
+        "Only the chosen key is offered to the server. TYBA stores just the public key.",
+      hostAuthAgentLoading: "Reading the agent's keys…",
+      hostAuthAgentNoAgent:
+        "No SSH agent found. Set an IdentityAgent in ~/.ssh/config or export SSH_AUTH_SOCK in your shell.",
+      hostAuthAgentEmpty:
+        "The agent has no keys. Add one (ssh-add or your password manager app) and refresh the list.",
+      hostAuthAgentRefresh: "Refresh list",
+      hostAuthAgentSocket: "Agent: {{socket}}",
+      hostAuthAgentKeyMissing:
+        "The chosen key is not in the agent right now; ssh will not be able to use it.",
+      hostAuthAgentKeyRequired: "Choose an agent key.",
+      hostAuthFileBrowse: "Choose file…",
+      hostAuthFileHint:
+        "TYBA stores only the path. Key with a passphrase: ssh asks for it once in the terminal and the key stays in the agent.",
+      hostAuthIdentityFileRequired: "Enter the key file.",
+      hostAuthPasswordHint:
+        "The password is asked in the terminal on every connection and is never stored by TYBA.",
+      hostUsernameUppercase:
+        "Username has an uppercase letter. On Linux, root and Root are different users — check before saving.",
+      hostTestAction: "Test connection",
+      hostTestRunning:
+        "Testing… if your agent asks for approval (1Password, for instance), confirm it there.",
+      hostTestOk: "Connected as {{user}} in {{elapsed}}.",
+      hostTestHostUnknown: "Server not known yet: {{keyType}} key {{fingerprint}}",
+      hostTestHostUnknownHint:
+        "TYBA never accepts a fingerprint for you. On the first connection ssh asks in the terminal; check the fingerprint before answering yes.",
+      hostTestPassphrase: "The key has a passphrase and is not in the agent.",
+      hostTestPassphraseHint:
+        "Connect once: ssh asks for the passphrase in the terminal and the key stays in the agent.",
+      hostTestPasswordAccepted: "The server accepts passwords (answered in {{elapsed}}).",
+      hostTestPasswordAcceptedHint:
+        "The test sends no password; it is asked in the terminal when connecting.",
+      hostTestPasswordNotOffered:
+        "The server does not accept passwords. Accepted methods: {{methods}}.",
+      hostTestTimedOut: "The test went past 30 seconds and was stopped.",
+      hostTestTimedOutHint:
+        "If the agent asked for approval, it may have taken too long — confirm and test again. Otherwise the server did not answer.",
+      canoFailAuthRefused: "Authentication refused",
+      canoFailAuthRefusedHint:
+        "The server refused the username or the key. Check the username (case matters) and the authentication method.",
+      canoFailHostKeyChanged: "The server's identity changed",
+      canoFailHostKeyChangedHint:
+        "The fingerprint presented differs from the one in known_hosts. It may be an attack (someone in the middle) or a server reinstall. Only remove the old fingerprint if you are sure it was a reinstall:",
+      canoFailHostKeyRejected: "Server identity not confirmed",
+      canoFailHostKeyRejectedHint:
+        "ssh could not confirm the server's fingerprint. Try again and answer ssh's prompt in the terminal.",
+      canoFailHostUnresolved: "Host address not found",
+      canoFailHostUnresolvedHint:
+        "DNS did not resolve the name. Check the Host field and your network.",
+      canoFailNoRoute: "Server unreachable",
+      canoFailNoRouteHint:
+        "The connection was refused or never reached the server. Check address, port and network.",
+      canoFailUnknown: "The connection failed",
+      canoFailUnknownHint: "ssh ended before logging in.",
+      canoNoAutoRetry: "TYBA does not retry on its own.",
+      canoRetry: "Try again",
+      canoEditHost: "Edit host",
+      canoCopyCommand: "Copy command",
+      canoCopied: "Copied",
       connectionsTunnels_one: "{{count}} tunnel",
       connectionsTunnels_other: "{{count}} tunnels",
       groupDialogTitleCreate: "New group",
@@ -2144,6 +2290,18 @@ const resources = {
       groupFieldNotesPlaceholder: "Internal notes about this group",
       "error.ssh.alias_invalid": "Invalid alias.",
       "error.ssh.alias_duplicate": "A connection with this alias already exists.",
+      "error.ssh.agent_key_invalid":
+        "The agent key does not check out. Choose the key again from the list.",
+      "error.ssh.identity_file_required":
+        "Enter the key file for the Key file method.",
+      "error.ssh.auth_fields_conflict":
+        "The authentication fields do not match the chosen method.",
+      "error.ssh.agent_unreachable":
+        "Could not read the SSH agent's keys: {{detail}}",
+      "error.ssh.password_needs_session":
+        "{{alias}} uses a password: open an SSH session on that host first.",
+      "error.ssh.field_invalid":
+        "The {{field}} field has a character ssh does not accept (line break or quote).",
       broadcastToggle: "Broadcast",
       broadcastEnable: "Enable broadcast",
       broadcastEnableHint: "Type once, send it to multiple hosts at the same time.",

@@ -110,6 +110,11 @@ import {
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ContainersView } from "./components/ContainersView";
 import { ConnectionsView } from "./components/ConnectionsView";
+import {
+  HostFormDialog,
+  type HostDialogState,
+} from "./components/HostFormDialog";
+import { knownHostsRemoveCommand } from "./lib/canoFailure";
 import { HostPicker } from "./components/HostPicker";
 import {
   BroadcastBar,
@@ -255,6 +260,7 @@ import {
   reconnectSsh,
   listHosts,
   listHostGroups,
+  onHostsChanged,
   tagWorkspace,
   appVersion,
   updateCheck,
@@ -1376,14 +1382,63 @@ export default function App() {
   const [sshHosts, setSshHosts] = useState<Host[]>([]);
   const [hostGroups, setHostGroups] = useState<HostGroup[]>([]);
   const [hostPickerOpen, setHostPickerOpen] = useState(false);
-  useEffect(() => {
+  // Uma falha de conexão pode vir de Host criado depois da última leitura;
+  // o cartão precisa dele para o "Editar host" e o `ssh-keygen -R`.
+  const failedSshSessions = useMemo(
+    () =>
+      sessions
+        .filter((s) => s.kind.type === "ssh" && s.connection === "failed")
+        .map((s) => s.id)
+        .sort()
+        .join("\n"),
+    [sessions],
+  );
+  const reloadHosts = useCallback(() => {
     void listHosts()
       .then(setSshHosts)
       .catch(() => {});
     void listHostGroups()
       .then(setHostGroups)
       .catch(() => {});
-  }, [hostPickerOpen]);
+  }, []);
+  useEffect(() => {
+    reloadHosts();
+  }, [reloadHosts, hostPickerOpen, failedSshSessions]);
+  // A tela de conexões grava por conta própria; sem o evento, a cópia daqui
+  // (subtítulo `user@host` da barra lateral) fica com o valor antigo.
+  useEffect(() => {
+    const unlisten = onHostsChanged(reloadHosts);
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [reloadHosts]);
+  const [hostEditor, setHostEditor] = useState<HostDialogState>(null);
+  const editSshHost = useCallback(
+    (hostId: string) => {
+      const known = sshHosts.find((h) => h.id === hostId);
+      if (known) {
+        setHostEditor({ mode: "edit", host: known });
+        return;
+      }
+      void listHosts()
+        .then((hosts) => {
+          setSshHosts(hosts);
+          const host = hosts.find((h) => h.id === hostId);
+          if (host) setHostEditor({ mode: "edit", host });
+        })
+        .catch((e) =>
+          toastError(t("connectionsActionFailed"), translateError(e, t)),
+        );
+    },
+    [sshHosts, t],
+  );
+  const knownHostsCommandFor = useCallback(
+    (hostId: string): string | null => {
+      const host = sshHosts.find((h) => h.id === hostId);
+      return host ? knownHostsRemoveCommand(host.hostname, host.port) : null;
+    },
+    [sshHosts],
+  );
 
   const sideView = activeWorkspace?.side_view ?? null;
   const sideTarget = useMemo(
@@ -4427,6 +4482,15 @@ export default function App() {
         onClose={() => setLaunchDraft(null)}
         onSaved={refreshLaunchConfigs}
       />
+      <HostFormDialog
+        state={hostEditor}
+        groups={hostGroups}
+        onClose={() => setHostEditor(null)}
+        onSaved={(saved) => {
+          setHostEditor(null);
+          setSshHosts((prev) => prev.map((h) => (h.id === saved.id ? saved : h)));
+        }}
+      />
       <PasteConfirmDialog
         text={pastePrompt?.text ?? null}
         onCancel={() => setPastePrompt(null)}
@@ -5279,6 +5343,8 @@ export default function App() {
                     const terminalBox =
                       pane && blocked ? termRect(pane) : pane;
                     const detected = detectedBySession.get(s.id) ?? null;
+                    const sshHostId =
+                      s.kind.type === "ssh" ? s.kind.host_id : null;
                     const hosting = detected?.hosting ?? false;
                     const jailed = detected?.jailed ?? false;
                     const notice = showShellAgentNotice(
@@ -5347,15 +5413,29 @@ export default function App() {
                         onSplit={(kind) => void splitActive(kind)}
                         visible={paneRect !== null}
                         focused={s.id === activeId}
-                        connecting={s.kind.type === "ssh"}
                         reattaches={!ptyExitEndsSession(s.kind)}
                         connection={
                           s.kind.type === "ssh" ? s.connection : undefined
                         }
+                        connectionFailure={
+                          s.kind.type === "ssh" ? s.connection_failure : null
+                        }
+                        knownHostsCommand={
+                          sshHostId ? knownHostsCommandFor(sshHostId) : null
+                        }
                         onReconnect={
                           s.kind.type === "ssh"
-                            ? () => void reconnectSsh(s.id)
+                            ? () =>
+                                void reconnectSsh(s.id).catch((e) =>
+                                  toastError(
+                                    t("connectionsActionFailed"),
+                                    translateError(e, t),
+                                  ),
+                                )
                             : undefined
+                        }
+                        onEditHost={
+                          sshHostId ? () => editSshHost(sshHostId) : undefined
                         }
                         onBroadcastInput={
                           broadcastOn && s.kind.type === "ssh"

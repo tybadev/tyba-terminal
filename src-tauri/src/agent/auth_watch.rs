@@ -198,6 +198,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             cwd: Some(std::path::PathBuf::from("/tmp")),
             connection: crate::session::ConnectionState::default(),
+            connection_failure: None,
             agent_conversation_id: None,
             observed: None,
             opened_by_gate: false,

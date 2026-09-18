@@ -589,6 +589,7 @@ impl RemoteFilesManager {
 
 /// Abre a conexão SFTP na conexão multiplexada e monta o painel remoto.
 pub fn build_panel(alias: &str, tmux_name: Option<&str>) -> Result<Arc<RemotePanel>, String> {
+    crate::ssh::command::require_session_if_password(alias).map_err(|e| e.to_string())?;
     let fs: Arc<dyn RemoteFs> =
         Arc::new(sftpwire::SshRemote::connect(alias).map_err(|e| e.message())?);
     let (root, context) = resolve_remote_root(&*fs, tmux_name).map_err(|e| e.message())?;
