@@ -101,8 +101,9 @@ describe("keyboardOwner", () => {
 
   it("na sessão ssh integrada as três situações valem igual", () => {
     // Critério de aceite: a linha aparece na sessão integrada E respeita os
-    // três estados de teclado. O `sudo` que pede senha do outro lado do ssh lê
-    // stdin do mesmo jeito que o local.
+    // estados de teclado. O `sudo` que pede senha do outro lado do ssh lê
+    // stdin do mesmo jeito que o local, e o `PS2` remoto é continuado pela
+    // linha como o local.
     const remote: OwnerInput = {
       ...atPrompt,
       kind: { type: "ssh", host_id: "h1" },
@@ -130,7 +131,7 @@ describe("keyboardOwner", () => {
           continuation: true,
         },
       }),
-    ).toBe("terminal");
+    ).toBe("tybaLine");
   });
 
   it("a rajada do broadcast fica com o terminal", () => {
@@ -446,15 +447,28 @@ describe("continuação do shell (PS2)", () => {
     },
   };
 
-  it("o teclado é do TERMINAL, não da linha do TYBA", () => {
-    // O `PS2` não emite OSC nenhum, então `running` é false e sem o campo
-    // `continuation` a linha se achava dona: o que fosse digitado ali viraria
-    // submissão separada em vez do corpo do `for`.
-    expect(keyboardOwner(emPS2)).toBe("terminal");
+  it("o teclado continua na linha do TYBA", () => {
+    // Ia para o terminal, e era o bug: em modo prompt o xterm fica escondido
+    // atrás da lista de blocos. `ls \` + Enter e o teclado ia para um
+    // terminal que ninguém via — a sessão parecia travada, sem onde digitar o
+    // resto. A linha do TYBA só escreve no PTY, e é o shell, parado no `PS2`,
+    // que junta o que chega ao comando pela metade.
+    expect(keyboardOwner(emPS2)).toBe("tybaLine");
   });
 
-  it("a linha diz que o shell espera o resto", () => {
+  it("a linha diz que o shell espera o resto, e aceita o resto", () => {
     expect(lineState(emPS2)).toBe("continuation");
+    expect(boxAcceptsTyping(lineState(emPS2))).toBe(true);
+  });
+
+  it("comando rodando ainda devolve o teclado ao terminal", () => {
+    // O resto foi enviado e o comando começou: aí quem lê stdin é ele.
+    expect(
+      keyboardOwner({
+        ...emPS2,
+        command: { ...emPS2.command, running: true, continuation: false },
+      }),
+    ).toBe("terminal");
   });
 
   it("alt-screen ganha da continuação", () => {
@@ -484,16 +498,18 @@ describe("boxAcceptsTyping", () => {
     // aparecia em lugar nenhum, e o Enter não fazia nada.
     expect(boxAcceptsTyping("waiting")).toBe(true);
     expect(boxAcceptsTyping("own")).toBe(true);
+    // E `continuation`: o terminal está escondido, então o resto do comando
+    // só tem a caixa para ser digitado.
+    expect(boxAcceptsTyping("continuation")).toBe(true);
   });
 
   it("os outros continuam fechados, e cada um por um motivo", () => {
-    // Não é uma lista de conveniência. `running` e `continuation`: quem lê o
-    // teclado é o comando — é a regra que impede a caixa de engolir a senha do
-    // sudo. `app`: a textarea nem está no DOM. `off`: o shell respondeu que NÃO
+    // Não é uma lista de conveniência. `running`: quem lê o teclado é o
+    // comando — é a regra que impede a caixa de engolir a senha do sudo.
+    // `app`: a textarea nem está no DOM. `off`: o shell respondeu que NÃO
     // está em modo prompt, e a linha do TYBA não teria para onde enviar.
     expect(STATES.filter((state) => !boxAcceptsTyping(state))).toEqual([
       "running",
-      "continuation",
       "app",
       "off",
     ]);
@@ -506,11 +522,13 @@ describe("boxAcceptsTyping", () => {
     // um comando que está lendo stdin.
     //
     // `off` saiu desta lista em 22/08: ele deixou de ter caixa montada. Não é
-    // que passou a aceitar tecla — é que não há mais caixa ali.
+    // que passou a aceitar tecla — é que não há mais caixa ali. `continuation`
+    // saiu por outro motivo: passou a aceitar, porque o resto do comando só
+    // tem a caixa para ser digitado.
     const mountedButClosed = STATES.filter(
       (state) => boxIsMounted(state) && !boxAcceptsTyping(state),
     );
-    expect(mountedButClosed).toEqual(["running", "continuation"]);
+    expect(mountedButClosed).toEqual(["running"]);
   });
 });
 

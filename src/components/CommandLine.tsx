@@ -158,6 +158,13 @@ export function CommandLine({
   // ele aceita. Sem esta trava, um segundo Enter na espera enviaria o MESMO
   // texto de novo — e o shell rodaria o comando duas vezes.
   const [submitting, setSubmitting] = useState(false);
+  // As linhas já enviadas do comando que o shell ainda está esperando fechar.
+  //
+  // O terminal fica escondido em modo prompt, e a caixa se limpa a cada Enter:
+  // sem isto, depois de `ls \` a pessoa digitaria o resto sem ver o começo.
+  // Só é DESENHADO em `continuation`; fora dele o valor é resto de submissão
+  // antiga e é trocado na próxima.
+  const [pending, setPending] = useState<string[]>([]);
 
   // O `caret` do React é só para as sugestões; quem posiciona o cursor de
   // verdade é o DOM, e a textarea nasce com a seleção em zero. Sem isto o
@@ -330,7 +337,13 @@ export function CommandLine({
   // oferece, e conhecimento específico ganha. Só que quem digitou `./s` já disse
   // que quer arquivo, e ali a ordem se inverte de volta.
   const escolhido = ghostDoToken(token?.value ?? "", pathGhost, argGhost);
-  const ghost = escolhido.texto || binGhost || ghostFor(text, hits);
+  // Na continuação o que se digita é o RESTO de um comando, e histórico e
+  // `$PATH` só sabem completar comando inteiro: sugerir `git status` como
+  // corpo de um `ls \` é ruído, e um Tab distraído o colaria lá.
+  const continuing = state === "continuation";
+  const ghost = continuing
+    ? ""
+    : escolhido.texto || binGhost || ghostFor(text, hits);
   const temItem =
     listed.length > 0 || paths.length > 0 || args.length > 0 || bins.length > 0;
   // A lista se anuncia enquanto se digita o PRIMEIRO token, e só ali. Antes,
@@ -338,7 +351,7 @@ export function CommandLine({
   // que não sabe que existe. Passado o primeiro token o cinza já basta: ali o
   // usuário sabe o que está completando.
   const anuncia = !dispensada && cmdPrefix !== null && bins.length > 0;
-  const showMenu = (menuOpen || anuncia) && temItem;
+  const showMenu = (menuOpen || anuncia) && temItem && !continuing;
 
   const resize = () => {
     const el = inputRef.current;
@@ -400,7 +413,9 @@ export function CommandLine({
 
   const run = () => {
     const value = text;
-    if (!value.trim() || submitting) return;
+    // Em continuação a linha vazia é resposta válida: é ela que fecha um
+    // `cat <<EOF` sem corpo ou um `ls \` que não tinha mais nada a dizer.
+    if ((!continuing && !value.trim()) || submitting) return;
     setMenuOpen(false);
     setSubmitting(true);
     // A linha só é limpa quando o shell aceitou. Multiline sem bracketed paste
@@ -408,6 +423,7 @@ export function CommandLine({
     // sem executar nada.
     void submitShellLine(sessionId, value)
       .then(() => {
+        setPending((prev) => (continuing ? [...prev, value] : [value]));
         apply("", 0);
         setHits([]);
       })
@@ -703,7 +719,17 @@ export function CommandLine({
                 : t("commandLineApp")}
           </span>
         ) : (
-        <div className="relative min-w-0 flex-1">
+        <div className="min-w-0 flex-1">
+          {/* O começo do comando que o shell está esperando fechar — ver
+              `pending`. Apagado, como texto que já saiu da mão de quem digita.
+              Fora do `relative` de baixo: o cinza do ghost é `inset-0` e
+              precisa cobrir só a caixa, não estas linhas. */}
+          {continuing && pending.length > 0 && (
+            <div className="max-h-[100px] overflow-y-auto whitespace-pre-wrap break-words pt-1 font-mono text-[13px] leading-[20px] text-tyba-text-muted">
+              {pending.join("\n")}
+            </div>
+          )}
+          <div className="relative">
           {ghost && (
             <div
               aria-hidden
@@ -736,6 +762,7 @@ export function CommandLine({
             onBlur={() => setFocused(false)}
             className="max-h-[140px] min-h-[28px] w-full resize-none border-0 bg-transparent py-1 font-mono text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
           />
+          </div>
         </div>
         )}
 
