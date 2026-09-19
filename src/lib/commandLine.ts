@@ -84,7 +84,11 @@ export function isOff(input: OwnerInput & { reported: boolean | undefined }) {
 export function lineState(
   input: OwnerInput & { reported?: boolean | undefined },
 ): LineState {
-  if (keyboardOwner(input) === "tybaLine") return "own";
+  if (keyboardOwner(input) === "tybaLine") {
+    // A linha é do TYBA nos dois casos; o que muda é o que o Enter faz com
+    // ela — começar comando novo ou mandar o resto do que está pela metade.
+    return input.command?.continuation ? "continuation" : "own";
+  }
   // Desligado de propósito (ou por engano num ⌘⇧L a mais): a linha continua na
   // tela dizendo isso. Ela sumir sem explicação foi o que fez o modo clássico
   // parecer defeito.
@@ -133,13 +137,20 @@ export function boxIsMounted(state: LineState): boolean {
  * > segura até o shell abrir a linha dele (ver `LineEditorGate`), em vez de
  * > escrever num tty canônico que ecoaria a injeção crua na tela.
  *
- * Os outros continuam fechados, e por motivos que não mudaram: em `running` e
- * `continuation` quem lê o teclado é o comando, em `app` é o programa de tela
- * cheia, e `off` é o shell tendo respondido que NÃO está em modo prompt — ali a
- * linha do TYBA não teria para onde enviar.
+ * `continuation` também é editável, pelo mesmo motivo. Em modo prompt o
+ * terminal fica ESCONDIDO atrás da lista de blocos (a faixa ao vivo só abre
+ * com `running`), então "digite no terminal" mandava o usuário para um lugar
+ * que não está na tela: `ls \` + Enter e a sessão ficava muda, sem onde
+ * digitar o resto. Quem recebe o resto é a própria linha do TYBA — cada Enter
+ * escreve a linha no PTY, e o shell a lê como continuação do `PS2`.
+ *
+ * Os outros continuam fechados, e por motivos que não mudaram: em `running`
+ * quem lê o teclado é o comando, em `app` é o programa de tela cheia, e `off`
+ * é o shell tendo respondido que NÃO está em modo prompt — ali a linha do TYBA
+ * não teria para onde enviar.
  */
 export function boxAcceptsTyping(state: LineState): boolean {
-  return state === "own" || state === "waiting";
+  return state === "own" || state === "waiting" || state === "continuation";
 }
 
 /**
@@ -188,13 +199,14 @@ export function keyboardOwner({
   }
   if (altScreen) return "terminal";
   if (command?.running) return "terminal";
-  // O shell está no meio de um comando multi-linha, esperando o resto.
+  // No meio de um comando multi-linha (`PS2`) a linha CONTINUA do TYBA.
   //
-  // Sem esta linha o front só via `running: false` — o `PS2` não emite OSC
-  // nenhum — e devolvia o teclado para a caixa do TYBA, que oferecia começar
-  // um comando novo. O que o usuário digitasse ali viraria uma submissão
-  // separada em vez do corpo do `for` que ele estava escrevendo.
-  if (command?.continuation) return "terminal";
+  // Já foi devolvida ao terminal aqui, e isso era o bug: em modo prompt o
+  // xterm está escondido atrás da lista de blocos, então o teclado ia para um
+  // terminal que ninguém via — `ls \` + Enter e não havia onde digitar o
+  // resto. Não há risco de virar "submissão separada": a linha do TYBA só
+  // escreve no PTY, e é o shell, parado no `PS2`, que junta o que chega ao
+  // comando pela metade. `lineState` separa o caso como `continuation`.
   return "tybaLine";
 }
 

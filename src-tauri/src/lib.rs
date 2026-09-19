@@ -5195,10 +5195,7 @@ async fn submit_shell_line(
         .bracketed_paste(id)
         .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
     let (normalized, _) = rich_input::normalize(&text);
-    if normalized.trim().is_empty() {
-        return Ok(());
-    }
-    let payload = rich_input::plan_injection(&normalized, bracketed)?;
+    let bytes = shell_line_bytes(&normalized, bracketed)?;
 
     // A espera vem ANTES do lock de submissão: um shell que demora seguraria a
     // fila de todas as outras sessões por [`LINE_EDITOR_WAIT`].
@@ -5213,11 +5210,27 @@ async fn submit_shell_line(
     let _ = wait_for_line_editor(gate).await;
 
     let _submitting = state.rich_input_submit.lock();
+    state.pty_pool.write(id, &bytes).map_err(|e| e.to_string())
+}
+
+/// O que a linha do TYBA escreve no PTY por um Enter: limpa, texto, quebra.
+///
+/// Linha vazia é só o Enter, e não nada. Ela é resposta legítima quando o
+/// shell está no `PS2` — fecha o `ls \` que não tinha mais o que dizer, ou o
+/// `cat <<EOF` sem corpo —, e a linha do TYBA é quem digita a continuação (o
+/// terminal fica escondido em modo prompt). No `PS1` um Enter vazio só repinta
+/// o prompt, e a caixa nem chega a enviá-lo.
+fn shell_line_bytes(normalized: &str, bracketed: bool) -> Result<Vec<u8>, String> {
+    let payload = if normalized.trim().is_empty() {
+        Vec::new()
+    } else {
+        rich_input::plan_injection(normalized, bracketed)?
+    };
     let mut bytes = Vec::with_capacity(KILL_LINE.len() + payload.len() + 1);
     bytes.extend_from_slice(KILL_LINE);
     bytes.extend_from_slice(&payload);
     bytes.push(b'\n');
-    state.pty_pool.write(id, &bytes).map_err(|e| e.to_string())
+    Ok(bytes)
 }
 
 /// Bytes crus para o PTY: sinais (Ctrl+C/D/Z) que a linha do TYBA nunca consome.
@@ -7041,6 +7054,34 @@ mod tests {
         fn assert_future<T>(_: impl std::future::Future<Output = T>) {}
 
         assert_future::<Result<(), String>>(submit_shell_line(state, id, text));
+    }
+
+    /// `ls \` + Enter deixa o shell no `PS2`, e quem digita o resto é a linha
+    /// do TYBA. Se a linha vazia sumisse no core, não haveria como fechar a
+    /// continuação: o shell ficaria esperando para sempre.
+    #[test]
+    fn linha_vazia_ainda_chega_ao_shell_como_enter() {
+        for bracketed in [true, false] {
+            assert_eq!(
+                super::shell_line_bytes("", bracketed).unwrap(),
+                b"\x1b=\n".to_vec()
+            );
+            assert_eq!(
+                super::shell_line_bytes("   ", bracketed).unwrap(),
+                b"\x1b=\n".to_vec()
+            );
+        }
+    }
+
+    #[test]
+    fn linha_com_texto_vai_limpa_embrulhada_e_com_enter() {
+        assert_eq!(
+            super::shell_line_bytes("echo oi \\", false).unwrap(),
+            b"\x1b=echo oi \\\n".to_vec()
+        );
+        let bytes = super::shell_line_bytes("echo oi", true).unwrap();
+        assert!(bytes.starts_with(b"\x1b=\x1b[200~"), "{bytes:?}");
+        assert!(bytes.ends_with(b"\x1b[201~\n"), "{bytes:?}");
     }
 
     /// O `None` do layout antes do boot não é "não existe", é "ainda não li":

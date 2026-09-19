@@ -117,7 +117,7 @@ const resources = {
       bootStoreDegraded: "O banco de sessões do TYBA não abriu por inteiro",
       commandLineWaiting: "Carregando o shell…",
       commandLineContinuation:
-        "O shell espera o resto do comando — digite no terminal",
+        "O shell espera o resto do comando — continue aqui, Ctrl+C cancela",
       commandLineRunning: "Comando rodando — o teclado é do terminal",
       commandLineOff: "Linha do TYBA desligada — ⌘⇧L liga de volta.",
       commandLineApp: "Um app está na tela — o teclado é dele",
@@ -1306,7 +1306,7 @@ const resources = {
       bootStoreDegraded: "TYBA's session database did not open fully",
       commandLineWaiting: "Loading the shell…",
       commandLineContinuation:
-        "The shell is waiting for the rest of the command — type in the terminal",
+        "The shell is waiting for the rest of the command — keep typing here, Ctrl+C cancels",
       commandLineRunning: "Command running — the keyboard is the terminal's",
       commandLineOff: "TYBA line is off — ⌘⇧L turns it back on.",
       commandLineApp: "An app is on screen — the keyboard is its",
