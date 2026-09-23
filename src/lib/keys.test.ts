@@ -249,14 +249,20 @@ describe("keydownGoesToPty", () => {
   // Meta+Ctrl+Seta no mac) fica FORA do mapa Bindings -- isBoundCombo
   // sozinho não pegava esse caso, e sofria do mesmo bug do B2 (ia pro PTY,
   // o agente comia a tecla).
-  it("Ctrl+Alt+Shift+ArrowLeft (resize) não vai pro PTY mesmo com agente rodando", () => {
-    const event = chord({
-      key: "ArrowLeft",
-      ctrlKey: true,
-      altKey: true,
-      shiftKey: true,
-    });
-    expect(keydownGoesToPty(event, PC_BINDINGS, false)).toBe(false);
+  //
+  // `isPaneResizeChord` lê `IS_MAC` na hora, então o acorde tem que ser o da
+  // plataforma que roda o teste — o do PC fixo passava no CI (Linux) e
+  // falhava em todo Mac.
+  it("resize de painel não vai pro PTY mesmo com agente rodando", () => {
+    const event = IS_MAC
+      ? chord({ key: "ArrowLeft", metaKey: true, ctrlKey: true })
+      : chord({
+          key: "ArrowLeft",
+          ctrlKey: true,
+          altKey: true,
+          shiftKey: true,
+        });
+    expect(keydownGoesToPty(event, DEFAULT_BINDINGS, false)).toBe(false);
   });
 
   it("Ctrl+Alt+ArrowDown (pane-nav, via Bindings) não vai pro PTY", () => {
