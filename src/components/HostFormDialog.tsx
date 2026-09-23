@@ -469,6 +469,9 @@ export function HostFormDialog({
                 {tn.kind !== "dynamic" && (
                   <>
                     <input
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoCorrect="off"
                       aria-label={t("tunnelsTargetHost")}
                       placeholder="localhost"
                       value={tn.target_host ?? ""}

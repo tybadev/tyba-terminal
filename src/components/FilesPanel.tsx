@@ -1122,6 +1122,9 @@ export function FilesPanel({
     onCommit: (value: string) => void,
   ) => (
     <input
+      spellCheck={false}
+      autoCapitalize="off"
+      autoCorrect="off"
       autoFocus
       defaultValue={initial}
       placeholder={placeholder}

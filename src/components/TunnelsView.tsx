@@ -236,6 +236,9 @@ export function TunnelsView({
               {draft.kind !== "dynamic" && (
                 <>
                   <input
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
                     aria-label={t("tunnelsTargetHost")}
                     required
                     placeholder="localhost"

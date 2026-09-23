@@ -63,6 +63,9 @@ export function PromptDialog({
             {title}
           </span>
           <input
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
             ref={inputRef}
             value={value}
             placeholder={placeholder}

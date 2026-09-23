@@ -270,6 +270,9 @@ export function ShellSettings() {
       {draft ? (
         <div className="mt-2 flex flex-col gap-2 rounded-[6px] border border-tyba-border p-4">
           <input
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
             autoFocus
             value={draft.name}
             placeholder={t("snippetName")}
@@ -277,6 +280,9 @@ export function ShellSettings() {
             className="rounded-[4px] border border-tyba-border bg-transparent px-2 py-1 text-[13px] text-tyba-text outline-none focus:border-tyba-green/50"
           />
           <textarea
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
             value={draft.command}
             rows={2}
             placeholder={t("snippetCommand")}
@@ -284,6 +290,9 @@ export function ShellSettings() {
             className="resize-none rounded-[4px] border border-tyba-border bg-transparent px-2 py-1 font-mono text-[12px] text-tyba-text outline-none focus:border-tyba-green/50"
           />
           <input
+            autoCapitalize="sentences"
+            autoCorrect="on"
+            spellCheck
             value={draft.description ?? ""}
             placeholder={t("snippetDescription")}
             onChange={(e) =>
