@@ -372,12 +372,12 @@ export function NotificationToaster({
   return (
     <ToastProvider swipeDirection="right" duration={Infinity}>
       {visibleToasts.map(({ id, approval }) => (
-        <Toast
-          key={id}
-          onOpenChange={(nextOpen) => {
-            if (!nextOpen) dismiss(id);
-          }}
-        >
+        // `open` fixo: o toast de aprovação só sai quando o pedido é decidido
+        // (aqui, no Inbox ou na fila). O Radix fecha toast em Esc no documento
+        // INTEIRO e em swipe — e Esc é a tecla de interromper o agente no
+        // terminal. Fechado assim, o pedido ficava pendente sem toast, visível
+        // só no Inbox.
+        <Toast key={id} open>
           <div className="flex items-start gap-2">
             <span
               role="img"
@@ -423,23 +423,27 @@ export function NotificationToaster({
                           : "approved";
                     decide(approval, decision);
                   };
+                  // Botão comum, não `ToastAction`: o do Radix FECHA o toast
+                  // no clique. Isso sumia com o campo de "dizer o que fazer"
+                  // antes de ele aparecer e com o segundo clique da
+                  // confirmação de ação vermelha. Quem tira o toast é
+                  // `decide`, depois de resolver.
                   return (
-                    <ToastAction key={action.id} altText={label} asChild>
-                      <Button
-                        size="sm"
-                        variant={action.id === "approve" ? "default" : "outline"}
-                        onClick={onClick}
-                        className={`h-6 rounded-[4px] px-2.5 text-[11px] ${
-                          action.id === "approve"
-                            ? isConfirmApprove
-                              ? "bg-tyba-red text-white hover:bg-tyba-red/90"
-                              : ""
-                            : "text-tyba-text-muted"
-                        }`}
-                      >
-                        {label}
-                      </Button>
-                    </ToastAction>
+                    <Button
+                      key={action.id}
+                      size="sm"
+                      variant={action.id === "approve" ? "default" : "outline"}
+                      onClick={onClick}
+                      className={`h-6 rounded-[4px] px-2.5 text-[11px] ${
+                        action.id === "approve"
+                          ? isConfirmApprove
+                            ? "bg-tyba-red text-white hover:bg-tyba-red/90"
+                            : ""
+                          : "text-tyba-text-muted"
+                      }`}
+                    >
+                      {label}
+                    </Button>
                   );
                 })}
               </div>
