@@ -68,7 +68,12 @@ import {
   sameRect,
   usedRowsFromLastLine,
 } from "../lib/liveSeam";
-import { DEFAULT_BINDINGS, keydownGoesToPty, type Bindings } from "../lib/keys";
+import {
+  DEFAULT_BINDINGS,
+  keydownGoesToPty,
+  ptyNewlineFor,
+  type Bindings,
+} from "../lib/keys";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
 export const RELAYOUT_EVENT = "tyba:relayout";
@@ -330,6 +335,15 @@ interface Props {
    * plataforma, pro caso raro do prop faltar.
    */
   bindings?: Bindings;
+  /**
+   * Há um agente lendo o teclado neste painel — sessão gerenciada ou `claude`
+   * cru detectado no shell.
+   *
+   * Só serve a UMA regra: Shift/Ctrl/Option+Enter abre linha no composer do
+   * agente em vez de enviar (ver `ptyNewlineFor`). Fica amarrado ao agente de
+   * propósito — num `vim` a mesma tecla sairia do modo de inserção.
+   */
+  agentTui?: boolean;
 }
 
 type NoticeTone = "amber" | "cyan" | "red";
@@ -468,6 +482,7 @@ export function TerminalView({
   onCellWidth,
   swallowArrows,
   bindings,
+  agentTui,
 }: Props) {
   // O onData é assinado uma vez no mount: sem ref, a rajada ficaria presa no
   // callback do primeiro render.
@@ -522,6 +537,10 @@ export function TerminalView({
   // primeiro render (B2).
   const bindingsRef = useRef<Bindings>(bindings ?? DEFAULT_BINDINGS);
   bindingsRef.current = bindings ?? DEFAULT_BINDINGS;
+  // Mesmo motivo dos dois acima: o handler é assinado no mount, e um agente
+  // que sobe DEPOIS (o `claude` que se digita no shell) precisa chegar aqui.
+  const agentTuiRef = useRef(false);
+  agentTuiRef.current = Boolean(agentTui);
   const hoveredLinkRef = useRef<string | null>(null);
   const [menuHasSelection, setMenuHasSelection] = useState(false);
   const [menuMouseMode, setMenuMouseMode] = useState(false);
@@ -678,6 +697,23 @@ export function TerminalView({
     // decide o que o xterm faz, não `stopPropagation`).
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
+      // Quebra de linha no composer do agente. Antes do resto porque é a
+      // ÚNICA regra que troca os bytes em vez de só decidir se eles saem: o
+      // xterm mandaria `\r` (= enviar) para os três modificadores, e é daí
+      // que vinha o "não dá pra quebrar linha no Claude".
+      const newline = readOnlyRef.current
+        ? null
+        : ptyNewlineFor(event, agentTuiRef.current);
+      if (newline !== null) {
+        event.preventDefault();
+        // Mesmo caminho do `onData` abaixo, broadcast incluso: a quebra de
+        // linha é digitação como qualquer outra, e num conjunto de sessões
+        // ela tem que chegar a todas.
+        if (!broadcastRef.current?.(newline)) {
+          void writeToSession(sessionId, newline).catch(() => {});
+        }
+        return false;
+      }
       return keydownGoesToPty(
         event,
         bindingsRef.current,

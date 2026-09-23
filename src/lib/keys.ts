@@ -382,6 +382,46 @@ export function keydownGoesToPty(
   return !swallowArrows;
 }
 
+/**
+ * ESC + CR: a quebra de linha que o composer de um agente entende.
+ *
+ * O TUI do Claude lê `\r` cru como ENVIAR e `\x1b\r` —
+ * meta+Enter — como "abre linha nova aqui". É exatamente a sequência que o
+ * `/terminal-setup` do Claude grava no iTerm2 e no VS Code quando configura
+ * Shift+Enter; o TYBA faz o mesmo por dentro, sem pedir setup nenhum.
+ */
+export const PTY_NEWLINE = "\x1b\r";
+
+/**
+ * Os bytes a escrever no PTY quando a tecla é "quebrar linha", ou `null`
+ * quando a tecla não é isso e segue o caminho normal.
+ *
+ * Por que existia o buraco: o xterm manda `\r` para Enter com QUALQUER
+ * modificador, e o TYBA nasce com `macOptionIsMeta: false` (mexer nisso
+ * quebraria Option+letra em teclado ABNT2). Resultado: Shift, Ctrl e Option
+ * com Enter chegavam ao agente indistinguíveis de um Enter pelado — não
+ * havia NENHUMA tecla que abrisse linha no Claude pelo TYBA, só o velho
+ * truque de terminar a linha com `\`.
+ *
+ * `agentTui` amarra a regra à sessão que tem um agente lendo o teclado —
+ * gerenciada ou agente cru detectado no shell. Fora dali nada muda: em
+ * `vim` um Shift+Enter que virasse ESC+CR sairia do modo de inserção, que
+ * é o oposto do que se pediu.
+ *
+ * ⌘+Enter fica DE FORA de propósito: é o `SEND_PROMPT_COMBO` do mac, e no
+ * Windows/Linux Meta é a tecla do sistema. Enviar continua sendo Enter.
+ */
+export function ptyNewlineFor(
+  event: KeyboardEvent,
+  agentTui: boolean,
+): string | null {
+  if (!agentTui) return null;
+  if (event.key !== "Enter") return null;
+  if (event.metaKey) return null;
+  const modified = event.shiftKey || event.ctrlKey || event.altKey;
+  return modified ? PTY_NEWLINE : null;
+}
+
 export function parseBindings(raw: string | null): Bindings {
   if (!raw) return { ...DEFAULT_BINDINGS };
   try {

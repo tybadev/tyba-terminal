@@ -16,6 +16,8 @@ import {
   isTabDigitChord,
   keydownGoesToPty,
   parseBindings,
+  PTY_NEWLINE,
+  ptyNewlineFor,
   tabDigitCombo,
   type Bindings,
 } from "./keys";
@@ -271,5 +273,45 @@ describe("keydownGoesToPty", () => {
   it("tecla que não é seta sempre vai pro PTY, mesmo com swallowArrows", () => {
     const event = chord({ key: "a", ctrlKey: true, altKey: true });
     expect(keydownGoesToPty(event, PC_BINDINGS, true)).toBe(true);
+  });
+});
+
+describe("ptyNewlineFor", () => {
+  // O buraco relatado: no Mac não havia NENHUMA tecla que abrisse linha no
+  // composer do Claude. Enter com Shift, Ctrl ou Option chegava lá como `\r`
+  // puro (o xterm manda o mesmo byte para os três) e o agente ENVIAVA.
+  it.each([
+    ["Shift", { shiftKey: true }],
+    ["Ctrl", { ctrlKey: true }],
+    ["Option/Alt", { altKey: true }],
+  ])("%s+Enter vira ESC+CR num TUI de agente", (_nome, mods) => {
+    const event = chord({ key: "Enter", ...mods });
+    expect(ptyNewlineFor(event, true)).toBe(PTY_NEWLINE);
+    expect(PTY_NEWLINE).toBe("\x1b\r");
+  });
+
+  it("Enter pelado continua sendo ENVIAR, nunca quebra de linha", () => {
+    expect(ptyNewlineFor(chord({ key: "Enter" }), true)).toBeNull();
+  });
+
+  // ⌘+Enter é o SEND_PROMPT_COMBO do mac e a tecla do sistema no resto —
+  // roubá-la trocaria "enviar" por "quebrar linha" sem ninguém pedir.
+  it("Meta+Enter fica fora, com ou sem outro modificador junto", () => {
+    expect(ptyNewlineFor(chord({ key: "Enter", metaKey: true }), true)).toBeNull();
+    expect(
+      ptyNewlineFor(chord({ key: "Enter", metaKey: true, shiftKey: true }), true),
+    ).toBeNull();
+  });
+
+  // Fora de uma sessão com agente a regra não existe: num `vim`, ESC+CR sairia
+  // do modo de inserção e desceria uma linha — o oposto do que se pediu.
+  it("sem agente lendo o teclado, nenhum Enter vira ESC+CR", () => {
+    for (const mods of [{ shiftKey: true }, { ctrlKey: true }, { altKey: true }]) {
+      expect(ptyNewlineFor(chord({ key: "Enter", ...mods }), false)).toBeNull();
+    }
+  });
+
+  it("tecla que não é Enter nunca vira quebra de linha", () => {
+    expect(ptyNewlineFor(chord({ key: "j", ctrlKey: true }), true)).toBeNull();
   });
 });
