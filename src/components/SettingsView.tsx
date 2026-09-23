@@ -571,6 +571,9 @@ function TextField({
   useEffect(() => setDraft(value), [value]);
   return (
     <input
+      spellCheck={false}
+      autoCapitalize="off"
+      autoCorrect="off"
       value={draft}
       placeholder={placeholder}
       onChange={(e) => setDraft(e.target.value)}

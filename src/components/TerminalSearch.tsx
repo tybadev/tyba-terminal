@@ -101,6 +101,9 @@ export function TerminalSearch({ sessionId, onClose }: Props) {
   return (
     <div className="absolute right-3 top-3 z-20 flex items-center gap-1 rounded-[6px] border border-tyba-border-strong bg-tyba-surface px-2 py-1 shadow-2xl">
       <input
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
         ref={inputRef}
         value={query}
         placeholder={t("searchPlaceholder")}

@@ -5161,6 +5161,9 @@ export default function App() {
                         className="shrink-0 text-tyba-text-faint"
                       />
                       <input
+                        spellCheck={false}
+                        autoCapitalize="off"
+                        autoCorrect="off"
                         value={sessionQuery}
                         onChange={(e) => setSessionQuery(e.target.value)}
                         placeholder={t("searchSessions")}

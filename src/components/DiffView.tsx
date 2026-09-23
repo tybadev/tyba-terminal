@@ -872,6 +872,9 @@ export function DiffView({
         return (
           <div className="flex flex-col gap-1.5 border-l-2 border-tyba-green/50 bg-tyba-green/[.04] py-2 pl-[104px] pr-4">
             <textarea
+              autoCapitalize="sentences"
+              autoCorrect="on"
+              spellCheck
               autoFocus
               value={draftText}
               onChange={(e) => setDraftText(e.target.value)}
@@ -1378,6 +1381,9 @@ export function DiffView({
         <div className="flex h-8 shrink-0 items-center gap-2 tyba-divide-t px-4">
           <GitCommit size={13} className="shrink-0 text-tyba-text-faint" />
           <input
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
             value={commitMsg}
             onChange={(e) => setCommitMsg(e.target.value)}
             onKeyDown={(e) => {

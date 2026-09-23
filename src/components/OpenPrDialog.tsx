@@ -163,6 +163,9 @@ export function OpenPrDialog({
             <div className="flex flex-col gap-1.5">
               <span className="tyba-label">{t("prDialogFieldBody")}</span>
               <textarea
+                autoCapitalize="sentences"
+                autoCorrect="on"
+                spellCheck
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
                 rows={6}

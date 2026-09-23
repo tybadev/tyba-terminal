@@ -150,6 +150,9 @@ export function BranchPicker({
       <PopoverContent align="start" className="w-96 p-1">
         <div className="flex items-center gap-1 p-1">
           <input
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t("branchPickerSearch")}

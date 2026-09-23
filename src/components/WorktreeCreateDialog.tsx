@@ -234,6 +234,9 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
             <div className="flex flex-col gap-1.5">
               <span className="tyba-label">{t("worktreeAgentPrompt")}</span>
               <textarea
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
                 value={agentPrompt}
                 placeholder={t("worktreeAgentPromptPlaceholder")}
                 onChange={(e) => setAgentPrompt(e.target.value)}

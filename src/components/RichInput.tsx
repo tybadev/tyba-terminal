@@ -294,6 +294,17 @@ export function RichInput({
           ref={textareaRef}
           value={text}
           rows={1}
+          // Regra 29, a mesma de `ui/input`/`ui/textarea`: campo técnico nasce
+          // sem correção. Um prompt de agente é caminho de arquivo, nome de
+          // símbolo e trecho de comando — o autocorretor do macOS capitaliza
+          // palavra, troca aspa por aspa curva e enfia espaço entre palavras
+          // enquanto se digita, e o que chega ao agente não é o que se
+          // escreveu. Este textarea é cru (não passa por `ui/textarea`) por
+          // causa do espelho de caret logo acima, então os três atributos
+          // ficam aqui à mão.
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
           placeholder={t("richInputPlaceholder", {
             combo: formatCombo(SEND_PROMPT_COMBO),
           })}

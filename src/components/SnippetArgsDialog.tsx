@@ -60,6 +60,9 @@ export function SnippetArgsDialog({
                 {placeholder.name}
               </span>
               <input
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
                 autoFocus={index === 0}
                 value={values[placeholder.name] ?? ""}
                 onChange={(e) =>
