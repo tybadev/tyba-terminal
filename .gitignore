@@ -23,3 +23,8 @@ docs-site/.mintlify/
 # estado do pipeline de fases — efêmero, por máquina.
 # A spec congelada, o mapa de blocos e os findings ao lado dele ficam versionados.
 .pipeline/*/state.json
+
+# Estado local do Entire, que saiu do projeto em 2026-09-19 (ver CLAUDE.md).
+# Fica aqui porque branch antiga ainda traz a pasta de volta: são centenas de MB
+# de transcript de sessão, e um `git add -A` distraído publicaria tudo.
+.entire/
