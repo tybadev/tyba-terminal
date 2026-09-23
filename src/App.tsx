@@ -5748,6 +5748,11 @@ export default function App() {
                           altScreen: altScreens[s.id] ?? false,
                         })}
                         bindings={bindings}
+                        // Quem lê o teclado neste painel é um composer de
+                        // agente: a sessão gerenciada, ou o `claude` cru que
+                        // o probe achou rodando no shell. É o que libera
+                        // Shift/Ctrl/Option+Enter como quebra de linha.
+                        agentTui={s.kind.type === "agent" || detected !== null}
                         onLineHeight={(px) => reportLineHeight(s.id, px)}
                         onCellWidth={(px) => reportCellWidth(s.id, px)}
                         onLiveRows={
