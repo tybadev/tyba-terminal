@@ -5,10 +5,10 @@ pub(super) static NODE_RUNTIME: &[PlatformPin] = &[
     PlatformPin {
         platform: Platform::LinuxX86_64,
         pin: Pin {
-            version: "24.18.0",
-            url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.gz",
-            sha256: "783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8",
-            size: 57224421,
+            version: "24.21.0",
+            url: "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz",
+            sha256: "6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff",
+            size: 58088022,
             archive: Archive::TarGz,
             member: "bin/node",
         },
@@ -16,10 +16,10 @@ pub(super) static NODE_RUNTIME: &[PlatformPin] = &[
     PlatformPin {
         platform: Platform::LinuxAarch64,
         pin: Pin {
-            version: "24.18.0",
-            url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-arm64.tar.gz",
-            sha256: "6b4484c2190274175df9aa8f28e2d758a819cb1c1fe6ab481e2f95b463ab8508",
-            size: 56979089,
+            version: "24.21.0",
+            url: "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.gz",
+            sha256: "724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5",
+            size: 57824078,
             archive: Archive::TarGz,
             member: "bin/node",
         },
@@ -27,10 +27,10 @@ pub(super) static NODE_RUNTIME: &[PlatformPin] = &[
     PlatformPin {
         platform: Platform::MacosAarch64,
         pin: Pin {
-            version: "24.18.0",
-            url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-darwin-arm64.tar.gz",
-            sha256: "e1a97e14c99c803e96c7339403282ea05a499c32f8d83defe9ef5ec66f979ed1",
-            size: 52087559,
+            version: "24.21.0",
+            url: "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
+            sha256: "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+            size: 52909993,
             archive: Archive::TarGz,
             member: "bin/node",
         },
@@ -38,10 +38,10 @@ pub(super) static NODE_RUNTIME: &[PlatformPin] = &[
     PlatformPin {
         platform: Platform::MacosX86_64,
         pin: Pin {
-            version: "24.18.0",
-            url: "https://nodejs.org/dist/v24.18.0/node-v24.18.0-darwin-x64.tar.gz",
-            sha256: "dfd0dbd3e721503434df7b7205e719f61b3a3a31b2bcf9729b8b91fea240f080",
-            size: 53282687,
+            version: "24.21.0",
+            url: "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-x64.tar.gz",
+            sha256: "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097",
+            size: 54203979,
             archive: Archive::TarGz,
             member: "bin/node",
         },
@@ -49,10 +49,10 @@ pub(super) static NODE_RUNTIME: &[PlatformPin] = &[
 ];
 
 pub(super) static RUST_ANALYZER: &[PlatformPin] = &[
-    PlatformPin { platform: Platform::LinuxX86_64, pin: Pin { version: "2026-07-27", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-x86_64-unknown-linux-gnu.gz", sha256: "ac4f42ddbbd040d75d847e991894776485783e28beb744b9719a660a99abe115", size: 15035345, archive: Archive::Gzip, member: "rust-analyzer" } },
-    PlatformPin { platform: Platform::LinuxAarch64, pin: Pin { version: "2026-07-27", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-aarch64-unknown-linux-gnu.gz", sha256: "4cb0ca4675608e8d73a7f4e43ef733d1f69600845d504c35d2f9d9f240bd3486", size: 14448293, archive: Archive::Gzip, member: "rust-analyzer" } },
-    PlatformPin { platform: Platform::MacosAarch64, pin: Pin { version: "2026-07-27", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-aarch64-apple-darwin.gz", sha256: "102215ae7e7a41c0dda8f24e910a01e757f58091204863e5e3e6696b743f7e97", size: 13987778, archive: Archive::Gzip, member: "rust-analyzer" } },
-    PlatformPin { platform: Platform::MacosX86_64, pin: Pin { version: "2026-07-27", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-x86_64-apple-darwin.gz", sha256: "9d1a60991ead6c27baa9d265fc8fd03bba9c39cf0ec2aaf389e37e6155af7cbb", size: 14715786, archive: Archive::Gzip, member: "rust-analyzer" } },
+    PlatformPin { platform: Platform::LinuxX86_64, pin: Pin { version: "2026-10-12", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-10-12/rust-analyzer-x86_64-unknown-linux-gnu.gz", sha256: "040cab4e2abc490fadd95c3f6cbc60b941a78761dbc3acf0ec66fd7a97f31db3", size: 14939384, archive: Archive::Gzip, member: "rust-analyzer" } },
+    PlatformPin { platform: Platform::LinuxAarch64, pin: Pin { version: "2026-10-12", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-10-12/rust-analyzer-aarch64-unknown-linux-gnu.gz", sha256: "d7219d5d8f5537bb227b521157aebddfe7e4a90f4a85a74f31e53722f5691025", size: 14352498, archive: Archive::Gzip, member: "rust-analyzer" } },
+    PlatformPin { platform: Platform::MacosAarch64, pin: Pin { version: "2026-10-12", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-10-12/rust-analyzer-aarch64-apple-darwin.gz", sha256: "a2e45e828b37bfc4b507c2ca456e8b61096e0bdfbae225f3d33295546d1eeacf", size: 13943252, archive: Archive::Gzip, member: "rust-analyzer" } },
+    PlatformPin { platform: Platform::MacosX86_64, pin: Pin { version: "2026-10-12", url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-10-12/rust-analyzer-x86_64-apple-darwin.gz", sha256: "56a5698a2e0d495c3ec28155416db310c879f21a70f6f38db549166cf157cfab", size: 14714609, archive: Archive::Gzip, member: "rust-analyzer" } },
 ];
 
 pub(super) static TAPLO: &[PlatformPin] = &[
@@ -125,17 +125,17 @@ pub(super) static CLOJURE_LSP: &[PlatformPin] = &[
 ];
 
 pub(super) static TYPESCRIPT_LANGUAGE_SERVER: &[NpmPin] = &[
-    NpmPin { package: "typescript-language-server", pin: Pin { version: "5.3.0", url: "https://registry.npmjs.org/typescript-language-server/-/typescript-language-server-5.3.0.tgz", sha256: "398cacc17fff2108652e7b4050e3182008d17063246b3fea7dcf5fae2ce1560e", size: 501633, archive: Archive::TarGz, member: "" } },
+    NpmPin { package: "typescript-language-server", pin: Pin { version: "6.0.2", url: "https://registry.npmjs.org/typescript-language-server/-/typescript-language-server-6.0.2.tgz", sha256: "d225b223a8a4764ecbd94bdba85d2ef185eaa7b9842a1a31c38c2bbe7f2fe9b9", size: 517038, archive: Archive::TarGz, member: "" } },
     NpmPin { package: "typescript", pin: Pin { version: "5.9.3", url: "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz", sha256: "10e108c9cf7d5f2879053dff18515fb405abf2ccef63eaaf017d9c571687a1d3", size: 4377468, archive: Archive::TarGz, member: "" } },
 ];
 
 pub(super) static PYRIGHT: &[NpmPin] = &[NpmPin {
     package: "pyright",
     pin: Pin {
-        version: "1.1.411",
-        url: "https://registry.npmjs.org/pyright/-/pyright-1.1.411.tgz",
-        sha256: "bd5c488fc20fa237a944279bf32cae2f986cf10d5d5d9e8705819859daeb2f4a",
-        size: 4139958,
+        version: "1.1.414",
+        url: "https://registry.npmjs.org/pyright/-/pyright-1.1.414.tgz",
+        sha256: "bf5f473f6167c0d14175492c3263d783b4489a6956e1c06c18e15228e3a3fa42",
+        size: 4226827,
         archive: Archive::TarGz,
         member: "",
     },
