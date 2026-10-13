@@ -44,6 +44,7 @@ const detail = (over: Partial<PrDetail> = {}): PrDetail => ({
   author: "dono",
   head: "feat/health",
   base: "main",
+  head_sha: "c".repeat(40),
   created_at: "2026-01-01T10:00:00Z",
   body: "corpo",
   additions: 42,

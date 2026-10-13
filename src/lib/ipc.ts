@@ -575,6 +575,8 @@ export interface PrDetail {
   author: string;
   head: string;
   base: string;
+  /** SHA do head quando o core buscou: o merge e a revisão só valem para ele. */
+  head_sha: string;
   created_at: string;
   body: string;
   additions: number;
@@ -602,6 +604,29 @@ export const forgePrPage = (id: SessionId, filter: PrFilter, fresh: boolean) =>
 
 export const forgePrDetail = (id: SessionId, number: number, fresh: boolean) =>
   invoke<PrDetail | null>("forge_pr_detail", { id, number, fresh });
+
+// --- revisar e mergear PR (fatias 5–6): VERMELHO ---------------------------
+// Só a UI dispara, sempre depois de confirmação que mostra o PR alvo e o texto.
+// Nunca por agente. `head_sha` amarra a ação ao que o usuário viu: se o PR
+// andou, o core recusa (`--match-head-commit` no merge).
+
+export type PrReviewEvent = "comment" | "approve" | "request_changes";
+export type PrMergeStrategy = "squash" | "merge" | "rebase";
+
+export const forgePrReview = (
+  id: SessionId,
+  number: number,
+  event: PrReviewEvent,
+  body: string,
+  headSha: string,
+) => invoke<void>("forge_pr_review", { id, number, event, body, headSha });
+
+export const forgePrMerge = (
+  id: SessionId,
+  number: number,
+  strategy: PrMergeStrategy,
+  headSha: string,
+) => invoke<void>("forge_pr_merge", { id, number, strategy, headSha });
 
 /** Aba "git · pull requests" do repo da sessão. */
 export const openPrListTab = (id: SessionId) =>
