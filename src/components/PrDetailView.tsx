@@ -13,6 +13,8 @@ import {
 } from "@phosphor-icons/react";
 
 import { useRelative } from "./GitHistoryView";
+import { MarkdownView } from "./MarkdownView";
+import { getEffectiveBase } from "@/theme";
 import { openExternalUrl } from "../lib/clipboard";
 import { requestConfirm } from "../lib/confirm";
 import { translateError } from "../lib/errors";
@@ -125,6 +127,8 @@ export function PrDetailView({
   const [forwarded, setForwarded] = useState<Set<string>>(() => new Set());
   const [now, setNow] = useState(() => Date.now());
   const [reviewBody, setReviewBody] = useState("");
+  const [bodyOpen, setBodyOpen] = useState(false);
+  const dark = getEffectiveBase() === "dark";
   const [reviewEvent, setReviewEvent] = useState<PrReviewEvent>("comment");
   const [strategy, setStrategy] = useState<PrMergeStrategy>("squash");
   const [acting, setActing] = useState<null | "review" | "merge">(null);
@@ -256,7 +260,9 @@ export function PrDetailView({
             {t("prReplied")} · {relative(c.created_at, now)}
           </span>
         </span>
-        <span className="whitespace-pre-wrap break-words text-tyba-text-muted">{c.body}</span>
+        <div className="min-w-0 text-tyba-text-muted">
+          <MarkdownView text={c.body} dark={dark} compact />
+        </div>
       </div>
     </div>
   );
@@ -304,8 +310,8 @@ export function PrDetailView({
             ))}
           </div>
         )}
-        <div className="whitespace-pre-wrap break-words px-2.5 pb-2.5 pt-0.5 text-[12px] leading-relaxed">
-          {first.body}
+        <div className="min-w-0 px-2.5 pb-2.5 pt-0.5">
+          <MarkdownView text={first.body} dark={dark} compact />
         </div>
         {rest.map(reply)}
       </div>
@@ -346,8 +352,20 @@ export function PrDetailView({
               <span className="text-tyba-text-faint">· {relative(event.at, now)}</span>
             </div>
             {event.body.trim() && (
-              <div className="whitespace-pre-wrap break-words rounded-[8px] border border-tyba-border bg-tyba-raised/60 px-3 py-2.5 text-[12px] leading-relaxed">
-                {event.body}
+              <div className="relative rounded-[8px] border border-tyba-border bg-tyba-raised/60 px-3 py-2.5">
+                <div className={bodyOpen ? "" : "max-h-[220px] overflow-hidden"}>
+                  <MarkdownView text={event.body} dark={dark} compact />
+                </div>
+                {!bodyOpen && (
+                  <div className="pointer-events-none absolute inset-x-0 bottom-9 h-10 bg-gradient-to-b from-transparent to-[var(--tyba-raised)]" />
+                )}
+                <button
+                  type="button"
+                  onClick={() => setBodyOpen((v) => !v)}
+                  className="mt-1.5 text-[11px] text-tyba-text-muted hover:text-tyba-text"
+                >
+                  {bodyOpen ? t("prBodyLess") : t("prBodyMore")}
+                </button>
               </div>
             )}
           </div>
@@ -423,8 +441,8 @@ export function PrDetailView({
                 )}
             </div>
             {event.review.body.trim() && (
-              <div className="whitespace-pre-wrap break-words px-2.5 pb-2.5 pl-[38px] text-[12px] text-tyba-text-muted">
-                {event.review.body}
+              <div className="min-w-0 px-2.5 pb-2.5 pl-[38px] text-tyba-text-muted">
+                <MarkdownView text={event.review.body} dark={dark} compact />
               </div>
             )}
           </div>
@@ -448,8 +466,8 @@ export function PrDetailView({
                 forwardPrompt(pr, { author: event.comment.author, verb: t("prReviewedCommented"), body: event.comment.body }),
               )}
             </div>
-            <div className="whitespace-pre-wrap break-words px-2.5 pb-2.5 pl-[38px] text-[12px] text-tyba-text-muted">
-              {event.comment.body}
+            <div className="min-w-0 px-2.5 pb-2.5 pl-[38px] text-tyba-text-muted">
+              <MarkdownView text={event.comment.body} dark={dark} compact />
             </div>
           </div>
         );

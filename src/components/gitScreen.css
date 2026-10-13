@@ -48,3 +48,15 @@
   .tyba-git-screen[data-exiting="true"] { animation-direction: reverse; }
   .tyba-git-rail-marker { transition: none; }
 }
+
+/* Markdown de PR e comentário (conteúdo de terceiro, sem HTML cru): compacto. */
+.files-markdown.tyba-md-compact { padding: 0; font-size: 12px; line-height: 1.6; }
+.files-markdown.tyba-md-compact h1,
+.files-markdown.tyba-md-compact h2 { font-size: 14px; border-bottom: 0; padding-bottom: 0; margin: 12px 0 4px; }
+.files-markdown.tyba-md-compact h3,
+.files-markdown.tyba-md-compact h4,
+.files-markdown.tyba-md-compact h5,
+.files-markdown.tyba-md-compact h6 { font-size: 12.5px; margin: 10px 0 4px; }
+.files-markdown.tyba-md-compact p,
+.files-markdown.tyba-md-compact ul,
+.files-markdown.tyba-md-compact ol { margin: 4px 0; }

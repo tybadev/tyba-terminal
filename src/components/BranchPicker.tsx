@@ -162,7 +162,7 @@ export function BranchPicker({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t("branchPickerSearch")}
-            className="h-7 min-w-0 flex-1 rounded-[4px] border border-tyba-border bg-black/20 px-2 font-mono text-[11px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-green/50"
+            className="h-7 min-w-0 flex-1 rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2 font-mono text-[11px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-green/50"
           />
           <button
             title={t("branchFetch")}

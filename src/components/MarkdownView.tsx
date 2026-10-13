@@ -49,7 +49,16 @@ function MarkdownCode({ code, lang, dark }: { code: string; lang: string | null;
 }
 
 /** Markdown renderizado (GFM). Imagem remota não carrega; link não navega. */
-export function MarkdownView({ text, dark }: { text: string; dark: boolean }) {
+export function MarkdownView({
+  text,
+  dark,
+  compact = false,
+}: {
+  text: string;
+  dark: boolean;
+  /** Sem o respiro do editor e com títulos menores (PR, comentário). */
+  compact?: boolean;
+}) {
   const components = useMemo<Components>(
     () => ({
       img(props) {
@@ -86,7 +95,7 @@ export function MarkdownView({ text, dark }: { text: string; dark: boolean }) {
     [dark],
   );
   return (
-    <div className="files-markdown">
+    <div className={compact ? "files-markdown tyba-md-compact" : "files-markdown"}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={safeMarkdownUrl} components={components}>
         {text}
       </ReactMarkdown>

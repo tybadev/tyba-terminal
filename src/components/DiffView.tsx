@@ -240,6 +240,9 @@ export function DiffView({
   const [suggesting, setSuggesting] = useState(false);
   // "Visto" por arquivo (chave escopo+caminho), só desta montagem.
   const [viewed, setViewed] = useState<Set<string>>(() => new Set());
+  // Mockup Diff: na tela de Git (asTab) mostra um arquivo por vez.
+  const single = asTab;
+  const [focusKey, setFocusKey] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestedRef = useRef(new Set<string>());
@@ -456,13 +459,18 @@ export function DiffView({
       const manyFiles = files.length > MANY_FILES_AUTO_COLLAPSE;
       for (const file of files) {
         const key = fileKeyOf(scope, file.path);
+        // Um arquivo por vez: só o arquivo em foco precisa dos trechos.
+        if (single) {
+          if (key === focusKey) fetchHunks(scope, file);
+          continue;
+        }
         const collapsed =
           collapsedByKey[key] ??
           defaultCollapsed(file, hunksByKey[key], manyFiles);
         if (!collapsed) fetchHunks(scope, file);
       }
     }
-  }, [diff, collapsedByKey, hunksByKey, fetchHunks]);
+  }, [diff, collapsedByKey, hunksByKey, fetchHunks, single, focusKey]);
 
   useEffect(() => {
     for (const [key, hunks] of Object.entries(hunksByKey)) {
@@ -492,11 +500,12 @@ export function DiffView({
             staged: diff.staged_files,
             unstaged: diff.unstaged_files,
             hunksByKey,
-            collapsedByKey,
+            collapsedByKey:
+              single && focusKey ? { ...collapsedByKey, [focusKey]: false } : collapsedByKey,
             mode,
           })
         : [],
-    [diff, hunksByKey, collapsedByKey, mode],
+    [diff, hunksByKey, collapsedByKey, mode, single, focusKey],
   );
 
   const displayRows = useMemo<DisplayRow[]>(() => {
@@ -504,8 +513,12 @@ export function DiffView({
     // Mockup Diff: sem título acima do código; com uma seção só, o título da
     // coluna basta.
     const manySections = rows.filter((r) => r.kind === "section").length > 1;
+    // Um arquivo por vez: só as linhas do arquivo em foco (até o próximo).
+    let inFocus = !single;
     for (const row of rows) {
-      if (row.kind === "section" && !manySections) continue;
+      if (row.kind === "section" && (single || !manySections)) continue;
+      if (single && row.kind === "file") inFocus = row.key === focusKey;
+      if (!inFocus) continue;
       out.push(row);
       if (row.kind !== "line") continue;
       const saved = comments[row.key];
@@ -522,7 +535,17 @@ export function DiffView({
       }
     }
     return out;
-  }, [rows, comments, draftAnchor]);
+  }, [rows, comments, draftAnchor, single, focusKey]);
+
+  // Foco some (arquivo commitado, descartado) ou ainda não existe → o primeiro.
+  useEffect(() => {
+    if (!single) return;
+    const files = rows.filter((r) => r.kind === "file");
+    if (!files.some((r) => r.kind === "file" && r.key === focusKey)) {
+      const first = files[0];
+      setFocusKey(first && first.kind === "file" ? first.key : null);
+    }
+  }, [single, rows, focusKey]);
 
   const virtualizer = useVirtualizer({
     count: displayRows.length,
@@ -648,7 +671,16 @@ export function DiffView({
       else out.delete(key);
       return out;
     });
-    toggleFile(key, next);
+    if (!single) {
+      toggleFile(key, next);
+      return;
+    }
+    if (next) {
+      const keys = rows.flatMap((r) => (r.kind === "file" ? [r.key] : []));
+      const after = [...keys.slice(keys.indexOf(key) + 1), ...keys.slice(0, keys.indexOf(key))];
+      const nextKey = after.find((k) => !viewed.has(k));
+      if (nextKey) setFocusKey(nextKey);
+    }
   };
 
   const openInEditor = (file: FileDiff) =>
@@ -859,13 +891,13 @@ export function DiffView({
         {open &&
           files.map((file) => {
             const key = fileKeyOf(scope, file.path);
-            const active = stickyFile?.key === key;
+            const active = single ? focusKey === key : stickyFile?.key === key;
             const seen = viewed.has(key);
             const notes = commentsByPath.get(file.path) ?? 0;
             return (
               <button
                 key={key}
-                onClick={() => jumpTo(key)}
+                onClick={() => (single ? setFocusKey(key) : jumpTo(key))}
                 className={`flex items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left font-mono text-[12.5px] transition-colors ${
                   active
                     ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]"
@@ -1442,7 +1474,7 @@ export function DiffView({
         </aside>
 
         <main className="relative min-w-0 flex-1">
-          {stickyFile && (
+          {stickyFile && !single && (
             <button
               onClick={() => jumpTo(stickyFile.key)}
               className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 tyba-divide-b bg-tyba-bg/95 px-4 py-1.5 text-left backdrop-blur"
@@ -1535,7 +1567,7 @@ export function DiffView({
                 ? t("diffCommitMsgPlaceholder")
                 : t("diffCommitStageFirst")
             }
-            className="h-6 min-w-0 flex-1 rounded-[4px] border border-tyba-border bg-black/20 px-2 font-mono text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-green/50"
+            className="h-7 min-w-0 flex-1 rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2.5 font-mono text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-green/50"
           />
           <Button
             variant="ghost"

@@ -10,6 +10,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { GitIcon } from "./icons/GitIcon";
+import { PromptDialog } from "./PromptDialog";
 import { translateError } from "../lib/errors";
 import { requestConfirm } from "../lib/confirm";
 import {
@@ -34,6 +35,7 @@ import {
 } from "../lib/gitHistory";
 import {
   onRepoChanged,
+  repoBranchCreate,
   repoCommitAction,
   repoCommitGraphWrite,
   repoLogStats,
@@ -772,6 +774,7 @@ function CommitDetailPanel({
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Record<string, FileHunks | "loading" | string>>({});
   const [busy, setBusy] = useState(false);
+  const [branchPrompt, setBranchPrompt] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -1014,7 +1017,30 @@ function CommitDetailPanel({
               >
                 {copied ? t("gitLogCopied") : t("gitLogCopyHash")}
               </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setBranchPrompt(true)}
+                className="col-span-2 rounded-[6px] border border-tyba-border-strong px-2.5 py-1.5 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50"
+              >
+                {t("gitLogCreateBranch")}
+              </button>
             </div>
+            <PromptDialog
+              open={branchPrompt}
+              onOpenChange={setBranchPrompt}
+              title={t("gitLogCreateBranchTitle", { sha: shortSha(sha) })}
+              placeholder={t("gitLogCreateBranchPlaceholder")}
+              onSubmit={(name) => {
+                if (!name) return;
+                setActionError(null);
+                setBusy(true);
+                repoBranchCreate(session.id, name, sha)
+                  .then(() => onChanged(t("gitLogBranchCreated", { branch: name, sha: shortSha(sha) })))
+                  .catch((e) => setActionError(translateError(e, t)))
+                  .finally(() => setBusy(false));
+              }}
+            />
             {actionError && (
               <p role="alert" className="text-[11px] text-tyba-red">
                 {actionError}
