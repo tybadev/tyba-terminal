@@ -335,7 +335,7 @@
   --tyba-selection-alpha: 25%;
   /* 50%, e não os 62% do mockup: a 62% o vidro apagava a aurora já no topo
      da sidebar e do painel, e o claro lia como branco chapado (2026-10-13). */
-  --tyba-glass-alpha: 50%;
+  --tyba-glass-alpha: 62%;
 
   /* No claro a aresta de luz não existe (branco sobre branco). A aurora
      é a tripla da marca, mais presente que no escuro: sobre branco frio
@@ -355,13 +355,12 @@
      sidebar e painel de vidro —, e com os valores do mockup sobrava ~7% de
      cor numa faixa de 72px, que no app lia como branco chapado. O terminal é
      `sunken` opaco: a aurora não chega ao texto dele. */
-  /* Aurora com as cores VIVAS da marca (#7cc544, #2dd4bf, #8b5cf6), não com
-     os acentos escurecidos do claro: estes viram cinza misturados no branco. */
+  /* Aurora do mockup aprovado (PropostaClaro, 2026-10-12), valores literais:
+     não deriva dos acentos do tema, que foram escurecidos para texto. */
   --tyba-aurora:
-    radial-gradient(720px 520px at 6% -14%, rgba(124, 197, 68, 0.30), transparent 62%),
-    radial-gradient(780px 540px at 32% -16%, rgba(45, 212, 191, 0.30), transparent 62%),
-    radial-gradient(840px 560px at 60% -14%, rgba(139, 92, 246, 0.18), transparent 62%),
-    radial-gradient(760px 520px at 90% -12%, rgba(45, 212, 191, 0.22), transparent 62%);
+    radial-gradient(1100px 460px at 70% -12%, rgba(122, 76, 232, 0.13), transparent 62%),
+    radial-gradient(800px 400px at 20% -10%, rgba(15, 157, 140, 0.11), transparent 60%),
+    radial-gradient(600px 340px at 45% -8%, rgba(78, 150, 34, 0.09), transparent 58%);
 
   --tyba-shadow-sm: 0 1px 2px rgba(23, 23, 28, 0.08);
   --tyba-shadow-md: 0 4px 16px rgba(23, 23, 28, 0.1);
