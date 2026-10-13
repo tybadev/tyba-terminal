@@ -140,7 +140,7 @@ import { FilesPanel } from "./components/FilesPanel";
 import { GitHistoryView } from "./components/GitHistoryView";
 import { DockerPanel } from "./components/DockerPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
-import { type PanelTab } from "./components/SidePanelBar";
+import { SidePanelBar, type PanelTab } from "./components/SidePanelBar";
 import {
   escClosesPanel,
   litPanel,
@@ -168,15 +168,8 @@ import {
 } from "./lib/contentTabs";
 import { AgentsPanel } from "./components/AgentsPanel";
 import { PrListView } from "./components/PrListView";
-import { GitScreen, useCiFailing } from "./components/GitScreen";
-import { AppRail } from "./components/AppRail";
-import {
-  openGitScreen,
-  railSections,
-  resolvePlace,
-  setGitPlace,
-  useGitPlace,
-} from "./lib/gitScreen";
+import { GitScreen } from "./components/GitScreen";
+import { openGitScreen } from "./lib/gitScreen";
 import { PrDetailView } from "./components/PrDetailView";
 import { SubagentViewer } from "./components/SubagentViewer";
 import { ForgePanel } from "./components/ForgePanel";
@@ -1646,7 +1639,6 @@ export default function App() {
   const lastGitSessionRef = useRef<Session | null>(null);
   if (gitPanelTarget) lastGitSessionRef.current = gitPanelTarget;
   const gitScreenSession = gitPanelTarget ?? (gitMotion.mounted ? lastGitSessionRef.current : null);
-  const gitPlace = useGitPlace(gitPanelTarget?.id ?? "");
   const agentsSideActive = Boolean(sideView?.startsWith("agents:"));
   const agentsMotion = usePresence(agentsSideActive, reducedMotion ? 0 : 150);
   const lastAgentsSessionRef = useRef<SessionId | null>(null);
@@ -2902,12 +2894,6 @@ export default function App() {
     (w: Workspace): string | null => workspaceMatchDir(w, sessionCwds),
     [sessionCwds],
   );
-  // Repo do Git aberto: contador de alterações e CI falhando no trilho.
-  const gitRailSnapshot = useMemo(() => {
-    const dir = activeWorkspace ? workspaceGitDir(activeWorkspace) : null;
-    return dir ? snapshotForDir(repoSnapshots, dir) : undefined;
-  }, [activeWorkspace, workspaceGitDir, repoSnapshots]);
-  const ciFailing = useCiFailing(gitPanelTarget?.id ?? null, gitRailSnapshot?.branch ?? null);
 
   // Ver `toolbarBranchChip`: a decisão de rótulo/ação/"não sei" mora lá, pura e
   // testada. Aqui só se junta o estado que a tela tem.
@@ -5360,6 +5346,36 @@ export default function App() {
 
           <Clock />
 
+          <SidePanelBar
+            tabs={panelTabs}
+            lit={
+              activeContent?.kind === "session-diff"
+                ? "diff"
+                : litPanel(sideView, fileSessionId)
+            }
+            onClick={onPanelClick}
+            onEscape={() => {
+              if (activeWorkspace) {
+                void closeSideView(activeWorkspace.id).catch(() => {});
+              }
+            }}
+          />
+
+          <ErrorBoundary region="forge">
+            <ForgePanel
+              sessionId={activeId}
+              repoRoot={activeGitStatus?.root ?? null}
+            />
+          </ErrorBoundary>
+
+          <IconAction
+            label={t("openProjectFolder")}
+            shortcut={bindings.openFolder}
+            onClick={() => void openProjectFolder()}
+          >
+            <FolderOpen size={16} />
+          </IconAction>
+
           <ErrorBoundary region="notificações">
             <NotificationsInbox
               sessions={sessions}
@@ -6836,46 +6852,6 @@ export default function App() {
                   </>
                 )}
               </main>
-
-              {/* Trilho único na borda direita (antes, ícones no header). */}
-              <AppRail
-                tabs={panelTabs}
-                lit={litPanel(sideView, fileSessionId)}
-                git={
-                  gitPanelTarget
-                    ? {
-                        sections: railSections(Boolean(gitPanelTarget.worktree)),
-                        active: resolvePlace(gitPlace, Boolean(gitPanelTarget.worktree)).section,
-                        changed: gitRailSnapshot?.status?.changed ?? 0,
-                        ciFailing,
-                        onPick: (section) => setGitPlace(gitPanelTarget.id, { section, pr: null }),
-                      }
-                    : null
-                }
-                onClick={onPanelClick}
-                onEscape={() => {
-                  if (activeWorkspace) {
-                    void closeSideView(activeWorkspace.id).catch(() => {});
-                  }
-                }}
-                footer={
-                  <>
-                    <ErrorBoundary region="forge">
-                      <ForgePanel
-                        sessionId={activeId}
-                        repoRoot={activeGitStatus?.root ?? null}
-                      />
-                    </ErrorBoundary>
-                    <IconAction
-                      label={t("openProjectFolder")}
-                      shortcut={bindings.openFolder}
-                      onClick={() => void openProjectFolder()}
-                    >
-                      <FolderOpen size={16} />
-                    </IconAction>
-                  </>
-                }
-              />
 
               <ShortcutsPanel
                 open={shortcutsOpen}

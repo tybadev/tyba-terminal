@@ -8,6 +8,12 @@ import {
   X,
 } from "@phosphor-icons/react";
 
+import { Shortcut } from "@/components/ui/kbd";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { AgentIcon } from "./icons/AgentIcon";
 import { DockerIcon } from "./icons/DockerIcon";
 import { GitIcon } from "./icons/GitIcon";
@@ -63,6 +69,11 @@ export function PanelIcon({
 /** Texto da cor da área, para o ícone do cabeçalho do painel. */
 export const areaText = (kind: PanelKind) => AREA[kind].text;
 
+const DOT: Record<NonNullable<PanelIndicator["dot"]>, string> = {
+  green: "bg-tyba-green",
+  amber: "bg-tyba-amber",
+  red: "bg-tyba-red",
+};
 
 export type PanelTab = {
   kind: PanelKind;
@@ -71,6 +82,83 @@ export type PanelTab = {
   shortcut?: string;
   indicator: PanelIndicator;
 };
+
+/** Os ícones da direita do header: as abas do painel lateral único. */
+export function SidePanelBar({
+  tabs,
+  lit,
+  onClick,
+  onEscape,
+}: {
+  tabs: PanelTab[];
+  lit: PanelKind | null;
+  onClick: (kind: PanelKind) => void;
+  /** Esc com o foco num ícone fecha o painel aberto. */
+  onEscape: () => void;
+}) {
+  const { t } = useTranslation();
+  if (tabs.length === 0) return null;
+  return (
+    <nav
+      aria-label={t("sidePanelNav")}
+      className="flex items-center gap-0.5"
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && lit) {
+          e.preventDefault();
+          onEscape();
+        }
+      }}
+    >
+      {tabs.map((tab) => {
+        const on = tab.kind === lit;
+        const area = AREA[tab.kind];
+        return (
+          <Tooltip key={tab.kind}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={tab.label}
+                aria-pressed={on}
+                onClick={() => onClick(tab.kind)}
+                className={`relative flex h-7 w-[30px] items-center justify-center rounded-[6px] outline-none focus-visible:ring-2 focus-visible:ring-tyba-cyan ${
+                  on
+                    ? `${area.text} bg-[var(--tyba-lit-bg)] shadow-[var(--tyba-lit-glow)]`
+                    : "text-tyba-text-faint hover:text-tyba-text"
+                }`}
+              >
+                <PanelIcon kind={tab.kind} />
+                {tab.indicator.dot && (
+                  <span
+                    aria-hidden
+                    className={`absolute right-[5px] top-1 size-[5px] rounded-full ${DOT[tab.indicator.dot]}`}
+                  />
+                )}
+                {tab.indicator.count !== null && (
+                  <span
+                    aria-hidden
+                    className="absolute right-[3px] top-[3px] flex h-3 min-w-3 items-center justify-center rounded-[6px] bg-tyba-amber px-[3px] text-[9px] leading-none text-tyba-text-inverse"
+                  >
+                    {tab.indicator.count > 9 ? "9+" : tab.indicator.count}
+                  </span>
+                )}
+                {on && (
+                  <span
+                    aria-hidden
+                    className={`absolute inset-x-[7px] -bottom-px h-0.5 rounded-[1px] ${area.bar}`}
+                  />
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="flex items-center gap-2">
+              {tab.tooltip}
+              {tab.shortcut && <Shortcut combo={tab.shortcut} />}
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
+    </nav>
+  );
+}
 
 /**
  * Cabeçalho comum dos painéis (mockup): ícone da área, título, extras e ✕.
