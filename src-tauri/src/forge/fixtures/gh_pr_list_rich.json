@@ -1,0 +1,81 @@
+[
+  {
+    "number": 42,
+    "title": "feat: tela de exemplo",
+    "url": "https://github.com/exemplo/app/pull/42",
+    "state": "OPEN",
+    "isDraft": false,
+    "author": { "login": "ana-dev", "name": "Ana Exemplo", "is_bot": false },
+    "headRefName": "tyba/tela-exemplo-ab12",
+    "baseRefName": "main",
+    "updatedAt": "2026-01-02T10:00:00Z",
+    "mergedAt": null,
+    "mergedBy": null,
+    "statusCheckRollup": [
+      { "__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "workflowName": "CI", "startedAt": "2026-01-02T09:00:00Z", "completedAt": "2026-01-02T09:05:00Z", "detailsUrl": "https://github.com/exemplo/app/actions/runs/1/job/1" },
+      { "__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "FAILURE", "workflowName": "CI", "startedAt": "2026-01-02T09:00:00Z", "completedAt": "2026-01-02T09:02:00Z", "detailsUrl": "https://github.com/exemplo/app/actions/runs/1/job/2" },
+      { "__typename": "CheckRun", "name": "e2e", "status": "IN_PROGRESS", "conclusion": "", "workflowName": "CI", "startedAt": "2026-01-02T09:00:00Z", "completedAt": "0001-01-01T00:00:00Z", "detailsUrl": "https://github.com/exemplo/app/actions/runs/1/job/3" },
+      { "__typename": "CheckRun", "name": "deploy-preview", "status": "COMPLETED", "conclusion": "SKIPPED", "workflowName": "CI", "startedAt": "2026-01-02T09:00:00Z", "completedAt": "2026-01-02T09:00:01Z", "detailsUrl": "https://github.com/exemplo/app/actions/runs/1/job/4" },
+      { "__typename": "StatusContext", "context": "ci/externo", "state": "PENDING", "targetUrl": "https://ci.exemplo.invalid/1", "startedAt": "2026-01-02T09:00:00Z" }
+    ],
+    "reviewDecision": "APPROVED",
+    "latestReviews": [
+      { "author": { "login": "beto-dev" }, "state": "APPROVED", "body": "", "submittedAt": "2026-01-02T11:00:00Z" },
+      { "author": { "login": "carla-dev" }, "state": "COMMENTED", "body": "ok", "submittedAt": "2026-01-02T11:30:00Z" }
+    ],
+    "reviewRequests": [
+      { "__typename": "User", "login": "eu-mesmo" }
+    ],
+    "comments": [
+      { "author": { "login": "beto-dev" }, "body": "boa", "createdAt": "2026-01-02T11:00:00Z" },
+      { "author": { "login": "ana-dev" }, "body": "valeu", "createdAt": "2026-01-02T11:10:00Z" }
+    ],
+    "additions": 120,
+    "deletions": 8
+  },
+  {
+    "number": 41,
+    "title": "wip: rascunho de exemplo",
+    "url": "https://github.com/exemplo/app/pull/41",
+    "state": "OPEN",
+    "isDraft": true,
+    "author": { "login": "eu-mesmo", "name": "", "is_bot": false },
+    "headRefName": "rascunho",
+    "baseRefName": "main",
+    "updatedAt": "2026-01-01T10:00:00Z",
+    "mergedAt": null,
+    "mergedBy": null,
+    "statusCheckRollup": [],
+    "reviewDecision": "",
+    "latestReviews": [],
+    "reviewRequests": [
+      { "__typename": "Team", "name": "time-core", "slug": "exemplo/time-core" }
+    ],
+    "comments": [],
+    "additions": 1,
+    "deletions": 0
+  },
+  {
+    "number": 40,
+    "title": "fix: correção de exemplo",
+    "url": "https://github.com/exemplo/app/pull/40",
+    "state": "MERGED",
+    "isDraft": false,
+    "author": { "login": "beto-dev" },
+    "headRefName": "fix/exemplo",
+    "baseRefName": "main",
+    "updatedAt": "2025-12-30T10:00:00Z",
+    "mergedAt": "2025-12-30T10:00:00Z",
+    "mergedBy": { "login": "ana-dev", "name": "Ana Exemplo" },
+    "statusCheckRollup": null,
+    "reviewDecision": "CHANGES_REQUESTED",
+    "latestReviews": [
+      { "author": { "login": "carla-dev" }, "state": "APPROVED" },
+      { "author": { "login": "davi-dev" }, "state": "APPROVED" }
+    ],
+    "reviewRequests": [],
+    "comments": [],
+    "additions": 3,
+    "deletions": 3
+  }
+]

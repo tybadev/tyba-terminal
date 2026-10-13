@@ -3094,6 +3094,72 @@ async fn forge_workflow_jobs(
     forge_blocking(move || forge::workflow_jobs(&path, run_id)).await
 }
 
+/// Sessão do TYBA cujo worktree está na branch `head` do PR — no mesmo repo da
+/// sessão que perguntou, quando ela sabe qual é.
+fn pr_session_link(
+    sessions: &[session::Session],
+    repo_root: Option<&std::path::Path>,
+    head: &str,
+) -> Option<forge::prs::PrSessionLink> {
+    let s = sessions.iter().find(|s| {
+        s.worktree.as_ref().is_some_and(|wt| wt.branch == head)
+            && repo_root.is_none_or(|root| s.repo_root.as_deref() == Some(root))
+    })?;
+    let agent = match &s.kind {
+        session::SessionKind::Agent { runner } => Some(match runner {
+            session::AgentRunnerKind::ClaudeCode => "claude".to_string(),
+            session::AgentRunnerKind::Codex => "codex".to_string(),
+            session::AgentRunnerKind::Custom(name) => name.clone(),
+        }),
+        _ => None,
+    };
+    Some(forge::prs::PrSessionLink {
+        session: s.id,
+        title: s.title.clone(),
+        agent,
+    })
+}
+
+/// Lista rica de PRs. `None` = a forja não tem lista rica (GitLab, sem `gh`).
+/// O vínculo com sessão é preenchido aqui, fora do cache da forja.
+#[tauri::command]
+async fn forge_pr_page(
+    state: State<'_, AppState>,
+    id: SessionId,
+    filter: forge::prs::PrFilter,
+    fresh: bool,
+) -> Result<Option<forge::prs::PrPage>, AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let repo_root = state.sessions.get(id).and_then(|s| s.repo_root);
+    let sessions = state.sessions.list();
+    let path = ctx.path;
+    let mut page = forge_blocking(move || forge::prs::page(&path, filter, fresh)).await?;
+    if let Some(page) = page.as_mut() {
+        for item in page.items.iter_mut().chain(page.recent_merged.iter_mut()) {
+            item.session = pr_session_link(&sessions, repo_root.as_deref(), &item.head);
+        }
+    }
+    Ok(page)
+}
+
+#[tauri::command]
+async fn forge_pr_detail(
+    state: State<'_, AppState>,
+    id: SessionId,
+    number: u64,
+    fresh: bool,
+) -> Result<Option<forge::prs::PrDetail>, AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let repo_root = state.sessions.get(id).and_then(|s| s.repo_root);
+    let sessions = state.sessions.list();
+    let path = ctx.path;
+    let mut detail = forge_blocking(move || forge::prs::detail(&path, number, fresh)).await?;
+    if let Some(detail) = detail.as_mut() {
+        detail.session = pr_session_link(&sessions, repo_root.as_deref(), &detail.head);
+    }
+    Ok(detail)
+}
+
 /// Abre um arquivo do worktree como TEXTO — nunca "executa" o arquivo.
 /// `open <arquivo>`/`xdg-open` rodariam um script/app deixado por um
 /// agente no worktree com um clique; aqui só editor configurado ou
@@ -3403,6 +3469,41 @@ async fn repo_commit_graph_write(app: AppHandle, id: SessionId) -> Result<(), St
     off_main(app, move |_, state| {
         let ctx = session_repo_context(&state, id)?;
         worktree::log::write_commit_graph(&ctx.path)
+    })
+    .await?
+}
+
+/// Lista de PRs do repo da sessão como ABA de conteúdo.
+#[tauri::command]
+async fn open_pr_list_tab(app: AppHandle, id: SessionId) -> Result<(), String> {
+    off_main(app, move |app, state| {
+        session_repo_context(&state, id)?;
+        let ws = state.layout.workspace_of_session(id);
+        state
+            .layout
+            .open_content_tab(ws, &layout::pr_list_view(id))
+            .map_err(|e| e.to_string())?;
+        emit_layout(app, &state);
+        Ok(())
+    })
+    .await?
+}
+
+/// Um PR do repo da sessão como ABA de conteúdo.
+#[tauri::command]
+async fn open_pr_tab(app: AppHandle, id: SessionId, number: u64) -> Result<(), String> {
+    if number == 0 {
+        return Err("número de PR inválido".into());
+    }
+    off_main(app, move |app, state| {
+        session_repo_context(&state, id)?;
+        let ws = state.layout.workspace_of_session(id);
+        state
+            .layout
+            .open_content_tab(ws, &layout::pr_view(id, number))
+            .map_err(|e| e.to_string())?;
+        emit_layout(app, &state);
+        Ok(())
     })
     .await?
 }
@@ -7718,6 +7819,8 @@ pub fn run() {
             repo_log_stats,
             repo_commit_graph_write,
             open_git_log_tab,
+            open_pr_list_tab,
+            open_pr_tab,
             open_diff_tab,
             open_tunnels_panel,
             open_git_panel,
@@ -7776,6 +7879,8 @@ pub fn run() {
             forge_create_pr,
             forge_pr_list,
             forge_workflow_runs,
+            forge_pr_page,
+            forge_pr_detail,
             forge_workflow_jobs,
             session_git_status,
             open_worktree_file,

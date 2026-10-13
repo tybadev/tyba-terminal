@@ -356,6 +356,10 @@ pub const VIEW_CONTAINER_FILES_PREFIX: &str = "container-files:";
 pub const VIEW_SESSION_DIFF_PREFIX: &str = "session-diff:";
 /// Aba de conteúdo: histórico (log + grafo) do repo da sessão, `git-log:<sessão>`.
 pub const VIEW_GIT_LOG_PREFIX: &str = "git-log:";
+/// Aba de conteúdo: lista de PRs do repo da sessão, `prs:<sessão>`.
+pub const VIEW_PR_LIST_PREFIX: &str = "prs:";
+/// Aba de conteúdo: um PR do repo da sessão, `pr:<sessão>:<número>`.
+pub const VIEW_PR_PREFIX: &str = "pr:";
 pub const DOCKER_WORKSPACE_NAME: &str = "Docker";
 pub const FALLBACK_WORKSPACE_NAME: &str = "tyba";
 
@@ -422,13 +426,29 @@ pub fn git_log_view(session: SessionId) -> String {
     format!("{VIEW_GIT_LOG_PREFIX}{session}")
 }
 
-/// Sessão dona de uma aba de conteúdo (editor, diff ou histórico da sessão).
+pub fn pr_list_view(session: SessionId) -> String {
+    format!("{VIEW_PR_LIST_PREFIX}{session}")
+}
+
+pub fn pr_view(session: SessionId, number: u64) -> String {
+    format!("{VIEW_PR_PREFIX}{session}:{number}")
+}
+
+fn pr_view_session(view: &str) -> Option<SessionId> {
+    let (sid, _) = view.strip_prefix(VIEW_PR_PREFIX)?.split_once(':')?;
+    Uuid::parse_str(sid).ok()
+}
+
+/// Sessão dona de uma aba de conteúdo (editor, diff, histórico ou PRs da sessão).
 pub fn content_view_session(view: &str) -> Option<SessionId> {
-    editor_view_session(view).or_else(|| {
-        view.strip_prefix(VIEW_SESSION_DIFF_PREFIX)
-            .or_else(|| view.strip_prefix(VIEW_GIT_LOG_PREFIX))
-            .and_then(|s| Uuid::parse_str(s).ok())
-    })
+    editor_view_session(view)
+        .or_else(|| pr_view_session(view))
+        .or_else(|| {
+            view.strip_prefix(VIEW_SESSION_DIFF_PREFIX)
+                .or_else(|| view.strip_prefix(VIEW_GIT_LOG_PREFIX))
+                .or_else(|| view.strip_prefix(VIEW_PR_LIST_PREFIX))
+                .and_then(|s| Uuid::parse_str(s).ok())
+        })
 }
 
 fn diff_view_session(view: &str) -> Option<SessionId> {
@@ -3208,6 +3228,30 @@ mod tests {
             .tabs
             .iter()
             .all(|t| t.view.as_deref() != Some(git_log_view(s).as_str())));
+    }
+
+    #[test]
+    fn pr_tabs_belong_to_their_session_and_are_singletons() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let list = mgr.open_content_tab(None, &pr_list_view(s)).unwrap();
+        assert_eq!(mgr.open_content_tab(None, &pr_list_view(s)).unwrap(), list);
+        let pr = mgr.open_content_tab(None, &pr_view(s, 42)).unwrap();
+        assert_eq!(mgr.open_content_tab(None, &pr_view(s, 42)).unwrap(), pr);
+        assert_ne!(mgr.open_content_tab(None, &pr_view(s, 7)).unwrap(), pr);
+        assert_ne!(list, pr);
+        assert_eq!(pr_view(s, 42), format!("pr:{s}:42"));
+        assert_eq!(content_view_session(&pr_list_view(s)), Some(s));
+        assert_eq!(content_view_session(&pr_view(s, 42)), Some(s));
+        assert_eq!(content_view_session("pr:nao-e-uuid:1"), None);
+        mgr.create_tab(sid(), None).unwrap();
+        mgr.session_disposed(s).unwrap();
+        assert!(active_ws(&mgr).tabs.iter().all(|t| t
+            .view
+            .as_deref()
+            .and_then(content_view_session)
+            != Some(s)));
     }
 
     #[test]

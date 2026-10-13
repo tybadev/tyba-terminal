@@ -9,7 +9,7 @@ use crate::error::AppError;
 
 pub const CLI: &str = "gh";
 
-fn cli_failed(detail: impl Into<String>) -> AppError {
+pub(super) fn cli_failed(detail: impl Into<String>) -> AppError {
     let detail = detail.into();
     if is_auth_error(&detail) {
         AppError::new("forge.not_authenticated").with("cli", CLI)
