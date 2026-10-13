@@ -501,7 +501,11 @@ export function DiffView({
 
   const displayRows = useMemo<DisplayRow[]>(() => {
     const out: DisplayRow[] = [];
+    // Mockup Diff: sem título acima do código; com uma seção só, o título da
+    // coluna basta.
+    const manySections = rows.filter((r) => r.kind === "section").length > 1;
     for (const row of rows) {
+      if (row.kind === "section" && !manySections) continue;
       out.push(row);
       if (row.kind !== "line") continue;
       const saved = comments[row.key];
@@ -836,18 +840,22 @@ export function DiffView({
     const open = isSectionOpen(openSections, scope);
     return (
       <div className="flex flex-col gap-px">
-        <button
-          onClick={() => setOpenSections((prev) => toggleSection(prev, scope))}
-          aria-expanded={open}
-          className="tyba-label flex items-center gap-1 px-2 pb-1 pt-3 hover:text-tyba-text-muted"
-        >
-          {open ? (
-            <CaretDown size={9} className="shrink-0" />
-          ) : (
-            <CaretRight size={9} className="shrink-0" />
-          )}
-          {t(SECTION_LABEL_KEY[scope])} · {files.length}
-        </button>
+        {/* Mockup Diff: as ações em lote moram no título da seção na coluna. */}
+        <div className="flex items-center justify-between gap-2 pb-1 pl-2 pr-2.5 pt-3">
+          <button
+            onClick={() => setOpenSections((prev) => toggleSection(prev, scope))}
+            aria-expanded={open}
+            className="tyba-label flex items-center gap-1 hover:text-tyba-text-muted"
+          >
+            {open ? (
+              <CaretDown size={9} className="shrink-0" />
+            ) : (
+              <CaretRight size={9} className="shrink-0" />
+            )}
+            {t(SECTION_LABEL_KEY[scope])} · {files.length}
+          </button>
+          {sectionActions(scope)}
+        </div>
         {open &&
           files.map((file) => {
             const key = fileKeyOf(scope, file.path);
@@ -976,16 +984,11 @@ export function DiffView({
           </div>
         );
       case "section":
+        // Só existe com mais de uma seção (ver displayRows): rótulo fino que
+        // separa as seções; as ações ficam na coluna.
         return (
-          <div className="flex items-baseline gap-2 px-4 pb-2 pt-5">
-            <span className="text-[12px] font-medium uppercase tracking-wide text-tyba-text-muted">
-              {t(SECTION_LABEL_KEY[row.scope])}
-            </span>
-            <span className="font-mono text-[10px] text-tyba-text-faint">
-              {row.count}
-            </span>
-            <span className="flex-1" />
-            {sectionActions(row.scope)}
+          <div className="tyba-label px-4 pb-1.5 pt-4">
+            {t(SECTION_LABEL_KEY[row.scope])} · {row.count}
           </div>
         );
       case "file": {
