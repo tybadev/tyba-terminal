@@ -356,9 +356,10 @@
      cor numa faixa de 72px, que no app lia como branco chapado. O terminal é
      `sunken` opaco: a aurora não chega ao texto dele. */
   --tyba-aurora:
-    radial-gradient(1100px 620px at 70% -12%, color-mix(in srgb, var(--tyba-violet) 20%, transparent), transparent 62%),
-    radial-gradient(800px 540px at 20% -10%, color-mix(in srgb, var(--tyba-cyan) 16%, transparent), transparent 60%),
-    radial-gradient(600px 460px at 45% -8%, color-mix(in srgb, var(--tyba-green) 13%, transparent), transparent 58%);
+    radial-gradient(720px 520px at 6% -14%, color-mix(in srgb, var(--tyba-green) 24%, transparent), transparent 62%),
+    radial-gradient(780px 540px at 32% -16%, color-mix(in srgb, var(--tyba-cyan) 22%, transparent), transparent 62%),
+    radial-gradient(840px 560px at 60% -14%, color-mix(in srgb, var(--tyba-violet) 15%, transparent), transparent 62%),
+    radial-gradient(760px 520px at 90% -12%, color-mix(in srgb, var(--tyba-cyan) 16%, transparent), transparent 62%);
 
   --tyba-shadow-sm: 0 1px 2px rgba(23, 23, 28, 0.08);
   --tyba-shadow-md: 0 4px 16px rgba(23, 23, 28, 0.1);
