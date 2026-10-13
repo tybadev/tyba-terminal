@@ -355,11 +355,13 @@
      sidebar e painel de vidro —, e com os valores do mockup sobrava ~7% de
      cor numa faixa de 72px, que no app lia como branco chapado. O terminal é
      `sunken` opaco: a aurora não chega ao texto dele. */
+  /* Aurora com as cores VIVAS da marca (#7cc544, #2dd4bf, #8b5cf6), não com
+     os acentos escurecidos do claro: estes viram cinza misturados no branco. */
   --tyba-aurora:
-    radial-gradient(720px 520px at 6% -14%, color-mix(in srgb, var(--tyba-green) 24%, transparent), transparent 62%),
-    radial-gradient(780px 540px at 32% -16%, color-mix(in srgb, var(--tyba-cyan) 22%, transparent), transparent 62%),
-    radial-gradient(840px 560px at 60% -14%, color-mix(in srgb, var(--tyba-violet) 15%, transparent), transparent 62%),
-    radial-gradient(760px 520px at 90% -12%, color-mix(in srgb, var(--tyba-cyan) 16%, transparent), transparent 62%);
+    radial-gradient(720px 520px at 6% -14%, rgba(124, 197, 68, 0.30), transparent 62%),
+    radial-gradient(780px 540px at 32% -16%, rgba(45, 212, 191, 0.30), transparent 62%),
+    radial-gradient(840px 560px at 60% -14%, rgba(139, 92, 246, 0.18), transparent 62%),
+    radial-gradient(760px 520px at 90% -12%, rgba(45, 212, 191, 0.22), transparent 62%);
 
   --tyba-shadow-sm: 0 1px 2px rgba(23, 23, 28, 0.08);
   --tyba-shadow-md: 0 4px 16px rgba(23, 23, 28, 0.1);
