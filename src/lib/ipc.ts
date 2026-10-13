@@ -462,6 +462,155 @@ export const forgePrForSession = (id: SessionId) =>
 export const forgePrList = (id: SessionId) =>
   invoke<PullRequest[]>("forge_pr_list", { id });
 
+// --- PRs ricos (git completo, fatias 3–4: só leitura) ----------------------
+// Todo texto que vem da forja (título, corpo, comentário, nome) é entrada não
+// confiável: a UI renderiza como texto, nunca como HTML.
+
+export type PrFilter = "open" | "mine" | "review" | "closed";
+export type PrState = "open" | "draft" | "merged" | "closed";
+export type PrReviewDecision = "approved" | "changes_requested" | "review_required";
+export type PrCheckStatus = "success" | "failure" | "pending" | "skipped";
+
+export interface PrCiSummary {
+  passed: number;
+  failed: number;
+  pending: number;
+  total: number;
+}
+
+/** Sessão do TYBA que trabalha na branch do PR (worktree com a mesma branch). */
+export interface PrSessionLink {
+  session: SessionId;
+  title: string;
+  /** "claude" | "codex" quando a sessão é de agente; `null` se é shell. */
+  agent: string | null;
+}
+
+export interface PrListItem {
+  number: number;
+  title: string;
+  url: string;
+  state: PrState;
+  author: string;
+  author_name: string | null;
+  head: string;
+  base: string;
+  updated_at: string;
+  merged_at: string | null;
+  merged_by: string | null;
+  ci: PrCiSummary;
+  review: PrReviewDecision | null;
+  approvals: number;
+  /** Alguém pediu revisão do usuário logado no `gh`. */
+  review_requested: boolean;
+  comments: number;
+  additions: number;
+  deletions: number;
+  session: PrSessionLink | null;
+}
+
+export interface PrPage {
+  /** Itens do filtro pedido; em "open", rascunhos inclusos. */
+  items: PrListItem[];
+  /** Mesclados recentemente (até 5); só vem no filtro "open". */
+  recent_merged: PrListItem[];
+  counts: { open: number; mine: number; review: number; draft: number };
+  /** `owner/repo`. */
+  repo: string;
+  forge: ForgeKind;
+  /** ISO; quando o core buscou (o cache pode devolver algo de antes). */
+  fetched_at: string;
+}
+
+export interface PrCommit {
+  sha: string;
+  subject: string;
+  author: string;
+  authored_at: string;
+}
+
+export interface PrFile {
+  path: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface PrCheck {
+  name: string;
+  /** Nome do workflow (GitHub Actions) quando houver. */
+  workflow: string | null;
+  status: PrCheckStatus;
+  started_at: string | null;
+  completed_at: string | null;
+  url: string | null;
+}
+
+export interface PrReview {
+  author: string;
+  state: "approved" | "changes_requested" | "commented" | "dismissed" | "pending";
+  submitted_at: string | null;
+  body: string;
+  commit: string | null;
+}
+
+export interface PrThreadComment {
+  author: string;
+  body: string;
+  created_at: string;
+}
+
+/** Comentário em linha (thread de revisão), com o trecho do diff. */
+export interface PrThread {
+  path: string;
+  line: number | null;
+  diff_hunk: string;
+  comments: PrThreadComment[];
+}
+
+export interface PrDetail {
+  number: number;
+  title: string;
+  url: string;
+  state: PrState;
+  author: string;
+  head: string;
+  base: string;
+  created_at: string;
+  body: string;
+  additions: number;
+  deletions: number;
+  changed_files: number;
+  commits: PrCommit[];
+  files: PrFile[];
+  checks: PrCheck[];
+  reviews: PrReview[];
+  /** Revisores pedidos que ainda não revisaram. */
+  pending_reviewers: string[];
+  threads: PrThread[];
+  /** Comentários gerais da conversa (não em linha). */
+  comments: PrThreadComment[];
+  review: PrReviewDecision | null;
+  mergeable: "mergeable" | "conflicting" | "unknown";
+  /** `mergeStateStatus` do GitHub em minúsculas: clean, behind, blocked, dirty… */
+  merge_state: string;
+  session: PrSessionLink | null;
+}
+
+/** `null` = a forja da sessão não tem lista rica (GitLab por enquanto). */
+export const forgePrPage = (id: SessionId, filter: PrFilter, fresh: boolean) =>
+  invoke<PrPage | null>("forge_pr_page", { id, filter, fresh });
+
+export const forgePrDetail = (id: SessionId, number: number, fresh: boolean) =>
+  invoke<PrDetail | null>("forge_pr_detail", { id, number, fresh });
+
+/** Aba "git · pull requests" do repo da sessão. */
+export const openPrListTab = (id: SessionId) =>
+  invoke<void>("open_pr_list_tab", { id });
+
+/** Aba "PR #N". */
+export const openPrTab = (id: SessionId, number: number) =>
+  invoke<void>("open_pr_tab", { id, number });
+
 export interface WorkflowRun {
   id: number;
   name: string;
