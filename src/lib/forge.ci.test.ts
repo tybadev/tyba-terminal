@@ -80,7 +80,16 @@ describe("sortRuns", () => {
 describe("jobTone", () => {
   it("job na fila é pendente e não tem url — a UI não pode explodir", () => {
     expect(
-      jobTone({ name: "publish", status: "queued", conclusion: null, url: null }),
+      jobTone({
+        id: 1,
+        name: "publish",
+        status: "queued",
+        conclusion: null,
+        url: null,
+        started_at: null,
+        completed_at: null,
+        steps: [],
+      }),
     ).toBe("pending");
   });
 });

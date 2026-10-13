@@ -332,6 +332,35 @@ export const worktreeDiscard = (id: SessionId, paths: string[]) =>
 export const worktreeCommit = (id: SessionId, message: string) =>
   invoke<void>("worktree_commit", { id, message });
 
+/** Amend do último commit. O core recusa se o HEAD já está no upstream
+ *  (reescrever história publicada). */
+export const worktreeCommitAmend = (id: SessionId, message: string) =>
+  invoke<void>("worktree_commit_amend", { id, message });
+
+/** `git pull --ff-only`; devolve um resumo curto ("3 commits", "já em dia"). */
+export const worktreePull = (id: SessionId) =>
+  invoke<string>("worktree_pull", { id });
+
+export type HunkAction = "stage" | "unstage" | "discard";
+
+/**
+ * Age num trecho só. `hunkIndex` e `header` vêm do `sessionDiffHunks` do
+ * mesmo `scope`; o core recalcula o diff e recusa se o trecho mudou
+ * (`header` diferente). stage/discard valem para "unstaged"; unstage para "staged".
+ */
+export const worktreeHunkAction = (
+  id: SessionId,
+  path: string,
+  scope: DiffScope,
+  hunkIndex: number,
+  header: string,
+  action: HunkAction,
+) => invoke<void>("worktree_hunk_action", { id, path, scope, hunkIndex, header, action });
+
+/** Cria branch apontando para `at` (sha); não troca de branch. */
+export const repoBranchCreate = (id: SessionId, name: string, at: string) =>
+  invoke<void>("repo_branch_create", { id, name, at });
+
 export const worktreePush = (id: SessionId) =>
   invoke<string>("worktree_push", { id });
 
@@ -647,12 +676,40 @@ export interface WorkflowRun {
   created_at: string;
 }
 
+export interface WorkflowStep {
+  name: string;
+  status: string;
+  conclusion: string | null;
+}
+
 export interface WorkflowJob {
+  /** id do job no GitHub (para buscar o log). */
+  id: number;
   name: string;
   status: string;
   conclusion: string | null;
   url: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  steps: WorkflowStep[];
 }
+
+export interface RunLog {
+  /** Texto do log, já com segredos mascarados pelo core. */
+  text: string;
+  /** O core cortou o começo para caber no teto. */
+  truncated: boolean;
+  /** Nome do primeiro passo que falhou, quando o job falhou. */
+  failed_step: string | null;
+}
+
+/** Log de um job (`gh run view --job <id> --log`, com teto e redação). */
+export const forgeRunLog = (id: SessionId, jobId: number) =>
+  invoke<RunLog>("forge_run_log", { id, jobId });
+
+/** VERMELHO: só pela UI, depois de confirmação. `failedOnly` = só os jobs que falharam. */
+export const forgeRunRerun = (id: SessionId, runId: number, failedOnly: boolean) =>
+  invoke<void>("forge_run_rerun", { id, runId, failedOnly });
 
 /**
  * `null` = a forja não sabe olhar CI (GitLab hoje). `[]` = não há run.
