@@ -103,6 +103,13 @@ fn codex_real_executa_o_hook_do_tyba_e_o_session_start_chega_no_core() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    // `UserPromptSubmit` também dispara antes da chamada ao modelo: prova que
+    // o trust computado vale para os hooks de observação, não só para o
+    // `SessionStart`.
+    assert!(
+        events.iter().any(|e| e == "UserPromptSubmit"),
+        "hook de observação ignorado pelo Codex: {events:?}"
+    );
 }
 
 #[test]

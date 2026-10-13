@@ -5,7 +5,10 @@ import {
   agentBinaryName,
   noticeKey,
   showShellAgentNotice,
+  noJailMessageKey,
   showUnjailedNotice,
+  ungatedMessageKey,
+  ungatedReason,
 } from "./shellAgentNotice";
 
 const shell: SessionKind = { type: "shell" };
@@ -69,6 +72,41 @@ describe("showShellAgentNotice", () => {
 // Shim v2 (tech-spec §7/§9, decisão 5 da spec): hosting&&jailed -> nada;
 // hosting&&!jailed -> ESTE sinal âmbar próprio, nunca o "sem gate" existente;
 // !hosting -> nem entra aqui (showShellAgentNotice cuida daquele caso).
+describe("M6-A: claude que passou pelo tyba _jail", () => {
+  test("nunca ganha a faixa âmbar de reabrir, em rota nenhuma", () => {
+    for (const shim of ["passthrough", "ungated", "fallback"] as const) {
+      expect(
+        showShellAgentNotice(shell, detected(), false, undefined, shim),
+      ).toBe(false);
+    }
+  });
+
+  test("fallback e segundo plano acendem o vermelho; passthrough não", () => {
+    expect(ungatedReason(shell, detected(), false, "fallback")).toBe("fallback");
+    expect(ungatedReason(shell, detected(), false, "ungated")).toBe("ungated");
+    expect(ungatedReason(shell, detected(), false, "raw")).toBe("raw");
+    expect(ungatedMessageKey("raw")).toBe("shellAgentUngatedRaw");
+    expect(ungatedReason(shell, detected(), false, "passthrough")).toBeNull();
+    expect(ungatedReason(shell, detected(), false, null)).toBeNull();
+  });
+
+  test("hospedado ou sem agente não é sem gate", () => {
+    expect(ungatedReason(shell, detected(), true, "fallback")).toBeNull();
+    expect(ungatedReason(shell, null, false, "fallback")).toBeNull();
+    expect(ungatedReason(agent, detected(), false, "fallback")).toBeNull();
+  });
+});
+
+describe("M7: motivo de estar sem jaula", () => {
+  test("uma frase por motivo, e a genérica sem motivo", () => {
+    expect(noJailMessageKey("home")).toBe("shellUnjailedHome");
+    expect(noJailMessageKey("hidden_dir")).toBe("shellUnjailedHiddenDir");
+    expect(noJailMessageKey("outside_home")).toBe("shellUnjailedOutsideHome");
+    expect(noJailMessageKey("sandbox")).toBe("shellUnjailedSandbox");
+    expect(noJailMessageKey(null)).toBe("shellUnjailedNotice");
+  });
+});
+
 describe("showUnjailedNotice", () => {
   test("hospedado E jaulado não mostra nada", () => {
     expect(showUnjailedNotice(shell, detected(), true, true)).toBe(false);

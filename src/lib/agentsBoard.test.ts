@@ -118,6 +118,11 @@ const asking: SessionStatus = {
   hint: null,
   reason: "reply",
 };
+const nativePrompt: SessionStatus = {
+  state: "awaiting_input",
+  hint: "Bash: ls",
+  reason: "native_prompt",
+};
 const running: SessionStatus = { state: "running" };
 const failed: SessionStatus = { state: "failed", reason: "boom" };
 const done: SessionStatus = { state: "idle", summary: null };
@@ -127,6 +132,15 @@ describe("urgência", () => {
     // As duas são `awaiting_input` e valem rank 3 no sidebar, onde a linha
     // mostra o motivo. No quadro, quem ordena é a urgência.
     expect(urgencyOf(session("a", blocked))).toBeGreaterThan(
+      urgencyOf(session("b", asking)),
+    );
+  });
+
+  test("prompt nativo desempata como aprovação, não como resposta (R5)", () => {
+    expect(urgencyOf(session("a", nativePrompt))).toBe(
+      urgencyOf(session("b", blocked)),
+    );
+    expect(urgencyOf(session("a", nativePrompt))).toBeGreaterThan(
       urgencyOf(session("b", asking)),
     );
   });
@@ -640,6 +654,7 @@ const approval = (
   command: "rm -rf build",
   cwd: null,
   risk: "green",
+  risk_reason: null,
   context: null,
   requested_at_ms: requestedAtMs,
 });

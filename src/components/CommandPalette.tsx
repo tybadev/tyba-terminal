@@ -25,6 +25,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { AgentIcon } from "./icons/AgentIcon";
+import { GitIcon } from "./icons/GitIcon";
 
 import {
   CommandDialog,
@@ -138,6 +139,8 @@ interface Props {
   onOpenStats: () => void;
   onTogglePanel: () => void;
   onOpenFiles: () => void;
+  /** Só com a sessão ativa num repo git. */
+  onOpenGitHistory?: () => void;
   onGoToWorkspace: (id: WorkspaceId) => void;
   launchConfigs: LaunchConfig[];
   onApplyLaunchConfig: (id: LaunchConfigId) => void;
@@ -269,6 +272,7 @@ export function CommandPalette({
   onOpenStats,
   onTogglePanel,
   onOpenFiles,
+  onOpenGitHistory,
   onGoToWorkspace,
   launchConfigs,
   onApplyLaunchConfig,
@@ -583,6 +587,12 @@ export function CommandPalette({
               <FolderOpen size={15} />
               {t("filesPanel")}
               <Shortcut combo={bindings.files} className="ml-auto" />
+            </CommandItem>
+          )}
+          {onOpenGitHistory && (
+            <CommandItem onSelect={run(onOpenGitHistory)}>
+              <GitIcon size={15} />
+              {t("gitLogOpenPalette")}
             </CommandItem>
           )}
           <CommandItem onSelect={run(onOpenAgentsBoard)}>

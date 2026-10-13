@@ -41,6 +41,15 @@ pub struct AgentDetectedPayload {
     /// `detected` é `None`: sem agente, não há o que hospedar.
     pub hosting: bool,
     pub jailed: bool,
+    /// M6-A: o claude cru passou pelo `tyba _jail` (`TYBA_SHIM` no env):
+    /// `passthrough` (versão, ajuda, `mcp`...), `ungated` (sessão em segundo
+    /// plano) ou `fallback` (o core não hospedou). Um claude que passou pelo
+    /// TYBA nunca ganha a faixa "Reabrir com gate"; `ungated`/`fallback`
+    /// mostram "sem gate" em vermelho. `None` = não passou pelo shim.
+    pub shim: Option<String>,
+    /// M7: por que um claude hospedado está sem jaula (`TYBA_NOJAIL`):
+    /// `home`, `hidden_dir`, `outside_home` ou `sandbox`. `None` com jaula.
+    pub no_jail: Option<String>,
 }
 
 /// Mapeia o nome do processo para o runner conhecido, reusando `runner_binary`
@@ -122,9 +131,9 @@ pub fn detect_kind(row: &ProcRow) -> Option<AgentRunnerKind> {
     })
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 const TYBA_HOSTED_MARKER: &[u8] = b"TYBA_HOSTED=1";
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 const TYBA_JAILED_MARKER: &[u8] = b"TYBA_JAILED=1";
 
 /// A leitura pura: dado o conteúdo cru de `/proc/<pid>/environ` (pares
@@ -132,10 +141,10 @@ const TYBA_JAILED_MARKER: &[u8] = b"TYBA_JAILED=1";
 /// qualquer byte exceto NUL), devolve `(hosting, jailed)`. Separado de
 /// [`hosting_markers`] pelo mesmo motivo de sempre: testável com bytes
 /// sintéticos, sem precisar de um processo de verdade rodando. Fora do Linux
-/// (§15) `hosting_markers` nunca chama isto — `cfg_attr` silencia o
+/// e do macOS `hosting_markers` nunca chama isto — `cfg_attr` silencia o
 /// dead-code sem esconder a função do teste, que roda em qualquer
 /// plataforma.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 fn parse_environ_markers(environ: &[u8]) -> (bool, bool) {
     let mut hosting = false;
     let mut jailed = false;
@@ -164,9 +173,148 @@ pub fn hosting_markers(pid: u32) -> (bool, bool) {
     }
 }
 
-/// O canal shim↔core (shim v2) é escopo Linux (tech-spec §15): fora dele
-/// não há shim, não há marcador, e `hosting` nunca é verdadeiro.
-#[cfg(not(target_os = "linux"))]
+/// O marcador `TYBA_SHIM=<rota>` que o `_jail` põe no env do claude cru
+/// (M6-A). Só os três valores conhecidos contam; qualquer outra coisa é
+/// `None` — um valor inventado nunca esconde um aviso.
+pub fn parse_shim_marker(environ: &[u8]) -> Option<String> {
+    parse_env_choice(
+        environ,
+        b"TYBA_SHIM=",
+        &["passthrough", "ungated", "fallback"],
+    )
+}
+
+/// O `TYBA_NOJAIL=<motivo>` que o core põe no claude hospedado sem jaula
+/// (M7). Mesma regra: só os motivos conhecidos.
+pub fn parse_no_jail_marker(environ: &[u8]) -> Option<String> {
+    parse_env_choice(
+        environ,
+        b"TYBA_NOJAIL=",
+        &["home", "hidden_dir", "outside_home", "sandbox"],
+    )
+}
+
+fn parse_env_choice(environ: &[u8], prefix: &[u8], allowed: &[&str]) -> Option<String> {
+    environ
+        .split(|b| *b == 0)
+        .filter_map(|entry| entry.strip_prefix(prefix))
+        .find_map(|value| {
+            allowed
+                .iter()
+                .find(|a| a.as_bytes() == value)
+                .map(|a| a.to_string())
+        })
+}
+
+/// [`parse_shim_marker`] sobre o env real do processo, lido como o de
+/// [`hosting_markers`].
+#[cfg(target_os = "linux")]
+pub fn shim_marker(pid: u32) -> Option<String> {
+    parse_shim_marker(&std::fs::read(format!("/proc/{pid}/environ")).ok()?)
+}
+
+#[cfg(target_os = "macos")]
+pub fn shim_marker(pid: u32) -> Option<String> {
+    parse_shim_marker(procargs2_environ(&procargs2(pid)?)?)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn shim_marker(_pid: u32) -> Option<String> {
+    None
+}
+
+/// [`parse_no_jail_marker`] sobre o env real do processo.
+#[cfg(target_os = "linux")]
+pub fn no_jail_marker(pid: u32) -> Option<String> {
+    parse_no_jail_marker(&std::fs::read(format!("/proc/{pid}/environ")).ok()?)
+}
+
+#[cfg(target_os = "macos")]
+pub fn no_jail_marker(pid: u32) -> Option<String> {
+    parse_no_jail_marker(procargs2_environ(&procargs2(pid)?)?)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn no_jail_marker(_pid: u32) -> Option<String> {
+    None
+}
+
+/// macOS (M3 do claude-monitor): sem `/proc`, o env de um processo do mesmo
+/// usuário sai de `sysctl(KERN_PROCARGS2)` — o mesmo que o `ps -E` lê. O
+/// `sandbox-exec` da cadeia hospedada faz `execve` no próprio pid, então o
+/// env com os marcadores chega intacto ao `claude`. Falha de leitura degrada
+/// para `(false, false)`, como no Linux.
+#[cfg(target_os = "macos")]
+pub fn hosting_markers(pid: u32) -> (bool, bool) {
+    procargs2(pid)
+        .as_deref()
+        .and_then(procargs2_environ)
+        .map(parse_environ_markers)
+        .unwrap_or((false, false))
+}
+
+#[cfg(target_os = "macos")]
+fn procargs2(pid: u32) -> Option<Vec<u8>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || size == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    buf.truncate(size);
+    Some(buf)
+}
+
+/// O bloco de env dentro do buffer de `KERN_PROCARGS2`: `argc` (i32 nativo),
+/// o caminho do executável, NULs de alinhamento, `argc` strings de argv e,
+/// depois delas, o env — pares `KEY=VALUE` separados por NUL, a mesma forma
+/// que [`parse_environ_markers`] já lê. Buffer truncado ou malformado é
+/// `None`, nunca panic. Puro, para testar com bytes sintéticos.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn procargs2_environ(buf: &[u8]) -> Option<&[u8]> {
+    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?);
+    if argc < 0 {
+        return None;
+    }
+    let mut at = 4;
+    // Caminho do executável.
+    at += buf.get(at..)?.iter().position(|b| *b == 0)?;
+    // NULs de alinhamento até o argv[0].
+    while buf.get(at) == Some(&0) {
+        at += 1;
+    }
+    for _ in 0..argc {
+        at += buf.get(at..)?.iter().position(|b| *b == 0)? + 1;
+    }
+    buf.get(at..)
+}
+
+/// Fora do Linux e do macOS não há canal shim↔core, não há marcador, e
+/// `hosting` nunca é verdadeiro.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn hosting_markers(_pid: u32) -> (bool, bool) {
     (false, false)
 }
@@ -278,6 +426,9 @@ pub fn find_owning_session(
 #[derive(Default)]
 pub struct AgentProber {
     detected: Mutex<HashMap<SessionId, DetectedAgent>>,
+    /// M6-B: panes em que o plugin do Claude Code avisou um claude CRU
+    /// (`SessionStart` sem gate). Some quando o agente do pane some.
+    raw_plugin: Mutex<std::collections::HashSet<SessionId>>,
 }
 
 pub type SharedAgentProber = Arc<AgentProber>;
@@ -285,6 +436,18 @@ pub type SharedAgentProber = Arc<AgentProber>;
 impl AgentProber {
     pub fn detected(&self, session: SessionId) -> Option<DetectedAgent> {
         self.detected.lock().get(&session).cloned()
+    }
+
+    pub fn mark_raw_plugin(&self, session: SessionId) {
+        self.raw_plugin.lock().insert(session);
+    }
+
+    pub fn clear_raw_plugin(&self, session: SessionId) {
+        self.raw_plugin.lock().remove(&session);
+    }
+
+    pub fn is_raw_plugin(&self, session: SessionId) -> bool {
+        self.raw_plugin.lock().contains(&session)
     }
 
     /// Sonda cada shell vivo contra um único snapshot de processos, grava o novo
@@ -761,7 +924,91 @@ mod tests {
         assert_eq!(find_owning_session(10, &[(s, 100)], &rows), None);
     }
 
+    /// M3: com dois panes abertos, o peer sob o shell B é do B — nunca do
+    /// primeiro líder da lista.
+    #[test]
+    fn owning_session_picks_the_shell_that_is_actually_an_ancestor() {
+        let a = session();
+        let b = session();
+        let rows = vec![
+            row(100, 1, "zsh", 10),
+            row(300, 1, "zsh", 11),
+            row(310, 300, "tyba", 20),
+        ];
+        assert_eq!(
+            find_owning_session(310, &[(a, 100), (b, 300)], &rows),
+            Some(b)
+        );
+    }
+
     // --- hosting/jailed via marcador de env (tech-spec §7) ------------------
+
+    /// Buffer no formato de `KERN_PROCARGS2`, montado à mão.
+    fn procargs2_of(exec: &str, argv: &[&str], env: &[&str]) -> Vec<u8> {
+        let mut buf = (argv.len() as i32).to_ne_bytes().to_vec();
+        buf.extend_from_slice(exec.as_bytes());
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        for arg in argv {
+            buf.extend_from_slice(arg.as_bytes());
+            buf.push(0);
+        }
+        buf.extend_from_slice(&environ_of(env));
+        buf
+    }
+
+    #[test]
+    fn shim_marker_reads_only_the_known_routes() {
+        for route in ["passthrough", "ungated", "fallback"] {
+            let env = environ_of(&["HOME=/x", &format!("TYBA_SHIM={route}")]);
+            assert_eq!(parse_shim_marker(&env).as_deref(), Some(route));
+        }
+        for env in [
+            environ_of(&["HOME=/x"]),
+            environ_of(&["TYBA_SHIM=hosted"]),
+            environ_of(&["X=TYBA_SHIM=fallback"]),
+        ] {
+            assert_eq!(parse_shim_marker(&env), None);
+        }
+    }
+
+    #[test]
+    fn no_jail_marker_reads_only_the_known_reasons() {
+        for reason in ["home", "hidden_dir", "outside_home", "sandbox"] {
+            let env = environ_of(&[&format!("TYBA_NOJAIL={reason}")]);
+            assert_eq!(parse_no_jail_marker(&env).as_deref(), Some(reason));
+        }
+        assert_eq!(parse_no_jail_marker(&environ_of(&["TYBA_NOJAIL=x"])), None);
+        assert_eq!(parse_no_jail_marker(&environ_of(&["HOME=/x"])), None);
+    }
+
+    #[test]
+    fn procargs2_environ_skips_exec_path_padding_and_argv() {
+        // Um argv que CONTÉM o marcador não pode contar: só o env vale.
+        let buf = procargs2_of(
+            "/usr/local/bin/claude",
+            &["claude", "TYBA_HOSTED=1"],
+            &["HOME=/Users/x", "TYBA_HOSTED=1", "TYBA_JAILED=1"],
+        );
+        let env = procargs2_environ(&buf).expect("env");
+        assert_eq!(parse_environ_markers(env), (true, true));
+
+        let only_argv = procargs2_of("/bin/x", &["x", "TYBA_HOSTED=1"], &["HOME=/Users/x"]);
+        assert_eq!(
+            parse_environ_markers(procargs2_environ(&only_argv).unwrap()),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn procargs2_environ_rejects_truncated_or_malformed_buffers() {
+        assert_eq!(procargs2_environ(&[]), None);
+        assert_eq!(procargs2_environ(&[1, 0]), None);
+        assert_eq!(procargs2_environ(&(-1i32).to_ne_bytes()), None);
+        // argc diz 3, mas só há um argumento antes do fim do buffer.
+        let mut short = 3i32.to_ne_bytes().to_vec();
+        short.extend_from_slice(b"/bin/x\0\0a\0");
+        assert_eq!(procargs2_environ(&short), None);
+    }
 
     fn environ_of(pairs: &[&str]) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -801,15 +1048,51 @@ mod tests {
         assert_eq!(parse_environ_markers(&environ), (false, false));
     }
 
+    /// Um processo parado por alguns segundos, com env limpo, para ter o env
+    /// lido de fora. No Linux, `sleep`. No macOS o `/bin/sleep` é binário de
+    /// plataforma e o kernel esconde o env dele de qualquer outro processo
+    /// (`ps -E` também não vê) — o `claude` de verdade não é, então o teste
+    /// usa o próprio binário de teste rodando [`idle_helper`].
+    fn idle_child() -> std::process::Command {
+        #[cfg(target_os = "macos")]
+        {
+            let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+            cmd.args([
+                "--exact",
+                "agent::process_probe::tests::idle_helper",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .env_clear()
+            .env("TYBA_IDLE_HELPER", "1");
+            cmd
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut cmd = std::process::Command::new("sleep");
+            cmd.arg("5").env_clear();
+            cmd
+        }
+    }
+
+    /// Só serve de processo-alvo para [`idle_child`] no macOS.
+    #[test]
+    #[ignore]
+    fn idle_helper() {
+        if std::env::var_os("TYBA_IDLE_HELPER").is_some() {
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    }
+
     /// Prova viva (não só o parser): um processo real, com os dois marcadores
     /// no env, lido pelo `hosting_markers` de produção via `/proc/<pid>/environ`
     /// de verdade — a mesma dupla que `prepare_hosted_agent` (Track B) grava.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn hosting_markers_reads_a_real_process_environ() {
-        let mut child = std::process::Command::new("sleep")
-            .arg("5")
-            .env_clear()
+        let mut child = idle_child()
             .env("TYBA_HOSTED", "1")
             .env("TYBA_JAILED", "1")
             .spawn()
@@ -834,17 +1117,15 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn hosting_markers_of_a_process_without_any_marker_is_neither() {
-        let mut child = std::process::Command::new("sleep")
-            .arg("5")
-            .env_clear()
+        let mut child = idle_child()
             .env("HOME", "/root")
             .spawn()
             .expect("spawn sleep sem marcador");
         let pid = child.id();
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(200));
 
         let seen = hosting_markers(pid);
         let _ = child.kill();

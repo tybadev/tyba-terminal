@@ -18,6 +18,7 @@ import {
   comboOf,
 } from "@/lib/keys";
 import { RISK_DOT, RISK_LABEL, approvalActions, decideApproval } from "@/lib/notifications";
+import { toastIsPointerOnly } from "@/lib/approvalPanel";
 import {
   onApprovalRequested,
   onApprovalResolved,
@@ -86,6 +87,9 @@ interface Props {
   // conjunto via hiddenApprovalIds (lib/notifications); ver também
   // visibleApprovalToasts em lib/toastQueue.
   hiddenApprovalIds: ReadonlySet<number>;
+  /** Distância da borda direita para a pilha de cards. Com a superfície de
+   * agentes aberta, a pilha anda para a esquerda dela em vez de cobri-la. */
+  viewportRightPx?: number;
 }
 
 export function NotificationToaster({
@@ -95,6 +99,7 @@ export function NotificationToaster({
   onDismissAgentReady,
   onGoToSession,
   hiddenApprovalIds,
+  viewportRightPx,
 }: Props) {
   const { t } = useTranslation();
   const [toasts, setToasts] = useState<ApprovalToastItem[]>([]);
@@ -371,7 +376,55 @@ export function NotificationToaster({
 
   return (
     <ToastProvider swipeDirection="right" duration={Infinity}>
-      {visibleToasts.map(({ id, approval }) => (
+      {visibleToasts.map(({ id, approval }) =>
+        toastIsPointerOnly(approval) ? (
+        // Vermelho não se decide daqui (R4, CA-10): o toast só aponta para a
+        // sessão, onde o painel mostra o texto inteiro. Some sozinho quando o
+        // painel da sessão entra na tela (hiddenApprovalIds).
+        <Toast
+          key={id}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) dismiss(id);
+          }}
+        >
+          <div className="flex items-start gap-2">
+            <span
+              role="img"
+              aria-label={t(RISK_LABEL[approval.risk])}
+              className={`mt-1 size-1.5 shrink-0 rounded-full ${RISK_DOT[approval.risk]}`}
+            />
+            <div className="min-w-0 flex-1">
+              <ToastTitle>
+                {t("approvalToastPointer", {
+                  session: sessionTitle(approval.session_id),
+                })}
+              </ToastTitle>
+              <ToastDescription>
+                <code className="block truncate font-mono text-xs">
+                  {approval.command}
+                </code>
+              </ToastDescription>
+              <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-tyba-red-tint px-2 py-0.5 text-[10px] font-medium text-tyba-red">
+                <Warning size={10} weight="bold" />
+                {t("redAction")}
+              </span>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <ToastAction altText={t("notificationGoToSession")} asChild>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onGoToSession(approval.session_id)}
+                    className="h-6 rounded-[4px] px-2.5 text-[11px]"
+                  >
+                    {t("notificationGoToSession")}
+                    <ArrowRight aria-hidden="true" size={12} weight="bold" />
+                  </Button>
+                </ToastAction>
+              </div>
+            </div>
+          </div>
+        </Toast>
+        ) : (
         <Toast
           key={id}
           onOpenChange={(nextOpen) => {
@@ -489,7 +542,8 @@ export function NotificationToaster({
             </div>
           </div>
         </Toast>
-      ))}
+        ),
+      )}
       {Object.entries(failedTunnels).map(([id, f]) => (
         <Toast
           key={`tunnel:${id}`}
@@ -643,7 +697,11 @@ export function NotificationToaster({
           </Toast>
         );
       })}
-      <ToastViewport />
+      <ToastViewport
+        style={
+          viewportRightPx != null ? { right: viewportRightPx } : undefined
+        }
+      />
     </ToastProvider>
   );
 }

@@ -127,8 +127,9 @@ export interface ToolbarPref {
 export const DEFAULT_TOOLBAR: ToolbarPref = {
   version: 1,
   enabled: true,
-  left: ["diffCount", "reviewDiff"],
-  right: ["aheadBehind", "branch", "cwd", "clock"],
+  // A branch abre a barra, colada nas alterações dela (mockup Proposta).
+  left: ["branch", "diffCount", "reviewDiff"],
+  right: ["aheadBehind", "cwd", "clock"],
   hidden: [],
 };
 

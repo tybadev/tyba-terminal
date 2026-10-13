@@ -28,9 +28,11 @@ describe("cmPalette", () => {
     }
   });
 
-  it("dark usa o mono-dark e light usa o vitesse — paletas distintas", () => {
-    expect(cmPalette(true).keyword).toBe("#C792EA");
-    expect(cmPalette(false).keyword).toBe("#4d9375");
+  it("segue os mockups Editor/EditorClaro — paletas distintas", () => {
+    expect(cmPalette(true).keyword).toBe("#c792ea");
+    expect(cmPalette(true).string).toBe("#a8e05f");
+    expect(cmPalette(false).keyword).toBe("#7a4ce8");
+    expect(cmPalette(false).function).toBe("#3b66d6");
     expect(cmPalette(true).string).not.toBe(cmPalette(false).string);
   });
 });

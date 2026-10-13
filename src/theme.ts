@@ -42,11 +42,11 @@ const FALLBACK_DARK: TerminalPalette = {
 };
 
 const FALLBACK_LIGHT: TerminalPalette = {
-  background: "#fbfbfd",
+  background: "#ffffff",
   foreground: "#17171c",
-  cursor: "#4e9622",
-  cursorAccent: "#fbfbfd",
-  selectionBackground: "#4e96224d",
+  cursor: "#387e15",
+  cursorAccent: "#ffffff",
+  selectionBackground: "#387e154d",
   ansi: [
     "#2a2a31", "#d6402e", "#4e9622", "#c47c14",
     "#3b66d6", "#d33d84", "#0f9d8c", "#e9e9ee",

@@ -6,6 +6,7 @@ pub mod broadcast;
 pub mod classify;
 pub mod command;
 pub mod config;
+pub mod connect_gate;
 pub mod query;
 pub mod remote_rc;
 pub mod test_conn;

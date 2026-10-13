@@ -102,20 +102,22 @@ function EntryRow({ entry }: { entry: TranscriptEntry }) {
   );
 }
 
-export function SubagentViewer({
+/**
+ * Transcript de UM subagente (prompt + tool calls + resultado), com carga
+ * inicial e streaming. Usado inline no painel Agentes (A5.3) e no viewer de
+ * split legado. `scrollClassName` decide a altura do rolador.
+ */
+export function SubagentTranscript({
   sessionId,
-  snapshot,
-  sessionEnded,
-  rect,
-  onClose,
-  onFocus,
-}: Props) {
+  run,
+  scrollClassName,
+}: {
+  sessionId: SessionId;
+  run: SubagentRun | null;
+  scrollClassName: string;
+}) {
   const { t } = useTranslation();
-  const focusedId = snapshot?.focused ?? null;
-  const focused = useMemo(
-    () => snapshot?.subagents.find((s) => s.agent_id === focusedId) ?? null,
-    [snapshot, focusedId],
-  );
+  const agentId = run?.agent_id ?? null;
 
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -125,14 +127,8 @@ export function SubagentViewer({
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
 
-  const running = focused?.status === "running" || focused?.status === "starting";
-  const now = useLiveClock(Boolean(running) && !sessionEnded);
-  const duration = focused
-    ? formatDuration((focused.ended_at_ms ?? now) - focused.started_at_ms)
-    : "";
-
   useEffect(() => {
-    if (!focusedId) {
+    if (!agentId) {
       setEntries([]);
       cursorRef.current = 0;
       return;
@@ -144,7 +140,7 @@ export function SubagentViewer({
     cursorRef.current = 0;
     receivedRef.current = 0;
     stickRef.current = true;
-    void subagentTranscript(sessionId, focusedId, null)
+    void subagentTranscript(sessionId, agentId, null)
       .then((res) => {
         if (cancelled) return;
         if (res.cursor < cursorRef.current) return;
@@ -164,14 +160,14 @@ export function SubagentViewer({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, focusedId]);
+  }, [sessionId, agentId]);
 
   useEffect(() => {
-    if (!focusedId) return;
+    if (!agentId) return;
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     void onSubagentTranscript((p) => {
-      if (p.session_id !== sessionId || p.agent_id !== focusedId) return;
+      if (p.session_id !== sessionId || p.agent_id !== agentId) return;
       if (p.cursor <= cursorRef.current) return;
       cursorRef.current = p.cursor;
       receivedRef.current += p.entries.length;
@@ -190,7 +186,7 @@ export function SubagentViewer({
       cancelled = true;
       unlisten?.();
     };
-  }, [sessionId, focusedId]);
+  }, [sessionId, agentId]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -202,6 +198,72 @@ export function SubagentViewer({
     if (!el) return;
     stickRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
   };
+
+  return (
+    <div ref={scrollRef} onScroll={onScroll} className={scrollClassName}>
+      {!run ? (
+        <p className="px-1 py-3 text-[12px] text-tyba-text-faint">
+          {t("subagentsViewerEmpty")}
+        </p>
+      ) : (
+        <>
+          {run.status === "done" && run.summary && (
+            <div className="mb-2 rounded-[5px] border border-tyba-green/40 bg-tyba-green/[.06] px-2.5 py-1.5">
+              <p className="mb-0.5 text-[10px] uppercase tracking-wide text-tyba-green">
+                {t("subagentsSummary")}
+              </p>
+              <p className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-tyba-text">
+                {run.summary}
+              </p>
+            </div>
+          )}
+          {loading && entries.length === 0 && (
+            <div className="flex items-center gap-1.5 px-1 py-3 text-[12px] text-tyba-text-faint">
+              <CircleNotch size={13} className="animate-spin" />
+              {t("subagentsViewerLoading")}
+            </div>
+          )}
+          {!loading && entries.length === 0 && (
+            <p className="px-1 py-3 text-[12px] text-tyba-text-faint">
+              {t("subagentsViewerNoTranscript")}
+            </p>
+          )}
+          {trimmed && (
+            <p className="pb-1.5 text-center text-[10px] text-tyba-text-faint">
+              {t("subagentsViewerTrimmed")}
+            </p>
+          )}
+          <div className="flex flex-col gap-1.5">
+            {entries.map((entry) => (
+              <EntryRow key={`${agentId}-${entry.seq}`} entry={entry} />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function SubagentViewer({
+  sessionId,
+  snapshot,
+  sessionEnded,
+  rect,
+  onClose,
+  onFocus,
+}: Props) {
+  const { t } = useTranslation();
+  const focusedId = snapshot?.focused ?? null;
+  const focused = useMemo(
+    () => snapshot?.subagents.find((s) => s.agent_id === focusedId) ?? null,
+    [snapshot, focusedId],
+  );
+
+  const running = focused?.status === "running" || focused?.status === "starting";
+  const now = useLiveClock(Boolean(running) && !sessionEnded);
+  const duration = focused
+    ? formatDuration((focused.ended_at_ms ?? now) - focused.started_at_ms)
+    : "";
 
   const statusLabel = focused
     ? sessionEnded && focused.status !== "done"
@@ -229,7 +291,7 @@ export function SubagentViewer({
       <div className="flex h-full min-h-0 flex-col">
         <header className="flex h-8 shrink-0 items-center gap-2 tyba-divide-b px-3">
           <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-tyba-amber/[.1] text-tyba-amber">
-            <AgentIcon size={11} />
+            <AgentIcon size={13} />
           </span>
           <span className="shrink-0 truncate text-[12px] font-medium text-tyba-text">
             {focused?.agent_type || t("subagentsTitle")}
@@ -260,51 +322,11 @@ export function SubagentViewer({
           </button>
         </header>
 
-        <div
-          ref={scrollRef}
-          onScroll={onScroll}
-          className="min-h-0 flex-1 overflow-y-auto p-2"
-        >
-          {!focused ? (
-            <p className="px-1 py-3 text-[12px] text-tyba-text-faint">
-              {t("subagentsViewerEmpty")}
-            </p>
-          ) : (
-            <>
-              {focused.status === "done" && focused.summary && (
-                <div className="mb-2 rounded-[5px] border border-tyba-green/40 bg-tyba-green/[.06] px-2.5 py-1.5">
-                  <p className="mb-0.5 text-[10px] uppercase tracking-wide text-tyba-green">
-                    {t("subagentsSummary")}
-                  </p>
-                  <p className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-tyba-text">
-                    {focused.summary}
-                  </p>
-                </div>
-              )}
-              {loading && entries.length === 0 && (
-                <div className="flex items-center gap-1.5 px-1 py-3 text-[12px] text-tyba-text-faint">
-                  <CircleNotch size={13} className="animate-spin" />
-                  {t("subagentsViewerLoading")}
-                </div>
-              )}
-              {!loading && entries.length === 0 && (
-                <p className="px-1 py-3 text-[12px] text-tyba-text-faint">
-                  {t("subagentsViewerNoTranscript")}
-                </p>
-              )}
-              {trimmed && (
-                <p className="pb-1.5 text-center text-[10px] text-tyba-text-faint">
-                  {t("subagentsViewerTrimmed")}
-                </p>
-              )}
-              <div className="flex flex-col gap-1.5">
-                {entries.map((entry) => (
-                  <EntryRow key={`${focusedId}-${entry.seq}`} entry={entry} />
-                ))}
-              </div>
-            </>
-          )}
-        </div>
+        <SubagentTranscript
+          sessionId={sessionId}
+          run={focused}
+          scrollClassName="min-h-0 flex-1 overflow-y-auto p-2"
+        />
       </div>
     </div>
   );

@@ -68,6 +68,37 @@ pub struct SessionDiff {
     pub staged_files: Vec<FileDiff>,
     /// Worktree vs index (`git diff`) + untracked.
     pub unstaged_files: Vec<FileDiff>,
+    /// Quais de `unstaged_files` são untracked (`ls-files --others`). O painel
+    /// Git usa para nunca levar arquivo novo num commit sem o usuário marcar.
+    pub untracked: Vec<String>,
+    /// `commits` parou em [`SESSION_COMMITS_MAX`]: existem mais no range.
+    pub commits_truncated: bool,
+}
+
+/// Teto de commits listados no diff da sessão/branch. O range costuma ser
+/// curto, mas uma base antiga (ou uma branch que nunca rebaseou) faria um
+/// `log` sem limite do tamanho do repo.
+pub const SESSION_COMMITS_MAX: usize = 500;
+
+fn range_log(worktree: &Path, range: &str) -> Result<Vec<u8>, String> {
+    run_git(
+        {
+            let mut c = git_in(worktree);
+            c.args(["log", "-z", "--no-color", "--format=%H%x1f%s%x1f%aI"]);
+            c.arg(format!("--max-count={}", SESSION_COMMITS_MAX + 1));
+            c.arg(range);
+            c
+        },
+        "git log",
+    )
+}
+
+/// Corta no teto e diz se cortou (o `log` pediu um a mais justamente pra isso).
+pub fn capped_commits(raw: &[u8]) -> (Vec<CommitInfo>, bool) {
+    let mut commits = parse_log_z(raw);
+    let truncated = commits.len() > SESSION_COMMITS_MAX;
+    commits.truncate(SESSION_COMMITS_MAX);
+    (commits, truncated)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -274,7 +305,7 @@ pub fn parse_unified_hunks(text: &str) -> FileHunks {
     FileHunks { binary, hunks }
 }
 
-fn diff_files(worktree: &Path, range_args: &[&str]) -> Result<Vec<FileDiff>, String> {
+pub(crate) fn diff_files(worktree: &Path, range_args: &[&str]) -> Result<Vec<FileDiff>, String> {
     let numstat = run_git(
         {
             let mut c = git_in(worktree);
@@ -348,22 +379,15 @@ pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, Stri
     // processos git em série. Com a jaula, cada chamada carrega o custo do
     // sandbox-exec; paralelizar mantém o wall-clock no maior ramo, não na soma.
     let (log, files, staged_files, unstaged_files) = std::thread::scope(|s| {
-        let log = s.spawn(|| {
-            run_git(
-                {
-                    let mut c = git_in(worktree);
-                    c.args(["log", "-z", "--format=%H%x1f%s%x1f%aI", &range]);
-                    c
-                },
-                "git log",
-            )
-        });
+        let log = s.spawn(|| range_log(worktree, &range));
         let files = s.spawn(|| diff_files(worktree, &[&range]));
         let staged = s.spawn(|| diff_files(worktree, &["--cached"]));
         let unstaged = s.spawn(|| {
             let mut f = diff_files(worktree, &[])?;
-            f.extend(untracked_files(worktree)?);
-            Ok::<_, String>(f)
+            let untracked = untracked_files(worktree)?;
+            let paths: Vec<String> = untracked.iter().map(|u| u.path.clone()).collect();
+            f.extend(untracked);
+            Ok::<_, String>((f, paths))
         });
         (
             log.join().expect("log thread"),
@@ -373,9 +397,9 @@ pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, Stri
         )
     });
 
-    let (commits, files) = match (log, files) {
-        (Ok(log), files) => (parse_log_z(&log), files?),
-        (Err(_), _) if head_is_unborn(worktree) => (Vec::new(), Vec::new()),
+    let ((commits, commits_truncated), files) = match (log, files) {
+        (Ok(log), files) => (capped_commits(&log), files?),
+        (Err(_), _) if head_is_unborn(worktree) => ((Vec::new(), false), Vec::new()),
         (Err(e), _) => return Err(e),
     };
 
@@ -385,6 +409,7 @@ pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, Stri
         .into_iter()
         .filter(|f| f.status != FileStatus::Unmerged)
         .collect();
+    let (unstaged_files, untracked) = unstaged_files?;
 
     Ok(SessionDiff {
         root: worktree.to_string_lossy().into_owned(),
@@ -392,7 +417,9 @@ pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, Stri
         commits,
         files,
         staged_files,
-        unstaged_files: unstaged_files?,
+        unstaged_files,
+        untracked,
+        commits_truncated,
     })
 }
 
@@ -402,16 +429,7 @@ pub fn session_diff(worktree: &Path, base_ref: &str) -> Result<SessionDiff, Stri
 pub fn branch_diff(worktree: &Path, base_ref: &str, branch: &str) -> Result<SessionDiff, String> {
     let range = format!("{base_ref}..{branch}");
     let (log, files) = std::thread::scope(|s| {
-        let log = s.spawn(|| {
-            run_git(
-                {
-                    let mut c = git_in(worktree);
-                    c.args(["log", "-z", "--format=%H%x1f%s%x1f%aI", &range]);
-                    c
-                },
-                "git log",
-            )
-        });
+        let log = s.spawn(|| range_log(worktree, &range));
         let files = s.spawn(|| diff_files(worktree, &[&range]));
         (
             log.join().expect("log thread"),
@@ -419,13 +437,16 @@ pub fn branch_diff(worktree: &Path, base_ref: &str, branch: &str) -> Result<Sess
         )
     });
 
+    let (commits, commits_truncated) = capped_commits(&log?);
     Ok(SessionDiff {
         root: worktree.to_string_lossy().into_owned(),
         base_ref: base_ref.to_string(),
-        commits: parse_log_z(&log?),
+        commits,
         files: files?,
         staged_files: Vec::new(),
         unstaged_files: Vec::new(),
+        untracked: Vec::new(),
+        commits_truncated,
     })
 }
 
@@ -651,6 +672,17 @@ mod parser_tests {
     }
 
     #[test]
+    fn commits_are_capped_and_flag_the_cut() {
+        let record = |i: usize| format!("{i:040x}\x1fs{i}\x1f2026-07-10T10:00:00-03:00\0");
+        let exact: String = (0..SESSION_COMMITS_MAX).map(record).collect();
+        let (commits, truncated) = capped_commits(exact.as_bytes());
+        assert_eq!((commits.len(), truncated), (SESSION_COMMITS_MAX, false));
+        let over: String = (0..=SESSION_COMMITS_MAX).map(record).collect();
+        let (commits, truncated) = capped_commits(over.as_bytes());
+        assert_eq!((commits.len(), truncated), (SESSION_COMMITS_MAX, true));
+    }
+
+    #[test]
     fn unified_hunks_parse_ranges_lines_and_no_newline_marker() {
         let text = "diff --git a/f.txt b/f.txt\nindex 000..111 100644\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,4 @@ contexto\n linha1\n-removida\n+adicionada\n+outra\n\\ No newline at end of file\n";
         let parsed = parse_unified_hunks(text);
@@ -838,6 +870,11 @@ mod integration_tests {
             .expect("untracked na lista");
         assert_eq!(untracked.status, FileStatus::Added);
         assert_eq!(untracked.insertions, Some(2));
+        assert_eq!(
+            diff.untracked,
+            vec!["nunca-addado.sh".to_string()],
+            "o core diz quem é untracked — o commit do painel Git não o leva sozinho"
+        );
 
         let hunks = file_hunks(&repo, &base, DiffScope::Unstaged, "nunca-addado.sh", None).unwrap();
         assert_eq!(hunks.hunks.len(), 1);

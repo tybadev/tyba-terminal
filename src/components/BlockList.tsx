@@ -2,24 +2,21 @@ import { memo, useCallback, useEffect, useReducer, useRef, useState } from "reac
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
-  ArrowUUpLeft,
+  ArrowClockwise,
   Check,
   ClipboardText,
   Copy,
   MarkdownLogo,
+  type Icon,
 } from "@phosphor-icons/react";
 
 import { bodyLines, columnsFor } from "../lib/blockMetrics";
-import {
-  blockMarkdown,
-  blockOutput,
-  duration,
-  failed,
-  shortPath,
-} from "../lib/blockText";
+import { cwdChange, formatDuration } from "../lib/blockLayout";
+import { blockMarkdown, blockOutput, failed, shortPath } from "../lib/blockText";
 import { writeClipboardText } from "../lib/clipboard";
 import type { Block, BlockColor, LogicalLine, StyleRun } from "../lib/ipc";
 import { toastError } from "../lib/toast";
+import { compactPath } from "../lib/workspaceCwd";
 import { ansiColor, onTerminalThemeChange } from "../theme";
 import type { PaneRectStyle } from "./TerminalView";
 
@@ -82,7 +79,7 @@ const Line = memo(function Line({ line }: { line: LogicalLine }) {
   return <div className="whitespace-pre-wrap break-words">{parts}</div>;
 });
 
-/** Quanto tempo o ✓ fica no lugar do ícone depois de copiar. */
+/** Quanto tempo o "copiado" fica no lugar do rótulo depois de copiar. */
 const COPIED_MS = 1200;
 
 type ActionId = "command" | "output" | "markdown";
@@ -93,13 +90,21 @@ type ActionId = "command" | "output" | "markdown";
  * Tudo sai do modelo do bloco — ver `lib/blockText`. Ler do DOM entregaria o
  * corpo cortado em `BODY_LIMIT` linhas, e a saída sem os espaços que o
  * `white-space` desenha mas o `textContent` não tem.
+ *
+ * Rótulos escritos, e só no hover ou no foco: sem a caixa em volta do bloco,
+ * quatro ícones sempre acesos em toda linha viravam o elemento mais forte da
+ * lista. Continuam alcançáveis pelo teclado — botões de verdade, na ordem do
+ * Tab, e `focus-within` acende a fileira assim que um deles recebe o foco.
  */
 const BlockActions = memo(function BlockActions({
   block,
   onInject,
+  visible,
 }: {
   block: Block;
   onInject?: (text: string) => void;
+  /** Acesa sem hover — o bloco marcado mostra o que dá para fazer com ele. */
+  visible?: boolean;
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState<ActionId | null>(null);
@@ -125,38 +130,40 @@ const BlockActions = memo(function BlockActions({
   );
 
   const hasOutput = block.lines.length > 0;
+  // Ícones (decisão do dono, depois do mockup), com o espaçamento e a cor
+  // da fileira do mockup Proposta: 14px entre eles, `muted`, acesos no hover.
   const items: Array<{
     id: ActionId | "inject";
-    label: string;
-    icon: typeof Copy;
+    icon: Icon;
+    title: string;
     run: () => void;
     show: boolean;
   }> = [
     {
       id: "command",
-      label: t("blockCopyCommand"),
       icon: Copy,
+      title: t("blockCopyCommand"),
       run: () => copy("command", block.command),
       show: block.command.length > 0,
     },
     {
       id: "output",
-      label: t("blockCopyOutput"),
       icon: ClipboardText,
+      title: t("blockCopyOutput"),
       run: () => copy("output", blockOutput(block)),
       show: hasOutput,
     },
     {
       id: "markdown",
-      label: t("blockCopyMarkdown"),
       icon: MarkdownLogo,
+      title: t("blockCopyMarkdown"),
       run: () => copy("markdown", blockMarkdown(block)),
       show: block.command.length > 0 || hasOutput,
     },
     {
       id: "inject",
-      label: t("blockReuse"),
-      icon: ArrowUUpLeft,
+      icon: ArrowClockwise,
+      title: t("blockReuse"),
       // Reinsere na linha e para por aí: quem aperta Enter é o dono.
       run: () => onInject?.(block.command),
       show: Boolean(onInject) && block.command.length > 0,
@@ -165,43 +172,36 @@ const BlockActions = memo(function BlockActions({
 
   return (
     <div
-      // Sempre presentes, e discretos — não escondidos atrás do hover.
-      //
-      // Antes o cartão normal nascia em `opacity-0` e só o header PRESO ficava
-      // opaco, porque ele é `pointer-events-none` e nunca recebe hover. O
-      // resultado é que o mesmo bloco mostrava quatro ícones no topo da lista e
-      // nenhum logo abaixo: a barra de ações parecia ir e vir sem regra.
-      //
-      // Visível de saída também responde à pergunta "dá para copiar isso?" sem
-      // exigir que se descubra passando o mouse. A 40% ela informa sem competir
-      // com o comando, que é o que a linha tem de mais importante.
-      className="pointer-events-auto flex shrink-0 items-center gap-0.5 opacity-40 transition-opacity focus-within:opacity-100 group-hover:opacity-100"
+      className={`pointer-events-auto flex shrink-0 items-center gap-2.5 transition-opacity focus-within:opacity-100 group-hover:opacity-100 ${
+        visible ? "opacity-100" : "opacity-0"
+      }`}
     >
       {items
         .filter((item) => item.show)
-        .map((item) => {
-          const Icon = copied === item.id ? Check : item.icon;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              title={item.label}
-              aria-label={item.label}
-              // Clicar numa ação não é clicar no bloco: sem isto, copiar a
-              // saída marcaria o cartão de quebra.
-              onClick={(event) => {
-                event.stopPropagation();
-                item.run();
-              }}
-              // Caixa de tamanho fixo, e menor que a linha do comando: botão
-              // que cresce o header desalinha a estimativa de altura do
-              // virtualizador e o bloco pula quando a medição real chega.
-              className="flex size-[18px] items-center justify-center rounded-[3px] text-tyba-text-faint transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text focus-visible:bg-tyba-text/[.06] focus-visible:text-tyba-text"
-            >
-              <Icon size={13} weight={copied === item.id ? "bold" : "regular"} />
-            </button>
-          );
-        })}
+        .map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            title={copied === item.id ? t("blockCopied") : item.title}
+            aria-label={item.title}
+            // Clicar numa ação não é clicar no bloco: sem isto, copiar a
+            // saída marcaria o bloco de quebra.
+            onClick={(event) => {
+              event.stopPropagation();
+              item.run();
+            }}
+            // Altura fixa e igual à da linha do comando: botão que cresce o
+            // header desalinha a estimativa de altura do virtualizador e o
+            // bloco pula quando a medição real chega.
+            className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.08] hover:text-tyba-text focus-visible:text-tyba-text focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-tyba-green"
+          >
+            {copied === item.id ? (
+              <Check size={13} className="text-tyba-green" />
+            ) : (
+              <item.icon size={13} />
+            )}
+          </button>
+        ))}
     </div>
   );
 });
@@ -209,61 +209,74 @@ const BlockActions = memo(function BlockActions({
 const BlockHeader = memo(function BlockHeader({
   block,
   pinned,
+  marked,
   onInject,
 }: {
   block: Block;
   pinned?: boolean;
+  marked?: boolean;
   onInject?: (text: string) => void;
 }) {
+  const { t, i18n } = useTranslation();
   const broke = failed(block.exitCode);
-  const took = duration(block);
-  const where = shortPath(block.cwd);
+  const took = formatDuration(
+    block.finishedAtMs - block.startedAtMs,
+    i18n.language,
+  );
   return (
     <div
       // O preso é `pointer-events-none`: ele fica POR CIMA da lista, e uma
-      // faixa opaca de 27px que captura a roda do mouse é uma faixa onde a
-      // lista não rola. Só as ações reativam — senão as do bloco do topo, que
-      // é o header que ele cobre, ficariam inalcançáveis.
-      // O fundo e o filete do preso moram no INVÓLUCRO, não aqui: só assim ele
-      // atravessa a largura inteira da lista enquanto o texto continua alinhado
-      // com o comando do cartão de baixo, que é recuado pelo padding do
-      // scroller. Com fundo próprio, a faixa era um cartão solto de 8px de
-      // margem e o comando dela caía 8px à esquerda do comando de todos os
-      // outros — ficava lendo como outra coisa, não como o mesmo header.
-      className={`group flex items-center gap-2 px-2.5 py-1 ${
-        pinned ? "pointer-events-none" : "tyba-divide-b"
+      // faixa opaca que captura a roda do mouse é uma faixa onde a lista não
+      // rola. Só as ações reativam — senão as do bloco do topo, que é o header
+      // que ele cobre, ficariam inalcançáveis.
+      // Mockup Proposta: `padding: 10px 18px`, comando em 13px.
+      className={`group flex h-9 items-start gap-2 px-[18px] pt-2.5 ${
+        pinned ? "pointer-events-none" : ""
       }`}
     >
-      <span className={`shrink-0 ${broke ? "text-tyba-red" : "text-tyba-green"}`}>
+      <span
+        className={`shrink-0 font-mono text-[13px] leading-5 ${
+          broke ? "text-tyba-red" : "text-tyba-green"
+        }`}
+      >
         ❯
       </span>
-      <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-tyba-text">
+      <span className="min-w-0 flex-1 truncate font-mono text-[13px] leading-5 text-tyba-text">
         {block.command}
       </span>
-      {/* Onde rodou. Encurtado porque o começo do caminho empurraria o comando
-          para fora da linha; o inteiro fica no title. */}
-      {where && (
-        <span
-          title={block.cwd ?? undefined}
-          className="max-w-[38%] shrink-0 truncate font-mono text-[10px] text-tyba-text-faint"
-        >
-          {where}
-        </span>
-      )}
+      <BlockActions block={block} onInject={onInject} visible={marked} />
+      {/* Canto direito: a duração e, quando deu errado, o código — nada mais
+          quando deu certo. */}
       {broke && (
-        <span className="shrink-0 font-mono text-[10px] text-tyba-red">
-          {block.exitCode}
+        <span className="shrink-0 rounded-[4px] bg-tyba-red-tint px-1.5 font-mono text-[11px] leading-5 text-tyba-red">
+          {t("blockExitedWith", { code: block.exitCode })}
         </span>
       )}
-      {took && (
-        <span className="shrink-0 font-mono text-[10px] tabular-nums text-tyba-text-faint">
+      {!broke && took && (
+        <span className="shrink-0 font-mono text-[11px] leading-5 tabular-nums text-tyba-text-faint">
           {took}
         </span>
       )}
-      <BlockActions block={block} onInject={onInject} />
     </div>
   );
 });
+
+/**
+ * A linha do diretório antes do bloco — só quando ele muda (`cwdChange`).
+ *
+ * Mora no item do virtualizador, acima do header, e entra na estimativa
+ * (`CWD_LINE_PX`): altura fixa por isso.
+ */
+function CwdLine({ cwd }: { cwd: string }) {
+  return (
+    <div
+      title={cwd}
+      className="truncate px-[18px] pb-1.5 pt-3.5 font-mono text-[11px] leading-4 text-tyba-text-faint"
+    >
+      {shortPath(cwd)}
+    </div>
+  );
+}
 
 /**
  * Teto de linhas desenhadas de uma vez.
@@ -275,7 +288,7 @@ const BlockHeader = memo(function BlockHeader({
 const BODY_LIMIT = 200;
 
 /**
- * Altura do botão "mostrar mais" (`text-[10px]` + `py-1` + `border-t`).
+ * Altura do botão "mostrar mais" (`leading-[14px]` + `py-1`).
  *
  * Entra na estimativa. Sem ele, TODO bloco grande era estimado ~22px curto — e
  * estimativa curta é cartão nascendo por cima do fim do anterior.
@@ -285,31 +298,26 @@ const SHOW_MORE_PX = 22;
 /**
  * Quanto da largura do scroller NÃO é texto do corpo, em px.
  *
- * `px-2` do scroller (8+8), a borda do cartão (1+1) e o `px-2.5` do corpo
- * (10+10). Entra na conta de quantas colunas cabem numa linha — errar aqui
- * volta como estimativa curta, que é cartão em cima de cartão.
+ * O `px-4` do corpo (16+16); o scroller não tem padding lateral, para a
+ * divisa e a superfície do bloco marcado irem de borda a borda. Entra na conta
+ * de quantas colunas cabem numa linha — errar aqui volta como estimativa
+ * curta, que é bloco em cima de bloco.
  */
-const BODY_INSET_X_PX = 38;
+const BODY_INSET_X_PX = 36;
 
 /**
- * Barra à esquerda do cartão marcado.
+ * O bloco marcado: superfície levantada, aresta de luz em cima, a divisa
+ * embaixo e a barra de destaque na lateral.
  *
- * `box-shadow` e não borda: borda muda a altura medida, e altura que muda faz o
- * virtualizador reposicionar a lista embaixo do ponteiro no meio de um
- * shift-clique.
+ * Tudo `box-shadow` e nada de borda: borda muda a altura medida, e altura que
+ * muda faz o virtualizador reposicionar a lista embaixo do ponteiro no meio de
+ * um shift-clique.
+ *
+ * A barra fica mesmo sem caixa: no tema claro o `raised` é o mesmo branco do
+ * terminal, e sem ela a marcação sumiria. A divisa (`--tyba-divider-b`) entra
+ * na lista porque o `style` substitui a sombra que a classe dava.
  */
-/**
- * A barra na lateral do bloco marcado.
- *
- * `box-shadow` e não borda: borda muda a altura medida, e altura que muda faz o
- * virtualizador reposicionar a lista embaixo do ponteiro no meio de um
- * shift-clique.
- *
- * 2px, e não mais: com a borda do marcado já na cor de destaque, engrossar a
- * barra faz a lateral esquerda destoar do resto do contorno — 6px contra 2px
- * do topo lê como caixa torta. Mais destaque se pede à cor, não à espessura.
- */
-const MARKED_BAR = "inset 2px 0 0 0 var(--tyba-primary)";
+const MARKED_SHADOW = "var(--tyba-edge), inset 0 -1px 0 0 var(--tyba-border-soft)";
 
 
 const BlockCard = memo(function BlockCard({
@@ -321,8 +329,11 @@ const BlockCard = memo(function BlockCard({
   onPick,
   shown,
   onShowMore,
+  cwd,
 }: {
   block: Block;
+  /** O diretório a anunciar acima do bloco, quando mudou. Ver `cwdChange`. */
+  cwd: string | null;
   /** Tamanho da fonte do terminal — ver o corpo abaixo. */
   fontSizePx: number;
   /** Altura real de uma linha do terminal, medida. */
@@ -355,11 +366,13 @@ const BlockCard = memo(function BlockCard({
   onShowMore?: (id: number) => void;
 }) {
   const { t } = useTranslation();
-  const broke = failed(block.exitCode);
   const hidden = Math.max(block.lines.length - shown, 0);
   return (
-    // `group` aqui além do header: revela as ações com o ponteiro em qualquer
-    // lugar do cartão, não só na faixa de 27px de cima.
+    <>
+    {cwd && <CwdLine cwd={cwd} />}
+    {/* Sem caixa: o que separa um bloco do seguinte é a divisa embaixo. O
+        `group` aqui além do header revela as ações com o ponteiro em qualquer
+        lugar do bloco, não só na linha do comando. */}
     <div
       onClick={onPick ? (event) => onPick(block.id, event) : undefined}
       // Shift-clique é o gesto do navegador para esticar seleção de texto.
@@ -368,20 +381,22 @@ const BlockCard = memo(function BlockCard({
       onMouseDown={(event) => {
         if (event.shiftKey && onPick) event.preventDefault();
       }}
-      style={marked ? { boxShadow: MARKED_BAR } : undefined}
-      className={`group overflow-hidden rounded-[5px] border ${
+      style={marked ? { boxShadow: MARKED_SHADOW } : undefined}
+      // No claro o `raised` é o mesmo branco do terminal: ali o realce é o
+      // véu violeta do tema (Claro A · Aurora). `dark:` = todo tema escuro.
+      // Mockup: o marcado é a superfície (`#0a0a0b` + aresta) no escuro e o
+      // véu violeta (`#f5f3ff`) no claro; a divisa entre blocos é 0,05.
+      className={`group pb-2.5 focus-within:bg-tyba-violet/[.07] dark:focus-within:bg-tyba-surface ${
         marked
-          ? "border-tyba-primary bg-tyba-green-tint"
-          : broke
-            ? "border-tyba-red/50 bg-tyba-red/[.07]"
-            : "border-tyba-block-border"
+          ? "bg-tyba-violet/[.07] dark:bg-tyba-surface"
+          : "shadow-[inset_0_-1px_0_0_var(--tyba-border-soft)]"
       }`}
     >
-      <BlockHeader block={block} onInject={onInject} />
+      <BlockHeader block={block} onInject={onInject} marked={marked} />
       {/* Sem corpo, mas com motivo: um cartão vazio e mudo pareceria comando
           que não imprimiu nada. */}
       {block.altScreen && (
-        <div className="px-2.5 py-1 font-mono text-[11px] italic text-tyba-text-faint">
+        <div className="px-[18px] font-mono text-[11px] italic leading-4 text-tyba-text-faint">
           {t("blockAltScreen")}
         </div>
       )}
@@ -391,7 +406,7 @@ const BlockCard = memo(function BlockCard({
         // ter mudado o tamanho da fonte. Preso em 13px, o texto encolhia ao
         // virar cartão.
         <div
-          className="px-2.5 py-1 font-mono text-tyba-text-muted"
+          className="px-[18px] font-mono text-tyba-text-muted"
           style={{
             fontSize: `${fontSizePx}px`,
             lineHeight: `${lineHeightPx}px`,
@@ -410,17 +425,18 @@ const BlockCard = memo(function BlockCard({
             event.stopPropagation();
             onShowMore?.(block.id);
           }}
-          className="w-full tyba-divide-t px-2.5 py-1 text-left font-mono text-[10px] text-tyba-text-faint hover:text-tyba-text"
+          className="w-full px-[18px] py-1 text-left font-mono text-[10px] leading-[14px] text-tyba-text-faint hover:text-tyba-text"
         >
           {t("blockShowAll", { count: Math.min(hidden, BODY_LIMIT) })}
         </button>
       )}
       {block.truncated > 0 && (
-        <div className="tyba-divide-t px-2.5 py-1 font-mono text-[10px] text-tyba-amber">
+        <div className="px-[18px] py-1 font-mono text-[10px] leading-[14px] text-tyba-amber">
           {t("blockTruncated", { count: block.truncated })}
         </div>
       )}
     </div>
+    </>
   );
 });
 
@@ -447,7 +463,8 @@ function SessionOpened({
   fontSizePx: number;
 }) {
   const { t } = useTranslation();
-  const where = shortPath(cwd);
+  // O caminho com `~`, como o mockup e o prompt do shell o escrevem.
+  const where = cwd ? compactPath(cwd) : null;
   const when =
     at === null || !Number.isFinite(at)
       ? null
@@ -459,17 +476,16 @@ function SessionOpened({
     <div
       // Sem borda cheia: é uma marca de começo, não um bloco. Cartão de verdade
       // aqui competiria com o primeiro comando de fato.
-      className="mb-2 flex items-center gap-2 px-2.5 py-1 font-mono text-tyba-text-faint"
+      // A linha do cwd do mockup (Proposta): só o caminho, apagado, e a hora
+      // discreta à direita. O "sessão iniciada" fica no tooltip.
+      title={t("blockSessionOpened")}
+      className="flex items-center justify-between gap-2 px-[18px] pb-1.5 font-mono text-tyba-text-faint"
       style={{ fontSize: `${Math.max(10, fontSizePx - 2)}px` }}
     >
-      <span className="size-1 shrink-0 rounded-full bg-tyba-text-faint/60" />
-      <span className="shrink-0">{t("blockSessionOpened")}</span>
-      {where && (
-        <span title={cwd ?? undefined} className="min-w-0 truncate">
-          · {where}
-        </span>
-      )}
-      {when && <span className="shrink-0 tabular-nums">· {when}</span>}
+      <span title={cwd ?? undefined} className="min-w-0 truncate">
+        {where ?? "~"}
+      </span>
+      {when && <span className="shrink-0 tabular-nums">{when}</span>}
     </div>
   );
 }
@@ -478,14 +494,16 @@ function SessionOpened({
 /// 13px × 1.35, a mesma métrica do xterm.
 
 /**
- * A tampa do cartão: o header MAIS a borda da caixa em volta.
+ * A linha do comando (`h-9`, `pt-2.5`). Sem caixa em volta, não há borda a somar.
  *
- * 35, e não os 27 de antes: medido no app, um cartão sem corpo dá 43px de altura
- * — 35 de caixa e os 8 do respiro. O número antigo deixava TODA estimativa 8px
- * curta, e estimativa curta é cartão sobrepondo o vizinho enquanto a medida real
- * não chega.
+ * Estimativa curta é bloco sobrepondo o vizinho enquanto a medida real não
+ * chega — por isso cada parcela abaixo é uma altura FIXA no JSX.
  */
-const HEADER_PX = 35;
+const HEADER_PX = 36;
+/** O `pb-2.5` do bloco, abaixo do corpo (mockup: `padding: 10px 18px`). */
+const BLOCK_PAD_PX = 10;
+/** A linha do diretório (`CwdLine`: `pt-3.5` + `leading-4` + `pb-1.5`). */
+const CWD_LINE_PX = 36;
 /**
  * Altura mínima para um bloco prender o header no topo.
  *
@@ -496,21 +514,21 @@ const HEADER_PX = 35;
  */
 const PIN_MIN_PX = HEADER_PX * 3;
 /**
- * A linha do motivo no cartão de tela cheia (`text-[11px]` + `py-1`).
+ * A linha do motivo no cartão de tela cheia (`leading-4`).
  *
  * Ele não tem corpo, mas não é só o header: sem esta parcela a estimativa
  * ficava curta para todo `vim`, `htop` ou `less`, e o cartão seguinte nascia
  * por cima dele.
  */
-const ALT_SCREEN_PX = 21;
+const ALT_SCREEN_PX = 16;
 /**
  * Respiro entre um bloco e o seguinte.
  *
- * Exportado porque o bloco EM EXECUÇÃO também precisa dele: sem isso ele é o
- * único da lista encostado no vizinho, e a diferença lê como defeito bem no
- * cartão para onde o olho vai.
+ * Zero: sem cartão, os blocos se encostam e quem separa é a divisa. Continua
+ * exportado porque o bloco EM EXECUÇÃO soma o mesmo respiro — se um dia ele
+ * voltar, volta para os dois.
  */
-export const BLOCK_GAP_PX = 8;
+export const BLOCK_GAP_PX = 0;
 /**
  * Folga para considerar a lista "no fim".
  *
@@ -670,13 +688,22 @@ export const BlockList = memo(function BlockList({
   }, []);
   const cols = columnsFor(widthPx, cellWidthPx, BODY_INSET_X_PX);
 
+  // O diretório só aparece quando muda — contra o bloco anterior, ou contra a
+  // abertura da sessão no primeiro, que a marca de início já mostra.
+  const openedCwd = opened?.cwd ?? null;
+  const cwdOf = (index: number) =>
+    cwdChange(
+      index > 0 ? blocks[index - 1]?.cwd : openedCwd,
+      blocks[index]?.cwd,
+    );
+
   // A estimativa sai do número de linhas, não de um número fixo: com 80px
   // chutados, o primeiro layout põe o bloco no lugar errado e ele PULA quando a
   // medição real chega — que é o "aparece com delay e renderiza".
   const estimate = (index: number) => {
     const line = lineHeightPx;
     const block = blocks[index];
-    if (!block) return line + HEADER_PX;
+    if (!block) return line + HEADER_PX + BLOCK_PAD_PX;
     // Cartão de tela cheia não tem corpo, mas tem a linha do MOTIVO. Sem ela na
     // conta, todo bloco de `vim`/`htop` era estimado curto demais.
     const reason = block.altScreen ? ALT_SCREEN_PX : 0;
@@ -689,8 +716,12 @@ export const BlockList = memo(function BlockList({
     const limit = shown[block.id] ?? BODY_LIMIT;
     const body = bodyLines(block.lines, cols, limit) * line;
     const more = block.lines.length > limit ? SHOW_MORE_PX : 0;
-    const footer = block.truncated > 0 ? line : 0;
-    return HEADER_PX + reason + body + more + footer + BLOCK_GAP_PX;
+    const footer = block.truncated > 0 ? SHOW_MORE_PX : 0;
+    const where = cwdOf(index) ? CWD_LINE_PX : 0;
+    return (
+      where + HEADER_PX + reason + body + more + footer + BLOCK_PAD_PX +
+      BLOCK_GAP_PX
+    );
   };
 
   const virtualizer = useVirtualizer({
@@ -846,8 +877,8 @@ export const BlockList = memo(function BlockList({
     const el = scrollRef.current;
     if (!el || last < 0 || !atBottomRef.current) return;
     // `scrollTop` na mão, e não `scrollToIndex`: o virtualizador posiciona os
-    // itens a partir do topo, mas a lista é ancorada embaixo (`justify-end` com
-    // `min-h-full`), então as posições dele não batem com a rolagem — é o mesmo
+    // itens a partir do topo DELE, e a marca de início da sessão fica fora e
+    // acima dele, então as posições não batem com a rolagem — é o mesmo
     // descolamento que o header preso já contorna logo abaixo.
     //
     // > [!warning] Um `scrollToIndex(last)` já morou três linhas acima daqui, e
@@ -888,9 +919,8 @@ export const BlockList = memo(function BlockList({
       // Lista que cabe na tela está sempre no fim, por definição.
       atBottomRef.current =
         el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_SLACK_PX;
-      // Lista que cabe na tela não tem o que prender: ancorada embaixo, ela
-      // começa deslocada do topo, e as posições que o virtualizador calcula
-      // deixam de bater com a rolagem.
+      // Lista que cabe na tela não tem o que prender: nenhum header saiu de
+      // cena.
       if (el.scrollHeight <= el.clientHeight + 1) {
         setPinned(null);
         return;
@@ -986,13 +1016,13 @@ export const BlockList = memo(function BlockList({
         // tudo (ver `App`). Lista e terminal desenhando cada um a sua borda
         // punham duas caixas dentro do mesmo painel, e a de baixo só existia na
         // metade que o terminal ocupa.
-        className="pointer-events-auto h-full overflow-y-auto overscroll-contain rounded-[4px] bg-tyba-sunken px-2 pb-3 pt-2"
+        className="pointer-events-auto h-full overflow-y-auto overscroll-contain bg-tyba-sunken pb-3 pt-2.5"
       >
-        {/* Ancorado embaixo, como todo terminal: os blocos crescem de baixo
-            para cima e o último fica colado na linha de comando. Ancorado em
-            cima, poucos blocos deixam um vazio enorme logo acima do input —
-            que é exatamente para onde o olho vai. */}
-        <div className="flex min-h-full flex-col justify-end">
+        {/* Ancorado em CIMA: a pilha começa no topo do painel e cresce para
+            baixo. Ancorada embaixo, poucos blocos deixavam um vão enorme acima
+            do primeiro. Com a lista maior que o painel não muda nada — ela
+            rola até o fim do mesmo jeito (ver o efeito de reancorar). */}
+        <div className="flex min-h-full flex-col">
           {opened && (
             <SessionOpened
               cwd={opened.cwd}
@@ -1026,6 +1056,7 @@ export const BlockList = memo(function BlockList({
             >
               <BlockCard
                 block={blocks[item.index]}
+                cwd={cwdOf(item.index)}
                 fontSizePx={fontSizePx}
                 lineHeightPx={lineHeightPx}
                 onInject={onInject}
@@ -1053,7 +1084,7 @@ export const BlockList = memo(function BlockList({
           O `px-2` repete o padding do scroller para o comando cair na mesma
           coluna do comando de todo cartão. */}
       {pinned !== null && blocks[pinned] && (
-        <div className="absolute inset-x-0 top-0 z-10 rounded-t-[4px] tyba-divide-b bg-tyba-sunken px-2">
+        <div className="absolute inset-x-0 top-0 z-10 tyba-divide-b bg-tyba-sunken">
           <BlockHeader block={blocks[pinned]} pinned onInject={onInject} />
         </div>
       )}

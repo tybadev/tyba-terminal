@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { SessionCwd, Workspace } from "./ipc";
-import { resolveWorkspaceCwd, workspaceMatchDir } from "./workspaceCwd";
+import { dirLabel, resolveWorkspaceCwd, workspaceMatchDir } from "./workspaceCwd";
 
 const cwd = (path: string, canonical = path): SessionCwd => ({
   cwd: path,
@@ -84,5 +84,19 @@ describe("display — mostra o que o usuário digitou", () => {
     const cwds = { "s-b": cwd("~/dev/proj", "/Volumes/Dev/proj") };
     expect(resolveWorkspaceCwd(ws, cwds)?.cwd).toBe("~/dev/proj");
     expect(workspaceMatchDir(ws, cwds)).toBe("/Volumes/Dev/proj");
+  });
+});
+
+describe("dirLabel", () => {
+  test("a aba mostra só a pasta", () => {
+    expect(dirLabel("/Users/g/swell-system/poc-git")).toBe("poc-git");
+    expect(dirLabel("/Users/g/swell-system/poc-git/")).toBe("poc-git");
+    expect(dirLabel("C:\\code\\poc-git")).toBe("poc-git");
+  });
+  test("home e raiz não viram nome de pasta", () => {
+    expect(dirLabel("/Users/g")).toBe("~");
+    expect(dirLabel("/home/g/")).toBe("~");
+    expect(dirLabel("~")).toBe("~");
+    expect(dirLabel("/")).toBe("/");
   });
 });

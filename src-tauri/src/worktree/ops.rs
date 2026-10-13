@@ -24,7 +24,7 @@ fn push_failed(detail: impl Into<String>) -> AppError {
     AppError::new("push.failed").with("detail", detail.into())
 }
 
-fn ensure_relative(path: &str) -> Result<(), String> {
+pub(crate) fn ensure_relative(path: &str) -> Result<(), String> {
     let p = Path::new(path);
     if p.is_absolute() {
         return Err(format!("path absoluto não é permitido: {path}"));

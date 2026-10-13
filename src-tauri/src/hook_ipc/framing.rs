@@ -23,6 +23,16 @@ fn build_response(action: HookAction) -> ResponseEnvelope {
             action: "ack".into(),
             reason: None,
         },
+        HookAction::Pass => ResponseEnvelope {
+            v: PROTOCOL_VERSION,
+            action: "pass".into(),
+            reason: None,
+        },
+        HookAction::Ask { reason } => ResponseEnvelope {
+            v: PROTOCOL_VERSION,
+            action: "ask".into(),
+            reason: Some(reason),
+        },
     }
 }
 
@@ -102,6 +112,11 @@ mod boundary_tests {
     /// jaula existe para esconder. Ver a decisão de 2026-08-15 no cofre. Quem
     /// adicionar uma variante a `HookAction` vai precisar mexer neste teste, e
     /// é isso que faz a mudança aparecer na revisão.
+    ///
+    /// Fluxo híbrido (2026-09-23): `pass` (sem decisão, valem as regras do
+    /// agente) e `ask` (força a pergunta nativa) entraram de propósito. Os dois
+    /// continuam sendo respostas sobre UMA ação — nenhum carrega dado do core
+    /// para o agente além do motivo que o próprio core escreveu.
     #[test]
     fn the_agent_channel_only_ever_answers_with_a_decision() {
         let answers = [
@@ -111,7 +126,12 @@ mod boundary_tests {
             })
             .action,
             build_response(HookAction::Ack).action,
+            build_response(HookAction::Pass).action,
+            build_response(HookAction::Ask {
+                reason: "pergunta".into(),
+            })
+            .action,
         ];
-        assert_eq!(answers, ["allow", "deny", "ack"]);
+        assert_eq!(answers, ["allow", "deny", "ack", "pass", "ask"]);
     }
 }

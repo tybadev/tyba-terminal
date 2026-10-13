@@ -2,10 +2,11 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowCounterClockwise,
   Info,
-  LockOpen,
+  Shield,
   ShieldSlash,
   WarningOctagon,
 } from "@phosphor-icons/react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -14,7 +15,11 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import i18n from "../i18n";
+import { noJailMessageKey, ungatedMessageKey } from "../lib/shellAgentNotice";
+import type { NoJailReason } from "../lib/ipc";
 import { CanoStatus } from "./CanoStatus";
+import { ApprovalPanel } from "./ApprovalPanel";
+import type { ApprovalRequest } from "../lib/ipc";
 
 import {
   ContextMenu,
@@ -254,12 +259,18 @@ interface Props {
   onDismissNotice?: () => void;
   /**
    * Shim v2, Track C (tech-spec §7/§9): agente HOSPEDADO (o gate já ligou
-   * pelo canal shim↔core) mas fora da jaula — allowlist não bateu ou sem
-   * userns. Sinal próprio, nunca o `agentNotice` de "sem gate" — os dois
-   * nunca aparecem juntos (`hosting` em polaridades opostas). Sem ação nem
-   * dispensa: é informativo, igual ao badge "sem gate" do painel.
+   * pelo canal shim↔core) mas fora da jaula. Decisão do dono: não é faixa,
+   * é um escudo pequeno e discreto no canto do pane, com o motivo (M7) no
+   * tooltip — o gate está de pé, o usuário não precisa ser interrompido. O
+   * vermelho "sem gate" continua faixa.
    */
-  unjailedNotice?: { binary: string } | null;
+  unjailedNotice?: { binary: string; reason: NoJailReason | null } | null;
+  /** M6-A: claude que passou pelo TYBA mas roda sem gate. Vermelho, sem
+   * dispensar. */
+  ungatedNotice?: {
+    binary: string;
+    reason: "ungated" | "fallback" | "raw";
+  } | null;
   /**
    * A faixa da SSH Session: por que a sessão abriu como terminal comum (regras
    * 8, 12 e 13) ou que há um agente rodando no servidor sem jaula (regra 26).
@@ -290,6 +301,12 @@ interface Props {
    */
   authAlert?: { kind: AuthAlertKind } | null;
   onDismissAuthAlert?: () => void;
+  /**
+   * Pedido vermelho que o painel desta sessão mostra (o mais antigo — ver
+   * `panelRequestsBySession`). Sobreposto, embaixo; `null` some. Só o App
+   * decide quando some: em `approvals://resolved`, nunca por tecla.
+   */
+  approvalRequest?: ApprovalRequest | null;
   /**
    * Quanto da tela a saída do comando em curso ocupa, de 0 a 1.
    *
@@ -470,12 +487,14 @@ export function TerminalView({
   onReopenManaged,
   onDismissNotice,
   unjailedNotice,
+  ungatedNotice,
   remoteNotice,
   resumeNotice,
   onResumeAgent,
   onDismissResume,
   authAlert,
   onDismissAuthAlert,
+  approvalRequest,
   liveUsed,
   onLiveRows,
   onLineHeight,
@@ -496,6 +515,7 @@ export function TerminalView({
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const webglRef = useRef<WebglAddon | null>(null);
+  const hasApprovalPanel = Boolean(approvalRequest) && !exited;
   const onFocusRef = useRef(onFocus);
   onFocusRef.current = onFocus;
   const onPasteRef = useRef(onPaste);
@@ -1074,9 +1094,11 @@ export function TerminalView({
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    if (focused && visible && !readOnly) term.focus();
+    // Com painel vermelho aberto o teclado é dele (foco no Negar); quando o
+    // pedido se resolve, `hasApprovalPanel` volta a false e o xterm recupera.
+    if (focused && visible && !readOnly && !hasApprovalPanel) term.focus();
     syncWebglRef.current?.();
-  }, [focused, visible, readOnly]);
+  }, [focused, visible, readOnly, hasApprovalPanel]);
 
   // Ao ficar visível (troca de aba), o container sai de `display:none` e ganha
   // tamanho, mas o canvas do xterm ainda está nas dimensões antigas — a CSS o
@@ -1188,15 +1210,40 @@ export function TerminalView({
         onDismiss={onDismissNotice}
       />
     )}
-    {unjailedNotice && rect && visible && !exited && (
+    {ungatedNotice && rect && visible && !exited && (
       <SessionNoticeBar
         rect={rect}
-        tone="amber"
-        icon={<LockOpen size={12} weight="fill" />}
-        message={i18n.t("shellUnjailedNotice", {
-          binary: unjailedNotice.binary,
+        tone="red"
+        icon={<ShieldSlash size={12} weight="fill" />}
+        message={i18n.t(ungatedMessageKey(ungatedNotice.reason), {
+          binary: ungatedNotice.binary,
         })}
       />
+    )}
+    {unjailedNotice && rect && visible && !exited && (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            role="img"
+            aria-label={i18n.t(noJailMessageKey(unjailedNotice.reason), {
+              binary: unjailedNotice.binary,
+            })}
+            className="z-10 flex h-5 w-5 items-center justify-center rounded-[4px] text-tyba-amber/60 transition-colors hover:bg-tyba-text/[.05] hover:text-tyba-amber"
+            style={{
+              position: "absolute",
+              left: `calc(${rect.left + rect.width}% - 26px)`,
+              top: `calc(${rect.top}% + 4px)`,
+            }}
+          >
+            <Shield size={13} weight="duotone" />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="left" className="max-w-72">
+          {i18n.t(noJailMessageKey(unjailedNotice.reason), {
+            binary: unjailedNotice.binary,
+          })}
+        </TooltipContent>
+      </Tooltip>
     )}
     {remoteNotice && rect && visible && !exited && (
       <SessionNoticeBar
@@ -1256,6 +1303,14 @@ export function TerminalView({
         onDismiss={onDismissAuthAlert}
       />
     )}
+    {approvalRequest && rect && visible && !exited && (
+      <ApprovalPanel
+        key={approvalRequest.id}
+        request={approvalRequest}
+        rect={rect}
+        focused={focused}
+      />
+    )}
     {connection && (
       <CanoStatus
         rect={rect}
@@ -1284,7 +1339,7 @@ export function TerminalView({
           // Sem contorno próprio: quem emoldura é o PAINEL (ver `App`). A borda
           // aqui só cercava a caixa do terminal, que em modo prompt é meia
           // altura — o painel focado aparecia com moldura na metade de baixo.
-          className="overflow-hidden rounded-[4px] bg-tyba-sunken px-2"
+          className="overflow-hidden rounded-[4px] bg-tyba-sunken px-2.5"
           style={
             visible && rect
               ? {

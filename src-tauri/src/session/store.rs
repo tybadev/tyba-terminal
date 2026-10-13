@@ -54,7 +54,10 @@ CREATE TABLE IF NOT EXISTS approval_history (
     risk TEXT NOT NULL,
     decision TEXT NOT NULL,
     requested_at_ms INTEGER NOT NULL,
-    resolved_at_ms INTEGER NOT NULL
+    resolved_at_ms INTEGER NOT NULL,
+    origin TEXT NOT NULL DEFAULT 'tyba',
+    call_key TEXT,
+    status TEXT NOT NULL DEFAULT 'resolved'
 );
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
@@ -258,7 +261,12 @@ const HISTORY_CANDIDATES: i64 = 2_000;
 /// descartada continuam no banco sem dono, contam em "todos os repos" e somem
 /// de qualquer escopo — o contrário seria atribuí-las a um repo que ninguém
 /// tem como conferir.
-const APPROVAL_SCOPE: &str = "requested_at_ms >= ?1 AND (?2 IS NULL OR repo_root = ?2)";
+///
+/// `status = 'resolved'` porque a linha pendente (prompt nativo do Claude ainda
+/// aberto) não é pedido decidido de nenhum jeito: contá-la no total inflaria o
+/// denominador de todo percentual com algo que ainda pode virar qualquer coisa.
+const APPROVAL_SCOPE: &str =
+    "requested_at_ms >= ?1 AND (?2 IS NULL OR repo_root = ?2) AND status = 'resolved'";
 
 /// Sessão de agente, a partir do `kind` serializado (`{\"type\":\"agent\",…}`).
 ///
@@ -493,6 +501,18 @@ pub enum StoreError {
 ///     com backfill `1` para toda sessão SSH que já existe: elas estavam vivas
 ///     antes da coluna, e sem o backfill o boot as esqueceria. Conferido em
 ///     2026-09-16: nenhuma branch remota usava versão acima de 7.
+/// 9 — `host.integration_enabled`, `sessions.ssh_integration` e
+///     `command_history.host_id` (com o índice por Host) entram juntos.
+/// 10 — `approval_history.origin`, `.call_key` e `.status` entram, com o
+///     índice `(session_id, status)`: o histórico passa a registrar também o
+///     amarelo que o prompt nativo do Claude decidiu, marcado como deduzido
+///     (`claude_native_inferred`) e nascendo `pending` até o `PostToolUse` ou
+///     o fechamento. Linha antiga fica `tyba`/`resolved` pelos defaults — é o
+///     que ela era. Conferido em 2026-09-23: nenhuma outra branch usava 10.
+/// 11 — `command_spec` é resemeada de novo: a base ganhou `ls`, `cat`,
+///     `grep`, `find`, a árvore do `docker compose` e o nome longo de cada
+///     flag (`--all` além de `-a`). Mesmo motivo do 7. Conferido em
+///     2026-10-12: nenhuma branch local usava 11.
 ///
 /// Degrau próprio para cada um, e nunca linha nova na [`BASELINE_COLUMNS`]: a
 /// base só roda em banco na versão 0, então quem já subiu de versão nunca mais
@@ -504,7 +524,7 @@ pub enum StoreError {
 /// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
 /// de cada um passa isolado, porque simula o banco na versão anterior, que é
 /// justamente o caso em que ambos rodam.
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 11;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -575,6 +595,9 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, Stor
 /// ficar para trás é reexecutar um punhado de `PRAGMA table_info` por abertura,
 /// até a próxima que der certo.
 /// A base de subcomando e flag, extraída dos specs do Fig em tempo de build.
+///
+/// Derivada de `withfig/autocomplete`, MIT, Copyright (c) 2021 Hercules Labs
+/// Inc. (Fig) — o aviso completo está em `THIRD_PARTY_NOTICES.md`.
 ///
 /// Formato: uma linha por entrada, campos separados por TAB — `command`,
 /// `path`, `kind`, `description`. TAB porque nenhum nome de comando, caminho ou
@@ -698,6 +721,50 @@ fn migrate_ssh_integration(conn: &Connection) -> Result<(), StoreError> {
         conn.execute(
             "CREATE INDEX IF NOT EXISTS command_history_by_host
              ON command_history (host_id, started_at_ms DESC)",
+            [],
+        )?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// Degrau 10, numa transação só: as três colunas e o índice nascem juntos. O
+/// fechamento das pendentes por sessão consulta `status` pelo índice, e linha
+/// com `origin` sem `status` não teria como dizer se já foi decidida.
+///
+/// O índice nasce AQUI e nunca no `SCHEMA`, pelo mesmo motivo do degrau 9: o
+/// `SCHEMA` roda antes da migração, e num banco na 9 a coluna `status` ainda
+/// não existe — o `CREATE INDEX` derrubaria o `Store::open` inteiro.
+fn migrate_approval_origin(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> Result<(), StoreError> {
+        if !has_column(conn, "approval_history", "origin")? {
+            // Toda linha que já existe foi decidida pelo gate do TYBA: o
+            // default é a verdade dela, não um palpite.
+            conn.execute(
+                "ALTER TABLE approval_history ADD COLUMN origin TEXT NOT NULL DEFAULT 'tyba'",
+                [],
+            )?;
+        }
+        if !has_column(conn, "approval_history", "call_key")? {
+            conn.execute("ALTER TABLE approval_history ADD COLUMN call_key TEXT", [])?;
+        }
+        if !has_column(conn, "approval_history", "status")? {
+            conn.execute(
+                "ALTER TABLE approval_history ADD COLUMN status TEXT NOT NULL DEFAULT 'resolved'",
+                [],
+            )?;
+        }
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS approval_history_by_session_status
+             ON approval_history (session_id, status)",
             [],
         )?;
         Ok(())
@@ -917,6 +984,34 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
+    let approval_origin_applied = if from < 10 {
+        match migrate_approval_origin(conn) {
+            Ok(()) => true,
+            Err(e) => {
+                skipped.push(format!("approval_history origem (degrau 10): {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
+    // Degrau 11: a mesma semeadura, pelo mesmo motivo do 7 — o artefato
+    // cresceu, e quem já está carimbado só recebe o que cresceu por aqui.
+    // Abaixo de 7 a semeadura acima JÁ usou o artefato de hoje; rodá-la de novo
+    // seria pagar a conferência de milhares de linhas para nada.
+    let spec_reseed_applied = if (7..11).contains(&from) {
+        match seed_command_spec(conn) {
+            Ok(()) => true,
+            Err(e) => {
+                skipped.push(format!("command_spec (degrau 11): {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
     let reached = match (
         baseline_applied,
         scrollback_applied,
@@ -926,16 +1021,20 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         spec_seed_applied,
         ssh_auth_applied,
         ssh_integration_applied,
+        approval_origin_applied,
+        spec_reseed_applied,
     ) {
-        (true, true, true, true, true, true, true, true) => SCHEMA_VERSION,
-        (true, true, true, true, true, true, true, false) => 8,
-        (true, true, true, true, true, true, false, _) => 7,
-        (true, true, true, true, true, false, _, _) => 5,
-        (true, true, true, true, false, _, _, _) => 4,
-        (true, true, true, false, _, _, _, _) => 3,
-        (true, true, false, _, _, _, _, _) => 2,
-        (true, false, _, _, _, _, _, _) => 1,
-        (false, _, _, _, _, _, _, _) => from,
+        (true, true, true, true, true, true, true, true, true, true) => SCHEMA_VERSION,
+        (true, true, true, true, true, true, true, true, true, false) => 10,
+        (true, true, true, true, true, true, true, true, false, _) => 9,
+        (true, true, true, true, true, true, true, false, _, _) => 8,
+        (true, true, true, true, true, true, false, _, _, _) => 7,
+        (true, true, true, true, true, false, _, _, _, _) => 5,
+        (true, true, true, true, false, _, _, _, _, _) => 4,
+        (true, true, true, false, _, _, _, _, _, _) => 3,
+        (true, true, false, _, _, _, _, _, _, _) => 2,
+        (true, false, _, _, _, _, _, _, _, _) => 1,
+        (false, _, _, _, _, _, _, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -1532,6 +1631,108 @@ impl Store {
         Ok(())
     }
 
+    /// O prompt nativo do Claude abriu para esta chamada: linha **pendente**,
+    /// com origem `claude_native_inferred`.
+    ///
+    /// Nasce `pending` porque o Claude não tem evento de "o usuário negou" — o
+    /// desfecho é deduzido depois (R8): `PostToolUse` da mesma `call_key` ⇒
+    /// aprovada; o turno seguir sem ele ⇒ negada. `resolved_at_ms` é NOT NULL
+    /// no schema, então nasce igual ao pedido e ganha o valor real ao fechar.
+    ///
+    /// Mesma redação de [`Store::insert_approval_history`] (princípio nº 10): o
+    /// comando é o texto que o agente pediu para rodar, e é onde secret aparece.
+    pub fn insert_pending_inferred(
+        &self,
+        session_id: &str,
+        command: &str,
+        cwd: Option<&str>,
+        risk: &str,
+        call_key: &str,
+        now_ms: u64,
+    ) -> Result<(), StoreError> {
+        let command = redact(command);
+        let cwd = cwd.map(|c| redact(c).into_owned());
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO approval_history
+                 (session_id, repo_root, command, cwd, risk, decision,
+                  requested_at_ms, resolved_at_ms, origin, call_key, status)
+             VALUES (?1, (SELECT repo_root FROM sessions WHERE id = ?1),
+                     ?2, ?3, ?4, 'pending', ?5, ?5,
+                     'claude_native_inferred', ?6, 'pending')",
+            params![session_id, command.as_ref(), cwd, risk, now_ms, call_key],
+        )?;
+        Ok(())
+    }
+
+    /// O `PostToolUse` da chamada chegou: ela rodou, logo o prompt nativo foi
+    /// aprovado. Devolve se alguma linha foi fechada.
+    ///
+    /// Pega a linha deduzida **mais recente** com a chave que ainda está
+    /// pendente — ou que já foi fechada como `denied` por dedução. O segundo
+    /// caso é o conserto de uma dedução errada: um `PreToolUse` de outra
+    /// chamada (subagente, ferramenta em paralelo) pode chegar com este prompt
+    /// ainda aberto e fechá-lo como negado; o `PostToolUse` é prova de que a
+    /// chamada rodou, e vale mais que a dedução. Não há como uma negação de
+    /// verdade ser desfeita assim: a chave carrega o `prompt_id`, e negar no
+    /// prompt nativo encerra o turno (medido no B0) — a mesma chave não volta.
+    pub fn resolve_inferred_by_call_key(
+        &self,
+        session_id: &str,
+        call_key: &str,
+        decision: &str,
+        now_ms: u64,
+    ) -> Result<bool, StoreError> {
+        let conn = self.conn.lock();
+        let changed = conn.execute(
+            "UPDATE approval_history
+             SET decision = ?3, status = 'resolved', resolved_at_ms = ?4
+             WHERE id = (
+                 SELECT id FROM approval_history
+                 WHERE session_id = ?1 AND call_key = ?2
+                   AND origin = 'claude_native_inferred'
+                   AND (status = 'pending' OR decision = 'denied')
+                 ORDER BY id DESC LIMIT 1)",
+            params![session_id, call_key, decision, now_ms],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Fecha como `denied` toda linha deduzida ainda pendente da sessão.
+    ///
+    /// Chamado quando o turno seguiu sem o `PostToolUse` (próximo `PreToolUse`,
+    /// `UserPromptSubmit`, `SessionEnd`) ou quando a sessão acaba. Devolve
+    /// quantas fechou.
+    pub fn deny_pending_inferred_for_session(
+        &self,
+        session_id: &str,
+        now_ms: u64,
+    ) -> Result<usize, StoreError> {
+        let conn = self.conn.lock();
+        let changed = conn.execute(
+            "UPDATE approval_history
+             SET decision = 'denied', status = 'resolved', resolved_at_ms = ?2
+             WHERE session_id = ?1 AND status = 'pending'
+               AND origin = 'claude_native_inferred'",
+            params![session_id, now_ms],
+        )?;
+        Ok(changed)
+    }
+
+    /// Quantos vermelhos a sessão pediu (CA-16) — o insumo da decisão futura de
+    /// afrouxar a classificação (R7). Pendente fica de fora, como em toda
+    /// contagem.
+    pub fn red_count_by_session(&self, session_id: &str) -> Result<u32, StoreError> {
+        let conn = self.conn.lock();
+        let count: u32 = conn.query_row(
+            "SELECT COUNT(*) FROM approval_history
+             WHERE session_id = ?1 AND risk = 'red' AND status = 'resolved'",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
     pub fn list_approval_history(
         &self,
         session_id: Option<&str>,
@@ -1611,14 +1812,14 @@ impl Store {
         since: i64,
         repo: Option<&str>,
     ) -> Result<crate::stats::ApprovalTotals, StoreError> {
-        use crate::stats::{percent, AUTO_DECISIONS, HUMAN_DECISIONS};
+        use crate::stats::{percent, AUTO_DECISIONS, HUMAN_DECISIONS, HUMAN_ORIGIN};
 
         let (requested, auto_approved, human_decided, denied): (u64, u64, u64, u64) = conn
             .query_row(
                 &format!(
                     "SELECT COUNT(*),
                             COALESCE(SUM(decision IN ({AUTO_DECISIONS})), 0),
-                            COALESCE(SUM(decision IN ({HUMAN_DECISIONS})), 0),
+                            COALESCE(SUM({HUMAN_ORIGIN} AND decision IN ({HUMAN_DECISIONS})), 0),
                             COALESCE(SUM(decision = 'denied'), 0)
                      FROM approval_history
                      WHERE {APPROVAL_SCOPE}"
@@ -1644,7 +1845,8 @@ impl Store {
                             ) AS pos,
                             COUNT(*) OVER () AS total
                      FROM approval_history
-                     WHERE {APPROVAL_SCOPE} AND decision IN ({HUMAN_DECISIONS})
+                     WHERE {APPROVAL_SCOPE} AND {HUMAN_ORIGIN}
+                       AND decision IN ({HUMAN_DECISIONS})
                  )
                  WHERE pos IN ((total + 1) / 2, (total + 2) / 2)"
             ),
@@ -1777,7 +1979,8 @@ impl Store {
                AND s.repo_root <> ''
                AND (EXISTS (
                        SELECT 1 FROM approval_history a
-                       WHERE a.session_id = s.id AND a.requested_at_ms >= ?1)
+                       WHERE a.session_id = s.id AND a.requested_at_ms >= ?1
+                         AND a.status = 'resolved')
                     OR ({AGENT_SESSION} AND EXISTS (
                        SELECT 1 FROM block b
                        WHERE b.session_id = s.id AND b.started_at_ms >= ?1)))
@@ -1944,6 +2147,54 @@ impl Store {
             filter,
             HISTORY_RECENT_ROWS,
         )
+    }
+
+    /// Execuções uma a uma (não agrupadas), mais recentes primeiro — o painel
+    /// Histórico mostra cada rodada com cwd, hora, exit code e duração.
+    ///
+    /// Escopo: a sessão (`session_id`) ou o repo (`repo_root`, cwd dentro dele);
+    /// os dois `None` é tudo. Regra 19 vale igual: comando de outro Host nunca
+    /// aparece numa sessão local.
+    pub fn history_runs(
+        &self,
+        query: Option<&str>,
+        session_id: Option<&str>,
+        repo_root: Option<&str>,
+        host_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<crate::history::HistoryRun>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT command, cwd, exit_code, started_at_ms, duration_ms
+               FROM command_history
+              WHERE (host_id IS NULL OR host_id = ?1)
+                AND (?2 IS NULL OR command LIKE ?2 ESCAPE '\\')
+                AND (?3 IS NULL OR session_id = ?3)
+                AND (?4 IS NULL OR cwd = ?5 OR cwd LIKE ?4 ESCAPE '\\')
+              ORDER BY started_at_ms DESC, id DESC
+              LIMIT ?6",
+        )?;
+        let matching = query
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(|q| format!("%{}%", escape_like(q)));
+        let repo_like =
+            repo_root.map(|root| format!("{}/%", escape_like(root.trim_end_matches('/'))));
+        let rows = stmt
+            .query_map(
+                params![host_id, matching, session_id, repo_like, repo_root, limit],
+                |row| {
+                    Ok(crate::history::HistoryRun {
+                        command: row.get(0)?,
+                        cwd: row.get(1)?,
+                        exit_code: row.get(2)?,
+                        started_at_ms: row.get(3)?,
+                        duration_ms: row.get(4)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Comandos distintos que começam com o prefixo, mais recentes primeiro.
@@ -2718,6 +2969,8 @@ impl RawSession {
             worktree,
             status,
             observed: None,
+            agent_model: None,
+            status_note: None,
             attention: false,
             created_at,
             cwd: self.cwd.map(PathBuf::from),
@@ -2731,6 +2984,7 @@ impl RawSession {
             // qualquer um dos dois aqui seria palpite, não fato.
             opened_by_gate: false,
             did_work: false,
+            agent_usage: None,
         })
     }
 }
@@ -2832,8 +3086,11 @@ mod tests {
             connection_failure: None,
             agent_conversation_id: None,
             observed: None,
+            agent_model: None,
+            status_note: None,
             opened_by_gate: false,
             did_work: false,
+            agent_usage: None,
         }
     }
 
@@ -3268,6 +3525,7 @@ mod tests {
         (5, "approval_history", "repo_root"),
         (8, "sessions", "ssh_logged_in"),
         (9, "command_history", "host_id"),
+        (10, "approval_history", "origin"),
     ];
 
     /// Colunas que nascem num degrau que já tem linha em [`STEP_COLUMNS`]. Lista
@@ -3277,6 +3535,8 @@ mod tests {
         (8, "host", "agent_key"),
         (9, "host", "integration_enabled"),
         (9, "sessions", "ssh_integration"),
+        (10, "approval_history", "call_key"),
+        (10, "approval_history", "status"),
     ];
 
     /// Degraus que nascem uma TABELA em vez de uma coluna, e em qual número.
@@ -3294,7 +3554,7 @@ mod tests {
     /// já está carimbado. A guarda de colisão precisa conhecer o número dele do
     /// mesmo jeito — um degrau fora de todas as listas passa despercebido pela
     /// guarda e é exatamente assim que dois degraus acabam com o mesmo número.
-    const STEP_RESEEDS: &[(i64, &str)] = &[(7, "command_spec")];
+    const STEP_RESEEDS: &[(i64, &str)] = &[(7, "command_spec"), (11, "command_spec")];
 
     /// Dois degraus não podem dividir o mesmo número.
     ///
@@ -3610,6 +3870,54 @@ mod tests {
             conta_spec(&store),
             antes,
             "a resemeadura duplicou o que já estava na base"
+        );
+    }
+
+    /// Banco carimbado na 10 recebe o que a semente ganhou no degrau 11.
+    ///
+    /// Mesma armadilha do 7, uma volta depois: sem o degrau, `docker compose
+    /// up`, `ls -la` e `--all` só existiriam para quem instalasse do zero.
+    #[test]
+    fn banco_carimbado_na_10_ganha_compose_e_ls() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        let antes = {
+            let store = Store::open(&path).unwrap();
+            let total = conta_spec(&store);
+            let conn = store.conn.lock();
+            conn.execute(
+                "DELETE FROM command_spec WHERE command = 'ls' OR path LIKE 'compose %'",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 10).unwrap();
+            total
+        };
+
+        let store = Store::open(&path).unwrap();
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        let nomes = |cmd: &str, escopo: &str, token: &str| -> Vec<String> {
+            store
+                .spec_completions(cmd, escopo, token, 20)
+                .unwrap()
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect()
+        };
+        assert!(nomes("docker", "compose", "u").contains(&"up".to_string()));
+        assert!(nomes("ls", "", "-l").contains(&"-l".to_string()));
+        assert_eq!(conta_spec(&store), antes, "a resemeadura duplicou a base");
+    }
+
+    /// O nome longo da flag está na base, não só o curto.
+    #[test]
+    fn a_flag_tem_o_nome_longo_alem_do_curto() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("tyba.db")).unwrap();
+        let achados = store.spec_completions("git", "commit", "--a", 20).unwrap();
+        assert!(
+            achados.iter().any(|(n, _)| n == "--all"),
+            "faltou --all em `git commit --a`: {achados:?}"
         );
     }
 
@@ -4167,6 +4475,279 @@ mod tests {
         assert!(cwd.as_deref().unwrap().contains("[REDACTED]"));
     }
 
+    /// Uma linha de `approval_history` como a tabela a guarda, com as colunas
+    /// do degrau 10.
+    fn approval_row(store: &Store, id_desc: usize) -> (String, String, Option<String>, String) {
+        let conn = store.conn.lock();
+        conn.query_row(
+            "SELECT decision, origin, call_key, status FROM approval_history
+             ORDER BY id DESC LIMIT 1 OFFSET ?1",
+            params![id_desc as i64],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap()
+    }
+
+    /// Degrau 10 a partir de um banco na 9 com aprovações: nenhuma linha se
+    /// perde, e todas ficam `tyba`/`resolved` — é o que elas eram (CA-14).
+    #[test]
+    fn banco_na_9_ganha_origem_e_status_sem_perder_as_aprovacoes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        {
+            let store = Store::open(&path).unwrap();
+            store
+                .insert_approval_history(&approval("s1", "git push", 100))
+                .unwrap();
+            let mut negada = approval("s1", "rm -rf build", 200);
+            negada.decision = "denied".into();
+            store.insert_approval_history(&negada).unwrap();
+            let conn = store.conn.lock();
+            conn.execute_batch(
+                "DROP INDEX IF EXISTS approval_history_by_session_status;
+                 ALTER TABLE approval_history DROP COLUMN origin;
+                 ALTER TABLE approval_history DROP COLUMN call_key;
+                 ALTER TABLE approval_history DROP COLUMN status;",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 9).unwrap();
+        }
+        // Pré-condição: o disco está de fato na forma da 9.
+        {
+            let before = Connection::open(&path).unwrap();
+            for column in ["origin", "call_key", "status"] {
+                assert!(!has_column(&before, "approval_history", column).unwrap());
+            }
+        }
+
+        let store = Store::open(&path).unwrap();
+
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert_eq!(store.degraded(), None);
+        assert!(index_exists(&store, "approval_history_by_session_status"));
+        let list = store.list_approval_history(None, 10).unwrap();
+        assert_eq!(list.len(), 2, "o degrau não pode perder aprovação");
+        assert_eq!(list[0].command, "rm -rf build");
+        assert_eq!(list[0].decision, "denied");
+        for offset in 0..2 {
+            let (_, origin, call_key, status) = approval_row(&store, offset);
+            assert_eq!(origin, "tyba");
+            assert_eq!(call_key, None);
+            assert_eq!(status, "resolved");
+        }
+        // E continuam contando: `status = 'resolved'` no escopo das estatísticas
+        // não pode esconder o histórico de antes do degrau.
+        assert_eq!(store.agent_stats(0, None).unwrap().totals.requested, 2);
+    }
+
+    #[test]
+    fn banco_novo_nasce_com_origem_status_e_indice() {
+        let store = Store::open_in_memory().unwrap();
+
+        for column in ["origin", "call_key", "status"] {
+            assert!(
+                column_exists(&store, "approval_history", column),
+                "{column}"
+            );
+        }
+        assert!(index_exists(&store, "approval_history_by_session_status"));
+        // A linha do gate do TYBA nasce `tyba`/`resolved` pelo default.
+        store
+            .insert_approval_history(&approval("s1", "git push", 100))
+            .unwrap();
+        let (decision, origin, call_key, status) = approval_row(&store, 0);
+        assert_eq!(
+            (decision.as_str(), origin.as_str(), status.as_str()),
+            ("approved", "tyba", "resolved")
+        );
+        assert_eq!(call_key, None);
+    }
+
+    /// As colunas do degrau 10 não podem estar na linha de base: ela só roda
+    /// em banco na versão 0, e quem está na 9 nunca as ganharia.
+    #[test]
+    fn as_colunas_do_degrau_10_nao_sao_linha_de_base() {
+        for column in ["origin", "call_key", "status"] {
+            assert!(
+                !BASELINE_COLUMNS
+                    .iter()
+                    .any(|(t, c, _)| *t == "approval_history" && *c == column),
+                "{column}"
+            );
+        }
+    }
+
+    #[test]
+    fn pendente_deduzida_vira_aprovada_pela_call_key() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_pending_inferred("s1", "cargo test", Some("/wt"), "yellow", "k1", 1_000)
+            .unwrap();
+        let (decision, origin, call_key, status) = approval_row(&store, 0);
+        assert_eq!(decision, "pending");
+        assert_eq!(origin, "claude_native_inferred");
+        assert_eq!(call_key.as_deref(), Some("k1"));
+        assert_eq!(status, "pending");
+
+        // Chave de outra chamada, ou da mesma chave em outra sessão: nada.
+        assert!(!store
+            .resolve_inferred_by_call_key("s1", "outra", "approved", 2_000)
+            .unwrap());
+        assert!(!store
+            .resolve_inferred_by_call_key("s2", "k1", "approved", 2_000)
+            .unwrap());
+
+        assert!(store
+            .resolve_inferred_by_call_key("s1", "k1", "approved", 2_500)
+            .unwrap());
+        let (decision, _, _, status) = approval_row(&store, 0);
+        assert_eq!(
+            (decision.as_str(), status.as_str()),
+            ("approved", "resolved")
+        );
+        let resolved_at: i64 = store
+            .conn
+            .lock()
+            .query_row("SELECT resolved_at_ms FROM approval_history", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(resolved_at, 2_500);
+    }
+
+    #[test]
+    fn fechamento_nega_so_as_pendentes_deduzidas_da_sessao() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_approval_history(&approval("s1", "git push", 100))
+            .unwrap();
+        store
+            .insert_pending_inferred("s1", "cargo test", None, "yellow", "k1", 1_000)
+            .unwrap();
+        store
+            .insert_pending_inferred("s1", "npm i", None, "yellow", "k2", 1_100)
+            .unwrap();
+        store
+            .insert_pending_inferred("s2", "make", None, "yellow", "k3", 1_200)
+            .unwrap();
+
+        assert_eq!(
+            store
+                .deny_pending_inferred_for_session("s1", 5_000)
+                .unwrap(),
+            2
+        );
+
+        let conn = store.conn.lock();
+        let rows: Vec<(String, String, String)> = conn
+            .prepare("SELECT session_id, decision, status FROM approval_history ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("s1".into(), "approved".into(), "resolved".into()),
+                ("s1".into(), "denied".into(), "resolved".into()),
+                ("s1".into(), "denied".into(), "resolved".into()),
+                ("s2".into(), "pending".into(), "pending".into()),
+            ]
+        );
+    }
+
+    /// O `PostToolUse` é prova de que a chamada rodou: se um `PreToolUse` de
+    /// outra chamada fechou a pendente como negada antes dele, a dedução estava
+    /// errada e é consertada.
+    #[test]
+    fn post_tool_use_conserta_a_negacao_deduzida_da_mesma_chamada() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_pending_inferred("s1", "cargo test", None, "yellow", "k1", 1_000)
+            .unwrap();
+        store
+            .deny_pending_inferred_for_session("s1", 1_100)
+            .unwrap();
+
+        assert!(store
+            .resolve_inferred_by_call_key("s1", "k1", "approved", 1_200)
+            .unwrap());
+        assert_eq!(approval_row(&store, 0).0, "approved");
+    }
+
+    /// A linha do gate do TYBA nunca é alcançada pelo fechamento deduzido,
+    /// mesmo com decisão `denied`.
+    #[test]
+    fn resolucao_deduzida_nunca_mexe_em_linha_do_tyba() {
+        let store = Store::open_in_memory().unwrap();
+        let mut negada = approval("s1", "rm -rf /", 100);
+        negada.decision = "denied".into();
+        store.insert_approval_history(&negada).unwrap();
+
+        assert!(!store
+            .resolve_inferred_by_call_key("s1", "k1", "approved", 200)
+            .unwrap());
+        assert_eq!(
+            store.deny_pending_inferred_for_session("s1", 300).unwrap(),
+            0
+        );
+        assert_eq!(approval_row(&store, 0).0, "denied");
+    }
+
+    /// CA-16: vermelhos por sessão, sem os de outra e sem os que não são
+    /// vermelhos.
+    #[test]
+    fn red_count_by_session_conta_so_os_vermelhos_da_sessao() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.red_count_by_session("s1").unwrap(), 0);
+        store
+            .insert_approval_history(&approval("s1", "git push", 100))
+            .unwrap();
+        let mut negada = approval("s1", "rm -rf /", 200);
+        negada.decision = "denied".into();
+        store.insert_approval_history(&negada).unwrap();
+        let mut amarelo = approval("s1", "cargo test", 300);
+        amarelo.risk = "yellow".into();
+        store.insert_approval_history(&amarelo).unwrap();
+        store
+            .insert_approval_history(&approval("s2", "sudo ls", 400))
+            .unwrap();
+        store
+            .insert_pending_inferred("s1", "npm i", None, "yellow", "k1", 500)
+            .unwrap();
+
+        assert_eq!(store.red_count_by_session("s1").unwrap(), 2);
+        assert_eq!(store.red_count_by_session("s2").unwrap(), 1);
+        assert_eq!(store.red_count_by_session("s3").unwrap(), 0);
+    }
+
+    /// A linha deduzida passa pela mesma redação da do gate (princípio nº 10).
+    #[test]
+    fn pendente_deduzida_redige_secrets_antes_de_gravar() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_pending_inferred(
+                "s1",
+                "deploy --key sk-abcdef1234567890ABCDEFghijkl now",
+                Some("/repo AKIAIOSFODNN7EXAMPLE dir"),
+                "yellow",
+                "k1",
+                100,
+            )
+            .unwrap();
+
+        let conn = store.conn.lock();
+        let (command, cwd): (String, Option<String>) = conn
+            .query_row("SELECT command, cwd FROM approval_history", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert!(!command.contains("sk-abcdef1234567890ABCDEFghijkl"));
+        assert!(command.contains("[REDACTED]"));
+        assert!(!cwd.as_deref().unwrap().contains("AKIAIOSFODNN7EXAMPLE"));
+    }
+
     fn command(cmd: &str, cwd: Option<&str>, at: i64) -> crate::history::CommandRecord {
         crate::history::CommandRecord {
             session_id: "s1".into(),
@@ -4177,6 +4758,54 @@ mod tests {
             duration_ms: Some(10),
             host_id: None,
         }
+    }
+
+    #[test]
+    fn history_runs_lists_each_run_newest_first_within_scope() {
+        let store = Store::open_in_memory().unwrap();
+        let mut failed = command("cargo test", Some("/repo/a_b"), 30);
+        failed.exit_code = Some(101);
+        failed.duration_ms = Some(4200);
+        store
+            .insert_command(&command("ls", Some("/repo/a_b"), 10))
+            .unwrap();
+        store.insert_command(&failed).unwrap();
+        store
+            .insert_command(&command("ls", Some("/repo/a_b/src"), 20))
+            .unwrap();
+        let mut other = command("make", Some("/repo/axb"), 40);
+        other.session_id = "s2".into();
+        store.insert_command(&other).unwrap();
+        let mut remote = command("htop", Some("/repo/a_b"), 50);
+        remote.host_id = Some("h1".into());
+        store.insert_command(&remote).unwrap();
+
+        let repo = store
+            .history_runs(None, None, Some("/repo/a_b"), None, 50)
+            .unwrap();
+        assert_eq!(
+            repo.iter().map(|r| r.command.as_str()).collect::<Vec<_>>(),
+            ["cargo test", "ls", "ls"],
+            "uma linha por execução; `_` do caminho não é curinga; remoto fica fora"
+        );
+        assert_eq!(repo[0].exit_code, Some(101));
+        assert_eq!(repo[0].duration_ms, Some(4200));
+
+        let session = store
+            .history_runs(None, Some("s2"), None, None, 50)
+            .unwrap();
+        assert_eq!(session.len(), 1);
+        assert_eq!(session[0].command, "make");
+
+        let search = store
+            .history_runs(Some("cargo"), None, None, None, 50)
+            .unwrap();
+        assert_eq!(search.len(), 1);
+
+        let host = store
+            .history_runs(Some("htop"), None, None, Some("h1"), 50)
+            .unwrap();
+        assert_eq!(host.len(), 1, "na sessão do Host, o comando dele aparece");
     }
 
     /// Regra 12: a sessão que já estava viva quando esta versão chegou não tem

@@ -1011,8 +1011,11 @@ mod tests {
                         connection_failure: None,
                         agent_conversation_id: None,
                         observed: None,
+                        agent_model: None,
+                        status_note: None,
                         opened_by_gate: false,
                         did_work: false,
+                        agent_usage: None,
                     },
                 );
                 manager.track_cano(id, CanoLifecycle::connecting());

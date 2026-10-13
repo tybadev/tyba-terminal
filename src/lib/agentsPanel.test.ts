@@ -12,6 +12,7 @@ import {
   agentsPanelSession,
   agentsPanelUngated,
   deadAgentsPanels,
+  mainColumn,
   orchestratorVisual,
   showAgentsButton,
   trackPanelRun,
@@ -57,6 +58,7 @@ const sub = (status: SubagentRun["status"]): SubagentRun => ({
   started_at_ms: 0,
   ended_at_ms: status === "done" ? 1 : null,
   summary: status === "done" ? "fez X" : null,
+  round: 1,
   interrupted: false,
 });
 
@@ -314,5 +316,46 @@ describe("trackPanelRun", () => {
     const swapped = trackPanelRun(s1, "s2", false);
     expect(swapped.entry).toEqual({ session: "s2", armed: true });
     expect(swapped.action).toBe("cancel");
+  });
+});
+
+describe("mainColumn", () => {
+  // Quadro a quadro de uma rodada: painel abre, rodada assenta, `sideView`
+  // volta a null, o fade de 150ms corre com o painel ainda montado, e só então
+  // ele desmonta. Quem refaz o fit do terminal ouve `slot`.
+  test("fechar só devolve a largura cheia quando o fade termina", () => {
+    const closed = mainColumn(null, false, null, false, 0.5);
+    const open = mainColumn("agents:s1", true, "s1", false, 0.5);
+    const fading = mainColumn(null, true, "s1", false, 0.5);
+    const gone = mainColumn(null, false, "s1", false, 0.5);
+
+    expect(closed.slot).toBe("full");
+    expect(open.slot).toBe("narrow");
+    // Durante o fade a coluna ainda é estreita: um relayout aqui mede 380px a
+    // menos — era o único que existia, e o terminal ficava estreito.
+    expect(fading.slot).toBe("narrow");
+    expect(fading.renderSideView).toBe("agents:s1");
+    // O desmonte muda o slot: é este quadro que tem que pedir o relayout.
+    expect(gone.slot).toBe("full");
+    expect(gone.slot).not.toBe(fading.slot);
+    expect(gone).toEqual(closed);
+  });
+
+  test("segunda rodada reabre o painel estreito", () => {
+    const gone = mainColumn(null, false, "s1", false, 0.5);
+    const reopened = mainColumn("agents:s1", true, "s1", false, 0.5);
+    expect(reopened.slot).toBe("narrow");
+    expect(reopened.agentsSideNarrow).toBe(true);
+    expect(reopened.slot).not.toBe(gone.slot);
+  });
+
+  test("expandido esconde a coluna; outras views dividem pela razão", () => {
+    expect(mainColumn("agents:s1", true, "s1", true, 0.5).slot).toBe("hidden");
+    expect(mainColumn("diff:s1", false, null, false, 0.3).slot).toBe(
+      "split:0.3",
+    );
+    expect(mainColumn("diff:s1", false, null, false, 0.4).slot).toBe(
+      "split:0.4",
+    );
   });
 });

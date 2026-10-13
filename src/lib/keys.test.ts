@@ -3,6 +3,8 @@ import { describe, expect, it } from "bun:test";
 import { IS_MAC } from "./platform";
 import {
   DEFAULT_BINDINGS,
+  TAB_BACK_EDITOR_COMBO,
+  tabBackRoute,
   KEY_ACTIONS,
   MAC_BINDINGS,
   OPEN_LATEST_SESSION_COMBO,
@@ -319,5 +321,21 @@ describe("ptyNewlineFor", () => {
 
   it("tecla que não é Enter nunca vira quebra de linha", () => {
     expect(ptyNewlineFor(chord({ key: "j", ctrlKey: true }), true)).toBeNull();
+  });
+});
+
+describe("tabBackRoute", () => {
+  const b = { ...DEFAULT_BINDINGS };
+  it("fora do editor, o atalho de voltar volta", () => {
+    expect(tabBackRoute(b.tabBack, b, false)).toBe("back");
+  });
+  it("no editor de código, o atalho de voltar fica com o editor (desindentar)", () => {
+    expect(tabBackRoute(b.tabBack, b, true)).toBe("native");
+  });
+  it("no editor, o acorde alternativo volta; fora dele não é voltar", () => {
+    expect(tabBackRoute(TAB_BACK_EDITOR_COMBO, b, true)).toBe("back");
+    expect(tabBackRoute(TAB_BACK_EDITOR_COMBO, b, false)).toBeNull();
+    expect(tabBackRoute(null, b, true)).toBeNull();
+    expect(tabBackRoute(b.newTab, b, true)).toBeNull();
   });
 });

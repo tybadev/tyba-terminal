@@ -619,6 +619,55 @@ fn claude_agent_dirs_follow_the_granular_rules() {
     assert!(session_env.join("env.sh").exists());
 }
 
+/// M5 do claude-monitor: o `/rewind` precisa ler e gravar o
+/// `file-history/<sessão>` da conversa da sessão; o de outra conversa e o
+/// `history.jsonl` seguem invisíveis.
+#[test]
+fn claude_session_reads_and_writes_only_its_own_file_history() {
+    require_seatbelt!();
+    let mut f = fixture();
+    let claude = f.home.join(".claude");
+    let history = claude.join("file-history");
+    std::fs::create_dir_all(history.join("conv-own-1234")).unwrap();
+    std::fs::create_dir_all(history.join("conv-other-5678")).unwrap();
+    std::fs::write(history.join("conv-own-1234/a@v1"), "OWN").unwrap();
+    std::fs::write(history.join("conv-other-5678/b@v1"), "OTHER").unwrap();
+    std::fs::write(claude.join("history.jsonl"), "PROMPTS").unwrap();
+    let mut agent = ClaudeCodeRunner.sandbox_access(&f.home, &f.worktree);
+    let own = ClaudeCodeRunner.conversation_access(&f.home, "conv-own-1234");
+    agent.read.extend(own.read);
+    agent.write.extend(own.write);
+    f.spec.agent = agent;
+
+    let ok = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!(
+            "cat {d}/a@v1 && echo NEW > {d}/c@v2 && cat {d}/c@v2",
+            d = history.join("conv-own-1234").display()
+        ),
+    );
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+
+    let other = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!("cat {}", history.join("conv-other-5678/b@v1").display()),
+    );
+    assert_denied(&other, "file-history de outra conversa");
+
+    let prompts = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!("cat {}", claude.join("history.jsonl").display()),
+    );
+    assert_denied(&prompts, "history.jsonl");
+}
+
 // ---------------------------------------------------------------------------
 // Entrega B — a credencial do agente sobrevive à jaula no Linux (§12, item 19:
 // mesmo par positivo/negativo dos itens 3-9 no Seatbelt). `seatbelt.rs` não
@@ -960,6 +1009,7 @@ fn real_agent_boots_under_production_policy(runner: &dyn AgentRunner, binary: &s
         &f.runtime,
         &f.spec.hook_socket,
         &exe,
+        None,
     )
     .expect("spec de produção");
 
@@ -1080,4 +1130,124 @@ fn agent_attached_to_the_main_checkout_cannot_move_main() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("feature-x"));
+}
+
+/// Toolchain do usuário num dot-dir da home (`~/.hermes/node/bin`, `~/.nvm`...):
+/// a entrada do PATH e o prefixo dela (`..`) ficam legíveis e executáveis, nunca
+/// graváveis, e um dot-dir vizinho continua invisível. Tudo sintético.
+#[test]
+fn path_toolchain_in_a_dot_dir_runs_reads_its_prefix_and_stays_read_only() {
+    require_seatbelt!();
+    let mut f = fixture();
+    let prefix = f.home.join(".toolchain");
+    let bin = prefix.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(prefix.join("lib")).unwrap();
+    std::fs::write(prefix.join("lib/data.txt"), "LIB-OK").unwrap();
+    let tool = bin.join("tool");
+    std::fs::write(
+        &tool,
+        "#!/bin/sh\nexec cat \"$(dirname \"$0\")/../lib/data.txt\"\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // Binário Mach-O de verdade (copiar um do sistema não serve: o macOS recusa
+    // binário de plataforma fora do lugar). Sem compilador, essa parte é pulada.
+    let source = f.home.join("native.c");
+    std::fs::write(
+        &source,
+        "#include <stdio.h>\nint main(void){puts(\"NATIVE-OK\");return 0;}\n",
+    )
+    .unwrap();
+    let native = bin.join("native");
+    let compiled = Command::new("cc")
+        .arg("-o")
+        .arg(&native)
+        .arg(&source)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let sibling = f.home.join(".sibling");
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(sibling.join("secret.txt"), "SIBLING-SECRET").unwrap();
+    f.spec.exec_path_dirs.insert(0, bin.clone());
+
+    let out = run_in_sandbox(&f.spec, &f.worktree, "tool");
+    assert!(
+        out.status.success(),
+        "o toolchain do PATH precisa rodar e ler ../lib: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "LIB-OK");
+
+    // Binário nativo dentro do dot-dir: exige file-map-executable.
+    if compiled {
+        let out = run_in_sandbox(&f.spec, &f.worktree, "native");
+        assert!(
+            out.status.success(),
+            "binário nativo no dot-dir: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "NATIVE-OK");
+    } else {
+        eprintln!("pulando o binário nativo: sem `cc`");
+    }
+
+    for (what, target) in [
+        ("escrita no lib do toolchain", prefix.join("lib/novo.txt")),
+        ("escrita no bin do toolchain", bin.join("plantado")),
+    ] {
+        let out = run_in_sandbox(
+            &f.spec,
+            &f.worktree,
+            &format!("echo x > '{}'", target.display()),
+        );
+        assert_denied(&out, what);
+        assert!(!target.exists(), "{what}: arquivo criado");
+    }
+
+    let out = run_in_sandbox(
+        &f.spec,
+        &f.worktree,
+        &format!("cat '{}'", sibling.join("secret.txt").display()),
+    );
+    assert_denied(&out, "leitura de dot-dir vizinho");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("SIBLING"));
+
+    let out = run_in_sandbox(&f.spec, &f.worktree, &format!("ls '{}'", f.home.display()));
+    assert!(
+        !out.status.success(),
+        "a home em si continua fechada para listagem"
+    );
+}
+
+/// As variáveis de cache que o `wrap` injeta apontam para um dir gravável de
+/// dentro da jaula — senão `npm view` cai no `~/.npm` somente-leitura.
+#[test]
+fn toolchain_cache_env_points_to_a_dir_writable_inside_the_jail() {
+    require_seatbelt!();
+    let f = fixture();
+    let cmd = portable_pty::CommandBuilder::new("/usr/bin/true");
+    let wrapped = SeatbeltSandbox::new().unwrap().wrap(cmd, &f.spec).unwrap();
+    for (var, _) in super::toolchain::CACHE_ENV_VARS {
+        let dir = PathBuf::from(wrapped.get_env(var).expect(var));
+        let out = run_in_sandbox(
+            &f.spec,
+            &f.worktree,
+            &format!(
+                "mkdir -p '{d}' && echo ok > '{d}/probe' && cat '{d}/probe'",
+                d = dir.display()
+            ),
+        );
+        assert!(
+            out.status.success(),
+            "{var}={} não é gravável na jaula: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
 }

@@ -33,6 +33,16 @@ pub struct CommandRecord {
     pub host_id: Option<String>,
 }
 
+/// Uma execução gravada, como o painel Histórico mostra.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct HistoryRun {
+    pub command: String,
+    pub cwd: Option<String>,
+    pub exit_code: Option<i32>,
+    pub started_at_ms: i64,
+    pub duration_ms: Option<i64>,
+}
+
 struct Recorder {
     tx: SyncSender<CommandRecord>,
     enabled: AtomicBool,

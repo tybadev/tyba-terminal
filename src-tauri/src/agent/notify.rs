@@ -33,6 +33,14 @@ pub enum NotifyKind {
     ///
     /// Nasce desligada — ver [`default_enabled`].
     ObservedRequest,
+    /// O prompt de permissão do próprio Claude abriu no terminal da sessão.
+    ///
+    /// É um pedido de fato (o hook `PermissionRequest` declarou), e por isso
+    /// lê e grava **a mesma preferência** de [`NotifyKind::Request`]: para o
+    /// usuário, "o agente parou pedindo permissão" é uma coisa só, venha a
+    /// pergunta do gate do TYBA ou do prompt nativo. Espécie separada só para
+    /// o core saber de onde o aviso saiu — nunca um interruptor a mais.
+    NativePrompt,
 }
 
 impl NotifyKind {
@@ -40,7 +48,7 @@ impl NotifyKind {
     /// encontrada, e o usuário volta ao default sem ter mexido em nada.
     pub const fn enabled_key(self) -> &'static str {
         match self {
-            NotifyKind::Request => "pref.notify.request.enabled",
+            NotifyKind::Request | NotifyKind::NativePrompt => "pref.notify.request.enabled",
             NotifyKind::Done => "pref.notify.done.enabled",
             NotifyKind::ObservedRequest => "pref.notify.observed_request.enabled",
         }
@@ -48,7 +56,7 @@ impl NotifyKind {
 
     pub const fn sound_key(self) -> &'static str {
         match self {
-            NotifyKind::Request => "pref.notify.request.sound",
+            NotifyKind::Request | NotifyKind::NativePrompt => "pref.notify.request.sound",
             NotifyKind::Done => "pref.notify.done.sound",
             NotifyKind::ObservedRequest => "pref.notify.observed_request.sound",
         }
@@ -71,7 +79,7 @@ impl NotifyKind {
 /// nasceria tão barulhenta quanto a do agente com hook.
 pub const fn default_enabled(kind: NotifyKind) -> bool {
     match kind {
-        NotifyKind::Request | NotifyKind::Done => true,
+        NotifyKind::Request | NotifyKind::NativePrompt | NotifyKind::Done => true,
         NotifyKind::ObservedRequest => false,
     }
 }
@@ -87,7 +95,7 @@ pub const fn default_sound(kind: NotifyKind) -> Option<&'static str> {
     #[cfg(target_os = "macos")]
     {
         match kind {
-            NotifyKind::Request => Some("Ping"),
+            NotifyKind::Request | NotifyKind::NativePrompt => Some("Ping"),
             NotifyKind::Done => Some("Glass"),
             // O mesmo som do pedido de propósito: o som carrega **urgência**, e
             // um agente esperando é igualmente urgente venha o sinal do hook ou
@@ -216,6 +224,9 @@ mod tests {
         );
     }
 
+    /// Espécies com interruptor próprio. `NativePrompt` fica de fora de
+    /// propósito: divide as chaves de `Request` (ver
+    /// `prompt_nativo_segue_a_preferencia_de_pedido`).
     const ESPECIES: [NotifyKind; 3] = [
         NotifyKind::Request,
         NotifyKind::Done,
@@ -268,6 +279,27 @@ mod tests {
             leia(NotifyKind::Done).enabled,
             "a conclusão foi arrastada por uma escolha que não era dela"
         );
+    }
+
+    /// O prompt nativo é pedido: mesma chave, mesmo default, mesmo som. Quem
+    /// desligou o aviso de pedido não pode ser interrompido pelo prompt nativo.
+    #[test]
+    fn prompt_nativo_segue_a_preferencia_de_pedido() {
+        assert_eq!(
+            NotifyKind::NativePrompt.enabled_key(),
+            NotifyKind::Request.enabled_key()
+        );
+        assert_eq!(
+            NotifyKind::NativePrompt.sound_key(),
+            NotifyKind::Request.sound_key()
+        );
+        assert_eq!(
+            default_sound(NotifyKind::NativePrompt),
+            default_sound(NotifyKind::Request)
+        );
+        assert!(resolve(NotifyKind::NativePrompt, None, None).enabled);
+        assert!(!resolve(NotifyKind::NativePrompt, Some("off"), None).enabled);
+        assert!(resolve(NotifyKind::NativePrompt, Some("talvez"), None).enabled);
     }
 
     #[cfg(target_os = "macos")]

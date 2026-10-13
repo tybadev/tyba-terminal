@@ -23,6 +23,10 @@ use std::path::Path;
 pub enum Provider {
     /// Branches locais e remotas do repositório.
     GitBranch,
+    /// Remotos configurados (`origin`, `upstream`).
+    GitRemote,
+    /// Arquivos modificados ou novos — o que `git add` quer.
+    GitChangedFile,
     /// Chaves de `scripts` no `package.json`.
     NpmScript,
     /// Alvos declarados no `Makefile`.
@@ -74,6 +78,24 @@ pub fn provider_for(prefix: &str) -> Option<Provider> {
         ("git", "branch") if prefix.contains(" -d") || prefix.contains(" -D") => {
             Some(Provider::GitBranch)
         }
+        // `git push origin feat/x`: primeiro o remoto, depois a branch.
+        ("git", "push" | "pull" | "fetch") => match words.len() {
+            2 => Some(Provider::GitRemote),
+            3 => Some(Provider::GitBranch),
+            _ => None,
+        },
+        // Só os subcomandos que agem sobre um remoto que JÁ existe. `remote add`
+        // cria: oferecer `origin` ali é sugerir colisão.
+        ("git", "remote")
+            if words.len() == 3
+                && matches!(
+                    words[2],
+                    "remove" | "rm" | "rename" | "set-url" | "get-url" | "show" | "prune"
+                ) =>
+        {
+            Some(Provider::GitRemote)
+        }
+        ("git", "add" | "restore") => Some(Provider::GitChangedFile),
         ("npm" | "pnpm" | "yarn" | "bun", "run") => Some(Provider::NpmScript),
         // Só subcomando que age sobre container que JÁ existe. `docker run` cria
         // um do zero: oferecer o nome de um existente ali é sugerir colisão.
@@ -233,6 +255,40 @@ mod tests {
         assert_eq!(provider_for("git branch "), None);
         assert_eq!(provider_for("git branch -d "), Some(Provider::GitBranch));
         assert_eq!(provider_for("git branch -D "), Some(Provider::GitBranch));
+    }
+
+    #[test]
+    fn push_oferece_remoto_e_depois_branch() {
+        assert_eq!(provider_for("git push "), Some(Provider::GitRemote));
+        assert_eq!(provider_for("git push origin "), Some(Provider::GitBranch));
+        assert_eq!(provider_for("git pull -r "), Some(Provider::GitRemote));
+        assert_eq!(provider_for("git fetch origin main "), None);
+    }
+
+    #[test]
+    fn remote_so_oferece_remoto_onde_ele_ja_existe() {
+        assert_eq!(
+            provider_for("git remote remove "),
+            Some(Provider::GitRemote)
+        );
+        assert_eq!(provider_for("git remote show "), Some(Provider::GitRemote));
+        // `remote add` cria: o nome é novo, e o que existe seria colisão.
+        assert_eq!(provider_for("git remote add "), None);
+        assert_eq!(provider_for("git remote "), None);
+    }
+
+    #[test]
+    fn add_e_restore_oferecem_o_que_mudou() {
+        assert_eq!(provider_for("git add "), Some(Provider::GitChangedFile));
+        assert_eq!(
+            provider_for("git add src/a.rs "),
+            Some(Provider::GitChangedFile)
+        );
+        assert_eq!(
+            provider_for("git restore --staged "),
+            Some(Provider::GitChangedFile)
+        );
+        assert_eq!(provider_for("git commit "), None);
     }
 
     #[test]

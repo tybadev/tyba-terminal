@@ -145,6 +145,12 @@ impl ManagedManager {
         Outcome::Offer(self.card(m, plat))
     }
 
+    pub fn is_installed(&self, entry: &ServerEntry) -> bool {
+        registry::managed_for(entry.id)
+            .map(|m| storage::is_installed(&self.data_dir, m))
+            .unwrap_or(false)
+    }
+
     pub fn plan(&self, entry: &ServerEntry) -> Option<SpawnPlan> {
         let m = registry::managed_for(entry.id)?;
         let plat = Platform::current()?;
@@ -531,6 +537,7 @@ mod tests {
             base_env(&user_env, entry),
             None,
             std::sync::Arc::new(|_b: DiagnosticsBatch| {}),
+            std::sync::Arc::new(|| {}),
         )
         .expect("server gerenciado sobe na jaula")
     }
@@ -641,6 +648,10 @@ mod tests {
             server.state(),
             server.last_error()
         );
+        // Projeto sem node_modules: o tsserver vem do TypeScript 5 gerenciado,
+        // e o server segue de pé além do vigia de processo-pai (3s).
+        std::thread::sleep(Duration::from_secs(4));
+        assert_eq!(server.state(), RunState::Ready, "{:?}", server.last_error());
         server.shutdown();
         std::fs::remove_dir_all(&root).ok();
     }

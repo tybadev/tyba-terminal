@@ -12,12 +12,27 @@
   "app": {
     "windows": [
       {
+        "label": "splash",
+        "url": "splash.html",
+        "title": "Tyba",
+        "width": 360,
+        "height": 240,
+        "center": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "decorations": false,
+        "skipTaskbar": true
+      },
+      {
+        "label": "main",
         "title": "Tyba",
         "width": 1200,
         "height": 780,
         "minWidth": 720,
         "minHeight": 480,
         "decorations": false,
+        "visible": false,
         "backgroundColor": "#050505"
       }
     ],

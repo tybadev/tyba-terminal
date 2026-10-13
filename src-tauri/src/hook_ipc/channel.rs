@@ -45,8 +45,35 @@ fn current_uid_string() -> String {
 /// Resolve o endereço real desta máquina, lendo `XDG_RUNTIME_DIR` e o uid uma
 /// única vez. Fora de teste — [`channel_socket_path`] é a peça pura.
 pub fn resolve_channel_socket_path() -> PathBuf {
-    let xdg = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-    channel_socket_path(xdg.as_deref(), &current_uid_string())
+    #[cfg(target_os = "macos")]
+    let base = darwin_user_temp_dir();
+    #[cfg(not(target_os = "macos"))]
+    let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    channel_socket_path(base.as_deref(), &current_uid_string())
+}
+
+/// macOS não tem `XDG_RUNTIME_DIR`. O equivalente é o temp dir por usuário
+/// do sistema (`/var/folders/.../T/`, 0700 e do dono), lido por `confstr` —
+/// nunca de `$TMPDIR`: um `.envrc` ou profile mudando o env não pode apontar
+/// o `_jail` para um socket de outro lugar, e app (lançado pelo launchd) e
+/// shell chegam no MESMO caminho.
+#[cfg(target_os = "macos")]
+fn darwin_user_temp_dir() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    let len = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+        )
+    };
+    if len == 0 || len > buf.len() {
+        return None;
+    }
+    buf.truncate(len - 1);
+    Some(PathBuf::from(std::ffi::OsString::from_vec(buf)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +81,23 @@ pub struct ChannelRequest {
     pub v: u32,
     pub op: String,
     pub agent: String,
+    /// Argumentos que o usuário digitou depois de `claude` (M6-A), um por
+    /// elemento — nunca uma string de shell. Ausente num cliente antigo:
+    /// `claude` puro. O core reclassifica com `agent::claude_cli::route`
+    /// antes de usar, nunca confia no cliente.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// M6-B (`op: "plugin_event"`): o token do pane (`TYBA_PANE_TOKEN`), o
+    /// evento do hook, a ferramenta e um resumo já redigido. Só isso — o
+    /// payload inteiro do hook nunca atravessa o canal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,26 +107,40 @@ pub enum RefusedReason {
     UnknownAgent,
     PeerUnresolved,
     NoCwd,
+    /// Os args pedem algo que desligaria o gate (M6-A): o cliente mostra o
+    /// motivo e NÃO cai no `claude` cru.
+    ForbiddenArgs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ChannelResponse {
-    Host { plan_path: String, jailed: bool },
-    Refused { reason: RefusedReason },
+    Host {
+        plan_path: String,
+        jailed: bool,
+    },
+    Refused {
+        reason: RefusedReason,
+    },
+    /// M6-B: a decisão do core para um evento do plugin. `deny` com o motivo
+    /// nega a ferramenta; `None` deixa seguir.
+    Plugin {
+        deny: Option<String>,
+    },
 }
 
 /// O que a entrega B (`agent::channel_host`) fornece: dado o pid do peer já
 /// autenticado (uid conferido) e o pedido já desserializado, decide o que
 /// responder. `find_owning_session`, o `TOCTOU` recheck, a allowlist e
 /// `prepare_hosted_agent` moram do lado de dentro deste fecho — não aqui.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub type ChannelHandler =
     std::sync::Arc<dyn Fn(u32, ChannelRequest) -> ChannelResponse + Send + Sync>;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const HOST_AGENT_OP: &str = "host_agent";
-#[cfg(target_os = "linux")]
+pub const PLUGIN_EVENT_OP: &str = "plugin_event";
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub const MAX_INFLIGHT: usize = 32;
 /// Review round 2, achado MINOR (invariante #8, bounded reads): um pedido
 /// de verdade é uma linha JSON minúscula (`{"v":1,"op":"host_agent",
@@ -90,46 +148,44 @@ pub const MAX_INFLIGHT: usize = 32;
 /// confiável — pode mandar um stream gigante sem `\n` de propósito. Sem
 /// teto, `read_line` cresce sem limite; combinado com `MAX_INFLIGHT`
 /// conexões lentas, as threads do accept-loop ficam presas e o canal fica
-/// surdo — um `claude` legítimo cai em fail-open cru.
-#[cfg(target_os = "linux")]
-const MAX_REQUEST_BYTES: u64 = 8 * 1024;
+/// surdo — um `claude` legítimo cai em fail-open cru. Desde o M6-A o pedido
+/// carrega os args do `claude` (um prompt de `-p` cabe aqui), então o teto
+/// subiu de 8 KiB para 256 KiB — ainda limitado.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const MAX_REQUEST_BYTES: u64 = 256 * 1024;
 /// Mesmo achado: sem timeout de leitura, um peer que conecta e nunca manda
 /// nada (nem dados nem EOF) trava a thread para sempre, e o teto de bytes
 /// sozinho não ajuda nesse caso.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct InflightGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Drop for InflightGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn current_uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
-// O canal (servidor) é escopo Linux nesta entrega (§15 do tech-spec): em
-// qualquer outra plataforma nada faz `bind`, então o tipo inteiro — junto
-// com o accept loop, o inflight guard e o dispatch — só existe sob
-// `target_os = "linux"` (não `cfg(unix)`: macOS é unix e o peer cred via
-// SO_PEERCRED que o servidor exige é Linux-only, ver `hook_ipc::peercred`).
-// Windows E macOS ficam só com o protocolo (`ChannelRequest`/
-// `ChannelResponse`) e a resolução de endereço, que `session::spawn_session`
-// usa sem branch de SO.
-#[cfg(target_os = "linux")]
+// O canal (servidor) existe onde há peer cred do kernel: Linux
+// (SO_PEERCRED) e, desde o M3 do claude-monitor, macOS (getpeereid +
+// LOCAL_PEERPID), ver `hook_ipc::peercred`. Windows fica só com o protocolo
+// (`ChannelRequest`/`ChannelResponse`) e a resolução de endereço.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub struct ChannelServer {
     socket_path: PathBuf,
     shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
     accept_handle: Option<std::thread::JoinHandle<()>>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl ChannelServer {
     /// Liga o socket sob um diretório PRIVADO 0700 (a defesa primária — FIX
     /// C6) e ainda assim aplica 0600 no PRÓPRIO arquivo do socket (defesa em
@@ -191,14 +247,14 @@ impl ChannelServer {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Drop for ChannelServer {
     fn drop(&mut self) {
         self.stop();
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn dispatch(
     stream: std::os::unix::net::UnixStream,
     handler: &ChannelHandler,
@@ -219,9 +275,17 @@ fn dispatch(
     });
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn serve_connection(stream: std::os::unix::net::UnixStream, handler: &ChannelHandler) {
     use std::io::{BufRead, Read, Write};
+
+    // M3 (pid reuse): a credencial e o start time do peer são lidos JÁ no
+    // accept, antes de esperar a linha (que pode levar até
+    // REQUEST_READ_TIMEOUT). Se o processo que conectou sair e o pid for
+    // reciclado nesse meio-tempo, o start time muda e a conexão é recusada —
+    // o handler nunca vê um pid que não é mais o de quem conectou.
+    let peer = super::peercred::peer_cred(&stream);
+    let peer_start = peer.and_then(|cred| crate::repo::process_start_time(cred.pid));
 
     // Achado MINOR do review round 2: timeout ANTES de ler nada — o peer
     // pode conectar e nunca mandar um byte.
@@ -242,12 +306,18 @@ fn serve_connection(stream: std::os::unix::net::UnixStream, handler: &ChannelHan
     let Ok(request) = serde_json::from_str::<ChannelRequest>(line.trim_end()) else {
         return;
     };
-    if request.v != CHANNEL_PROTOCOL_VERSION || request.op != HOST_AGENT_OP {
+    if request.v != CHANNEL_PROTOCOL_VERSION
+        || (request.op != HOST_AGENT_OP && request.op != PLUGIN_EVENT_OP)
+    {
         return;
     }
 
-    let response = match super::peercred::peer_cred(&stream) {
-        Some(cred) if super::peercred::is_trusted_peer(&cred, current_uid()) => {
+    let response = match peer {
+        Some(cred)
+            if super::peercred::is_trusted_peer(&cred, current_uid())
+                && peer_start.is_some()
+                && crate::repo::process_start_time(cred.pid) == peer_start =>
+        {
             handler(cred.pid, request)
         }
         _ => ChannelResponse::Refused {
@@ -287,18 +357,26 @@ pub enum JailOutcome {
         env: Vec<(String, String)>,
         cwd: String,
     },
+    /// O core recusou os args porque desligariam o gate (M6-A): nada roda,
+    /// nem cru.
+    Forbidden,
 }
 
 /// Timeouts curtos de propósito: isto roda INLINE no que o usuário digitou.
 /// Um app que não está rodando falha a conexão na hora (ECONNREFUSED/ENOENT);
 /// a única corrida que a retentativa cobre é o app subindo bem naquele
 /// instante — por isso poucas tentativas, não a espera longa do hook.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const JAIL_CONNECT_ATTEMPTS: u32 = 3;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const JAIL_CONNECT_BASE: std::time::Duration = std::time::Duration::from_millis(20);
+/// Teto da espera pela resposta: o core monta o plano (git, sandbox) antes de
+/// responder, mas um core travado nunca pode prender o terminal — estourou,
+/// cai no `claude` cru.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const JAIL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn connect_with_retry(socket_path: &Path) -> Option<std::os::unix::net::UnixStream> {
     for attempt in 0..JAIL_CONNECT_ATTEMPTS {
         if let Ok(stream) = std::os::unix::net::UnixStream::connect(socket_path) {
@@ -311,7 +389,25 @@ fn connect_with_retry(socket_path: &Path) -> Option<std::os::unix::net::UnixStre
     None
 }
 
-#[cfg(target_os = "linux")]
+/// O diretório do socket tem que ser do usuário e fechado para os outros
+/// (0700) — o mesmo que o servidor exige ao ligar. Só leitura: o cliente
+/// nunca corrige permissão, recusa. Cobre o caso de o endereço cair num
+/// `/tmp` compartilhado, onde outro usuário poderia ter criado o diretório
+/// antes e plantado um socket que devolve um plano dele.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn socket_dir_is_ours(socket_path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let Some(meta) = socket_path
+        .parent()
+        .and_then(|dir| std::fs::symlink_metadata(dir).ok())
+    else {
+        return false;
+    };
+    meta.is_dir() && meta.uid() == current_uid() && meta.mode() & 0o077 == 0
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn read_and_unlink_plan(plan_path: &str) -> Option<HostedPlan> {
     let path = Path::new(plan_path);
     let contents = std::fs::read(path).ok();
@@ -325,24 +421,42 @@ fn read_and_unlink_plan(plan_path: &str) -> Option<HostedPlan> {
 /// executa nada — quem chama decide se roda [`JailOutcome::Exec`] ou cai no
 /// binário de verdade. Separado de `run_jail_client` para que o teste prove
 /// a decisão sem substituir o processo de teste por um exec real.
-#[cfg(target_os = "linux")]
-pub fn resolve_jail_outcome(socket_path: Option<&Path>) -> JailOutcome {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn resolve_jail_outcome(socket_path: Option<&Path>, args: &[String]) -> JailOutcome {
     let Some(socket_path) = socket_path else {
         return JailOutcome::RunReal;
     };
+    if !socket_dir_is_ours(socket_path) {
+        return JailOutcome::RunReal;
+    }
     let Some(stream) = connect_with_retry(socket_path) else {
         return JailOutcome::RunReal;
     };
+    // O cliente também confere quem está do outro lado: o plano que ele vai
+    // executar só vale se veio de um processo do MESMO uid (o core).
+    let server_is_ours = super::peercred::peer_cred(&stream)
+        .is_some_and(|cred| super::peercred::is_trusted_peer(&cred, current_uid()));
+    if !server_is_ours {
+        return JailOutcome::RunReal;
+    }
     let request = ChannelRequest {
         v: CHANNEL_PROTOCOL_VERSION,
         op: HOST_AGENT_OP.into(),
         agent: "claude".into(),
+        args: args.to_vec(),
+        token: None,
+        event: None,
+        tool: None,
+        summary: None,
     };
     let Some(response) = exchange(stream, &request) else {
         return JailOutcome::RunReal;
     };
     match response {
-        ChannelResponse::Refused { .. } => JailOutcome::RunReal,
+        ChannelResponse::Refused {
+            reason: RefusedReason::ForbiddenArgs,
+        } => JailOutcome::Forbidden,
+        ChannelResponse::Refused { .. } | ChannelResponse::Plugin { .. } => JailOutcome::RunReal,
         ChannelResponse::Host { plan_path, .. } => match read_and_unlink_plan(&plan_path) {
             Some(plan) => JailOutcome::Exec {
                 argv: plan.argv,
@@ -354,13 +468,14 @@ pub fn resolve_jail_outcome(socket_path: Option<&Path>) -> JailOutcome {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn exchange(
     stream: std::os::unix::net::UnixStream,
     request: &ChannelRequest,
 ) -> Option<ChannelResponse> {
     use std::io::{BufRead, Write};
 
+    stream.set_read_timeout(Some(JAIL_RESPONSE_TIMEOUT)).ok()?;
     let mut writer = stream.try_clone().ok()?;
     let mut payload = serde_json::to_vec(request).ok()?;
     payload.push(b'\n');
@@ -373,6 +488,40 @@ fn exchange(
         Ok(0) | Err(_) => None,
         Ok(_) => serde_json::from_str(line.trim_end()).ok(),
     }
+}
+
+/// M6-B: manda um evento do plugin do Claude Code ao core e devolve a
+/// resposta, ou `None` se o core não respondeu (o cliente então decide com a
+/// regra local). Mesmas checagens do `_jail`: dir do socket do usuário e
+/// servidor do mesmo uid.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn send_plugin_event(
+    token: String,
+    event: String,
+    tool: Option<String>,
+    summary: Option<String>,
+) -> Option<ChannelResponse> {
+    let socket_path = jail_connect_socket_path();
+    if !socket_dir_is_ours(&socket_path) {
+        return None;
+    }
+    let stream = connect_with_retry(&socket_path)?;
+    let server_is_ours = super::peercred::peer_cred(&stream)
+        .is_some_and(|cred| super::peercred::is_trusted_peer(&cred, current_uid()));
+    if !server_is_ours {
+        return None;
+    }
+    let request = ChannelRequest {
+        v: CHANNEL_PROTOCOL_VERSION,
+        op: PLUGIN_EVENT_OP.into(),
+        agent: "claude".into(),
+        args: Vec::new(),
+        token: Some(token),
+        event: Some(event),
+        tool,
+        summary,
+    };
+    exchange(stream, &request)
 }
 
 /// O endereço REAL que `tyba _jail` usa para conectar — sempre o canônico
@@ -389,38 +538,55 @@ fn exchange(
 /// variável virou env morto (o rc nunca a leu — só olha `TYBA_BIN`), então
 /// o core parou de exportá-la; o teste abaixo continua provando que, mesmo
 /// que alguém a injete, ela é ignorada.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn jail_connect_socket_path() -> PathBuf {
     resolve_channel_socket_path()
 }
 
-/// Ponto de entrada do binário quando invocado como `tyba _jail` — o alvo do
-/// `exec` que o shim faz depois de o shell interceptar `claude` puro (§6).
-/// Fail-open vive INTEIRAMENTE aqui: qualquer dúvida (sem socket, recusado,
-/// plano ilegível, exec falhou) cai no binário de verdade, sem argumento
-/// nenhum — Q1 já garantiu que só `claude` sem args chega até aqui.
-#[cfg(target_os = "linux")]
-pub fn maybe_run_jail_mode() -> Option<i32> {
-    if std::env::args().nth(1).as_deref() != Some("_jail") {
-        return None;
+/// Os args de `tyba _jail [--] <args do claude>`: tudo depois do `--`
+/// (M6-A), ou nada num shim antigo que chamava `_jail` puro.
+pub fn jail_args(argv: &[String]) -> Vec<String> {
+    let rest = argv.get(2..).unwrap_or_default();
+    match rest.first().map(String::as_str) {
+        Some("--") => rest[1..].to_vec(),
+        _ => rest.to_vec(),
     }
-    Some(run_jail_client(Some(&jail_connect_socket_path())))
 }
 
-/// Fora do Linux o canal não existe, mas o shim do rc é o mesmo em todo unix
+/// Ponto de entrada do binário quando invocado como `tyba _jail -- <args>` —
+/// o alvo do shim do rc e do wrapper `claude` no PATH do pane (M6-A). Toda
+/// forma de chamar `claude` chega aqui; [`crate::agent::claude_cli::route`]
+/// decide o caminho. Nunca trava o terminal: qualquer dúvida no canal cai no
+/// binário de verdade — mas marcado, para o pane mostrar "sem gate".
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn maybe_run_jail_mode() -> Option<i32> {
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) != Some("_jail") {
+        return None;
+    }
+    Some(run_jail_client(
+        Some(&jail_connect_socket_path()),
+        &jail_args(&argv),
+    ))
+}
+
+/// Fora do Linux e do macOS o canal não existe, mas o shim do rc é o mesmo em todo unix
 /// e chama `tyba _jail` sem `||` de volta (a shell decide ANTES de lançar,
 /// nunca pelo status de saída — ver o comentário do shim). Então `_jail`
 /// tem que ser fail-open AQUI também: `exec claude` sem argumento (Q1).
 /// Deixar cair em `tyba_lib::run()` abriria a janela do app em vez de rodar
 /// o que foi digitado.
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 pub fn maybe_run_jail_mode() -> Option<i32> {
     use std::os::unix::process::CommandExt;
 
     if std::env::args().nth(1).as_deref() != Some("_jail") {
         return None;
     }
-    let err = std::process::Command::new("claude").exec();
+    let argv: Vec<String> = std::env::args().collect();
+    let err = std::process::Command::new("claude")
+        .args(jail_args(&argv))
+        .exec();
     eprintln!("tyba _jail: exec de claude falhou: {err}");
     Some(126)
 }
@@ -432,11 +598,37 @@ pub fn maybe_run_jail_mode() -> Option<i32> {
     None
 }
 
-#[cfg(target_os = "linux")]
-fn run_jail_client(socket_path: Option<&Path>) -> i32 {
+/// Marcador no env do `claude` cru que passou pelo `_jail` (M6-A). O core lê
+/// do processo detectado (`process_probe::shim_route`): `passthrough` não
+/// pede aviso nenhum; `ungated`/`fallback` acendem o "sem gate" vermelho.
+/// Nunca a faixa âmbar "Reabrir com gate": esse claude já passou pelo TYBA.
+pub const SHIM_ENV: &str = "TYBA_SHIM";
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn run_jail_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
+    use crate::agent::claude_cli::{route, ClaudeRoute};
     use std::os::unix::process::CommandExt;
 
-    match resolve_jail_outcome(socket_path) {
+    // Já dentro de um claude hospedado (o Bash dele chamou `claude`): roda o
+    // binário de verdade direto, herdando a jaula — nunca pede outro hosting,
+    // e nunca entra em loop se o wrapper estiver no PATH do agente.
+    if std::env::var("TYBA_HOSTED").as_deref() == Ok("1") {
+        return exec_real(args, None);
+    }
+    match route(args) {
+        ClaudeRoute::Forbidden(reason) => {
+            eprintln!("tyba: {reason}. Dentro do TYBA o claude roda sempre com gate.");
+            return 2;
+        }
+        ClaudeRoute::Passthrough => return exec_real(args, Some("passthrough")),
+        ClaudeRoute::Ungated => {
+            eprintln!("tyba: sessão em segundo plano roda fora do pane, SEM gate do TYBA.");
+            return exec_real(args, Some("ungated"));
+        }
+        ClaudeRoute::Host => {}
+    }
+
+    match resolve_jail_outcome(socket_path, args) {
         JailOutcome::Exec { argv, env, cwd } => {
             if let Some((program, rest)) = argv.split_first() {
                 let mut cmd = std::process::Command::new(program);
@@ -448,24 +640,58 @@ fn run_jail_client(socket_path: Option<&Path>) -> i32 {
                 eprintln!("tyba: exec do agente hospedado falhou: {err}");
             }
         }
+        JailOutcome::Forbidden => {
+            eprintln!("tyba: o TYBA recusou estes argumentos — eles desligariam o gate.");
+            return 2;
+        }
         JailOutcome::RunReal => {}
     }
-    // Fail-open final: ou a resposta foi RunReal, ou o exec acima falhou —
-    // os dois caem aqui, e o caminho de volta é o mesmo: rodar o binário de
-    // verdade sem nenhum argumento (Q1).
-    let err = std::process::Command::new("claude").exec();
+    // Fail-open final, mas VISÍVEL: o core não hospedou (ou o exec acima
+    // falhou), o terminal não pode travar, e o claude sobe cru marcado como
+    // `fallback` — o pane mostra "sem gate" em vermelho.
+    eprintln!("tyba: o TYBA não conseguiu hospedar este claude; ele roda SEM gate.");
+    exec_real(args, Some("fallback"))
+}
+
+/// `exec` do `claude` de verdade com os args intactos (argv, nunca shell).
+/// Nunca o wrapper do TYBA — ver [`crate::agent::claude_cli::real_claude`].
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn exec_real(args: &[String], marker: Option<&str>) -> i32 {
+    use std::os::unix::process::CommandExt;
+
+    let wrapper_dir = std::env::var_os("TYBA_WRAPPER_DIR").map(PathBuf::from);
+    let Some(real) = crate::agent::claude_cli::real_claude(
+        std::env::var("TYBA_REAL_CLAUDE").ok().as_deref(),
+        std::env::var("PATH").ok().as_deref(),
+        wrapper_dir.as_deref(),
+        is_executable_file,
+    ) else {
+        eprintln!("tyba _jail: claude não encontrado no PATH");
+        return 127;
+    };
+    let mut cmd = std::process::Command::new(real);
+    cmd.args(args);
+    match marker {
+        Some(marker) => cmd.env(SHIM_ENV, marker),
+        None => cmd.env_remove(SHIM_ENV),
+    };
+    let err = cmd.exec();
     eprintln!("tyba _jail: exec de claude falhou: {err}");
     126
 }
 
-// Gate consistente com o servidor/cliente que exercitam (§15): sem ele,
-// Windows não compila estes testes (`ChannelServer`/`resolve_jail_outcome`/
-// `MAX_REQUEST_BYTES` não existem lá) e macOS os compila mas os faz falhar
-// em RUNTIME — `hook_ipc::peercred::peer_cred` real (SO_PEERCRED) é
-// Linux-only, então o handshake completo que estes testes fazem de ponta a
-// ponta não tem como funcionar fora do Linux.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+// Gate consistente com o servidor/cliente que exercitam: sem ele, Windows não
+// compila estes testes (`ChannelServer`/`resolve_jail_outcome`/
+// `MAX_REQUEST_BYTES` não existem lá). Rodam no Linux e no macOS, com o peer
+// cred real de cada um.
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod client_tests {
     use super::*;
 
@@ -478,14 +704,39 @@ mod client_tests {
 
     #[test]
     fn no_socket_path_fails_open() {
-        assert_eq!(resolve_jail_outcome(None), JailOutcome::RunReal);
+        assert_eq!(resolve_jail_outcome(None, &[]), JailOutcome::RunReal);
+    }
+
+    /// M3: o cliente só conversa com um socket num diretório do usuário e
+    /// fechado para os outros. Um servidor de verdade ali, mas com o diretório
+    /// aberto (0755), é recusado sem nem conectar — e o `claude` cai cru.
+    #[test]
+    fn a_socket_in_a_dir_open_to_others_fails_open_without_connecting() {
+        use std::os::unix::fs::PermissionsExt;
+        let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sink = reached.clone();
+        let (dir, path, server) = bound_server(std::sync::Arc::new(move |_pid, _req| {
+            sink.store(true, std::sync::atomic::Ordering::SeqCst);
+            ChannelResponse::Refused {
+                reason: RefusedReason::NoSession,
+            }
+        }));
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(resolve_jail_outcome(Some(&path), &[]), JailOutcome::RunReal);
+        assert!(!reached.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!socket_dir_is_ours(&path));
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(socket_dir_is_ours(&path));
+        server.shutdown();
     }
 
     #[test]
     fn an_unreachable_socket_fails_open() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nada-aqui.sock");
-        assert_eq!(resolve_jail_outcome(Some(&path)), JailOutcome::RunReal);
+        assert_eq!(resolve_jail_outcome(Some(&path), &[]), JailOutcome::RunReal);
     }
 
     #[test]
@@ -500,7 +751,7 @@ mod client_tests {
                 ChannelResponse::Refused { reason }
             }));
             assert_eq!(
-                resolve_jail_outcome(Some(&path)),
+                resolve_jail_outcome(Some(&path), &[]),
                 JailOutcome::RunReal,
                 "recusa ({reason:?}) tem que sair do caminho, nunca travar o terminal"
             );
@@ -515,7 +766,43 @@ mod client_tests {
                 plan_path: "/tmp/tyba-plan-que-nao-existe-jamais.json".into(),
                 jailed: true,
             }));
-        assert_eq!(resolve_jail_outcome(Some(&path)), JailOutcome::RunReal);
+        assert_eq!(resolve_jail_outcome(Some(&path), &[]), JailOutcome::RunReal);
+        server.shutdown();
+    }
+
+    #[test]
+    fn jail_args_take_everything_after_the_double_dash() {
+        let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(jail_args(&argv(&["tyba", "_jail"])).is_empty());
+        assert_eq!(
+            jail_args(&argv(&["tyba", "_jail", "--", "-c"])),
+            argv(&["-c"])
+        );
+        // Um `--` do próprio usuário depois do nosso continua lá.
+        assert_eq!(
+            jail_args(&argv(&["tyba", "_jail", "--", "-p", "--", "x"])),
+            argv(&["-p", "--", "x"])
+        );
+    }
+
+    /// M6-A: os args chegam ao core como argv, e a recusa por args vira
+    /// `Forbidden` — o cliente não cai no claude cru.
+    #[test]
+    fn args_reach_the_core_and_a_forbidden_refusal_never_runs_raw() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let (_dir, path, server) = bound_server(std::sync::Arc::new(move |_pid, req| {
+            *sink.lock().unwrap() = req.args.clone();
+            ChannelResponse::Refused {
+                reason: RefusedReason::ForbiddenArgs,
+            }
+        }));
+        let args: Vec<String> = vec!["-p".into(), "oi \"$(whoami)\"".into()];
+        assert_eq!(
+            resolve_jail_outcome(Some(&path), &args),
+            JailOutcome::Forbidden
+        );
+        assert_eq!(*seen.lock().unwrap(), args);
         server.shutdown();
     }
 
@@ -541,7 +828,7 @@ mod client_tests {
             }
         }));
 
-        let outcome = resolve_jail_outcome(Some(&path));
+        let outcome = resolve_jail_outcome(Some(&path), &[]);
         assert_eq!(
             outcome,
             JailOutcome::Exec {
@@ -559,9 +846,9 @@ mod client_tests {
 }
 
 // Mesmo motivo de `client_tests`: exercita `ChannelServer`/peer cred real de
-// ponta a ponta, escopo Linux (§15).
+// ponta a ponta, no Linux e no macOS.
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod server_tests {
     use super::*;
     use std::sync::Arc;
@@ -596,6 +883,11 @@ mod server_tests {
                 v: CHANNEL_PROTOCOL_VERSION,
                 op: "host_agent".into(),
                 agent: "claude".into(),
+                args: Vec::new(),
+                token: None,
+                event: None,
+                tool: None,
+                summary: None,
             },
         );
         assert_eq!(
@@ -632,6 +924,54 @@ mod server_tests {
         server.shutdown();
     }
 
+    /// M6-B: o evento do plugin chega ao handler com o token e o resumo, e a
+    /// resposta `plugin` volta ao cliente.
+    #[test]
+    fn a_plugin_event_reaches_the_handler_with_its_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = socket_in(&dir, "channel.sock");
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let sink = seen.clone();
+        let server = ChannelServer::bind(
+            &path,
+            Arc::new(move |_pid, req| {
+                *sink.lock().unwrap() = Some((req.op.clone(), req.token.clone(), req.tool.clone()));
+                ChannelResponse::Plugin {
+                    deny: Some("não".into()),
+                }
+            }),
+        )
+        .unwrap();
+        let response = connect_and_request(
+            &path,
+            &ChannelRequest {
+                v: CHANNEL_PROTOCOL_VERSION,
+                op: PLUGIN_EVENT_OP.into(),
+                agent: "claude".into(),
+                args: Vec::new(),
+                token: Some("tok".into()),
+                event: Some("PreToolUse".into()),
+                tool: Some("Bash".into()),
+                summary: Some("Bash: ls".into()),
+            },
+        );
+        assert_eq!(
+            response,
+            Some(ChannelResponse::Plugin {
+                deny: Some("não".into())
+            })
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some((
+                "plugin_event".to_string(),
+                Some("tok".to_string()),
+                Some("Bash".to_string())
+            ))
+        );
+        server.shutdown();
+    }
+
     #[test]
     fn an_unknown_op_closes_the_connection_without_a_response() {
         let dir = tempfile::tempdir().unwrap();
@@ -650,6 +990,11 @@ mod server_tests {
                 v: CHANNEL_PROTOCOL_VERSION,
                 op: "delete_everything".into(),
                 agent: "claude".into(),
+                args: Vec::new(),
+                token: None,
+                event: None,
+                tool: None,
+                summary: None,
             },
         );
         assert_eq!(response, None);
@@ -738,6 +1083,11 @@ mod server_tests {
                 v: CHANNEL_PROTOCOL_VERSION,
                 op: "host_agent".into(),
                 agent: "claude".into(),
+                args: Vec::new(),
+                token: None,
+                event: None,
+                tool: None,
+                summary: None,
             },
         );
         assert_eq!(
@@ -795,6 +1145,22 @@ mod address_tests {
         );
     }
 
+    /// M3: no macOS o endereço mora no temp dir por usuário do sistema
+    /// (`confstr`), não no `$TMPDIR` do env de quem chama.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_socket_lives_in_the_darwin_user_temp_dir() {
+        use std::os::unix::fs::MetadataExt;
+        let base = darwin_user_temp_dir().expect("confstr devolve o temp dir do usuário");
+        assert_eq!(
+            resolve_channel_socket_path(),
+            base.join("tyba").join(SOCKET_FILE)
+        );
+        let meta = std::fs::metadata(&base).unwrap();
+        assert_eq!(meta.uid(), unsafe { libc::getuid() });
+        assert_eq!(meta.mode() & 0o077, 0, "o temp dir do usuário é 0700");
+    }
+
     #[test]
     fn falls_back_when_xdg_runtime_dir_is_present_but_empty() {
         let path = channel_socket_path(Some(Path::new("")), "1000");
@@ -814,7 +1180,7 @@ mod address_tests {
     /// regressão: se alguém no futuro reintroduzir a leitura do env aqui,
     /// este teste denuncia o desvio comparando os dois valores.
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn jail_connect_socket_path_ignores_a_spoofed_tyba_channel_sock() {
         // Não precisa nem mutar o env de verdade: o ponto é que a função
         // nunca lê essa variável — mas se ela existir no ambiente deste
@@ -848,6 +1214,11 @@ mod protocol_tests {
             v: CHANNEL_PROTOCOL_VERSION,
             op: "host_agent".into(),
             agent: "claude".into(),
+            args: Vec::new(),
+            token: None,
+            event: None,
+            tool: None,
+            summary: None,
         };
         let value = serde_json::to_value(&req).unwrap();
         assert_eq!(
@@ -864,6 +1235,11 @@ mod protocol_tests {
             v: 1,
             op: "host_agent".into(),
             agent: "claude".into(),
+            args: Vec::new(),
+            token: None,
+            event: None,
+            tool: None,
+            summary: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         let back: ChannelRequest = serde_json::from_str(&line).unwrap();

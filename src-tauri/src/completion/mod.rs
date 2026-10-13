@@ -7,6 +7,7 @@
 
 pub mod argument;
 pub mod binary;
+pub mod generator;
 
 use std::path::{Path, PathBuf};
 
@@ -91,11 +92,11 @@ pub fn complete_path(cwd: &Path, token: &str) -> Vec<String> {
 
 /// Subcomandos e flags aprendidos do próprio histórico.
 ///
-/// A base de specs de comando do Warp é um crate inteiro e é AGPL — fora de
-/// alcance. Mas o TYBA já guarda tudo que o dono digitou: para `git co` basta
-/// olhar os comandos que começaram com `git ` e oferecer o token seguinte. Sai
-/// personalizado (só aparece o que ele de fato usa), não envelhece e não custa
-/// manutenção.
+/// É a fonte que vale onde a base de specs (`command_spec`, do Fig, MIT) não
+/// tem o comando: o TYBA já guarda tudo que o dono digitou, e para `git co`
+/// basta olhar os comandos que começaram com `git ` e oferecer o token
+/// seguinte. Onde a base tem o comando, este é o que ORDENA — o que o dono usa
+/// sobe.
 ///
 /// `commands` chega ordenado por recência; a ordem é preservada.
 pub fn next_tokens(commands: &[String], prefix: &str, token: &str) -> Vec<String> {

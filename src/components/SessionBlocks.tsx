@@ -1,7 +1,6 @@
 import { memo, useCallback, useMemo } from "react";
 
 import {
-  ActiveBlockFrame,
   ActiveBlockHeader,
   blocksRect,
   liveRect,
@@ -13,8 +12,11 @@ import type { PaneId, SessionId } from "../lib/ipc";
 import type { SessionBlocksData } from "../lib/sessionBlocks";
 
 interface Props extends SessionBlocksData {
-  /** Devolve o comando para a linha. Só o painel ativo tem para onde injetar. */
-  onInject: (text: string) => void;
+  /**
+   * Devolve o comando para a linha DESTE painel. Recebe a sessão para que o
+   * texto nunca dependa de qual painel está ativo quando chega.
+   */
+  onInject: (sessionId: SessionId, text: string) => void;
   /**
    * O `focusPane` do core, cru.
    *
@@ -30,8 +32,8 @@ interface Props extends SessionBlocksData {
 }
 
 /**
- * O painel de blocos de uma sessão: a lista, o header do comando em execução e
- * a moldura da faixa ao vivo.
+ * O painel de blocos de uma sessão: a lista e o header do comando em execução sobre
+ * a faixa ao vivo.
  *
  * Existe para dar uma FRONTEIRA de memoização por sessão. O `App` é um
  * componente só e re-renderiza a ~60 Hz enquanto um comando escreve; sem esta
@@ -63,6 +65,7 @@ export const SessionBlocks = memo(function SessionBlocks({
   openedAtMs,
   active,
   command,
+  commandStartedAtMs,
   marked,
   copyCombo,
   onInject,
@@ -81,7 +84,7 @@ export const SessionBlocks = memo(function SessionBlocks({
   );
   const liveBox = useMemo(() => liveRect(pane, used), [pane, used]);
   // A saída sobe além do que a conta em % diz, porque o recorte desconta o
-  // padding do terminal. Lista, header e moldura acompanham pelo mesmo tanto.
+  // padding do terminal. Lista e header acompanham pelo mesmo tanto.
   const lift = padSlackPx(LIVE_PAD_Y_PX, used);
   const opened = useMemo(
     () => ({ cwd: openedCwd, atMs: openedAtMs }),
@@ -90,6 +93,10 @@ export const SessionBlocks = memo(function SessionBlocks({
   const activate = useCallback(() => {
     void onFocusPane(paneId);
   }, [onFocusPane, paneId]);
+  const inject = useCallback(
+    (text: string) => onInject(sessionId, text),
+    [onInject, sessionId],
+  );
   const reportHeaderPx = useCallback(
     (px: number) => onHeaderPx(sessionId, px),
     [onHeaderPx, sessionId],
@@ -110,7 +117,7 @@ export const SessionBlocks = memo(function SessionBlocks({
         lineHeightPx={lineHeightPx}
         cellWidthPx={cellWidthPx}
         opened={opened}
-        onInject={active ? onInject : undefined}
+        onInject={active ? inject : undefined}
         onActivate={active ? undefined : activate}
         marked={marked}
         onPick={onPick}
@@ -118,15 +125,13 @@ export const SessionBlocks = memo(function SessionBlocks({
         copyCombo={copyCombo}
       />
       {live && (
-        <>
-          <ActiveBlockHeader
-            command={command}
-            rect={liveBox}
-            liftPx={lift}
-            onHeight={reportHeaderPx}
-          />
-          <ActiveBlockFrame rect={liveBox} liftPx={lift} />
-        </>
+        <ActiveBlockHeader
+          command={command}
+          startedAtMs={commandStartedAtMs}
+          rect={liveBox}
+          liftPx={lift}
+          onHeight={reportHeaderPx}
+        />
       )}
     </>
   );

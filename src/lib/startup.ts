@@ -120,17 +120,8 @@ export function nextBootPoll(input: {
 /**
  * O app terminou de carregar e o splash pode sair.
  *
- * Evento de DOM, e não de IPC: quem escuta é o `main.tsx`, que roda antes do
- * React e não fala com o core.
+ * Evento de DOM, e não de IPC: quem escuta é o `main.tsx`, que o repassa ao
+ * core (`splash_done`) — é o core que fecha a janela de splash e mostra a
+ * `main`.
  */
 export const SPLASH_DONE_EVENT = "tyba:ready";
-
-/**
- * Teto de espera do splash, em ms.
- *
- * O splash sai quando o app está pronto — mas "pronto" depende do core, e o
- * core pode ficar parado num diálogo de permissão do macOS, que segura a
- * thread até alguém clicar. Sem teto, um boot que trava deixa o usuário preso
- * olhando um logo, que é pior do que a UI vazia que ele substituiu.
- */
-export const SPLASH_CEILING_MS = 4000;

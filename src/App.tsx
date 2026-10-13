@@ -9,8 +9,6 @@ import {
   FolderOpen,
   GearSix,
   GitBranch,
-  TreeStructure,
-  TreeView,
   GitDiff,
   HardDrives,
   Keyboard,
@@ -79,6 +77,7 @@ import {
   noticeKey,
   showShellAgentNotice,
   showUnjailedNotice,
+  ungatedReason,
 } from "./lib/shellAgentNotice";
 import { resumeCandidates, showAgentResumeInvite } from "./lib/agentResume";
 import {
@@ -103,6 +102,7 @@ import {
   withoutRecoveredAuthAlerts,
 } from "./lib/authAlert";
 import { agentOpenUrlToastInput } from "./lib/agentOpenUrlToast";
+import { agentAlertToast } from "./lib/agentUsage";
 import {
   LaunchConfigDialog,
   type LaunchConfigDraftState,
@@ -122,8 +122,14 @@ import {
   type BroadcastTarget,
 } from "./components/BroadcastBar";
 import { ptyExitEndsSession } from "./lib/sessionExit";
+import {
+  SESSION_DOT_CLASS,
+  SESSION_DOT_LABEL_KEY,
+  sessionDot,
+} from "./lib/sessionCard";
 import { matchSshHost } from "./lib/sshCommand";
 import { DockerIcon } from "./components/icons/DockerIcon";
+import { TybaMark } from "./components/icons/TybaMark";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
 import { WorktreesView } from "./components/WorktreesView";
@@ -131,6 +137,36 @@ import { StatsView } from "./components/StatsView";
 import { DiffView } from "./components/DiffView";
 import { TunnelsView } from "./components/TunnelsView";
 import { FilesPanel } from "./components/FilesPanel";
+import { GitPanel } from "./components/GitPanel";
+import { GitHistoryView } from "./components/GitHistoryView";
+import { DockerPanel } from "./components/DockerPanel";
+import { HistoryPanel } from "./components/HistoryPanel";
+import { SidePanelBar, type PanelTab } from "./components/SidePanelBar";
+import {
+  escClosesPanel,
+  litPanel,
+  panelAriaLabel,
+  panelClick,
+  panelIndicator,
+  parseSideView,
+  visiblePanels,
+  type PanelKind,
+} from "./lib/sidePanel";
+import { EditorTab } from "./components/EditorTab";
+import { ContainerLogsView } from "./components/ContainerLogsView";
+import { ContainerShellBanner, ContainerStrip } from "./components/ContainerStrip";
+import { ContainerFilesPanel } from "./components/ContainerFilesPanel";
+import {
+  baseName,
+  containerFilesTarget,
+  dirtyEditorsOf,
+  isEditorDirty,
+  openDiffTab as openDiffContentTab,
+  openEditorTab,
+  openHistoryTab,
+  parseContentView,
+  setEditorDirty,
+} from "./lib/contentTabs";
 import { AgentsPanel } from "./components/AgentsPanel";
 import { SubagentViewer } from "./components/SubagentViewer";
 import { ForgePanel } from "./components/ForgePanel";
@@ -177,6 +213,7 @@ import {
   onAgentOpenUrl,
   onAgentSandboxWarning,
   onAgentAuthAlert,
+  onAgentAlert,
   type AuthAlertKind,
   onAppReady,
   onBootFailed,
@@ -212,10 +249,13 @@ import {
   filesSearch,
   type FileSearchResult,
   openDiffTab,
+  backTab,
   openFilesPanel,
   openTunnelsPanel,
   openAgentsPanel,
-  openSubagentViewer,
+  openGitPanel,
+  openDockerPanel,
+  openHistoryPanel,
   openViewTab,
   toggleAgentQueue,
   paneSession,
@@ -229,6 +269,8 @@ import {
   type AgentRunner,
   onAgentDetected,
   type AgentDetectedPayload,
+  type ShimRoute,
+  type NoJailReason,
   type DetectedAgent,
   type SubagentSnapshot,
   renameWorkspace,
@@ -253,6 +295,7 @@ import {
   type Loaded,
   type RepoSnapshot,
   type Session,
+  type Tab,
   type SessionCommand,
   type ConflictState,
   type SessionCwd,
@@ -265,6 +308,7 @@ import {
   type HostGroup,
   broadcastWrite,
   broadcastSubmit,
+  connectHost,
   connectHostGroup,
   reconnectSsh,
   listHosts,
@@ -295,16 +339,28 @@ import {
 } from "./lib/ipc";
 import { bootFailureTitleKey } from "./lib/bootFailure";
 import { hiddenApprovalIds as computeHiddenApprovalIds } from "./lib/notifications";
+import {
+  panelRequestsBySession,
+  panelVisibleApprovalIds,
+  withoutResolved,
+} from "./lib/approvalPanel";
 import { basename } from "@/lib/utils";
 import { buildConflictPrompt } from "./lib/conflicts";
-import { isFinishedStatus, mergeSessionUpdate } from "./lib/sessionStatus";
+import {
+  connectingHostIds,
+  isFinishedStatus,
+  mergeSessionUpdate,
+} from "./lib/sessionStatus";
 import {
   AGENTS_PANEL_LINGER_MS,
+  agentsPanelActionableIds,
   agentsPanelRunConcluded,
   agentsPanelSession,
   agentsPanelUngated,
   deadAgentsPanels,
+  mainColumn,
   showAgentsButton,
+  subagentInlineApprovals,
   trackPanelRun,
   type PanelRunEntry,
 } from "./lib/agentsPanel";
@@ -379,9 +435,20 @@ const LINE_ECHO_POLL_MS = 200;
  *  resto é o mínimo para o conteúdo ao lado dela não virar uma fresta. Abaixo
  *  disso o painel fica menor que o próprio conteúdo e a árvore transborda. */
 const SIDE_MIN_PX = 360;
+/** Largura da superfície de agentes (árvore + detalhe inline). */
+const AGENTS_PANEL_WIDTH_PX = 380;
 /** Piso do terminal. Sem ele o arrasto para o outro lado engole a área de
  *  trabalho, que é o problema simétrico e igualmente fácil de provocar. */
 const MAIN_MIN_PX = 320;
+/**
+ * A área de conteúdo de um painel, nas coordenadas DELA: o painel inteiro.
+ *
+ * Terminal e blocos moram dentro de um invólucro por painel que já desconta a
+ * linha do TYBA, então medem em % desse invólucro e não da área de painéis.
+ * Objeto único e fixo: o `rect` derivado dele compara igual entre renders
+ * (`sameRect`), e o fit só roda quando o invólucro muda de tamanho de verdade.
+ */
+const PANE_BOX = { left: 0, top: 0, width: 100, height: 100 } as const;
 import { handlerCache, withEntry } from "./lib/perSession";
 import { useStableCallback } from "./lib/stableProps";
 import { mergeBlockHistory } from "./lib/blockHistory";
@@ -406,6 +473,7 @@ import {
 import {
   captureState,
   comboOf,
+  tabBackRoute,
   DEFAULT_BINDINGS,
   KEY_ACTIONS,
   formatCombo,
@@ -424,11 +492,10 @@ import {
   type MenuExtraId,
 } from "./lib/appMenu";
 import {
-  keyboardOwner,
+  paneLine,
+  type PaneLine,
   programName,
   swallowsArrow,
-  lineState,
-  lineVisible,
   PROMPT_MODE_PREF_KEY,
   promptModeEnabled,
 } from "./lib/commandLine";
@@ -589,7 +656,7 @@ function IconAction({
           size="icon"
           onClick={onClick}
           aria-label={label}
-          className="size-6 rounded-[4px] text-tyba-text-muted hover:text-tyba-text"
+          className="h-7 w-[30px] rounded-[6px] text-tyba-text-faint hover:text-tyba-text"
         >
           {children}
         </Button>
@@ -609,10 +676,23 @@ function IconAction({
  * à parte: são derivados a cada leitura, e viajam sempre COM a identidade do
  * processo a que pertencem.
  */
-type DetectedAgentState = DetectedAgent & { hosting: boolean; jailed: boolean };
+type DetectedAgentState = DetectedAgent & {
+  hosting: boolean;
+  jailed: boolean;
+  shim: ShimRoute | null;
+  noJail: NoJailReason | null;
+};
 
 const withHostingState = (p: AgentDetectedPayload): DetectedAgentState | null =>
-  p.detected ? { ...p.detected, hosting: p.hosting, jailed: p.jailed } : null;
+  p.detected
+    ? {
+        ...p.detected,
+        hosting: p.hosting,
+        jailed: p.jailed,
+        shim: p.shim ?? null,
+        noJail: p.no_jail ?? null,
+      }
+    : null;
 
 /** Shim v2 (tech-spec §9): flag local de "já mostrou o toast de introdução",
  * uma vez por usuário. Durabilidade local — pior caso de perder o flag
@@ -667,11 +747,6 @@ export default function App() {
   const [sessionQuery, setSessionQuery] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("actions");
-  const [fileOpenRequest, setFileOpenRequest] = useState<{
-    id: string;
-    path: string;
-    nonce: number;
-  } | null>(null);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [newSessionIsolate, setNewSessionIsolate] = useState(false);
   const [worktreeDir, setWorktreeDir] = useState<string | null>(null);
@@ -830,11 +905,10 @@ export default function App() {
   /**
    * O que foi digitado e não enviado, por sessão.
    *
-   * A linha de comando é uma só e remonta a cada troca de sessão — a `key`
-   * dela inclui o id de propósito, porque sugestão, histórico e caret são de
-   * uma sessão só e não podem vazar para a outra. O rascunho ia junto: meio
-   * comando escrito num pane, um clique no pane ao lado, e sumia sem aviso.
-   * Valia para pane, aba e sessão.
+   * Cada painel tem a própria linha, e trocar o foco não a remonta. Mas ela
+   * remonta quando o painel sai da tela (troca de aba) e ao voltar de um app
+   * de tela cheia, e o rascunho ia junto: meio comando escrito, uma ida a
+   * outra aba, e ele sumia sem aviso. Nunca vai para o disco.
    *
    * `ref` e não estado: ninguém lê isto durante o render, só a próxima
    * montagem da caixa. Como estado, cada tecla digitada re-renderizaria o
@@ -846,6 +920,13 @@ export default function App() {
   // trabalho por tecla digitada para escrever o mesmo valor de novo.
   const rememberDraft = useCallback((id: SessionId, text: string) => {
     drafts.current[id] = text;
+  }, []);
+  // As linhas já enviadas de um comando em continuação (`ls \`), por sessão e
+  // pelo mesmo motivo do rascunho: sobreviver à remontagem da caixa. Só em
+  // memória, como o rascunho.
+  const pendings = useRef<Record<string, string[]>>({});
+  const rememberPending = useCallback((id: SessionId, lines: string[]) => {
+    pendings.current[id] = lines;
   }, []);
   /**
    * Sessões que subiram com o hook do TYBA injetado.
@@ -865,6 +946,8 @@ export default function App() {
   const [snippetPrompt, setSnippetPrompt] = useState<{
     snippet: Snippet;
     placeholders: SnippetPlaceholder[];
+    /** O painel que pediu o snippet. Ver `pickSnippet`. */
+    sessionId: SessionId;
   } | null>(null);
   const [pastePrompt, setPastePrompt] = useState<TerminalPasteDetail | null>(
     null,
@@ -899,7 +982,7 @@ export default function App() {
   const [pendingGroup, setPendingGroup] = useState<string | null>(null);
   const [showContainers, setShowContainers] = useState(false);
   const [dockerUp, setDockerUp] = useState(true);
-  const [dockerRunning, setDockerRunning] = useState(false);
+  const [dockerRunning, setDockerRunning] = useState(0);
   const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [inboxOpen, setInboxOpen] = useState(false);
@@ -948,7 +1031,7 @@ export default function App() {
     );
     track(
       onApprovalResolved(({ id }) =>
-        setApprovals((prev) => prev.filter((p) => p.id !== id)),
+        setApprovals((prev) => withoutResolved(prev, id)),
       ),
     );
     listApprovals()
@@ -999,21 +1082,35 @@ export default function App() {
     [activeTab],
   );
 
+  // Sessão dona dos arquivos do que está em foco: o pane ativo; numa aba de
+  // editor/diff, a dona dela; numa aba de logs, o primeiro terminal do
+  // workspace. É o alvo do ⌘⇧E e da busca de arquivos da paleta.
+  const fileSessionId = useMemo(() => {
+    if (activeId) return activeId;
+    const content = parseContentView(activeTab?.view);
+    if (content && content.kind !== "container-logs") return content.session;
+    for (const tab of activeWorkspace?.tabs ?? []) {
+      if (tab.root) return leafSessions(tab.root)[0] ?? null;
+    }
+    return null;
+  }, [activeId, activeTab, activeWorkspace]);
+
   const searchFilesForPalette = useCallback(
     (query: string): Promise<FileSearchResult> =>
-      activeId
-        ? filesSearch(activeId, query)
+      fileSessionId
+        ? filesSearch(fileSessionId, query)
         : Promise.resolve({ paths: [], truncated: false }),
-    [activeId],
+    [fileSessionId],
   );
 
   const openFileFromFinder = useCallback(
     (rel: string) => {
-      if (!activeId) return;
-      void openFilesPanel(activeId).catch(() => {});
-      setFileOpenRequest({ id: activeId, path: rel, nonce: Date.now() });
+      if (!fileSessionId) return;
+      void openEditorTab(rel, undefined, { session: fileSessionId }).catch((e) =>
+        toastError(t("editorOpenError"), e),
+      );
     },
-    [activeId],
+    [fileSessionId, t],
   );
 
   /**
@@ -1307,6 +1404,23 @@ export default function App() {
     };
   }, [t]);
 
+  // `agent://alert` (proposta 4 da ia-v2): falha de turno e limite de uso
+  // viram toast. O aviso do sistema, fora de foco e conforme a preferência,
+  // o core já mandou — aqui é só a superfície dentro do app. O título da
+  // sessão vem de um ref para o listener não ser refeito a cada update.
+  const alertSessionsRef = useRef(sessions);
+  alertSessionsRef.current = sessions;
+  useEffect(() => {
+    const unlisten = onAgentAlert((payload) => {
+      const title =
+        alertSessionsRef.current.find((s) => s.id === payload.session_id)?.title ?? null;
+      pushToast(agentAlertToast(payload, title, i18n.language, t));
+    });
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [t, i18n.language]);
+
   // F3: metade "recovery" do dismiss -- a mesma sessão que carrega a faixa
   // volta a `running` (o dono rodou `/login` e o agente seguiu). `sessions`
   // já chega atualizado por `onSessionStatus` (ver o efeito que popula esse
@@ -1481,6 +1595,30 @@ export default function App() {
         : null,
     [sideView, sessionById],
   );
+  const gitPanelTarget = useMemo(() => {
+    const view = parseSideView(sideView);
+    return view?.kind === "git" && view.session
+      ? (sessionById.get(view.session) ?? null)
+      : null;
+  }, [sideView, sessionById]);
+  const dockerPanelTarget = useMemo(() => {
+    const view = parseSideView(sideView);
+    return view?.kind === "docker" && view.session
+      ? (sessionById.get(view.session) ?? null)
+      : null;
+  }, [sideView, sessionById]);
+  const historyPanelTarget = useMemo(() => {
+    const view = parseSideView(sideView);
+    return view?.kind === "history" && view.session
+      ? (sessionById.get(view.session) ?? null)
+      : null;
+  }, [sideView, sessionById]);
+  // Docker numa sessão SSH fala com o servidor dela (alias no ssh_config).
+  const dockerPanelHost = useMemo(() => {
+    const kind = dockerPanelTarget?.kind;
+    if (kind?.type !== "ssh") return null;
+    return sshHosts.find((h) => h.id === kind.host_id)?.alias ?? null;
+  }, [dockerPanelTarget, sshHosts]);
   const tunnelsHostAlias = useMemo(() => {
     const kind = tunnelsTarget?.kind;
     if (kind?.type !== "ssh") return "";
@@ -1505,12 +1643,16 @@ export default function App() {
   // O painel Agentes continua montado durante o fade de saída (agentsMotion):
   // renderSideView guarda a sessão que estava aberta para desenhar o último
   // quadro enquanto ela sai, sem que a coluna principal reflua na hora.
-  const sideVisible = Boolean(sideView) || agentsMotion.mounted;
-  const renderSideView =
-    sideView ??
-    (agentsMotion.mounted && lastAgentsSessionRef.current
-      ? `agents:${lastAgentsSessionRef.current}`
-      : null);
+  // A superfície de agentes é uma coluna estreita de largura fixa (A5.3): o
+  // terminal fica com o resto. Expandida, ocupa tudo como as outras views.
+  const { sideVisible, renderSideView, agentsSideNarrow, slot: mainSlot } =
+    mainColumn(
+      sideView,
+      agentsMotion.mounted,
+      lastAgentsSessionRef.current,
+      sideExpanded,
+      sideRatio,
+    );
   const agentsTarget = useMemo(() => {
     const sid = renderSideView?.startsWith("agents:")
       ? renderSideView.slice(7)
@@ -1598,9 +1740,12 @@ export default function App() {
     }
   }, [layout.workspaces, sessionById, subagentsBySession]);
 
+  // `mainSlot`, não só `sideView`: o painel Agentes fecha com fade e só libera
+  // a largura quando desmonta — ver `mainColumn`. O ResizeObserver do terminal
+  // sozinho não bastou para pegar essa volta à largura cheia.
   useEffect(() => {
     requestTerminalRelayout();
-  }, [sideView, sideRatio, sideExpanded]);
+  }, [sideView, sideRatio, sideExpanded, mainSlot]);
 
   const mainAreaRef = useRef<HTMLDivElement>(null);
   const sideDragThrottle = useRef(0);
@@ -1807,6 +1952,24 @@ export default function App() {
     [goToSession],
   );
 
+  // "Agentes" no menu lateral: com a sessão ativa tendo subagentes, abre (ou
+  // fecha) a árvore dela — é o que o dono espera achar ali, e é o caminho de
+  // volta depois de fechar o painel. Sem subagentes, segue sendo a fila.
+  const openAgentsFromSidebar = useCallback(() => {
+    const hasSubagents =
+      activeId != null &&
+      (subagentsBySession.get(activeId)?.subagents.length ?? 0) > 0;
+    if (!hasSubagents || !activeWorkspace) {
+      void toggleAgentQueue().catch(() => {});
+      return;
+    }
+    if (sideView === `agents:${activeId}`) {
+      void closeSideView(activeWorkspace.id).catch(() => {});
+    } else {
+      void openAgentsPanel(activeId).catch(() => {});
+    }
+  }, [activeId, activeWorkspace, sideView, subagentsBySession]);
+
   // O `hosting` do shim v2 (tech-spec §7), por sessão — projeção de
   // `detectedBySession` porque `agentsBoard.buildRows`/`AgentRow` só
   // precisam do booleano, nunca do `pid`/`start_ms`/`jailed` que o resto do
@@ -1842,6 +2005,34 @@ export default function App() {
     () => agentQueueVisibleApprovalIds(agentRows, approvals),
     [agentRows, approvals],
   );
+  // Painel vermelho dentro da sessão: um pedido por sessão (o mais antigo).
+  // Os que um painel NA TELA mostra saem do toast — acionável em um lugar só.
+  const panelRequests = useMemo(
+    () => panelRequestsBySession(approvals),
+    [approvals],
+  );
+  const sessionPanelIds = useMemo(
+    () =>
+      panelVisibleApprovalIds(
+        approvals,
+        new Set(paneLayout?.panes.map((p) => p.session) ?? []),
+      ),
+    [approvals, paneLayout],
+  );
+  // Painel de agentes aberto: os pedidos que ele deixa aprovar na linha do
+  // subagente (não-vermelhos) saem do toast. A mesma derivação que o painel
+  // usa para desenhar — `subagentInlineApprovals` —, para os dois concordarem.
+  const agentsPanelIds = useMemo(() => {
+    const panelSession = agentsPanelSession(sideView);
+    if (!panelSession) return new Set<number>();
+    return agentsPanelActionableIds(
+      subagentInlineApprovals(
+        panelSession,
+        subagentsBySession.get(panelSession)?.subagents ?? [],
+        approvals,
+      ),
+    );
+  }, [sideView, subagentsBySession, approvals]);
   const approvalHiddenIds = useMemo(
     () =>
       computeHiddenApprovalIds({
@@ -1849,8 +2040,17 @@ export default function App() {
         notificationsOpen: inboxOpen,
         agentQueueOpen: sideView === "agent-queue",
         agentQueueVisibleIds,
+        sessionPanelIds,
+        agentsPanelIds,
       }),
-    [approvals, inboxOpen, sideView, agentQueueVisibleIds],
+    [
+      approvals,
+      inboxOpen,
+      sideView,
+      agentQueueVisibleIds,
+      sessionPanelIds,
+      agentsPanelIds,
+    ],
   );
 
   const goToNextAttention = useCallback(() => {
@@ -1889,6 +2089,7 @@ export default function App() {
       cwd: string,
       runner?: AgentRunner,
       openedByGate = false,
+      resumeConversation?: string,
     ) => {
       const fresh = await createSession({
         kind: { type: "agent", runner: runner ?? runnerFromCommand(reviewAgent) },
@@ -1898,6 +2099,7 @@ export default function App() {
         cols: 100,
         rows: 30,
         opened_by_gate: openedByGate,
+        resume_conversation: resumeConversation,
       });
       setSessions((prev) => [...prev, fresh]);
       try {
@@ -1973,8 +2175,10 @@ export default function App() {
         });
         if (!proceed) return;
         let cwd: string;
+        let conversationId: string | null;
         try {
-          cwd = await killShellAgent(sessionId);
+          ({ cwd, conversation_id: conversationId } =
+            await killShellAgent(sessionId));
         } catch (e) {
           toastError(t("shellAgentReopenFailed"), translateError(e, t));
           return;
@@ -1986,7 +2190,15 @@ export default function App() {
           // `opened_by_gate` no core. Review e resolução de conflitos NÃO
           // marcam isto: só este fluxo reabre por trás de uma confirmação
           // explícita ("gate") e é dono da aba que criou.
-          const sid = await spawnAgentSession(title, cwd, detected.kind, true);
+          // Com o id, a sessão gerenciada retoma a MESMA conversa (M1 do
+          // claude-monitor) em vez de nascer vazia e deixar a original órfã.
+          const sid = await spawnAgentSession(
+            title,
+            cwd,
+            detected.kind,
+            true,
+            conversationId ?? undefined,
+          );
           goToSession(sid);
         } catch (e) {
           toastError(t("shellAgentReopenSpawnFailed"), translateError(e, t));
@@ -2328,6 +2540,10 @@ export default function App() {
   const activeCwdKey = activeId
     ? (sessionCwds[activeId]?.canonical ?? sessionCwds[activeId]?.cwd ?? null)
     : null;
+  // O mesmo, para qualquer sessão: cada painel tem a própria linha, e o cwd do
+  // rodapé dela e o escopo do histórico são os da sessão DELA.
+  const cwdKeyOf = (id: SessionId) =>
+    sessionCwds[id]?.canonical ?? sessionCwds[id]?.cwd ?? null;
   const statusSessionRef = useRef<SessionId | null>(null);
   useEffect(() => {
     if (!activeId) {
@@ -2360,6 +2576,31 @@ export default function App() {
   const gitTone = gitIconTone(activeGitStatus);
 
   const activeSession = activeId ? sessionById.get(activeId) : undefined;
+
+  // Abas de conteúdo. Editores ficam montados em TODOS os workspaces enquanto
+  // a aba existe: o buffer não salvo é do CodeMirror.
+  const activeContent = parseContentView(activeTab?.view);
+  const editorTabs = useMemo(
+    () =>
+      layout.workspaces.flatMap((w) =>
+        w.tabs.flatMap((tab) => {
+          const parsed = parseContentView(tab.view);
+          return parsed?.kind === "editor"
+            ? [{ tab, workspace: w, session: parsed.session, rel: parsed.rel }]
+            : [];
+        }),
+      ),
+    [layout.workspaces],
+  );
+  // Faixa de contexto: aba de logs estruturados, ou o shell (PTY) de um
+  // container local em foco.
+  const containerStrip: { id: string; current: "logs" | "shell" } | null =
+    activeContent?.kind === "container-logs"
+      ? { id: activeContent.containerId, current: "logs" }
+      : activeSession?.kind.type === "container" && !activeSession.kind.host_id
+        ? { id: activeSession.kind.container_id, current: "shell" }
+        : null;
+  const [logsRestart, setLogsRestart] = useState<Record<string, number>>({});
   const activeCommand = activeId ? sessionCommands[activeId] : undefined;
   const agentsButtonVisible =
     activeSession != null &&
@@ -2367,6 +2608,63 @@ export default function App() {
       activeSession.kind,
       activeId != null && detectedBySession.has(activeId),
     );
+
+  // Painel lateral único: os ícones do header são as abas dele, e qual está
+  // aberta é o `side_view` do workspace no core — aqui só se deriva o que o
+  // header mostra (regras em `lib/sidePanel`, testadas). A sessão dos painéis
+  // é `fileSessionId`: numa aba de editor/diff/logs não há pane em foco, e os
+  // ícones seguem valendo para a sessão dona dela.
+  const activeRepoSnapshot = activeGitStatus
+    ? snapshotForDir(repoSnapshots, activeGitStatus.root)
+    : undefined;
+  const panelIndicatorInput = {
+    dockerUp,
+    dockerRunning,
+    gitDirty: activeGitStatus?.dirty ?? false,
+    pendingApprovals: activeId
+      ? approvals.filter((a) => a.session_id === activeId).length
+      : 0,
+  };
+  const panelTabs: PanelTab[] = visiblePanels({
+    hasSession: fileSessionId != null,
+    isSsh: activeSession?.kind.type === "ssh",
+    showDocker: showContainers,
+    hasRepo: gitTone != null,
+    agentsAvailable: agentsButtonVisible,
+  }).map((kind) => {
+    const label = panelAriaLabel(
+      kind,
+      {
+        ...panelIndicatorInput,
+        gitChanged: activeRepoSnapshot?.status?.changed ?? null,
+      },
+      t,
+    );
+    return {
+      kind,
+      label,
+      tooltip: label,
+      shortcut: kind === "files" ? bindings.files : undefined,
+      indicator: panelIndicator(kind, panelIndicatorInput),
+    };
+  });
+  const onPanelClick = (kind: PanelKind) => {
+    if (!fileSessionId || !activeWorkspace) return;
+    if (panelClick(kind, sideView, fileSessionId) === "close") {
+      void closeSideView(activeWorkspace.id).catch(() => {});
+      return;
+    }
+    const open = {
+      history: openHistoryPanel,
+      docker: openDockerPanel,
+      tunnels: openTunnelsPanel,
+      files: openFilesPanel,
+      git: openGitPanel,
+      diff: openDiffTab,
+      agents: openAgentsPanel,
+    }[kind];
+    void open(fileSessionId).catch(() => {});
+  };
 
   useEffect(() => {
     const markSeen = () => {
@@ -3038,25 +3336,36 @@ export default function App() {
     [],
   );
 
+  // Só a janela entre o clique e a resposta do core: dali em diante quem diz
+  // "conectando" é o `connection` da sessão. Quem impede a segunda sessão é o
+  // core (`connect_host`), não este estado.
+  const [connectRequests, setConnectRequests] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const connectingHosts = useMemo(() => {
+    const ids = connectingHostIds(sessions);
+    for (const id of connectRequests) ids.add(id);
+    return ids;
+  }, [sessions, connectRequests]);
+
   const connectToHost = useCallback(async (host: Host) => {
-    const session = await createSession({
-      kind: { type: "ssh", host_id: host.id },
-      cols: 100,
-      rows: 30,
-    });
-    setSessions((prev) => [...prev, session]);
+    setConnectRequests((prev) => new Set(prev).add(host.id));
     try {
-      const group = host.group_id
-        ? ((await listHostGroups()).find((g) => g.id === host.group_id)?.name ??
-          null)
-        : null;
-      await createWorkspace(host.alias, null, session.id, {
-        lock_name: true,
-        color: host.color,
-        group,
+      const result = await connectHost(host.id);
+      if (result.type === "opened") {
+        const { session } = result;
+        setSessions((prev) =>
+          prev.some((s) => s.id === session.id) ? prev : [...prev, session],
+        );
+      }
+    } catch (e) {
+      console.error("connect_host", e);
+    } finally {
+      setConnectRequests((prev) => {
+        const next = new Set(prev);
+        next.delete(host.id);
+        return next;
       });
-    } catch {
-      void disposeSession(session.id).catch(() => {});
     }
   }, []);
 
@@ -3260,8 +3569,33 @@ export default function App() {
     [layout.workspaces, sessionById, confirmCloseWithRunningAgent, refreshSessions],
   );
 
+  /** Editores com alteração não salva que fechar esta aba levaria junto: o
+   *  próprio editor, ou os editores das sessões do terminal que fecha. */
+  const confirmCloseDirtyEditors = useCallback(
+    async (tab: Tab): Promise<boolean> => {
+      const views = tab.root
+        ? dirtyEditorsOf(leafSessions(tab.root))
+        : isEditorDirty(tab.view)
+          ? [tab.view as string]
+          : [];
+      if (views.length === 0) return true;
+      const parsed = parseContentView(views[0]);
+      const name = parsed?.kind === "editor" ? baseName(parsed.rel) : "";
+      const ok = await requestConfirm({
+        title: t("editorUnsavedTitle", { name }),
+        detail: t("editorUnsavedDetail"),
+        confirmLabel: t("editorUnsavedConfirm"),
+        destructive: true,
+      });
+      if (ok) for (const view of views) setEditorDirty(view, false);
+      return ok;
+    },
+    [t],
+  );
+
   const closeActivePane = useCallback(async () => {
     if (!activeTab) return;
+    if (!activeTab.active_pane && !(await confirmCloseDirtyEditors(activeTab))) return;
     if (activeTab.active_pane) {
       const running = activeTab.root
         ? paneRunningAgent(activeTab.root, activeTab.active_pane, sessionById)
@@ -3274,7 +3608,13 @@ export default function App() {
       await closeTab(activeTab.id);
     }
     await refreshSessions();
-  }, [activeTab, sessionById, confirmCloseWithRunningAgent, refreshSessions]);
+  }, [
+    activeTab,
+    sessionById,
+    confirmCloseWithRunningAgent,
+    confirmCloseDirtyEditors,
+    refreshSessions,
+  ]);
 
   const closeTabAndRefresh = useCallback(
     async (id: string) => {
@@ -3283,10 +3623,17 @@ export default function App() {
         .find((tt) => tt.id === id);
       const running = tab ? tabRunningAgent(tab, sessionById) : null;
       if (!(await confirmCloseWithRunningAgent(running))) return;
+      if (tab && !(await confirmCloseDirtyEditors(tab))) return;
       await closeTab(id);
       await refreshSessions();
     },
-    [layout.workspaces, sessionById, confirmCloseWithRunningAgent, refreshSessions],
+    [
+      layout.workspaces,
+      sessionById,
+      confirmCloseWithRunningAgent,
+      confirmCloseDirtyEditors,
+      refreshSessions,
+    ],
   );
 
   const toggleSettings = useCallback(() => {
@@ -3410,17 +3757,17 @@ export default function App() {
         if (cancelled) return;
         setDockerUp(ok);
         if (!ok) {
-          setDockerRunning(false);
+          setDockerRunning(0);
           return;
         }
         const list = await dockerListContainers(null, true);
         if (!cancelled) {
-          setDockerRunning(list.some((c) => c.state === "running"));
+          setDockerRunning(list.filter((c) => c.state === "running").length);
         }
       } catch {
         if (!cancelled) {
           setDockerUp(false);
-          setDockerRunning(false);
+          setDockerRunning(0);
         }
       }
     };
@@ -3502,29 +3849,38 @@ export default function App() {
   // Texto que a linha do TYBA recebeu de fora — paste, histórico, snippet.
   // Declarado aqui, e não junto do resto da linha lá embaixo, porque o
   // `deliverPaste` precisa dele.
-  const [injected, setInjected] = useState<{
-    text: string;
-    nonce: number;
-  } | null>(null);
-  // A linha do TYBA está no comando do teclado? Ref pelo mesmo motivo que
-  // `promptModesRef` existe: `ownsCommandLine` só é calculado bem abaixo, e uma
+  //
+  // Por SESSÃO: cada painel tem a própria linha, e o texto vai para a linha do
+  // painel a que foi endereçado — nunca para "a linha", que com a tela dividida
+  // seria a do painel que por acaso tem o foco.
+  const [injected, setInjected] = useState<
+    Record<string, { text: string; nonce: number }>
+  >({});
+  const injectLine = useCallback((sessionId: SessionId, text: string) => {
+    setInjected((prev) => ({
+      ...prev,
+      [sessionId]: { text, nonce: Date.now() },
+    }));
+  }, []);
+  // Qual linha está no comando do teclado, por sessão. Ref pelo mesmo motivo
+  // que `promptModesRef` existe: as linhas só são calculadas bem abaixo, e uma
   // dependência de `useCallback` seria lida antes de existir.
-  const ownsCommandLineRef = useRef(false);
+  const ownsLineRef = useRef<Record<string, boolean>>({});
 
   const deliverPaste = useCallback(
     (sessionId: SessionId, raw: string) => {
       const entry = getTerm(sessionId);
       if (!entry) return;
-      // A dona do teclado é a linha da sessão ATIVA. Colar num painel vizinho
-      // continua indo para o terminal dele, que não está somente-leitura.
+      // A dona do teclado é a linha DESTA sessão. Colar num painel vizinho vai
+      // para o que é dono do teclado lá — a linha dele ou o terminal dele.
       const route = routePaste({
         raw,
-        ownsCommandLine: sessionId === activeId && ownsCommandLineRef.current,
+        ownsCommandLine: ownsLineRef.current[sessionId] ?? false,
         bracketed: entry.term.modes.bracketedPasteMode,
       });
       if (!route) return;
       if (route.to === "line") {
-        setInjected({ text: route.text, nonce: Date.now() });
+        injectLine(sessionId, route.text);
         return;
       }
       if (route.to === "terminal") {
@@ -3533,18 +3889,21 @@ export default function App() {
       }
       setPastePrompt({ sessionId, text: route.text });
     },
-    [activeId],
+    [injectLine],
   );
 
   const pasteFromClipboard = useCallback(async () => {
     if (!activeId) return;
+    // O alvo é decidido ANTES de esperar a área de transferência: o foco pode
+    // trocar de painel enquanto ela responde.
+    const target = activeId;
     let text = "";
     try {
       text = await readClipboardText();
     } catch {
       return;
     }
-    deliverPaste(activeId, text);
+    deliverPaste(target, text);
   }, [activeId, deliverPaste]);
 
   const confirmPaste = useCallback(
@@ -3558,11 +3917,8 @@ export default function App() {
       // O comando pode ter terminado entre abrir o preview e confirmar, e aí a
       // linha do TYBA voltou a ser a dona do teclado: o `term.paste` seria
       // engolido e o texto confirmado sumiria sem aviso.
-      if (
-        pastePrompt.sessionId === activeId &&
-        ownsCommandLineRef.current
-      ) {
-        setInjected({ text, nonce: Date.now() });
+      if (ownsLineRef.current[pastePrompt.sessionId]) {
+        injectLine(pastePrompt.sessionId, text);
         setPastePrompt(null);
         return;
       }
@@ -3570,7 +3926,7 @@ export default function App() {
       entry?.term.focus();
       setPastePrompt(null);
     },
-    [activeId, pastePrompt],
+    [pastePrompt, injectLine],
   );
 
   // Despacho único das ações: o teclado e o menu nativo do macOS entram por
@@ -3588,7 +3944,7 @@ export default function App() {
       } else if (action === "panel") {
         toggleSidebar();
       } else if (action === "files") {
-        if (activeId) void openFilesPanel(activeId).catch(() => {});
+        if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
       } else if (action === "clear") {
         // Manda `clear` para o shell em vez de limpar por conta própria: esse
         // caminho já existe e já leva os BLOCOS junto (`Action::Wipe`), que em
@@ -3627,6 +3983,8 @@ export default function App() {
         cycleTab(-1);
       } else if (action === "nextTab") {
         cycleTab(1);
+      } else if (action === "tabBack") {
+        void backTab().catch(() => {});
       } else if (action === "paneLeft") {
         focusPaneInDirection("left");
       } else if (action === "paneRight") {
@@ -3662,6 +4020,7 @@ export default function App() {
     },
     [
       activeId,
+      fileSessionId,
       openPalette,
       toggleSidebar,
       newTab,
@@ -3680,73 +4039,65 @@ export default function App() {
 
   // Quem é dono do teclado agora. A regra vive em lib/commandLine.ts, testada:
   // é ela que impede a caixa de engolir a senha que o sudo está pedindo.
-  const promptMode = activeId ? (promptModes[activeId] ?? false) : false;
+  //
+  // Por PAINEL: cada sessão com painel tem a própria linha, e o estado dela —
+  // visível, editável, dona do teclado — sai só do estado DAQUELA sessão. O
+  // vizinho do `vim` continua no prompt; o vizinho de um comando rodando
+  // continua aceitando texto. Ver `paneLine`.
+  //
   // O shell só reporta o modo no primeiro prompt — depois de carregar rc,
   // framework e plugins. Até lá a linha aparece desabilitada em vez de a tela
-  // ficar em branco sem lugar nenhum para digitar.
-  // A linha aparece sempre que a sessão é um shell em modo prompt — inclusive
-  // com comando rodando ou app de tela cheia aberto. Ela só muda de estado.
-  // A preferência só vale onde o hook pode chegar. Ligada, ela adianta a linha
-  // para antes do primeiro `633;P` — que é o ponto dela, evitar a barra
-  // aparecendo do nada depois do `rc` carregar. Mas num shell sem integração
-  // não há primeiro `633;P` nenhum, e adiantar viraria promessa permanente:
-  // uma linha desabilitada dizendo "Carregando o shell…" para sempre.
-  // O plano da sessão ativa: é ele que trocou o gate `kind === "shell"` da
-  // linha do TYBA pela pergunta "esta sessão é integrada?" (regra 15).
-  const activeIntegration = activeId ? integrations[activeId] : undefined;
-  const lineIsVisible =
-    activeId != null &&
-    lineVisible({
-      kind: activeSession?.kind,
-      sessionIntegration: activeIntegration,
-      promptMode,
-      promptModePref,
-      hookExpected: hookExpected[activeId],
-    });
+  // ficar em branco sem lugar nenhum para digitar. A preferência só adianta a
+  // linha onde o hook pode chegar (ver `lineVisible`).
+  const paneLines = new Map<string, PaneLine>();
+  for (const s of sessions) {
+    if (!pannedSessions.has(s.id)) continue;
+    paneLines.set(
+      s.id,
+      paneLine({
+        kind: s.kind,
+        sessionIntegration: integrations[s.id],
+        reported: promptModes[s.id],
+        promptModePref,
+        hookExpected: hookExpected[s.id],
+        // A rajada é interceptada no xterm; a linha do TYBA o deixa
+        // somente-leitura. Ver `OwnerInput.broadcasting`.
+        broadcasting:
+          broadcastOn &&
+          s.kind.type === "ssh" &&
+          broadcastSet.includes(s.id),
+        altScreen: altScreens[s.id] ?? false,
+        command: sessionCommands[s.id],
+      }),
+    );
+  }
+  const ownsLines: Record<string, boolean> = {};
+  for (const [id, line] of paneLines) ownsLines[id] = line.owns;
+  ownsLineRef.current = ownsLines;
+  // A sessão ativa ainda decide o que é da JANELA: a caixa de agente e o
+  // histórico/snippet pedidos pela paleta.
+  const ownsCommandLine = activeId ? (ownsLines[activeId] ?? false) : false;
 
-  // A rajada é interceptada no xterm; a linha do TYBA o deixa somente-leitura.
-  // Ver `OwnerInput.broadcasting`.
-  const activeBroadcasting =
-    broadcastOn &&
-    activeSession?.kind.type === "ssh" &&
-    activeId != null &&
-    broadcastSet.includes(activeId);
-
-  const commandLineState = lineState({
-    reported: activeId ? promptModes[activeId] : undefined,
-    promptMode,
-    kind: activeSession?.kind,
-    sessionIntegration: activeIntegration,
-    broadcasting: activeBroadcasting,
-    altScreen: activeId ? (altScreens[activeId] ?? false) : false,
-    command: activeCommand,
-    integrated: promptMode,
-  });
-  const ownsCommandLine =
-    keyboardOwner({
-      promptMode,
-      kind: activeSession?.kind,
-      sessionIntegration: activeIntegration,
-      altScreen: activeId ? (altScreens[activeId] ?? false) : false,
-      command: activeCommand,
-      integrated: promptMode,
-      broadcasting: activeBroadcasting,
-    }) === "tybaLine";
-
-  ownsCommandLineRef.current = ownsCommandLine;
-
-  // Voltar do vim ou do fim de um comando devolve o foco para a linha.
-  const [commandLineNonce, setCommandLineNonce] = useState(0);
+  // Voltar do vim, o fim de um comando ou a troca de painel devolvem o foco à
+  // linha — só à do painel ATIVO. Cada linha guarda o próprio contador; o
+  // painel que terminou um comando sem estar em foco não rouba o teclado.
+  const [lineFocusNonces, setLineFocusNonces] = useState<
+    Record<string, number>
+  >({});
+  const focusLine = useCallback((id: SessionId) => {
+    setLineFocusNonces((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
+  }, []);
   useEffect(() => {
+    if (!activeId) return;
     if (ownsCommandLine) {
-      setCommandLineNonce((n) => n + 1);
+      focusLine(activeId);
       return;
     }
     // Devolveu o teclado ao terminal (vim abriu, comando começou, modo
     // desligado): o foco vai junto, senão as teclas caem numa caixa que já não
     // é dona da linha.
-    if (activeId) getTerm(activeId)?.term.focus();
-  }, [ownsCommandLine, activeId]);
+    getTerm(activeId)?.term.focus();
+  }, [ownsCommandLine, activeId, focusLine]);
 
   // Quem responde se o PS1 saiu da tela é o SHELL, não o app: o hook relata por
   // `633;P` a cada prompt. Assumir pela preferência mentiria quando o hook não
@@ -3758,6 +4109,9 @@ export default function App() {
     const vivos = new Set<string>(ids);
     for (const id of Object.keys(drafts.current)) {
       if (!vivos.has(id)) delete drafts.current[id];
+    }
+    for (const id of Object.keys(pendings.current)) {
+      if (!vivos.has(id)) delete pendings.current[id];
     }
     let disposed = false;
     const unlisteners: Array<() => void> = [];
@@ -4034,37 +4388,49 @@ export default function App() {
   // paste detectado, control chars sanitizados e confirmação quando é multilinha.
   // Nada é executado — quem aperta Enter é o dono.
   //
+  // Endereçado pela sessão que pediu, nunca por `activeId` lido depois: entre o
+  // clique e a entrega o foco pode ter trocado de painel, e o texto iria parar
+  // na linha errada.
+  //
   // `useStableCallback` e não `useCallback`: isto desce como `onInject` para o
   // `SessionBlocks`, que é `memo`. As dependências naturais deste handler são
-  // as que mais mudam no app — `activeId` a cada troca de foco de painel e
-  // `ownsCommandLine` a cada começo e fim de comando —, então a lista daria
-  // identidade nova em toda fronteira de comando e invalidaria a memoização de
-  // TODOS os painéis, inclusive os que nada tinham a ver com o comando. Ver
-  // `lib/stableProps`.
-  const injectIntoActive = useStableCallback((text: string) => {
-    if (!activeId || !text) return;
+  // as que mais mudam no app — `ownsLines` a cada começo e fim de comando —,
+  // então a lista daria identidade nova em toda fronteira de comando e
+  // invalidaria a memoização de TODOS os painéis, inclusive os que nada tinham
+  // a ver com o comando. Ver `lib/stableProps`.
+  const injectInto = useStableCallback((sessionId: SessionId, text: string) => {
+    if (!text) return;
     // Sem decidir de novo para onde o texto vai: quem decide é o
     // `deliverPaste`, e duas cópias da regra divergiriam — foi assim que o
     // "Colar" do menu de contexto ficou inerte enquanto histórico e snippet
     // funcionavam.
-    deliverPaste(activeId, text);
-    if (!ownsCommandLine) getTerm(activeId)?.term.focus();
+    deliverPaste(sessionId, text);
+    if (!ownsLineRef.current[sessionId]) getTerm(sessionId)?.term.focus();
+  });
+  // A paleta de histórico é da janela: o alvo é o painel ativo no momento da
+  // escolha.
+  const injectIntoActive = useStableCallback((text: string) => {
+    if (activeId) injectInto(activeId, text);
   });
 
   const pickSnippet = useCallback(
     (snippet: Snippet) => {
+      // O alvo é o painel ativo NA ESCOLHA. Os placeholders e o render são
+      // assíncronos, e o foco pode trocar de painel até o texto voltar.
+      const target = activeId;
+      if (!target) return;
       void snippetPlaceholders(snippet.command)
         .then((found) => {
           if (found.length === 0) {
             return renderSnippet(snippet.id, snippet.command, []).then(
-              injectIntoActive,
+              (text) => injectInto(target, text),
             );
           }
-          setSnippetPrompt({ snippet, placeholders: found });
+          setSnippetPrompt({ snippet, placeholders: found, sessionId: target });
         })
         .catch((error) => toastError(t("snippetsError"), error));
     },
-    [injectIntoActive, t],
+    [activeId, injectInto, t],
   );
 
   const confirmSnippet = useCallback(
@@ -4073,10 +4439,10 @@ export default function App() {
       setSnippetPrompt(null);
       if (!prompt) return;
       void renderSnippet(prompt.snippet.id, prompt.snippet.command, values)
-        .then(injectIntoActive)
+        .then((text) => injectInto(prompt.sessionId, text))
         .catch((error) => toastError(t("snippetsError"), error));
     },
-    [snippetPrompt, injectIntoActive, t],
+    [snippetPrompt, injectInto, t],
   );
 
   const runMenuExtra = useCallback(
@@ -4153,6 +4519,20 @@ export default function App() {
       }
       const combo = comboOf(e);
       if (!combo) return;
+      // ⌘[ é "voltar de aba" — menos dentro do editor de código, onde é do
+      // CodeMirror (desindentar); lá o voltar é ⌘⌥←.
+      const backRoute = tabBackRoute(
+        combo,
+        bindings,
+        Boolean((document.activeElement as HTMLElement | null)?.closest?.(".cm-editor")),
+      );
+      if (backRoute === "native") return;
+      if (backRoute === "back") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!e.repeat) void backTab().catch(() => {});
+        return;
+      }
       const action = (Object.keys(bindings) as KeyAction[]).find(
         (a) => bindings[a] === combo,
       );
@@ -4431,9 +4811,19 @@ export default function App() {
       if (status.state === "running") return runningCmd ?? label;
       return label;
     })();
-    const turnEndedUnseen =
-      agentStatus?.session.attention === true &&
-      agentStatus.session.status.state === "idle";
+    // Cartão do mockup Proposta no visual (ativa sobe, ponto de estado à
+    // direita), com os dados de sempre: caminho/host, agente ou comando,
+    // branch, contadores do git e número de abas — ativa ou não. A regra do
+    // ponto mora em `lib/sessionCard`, testada.
+    const workspaceSessions = new Set(
+      w.tabs.flatMap((tab) => (tab.root ? leafSessions(tab.root) : [])),
+    );
+    const dot = sessionDot({
+      approvals: approvals.filter((a) => workspaceSessions.has(a.session_id))
+        .length,
+      agentRank: agentStatus?.visual.rank ?? null,
+      commandRunning: runningCmd != null,
+    });
     const workspaceButton = (
       <button
         key={w.id}
@@ -4447,21 +4837,25 @@ export default function App() {
               }
             : undefined
         }
-        className={`group relative flex shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
-          showDetails ? "h-[3.75rem]" : "h-8"
-        } ${open ? "px-2" : "justify-center px-0"} ${
+        // Ativa = o cartão que SOBE (mockup Proposta): `raised` com o contorno
+        // do tema e o filamento vertical no meio da aresta esquerda.
+        className={`group relative flex shrink-0 items-center gap-2 overflow-hidden rounded-[6px] text-[13px] transition-colors ${
+          showDetails ? "h-[3.75rem]" : "h-[33px]"
+        } ${open ? "px-2.5" : "justify-center px-0"} ${
           isActive
-            ? `text-tyba-text ${w.color ? "" : "bg-tyba-text/[.05]"}`
-            : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
+            ? `text-tyba-text ${w.color ? "" : "bg-tyba-raised shadow-[var(--tyba-raised-ring)]"}`
+            : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
         }`}
       >
         {isActive && (
+          // O fio pega só o meio da aresta: de ponta a ponta pesava mais que o
+          // próprio cartão.
           <span
-            className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
+            className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-r-full"
             style={{
               background: w.color
                 ? `var(--tyba-${w.color})`
-                : "var(--tyba-gradient-soft)",
+                : "var(--tyba-filament-v)",
             }}
           />
         )}
@@ -4517,22 +4911,17 @@ export default function App() {
         </span>
         {open && (
           <>
-            <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
-              <span className="flex w-full items-center gap-1.5">
-                <span className="min-w-0 flex-1 truncate text-left leading-none">
-                  {isConfig
-                    ? t("settings")
-                    : isWtView
-                      ? t("workspaceView")
-                      : displayName}
-                </span>
-                {turnEndedUnseen && (
-                  <span
-                    aria-hidden
-                    title={t("sessionFinished")}
-                    className="size-1.5 shrink-0 rounded-full bg-tyba-green"
-                  />
-                )}
+            <span className="flex min-w-0 flex-1 flex-col items-start gap-[3px]">
+              <span
+                className={`w-full truncate text-left leading-tight ${
+                  isConfig || isWtView ? "" : "text-[13px]"
+                }`}
+              >
+                {isConfig
+                  ? t("settings")
+                  : isWtView
+                    ? t("workspaceView")
+                    : displayName}
               </span>
               {showDetails && (
                 <span className="w-full truncate text-left font-mono text-[10px] leading-none text-tyba-text-faint">
@@ -4557,18 +4946,12 @@ export default function App() {
                       </span>
                     </span>
                   ) : runningCmd ? (
-                    <span className="flex min-w-0 items-center gap-1">
-                      <span className="size-1 shrink-0 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse" />
-                      <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-muted">
-                        {runningCmd}
-                      </span>
+                    <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-muted">
+                      {runningCmd}
                     </span>
                   ) : null}
-                  {/* A branch cede a linha quando há agente. Os dois cabiam em
-                      teoria e truncavam na prática — medido: `em and…` e
-                      `feat/mcp-…` lado a lado, nenhum dos dois legível. O que
-                      muda e urge é o estado; a branch é estável e está no
-                      cabeçalho. E o texto completo do estado vive no painel. */}
+                  {/* A branch cede a linha quando há agente ou comando: os
+                      dois lado a lado truncavam e nenhum ficava legível. */}
                   {branch && !agentDetail && !runningCmd && (
                     <span
                       title={branch}
@@ -4592,8 +4975,7 @@ export default function App() {
                         <DiffStat status={gitStatus} />
                       ) : (
                         // O servidor responde só quantos arquivos mudaram
-                        // (regra 24): sem linhas somadas nem removidas, o
-                        // número sozinho é exatamente o que o `DiffStat` já
+                        // (regra 24): o número sozinho é o que o `DiffStat`
                         // desenha quando não há linhas a mostrar.
                         <span className="font-mono text-[9px] leading-none text-tyba-amber">
                           {chips.remoteChanged}
@@ -4604,10 +4986,23 @@ export default function App() {
                 </span>
               )}
             </span>
-            {!isConfig && (
-              <span className="font-mono text-[10px] text-tyba-text-faint">
-                {w.tabs.length > 0 ? w.tabs.length : ""}
+            {!isConfig && !isWtView && w.tabs.length > 0 && (
+              <span
+                title={t("sessionPanes", { count: w.tabs.length })}
+                className="shrink-0 font-mono text-[10px] text-tyba-text-faint"
+              >
+                {w.tabs.length}
               </span>
+            )}
+            {!isConfig && !isWtView && (
+              <span
+                role="img"
+                aria-label={t(SESSION_DOT_LABEL_KEY[dot])}
+                title={t(SESSION_DOT_LABEL_KEY[dot])}
+                className={`size-[7px] shrink-0 rounded-full ${SESSION_DOT_CLASS[dot]} ${
+                  menuWorkspace === w.id ? "hidden" : "group-hover:hidden"
+                }`}
+              />
             )}
             {!isConfig && (
             <DropdownMenu
@@ -4618,7 +5013,9 @@ export default function App() {
                   role="button"
                   aria-label={t("sessionOptions")}
                   onClick={(e) => e.stopPropagation()}
-                  className="rounded-[3px] text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-text group-hover:opacity-100"
+                  className={`rounded-[3px] text-tyba-text-faint hover:text-tyba-text ${
+                    menuWorkspace === w.id ? "" : "hidden group-hover:block"
+                  }`}
                 >
                   <DotsThree size={14} weight="bold" />
                 </span>
@@ -4651,7 +5048,7 @@ export default function App() {
           {menuWorkspace !== w.id && (
             <SessionHoverCard
               name={displayName}
-              path={workspaceCwd(w) ?? w.repo_root}
+              path={sshHost ?? workspaceCwd(w) ?? w.repo_root}
               branch={branch}
               status={gitStatus}
               runner={hoverAgent}
@@ -4709,6 +5106,9 @@ export default function App() {
           activeSessionId={activeId}
           agentReadyWarnings={agentReadyWarnings}
           hiddenApprovalIds={approvalHiddenIds}
+          viewportRightPx={
+            agentsSideNarrow ? AGENTS_PANEL_WIDTH_PX + 16 : undefined
+          }
           onDismissAgentReady={(sessionId) =>
             setAgentReadyWarnings((prev) => {
               const next = { ...prev };
@@ -4742,8 +5142,13 @@ export default function App() {
         onOpenStats={() => void openViewTab("stats").catch(() => {})}
         onTogglePanel={toggleSidebar}
         onOpenFiles={() => {
-          if (activeId) void openFilesPanel(activeId).catch(() => {});
+          if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
         }}
+        onOpenGitHistory={
+          activeId && activeGitStatus
+            ? () => void openHistoryTab(activeId).catch(() => {})
+            : undefined
+        }
         onGoToWorkspace={(id) => void activateWorkspace(id)}
         launchConfigs={launchConfigs}
         onApplyLaunchConfig={applyLaunchConfigById}
@@ -4863,10 +5268,21 @@ export default function App() {
         <WindowResizeEdges />
         <header
           data-tauri-drag-region
-          className={`tyba-glass tyba-lift-b flex h-9 shrink-0 items-center gap-1 pr-2.5 ${
+          // Sem vidro: o header é transparente sobre o canvas, e é por ele que a
+          // aurora tripla aparece no topo da janela (mockup Proposta/PropostaClaro).
+          className={`tyba-lift-b flex h-[38px] shrink-0 items-center gap-1 pr-2.5 ${
             IS_MAC ? "pl-20" : "pl-2.5"
           }`}
         >
+          {/* Marca + wordmark. Sem eventos: o clique cai no header, que
+              arrasta a janela. */}
+          <span className="pointer-events-none mr-2 flex shrink-0 items-center gap-2">
+            <TybaMark size={18} />
+            <span className="font-sans text-[13px] font-bold tracking-[0.02em] text-tyba-text">
+              TYBA
+            </span>
+          </span>
+
           <IconAction
             label={t("panelToggle")}
             shortcut={bindings.panel}
@@ -4883,16 +5299,15 @@ export default function App() {
             <MagnifyingGlass size={16} />
           </IconAction>
 
-          <div className="pointer-events-none absolute inset-x-0 top-0 flex h-9 items-center justify-center">
-            <div className="pointer-events-auto flex items-center gap-0.5 rounded-[5px] border border-tyba-border bg-tyba-text/[.02] p-0.5">
+          <div className="pointer-events-none absolute inset-x-0 top-0 flex h-[38px] items-center justify-center">
+            <div className="pointer-events-auto flex items-center gap-0.5 rounded-[8px] bg-[var(--tyba-segment-bg)] p-[3px] shadow-[var(--tyba-edge)]">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     aria-label={t("terminalView")}
                     aria-pressed
-                    className="flex h-6 items-center gap-1.5 rounded-[3px] bg-tyba-text/[.06] px-2 text-[11px] text-tyba-text"
+                    className="flex h-6 items-center gap-1.5 rounded-[6px] bg-tyba-raised px-3 text-[13px] text-tyba-text shadow-[var(--tyba-row-raised)]"
                   >
-                    <TerminalWindow size={14} />
                     {t("terminalView")}
                   </button>
                 </TooltipTrigger>
@@ -4906,9 +5321,8 @@ export default function App() {
                     aria-label={`${t("workspaceView")} — ${t("comingSoon")}`}
                     aria-disabled
                     disabled
-                    className="flex h-6 cursor-not-allowed items-center gap-1.5 rounded-[3px] px-2 text-[11px] text-tyba-text-faint/50"
+                    className="flex h-6 cursor-not-allowed items-center gap-1.5 rounded-[6px] px-3 text-[13px] text-tyba-text-faint"
                   >
-                    <SquaresFour size={14} />
                     {t("workspaceView")}
                   </button>
                 </TooltipTrigger>
@@ -4923,142 +5337,16 @@ export default function App() {
 
           <Clock />
 
-          {showContainers && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={t("containers")}
-                  onClick={() => void dockerOpenDashboard().catch(() => {})}
-                  className={`relative size-6 rounded-[4px] ${
-                    dockerUp
-                      ? "text-tyba-text-muted hover:text-tyba-text"
-                      : "text-tyba-text-faint"
-                  } ${
-                    activeWorkspace?.kind === "docker"
-                      ? "bg-tyba-text/[.06] text-tyba-text"
-                      : ""
-                  }`}
-                >
-                  <DockerIcon size={16} />
-                  {!dockerUp ? (
-                    <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-red [box-shadow:var(--tyba-glow-red)]" />
-                  ) : (
-                    dockerRunning && (
-                      <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)]" />
-                    )
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                {dockerUp ? t("containers") : t("dockerUnavailable")}
-              </TooltipContent>
-            </Tooltip>
-          )}
-
-          {activeId && activeSession?.kind.type === "ssh" && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={t("tunnelsAction")}
-                  onClick={() =>
-                    void openTunnelsPanel(activeId).catch(() => {})
-                  }
-                  className="size-6 rounded-[4px] text-tyba-text-faint hover:text-tyba-text"
-                >
-                  <TreeStructure size={16} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">{t("tunnelsAction")}</TooltipContent>
-            </Tooltip>
-          )}
-
-          {activeId && agentsButtonVisible && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={t("agentsAction")}
-                  onClick={() => {
-                    if (!activeId || !activeWorkspace) return;
-                    if (sideView === `agents:${activeId}`) {
-                      void closeSideView(activeWorkspace.id).catch(() => {});
-                    } else {
-                      void openAgentsPanel(activeId).catch(() => {});
-                    }
-                  }}
-                  className={`size-6 rounded-[4px] ${
-                    sideView === `agents:${activeId}`
-                      ? "bg-tyba-text/[.06] text-tyba-text"
-                      : "text-tyba-text-faint hover:text-tyba-text"
-                  }`}
-                >
-                  <TreeStructure size={16} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">{t("agentsAction")}</TooltipContent>
-            </Tooltip>
-          )}
-
-          {activeId && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={t("filesPanel")}
-                  onClick={() => {
-                    if (!activeId || !activeWorkspace) return;
-                    if (sideView === `files:${activeId}`) {
-                      void closeSideView(activeWorkspace.id).catch(() => {});
-                    } else {
-                      void openFilesPanel(activeId).catch(() => {});
-                    }
-                  }}
-                  className={`size-6 rounded-[4px] ${
-                    sideView === `files:${activeId}`
-                      ? "bg-tyba-text/[.06] text-tyba-text"
-                      : "text-tyba-text-faint hover:text-tyba-text"
-                  }`}
-                >
-                  <TreeView size={16} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                {`${t("filesPanel")} (${formatCombo(bindings.files)})`}
-              </TooltipContent>
-            </Tooltip>
-          )}
-
-          {gitTone && activeId && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={t("gitStatusIconLabel")}
-                  onClick={() => void openDiffTab(activeId).catch(() => {})}
-                  className={`size-6 rounded-[4px] ${
-                    gitTone === "dirty"
-                      ? "text-tyba-amber hover:text-tyba-amber/80"
-                      : "text-tyba-text-faint hover:text-tyba-text"
-                  }`}
-                >
-                  <GitBranch
-                    size={16}
-                    weight={gitTone === "dirty" ? "fill" : "regular"}
-                  />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                {t("gitStatusIconLabel")}
-              </TooltipContent>
-            </Tooltip>
-          )}
+          <SidePanelBar
+            tabs={panelTabs}
+            lit={litPanel(sideView, fileSessionId)}
+            onClick={onPanelClick}
+            onEscape={() => {
+              if (activeWorkspace) {
+                void closeSideView(activeWorkspace.id).catch(() => {});
+              }
+            }}
+          />
 
           <ErrorBoundary region="forge">
             <ForgePanel
@@ -5084,6 +5372,9 @@ export default function App() {
               onGoToSession={goToSession}
             />
           </ErrorBoundary>
+
+          {/* Divisória antes da conta (mockup): 1px × 18px, a linha fina. */}
+          <span aria-hidden className="mx-1.5 h-[18px] w-px bg-tyba-border" />
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -5155,7 +5446,7 @@ export default function App() {
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {open && (
-                    <label className="mx-2 mt-3 flex h-7 items-center gap-1.5 rounded-[4px] bg-tyba-text/[.03] px-2 focus-within:bg-tyba-text/[.05]">
+                    <label className="mx-2 mt-3 flex h-[31px] items-center gap-1.5 rounded-[6px] bg-tyba-raised px-2.5 shadow-[var(--tyba-raised-ring)] focus-within:shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]">
                       <MagnifyingGlass
                         size={12}
                         className="shrink-0 text-tyba-text-faint"
@@ -5167,14 +5458,12 @@ export default function App() {
                         value={sessionQuery}
                         onChange={(e) => setSessionQuery(e.target.value)}
                         placeholder={t("searchSessions")}
-                        className="w-full bg-transparent text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
+                        className="w-full bg-transparent text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
                       />
                     </label>
                   )}
                   <nav
-                    className={`tyba-scroll-fade flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2 pb-2 ${
-                      open ? "mt-2" : "mt-3"
-                    }`}
+                    className="tyba-scroll-fade mt-3 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2"
                   >
                     {layout.workspaces.some(isConfigWorkspace) && (
                       <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-tyba-text/[.015] p-1">
@@ -5320,12 +5609,13 @@ export default function App() {
                           variant="ghost"
                           onClick={() => openNewSession()}
                           aria-label={t("newSession")}
-                          className={`mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text ${
-                            open ? "justify-start px-2" : "justify-center px-0"
+                          className={`h-[33px] shrink-0 gap-2 rounded-[6px] text-[13px] font-normal text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text ${
+                            open ? "justify-start px-2.5" : "justify-center px-0"
                           }`}
                         >
-                          <Plus size={14} />
-                          {open && t("newSession")}
+                          {/* Aberta, só o texto (mockup Proposta); o ícone fica
+                              para o trilho recolhido, onde não há texto. */}
+                          {open ? t("newSession") : <Plus size={14} />}
                         </Button>
                       </TooltipTrigger>
                       <TooltipContent
@@ -5333,6 +5623,9 @@ export default function App() {
                         className="flex items-center gap-2"
                       >
                         {t("newSession")}
+                        <span className="font-mono text-tyba-text-faint">
+                          {formatCombo(bindings.newSession)}
+                        </span>
                       </TooltipContent>
                     </Tooltip>
                     <Tooltip>
@@ -5343,16 +5636,15 @@ export default function App() {
                             void openViewTab("connections").catch(() => {})
                           }
                           aria-label={t("connectionsTitle")}
-                          className={`mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal ${
-                            open ? "justify-start px-2" : "justify-center px-0"
+                          className={`h-[33px] shrink-0 gap-2 rounded-[6px] text-[13px] font-normal ${
+                            open ? "justify-start px-2.5" : "justify-center px-0"
                           } ${
                             activeTab?.view === "connections"
                               ? "bg-tyba-text/[.05] text-tyba-text"
                               : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text"
                           }`}
                         >
-                          <HardDrives size={14} />
-                          {open && t("connectionsTitle")}
+                          {open ? t("connectionsTitle") : <HardDrives size={14} />}
                         </Button>
                       </TooltipTrigger>
                       <TooltipContent side={open ? "bottom" : "right"}>
@@ -5372,27 +5664,36 @@ export default function App() {
                       <TooltipTrigger asChild>
                         <Button
                           variant="ghost"
-                          onClick={() => void toggleAgentQueue().catch(() => {})}
+                          onClick={openAgentsFromSidebar}
                           aria-label={t("agentsQueue")}
-                          className={`relative mt-0.5 h-8 shrink-0 gap-2 rounded-[4px] text-[13px] font-normal ${
-                            open ? "justify-start px-2" : "justify-center px-0"
+                          className={`relative h-[33px] shrink-0 gap-2 rounded-[6px] text-[13px] font-normal ${
+                            open ? "justify-start px-2.5" : "justify-center px-0"
                           } ${
-                            activeWorkspace?.side_view === "agent-queue"
+                            activeWorkspace?.side_view === "agent-queue" ||
+                            activeWorkspace?.side_view?.startsWith("agents:")
                               ? "bg-tyba-text/[.05] text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text"
+                              : "text-tyba-text hover:bg-tyba-text/[.03]"
                           }`}
                         >
-                          <AgentIcon size={14} />
-                          {open && t("agentsQueue")}
-                          {agentsWaiting > 0 && (
+                          {open ? t("agentsQueue") : <AgentIcon size={14} />}
+                          {/* Pílula do mockup: conta APROVAÇÕES pendentes. Sem
+                              nenhuma, mas com agente pedindo alguém, cai no
+                              número de antes — a atenção não some da tela. */}
+                          {(approvals.length > 0 || agentsWaiting > 0) && (
                             <span
                               className={
                                 open
-                                  ? "ml-auto text-[11px] text-tyba-amber"
+                                  ? "ml-auto rounded-[4px] bg-tyba-amber-tint px-1.5 text-[11px] text-tyba-amber"
                                   : "absolute right-1 top-1 size-1.5 rounded-full bg-tyba-amber"
                               }
                             >
-                              {open ? agentsWaiting : null}
+                              {open
+                                ? approvals.length > 0
+                                  ? t("agentsApprovals", {
+                                      count: approvals.length,
+                                    })
+                                  : agentsWaiting
+                                : null}
                             </span>
                           )}
                         </Button>
@@ -5406,7 +5707,17 @@ export default function App() {
                         <AgentsSidebar
                           rows={agentRows}
                           open={open}
-                          onSelect={jumpToAgent}
+                          onSelect={(sessionId, place) => {
+                            jumpToAgent(sessionId, place);
+                            // A linha da sessão também reabre a árvore dela,
+                            // se ela tem subagentes: fechar nunca é sem volta.
+                            if (
+                              (subagentsBySession.get(sessionId)?.subagents
+                                .length ?? 0) > 0
+                            ) {
+                              void openAgentsPanel(sessionId).catch(() => {});
+                            }
+                          }}
                         />
                       </div>
                     )}
@@ -5428,11 +5739,13 @@ export default function App() {
                     sideVisible
                       ? sideExpanded
                         ? "hidden"
-                        : "flex shrink-0"
+                        : agentsSideNarrow
+                          ? "flex flex-1"
+                          : "flex shrink-0"
                       : "flex flex-1"
                   }`}
                   style={
-                    sideVisible && !sideExpanded
+                    sideVisible && !sideExpanded && !agentsSideNarrow
                       ? // O `minWidth` não é redundante com o clamp do arrasto:
                         // a razão é persistida, então uma janela redimensionada
                         // para menos — ou um valor gravado antes deste conserto
@@ -5458,6 +5771,19 @@ export default function App() {
                     onActivate={(id) => void activateTab(id)}
                     onClose={(id) => void closeTabAndRefresh(id)}
                     onNew={() => void newTab()}
+                  />
+                )}
+                {containerStrip && (
+                  <ContainerStrip
+                    key={containerStrip.id}
+                    containerId={containerStrip.id}
+                    current={containerStrip.current}
+                    onRestarted={() =>
+                      setLogsRestart((prev) => ({
+                        ...prev,
+                        [containerStrip.id]: (prev[containerStrip.id] ?? 0) + 1,
+                      }))
+                    }
                   />
                 )}
                 {broadcastTargets.length > 1 && (
@@ -5489,10 +5815,81 @@ export default function App() {
                       />
                     </div>
                   )}
+                  {editorTabs.map(({ tab, workspace, session, rel }) => {
+                    const owner = sessionById.get(session);
+                    if (!owner) return null;
+                    const root = workspace.repo_root ?? owner.worktree?.path ?? null;
+                    return (
+                      <EditorTab
+                        key={tab.id}
+                        session={owner}
+                        rel={rel}
+                        view={tab.view as string}
+                        active={tab.id === activeTab?.id}
+                        editor={editorPref}
+                        rootLabel={root ? baseName(root.replace(/[/\\]+$/, "")) : workspace.name}
+                        onOpenDiff={() => void openDiffContentTab(session).catch(() => {})}
+                        onRunInTerminal={runInTerminal}
+                      />
+                    );
+                  })}
+                  {activeContent?.kind === "container-logs" && (
+                    <ContainerLogsView
+                      key={activeContent.containerId}
+                      containerId={activeContent.containerId}
+                      restartNonce={logsRestart[activeContent.containerId] ?? 0}
+                    />
+                  )}
+                  {activeContent?.kind === "session-diff" &&
+                    (sessionById.get(activeContent.session) ? (
+                      <div className="absolute inset-0 flex">
+                        <DiffView
+                          key={activeContent.session}
+                          session={sessionById.get(activeContent.session) as Session}
+                          editor={editorPref}
+                          suggestAgent={
+                            reviewAgent.trim() === "codex" ? "codex" : "claude"
+                          }
+                          expanded
+                          onToggleExpand={() => {}}
+                          onClose={() =>
+                            activeTab && void closeTabAndRefresh(activeTab.id)
+                          }
+                          onSendToAgent={(prompt) =>
+                            sendReviewToAgent(
+                              sessionById.get(activeContent.session) as Session,
+                              prompt,
+                            )
+                          }
+                          onResolveConflicts={(state) =>
+                            resolveConflictsWithAgent(
+                              sessionById.get(activeContent.session) as Session,
+                              state,
+                            )
+                          }
+                        />
+                      </div>
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center text-[12px] text-tyba-text-faint">
+                        {t("diffSessionGone")}
+                      </div>
+                    ))}
+                  {activeContent?.kind === "git-log" &&
+                    (sessionById.get(activeContent.session) ? (
+                      <GitHistoryView
+                        key={activeContent.session}
+                        session={sessionById.get(activeContent.session) as Session}
+                      />
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center text-[12px] text-tyba-text-faint">
+                        {t("diffSessionGone")}
+                      </div>
+                    ))}
                   {activeTab?.view === "connections" && (
                     <div className="absolute inset-0 flex">
                       <ConnectionsView
                         onConnect={(host) => void connectToHost(host)}
+                        connectingHostIds={connectingHosts}
                         onConnectGroup={(group, hosts) =>
                           void connectGroup(group, hosts)
                         }
@@ -5604,14 +6001,11 @@ export default function App() {
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ??
                       null;
-                    const pane = paneRect
-                      ? {
-                          left: paneRect.x,
-                          top: paneRect.y,
-                          width: paneRect.w,
-                          height: paneRect.h,
-                        }
-                      : null;
+                    // O terminal e os blocos medem em % da ÁREA DE CONTEÚDO do
+                    // painel — o painel menos a linha do TYBA, que mora no
+                    // rodapé dele. Ver o invólucro abaixo.
+                    const pane = paneRect ? PANE_BOX : null;
+                    const line = paneLines.get(s.id);
                     // Em modo prompt o terminal ocupa uma faixa FIXA embaixo: a
                     // lista de blocos a cobre quando ocioso e a revela quando um
                     // comando roda, sem nunca redimensionar o PTY. Alt-screen é
@@ -5626,11 +6020,19 @@ export default function App() {
                       s.kind.type === "ssh" ? s.kind.host_id : null;
                     const hosting = detected?.hosting ?? false;
                     const jailed = detected?.jailed ?? false;
+                    const shim = detected?.shim ?? null;
                     const notice = showShellAgentNotice(
                       s.kind,
                       detected,
                       hosting,
                       dismissedShellNotices.get(s.id),
+                      shim,
+                    );
+                    const ungated = ungatedReason(
+                      s.kind,
+                      detected,
+                      hosting,
+                      shim,
                     );
                     const unjailedNotice = showUnjailedNotice(
                       s.kind,
@@ -5656,215 +6058,300 @@ export default function App() {
                         })
                       : null;
                     return (
-                      <TerminalView
-                        key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
-                        sessionId={s.id}
-                        transport={transports[s.id] ?? INITIAL_TRANSPORT}
-                        agentNotice={
-                          notice && detected
-                            ? { binary: agentBinaryName(detected.kind) }
-                            : null
-                        }
-                        onReopenManaged={() =>
-                          void reopenShellAgentManaged(s.id)
-                        }
-                        onDismissNotice={() => dismissShellAgentNotice(s.id)}
-                        unjailedNotice={
-                          unjailedNotice && detected
-                            ? { binary: agentBinaryName(detected.kind) }
-                            : null
-                        }
-                        remoteNotice={remoteNotice}
-                        resumeNotice={
-                          resumeInvite && s.kind.type === "agent"
-                            ? { binary: agentBinaryName(s.kind.runner) }
-                            : null
-                        }
-                        onResumeAgent={() =>
-                          void resumeAgentConversation(s.id)
-                        }
-                        onDismissResume={() => dismissResumeInvite(s.id)}
-                        authAlert={
-                          runtimeAuthAlerts.has(s.id)
-                            ? { kind: runtimeAuthAlerts.get(s.id)! }
-                            : null
-                        }
-                        onDismissAuthAlert={() =>
-                          dismissRuntimeAuthAlert(s.id)
-                        }
-                        onPaste={deliverPaste}
-                        onSearch={() => setSearchOpen(true)}
-                        readOnly={s.id === activeId && ownsCommandLine}
-                        onReclaimFocus={() => setCommandLineNonce((n) => n + 1)}
-                        onAltScreen={(alt) =>
-                          setAltScreens((prev) =>
-                            prev[s.id] === alt
-                              ? prev
-                              : { ...prev, [s.id]: alt },
-                          )
-                        }
-                        onSplit={(kind) => void splitActive(kind)}
-                        visible={paneRect !== null}
-                        focused={s.id === activeId}
-                        reattaches={!ptyExitEndsSession(s.kind)}
-                        connection={
-                          s.kind.type === "ssh" ? s.connection : undefined
-                        }
-                        connectionFailure={
-                          s.kind.type === "ssh" ? s.connection_failure : null
-                        }
-                        knownHostsCommand={
-                          sshHostId ? knownHostsCommandFor(sshHostId) : null
-                        }
-                        onReconnect={
-                          s.kind.type === "ssh"
-                            ? () =>
-                                void reconnectSsh(s.id).catch((e) =>
-                                  toastError(
-                                    t("connectionsActionFailed"),
-                                    translateError(e, t),
-                                  ),
-                                )
-                            : undefined
-                        }
-                        onEditHost={
-                          sshHostId ? () => editSshHost(sshHostId) : undefined
-                        }
-                        onBroadcastInput={
-                          broadcastOn && s.kind.type === "ssh"
-                            ? handleBroadcastInput
-                            : undefined
-                        }
-                        exited={isFinishedStatus(s.status)}
-                        rect={terminalBox}
-                        // Só com a faixa ABERTA. `liveUsed` guarda a última
-                        // medida e não se apaga quando o comando termina: sem
-                        // esta guarda o recorte fica valendo para sempre, e o
-                        // terminal vira uma tira no rodapé assim que a lista
-                        // deixa de cobri-lo — num split, o painel sem blocos.
-                        liveUsed={
-                          blocked && liveOf(s.id) ? liveUsed[s.id] : undefined
-                        }
-                        swallowArrows={swallowsArrow({
-                          running: Boolean(sessionCommands[s.id]?.running),
-                          lineEcho: lineEcho[s.id] ?? false,
-                          altScreen: altScreens[s.id] ?? false,
-                        })}
-                        bindings={bindings}
-                        // Quem lê o teclado neste painel é um composer de
-                        // agente: a sessão gerenciada, ou o `claude` cru que
-                        // o probe achou rodando no shell. É o que libera
-                        // Shift/Ctrl/Option+Enter como quebra de linha.
-                        agentTui={s.kind.type === "agent" || detected !== null}
-                        onLineHeight={(px) => reportLineHeight(s.id, px)}
-                        onCellWidth={(px) => reportCellWidth(s.id, px)}
-                        onLiveRows={
-                          blocked
-                            ? (used, total, scrolled) =>
-                                reportLiveRows(s.id, used, total, scrolled)
-                            : undefined
-                        }
-                        onFocus={
+                      // O painel é uma coluna: a área de conteúdo (terminal e
+                      // blocos) em cima, a linha do TYBA embaixo. A altura da
+                      // linha sai da área de conteúdo DESTE painel e de nenhum
+                      // outro — um resize por painel, e só quando a linha muda
+                      // de altura, nunca por comando.
+                      <div
+                        key={`pane-${s.id}`}
+                        className="flex flex-col"
+                        style={
                           paneRect
-                            ? () => void focusPane(paneRect.pane)
-                            : undefined
+                            ? {
+                                position: "absolute",
+                                left: `${paneRect.x}%`,
+                                top: `${paneRect.y}%`,
+                                width: `${paneRect.w}%`,
+                                height: `${paneRect.h}%`,
+                              }
+                            : { display: "none" }
                         }
-                        onExit={() => void refreshSessions()}
-                      />
+                      >
+                        {s.kind.type === "container" && (
+                          <ContainerShellBanner containerId={s.kind.container_id} />
+                        )}
+                        <div className="relative min-h-0 flex-1">
+                          <TerminalView
+                            key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
+                            sessionId={s.id}
+                            transport={transports[s.id] ?? INITIAL_TRANSPORT}
+                            agentNotice={
+                              notice && detected
+                                ? { binary: agentBinaryName(detected.kind) }
+                                : null
+                            }
+                            onReopenManaged={() =>
+                              void reopenShellAgentManaged(s.id)
+                            }
+                            onDismissNotice={() => dismissShellAgentNotice(s.id)}
+                            ungatedNotice={
+                              ungated && detected
+                                ? {
+                                    binary: agentBinaryName(detected.kind),
+                                    reason: ungated,
+                                  }
+                                : null
+                            }
+                            unjailedNotice={
+                              unjailedNotice && detected
+                                ? {
+                                    binary: agentBinaryName(detected.kind),
+                                    reason: detected.noJail,
+                                  }
+                                : null
+                            }
+                            remoteNotice={remoteNotice}
+                            resumeNotice={
+                              resumeInvite && s.kind.type === "agent"
+                                ? { binary: agentBinaryName(s.kind.runner) }
+                                : null
+                            }
+                            onResumeAgent={() =>
+                              void resumeAgentConversation(s.id)
+                            }
+                            onDismissResume={() => dismissResumeInvite(s.id)}
+                            authAlert={
+                              runtimeAuthAlerts.has(s.id)
+                                ? { kind: runtimeAuthAlerts.get(s.id)! }
+                                : null
+                            }
+                            onDismissAuthAlert={() =>
+                              dismissRuntimeAuthAlert(s.id)
+                            }
+                            approvalRequest={panelRequests.get(s.id) ?? null}
+                            onPaste={deliverPaste}
+                            onSearch={() => setSearchOpen(true)}
+                            readOnly={line?.owns ?? false}
+                            onReclaimFocus={() => focusLine(s.id)}
+                            onAltScreen={(alt) =>
+                              setAltScreens((prev) =>
+                                prev[s.id] === alt
+                                  ? prev
+                                  : { ...prev, [s.id]: alt },
+                              )
+                            }
+                            onSplit={(kind) => void splitActive(kind)}
+                            visible={paneRect !== null}
+                            focused={s.id === activeId}
+                            reattaches={!ptyExitEndsSession(s.kind)}
+                            connection={
+                              s.kind.type === "ssh" ? s.connection : undefined
+                            }
+                            connectionFailure={
+                              s.kind.type === "ssh" ? s.connection_failure : null
+                            }
+                            knownHostsCommand={
+                              sshHostId ? knownHostsCommandFor(sshHostId) : null
+                            }
+                            onReconnect={
+                              s.kind.type === "ssh"
+                                ? () =>
+                                    void reconnectSsh(s.id).catch((e) =>
+                                      toastError(
+                                        t("connectionsActionFailed"),
+                                        translateError(e, t),
+                                      ),
+                                    )
+                                : undefined
+                            }
+                            onEditHost={
+                              sshHostId ? () => editSshHost(sshHostId) : undefined
+                            }
+                            onBroadcastInput={
+                              broadcastOn && s.kind.type === "ssh"
+                                ? handleBroadcastInput
+                                : undefined
+                            }
+                            exited={isFinishedStatus(s.status)}
+                            rect={terminalBox}
+                            // Só com a faixa ABERTA. `liveUsed` guarda a última
+                            // medida e não se apaga quando o comando termina: sem
+                            // esta guarda o recorte fica valendo para sempre, e o
+                            // terminal vira uma tira no rodapé assim que a lista
+                            // deixa de cobri-lo — num split, o painel sem blocos.
+                            liveUsed={
+                              blocked && liveOf(s.id) ? liveUsed[s.id] : undefined
+                            }
+                            swallowArrows={swallowsArrow({
+                              running: Boolean(sessionCommands[s.id]?.running),
+                              lineEcho: lineEcho[s.id] ?? false,
+                              altScreen: altScreens[s.id] ?? false,
+                            })}
+                            bindings={bindings}
+                            // Quem lê o teclado neste painel é um composer de
+                            // agente: a sessão gerenciada, ou o `claude` cru que
+                            // o probe achou rodando no shell. É o que libera
+                            // Shift/Ctrl/Option+Enter como quebra de linha.
+                            agentTui={s.kind.type === "agent" || detected !== null}
+                            onLineHeight={(px) => reportLineHeight(s.id, px)}
+                            onCellWidth={(px) => reportCellWidth(s.id, px)}
+                            onLiveRows={
+                              blocked
+                                ? (used, total, scrolled) =>
+                                    reportLiveRows(s.id, used, total, scrolled)
+                                : undefined
+                            }
+                            onFocus={
+                              paneRect
+                                ? () => void focusPane(paneRect.pane)
+                                : undefined
+                            }
+                            onExit={() => void refreshSessions()}
+                          />
+                          {/* Nada de objeto ou arrow montados aqui
+                              dentro: o corpo do painel é `memo`, e prop com
+                              identidade nova a cada quadro faz a comparação
+                              rasa falhar sempre. Ver `SessionBlocks`. */}
+                          {blocked && paneRect && (
+                            <SessionBlocks
+                              key={`blocks-${s.id}`}
+                              {...sessionBlocksData({
+                                session: s,
+                                pane: {
+                                  pane: paneRect.pane,
+                                  x: PANE_BOX.left,
+                                  y: PANE_BOX.top,
+                                  w: PANE_BOX.width,
+                                  h: PANE_BOX.height,
+                                },
+                                blocks: blocks[s.id],
+                                // `clear` não abre a faixa: ele não tem saída para
+                                // mostrar, e meio painel preto que aparece para logo
+                                // esvaziar tudo é um solavanco em cima de um comando
+                                // cujo ponto é sumir com as coisas.
+                                live: liveOf(s.id),
+                                // A lista cede à faixa só a altura que a saída usa de
+                                // fato. Sem isto ela larga metade do painel para um
+                                // terminal que costuma estar em boa parte vazio, e o
+                                // cartão nasce longe de onde a saída estava.
+                                used: liveUsed[s.id],
+                                headerPx: activeHeaderPx[s.id],
+                                fontSizePx: termFontSize,
+                                lineHeightPx:
+                                  termLineHeight[s.id] ?? fallbackLineHeight,
+                                cellWidthPx:
+                                  termCellWidth[s.id] ?? fallbackCellWidth,
+                                cwd: sessionCwds[s.id],
+                                active: s.id === activeId,
+                                command: sessionCommands[s.id]?.command,
+                                commandStartedAtMs:
+                                  sessionCommands[s.id]?.started_at_ms,
+                                marked:
+                                  blockPick?.session === s.id
+                                    ? markedBlocks
+                                    : null,
+                                copyCombo: formatCombo(bindings.copy),
+                              })}
+                              onInject={injectInto}
+                              onFocusPane={focusPane}
+                              onPick={pickerFor(s.id)}
+                              onClearPick={clearPick}
+                              onHeaderPx={reportHeaderPx}
+                            />
+                          )}
+                        </div>
+                        {paneRect && line?.visible && (
+                          // Clicar (ou focar) a linha de outro painel passa o
+                          // foco do CORE para ele antes de qualquer tecla: é o
+                          // core que decide o painel ativo, e o atalho, a
+                          // paleta e a caixa de agente seguem essa resposta.
+                          <div
+                            className="shrink-0"
+                            onPointerDownCapture={() => {
+                              if (s.id !== activeId) {
+                                void focusPane(paneRect.pane).catch(() => {});
+                              }
+                            }}
+                            onFocusCapture={() => {
+                              if (s.id !== activeId) {
+                                void focusPane(paneRect.pane).catch(() => {});
+                              }
+                            }}
+                          >
+                            {/* `key` só pela sessão: trocar o foco NÃO remonta
+                                a linha. Texto, caret, linhas pendentes e menu
+                                de cada painel ficam onde estavam. */}
+                            <CommandLine
+                              key={`${s.id}:line`}
+                              sessionId={s.id}
+                              cwd={cwdKeyOf(s.id)}
+                              program={programName(
+                                sessionCommands[s.id]?.command,
+                              )}
+                              // A branch DESTA sessão, pela mesma regra do
+                              // chip da barra (sem emprestar de outro repo).
+                              // SSH fica sem: o snapshot é local.
+                              branch={(() => {
+                                if (s.kind.type === "ssh") return null;
+                                const chip = toolbarBranchChip({
+                                  session: {
+                                    id: s.id,
+                                    worktree: s.worktree?.path ?? null,
+                                    alive: !isFinishedStatus(s.status),
+                                    cwd: sessionCwds[s.id]?.canonical ?? null,
+                                  },
+                                  workspaceDir: null,
+                                  snapshots: repoSnapshots,
+                                });
+                                return chip?.state === "known"
+                                  ? chip.label
+                                  : null;
+                              })()}
+                              scope={{
+                                cwd: cwdKeyOf(s.id),
+                                repoRoot: s.repo_root ?? null,
+                              }}
+                              focusOnMount={s.id === activeId && line.owns}
+                              focusNonce={lineFocusNonces[s.id] ?? 0}
+                              state={line.state}
+                              inject={injected[s.id] ?? null}
+                              draft={drafts.current[s.id] ?? ""}
+                              onDraftChange={rememberDraft}
+                              pending={pendings.current[s.id]}
+                              onPendingChange={rememberPending}
+                            />
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
-                  {/* Nada de objeto ou arrow montados aqui dentro: o corpo do
-                      painel é `memo`, e prop com identidade nova a cada quadro
-                      faz a comparação rasa falhar sempre. Ver
-                      `SessionBlocks`. */}
-                  {sessions.map((s) => {
-                    const paneRect =
-                      paneLayout?.panes.find((p) => p.session === s.id) ?? null;
-                    const blocked =
-                      paneRect !== null &&
-                      (promptModes[s.id] ?? false) &&
-                      !(altScreens[s.id] ?? false);
-                    if (!blocked || !paneRect) return null;
-                    return (
-                      <SessionBlocks
-                        key={`blocks-${s.id}`}
-                        {...sessionBlocksData({
-                          session: s,
-                          pane: paneRect,
-                          blocks: blocks[s.id],
-                          // `clear` não abre a faixa: ele não tem saída para
-                          // mostrar, e meio painel preto que aparece para logo
-                          // esvaziar tudo é um solavanco em cima de um comando
-                          // cujo ponto é sumir com as coisas.
-                          live: liveOf(s.id),
-                          // A lista cede à faixa só a altura que a saída usa de
-                          // fato. Sem isto ela larga metade do painel para um
-                          // terminal que costuma estar em boa parte vazio, e o
-                          // cartão nasce longe de onde a saída estava.
-                          used: liveUsed[s.id],
-                          headerPx: activeHeaderPx[s.id],
-                          fontSizePx: termFontSize,
-                          lineHeightPx:
-                            termLineHeight[s.id] ?? fallbackLineHeight,
-                          cellWidthPx: termCellWidth[s.id] ?? fallbackCellWidth,
-                          cwd: sessionCwds[s.id],
-                          active: s.id === activeId,
-                          command: sessionCommands[s.id]?.command,
-                          marked:
-                            blockPick?.session === s.id ? markedBlocks : null,
-                          copyCombo: formatCombo(bindings.copy),
-                        })}
-                        onInject={injectIntoActive}
-                        onFocusPane={focusPane}
-                        onPick={pickerFor(s.id)}
-                        onClearPick={clearPick}
-                        onHeaderPx={reportHeaderPx}
-                      />
-                    );
-                  })}
-                  {/* Onde o foco está. Uma barra, não uma moldura.
+                  {/* Onde o foco está: o filamento de luz na aresta de cima
+                      do painel ativo — a mesma linha viva (estática) da aba
+                      ativa. "Estática = selecionado" é a regra da marca.
 
-                      O retângulo que morava aqui tinha dois problemas. O
-                      visível: ele somava-se ao contorno do cartão de bloco, e o
-                      olho lia dois retângulos aninhados sem saber qual dizia o
-                      quê. O invisível, e pior: ele não pintava. Medido num
-                      print real de dois painéis, varrendo a área inteira pixel
-                      a pixel, não havia UMA coluna verde — os 1833 pixels
-                      esverdeados eram chevron de bloco e saída de `ls`,
-                      espalhados por 1701 colunas e só 33 linhas. Uma borda
-                      seria uma coluna com mil linhas seguidas.
+                      Já foi um contorno verde em volta do painel inteiro.
+                      Num terminal BLACKOUT o retângulo aceso era o elemento
+                      mais forte da tela, competindo com o que roda; o
+                      filamento diz "é aqui" sem cercar.
 
-                      O contorno volta inteiro, e em verde sólido — não em
-                      gradiente: gradiente esticado por um retângulo de mil
-                      pixels vira moldura de arco-íris. O gesto do gradiente é
-                      da ABA, curto; aqui o que se quer é cercar.
-
-                      Só o painel ATIVO ganha marca. Os inativos não precisam de
-                      contorno: o degrau de fundo (`pane-bg`) e o divisor já os
-                      separam, e era o retângulo neutro deles que fazia o
-                      segundo tipo de linha na tela. */}
+                      Só o painel ATIVO ganha marca, e só com mais de um: o
+                      divisor e o degrau de fundo já separam os outros.
+                      `zIndex` acima da lista de blocos (`z-10`), que cobre
+                      quase todo o painel. */}
                   {(paneLayout?.panes.length ?? 0) > 1 &&
                     paneLayout?.panes
                       .filter((p) => p.session === activeId)
                       .map((p) => (
                         <div
                           key={`pane-focus-${p.pane}`}
-                          className="pointer-events-none rounded-[4px]"
+                          aria-hidden
+                          className="tyba-flow-line tyba-flow-line--thick pointer-events-none"
                           style={{
                             position: "absolute",
                             left: `${p.x}%`,
                             top: `${p.y}%`,
                             width: `${p.w}%`,
-                            height: `${p.h}%`,
-                            border:
-                              "1px solid color-mix(in srgb, var(--tyba-green) 90%, transparent)",
-                            boxShadow:
-                              "0 0 0 1px color-mix(in srgb, var(--tyba-green) 18%, transparent), 0 0 16px -4px color-mix(in srgb, var(--tyba-green) 45%, transparent)",
-                            // Acima da lista de blocos, que é `z-10`. Sem isto
-                            // a marca fica DEBAIXO dos cartões — e como eles
-                            // cobrem quase todo o painel, ela some. Era isso, e
-                            // não o formato, que fazia o contorno antigo
-                            // parecer inexistente: ele estava lá, embaixo.
                             zIndex: 30,
                           }}
                         />
@@ -6002,21 +6489,6 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                {activeSession && lineIsVisible && (
-                  <CommandLine
-                    key={`${activeSession.id}:line`}
-                    sessionId={activeSession.id}
-                    cwd={activeCwdKey}
-                    program={programName(activeCommand?.command)}
-                    canCollapse={(paneLayout?.panes.length ?? 1) <= 1}
-                    scope={historyScope}
-                    focusNonce={commandLineNonce}
-                    state={commandLineState}
-                    inject={injected}
-                    draft={drafts.current[activeSession.id] ?? ""}
-                    onDraftChange={rememberDraft}
-                  />
-                )}
                 {activeSession && richInputVisible && !ownsCommandLine && (
                   <RichInput
                     key={activeSession.id}
@@ -6034,7 +6506,7 @@ export default function App() {
                 </div>
                 {sideVisible && activeWorkspace && (
                   <>
-                    {!sideExpanded && (
+                    {!sideExpanded && !agentsSideNarrow && (
                       <div
                         onPointerDown={startSideDrag}
                         className="z-10 flex w-[7px] shrink-0 cursor-col-resize items-stretch justify-center"
@@ -6057,16 +6529,130 @@ export default function App() {
                       // na metade de cima e sumia na de baixo, onde os dois
                       // lados mediam a mesma cor. Fundo constante é o que
                       // permite a linha do divisor recuar para o hover.
-                      style={sideExpanded ? undefined : { minWidth: SIDE_MIN_PX }}
-                      className={`flex min-h-0 min-w-0 flex-1 bg-tyba-surface${
+                      // Mockups Painel*: no escuro `#0a0a0b`, no claro o vidro
+                      // a 62%, sempre com a linha fina à esquerda.
+                      style={
+                        sideExpanded
+                          ? undefined
+                          : agentsSideNarrow
+                            ? { width: AGENTS_PANEL_WIDTH_PX }
+                            : { minWidth: SIDE_MIN_PX }
+                      }
+                      className={`flex min-h-0 min-w-0 ${
+                        agentsSideNarrow
+                          ? "shrink-0 bg-[var(--tyba-panel-bg)] tyba-divide-l"
+                          : "flex-1 bg-[var(--tyba-panel-bg)] tyba-divide-l"
+                      }${
                         renderSideView?.startsWith("agents:")
                           ? agentsMotion.exiting
                             ? " tyba-panel-exit"
                             : " motion-safe:animate-tyba-panel-in"
                           : ""
                       }`}
+                      role="complementary"
+                      aria-label={t("sidePanelNav")}
+                      onKeyDown={(e) => {
+                        const target = e.target as HTMLElement;
+                        // Evento de portal (popover, select) borbulha pela
+                        // árvore React mas não está no DOM do painel: o Esc
+                        // é dele, não do painel.
+                        if (!e.currentTarget.contains(target)) return;
+                        if (
+                          escClosesPanel({
+                            key: e.key,
+                            defaultPrevented: e.defaultPrevented,
+                            targetEditable:
+                              target.isContentEditable ||
+                              target.tagName === "INPUT" ||
+                              target.tagName === "TEXTAREA" ||
+                              target.tagName === "SELECT",
+                          })
+                        ) {
+                          void closeSideView(activeWorkspace.id).catch(
+                            () => {},
+                          );
+                        }
+                      }}
                     >
-                      {renderSideView === "agent-queue" ? (
+                      {renderSideView?.startsWith("git:") ? (
+                        gitPanelTarget ? (
+                          <GitPanel
+                            key={gitPanelTarget.id}
+                            session={gitPanelTarget}
+                            branch={
+                              gitPanelTarget.id === activeId
+                                ? (activeGitStatus?.branch ?? null)
+                                : null
+                            }
+                            snapshot={
+                              gitPanelTarget.id === activeId
+                                ? activeRepoSnapshot
+                                : undefined
+                            }
+                            onOpenDiff={() =>
+                              void openDiffContentTab(gitPanelTarget.id).catch(
+                                () => {},
+                              )
+                            }
+                            onOpenHistory={() =>
+                              void openHistoryTab(gitPanelTarget.id).catch(
+                                () => {},
+                              )
+                            }
+                            onClose={() =>
+                              void closeSideView(activeWorkspace.id).catch(
+                                () => {},
+                              )
+                            }
+                          />
+                        ) : (
+                          <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
+                            {t("diffSessionGone")}
+                          </div>
+                        )
+                      ) : renderSideView?.startsWith("docker:") ? (
+                        <DockerPanel
+                          key={dockerPanelTarget?.id ?? "docker"}
+                          host={dockerPanelHost}
+                          repoRoot={
+                            dockerPanelTarget?.id === activeId
+                              ? (activeGitStatus?.root ?? null)
+                              : null
+                          }
+                          onOpenDashboard={() =>
+                            void dockerOpenDashboard().catch(() => {})
+                          }
+                          onClose={() =>
+                            void closeSideView(activeWorkspace.id).catch(
+                              () => {},
+                            )
+                          }
+                        />
+                      ) : renderSideView?.startsWith("history:") ? (
+                        historyPanelTarget ? (
+                          <HistoryPanel
+                            key={historyPanelTarget.id}
+                            session={historyPanelTarget}
+                            repoRoot={
+                              historyPanelTarget.id === activeId
+                                ? (activeGitStatus?.root ?? null)
+                                : null
+                            }
+                            onInsert={(command) =>
+                              injectInto(historyPanelTarget.id, command)
+                            }
+                            onClose={() =>
+                              void closeSideView(activeWorkspace.id).catch(
+                                () => {},
+                              )
+                            }
+                          />
+                        ) : (
+                          <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
+                            {t("diffSessionGone")}
+                          </div>
+                        )
+                      ) : renderSideView === "agent-queue" ? (
                         <AgentsQueue
                           sessions={sessions}
                           layout={layout}
@@ -6090,6 +6676,7 @@ export default function App() {
                             snapshot={
                               subagentsBySession.get(agentsTarget.id) ?? null
                             }
+                            approvals={approvals}
                             ungated={agentsPanelUngated(
                               agentsTarget.kind,
                               hostingBySession.get(agentsTarget.id) ?? false,
@@ -6104,6 +6691,12 @@ export default function App() {
                                   })()
                                 : null
                             }
+                            runner={
+                              agentsTarget.kind.type === "agent"
+                                ? agentsTarget.kind.runner
+                                : (detectedBySession.get(agentsTarget.id)
+                                    ?.kind ?? null)
+                            }
                             expanded={sideExpanded}
                             onToggleExpand={() =>
                               void setSideViewExpanded(
@@ -6117,13 +6710,12 @@ export default function App() {
                               )
                             }
                             onSelect={(agentId) => {
+                              // O detalhe abre inline no próprio painel (A5.3):
+                              // nada de split de viewer ao lado.
                               void focusSubagent(
                                 agentsTarget.id,
                                 agentId,
                               ).catch(() => {});
-                              void openSubagentViewer(agentsTarget.id).catch(
-                                () => {},
-                              );
                             }}
                           />
                         ) : (
@@ -6155,21 +6747,25 @@ export default function App() {
                             {t("tunnelsSessionGone")}
                           </div>
                         )
+                      ) : containerFilesTarget(renderSideView) ? (
+                        <ContainerFilesPanel
+                          key={containerFilesTarget(renderSideView) as string}
+                          containerId={containerFilesTarget(renderSideView) as string}
+                          onClose={() =>
+                            void closeSideView(activeWorkspace.id).catch(() => {})
+                          }
+                        />
                       ) : renderSideView?.startsWith("files:") ? (
                         filesTarget ? (
                           <FilesPanel
                             key={filesTarget.id}
                             session={filesTarget}
-                            editor={editorPref}
                             expanded={sideExpanded}
-                            openRequest={
-                              fileOpenRequest &&
-                              fileOpenRequest.id === filesTarget.id
-                                ? {
-                                    path: fileOpenRequest.path,
-                                    nonce: fileOpenRequest.nonce,
-                                  }
-                                : null
+                            onOpenFile={(rel) =>
+                              void openEditorTab(rel, undefined, {
+                                session: filesTarget.id,
+                                preview: true,
+                              }).catch((e) => toastError(t("editorOpenError"), e))
                             }
                             onToggleExpand={() =>
                               void setSideViewExpanded(
@@ -6185,7 +6781,10 @@ export default function App() {
                             onJumpToDiff={() =>
                               void openDiffTab(filesTarget.id).catch(() => {})
                             }
-                            onRunInTerminal={runInTerminal}
+                            finderShortcut={formatCombo(bindings.filesFinder)}
+                            editorOpen={editorTabs.some(
+                              (e) => e.session === filesTarget.id,
+                            )}
                           />
                         ) : (
                           <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">

@@ -22,6 +22,7 @@ export type KeyAction =
   | "nextAttentionSession"
   | "prevTab"
   | "nextTab"
+  | "tabBack"
   | "splitRight"
   | "splitDown"
   | "nextPane"
@@ -57,6 +58,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   "nextAttentionSession",
   "prevTab",
   "nextTab",
+  "tabBack",
   "splitRight",
   "splitDown",
   "nextPane",
@@ -112,6 +114,7 @@ export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
   nextAttentionSession: "navigation",
   prevTab: "navigation",
   nextTab: "navigation",
+  tabBack: "navigation",
   nextPane: "navigation",
   paneLeft: "navigation",
   paneRight: "navigation",
@@ -146,6 +149,7 @@ export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   nextAttentionSession: "nextAttentionSessionNav",
   prevTab: "prevTabNav",
   nextTab: "nextTabNav",
+  tabBack: "tabBackNav",
   splitRight: "splitRight",
   splitDown: "splitDown",
   nextPane: "nextPane",
@@ -204,6 +208,7 @@ export const MAC_BINDINGS: Bindings = {
   nextAttentionSession: "meta+shift+a",
   prevTab: "meta+shift+arrowleft",
   nextTab: "meta+shift+arrowright",
+  tabBack: "meta+[",
   splitRight: "meta+d",
   splitDown: "meta+shift+d",
   nextPane: "meta+]",
@@ -240,6 +245,7 @@ export const PC_BINDINGS: Bindings = {
   nextAttentionSession: "ctrl+alt+shift+a",
   prevTab: "ctrl+pageup",
   nextTab: "ctrl+pagedown",
+  tabBack: "alt+[",
   splitRight: "ctrl+alt+d",
   splitDown: "ctrl+shift+d",
   nextPane: "ctrl+tab",
@@ -271,6 +277,30 @@ export function isPaneResizeChord(e: KeyboardEvent): boolean {
 }
 
 export const PANE_RESIZE_COMBO_PREFIX = IS_MAC ? "meta+ctrl" : "ctrl+alt+shift";
+
+/**
+ * Voltar de aba com o foco DENTRO do editor de código. Lá o ⌘[ é do
+ * CodeMirror (desindentar) e fica com ele; o voltar passa a este acorde. No
+ * editor não há panes, então o acorde de foco de pane não perde nada.
+ */
+export const TAB_BACK_EDITOR_COMBO = IS_MAC
+  ? "meta+alt+arrowleft"
+  : "ctrl+alt+arrowleft";
+
+/**
+ * Quem fica com o acorde de voltar: `back` (volta de aba), `native` (deixa o
+ * editor de código tratar — ⌘[ desindenta) ou `null` (não é voltar).
+ */
+export function tabBackRoute(
+  combo: string | null,
+  bindings: Bindings,
+  inCodeEditor: boolean,
+): "back" | "native" | null {
+  if (!combo) return null;
+  if (combo === bindings.tabBack) return inCodeEditor ? "native" : "back";
+  if (inCodeEditor && combo === TAB_BACK_EDITOR_COMBO) return "back";
+  return null;
+}
 
 export const OPEN_LATEST_SESSION_COMBO = IS_MAC
   ? "meta+shift+o"

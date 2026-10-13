@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import {
   ArrowDown,
   ArrowUp,
-  FolderSimple,
   GitBranch,
   GitDiff,
   TextAlignLeft,
@@ -93,7 +92,6 @@ export function Toolbar({
             className="flex min-w-0 shrink items-center gap-1"
             aria-label={t("toolbarCwd")}
           >
-            <FolderSimple size={12} className="shrink-0" />
             <span className="truncate">{basename(cwd)}</span>
           </span>
         ) : null;
@@ -121,24 +119,25 @@ export function Toolbar({
         // ela, continua sendo o texto que sempre foi. O seletor faz o checkout
         // em dois passos — armar e confirmar —, que é a rede para uma ação que
         // mexe no working tree.
+        // Azul, a cor do git (mockup Proposta): o chip colorido da barra.
         return branch.sessionId ? (
-          <BranchPicker
-            key={id}
-            sessionId={branch.sessionId}
-            browsing={null}
-            label={branch.label}
-            onBrowse={() => {}}
-            variant="chip"
-            browsable={false}
-          />
+          <span key={id} className="flex min-w-0 shrink text-tyba-blue">
+            <BranchPicker
+              sessionId={branch.sessionId}
+              browsing={null}
+              label={branch.label}
+              onBrowse={() => {}}
+              variant="chip"
+              browsable={false}
+            />
+          </span>
         ) : (
           <span
             key={id}
             title={branch.label}
-            className="flex min-w-0 shrink items-center gap-1"
+            className="flex min-w-0 shrink items-center gap-1 text-tyba-blue"
             aria-label={t("toolbarBranch")}
           >
-            <GitBranch size={12} className="shrink-0" />
             <span className="truncate">{branch.label}</span>
           </span>
         );
@@ -168,7 +167,7 @@ export function Toolbar({
             aria-label={t("toolbarDiff")}
             className="rounded-[4px] px-1 py-0.5 font-mono transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
           >
-            {status.changed} •{" "}
+            {t("toolbarChanges", { count: status.changed })}{" "}
             <span className="text-tyba-green">+{status.insertions}</span>{" "}
             <span className="text-tyba-red">−{status.deletions}</span>
           </button>
@@ -224,8 +223,8 @@ export function Toolbar({
   if (!showRichInput && left.length === 0 && right.length === 0) return null;
 
   return (
-    <div className="tyba-lift-t flex h-6 min-w-0 shrink-0 items-center justify-between gap-3 px-3 text-[11px] text-tyba-text-muted">
-      <div className="flex min-w-0 items-center gap-3 overflow-hidden">
+    <div className="tyba-lift-t flex h-[26px] min-w-0 shrink-0 items-center justify-between gap-4 px-3.5 text-[11px] text-tyba-text-faint">
+      <div className="flex min-w-0 items-center gap-4 overflow-hidden">
         {showRichInput && (
           <button
             onClick={onOpenRichInput}
@@ -239,7 +238,7 @@ export function Toolbar({
         )}
         {left}
       </div>
-      <div className="flex shrink-0 items-center gap-3">{right}</div>
+      <div className="flex shrink-0 items-center gap-4">{right}</div>
     </div>
   );
 }

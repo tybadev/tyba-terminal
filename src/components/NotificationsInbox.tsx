@@ -109,21 +109,22 @@ export function NotificationsInbox({
           variant="ghost"
           size="icon"
           aria-label={t("notifications")}
-          className="relative size-6 rounded-[4px] text-tyba-text-muted hover:text-tyba-text"
+          className="relative h-7 w-[30px] rounded-[6px] text-tyba-text-faint hover:text-tyba-text"
         >
           <Tray size={16} weight={count > 0 ? "fill" : "regular"} />
           {count > 0 && (
-            <span className="absolute -right-0.5 -top-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-tyba-violet px-1 font-mono text-[9px] font-semibold leading-none text-white [box-shadow:var(--tyba-glow-violet)]">
+            <span className="absolute right-[3px] top-[3px] flex h-3 min-w-3 items-center justify-center rounded-[6px] bg-tyba-red px-[3px] text-[9px] leading-none text-tyba-text-inverse">
               {count}
             </span>
           )}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-96">
-        <div className="tyba-label flex items-center justify-between px-2 py-1.5">
+        {/* Cabeçalho do mockup Notificacoes: título 13px, contagem apagada. */}
+        <div className="flex items-center justify-between gap-2.5 px-2 py-1.5 text-[13px] text-tyba-text">
           {t("notifications")}
           {count > 0 && (
-            <span className="rounded-full bg-tyba-violet-tint px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal text-tyba-violet">
+            <span className="text-[11px] text-tyba-text-faint">
               {t("pendingCount", { count })}
             </span>
           )}
@@ -146,7 +147,7 @@ export function NotificationsInbox({
                   return (
                     <div
                       key={item.id}
-                      className={`motion-safe:animate-tyba-pop-in rounded-md border bg-tyba-raised p-2.5 ${
+                      className={`motion-safe:animate-tyba-pop-in rounded-[6px] border bg-tyba-raised p-2.5 ${
                         request.risk === "red"
                           ? "border-tyba-red/35"
                           : "border-tyba-border"

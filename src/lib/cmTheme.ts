@@ -28,24 +28,36 @@ const MONO_DARK: SyntaxPalette = {
   invalid: "#FF5370",
 };
 
-const VITESSE_DARK: SyntaxPalette = {
-  comment: "#758575dd",
-  keyword: "#4d9375",
-  control: "#4d9375",
-  string: "#c98a7d",
-  function: "#80a665",
-  number: "#4C9A91",
-  type: "#5DA994",
-  variable: "#bd976a",
-  tag: "#4d9375",
-  invalid: "#cb7676",
+/// Mockup Editor: palavra-chave lilás, string lima, função azul, número âmbar,
+/// comentário apagado e variável na cor do texto — os acentos do TYBA.
+const TYBA_DARK: SyntaxPalette = {
+  ...MONO_DARK,
+  comment: "#5f6066",
+  keyword: "#c792ea",
+  string: "#a8e05f",
+  function: "#4c7df0",
+  number: "#f5a93b",
+  variable: "#f5f5f6",
 };
 
-/// Espelha o viewer da fatia 1: no tema escuro do app o editor usa o mono-dark
-/// do design system; no claro, o vitesse-dark — mesma fonte de tokens, não um
-/// tema CM6 de terceiro. Função pura pra testar o mapeamento sem montar o app.
+/// Mockup EditorClaro: os acentos escurecidos do tema claro.
+const TYBA_LIGHT: SyntaxPalette = {
+  comment: "#8b8b96",
+  keyword: "#7a4ce8",
+  control: "#55555f",
+  string: "#387e15",
+  function: "#3b66d6",
+  number: "#9b6210",
+  type: "#0c7c6f",
+  variable: "#121218",
+  tag: "#c93c2b",
+  invalid: "#c93c2b",
+};
+
+/// A paleta de sintaxe dos mockups Editor/EditorClaro. Função pura pra testar
+/// o mapeamento sem montar o app.
 export function cmPalette(dark: boolean): SyntaxPalette {
-  return dark ? MONO_DARK : VITESSE_DARK;
+  return dark ? TYBA_DARK : TYBA_LIGHT;
 }
 
 export function cmHighlightStyle(dark: boolean): HighlightStyle {
@@ -89,32 +101,38 @@ export function cmEditorTheme(dark: boolean): ReturnType<typeof EditorView.theme
     {
       "&": {
         color: "var(--tyba-text)",
-        backgroundColor: "var(--tyba-bg)",
-        fontSize: "12px",
+        backgroundColor: "var(--tyba-sunken)",
         height: "100%",
       },
       ".cm-scroller": {
         fontFamily: "var(--tyba-font-mono)",
       },
-      ".cm-content": { caretColor: "var(--tyba-text)" },
+      ".cm-content": { caretColor: "var(--tyba-green)", padding: "10px 0" },
       "&.cm-focused": { outline: "none" },
-      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--tyba-text)" },
+      // Mockup: cursor verde de 2px, aceso (o brilho some no claro).
+      ".cm-cursor, .cm-dropCursor": {
+        borderLeft: "2px solid var(--tyba-green)",
+        boxShadow: "var(--tyba-glow-green)",
+      },
       "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
         {
           backgroundColor: "var(--tyba-selection)",
         },
-      ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--tyba-text) 4%, transparent)" },
+      ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--tyba-text) 3%, transparent)" },
       ".cm-gutters": {
-        backgroundColor: "var(--tyba-bg)",
-        color: "var(--tyba-text-faint)",
+        backgroundColor: "var(--tyba-sunken)",
+        color: "var(--tyba-text-ghost)",
         border: "none",
       },
       ".cm-activeLineGutter": {
-        backgroundColor: "color-mix(in srgb, var(--tyba-text) 4%, transparent)",
+        backgroundColor: "color-mix(in srgb, var(--tyba-text) 3%, transparent)",
+        color: "var(--tyba-text-muted)",
       },
-      ".cm-lineNumbers .cm-gutterElement": { padding: "0 6px 0 8px" },
-      ".cm-diff-lane": { width: "2px", padding: "0" },
-      ".cm-diff-marker": { width: "2px", height: "100%", marginLeft: "1px" },
+      // Mockup: número alinhado à direita em 44px com 14px de folga, a faixa
+      // de alteração de 3px e 10px até o código.
+      ".cm-lineNumbers .cm-gutterElement": { padding: "0 14px 0 8px", minWidth: "22px" },
+      ".cm-diff-lane": { width: "3px", padding: "0", marginRight: "10px" },
+      ".cm-diff-marker": { width: "3px", height: "100%", marginLeft: "0" },
       ".cm-diff-added": { backgroundColor: "var(--tyba-green)" },
       ".cm-diff-modified": { backgroundColor: "var(--tyba-amber)" },
       ".cm-diff-deleted": {

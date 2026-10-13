@@ -108,12 +108,18 @@ export function decideApproval(params: {
 // painel é 1:1 (mostra todo approval), mas a fila colapsa pra um por sessão
 // — esconder todos os pendentes enquanto só a fila está aberta deixaria um
 // pedido sem NENHUM ponto de ação visível (agentQueueVisibleApprovalIds em
-// lib/agentsBoard é quem sabe quais são esses ids).
+// lib/agentsBoard é quem sabe quais são esses ids). O painel vermelho
+// dentro da sessão também contribui — só com os pedidos que um painel NA
+// TELA mostra (panelVisibleApprovalIds em lib/approvalPanel).
 export function hiddenApprovalIds(params: {
   approvals: ApprovalRequest[];
   notificationsOpen: boolean;
   agentQueueOpen: boolean;
   agentQueueVisibleIds: ReadonlySet<number>;
+  sessionPanelIds?: ReadonlySet<number>;
+  /** Os que o painel de agentes NA TELA deixa aprovar na linha do subagente
+   * (`agentsPanelActionableIds`). */
+  agentsPanelIds?: ReadonlySet<number>;
 }): Set<number> {
   const ids = new Set<number>();
   if (params.notificationsOpen) {
@@ -122,6 +128,8 @@ export function hiddenApprovalIds(params: {
   if (params.agentQueueOpen) {
     for (const id of params.agentQueueVisibleIds) ids.add(id);
   }
+  for (const id of params.sessionPanelIds ?? []) ids.add(id);
+  for (const id of params.agentsPanelIds ?? []) ids.add(id);
   return ids;
 }
 

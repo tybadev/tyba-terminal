@@ -103,6 +103,15 @@ pub fn body(agent: &str) -> String {
     format!("Parece estar esperando você — palpite da tela ({agent})")
 }
 
+/// O texto do aviso quando quem disse foi o próprio programa (OSC 7501).
+///
+/// Não é palpite, mas também não é hook: qualquer processo no terminal pode
+/// emitir a sequência. Por isso o aviso só chama para a sessão — nenhum texto
+/// do programa entra aqui além do nome já filtrado.
+pub fn program_body(agent: &str) -> String {
+    format!("Parece estar esperando você — informado pelo programa ({agent})")
+}
+
 /// A máquina da terceira guarda: candidato, assentado e cancelamento.
 pub struct ObservedNotifier {
     sink: NotifySink,
@@ -246,6 +255,7 @@ mod tests {
             let observed = ObservedAgent {
                 agent: agent.into(),
                 state,
+                kind: None,
             };
             self.notifier.observed(Some(&observed), notifies);
         }

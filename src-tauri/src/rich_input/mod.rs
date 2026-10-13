@@ -8,6 +8,9 @@ use fuzzy_matcher::FuzzyMatcher;
 use parking_lot::{Mutex, RwLock};
 use regex::Regex;
 
+mod incomplete;
+pub use incomplete::is_incomplete;
+
 pub const DEFAULT_AGENT_PATTERN: &str = r"^(claude|codex|gemini)\b";
 
 const PASTE_START: &[u8] = b"\x1b[200~";

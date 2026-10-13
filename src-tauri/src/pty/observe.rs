@@ -17,6 +17,7 @@
 //!   agente voltasse a escrever, e ele não vai.
 
 use crate::status::observer::ScreenObserver;
+use crate::status::program_status::ProgramStatus;
 use crate::status::screen::{self, ScreenSnapshot, MAX_REGION_LINES};
 
 use super::ScreenState;
@@ -70,6 +71,12 @@ impl ScreenPipe {
     /// A avaliação do manifesto. Chamada **fora** do lock — ver o laço.
     pub(super) fn feed(&mut self, snapshot: &ScreenSnapshot) {
         self.observer.observe(snapshot);
+    }
+
+    /// O registro raiz do OSC 7501 mudou — ver [`crate::status::program_status`].
+    /// Fora do lock, como o `feed`.
+    pub(super) fn program(&mut self, status: Option<&ProgramStatus>) {
+        self.observer.program_status(status);
     }
 
     /// O PTY morreu: o que estava na tela virou passado, e um palpite

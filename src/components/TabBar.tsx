@@ -1,14 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Plus,
-  ShippingContainer,
-  SlidersHorizontal,
-  TerminalWindow,
-  X,
-} from "@phosphor-icons/react";
+import { Plus, X } from "@phosphor-icons/react";
 
 import { AgentIcon } from "./icons/AgentIcon";
+import { DockerIcon } from "./icons/DockerIcon";
+import { GitIcon } from "./icons/GitIcon";
 
 import i18n from "../i18n";
 import { formatCombo, tabDigitCombo } from "@/lib/keys";
@@ -22,7 +18,16 @@ import {
   type Tab,
   type TabId,
 } from "../lib/ipc";
-import { compactPath } from "../lib/workspaceCwd";
+import { tabAttention } from "../lib/sessionStatus";
+import {
+  baseName,
+  containerName,
+  isEditorDirty,
+  langGlyph,
+  parseContentView,
+  useContentTabsVersion,
+} from "../lib/contentTabs";
+import { compactPath, dirLabel } from "../lib/workspaceCwd";
 import {
   filete,
   rodaParaHorizontal,
@@ -54,9 +59,42 @@ function agentGlyph(label: string): React.ReactNode {
   return <AgentIcon size={12} />;
 }
 
+/** Sessão de container (shell `docker exec`) que a aba mostra, se for o caso. */
+function containerSession(tab: Tab, sessions: Map<SessionId, Session>): Session | null {
+  if (!tab.root) return null;
+  for (const sid of leafSessions(tab.root)) {
+    const session = sessions.get(sid);
+    if (session?.kind.type === "container") return session;
+  }
+  return null;
+}
+
+/** Aba de container (logs ou shell): ícone e filete em azul docker. */
+function isContainerTab(tab: Tab, sessions: Map<SessionId, Session>): boolean {
+  return (
+    parseContentView(tab.view)?.kind === "container-logs" ||
+    containerSession(tab, sessions) !== null
+  );
+}
+
+// Só os glifos que os mockups mostram: selo de linguagem no editor, docker
+// azul no container, git no diff/histórico e o glifo do agente. Terminal e as
+// demais abas são só texto (mockup Proposta) — `null` aqui.
 function tabIcon(tab: Tab, sessions: Map<SessionId, Session>): React.ReactNode {
-  if (tab.view === "containers") return <ShippingContainer size={12} />;
-  if (tab.view === "settings") return <SlidersHorizontal size={12} />;
+  const content = parseContentView(tab.view);
+  if (content?.kind === "editor") {
+    const glyph = langGlyph(content.rel);
+    return (
+      <span className={`font-mono text-[10px] font-medium ${glyph.className}`}>
+        {glyph.text}
+      </span>
+    );
+  }
+  if (content?.kind === "container-logs" || containerSession(tab, sessions)) {
+    return <DockerIcon size={13} className="text-tyba-blue" />;
+  }
+  if (content?.kind === "session-diff") return <GitIcon size={12} />;
+  if (content?.kind === "git-log") return <GitIcon size={12} className="text-tyba-blue" />;
   if (tab.root) {
     for (const sid of leafSessions(tab.root)) {
       const session = sessions.get(sid);
@@ -64,7 +102,18 @@ function tabIcon(tab: Tab, sessions: Map<SessionId, Session>): React.ReactNode {
       if (label) return agentGlyph(label);
     }
   }
-  return <TerminalWindow size={12} />;
+  return null;
+}
+
+/** O cwd da primeira sessão da aba que já tem um — o rótulo usa a pasta, o
+ *  tooltip o caminho inteiro. */
+function tabCwd(tab: Tab, cwds: Record<string, SessionCwd>): string | null {
+  if (!tab.root || tab.view) return null;
+  for (const sid of leafSessions(tab.root)) {
+    const cwd = cwds[sid]?.cwd;
+    if (cwd) return cwd;
+  }
+  return null;
 }
 
 function tabLabel(
@@ -72,13 +121,26 @@ function tabLabel(
   sessions: Map<SessionId, Session>,
   cwds: Record<string, SessionCwd>,
 ): string {
-  if (tab.view) return i18n.t(tab.view);
-  if (tab.root) {
-    for (const sid of leafSessions(tab.root)) {
-      const cwd = cwds[sid]?.cwd;
-      if (cwd) return compactPath(cwd);
-    }
+  const content = parseContentView(tab.view);
+  if (content?.kind === "editor") return baseName(content.rel);
+  if (content?.kind === "container-logs") {
+    return i18n.t("tabContainerLogs", { name: containerName(content.containerId) });
   }
+  if (content?.kind === "git-log") return i18n.t("tabGitHistory");
+  if (content?.kind === "session-diff") {
+    const cwd = cwds[content.session]?.cwd;
+    return cwd ? `${i18n.t("tabSessionDiff")} · ${compactPath(cwd)}` : i18n.t("tabSessionDiff");
+  }
+  if (tab.view) return i18n.t(tab.view);
+  const container = containerSession(tab, sessions);
+  if (container?.kind.type === "container") {
+    const id = container.kind.container_id;
+    const known = containerName(id);
+    const name = known !== id.slice(0, 12) ? known : container.title.replace(/^sh: /, "");
+    return i18n.t("tabContainerShell", { name });
+  }
+  const cwd = tabCwd(tab, cwds);
+  if (cwd) return dirLabel(cwd);
   if (tab.title) return tab.title;
   if (!tab.root) return "shell";
   const bound = leafSessions(tab.root)
@@ -98,6 +160,8 @@ export function TabBar({
 }: Props) {
   const { t } = useTranslation();
   const byId = new Map(sessions.map((s) => [s.id, s]));
+  // Rótulo (nome do container) e ponto de não salvo vêm do estado efêmero.
+  useContentTabsVersion();
 
   const faixaRef = useRef<HTMLDivElement>(null);
   const ativaRef = useRef<HTMLButtonElement>(null);
@@ -152,7 +216,9 @@ export function TabBar({
   }, [activeTab, tabs.length]);
 
   return (
-    <div className="tyba-divide-b relative bg-tyba-surface">
+    // Sem fundo: a faixa é transparente e a aurora do canvas passa por ela
+    // (mockup Proposta/PropostaClaro). Só a aba ativa pinta, com `sunken`.
+    <div className="tyba-divide-b relative">
       <div
         ref={faixaRef}
         onScroll={aoRolar}
@@ -161,19 +227,29 @@ export function TabBar({
           if (passo === 0 || !faixaRef.current) return;
           faixaRef.current.scrollLeft += passo;
         }}
-        className={`tyba-sem-barra flex h-8 items-stretch gap-px overflow-x-auto px-1 ${
+        className={`tyba-sem-barra flex h-[34px] items-stretch gap-px overflow-x-auto pr-1 ${
           borda.antes ? "tyba-fade-x--ini" : ""
         } ${borda.depois ? "tyba-fade-x--fim" : ""}`}
       >
       {tabs.map((tab, i) => {
         const isActive = tab.id === activeTab;
+        // Selo de "parou por sua causa" — decidido em `tabAttention` (testado);
+        // aqui só se pinta, no mesmo desenho do ponto da barra lateral.
+        const attention = tab.root
+          ? tabAttention(leafSessions(tab.root).map((sid) => byId.get(sid)))
+          : null;
+        const icon = tabIcon(tab, byId);
         return (
           <button
             key={tab.id}
             ref={isActive ? ativaRef : undefined}
             onClick={() => onActivate(tab.id)}
-            title={formatCombo(tabDigitCombo(i + 1))}
-            className={`group relative flex max-w-44 min-w-24 shrink-0 items-center gap-1.5 rounded-t-[4px] px-2.5 text-[12px] transition-colors ${
+            title={(() => {
+              const combo = formatCombo(tabDigitCombo(i + 1));
+              const cwd = tabCwd(tab, cwds);
+              return cwd ? `${compactPath(cwd)} · ${combo}` : combo;
+            })()}
+            className={`group relative flex max-w-44 min-w-24 shrink-0 items-center gap-1.5 px-3.5 text-[13px] transition-colors ${
               isActive
                 // `sunken`, a cor do CONTEÚDO, e não `bg`. Com `bg` havia três
                 // superfícies empilhadas — a faixa em `surface`, a aba em `bg`,
@@ -188,22 +264,64 @@ export function TabBar({
                 : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
             }`}
           >
-            {isActive && (
+            {isActive &&
+              (isContainerTab(tab, byId) ? (
+                // Aba de container: o filete é azul docker — "isto roda lá".
+                <span
+                  aria-hidden
+                  className="absolute inset-x-0 top-0 h-[2px] rounded-[2px] bg-tyba-blue"
+                />
+              ) : (
+                // A linha viva estática: "esta é a selecionada". A mesma do
+                // painel ativo, para os dois lerem como uma coisa só.
+                // O filamento cheio, de ponta a ponta da aba (mockup): o
+                // `flow-line` some nas pontas e é o fio de quem executa.
+                <span
+                  aria-hidden
+                  className="absolute inset-x-0 top-0 h-[2px]"
+                  style={{ background: "var(--tyba-filament)" }}
+                />
+              ))}
+            {icon ? (
               <span
-                className="absolute inset-x-1 top-0 h-0.5 rounded-full"
-                style={{ background: "var(--tyba-gradient-soft)" }}
-              />
+                className={`relative shrink-0 ${
+                  isActive ? "text-tyba-text-muted" : "text-tyba-text-faint"
+                }`}
+              >
+                {icon}
+                {attention && (
+                  <span
+                    aria-hidden
+                    title={t(attention.labelKey)}
+                    className={`absolute -right-0.5 -top-0.5 size-1.5 rounded-full ${attention.dotClass}`}
+                  />
+                )}
+              </span>
+            ) : (
+              // Aba só texto: o selo de atenção, sem ícone onde pousar, vira
+              // um ponto antes do nome.
+              attention && (
+                <span
+                  aria-hidden
+                  title={t(attention.labelKey)}
+                  className={`size-1.5 shrink-0 rounded-full ${attention.dotClass}`}
+                />
+              )
             )}
-            <span
-              className={`shrink-0 ${
-                isActive ? "text-tyba-text-muted" : "text-tyba-text-faint"
-              }`}
-            >
-              {tabIcon(tab, byId)}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px]">
+            {attention && (
+              <span className="sr-only">{t(attention.labelKey)}</span>
+            )}
+            <span className="min-w-0 flex-1 truncate text-left font-mono text-[13px]">
               {tabLabel(tab, byId, cwds)}
             </span>
+            {isEditorDirty(tab.view) && (
+              <span
+                role="img"
+                aria-label={t("filesDirty")}
+                title={t("filesDirty")}
+                className="size-[7px] shrink-0 rounded-full bg-tyba-text group-hover:hidden"
+              />
+            )}
             <span
               role="button"
               aria-label={t("closeTab")}

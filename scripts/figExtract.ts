@@ -38,8 +38,19 @@ const MAX_DESCRICAO = 120;
  * `-f,--force`, que não é um nome e nunca casaria com o que se digita.
  */
 function nome(bruto: unknown): string {
-  if (Array.isArray(bruto)) return typeof bruto[0] === "string" ? bruto[0] : "";
-  return typeof bruto === "string" ? bruto : "";
+  return nomes(bruto)[0] ?? "";
+}
+
+/**
+ * TODOS os nomes, cada um por si.
+ *
+ * Só o primeiro entrava, e o primeiro do Fig costuma ser o curto: `git commit`
+ * tinha `-a` e não tinha `--all`, então `git commit --a` não completava nada.
+ * Cada apelido vira a sua linha, com a mesma descrição.
+ */
+function nomes(bruto: unknown): string[] {
+  const lista = Array.isArray(bruto) ? bruto : [bruto];
+  return lista.filter((n): n is string => typeof n === "string" && n.length > 0);
 }
 
 /**
@@ -78,33 +89,60 @@ export function extrai(spec: Cru): Linha[] {
 
   const desce = (item: Cru, prefixo: string[]) => {
     for (const sub of item.subcommands ?? []) {
-      const n = nome(sub?.name);
+      const [n, ...apelidos] = nomes(sub?.name);
       if (!n) continue;
       const caminho = [...prefixo, n];
       const d = descricao(sub?.description);
-      linhas.push({
-        command: comando,
-        path: caminho.join(" "),
-        kind: "subcommand",
-        ...(d !== undefined ? { description: d } : {}),
-      });
+      // O apelido (`rm` de `remove`) vira linha, mas não desce: duplicar a
+      // árvore inteira por apelido dobraria o peso para responder a mesma coisa.
+      for (const nomeDele of [n, ...apelidos]) {
+        linhas.push({
+          command: comando,
+          path: [...prefixo, nomeDele].join(" "),
+          kind: "subcommand",
+          ...(d !== undefined ? { description: d } : {}),
+        });
+      }
       desce(sub, caminho);
     }
     for (const op of item.options ?? []) {
-      const n = nome(op?.name);
-      if (!n) continue;
       const d = descricao(op?.description);
-      linhas.push({
-        command: comando,
-        // Flag de subcomando carrega o caminho dele: `container ls --all` é
-        // outra coisa que `--all` solto na raiz.
-        path: [...prefixo, n].join(" "),
-        kind: "option",
-        ...(d !== undefined ? { description: d } : {}),
-      });
+      for (const n of nomes(op?.name)) {
+        linhas.push({
+          command: comando,
+          // Flag de subcomando carrega o caminho dele: `container ls --all` é
+          // outra coisa que `--all` solto na raiz.
+          path: [...prefixo, n].join(" "),
+          kind: "option",
+          ...(d !== undefined ? { description: d } : {}),
+        });
+      }
     }
   };
 
   desce(spec, []);
   return linhas;
+}
+
+/**
+ * Pendura as linhas de um spec debaixo de um subcomando de outro.
+ *
+ * `docker compose` é o plugin v2, e o spec do `docker` do Fig o declara como
+ * folha — sem `up`, `down`, `logs`. Quem tem a árvore é o spec do
+ * `docker-compose` (v1), com os mesmos subcomandos. Enxertar é o que faz
+ * `docker compose u` oferecer `up`.
+ */
+export function enxerta(linhas: Linha[], comando: string, sob: string): Linha[] {
+  return linhas.map((l) => ({ ...l, command: comando, path: `${sob} ${l.path}` }));
+}
+
+/** Uma linha por `(command, path, kind)` — a mesma chave única da tabela. */
+export function semRepetir(linhas: Linha[]): Linha[] {
+  const vistas = new Set<string>();
+  return linhas.filter((l) => {
+    const chave = `${l.command}\t${l.path}\t${l.kind}`;
+    if (vistas.has(chave)) return false;
+    vistas.add(chave);
+    return true;
+  });
 }

@@ -36,7 +36,17 @@ pub(crate) const AUTO_DECISIONS: &str = "'auto_allowed','session_allowed'";
 /// sem decisão (canal caiu, sessão encerrou com a aprovação pendente). Entram
 /// no total pedido e em nenhum dos dois lados — somar um pedido esquecido como
 /// "decidido por humano" inflaria justamente a métrica de atenção.
+///
+/// Só vale junto de [`HUMAN_ORIGIN`]: a linha `claude_native_inferred` também
+/// grava `approved`/`denied`, mas ninguém viu a decisão — ela foi deduzida do
+/// `PostToolUse` (ou da falta dele). Somá-la aqui faria dedução se passar por
+/// decisão humana (invariante 7 do fluxo híbrido). Ela entra no total, em
+/// [`APPROVING_DECISIONS`] quando aprovada e em "negados" quando negada.
 pub(crate) const HUMAN_DECISIONS: &str = "'approved','approved_always','denied'";
+
+/// A origem em que [`HUMAN_DECISIONS`] é decisão humana de fato: o gate do
+/// TYBA, onde a pessoa clicou.
+pub(crate) const HUMAN_ORIGIN: &str = "origin = 'tyba'";
 
 /// Decisões que deixaram o agente rodar.
 pub(crate) const APPROVING_DECISIONS: &str =
@@ -173,12 +183,15 @@ mod tests {
             attention: false,
             agent_conversation_id: None,
             observed: None,
+            agent_model: None,
+            status_note: None,
             created_at: Utc::now(),
             cwd: Some(PathBuf::from(repo)),
             connection: crate::session::ConnectionState::default(),
             connection_failure: None,
             opened_by_gate: false,
             did_work: false,
+            agent_usage: None,
         };
         store.upsert_session(&session).unwrap();
         id
@@ -486,12 +499,15 @@ mod tests {
                 attention: false,
                 agent_conversation_id: None,
                 observed: None,
+                agent_model: None,
+                status_note: None,
                 created_at: Utc::now(),
                 cwd: None,
                 connection: crate::session::ConnectionState::default(),
                 connection_failure: None,
                 opened_by_gate: false,
                 did_work: false,
+                agent_usage: None,
             })
             .unwrap();
         block(&store, shell, 1_000, 100);
@@ -581,6 +597,70 @@ mod tests {
             stats.commands[0].command
         );
         assert!(stats.commands[0].command.contains("[REDACTED]"));
+    }
+
+    /// Prompt nativo ainda aberto não é pedido decidido: fica fora do total,
+    /// da tabela de comandos, da de sessões e da lista de repositórios.
+    #[test]
+    fn pendente_fica_fora_de_toda_contagem() {
+        let store = Store::open_in_memory().unwrap();
+        let session = agent_session(&store, "/repo", "agente");
+        store
+            .insert_pending_inferred(
+                &session.to_string(),
+                "cargo test",
+                None,
+                "yellow",
+                "k1",
+                1_000,
+            )
+            .unwrap();
+
+        let stats = store.agent_stats(0, None).unwrap();
+
+        assert_eq!(stats.totals.requested, 0);
+        assert_eq!(stats.totals.denied, 0);
+        assert!(stats.commands.is_empty(), "{:?}", stats.commands);
+        assert!(stats.sessions.is_empty(), "{:?}", stats.sessions);
+        assert!(stats.repos.is_empty(), "{:?}", stats.repos);
+    }
+
+    /// Invariante 7: a dedução entra no total, nos aprovados da tabela e nos
+    /// negados — nunca em "decidido por humano" nem na mediana de espera.
+    #[test]
+    fn deducao_nunca_conta_como_decisao_humana() {
+        let store = Store::open_in_memory().unwrap();
+        let session = agent_session(&store, "/repo", "agente");
+        let sid = session.to_string();
+        approval(&store, session, "git push", "red", "approved", 1_000, 400);
+        store
+            .insert_pending_inferred(&sid, "cargo test", None, "yellow", "k1", 1_000)
+            .unwrap();
+        store
+            .resolve_inferred_by_call_key(&sid, "k1", "approved", 60_000)
+            .unwrap();
+        store
+            .insert_pending_inferred(&sid, "npm i", None, "yellow", "k2", 1_000)
+            .unwrap();
+        store
+            .deny_pending_inferred_for_session(&sid, 90_000)
+            .unwrap();
+
+        let stats = store.agent_stats(0, None).unwrap();
+
+        assert_eq!(stats.totals.requested, 3);
+        assert_eq!(
+            stats.totals.human_decided, 1,
+            "dedução contada como decisão humana"
+        );
+        assert_eq!(stats.totals.denied, 1);
+        assert_eq!(stats.totals.median_human_ms, Some(400));
+        let cargo = stats
+            .commands
+            .iter()
+            .find(|c| c.command == "cargo test")
+            .unwrap();
+        assert_eq!(cargo.approved, 1, "aprovado deduzido entra nos aprovados");
     }
 
     #[test]

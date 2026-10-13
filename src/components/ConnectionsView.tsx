@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   CaretDown,
   CaretRight,
+  CircleNotch,
   FolderPlus,
   HardDrives,
   PencilSimple,
@@ -59,6 +60,8 @@ const ACTION_ERROR_MS = 8000;
 
 interface Props {
   onConnect: (host: Host) => void;
+  /** Hosts com conexão em voo (estado do core): o card trava em "Conectando…". */
+  connectingHostIds?: ReadonlySet<string>;
   /** Abre o grupo como panes de um workspace só (base do broadcast). */
   onConnectGroup?: (group: HostGroup | null, hosts: Host[]) => void;
 }
@@ -246,7 +249,11 @@ function GroupDialog({
   );
 }
 
-export function ConnectionsView({ onConnect, onConnectGroup }: Props) {
+export function ConnectionsView({
+  onConnect,
+  connectingHostIds,
+  onConnectGroup,
+}: Props) {
   const { t, i18n } = useTranslation();
   const [hosts, setHosts] = useState<Host[] | null>(null);
   const [groups, setGroups] = useState<HostGroup[] | null>(null);
@@ -356,14 +363,27 @@ export function ConnectionsView({ onConnect, onConnectGroup }: Props) {
 
   const renderHostCard = (host: Host) => {
     const accent = host.color ? `var(--tyba-${host.color})` : undefined;
+    const connecting = connectingHostIds?.has(host.id) ?? false;
+    const connect = () => {
+      if (!connecting) onConnect(host);
+    };
     return (
       <div
         key={host.id}
         role="button"
         tabIndex={0}
-        onDoubleClick={() => onConnect(host)}
+        aria-busy={connecting}
+        onDoubleClick={(e) => {
+          // Duplo clique nos botões do card (Conectar, editar, apagar) também
+          // borbulha até aqui: era o clique duplo no "Conectar" virando três
+          // conexões (dois `click` + este `dblclick`).
+          if ((e.target as HTMLElement).closest("button")) return;
+          connect();
+        }}
         onKeyDown={(e) => {
-          if (e.key === "Enter") onConnect(host);
+          if (e.key === "Enter" && e.target === e.currentTarget && !e.repeat) {
+            connect();
+          }
         }}
         className="group relative flex flex-col justify-between gap-3 overflow-hidden rounded-lg border border-tyba-border bg-tyba-text/[.02] p-3 transition-colors hover:border-tyba-border-strong hover:bg-tyba-text/[.04]"
       >
@@ -440,11 +460,16 @@ export function ConnectionsView({ onConnect, onConnectGroup }: Props) {
           </span>
           <Button
             size="xs"
-            onClick={() => onConnect(host)}
+            onClick={connect}
+            disabled={connecting}
             className="h-6 shrink-0 rounded-[4px] px-2 text-[11px]"
           >
-            <Plug size={11} />
-            {t("connectionsConnect")}
+            {connecting ? (
+              <CircleNotch size={11} className="animate-spin" weight="bold" />
+            ) : (
+              <Plug size={11} />
+            )}
+            {connecting ? t("connectionsConnecting") : t("connectionsConnect")}
           </Button>
         </div>
       </div>

@@ -19,9 +19,10 @@
 use std::sync::Arc;
 
 use crate::agent::notify::NotifyKind;
-use crate::session::{ObservedAgent, SessionId, SessionKind};
+use crate::session::{ObservedAgent, ObservedState, SessionId, SessionKind};
 use crate::status::manifest::{Scope, Verdict};
 use crate::status::observed_notify::{self, ObservedNotifier, Scheduler};
+use crate::status::program_status::ProgramStatus;
 use crate::status::registry::ManifestRegistry;
 use crate::status::screen::ScreenSnapshot;
 
@@ -75,6 +76,17 @@ pub fn observer_for(
     let process = Arc::clone(&deps.process);
     let observed = Arc::clone(&deps.observed);
     let notify = Arc::clone(&deps.notify);
+    let program_notify = Arc::clone(&deps.notify);
+    let program_notifier = ObservedNotifier::new(
+        Arc::new(move |agent: &str| {
+            program_notify(
+                id,
+                NotifyKind::ObservedRequest,
+                &observed_notify::program_body(agent),
+            );
+        }),
+        Arc::clone(&deps.scheduler),
+    );
     ScreenObserver::for_session(
         kind,
         Arc::clone(&deps.registry),
@@ -91,6 +103,7 @@ pub fn observer_for(
             Arc::clone(&deps.scheduler),
         ),
     )
+    .map(|observer| observer.with_program_notifier(program_notifier))
 }
 
 pub struct ScreenObserver {
@@ -107,9 +120,18 @@ pub struct ScreenObserver {
     notifier: ObservedNotifier,
     /// O portão de sequência. `None` antes da primeira avaliação.
     last_fingerprint: Option<u64>,
-    /// O último palpite publicado. Guardado para dois motivos: não repetir IPC
-    /// idêntico, e sobreviver a `Hold`/`NoMatch` — que mandam **não mexer** no
-    /// estado, não limpá-lo.
+    /// O último palpite **de tela**. Guardado para sobreviver a
+    /// `Hold`/`NoMatch` — que mandam **não mexer** no estado, não limpá-lo.
+    screen: Option<ObservedAgent>,
+    /// O manifesto que produziu `screen` autoriza aviso?
+    screen_notifies: bool,
+    /// O registro raiz do OSC 7501, quando o programa na tela o emite. Vence o
+    /// palpite de tela: é o programa dizendo, não o TYBA adivinhando.
+    program: Option<ProgramStatus>,
+    /// Aviso do estado que veio do OSC 7501 — separado do `notifier` porque o
+    /// texto diz de onde veio. `None` só em teste.
+    program_notifier: Option<ObservedNotifier>,
+    /// O último publicado (tela ou 7501), para não repetir IPC idêntico.
     last: Option<ObservedAgent>,
 }
 
@@ -135,8 +157,25 @@ impl ScreenObserver {
             sink,
             notifier,
             last_fingerprint: None,
+            screen: None,
+            screen_notifies: false,
+            program: None,
+            program_notifier: None,
             last: None,
         })
+    }
+
+    /// Liga o aviso do estado relatado por OSC 7501.
+    pub fn with_program_notifier(mut self, notifier: ObservedNotifier) -> Self {
+        self.program_notifier = Some(notifier);
+        self
+    }
+
+    /// O registro raiz do OSC 7501 mudou. `None` é "o programa não relata
+    /// nada" — e a tela volta a ser a fonte.
+    pub fn program_status(&mut self, status: Option<&ProgramStatus>) {
+        self.program = status.cloned();
+        self.publish();
     }
 
     /// Vale a pena recortar a tela desta sessão? Consultado **dentro** do lock,
@@ -186,7 +225,9 @@ impl ScreenObserver {
             // Ninguém reconhece o que está na tela. Identidade é o que sustenta
             // a presença: sem ela não há agente a apontar, e manter o último
             // palpite deixaria um agente morto no quadro para sempre.
-            self.publish(None, false);
+            self.screen = None;
+            self.screen_notifies = false;
+            self.publish();
             return true;
         };
         let agent = manifest.id.clone();
@@ -202,28 +243,74 @@ impl ScreenObserver {
             // descreve. O estado só é herdado do MESMO agente: trocar de agente
             // e levar o estado junto seria afirmar o que ninguém observou.
             Verdict::Hold | Verdict::NoMatch => self
-                .last
+                .screen
                 .as_ref()
                 .filter(|observed| observed.agent == agent)
                 .and_then(|observed| observed.state),
         };
-        self.publish(Some(ObservedAgent { agent, state }), notifies);
+        self.screen = Some(ObservedAgent {
+            agent,
+            state,
+            kind: None,
+        });
+        self.screen_notifies = notifies;
+        self.publish();
         true
     }
 
     /// O PTY morreu: o que estava na tela deixou de ser notícia do presente.
     pub fn clear(&mut self) {
         self.last_fingerprint = None;
-        self.publish(None, false);
+        self.screen = None;
+        self.screen_notifies = false;
+        self.program = None;
+        self.publish();
     }
 
-    fn publish(&mut self, observed: Option<ObservedAgent>, notifies: bool) {
+    /// Junta as duas fontes. Precedência: OSC 7501 > manifesto. (Hook vence os
+    /// dois, mas nem chega aqui: sessão com hook não tem observador.)
+    ///
+    /// Com OSC 7501 presente, o estado é o do programa e a identidade continua
+    /// sendo a do manifesto quando ele reconhece a sessão — senão o `app` do
+    /// relatório, senão um nome genérico. E o aviso de palpite de tela é
+    /// desarmado: quem avisa é o programa.
+    fn publish(&mut self) {
+        let observed = match &self.program {
+            Some(program) => {
+                let agent = self
+                    .screen
+                    .as_ref()
+                    .map(|s| s.agent.clone())
+                    .or_else(|| program.app.clone())
+                    .unwrap_or_else(|| PROGRAM_FALLBACK_AGENT.to_string());
+                let state = program.state.observed();
+                Some(ObservedAgent {
+                    agent,
+                    state: Some(state),
+                    kind: program
+                        .kind
+                        .filter(|_| state == ObservedState::AwaitingInput),
+                })
+            }
+            None => self.screen.clone(),
+        };
         // Antes do corte de repetição, e de propósito: o aviso do sistema tem a
         // própria noção de novidade — a transição —, e ela é mais estrita do que
         // esta. Uma tela que reafirma o mesmo estado com um spinner girando
         // muda o palpite em nada e ainda assim chega aqui; deixá-la fora faria
         // este método decidir por um assunto que não é dele.
-        self.notifier.observed(observed.as_ref(), notifies);
+        if self.program.is_some() {
+            self.notifier.observed(None, false);
+            if let Some(n) = self.program_notifier.as_mut() {
+                n.observed(observed.as_ref(), true);
+            }
+        } else {
+            if let Some(n) = self.program_notifier.as_mut() {
+                n.observed(None, false);
+            }
+            self.notifier
+                .observed(self.screen.as_ref(), self.screen_notifies);
+        }
         if self.last == observed {
             return;
         }
@@ -231,6 +318,10 @@ impl ScreenObserver {
         (self.sink)(observed);
     }
 }
+
+/// Nome no quadro quando o programa relata estado por OSC 7501 sem `app`
+/// válido e nenhum manifesto reconhece a sessão.
+const PROGRAM_FALLBACK_AGENT: &str = "programa";
 
 /// A impressão digital das DUAS entradas da identidade.
 ///
@@ -859,5 +950,136 @@ skip_state_update = true
         .unwrap();
 
         assert!(!observer.wants_snapshot());
+    }
+
+    // ---- OSC 7501: precedência hook > programa > tela ----
+
+    use crate::session::ObservedWait;
+    use crate::status::program_status::{ProgramState, ProgramStatus};
+
+    fn programa(
+        state: ProgramState,
+        kind: Option<ObservedWait>,
+        app: Option<&str>,
+    ) -> ProgramStatus {
+        ProgramStatus {
+            state,
+            kind,
+            progress: None,
+            app: app.map(str::to_string),
+        }
+    }
+
+    /// O programa diz que trabalha; a tela diz que espera. Vence o programa, e
+    /// a identidade continua sendo a do manifesto.
+    #[test]
+    fn osc_7501_vence_o_palpite_de_tela() {
+        let espiao = Arc::new(Espiao::default());
+        let mut observer = observer(&SessionKind::Shell, &espiao).unwrap();
+        observer.observe(&snap("Codex — Action Required", &[]));
+        assert_eq!(
+            espiao.ultimo().unwrap().state,
+            Some(ObservedState::AwaitingInput)
+        );
+
+        observer.program_status(Some(&programa(ProgramState::Working, None, Some("outro"))));
+        let agora = espiao.ultimo().unwrap();
+        assert_eq!(agora.agent, "codex", "identidade do manifesto se perdeu");
+        assert_eq!(agora.state, Some(ObservedState::Running));
+
+        // Tela muda de novo, e o programa continua vencendo.
+        observer.observe(&snap("Codex — Action Required", &["outra linha"]));
+        assert_eq!(espiao.ultimo().unwrap().state, Some(ObservedState::Running));
+
+        // O programa para de relatar: a tela volta a ser a fonte.
+        observer.program_status(None);
+        assert_eq!(
+            espiao.ultimo().unwrap().state,
+            Some(ObservedState::AwaitingInput)
+        );
+    }
+
+    /// Sem manifesto que reconheça, o nome é o `app` do relatório — e, sem
+    /// ele, um genérico. `blocked` carrega o tipo da espera.
+    #[test]
+    fn osc_7501_sem_manifesto_usa_app_e_carrega_o_tipo() {
+        let espiao = Arc::new(Espiao::default());
+        *espiao.binario.lock() = None;
+        let mut observer = observer(&SessionKind::Shell, &espiao).unwrap();
+        observer.observe(&snap("~/proj", &[]));
+        assert_eq!(espiao.ultimo(), None);
+
+        observer.program_status(Some(&programa(
+            ProgramState::Blocked,
+            Some(ObservedWait::Auth),
+            Some("brew"),
+        )));
+        assert_eq!(
+            espiao.ultimo(),
+            Some(ObservedAgent {
+                agent: "brew".into(),
+                state: Some(ObservedState::AwaitingInput),
+                kind: Some(ObservedWait::Auth),
+            })
+        );
+
+        observer.program_status(Some(&programa(ProgramState::Done, None, None)));
+        assert_eq!(
+            espiao.ultimo(),
+            Some(ObservedAgent {
+                agent: PROGRAM_FALLBACK_AGENT.into(),
+                state: Some(ObservedState::Idle),
+                kind: None,
+            })
+        );
+    }
+
+    /// Com OSC 7501 presente, o aviso de palpite de tela não sai — quem avisa é
+    /// o notificador do programa, com o próprio texto.
+    #[test]
+    fn osc_7501_silencia_o_aviso_da_tela_e_avisa_pelo_programa() {
+        let espiao = Arc::new(Espiao::default());
+        let (tela, notifier) = Avisos::novo();
+        let (prog, program_notifier) = Avisos::novo();
+        let mut observer =
+            observer_com(&SessionKind::Shell, &espiao, registry_que_avisa(), notifier)
+                .unwrap()
+                .with_program_notifier(program_notifier);
+
+        observer.program_status(Some(&programa(ProgramState::Working, None, None)));
+        observer.observe(&snap("Codex — Action Required", &[]));
+        tela.assenta();
+        prog.assenta();
+        assert!(
+            tela.saidos().is_empty(),
+            "palpite de tela avisou com 7501 ativo"
+        );
+        assert!(prog.saidos().is_empty(), "working não é espera");
+
+        observer.program_status(Some(&programa(
+            ProgramState::Blocked,
+            Some(ObservedWait::Permission),
+            None,
+        )));
+        tela.assenta();
+        prog.assenta();
+        assert!(tela.saidos().is_empty());
+        assert_eq!(prog.saidos(), vec!["codex".to_string()]);
+    }
+
+    /// O PTY morreu: o relato do programa morre junto.
+    #[test]
+    fn a_morte_do_pty_leva_o_osc_7501_junto() {
+        let espiao = Arc::new(Espiao::default());
+        let mut observer = observer(&SessionKind::Shell, &espiao).unwrap();
+        observer.program_status(Some(&programa(ProgramState::Working, None, Some("x"))));
+        observer.clear();
+        assert_eq!(espiao.publicados().last().unwrap(), &None);
+        // E a tela seguinte decide sozinha.
+        observer.observe(&snap("Codex — Action Required", &[]));
+        assert_eq!(
+            espiao.ultimo().unwrap().state,
+            Some(ObservedState::AwaitingInput)
+        );
     }
 }

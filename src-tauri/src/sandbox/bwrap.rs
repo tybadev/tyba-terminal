@@ -292,19 +292,13 @@ fn agent_access(args: &mut Args, access: &AgentAccess) -> Result<(), String> {
 }
 
 fn exec_path_dirs(args: &mut Args, spec: &SandboxSpec) {
-    let home = crate::repo::canonicalize_or(&spec.home);
-    let mut seen = std::collections::HashSet::new();
-    for dir in &spec.exec_path_dirs {
-        if !dir.is_absolute() {
-            continue;
-        }
-        let canon = crate::repo::canonicalize_or(dir);
-        if home.starts_with(&canon) {
-            continue;
-        }
-        if seen.insert(canon.clone()) {
-            args.ro_bind_try(&canon);
-        }
+    let grants = super::toolchain::path_read_grants(
+        &spec.exec_path_dirs,
+        &spec.home,
+        std::slice::from_ref(&spec.tyba_data_dir),
+    );
+    for dir in grants {
+        args.ro_bind_try(&dir);
     }
 }
 
@@ -535,6 +529,9 @@ pub fn wrap_command(
     wrapped.append(argv);
     *argv = wrapped;
     cmd.env("TYBA_SANDBOX", "bwrap");
+    for (var, dir) in super::toolchain::cache_env(spec.tmpdir.as_deref(), &spec.runtime_dir) {
+        cmd.env(var, dir);
+    }
     Ok(cmd)
 }
 
@@ -1317,6 +1314,51 @@ mod tests {
         let argv = strs(&build_args(&spec).unwrap());
         let home = spec.home.to_string_lossy().into_owned();
         assert!(triple_pos(&argv, "--ro-bind-try", &home, &home).is_none());
+    }
+
+    #[test]
+    fn path_toolchain_in_a_dot_dir_is_ro_bound_with_its_prefix_and_nothing_else() {
+        let (_tmp, mut spec) = fixture();
+        let bin = spec.home.join(".hermes/node/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(spec.home.join(".hermes/other")).unwrap();
+        std::fs::create_dir_all(spec.home.join(".ssh/bin")).unwrap();
+        spec.exec_path_dirs = vec![bin.clone(), spec.home.join(".ssh/bin")];
+        let argv = strs(&build_args(&spec).unwrap());
+        assert!(has_triple(&argv, "--ro-bind-try", &bin));
+        assert!(has_triple(
+            &argv,
+            "--ro-bind-try",
+            &spec.home.join(".hermes/node")
+        ));
+        assert!(!has_triple(
+            &argv,
+            "--ro-bind-try",
+            &spec.home.join(".hermes")
+        ));
+        assert!(!has_triple(
+            &argv,
+            "--ro-bind-try",
+            &spec.home.join(".ssh/bin")
+        ));
+        assert!(
+            !has_triple(&argv, "--bind", &spec.home.join(".hermes/node")),
+            "toolchain nunca entra gravável"
+        );
+    }
+
+    #[test]
+    fn wrap_command_sets_per_session_toolchain_caches() {
+        let (_tmp, spec) = fixture();
+        let wrapped =
+            wrap_command(CommandBuilder::new("claude"), &spec, Path::new("/x.bpf")).unwrap();
+        for (var, _) in crate::sandbox::toolchain::CACHE_ENV_VARS {
+            let dir = PathBuf::from(wrapped.get_env(var).expect(var));
+            assert!(
+                dir.starts_with("/tmp/toolchain-cache-abc"),
+                "{var}: {dir:?}"
+            );
+        }
     }
 
     #[test]

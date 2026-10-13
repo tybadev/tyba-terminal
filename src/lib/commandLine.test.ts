@@ -5,6 +5,7 @@ import {
   commandPrefix,
   boxAcceptsTyping,
   boxIsMounted,
+  caretLine,
   clearsDraft,
   controlBytes,
   ghostDoToken,
@@ -13,7 +14,11 @@ import {
   keyboardOwner,
   lineState,
   lineVisible,
+  paneLine,
   lineToken,
+  menuItems,
+  menuRows,
+  moveSelection,
   pathToken,
   programName,
   promptModeEnabled,
@@ -726,5 +731,190 @@ describe("lineVisible", () => {
         hookExpected: true,
       }),
     ).toBe(true);
+  });
+});
+
+describe("paneLine", () => {
+  const idle = {
+    command: null,
+    running: false,
+    agent_match: false,
+    continuation: false,
+  };
+  const shellAt = (over: Partial<Parameters<typeof paneLine>[0]> = {}) =>
+    paneLine({
+      kind: { type: "shell" },
+      reported: true,
+      promptModePref: true,
+      hookExpected: true,
+      broadcasting: false,
+      altScreen: false,
+      command: idle,
+      ...over,
+    });
+
+  it("cada painel decide com o estado da PRÓPRIA sessão", () => {
+    // O defeito que a linha por painel elimina: um painel herdando o estado de
+    // quem tem o foco. Dois painéis, um no prompt e outro com comando
+    // rodando, saem com respostas diferentes — nenhum dos dois sabe qual está
+    // ativo.
+    const atPrompt = shellAt();
+    const running = shellAt({ command: { ...idle, running: true } });
+    expect(atPrompt).toEqual({ visible: true, state: "own", owns: true });
+    expect(running).toEqual({ visible: true, state: "running", owns: false });
+  });
+
+  it("vim num painel não tira o teclado do vizinho", () => {
+    expect(shellAt({ altScreen: true })).toEqual({
+      visible: true,
+      state: "app",
+      owns: false,
+    });
+    expect(shellAt().owns).toBe(true);
+  });
+
+  it("antes do primeiro prompt a linha aparece esperando, sem o teclado", () => {
+    expect(shellAt({ reported: undefined })).toEqual({
+      visible: true,
+      state: "waiting",
+      owns: false,
+    });
+  });
+
+  it("modo clássico: a linha fica na tela dizendo que está desligada", () => {
+    expect(shellAt({ reported: false })).toEqual({
+      visible: true,
+      state: "off",
+      owns: false,
+    });
+  });
+
+  it("a rajada do broadcast devolve o teclado ao terminal", () => {
+    expect(shellAt({ broadcasting: true }).owns).toBe(false);
+  });
+
+  it("sessão de agente não tem linha", () => {
+    expect(
+      shellAt({ kind: { type: "agent", runner: "claude-code" } as never })
+        .visible,
+    ).toBe(false);
+  });
+});
+
+describe("caretLine", () => {
+  it("rascunho de uma linha é primeira e última ao mesmo tempo", () => {
+    // É o que mantém ↑/↓ como sempre foram fora do multilinha.
+    expect(caretLine("ls -la", 3)).toEqual({ first: true, last: true });
+  });
+
+  it("caixa vazia também", () => {
+    expect(caretLine("", 0)).toEqual({ first: true, last: true });
+  });
+
+  it("na primeira linha de um multilinha", () => {
+    expect(caretLine("ls \\\n  -la", 2)).toEqual({ first: true, last: false });
+  });
+
+  it("no meio: nem primeira nem última", () => {
+    expect(caretLine("a\nb\nc", 2)).toEqual({ first: false, last: false });
+  });
+
+  it("na última linha", () => {
+    expect(caretLine("a\nb\nc", 5)).toEqual({ first: false, last: true });
+  });
+
+  it("colado no fim da linha, antes do \\n, ainda é aquela linha", () => {
+    expect(caretLine("a\nb", 1)).toEqual({ first: true, last: false });
+  });
+
+  it("newline no fim: depois dele é a última linha, vazia", () => {
+    expect(caretLine("echo a\n", 7)).toEqual({ first: false, last: true });
+    expect(caretLine("echo a\n", 6)).toEqual({ first: true, last: false });
+  });
+
+  it("caret fora do texto é preso nas bordas", () => {
+    expect(caretLine("a\nb", 99)).toEqual({ first: false, last: true });
+    expect(caretLine("a\nb", -1)).toEqual({ first: true, last: false });
+  });
+});
+
+const hist = (command: string, failed = false) => ({
+  command,
+  failed,
+  kind: "history" as const,
+  label: null,
+});
+
+describe("menuItems — a ordem da lista que abre acima da linha", () => {
+  const vazio = { commands: [], args: [], bins: [], paths: [] };
+
+  it("o mais recente é o item 0, o que encosta na caixa", () => {
+    // O core manda em ordem de execução, o mais novo primeiro.
+    const items = menuItems({
+      ...vazio,
+      commands: [hist("lsd --tree"), hist("ls -la"), hist("docker ps")],
+    });
+    expect(items.map((i) => i.kind === "history" && i.command)).toEqual([
+      "lsd --tree",
+      "ls -la",
+      "docker ps",
+    ]);
+  });
+
+  it("repetição fica com a ocorrência mais recente", () => {
+    const items = menuItems({
+      ...vazio,
+      commands: [hist("ls"), hist("pwd"), hist("ls")],
+    });
+    expect(items.map((i) => i.key)).toEqual(["history:ls", "history:pwd"]);
+  });
+
+  it("comando que só falhou não vira item", () => {
+    const items = menuItems({ ...vazio, commands: [hist("lljh", true), hist("ls")] });
+    expect(items.map((i) => i.key)).toEqual(["history:ls"]);
+  });
+
+  it("histórico primeiro, depois o que o comando oferece, binário e caminho", () => {
+    const items = menuItems({
+      commands: [hist("git checkout main")],
+      args: [{ value: "checkout", description: "Switch branches" }],
+      bins: [{ name: "gitk", kind: "path" }],
+      paths: ["src/"],
+    });
+    expect(items.map((i) => i.kind)).toEqual(["history", "argument", "binary", "path"]);
+  });
+});
+
+describe("menuRows", () => {
+  it("desenha invertido: o item 0 é a ÚLTIMA linha, colada na caixa", () => {
+    const rows = menuRows(["novo", "meio", "velho"]);
+    expect(rows.map((r) => r.item)).toEqual(["velho", "meio", "novo"]);
+    // O índice continua o lógico — é ele que a seleção usa.
+    expect(rows.at(-1)).toEqual({ item: "novo", index: 0 });
+  });
+});
+
+describe("moveSelection", () => {
+  it("↑ da caixa escolhe o item colado nela", () => {
+    expect(moveSelection(-1, "ArrowUp", 3)).toBe(0);
+  });
+
+  it("↑ sobe para o mais antigo e para no topo, sem dar a volta", () => {
+    expect(moveSelection(0, "ArrowUp", 3)).toBe(1);
+    expect(moveSelection(2, "ArrowUp", 3)).toBe(2);
+  });
+
+  it("↓ desce em direção à caixa e, do item 0, devolve o cursor à linha", () => {
+    expect(moveSelection(2, "ArrowDown", 3)).toBe(1);
+    expect(moveSelection(0, "ArrowDown", 3)).toBe(-1);
+    expect(moveSelection(-1, "ArrowDown", 3)).toBe(-1);
+  });
+
+  it("lista vazia não tem o que escolher", () => {
+    expect(moveSelection(-1, "ArrowUp", 0)).toBe(-1);
+  });
+
+  it("índice que sobrou de uma lista maior é preso no fim", () => {
+    expect(moveSelection(9, "ArrowDown", 3)).toBe(2);
   });
 });

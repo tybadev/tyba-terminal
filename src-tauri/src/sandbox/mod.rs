@@ -9,6 +9,7 @@ pub mod seatbelt;
 mod seatbelt_exec_tests;
 #[cfg(target_os = "linux")]
 pub mod seccomp;
+pub(crate) mod toolchain;
 #[cfg(target_os = "windows")]
 pub mod windows;
 

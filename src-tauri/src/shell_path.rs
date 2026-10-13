@@ -39,6 +39,13 @@ pub fn agent_path() -> String {
         .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default())
 }
 
+/// O mesmo PATH de [`agent_path`], mas só se já foi resolvido — nunca dispara
+/// o `$SHELL -lic` (até 3 s). Para quem não pode esperar, como o spawn de um
+/// pane.
+pub fn agent_path_if_resolved() -> Option<String> {
+    RESOLVED.get().map(|_| agent_path())
+}
+
 /// Resolvido uma vez. Variável que o login shell não trouxe cai na do processo.
 pub fn login_env() -> LoginEnv {
     let resolved = RESOLVED.get_or_init(resolve_login_env).clone();

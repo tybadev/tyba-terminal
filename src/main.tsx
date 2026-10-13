@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { invoke } from "@tauri-apps/api/core";
 import "@fontsource/space-grotesk/500.css";
 import "@fontsource/space-grotesk/600.css";
 import "@fontsource/space-grotesk/700.css";
@@ -11,7 +12,7 @@ import "./i18n";
 import "./theme";
 import "./font";
 import App from "./App";
-import { SPLASH_CEILING_MS, SPLASH_DONE_EVENT } from "./lib/startup";
+import { SPLASH_DONE_EVENT } from "./lib/startup";
 
 // O webview traz um menu de contexto próprio (Reload, e Inspect em debug) que
 // não é do produto e aparece em toda área sem menu nosso. Campo de texto
@@ -42,20 +43,12 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 // sequência que faz "carregando" ser lido como "travou".
 //
 // Agora quem manda sair é o `App`, quando o core avisa que terminou de
-// carregar. Com teto: o core pode estar parado num diálogo de permissão do
-// macOS, e splash eterno é pior que UI vazia.
-const splash = document.getElementById("splash");
-if (splash) {
-  let done = false;
-  const hide = () => {
-    if (done) return;
-    done = true;
-    window.removeEventListener(SPLASH_DONE_EVENT, hide);
-    splash.dataset.hidden = "true";
-    const remove = () => splash.remove();
-    splash.addEventListener("transitionend", remove, { once: true });
-    window.setTimeout(remove, 600);
-  };
-  window.addEventListener(SPLASH_DONE_EVENT, hide);
-  window.setTimeout(hide, SPLASH_CEILING_MS);
-}
+// carregar. O splash é uma janela própria (`splash.html`) e esta, a `main`,
+// nasce escondida: o aviso pede ao core para trocar uma pela outra. O teto
+// (core parado num diálogo de permissão do macOS, webview que nem carregou)
+// mora no core, em `splash::CEILING` — daqui não daria para cobrir o segundo.
+window.addEventListener(
+  SPLASH_DONE_EVENT,
+  () => void invoke("splash_done").catch(() => {}),
+  { once: true },
+);

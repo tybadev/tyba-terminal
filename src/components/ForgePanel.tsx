@@ -3,8 +3,6 @@ import { useTranslation } from "react-i18next";
 import {
   CaretDown,
   CaretRight,
-  GithubLogo,
-  GitlabLogo,
 } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
@@ -19,6 +17,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PrStatusIcon } from "@/components/icons/PrStatusIcon";
+import { GitHubIcon } from "@/components/icons/GitHubIcon";
+import { GitLabIcon } from "@/components/icons/GitLabIcon";
 import { openExternalUrl } from "@/lib/clipboard";
 import { translateError } from "@/lib/errors";
 import {
@@ -343,7 +343,7 @@ export function ForgePanel({
   if (!sessionId || !shouldShowPrIcon(status)) return null;
 
   const isMr = status?.kind === "gitlab";
-  const Logo = isMr ? GitlabLogo : GithubLogo;
+  const Logo = isMr ? GitLabIcon : GitHubIcon;
   const title = t(isMr ? "headerMrPanelTitle" : "headerPrPanelTitle");
 
   return (
@@ -355,7 +355,7 @@ export function ForgePanel({
               variant="ghost"
               size="icon"
               aria-label={title}
-              className="size-6 rounded-[4px] text-tyba-text-muted hover:text-tyba-text"
+              className="h-7 w-[30px] rounded-[6px] text-tyba-text-faint hover:text-tyba-text"
             >
               <Logo size={16} />
             </Button>

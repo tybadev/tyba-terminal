@@ -1,4 +1,10 @@
-import type { AgentRunner, DetectedAgent, SessionKind } from "./ipc";
+import type {
+  AgentRunner,
+  DetectedAgent,
+  NoJailReason,
+  SessionKind,
+  ShimRoute,
+} from "./ipc";
 
 export const noticeKey = (detected: DetectedAgent): string =>
   `${detected.pid}:${detected.start_ms}`;
@@ -21,11 +27,43 @@ export const showShellAgentNotice = (
   detected: DetectedAgent | null | undefined,
   hosting: boolean,
   dismissedKey: string | undefined,
+  shim: ShimRoute | null = null,
 ): boolean =>
   kind.type === "shell" &&
   detected != null &&
   !hosting &&
+  // M6-A: um claude que passou pelo `tyba _jail` nunca ganha "Reabrir com
+  // gate" — ou ele não abre sessão (passthrough), ou o vermelho
+  // `ungatedReason` já diz por que está sem gate.
+  shim == null &&
   dismissedKey !== noticeKey(detected);
+
+/**
+ * M6-A: o claude passou pelo TYBA mas roda SEM gate — sessão em segundo plano
+ * (`ungated`) ou o core não conseguiu hospedar (`fallback`). Vermelho, sem
+ * botão de dispensar: é o estado que o usuário precisa ver. `null` quando não
+ * se aplica.
+ */
+export const ungatedReason = (
+  kind: SessionKind,
+  detected: DetectedAgent | null | undefined,
+  hosting: boolean,
+  shim: ShimRoute | null,
+): "ungated" | "fallback" | "raw" | null =>
+  kind.type === "shell" &&
+  detected != null &&
+  !hosting &&
+  (shim === "ungated" || shim === "fallback" || shim === "raw")
+    ? shim
+    : null;
+
+/** A frase da faixa vermelha, por motivo. */
+export const ungatedMessageKey = (reason: "ungated" | "fallback" | "raw"): string =>
+  reason === "fallback"
+    ? "shellAgentUngatedFallback"
+    : reason === "raw"
+      ? "shellAgentUngatedRaw"
+      : "shellAgentUngatedBackground";
 
 /**
  * O sinal âmbar "sem jaula" (shim v2, tech-spec §7/§9, spec.md decisão 5):
@@ -41,3 +79,22 @@ export const showUnjailedNotice = (
   hosting: boolean,
   jailed: boolean,
 ): boolean => kind.type === "shell" && detected != null && hosting && !jailed;
+
+/**
+ * M7: a frase que explica por que o claude está sem jaula, uma por motivo.
+ * Sem motivo conhecido (core antigo), a frase genérica.
+ */
+export const noJailMessageKey = (reason: NoJailReason | null): string => {
+  switch (reason) {
+    case "home":
+      return "shellUnjailedHome";
+    case "hidden_dir":
+      return "shellUnjailedHiddenDir";
+    case "outside_home":
+      return "shellUnjailedOutsideHome";
+    case "sandbox":
+      return "shellUnjailedSandbox";
+    default:
+      return "shellUnjailedNotice";
+  }
+};

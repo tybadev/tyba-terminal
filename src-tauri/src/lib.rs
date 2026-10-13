@@ -22,6 +22,7 @@ pub mod sandbox;
 pub mod session;
 pub mod shell_path;
 pub mod snippet;
+pub mod splash;
 pub mod ssh;
 pub mod stats;
 pub mod status;
@@ -52,6 +53,7 @@ struct AppState {
     themes: theme::SharedThemes,
     layout: layout::SharedLayout,
     docker: docker::SharedDocker,
+    docker_logs: Arc<docker::logs::LogsManager>,
     repos: repo::SharedRepoWatcher,
     files: files::SharedFiles,
     remote_files: files::remote::SharedRemoteFiles,
@@ -67,6 +69,8 @@ struct AppState {
     tunnel_states: crate::ssh::tunnel::SharedTunnelStates,
     /// O canal próprio de cada Host (regras 20, 24 e 25).
     host_queries: crate::ssh::query::SharedHostQueries,
+    /// Um "Conectar" em voo por Host: clique repetido não abre outra sessão.
+    connect_gate: crate::ssh::connect_gate::SharedConnectGate,
     /// Fecha em `false` e abre quando a thread de boot termina. Ver [`boot`].
     boot: Arc<boot::BootGate>,
 }
@@ -397,11 +401,11 @@ fn poll_agent_probers(app: &AppHandle) {
     }
     // Detecção estável não re-emite: uma sessão cujo transcript ainda não existia
     // na transição da F1 (janela de startup do claude) jamais ganharia observer.
-    // Re-tenta a cada poll enquanto o agente segue detectado e o bind não é
-    // forte — sem thread viva OU bind provisório (melhor-esforço por mtime),
-    // que re-resolve até aparecer candidato datado pós-agente.
+    // Re-tenta a cada poll enquanto o agente segue detectado — inclusive com
+    // bind forte: o vínculo é com a conversa, e `/clear`/`/resume` trocam de
+    // transcript sem trocar de processo (M2 do claude-monitor).
     for session_id in leader_by_session.keys().copied() {
-        if changed.contains(&session_id) || state.disk_observer.is_settled(session_id) {
+        if changed.contains(&session_id) {
             continue;
         }
         if let Some(detected) = state.agent_prober.detected(session_id) {
@@ -413,23 +417,116 @@ fn poll_agent_probers(app: &AppHandle) {
         .disk_observer
         .retain_live(app, &state.subagents, &live);
     for (session_id, detected) in changes {
-        // Track C (tech-spec §7): derivado do env do PID detectado a cada
-        // mudança — nunca armazenado (§5 da spec, decisão 5). `(false,
-        // false)` quando não há mais agente nenhum.
-        let (hosting, jailed) = detected
-            .as_ref()
-            .map(|d| agent::process_probe::hosting_markers(d.pid))
-            .unwrap_or((false, false));
+        if detected.is_none() {
+            state.agent_prober.clear_raw_plugin(session_id);
+        }
         let _ = app.emit(
             agent::process_probe::EVENT_CHANGED,
-            agent::process_probe::AgentDetectedPayload {
-                session_id,
-                detected,
-                hosting,
-                jailed,
-            },
+            agent_payload(&state, session_id, detected),
         );
     }
+}
+
+/// O payload de detecção de uma sessão. Track C (tech-spec §7): derivado do
+/// env do PID detectado a cada leitura — nunca armazenado (§5 da spec,
+/// decisão 5). `(false, false)` quando não há agente nenhum. M6-B: um claude
+/// sem marcador do shim que o plugin avisou como cru vira `shim: "raw"`.
+fn agent_payload(
+    state: &AppState,
+    session_id: SessionId,
+    detected: Option<agent::process_probe::DetectedAgent>,
+) -> agent::process_probe::AgentDetectedPayload {
+    let (hosting, jailed) = detected
+        .as_ref()
+        .map(|d| agent::process_probe::hosting_markers(d.pid))
+        .unwrap_or((false, false));
+    let shim = detected.as_ref().and_then(|d| {
+        agent::process_probe::shim_marker(d.pid).or_else(|| {
+            state
+                .agent_prober
+                .is_raw_plugin(session_id)
+                .then(|| "raw".to_string())
+        })
+    });
+    let no_jail = detected
+        .as_ref()
+        .filter(|_| hosting && !jailed)
+        .and_then(|d| agent::process_probe::no_jail_marker(d.pid));
+    agent::process_probe::AgentDetectedPayload {
+        session_id,
+        detected,
+        hosting,
+        jailed,
+        shim,
+        no_jail,
+    }
+}
+
+/// M6-B: um evento do plugin do Claude Code. O token tem que ser o de um
+/// pane e o peer tem que estar na árvore do shell desse pane; senão o core
+/// recusa e o cliente aplica a regra local (que só nega). `SessionStart`
+/// marca o pane como "claude sem gate" e reemite a detecção; ferramenta
+/// negada vai para o histórico de aprovações já redigida.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn handle_plugin_event(
+    app: &AppHandle,
+    peer_pid: u32,
+    request: &hook_ipc::channel::ChannelRequest,
+) -> hook_ipc::channel::ChannelResponse {
+    use hook_ipc::channel::{ChannelResponse, RefusedReason};
+
+    let state = app.state::<AppState>();
+    let refused = ChannelResponse::Refused {
+        reason: RefusedReason::NoSession,
+    };
+    let Some(token) = request.token.as_deref() else {
+        return refused;
+    };
+    let shells: Vec<(SessionId, u32)> = state
+        .sessions
+        .shell_ids()
+        .into_iter()
+        .filter_map(|id| state.pty_pool.leader_pid(id).map(|pid| (id, pid)))
+        .collect();
+    let rows = agent::process_probe::snapshot();
+    let peer_session = agent::process_probe::find_owning_session(peer_pid, &shells, &rows);
+    let event = request.event.as_deref().unwrap_or("");
+    let Some(verdict) = agent::claude_plugin::resolve_plugin_event(
+        token,
+        peer_session,
+        |t| state.sessions.session_for_pane_token(t),
+        event,
+        request.tool.as_deref(),
+    ) else {
+        return refused;
+    };
+    if verdict.mark_raw && !state.agent_prober.is_raw_plugin(verdict.session) {
+        state.agent_prober.mark_raw_plugin(verdict.session);
+        let detected = state.agent_prober.detected(verdict.session);
+        if detected.is_some() {
+            let _ = app.emit(
+                agent::process_probe::EVENT_CHANGED,
+                agent_payload(&state, verdict.session, detected),
+            );
+        }
+    }
+    if verdict.deny.is_some() && event == "PreToolUse" {
+        let summary = request
+            .summary
+            .as_deref()
+            .map(|s| crate::session::redact::redact(s).into_owned())
+            .unwrap_or_else(|| request.tool.clone().unwrap_or_default());
+        agent::session::record_history(
+            &state.store,
+            verdict.session,
+            summary,
+            None,
+            approvals::RiskLevel::Red,
+            "denied_raw",
+            approvals::now_ms(),
+        );
+    }
+    ChannelResponse::Plugin { deny: verdict.deny }
 }
 
 /// A decisão pura de quando o disk observer (F1→F2) entra em ação: só para
@@ -473,13 +570,24 @@ fn drive_disk_observer(
                     .and_then(|pid| repo::process_cwd(*pid))
             });
             if let Some(cwd) = cwd {
-                state.disk_observer.observe(
+                let rebound = state.disk_observer.observe(
                     app,
                     &state.subagents,
                     session_id,
                     &cwd,
                     agent.start_ms,
                 );
+                // A sessão de shell também guarda a conversa que está rodando
+                // nela (vai pro SQLite pelo mesmo `set_agent_conversation_id`
+                // do caminho com hook): é o que deixa um restart saber qual
+                // conversa retomar.
+                if rebound {
+                    if let Some(id) = state.disk_observer.bound_conversation(session_id) {
+                        state
+                            .sessions
+                            .set_agent_conversation_id(app, session_id, &id);
+                    }
+                }
             }
         }
         None => state.disk_observer.stop(app, &state.subagents, session_id),
@@ -487,7 +595,12 @@ fn drive_disk_observer(
 }
 
 fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
-    let _ = app.emit(layout::EVENT_CHANGED, state.layout.state());
+    let snapshot = state.layout.state();
+    // Toda mudança de layout passa aqui: seguidor de logs sem aba morre.
+    state
+        .docker_logs
+        .retain(&layout::open_log_containers(&snapshot));
+    let _ = app.emit(layout::EVENT_CHANGED, snapshot);
     let _ = state.repo_reconcile.send(());
 }
 
@@ -507,15 +620,18 @@ pub(crate) fn coordinate_subagent_viewer(
     session: SessionId,
     coordination: agent::subagents::Coordination,
 ) {
+    // A5.3: uma superfície só. O painel Agentes mostra a árvore e o detalhe
+    // inline; o split de viewer não abre mais sozinho. Antes o viewer abria,
+    // marcava a rodada como coordenada mesmo com o painel barrado pelo slot
+    // ocupado (fila aberta pelo menu lateral), e a rodada seguia sem painel.
+    // Agora só o painel conta: se não deu para abrir, a próxima chegada tenta
+    // de novo.
     let state = app.state::<AppState>();
-    let mut changed = false;
-    if !coordination.viewer_disarmed {
-        changed |= state.layout.ensure_agent_viewer(session);
+    if coordination.panel_disarmed {
+        state.subagents.mark_coordinated(session);
+        return;
     }
-    if !coordination.panel_disarmed {
-        changed |= state.layout.ensure_agents_panel(session);
-    }
-    if changed {
+    if state.layout.ensure_agents_panel(session) {
         state.subagents.mark_coordinated(session);
         emit_layout(app, &state);
     }
@@ -990,6 +1106,12 @@ fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
             request.requested_at_ms,
         );
     }
+    // Prompt nativo do Claude ainda aberto quando a sessão acaba: a chamada
+    // não rodou. Fecha como negado (deduzido) em vez de deixar `pending` para
+    // sempre, fora de toda contagem.
+    let _ = state
+        .store
+        .deny_pending_inferred_for_session(&id.to_string(), approvals::now_ms());
 }
 
 /// Reabre no boot as sessões que morreram com o app anterior, conforme a pref de
@@ -1119,11 +1241,17 @@ fn resume_startup(
             shell: None,
             initial_prompt: None,
             opened_by_gate: false,
+            resume_conversation: None,
         };
         match sessions.create_shell_session(app.clone(), pty_pool, opts, move |id| {
             session_exited(&handle, id)
         }) {
             Ok(fresh) => {
+                // A conversa do claude que rodava neste shell atravessa o
+                // restart junto com o cwd — `forget` apaga a linha antiga.
+                if let Some(conversation) = &old.agent_conversation_id {
+                    sessions.set_agent_conversation_id(app, fresh.id, conversation);
+                }
                 remap.insert(old.id, fresh.id);
                 sessions.forget(old.id);
             }
@@ -1437,74 +1565,82 @@ fn list_session_tunnels(
 }
 
 #[tauri::command]
-fn open_session_tunnel(
-    state: State<'_, AppState>,
+async fn open_session_tunnel(
+    app: AppHandle,
     session_id: SessionId,
     tunnel: crate::ssh::tunnel::Tunnel,
     confirmed: bool,
 ) -> Result<crate::ssh::tunnel::SessionTunnel, crate::error::AppError> {
-    tunnel.validate()?;
-    if tunnel.kind.needs_confirmation() && !confirmed {
-        return Err(crate::error::AppError::new("ssh.tunnel_needs_confirmation")
-            .with("kind", tunnel.kind.flag())
-            .with("port", tunnel.listen_port.to_string()));
-    }
-    let alias = ssh_target(&state, session_id)
-        .map(|(_, alias, _)| alias)
-        .ok_or_else(|| crate::error::AppError::new("ssh.session_not_found"))?;
+    off_main(app, move |_app, state| {
+        tunnel.validate()?;
+        if tunnel.kind.needs_confirmation() && !confirmed {
+            return Err(crate::error::AppError::new("ssh.tunnel_needs_confirmation")
+                .with("kind", tunnel.kind.flag())
+                .with("port", tunnel.listen_port.to_string()));
+        }
+        let alias = ssh_target(&state, session_id)
+            .map(|(_, alias, _)| alias)
+            .ok_or_else(|| crate::error::AppError::new("ssh.session_not_found"))?;
 
-    let master = crate::ssh::tunnel::control_master_available();
-    if master {
-        crate::ssh::tunnel::open_on_master(&alias, &tunnel)?;
-    } else if !crate::ssh::tunnel::local_port_free(&tunnel) {
-        return Err(crate::error::AppError::new("ssh.tunnel_open_failed")
-            .with("port", tunnel.listen_port.to_string())
-            .with("detail", "a porta local já está em uso"));
-    }
+        let master = crate::ssh::tunnel::control_master_available();
+        if master {
+            crate::ssh::tunnel::open_on_master(&alias, &tunnel)?;
+        } else if !crate::ssh::tunnel::local_port_free(&tunnel) {
+            return Err(crate::error::AppError::new("ssh.tunnel_open_failed")
+                .with("port", tunnel.listen_port.to_string())
+                .with("detail", "a porta local já está em uso"));
+        }
 
-    let entry = crate::ssh::tunnel::SessionTunnel {
-        id: uuid::Uuid::new_v4().to_string(),
-        session_id,
-        tunnel,
-        state: if master {
-            crate::ssh::tunnel::TunnelState::Live
-        } else {
-            crate::ssh::tunnel::TunnelState::Opening
-        },
-        created_at: chrono::Utc::now(),
-    };
-    state.store.add_session_tunnel(&entry).map_err(store_err)?;
-    state.tunnel_states.set(&entry.id, entry.state.clone());
+        let entry = crate::ssh::tunnel::SessionTunnel {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id,
+            tunnel,
+            state: if master {
+                crate::ssh::tunnel::TunnelState::Live
+            } else {
+                crate::ssh::tunnel::TunnelState::Opening
+            },
+            created_at: chrono::Utc::now(),
+        };
+        state.store.add_session_tunnel(&entry).map_err(store_err)?;
+        state.tunnel_states.set(&entry.id, entry.state.clone());
 
-    // Sem master o túnel só entra num Cano novo. `terminate` e não `kill`: o
-    // handle fica, e o Cano religado herda o pane.
-    if !master {
-        let _ = state.pty_pool.terminate(session_id);
-    }
-    Ok(entry)
+        // Sem master o túnel só entra num Cano novo. `terminate` e não `kill`: o
+        // handle fica, e o Cano religado herda o pane.
+        if !master {
+            let _ = state.pty_pool.terminate(session_id);
+        }
+        Ok(entry)
+    })
+    .await
+    .map_err(|e| crate::error::AppError::new("ssh.tunnel_control_failed").with("detail", e))?
 }
 
 #[tauri::command]
-fn close_session_tunnel(
-    state: State<'_, AppState>,
+async fn close_session_tunnel(
+    app: AppHandle,
     session_id: SessionId,
     tunnel_id: String,
 ) -> Result<(), crate::error::AppError> {
-    let tunnels = state
-        .store
-        .load_session_tunnels(session_id)
-        .map_err(store_err)?;
-    let Some(entry) = tunnels.into_iter().find(|t| t.id == tunnel_id) else {
-        return Ok(());
-    };
-    if let Some((_, alias, _)) = ssh_target(&state, session_id) {
-        let _ = crate::ssh::tunnel::close_on_master(&alias, &entry.tunnel);
-    }
-    state.tunnel_states.forget(&tunnel_id);
-    state
-        .store
-        .remove_session_tunnel(&tunnel_id)
-        .map_err(store_err)
+    off_main(app, move |_app, state| {
+        let tunnels = state
+            .store
+            .load_session_tunnels(session_id)
+            .map_err(store_err)?;
+        let Some(entry) = tunnels.into_iter().find(|t| t.id == tunnel_id) else {
+            return Ok(());
+        };
+        if let Some((_, alias, _)) = ssh_target(&state, session_id) {
+            let _ = crate::ssh::tunnel::close_on_master(&alias, &entry.tunnel);
+        }
+        state.tunnel_states.forget(&tunnel_id);
+        state
+            .store
+            .remove_session_tunnel(&tunnel_id)
+            .map_err(store_err)
+    })
+    .await
+    .map_err(|e| crate::error::AppError::new("ssh.tunnel_control_failed").with("detail", e))?
 }
 
 /// Regra 28. Fora da thread do command: `ssh -G` e `ssh-add` são processos.
@@ -1655,38 +1791,45 @@ struct SetupScriptInfo {
 }
 
 #[tauri::command]
-fn worktree_setup_script(state: State<'_, AppState>, repo_root: String) -> Option<SetupScriptInfo> {
-    let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
-    let root = repo::toplevel(&param).map(|t| repo::canonicalize_or(&t))?;
-    let script = worktree::setup_script(&root)?;
-    let consent = state
-        .store
-        .setup_consent(&root.to_string_lossy(), &script.hash)
-        .ok()
-        .flatten();
-    Some(SetupScriptInfo {
-        path: script.path,
-        content: script.content,
-        hash: script.hash,
-        consent,
+async fn worktree_setup_script(app: AppHandle, repo_root: String) -> Option<SetupScriptInfo> {
+    off_main(app, move |_app, state| {
+        let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
+        let root = repo::toplevel(&param).map(|t| repo::canonicalize_or(&t))?;
+        let script = worktree::setup_script(&root)?;
+        let consent = state
+            .store
+            .setup_consent(&root.to_string_lossy(), &script.hash)
+            .ok()
+            .flatten();
+        Some(SetupScriptInfo {
+            path: script.path,
+            content: script.content,
+            hash: script.hash,
+            consent,
+        })
     })
+    .await
+    .unwrap_or_default()
 }
 
 #[tauri::command]
-fn worktree_set_setup_consent(
-    state: State<'_, AppState>,
+async fn worktree_set_setup_consent(
+    app: AppHandle,
     repo_root: String,
     hash: String,
     allow: bool,
 ) -> Result<(), String> {
-    let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
-    let root = repo::toplevel(&param)
-        .map(|t| repo::canonicalize_or(&t))
-        .ok_or("fora de repositório git")?;
-    state
-        .store
-        .set_setup_consent(&root.to_string_lossy(), &hash, allow)
-        .map_err(|e| e.to_string())
+    off_main(app, move |_app, state| {
+        let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
+        let root = repo::toplevel(&param)
+            .map(|t| repo::canonicalize_or(&t))
+            .ok_or("fora de repositório git")?;
+        state
+            .store
+            .set_setup_consent(&root.to_string_lossy(), &hash, allow)
+            .map_err(|e| e.to_string())
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -1794,16 +1937,114 @@ async fn session_git_status(
 }
 
 #[tauri::command]
-fn open_diff_tab(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
-    session_repo_context(&state, id)?;
+async fn open_diff_tab(app: AppHandle, id: SessionId) -> Result<(), String> {
+    off_main(app, move |app, state| {
+        session_repo_context(&state, id)?;
+        let previous = session_side_view(&state, id);
+        state
+            .layout
+            .open_workspace_side_view(id, &layout::diff_view(id))
+            .map_err(|e| e.to_string())?;
+        close_orphaned_files_panel(&state, previous, None);
+        emit_layout(app, &state);
+        Ok(())
+    })
+    .await?
+}
+
+/// Painel Git da sessão no slot lateral único. Só existe para sessão com repo:
+/// sem repo não há branch nem alteração para mostrar.
+#[tauri::command]
+async fn open_git_panel(app: AppHandle, id: SessionId) -> Result<(), String> {
+    off_main(app, move |app, state| {
+        session_repo_context(&state, id)?;
+        let previous = session_side_view(&state, id);
+        state
+            .layout
+            .open_workspace_side_view(id, &layout::git_view(id))
+            .map_err(|e| e.to_string())?;
+        close_orphaned_files_panel(&state, previous, None);
+        emit_layout(app, &state);
+        Ok(())
+    })
+    .await?
+}
+
+/// Painel Docker da sessão no slot lateral único (o painel completo segue
+/// sendo o workspace Docker, `docker_open_dashboard`).
+#[tauri::command]
+fn open_docker_panel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), String> {
+    if state.sessions.get(id).is_none() {
+        return Err(format!("sessão não encontrada: {id}"));
+    }
     let previous = session_side_view(&state, id);
     state
         .layout
-        .open_workspace_side_view(id, &layout::diff_view(id))
+        .open_workspace_side_view(id, &layout::docker_view(id))
         .map_err(|e| e.to_string())?;
     close_orphaned_files_panel(&state, previous, None);
     emit_layout(&app, &state);
     Ok(())
+}
+
+/// Painel Histórico da sessão no slot lateral único.
+#[tauri::command]
+fn open_history_panel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), String> {
+    if state.sessions.get(id).is_none() {
+        return Err(format!("sessão não encontrada: {id}"));
+    }
+    let previous = session_side_view(&state, id);
+    state
+        .layout
+        .open_workspace_side_view(id, &layout::history_view(id))
+        .map_err(|e| e.to_string())?;
+    close_orphaned_files_panel(&state, previous, None);
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// Execuções gravadas para o painel Histórico. `repo = true` amplia da sessão
+/// para o repo dela (resolvido aqui, no core, a partir do cwd da sessão).
+#[tauri::command]
+async fn history_runs(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    repo: bool,
+    query: String,
+    limit: usize,
+) -> Result<Vec<history::HistoryRun>, String> {
+    let repo_root = if repo {
+        session_repo_context(&state, session_id)
+            .ok()
+            .map(|ctx| ctx.path.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+    // Fora de repo, "do repo" cai para a sessão em vez de virar "tudo".
+    let session_filter = (repo_root.is_none()).then(|| session_id.to_string());
+    let host = history::session_host(&session_id.to_string());
+    let store = Arc::clone(&state.store);
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .history_runs(
+                Some(&query),
+                session_filter.as_deref(),
+                repo_root.as_deref(),
+                host.as_deref(),
+                limit.min(500) as i64,
+            )
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1968,7 +2209,38 @@ fn close_orphaned_files_panel(state: &AppState, previous: Option<String>, keep: 
         .strip_prefix(layout::VIEW_FILES_PREFIX)
         .and_then(|s| s.parse::<SessionId>().ok())
     {
-        close_files_panel(state, id);
+        // Aba de editor aberta usa o mesmo painel (watcher, LSP): fica vivo.
+        if !state.layout.has_editor_tabs(id) {
+            close_files_panel(state, id);
+        }
+    }
+}
+
+/// Uma aba de conteúdo fechou: solta o que só ela segurava — o `docker logs
+/// -f` do container, o painel de arquivos/LSP da sessão do editor.
+fn release_content_view(state: &AppState, view: &str) {
+    let still_open = state
+        .layout
+        .state()
+        .workspaces
+        .iter()
+        .flat_map(|w| w.tabs.iter())
+        .any(|t| t.view.as_deref() == Some(view));
+    if still_open {
+        return;
+    }
+    // O seguidor de logs é solto pelo `emit_layout` (vale para todo caminho
+    // que tira a aba, não só este).
+    if let Some(session) = layout::editor_view_session(view) {
+        let files_open = state
+            .layout
+            .state()
+            .workspaces
+            .iter()
+            .any(|w| w.side_view.as_deref() == Some(layout::files_view(session).as_str()));
+        if !files_open && !state.layout.has_editor_tabs(session) {
+            close_files_panel(state, session);
+        }
     }
 }
 
@@ -2293,32 +2565,6 @@ async fn files_search(
 }
 
 #[tauri::command]
-async fn files_focus(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: SessionId,
-    path: Option<String>,
-) -> Result<Vec<files::gutter::GutterMarker>, String> {
-    if let Some(t) = remote_target(&state, id) {
-        let (rf, alias, tmux) = t?;
-        let panel = open_remote_panel(rf, id, alias, tmux).await?;
-        panel.set_open(path.clone());
-        return Ok(match path {
-            Some(rel) => on_remote(panel, move |p| p.gutter(&rel)).await?,
-            None => Vec::new(),
-        });
-    }
-    state
-        .files
-        .ensure(&app, id, || resolve_files_root(&state, id))?;
-    state.files.set_open(id, path.clone());
-    Ok(match path {
-        Some(rel) => state.files.gutter(id, &rel),
-        None => Vec::new(),
-    })
-}
-
-#[tauri::command]
 async fn files_gutter(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -2372,57 +2618,55 @@ fn files_edit_end(state: State<'_, AppState>, id: SessionId) {
 }
 
 #[tauri::command]
-fn lsp_status(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: SessionId,
-    path: String,
-) -> Result<lsp::LspStatus, String> {
-    // LSP é local-only (fatia 3): sessão SSH nunca sobe server (o LSP remoto é a
-    // fatia 4b). Guarda no core — não resolve raiz local nem spawna. UI espelha.
-    if is_ssh_session(&state, id) {
-        return Ok(lsp::LspStatus::Unsupported);
-    }
-    let (root, _ctx) = state
-        .files
-        .ensure(&app, id, || resolve_files_root(&state, id))?;
-    Ok(state.lsp.status(id, &path, &root))
+async fn lsp_status(app: AppHandle, id: SessionId, path: String) -> Result<lsp::LspStatus, String> {
+    off_main(app, move |app, state| {
+        // LSP é local-only (fatia 3): sessão SSH nunca sobe server (o LSP remoto é a
+        // fatia 4b). Guarda no core — não resolve raiz local nem spawna. UI espelha.
+        if is_ssh_session(&state, id) {
+            return Ok(lsp::LspStatus::Unsupported);
+        }
+        let (root, _ctx) = state
+            .files
+            .ensure(app, id, || resolve_files_root(&state, id))?;
+        Ok(state.lsp.status(id, &path, &root))
+    })
+    .await?
 }
 
 #[tauri::command]
-fn lsp_open(
+async fn lsp_open(
     app: AppHandle,
-    state: State<'_, AppState>,
     id: SessionId,
     path: String,
     text: String,
     spawn: bool,
 ) -> Result<lsp::LspStatus, String> {
-    if is_ssh_session(&state, id) {
-        return Ok(lsp::LspStatus::Unsupported);
-    }
-    let (root, _ctx) = state
-        .files
-        .ensure(&app, id, || resolve_files_root(&state, id))?;
-    files::resolve_within(&root, &path)?;
-    Ok(state.lsp.open(&app, id, &root, &path, &text, spawn))
+    off_main(app, move |app, state| {
+        if is_ssh_session(&state, id) {
+            return Ok(lsp::LspStatus::Unsupported);
+        }
+        let (root, _ctx) = state
+            .files
+            .ensure(app, id, || resolve_files_root(&state, id))?;
+        files::resolve_within(&root, &path)?;
+        Ok(state.lsp.open(app, id, &root, &path, &text, spawn))
+    })
+    .await?
 }
 
 #[tauri::command]
-fn lsp_retry(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: SessionId,
-    path: String,
-) -> Result<lsp::LspStatus, String> {
-    if is_ssh_session(&state, id) {
-        return Ok(lsp::LspStatus::Unsupported);
-    }
-    let (root, _ctx) = state
-        .files
-        .ensure(&app, id, || resolve_files_root(&state, id))?;
-    files::resolve_within(&root, &path)?;
-    Ok(state.lsp.retry(&app, id, &root, &path))
+async fn lsp_retry(app: AppHandle, id: SessionId, path: String) -> Result<lsp::LspStatus, String> {
+    off_main(app, move |app, state| {
+        if is_ssh_session(&state, id) {
+            return Ok(lsp::LspStatus::Unsupported);
+        }
+        let (root, _ctx) = state
+            .files
+            .ensure(app, id, || resolve_files_root(&state, id))?;
+        files::resolve_within(&root, &path)?;
+        Ok(state.lsp.retry(app, id, &root, &path))
+    })
+    .await?
 }
 
 fn managed_progress_emitter(app: &AppHandle) -> Arc<lsp::managed::ProgressEmit> {
@@ -2442,60 +2686,67 @@ fn lsp_managed_registry(state: State<'_, AppState>) -> Vec<lsp::managed::Card> {
 }
 
 #[tauri::command]
-fn lsp_managed_consent(
+async fn lsp_managed_consent(
     app: AppHandle,
-    state: State<'_, AppState>,
     id: SessionId,
     server_id: String,
     decision: lsp::managed::consent::Decision,
     path: String,
 ) -> Result<lsp::LspStatus, String> {
-    if is_ssh_session(&state, id) {
-        return Ok(lsp::LspStatus::Unsupported);
-    }
-    state.managed_lsp.record_decision(&server_id, decision)?;
-    if decision == lsp::managed::consent::Decision::Accept {
-        state
-            .managed_lsp
-            .start_download(&server_id, managed_progress_emitter(&app))?;
-    }
-    let (root, _ctx) = state
-        .files
-        .ensure(&app, id, || resolve_files_root(&state, id))?;
-    Ok(state.lsp.status(id, &path, &root))
+    off_main(app, move |app, state| {
+        if is_ssh_session(&state, id) {
+            return Ok(lsp::LspStatus::Unsupported);
+        }
+        state.managed_lsp.record_decision(&server_id, decision)?;
+        if decision == lsp::managed::consent::Decision::Accept {
+            state
+                .managed_lsp
+                .start_download(&server_id, managed_progress_emitter(app))?;
+        }
+        let (root, _ctx) = state
+            .files
+            .ensure(app, id, || resolve_files_root(&state, id))?;
+        Ok(state.lsp.status(id, &path, &root))
+    })
+    .await?
 }
 
 #[tauri::command]
-fn lsp_managed_download(
+async fn lsp_managed_download(
     app: AppHandle,
-    state: State<'_, AppState>,
     id: SessionId,
     server_id: String,
     path: String,
 ) -> Result<lsp::LspStatus, String> {
-    if is_ssh_session(&state, id) {
-        return Ok(lsp::LspStatus::Unsupported);
-    }
-    if state.managed_lsp.is_consented(&server_id) {
-        state
-            .managed_lsp
-            .start_download(&server_id, managed_progress_emitter(&app))?;
-    }
-    let (root, _ctx) = state
-        .files
-        .ensure(&app, id, || resolve_files_root(&state, id))?;
-    Ok(state.lsp.status(id, &path, &root))
+    off_main(app, move |app, state| {
+        if is_ssh_session(&state, id) {
+            return Ok(lsp::LspStatus::Unsupported);
+        }
+        if state.managed_lsp.is_consented(&server_id) {
+            state
+                .managed_lsp
+                .start_download(&server_id, managed_progress_emitter(app))?;
+        }
+        let (root, _ctx) = state
+            .files
+            .ensure(app, id, || resolve_files_root(&state, id))?;
+        Ok(state.lsp.status(id, &path, &root))
+    })
+    .await?
 }
 
 #[tauri::command]
-fn lsp_managed_use_mine(
-    state: State<'_, AppState>,
+async fn lsp_managed_use_mine(
+    app: AppHandle,
     server_id: String,
 ) -> Result<lsp::InstallHints, String> {
-    state
-        .managed_lsp
-        .record_decision(&server_id, lsp::managed::consent::Decision::UseMine)?;
-    Ok(state.lsp.install_hints(&server_id))
+    off_main(app, move |_app, state| {
+        state
+            .managed_lsp
+            .record_decision(&server_id, lsp::managed::consent::Decision::UseMine)?;
+        Ok(state.lsp.install_hints(&server_id))
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -2530,48 +2781,80 @@ fn lsp_close_doc(state: State<'_, AppState>, id: SessionId, path: String) {
     state.lsp.close_doc(id, &path);
 }
 
+/// Command síncrono do Tauri roda na main thread — a mesma que entrega
+/// teclado, pintura e eventos ao webview. Qualquer espera ali (subprocesso
+/// `git`/`ssh`/`docker`, pedido ao language server, varredura de disco)
+/// congela a janela inteira: foi assim que digitar no editor travava, com o
+/// completar esperando o server até 2,5 s. Trabalho que pode esperar roda
+/// aqui, numa thread de `spawn_blocking`; a guarda
+/// `blocking_commands_are_async` (testes deste arquivo) cobra isso.
+///
+/// O `State` sai do `AppHandle` dentro da tarefa: nada emprestado atravessa o
+/// `.await`. Join que falhou (pânico na tarefa) vira erro de texto.
+async fn off_main<T: Send + 'static>(
+    app: AppHandle,
+    f: impl FnOnce(&AppHandle, State<'_, AppState>) -> T + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || f(&app, app.state::<AppState>()))
+        .await
+        .map_err(|e| format!("tarefa interrompida: {e}"))
+}
+
+/// [`off_main`] para quem não precisa do estado e responde vazio na falha.
+async fn blocking_or_default<T: Default + Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .unwrap_or_default()
+}
+
 #[tauri::command]
-fn lsp_completion(
-    state: State<'_, AppState>,
+async fn lsp_completion(
+    app: AppHandle,
     id: SessionId,
     path: String,
     line: u32,
     character: u32,
 ) -> Vec<lsp::CompletionItem> {
-    state.lsp.completion(id, &path, line, character)
+    let lsp = Arc::clone(&app.state::<AppState>().lsp);
+    blocking_or_default(move || lsp.completion(id, &path, line, character)).await
 }
 
 #[tauri::command]
-fn lsp_hover(
-    state: State<'_, AppState>,
+async fn lsp_hover(
+    app: AppHandle,
     id: SessionId,
     path: String,
     line: u32,
     character: u32,
 ) -> Option<lsp::Hover> {
-    state.lsp.hover(id, &path, line, character)
+    let lsp = Arc::clone(&app.state::<AppState>().lsp);
+    blocking_or_default(move || lsp.hover(id, &path, line, character)).await
 }
 
 #[tauri::command]
-fn lsp_definition(
-    state: State<'_, AppState>,
+async fn lsp_definition(
+    app: AppHandle,
     id: SessionId,
     path: String,
     line: u32,
     character: u32,
 ) -> Vec<lsp::LocationIpc> {
-    state.lsp.definition(id, &path, line, character)
+    let lsp = Arc::clone(&app.state::<AppState>().lsp);
+    blocking_or_default(move || lsp.definition(id, &path, line, character)).await
 }
 
 #[tauri::command]
-fn lsp_signature(
-    state: State<'_, AppState>,
+async fn lsp_signature(
+    app: AppHandle,
     id: SessionId,
     path: String,
     line: u32,
     character: u32,
 ) -> Option<lsp::SignatureHelp> {
-    state.lsp.signature(id, &path, line, character)
+    let lsp = Arc::clone(&app.state::<AppState>().lsp);
+    blocking_or_default(move || lsp.signature(id, &path, line, character)).await
 }
 
 #[tauri::command]
@@ -3031,6 +3314,115 @@ async fn session_branch_hunks(
     )
 }
 
+/// Uma página do histórico do repo da sessão (aba "git · histórico"). Tudo
+/// fora da main thread e do runtime (`off_main`): resolver o repo da sessão e
+/// o `log` esperam processo, e num repo grande são dezenas de ms.
+#[tauri::command]
+async fn repo_log(
+    app: AppHandle,
+    id: SessionId,
+    filter: worktree::log::LogFilter,
+    cursor: Option<worktree::log::LogCursor>,
+    limit: Option<usize>,
+) -> Result<worktree::log::LogPage, String> {
+    off_main(app, move |_, state| {
+        let ctx = session_repo_context(&state, id)?;
+        worktree::log::log_page(
+            &ctx.path,
+            &filter,
+            cursor.as_ref(),
+            limit.unwrap_or(worktree::log::PAGE_DEFAULT),
+        )
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn repo_commit_detail(
+    app: AppHandle,
+    id: SessionId,
+    sha: String,
+) -> Result<worktree::log::CommitDetail, String> {
+    off_main(app, move |_, state| {
+        let ctx = session_repo_context(&state, id)?;
+        worktree::log::commit_detail(&ctx.path, &sha)
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn repo_commit_hunks(
+    app: AppHandle,
+    id: SessionId,
+    sha: String,
+    path: String,
+    old_path: Option<String>,
+) -> Result<worktree::diff::FileHunks, String> {
+    off_main(app, move |_, state| {
+        let ctx = session_repo_context(&state, id)?;
+        worktree::log::commit_hunks(&ctx.path, &sha, &path, old_path.as_deref())
+    })
+    .await?
+}
+
+/// Checkout/cherry-pick/revert de um commit do histórico. Só a UI chama, por
+/// clique; árvore suja exige `allow_dirty` (a UI confirmou antes).
+#[tauri::command]
+async fn repo_commit_action(
+    app: AppHandle,
+    id: SessionId,
+    sha: String,
+    action: worktree::log::CommitAction,
+    allow_dirty: bool,
+) -> Result<(), AppError> {
+    off_main(app, move |_, state| {
+        let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+        worktree::log::apply_commit_action(&ctx.path, &sha, action, allow_dirty)
+    })
+    .await
+    .map_err(|e| AppError::new("history.failed").with("detail", e))?
+}
+
+#[tauri::command]
+async fn repo_log_stats(
+    app: AppHandle,
+    id: SessionId,
+    filter: worktree::log::LogFilter,
+) -> Result<worktree::log::LogStats, String> {
+    off_main(app, move |_, state| {
+        let ctx = session_repo_context(&state, id)?;
+        worktree::log::log_stats(&ctx.path, &filter)
+    })
+    .await?
+}
+
+/// Grava o commit-graph (escreve no repo) — só por clique, depois da
+/// confirmação que diz isso.
+#[tauri::command]
+async fn repo_commit_graph_write(app: AppHandle, id: SessionId) -> Result<(), String> {
+    off_main(app, move |_, state| {
+        let ctx = session_repo_context(&state, id)?;
+        worktree::log::write_commit_graph(&ctx.path)
+    })
+    .await?
+}
+
+/// Histórico do repo da sessão como ABA de conteúdo.
+#[tauri::command]
+async fn open_git_log_tab(app: AppHandle, id: SessionId) -> Result<(), String> {
+    off_main(app, move |app, state| {
+        session_repo_context(&state, id)?;
+        let ws = state.layout.workspace_of_session(id);
+        state
+            .layout
+            .open_content_tab(ws, &layout::git_log_view(id))
+            .map_err(|e| e.to_string())?;
+        emit_layout(app, &state);
+        Ok(())
+    })
+    .await?
+}
+
 fn known_worktree_paths(
     sessions: &SharedSessionManager,
 ) -> std::collections::HashSet<std::path::PathBuf> {
@@ -3049,63 +3441,162 @@ fn write_to_session(state: State<'_, AppState>, id: SessionId, data: String) -> 
     state.pty_pool.write(id, &bytes).map_err(|e| e.to_string())
 }
 
+/// O que um "Conectar" fez. Espelha `ConnectHostResult` em `ipc.ts`.
+#[derive(serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ConnectHostResult {
+    /// Sessão nova, já num workspace próprio.
+    Opened { session: Session },
+    /// Já havia uma conexão a este Host conectando: nada foi aberto e o foco
+    /// foi para o pane dela.
+    Existing { session: Session },
+    /// O pedido anterior ainda não tem sessão; este não abre nada.
+    AlreadyConnecting,
+}
+
+/// "Conectar" de um Host salvo: SSH Session + workspace, numa chamada só.
+///
+/// Idempotente por Host enquanto a conexão está em voo
+/// ([`crate::ssh::connect_gate`]): clique repetido não vira N sessões. Sessão a
+/// mais no mesmo Host continua possível pelos caminhos explícitos (nova aba,
+/// split, e "Conectar" de novo depois que a primeira logou), que não passam
+/// pelo portão ou já o encontram livre.
+#[tauri::command]
+async fn connect_host(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    host_id: String,
+) -> Result<ConnectHostResult, String> {
+    // O portão vem antes de qualquer `await`: é nessa janela que o segundo
+    // clique chegava.
+    let still_connecting = |id: SessionId| {
+        state
+            .sessions
+            .get(id)
+            .is_some_and(|s| s.connection == session::ConnectionState::Connecting)
+    };
+    let ticket = match state.connect_gate.begin(&host_id, still_connecting) {
+        Ok(ticket) => ticket,
+        Err(crate::ssh::connect_gate::InFlight::Starting) => {
+            return Ok(ConnectHostResult::AlreadyConnecting)
+        }
+        Err(crate::ssh::connect_gate::InFlight::Session(id)) => {
+            let Some(session) = state.sessions.get(id) else {
+                return Ok(ConnectHostResult::AlreadyConnecting);
+            };
+            if let Some(pane) = state.layout.pane_of_session(id) {
+                if state.layout.focus_pane(pane).is_ok() {
+                    emit_layout(&app, &state);
+                }
+            }
+            return Ok(ConnectHostResult::Existing { session });
+        }
+    };
+
+    let _ = wait_for_boot(Arc::clone(&state.boot)).await;
+
+    let host = state
+        .store
+        .load_hosts()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|h| h.id == host_id)
+        .ok_or_else(|| {
+            crate::error::AppError::new("ssh.host_not_found")
+                .with("id", host_id.clone())
+                .to_string()
+        })?;
+    let group = match &host.group_id {
+        Some(gid) => state
+            .store
+            .load_host_groups()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|g| &g.id == gid)
+            .map(|g| g.name),
+        None => None,
+    };
+
+    let session = open_ssh_session(&app, &state, &host, 100, 30)?;
+    if let Err(e) = state.layout.create_workspace_tagged(
+        &host.alias,
+        None,
+        session.id,
+        layout::Tag {
+            lock_name: true,
+            color: host.color.clone(),
+            group,
+        },
+    ) {
+        // Sessão sem pane seria uma conexão ao Host que ninguém vê.
+        state.sessions.dispose(&state.pty_pool, session.id);
+        return Err(e.to_string());
+    }
+    ticket.opened(session.id);
+    emit_layout(&app, &state);
+    run_setup_if_consented(&app, &state, &session);
+    Ok(ConnectHostResult::Opened { session })
+}
+
 /// Abre um Host Group inteiro como **panes de um workspace só** — é o que dá
 /// sentido visual ao broadcast: digitar uma vez e conferir as N saídas lado a
 /// lado. Um workspace por host deixaria a rajada acontecendo fora da tela.
 #[tauri::command]
-fn connect_host_group(
+async fn connect_host_group(
     app: AppHandle,
-    state: State<'_, AppState>,
     host_ids: Vec<String>,
     name: String,
     color: Option<String>,
     group: Option<String>,
 ) -> Result<Vec<Session>, String> {
-    let hosts = state.store.load_hosts().map_err(|e| e.to_string())?;
-    let picked: Vec<_> = host_ids
-        .iter()
-        .filter_map(|id| hosts.iter().find(|h| &h.id == id))
-        .collect();
-    if picked.is_empty() {
-        return Err(crate::error::AppError::new("ssh.host_not_found").to_string());
-    }
-
-    let mut opened: Vec<Session> = Vec::new();
-    let mut last_pane: Option<layout::PaneId> = None;
-
-    for host in picked {
-        let session = open_ssh_session(&app, &state, host, 100, 30)?;
-
-        match last_pane {
-            None => {
-                state
-                    .layout
-                    .create_workspace_tagged(
-                        &name,
-                        None,
-                        session.id,
-                        layout::Tag {
-                            lock_name: true,
-                            color: color.clone(),
-                            group: group.clone(),
-                        },
-                    )
-                    .map_err(|e| e.to_string())?;
-            }
-            Some(pane) => {
-                // Vertical: as saídas ficam lado a lado, que é o ponto de olhar
-                // N hosts ao mesmo tempo.
-                state
-                    .layout
-                    .split_pane(pane, layout::SplitKind::V, session.id)
-                    .map_err(|e| e.to_string())?;
-            }
+    off_main(app, move |app, state| {
+        let hosts = state.store.load_hosts().map_err(|e| e.to_string())?;
+        let picked: Vec<_> = host_ids
+            .iter()
+            .filter_map(|id| hosts.iter().find(|h| &h.id == id))
+            .collect();
+        if picked.is_empty() {
+            return Err(crate::error::AppError::new("ssh.host_not_found").to_string());
         }
-        last_pane = state.layout.pane_of_session(session.id);
-        opened.push(session);
-    }
-    emit_layout(&app, &state);
-    Ok(opened)
+
+        let mut opened: Vec<Session> = Vec::new();
+        let mut last_pane: Option<layout::PaneId> = None;
+
+        for host in picked {
+            let session = open_ssh_session(app, &state, host, 100, 30)?;
+
+            match last_pane {
+                None => {
+                    state
+                        .layout
+                        .create_workspace_tagged(
+                            &name,
+                            None,
+                            session.id,
+                            layout::Tag {
+                                lock_name: true,
+                                color: color.clone(),
+                                group: group.clone(),
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
+                Some(pane) => {
+                    // Vertical: as saídas ficam lado a lado, que é o ponto de olhar
+                    // N hosts ao mesmo tempo.
+                    state
+                        .layout
+                        .split_pane(pane, layout::SplitKind::V, session.id)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            last_pane = state.layout.pane_of_session(session.id);
+            opened.push(session);
+        }
+        emit_layout(app, &state);
+        Ok(opened)
+    })
+    .await?
 }
 
 /// Espelha tecla crua nos alvos. Sem gate de propósito: tecla não executa nada
@@ -3284,16 +3775,19 @@ fn session_rel_path(state: State<'_, AppState>, id: SessionId, path: String) -> 
 }
 
 #[tauri::command]
-fn list_worktree_files(
-    state: State<'_, AppState>,
+async fn list_worktree_files(
+    app: AppHandle,
     id: SessionId,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<String>, String> {
-    let cwd = session_cwd_of(&state, id)?;
-    state
-        .worktree_files
-        .files_for(&cwd, &query, limit.unwrap_or(50).min(500))
+    off_main(app, move |_app, state| {
+        let cwd = session_cwd_of(&state, id)?;
+        state
+            .worktree_files
+            .files_for(&cwd, &query, limit.unwrap_or(50).min(500))
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -3687,6 +4181,7 @@ async fn spawn_slot(
                 shell: None,
                 initial_prompt: slot.initial_prompt.clone(),
                 opened_by_gate: false,
+                resume_conversation: None,
             },
         )
         .await;
@@ -3734,6 +4229,7 @@ async fn spawn_slot(
             shell: None,
             initial_prompt: slot.initial_prompt.clone(),
             opened_by_gate: false,
+            resume_conversation: None,
         },
     )
     .await
@@ -4064,7 +4560,18 @@ fn create_tab(
 
 #[tauri::command]
 fn close_tab(app: AppHandle, state: State<'_, AppState>, id: layout::TabId) -> Result<(), String> {
+    let view = state
+        .layout
+        .state()
+        .workspaces
+        .iter()
+        .flat_map(|w| w.tabs.iter())
+        .find(|t| t.id == id)
+        .and_then(|t| t.view.clone());
     let bound = state.layout.close_tab(id).map_err(|e| e.to_string())?;
+    if let Some(view) = view {
+        release_content_view(&state, &view);
+    }
     dispose_shells(&state, &bound);
     emit_layout(&app, &state);
     Ok(())
@@ -4150,16 +4657,16 @@ fn new_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_editors() -> Vec<editor::Editor> {
-    editor::detect()
+async fn list_editors() -> Vec<editor::Editor> {
+    blocking_or_default(editor::detect).await
 }
 
 /// Shells que o usuário pode escolher ao abrir uma sessão. No Windows: PowerShell
 /// 7, Windows PowerShell, Prompt de Comando e cada distro WSL instalada. Fora do
 /// Windows: uma entrada com o `$SHELL` do usuário.
 #[tauri::command]
-fn list_shells() -> Vec<session::ShellOption> {
-    session::available_shells()
+async fn list_shells() -> Vec<session::ShellOption> {
+    blocking_or_default(session::available_shells).await
 }
 
 #[tauri::command]
@@ -4392,16 +4899,21 @@ async fn docker_list_containers(
     .await?
 }
 
+/// `bash` se o container tiver (sem rc: o `/etc/bash.bashrc` do Debian
+/// sobrescreveria o prompt), senão `sh`. O prompt é o marcador azul do container.
+const CONTAINER_SHELL_SCRIPT: &str = "if command -v bash >/dev/null 2>&1; then export PS1='\\[\\e[34m\\]'\"$TYBA_CTR\"' ❯\\[\\e[0m\\] '; exec bash --norc -i; else export PS1=\"$(printf '\\033[34m')$TYBA_CTR ❯$(printf '\\033[0m') \"; exec sh -i; fi";
+
 fn open_container_tab(
     app: &AppHandle,
     state: &State<'_, AppState>,
     container_id: &str,
     tab: docker::ContainerTab,
     host: Option<&str>,
+    in_active_workspace: bool,
 ) -> Result<(), String> {
     let name = state
         .docker
-        .container_name(container_id)
+        .ensure_known(container_id, host)
         .map_err(|e| e.to_string())?;
 
     if let Some(existing) = state.docker.tab_session(container_id, tab) {
@@ -4427,9 +4939,13 @@ fn open_container_tab(
             .find(|h| h.alias == alias)?;
         Some(host)
     });
-    let workspace_id = match &remote {
-        Some(_) => None,
-        None => Some(state.layout.docker_workspace().map_err(|e| e.to_string())?),
+    // Pelo painel lateral (aba de conteúdo), a aba nasce ao lado das do
+    // workspace em uso; pelo painel de containers, no workspace do Docker.
+    let active = state.layout.state().active_workspace;
+    let workspace_id = match (&remote, in_active_workspace, active) {
+        (Some(_), _, _) => None,
+        (None, true, Some(ws)) => Some(ws),
+        (None, _, _) => Some(state.layout.docker_workspace().map_err(|e| e.to_string())?),
     };
 
     if let Some(alias) = host {
@@ -4451,10 +4967,19 @@ fn open_container_tab(
             vec![
                 "exec".to_string(),
                 "-it".to_string(),
+                // O nome vai por env, nunca interpolado no script: o prompt
+                // azul diz "isto é o container" sem abrir porta para injeção.
+                "-e".to_string(),
+                format!(
+                    "TYBA_CTR={}",
+                    name.chars()
+                        .filter(|c| c.is_ascii_alphanumeric() || "_.-".contains(*c))
+                        .collect::<String>()
+                ),
                 container_id.to_string(),
                 "sh".to_string(),
                 "-c".to_string(),
-                "command -v bash >/dev/null && exec bash || exec sh".to_string(),
+                CONTAINER_SHELL_SCRIPT.to_string(),
             ],
             format!("sh: {name}"),
         ),
@@ -4584,35 +5109,345 @@ fn spawn_tab_session(
 }
 
 #[tauri::command]
-fn docker_open_logs(
+async fn docker_open_shell(
     app: AppHandle,
-    state: State<'_, AppState>,
     container_id: String,
     host: Option<String>,
 ) -> Result<(), String> {
-    open_container_tab(
-        &app,
-        &state,
-        &container_id,
-        docker::ContainerTab::Logs,
-        host.as_deref(),
-    )
+    off_main(app, move |app, state| {
+        open_container_tab(
+            app,
+            &state,
+            &container_id,
+            docker::ContainerTab::Shell,
+            host.as_deref(),
+            false,
+        )
+    })
+    .await?
+}
+
+#[derive(serde::Serialize)]
+struct EditorTabOpened {
+    session: SessionId,
+    rel: String,
+    view: String,
+}
+
+/// Abre (ou foca) a aba de editor de um arquivo. `path` pode ser absoluto (link
+/// de log já mapeado para o host) ou relativo à raiz/repo da sessão. Sem
+/// `session`, tenta as sessões do workspace ativo, da em foco para as demais.
+#[tauri::command]
+async fn open_editor_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session: Option<SessionId>,
+    path: String,
+) -> Result<EditorTabOpened, String> {
+    let candidates = match session {
+        Some(s) => vec![s],
+        None => state.layout.active_sessions(),
+    };
+    let mut last_err = "nenhuma sessão para abrir o arquivo".to_string();
+    for sid in candidates {
+        let (root, remote) = match remote_target(&state, sid) {
+            Some(t) => {
+                let (rf, alias, tmux) = t?;
+                let root = open_remote_panel(rf, sid, alias, tmux).await?.info().root;
+                (std::path::PathBuf::from(root), true)
+            }
+            None => match state
+                .files
+                .ensure(&app, sid, || resolve_files_root(&state, sid))
+            {
+                Ok((root, _)) => (root, false),
+                Err(e) => {
+                    last_err = e;
+                    continue;
+                }
+            },
+        };
+        let repo_root = if remote {
+            None
+        } else {
+            files::find_repo_root(&root)
+        };
+        match files::editor_rel_path(&root, repo_root.as_deref(), &path, |p| {
+            remote || p.is_file()
+        }) {
+            Ok(rel) => {
+                let view = layout::editor_view(sid, &rel);
+                let ws = state.layout.workspace_of_session(sid);
+                state
+                    .layout
+                    .open_content_tab(ws, &view)
+                    .map_err(|e| e.to_string())?;
+                emit_layout(&app, &state);
+                return Ok(EditorTabOpened {
+                    session: sid,
+                    rel,
+                    view,
+                });
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
+
+/// Diff da sessão como ABA (ao lado das de terminal), com o mesmo conteúdo do
+/// painel de diff.
+#[tauri::command]
+async fn open_diff_content_tab(app: AppHandle, id: SessionId) -> Result<(), String> {
+    off_main(app, move |app, state| {
+        session_repo_context(&state, id)?;
+        let ws = state.layout.workspace_of_session(id);
+        state
+            .layout
+            .open_content_tab(ws, &layout::session_diff_view(id))
+            .map_err(|e| e.to_string())?;
+        emit_layout(app, &state);
+        Ok(())
+    })
+    .await?
+}
+
+/// ⌘[ — volta para a aba usada antes da atual.
+#[tauri::command]
+fn back_tab(app: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
+    let moved = state.layout.back_tab().map_err(|e| e.to_string())?;
+    if moved {
+        emit_layout(&app, &state);
+    }
+    Ok(moved)
+}
+
+/// Aba de conteúdo de container a partir do painel lateral: `logs` (view
+/// estruturada), `shell` (PTY de `docker exec`) ou `files` (painel lateral,
+/// só leitura). Nasce no workspace em uso, ao lado das abas de terminal.
+#[tauri::command]
+async fn container_open_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    kind: String,
+    container_id: String,
+    host: Option<String>,
+) -> Result<(), String> {
+    let docker = Arc::clone(&state.docker);
+    let id = container_id.clone();
+    let probe_host = host.clone();
+    docker_blocking(move || docker.ensure_known(&id, probe_host.as_deref()))
+        .await?
+        .map_err(|e| e.to_string())?;
+    match (kind.as_str(), host.as_deref()) {
+        ("shell", _) => open_container_tab(
+            &app,
+            &state,
+            &container_id,
+            docker::ContainerTab::Shell,
+            host.as_deref(),
+            true,
+        ),
+        // Logs e arquivos estruturados leem o docker local; o do host remoto
+        // continua no terminal de `docker logs -f`.
+        ("logs", Some(_)) => open_container_tab(
+            &app,
+            &state,
+            &container_id,
+            docker::ContainerTab::Logs,
+            host.as_deref(),
+            true,
+        ),
+        ("logs", None) => {
+            let view = format!("{}{container_id}", layout::VIEW_CONTAINER_LOGS_PREFIX);
+            let ws = match state.layout.state().active_workspace {
+                Some(ws) => ws,
+                None => state.layout.docker_workspace().map_err(|e| e.to_string())?,
+            };
+            state
+                .layout
+                .open_content_tab(Some(ws), &view)
+                .map_err(|e| e.to_string())?;
+            emit_layout(&app, &state);
+            Ok(())
+        }
+        ("files", Some(_)) => Err("arquivos de container remoto ainda não são suportados".into()),
+        ("files", None) => {
+            let view = format!("{}{container_id}", layout::VIEW_CONTAINER_FILES_PREFIX);
+            let previous = state
+                .layout
+                .state()
+                .active_workspace
+                .and_then(|ws| workspace_side_view(&state, ws));
+            state
+                .layout
+                .open_active_side_view(&view)
+                .map_err(|e| e.to_string())?;
+            close_orphaned_files_panel(&state, previous, None);
+            emit_layout(&app, &state);
+            Ok(())
+        }
+        (other, _) => Err(format!("aba de container desconhecida: {other}")),
+    }
+}
+
+/// Liga (ou reaproveita) o `docker logs -f` do container e devolve o que já
+/// foi lido. As linhas novas chegam em lote por `docker-logs://<id>`.
+#[tauri::command]
+async fn docker_logs_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    container_id: String,
+) -> Result<docker::logs::LogsSnapshot, String> {
+    // Aba já fechada (corrida com o fechamento): não liga seguidor que nenhum
+    // `emit_layout` voltaria a soltar.
+    if !layout::open_log_containers(&state.layout.state()).contains(&container_id) {
+        return Err("aba de logs não está aberta".into());
+    }
+    let docker = Arc::clone(&state.docker);
+    let logs = Arc::clone(&state.docker_logs);
+    docker_blocking(move || {
+        // Sem inspect (container removido) ainda dá para ler o que houver;
+        // só os links de arquivo ficam desabilitados.
+        let mapping = docker
+            .detail(&container_id, None)
+            .map(|d| docker::logs::PathMapping {
+                workdir: d.workdir,
+                mounts: d.mounts,
+            })
+            .unwrap_or_default();
+        let event = format!("docker-logs://{container_id}");
+        let emit: docker::logs::Emit = Arc::new(move |batch| {
+            let _ = app.emit(&event, batch);
+        });
+        logs.start(&container_id, mapping, emit, |since| {
+            docker::spawn_logs_follow(&container_id, since.as_deref(), None)
+                .map_err(|e| e.to_string())
+        })
+    })
+    .await?
 }
 
 #[tauri::command]
-fn docker_open_shell(
-    app: AppHandle,
+async fn docker_container_detail(
     state: State<'_, AppState>,
     container_id: String,
     host: Option<String>,
+) -> Result<docker::ContainerDetail, String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || {
+        docker
+            .detail(&container_id, host.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn docker_container_stats(
+    state: State<'_, AppState>,
+    container_id: String,
+    host: Option<String>,
+) -> Result<docker::ContainerStats, String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || {
+        docker
+            .stats(&container_id, host.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn docker_container_action(
+    state: State<'_, AppState>,
+    container_id: String,
+    action: docker::ContainerAction,
+    host: Option<String>,
 ) -> Result<(), String> {
-    open_container_tab(
-        &app,
-        &state,
-        &container_id,
-        docker::ContainerTab::Shell,
-        host.as_deref(),
-    )
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || {
+        docker
+            .action(&container_id, action, host.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn docker_fs_list(
+    state: State<'_, AppState>,
+    container_id: String,
+    path: String,
+) -> Result<Vec<docker::FsEntry>, String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || {
+        docker
+            .fs_list(&container_id, &path, None)
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn docker_fs_read(
+    state: State<'_, AppState>,
+    container_id: String,
+    path: String,
+) -> Result<docker::FsFile, String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || {
+        docker
+            .fs_read(&container_id, &path, None)
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+/// Texto para a área de transferência, com segredos mascarados (#10).
+#[tauri::command]
+fn export_redacted(lines: Vec<String>) -> String {
+    docker::logs::export_text(&lines)
+}
+
+/// "Baixar": grava o texto mascarado em ~/Downloads e devolve o caminho.
+#[tauri::command]
+async fn export_download(name: String, lines: Vec<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || write_export(name, lines))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn write_export(name: String, lines: Vec<String>) -> Result<String, String> {
+    let home = crate::ssh::home_dir().ok_or("pasta pessoal não encontrada")?;
+    let dir = home.join("Downloads");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let target = docker::logs::download_target(&dir, &name);
+    std::fs::write(&target, docker::logs::export_text(&lines)).map_err(|e| e.to_string())?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn lsp_code_actions(
+    app: AppHandle,
+    id: SessionId,
+    path: String,
+    diagnostics: Vec<lsp::DiagnosticIn>,
+) -> Vec<lsp::QuickFix> {
+    let lsp = Arc::clone(&app.state::<AppState>().lsp);
+    blocking_or_default(move || lsp.code_actions(id, &path, &diagnostics)).await
+}
+
+#[tauri::command]
+async fn lsp_symbol_path(
+    app: AppHandle,
+    id: SessionId,
+    path: String,
+    line: u32,
+    character: u32,
+) -> Vec<String> {
+    let lsp = Arc::clone(&app.state::<AppState>().lsp);
+    blocking_or_default(move || lsp.symbol_path(id, &path, line, character)).await
 }
 
 #[tauri::command]
@@ -4723,6 +5558,7 @@ fn docker_open_project(
                 shell: None,
                 initial_prompt: None,
                 opened_by_gate: false,
+                resume_conversation: None,
             },
             move |id| session_exited(&handle, id),
         )
@@ -4784,7 +5620,9 @@ async fn docker_remove_container(
     host: Option<String>,
 ) -> Result<(), String> {
     let docker = Arc::clone(&state.docker);
+    let logs = Arc::clone(&state.docker_logs);
     docker_blocking(move || {
+        logs.stop(&container_id);
         docker
             .remove(&container_id, host.as_deref())
             .map_err(|e| e.to_string())
@@ -4793,7 +5631,45 @@ async fn docker_remove_container(
 }
 
 #[tauri::command]
-fn docker_open_desktop() -> Result<(), String> {
+async fn docker_container_op(
+    state: State<'_, AppState>,
+    container_id: String,
+    op: docker::ContainerOp,
+    host: Option<String>,
+) -> Result<(), String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || {
+        docker
+            .container_op(&container_id, op, host.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+/// CPU/RAM e motivo de saída para o painel Docker (só ele chama, só aberto).
+#[tauri::command]
+async fn docker_panel_usage(
+    state: State<'_, AppState>,
+    exited: Vec<String>,
+    host: Option<String>,
+) -> Result<docker::PanelUsage, String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || {
+        docker
+            .panel_usage(&exited, host.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn docker_open_desktop() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(open_docker_desktop)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn open_docker_desktop() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let attempts: [&[&str]; 2] = [&["-a", "Docker"], &["-b", "com.docker.docker"]];
@@ -4884,11 +5760,16 @@ fn focus_subagent(
 /// detectar-agente-no-shell) e devolve o cwd do agente pro front encadear o
 /// attach gerenciado. Valida ANTES de matar que a pasta é um repo git — nunca
 /// derruba o agente pra depois falhar o reopen. O shell da sessão sobrevive.
+///
+/// Devolve também o id da conversa que o disk observer tinha ligado (M1 do
+/// claude-monitor), colhido antes do kill: o attach sobe com `--resume` nele e
+/// a conversa do usuário continua, em vez de ficar órfã no disco. `None` (sem
+/// bind, sessão hospedada) cai no comportamento antigo: sessão nova vazia.
 #[tauri::command]
 async fn kill_shell_agent(
     state: State<'_, AppState>,
     session_id: SessionId,
-) -> Result<String, crate::error::AppError> {
+) -> Result<ShellAgentReopen, crate::error::AppError> {
     let agent = state
         .agent_prober
         .detected(session_id)
@@ -4902,6 +5783,7 @@ async fn kill_shell_agent(
             crate::error::AppError::new("agent.reopen_not_git").with("path", cwd.to_string_lossy())
         );
     }
+    let conversation_id = state.disk_observer.bound_conversation(session_id);
     // O grace do SIGTERM (~1,5s) roda fora da thread do command — mesmo padrão
     // do painel remoto: worker do Tokio nunca dorme.
     tauri::async_runtime::spawn_blocking(move || {
@@ -4911,7 +5793,69 @@ async fn kill_shell_agent(
     .map_err(|e| {
         crate::error::AppError::new("agent.reopen_kill_failed").with("detail", e.to_string())
     })??;
-    Ok(cwd.to_string_lossy().into_owned())
+    Ok(ShellAgentReopen {
+        cwd: cwd.to_string_lossy().into_owned(),
+        conversation_id,
+    })
+}
+
+/// O que o front precisa para encadear o attach depois do [`kill_shell_agent`].
+#[derive(serde::Serialize)]
+struct ShellAgentReopen {
+    cwd: String,
+    conversation_id: Option<String>,
+}
+
+/// M6-B: estado da integração com o Claude Code (o plugin do TYBA).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tauri::command]
+async fn claude_plugin_status() -> Result<agent::claude_plugin::PluginStatus, String> {
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or("HOME indisponível")?;
+    // `resolved_binary` pode resolver o PATH de login (`$SHELL -lic`): fora
+    // do worker do runtime.
+    tauri::async_runtime::spawn_blocking(move || agent::claude_plugin::status(&home))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// M6-B: instala o plugin do TYBA no Claude Code do usuário. Só por clique
+/// explícito em Configurações → Integrações: mexe na config global do Claude.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tauri::command]
+async fn install_claude_plugin(
+    app: AppHandle,
+) -> Result<agent::claude_plugin::PluginStatus, String> {
+    let dir = std::env::var_os("TYBA_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| app.path().app_data_dir().ok())
+        .ok_or("pasta de dados do TYBA indisponível")?
+        .join("claude-plugin");
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or("HOME indisponível")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        agent::claude_plugin::install(&dir)?;
+        Ok(agent::claude_plugin::status(&home))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// M6-B: remove o plugin e o marketplace local do Claude Code.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tauri::command]
+async fn uninstall_claude_plugin() -> Result<agent::claude_plugin::PluginStatus, String> {
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or("HOME indisponível")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        agent::claude_plugin::uninstall()?;
+        Ok(agent::claude_plugin::status(&home))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Se a sessão morta ainda dá para retomar pela conversa nativa do agente.
@@ -5029,26 +5973,29 @@ struct SubagentTranscript {
 }
 
 #[tauri::command]
-fn subagent_transcript(
-    state: State<'_, AppState>,
+async fn subagent_transcript(
+    app: AppHandle,
     session_id: SessionId,
     agent_id: String,
     cursor: Option<u64>,
 ) -> Result<SubagentTranscript, String> {
-    let path = state
-        .subagents
-        .resolve_transcript_path(session_id, &agent_id)
-        .ok_or("subagente sem transcript disponível")?;
-    let (entries, cursor, complete) = status::subagent_transcript::read_entries(
-        &path,
-        cursor,
-        status::subagent_transcript::TAIL_ENTRIES,
-    );
-    Ok(SubagentTranscript {
-        entries,
-        cursor,
-        complete,
+    off_main(app, move |_app, state| {
+        let path = state
+            .subagents
+            .resolve_transcript_path(session_id, &agent_id)
+            .ok_or("subagente sem transcript disponível")?;
+        let (entries, cursor, complete) = status::subagent_transcript::read_entries(
+            &path,
+            cursor,
+            status::subagent_transcript::TAIL_ENTRIES,
+        );
+        Ok(SubagentTranscript {
+            entries,
+            cursor,
+            complete,
+        })
     })
+    .await?
 }
 
 #[derive(serde::Serialize)]
@@ -5082,61 +6029,58 @@ async fn detected_agent(
     state: State<'_, AppState>,
     session_id: SessionId,
 ) -> Result<Option<agent::process_probe::AgentDetectedPayload>, String> {
-    let detected = state.agent_prober.detected(session_id);
-    let (hosting, jailed) = detected
-        .as_ref()
-        .map(|d| agent::process_probe::hosting_markers(d.pid))
-        .unwrap_or((false, false));
-    Ok(
-        detected.map(|detected| agent::process_probe::AgentDetectedPayload {
-            session_id,
-            detected: Some(detected),
-            hosting,
-            jailed,
-        }),
-    )
+    Ok(state
+        .agent_prober
+        .detected(session_id)
+        .map(|detected| agent_payload(&state, session_id, Some(detected))))
 }
 
 #[tauri::command]
-fn agent_repo_config(
-    state: State<'_, AppState>,
+async fn agent_repo_config(
+    app: AppHandle,
     repo_root: String,
 ) -> Result<Option<AgentConfigInfo>, String> {
-    let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
-    let root = repo::toplevel(&param)
-        .map(|t| repo::canonicalize_or(&t))
-        .ok_or("fora de repositório git")?;
-    let Some((config, hash)) = repo_config::load(&root).map_err(|e| e.to_string())? else {
-        return Ok(None);
-    };
-    let consent = state
-        .store
-        .config_consent(&root.to_string_lossy(), &hash)
-        .ok()
-        .flatten();
-    Ok(Some(AgentConfigInfo {
-        hash,
-        default_agent: config.default_agent,
-        env_allow: config.env_allow,
-        consent,
-    }))
+    off_main(app, move |_app, state| {
+        let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
+        let root = repo::toplevel(&param)
+            .map(|t| repo::canonicalize_or(&t))
+            .ok_or("fora de repositório git")?;
+        let Some((config, hash)) = repo_config::load(&root).map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        let consent = state
+            .store
+            .config_consent(&root.to_string_lossy(), &hash)
+            .ok()
+            .flatten();
+        Ok(Some(AgentConfigInfo {
+            hash,
+            default_agent: config.default_agent,
+            env_allow: config.env_allow,
+            consent,
+        }))
+    })
+    .await?
 }
 
 #[tauri::command]
-fn set_agent_config_consent(
-    state: State<'_, AppState>,
+async fn set_agent_config_consent(
+    app: AppHandle,
     repo_root: String,
     hash: String,
     allowed: bool,
 ) -> Result<(), String> {
-    let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
-    let root = repo::toplevel(&param)
-        .map(|t| repo::canonicalize_or(&t))
-        .ok_or("fora de repositório git")?;
-    state
-        .store
-        .set_config_consent(&root.to_string_lossy(), &hash, allowed)
-        .map_err(|e| e.to_string())
+    off_main(app, move |_app, state| {
+        let param = repo::canonicalize_or(std::path::Path::new(&repo_root));
+        let root = repo::toplevel(&param)
+            .map(|t| repo::canonicalize_or(&t))
+            .ok_or("fora de repositório git")?;
+        state
+            .store
+            .set_config_consent(&root.to_string_lossy(), &hash, allowed)
+            .map_err(|e| e.to_string())
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -5189,14 +6133,7 @@ async fn submit_shell_line(
     state: State<'_, AppState>,
     id: SessionId,
     text: String,
-) -> Result<(), String> {
-    let bracketed = state
-        .pty_pool
-        .bracketed_paste(id)
-        .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
-    let (normalized, _) = rich_input::normalize(&text);
-    let bytes = shell_line_bytes(&normalized, bracketed)?;
-
+) -> Result<ShellSubmit, String> {
     // A espera vem ANTES do lock de submissão: um shell que demora seguraria a
     // fila de todas as outras sessões por [`LINE_EDITOR_WAIT`].
     //
@@ -5209,8 +6146,48 @@ async fn submit_shell_line(
         .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
     let _ = wait_for_line_editor(gate).await;
 
+    // Lido DEPOIS da espera: quem liga o bracketed paste é o editor de linha
+    // do shell, e lido antes, numa sessão nova, ainda daria `false` — o
+    // multiline seria recusado por um estado que já não valia.
+    let bracketed = state
+        .pty_pool
+        .bracketed_paste(id)
+        .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+    let continuing = state.pty_pool.continuation(id).unwrap_or(false);
+    let (normalized, _) = rich_input::normalize(&text);
+    if shell_line_waits(&normalized, bracketed, continuing) {
+        return Ok(ShellSubmit::Incomplete);
+    }
+    let bytes = shell_line_bytes(&normalized, bracketed)?;
+
     let _submitting = state.rich_input_submit.lock();
-    state.pty_pool.write(id, &bytes).map_err(|e| e.to_string())
+    state
+        .pty_pool
+        .write(id, &bytes)
+        .map_err(|e| e.to_string())?;
+    Ok(ShellSubmit::Sent)
+}
+
+/// O que o Enter da linha do TYBA fez.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ShellSubmit {
+    /// Foi para o shell.
+    Sent,
+    /// O comando está pela metade: nada foi escrito, e a caixa quebra a linha.
+    Incomplete,
+}
+
+/// O Enter deve virar quebra de linha na caixa em vez de submissão?
+///
+/// Só quando o comando inteiro pode sair depois como UM bracketed paste. Sem
+/// bracketed paste (bash 3.2 do macOS) o multiline é recusado, e segurar o
+/// `ls \` na caixa trocaria uma continuação que funciona — o shell no `PS2`,
+/// linha a linha — por um erro. Na continuação o texto é o RESTO de um
+/// comando que o shell já tem: julgá-lo sozinho daria errado (`echo "` fecha
+/// aspas abertas antes, não abre novas).
+fn shell_line_waits(normalized: &str, bracketed: bool, continuing: bool) -> bool {
+    bracketed && !continuing && rich_input::is_incomplete(normalized)
 }
 
 /// O que a linha do TYBA escreve no PTY por um Enter: limpa, texto, quebra.
@@ -5332,7 +6309,13 @@ struct HistoryHit {
 /// Só conta: nada entra no banco antes de o usuário mandar importar. É o que o
 /// convite de primeiro uso mostra.
 #[tauri::command]
-fn scan_shell_history_sources() -> Result<Vec<history::import::source::SourceScan>, String> {
+async fn scan_shell_history_sources() -> Result<Vec<history::import::source::SourceScan>, String> {
+    tauri::async_runtime::spawn_blocking(scan_history_sources)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn scan_history_sources() -> Result<Vec<history::import::source::SourceScan>, String> {
     let Some(home) = ssh::home_dir() else {
         return Ok(Vec::new());
     };
@@ -5349,19 +6332,19 @@ fn scan_shell_history_sources() -> Result<Vec<history::import::source::SourceSca
 /// aqui. O único canal que o agente tem com o core é o socket de hook, e a
 /// resposta dele é uma decisão (`HookAction`), nunca uma ação como esta.
 #[tauri::command]
-fn import_shell_history(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<history::import::ImportReport, String> {
-    let Some(home) = ssh::home_dir() else {
-        return Err("history_import_no_home".into());
-    };
-    let sources = history::import::source::resolve(&home, &|name| std::env::var(name).ok());
-    let report = history::import::run(&state.store, &sources, &mut |progress| {
-        let _ = app.emit(history::import::EVENT_PROGRESS, progress);
+async fn import_shell_history(app: AppHandle) -> Result<history::import::ImportReport, String> {
+    off_main(app, move |app, state| {
+        let Some(home) = ssh::home_dir() else {
+            return Err("history_import_no_home".into());
+        };
+        let sources = history::import::source::resolve(&home, &|name| std::env::var(name).ok());
+        let report = history::import::run(&state.store, &sources, &mut |progress| {
+            let _ = app.emit(history::import::EVENT_PROGRESS, progress);
+        })
+        .map_err(|error| error.to_string())?;
+        Ok(report)
     })
-    .map_err(|error| error.to_string())?;
-    Ok(report)
+    .await?
 }
 
 /// Fuzzy + frecência no core: o webview recebe a lista já ordenada (princípio #1).
@@ -5404,6 +6387,7 @@ fn history_hits(
     cwd: Option<&str>,
     repo_root: Option<&str>,
     limit: usize,
+    ordem: history::Ordem,
 ) -> Result<Vec<HistoryHit>, String> {
     history_hits_filtered(
         state,
@@ -5413,10 +6397,7 @@ fn history_hits(
         None,
         &history::HistoryFilter::default(),
         limit,
-        // O ghost PREVÊ: "o que você provavelmente vai rodar". Aqui o que se
-        // usa todo dia vale mais que o que rodou uma vez — trocar por recência
-        // faria o cinza sugerir o último comando em vez do provável.
-        history::Ordem::Frecencia,
+        ordem,
     )
 }
 
@@ -5498,8 +6479,8 @@ struct CommandSuggestion {
 
 const SUGGEST_LIMIT: usize = 8;
 
-/// O que aparece embaixo da linha de comando: histórico ranqueado por frecência
-/// e snippets, numa lista só. O ranking fica no core (princípio #1) — o webview
+/// O que aparece na lista da linha de comando: histórico em ORDEM DE EXECUÇÃO
+/// e, depois dele, snippets. O ranking fica no core (princípio #1) — o webview
 /// recebe pronto e só desenha.
 #[tauri::command]
 async fn suggest_commands(
@@ -5511,6 +6492,17 @@ async fn suggest_commands(
     command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref())
 }
 
+/// A lista responde "o que eu rodei?", e a resposta é cronológica.
+///
+/// Ela era ordenada por frecência — a mesma conta do ghost — e o comando que
+/// acabou de rodar aparecia no meio, abaixo de um que se usa todo dia. Quem
+/// abre a lista com ↑ espera o gesto do shell: o último executado, já
+/// escolhido, colado na caixa. A frecência continua mandando no cinza (ver
+/// [`ghost_command`]), que é previsão, não registro.
+///
+/// Snippet vem DEPOIS do histórico: antes ele vinha primeiro, e com a lista
+/// abrindo acima da caixa isso o punha no lugar do último comando executado —
+/// justamente o item que o ↑ escolhe.
 fn command_suggestions(
     state: &AppState,
     query: &str,
@@ -5522,42 +6514,89 @@ fn command_suggestions(
 
     let query = query.trim();
     let matcher = SkimMatcherV2::default();
-    let mut out: Vec<CommandSuggestion> = Vec::new();
-
-    // Snippet primeiro quando o nome casa: foi o usuário que o nomeou, então é
-    // mais intencional do que um comando que ele rodou uma vez sem querer.
+    let mut snippets: Vec<CommandSuggestion> = Vec::new();
     if !query.is_empty() {
         for snippet in state.store.list_snippets().unwrap_or_default() {
             if matcher.fuzzy_match(&snippet.name, query).is_some()
                 || snippet.command.starts_with(query)
             {
-                out.push(CommandSuggestion {
+                snippets.push(CommandSuggestion {
                     command: snippet.command,
                     failed: false,
                     kind: "snippet",
                     label: Some(snippet.name),
                 });
             }
-            if out.len() >= 3 {
+            if snippets.len() >= 3 {
                 break;
             }
         }
     }
 
-    let hits = history_hits(state, query, cwd, repo_root, SUGGEST_LIMIT)?;
-    for hit in hits {
-        if out.iter().any(|s| s.command == hit.command) {
-            continue;
+    let history = history_hits(
+        state,
+        query,
+        cwd,
+        repo_root,
+        SUGGEST_LIMIT,
+        history::Ordem::Recencia,
+    )?
+    .into_iter()
+    .map(|hit| CommandSuggestion {
+        command: hit.command,
+        failed: hit.failed,
+        kind: "history",
+        label: None,
+    })
+    .collect();
+    Ok(history_then_snippets(history, snippets, SUGGEST_LIMIT))
+}
+
+/// Histórico na ordem em que chegou, depois os snippets que ainda não estão
+/// nele, até o limite. Snippet que repete um comando do histórico sai: o
+/// histórico já o mostra, e mais perto da caixa.
+fn history_then_snippets(
+    history: Vec<CommandSuggestion>,
+    snippets: Vec<CommandSuggestion>,
+    limit: usize,
+) -> Vec<CommandSuggestion> {
+    let mut out = history;
+    for snippet in snippets {
+        if !out.iter().any(|s| s.command == snippet.command) {
+            out.push(snippet);
         }
-        out.push(CommandSuggestion {
-            command: hit.command,
-            failed: hit.failed,
-            kind: "history",
-            label: None,
-        });
     }
-    out.truncate(SUGGEST_LIMIT);
-    Ok(out)
+    out.truncate(limit);
+    out
+}
+
+/// O resto em cinza: o comando que o dono PROVAVELMENTE vai rodar.
+///
+/// Frecência, e não recência: o que se usa todo dia vale mais que o que rodou
+/// uma vez — trocar por recência faria o cinza sugerir o último comando em vez
+/// do provável. Só serve comando que começa EXATAMENTE com o que está escrito
+/// (sem `trim`): ghost que não é prefixo mentiria sobre o que o `→` completa.
+fn ghost_command(
+    state: &AppState,
+    raw_query: &str,
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
+) -> Option<String> {
+    if raw_query.trim().is_empty() {
+        return None;
+    }
+    history_hits(
+        state,
+        raw_query,
+        cwd,
+        repo_root,
+        SUGGEST_LIMIT,
+        history::Ordem::Frecencia,
+    )
+    .ok()?
+    .into_iter()
+    .map(|hit| hit.command)
+    .find(|command| command.len() > raw_query.len() && command.starts_with(raw_query))
 }
 
 #[derive(serde::Serialize)]
@@ -5573,6 +6612,9 @@ struct BinarySuggestion {
 #[serde(rename_all = "camelCase")]
 struct LineSuggestions {
     commands: Vec<CommandSuggestion>,
+    /// Ver [`ghost_command`]. Separado de `commands` porque as duas perguntas
+    /// têm ordens diferentes: a lista é cronológica, o cinza é frecência.
+    ghost: Option<String>,
     paths: Vec<String>,
     arguments: Vec<ArgumentSuggestion>,
     binaries: Vec<BinarySuggestion>,
@@ -5707,9 +6749,11 @@ async fn suggest_line(
         _ => Vec::new(),
     };
     let commands = command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref())?;
+    let ghost = ghost_command(&state, &query, cwd.as_deref(), repo_root.as_deref());
     let binaries = binary_suggestions(&state, session_id.as_deref(), command_prefix.as_deref());
     Ok(LineSuggestions {
         commands,
+        ghost,
         paths,
         arguments,
         binaries,
@@ -5721,16 +6765,13 @@ async fn suggest_line(
 /// listar para sugerir: nenhuma decisão de segurança sai daqui, e o usuário
 /// alcança qualquer caminho digitando de qualquer jeito.
 #[tauri::command]
-fn complete_path(cwd: String, token: String) -> Vec<String> {
+async fn complete_path(cwd: String, token: String) -> Vec<String> {
     if cwd.is_empty() {
         return Vec::new();
     }
-    completion::complete_path(std::path::Path::new(&cwd), &token)
+    blocking_or_default(move || completion::complete_path(std::path::Path::new(&cwd), &token)).await
 }
 
-/// Subcomando e flag vêm do histórico do próprio dono: para `git co`, os
-/// comandos que começaram com `git `. Personalizado, sem base externa e sem
-/// manutenção — a do Warp é AGPL e está fora de alcance.
 /// Candidatos vindos de quem sabe: o git, o `package.json`, o `Makefile`, o
 /// gestor de conexões.
 ///
@@ -5752,15 +6793,25 @@ fn provider_candidates(
     let root = repo_root.map(std::path::Path::new);
     let here = cwd.map(std::path::Path::new);
 
+    use completion::generator::GitQuery;
+    // Onde o git roda: o diretório do painel, quando ele está dentro do repo —
+    // é o que faz `git add ` em `src/` oferecer `main.rs` e não `src/main.rs`.
+    // Fora do repo (ou sem repo, como na sessão SSH, cujo cwd é de OUTRA
+    // máquina) não há o que perguntar ao git local.
+    let git_dir = root.map(|repo| match here {
+        Some(dir) if dir.starts_with(repo) => dir,
+        _ => repo,
+    });
+    let ask_git = |query: GitQuery| -> Vec<String> {
+        git_dir
+            .map(|dir| completion::generator::run(query, dir))
+            .unwrap_or_default()
+    };
+
     match provider {
-        Provider::GitBranch => {
-            let Some(repo) = root else {
-                return Vec::new();
-            };
-            worktree::branches::list(repo)
-                .map(|list| list.branches.into_iter().map(|b| b.name).collect())
-                .unwrap_or_default()
-        }
+        Provider::GitBranch => ask_git(GitQuery::Branches),
+        Provider::GitRemote => ask_git(GitQuery::Remotes),
+        Provider::GitChangedFile => ask_git(GitQuery::ChangedFiles),
         Provider::NpmScript => here
             .and_then(|dir| find_upwards(dir, "package.json", root))
             .and_then(|path| std::fs::read_to_string(path).ok())
@@ -6032,12 +7083,11 @@ fn set_theme_slot(
 }
 
 #[tauri::command]
-fn import_theme(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<theme::Theme, String> {
-    state.themes.import(&app, &path).map_err(|e| e.to_string())
+async fn import_theme(app: AppHandle, path: String) -> Result<theme::Theme, String> {
+    off_main(app, move |app, state| {
+        state.themes.import(app, &path).map_err(|e| e.to_string())
+    })
+    .await?
 }
 
 /// Abre o banco de sessões — e devolve, junto, o que se perdeu no caminho.
@@ -6209,7 +7259,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 ///
 /// A thread de boot é a única que chama `mark_ready`. Se ela morrer antes
 /// disso, o portão fica fechado PARA SEMPRE, e o sintoma não é um crash: o
-/// splash desiste em `SPLASH_CEILING_MS` e entrega um app sem sessões e sem
+/// splash desiste em [`splash::CEILING`] e entrega um app sem sessões e sem
 /// layout, enquanto todo `create_session`/`apply_launch_config` paga
 /// [`BOOT_WAIT`] antes de fazer qualquer coisa. Falha disfarçada de lentidão.
 /// Enquanto o boot morava no `.setup()`, o mesmo erro matava o app na hora, com
@@ -6342,7 +7392,18 @@ pub fn run() {
             }
         })
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // O splash não tem estado a lembrar, e a visibilidade da `main` é do
+        // `splash::finish`: restaurada pelo plugin, ela apareceria antes de o
+        // app estar pronto, por baixo do splash.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_denylist(&[splash::SPLASH_LABEL])
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        - tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -6362,6 +7423,8 @@ pub fn run() {
         })
         .setup(|app| {
             let setup_span = boot::Span::start("setup.total");
+            app.manage(splash::SplashLatch::default());
+            splash::arm_ceiling(app.handle().clone());
             let (opened_store, store_degraded) = open_store(app.handle());
             let store = Arc::new(opened_store);
 
@@ -6430,6 +7493,7 @@ pub fn run() {
                 themes,
                 layout: Arc::clone(&layout),
                 docker: Arc::new(docker::DockerManager::new()),
+                docker_logs: Arc::new(docker::logs::LogsManager::new()),
                 repos,
                 files: Arc::new(files::FilesManager::new()),
                 remote_files: Arc::new(files::remote::RemoteFilesManager::new()),
@@ -6449,6 +7513,7 @@ pub fn run() {
                 })),
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
                 host_queries,
+                connect_gate: Arc::default(),
                 boot: Arc::clone(&boot_gate),
             });
 
@@ -6457,17 +7522,18 @@ pub fn run() {
             // `channel_app` fecha só o `AppHandle`, e cada conexão relê
             // `app.state::<AppState>()` na hora (o mesmo padrão de
             // `resume_agent_session`), porque `sessions`/`pty_pool`/... só
-            // existem a partir daqui. Bind escopo Linux (`ChannelServer` só
-            // existe sob `target_os = "linux"`, §15 — não `cfg(unix)`: macOS é
-            // unix e o peer cred via SO_PEERCRED que o servidor exige é
-            // Linux-only, ver `hook_ipc::peercred`); falha em bind NÃO é
+            // existem a partir daqui. Liga no Linux e no macOS, onde há peer
+            // cred do kernel (ver `hook_ipc::peercred`); falha em bind NÃO é
             // fatal — o cliente (`tyba _jail`) já é fail-open por construção
             // (§6): sem socket, roda o binário de verdade e sai do caminho.
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 let channel_app = app.handle().clone();
                 let channel_handler: hook_ipc::channel::ChannelHandler =
                     Arc::new(move |peer_pid, request| {
+                        if request.op == hook_ipc::channel::PLUGIN_EVENT_OP {
+                            return handle_plugin_event(&channel_app, peer_pid, &request);
+                        }
                         let state = channel_app.state::<AppState>();
                         let ctx = agent::session::AgentSessionCtx {
                             app: channel_app.clone(),
@@ -6601,6 +7667,7 @@ pub fn run() {
             create_session,
             broadcast_write,
             broadcast_submit,
+            connect_host,
             connect_host_group,
             reconnect_ssh,
             list_agent_keys,
@@ -6644,8 +7711,19 @@ pub fn run() {
             suggest_commit_message,
             session_branch_diff,
             session_branch_hunks,
+            repo_log,
+            repo_commit_detail,
+            repo_commit_hunks,
+            repo_commit_action,
+            repo_log_stats,
+            repo_commit_graph_write,
+            open_git_log_tab,
             open_diff_tab,
             open_tunnels_panel,
+            open_git_panel,
+            open_docker_panel,
+            open_history_panel,
+            history_runs,
             open_files_panel,
             files_panel_info,
             files_list_dir,
@@ -6662,7 +7740,6 @@ pub fn run() {
             files_rename,
             files_delete,
             files_search,
-            files_focus,
             files_gutter,
             files_edit_begin,
             files_edit_end,
@@ -6717,6 +7794,12 @@ pub fn run() {
             open_agents_panel,
             toggle_agent_queue,
             kill_shell_agent,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            claude_plugin_status,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            install_claude_plugin,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            uninstall_claude_plugin,
             can_resume_agent_session,
             resume_agent_session,
             open_subagent_viewer,
@@ -6785,15 +7868,31 @@ pub fn run() {
             list_shells,
             docker_available,
             docker_list_containers,
-            docker_open_logs,
             docker_open_shell,
+            open_editor_tab,
+            open_diff_content_tab,
+            back_tab,
+            container_open_tab,
+            docker_logs_start,
+            docker_container_detail,
+            docker_container_stats,
+            docker_container_action,
+            docker_fs_list,
+            docker_fs_read,
+            export_redacted,
+            export_download,
+            lsp_code_actions,
+            lsp_symbol_path,
             docker_remove_container,
+            docker_container_op,
+            docker_panel_usage,
             docker_open_desktop,
             docker_compose_op,
             docker_open_project,
             docker_open_compose_file,
             docker_open_dashboard,
             open_view_tab,
+            splash::splash_done,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tyba")
@@ -6808,6 +7907,7 @@ pub fn run() {
             if matches!(event, tauri::RunEvent::Exit) {
                 if let Some(state) = app_handle.try_state::<AppState>() {
                     state.pty_pool.kill_all();
+                    state.docker_logs.stop_all();
                 }
             }
         });
@@ -6979,6 +8079,52 @@ mod tests {
         );
     }
 
+    fn sugestao(command: &str, kind: &'static str) -> CommandSuggestion {
+        CommandSuggestion {
+            command: command.to_string(),
+            failed: false,
+            kind,
+            label: None,
+        }
+    }
+
+    /// O último executado fica em primeiro — é ele que encosta na caixa e que
+    /// o ↑ escolhe. Snippet vinha antes e tomava esse lugar.
+    #[test]
+    fn historico_vem_antes_do_snippet_e_o_snippet_repetido_sai() {
+        let out = history_then_snippets(
+            vec![
+                sugestao("ls -la", "history"),
+                sugestao("make deploy", "history"),
+            ],
+            vec![
+                sugestao("make deploy", "snippet"),
+                sugestao("kubectl get pods", "snippet"),
+            ],
+            8,
+        );
+        let ordem: Vec<(&str, &str)> = out.iter().map(|s| (s.command.as_str(), s.kind)).collect();
+        assert_eq!(
+            ordem,
+            vec![
+                ("ls -la", "history"),
+                ("make deploy", "history"),
+                ("kubectl get pods", "snippet"),
+            ]
+        );
+    }
+
+    #[test]
+    fn o_limite_corta_o_snippet_antes_do_historico() {
+        let out = history_then_snippets(
+            vec![sugestao("a", "history"), sugestao("b", "history")],
+            vec![sugestao("c", "snippet")],
+            2,
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|s| s.kind == "history"));
+    }
+
     /// Flag digitada antes do subcomando não vira escopo.
     ///
     /// `git --no-pager log ` continua sendo `log` dentro de `git`. Sem o filtro,
@@ -7053,7 +8199,7 @@ mod tests {
     ) {
         fn assert_future<T>(_: impl std::future::Future<Output = T>) {}
 
-        assert_future::<Result<(), String>>(submit_shell_line(state, id, text));
+        assert_future::<Result<super::ShellSubmit, String>>(submit_shell_line(state, id, text));
     }
 
     /// `ls \` + Enter deixa o shell no `PS2`, e quem digita o resto é a linha
@@ -7071,6 +8217,19 @@ mod tests {
                 b"\x1b=\n".to_vec()
             );
         }
+    }
+
+    /// O Enter só vira quebra de linha onde o comando inteiro poderá sair
+    /// depois como UM bracketed paste, e nunca no meio de uma continuação.
+    #[test]
+    fn comando_pela_metade_espera_so_com_bracketed_e_fora_do_ps2() {
+        assert!(super::shell_line_waits("ls \\", true, false));
+        assert!(super::shell_line_waits("echo 'a", true, false));
+        assert!(!super::shell_line_waits("ls -la", true, false));
+        // bash 3.2: sem bracketed paste o shell continua decidindo no `PS2`.
+        assert!(!super::shell_line_waits("ls \\", false, false));
+        // No `PS2` o texto é o resto: `"` aqui FECHA as aspas de antes.
+        assert!(!super::shell_line_waits("fim\"", true, true));
     }
 
     #[test]
@@ -7397,8 +8556,11 @@ mod tests {
             connection_failure: None,
             agent_conversation_id: None,
             observed: None,
+            agent_model: None,
+            status_note: None,
             opened_by_gate: false,
             did_work: false,
+            agent_usage: None,
         }
     }
 
@@ -7436,6 +8598,7 @@ mod tests {
                 side_view: None,
                 side_ratio: 0.5,
                 side_expanded: false,
+                history: Vec::new(),
                 created_at: chrono::Utc::now(),
             }],
             active_workspace: None,
@@ -7672,6 +8835,7 @@ mod tests {
             // kind nunca latcha.
             opened_by_gate: true,
             did_work: false,
+            agent_usage: None,
             ..agent_session(uuid::Uuid::new_v4(), None)
         };
         assert!(!should_auto_close_gate_tab(&s));
@@ -7741,5 +8905,123 @@ mod tests {
                 hosted
             ));
         }
+    }
+}
+
+/// Guarda de [`off_main`]: command síncrono roda na main thread do Tauri, e
+/// qualquer espera ali congela a janela. Lê este arquivo e recusa command sem
+/// `async` cujo corpo chame algo que sabidamente espera (subprocesso, pedido
+/// ao language server, leitura de disco, sono).
+#[cfg(test)]
+mod command_threading_tests {
+    /// Chamadas que esperam: subprocesso, rede, disco, LSP, sono.
+    const BLOCKING: &[&str] = &[
+        "Command::new(",
+        "std_command()",
+        "repo::toplevel(",
+        "session_repo_context(",
+        "run_docker(",
+        "ensure_known(",
+        "open_container_tab(",
+        "master_alive(",
+        "require_session_if_password(",
+        "open_on_master(",
+        "close_on_master(",
+        "open_ssh_session(",
+        "recv_timeout(",
+        ".recv()",
+        "thread::sleep(",
+        "read_dir(",
+        "std::fs::",
+        "lsp.open(",
+        "lsp.retry(",
+        "lsp.status(",
+        "lsp.completion(",
+        "lsp.hover(",
+        "lsp.definition(",
+        "lsp.signature(",
+        "lsp.code_actions(",
+        "lsp.symbol_path(",
+        "install_hints(",
+        "editor::detect(",
+        "available_shells(",
+        "completion::complete_path(",
+        "read_entries(",
+        "history::import::run(",
+        "themes.import(",
+        "files_for(",
+    ];
+
+    /// Síncronos de propósito, com o motivo.
+    const ALLOWED: &[(&str, &str)] = &[(
+        "submit_rich_input",
+        "50 ms entre colar e Enter; síncrono para manter a ordem com write_to_session",
+    )];
+
+    /// (nome, corpo) de cada `#[tauri::command]` sem `async`.
+    fn sync_commands(src: &str) -> Vec<(String, String)> {
+        let lines: Vec<&str> = src.lines().collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            if lines[i].trim_start().starts_with("#[tauri::command") {
+                let mut j = i + 1;
+                while j < lines.len()
+                    && (lines[j].trim_start().starts_with("#[")
+                        || lines[j].trim_start().starts_with("//"))
+                {
+                    j += 1;
+                }
+                let sig = lines.get(j).copied().unwrap_or("").trim_start();
+                let sig = sig.strip_prefix("pub ").unwrap_or(sig);
+                if let Some(rest) = sig.strip_prefix("fn ") {
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    let end = (j..lines.len()).find(|&k| lines[k] == "}").unwrap_or(j);
+                    out.push((name, lines[j..=end].join("\n")));
+                }
+                i = j;
+            }
+            i += 1;
+        }
+        out
+    }
+
+    fn offenders(src: &str) -> Vec<String> {
+        sync_commands(src)
+            .into_iter()
+            .filter(|(name, _)| !ALLOWED.iter().any(|(n, _)| n == name))
+            .filter_map(|(name, body)| {
+                let hits: Vec<&str> = BLOCKING
+                    .iter()
+                    .copied()
+                    .filter(|t| body.contains(t))
+                    .collect();
+                (!hits.is_empty()).then(|| format!("{name}: {}", hits.join(", ")))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn blocking_commands_are_async() {
+        let src = include_str!("lib.rs");
+        // Se o leitor parar de achar os commands, a guarda passaria calada.
+        assert!(sync_commands(src).len() > 50, "leitor de commands quebrou");
+        let found = offenders(src);
+        assert!(
+            found.is_empty(),
+            "command síncrono com espera (roda na main thread e congela a UI) — \
+             torne-o async com off_main/spawn_blocking: {found:#?}"
+        );
+    }
+
+    #[test]
+    fn guard_flags_a_sync_command_that_spawns() {
+        let src =
+            "#[tauri::command]\nfn bad(state: State<'_, AppState>) {\n    repo::toplevel(&p);\n}\n\
+                   #[tauri::command]\nasync fn good() {\n    repo::toplevel(&p);\n}\n";
+        assert_eq!(offenders(src), vec!["bad: repo::toplevel(".to_string()]);
     }
 }

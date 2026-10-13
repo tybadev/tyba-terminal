@@ -69,9 +69,11 @@ function action(
   t: Translate,
   bindings: Bindings,
 ): MenuItemSpec {
-  const accelerator = isTerminalAction(id)
-    ? null
-    : toAccelerator(bindings[id]);
+  // Voltar de aba sem acelerador: no macOS o AppKit consumiria o ⌘[ antes do
+  // webview, e dentro do editor de código ele é "desindentar". O atalho vive
+  // no teclado do webview (ver `tabBackRoute`); o menu só lembra os dois.
+  const accelerator =
+    isTerminalAction(id) || id === "tabBack" ? null : toAccelerator(bindings[id]);
   return {
     kind: "action",
     id,
@@ -173,6 +175,7 @@ export function buildMenuSpec(t: Translate, bindings: Bindings): MenuSpec {
           action("nextPane", t, bindings),
           action("prevTab", t, bindings),
           action("nextTab", t, bindings),
+          action("tabBack", t, bindings),
         ],
       },
       {

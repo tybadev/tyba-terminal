@@ -1,0 +1,136 @@
+/*
+ * Splash do arranque (`splash.html`). Segue a aparência do SISTEMA, não o tema
+ * escolhido no app: o tema mora no core e ler isso aqui custaria IPC antes do
+ * primeiro quadro. Só o subset latin das fontes — o splash não tem outro texto.
+ */
+@import "@fontsource/space-grotesk/latin-700.css";
+@import "@fontsource/jetbrains-mono/latin-400.css";
+
+/* BLACKOUT */
+:root {
+  --bg: #050505;
+  --fg: #ffffff;
+  --muted: rgba(255, 255, 255, 0.45);
+  --track: rgba(255, 255, 255, 0.06);
+  --green: #7cc544;
+  --cyan: #2dd4bf;
+  --violet: #8b5cf6;
+  --aurora-alpha: 6%;
+}
+
+/* Aurora */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fafbff;
+    --fg: #0a0a0f;
+    --muted: rgba(10, 10, 15, 0.5);
+    --track: rgba(10, 10, 15, 0.06);
+    --green: #387e15;
+    --cyan: #0c7c6f;
+    --violet: #7a4ce8;
+    --aurora-alpha: 11%;
+  }
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+body {
+  background:
+    radial-gradient(320px 160px at 72% -10%, color-mix(in srgb, var(--violet) var(--aurora-alpha), transparent), transparent 70%),
+    radial-gradient(260px 140px at 22% -12%, color-mix(in srgb, var(--cyan) var(--aurora-alpha), transparent), transparent 70%),
+    var(--bg);
+  color: var(--fg);
+}
+
+.splash {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  animation: splash-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.mark {
+  width: 64px;
+  height: 64px;
+}
+
+.wordmark {
+  margin: 14px 0 0;
+  font: 700 22px/1 "Space Grotesk", system-ui, sans-serif;
+  letter-spacing: 0.18em;
+  /* o tracking empurra o texto para a esquerda; compensa a última letra */
+  padding-left: 0.18em;
+}
+
+.filament {
+  position: relative;
+  width: 132px;
+  height: 2px;
+  margin-top: 22px;
+  border-radius: 1px;
+  background: var(--track);
+  overflow: hidden;
+}
+
+.filament::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--green) 15%,
+    var(--cyan) 45%,
+    var(--violet) 75%,
+    transparent
+  );
+  background-size: 200% 100%;
+  animation: flow 1.6s linear infinite;
+}
+
+.status {
+  margin: 12px 0 0;
+  font: 400 11px/1 "JetBrains Mono", ui-monospace, monospace;
+  color: var(--muted);
+}
+
+@keyframes flow {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes splash-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Sem movimento: o filamento fica parado, aceso, como linha "selecionada". */
+@media (prefers-reduced-motion: reduce) {
+  .splash,
+  .filament::after {
+    animation: none;
+  }
+  .filament::after {
+    background-size: 100% 100%;
+  }
+}

@@ -3,10 +3,18 @@ use std::path::Path;
 use serde_json::Value;
 
 use super::tool_risk::{classify_command, classify_write};
-use super::RiskLevel;
+use super::{red, Classification, RedReason, RiskLevel};
 use crate::session::AgentRunnerKind;
 
+/// Corte da chave do "sempre permitir" da sessão (Codex) e do resumo de uma
+/// linha (dica de status, notificação do SO). NÃO é o corte do texto exibido
+/// no pedido — ver [`DISPLAY_MAX_BYTES`].
 const DESCRIPTION_MAX_CHARS: usize = 500;
+
+/// Limite de transporte do texto exibido num pedido (invariante 6 do fluxo
+/// híbrido): vermelho se decide lendo tudo, e 64 KiB cobre qualquer comando
+/// que alguém leia. Acima disso o texto vai cortado com marcador visível.
+pub const DISPLAY_MAX_BYTES: usize = 64 * 1024;
 
 const SUBAGENT_SPAWN_RISK_TOOLS_GATED_BY_PRETOOLUSE: RiskLevel = RiskLevel::Green;
 
@@ -50,36 +58,97 @@ pub enum ToolAction {
 }
 
 impl ToolAction {
-    pub fn classify(&self, worktree_root: &Path) -> RiskLevel {
+    /// Nível de risco e, no vermelho, o porquê.
+    pub fn classify(&self, worktree_root: &Path) -> Classification {
         match self {
             ToolAction::RunCommand { command } => classify_command(command, worktree_root),
             ToolAction::WriteFile { path } => classify_write(path, worktree_root),
             ToolAction::WriteFiles { paths } => {
                 if paths.is_empty() {
-                    return RiskLevel::Yellow;
+                    return (RiskLevel::Yellow, None);
                 }
-                paths
-                    .iter()
-                    .map(|path| classify_write(path, worktree_root))
-                    .max_by_key(|risk| match risk {
+                // O pior caminho decide; no empate fica o primeiro (o motivo
+                // aponta para o primeiro arquivo que fez o patch ser vermelho).
+                let mut worst: Option<Classification> = None;
+                for classification in paths.iter().map(|path| classify_write(path, worktree_root)) {
+                    let rank = |risk: RiskLevel| match risk {
                         RiskLevel::Green => 0,
                         RiskLevel::Yellow => 1,
                         RiskLevel::Red => 2,
-                    })
-                    .unwrap_or(RiskLevel::Yellow)
+                    };
+                    if worst
+                        .as_ref()
+                        .is_none_or(|(risk, _)| rank(classification.0) > rank(*risk))
+                    {
+                        worst = Some(classification);
+                    }
+                }
+                worst.unwrap_or((RiskLevel::Yellow, None))
             }
-            ToolAction::ReadOnly => RiskLevel::Green,
-            ToolAction::Network => RiskLevel::Red,
-            ToolAction::Subagent { .. } => SUBAGENT_SPAWN_RISK_TOOLS_GATED_BY_PRETOOLUSE,
-            ToolAction::Unknown => RiskLevel::Yellow,
+            ToolAction::ReadOnly => (RiskLevel::Green, None),
+            ToolAction::Network => red(RedReason::WebAccess),
+            ToolAction::Subagent { .. } => (SUBAGENT_SPAWN_RISK_TOOLS_GATED_BY_PRETOOLUSE, None),
+            ToolAction::Unknown => (RiskLevel::Yellow, None),
         }
     }
 }
 
+/// Uma chamada de ferramenta normalizada.
+///
+/// `description` é o texto **inteiro**, sem corte nenhum — é o que a recusa do
+/// core ([`super::is_refused_by_core`]) precisa ler: um push para main
+/// escondido depois do corte não pode escapar. Os textos cortados saem dele:
+/// [`NormalizedToolUse::display_text`] (pedido e histórico) e
+/// [`NormalizedToolUse::allowlist_key`] / [`NormalizedToolUse::summary`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedToolUse {
     pub action: ToolAction,
     pub description: String,
+}
+
+impl NormalizedToolUse {
+    /// Texto exibido no pedido e gravado no histórico: inteiro até
+    /// [`DISPLAY_MAX_BYTES`], com marcador de corte acima disso.
+    pub fn display_text(&self) -> String {
+        display_text(&self.description)
+    }
+
+    /// Chave do "sempre permitir" da sessão (Codex). Mesma de antes do fluxo
+    /// híbrido: os primeiros 500 caracteres.
+    pub fn allowlist_key(&self) -> String {
+        allowlist_key(&self.description)
+    }
+
+    /// Resumo de uma linha para dica de status e notificação do SO — onde o
+    /// texto inteiro não cabe nem é lido. Mesmo corte da chave.
+    pub fn summary(&self) -> String {
+        truncate_chars(self.description.clone(), DESCRIPTION_MAX_CHARS)
+    }
+}
+
+/// Ver [`NormalizedToolUse::allowlist_key`].
+pub fn allowlist_key(text: &str) -> String {
+    truncate_chars(text.to_string(), DESCRIPTION_MAX_CHARS)
+}
+
+/// Ver [`NormalizedToolUse::display_text`]. O corte cai numa fronteira de
+/// caractere, e o marcador diz quantos bytes ficaram de fora — sem texto de
+/// idioma, porque quem traduz é a interface.
+pub fn display_text(text: &str) -> String {
+    if text.len() <= DISPLAY_MAX_BYTES {
+        return text.to_string();
+    }
+    let mut cut = DISPLAY_MAX_BYTES;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let omitted = text.len() - cut;
+    format!("{}{}", &text[..cut], truncation_marker(omitted))
+}
+
+/// Marcador visível do corte do texto exibido.
+pub fn truncation_marker(omitted_bytes: usize) -> String {
+    format!("\n…[+{omitted_bytes} bytes]")
 }
 
 pub fn normalize_tool_use(
@@ -87,17 +156,13 @@ pub fn normalize_tool_use(
     tool_name: &str,
     tool_input: Option<&Value>,
 ) -> NormalizedToolUse {
-    let normalized = match runner {
+    match runner {
         AgentRunnerKind::ClaudeCode => normalize_claude(tool_name, tool_input),
         AgentRunnerKind::Codex => normalize_codex(tool_name, tool_input),
         AgentRunnerKind::Custom(_) => NormalizedToolUse {
             action: ToolAction::Unknown,
             description: tool_name.to_string(),
         },
-    };
-    NormalizedToolUse {
-        action: normalized.action,
-        description: truncate_chars(normalized.description, DESCRIPTION_MAX_CHARS),
     }
 }
 
@@ -458,9 +523,11 @@ mod tests {
             agent_type: Some("x".into()),
             description: None,
         };
-        assert_eq!(action.classify(&root), RiskLevel::Green);
+        assert_eq!(action.classify(&root).0, RiskLevel::Green);
     }
 
+    /// A descrição do subagente é cortada em 500 antes do rótulo; a chave da
+    /// allowlist corta o rótulo inteiro em 500, como antes.
     #[test]
     fn subagent_description_truncates_at_500_chars() {
         let long = "z".repeat(600);
@@ -468,7 +535,11 @@ mod tests {
             "Agent",
             Some(json!({"subagent_type": "explorer", "description": long})),
         );
-        assert_eq!(n.description.chars().count(), 500);
+        assert_eq!(
+            n.description,
+            format!("Subagente explorer: {}", "z".repeat(500))
+        );
+        assert_eq!(n.allowlist_key().chars().count(), 500);
     }
 
     #[test]
@@ -542,7 +613,7 @@ mod tests {
         );
         assert_eq!(n.action, ToolAction::WriteFiles { paths: vec![] });
         let root = PathBuf::from("/wt");
-        assert_eq!(n.action.classify(&root), RiskLevel::Yellow);
+        assert_eq!(n.action.classify(&root).0, RiskLevel::Yellow);
     }
 
     #[test]
@@ -558,7 +629,7 @@ mod tests {
         for tool in CODEX_READ_ONLY_TOOLS {
             let n = codex(tool, Some(json!({"plan": []})));
             assert_eq!(n.action, ToolAction::ReadOnly, "{tool}");
-            assert_eq!(n.action.classify(&root), RiskLevel::Green, "{tool}");
+            assert_eq!(n.action.classify(&root).0, RiskLevel::Green, "{tool}");
         }
     }
 
@@ -577,25 +648,68 @@ mod tests {
         let inside = ToolAction::WriteFiles {
             paths: vec!["a.rs".into(), "b/c.rs".into()],
         };
-        assert_eq!(inside.classify(&root), RiskLevel::Green);
+        assert_eq!(inside.classify(&root).0, RiskLevel::Green);
         let escaping = ToolAction::WriteFiles {
             paths: vec!["a.rs".into(), "../fora.rs".into()],
         };
-        assert_eq!(escaping.classify(&root), RiskLevel::Red);
+        assert_eq!(escaping.classify(&root).0, RiskLevel::Red);
+    }
+
+    /// A chave do "sempre permitir" continua a de antes: 500 caracteres.
+    #[test]
+    fn allowlist_key_keeps_the_500_char_cut() {
+        let long = "x".repeat(600);
+        let n = claude("Bash", Some(json!({ "command": long })));
+        assert_eq!(n.allowlist_key().chars().count(), 500);
+        assert_eq!(n.summary().chars().count(), 500);
+    }
+
+    /// CA-21: o texto exibido não tem mais o corte de 500 — 10 KiB chega
+    /// inteiro, e a descrição guarda o texto inteiro.
+    #[test]
+    fn display_text_of_10_kib_arrives_whole() {
+        let command = format!("echo {}", "a".repeat(10 * 1024));
+        let n = claude("Bash", Some(json!({ "command": command.clone() })));
+        assert_eq!(n.description, command);
+        assert_eq!(n.display_text(), command);
+    }
+
+    /// CA-21: acima de 64 KiB, corte com marcador visível dizendo quanto
+    /// ficou de fora.
+    #[test]
+    fn display_text_of_100_kib_is_cut_with_marker() {
+        let command = "b".repeat(100 * 1024);
+        let n = claude("Bash", Some(json!({ "command": command.clone() })));
+        assert_eq!(n.description, command, "descrição fica inteira");
+        let shown = n.display_text();
+        let marker = truncation_marker(100 * 1024 - DISPLAY_MAX_BYTES);
+        assert!(shown.ends_with(&marker), "marcador no fim");
+        assert_eq!(shown.len(), DISPLAY_MAX_BYTES + marker.len());
+        assert!(command.starts_with(&shown[..DISPLAY_MAX_BYTES]));
     }
 
     #[test]
-    fn description_truncates_at_500_chars() {
-        let long = "x".repeat(600);
-        let n = claude("Bash", Some(json!({ "command": long })));
-        assert_eq!(n.description.chars().count(), 500);
+    fn display_text_exactly_at_the_limit_has_no_marker() {
+        let text = "c".repeat(DISPLAY_MAX_BYTES);
+        assert_eq!(display_text(&text), text);
+    }
+
+    /// O corte nunca parte um caractere de vários bytes.
+    #[test]
+    fn display_text_cuts_on_a_char_boundary() {
+        let text = format!("x{}", "é".repeat(DISPLAY_MAX_BYTES));
+        let shown = display_text(&text);
+        let body = shown.split('\n').next().unwrap();
+        assert!(body.len() <= DISPLAY_MAX_BYTES);
+        assert!(text.starts_with(body));
+        assert!(shown.contains("…[+"));
     }
 
     #[test]
     fn classify_read_only_is_green_and_network_red_and_unknown_yellow() {
         let root = PathBuf::from("/wt");
-        assert_eq!(ToolAction::ReadOnly.classify(&root), RiskLevel::Green);
-        assert_eq!(ToolAction::Network.classify(&root), RiskLevel::Red);
-        assert_eq!(ToolAction::Unknown.classify(&root), RiskLevel::Yellow);
+        assert_eq!(ToolAction::ReadOnly.classify(&root).0, RiskLevel::Green);
+        assert_eq!(ToolAction::Network.classify(&root).0, RiskLevel::Red);
+        assert_eq!(ToolAction::Unknown.classify(&root).0, RiskLevel::Yellow);
     }
 }

@@ -9,6 +9,8 @@ use uuid::Uuid;
 use crate::session::store::Store;
 use crate::session::SessionId;
 
+pub mod history;
+
 pub const EVENT_CHANGED: &str = "layout://changed";
 
 const KEY_ACTIVE_WORKSPACE: &str = "layout.active_workspace";
@@ -323,6 +325,13 @@ pub const VIEW_DIFF_PREFIX: &str = "diff:";
 pub const VIEW_TUNNELS_PREFIX: &str = "tunnels:";
 pub const VIEW_FILES_PREFIX: &str = "files:";
 pub const VIEW_AGENTS_PREFIX: &str = "agents:";
+/// Painel Git da sessão (branch, à frente/atrás, alterações, commit).
+pub const VIEW_GIT_PREFIX: &str = "git:";
+/// Painel Docker da sessão: os containers do alvo dela (local, ou o servidor
+/// numa sessão SSH) — por isso é da sessão e morre com ela.
+pub const VIEW_DOCKER_PREFIX: &str = "docker:";
+/// Painel Histórico da sessão: as execuções gravadas (OSC 633).
+pub const VIEW_HISTORY_PREFIX: &str = "history:";
 /// O quadro de agentes de **todos** os workspaces. Nome sem dois-pontos de
 /// propósito: `VIEW_AGENTS_PREFIX` acima é o visualizador de subagente de UMA
 /// sessão, e são coisas diferentes.
@@ -334,6 +343,19 @@ pub const VIEW_AGENT_BOARD: &str = "agent-board";
 /// limpeza de layout já o preserva de graça — o filtro usa `is_none_or`, ou
 /// seja, view sem sessão sobrevive por desenho.
 pub const VIEW_AGENT_QUEUE: &str = "agent-queue";
+/// Aba de conteúdo: um arquivo aberto no editor, `editor:<sessão>:<caminho
+/// relativo à raiz de arquivos da sessão>`. Pertence à sessão — a raiz, o LSP e
+/// o watcher são dela — e morre com ela.
+pub const VIEW_EDITOR_PREFIX: &str = "editor:";
+/// Aba de conteúdo: logs estruturados de um container, `container-logs:<id>`.
+pub const VIEW_CONTAINER_LOGS_PREFIX: &str = "container-logs:";
+/// Painel lateral: arquivos de um container (só leitura), `container-files:<id>`.
+pub const VIEW_CONTAINER_FILES_PREFIX: &str = "container-files:";
+/// Aba de conteúdo: o diff da sessão como aba (não painel), `session-diff:<sessão>`.
+/// Prefixo próprio porque `diff:` em aba é a forma antiga, descartada no load.
+pub const VIEW_SESSION_DIFF_PREFIX: &str = "session-diff:";
+/// Aba de conteúdo: histórico (log + grafo) do repo da sessão, `git-log:<sessão>`.
+pub const VIEW_GIT_LOG_PREFIX: &str = "git-log:";
 pub const DOCKER_WORKSPACE_NAME: &str = "Docker";
 pub const FALLBACK_WORKSPACE_NAME: &str = "tyba";
 
@@ -357,6 +379,58 @@ pub fn agents_view(session: SessionId) -> String {
     format!("{VIEW_AGENTS_PREFIX}{session}")
 }
 
+pub fn git_view(session: SessionId) -> String {
+    format!("{VIEW_GIT_PREFIX}{session}")
+}
+
+pub fn docker_view(session: SessionId) -> String {
+    format!("{VIEW_DOCKER_PREFIX}{session}")
+}
+
+pub fn history_view(session: SessionId) -> String {
+    format!("{VIEW_HISTORY_PREFIX}{session}")
+}
+
+pub fn editor_view(session: SessionId, rel: &str) -> String {
+    format!("{VIEW_EDITOR_PREFIX}{session}:{rel}")
+}
+
+/// Sessão dona de uma aba de editor. `None` para qualquer outra view.
+pub fn editor_view_session(view: &str) -> Option<SessionId> {
+    let rest = view.strip_prefix(VIEW_EDITOR_PREFIX)?;
+    let (sid, _) = rest.split_once(':')?;
+    Uuid::parse_str(sid).ok()
+}
+
+/// Containers com aba de logs aberta em algum workspace — o que pode ter um
+/// `docker logs -f` vivo.
+pub fn open_log_containers(state: &LayoutState) -> HashSet<String> {
+    state
+        .workspaces
+        .iter()
+        .flat_map(|w| w.tabs.iter())
+        .filter_map(|t| t.view.as_deref()?.strip_prefix(VIEW_CONTAINER_LOGS_PREFIX))
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn session_diff_view(session: SessionId) -> String {
+    format!("{VIEW_SESSION_DIFF_PREFIX}{session}")
+}
+
+pub fn git_log_view(session: SessionId) -> String {
+    format!("{VIEW_GIT_LOG_PREFIX}{session}")
+}
+
+/// Sessão dona de uma aba de conteúdo (editor, diff ou histórico da sessão).
+pub fn content_view_session(view: &str) -> Option<SessionId> {
+    editor_view_session(view).or_else(|| {
+        view.strip_prefix(VIEW_SESSION_DIFF_PREFIX)
+            .or_else(|| view.strip_prefix(VIEW_GIT_LOG_PREFIX))
+            .and_then(|s| Uuid::parse_str(s).ok())
+    })
+}
+
 fn diff_view_session(view: &str) -> Option<SessionId> {
     view.strip_prefix(VIEW_DIFF_PREFIX)
         .and_then(|s| Uuid::parse_str(s).ok())
@@ -367,6 +441,9 @@ fn side_view_session(view: &str) -> Option<SessionId> {
         .or_else(|| view.strip_prefix(VIEW_TUNNELS_PREFIX))
         .or_else(|| view.strip_prefix(VIEW_FILES_PREFIX))
         .or_else(|| view.strip_prefix(VIEW_AGENTS_PREFIX))
+        .or_else(|| view.strip_prefix(VIEW_GIT_PREFIX))
+        .or_else(|| view.strip_prefix(VIEW_DOCKER_PREFIX))
+        .or_else(|| view.strip_prefix(VIEW_HISTORY_PREFIX))
         .and_then(|s| Uuid::parse_str(s).ok())
 }
 
@@ -450,13 +527,43 @@ pub struct Workspace {
     pub side_view: Option<String>,
     pub side_ratio: f64,
     pub side_expanded: bool,
+    /// Abas usadas antes da ativa, da mais antiga para a mais recente — o
+    /// "voltar" (⌘[) e o destino de fechar a ativa. Memória de uso, não
+    /// persiste (ver [`history`]).
+    #[serde(skip)]
+    pub history: Vec<TabId>,
     pub created_at: DateTime<Utc>,
 }
 
 impl Workspace {
+    /// Sessão em foco: a do pane ativo — ou, numa aba de editor, a dona do
+    /// arquivo (o diff e o painel de arquivos daquela sessão continuam valendo).
     fn focused_session(&self) -> Option<SessionId> {
         let tab = self.tabs.iter().find(|t| Some(t.id) == self.active_tab)?;
+        if let Some(view) = tab.view.as_deref() {
+            return content_view_session(view);
+        }
         tab.root.as_ref()?.leaf_session(tab.active_pane?)
+    }
+
+    /// Troca a aba ativa registrando a anterior no histórico.
+    fn set_active_tab(&mut self, tab: TabId) {
+        history::record(&mut self.history, self.active_tab, tab);
+        self.active_tab = Some(tab);
+    }
+
+    /// Remove a aba `t_idx` e, se era a ativa, passa o foco para a usada antes
+    /// dela (ou a vizinha). Devolve a aba removida.
+    fn remove_tab_at(&mut self, t_idx: usize) -> Tab {
+        let removed = self.tabs.remove(t_idx);
+        let remaining: Vec<TabId> = self.tabs.iter().map(|t| t.id).collect();
+        if self.active_tab == Some(removed.id) {
+            self.active_tab =
+                history::successor_after_close(&mut self.history, removed.id, &remaining, t_idx);
+        } else {
+            self.history.retain(|t| *t != removed.id);
+        }
+        removed
     }
 
     fn bound_sessions(&self) -> Vec<SessionId> {
@@ -589,6 +696,19 @@ impl LayoutManager {
                 }
             }
         }
+        if !remap.is_empty() {
+            for tab in rows.tabs.iter_mut() {
+                let Some(view) = tab.view.as_deref() else {
+                    continue;
+                };
+                let Some(old) = content_view_session(view) else {
+                    continue;
+                };
+                if let Some(new) = remap.get(&old) {
+                    tab.view = Some(view.replacen(&old.to_string(), &new.to_string(), 1));
+                }
+            }
+        }
         let workspaces = rows_to_workspaces(&rows, valid_sessions);
 
         let saved_active = self
@@ -654,6 +774,7 @@ impl LayoutManager {
             side_view: None,
             side_ratio: DEFAULT_SIDE_RATIO,
             side_expanded: false,
+            history: Vec::new(),
             created_at: Utc::now(),
         };
         let id = workspace.id;
@@ -706,6 +827,7 @@ impl LayoutManager {
             side_view: None,
             side_ratio: DEFAULT_SIDE_RATIO,
             side_expanded: false,
+            history: Vec::new(),
             created_at: Utc::now(),
         };
         let ws_id = workspace.id;
@@ -828,7 +950,7 @@ impl LayoutManager {
         let tab = Tab::from_session(session);
         let tab_id = tab.id;
         inner.workspaces[idx].tabs.push(tab);
-        inner.workspaces[idx].active_tab = Some(tab_id);
+        inner.workspaces[idx].set_active_tab(tab_id);
         inner.active = Some(target);
         drop_stale_diff_views(&mut inner);
         drop(inner);
@@ -839,15 +961,7 @@ impl LayoutManager {
     pub fn close_tab(&self, tab: TabId) -> Result<Vec<SessionId>, LayoutError> {
         let mut inner = self.inner.write();
         let (w_idx, t_idx) = tab_index(&inner.workspaces, tab)?;
-        let removed = inner.workspaces[w_idx].tabs.remove(t_idx);
-        let ws = &mut inner.workspaces[w_idx];
-        if ws.active_tab == Some(tab) {
-            ws.active_tab = ws
-                .tabs
-                .get(t_idx.min(ws.tabs.len().saturating_sub(1)))
-                .map(|t| t.id)
-                .filter(|_| !ws.tabs.is_empty());
-        }
+        let removed = inner.workspaces[w_idx].remove_tab_at(t_idx);
         remove_workspace_if_empty(&mut inner, w_idx);
         drop_stale_diff_views(&mut inner);
         drop(inner);
@@ -863,7 +977,7 @@ impl LayoutManager {
         let mut inner = self.inner.write();
         let (w_idx, _) = tab_index(&inner.workspaces, tab)?;
         let ws_id = inner.workspaces[w_idx].id;
-        inner.workspaces[w_idx].active_tab = Some(tab);
+        inner.workspaces[w_idx].set_active_tab(tab);
         inner.active = Some(ws_id);
         drop_stale_diff_views(&mut inner);
         drop(inner);
@@ -897,7 +1011,6 @@ impl LayoutManager {
         self.persist()
     }
 
-    #[allow(dead_code)]
     pub fn workspace_of_session(&self, session: SessionId) -> Option<WorkspaceId> {
         let inner = self.inner.read();
         find_session_pane(&inner.workspaces, session).map(|(ws, _, _)| ws)
@@ -918,7 +1031,7 @@ impl LayoutManager {
                 let mut inner = self.inner.write();
                 inner.active = Some(ws_id);
                 if let Ok(idx) = ws_index(&inner.workspaces, ws_id) {
-                    inner.workspaces[idx].active_tab = Some(tab_id);
+                    inner.workspaces[idx].set_active_tab(tab_id);
                     if let Some(tab) = inner.workspaces[idx]
                         .tabs
                         .iter_mut()
@@ -1011,15 +1124,7 @@ impl LayoutManager {
                 };
             }
             None => {
-                inner.workspaces[wi].tabs.remove(ti);
-                let ws = &mut inner.workspaces[wi];
-                if ws.active_tab == Some(tab.id) {
-                    ws.active_tab = ws
-                        .tabs
-                        .get(ti.min(ws.tabs.len().saturating_sub(1)))
-                        .map(|t| t.id)
-                        .filter(|_| !ws.tabs.is_empty());
-                }
+                inner.workspaces[wi].remove_tab_at(ti);
                 remove_workspace_if_empty(&mut inner, wi);
             }
         }
@@ -1031,21 +1136,24 @@ impl LayoutManager {
 
     pub fn focus_pane(&self, pane: PaneId) -> Result<(), LayoutError> {
         let mut inner = self.inner.write();
-        for ws in inner.workspaces.iter_mut() {
-            let ws_id = ws.id;
-            for tab in ws.tabs.iter_mut() {
-                if tab.root.as_ref().is_some_and(|r| r.contains(pane)) {
-                    tab.active_pane = Some(pane);
-                    let tab_id = tab.id;
-                    ws.active_tab = Some(tab_id);
-                    inner.active = Some(ws_id);
-                    drop_stale_diff_views(&mut inner);
-                    drop(inner);
-                    return self.persist();
-                }
-            }
-        }
-        Err(LayoutError::PaneNotFound(pane))
+        let found = inner.workspaces.iter().enumerate().find_map(|(wi, ws)| {
+            ws.tabs
+                .iter()
+                .position(|t| t.root.as_ref().is_some_and(|r| r.contains(pane)))
+                .map(|ti| (wi, ti))
+        });
+        let Some((wi, ti)) = found else {
+            return Err(LayoutError::PaneNotFound(pane));
+        };
+        let ws = &mut inner.workspaces[wi];
+        ws.tabs[ti].active_pane = Some(pane);
+        let tab_id = ws.tabs[ti].id;
+        ws.set_active_tab(tab_id);
+        let ws_id = ws.id;
+        inner.active = Some(ws_id);
+        drop_stale_diff_views(&mut inner);
+        drop(inner);
+        self.persist()
     }
 
     pub fn set_split_ratio(
@@ -1084,13 +1192,22 @@ impl LayoutManager {
         };
         let idx = ws_index(&inner.workspaces, ws_id)?;
         inner.workspaces[idx].side_view = Some(view.to_string());
-        inner.workspaces[idx].active_tab = Some(tab_id);
-        if let Some(tab) = inner.workspaces[idx]
-            .tabs
-            .iter_mut()
-            .find(|t| t.id == tab_id)
-        {
-            tab.active_pane = Some(pane_id);
+        // Aba de editor da mesma sessão em foco: o painel abre ao lado dela,
+        // sem arrancar o usuário do arquivo para o terminal.
+        let editing_same = inner.workspaces[idx].focused_session() == Some(session)
+            && inner.workspaces[idx]
+                .tabs
+                .iter()
+                .any(|t| Some(t.id) == inner.workspaces[idx].active_tab && t.view.is_some());
+        if !editing_same {
+            inner.workspaces[idx].set_active_tab(tab_id);
+            if let Some(tab) = inner.workspaces[idx]
+                .tabs
+                .iter_mut()
+                .find(|t| t.id == tab_id)
+            {
+                tab.active_pane = Some(pane_id);
+            }
         }
         inner.active = Some(ws_id);
         drop(inner);
@@ -1169,20 +1286,32 @@ impl LayoutManager {
                 None => break,
             }
         }
-        // O painel de diff/arquivos/agentes referencia a sessão; sem ela vira casca órfã.
-        let diff = diff_view(session);
-        let files = files_view(session);
-        let agents = agents_view(session);
+        // Todo painel de sessão (diff, arquivos, agentes, túneis, git, docker)
+        // referencia a sessão; sem ela vira casca órfã.
         let mut inner = self.inner.write();
         let mut changed = false;
         for ws in inner.workspaces.iter_mut() {
-            if ws.side_view.as_deref() == Some(diff.as_str())
-                || ws.side_view.as_deref() == Some(files.as_str())
-                || ws.side_view.as_deref() == Some(agents.as_str())
-            {
+            if ws.side_view.as_deref().and_then(side_view_session) == Some(session) {
                 ws.side_view = None;
                 ws.side_expanded = false;
                 changed = true;
+            }
+        }
+        // Abas de editor da sessão: a raiz de arquivos e o LSP eram dela.
+        let mut wi = 0;
+        while wi < inner.workspaces.len() {
+            while let Some(ti) = inner.workspaces[wi]
+                .tabs
+                .iter()
+                .position(|t| t.view.as_deref().and_then(content_view_session) == Some(session))
+            {
+                inner.workspaces[wi].remove_tab_at(ti);
+                changed = true;
+            }
+            let before = inner.workspaces.len();
+            remove_workspace_if_empty(&mut inner, wi);
+            if inner.workspaces.len() == before {
+                wi += 1;
             }
         }
         drop(inner);
@@ -1190,6 +1319,130 @@ impl LayoutManager {
             self.persist()?;
         }
         Ok(())
+    }
+
+    /// Abre (ou foca, se já existe no workspace) uma aba de conteúdo — editor
+    /// de arquivo, logs de container. Vive ao lado das abas de terminal do
+    /// workspace, não num workspace dedicado como as páginas (Configurações).
+    pub fn open_content_tab(
+        &self,
+        workspace: Option<WorkspaceId>,
+        view: &str,
+    ) -> Result<TabId, LayoutError> {
+        let mut inner = self.inner.write();
+        let target = workspace
+            .or(inner.active)
+            .ok_or(LayoutError::NoActiveWorkspace)?;
+        let idx = ws_index(&inner.workspaces, target)?;
+        let existing = inner.workspaces[idx]
+            .tabs
+            .iter()
+            .find(|t| t.view.as_deref() == Some(view))
+            .map(|t| t.id);
+        let tab_id = match existing {
+            Some(id) => id,
+            None => {
+                let tab = Tab::from_view(view);
+                let id = tab.id;
+                // Ao lado da aba de onde veio, como um link aberto no navegador.
+                let ws = &mut inner.workspaces[idx];
+                let at = ws
+                    .active_tab
+                    .and_then(|a| ws.tabs.iter().position(|t| t.id == a))
+                    .map(|p| p + 1)
+                    .unwrap_or(ws.tabs.len());
+                ws.tabs.insert(at, tab);
+                id
+            }
+        };
+        inner.workspaces[idx].set_active_tab(tab_id);
+        inner.active = Some(target);
+        drop_stale_diff_views(&mut inner);
+        drop(inner);
+        self.persist()?;
+        Ok(tab_id)
+    }
+
+    /// ⌘[ — volta para a aba usada antes da atual no workspace ativo. `false`
+    /// quando não há para onde voltar.
+    pub fn back_tab(&self) -> Result<bool, LayoutError> {
+        let mut inner = self.inner.write();
+        let ws_id = inner.active.ok_or(LayoutError::NoActiveWorkspace)?;
+        let idx = ws_index(&inner.workspaces, ws_id)?;
+        let ws = &mut inner.workspaces[idx];
+        let alive: Vec<TabId> = ws.tabs.iter().map(|t| t.id).collect();
+        let Some(target) =
+            history::pop_back(&mut ws.history, ws.active_tab, |t| alive.contains(&t))
+        else {
+            return Ok(false);
+        };
+        // Sem registrar a atual: voltar duas vezes anda duas abas para trás,
+        // como no navegador, em vez de alternar entre as duas últimas.
+        ws.active_tab = Some(target);
+        drop_stale_diff_views(&mut inner);
+        drop(inner);
+        self.persist()?;
+        Ok(true)
+    }
+
+    /// Sessão em foco no workspace ativo (pane ativo ou dona da aba de editor).
+    pub fn active_session(&self) -> Option<SessionId> {
+        self.active_sessions().first().copied()
+    }
+
+    /// Sessões do workspace ativo em ordem de preferência para resolver um
+    /// arquivo: a em foco, as das abas usadas por último, depois as demais.
+    /// Com a aba de logs em foco, "a sessão" é a do terminal de onde se veio.
+    pub fn active_sessions(&self) -> Vec<SessionId> {
+        let inner = self.inner.read();
+        let Some(ws) = inner
+            .active
+            .and_then(|id| inner.workspaces.iter().find(|w| w.id == id))
+        else {
+            return Vec::new();
+        };
+        let tab_session = |tab: &Tab| match tab.view.as_deref() {
+            Some(view) => content_view_session(view),
+            None => tab
+                .root
+                .as_ref()
+                .and_then(|r| tab.active_pane.and_then(|p| r.leaf_session(p))),
+        };
+        let mut out: Vec<SessionId> = ws.focused_session().into_iter().collect();
+        let recent = ws
+            .history
+            .iter()
+            .rev()
+            .filter_map(|id| ws.tabs.iter().find(|t| t.id == *id))
+            .filter_map(tab_session);
+        for s in recent.chain(ws.bound_sessions()) {
+            if !out.contains(&s) {
+                out.push(s);
+            }
+        }
+        out
+    }
+
+    /// Há aba de editor aberta para a sessão em algum workspace? O painel de
+    /// arquivos da sessão (watcher, LSP) não pode morrer enquanto houver.
+    pub fn has_editor_tabs(&self, session: SessionId) -> bool {
+        self.inner.read().workspaces.iter().any(|w| {
+            w.tabs
+                .iter()
+                .any(|t| t.view.as_deref().and_then(editor_view_session) == Some(session))
+        })
+    }
+
+    /// Painel lateral sem sessão dona (ex.: arquivos de um container) no
+    /// workspace ativo.
+    pub fn open_active_side_view(&self, view: &str) -> Result<WorkspaceId, LayoutError> {
+        let mut inner = self.inner.write();
+        let ws_id = inner.active.ok_or(LayoutError::NoActiveWorkspace)?;
+        let idx = ws_index(&inner.workspaces, ws_id)?;
+        inner.workspaces[idx].side_view = Some(view.to_string());
+        drop(inner);
+        self.persist()?;
+        Ok(ws_id)
     }
 
     pub fn agent_viewer_session(&self, pane: PaneId) -> Option<SessionId> {
@@ -1241,6 +1494,15 @@ impl LayoutManager {
         true
     }
 
+    /// Garante o painel Agentes da sessão aberto no workspace ativo. Devolve
+    /// `true` quando, depois da chamada, o painel mostra esta sessão (aberto
+    /// agora ou já aberto) — é o que diz ao chamador que a rodada foi
+    /// coordenada.
+    ///
+    /// A fila de agentes cede o lugar: é a mesma família ("Agentes" no menu
+    /// lateral) e o dono que a abriu queria ver os agentes. Antes ela segurava
+    /// o slot e a rodada nova nascia sem painel (A5.3, tela 4). Qualquer outra
+    /// side view (diff, arquivos, túneis) é escolha do usuário e não é tomada.
     pub fn ensure_agents_panel(&self, session: SessionId) -> bool {
         let mut inner = self.inner.write();
         let Some(active_ws) = inner.active else {
@@ -1252,10 +1514,13 @@ impl LayoutManager {
         if !session_in_workspace(&inner.workspaces[idx], session) {
             return false;
         }
-        if inner.workspaces[idx].side_view.is_some() {
-            return false;
+        let wanted = agents_view(session);
+        match inner.workspaces[idx].side_view.as_deref() {
+            Some(current) if current == wanted => return true,
+            Some(VIEW_AGENT_QUEUE) | None => {}
+            Some(_) => return false,
         }
-        inner.workspaces[idx].side_view = Some(agents_view(session));
+        inner.workspaces[idx].side_view = Some(wanted);
         drop(inner);
         let _ = self.persist();
         true
@@ -1477,6 +1742,7 @@ fn ensure_docker_workspace(inner: &mut Inner) -> WorkspaceId {
         side_view: None,
         side_ratio: DEFAULT_SIDE_RATIO,
         side_expanded: false,
+        history: Vec::new(),
         created_at: Utc::now(),
     };
     let id = workspace.id;
@@ -1630,6 +1896,10 @@ fn build_tab(row: &TabRow, panes: &[PaneRow], valid: &HashSet<SessionId>) -> Opt
         if view.starts_with(VIEW_DIFF_PREFIX) {
             return None;
         }
+        // Editor de sessão que não voltou: sem a raiz dela, o arquivo não abre.
+        if content_view_session(view).is_some_and(|s| !valid.contains(&s)) {
+            return None;
+        }
         return Some(Tab {
             id: tab_id,
             title: row.title.clone(),
@@ -1709,6 +1979,7 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
                     .unwrap_or(DEFAULT_SIDE_RATIO)
                     .clamp(MIN_RATIO, MAX_RATIO),
                 side_expanded: w.side_expanded.unwrap_or(0) != 0,
+                history: Vec::new(),
                 created_at,
             })
         })
@@ -2283,6 +2554,74 @@ mod tests {
     }
 
     #[test]
+    fn session_disposed_clears_every_session_panel() {
+        for view in [
+            git_view,
+            docker_view,
+            tunnels_view,
+            files_view,
+            agents_view,
+            history_view,
+        ] {
+            let mgr = manager();
+            let s = sid();
+            let other = sid();
+            mgr.create_workspace("api", None, s).unwrap();
+            mgr.create_tab(other, None).unwrap();
+            mgr.open_workspace_side_view(s, &view(s)).unwrap();
+
+            mgr.session_disposed(s).unwrap();
+            assert_eq!(mgr.state().workspaces[0].side_view, None, "{}", view(s));
+        }
+    }
+
+    #[test]
+    fn session_disposed_keeps_panel_of_other_session() {
+        let mgr = manager();
+        let s = sid();
+        let other = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        mgr.create_tab(other, None).unwrap();
+        mgr.open_workspace_side_view(other, &git_view(other))
+            .unwrap();
+
+        mgr.session_disposed(s).unwrap();
+        assert_eq!(mgr.state().workspaces[0].side_view, Some(git_view(other)));
+    }
+
+    #[test]
+    fn git_and_docker_panels_of_dead_session_do_not_come_back_on_boot() {
+        for view in [git_view, docker_view, history_view] {
+            let store = Arc::new(Store::open_in_memory().unwrap());
+            let dead = sid();
+            {
+                let mgr = LayoutManager::new(Arc::clone(&store));
+                mgr.create_workspace("b", None, dead).unwrap();
+                mgr.open_workspace_side_view(dead, &view(dead)).unwrap();
+            }
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.load(&HashSet::new());
+            for w in &mgr.state().workspaces {
+                assert_eq!(w.side_view, None, "{}", view(dead));
+            }
+        }
+    }
+
+    #[test]
+    fn opening_another_panel_replaces_the_slot() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        mgr.open_workspace_side_view(s, &git_view(s)).unwrap();
+        mgr.open_workspace_side_view(s, &docker_view(s)).unwrap();
+        assert_eq!(
+            mgr.state().workspaces[0].side_view.as_deref(),
+            Some(docker_view(s).as_str()),
+            "um painel por vez: abrir outro troca o que está no slot"
+        );
+    }
+
+    #[test]
     fn painel_de_tuneis_de_sessao_morta_nao_volta_no_boot() {
         let store = Arc::new(Store::open_in_memory().unwrap());
         let dead = sid();
@@ -2532,7 +2871,34 @@ mod tests {
             mgr.state().workspaces[0].side_view.as_deref(),
             Some(agents_view(s).as_str())
         );
+        assert!(
+            mgr.ensure_agents_panel(s),
+            "já aberto conta como coordenado"
+        );
+    }
+
+    #[test]
+    fn ensure_agents_panel_takes_the_queue_slot_but_not_other_views() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+
+        // A fila aberta pelo menu lateral não segura a rodada nova (tela 4).
+        mgr.toggle_agent_queue().unwrap();
+        assert!(mgr.ensure_agents_panel(s));
+        assert_eq!(
+            mgr.state().workspaces[0].side_view.as_deref(),
+            Some(agents_view(s).as_str())
+        );
+
+        // Uma view que o usuário escolheu (diff) não é tomada.
+        mgr.open_workspace_side_view(s, &format!("diff:{s}"))
+            .unwrap();
         assert!(!mgr.ensure_agents_panel(s));
+        assert_eq!(
+            mgr.state().workspaces[0].side_view,
+            Some(format!("diff:{s}"))
+        );
     }
 
     #[test]
@@ -2671,5 +3037,223 @@ mod tests {
         let mut out = Vec::new();
         node.leaf_sessions(&mut out);
         assert_eq!(out, vec![term]);
+    }
+
+    fn active_ws(mgr: &LayoutManager) -> Workspace {
+        let state = mgr.state();
+        state
+            .workspaces
+            .iter()
+            .find(|w| Some(w.id) == state.active_workspace)
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn content_tab_opens_next_to_current_and_is_singleton() {
+        let mgr = manager();
+        let s = sid();
+        let ws_id = mgr.create_workspace("api", None, s).unwrap();
+        mgr.create_tab(sid(), None).unwrap();
+        let first = active_ws(&mgr).tabs[0].id;
+        mgr.activate_tab(first).unwrap();
+        let view = editor_view(s, "src/server.js");
+        let a = mgr.open_content_tab(None, &view).unwrap();
+        let ws = active_ws(&mgr);
+        assert_eq!(ws.id, ws_id);
+        assert_eq!(ws.tabs[1].id, a, "abre ao lado da aba de onde veio");
+        assert_eq!(ws.active_tab, Some(a));
+        let again = mgr.open_content_tab(None, &view).unwrap();
+        assert_eq!(again, a);
+        assert_eq!(active_ws(&mgr).tabs.len(), 3);
+    }
+
+    #[test]
+    fn closing_active_tab_goes_to_previously_used_one() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let term = active_ws(&mgr).tabs[0].id;
+        let logs = mgr
+            .open_content_tab(None, &format!("{VIEW_CONTAINER_LOGS_PREFIX}abc"))
+            .unwrap();
+        let file = mgr.open_content_tab(None, &editor_view(s, "a.rs")).unwrap();
+        // Usou: term → logs → file → term → file. Fecha file: volta para term,
+        // não para a vizinha (logs).
+        mgr.activate_tab(term).unwrap();
+        mgr.activate_tab(file).unwrap();
+        mgr.close_tab(file).unwrap();
+        assert_eq!(active_ws(&mgr).active_tab, Some(term));
+        let _ = logs;
+    }
+
+    #[test]
+    fn back_tab_walks_history_like_a_browser() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let term = active_ws(&mgr).tabs[0].id;
+        let logs = mgr
+            .open_content_tab(None, &format!("{VIEW_CONTAINER_LOGS_PREFIX}abc"))
+            .unwrap();
+        let file = mgr.open_content_tab(None, &editor_view(s, "a.rs")).unwrap();
+        assert_eq!(active_ws(&mgr).active_tab, Some(file));
+        assert!(mgr.back_tab().unwrap());
+        assert_eq!(active_ws(&mgr).active_tab, Some(logs));
+        assert!(mgr.back_tab().unwrap());
+        assert_eq!(active_ws(&mgr).active_tab, Some(term));
+        assert!(!mgr.back_tab().unwrap(), "sem histórico, não anda");
+    }
+
+    #[test]
+    fn editor_tab_keeps_its_session_diff_panel_and_dies_with_session() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        mgr.open_workspace_side_view(s, &diff_view(s)).unwrap();
+        let file = mgr.open_content_tab(None, &editor_view(s, "a.rs")).unwrap();
+        let ws = active_ws(&mgr);
+        assert_eq!(ws.side_view, Some(diff_view(s)), "editor é da mesma sessão");
+        assert_eq!(ws.active_tab, Some(file));
+        assert_eq!(mgr.active_session(), Some(s));
+        assert!(mgr.has_editor_tabs(s));
+        // Abrir o painel de arquivos com o editor em foco não troca de aba.
+        mgr.open_workspace_side_view(s, &files_view(s)).unwrap();
+        assert_eq!(active_ws(&mgr).active_tab, Some(file));
+
+        let other = sid();
+        mgr.create_tab(other, None).unwrap();
+        mgr.session_disposed(s).unwrap();
+        assert!(!mgr.has_editor_tabs(s));
+        let ws = active_ws(&mgr);
+        assert_eq!(ws.tabs.len(), 1);
+    }
+
+    #[test]
+    fn editor_view_round_trips_and_parses_session() {
+        let s = sid();
+        let v = editor_view(s, "dir/with:colon.rs");
+        assert_eq!(editor_view_session(&v), Some(s));
+        assert_eq!(editor_view_session("container-logs:abc"), None);
+        assert_eq!(editor_view_session("editor:not-a-uuid:x"), None);
+    }
+
+    #[test]
+    fn editor_tab_of_dead_session_is_dropped_on_load_and_remapped_when_reopened() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let s = sid();
+        let other = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("api", None, s).unwrap();
+            mgr.create_tab(other, None).unwrap();
+            mgr.open_content_tab(None, &editor_view(s, "a.rs")).unwrap();
+        }
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load(&HashSet::from([other]));
+        assert!(mgr.state().workspaces[0]
+            .tabs
+            .iter()
+            .all(|t| t.view.is_none()));
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("api", None, s).unwrap();
+            mgr.open_content_tab(None, &editor_view(s, "a.rs")).unwrap();
+        }
+        let reborn = sid();
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load_remapped(
+            &HashSet::from([reborn]),
+            &std::collections::HashMap::from([(s, reborn)]),
+        );
+        let views: Vec<_> = mgr.state().workspaces[0]
+            .tabs
+            .iter()
+            .filter_map(|t| t.view.clone())
+            .collect();
+        assert_eq!(views, vec![editor_view(reborn, "a.rs")]);
+    }
+
+    #[test]
+    fn session_diff_tab_belongs_to_its_session() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let tab = mgr.open_content_tab(None, &session_diff_view(s)).unwrap();
+        assert_eq!(content_view_session(&session_diff_view(s)), Some(s));
+        assert_eq!(mgr.active_session(), Some(s));
+        assert_eq!(active_ws(&mgr).active_tab, Some(tab));
+        mgr.create_tab(sid(), None).unwrap();
+        mgr.session_disposed(s).unwrap();
+        assert!(active_ws(&mgr)
+            .tabs
+            .iter()
+            .all(|t| t.view.as_deref() != Some(session_diff_view(s).as_str())));
+    }
+
+    #[test]
+    fn git_log_tab_belongs_to_its_session_and_is_singleton() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let tab = mgr.open_content_tab(None, &git_log_view(s)).unwrap();
+        assert_eq!(mgr.open_content_tab(None, &git_log_view(s)).unwrap(), tab);
+        assert_eq!(content_view_session(&git_log_view(s)), Some(s));
+        assert_eq!(mgr.active_session(), Some(s));
+        mgr.create_tab(sid(), None).unwrap();
+        mgr.session_disposed(s).unwrap();
+        assert!(active_ws(&mgr)
+            .tabs
+            .iter()
+            .all(|t| t.view.as_deref() != Some(git_log_view(s).as_str())));
+    }
+
+    #[test]
+    fn closing_workspace_or_tab_stops_the_log_follower() {
+        use crate::docker::logs::{LogsManager, PathMapping};
+        use std::process::{Command, Stdio};
+        let spawn = |_: Option<String>| {
+            Command::new("/bin/sh")
+                .args(["-c", "sleep 30"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| e.to_string())
+        };
+        let mgr = manager();
+        let logs = LogsManager::new();
+        let s = sid();
+        let ws = mgr.create_workspace("api", None, s).unwrap();
+        let logs_view = format!("{VIEW_CONTAINER_LOGS_PREFIX}abc");
+        let tab = mgr.open_content_tab(None, &logs_view).unwrap();
+        logs.start("abc", PathMapping::default(), Arc::new(|_| {}), spawn)
+            .unwrap();
+        logs.retain(&open_log_containers(&mgr.state()));
+        assert!(logs.is_following("abc"), "aba aberta mantém o seguidor");
+
+        // A sessão dona do workspace morre: a aba de logs continua lá.
+        mgr.session_disposed(s).unwrap();
+        logs.retain(&open_log_containers(&mgr.state()));
+        assert!(logs.is_following("abc"));
+
+        mgr.close_workspace(ws).unwrap();
+        logs.retain(&open_log_containers(&mgr.state()));
+        assert!(
+            !logs.is_following("abc"),
+            "fechar o workspace mata o seguidor"
+        );
+
+        // Fechar só a aba também.
+        let s2 = sid();
+        mgr.create_workspace("web", None, s2).unwrap();
+        let tab2 = mgr.open_content_tab(None, &logs_view).unwrap();
+        logs.start("abc", PathMapping::default(), Arc::new(|_| {}), spawn)
+            .unwrap();
+        mgr.close_tab(tab2).unwrap();
+        logs.retain(&open_log_containers(&mgr.state()));
+        assert!(!logs.is_following("abc"));
+        let _ = tab;
     }
 }

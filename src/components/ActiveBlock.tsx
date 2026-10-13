@@ -1,4 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+
+import { formatDuration } from "../lib/blockLayout";
 
 import { LIVE_INSET_X_PX, type PaneRectStyle } from "./TerminalView";
 
@@ -22,17 +25,20 @@ export {
  */
 export function ActiveBlockHeader({
   command,
+  startedAtMs,
   rect,
   liftPx = 0,
   onHeight,
 }: {
   command: string;
+  /** Quando o comando começou, pelo relógio do core. `null`: sem contador. */
+  startedAtMs: number | null;
   rect: PaneRectStyle;
   /**
    * Quanto a faixa ao vivo sobe além do que a conta em % diz, em px.
    *
    * O recorte do terminal desconta o padding dele, então a saída aparece um
-   * pouco mais alta do que `liveRect` calcula. Header e moldura sobem junto —
+   * pouco mais alta do que `liveRect` calcula. O header sobe junto —
    * senão a tampa flutua no meio da saída. Ver `padSlackPx`.
    */
   liftPx?: number;
@@ -66,10 +72,29 @@ export function ActiveBlockHeader({
     return () => ro.disconnect();
   }, []);
 
+  const { t, i18n } = useTranslation();
+  // O contador anda de segundo em segundo. O relógio é do core
+  // (`started_at_ms`); aqui só se lê a hora para desenhar.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (startedAtMs === null) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [startedAtMs]);
+  const elapsed =
+    startedAtMs === null
+      ? null
+      : formatDuration(Math.max(0, now - startedAtMs), i18n.language, {
+          whole: true,
+        });
+
   return (
     <div
       ref={ref}
-      className="z-10 flex items-center gap-2 overflow-hidden rounded-t-[5px] border border-b-0 border-tyba-border bg-tyba-sunken px-2.5 py-1"
+      // Sem caixa, como os blocos prontos: o que diz "este roda" é o filete
+      // vivo no topo e o ponto aceso. `px-2.5` + o recuo da faixa põem o comando
+      // na mesma coluna do comando dos blocos da lista (`px-[18px]`, mockup).
+      className="z-10 flex h-9 items-start gap-2 overflow-hidden bg-tyba-sunken px-2.5 pt-2.5"
       style={{
         position: "absolute",
         left: `calc(${rect.left}% + ${LIVE_INSET_X_PX}px)`,
@@ -89,45 +114,18 @@ export function ActiveBlockHeader({
         aria-hidden
         className="tyba-flow-line tyba-flow-line--live tyba-flow-line--thick pointer-events-none absolute inset-x-0 top-0"
       />
-      <span className="shrink-0 text-tyba-green">❯</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-tyba-text">
+      <span className="shrink-0 font-mono text-[13px] leading-5 text-tyba-green">
+        ❯
+      </span>
+      <span className="min-w-0 flex-1 truncate font-mono text-[13px] leading-5 text-tyba-text">
         {command}
       </span>
-      {/* O ponto fica: o filete diz "algo corre", o ponto diz "é este bloco". */}
-      <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-tyba-green" />
+      {/* O ponto fica: o filete diz "algo corre", o ponto diz "é este bloco".
+          Aceso (glow) porque está vivo; o pulso para em reduced-motion. */}
+      <span className="flex shrink-0 items-center gap-2 font-mono text-[11px] leading-5 text-tyba-green">
+        <span className="size-[7px] shrink-0 rounded-full bg-tyba-green shadow-[var(--tyba-glow-green)] tyba-pulse" />
+        {elapsed && t("blockRunningFor", { time: elapsed })}
+      </span>
     </div>
-  );
-}
-
-/**
- * A moldura em volta da saída ao vivo — o resto do cartão que o header começa.
- *
- * Sem ela o bloco em execução é o único da lista sem caixa fechada: o header
- * desenha a tampa e o corpo termina no vazio, o que lê como bloco cortado no
- * meio, ainda mais ao lado dos cartões já prontos logo acima.
- *
- * É um irmão do terminal, não uma borda nele: o corpo ao vivo é recortado por
- * `clip-path`, e uma borda no próprio elemento seria cortada junto — some
- * justamente a linha de baixo, que é a que fecha a caixa.
- */
-export function ActiveBlockFrame({
-  rect,
-  liftPx = 0,
-}: {
-  rect: PaneRectStyle;
-  /** Ver {@link ActiveBlockHeader} — sobe e cresce o mesmo tanto. */
-  liftPx?: number;
-}) {
-  return (
-    <div
-      className="pointer-events-none z-10 rounded-b-[5px] border border-t-0 border-tyba-border"
-      style={{
-        position: "absolute",
-        left: `calc(${rect.left}% + ${LIVE_INSET_X_PX}px)`,
-        top: `calc(${rect.top}% - ${liftPx}px)`,
-        width: `calc(${rect.width}% - ${LIVE_INSET_X_PX * 2}px)`,
-        height: `calc(${rect.height}% + ${liftPx}px)`,
-      }}
-    />
   );
 }

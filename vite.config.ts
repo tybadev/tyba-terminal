@@ -8,6 +8,15 @@ export default defineConfig({
   resolve: {
     alias: { "@": resolve(__dirname, "src") },
   },
+  // Duas páginas: o app e o splash do arranque (janela própria, sem JS).
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, "index.html"),
+        splash: resolve(__dirname, "splash.html"),
+      },
+    },
+  },
   clearScreen: false,
   server: {
     port: 1420,

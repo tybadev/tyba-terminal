@@ -1,11 +1,9 @@
 pub mod channel;
 mod client;
 mod framing;
-// O canal shim↔core (shim v2) é escopo Linux nesta entrega (§15 do
-// tech-spec): `peer_cred` via SO_PEERCRED só existe no Linux — macOS pede
-// LOCAL_PEERCRED/getpeereid (follow-on) e o único chamador
-// (`hook_ipc::channel::serve_connection`) já é `target_os = "linux"`.
-#[cfg(target_os = "linux")]
+// O canal shim↔core (shim v2) existe no Linux (SO_PEERCRED) e, desde o M3 do
+// claude-monitor, no macOS (getpeereid + LOCAL_PEERPID). Windows não tem shim.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod peercred;
 #[cfg(windows)]
 mod pipe;
@@ -16,6 +14,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use client::{request, run_client};
+#[cfg(test)]
+pub(crate) use protocol::hook_event_from_value;
 pub use protocol::ResponseEnvelope;
 pub use server::HookServer;
 
@@ -33,9 +33,21 @@ pub struct HookEvent {
 }
 
 pub enum HookAction {
-    Allow { reason: Option<String> },
-    Deny { reason: String },
+    Allow {
+        reason: Option<String>,
+    },
+    Deny {
+        reason: String,
+    },
     Ack,
+    /// Sem decisão: o cliente sai calado e valem as regras do próprio agente
+    /// (amarelo do Claude no fluxo híbrido).
+    Pass,
+    /// Força a pergunta nativa do agente, com o motivo (amarelo do Claude
+    /// quando a config dele dispensaria a pergunta).
+    Ask {
+        reason: String,
+    },
 }
 
 pub fn maybe_run_hook_mode() -> Option<i32> {

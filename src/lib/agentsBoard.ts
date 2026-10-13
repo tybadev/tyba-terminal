@@ -12,7 +12,11 @@ import type {
   Workspace,
   WorkspaceId,
 } from "./ipc";
-import { statusVisual, type StatusVisual } from "./sessionStatus";
+import {
+  awaitsDecision,
+  statusVisual,
+  type StatusVisual,
+} from "./sessionStatus";
 
 /**
  * Onde a sessão mora no layout — o caminho inteiro que o salto percorre.
@@ -124,8 +128,9 @@ export const NO_SIGNAL: StatusVisual = {
  *
  * O `statusVisual` empata bloqueado-por-aprovação com bloqueado-por-resposta no
  * rank 3, e no sidebar isso não importa porque a linha mostra o motivo. Aqui o
- * quadro ordena, e aprovação vem primeiro: é a única das duas em que o agente
- * está parado esperando uma decisão de risco, não uma pergunta.
+ * quadro ordena, e decisão vem primeiro: aprovação do TYBA e prompt nativo do
+ * Claude (`awaitsDecision`) param o agente esperando um sim/não, não uma
+ * pergunta — e têm o mesmo peso entre si (R5).
  *
  * Multiplica por 10 para o desempate caber sem invadir o degrau seguinte.
  */
@@ -134,7 +139,7 @@ export const urgencyOf = (session: Session): number => {
   if (!visual) return 0;
   const tiebreak =
     session.status.state === "awaiting_input" &&
-    session.status.reason === "approval"
+    awaitsDecision(session.status.reason)
       ? 1
       : 0;
   return visual.rank * 10 + tiebreak;
@@ -149,7 +154,9 @@ const isAgent = (session: Session): boolean => session.kind.type === "agent";
  *
  * `awaiting_input` vira `reason: "reply"` porque sem gate não existe aprovação
  * pendente: o que a tela pode sugerir é um agente parado esperando alguém, e é
- * isso que o rótulo "aguardando" diz.
+ * isso que o rótulo "aguardando" diz. Nem `native_prompt`: esse sinal vem do
+ * hook `PermissionRequest`, e sessão observada não tem hook — a tela não
+ * distingue prompt nativo de pergunta.
  *
  * `null` para o que este front não sabe ler — incluindo o `state` ausente e o
  * estado que o core acrescente depois. A união do TypeScript vale na compilação

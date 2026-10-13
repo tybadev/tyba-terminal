@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::SessionId;
 
+pub mod logs;
+
 const AVAILABILITY_TTL: Duration = Duration::from_secs(10);
 /// Vida do nome de container servido à completação.
 ///
@@ -107,6 +109,10 @@ pub struct ContainerInfo {
     pub config_files: Option<String>,
     pub working_dir_status: Option<PathStatus>,
     pub compose_file_status: Option<PathStatus>,
+    /// É do projeto compose do repo pedido (`list` com `repo_root`) — o painel
+    /// lateral lista tudo, mas abre esse grupo primeiro. Mesma regra do
+    /// `filter_project`, decidida aqui e não no front.
+    pub in_repo: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -164,6 +170,30 @@ impl ComposeOp {
         }
     }
 }
+
+/// Ação de um container só (o painel lateral Docker). O compose inteiro segue
+/// em `ComposeOp`; aqui é o `docker restart|stop <id>` do container clicado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContainerOp {
+    Start,
+    Restart,
+    Stop,
+}
+
+impl ContainerOp {
+    pub fn arg(self) -> &'static str {
+        match self {
+            ContainerOp::Start => "start",
+            ContainerOp::Restart => "restart",
+            ContainerOp::Stop => "stop",
+        }
+    }
+}
+
+/// `docker stop` espera o container sair (10s de graça por padrão) antes do
+/// SIGKILL: o teto tem que cobrir essa espera.
+const CONTAINER_OP_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn probe_path(path: &str, want_dir: bool) -> PathStatus {
     if path.contains('\'') {
@@ -301,6 +331,7 @@ pub fn parse_ps_output(raw: &str) -> Vec<ContainerInfo> {
                 config_files: labels.get(COMPOSE_CONFIG_FILES_LABEL).cloned(),
                 working_dir_status: None,
                 compose_file_status: None,
+                in_repo: false,
             })
         })
         .collect()
@@ -325,6 +356,17 @@ pub fn annotate_host_paths(containers: &mut [ContainerInfo]) {
         container.compose_file_status = *files
             .entry(key)
             .or_insert_with(|| compose_files_status(&resolve_compose_files(&working_dir, &raw)));
+    }
+}
+
+/// Marca `in_repo` nos containers do projeto do repo (regra do `filter_project`).
+pub fn mark_repo_project(containers: &mut [ContainerInfo], repo_root: &str) {
+    let ours: std::collections::HashSet<String> = filter_project(containers, repo_root)
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    for c in containers.iter_mut() {
+        c.in_repo = ours.contains(&c.id);
     }
 }
 
@@ -470,6 +512,256 @@ fn run_docker(args: &[&str], timeout: Duration, host: Option<&str>) -> Result<St
     }
 }
 
+/// Prepara um `docker …` com o alvo (local ou host SSH) — a mesma montagem do
+/// `run_docker`, para os comandos de longa duração que não cabem num timeout.
+fn docker_command(args: &[&str], host: Option<&str>) -> Result<Command, DockerError> {
+    let bin = docker_bin().ok_or(DockerError::NotInstalled)?;
+    let mut cmd = Command::new(bin);
+    cmd.args(args);
+    if let Some(target) = docker_host_env(host) {
+        if let Some(alias) = host {
+            crate::ssh::command::require_session_if_password(alias).map_err(DockerError::Ssh)?;
+        }
+        crate::ssh::command::apply_env(&mut cmd);
+        cmd.env("DOCKER_HOST", target);
+    }
+    crate::repo::no_console_window(&mut cmd);
+    Ok(cmd)
+}
+
+/// `docker logs -f --timestamps` do container, stdout/stderr em pipe. `since`
+/// retoma de onde o seguidor anterior parou (container reiniciado).
+pub fn spawn_logs_follow(
+    id: &str,
+    since: Option<&str>,
+    host: Option<&str>,
+) -> Result<Child, DockerError> {
+    if !is_valid_container_id(id) {
+        return Err(DockerError::UnknownContainer(id.chars().take(12).collect()));
+    }
+    let tail = logs::INITIAL_TAIL.to_string();
+    let mut args = vec!["logs", "-f", "--timestamps"];
+    match since {
+        Some(ts) => args.extend(["--since", ts]),
+        None => args.extend(["--tail", tail.as_str()]),
+    }
+    args.push(id);
+    let mut cmd = docker_command(&args, host)?;
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    Ok(cmd.spawn()?)
+}
+
+const ACTION_TIMEOUT: Duration = Duration::from_secs(30);
+const INSPECT_TIMEOUT: Duration = Duration::from_secs(3);
+const STATS_TIMEOUT: Duration = Duration::from_secs(6);
+const FS_TIMEOUT: Duration = Duration::from_secs(5);
+/// Teto do leitor de arquivo do container: é uma espiada, não um download.
+pub const FS_READ_MAX: usize = 512 * 1024;
+
+/// O que a faixa de contexto da aba de container mostra.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContainerDetail {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub state: String,
+    pub started_at: Option<String>,
+    pub workdir: Option<String>,
+    pub mounts: Vec<logs::Mount>,
+    /// `3000 → localhost:3000`, já formatado.
+    pub ports: Vec<String>,
+}
+
+fn json_str(v: Option<&serde_json::Value>) -> Option<String> {
+    v.and_then(|x| x.as_str()).map(str::to_string)
+}
+
+fn format_ports(c: &serde_json::Value) -> Vec<String> {
+    let Some(map) = c
+        .get("NetworkSettings")
+        .and_then(|n| n.get("Ports"))
+        .and_then(|p| p.as_object())
+    else {
+        return Vec::new();
+    };
+    let mut ports = Vec::new();
+    for (inner, bindings) in map {
+        let port = inner.split('/').next().unwrap_or(inner);
+        for bind in bindings.as_array().into_iter().flatten() {
+            let Some(host_port) = bind.get("HostPort").and_then(|p| p.as_str()) else {
+                continue;
+            };
+            let ip = match bind.get("HostIp").and_then(|i| i.as_str()).unwrap_or("") {
+                "" | "0.0.0.0" | "::" => "localhost",
+                other => other,
+            };
+            ports.push(format!("{port} → {ip}:{host_port}"));
+        }
+    }
+    ports.sort();
+    ports.dedup();
+    ports
+}
+
+/// `docker inspect <id>` → o que a faixa e o mapeamento de caminho precisam.
+pub fn parse_inspect(raw: &str) -> Option<ContainerDetail> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let c = value.as_array().and_then(|a| a.first()).unwrap_or(&value);
+    let id = json_str(c.get("Id"))?;
+    let state = c.get("State");
+    let config = c.get("Config");
+    let mounts = c
+        .get("Mounts")
+        .and_then(|m| m.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|m| m.get("Type").and_then(|t| t.as_str()) == Some("bind"))
+        .filter_map(|m| {
+            Some(logs::Mount {
+                source: json_str(m.get("Source"))?,
+                destination: json_str(m.get("Destination"))?,
+            })
+        })
+        .collect();
+    Some(ContainerDetail {
+        id,
+        name: json_str(c.get("Name"))
+            .unwrap_or_default()
+            .trim_start_matches('/')
+            .to_string(),
+        image: json_str(config.and_then(|cfg| cfg.get("Image"))).unwrap_or_default(),
+        state: json_str(state.and_then(|st| st.get("Status"))).unwrap_or_default(),
+        // Container que nunca subiu reporta o "zero" do Go.
+        started_at: json_str(state.and_then(|st| st.get("StartedAt")))
+            .filter(|t| !t.starts_with("0001-")),
+        workdir: json_str(config.and_then(|cfg| cfg.get("WorkingDir"))).filter(|w| !w.is_empty()),
+        mounts,
+        ports: format_ports(c),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContainerStats {
+    pub cpu: String,
+    pub mem: String,
+}
+
+pub fn parse_stats(raw: &str) -> Option<ContainerStats> {
+    let line = raw.lines().find(|l| !l.trim().is_empty())?;
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let cpu = value.get("CPUPerc")?.as_str()?.to_string();
+    let mem = value
+        .get("MemUsage")?
+        .as_str()?
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Some(ContainerStats { cpu, mem })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContainerAction {
+    Restart,
+    Stop,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FsEntry {
+    pub name: String,
+    pub is_dir: bool,
+    /// Bytes, para arquivo comum. `None` em pasta, link e dispositivo.
+    pub size: Option<u64>,
+    /// Alvo do link simbólico (`ls` não segue o link: `is_dir` fica falso).
+    pub link_target: Option<String>,
+}
+
+/// Uma linha de `ls -lAn` (GNU ou busybox). `None` para `total N` e para o
+/// que não tiver a forma esperada.
+fn parse_ls_line(line: &str) -> Option<FsEntry> {
+    // Campos separados por um ou mais espaços; o nome é o resto da linha,
+    // então se anda campo a campo guardando onde cada um termina.
+    let mut rest = line;
+    let mut field = || -> Option<&str> {
+        let trimmed = rest.trim_start_matches(' ');
+        if trimmed.is_empty() {
+            return None;
+        }
+        let end = trimmed.find(' ').unwrap_or(trimmed.len());
+        let (head, tail) = trimmed.split_at(end);
+        rest = tail;
+        Some(head)
+    };
+    let mode = field()?;
+    let kind = mode.chars().next()?;
+    if mode.len() < 10 || !"-dlcbps".contains(kind) {
+        return None;
+    }
+    let _links = field()?;
+    let _owner = field()?;
+    let _group = field()?;
+    let mut size_field = field()?;
+    if kind == 'c' || kind == 'b' {
+        // Dispositivo: `maior, menor` no lugar do tamanho.
+        if size_field.ends_with(',') {
+            size_field = field()?;
+        }
+    }
+    // Data: `Oct 12 23:50` / `Oct 12  2025` (3 campos) ou `2026-10-12 23:50`
+    // quando o ls usa estilo ISO (2 campos).
+    let first = field()?;
+    let is_iso = first.len() == 10 && first.as_bytes().get(4) == Some(&b'-');
+    field()?;
+    if !is_iso {
+        field()?;
+    }
+    let name = rest.strip_prefix(' ')?;
+    if name.is_empty() {
+        return None;
+    }
+    let (name, link_target) = match (kind, name.split_once(" -> ")) {
+        ('l', Some((n, target))) => (n, Some(target.to_string())),
+        _ => (name, None),
+    };
+    Some(FsEntry {
+        name: name.to_string(),
+        is_dir: kind == 'd',
+        size: if kind == '-' {
+            size_field.parse().ok()
+        } else {
+            None
+        },
+        link_target,
+    })
+}
+
+/// Saída de `ls -lAn`: pastas primeiro, depois por nome.
+pub fn parse_ls(raw: &str) -> Vec<FsEntry> {
+    let mut out: Vec<FsEntry> = raw.lines().filter_map(parse_ls_line).collect();
+    out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FsFile {
+    pub text: String,
+    pub truncated: bool,
+    pub binary: bool,
+}
+
+/// Caminho do container aceito pelo leitor: absoluto, sem NUL nem quebra de
+/// linha. Vai como argv (nunca por shell), então aspas não importam.
+pub fn validate_container_path(path: &str) -> Result<(), DockerError> {
+    if !path.starts_with('/') || path.contains('\0') || path.contains('\n') {
+        return Err(DockerError::InvalidPath(path.to_string()));
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct DockerManager {
     /// Por alvo (`None` = local): docker no Mac não diz nada sobre docker na VPS.
@@ -481,6 +773,103 @@ pub struct DockerManager {
     completion_names: Mutex<Option<(Instant, Vec<String>)>>,
     projects: Mutex<HashMap<String, ProjectInfo>>,
     tabs: Mutex<HashMap<(String, ContainerTab), SessionId>>,
+    /// Última leitura de CPU/RAM e motivo de saída, por alvo — o painel pede a
+    /// cada refresh, mas o `docker stats` só roda de novo depois do intervalo.
+    usage: Mutex<HashMap<Option<String>, (Instant, PanelUsage)>>,
+}
+
+/// CPU e memória de um container rodando (`docker stats --no-stream`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContainerUsage {
+    /// Id completo (o `stats` devolve o curto; casado com o snapshot do `list`).
+    pub id: String,
+    pub cpu_percent: Option<f64>,
+    pub mem_bytes: Option<u64>,
+}
+
+/// Por que um container parado saiu (`docker inspect`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExitReason {
+    pub id: String,
+    pub oom_killed: bool,
+    pub exit_code: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PanelUsage {
+    pub usage: Vec<ContainerUsage>,
+    pub exits: Vec<ExitReason>,
+}
+
+/// Intervalo mínimo entre duas rodadas de `docker stats` no mesmo alvo.
+const USAGE_MIN_INTERVAL: Duration = Duration::from_secs(5);
+/// `stats --no-stream` amostra por ~1-2s antes de responder.
+const PANEL_STATS_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// "182.3MiB" / "1.2GB" / "512kB" → bytes. Binário (KiB) e decimal (kB).
+pub fn parse_size(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    let split = raw
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(raw.len());
+    let (number, unit) = raw.split_at(split);
+    let value: f64 = number.parse().ok()?;
+    let factor: f64 = match unit.trim() {
+        "B" | "" => 1.0,
+        "KiB" => 1024.0,
+        "MiB" => 1024.0 * 1024.0,
+        "GiB" => 1024.0 * 1024.0 * 1024.0,
+        "TiB" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        "kB" | "KB" => 1e3,
+        "MB" => 1e6,
+        "GB" => 1e9,
+        "TB" => 1e12,
+        _ => return None,
+    };
+    Some((value * factor).round() as u64)
+}
+
+/// Uma linha JSON por container de `docker stats --format '{{json .}}'`.
+/// Linha que não parseia é ignorada (o docker às vezes emite `--` em
+/// container que acabou de parar).
+pub fn parse_stats_output(raw: &str) -> Vec<ContainerUsage> {
+    #[derive(Deserialize)]
+    struct Line {
+        // Só `ID`: o `{{json .}}` traz também `Container`, e um alias para ele
+        // faria o serde recusar a linha como campo duplicado.
+        #[serde(rename = "ID")]
+        id: String,
+        #[serde(rename = "CPUPerc", default)]
+        cpu: String,
+        #[serde(rename = "MemUsage", default)]
+        mem: String,
+    }
+    raw.lines()
+        .filter_map(|line| serde_json::from_str::<Line>(line.trim()).ok())
+        .filter(|l| is_valid_container_id(&l.id))
+        .map(|l| ContainerUsage {
+            id: l.id,
+            cpu_percent: l.cpu.trim().trim_end_matches('%').trim().parse().ok(),
+            mem_bytes: l.mem.split('/').next().and_then(parse_size),
+        })
+        .collect()
+}
+
+/// `docker inspect --format '{{.Id}} {{.State.OOMKilled}} {{.State.ExitCode}}'`.
+pub fn parse_exit_reasons(raw: &str) -> Vec<ExitReason> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let id = parts.next()?;
+            let oom = parts.next()?;
+            let code = parts.next().and_then(|c| c.parse().ok());
+            is_valid_container_id(id).then(|| ExitReason {
+                id: id.to_string(),
+                oom_killed: oom == "true",
+                exit_code: code,
+            })
+        })
+        .collect()
 }
 
 pub type SharedDocker = Arc<DockerManager>;
@@ -603,8 +992,11 @@ impl DockerManager {
                 }
             }
         }
+        if let Some(root) = repo_root {
+            mark_repo_project(&mut containers, root);
+        }
         let mut result = match (all, repo_root) {
-            (false, Some(root)) => filter_project(&containers, root),
+            (false, Some(_)) => containers.into_iter().filter(|c| c.in_repo).collect(),
             _ => containers,
         };
         sort_containers(&mut result);
@@ -630,6 +1022,74 @@ impl DockerManager {
         Ok(())
     }
 
+    /// CPU/RAM dos que rodam e o motivo de saída dos parados (`exited` = ids
+    /// do snapshot). Só o painel Docker aberto chama; o intervalo mínimo por
+    /// alvo segura o custo (`docker stats` remoto é ssh + amostragem).
+    pub fn panel_usage(
+        &self,
+        exited: &[String],
+        host: Option<&str>,
+    ) -> Result<PanelUsage, DockerError> {
+        let key = host.map(str::to_string);
+        if let Some((at, cached)) = self.usage.lock().get(&key) {
+            if at.elapsed() < USAGE_MIN_INTERVAL {
+                return Ok(cached.clone());
+            }
+        }
+        let raw = run_docker(
+            &["stats", "--no-stream", "--format", "{{json .}}"],
+            PANEL_STATS_TIMEOUT,
+            host,
+        )?;
+        let known: Vec<String> = self.known.lock().keys().cloned().collect();
+        let usage = parse_stats_output(&raw)
+            .into_iter()
+            .filter_map(|mut u| {
+                let full = known.iter().find(|id| id.starts_with(&u.id))?;
+                u.id = full.clone();
+                Some(u)
+            })
+            .collect();
+        let ids: Vec<&str> = exited
+            .iter()
+            .map(String::as_str)
+            .filter(|id| self.container_name(id).is_ok())
+            .collect();
+        let exits = if ids.is_empty() {
+            Vec::new()
+        } else {
+            let mut args = vec![
+                "inspect",
+                "--format",
+                "{{.Id}} {{.State.OOMKilled}} {{.State.ExitCode}}",
+            ];
+            args.extend(ids);
+            // Container removido entre o list e aqui faz o inspect falhar
+            // inteiro; o motivo é extra, não vale derrubar CPU/RAM.
+            run_docker(&args, PS_TIMEOUT, host)
+                .map(|raw| parse_exit_reasons(&raw))
+                .unwrap_or_default()
+        };
+        let result = PanelUsage { usage, exits };
+        self.usage
+            .lock()
+            .insert(key, (Instant::now(), result.clone()));
+        Ok(result)
+    }
+
+    /// Reinicia ou para um container que o último `list` viu — id fora do
+    /// snapshot é recusado antes de virar argumento do `docker`.
+    pub fn container_op(
+        &self,
+        id: &str,
+        op: ContainerOp,
+        host: Option<&str>,
+    ) -> Result<(), DockerError> {
+        self.container_name(id)?;
+        run_docker(&[op.arg(), id], CONTAINER_OP_TIMEOUT, host)?;
+        Ok(())
+    }
+
     fn prune_tabs(&self) {
         let known = self.known.lock();
         self.tabs
@@ -643,6 +1103,110 @@ impl DockerManager {
             .get(name)
             .cloned()
             .ok_or_else(|| DockerError::UnknownProject(name.to_string()))
+    }
+
+    /// Nome do container, relistando uma vez se ele ainda não está no retrato
+    /// (a aba foi aberta antes do primeiro `ps` desta execução, ou por um
+    /// painel que listou outro alvo).
+    pub fn ensure_known(&self, id: &str, host: Option<&str>) -> Result<String, DockerError> {
+        if let Ok(name) = self.container_name(id) {
+            return Ok(name);
+        }
+        if !is_valid_container_id(id) {
+            return Err(DockerError::UnknownContainer(id.chars().take(12).collect()));
+        }
+        let raw = run_docker(
+            &["ps", "-a", "--no-trunc", "--format", "{{json .}}"],
+            PS_TIMEOUT,
+            host,
+        )?;
+        {
+            let mut known = self.known.lock();
+            for c in parse_ps_output(&raw) {
+                known.insert(c.id, c.name);
+            }
+        }
+        self.container_name(id)
+    }
+
+    pub fn detail(&self, id: &str, host: Option<&str>) -> Result<ContainerDetail, DockerError> {
+        self.ensure_known(id, host)?;
+        let raw = run_docker(&["inspect", id], INSPECT_TIMEOUT, host)?;
+        parse_inspect(&raw).ok_or_else(|| DockerError::Failed("inspect ilegível".into()))
+    }
+
+    pub fn stats(&self, id: &str, host: Option<&str>) -> Result<ContainerStats, DockerError> {
+        self.ensure_known(id, host)?;
+        let raw = run_docker(
+            &["stats", "--no-stream", "--format", "{{json .}}", id],
+            STATS_TIMEOUT,
+            host,
+        )?;
+        parse_stats(&raw).ok_or_else(|| DockerError::Failed("stats ilegível".into()))
+    }
+
+    pub fn action(
+        &self,
+        id: &str,
+        action: ContainerAction,
+        host: Option<&str>,
+    ) -> Result<(), DockerError> {
+        self.ensure_known(id, host)?;
+        let verb = match action {
+            ContainerAction::Restart => "restart",
+            ContainerAction::Stop => "stop",
+        };
+        run_docker(&[verb, id], ACTION_TIMEOUT, host)?;
+        Ok(())
+    }
+
+    pub fn fs_list(
+        &self,
+        id: &str,
+        path: &str,
+        host: Option<&str>,
+    ) -> Result<Vec<FsEntry>, DockerError> {
+        self.ensure_known(id, host)?;
+        validate_container_path(path)?;
+        // Barra no fim: com `-l`, o ls não segue um link simbólico passado na
+        // linha de comando — sem ela, uma pasta que é link listaria o link.
+        let dir = if path.ends_with('/') {
+            path.to_string()
+        } else {
+            format!("{path}/")
+        };
+        let raw = run_docker(
+            &["exec", id, "ls", "-lAn", "--", dir.as_str()],
+            FS_TIMEOUT,
+            host,
+        )?;
+        Ok(parse_ls(&raw))
+    }
+
+    pub fn fs_read(&self, id: &str, path: &str, host: Option<&str>) -> Result<FsFile, DockerError> {
+        self.ensure_known(id, host)?;
+        validate_container_path(path)?;
+        let limit = (FS_READ_MAX + 1).to_string();
+        let raw = run_docker(
+            &["exec", id, "head", "-c", limit.as_str(), "--", path],
+            FS_TIMEOUT,
+            host,
+        )?;
+        let binary = raw.contains('\0');
+        let truncated = raw.len() > FS_READ_MAX;
+        let mut text = if binary { String::new() } else { raw };
+        if truncated && !binary {
+            let mut cut = FS_READ_MAX;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.truncate(cut);
+        }
+        Ok(FsFile {
+            text,
+            truncated,
+            binary,
+        })
     }
 
     pub fn tab_session(&self, id: &str, tab: ContainerTab) -> Option<SessionId> {
@@ -709,6 +1273,7 @@ not-json-line
             config_files: config_files.map(str::to_string),
             working_dir_status: None,
             compose_file_status: None,
+            in_repo: false,
         }
     }
 
@@ -980,6 +1545,24 @@ not-json-line
     }
 
     #[test]
+    fn mark_repo_project_flags_only_the_repo_compose() {
+        let mut list = vec![
+            ContainerInfo {
+                id: "1".repeat(12),
+                ..container(Some("/u/repo"), None)
+            },
+            ContainerInfo {
+                id: "2".repeat(12),
+                compose_project: Some("outro".into()),
+                ..container(Some("/u/outro"), None)
+            },
+        ];
+        mark_repo_project(&mut list, "/u/repo/");
+        assert!(list[0].in_repo);
+        assert!(!list[1].in_repo);
+    }
+
+    #[test]
     fn sort_puts_running_first_then_by_name() {
         let named = |name: &str, state: &str| ContainerInfo {
             name: name.into(),
@@ -1034,5 +1617,194 @@ not-json-line
             mgr.container_name("èçho"),
             Err(DockerError::UnknownContainer(_))
         ));
+    }
+
+    #[test]
+    fn parse_size_handles_binary_and_decimal_units() {
+        assert_eq!(parse_size("182MiB"), Some(182 * 1024 * 1024));
+        assert_eq!(parse_size("1.5GiB"), Some(1_610_612_736));
+        assert_eq!(parse_size("512kB"), Some(512_000));
+        assert_eq!(parse_size(" 12B "), Some(12));
+        assert_eq!(parse_size("2GB"), Some(2_000_000_000));
+        assert_eq!(parse_size("--"), None);
+        assert_eq!(parse_size("3 parsecs"), None);
+    }
+
+    #[test]
+    fn parse_stats_output_reads_cpu_and_memory() {
+        let raw = concat!(
+            r#"{"BlockIO":"0B / 0B","CPUPerc":"4.12%","Container":"a1b2c3d4e5f6","ID":"a1b2c3d4e5f6","MemPerc":"2.31%","MemUsage":"182.3MiB / 7.66GiB","Name":"api","NetIO":"1kB / 0B","PIDs":"11"}"#,
+            "\n",
+            r#"{"CPUPerc":"--","ID":"bbbbbbbbbbbb","MemUsage":"-- / --","Name":"worker"}"#,
+            "\n",
+            "lixo\n",
+            r#"{"CPUPerc":"1%","ID":"--rm","MemUsage":"1MiB / 1GiB"}"#,
+        );
+        let out = parse_stats_output(raw);
+        assert_eq!(out.len(), 2, "linha inválida e id inválido saem");
+        assert_eq!(out[0].id, "a1b2c3d4e5f6");
+        assert_eq!(out[0].cpu_percent, Some(4.12));
+        assert_eq!(
+            out[0].mem_bytes,
+            Some((182.3f64 * 1024.0 * 1024.0).round() as u64)
+        );
+        assert_eq!(out[1].cpu_percent, None, "`--` não vira zero");
+        assert_eq!(out[1].mem_bytes, None);
+    }
+
+    #[test]
+    fn parse_exit_reasons_reads_oom_and_code() {
+        let id = "a".repeat(64);
+        let other = "b".repeat(64);
+        let raw = format!("{id} true 137\n{other} false 1\nnope\n");
+        let out = parse_exit_reasons(&raw);
+        assert_eq!(
+            out,
+            vec![
+                ExitReason {
+                    id,
+                    oom_killed: true,
+                    exit_code: Some(137)
+                },
+                ExitReason {
+                    id: other,
+                    oom_killed: false,
+                    exit_code: Some(1)
+                },
+            ]
+        );
+    }
+
+    const INSPECT: &str = r#"[{"Id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","Name":"/api","State":{"Status":"running","StartedAt":"2026-10-12T15:21:00.5Z"},"Config":{"Image":"node:22-alpine","WorkingDir":"/app"},"Mounts":[{"Type":"bind","Source":"/Users/dev/poc-git","Destination":"/app"},{"Type":"volume","Name":"pg","Source":"/var/lib/docker/volumes/pg/_data","Destination":"/data"}],"NetworkSettings":{"Ports":{"3000/tcp":[{"HostIp":"0.0.0.0","HostPort":"3000"},{"HostIp":"::","HostPort":"3000"}],"9229/tcp":null}}}]"#;
+
+    #[test]
+    fn parse_inspect_reads_strip_fields_and_bind_mounts_only() {
+        let d = parse_inspect(INSPECT).unwrap();
+        assert_eq!(d.name, "api");
+        assert_eq!(d.image, "node:22-alpine");
+        assert_eq!(d.state, "running");
+        assert_eq!(d.started_at.as_deref(), Some("2026-10-12T15:21:00.5Z"));
+        assert_eq!(d.workdir.as_deref(), Some("/app"));
+        assert_eq!(
+            d.mounts,
+            vec![logs::Mount {
+                source: "/Users/dev/poc-git".into(),
+                destination: "/app".into()
+            }],
+            "volume nomeado não é caminho do projeto"
+        );
+        assert_eq!(d.ports, vec!["3000 → localhost:3000".to_string()]);
+        let never = INSPECT.replace("2026-10-12T15:21:00.5Z", "0001-01-01T00:00:00Z");
+        assert_eq!(parse_inspect(&never).unwrap().started_at, None);
+        assert!(parse_inspect("lixo").is_none());
+    }
+
+    #[test]
+    fn parse_stats_keeps_cpu_and_used_memory() {
+        let raw = r#"{"BlockIO":"0B / 0B","CPUPerc":"4.12%","MemPerc":"2.3%","MemUsage":"182MiB / 7.66GiB","Name":"api"}"#;
+        assert_eq!(
+            parse_stats(raw),
+            Some(ContainerStats {
+                cpu: "4.12%".into(),
+                mem: "182MiB".into()
+            })
+        );
+        assert_eq!(parse_stats(""), None);
+    }
+
+    #[test]
+    fn parse_ls_lists_dirs_first() {
+        let raw = "total 12\n\
+drwxr-xr-x    2 0        0             4096 Oct 12 23:50 src\n\
+-rw-r--r--    1 0        0              812 Oct 12 23:50 package.json\n\
+drwxr-xr-x  140 0        0             4096 Oct 12  2025 node_modules\n\
+-rw-------    1 1000     1000            33 Oct 12 23:50 .env\n";
+        let entries = parse_ls(raw);
+        let names: Vec<(&str, bool, Option<u64>)> = entries
+            .iter()
+            .map(|e| (e.name.as_str(), e.is_dir, e.size))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("node_modules", true, None),
+                ("src", true, None),
+                (".env", false, Some(33)),
+                ("package.json", false, Some(812))
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_ls_marks_symlinks_and_keeps_spaces_in_names() {
+        let raw = "lrwxrwxrwx 1 0 0 11 Oct 12 23:50 app -> /srv/app v2\n\
+-rw-r--r-- 1 0 0 5 Oct 12 23:50 meu arquivo.txt\n";
+        let entries = parse_ls(raw);
+        assert_eq!(entries[0].name, "app");
+        assert_eq!(entries[0].link_target.as_deref(), Some("/srv/app v2"));
+        assert_eq!(entries[0].size, None);
+        assert!(!entries[0].is_dir);
+        assert_eq!(entries[1].name, "meu arquivo.txt");
+        assert_eq!(entries[1].size, Some(5));
+    }
+
+    #[test]
+    fn parse_ls_reads_iso_dates_devices_and_skips_noise() {
+        let raw = "total 0\n\
+crw-rw-rw- 1 0 0 1, 3 2026-10-12 23:50 null\n\
+-rw-r--r--+ 1 0 0 2048 2026-10-12 23:50 notas.md\n\
+ls: cannot access 'x': Permission denied\n";
+        let entries = parse_ls(raw);
+        let names: Vec<(&str, Option<u64>)> =
+            entries.iter().map(|e| (e.name.as_str(), e.size)).collect();
+        assert_eq!(names, vec![("notas.md", Some(2048)), ("null", None)]);
+    }
+
+    #[test]
+    fn panel_usage_serves_cache_within_interval() {
+        let mgr = DockerManager::new();
+        let cached = PanelUsage {
+            usage: vec![ContainerUsage {
+                id: "x".into(),
+                cpu_percent: Some(1.0),
+                mem_bytes: None,
+            }],
+            exits: vec![],
+        };
+        mgr.usage
+            .lock()
+            .insert(None, (Instant::now(), cached.clone()));
+        // Dentro do intervalo não roda docker nenhum: devolve o que já tinha.
+        assert_eq!(mgr.panel_usage(&[], None).unwrap(), cached);
+    }
+
+    #[test]
+    fn container_op_maps_args_and_rejects_unknown_ids() {
+        assert_eq!(ContainerOp::Restart.arg(), "restart");
+        assert_eq!(ContainerOp::Stop.arg(), "stop");
+        assert_eq!(ContainerOp::Start.arg(), "start");
+        let op: ContainerOp = serde_json::from_str("\"stop\"").unwrap();
+        assert_eq!(op, ContainerOp::Stop);
+        assert!(serde_json::from_str::<ContainerOp>("\"rm\"").is_err());
+
+        let mgr = DockerManager::new();
+        let id = "a1b2c3d4e5f6".to_string() + &"0".repeat(52);
+        assert!(matches!(
+            mgr.container_op(&id, ContainerOp::Stop, None),
+            Err(DockerError::UnknownContainer(_))
+        ));
+        assert!(matches!(
+            mgr.container_op("--help", ContainerOp::Restart, None),
+            Err(DockerError::UnknownContainer(_))
+        ));
+    }
+
+    #[test]
+    fn container_path_must_be_absolute_and_single_line() {
+        assert!(validate_container_path("/app/src").is_ok());
+        assert!(validate_container_path("/app/it's ok").is_ok());
+        assert!(validate_container_path("app/src").is_err());
+        assert!(validate_container_path("/app\n/etc").is_err());
+        assert!(validate_container_path("/app\0").is_err());
     }
 }

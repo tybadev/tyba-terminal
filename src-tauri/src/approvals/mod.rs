@@ -33,6 +33,7 @@
 //! comando — dizer mais do que isso seria dar por coberto um buraco que
 //! continua aberto.
 
+pub mod hybrid;
 pub mod tool_action;
 pub mod tool_risk;
 
@@ -70,16 +71,117 @@ impl Decision {
     }
 }
 
+/// Por que uma ação é vermelha. Existe para o dono saber **por que** está
+/// sendo perguntado (R4 do fluxo híbrido) — sem ele, "caminho fora do
+/// worktree" parece arbitrário.
+///
+/// Chega ao webview como `{ key, arg? }` ([`RedReason::key`] e
+/// [`RedReason::arg`]): a chave é estável e é a interface que traduz; o core
+/// não escreve texto de UI aqui.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RedReason {
+    /// `sudo`.
+    Sudo,
+    /// Rede iniciada por comando do shell (`curl`, `wget`).
+    Network,
+    /// Saída canalizada para um shell (`| sh`, `| bash`).
+    PipeToShell,
+    /// `rm` com `-r` e `-f`.
+    RecursiveForceRemove,
+    /// Mudança de permissões (`chmod`, `chown`).
+    Permissions,
+    /// `git push` — e todo push para main/master, que o core recusa.
+    GitPush,
+    /// `gh pr create`.
+    PrCreate,
+    /// Escrita na forja (GitHub/GitLab) em nome do dono, por `gh`/`glab`:
+    /// merge, review, comentário, issue, release, workflow, `api` com método
+    /// que escreve. `action` é o resumo do que casou (`gh pr merge`,
+    /// `glab api POST`) — vai ao webview como `arg`.
+    ForgeWrite { action: String },
+    /// Escrita (ou caminho citado no shell) fora do worktree da sessão.
+    OutsideWorktree { path: String },
+    /// Ferramenta de rede do agente (`WebFetch`, `WebSearch`, `web_search`).
+    WebAccess,
+    /// Escrita na configuração de permissões do Claude
+    /// (`.claude/settings.json`, `.claude/settings.local.json`).
+    ClaudeConfigWrite,
+}
+
+impl RedReason {
+    /// Chave estável (i18n) do motivo. Mudar uma chave quebra a tradução.
+    pub fn key(&self) -> &'static str {
+        match self {
+            RedReason::Sudo => "sudo",
+            RedReason::Network => "network",
+            RedReason::PipeToShell => "pipe_to_shell",
+            RedReason::RecursiveForceRemove => "recursive_force_remove",
+            RedReason::Permissions => "permissions",
+            RedReason::GitPush => "git_push",
+            RedReason::PrCreate => "pr_create",
+            RedReason::ForgeWrite { .. } => "forge_write",
+            RedReason::OutsideWorktree { .. } => "outside_worktree",
+            RedReason::WebAccess => "web_access",
+            RedReason::ClaudeConfigWrite => "claude_config_write",
+        }
+    }
+
+    /// Argumento da tradução, quando o motivo tem um (o caminho, no
+    /// [`RedReason::OutsideWorktree`]; a ação, no [`RedReason::ForgeWrite`]).
+    pub fn arg(&self) -> Option<&str> {
+        match self {
+            RedReason::OutsideWorktree { path } => Some(path),
+            RedReason::ForgeWrite { action } => Some(action),
+            _ => None,
+        }
+    }
+}
+
+impl Serialize for RedReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            key: &'static str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            arg: Option<&'a str>,
+        }
+        Wire {
+            key: self.key(),
+            arg: self.arg(),
+        }
+        .serialize(serializer)
+    }
+}
+
+/// Resultado da classificação: o nível e, só quando vermelho, o porquê.
+pub type Classification = (RiskLevel, Option<RedReason>);
+
+pub(crate) fn red(reason: RedReason) -> Classification {
+    (RiskLevel::Red, Some(reason))
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ApprovalRequest {
     pub id: u64,
     pub session_id: SessionId,
+    /// Texto exibido: inteiro até [`tool_action::DISPLAY_MAX_BYTES`], com
+    /// marcador de corte visível acima disso.
     pub command: String,
     pub cwd: Option<String>,
     pub risk: RiskLevel,
+    /// Por que é vermelho (`None` fora do vermelho).
+    pub risk_reason: Option<RedReason>,
+    /// Chave do "sempre permitir" da sessão — o texto de sempre (cortado em
+    /// 500 caracteres). Fica no core: o webview não precisa dela.
+    #[serde(skip)]
+    pub allowlist_key: String,
     /// O que o agente disse que está tentando fazer (stream-json), quando houver.
     pub context: Option<String>,
     pub requested_at_ms: u64,
+    /// Subagente que pediu (o `agent_id` do hook, sem o prefixo `agent-`).
+    /// `None` é o agente principal. Só serve para o painel Agentes pôr o
+    /// selo âmbar na linha certa; não muda a decisão.
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -379,6 +481,18 @@ fn command_start(tokens: &[&str]) -> usize {
 /// [`passes_allowed`] concorda, porque `echo` que emite para a tela é texto e
 /// `echo` canalizado é o comando que ele escreve.
 fn git_positions<'a>(tokens: &'a [&'a str], passes: bool) -> impl Iterator<Item = usize> + 'a {
+    program_positions(tokens, passes, is_git_program)
+}
+
+/// [`git_positions`] para qualquer programa: a mesma varredura de toda
+/// posição, com a mesma única exceção ([`TEXT_ONLY_COMMANDS`] atrás de
+/// [`passes_allowed`]). É por ela que `gh`/`glab` são achados atrás de
+/// `command`, `env`, caminho absoluto ou `bash -c "…"`.
+fn program_positions<'a>(
+    tokens: &'a [&'a str],
+    passes: bool,
+    is_program: fn(&str) -> bool,
+) -> impl Iterator<Item = usize> + 'a {
     let scan = !passes
         || !tokens.get(command_start(tokens)).is_some_and(|token| {
             program_is(token, |name| {
@@ -390,7 +504,7 @@ fn git_positions<'a>(tokens: &'a [&'a str], passes: bool) -> impl Iterator<Item 
     tokens
         .iter()
         .enumerate()
-        .filter_map(move |(at, token)| (scan && is_git_program(token)).then_some(at))
+        .filter_map(move |(at, token)| (scan && is_program(token)).then_some(at))
 }
 
 /// Uma invocação de `git` encontrada num segmento.
@@ -587,6 +701,136 @@ fn any_git_call(command: &str, predicate: impl Fn(&GitCall) -> bool) -> bool {
     false
 }
 
+/// CLIs de forja: escrevem no GitHub/GitLab com a credencial do dono.
+fn is_forge_program(token: &str) -> bool {
+    program_is(token, |name| {
+        name.eq_ignore_ascii_case("gh") || name.eq_ignore_ascii_case("glab")
+    })
+}
+
+/// Flags de `gh`/`glab` que consomem o argumento SEGUINTE e podem vir antes
+/// do subcomando (`gh -R dono/repo pr merge 1`). Flag desconhecida com valor
+/// separado faz o valor virar "grupo" — e grupo desconhecido é vermelho (ver
+/// [`forge_write`]), então o erro cai do lado seguro.
+const FORGE_FLAGS_WITH_VALUE: &[&str] = &["-R", "--repo", "--hostname", "-g", "--group"];
+
+/// Próximo token que não é flag, a partir de `at`, pulando o valor das flags
+/// de [`FORGE_FLAGS_WITH_VALUE`]. Devolve o índice.
+fn skip_forge_flags(tokens: &[&str], mut at: usize) -> Option<usize> {
+    while let Some(token) = tokens.get(at) {
+        let flag = unquote(token);
+        if !flag.starts_with('-') {
+            return Some(at);
+        }
+        at += 1;
+        if FORGE_FLAGS_WITH_VALUE.contains(&flag.as_str()) {
+            at = quoted_value_end(tokens, at) + 1;
+        }
+    }
+    None
+}
+
+/// Ações de `gh`/`glab` que só leem — da forja ou para a máquina local
+/// (`checkout`, `clone`, `download`). Valem em qualquer grupo.
+///
+/// É uma lista do que LÊ, não do que escreve, de propósito: lista de quem
+/// escreve falha ABERTO no subcomando que ela ainda não tem (`gh pr
+/// update-branch`, `gh gist create`, `gh secret set`, o próximo), e é a mesma
+/// lição de [`git_positions`]. O custo é ação inofensiva fora da lista virar
+/// vermelha — um clique a mais, nunca um merge sem aprovação.
+const FORGE_READ_ACTIONS: &[&str] = &[
+    "view", "list", "ls", "get", "status", "checks", "diff", "checkout", "clone", "download",
+    "watch", "trace",
+];
+
+/// Grupos de `gh`/`glab` que só leem por inteiro, qualquer que seja a ação.
+const FORGE_READ_GROUPS: &[&str] = &[
+    "help",
+    "version",
+    "completion",
+    "search",
+    "status",
+    "browse",
+];
+
+/// `gh api`/`glab api` escreve? Método explícito diferente de GET escreve;
+/// sem método, campo (`-f`, `-F`, `--field`, `--raw-field`) ou `--input`
+/// faz o CLI mandar POST por conta própria.
+fn api_write_method(args: &[&str]) -> Option<String> {
+    let mut method: Option<String> = None;
+    let mut has_body = false;
+    let mut at = 0;
+    while let Some(token) = args.get(at) {
+        let arg = unquote(token);
+        let (flag, glued) = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag.to_string(), Some(value)),
+            _ => (arg.clone(), None),
+        };
+        if flag == "-X" || flag == "--method" {
+            let value = glued
+                .map(str::to_string)
+                .or_else(|| args.get(at + 1).map(|v| unquote(v)));
+            method = value.map(|v| v.to_ascii_uppercase());
+            at += 1;
+        } else if let Some(value) = flag.strip_prefix("-X").filter(|v| !v.is_empty()) {
+            method = Some(value.to_ascii_uppercase());
+        } else if matches!(flag.as_str(), "--field" | "--raw-field" | "--input")
+            || flag.starts_with("-f")
+            || flag.starts_with("-F")
+        {
+            has_body = true;
+        }
+        at += 1;
+    }
+    match method {
+        Some(m) if m == "GET" => None,
+        Some(m) => Some(m),
+        None => has_body.then(|| "POST".to_string()),
+    }
+}
+
+/// A primeira invocação de `gh`/`glab` da linha que escreve na forja, já
+/// resumida para o motivo (`gh pr merge`, `glab api POST`).
+///
+/// A varredura é a de [`any_git_call`]: toda posição, todo segmento, com o
+/// passe de texto e o salto de mensagem de commit valendo do mesmo jeito.
+fn forge_write(command: &str) -> Option<String> {
+    let passes = passes_allowed(command);
+    for segment in command.split(|c| COMMAND_SEPARATORS.contains(&c)) {
+        let tokens = segment_tokens(segment);
+        let message = message_operand_mask(&tokens, passes);
+        for at in program_positions(&tokens, passes, is_forge_program) {
+            if message.get(at).copied().unwrap_or(false) {
+                continue;
+            }
+            let program = program_name(tokens[at]).to_ascii_lowercase();
+            // `gh` sozinho, ou só com flags (`gh --help`), não faz nada.
+            let Some(group_at) = skip_forge_flags(&tokens, at + 1) else {
+                continue;
+            };
+            let group = unquote(tokens[group_at]);
+            if FORGE_READ_GROUPS.contains(&group.as_str()) {
+                continue;
+            }
+            if group == "api" {
+                // Todos os argumentos: `-X` pode vir antes do endpoint.
+                if let Some(method) = api_write_method(&tokens[group_at + 1..]) {
+                    return Some(format!("{program} api {method}"));
+                }
+                continue;
+            }
+            let action = skip_forge_flags(&tokens, group_at + 1).map(|a| unquote(tokens[a]));
+            match action {
+                Some(action) if FORGE_READ_ACTIONS.contains(&action.as_str()) => {}
+                Some(action) => return Some(format!("{program} {group} {action}")),
+                // Grupo sem ação (`gh pr`) só imprime ajuda.
+                None => {}
+            }
+        }
+    }
+    None
+}
+
 /// O destino de um refspec é o que vem depois do último `:` — `HEAD:main`,
 /// `HEAD:refs/heads/main`, `:main` (delete) e `+main` (force) chegam todos em
 /// `main`.
@@ -704,24 +948,32 @@ fn green_allowed(command: &str) -> bool {
 
 /// Classificação por padrões. Conservadora: na dúvida, amarelo.
 pub fn classify_risk(command: &str) -> RiskLevel {
+    classify_risk_reason(command).0
+}
+
+/// [`classify_risk`] com o porquê do vermelho. Invariante: há motivo se e só
+/// se o nível é vermelho.
+pub fn classify_risk_reason(command: &str) -> Classification {
     let cmd = command.trim();
     let tokens = word_tokens(cmd);
     let Some(&first) = tokens.first() else {
-        return RiskLevel::Yellow;
+        return (RiskLevel::Yellow, None);
     };
 
     // ---- vermelho: hard-coded (SECURITY.md) ----
     if first == "sudo" {
-        return RiskLevel::Red;
+        return red(RedReason::Sudo);
     }
     // rede iniciada pelo agente; pipe para shell é o pior caso
-    if matches!(first, "curl" | "wget")
-        || cmd.contains("| sh")
+    if matches!(first, "curl" | "wget") {
+        return red(RedReason::Network);
+    }
+    if cmd.contains("| sh")
         || cmd.contains("| bash")
         || cmd.contains("|sh")
         || cmd.contains("|bash")
     {
-        return RiskLevel::Red;
+        return red(RedReason::PipeToShell);
     }
     // rm com -r e -f em qualquer combinação de flags
     if first == "rm" {
@@ -731,22 +983,23 @@ pub fn classify_risk(command: &str) -> RiskLevel {
             f |= flag.contains('f');
         }
         if r && f {
-            return RiskLevel::Red;
+            return red(RedReason::RecursiveForceRemove);
         }
     }
     // mudança de permissões
     if matches!(first, "chmod" | "chown") {
-        return RiskLevel::Red;
+        return red(RedReason::Permissions);
     }
     // dano público/irreversível
     if any_git_call(cmd, |call| call.subcommand == "push") {
-        return RiskLevel::Red;
+        return red(RedReason::GitPush);
     }
-    if first == "gh"
-        && tokens.get(1).copied() == Some("pr")
-        && tokens.get(2).copied() == Some("create")
-    {
-        return RiskLevel::Red;
+    // escrita na forja com a credencial do dono (`gh`, `glab`)
+    if let Some(action) = forge_write(cmd) {
+        if action == "gh pr create" {
+            return red(RedReason::PrCreate);
+        }
+        return red(RedReason::ForgeWrite { action });
     }
 
     // ---- verde: read-only ----
@@ -754,24 +1007,24 @@ pub fn classify_risk(command: &str) -> RiskLevel {
     // shell. Ver [`green_allowed`] — inclusive por que ele é um `return` antes
     // da seção e não um `&&` por ramo.
     if !green_allowed(cmd) {
-        return RiskLevel::Yellow;
+        return (RiskLevel::Yellow, None);
     }
     if READ_ONLY_COMMANDS.contains(&first) {
-        return RiskLevel::Green;
+        return (RiskLevel::Green, None);
     }
     if first == "git"
         && tokens
             .get(1)
             .is_some_and(|sub| GIT_READ_ONLY_SUBCOMMANDS.contains(sub))
     {
-        return RiskLevel::Green;
+        return (RiskLevel::Green, None);
     }
     if TRIVIAL_COMMANDS.contains(&first) {
-        return RiskLevel::Green;
+        return (RiskLevel::Green, None);
     }
 
     // ---- amarelo: escrita no worktree, o default ----
-    RiskLevel::Yellow
+    (RiskLevel::Yellow, None)
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -779,6 +1032,37 @@ pub(crate) fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// O que vira pedido de aprovação. Os textos já chegam separados: exibido
+/// (`command`, até 64 KiB com marcador) e chave de allowlist (500 caracteres).
+#[derive(Debug, Clone)]
+pub struct ApprovalAsk {
+    pub command: String,
+    pub allowlist_key: String,
+    pub cwd: Option<String>,
+    pub context: Option<String>,
+    pub risk: RiskLevel,
+    pub risk_reason: Option<RedReason>,
+    /// Decidido sobre o texto INTEIRO, antes de qualquer corte.
+    pub refused_by_core: bool,
+}
+
+impl ApprovalAsk {
+    /// Pedido a partir de uma linha de comando crua (comando Tauri
+    /// `request_approval`): classifica e checa a recusa sobre ela inteira.
+    pub fn for_command(command: String, cwd: Option<String>, context: Option<String>) -> Self {
+        let (risk, risk_reason) = classify_risk_reason(&command);
+        Self {
+            refused_by_core: is_refused_by_core(&command),
+            allowlist_key: tool_action::allowlist_key(&command),
+            command: tool_action::display_text(&command),
+            cwd,
+            context,
+            risk,
+            risk_reason,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -794,26 +1078,32 @@ impl ApprovalsManager {
         Self::default()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn request_inner(
         &self,
         session_id: SessionId,
-        command: String,
-        cwd: Option<String>,
-        context: Option<String>,
-        risk: RiskLevel,
+        ask: ApprovalAsk,
         waiter: Option<mpsc::Sender<Resolution>>,
+        agent_id: Option<String>,
     ) -> Result<ApprovalRequest, String> {
-        if is_refused_by_core(&command) {
+        // `refused_by_core` vem de quem leu o texto INTEIRO; o texto exibido
+        // pode ter sido cortado em 64 KiB, e um push para main depois do corte
+        // não pode virar pedido aprovável. A checagem local fica como segunda
+        // camada.
+        if ask.refused_by_core || is_refused_by_core(&ask.command) {
             return Err("recusado pelo core: push para main/master nunca é permitido".into());
         }
         let request = ApprovalRequest {
             id: self.next_id.fetch_add(1, Ordering::Relaxed) + 1,
             session_id,
-            risk,
-            command,
-            cwd,
-            context,
+            risk: ask.risk,
+            risk_reason: ask.risk_reason,
+            allowlist_key: ask.allowlist_key,
+            command: ask.command,
+            cwd: ask.cwd,
+            context: ask.context,
             requested_at_ms: now_ms(),
+            agent_id,
         };
         let mut pending = self.pending.lock().expect("approvals lock");
         pending.push(request.clone());
@@ -835,23 +1125,26 @@ impl ApprovalsManager {
         cwd: Option<String>,
         context: Option<String>,
     ) -> Result<ApprovalRequest, String> {
-        let risk = classify_risk(&command);
-        let request = self.request_inner(session_id, command, cwd, context, risk, None)?;
+        let request = self.request_inner(
+            session_id,
+            ApprovalAsk::for_command(command, cwd, context),
+            None,
+            None,
+        )?;
         let _ = app.emit("approvals://requested", request.clone());
         Ok(request)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn request_blocking(
         &self,
         app: &AppHandle,
         session_id: SessionId,
-        command: String,
-        cwd: Option<String>,
-        context: Option<String>,
-        risk: RiskLevel,
+        ask: ApprovalAsk,
+        agent_id: Option<String>,
     ) -> Result<(ApprovalRequest, Resolution), String> {
         let (tx, rx) = mpsc::channel();
-        let request = self.request_inner(session_id, command, cwd, context, risk, Some(tx))?;
+        let request = self.request_inner(session_id, ask, Some(tx), agent_id)?;
         let _ = app.emit("approvals://requested", request.clone());
         let resolution = rx.recv().unwrap_or_else(|_| Resolution::denied());
         Ok((request, resolution))
@@ -878,7 +1171,7 @@ impl ApprovalsManager {
             .expect("session allowlist lock")
             .entry(request.session_id)
             .or_default()
-            .insert(request.command.clone());
+            .insert(request.allowlist_key.clone());
     }
 
     fn resolve_inner(&self, id: u64, resolution: Resolution) -> Result<ApprovalRequest, String> {
@@ -971,6 +1264,172 @@ mod tests {
         assert_eq!(classify_risk("gh pr create --fill"), RiskLevel::Red);
         assert_eq!(classify_risk("chmod +x deploy.sh"), RiskLevel::Red);
         assert_eq!(classify_risk("chown -R app: /srv"), RiskLevel::Red);
+    }
+
+    fn forge(command: &str) -> Classification {
+        classify_risk_reason(command)
+    }
+
+    fn forge_red(command: &str, action: &str) {
+        assert_eq!(
+            forge(command),
+            red(RedReason::ForgeWrite {
+                action: action.into()
+            }),
+            "{command}"
+        );
+    }
+
+    #[test]
+    fn escrita_no_github_e_vermelha() {
+        let casos = [
+            ("gh pr merge 12 --squash", "gh pr merge"),
+            ("gh pr review 12 --approve", "gh pr review"),
+            ("gh pr review 12 --request-changes -b 'x'", "gh pr review"),
+            ("gh pr review 12 --comment -b ok", "gh pr review"),
+            ("gh pr comment 12 --body 'lgtm'", "gh pr comment"),
+            ("gh pr close 12", "gh pr close"),
+            ("gh pr reopen 12", "gh pr reopen"),
+            ("gh pr edit 12 --title x", "gh pr edit"),
+            ("gh pr ready 12", "gh pr ready"),
+            ("gh issue create --title x --body y", "gh issue create"),
+            ("gh issue comment 3 --body y", "gh issue comment"),
+            ("gh issue close 3", "gh issue close"),
+            ("gh release create v1.0.0", "gh release create"),
+            ("gh repo delete dono/repo --yes", "gh repo delete"),
+            ("gh repo edit --visibility public", "gh repo edit"),
+            ("gh run rerun 99", "gh run rerun"),
+            ("gh run cancel 99", "gh run cancel"),
+            ("gh workflow run deploy.yml", "gh workflow run"),
+            // subcomando que ninguém listou: a lista é do que LÊ
+            ("gh pr update-branch 12", "gh pr update-branch"),
+            ("gh gist create notas.txt", "gh gist create"),
+            ("gh secret set TOKEN", "gh secret set"),
+        ];
+        for (command, action) in casos {
+            forge_red(command, action);
+        }
+    }
+
+    #[test]
+    fn escrita_no_gitlab_e_vermelha() {
+        let casos = [
+            ("glab mr merge 7", "glab mr merge"),
+            ("glab mr approve 7", "glab mr approve"),
+            ("glab mr note 7 -m 'ok'", "glab mr note"),
+            ("glab mr close 7", "glab mr close"),
+            ("glab mr create --fill", "glab mr create"),
+            ("glab release create v1.0.0", "glab release create"),
+            ("glab api projects/1/issues -X POST", "glab api POST"),
+            ("glab api projects/1/issues -f title=x", "glab api POST"),
+        ];
+        for (command, action) in casos {
+            forge_red(command, action);
+        }
+    }
+
+    #[test]
+    fn gh_api_get_e_amarelo_e_metodo_que_escreve_e_vermelho() {
+        assert_eq!(forge("gh api repos/o/r/pulls"), (RiskLevel::Yellow, None));
+        assert_eq!(
+            forge("gh api -X GET repos/o/r/issues -f state=open"),
+            (RiskLevel::Yellow, None)
+        );
+        assert_eq!(
+            forge("gh api --method get repos/o/r"),
+            (RiskLevel::Yellow, None)
+        );
+        forge_red("gh api -X POST repos/o/r/issues", "gh api POST");
+        forge_red("gh api -XPATCH repos/o/r", "gh api PATCH");
+        forge_red("gh api --method=PUT repos/o/r/pulls/1/merge", "gh api PUT");
+        forge_red("gh api --method DELETE repos/o/r", "gh api DELETE");
+        // campo sem método: o gh manda POST sozinho
+        forge_red("gh api repos/o/r/issues -f title=x", "gh api POST");
+        forge_red("gh api repos/o/r/issues -F title=@t.txt", "gh api POST");
+        forge_red("gh api repos/o/r/issues --field title=x", "gh api POST");
+        forge_red("gh api repos/o/r/issues --raw-field body=x", "gh api POST");
+        forge_red("gh api repos/o/r/issues --input body.json", "gh api POST");
+        forge_red("gh api graphql -f query='mutation{x}'", "gh api POST");
+    }
+
+    #[test]
+    fn leitura_do_gh_e_do_glab_continua_como_estava() {
+        for command in [
+            "gh pr view 12",
+            "gh pr list --state open",
+            "gh pr status",
+            "gh pr checks 12",
+            "gh pr diff 12",
+            "gh pr checkout 12",
+            "gh run list",
+            "gh run view 99 --log",
+            "gh run watch 99",
+            "gh issue view 3",
+            "gh release view v1.0.0",
+            "gh repo view",
+            "gh auth status",
+            "gh search prs foo",
+            "gh status",
+            "gh --version",
+            "gh",
+            "gh pr",
+            "glab mr view 7",
+            "glab mr list",
+            "glab mr diff 7",
+            "glab ci status",
+            "glab api projects/1/merge_requests",
+        ] {
+            assert_eq!(forge(command), (RiskLevel::Yellow, None), "{command}");
+        }
+    }
+
+    #[test]
+    fn pr_create_mantem_a_chave_propria_em_qualquer_forma() {
+        for command in [
+            "gh pr create --fill",
+            "gh -R dono/repo pr create --fill",
+            "/opt/homebrew/bin/gh pr create",
+            "GH_TOKEN=x gh pr create",
+        ] {
+            assert_eq!(forge(command), red(RedReason::PrCreate), "{command}");
+        }
+    }
+
+    #[test]
+    fn escrita_na_forja_nao_se_esconde_atras_de_flag_wrapper_ou_cadeia() {
+        for command in [
+            "gh -R dono/repo pr merge 1",
+            "gh --repo dono/repo pr merge 1",
+            "gh pr -R dono/repo merge 1",
+            "GH_TOKEN=x gh pr merge 1",
+            "command gh pr merge 1",
+            "env GH_HOST=x gh pr merge 1",
+            "/opt/homebrew/bin/gh pr merge 1",
+            r"C:\Program Files\GitHub CLI\gh.exe pr merge 1",
+            "cargo test && gh pr merge 1",
+            "cargo test; gh pr merge 1",
+            "cargo test;gh pr merge 1",
+            "gh pr view 1 | gh pr merge 1",
+            "bash -c \"gh pr merge 1\"",
+            "sh -c 'gh -R o/r pr merge 1'",
+            "ssh host gh pr merge 1",
+            "gh \"pr\" 'merge' 1",
+        ] {
+            forge_red(command, "gh pr merge");
+        }
+    }
+
+    #[test]
+    fn texto_que_cita_a_forja_nao_e_vermelho() {
+        for command in [
+            "echo gh pr merge 1",
+            "grep -rn 'gh pr merge' docs",
+            "git commit -m 'gh pr merge 1 agora pede aprovação'",
+            "cat gh",
+            "ls gh/",
+        ] {
+            assert_ne!(forge(command).0, RiskLevel::Red, "{command}");
+        }
     }
 
     /// Amarelo entra na allowlist da sessão ("sempre permitir"); vermelho não.
@@ -2204,16 +2663,21 @@ mod tests {
     ) -> (ApprovalRequest, mpsc::Receiver<Resolution>) {
         let (tx, rx) = mpsc::channel();
         let request = manager
-            .request_inner(
-                session_id,
-                command.to_string(),
-                None,
-                None,
-                RiskLevel::Yellow,
-                Some(tx),
-            )
+            .request_inner(session_id, ask(command, RiskLevel::Yellow), Some(tx), None)
             .expect("request deve entrar");
         (request, rx)
+    }
+
+    fn ask(command: &str, risk: RiskLevel) -> ApprovalAsk {
+        ApprovalAsk {
+            command: command.to_string(),
+            allowlist_key: command.to_string(),
+            cwd: None,
+            context: None,
+            risk,
+            risk_reason: None,
+            refused_by_core: false,
+        }
     }
 
     #[test]
@@ -2294,14 +2758,7 @@ mod tests {
         let session = SessionId::new_v4();
         let (tx, _rx) = mpsc::channel();
         let request = manager
-            .request_inner(
-                session,
-                "rm -rf build".to_string(),
-                None,
-                None,
-                RiskLevel::Red,
-                Some(tx),
-            )
+            .request_inner(session, ask("rm -rf build", RiskLevel::Red), Some(tx), None)
             .unwrap();
 
         manager
@@ -2367,5 +2824,113 @@ mod tests {
             .resolve_inner(999, approval(Decision::Approved))
             .is_err());
         assert_eq!(manager.list_pending().len(), 1);
+    }
+
+    /// Contrato com o webview: chave estável + argumento opcional.
+    #[test]
+    fn motivo_vai_ao_webview_como_chave_e_argumento() {
+        let json = |r: &RedReason| serde_json::to_value(r).unwrap();
+        assert_eq!(json(&RedReason::Sudo), serde_json::json!({ "key": "sudo" }));
+        assert_eq!(
+            json(&RedReason::OutsideWorktree {
+                path: "/etc/hosts".into()
+            }),
+            serde_json::json!({ "key": "outside_worktree", "arg": "/etc/hosts" })
+        );
+        let chaves: Vec<&str> = [
+            RedReason::Sudo,
+            RedReason::Network,
+            RedReason::PipeToShell,
+            RedReason::RecursiveForceRemove,
+            RedReason::Permissions,
+            RedReason::GitPush,
+            RedReason::PrCreate,
+            RedReason::ForgeWrite { action: "a".into() },
+            RedReason::OutsideWorktree { path: "p".into() },
+            RedReason::WebAccess,
+            RedReason::ClaudeConfigWrite,
+        ]
+        .iter()
+        .map(RedReason::key)
+        .collect();
+        assert_eq!(
+            chaves,
+            [
+                "sudo",
+                "network",
+                "pipe_to_shell",
+                "recursive_force_remove",
+                "permissions",
+                "git_push",
+                "pr_create",
+                "forge_write",
+                "outside_worktree",
+                "web_access",
+                "claude_config_write",
+            ]
+        );
+    }
+
+    #[test]
+    fn pedido_serializa_o_motivo_e_nao_a_chave_da_allowlist() {
+        let manager = ApprovalsManager::new();
+        let mut red = ask("sudo ls", RiskLevel::Red);
+        red.risk_reason = Some(RedReason::Sudo);
+        let request = manager
+            .request_inner(SessionId::new_v4(), red, None, None)
+            .unwrap();
+        let v = serde_json::to_value(&request).unwrap();
+        assert_eq!(v["risk_reason"], serde_json::json!({ "key": "sudo" }));
+        assert!(v.get("allowlist_key").is_none());
+
+        let (yellow, _rx) = pending_request(&manager, SessionId::new_v4(), "cargo test");
+        let v = serde_json::to_value(&yellow).unwrap();
+        assert_eq!(v["risk_reason"], serde_json::Value::Null);
+    }
+
+    /// A recusa decidida sobre o texto inteiro vale mesmo que o texto exibido
+    /// não mostre o push (cortado depois de 64 KiB).
+    #[test]
+    fn recusa_decidida_pelo_texto_inteiro_nao_vira_pedido() {
+        let manager = ApprovalsManager::new();
+        let mut cortado = ask("echo aaaa…[+30 bytes]", RiskLevel::Red);
+        cortado.refused_by_core = true;
+        assert!(manager
+            .request_inner(SessionId::new_v4(), cortado, None, None)
+            .is_err());
+        assert!(manager.list_pending().is_empty());
+    }
+
+    #[test]
+    fn pedido_de_comando_cru_recusa_push_escondido_depois_do_corte() {
+        let command = format!("echo {} ; git push origin main", "a".repeat(70 * 1024));
+        let ask = ApprovalAsk::for_command(command, None, None);
+        assert!(ask.refused_by_core);
+        assert!(ask.command.len() < 70 * 1024);
+        assert_eq!(ask.allowlist_key.chars().count(), 500);
+        assert!(ApprovalsManager::new()
+            .request_inner(SessionId::new_v4(), ask, None, None)
+            .is_err());
+    }
+
+    /// "Sempre permitir" memoriza a CHAVE (500 caracteres, como antes), não o
+    /// texto exibido, que agora vai inteiro.
+    #[test]
+    fn sempre_permitir_memoriza_a_chave_e_nao_o_texto_exibido() {
+        let manager = ApprovalsManager::new();
+        let session = SessionId::new_v4();
+        let long = "x".repeat(800);
+        let mut pedido = ask(&long, RiskLevel::Yellow);
+        pedido.allowlist_key = tool_action::allowlist_key(&long);
+        let (tx, _rx) = mpsc::channel();
+        let request = manager
+            .request_inner(session, pedido, Some(tx), None)
+            .unwrap();
+        assert_eq!(request.command, long);
+        manager
+            .resolve_inner(request.id, approval(Decision::ApprovedAlways))
+            .unwrap();
+        assert!(manager.is_session_allowed(session, &"x".repeat(500)));
+        assert!(!manager.is_session_allowed(session, &long));
     }
 }

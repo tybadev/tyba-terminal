@@ -274,6 +274,44 @@ describe("moldura", () => {
     });
   }
 
+  /**
+   * O cromo não projeta sombra em pele nenhuma.
+   *
+   * A sombra que header, sidebar e rodapé jogavam no conteúdo (`lift-cast`)
+   * fazia o cromo flutuar sobre um terminal afundado. Quem separa é a linha
+   * (`divider-line` e `lift-edge`), que os testes acima mantêm visível.
+   */
+  for (const [id, body] of [
+    [":root", root!],
+    ["[data-theme$='light']", lightBase!],
+    ...SCHEMES.map(({ id, body }) => [id, body] as const),
+  ] as const) {
+    it(`o cromo não projeta sombra em ${id}`, () => {
+      expect(rgba(resolve(body, "lift-cast")).alpha).toBe(0);
+    });
+  }
+
+  /**
+   * No claro, o terminal não fica abaixo do cromo.
+   *
+   * Só no claro: no escuro o dono aprovou o BLACKOUT — terminal em preto
+   * absoluto sobre o fundo, separado pela aresta de luz e não por sombra. No
+   * claro um `sunken` mais escuro que o cromo lia como um poço cinza.
+   */
+  for (const [id, body] of [
+    ["[data-theme$='light']", lightBase!],
+    ...SCHEMES.filter(({ body }) => /color-scheme:\s*light/.test(body)).map(
+      ({ id, body }) => [id, body] as const,
+    ),
+  ] as const) {
+    it(`o terminal não fica abaixo do cromo em ${id}`, () => {
+      const lum = (c: Rgb) => c[0] + c[1] + c[2];
+      const sunken = hex(resolve(body, "sunken"));
+      const surface = hex(resolve(body, "surface"));
+      expect(lum(sunken)).toBeGreaterThanOrEqual(lum(surface));
+    });
+  }
+
   for (const { id, body } of SCHEMES) {
     it(`a linha se sustenta em toda superfície de ${id}`, () => {
       const line = rgba(resolve(body, "divider-line"));
@@ -285,4 +323,51 @@ describe("moldura", () => {
       }
     });
   }
+});
+
+/**
+ * Claro A · Aurora: os acentos do `light` servem de TEXTO (estado, badge,
+ * branch) e de preenchimento, sem variante só de texto. Então cada um tem de
+ * passar AA (4,5:1) sobre o fundo e sobre o véu violeta do bloco marcado — o
+ * verde lavado de antes (#4e9622) ficava em 3,6.
+ */
+describe("claro A · aurora", () => {
+  const luminance = ([r, g, b]: Rgb) => {
+    const lin = (c: number) => {
+      const x = c / 255;
+      return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  };
+  const contrast = (a: Rgb, b: Rgb) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const bg = hex(declared(lightBase!, "bg")!);
+  const violet = hex(declared(lightBase!, "violet")!);
+  // `bg-tyba-violet/[.08]` sobre o terminal branco.
+  const wash = over(violet, 0.08, hex(declared(lightBase!, "sunken")!));
+
+  for (const accent of [
+    "green",
+    "amber",
+    "red",
+    "blue",
+    "violet",
+    "cyan",
+    "magenta",
+  ]) {
+    it(`${accent} se lê como texto no claro`, () => {
+      const color = hex(declared(lightBase!, accent)!);
+      expect(contrast(color, bg)).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(color, wash)).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+
+  it("a aurora do claro é a tripla da marca", () => {
+    const aurora = lightBase!.slice(lightBase!.indexOf("--tyba-aurora:"));
+    for (const accent of ["violet", "cyan", "green"]) {
+      expect(aurora).toContain(`var(--tyba-${accent})`);
+    }
+  });
 });

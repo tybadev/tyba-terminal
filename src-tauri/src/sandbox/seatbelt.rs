@@ -122,22 +122,14 @@ fn canonical_dir(path: &Path) -> PathBuf {
 }
 
 fn exec_path_read_rules(spec: &SandboxSpec) -> Vec<Rule> {
-    let home = canonical_dir(&spec.home);
-    let mut seen = std::collections::HashSet::new();
-    let mut rules = Vec::new();
-    for dir in &spec.exec_path_dirs {
-        if !dir.is_absolute() {
-            continue;
-        }
-        let canon = canonical_dir(dir);
-        if home.starts_with(&canon) {
-            continue;
-        }
-        if seen.insert(canon.clone()) {
-            rules.push(Rule::Subpath(canon));
-        }
-    }
-    rules
+    super::toolchain::path_read_grants(
+        &spec.exec_path_dirs,
+        &spec.home,
+        std::slice::from_ref(&spec.tyba_data_dir),
+    )
+    .into_iter()
+    .map(Rule::Subpath)
+    .collect()
 }
 
 pub fn build_policy(spec: &SandboxSpec) -> String {
@@ -391,6 +383,9 @@ impl Sandbox for SeatbeltSandbox {
         wrapped.append(argv);
         *argv = wrapped;
         cmd.env("TYBA_SANDBOX", "seatbelt");
+        for (var, dir) in super::toolchain::cache_env(spec.tmpdir.as_deref(), &spec.runtime_dir) {
+            cmd.env(var, dir);
+        }
         Ok(cmd)
     }
 }

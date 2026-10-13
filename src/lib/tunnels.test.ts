@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { Tunnel } from "@/lib/ipc";
-import { addedRiskyTunnels, describeTunnel, tunnelFlag } from "@/lib/tunnels";
+import { addedRiskyTunnels, describeTunnel } from "@/lib/tunnels";
 
 const local = (port: number): Tunnel => ({
   kind: "local",
@@ -40,14 +40,6 @@ describe("describeTunnel", () => {
     expect(
       describeTunnel({ ...local(5432), listen_host: "0.0.0.0" }),
     ).toBe("0.0.0.0:5432 → localhost:5432");
-  });
-});
-
-describe("tunnelFlag", () => {
-  test("mapeia os três kinds para a flag do ssh", () => {
-    expect(tunnelFlag(local(1))).toBe("-L");
-    expect(tunnelFlag(remote(1))).toBe("-R");
-    expect(tunnelFlag(dynamic(1))).toBe("-D");
   });
 });
 

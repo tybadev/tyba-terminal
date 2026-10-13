@@ -17,6 +17,7 @@ const PRE_TOOL_USE: &str = "PreToolUse";
 const PERMISSION_REQUEST: &str = "PermissionRequest";
 const FAIL_CLOSED_REASON: &str = "TYBA: transporte de hook indisponível — negado (fail-closed).";
 const DENY_FALLBACK_REASON: &str = "negado no TYBA";
+const ASK_FALLBACK_REASON: &str = "o TYBA pede confirmação";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EventKind {
@@ -195,7 +196,18 @@ fn emit_response<W: Write>(
             "deny",
             Some(reason.unwrap_or(DENY_FALLBACK_REASON).to_string()),
         ),
-        ("ack", _) | ("allow", EventKind::Other) | ("deny", EventKind::Other) => {}
+        // Fluxo híbrido: `ask` só tem forma no PreToolUse, e sem
+        // `updatedInput` — é pergunta, não aval. Em outro evento, silêncio.
+        ("ask", EventKind::PreToolUse) => {
+            emit_pre_tool_use(stdout, "ask", reason.unwrap_or(ASK_FALLBACK_REASON))
+        }
+        // `pass` é "sem decisão": nada no stdout, exit 0, e o agente segue as
+        // regras dele. `ack` idem. Ação desconhecida continua fail-closed.
+        ("pass", _)
+        | ("ack", _)
+        | ("ask", _)
+        | ("allow", EventKind::Other)
+        | ("deny", EventKind::Other) => {}
         (_, kind) => emit_transport_failure(stdout, kind),
     }
 }

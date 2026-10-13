@@ -34,6 +34,16 @@ describe("helpers de pane com AgentViewer", () => {
     expect(viewer.w).toBeCloseTo(38, 5);
   });
 
+  it("o terminal aparece uma vez só, e volta à largura cheia sem o viewer", () => {
+    const withViewer = computeRects(tree);
+    expect(withViewer.panes.filter((p) => p.session === "sess-a")).toHaveLength(1);
+    // O fim da rodada fecha o viewer: o core devolve só a folha.
+    const closed = computeRects(tree.type === "split" ? tree.first : tree);
+    expect(closed.panes).toHaveLength(1);
+    expect(closed.panes[0]).toMatchObject({ pane: "term-1", x: 0, w: 100 });
+    expect(closed.agentViewers).toHaveLength(0);
+  });
+
   it("findAncestorSplit encontra o split que contém o AgentViewer", () => {
     const found = findAncestorSplit(tree, "viewer-1", "v");
     expect(found).toEqual({ id: "split-1", ratio: 0.62 });

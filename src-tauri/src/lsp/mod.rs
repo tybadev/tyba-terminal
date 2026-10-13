@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Runtime};
 
@@ -13,10 +13,11 @@ pub mod document;
 pub mod jsonrpc;
 pub mod managed;
 pub mod registry;
+pub mod restart;
 pub mod sandbox;
 pub mod uri;
 
-use client::{base_env, DiagEmitter, LspServer};
+use client::{base_env, DiagEmitter, LspServer, StateEmitter};
 use document::ContentChange;
 use registry::{entry_for_file, ServerEntry};
 use sandbox::LspSpecCtx;
@@ -24,6 +25,7 @@ use sandbox::LspSpecCtx;
 use crate::session::SessionId;
 
 pub const EVENT_DIAGNOSTICS_PREFIX: &str = "lsp://diagnostics/";
+pub const EVENT_STATUS_PREFIX: &str = "lsp://status/";
 const IDLE_KILL: Duration = Duration::from_secs(300);
 const REAP_INTERVAL: Duration = Duration::from_secs(45);
 
@@ -31,11 +33,18 @@ pub fn diagnostics_event(id: SessionId) -> String {
     format!("{EVENT_DIAGNOSTICS_PREFIX}{id}")
 }
 
+pub fn status_event(id: SessionId) -> String {
+    format!("{EVENT_STATUS_PREFIX}{id}")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
     Starting,
     Ready,
+    /// Caiu e o reinício com backoff já está agendado.
+    Restarting,
+    /// Desistiu (ou nem subiu): fica parado até o "tentar de novo".
     Crashed,
     Stopped,
 }
@@ -75,6 +84,9 @@ pub struct DiagnosticIpc {
     pub severity: u8,
     pub message: String,
     pub source: Option<String>,
+    /// Código do servidor (`2551`, `"E0425"`). Volta no pedido de correção:
+    /// sem ele o tsserver não sabe qual fix oferecer.
+    pub code: Option<Value>,
 }
 
 impl DiagnosticIpc {
@@ -86,13 +98,180 @@ impl DiagnosticIpc {
             .get("source")
             .and_then(Value::as_str)
             .map(str::to_string);
+        let code = value
+            .get("code")
+            .filter(|c| c.is_string() || c.is_number())
+            .cloned();
         Some(DiagnosticIpc {
             range,
             severity,
             message,
             source,
+            code,
         })
     }
+}
+
+/// Diagnóstico como o webview o devolve ao pedir correção.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiagnosticIn {
+    pub range: RangeIn,
+    pub severity: u8,
+    pub message: String,
+    pub source: Option<String>,
+    pub code: Option<Value>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct PosIn {
+    pub line: u32,
+    pub character: u32,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct RangeIn {
+    pub start: PosIn,
+    pub end: PosIn,
+}
+
+impl DiagnosticIn {
+    fn to_lsp(&self) -> Value {
+        let mut v = json!({
+            "range": {
+                "start": {"line": self.range.start.line, "character": self.range.start.character},
+                "end": {"line": self.range.end.line, "character": self.range.end.character},
+            },
+            "severity": self.severity,
+            "message": self.message,
+        });
+        if let Some(source) = &self.source {
+            v["source"] = json!(source);
+        }
+        if let Some(code) = &self.code {
+            v["code"] = code.clone();
+        }
+        v
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TextEditIpc {
+    pub range: RangeIpc,
+    pub new_text: String,
+}
+
+/// Correção rápida aplicável no editor: só edições no próprio arquivo.
+#[derive(Debug, Clone, Serialize)]
+pub struct QuickFix {
+    pub title: String,
+    pub preferred: bool,
+    pub edits: Vec<TextEditIpc>,
+}
+
+fn text_edits(value: &Value) -> Option<Vec<TextEditIpc>> {
+    value
+        .as_array()?
+        .iter()
+        .map(|e| {
+            Some(TextEditIpc {
+                range: RangeIpc::from_lsp(e.get("range")?)?,
+                new_text: e.get("newText")?.as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn same_file(a: &str, b: &str) -> bool {
+    a == b || matches!((uri::to_path(a), uri::to_path(b)), (Some(x), Some(y)) if x == y)
+}
+
+impl QuickFix {
+    /// Resposta de `textDocument/codeAction` → correções aplicáveis em `uri`.
+    /// Descarta comandos (o TYBA não os executa), ações que mexem noutro
+    /// arquivo ou criam/renomeiam arquivo — aplicar metade seria pior que nada.
+    pub fn list_from(value: &Value, uri: &str) -> Vec<QuickFix> {
+        let Some(items) = value.as_array() else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| {
+                if item.get("command").is_some() {
+                    return None;
+                }
+                if let Some(kind) = item.get("kind").and_then(Value::as_str) {
+                    if !kind.starts_with("quickfix") {
+                        return None;
+                    }
+                }
+                let edit = item.get("edit")?;
+                let mut edits = Vec::new();
+                if let Some(changes) = edit.get("changes").and_then(Value::as_object) {
+                    for (target, list) in changes {
+                        if !same_file(target, uri) {
+                            return None;
+                        }
+                        edits.extend(text_edits(list)?);
+                    }
+                }
+                if let Some(doc_changes) = edit.get("documentChanges").and_then(Value::as_array) {
+                    for change in doc_changes {
+                        let target = change.get("textDocument")?.get("uri")?.as_str()?;
+                        if change.get("kind").is_some() || !same_file(target, uri) {
+                            return None;
+                        }
+                        edits.extend(text_edits(change.get("edits")?)?);
+                    }
+                }
+                if edits.is_empty() {
+                    return None;
+                }
+                Some(QuickFix {
+                    title: item.get("title")?.as_str()?.to_string(),
+                    preferred: item
+                        .get("isPreferred")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    edits,
+                })
+            })
+            .collect()
+    }
+}
+
+/// Cadeia de símbolos (função, classe…) que contém a posição, de fora para
+/// dentro — o fim do breadcrumb do editor.
+pub fn symbol_path_at(value: &Value, line: u32, character: u32) -> Vec<String> {
+    fn contains(range: &Value, line: u32, character: u32) -> bool {
+        let Some(r) = RangeIpc::from_lsp(range) else {
+            return false;
+        };
+        let after_start = (line, character) >= (r.start.line, r.start.character);
+        let before_end = (line, character) <= (r.end.line, r.end.character);
+        after_start && before_end
+    }
+    fn walk(nodes: &[Value], line: u32, character: u32, out: &mut Vec<String>) {
+        for node in nodes {
+            // DocumentSymbol tem `range`; SymbolInformation, `location.range`.
+            let range = node
+                .get("range")
+                .or_else(|| node.get("location").and_then(|l| l.get("range")));
+            if range.is_some_and(|r| contains(r, line, character)) {
+                if let Some(name) = node.get("name").and_then(Value::as_str) {
+                    out.push(name.to_string());
+                }
+                if let Some(children) = node.get("children").and_then(Value::as_array) {
+                    walk(children, line, character, out);
+                }
+                return;
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(nodes) = value.as_array() {
+        walk(nodes, line, character, &mut out);
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -334,6 +513,8 @@ pub enum LspStatus {
     },
     Absent {
         server: String,
+        /// O que falta, em pt-BR (ex.: TypeScript sem tsserver).
+        missing: Option<String>,
         install: Option<InstallHintIpc>,
         alternatives: Vec<InstallHintIpc>,
     },
@@ -342,6 +523,10 @@ pub enum LspStatus {
     },
     Starting {
         server: String,
+    },
+    Restarting {
+        server: String,
+        reason: Option<String>,
     },
     Ready {
         server: String,
@@ -354,6 +539,8 @@ pub enum LspStatus {
     },
     ManagedOffer {
         server: String,
+        /// O que falta e por que o download resolve, em pt-BR.
+        missing: Option<String>,
         card: managed::Card,
     },
     Installing {
@@ -367,11 +554,16 @@ type ServerKey = (SessionId, &'static str);
 
 pub const MAX_COMPLETIONS: usize = 500;
 pub const MAX_LOCATIONS: usize = 100;
+pub const MAX_QUICK_FIXES: usize = 20;
 pub const MAX_SIGNATURES: usize = 20;
 
 enum ServerSlot {
     Reserving,
     Live(Arc<LspServer>),
+    /// A subida falhou antes de existir processo (jaula recusou, binário
+    /// sumiu). Guardado para a UI mostrar o motivo em vez de "disponível"
+    /// para sempre; o próximo open/retry tenta de novo.
+    Failed(String),
 }
 
 #[derive(Default)]
@@ -402,6 +594,13 @@ impl LspManager {
         }
     }
 
+    fn failure(&self, id: SessionId, entry: &ServerEntry) -> Option<String> {
+        match self.servers.lock().get(&(id, entry.id)) {
+            Some(ServerSlot::Failed(reason)) => Some(reason.clone()),
+            _ => None,
+        }
+    }
+
     fn is_reserving(&self, id: SessionId, entry: &ServerEntry) -> bool {
         matches!(
             self.servers.lock().get(&(id, entry.id)),
@@ -420,6 +619,10 @@ impl LspManager {
         if let Some(server) = self.get(id, entry) {
             return match server.state() {
                 RunState::Starting => LspStatus::Starting { server: label },
+                RunState::Restarting => LspStatus::Restarting {
+                    server: label,
+                    reason: server.last_error(),
+                },
                 RunState::Ready => LspStatus::Ready {
                     server: label,
                     diagnostics: server.diagnostic_count(rel),
@@ -435,9 +638,20 @@ impl LspManager {
         if self.is_reserving(id, entry) {
             return LspStatus::Starting { server: label };
         }
-        if self.discover(entry, root).is_some() {
-            return LspStatus::Available { server: label };
-        }
+        let missing = match self.launch(entry, root) {
+            registry::Launch::Missing(missing) => missing,
+            _ => {
+                if let Some(reason) = self.failure(id, entry) {
+                    return LspStatus::Crashed {
+                        server: label,
+                        reason: Some(reason),
+                    };
+                }
+                return LspStatus::Available { server: label };
+            }
+        };
+        // Nada utilizável na máquina: a oferta do download verificado vem antes
+        // de qualquer falha antiga — é a ação que resolve.
         if let Some(managed) = self.managed() {
             match managed.outcome(entry) {
                 managed::Outcome::Installed => return LspStatus::Available { server: label },
@@ -451,6 +665,7 @@ impl LspManager {
                 managed::Outcome::Offer(card) => {
                     return LspStatus::ManagedOffer {
                         server: label,
+                        missing: Some(missing),
                         card,
                     }
                 }
@@ -460,9 +675,20 @@ impl LspManager {
         let chosen = registry::choose_install(entry, &self.path_dirs());
         LspStatus::Absent {
             server: label,
+            missing: Some(missing),
             install: chosen.chosen.map(install_ipc),
             alternatives: chosen.alternatives.into_iter().map(install_ipc).collect(),
         }
+    }
+
+    /// Com que binário este server subiria nesta raiz — a mesma decisão para o
+    /// status e para o spawn, para a UI nunca prometer o que o spawn não cumpre.
+    fn launch(&self, entry: &ServerEntry, root: &Path) -> registry::Launch {
+        let managed_installed = self
+            .managed()
+            .map(|m| m.is_installed(entry))
+            .unwrap_or(false);
+        registry::choose_launch(entry, self.discover(entry, root), managed_installed, root)
     }
 
     fn path_dirs(&self) -> Vec<PathBuf> {
@@ -506,7 +732,10 @@ impl LspManager {
             server.did_open(rel, lang, text);
             return self.status(id, rel, root);
         }
-        if !spawn || !entry.default_enabled {
+        if !spawn
+            || !entry.default_enabled
+            || matches!(self.launch(entry, root), registry::Launch::Missing(_))
+        {
             return self.status(id, rel, root);
         }
         if let Ok(server) = self.spawn_server(app, id, root, entry) {
@@ -524,14 +753,34 @@ impl LspManager {
     ) -> LspStatus {
         if let Some((entry, _)) = entry_for_file(rel) {
             if entry.default_enabled {
-                if let Some(server) = self.get(id, entry) {
-                    server.retry();
-                } else {
-                    let _ = self.spawn_server(app, id, root, entry);
+                match self.get(id, entry) {
+                    // Desistiu: sobe um server novo, com a escolha de binário
+                    // refeita — o gerenciado pode ter acabado de chegar, e o
+                    // processo velho seguiria com o binário que não servia.
+                    Some(server) if server.state() == RunState::Crashed => {
+                        let docs = server.open_docs_snapshot();
+                        self.drop_server(id, entry);
+                        if let Ok(fresh) = self.spawn_server(app, id, root, entry) {
+                            for (path, lang, text) in docs {
+                                fresh.did_open(&path, &lang, &text);
+                            }
+                        }
+                    }
+                    Some(server) => server.retry(),
+                    None => {
+                        let _ = self.spawn_server(app, id, root, entry);
+                    }
                 }
             }
         }
         self.status(id, rel, root)
+    }
+
+    fn drop_server(&self, id: SessionId, entry: &ServerEntry) {
+        let removed = self.servers.lock().remove(&(id, entry.id));
+        if let Some(ServerSlot::Live(server)) = removed {
+            server.shutdown();
+        }
     }
 
     fn spawn_server<R: Runtime>(
@@ -547,7 +796,7 @@ impl LspManager {
             match servers.get(&key) {
                 Some(ServerSlot::Live(server)) => return Ok(Arc::clone(server)),
                 Some(ServerSlot::Reserving) => return Err("server já subindo".into()),
-                None => {
+                Some(ServerSlot::Failed(_)) | None => {
                     servers.insert(key, ServerSlot::Reserving);
                 }
             }
@@ -567,7 +816,7 @@ impl LspManager {
             Err(e) => {
                 let mut servers = self.servers.lock();
                 if matches!(servers.get(&key), Some(ServerSlot::Reserving)) {
-                    servers.remove(&key);
+                    servers.insert(key, ServerSlot::Failed(e.clone()));
                 }
                 Err(e)
             }
@@ -589,8 +838,9 @@ impl LspManager {
             .ok_or("HOME indisponível")?;
         let path_dirs = self.path_dirs();
         let (program, pre, exec_extra, extra_reads, data_dir_reads, is_managed) =
-            match registry::discover(entry, &path_dirs, &home, root) {
-                Some(binary) => {
+            match self.launch(entry, root) {
+                registry::Launch::Missing(missing) => return Err(missing),
+                registry::Launch::Discovered(binary) => {
                     let exec_extra = binary
                         .parent()
                         .map(|p| vec![p.to_path_buf()])
@@ -599,13 +849,12 @@ impl LspManager {
                     let (program, pre) = registry::spawn_command(entry, &binary, &path_dirs);
                     (program, pre, exec_extra, extra_reads, Vec::new(), false)
                 }
-                None => {
-                    let managed = self
+                registry::Launch::Managed => {
+                    let incomplete = "a instalação gerenciada está incompleta — baixe de novo";
+                    let plan = self
                         .managed()
-                        .ok_or("binário do language server não encontrado")?;
-                    let plan = managed
-                        .plan(entry)
-                        .ok_or("binário do language server não encontrado")?;
+                        .and_then(|m| m.plan(entry))
+                        .ok_or(incomplete)?;
                     (
                         plan.program,
                         plan.pre_args,
@@ -641,10 +890,15 @@ impl LspManager {
             pre.into_iter().map(|p| p.into_os_string()).collect();
         let init_options = embedded_init_options(entry, &cache.join(".rt"));
 
-        let app = app.clone();
+        let diag_app = app.clone();
         let event = diagnostics_event(id);
         let emit: Arc<DiagEmitter> = Arc::new(move |batch: DiagnosticsBatch| {
-            let _ = app.emit(&event, batch);
+            let _ = diag_app.emit(&event, batch);
+        });
+        let state_app = app.clone();
+        let state_event = status_event(id);
+        let on_state: Arc<StateEmitter> = Arc::new(move || {
+            let _ = state_app.emit(&state_event, ());
         });
 
         let server = LspServer::spawn(
@@ -656,6 +910,7 @@ impl LspManager {
             env,
             init_options,
             emit,
+            on_state,
         )?;
 
         if is_managed {
@@ -671,7 +926,7 @@ impl LspManager {
                                 break;
                             }
                             RunState::Crashed | RunState::Stopped => break,
-                            RunState::Starting => {}
+                            RunState::Starting | RunState::Restarting => {}
                         }
                         if std::time::Instant::now() > deadline {
                             break;
@@ -778,6 +1033,51 @@ impl LspManager {
         Some(help)
     }
 
+    pub fn code_actions(
+        &self,
+        id: SessionId,
+        rel: &str,
+        diagnostics: &[DiagnosticIn],
+    ) -> Vec<QuickFix> {
+        let Some(server) = self.ready_server(id, rel) else {
+            return Vec::new();
+        };
+        let Some(first) = diagnostics.first() else {
+            return Vec::new();
+        };
+        let uri = server_uri(&server, rel);
+        let params = json!({
+            "textDocument": {"uri": uri},
+            "range": {
+                "start": {"line": first.range.start.line, "character": first.range.start.character},
+                "end": {"line": first.range.end.line, "character": first.range.end.character},
+            },
+            "context": {
+                "diagnostics": diagnostics.iter().map(DiagnosticIn::to_lsp).collect::<Vec<_>>(),
+                "only": ["quickfix"],
+            },
+        });
+        match server.request("textDocument/codeAction", params) {
+            Ok(value) => {
+                let mut fixes = QuickFix::list_from(&value, &uri);
+                fixes.truncate(MAX_QUICK_FIXES);
+                fixes
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn symbol_path(&self, id: SessionId, rel: &str, line: u32, character: u32) -> Vec<String> {
+        let Some(server) = self.ready_server(id, rel) else {
+            return Vec::new();
+        };
+        let params = json!({"textDocument": {"uri": server_uri(&server, rel)}});
+        match server.request("textDocument/documentSymbol", params) {
+            Ok(value) => symbol_path_at(&value, line, character),
+            Err(_) => Vec::new(),
+        }
+    }
+
     pub fn close_session(&self, id: SessionId) {
         let removed: Vec<(ServerKey, Arc<LspServer>)> = {
             let mut servers = self.servers.lock();
@@ -808,7 +1108,7 @@ impl LspManager {
                     ServerSlot::Live(server) => {
                         !server.has_open_docs() && server.idle_since().elapsed() >= IDLE_KILL
                     }
-                    ServerSlot::Reserving => false,
+                    ServerSlot::Reserving | ServerSlot::Failed(_) => false,
                 })
                 .map(|(k, _)| *k)
                 .collect();
@@ -1060,6 +1360,7 @@ mod tests {
             base_env(&user_env, entry),
             None,
             Arc::new(|_batch: DiagnosticsBatch| {}),
+            Arc::new(|| {}),
         )
         .expect("server enjaulado subiu");
 
@@ -1154,6 +1455,7 @@ mod tests {
             base_env(&user_env, entry),
             None,
             Arc::new(|_batch: DiagnosticsBatch| {}),
+            Arc::new(|| {}),
         )
         .expect("server node enjaulado subiu");
 
@@ -1248,6 +1550,7 @@ mod tests {
             base_env(&user_env, entry),
             None,
             Arc::new(|_b: DiagnosticsBatch| {}),
+            Arc::new(|| {}),
         )
         .unwrap();
 
@@ -1287,7 +1590,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(200));
         }
         assert_eq!(server.state(), RunState::Ready);
-        std::thread::sleep(Duration::from_secs(2));
+        // Mais que os 3s do vigia de processo-pai do vscode-languageserver: com
+        // o processId do host no initialize o server morria aqui dentro.
+        std::thread::sleep(Duration::from_secs(7));
+        assert_eq!(
+            server.state(),
+            RunState::Ready,
+            "o server enjaulado segue de pé depois do vigia de processo-pai"
+        );
 
         for (i, c) in "som".chars().enumerate() {
             type_char(1, i as u32, &c.to_string());
@@ -1372,6 +1682,7 @@ mod tests {
             base_env(&user_env, entry),
             init_options,
             Arc::new(|_b: DiagnosticsBatch| {}),
+            Arc::new(|| {}),
         )
         .unwrap();
 
@@ -1401,5 +1712,91 @@ mod tests {
             labels.iter().any(|l| l == "services"),
             "schema compose embarcado (sem rede) oferece chaves como `services`: {labels:?}"
         );
+    }
+
+    #[test]
+    fn quick_fix_keeps_only_same_file_edits_and_drops_commands() {
+        let uri = "file:///repo/src/server.js";
+        let value = json!([
+            {
+                "title": "Change spelling to 'uptime'",
+                "kind": "quickfix",
+                "isPreferred": true,
+                "edit": {"changes": {uri: [
+                    {"range": {"start": {"line": 7, "character": 37}, "end": {"line": 7, "character": 42}}, "newText": "uptime"}
+                ]}}
+            },
+            {"title": "Run linter", "command": "eslint.fix"},
+            {
+                "title": "Fix all in project",
+                "kind": "quickfix",
+                "edit": {"changes": {"file:///repo/src/other.js": [
+                    {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "x"}
+                ]}}
+            },
+            {
+                "title": "Create file",
+                "kind": "quickfix",
+                "edit": {"documentChanges": [{"kind": "create", "uri": "file:///repo/new.js"}]}
+            },
+            {
+                "title": "Organize imports",
+                "kind": "source.organizeImports",
+                "edit": {"changes": {uri: [
+                    {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": ""}
+                ]}}
+            },
+            {
+                "title": "Add missing semicolon",
+                "edit": {"documentChanges": [{"textDocument": {"uri": uri, "version": 3}, "edits": [
+                    {"range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 4}}, "newText": ";"}
+                ]}]}
+            }
+        ]);
+        let fixes = QuickFix::list_from(&value, uri);
+        let titles: Vec<&str> = fixes.iter().map(|f| f.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            vec!["Change spelling to 'uptime'", "Add missing semicolon"]
+        );
+        assert!(fixes[0].preferred);
+        assert_eq!(fixes[0].edits[0].new_text, "uptime");
+        assert_eq!(fixes[0].edits[0].range.start.character, 37);
+    }
+
+    #[test]
+    fn diagnostic_code_round_trips_to_code_action_context() {
+        let d = DiagnosticIpc::from_lsp(&json!({
+            "range": {"start": {"line": 7, "character": 37}, "end": {"line": 7, "character": 42}},
+            "severity": 1,
+            "message": "Property 'uptim' does not exist",
+            "source": "ts",
+            "code": 2551
+        }))
+        .unwrap();
+        assert_eq!(d.code, Some(json!(2551)));
+        let back: DiagnosticIn = serde_json::from_value(serde_json::to_value(&d).unwrap()).unwrap();
+        let lsp = back.to_lsp();
+        assert_eq!(lsp["code"], json!(2551));
+        assert_eq!(lsp["range"]["end"]["character"], json!(42));
+        assert_eq!(lsp["source"], json!("ts"));
+    }
+
+    #[test]
+    fn symbol_path_walks_hierarchy_to_innermost() {
+        let range = |a: u32, b: u32| json!({"start": {"line": a, "character": 0}, "end": {"line": b, "character": 0}});
+        let value = json!([
+            {"name": "imports", "range": range(0, 2)},
+            {"name": "App", "range": range(4, 20), "children": [
+                {"name": "health", "range": range(6, 9)},
+                {"name": "listen", "range": range(11, 12)}
+            ]}
+        ]);
+        assert_eq!(symbol_path_at(&value, 7, 3), vec!["App", "health"]);
+        assert_eq!(symbol_path_at(&value, 10, 0), vec!["App"]);
+        assert!(symbol_path_at(&value, 3, 0).is_empty());
+        let flat =
+            json!([{"name": "main", "location": {"uri": "file:///x", "range": range(1, 5)}}]);
+        assert_eq!(symbol_path_at(&flat, 2, 0), vec!["main"]);
     }
 }

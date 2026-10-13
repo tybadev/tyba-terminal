@@ -7,11 +7,14 @@ use tauri_plugin_notification::NotificationExt;
 
 use crate::agent::notify;
 
-use crate::agent::hooks_settings::{hook_command, hooks_settings_json};
+use crate::agent::claude_settings::claude_settings_are_broad;
+use crate::agent::hooks_settings::{claude_session_settings, hook_command};
 use crate::agent::subagents::SharedSubagents;
+use crate::agent::usage::{AgentAlert, AgentUsage, EVENT_AGENT_ALERT, STATUSLINE_HOOK_EVENT};
 use crate::agent::{AgentRunner, ClaudeCodeRunner, CodexRunner, HookSetup};
+use crate::approvals::hybrid::{plan_pre_tool_use, HybridDecision, PreToolUsePlan};
 use crate::approvals::tool_action::{normalize_tool_use, ToolAction};
-use crate::approvals::{now_ms, Decision, RiskLevel, SharedApprovals};
+use crate::approvals::{now_ms, ApprovalAsk, Decision, RiskLevel, SharedApprovals};
 use crate::hook_ipc::{HookAction, HookEvent, HookServer};
 use crate::pty::SharedPtyPool;
 use crate::sandbox::SandboxSpec;
@@ -20,7 +23,11 @@ use crate::session::{
     AgentRunnerKind, AwaitingReason, CreateSessionOpts, Session, SessionId, SessionKind,
     SessionStatus, SharedSessionManager,
 };
-use crate::status::agent_events::{signal_for, status_for, AgentSignal};
+use crate::status::agent_events::{
+    native_prompt_status, note_for_event, signal_for, status_for, status_on_idle_prompt,
+    status_on_interrupt, status_on_session_end, status_on_stop_failure, AgentSignal,
+    INTERRUPTED_SUMMARY,
+};
 
 pub const EVENT_AGENT_READY: &str = "agent://ready";
 const HOOK_SETTINGS_FILE: &str = "hooks.json";
@@ -125,6 +132,13 @@ struct HandlerCtx {
     session_id: SessionId,
     runner_kind: AgentRunnerKind,
     worktree_root: PathBuf,
+    /// Raiz do repositório PRINCIPAL (não o worktree): é onde o Claude lê e
+    /// grava o `.claude/settings.local.json` do projeto (medido no B0 do fluxo
+    /// híbrido). Entra na leitura de regra ampla.
+    repo_root: PathBuf,
+    /// `HOME` do agente — de onde o Claude dele lê `~/.claude`. Nunca o
+    /// `CLAUDE_CONFIG_DIR` do app (denylist de env).
+    agent_home: Option<PathBuf>,
     turn_settle: Arc<std::sync::atomic::AtomicU64>,
     /// Último `transcript_path` que já virou id de conversa. Existe para o
     /// handler não reabrir o arquivo a cada `PreToolUse`: o id mora no cabeçalho
@@ -278,10 +292,28 @@ fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_se
     });
 }
 
+/// Regra ampla nas configurações do Claude que esta sessão carrega. Sem
+/// `HOME` conhecido não dá para ler o escopo do usuário: responde "amplo",
+/// que só custa uma pergunta a mais — nunca um amarelo calado.
+fn claude_settings_broad(ctx: &HandlerCtx) -> bool {
+    match &ctx.agent_home {
+        Some(home) => claude_settings_are_broad(home, &ctx.worktree_root, &ctx.repo_root),
+        None => true,
+    }
+}
+
 fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     let tool = event.tool_name.as_deref().unwrap_or("");
     let input = event.tool_input.as_ref();
-    let normalized = normalize_tool_use(&ctx.runner_kind, tool, input);
+    let PreToolUsePlan {
+        normalized,
+        risk,
+        reason,
+        refused_by_core,
+        decision,
+    } = plan_pre_tool_use(&ctx.runner_kind, tool, input, &ctx.worktree_root, || {
+        claude_settings_broad(ctx)
+    });
     let subagent_spawn = if let ToolAction::Subagent {
         agent_type,
         description,
@@ -297,24 +329,46 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     } else {
         None
     };
-    let command = normalized.description;
+    // Três textos da mesma chamada (ver `NormalizedToolUse`): o exibido vai ao
+    // pedido e ao histórico; a chave, à allowlist da sessão; o resumo, à dica
+    // de status e à notificação do SO. A recusa já leu o inteiro no plano.
+    let command = normalized.display_text();
+    let allowlist_key = normalized.allowlist_key();
+    let summary = normalized.summary();
     let cwd = event.cwd.clone();
+    // O que o subagente está fazendo agora, para a linha dele no painel.
+    // Antes da decisão: um pedido de aprovação também é "o que ele faz".
+    if let Some(agent_id) = event.agent_id.as_deref() {
+        ctx.subagents.on_tool_use(
+            &ctx.app,
+            ctx.session_id,
+            agent_id,
+            crate::agent::subagents::tool_activity(tool, input, &normalized.description),
+        );
+    }
 
-    match normalized.action.classify(&ctx.worktree_root) {
-        RiskLevel::Green => {
+    match decision {
+        HybridDecision::Allow => {
             record_history(
                 &ctx.store,
                 ctx.session_id,
                 command,
                 cwd,
-                RiskLevel::Green,
+                risk,
                 "auto_allowed",
                 now_ms(),
             );
             HookAction::Allow { reason: None }
         }
-        risk => {
-            if risk != RiskLevel::Red && ctx.approvals.is_session_allowed(ctx.session_id, &command)
+        // Amarelo do Claude: quem pergunta é o Claude. Sem pedido, sem toast,
+        // sem linha de histórico aqui (R1, R2 do fluxo híbrido).
+        HybridDecision::Pass => HookAction::Pass,
+        HybridDecision::Ask(reason) => HookAction::Ask { reason },
+        HybridDecision::Gate => {
+            if risk != RiskLevel::Red
+                && ctx
+                    .approvals
+                    .is_session_allowed(ctx.session_id, &allowlist_key)
             {
                 record_history(
                     &ctx.store,
@@ -331,18 +385,27 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
                 &ctx.app,
                 ctx.session_id,
                 SessionStatus::AwaitingInput {
-                    hint: Some(command.clone()),
+                    hint: Some(summary.clone()),
                     reason: AwaitingReason::Approval,
                 },
             );
-            notify_awaiting_input(ctx, &format!("Aprovação pendente: {command}"));
+            notify_awaiting_input(ctx, &format!("Aprovação pendente: {summary}"));
             let outcome = ctx.approvals.request_blocking(
                 &ctx.app,
                 ctx.session_id,
-                command.clone(),
-                cwd.clone(),
-                None,
-                risk,
+                ApprovalAsk {
+                    command: command.clone(),
+                    allowlist_key,
+                    cwd: cwd.clone(),
+                    context: None,
+                    risk,
+                    risk_reason: reason,
+                    refused_by_core,
+                },
+                event
+                    .agent_id
+                    .as_deref()
+                    .map(crate::agent::subagents::strip_agent_prefix),
             );
             ctx.sessions
                 .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
@@ -421,9 +484,260 @@ fn capture_conversation_id(ctx: &HandlerCtx, event: &HookEvent) {
     }
 }
 
+/// O modelo que o agente declara no payload (`model`, extensão do Codex
+/// presente em todo evento menos `SessionEnd`; vale para qualquer runner que o
+/// mande). Só do fio principal: evento com `agent_id` é de subagente, que pode
+/// rodar outro modelo.
+fn capture_model(ctx: &HandlerCtx, event: &HookEvent) {
+    if let Some(model) = model_of(event) {
+        ctx.sessions
+            .set_agent_model(&ctx.app, ctx.session_id, model);
+    }
+}
+
+fn model_of(event: &HookEvent) -> Option<&str> {
+    if event.agent_id.is_some() {
+        return None;
+    }
+    event.raw.get("model").and_then(serde_json::Value::as_str)
+}
+
+/// Se o `SessionEnd` encerra os subagentes da sessão. `reason: "clear"` não
+/// encerra: o `/clear` troca de conversa com o MESMO processo vivo, e um
+/// subagente em background continua rodando — marcá-lo concluído mentiria no
+/// painel (M2 do claude-monitor). Ele termina pelo próprio `SubagentStop` ou
+/// pelo watcher do transcript. Qualquer outro motivo (saída, logout) encerra.
+fn session_end_ends_subagents(raw: &serde_json::Value) -> bool {
+    raw.get("reason").and_then(serde_json::Value::as_str) != Some("clear")
+}
+
+/// Para onde um evento de hook vai depois do sinal de status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookRoute {
+    /// `on_pre_tool_use`: classificação, decisão híbrida e gate.
+    ToolUse,
+    /// O prompt nativo do Claude abriu: marca a sessão, avisa, `ack`.
+    NativePrompt,
+    OpenUrl,
+    /// O `tyba _statusline` mandando o uso da sessão.
+    Usage,
+    Ack,
+}
+
+/// O roteamento, sem efeito colateral.
+///
+/// `PermissionRequest` do Claude **nunca** vai a `on_pre_tool_use`: lá ele
+/// poderia sair `allow`, e responder `allow` a esse evento aprovaria o prompt
+/// nativo em nome do usuário (invariante 4 do fluxo híbrido). O do Codex
+/// continua no gate — é o protocolo de aprovação dele.
+fn hook_route(runner: &AgentRunnerKind, hook_event_name: &str) -> HookRoute {
+    match (hook_event_name, runner) {
+        ("TybaOpenUrl", _) => HookRoute::OpenUrl,
+        (STATUSLINE_HOOK_EVENT, _) => HookRoute::Usage,
+        ("PreToolUse", _) => HookRoute::ToolUse,
+        ("PermissionRequest", AgentRunnerKind::ClaudeCode) => HookRoute::NativePrompt,
+        ("PermissionRequest", _) => HookRoute::ToolUse,
+        _ => HookRoute::Ack,
+    }
+}
+
+/// O prompt nativo do Claude está aberto no terminal da sessão.
+///
+/// O `PermissionRequest` chega ~0,1 s depois do `PreToolUse` da mesma chamada,
+/// mas só depois de o Claude receber a resposta daquele — e o handler do
+/// `PreToolUse` põe `Running` **antes** de responder. Pela causalidade, este
+/// `NativePrompt` é sempre o último a escrever; e o próprio `PermissionRequest`
+/// não gera sinal de status (`signal_for` devolve `None`), então nada o
+/// sobrescreve com `Running` no mesmo evento. Quem tira daqui: `PostToolUse`,
+/// o próximo `PreToolUse`, `UserPromptSubmit` (via sinal) e `SessionEnd`.
+fn on_native_prompt(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
+    let summary = normalize_tool_use(
+        &ctx.runner_kind,
+        event.tool_name.as_deref().unwrap_or(""),
+        event.tool_input.as_ref(),
+    )
+    .summary();
+    let hint = (!summary.trim().is_empty()).then_some(summary);
+    ctx.sessions
+        .set_status(&ctx.app, ctx.session_id, native_prompt_status(hint.clone()));
+    let body = match hint {
+        Some(summary) => format!("Pede permissão no terminal: {summary}"),
+        None => "Pede permissão no terminal".to_string(),
+    };
+    notify_native(
+        &ctx.app,
+        &ctx.sessions,
+        &ctx.store,
+        notify::NotifyKind::NativePrompt,
+        ctx.session_id,
+        &body,
+    );
+    HookAction::Ack
+}
+
+/// Chave que casa o `PermissionRequest` de uma chamada com o `PostToolUse`
+/// dela.
+///
+/// O `PermissionRequest` não traz `tool_use_id` (medido no B0); os quatro
+/// campos que batem entre `PreToolUse`, `PermissionRequest` e `PostToolUse` da
+/// mesma chamada são `session_id`, `prompt_id`, `tool_name` e `tool_input`. O
+/// `tool_input` entra canônico (chaves de objeto ordenadas, em qualquer
+/// profundidade): a ordem em que o Claude serializa não é contrato, e a mesma
+/// chamada com as chaves em outra ordem tem de dar a mesma chave. Campo ausente
+/// entra como `null` — a chave fica mais fraca, nunca some.
+///
+/// SHA-256 sobre o array JSON canônico dos quatro: o array já separa os campos
+/// sem ambiguidade, e o hash é estável entre versões do Rust (o `DefaultHasher`
+/// não é, e a chave vai para o disco).
+pub(crate) fn call_key(raw: &serde_json::Value) -> String {
+    use sha2::Digest;
+
+    let field = |name: &str| raw.get(name).cloned().unwrap_or(serde_json::Value::Null);
+    let tuple = serde_json::Value::Array(vec![
+        field("session_id"),
+        field("prompt_id"),
+        field("tool_name"),
+        field("tool_input"),
+    ]);
+    let mut canonical = String::new();
+    write_canonical_json(&tuple, &mut canonical);
+    format!("{:x}", sha2::Sha256::digest(canonical.as_bytes()))
+}
+
+/// JSON com as chaves de todo objeto em ordem, sem espaço. Não depende da
+/// feature `preserve_order` do `serde_json` estar desligada — se um dia alguém
+/// a ligar, a chave continua a mesma.
+fn write_canonical_json(value: &serde_json::Value, out: &mut String) {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (i, key) in keys.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&Value::String(key.clone()).to_string());
+                out.push(':');
+                write_canonical_json(&map[key], out);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical_json(item, out);
+            }
+            out.push(']');
+        }
+        scalar => out.push_str(&scalar.to_string()),
+    }
+}
+
+/// O que um evento faz com as linhas deduzidas do prompt nativo (R8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InferredStep {
+    /// O prompt nativo abriu: linha pendente.
+    Open,
+    /// A chamada rodou: a pendente dela vira aprovada.
+    Approve,
+    /// O turno seguiu sem o `PostToolUse`: toda pendente da sessão vira negada.
+    DenyPending,
+    None,
+}
+
+/// Sem efeito colateral, para ser testável.
+///
+/// `Open` segue exatamente o roteamento de [`hook_route`]: só o
+/// `PermissionRequest` que vai ao prompt nativo abre linha — o do Codex vai ao
+/// gate, que grava a própria linha `tyba`.
+///
+/// `Stop` **não** fecha: negar no prompt nativo não dispara `Stop` (medido no
+/// B0), então ele nunca é o sinal de uma negação; e com subagente ou
+/// ferramenta em paralelo um `Stop` poderia chegar com o prompt ainda aberto,
+/// fechando como negado algo que o usuário ainda vai aprovar. Quem chega depois
+/// de toda negação é o `UserPromptSubmit` da próxima mensagem.
+fn inferred_step(runner: &AgentRunnerKind, hook_event_name: &str) -> InferredStep {
+    if hook_route(runner, hook_event_name) == HookRoute::NativePrompt {
+        return InferredStep::Open;
+    }
+    match hook_event_name {
+        // Rodou — com ou sem erro, o usuário aprovou no prompt nativo.
+        "PostToolUse" | "PostToolUseFailure" => InferredStep::Approve,
+        "PreToolUse" | "UserPromptSubmit" | "SessionEnd" => InferredStep::DenyPending,
+        _ => InferredStep::None,
+    }
+}
+
+/// Registra no histórico o que o prompt nativo do Claude decidiu, como
+/// dedução. Falha de banco não derruba o hook: o histórico é registro, não
+/// gate. Sem `HandlerCtx` (que exige `AppHandle`) para ser testável.
+fn record_inferred(
+    store: &Store,
+    runner: &AgentRunnerKind,
+    worktree_root: &Path,
+    session_id: SessionId,
+    event: &HookEvent,
+    now: u64,
+) {
+    let session_id = session_id.to_string();
+    match inferred_step(runner, &event.hook_event_name) {
+        InferredStep::Open => {
+            // Só o texto e o risco; `|| false` porque a decisão híbrida não
+            // importa aqui e não vale ler as configurações do Claude à toa.
+            let plan = plan_pre_tool_use(
+                runner,
+                event.tool_name.as_deref().unwrap_or(""),
+                event.tool_input.as_ref(),
+                worktree_root,
+                || false,
+            );
+            let _ = store.insert_pending_inferred(
+                &session_id,
+                &plan.normalized.display_text(),
+                event.cwd.as_deref(),
+                risk_label(plan.risk),
+                &call_key(&event.raw),
+                now,
+            );
+        }
+        InferredStep::Approve => {
+            let _ = store.resolve_inferred_by_call_key(
+                &session_id,
+                &call_key(&event.raw),
+                "approved",
+                now,
+            );
+        }
+        InferredStep::DenyPending => {
+            let _ = store.deny_pending_inferred_for_session(&session_id, now);
+        }
+        InferredStep::None => {}
+    }
+}
+
 fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
     capture_conversation_id(ctx, &event);
-    match signal_for(&event.hook_event_name, event.notification_type.as_deref()) {
+    // Antes do roteamento: o `PreToolUse` pode ficar bloqueado no gate de um
+    // vermelho, e a pendente anterior tem de fechar já, não depois da decisão.
+    record_inferred(
+        &ctx.store,
+        &ctx.runner_kind,
+        &ctx.worktree_root,
+        ctx.session_id,
+        &event,
+        now_ms(),
+    );
+    let signal = signal_for(&event.hook_event_name, event.notification_type.as_deref());
+    capture_model(ctx, &event);
+    if let Some(note) = note_for_event(signal.as_ref(), event.agent_id.is_some()) {
+        ctx.sessions.set_status_note(&ctx.app, ctx.session_id, note);
+    }
+    match signal {
         Some(AgentSignal::Ready) => {
             let _ = ctx.app.emit(
                 EVENT_AGENT_READY,
@@ -476,8 +790,48 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                 }
             }
         }
+        Some(AgentSignal::TurnFailed) => on_stop_failure(ctx, &event),
         Some(AgentSignal::Ended) => {
-            ctx.subagents.on_session_ended(&ctx.app, ctx.session_id);
+            if session_end_ends_subagents(&event.raw) {
+                ctx.subagents.on_session_ended(&ctx.app, ctx.session_id);
+            }
+            // Claude hospedado num shell: o pane continua depois que ele sai,
+            // e o painel não pode seguir mostrando o custo de uma conversa
+            // que acabou. O `/clear` também zera — o próximo `statusLine`
+            // repõe. Sessão de agente guarda o último número até morrer.
+            if ctx
+                .sessions
+                .get(ctx.session_id)
+                .is_some_and(|s| matches!(s.kind, SessionKind::Shell))
+            {
+                ctx.sessions.set_agent_usage(&ctx.app, ctx.session_id, None);
+            }
+            if let Some(status) = ctx
+                .sessions
+                .get(ctx.session_id)
+                .and_then(|s| status_on_session_end(&s.status))
+            {
+                ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
+            }
+        }
+        Some(AgentSignal::Interrupted) => {
+            use std::sync::atomic::Ordering;
+            // Sem notificação: quem interrompeu foi o próprio usuário. Mesmo
+            // cuidado do `Stop` com subagente vivo — a sessão segue `Running`
+            // até o último terminar.
+            ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+            let summary = Some(INTERRUPTED_SUMMARY.to_string());
+            ctx.subagents
+                .note_orchestrator_idle(ctx.session_id, summary);
+            if !ctx.subagents.has_active(ctx.session_id) {
+                if let Some(status) = ctx
+                    .sessions
+                    .get(ctx.session_id)
+                    .and_then(|s| status_on_interrupt(&s.status))
+                {
+                    ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
+                }
+            }
         }
         Some(signal) => {
             use std::sync::atomic::Ordering;
@@ -489,8 +843,16 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                         .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
                 }
                 Some(status @ SessionStatus::AwaitingInput { .. }) => {
-                    ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
-                    notify_awaiting_input(ctx, "Agente aguardando sua resposta");
+                    // O `idle_prompt` não rebaixa o prompt nativo a `Reply`: a
+                    // pergunta de permissão continua aberta no terminal.
+                    let next = match ctx.sessions.get(ctx.session_id) {
+                        Some(session) => status_on_idle_prompt(&session.status),
+                        None => Some(status),
+                    };
+                    if let Some(next) = next {
+                        ctx.sessions.set_status(&ctx.app, ctx.session_id, next);
+                        notify_awaiting_input(ctx, "Agente aguardando sua resposta");
+                    }
                 }
                 Some(SessionStatus::Idle { .. }) => {
                     let turn = turn_summary(&event);
@@ -525,14 +887,90 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
         None => {}
     }
 
-    if event.hook_event_name == "TybaOpenUrl" {
-        return handle_open_url(ctx, &event);
+    match hook_route(&ctx.runner_kind, &event.hook_event_name) {
+        HookRoute::OpenUrl => handle_open_url(ctx, &event),
+        HookRoute::Usage => on_statusline(ctx, &event),
+        HookRoute::ToolUse => on_pre_tool_use(ctx, &event),
+        HookRoute::NativePrompt => on_native_prompt(ctx, &event),
+        HookRoute::Ack => HookAction::Ack,
     }
-    if matches!(
-        event.hook_event_name.as_str(),
-        "PreToolUse" | "PermissionRequest"
-    ) {
-        return on_pre_tool_use(ctx, &event);
+}
+
+/// O turno acabou por erro da API. O status vira `Idle` com o motivo (ver
+/// [`status_on_stop_failure`]), e o aviso sai pelos dois caminhos de
+/// sempre: o toast no app (`agent://alert`) e o aviso do sistema, que só sai
+/// fora de foco e respeita a preferência de "pedido" — o agente parou e
+/// precisa de alguém.
+fn on_stop_failure(ctx: &HandlerCtx, event: &HookEvent) {
+    use std::sync::atomic::Ordering;
+
+    let error = crate::agent::usage::stop_failure_error(&event.raw);
+    let reason = crate::agent::usage::stop_failure_reason(error.as_deref());
+    let status = status_on_stop_failure(reason);
+    let SessionStatus::Idle { summary } = &status else {
+        return;
+    };
+    ctx.subagents
+        .note_orchestrator_idle(ctx.session_id, summary.clone());
+    // Cancela um aviso de "terminou" que um `Stop` anterior tenha agendado.
+    ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+    ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
+    let _ = ctx.app.emit(
+        EVENT_AGENT_ALERT,
+        AgentAlert::StopFailure {
+            session_id: ctx.session_id,
+            error: error.unwrap_or_else(|| "unknown".into()),
+            reason: reason.to_string(),
+        },
+    );
+    notify_native(
+        &ctx.app,
+        &ctx.sessions,
+        &ctx.store,
+        notify::NotifyKind::Request,
+        ctx.session_id,
+        &format!("Parou: {reason}"),
+    );
+}
+
+/// O uso que o `_statusline` mandou. Dado de dentro da jaula: passa de novo
+/// por [`AgentUsage::sanitized`]. Cruzou 85% numa janela de limite → aviso,
+/// uma vez por cruzamento (ver [`crate::agent::usage::LimitTracker`]).
+fn on_statusline(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
+    let Some(usage) = event
+        .raw
+        .get("usage")
+        .cloned()
+        .and_then(|u| serde_json::from_value::<AgentUsage>(u).ok())
+        .map(AgentUsage::sanitized)
+    else {
+        return HookAction::Ack;
+    };
+    let warnings = crate::agent::usage::observe_limits(&usage);
+    ctx.sessions
+        .set_agent_usage(&ctx.app, ctx.session_id, Some(usage));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for w in warnings {
+        let _ = ctx.app.emit(
+            EVENT_AGENT_ALERT,
+            AgentAlert::UsageLimit {
+                session_id: ctx.session_id,
+                window: w.window,
+                pct: w.pct,
+                resets_at: w.resets_at,
+            },
+        );
+        notify_native(
+            &ctx.app,
+            &ctx.sessions,
+            &ctx.store,
+            notify::NotifyKind::Request,
+            ctx.session_id,
+            &crate::agent::usage::limit_warning_text(&w, now),
+        );
     }
     HookAction::Ack
 }
@@ -658,6 +1096,7 @@ pub fn attach_agent_session(
         .clone()
         .or_else(|| opts.title.clone())
         .unwrap_or_else(|| worktree.branch.clone());
+    let resume = attach_resume(opts.resume_conversation.as_deref(), runner.as_ref())?;
 
     // Sem `worktree::remove` no erro: a pasta é do usuário, não nossa.
     spawn_prepared(
@@ -668,21 +1107,39 @@ pub fn attach_agent_session(
         root,
         worktree,
         task,
-        None,
+        resume,
         on_exit,
     )
 }
 
+/// O id de conversa que o attach do gate pede para retomar, já validado. Ele
+/// volta do webview, então é dado não confiável: só passa o que
+/// [`crate::agent::conversation::is_plausible`] aceita — nada com espaço,
+/// aspas ou `-` inicial chega ao argv. Implausível recusa o spawn em vez de
+/// cair calado numa sessão vazia (o core devolveu um id válido; um inválido
+/// aqui é adulteração ou bug). Runner que não retoma por id ignora.
+fn attach_resume(
+    requested: Option<&str>,
+    runner: &dyn AgentRunner,
+) -> Result<Option<String>, String> {
+    let Some(id) = requested else {
+        return Ok(None);
+    };
+    if !crate::agent::conversation::is_plausible(id) {
+        return Err("id de conversa inválido para retomar".into());
+    }
+    Ok(runner.resumes_conversations().then(|| id.to_string()))
+}
+
 // A partir daqui, e até o fim de `prepare_hosted_agent`, todo o código é
-// exclusivo do canal shim↔core (shim v2, passo 2) — escopo Linux nesta
-// entrega (§15 do tech-spec, mesmo motivo de `hook_ipc::channel`/
+// exclusivo do canal shim↔core (shim v2, passo 2) — Linux e, desde o M3 do
+// claude-monitor, macOS (mesmo gate de `hook_ipc::channel`/
 // `agent::channel_host`). Nunca o caminho gerenciado normal (`spawn_prepared`
-// e o resto deste arquivo), que macOS e Windows continuam usando sem gate
-// nenhum.
-#[cfg(target_os = "linux")]
+// e o resto deste arquivo).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const LAUNCH_PLAN_FILE: &str = "launch.json";
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct HostedCommand {
     cmd: portable_pty::CommandBuilder,
     jailed: bool,
@@ -701,7 +1158,7 @@ struct HostedCommand {
 /// memoizado como `userns_usable()`), então pode falhar mesmo com
 /// `decide_jail` já tendo dito Some — pressão de recurso, binário sumido
 /// entre o probe e agora.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[allow(clippy::too_many_arguments)]
 fn try_jail(
     cmd: portable_pty::CommandBuilder,
@@ -713,7 +1170,7 @@ fn try_jail(
     exe: &Path,
 ) -> Result<portable_pty::CommandBuilder, String> {
     let sandbox = crate::sandbox::platform_sandbox()?;
-    let spec = sandbox_spec(runner, env, target, target, runtime, socket_path, exe)?;
+    let spec = sandbox_spec(runner, env, target, target, runtime, socket_path, exe, None)?;
     sandbox.wrap(cmd, &spec)
 }
 
@@ -726,7 +1183,7 @@ fn try_jail(
 /// jaula E sem gate, no cliente fail-open). `bare` precisa ter sido
 /// CLONADO antes da tentativa: `Sandbox::wrap` consome o `CommandBuilder`
 /// por valor e não devolve nada utilizável em caso de erro.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn degrade_to_gate_only_on_sandbox_failure(
     bare: portable_pty::CommandBuilder,
     jailed_attempt: Result<portable_pty::CommandBuilder, String>,
@@ -749,7 +1206,7 @@ fn degrade_to_gate_only_on_sandbox_failure(
 /// também chega por parâmetro (não `std::env::vars()` direto) para que um
 /// teste consiga forçar uma falha REAL de `sandbox_spec` (ex.: sem `HOME`)
 /// sem precisar mutar o env global do processo de teste.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[allow(clippy::too_many_arguments)]
 fn build_hosted_command(
     store: &Store,
@@ -761,6 +1218,7 @@ fn build_hosted_command(
     runtime: &Path,
     exe: &Path,
     user_env: &HashMap<String, String>,
+    args: &[String],
 ) -> Result<HostedCommand, String> {
     // Repo faltando (gate-sem-jaula por não ser git, ou por estar fora da
     // allowlist) usa a cwd crua como raiz de config: `repo_config::load`
@@ -773,6 +1231,10 @@ fn build_hosted_command(
     apply_git_overrides(&mut env);
 
     let mut cmd = runner.build_command(cwd, &env, hook_setup, None);
+    // M6-A: os args que o usuário digitou (`-c`, `--resume <id>`, `-p ...`),
+    // já reclassificados pelo `channel_host`, entram como argv depois do
+    // `--settings` dos hooks e ANTES do wrap da jaula — nunca por shell.
+    cmd.args(args);
     cmd.env("TYBA_HOOK_SOCKET", socket_path);
     // Track C consome estes dois via `/proc/<agente>/environ` — NUNCA via
     // cmdline, que o `exec` da cadeia bwrap apaga (§7 do tech-spec).
@@ -802,7 +1264,7 @@ fn build_hosted_command(
 /// só o mapeamento, sem decisão nenhuma: `get_argv()` inclui o programa em
 /// `[0]`, `iter_extra_env_as_str()` devolve só o que foi setado depois do
 /// `env_clear()` do `build_command` (o env FILTRADO, nunca o herdado).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn hosted_plan_from(
     cmd: &portable_pty::CommandBuilder,
     cwd: &Path,
@@ -842,12 +1304,14 @@ fn hosted_plan_from(
 ///
 /// Devolve o caminho do plano escrito (0600 via [`crate::session::write_private_bytes`])
 /// e se a sessão saiu jaulada.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn prepare_hosted_agent(
     ctx: &AgentSessionCtx,
     id: SessionId,
     cwd: PathBuf,
     jail_target: Option<PathBuf>,
+    no_jail: Option<crate::agent::channel_host::NoJailReason>,
+    args: &[String],
 ) -> Result<(PathBuf, bool), String> {
     let runtime = runtime_dir(id)?;
     let socket_path = runtime.join(HOOK_SOCKET_FILE);
@@ -858,7 +1322,11 @@ pub fn prepare_hosted_agent(
     let runner = build_runner(&AgentRunnerKind::ClaudeCode)?;
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
     let hook_cmd = hook_command(&exe);
-    let settings = hooks_settings_json(&hook_cmd);
+    let user_env: HashMap<String, String> = std::env::vars().collect();
+    let settings = claude_session_settings(
+        &hook_cmd,
+        session_statusline(&exe, &user_env, &[&cwd, &main_repo_root(&cwd)]),
+    );
     let settings_body =
         serde_json::to_string_pretty(&settings).map_err(|e| format!("settings de hooks: {e}"))?;
     crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
@@ -869,7 +1337,7 @@ pub fn prepare_hosted_agent(
     };
 
     let HostedCommand {
-        cmd,
+        mut cmd,
         jailed,
         worktree_root,
     } = build_hosted_command(
@@ -882,7 +1350,15 @@ pub fn prepare_hosted_agent(
         &runtime,
         &exe,
         &std::env::vars().collect(),
+        args,
     )?;
+    // M7: sem jaula, o motivo vai junto no env do agente — o pane lê de lá
+    // (`process_probe::no_jail_marker`) e explica em linguagem simples. A
+    // jaula pedida que falhou ao montar conta como "sandbox".
+    if !jailed {
+        let reason = no_jail.unwrap_or(crate::agent::channel_host::NoJailReason::Sandbox);
+        cmd.env("TYBA_NOJAIL", reason.as_env());
+    }
 
     ctx.subagents.register_session(id);
     let handler_ctx = HandlerCtx {
@@ -893,6 +1369,8 @@ pub fn prepare_hosted_agent(
         subagents: ctx.subagents.clone(),
         session_id: id,
         runner_kind: AgentRunnerKind::ClaudeCode,
+        repo_root: main_repo_root(&worktree_root),
+        agent_home: agent_home(&std::env::vars().collect()),
         worktree_root,
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
@@ -968,6 +1446,7 @@ pub fn resume_agent_session(
         // sessão anterior que ocupava o mesmo `SessionId` — `spawn_session`
         // é quem herda de `previous`. Ver `Session::opened_by_gate`.
         opened_by_gate: false,
+        resume_conversation: None,
     };
     spawn_prepared(
         ctx,
@@ -1070,6 +1549,37 @@ fn default_data_dir(env: &HashMap<String, String>, home: &Path) -> PathBuf {
     }
 }
 
+/// `HOME` que o agente recebe (o mesmo que `sandbox_spec` exige): é de onde o
+/// Claude da sessão lê `~/.claude`.
+/// O `statusLine` da sessão: o `tyba _statusline`, carregando a statusline
+/// efetiva do usuário (lida do `HOME` do agente e das pastas do projeto) para
+/// que ela continue aparecendo — ver [`crate::agent::statusline`].
+fn session_statusline(
+    exe: &Path,
+    env: &HashMap<String, String>,
+    project_dirs: &[&Path],
+) -> serde_json::Value {
+    let home = agent_home(env);
+    let user = crate::agent::statusline::read_user_statusline(home.as_deref(), project_dirs);
+    crate::agent::statusline::statusline_settings(exe, user.as_ref())
+}
+
+fn agent_home(env: &HashMap<String, String>) -> Option<PathBuf> {
+    env.get("HOME")
+        .map(PathBuf::from)
+        .filter(|h| h.is_absolute())
+}
+
+/// Raiz do repositório principal de `path` (worktree ou checkout). Fora de um
+/// repositório git, a própria pasta.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn main_repo_root(path: &Path) -> PathBuf {
+    crate::worktree::main_repo_of(path)
+        .map(|r| crate::repo::canonicalize_or(&r))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sandbox_spec(
     runner: &dyn AgentRunner,
     env: &HashMap<String, String>,
@@ -1078,13 +1588,34 @@ pub(crate) fn sandbox_spec(
     runtime: &Path,
     socket_path: &Path,
     exe: &Path,
+    conversation: Option<&str>,
 ) -> Result<SandboxSpec, String> {
     let home = env
         .get("HOME")
         .map(PathBuf::from)
         .filter(|h| h.is_absolute())
         .ok_or("HOME indisponível — sandbox exige a home do usuário")?;
-    let git_dirs = crate::worktree::resolved_git_dirs(worktree)?;
+    // M7: a jaula não depende de git. Os dirs do git só entram quando o
+    // repositório é DESTA jaula (toplevel dentro de `root` ou do worktree da
+    // sessão); pasta sem git, ou um repo maior que a jaula (o `~/.git` vazio
+    // que faz a home inteira virar toplevel), usa um gitdir inerte no runtime
+    // privado da sessão — mesmo padrão do LSP — e nunca concede escrita num
+    // `.git` fora da jaula.
+    let inside = |top: &Path| {
+        let top = crate::repo::canonicalize_or(top);
+        top.starts_with(crate::repo::canonicalize_or(root))
+            || top.starts_with(crate::repo::canonicalize_or(worktree))
+    };
+    let git_dirs = match crate::repo::toplevel(worktree) {
+        Some(top) if inside(&top) => crate::worktree::resolved_git_dirs(worktree)?,
+        _ => {
+            let inert = runtime.join(".no-git");
+            crate::worktree::WorktreeGitDirs {
+                git_dir: inert.clone(),
+                common_dir: inert,
+            }
+        }
+    };
     let mut exec_path_dirs: Vec<PathBuf> =
         std::env::split_paths(&crate::shell_path::agent_path()).collect();
     if let Some(parent) = crate::agent::resolved_binary(&runner.kind())
@@ -1093,7 +1624,12 @@ pub(crate) fn sandbox_spec(
     {
         exec_path_dirs.push(parent.to_path_buf());
     }
-    let agent = runner.sandbox_access(&home, worktree);
+    let mut agent = runner.sandbox_access(&home, worktree);
+    if let Some(id) = conversation.filter(|id| crate::agent::conversation::is_plausible(id)) {
+        let own = runner.conversation_access(&home, id);
+        agent.read.extend(own.read);
+        agent.write.extend(own.write);
+    }
     let read_allow_extra = crate::user_config::load(&home)?.sandbox_read_allow;
     let tyba_data_dir = std::env::var_os("TYBA_DATA_DIR")
         .map(PathBuf::from)
@@ -1138,7 +1674,10 @@ fn spawn_prepared(
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
     let hook_cmd = hook_command(&exe);
     if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
-        let settings = hooks_settings_json(&hook_cmd);
+        let settings = claude_session_settings(
+            &hook_cmd,
+            session_statusline(&exe, &std::env::vars().collect(), &[&worktree.path, &root]),
+        );
         let settings_body = serde_json::to_string_pretty(&settings)
             .map_err(|e| format!("settings de hooks: {e}"))?;
         crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
@@ -1155,6 +1694,17 @@ fn spawn_prepared(
     apply_git_overrides(&mut env);
 
     let mut cmd = runner.build_command(&worktree.path, &env, &hook_setup, resume.as_deref());
+    // M5 do claude-monitor: a jaula só libera o `file-history/<sessão>` da
+    // conversa desta sessão, então o id precisa ser conhecido no spawn. Retomar
+    // já o traz; conversa nova do Claude ganha um UUID nosso via
+    // `--session-id` (gerado aqui, nunca vindo de fora).
+    let pinned = (resume.is_none() && matches!(runner.kind(), AgentRunnerKind::ClaudeCode))
+        .then(|| uuid::Uuid::new_v4().to_string());
+    if let Some(id) = &pinned {
+        cmd.arg("--session-id");
+        cmd.arg(id);
+    }
+    let conversation = resume.as_deref().or(pinned.as_deref());
     cmd.env("TYBA_HOOK_SOCKET", &socket_path);
     // Entrega B (§5.2): setado pra TODA sessão de agente, sem branch por
     // runner — bônus por construção (gh/vercel login também passam a
@@ -1180,6 +1730,7 @@ fn spawn_prepared(
             &runtime,
             &socket_path,
             &exe,
+            conversation,
         )?;
         // Entrega B: só no Linux, só pro Claude Code — é onde a credencial
         // depende da inversão da política (§2). Nunca bloqueia o spawn (§6).
@@ -1224,6 +1775,10 @@ fn spawn_prepared(
         session_id: id,
         runner_kind: runner.kind(),
         worktree_root: worktree.path.clone(),
+        repo_root: crate::worktree::main_repo_of(&worktree.path)
+            .map(|r| crate::repo::canonicalize_or(&r))
+            .unwrap_or_else(|_| root.clone()),
+        agent_home: agent_home(&env),
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
     };
@@ -1372,9 +1927,9 @@ mod hook_server_registry_tests {
 
 // Exercita `build_hosted_command`/`hosted_plan_from`/
 // `degrade_to_gate_only_on_sandbox_failure` — a cadeia exclusiva do canal
-// shim↔core, escopo Linux (§15, mesmo motivo do gate acima).
+// shim↔core, no Linux e no macOS (mesmo gate acima).
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod build_hosted_command_tests {
     use super::*;
 
@@ -1452,7 +2007,7 @@ mod build_hosted_command_tests {
     /// (que viraria `Refused` no canal e `claude` cru, sem jaula E sem
     /// gate, no `tyba _jail` fail-open).
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn a_real_sandbox_spec_failure_degrades_the_whole_plan_to_gate_only_never_to_an_error() {
         let store = store();
         let repo = tempfile::tempdir().unwrap();
@@ -1476,6 +2031,7 @@ mod build_hosted_command_tests {
             runtime.path(),
             &exe,
             &user_env,
+            &[],
         )
         .expect(
             "uma falha de sandbox_spec tem que degradar pro plano gate-sem-jaula, \
@@ -1533,6 +2089,7 @@ mod build_hosted_command_tests {
             runtime.path(),
             &exe,
             &std::env::vars().collect(),
+            &[],
         )
         .expect("gate-sem-jaula não deveria falhar");
 
@@ -1587,6 +2144,7 @@ mod build_hosted_command_tests {
             runtime.path(),
             &exe,
             &user_env,
+            &[],
         )
         .expect("gate-sem-jaula não deveria falhar");
 
@@ -1627,6 +2185,7 @@ mod build_hosted_command_tests {
             runtime.path(),
             &exe,
             &std::env::vars().collect(),
+            &[],
         )
         .expect("branch jaulado deveria montar com bwrap real");
 
@@ -1654,6 +2213,141 @@ mod build_hosted_command_tests {
         );
     }
 
+    /// M7: jaula sem git. Uma pasta sem repositório, e uma pasta dentro de
+    /// um repo MAIOR que ela (o `~/.git` vazio da máquina do dono), sobem
+    /// jauladas na própria pasta — e a política nunca concede o `.git` de
+    /// fora da jaula.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_jail_without_its_own_git_repo_still_mounts_and_never_grants_an_outer_git() {
+        let store = store();
+        let outer = tempfile::tempdir().unwrap();
+        init_git_repo(outer.path());
+        let inner = outer.path().join("projeto");
+        std::fs::create_dir(&inner).unwrap();
+        let plain = tempfile::tempdir().unwrap();
+
+        for target in [
+            crate::repo::canonicalize_or(&inner),
+            crate::repo::canonicalize_or(plain.path()),
+        ] {
+            let runtime = tempfile::tempdir().unwrap();
+            let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
+            let setup = hook_setup(runtime.path());
+            let exe = std::env::current_exe().unwrap();
+            let hosted = build_hosted_command(
+                &store,
+                &ClaudeCodeRunner,
+                &target,
+                Some(target.clone()),
+                &setup,
+                &socket_path,
+                runtime.path(),
+                &exe,
+                &std::env::vars().collect(),
+                &[],
+            )
+            .expect("monta");
+            assert!(hosted.jailed, "{target:?} deveria subir jaulado");
+            let plan = hosted_plan_from(&hosted.cmd, &target);
+            let policy = plan
+                .argv
+                .iter()
+                .find(|a| a.contains("(version 1)"))
+                .expect("política do Seatbelt no argv");
+            let outer_git = crate::repo::canonicalize_or(outer.path())
+                .join(".git")
+                .to_string_lossy()
+                .into_owned();
+            assert!(
+                !policy.contains(&format!("(subpath \"{outer_git}/objects\")")),
+                "o .git de fora da jaula não pode ficar gravável"
+            );
+        }
+    }
+
+    /// M3: no macOS a jaula do `claude` hospedado é o Seatbelt — o mesmo
+    /// `Sandbox::wrap` da sessão gerenciada, nunca um `Command` cru.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_jailed_branch_wraps_argv_through_seatbelt_on_macos() {
+        let store = store();
+        let repo = tempfile::tempdir().unwrap();
+        init_git_repo(repo.path());
+        let target = crate::repo::canonicalize_or(repo.path());
+        let runtime = tempfile::tempdir().unwrap();
+        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
+        let setup = hook_setup(runtime.path());
+        let exe = std::env::current_exe().unwrap();
+
+        let hosted = build_hosted_command(
+            &store,
+            &ClaudeCodeRunner,
+            &target,
+            Some(target.clone()),
+            &setup,
+            &socket_path,
+            runtime.path(),
+            &exe,
+            &std::env::vars().collect(),
+            &[],
+        )
+        .expect("branch jaulado deveria montar com o Seatbelt real");
+
+        assert!(hosted.jailed);
+        let plan = hosted_plan_from(&hosted.cmd, &target);
+        assert_eq!(
+            plan.argv.first().map(String::as_str),
+            Some(crate::sandbox::seatbelt::SANDBOX_EXEC),
+            "o argv jaulado começa no sandbox-exec: {:?}",
+            plan.argv
+        );
+        assert!(plan.argv.iter().any(|a| a == "claude"));
+        for marker in [
+            ("TYBA_HOSTED", "1"),
+            ("TYBA_JAILED", "1"),
+            ("TYBA_SANDBOX", "seatbelt"),
+        ] {
+            assert!(
+                plan.env
+                    .contains(&(marker.0.to_string(), marker.1.to_string())),
+                "{marker:?} faltou no plano: {:?}",
+                plan.env
+            );
+        }
+    }
+
+    /// M6-A: os args do usuário entram no argv do plano um a um, depois dos
+    /// hooks — nada vira string de shell.
+    #[test]
+    fn user_args_land_in_the_plan_argv_verbatim_after_the_hooks() {
+        let store = store();
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
+        let setup = hook_setup(runtime.path());
+        let exe = std::env::current_exe().unwrap();
+        let args: Vec<String> = vec!["-c".into(), "-p".into(), "a; rm -rf ~ $(x)".into()];
+
+        let hosted = build_hosted_command(
+            &store,
+            &ClaudeCodeRunner,
+            cwd.path(),
+            None,
+            &setup,
+            &socket_path,
+            runtime.path(),
+            &exe,
+            &std::env::vars().collect(),
+            &args,
+        )
+        .unwrap();
+        let plan = hosted_plan_from(&hosted.cmd, cwd.path());
+        let settings = plan.argv.iter().position(|a| a == "--settings").unwrap();
+        assert_eq!(&plan.argv[plan.argv.len() - 3..], &args[..]);
+        assert!(settings < plan.argv.len() - 3);
+    }
+
     #[test]
     fn hosted_plan_from_carries_only_the_env_set_after_env_clear() {
         // `iter_extra_env_as_str` nunca deveria vazar o env HERDADO do
@@ -1678,6 +2372,7 @@ mod build_hosted_command_tests {
             runtime.path(),
             &exe,
             &std::env::vars().collect(),
+            &[],
         )
         .unwrap();
         std::env::remove_var("TYBA_TEST_SHOULD_NEVER_LEAK");
@@ -1691,5 +2386,704 @@ mod build_hosted_command_tests {
             "o env hospedado vazou algo fora da allowlist: {:?}",
             plan.env
         );
+    }
+}
+
+#[cfg(test)]
+mod session_end_tests {
+    use super::session_end_ends_subagents;
+    use serde_json::json;
+
+    #[test]
+    fn clear_keeps_background_subagents_running() {
+        // Payload sintético, escrito à mão no formato do hook SessionEnd.
+        let raw = json!({"hook_event_name": "SessionEnd", "reason": "clear"});
+        assert!(!session_end_ends_subagents(&raw));
+    }
+
+    #[test]
+    fn exit_and_unknown_reasons_end_subagents() {
+        for reason in ["prompt_input_exit", "logout", "other"] {
+            let raw = json!({"hook_event_name": "SessionEnd", "reason": reason});
+            assert!(session_end_ends_subagents(&raw), "{reason}");
+        }
+        assert!(session_end_ends_subagents(
+            &json!({"hook_event_name": "SessionEnd"})
+        ));
+    }
+}
+
+#[cfg(test)]
+mod attach_resume_tests {
+    use super::*;
+
+    #[test]
+    fn no_requested_id_attaches_a_fresh_conversation() {
+        assert_eq!(attach_resume(None, &ClaudeCodeRunner), Ok(None));
+    }
+
+    #[test]
+    fn plausible_id_becomes_the_resume_target() {
+        let id = "11111111-2222-3333-4444-555555555555";
+        assert_eq!(
+            attach_resume(Some(id), &ClaudeCodeRunner),
+            Ok(Some(id.to_string()))
+        );
+    }
+
+    #[test]
+    fn implausible_id_refuses_instead_of_reaching_argv() {
+        for bad in ["--dangerously-skip-permissions", "a b c d e f g h", "x"] {
+            assert!(
+                attach_resume(Some(bad), &ClaudeCodeRunner).is_err(),
+                "{bad}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod hook_route_tests {
+    use super::*;
+
+    const CLAUDE: AgentRunnerKind = AgentRunnerKind::ClaudeCode;
+    const CODEX: AgentRunnerKind = AgentRunnerKind::Codex;
+
+    /// Invariante 4: o `PermissionRequest` do Claude só sinaliza. Se fosse ao
+    /// gate, um verde sairia `allow` — aprovando o prompt nativo pelo usuário.
+    #[test]
+    fn permission_request_do_claude_nunca_vai_ao_gate() {
+        assert_eq!(
+            hook_route(&CLAUDE, "PermissionRequest"),
+            HookRoute::NativePrompt
+        );
+    }
+
+    #[test]
+    fn permission_request_do_codex_continua_no_gate() {
+        assert_eq!(hook_route(&CODEX, "PermissionRequest"), HookRoute::ToolUse);
+        assert_eq!(
+            hook_route(&AgentRunnerKind::Custom("x".into()), "PermissionRequest"),
+            HookRoute::ToolUse
+        );
+    }
+
+    #[test]
+    fn pre_tool_use_vai_ao_gate_em_qualquer_runner() {
+        assert_eq!(hook_route(&CLAUDE, "PreToolUse"), HookRoute::ToolUse);
+        assert_eq!(hook_route(&CODEX, "PreToolUse"), HookRoute::ToolUse);
+    }
+
+    #[test]
+    fn eventos_de_sinal_so_recebem_ack() {
+        for name in [
+            "PostToolUse",
+            "UserPromptSubmit",
+            "SessionStart",
+            "SessionEnd",
+            "Stop",
+            "Notification",
+            "SubagentStart",
+            "SubagentStop",
+        ] {
+            assert_eq!(hook_route(&CLAUDE, name), HookRoute::Ack, "{name}");
+        }
+        assert_eq!(hook_route(&CLAUDE, "TybaOpenUrl"), HookRoute::OpenUrl);
+        assert_eq!(hook_route(&CLAUDE, "TybaStatusline"), HookRoute::Usage);
+        assert_eq!(hook_route(&CLAUDE, "StopFailure"), HookRoute::Ack);
+    }
+
+    /// O status que `handle_event` deixa depois de uma sequência de eventos,
+    /// na mesma ordem que ele usa: primeiro o sinal (`signal_for` →
+    /// `status_for`, e `SessionEnd` → `status_on_session_end`), depois o
+    /// roteamento (`hook_route` → `NativePrompt`).
+    fn status_after(runner: &AgentRunnerKind, events: &[&str]) -> SessionStatus {
+        let mut status = SessionStatus::Idle { summary: None };
+        for name in events {
+            match signal_for(name, None) {
+                Some(AgentSignal::Ended) => {
+                    if let Some(next) = status_on_session_end(&status) {
+                        status = next;
+                    }
+                }
+                Some(signal) => {
+                    if let Some(next) = status_for(&signal) {
+                        status = next;
+                    }
+                }
+                None => {}
+            }
+            if hook_route(runner, name) == HookRoute::NativePrompt {
+                status = native_prompt_status(None);
+            }
+        }
+        status
+    }
+
+    fn is_native_prompt(status: &SessionStatus) -> bool {
+        matches!(
+            status,
+            SessionStatus::AwaitingInput {
+                reason: AwaitingReason::NativePrompt,
+                ..
+            }
+        )
+    }
+
+    /// O `PermissionRequest` chega logo depois do `PreToolUse` da mesma
+    /// chamada; o `Running` do `PreToolUse` não pode ficar por cima.
+    #[test]
+    fn pre_tool_use_seguido_de_permission_request_termina_no_prompt_nativo() {
+        let status = status_after(
+            &CLAUDE,
+            &["UserPromptSubmit", "PreToolUse", "PermissionRequest"],
+        );
+        assert!(is_native_prompt(&status), "{status:?}");
+    }
+
+    #[test]
+    fn cada_saida_tira_do_prompt_nativo() {
+        for exit in ["PostToolUse", "PreToolUse", "UserPromptSubmit"] {
+            let status = status_after(&CLAUDE, &["PreToolUse", "PermissionRequest", exit]);
+            assert_eq!(status, SessionStatus::Running, "{exit}");
+        }
+        let status = status_after(&CLAUDE, &["PreToolUse", "PermissionRequest", "SessionEnd"]);
+        assert!(!is_native_prompt(&status), "SessionEnd: {status:?}");
+    }
+
+    /// O que `on_native_prompt` responde (`Ack`) chega ao Claude como stdout
+    /// vazio, exit 0 — o prompt nativo segue com o usuário. Round-trip real
+    /// pelo socket e pelo cliente `_hook`.
+    #[cfg(unix)]
+    #[test]
+    fn ack_do_prompt_nativo_sai_vazio_para_o_claude() {
+        use crate::hook_ipc::run_client;
+        use crate::hook_ipc::HookServer;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hook.sock");
+        let server = HookServer::bind(
+            &path,
+            Arc::new(
+                |e: HookEvent| match hook_route(&CLAUDE, &e.hook_event_name) {
+                    HookRoute::NativePrompt => HookAction::Ack,
+                    // Qualquer outro roteamento é o gate, que pode sair `allow`:
+                    // é isso que o teste tem de pegar.
+                    _ => HookAction::Allow { reason: None },
+                },
+            ),
+        )
+        .unwrap();
+        let event = serde_json::json!({
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "tool_input": {"command": "cargo test"},
+            "cwd": "/work"
+        });
+        let mut out = Vec::new();
+        let code = run_client(
+            std::io::Cursor::new(serde_json::to_vec(&event).unwrap()),
+            &mut out,
+            Some(&path),
+        );
+        assert_eq!(code, 0);
+        assert_eq!(String::from_utf8(out).unwrap(), "");
+        server.shutdown();
+    }
+
+    #[test]
+    fn codex_nunca_entra_no_prompt_nativo() {
+        let status = status_after(&CODEX, &["PreToolUse", "PermissionRequest"]);
+        assert!(!is_native_prompt(&status), "{status:?}");
+    }
+}
+
+/// Os hooks de observação do Codex, com payloads sintéticos no formato da doc
+/// (learn.chatgpt.com/docs/hooks): campos comuns + os de cada evento.
+#[cfg(test)]
+mod codex_hook_events_tests {
+    use super::*;
+    use crate::hook_ipc::{hook_event_from_value, run_client, HookServer};
+    use serde_json::{json, Value};
+
+    const CODEX: AgentRunnerKind = AgentRunnerKind::Codex;
+    const AGENT_ID: &str = "019a3f2e-7c1b-7d40-9f3e-5b2c8a1d4e6f";
+
+    fn payload(name: &str, extra: Value) -> Value {
+        let mut base = json!({
+            "session_id": "thr_sintetico",
+            "transcript_path": "/tmp/sintetico/rollout-2026-10-12T10-00-00-thr.jsonl",
+            "cwd": "/work/wt",
+            "hook_event_name": name,
+            "model": "gpt-5.5-codex",
+            "permission_mode": "default",
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            base[k] = v.clone();
+        }
+        base
+    }
+
+    fn fixtures() -> Vec<Value> {
+        vec![
+            payload(
+                "UserPromptSubmit",
+                json!({"turn_id": "t1", "prompt": "rode os testes"}),
+            ),
+            payload(
+                "PostToolUse",
+                json!({
+                    "turn_id": "t1",
+                    "tool_name": "Bash",
+                    "tool_use_id": "call_1",
+                    "tool_input": {"command": "cargo test"},
+                    "tool_response": "ok"
+                }),
+            ),
+            payload("PreCompact", json!({"turn_id": "t1", "trigger": "auto"})),
+            payload("PostCompact", json!({"turn_id": "t1", "trigger": "auto"})),
+            payload(
+                "SubagentStart",
+                json!({"turn_id": "t1", "agent_id": AGENT_ID, "agent_type": "worker"}),
+            ),
+            payload(
+                "SubagentStop",
+                json!({
+                    "turn_id": "t1",
+                    "agent_id": AGENT_ID,
+                    "agent_type": "worker",
+                    "agent_transcript_path": null,
+                    "stop_hook_active": false,
+                    "last_assistant_message": "Testes verdes."
+                }),
+            ),
+            payload("Interrupt", json!({"turn_id": "t1"})),
+            payload("SessionEnd", json!({"reason": "other"})),
+        ]
+    }
+
+    #[test]
+    fn cada_evento_novo_vira_o_sinal_do_caminho_do_claude() {
+        let expected = [
+            Some(AgentSignal::Working),
+            Some(AgentSignal::Working),
+            Some(AgentSignal::Compacting),
+            None,
+            Some(AgentSignal::SubagentStarted),
+            Some(AgentSignal::SubagentEnded),
+            Some(AgentSignal::Interrupted),
+            Some(AgentSignal::Ended),
+        ];
+        for (raw, want) in fixtures().into_iter().zip(expected) {
+            let event = hook_event_from_value(raw);
+            assert_eq!(
+                signal_for(&event.hook_event_name, event.notification_type.as_deref()),
+                want,
+                "{}",
+                event.hook_event_name
+            );
+        }
+    }
+
+    /// Observação nunca passa pelo gate: só `PreToolUse`/`PermissionRequest`.
+    #[test]
+    fn eventos_novos_do_codex_so_recebem_ack() {
+        for raw in fixtures() {
+            let event = hook_event_from_value(raw);
+            assert_eq!(
+                hook_route(&CODEX, &event.hook_event_name),
+                HookRoute::Ack,
+                "{}",
+                event.hook_event_name
+            );
+        }
+    }
+
+    #[test]
+    fn subagente_do_codex_traz_id_tipo_e_fala_final() {
+        let all = fixtures();
+        let start = hook_event_from_value(all[4].clone());
+        assert_eq!(start.agent_id.as_deref(), Some(AGENT_ID));
+        assert_eq!(start.agent_type.as_deref(), Some("worker"));
+        let stop = hook_event_from_value(all[5].clone());
+        assert_eq!(stop.agent_id.as_deref(), Some(AGENT_ID));
+        assert_eq!(stop.raw["last_assistant_message"], "Testes verdes.");
+    }
+
+    #[test]
+    fn modelo_vem_do_fio_principal_e_nunca_do_subagente() {
+        let all = fixtures();
+        let prompt = hook_event_from_value(all[0].clone());
+        assert_eq!(model_of(&prompt), Some("gpt-5.5-codex"));
+        let sub = hook_event_from_value(all[4].clone());
+        assert_eq!(model_of(&sub), None);
+        let sem_modelo = hook_event_from_value(json!({"hook_event_name": "Stop"}));
+        assert_eq!(model_of(&sem_modelo), None);
+    }
+
+    #[test]
+    fn um_turno_do_codex_comeca_trabalhando_e_termina_parado() {
+        let mut status = SessionStatus::Idle { summary: None };
+        for name in [
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "PreCompact",
+        ] {
+            if let Some(next) = signal_for(name, None).as_ref().and_then(status_for) {
+                status = next;
+            }
+        }
+        assert_eq!(
+            status,
+            SessionStatus::Running,
+            "PreCompact não para o turno"
+        );
+        assert_eq!(
+            status_on_interrupt(&status),
+            Some(SessionStatus::Idle {
+                summary: Some(INTERRUPTED_SUMMARY.into())
+            })
+        );
+    }
+
+    /// `Stop`, `SubagentStop` e `Interrupt` do Codex só aceitam JSON ou nada
+    /// no stdout; `ack` tem de sair vazio para todo evento de observação.
+    #[test]
+    fn ack_sai_vazio_para_todo_evento_de_observacao() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hook.sock");
+        let server = HookServer::bind(&path, Arc::new(|_e: HookEvent| HookAction::Ack)).unwrap();
+        let mut all = fixtures();
+        all.push(payload(
+            "Stop",
+            json!({"turn_id": "t1", "stop_hook_active": false, "last_assistant_message": "pronto"}),
+        ));
+        for raw in all {
+            let name = raw["hook_event_name"].as_str().unwrap().to_string();
+            let mut out = Vec::new();
+            let code = run_client(
+                std::io::Cursor::new(serde_json::to_vec(&raw).unwrap()),
+                &mut out,
+                Some(&path),
+            );
+            assert_eq!(code, 0, "{name}");
+            assert_eq!(String::from_utf8(out).unwrap(), "", "{name}");
+        }
+        server.shutdown();
+    }
+
+    /// Socket fora do ar: observação segue sem o hook (fail-open, stdout
+    /// vazio); só o `PreToolUse` nega.
+    #[test]
+    fn sem_transporte_observacao_e_fail_open() {
+        for raw in fixtures() {
+            let name = raw["hook_event_name"].as_str().unwrap().to_string();
+            let mut out = Vec::new();
+            let code = run_client(
+                std::io::Cursor::new(serde_json::to_vec(&raw).unwrap()),
+                &mut out,
+                None,
+            );
+            assert_eq!(code, 0, "{name}");
+            assert_eq!(String::from_utf8(out).unwrap(), "", "{name}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod inferred_history_tests {
+    use super::*;
+    use serde_json::json;
+
+    const CLAUDE: AgentRunnerKind = AgentRunnerKind::ClaudeCode;
+
+    /// Payloads sintéticos com as chaves que o Claude 2.1.281 manda em cada
+    /// evento (medicao-claude.md, pergunta 3). Nenhum sai de sessão real.
+    fn permission_request(prompt_id: &str, command: &str) -> serde_json::Value {
+        json!({
+            "cwd": "/wt",
+            "hook_event_name": "PermissionRequest",
+            "permission_mode": "default",
+            "permission_suggestions": [{
+                "type": "addRules",
+                "rules": [{"toolName": "Bash", "ruleContent": "python3 *"}],
+                "behavior": "allow",
+                "destination": "localSettings"
+            }],
+            "prompt_id": prompt_id,
+            "scratchpad_dir": "/tmp/scratch",
+            "session_id": "claude-sessao-1",
+            "tool_input": {"command": command},
+            "tool_name": "Bash",
+            "transcript_path": "/tmp/transcript.jsonl"
+        })
+    }
+
+    fn post_tool_use(prompt_id: &str, command: &str) -> serde_json::Value {
+        json!({
+            "cwd": "/wt",
+            "duration_ms": 42,
+            "hook_event_name": "PostToolUse",
+            "permission_mode": "default",
+            "prompt_id": prompt_id,
+            "scratchpad_dir": "/tmp/scratch",
+            "session_id": "claude-sessao-1",
+            "tool_input": {"command": command},
+            "tool_name": "Bash",
+            "tool_response": {"stdout": "ok", "stderr": "", "interrupted": false},
+            "tool_use_id": "toolu_sintetico_01",
+            "transcript_path": "/tmp/transcript.jsonl"
+        })
+    }
+
+    fn pre_tool_use(prompt_id: &str, command: &str) -> serde_json::Value {
+        json!({
+            "cwd": "/wt",
+            "hook_event_name": "PreToolUse",
+            "permission_mode": "default",
+            "prompt_id": prompt_id,
+            "scratchpad_dir": "/tmp/scratch",
+            "session_id": "claude-sessao-1",
+            "tool_input": {"command": command},
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_sintetico_02",
+            "transcript_path": "/tmp/transcript.jsonl"
+        })
+    }
+
+    fn named(name: &str) -> serde_json::Value {
+        json!({
+            "hook_event_name": name,
+            "prompt_id": "p2",
+            "session_id": "claude-sessao-1",
+            "cwd": "/wt"
+        })
+    }
+
+    fn event(raw: serde_json::Value) -> HookEvent {
+        let s = |k: &str| raw.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        HookEvent {
+            hook_event_name: s("hook_event_name").unwrap_or_default(),
+            tool_name: s("tool_name"),
+            tool_input: raw.get("tool_input").cloned(),
+            notification_type: s("notification_type"),
+            cwd: s("cwd"),
+            agent_id: None,
+            agent_type: None,
+            raw,
+        }
+    }
+
+    fn feed(store: &Store, session: SessionId, raws: Vec<serde_json::Value>) {
+        for (i, raw) in raws.into_iter().enumerate() {
+            record_inferred(
+                store,
+                &CLAUDE,
+                Path::new("/wt"),
+                session,
+                &event(raw),
+                1_000 + i as u64,
+            );
+        }
+    }
+
+    /// A decisão de cada linha da sessão, na ordem de inserção.
+    fn decisions(store: &Store, session: SessionId) -> Vec<String> {
+        store
+            .list_approval_history(Some(&session.to_string()), 100)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .map(|e| e.decision)
+            .collect()
+    }
+
+    /// A mesma chamada vista no `PermissionRequest` e no `PostToolUse` dá a
+    /// mesma chave — embora os dois payloads tenham chaves diferentes
+    /// (`permission_suggestions` num, `tool_use_id`/`tool_response` no outro).
+    #[test]
+    fn call_key_casa_permission_request_com_post_tool_use() {
+        assert_eq!(
+            call_key(&permission_request("p1", "cargo test")),
+            call_key(&post_tool_use("p1", "cargo test"))
+        );
+        assert_eq!(
+            call_key(&permission_request("p1", "cargo test")),
+            call_key(&pre_tool_use("p1", "cargo test"))
+        );
+    }
+
+    #[test]
+    fn call_key_separa_chamadas_diferentes() {
+        let base = call_key(&permission_request("p1", "cargo test"));
+        assert_ne!(base, call_key(&permission_request("p2", "cargo test")));
+        assert_ne!(base, call_key(&permission_request("p1", "cargo build")));
+        let mut outra_sessao = permission_request("p1", "cargo test");
+        outra_sessao["session_id"] = json!("claude-sessao-2");
+        assert_ne!(base, call_key(&outra_sessao));
+        let mut outra_ferramenta = permission_request("p1", "cargo test");
+        outra_ferramenta["tool_name"] = json!("Write");
+        assert_ne!(base, call_key(&outra_ferramenta));
+    }
+
+    /// A ordem das chaves do `tool_input` não é contrato do Claude: o mesmo
+    /// input com as chaves em outra ordem (e aninhado) dá a mesma chave. O
+    /// texto é parseado com `from_str` para a ordem de origem ser a do texto.
+    #[test]
+    fn call_key_nao_depende_da_ordem_das_chaves_do_tool_input() {
+        let a: serde_json::Value = serde_json::from_str(
+            r#"{"session_id":"s","prompt_id":"p","tool_name":"Edit",
+                "tool_input":{"file_path":"/wt/a.rs","old_string":"x","new_string":"y",
+                              "opts":{"b":1,"a":[{"z":1,"y":2}]}}}"#,
+        )
+        .unwrap();
+        let b: serde_json::Value = serde_json::from_str(
+            r#"{"tool_input":{"opts":{"a":[{"y":2,"z":1}],"b":1},"new_string":"y",
+                              "old_string":"x","file_path":"/wt/a.rs"},
+                "tool_name":"Edit","prompt_id":"p","session_id":"s"}"#,
+        )
+        .unwrap();
+        assert_eq!(call_key(&a), call_key(&b));
+    }
+
+    #[test]
+    fn json_canonico_ordena_chaves_em_toda_profundidade() {
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"b":{"d":1,"c":[{"f":null,"e":"é\"x"}]},"a":true}"#).unwrap();
+        let mut out = String::new();
+        write_canonical_json(&v, &mut out);
+        assert_eq!(out, r#"{"a":true,"b":{"c":[{"e":"é\"x","f":null}],"d":1}}"#);
+    }
+
+    #[test]
+    fn campos_ausentes_ainda_dao_chave_estavel() {
+        let raw = json!({"hook_event_name": "PermissionRequest"});
+        assert_eq!(call_key(&raw), call_key(&raw.clone()));
+        assert_eq!(call_key(&raw).len(), 64);
+    }
+
+    #[test]
+    fn passo_deduzido_de_cada_evento() {
+        assert_eq!(
+            inferred_step(&CLAUDE, "PermissionRequest"),
+            InferredStep::Open
+        );
+        assert_eq!(inferred_step(&CLAUDE, "PostToolUse"), InferredStep::Approve);
+        assert_eq!(
+            inferred_step(&CLAUDE, "PostToolUseFailure"),
+            InferredStep::Approve
+        );
+        for name in ["PreToolUse", "UserPromptSubmit", "SessionEnd"] {
+            assert_eq!(
+                inferred_step(&CLAUDE, name),
+                InferredStep::DenyPending,
+                "{name}"
+            );
+        }
+        // Negar não dispara `Stop` (B0); e ele pode chegar com o prompt aberto.
+        for name in ["Stop", "Notification", "SessionStart", "SubagentStop"] {
+            assert_eq!(inferred_step(&CLAUDE, name), InferredStep::None, "{name}");
+        }
+        // O `PermissionRequest` do Codex vai ao gate, que grava a linha `tyba`.
+        assert_ne!(
+            inferred_step(&AgentRunnerKind::Codex, "PermissionRequest"),
+            InferredStep::Open
+        );
+    }
+
+    /// CA-15: pedido → a ferramenta rodou → aprovado (deduzido).
+    #[test]
+    fn ciclo_pendente_aprovado() {
+        let store = Store::open_in_memory().unwrap();
+        let session = SessionId::new_v4();
+        feed(
+            &store,
+            session,
+            vec![
+                pre_tool_use("p1", "cargo test"),
+                permission_request("p1", "cargo test"),
+            ],
+        );
+        assert_eq!(decisions(&store, session), vec!["pending"]);
+
+        feed(&store, session, vec![post_tool_use("p1", "cargo test")]);
+        assert_eq!(decisions(&store, session), vec!["approved"]);
+        let stats = store.agent_stats(0, None).unwrap();
+        assert_eq!(stats.totals.requested, 1);
+        assert_eq!(stats.totals.human_decided, 0);
+    }
+
+    /// CA-15: pedido → o turno segue sem o `PostToolUse` → negado (deduzido),
+    /// por cada gatilho de fechamento.
+    #[test]
+    fn ciclo_pendente_negado_por_cada_gatilho() {
+        for closer in [
+            pre_tool_use("p1", "ls"),
+            named("UserPromptSubmit"),
+            named("SessionEnd"),
+        ] {
+            let store = Store::open_in_memory().unwrap();
+            let session = SessionId::new_v4();
+            let name = closer["hook_event_name"].clone();
+            feed(
+                &store,
+                session,
+                vec![
+                    pre_tool_use("p1", "cargo test"),
+                    permission_request("p1", "cargo test"),
+                    closer,
+                ],
+            );
+            assert_eq!(decisions(&store, session), vec!["denied"], "{name}");
+        }
+    }
+
+    /// O fechamento do `teardown_agent_session` (lib.rs) é esta mesma chamada
+    /// do store, com a sessão que acabou.
+    #[test]
+    fn teardown_fecha_a_pendente_como_negada() {
+        let store = Store::open_in_memory().unwrap();
+        let session = SessionId::new_v4();
+        feed(
+            &store,
+            session,
+            vec![permission_request("p1", "cargo test")],
+        );
+        store
+            .deny_pending_inferred_for_session(&session.to_string(), 9_000)
+            .unwrap();
+        assert_eq!(decisions(&store, session), vec!["denied"]);
+    }
+
+    /// `Stop` não fecha: a pendente segue esperando o `PostToolUse`.
+    #[test]
+    fn stop_nao_fecha_a_pendente() {
+        let store = Store::open_in_memory().unwrap();
+        let session = SessionId::new_v4();
+        feed(
+            &store,
+            session,
+            vec![permission_request("p1", "cargo test"), named("Stop")],
+        );
+        assert_eq!(decisions(&store, session), vec!["pending"]);
+        feed(&store, session, vec![post_tool_use("p1", "cargo test")]);
+        assert_eq!(decisions(&store, session), vec!["approved"]);
+    }
+
+    /// Codex não abre linha deduzida: o `PermissionRequest` dele é o gate.
+    #[test]
+    fn codex_nao_grava_linha_deduzida() {
+        let store = Store::open_in_memory().unwrap();
+        let session = SessionId::new_v4();
+        record_inferred(
+            &store,
+            &AgentRunnerKind::Codex,
+            Path::new("/wt"),
+            session,
+            &event(permission_request("p1", "cargo test")),
+            1_000,
+        );
+        assert!(decisions(&store, session).is_empty());
     }
 }

@@ -14,12 +14,6 @@ export function describeTunnel(t: Tunnel): string {
   return `${bind}:${t.listen_port} → ${t.target_host}:${t.target_port}`;
 }
 
-export function tunnelFlag(t: Tunnel): string {
-  if (t.kind === "local") return "-L";
-  if (t.kind === "remote") return "-R";
-  return "-D";
-}
-
 function exposure(t: Tunnel): string {
   return [
     t.kind,

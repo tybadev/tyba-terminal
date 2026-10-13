@@ -37,6 +37,8 @@ export interface SessionBlocksData {
   openedAtMs: number | null;
   active: boolean;
   command: string;
+  /** Quando o comando em execução começou, pelo relógio do core. */
+  commandStartedAtMs: number | null;
   marked: ReadonlySet<number> | undefined;
   copyCombo: string;
 }
@@ -62,6 +64,7 @@ export function sessionBlocksData(input: {
   cwd: SessionCwd | undefined;
   active: boolean;
   command: string | null | undefined;
+  commandStartedAtMs?: number | null;
   marked: ReadonlySet<number> | null;
   copyCombo: string;
 }): SessionBlocksData {
@@ -83,6 +86,7 @@ export function sessionBlocksData(input: {
     openedAtMs: Date.parse(input.session.created_at) || null,
     active: input.active,
     command: input.command ?? "",
+    commandStartedAtMs: input.commandStartedAtMs ?? null,
     marked: input.marked ?? undefined,
     copyCombo: input.copyCombo,
   };

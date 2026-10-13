@@ -14,6 +14,7 @@ use crate::agent::auth_watch::AuthWatch;
 use crate::session::cano::{CanoOutcome, CanoWatch};
 use crate::session::SessionKind;
 use crate::status::observer::ScreenObserver;
+use crate::status::program_status;
 
 use observe::ScreenPipe;
 
@@ -129,6 +130,10 @@ struct ScreenState {
     /// Aberto pelo mesmo `633;P` que atualiza o campo acima — ver
     /// [`LineEditorGate`].
     line_editor: Arc<LineEditorGate>,
+    /// O shell está no `PS2` — o último `CommandState` anunciado. Guardado para
+    /// a linha do TYBA consultar: na continuação o texto é o RESTO de um
+    /// comando, e julgá-lo sozinho como "pela metade" prenderia o usuário.
+    continuation: bool,
 }
 
 impl ScreenState {
@@ -140,6 +145,7 @@ impl ScreenState {
             prompt_mode: false,
             hook_expected: false,
             line_editor: Arc::new(LineEditorGate::default()),
+            continuation: false,
         }
     }
 
@@ -283,6 +289,10 @@ pub struct SessionCommandPayload {
     /// mesmo comando, e não comando novo — sem isto o front só vê
     /// `running: false` e oferece a linha como se fosse começar do zero.
     pub continuation: bool,
+    /// Quando o comando em execução começou (`133;C`), em ms desde a época.
+    /// `None` quando ocioso. É o relógio do "rodando Ns" do bloco ao vivo:
+    /// medido no core, para a contagem não recomeçar quando o front remonta.
+    pub started_at_ms: Option<i64>,
 }
 
 /// Diretório de trabalho reportado via `OSC 7`.
@@ -541,6 +551,7 @@ fn apply_screen(state: &mut ScreenState, chunk: &[u8], actions: &[capture::Actio
                 state.prompt_mode = *on;
                 state.line_editor.mark_open();
             }
+            capture::Action::CommandState(command) => state.continuation = command.continuation,
             _ => {}
         }
     }
@@ -585,6 +596,81 @@ fn ingest_chunk(
     let actions = machine.on_chunk(chunk, now_ms, alt_screen);
     apply_screen(state, chunk, &actions);
     actions
+}
+
+/// O OSC 7501 de uma sessão: responde à detecção e acompanha o registro raiz.
+///
+/// O estado vai para o palpite de tela (que só existe em sessão sem hook); a
+/// resposta à detecção vale para toda sessão de transporte cru, para o
+/// programa se comportar igual dentro e fora de sessão de agente.
+struct ProgramStatusLink {
+    scanner: program_status::Osc7501Scanner,
+    tracker: program_status::ProgramTracker,
+    limiter: program_status::QueryLimiter,
+    writer: SharedWriter,
+    answers_query: bool,
+    /// Uma resposta por vez. A escrita sai numa thread porque a fila de
+    /// entrada do PTY pode estar cheia (programa que não lê stdin despejando
+    /// consultas), e bloquear a thread emissora pararia a saída — que é o que
+    /// o programa espera para voltar a ler. Resposta com outra em voo é
+    /// descartada: no máximo uma thread presa por sessão.
+    in_flight: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ProgramStatusLink {
+    fn new(writer: SharedWriter, answers_query: bool) -> Self {
+        Self {
+            scanner: program_status::Osc7501Scanner::new(),
+            tracker: program_status::ProgramTracker::new(),
+            limiter: program_status::QueryLimiter::new(),
+            writer,
+            answers_query,
+            in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// Devolve se o registro raiz mudou neste chunk. Um aviso por chunk, não
+    /// por relatório: programa que alterna estado mil vezes num chunk custa
+    /// uma publicação só.
+    fn feed(&mut self, chunk: &[u8]) -> bool {
+        let mut changed = false;
+        for event in self.scanner.feed(chunk) {
+            if let program_status::ProgramEvent::Query { bel } = event {
+                self.reply(bel);
+                continue;
+            }
+            changed |= self.tracker.apply(&event);
+        }
+        changed
+    }
+
+    fn current(&self) -> Option<&program_status::ProgramStatus> {
+        self.tracker.current()
+    }
+
+    fn reply(&mut self, bel: bool) {
+        use std::sync::atomic::Ordering;
+        if !self.answers_query || !self.limiter.allow(Instant::now()) {
+            return;
+        }
+        if self.in_flight.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let writer = Arc::clone(&self.writer);
+        let in_flight = Arc::clone(&self.in_flight);
+        let spawned = std::thread::Builder::new()
+            .name("osc7501-reply".into())
+            .spawn(move || {
+                let mut writer = writer.lock();
+                let _ = writer.write_all(program_status::query_reply(bel));
+                let _ = writer.flush();
+                drop(writer);
+                in_flight.store(false, Ordering::SeqCst);
+            });
+        if spawned.is_err() {
+            self.in_flight.store(false, Ordering::SeqCst);
+        }
+    }
 }
 
 /// O lado não-visual das ações: eventos para o webview, histórico e blocos.
@@ -930,6 +1016,11 @@ impl PtyPool {
             link.set_size(cols, rows);
         }
         let control_writer = Arc::clone(&writer);
+        let query_writer = Arc::clone(&writer);
+        // A resposta à detecção do OSC 7501 vai em bytes crus na entrada do
+        // PTY. Em modo de controle do tmux a entrada é o protocolo do tmux, e
+        // o programa do pane nem fala com este terminal: não responde.
+        let answers_program_query = control.is_none();
         let tmux_target = transport.tmux_target().unwrap_or_default().to_string();
         let control_link = control.clone();
         // Um `tmux -C` local nasce falando o protocolo (sem marco): ali não há
@@ -1124,6 +1215,7 @@ impl PtyPool {
                 let mut last_checkpoint = Instant::now();
                 let mut machine = capture::CaptureMachine::new(session_id.to_string());
                 let mut pipe = pipe;
+                let mut program = ProgramStatusLink::new(query_writer, answers_program_query);
                 let sink = ActionSink {
                     app: app.clone(),
                     session_id,
@@ -1149,6 +1241,16 @@ impl PtyPool {
                     };
                     match chunk {
                         Some(chunk) => {
+                            // ANTES de o chunk seguir para o webview: a
+                            // resposta à detecção do OSC 7501 tem de chegar ao
+                            // programa antes da resposta do xterm.js ao `CSI c`
+                            // que vem logo atrás — é o que a especificação usa
+                            // para separar "suporta" de "não suporta".
+                            if program.feed(&chunk) {
+                                if let Some(pipe) = pipe.as_mut() {
+                                    pipe.program(program.current());
+                                }
+                            }
                             let due = last_flush.elapsed() >= FLUSH_INTERVAL;
                             // Um lock só do parse até a fila: ver `ingest_chunk`.
                             let (actions, bracketed, cols, rows, snapshot) = {
@@ -1466,6 +1568,14 @@ impl PtyPool {
     #[cfg(not(unix))]
     pub fn line_echo(&self, _id: PtyId) -> Option<bool> {
         None
+    }
+
+    /// O shell está esperando o resto de um comando (`PS2`)? Ver
+    /// [`ScreenState::continuation`].
+    pub fn continuation(&self, id: PtyId) -> Option<bool> {
+        let screen = self.screen_of(id)?;
+        let continuing = screen.lock().continuation;
+        Some(continuing)
     }
 
     pub fn bracketed_paste(&self, id: PtyId) -> Option<bool> {
@@ -2073,6 +2183,92 @@ match = { process = ["codex"] }
                 !publicados.is_empty()
             }),
             "sessão com hook recebeu palpite de tela: publicados={:?}",
+            visto.lock()
+        );
+    }
+
+    /// OSC 7501 ponta a ponta: o programa pergunta, o core responde na
+    /// entrada do PTY ANTES do DA, e o relato vira estado da sessão.
+    #[test]
+    fn osc_7501_responde_a_deteccao_e_vira_estado() {
+        let app = tauri::test::mock_app();
+        let (pool, visto) = pool_com_manifesto();
+        let id = PtyId::new_v4();
+
+        // Modo cru para a resposta não esperar Enter nem ecoar. Lê exatamente
+        // os 10 bytes de `ESC ] 7501 ; ? ESC \` e mostra o que veio; sem
+        // resposta, o `time 20` desiste em 2 s e o teste falha em vez de travar.
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(
+            "stty raw -echo min 0 time 20; printf '\\033]7501;?\\033\\\\'; \
+             r=$(dd bs=1 count=10 2>/dev/null | od -An -c | tr -d ' \\n'); \
+             stty sane; printf 'RESP[%s]\\n' \"$r\"; \
+             printf '\\033]7501;state=blocked:kind=permission:app=meu-app\\007'; sleep 1",
+        );
+        pool.spawn(
+            app.handle().clone(),
+            id,
+            cmd,
+            None,
+            None,
+            80,
+            24,
+            &SessionKind::Shell,
+            Box::new(|| {}),
+        )
+        .unwrap();
+
+        let screen = pool.screen_of(id).unwrap();
+        let prazo = Instant::now() + Duration::from_secs(10);
+        let tela = loop {
+            let tela = screen.lock().parser.screen().contents();
+            if tela.contains("RESP[") || Instant::now() >= prazo {
+                break tela;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            tela.contains(r"RESP[033]7501;?033\]"),
+            "a resposta à detecção não chegou como devia: {tela:?}"
+        );
+        assert!(
+            espera(&visto, |publicados| publicados.iter().flatten().any(|o| {
+                o.agent == "meu-app"
+                    && o.state == Some(ObservedState::AwaitingInput)
+                    && o.kind == Some(crate::session::ObservedWait::Permission)
+            })),
+            "o relato não virou estado: {:?}",
+            visto.lock()
+        );
+    }
+
+    /// Sessão com hook: o relato do programa não vira estado nenhum.
+    #[test]
+    fn osc_7501_nao_mexe_em_sessao_com_hook() {
+        let app = tauri::test::mock_app();
+        let (pool, visto) = pool_com_manifesto();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("printf '\\033]7501;state=blocked:kind=permission\\007'; sleep 0.3");
+        pool.spawn(
+            app.handle().clone(),
+            PtyId::new_v4(),
+            cmd,
+            None,
+            None,
+            80,
+            24,
+            &SessionKind::Agent {
+                runner: AgentRunnerKind::ClaudeCode,
+            },
+            Box::new(|| {}),
+        )
+        .unwrap();
+
+        assert!(
+            !espera_ate(&visto, Duration::from_secs(1), |p| !p.is_empty()),
+            "OSC 7501 mexeu em sessão com hook: {:?}",
             visto.lock()
         );
     }

@@ -52,6 +52,24 @@ fn agent_access(entry: &ServerEntry, home: &Path, env: &HashMap<String, String>)
     access
 }
 
+/// A raiz da jaula do LSP é a raiz do painel — legível e gravável pelo server.
+/// Ela nunca pode ser a home nem um ancestral dela (a mesma regra da jaula do
+/// agente, M7): com a sessão aberta na própria home, o server ganharia escrita
+/// na pasta pessoal inteira e indexaria tudo dentro dela até estourar o
+/// initialize. Aí não sobe — fail-closed, com o motivo na UI.
+fn check_root(root: &Path, home: &Path) -> Result<(), String> {
+    if !root.is_absolute() {
+        return Err("raiz do painel não é absoluta".into());
+    }
+    if home.starts_with(root) {
+        return Err(
+            "a pasta da sessão é a home (ou acima dela) — o LSP só sobe dentro de uma pasta de projeto"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 pub fn lsp_sandbox_spec(entry: &ServerEntry, ctx: &LspSpecCtx) -> Result<SandboxSpec, String> {
     let home = ctx
         .env
@@ -59,6 +77,7 @@ pub fn lsp_sandbox_spec(entry: &ServerEntry, ctx: &LspSpecCtx) -> Result<Sandbox
         .map(PathBuf::from)
         .filter(|h| h.is_absolute())
         .ok_or("HOME indisponível — a jaula do LSP exige a home do usuário")?;
+    check_root(ctx.root, &home)?;
 
     let inert_git = ctx.cache_dir.join(".no-git");
     let mut agent = agent_access(entry, &home, ctx.env);
@@ -260,6 +279,45 @@ mod tests {
             .collect();
         assert!(write_paths.contains(&PathBuf::from("/opt/modcache")));
         assert!(!write_paths.contains(&PathBuf::from("/Users/nobody/go/pkg/mod")));
+    }
+
+    #[test]
+    fn root_at_or_above_home_is_refused() {
+        let env = ctx_env();
+        let entry = entry_by_id("rust-analyzer").unwrap();
+        for root in ["/Users/nobody", "/Users/nobody/", "/Users", "/"] {
+            let c = ctx(
+                Path::new(root),
+                Path::new("/private/tmp/tyba-lsp-abc"),
+                Path::new("/x/tyba"),
+                &env,
+            );
+            let err = lsp_sandbox_spec(entry, &c)
+                .err()
+                .unwrap_or_else(|| panic!("raiz {root} não pode virar jaula do LSP"));
+            assert!(err.contains("home"), "{err}");
+        }
+    }
+
+    #[test]
+    fn project_roots_are_accepted_with_or_without_git() {
+        let env = ctx_env();
+        let entry = entry_by_id("rust-analyzer").unwrap();
+        for root in [
+            "/Users/nobody/swell-system/poc-git",
+            "/Users/nobody/proj/.claude/worktrees/wt",
+            "/Users/nobodyelse/proj",
+            "/private/wt/proj",
+        ] {
+            let c = ctx(
+                Path::new(root),
+                Path::new("/private/tmp/tyba-lsp-abc"),
+                Path::new("/x/tyba"),
+                &env,
+            );
+            let spec = lsp_sandbox_spec(entry, &c).unwrap();
+            assert_eq!(spec.writable_root, Path::new(root));
+        }
     }
 
     #[test]

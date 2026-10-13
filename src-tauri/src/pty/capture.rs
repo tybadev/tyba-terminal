@@ -376,6 +376,7 @@ impl CaptureMachine {
                         running: true,
                         agent_match: self.agent_match,
                         continuation: false,
+                        started_at_ms: Some(now_ms),
                     }));
                 }
                 // `133;D` traz exit code; prompt novo sem ele é comando que não
@@ -1049,6 +1050,22 @@ mod tests {
         );
         assert_eq!(state.command.as_deref(), Some("ls -la"));
         assert!(!state.continuation);
+    }
+
+    #[test]
+    fn the_running_command_carries_when_it_started_and_idle_clears_it() {
+        // O "rodando Ns" do bloco ao vivo conta a partir daqui. Medido no
+        // core: no front a contagem recomeçava a cada remontagem da faixa.
+        let mut machine = at_the_prompt();
+        machine.on_chunk(b"ls -la\r\n", 2_000, false);
+        let actions = machine.on_chunk(
+            format!("\x1b]633;E;{}\x07\x1b]133;C\x07", b64("ls -la")).as_bytes(),
+            2_010,
+            false,
+        );
+        assert_eq!(front_state(&actions).started_at_ms, Some(2_010));
+        let done = machine.on_chunk(b"\x1b]133;D;0\x07", 2_500, false);
+        assert_eq!(front_state(&done).started_at_ms, None, "{done:?}");
     }
 
     #[test]

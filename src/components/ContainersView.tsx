@@ -19,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { IS_MAC } from "@/lib/platform";
+import { openContainerTab } from "@/lib/contentTabs";
 import {
   Tooltip,
   TooltipContent,
@@ -36,7 +37,6 @@ import {
   dockerListContainers,
   dockerOpenComposeFile,
   dockerOpenDesktop,
-  dockerOpenLogs,
   dockerOpenProject,
   dockerOpenShell,
   dockerRemoveContainer,
@@ -64,7 +64,8 @@ const UNREACHABLE_PATH_LABEL: Record<
 };
 
 interface Props {
-  onRunningChange?: (running: boolean) => void;
+  /** Quantos containers estão rodando (o ícone do header mostra e conta). */
+  onRunningChange?: (running: number) => void;
   onAvailableChange?: (available: boolean) => void;
   sshHost?: string | null;
   /** Alvo na tela (alias, ou null = local) — a sidebar segue o painel. */
@@ -173,7 +174,7 @@ export function ContainersView({
       setContainers(list);
       setLoadError(null);
       onAvailableChange?.(true);
-      onRunningChange?.(list.some((c) => c.state === "running"));
+      onRunningChange?.(list.filter((c) => c.state === "running").length);
     } catch (e) {
       setLoadError(String(e));
       onAvailableChange?.(false);
@@ -248,10 +249,19 @@ export function ContainersView({
 
   const openTab = useCallback(
     (kind: "logs" | "shell", id: string) => {
-      const call = kind === "logs" ? dockerOpenLogs : dockerOpenShell;
+      // Logs locais abrem a aba estruturada (filtro, níveis, links de stack
+      // trace); no host remoto o core cai no terminal de `docker logs -f`.
+      const call =
+        kind === "logs"
+          ? (cid: string, host: string | null) =>
+              openContainerTab("logs", cid, {
+                host,
+                name: containers?.find((c) => c.id === cid)?.name,
+              })
+          : dockerOpenShell;
       void call(id, selected).catch(failAction);
     },
-    [failAction, selected],
+    [failAction, selected, containers],
   );
 
   const removeContainer = useCallback(

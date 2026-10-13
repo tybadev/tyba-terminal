@@ -20,7 +20,10 @@
   --tyba-overlay: #161617;        /* dropdowns, dialogs, tooltips */
   --tyba-border: rgba(255, 255, 255, 0.07);        /* borda = luz, não cinza */
   --tyba-border-strong: rgba(255, 255, 255, 0.16); /* foco/hover */
-  --tyba-sunken: #000000;         /* área do terminal: preto absoluto */
+  /* Área do terminal: preto absoluto sobre o #050505 do bg (BLACKOUT).
+     O cromo não projeta sombra (`lift-cast` 0); quem separa o terminal
+     do cromo é a aresta de luz (`lift-edge` / `divider-line`). */
+  --tyba-sunken: #000000;
   /* Contorno do cartão de bloco.
      Própria, e não `--tyba-border`: o cartão vive sobre o sunken, que em vários
      temas é preto absoluto, e ali a borda comum rende 1,12:1 — some, e o que
@@ -33,6 +36,11 @@
   --tyba-text-muted: #9fa0a6;
   --tyba-text-faint: #5f6066;
   --tyba-text-inverse: #050505;
+  /* Fantasma: o resto sugerido do comando, placeholder fora de foco e o ponto
+     de sessão parada (mockups: #3a3a3f no escuro, #c4c4cc no claro).
+     Derivado do faint rumo ao fundo, para todo tema ganhar o seu. */
+  --tyba-ghost-mix: 58%;
+  --tyba-text-ghost: color-mix(in srgb, var(--tyba-text-faint) var(--tyba-ghost-mix), var(--tyba-bg));
 
   /* ---------- Acentos da marca ---------- */
   --tyba-green: #7cc544;          /* terminal, sucesso, "ativo" */
@@ -46,12 +54,12 @@
 
   /* ---------- Knobs de intensidade (por tema) ----------
      Temas light contêm a luz: tints/glows mais discretos. */
-  --tyba-tint-alpha: 14%;         /* fundos de badge/status */
-  --tyba-glow-size: 12px;
-  --tyba-glow-alpha: 55%;         /* o preto puro pede luz mais forte */
+  --tyba-tint-alpha: 12%;         /* fundos de badge/status (mockups: 0,12) */
+  --tyba-glow-size: 8px;          /* mockups: 0 0 8px a 60% */
+  --tyba-glow-alpha: 60%;         /* o preto puro pede luz mais forte */
   --tyba-halo-alpha: 12%;
   --tyba-selection-alpha: 30%;
-  --tyba-glass-alpha: 55%;
+  --tyba-glass-alpha: 72%;        /* sidebar do mockup: rgba(10,10,11,.72) */
 
   /* ---------- Papéis semânticos ---------- */
   --tyba-primary: var(--tyba-green);
@@ -92,6 +100,31 @@
      Aresta iluminada no topo de cada superfície + verniz vertical:
      é isso que separa as camadas, não cinzas mais claros. */
   --tyba-edge: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  /* Aba acesa (ícone do header, mockup PainelGit): tinta e brilho na cor
+     da área — `currentColor`, então quem pinta é a classe de texto da área.
+     A luz é estado: só o aceso usa. */
+  --tyba-lit-bg: color-mix(in srgb, currentColor 12%, transparent);
+  --tyba-lit-glow: 0 0 10px color-mix(in srgb, currentColor 25%, transparent);
+  /* Linha selecionada/elevada numa lista (painéis laterais). */
+  --tyba-row-raised: var(--tyba-edge);
+  /* Fundo do painel lateral de 380px: a superfície chapada no escuro. */
+  --tyba-panel-bg: var(--tyba-surface);
+  /* Contorno do que SOBE sobre o cromo (busca da sidebar, sessão ativa):
+     no escuro, a aresta de luz; no claro, a linha fina por dentro. */
+  --tyba-raised-ring: var(--tyba-edge);
+  /* Fundo do seletor segmentado do header (Terminal/Workspace). */
+  --tyba-segment-bg: var(--tyba-surface);
+  /* Filamento: o fio verde→ciano→violeta da aba e da sessão ativas.
+     Cheio de ponta a ponta (o `--tyba-flow-gradient` some nas pontas e
+     é o fio de quem EXECUTA). Dos acentos do tema: theme-aware. */
+  --tyba-filament: linear-gradient(90deg, var(--tyba-green), var(--tyba-cyan), var(--tyba-violet));
+  --tyba-filament-v: linear-gradient(180deg, var(--tyba-green), var(--tyba-cyan), var(--tyba-violet));
+  /* Divisória interna dos painéis: a linha fina, um tom mais quieta
+     (0,05 sobre 0,07 no mockup) — derivada, vale em todo tema. */
+  --tyba-border-soft: color-mix(in srgb, var(--tyba-border) 72%, transparent);
+  /* Contorno de campo (busca, mensagem de commit): 0,12 nos mockups —
+     entre a linha fina e a forte. Derivado: vale em todo tema. */
+  --tyba-border-field: color-mix(in srgb, var(--tyba-border-strong) 75%, transparent);
   --tyba-sheen: linear-gradient(
     180deg,
     color-mix(in srgb, var(--tyba-raised) 97%, white),
@@ -102,8 +135,7 @@
      acentos, então cada tema ganha a sua sozinho */
   --tyba-aurora:
     radial-gradient(1100px 460px at 70% -12%, color-mix(in srgb, var(--tyba-violet) 8%, transparent), transparent 62%),
-    radial-gradient(800px 400px at 20% -10%, color-mix(in srgb, var(--tyba-cyan) 6%, transparent), transparent 60%),
-    radial-gradient(600px 340px at 45% -8%, color-mix(in srgb, var(--tyba-green) 4%, transparent), transparent 58%);
+    radial-gradient(800px 400px at 20% -10%, color-mix(in srgb, var(--tyba-cyan) 6%, transparent), transparent 60%);
 
   /* ---------- Gradiente-assinatura (constante da marca) ----------
      Não muda com o tema: é a assinatura do TYBA em qualquer pele. */
@@ -203,27 +235,16 @@
   --tyba-divider-r: inset -1px 0 0 0 var(--tyba-divider-line);
   --tyba-divider-l: inset 1px 0 0 0 var(--tyba-divider-line);
 
-  /* Separação por LUZ — o cromo da janela em vez de uma linha.
-     A doutrina do BLACKOUT ("quem separa é a luz, não o cinza") só vivia
-     nos overlays flutuantes; isto a traz para o shell.
-     Dois ingredientes, e a polaridade decide o peso de cada um:
-     - `edge`: a aresta que o plano da frente ilumina. É o que funciona no
-       escuro, e é quase nada sobre branco.
-     - `cast`: a sombra que ele projeta no plano de trás. É o que funciona
-       no claro, e é invisível sobre preto absoluto.
-     Por isso os dois convivem: cada tema usa o que a sua polaridade
-     permite, sem uma regra por tema.
-
-     O `cast` escuro é 0.30 e não 0.85, e a diferença não é gosto. "Invisível
-     sobre preto absoluto" só vale para o BLACKOUT, onde o `bg` é #050505 —
-     e ele foi o único esquema em que o valor foi conferido. Os outros doze
-     escuros têm fundo levantado (o `monokai-machine` chega a #2f2f2f), e ali
-     0.85 não sumia: a sombra de 16px caía sobre o conteúdo como uma FAIXA de
-     ~10px, não como separação. Na sidebar isso virou uma camada visível entre
-     ela e o terminal. Ver `themeFrame.test.ts`, que mede o salto na costura
-     em todos os esquemas — no escuro quem separa continua sendo o `edge`. */
-  --tyba-lift-edge: rgba(255, 255, 255, 0.06);
-  --tyba-lift-cast: rgba(0, 0, 0, 0.30);
+  /* Aresta do cromo (header, sidebar, rodapé). Era separação por LUZ:
+     `edge`, a aresta que o plano da frente ilumina, e `cast`, a sombra
+     que ele projeta no de trás. A interface virou CHAPADA em toda pele:
+     uma camada só, sem sombra caindo do cromo no conteúdo — com ela,
+     header e sidebar pareciam flutuar sobre um terminal afundado. Sobra
+     a aresta, na mesma linha fina do `--tyba-divider-line`; o `cast`
+     fica zerado e os blocos de esquema não o redeclaram. Ver
+     `themeFrame.test.ts`, que prende o zero em todo esquema. */
+  --tyba-lift-edge: rgba(255, 255, 255, 0.07);
+  --tyba-lift-cast: rgba(0, 0, 0, 0);
   --tyba-focus-ring: 0 0 0 2px var(--tyba-bg), 0 0 0 4px var(--tyba-green);
 
   /* ---------- Movimento ---------- */
@@ -275,50 +296,72 @@
 [data-theme$='light'] {
   color-scheme: light;
 
-  --tyba-bg: #f5f5f7;
-  --tyba-surface: #fbfbfd;
+  /* Claro A · Aurora (2026-10-12): base branca fria, a aurora tripla da
+     marca no topo do canvas, cromo de vidro branco e conteúdo branco. */
+  --tyba-bg: #fafbff;
+  --tyba-surface: #ffffff;         /* vidro a 62% (glass-alpha): a aurora passa */
   --tyba-raised: #ffffff;
   --tyba-overlay: #ffffff;
   --tyba-border: rgba(0, 0, 0, 0.07);        /* espelha o :root, invertido */
   --tyba-border-strong: rgba(0, 0, 0, 0.16);
-  --tyba-sunken: #ececf0;
+  /* Branco, e não um cinza abaixo do cromo: o terminal mais escuro que
+     sidebar e header, somado à sombra que os dois projetavam nele, lia
+     como um poço afundado. Conteúdo é a superfície mais clara; quem
+     separa é a linha. O xterm segue (`terminalTheme` lê este token). */
+  --tyba-sunken: #ffffff;
 
-  --tyba-text: #17171c;
+  --tyba-text: #121218;            /* mockups *Claro */
   --tyba-text-muted: #55555f;
   --tyba-text-faint: #8b8b96;
   --tyba-text-inverse: #ffffff;
+  --tyba-ghost-mix: 49%;          /* fantasma ≈ #c4c4cc */
 
-  --tyba-green: #4e9622;
+  /* Acentos saturados. Cada um passa AA (4,5:1) como TEXTO sobre o bg e
+     sobre o tint violeta do bloco marcado — eles servem de texto e de
+     preenchimento, e não há variante só de texto. */
+  --tyba-green: #387e15;
   --tyba-lime: #6fae2e;
-  --tyba-amber: #c47c14;
-  --tyba-magenta: #d33d84;
+  --tyba-amber: #9b6210;
+  --tyba-magenta: #c23879;
   --tyba-violet: #7a4ce8;
   --tyba-blue: #3b66d6;
-  --tyba-cyan: #0f9d8c;
-  --tyba-red: #d6402e;
+  --tyba-cyan: #0c7c6f;
+  --tyba-red: #c93c2b;
 
   --tyba-tint-alpha: 12%;
-  --tyba-glow-size: 10px;
+  --tyba-glow-size: 0px;          /* mockups *Claro: nenhum brilho */
   --tyba-glow-alpha: 28%;
   --tyba-halo-alpha: 10%;
   --tyba-selection-alpha: 25%;
-  --tyba-glass-alpha: 60%;
+  --tyba-glass-alpha: 62%;
 
-  /* No claro a aresta de luz não existe (branco sobre branco) e a
-     aurora volta a ser dupla e lavada */
+  /* No claro a aresta de luz não existe (branco sobre branco). A aurora
+     é a tripla da marca, mais presente que no escuro: sobre branco frio
+     ela é o único respiro de cor, e o cromo de vidro a deixa passar. */
   --tyba-edge: inset 0 1px 0 rgba(255, 255, 255, 0);
+  /* Claro: aba acesa sem brilho (só a tinta); linha elevada por sombra. */
+  --tyba-lit-glow: none;
+  --tyba-row-raised: 0 1px 2px rgba(0, 0, 0, 0.06);
+  /* No claro o painel é vidro: a aurora do canvas passa (mockup *Claro). */
+  --tyba-panel-bg: var(--tyba-glass-bg);
+  /* Claro: o que sobe é branco com a linha fina por dentro; o seletor
+     segmentado ganha o véu violeta (mockup PropostaClaro). */
+  --tyba-raised-ring: inset 0 0 0 1px var(--tyba-border);
+  --tyba-segment-bg: color-mix(in srgb, var(--tyba-violet) 9%, transparent);
   --tyba-aurora:
-    radial-gradient(900px 420px at 75% -10%, color-mix(in srgb, var(--tyba-cyan) 6%, transparent), transparent 60%),
-    radial-gradient(700px 380px at 15% -10%, color-mix(in srgb, var(--tyba-green) 5%, transparent), transparent 60%);
+    radial-gradient(1100px 460px at 70% -12%, color-mix(in srgb, var(--tyba-violet) 13%, transparent), transparent 62%),
+    radial-gradient(800px 400px at 20% -10%, color-mix(in srgb, var(--tyba-cyan) 11%, transparent), transparent 60%),
+    radial-gradient(600px 340px at 45% -8%, color-mix(in srgb, var(--tyba-green) 9%, transparent), transparent 58%);
 
   --tyba-shadow-sm: 0 1px 2px rgba(23, 23, 28, 0.08);
   --tyba-shadow-md: 0 4px 16px rgba(23, 23, 28, 0.1);
   --tyba-shadow-lg: 0 12px 40px rgba(23, 23, 28, 0.14);
   --tyba-divider-line: rgba(0, 0, 0, 0.07);
-  /* No claro a aresta iluminada é branco sobre branco: some. Sobra
-     metade da linha e a sombra fazendo o resto do trabalho. */
-  --tyba-lift-edge: rgba(0, 0, 0, 0.045);
-  --tyba-lift-cast: rgba(0, 0, 0, 0.16);
+  /* No claro o cromo é chapado: a aresta vira a mesma linha fina do
+     conteúdo e a sombra projetada sai. Com ela, header e sidebar
+     pareciam flutuar sobre um terminal afundado. */
+  --tyba-lift-edge: rgba(0, 0, 0, 0.07);
+  --tyba-lift-cast: rgba(0, 0, 0, 0);
 }
 
 /* ============================================================
@@ -381,7 +424,7 @@
   --tyba-surface: #faf4e4;
   --tyba-raised: #fefaef;
   --tyba-overlay: #fffcf4;
-  --tyba-sunken: #eee8d5;         /* base2 */
+  --tyba-sunken: #fefaef;         /* = raised: chapado */
 
   --tyba-text: #073642;           /* base02 */
   --tyba-text-muted: #586e75;     /* base01 */
@@ -444,7 +487,7 @@
   --tyba-surface: #fcf8e8;
   --tyba-raised: #fffbeb;        /* bg oficial do Alucard */
   --tyba-overlay: #fffdf3;
-  --tyba-sunken: #efead5;
+  --tyba-sunken: #fffbeb;         /* = raised: chapado */
 
   --tyba-text: #1f1f1f;
   --tyba-text-muted: #6c664b;    /* comment */
@@ -507,7 +550,7 @@
   --tyba-surface: #f9f0ca;
   --tyba-raised: #f9f5d7;         /* bg0_h */
   --tyba-overlay: #fbf7e2;
-  --tyba-sunken: #ebdbb2;         /* bg1 */
+  --tyba-sunken: #f9f5d7;         /* = raised: chapado */
 
   --tyba-text: #3c3836;           /* fg1 */
   --tyba-text-muted: #665c54;     /* fg3 */
@@ -570,7 +613,7 @@
   --tyba-surface: #ffffff;
   --tyba-raised: #ffffff;
   --tyba-overlay: #ffffff;
-  --tyba-sunken: #eaeef2;
+  --tyba-sunken: #ffffff;         /* = raised: chapado */
 
   --tyba-text: #1f2328;
   --tyba-text-muted: #59636e;
@@ -758,7 +801,7 @@
   --tyba-surface: #fdf9f7;
   --tyba-raised: #fffcfb;
   --tyba-overlay: #fffdfc;
-  --tyba-sunken: #ede7e5;         /* dark1 */
+  --tyba-sunken: #fffcfb;         /* = raised: chapado */
 
   --tyba-text: #29242a;
   --tyba-text-muted: #706b6e;     /* dimmed1 */
@@ -829,11 +872,13 @@
   --color-tyba-sunken: var(--tyba-sunken);
   --color-tyba-border: var(--tyba-border);
   --color-tyba-border-strong: var(--tyba-border-strong);
+  --color-tyba-border-field: var(--tyba-border-field);
   --color-tyba-block-border: var(--tyba-block-border);
 
   --color-tyba-text: var(--tyba-text);
   --color-tyba-text-muted: var(--tyba-text-muted);
   --color-tyba-text-faint: var(--tyba-text-faint);
+  --color-tyba-text-ghost: var(--tyba-text-ghost);
   --color-tyba-text-inverse: var(--tyba-text-inverse);
 
   --color-tyba-green: var(--tyba-green);
@@ -1178,6 +1223,11 @@ samp {
 .cm-gutters {
   line-height: 1.5;
 }
+/* O corpo do editor (mockup Editor: 13px). Pelo mesmo motivo da entrelinha:
+   numa folha real, já aplicada antes de o CodeMirror medir. */
+.cm-editor {
+  font-size: 13px;
+}
 
 /* Vidro sobre o void (sidebar, painéis flutuantes) */
 .tyba-glass {
@@ -1195,7 +1245,7 @@ samp {
 }
 .tyba-flow-line--live {
   background-size: 200% 100%;
-  animation: tyba-flow 3s linear infinite;
+  animation: tyba-flow 2.4s linear infinite; /* mockup: .flow-live */
 }
 /* Modificador de espessura, e não uma utilitária do Tailwind: `.tyba-flow-line`
    fixa `height` fora de camada, e utilitária de mesma especificidade em @layer
@@ -1206,10 +1256,19 @@ samp {
 }
 @keyframes tyba-flow {
   from { background-position: 0% 0; }
-  to { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+/* O ponto vivo do mockup (.pulse): 1 → .45 em 1,6s. */
+@keyframes tyba-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.tyba-pulse {
+  animation: tyba-pulse 1.6s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .tyba-flow-line--live { animation: none; }
+  .tyba-flow-line--live,
+  .tyba-pulse { animation: none; }
 }
 
 @keyframes tyba-pop-in {

@@ -15,7 +15,7 @@ export type SessionKind =
   | { type: "ssh"; host_id: string }
   | { type: "container"; host_id: string | null; container_id: string };
 
-export type AwaitingReason = "approval" | "reply";
+export type AwaitingReason = "approval" | "reply" | "native_prompt";
 
 export type SessionStatus =
   | { state: "running" }
@@ -67,7 +67,14 @@ export type ObservedState = "running" | "awaiting_input" | "idle";
 export interface ObservedAgent {
   agent: string;
   state: ObservedState | null;
+  /**
+   * Do que está esperando, quando o próprio programa diz (OSC 7501 `kind=`).
+   * Ausente no palpite de tela. Espelha `ObservedWait` do core.
+   */
+  kind?: ObservedWait;
 }
+
+export type ObservedWait = "permission" | "question" | "auth";
 
 export interface Session {
   id: SessionId;
@@ -86,6 +93,35 @@ export interface Session {
   agent_conversation_id?: string | null;
   /** Nunca vem do banco: é derivado da tela de agora. */
   observed?: ObservedAgent | null;
+  /** Modelo ativo que o agente declarou no último hook do fio principal.
+   * Só em memória no core: ausente depois de reiniciar o app. */
+  agent_model?: string | null;
+  /** Nota curta do que o agente faz além do status (ex.: "compactando
+   * contexto"). Só em memória no core. */
+  status_note?: string | null;
+  /** O que o `statusLine` do Claude reportou. Só memória no core. */
+  agent_usage?: AgentUsage | null;
+}
+
+export interface RateWindow {
+  pct: number;
+  /** Epoch em segundos. */
+  resets_at?: number | null;
+}
+
+/** Espelha `agent::usage::AgentUsage`: só números e o nome do modelo. */
+export interface AgentUsage {
+  model?: string | null;
+  context_pct?: number | null;
+  context_window_size?: number | null;
+  tokens_in?: number | null;
+  tokens_out?: number | null;
+  cost_usd?: number | null;
+  duration_ms?: number | null;
+  lines_added?: number | null;
+  lines_removed?: number | null;
+  rate_5h?: RateWindow | null;
+  rate_7d?: RateWindow | null;
 }
 
 export interface CreateSessionOpts {
@@ -104,6 +140,9 @@ export interface CreateSessionOpts {
    * não por review, resolução de conflito ou clique manual. Controla se a
    * aba se recolhe sozinha quando o agente sai depois de trabalhar. */
   opened_by_gate?: boolean;
+  /** Id da conversa nativa a retomar no attach do gate — o que o
+   * `kill_shell_agent` devolveu. O core valida antes de virar argumento. */
+  resume_conversation?: string;
 }
 
 /** Um shell disponível para abrir uma sessão (ver `listShells`). */
@@ -177,6 +216,10 @@ export interface SessionDiff {
   files: FileDiff[];
   staged_files: FileDiff[];
   unstaged_files: FileDiff[];
+  /** Quais de `unstaged_files` são untracked (`ls-files --others`). */
+  untracked: string[];
+  /** `commits` parou no teto do core: o range tem mais. */
+  commits_truncated: boolean;
 }
 
 export type DiffScope = "committed" | "staged" | "unstaged";
@@ -238,6 +281,35 @@ export interface FileHunks {
 
 export const openDiffTab = (id: SessionId) =>
   invoke<void>("open_diff_tab", { id });
+
+/** Painel Git da sessão no slot lateral único (`side_view = "git:<id>"`). */
+export const openGitPanel = (id: SessionId) =>
+  invoke<void>("open_git_panel", { id });
+
+/** Painel Histórico da sessão no slot lateral único (`side_view = "history:<id>"`). */
+export const openHistoryPanel = (id: SessionId) =>
+  invoke<void>("open_history_panel", { id });
+
+/** Uma execução gravada (espelha `history::HistoryRun`). */
+export interface HistoryRun {
+  command: string;
+  cwd: string | null;
+  exit_code: number | null;
+  started_at_ms: number;
+  duration_ms: number | null;
+}
+
+/** Execuções mais recentes primeiro; `repo` amplia da sessão para o repo dela. */
+export const historyRuns = (
+  sessionId: SessionId,
+  repo: boolean,
+  query: string,
+  limit: number,
+) => invoke<HistoryRun[]>("history_runs", { sessionId, repo, query, limit });
+
+/** Painel Docker da sessão no slot lateral único (`side_view = "docker:<id>"`). */
+export const openDockerPanel = (id: SessionId) =>
+  invoke<void>("open_docker_panel", { id });
 
 export interface SessionGitStatus {
   root: string;
@@ -528,6 +600,28 @@ export const onAgentAuthAlert = (
 ): Promise<UnlistenFn> =>
   listen<AgentAuthAlertPayload>("agent://auth-alert", (e) => handler(e.payload));
 
+/** `agent://alert`: falha de turno (`StopFailure`) ou limite de uso ≥ 85%.
+ * `reason` é o motivo fixo em pt-BR do core, nunca texto da API. */
+export type AgentAlertPayload =
+  | {
+      kind: "stop_failure";
+      session_id: SessionId;
+      error: string;
+      reason: string;
+    }
+  | {
+      kind: "usage_limit";
+      session_id: SessionId;
+      window: "five_hour" | "seven_day";
+      pct: number;
+      resets_at: number | null;
+    };
+
+export const onAgentAlert = (
+  handler: (payload: AgentAlertPayload) => void,
+): Promise<UnlistenFn> =>
+  listen<AgentAlertPayload>("agent://alert", (e) => handler(e.payload));
+
 export type AgentRunner = "claude_code" | "codex" | { custom: string };
 
 export interface DetectedAgent {
@@ -549,13 +643,49 @@ export interface AgentDetectedPayload {
   detected: DetectedAgent | null;
   hosting: boolean;
   jailed: boolean;
+  /** M6-A: o claude cru passou pelo `tyba _jail`. `passthrough` (versão,
+   * ajuda, `mcp`...) não pede aviso; `ungated` (segundo plano) e `fallback`
+   * (o core não hospedou) mostram "sem gate" em vermelho. `null` = não passou
+   * pelo TYBA. */
+  shim: ShimRoute | null;
+  /** M7: por que um claude hospedado está sem jaula. `null` com jaula. */
+  no_jail: NoJailReason | null;
 }
+
+/** `raw` (M6-B): o plugin do TYBA para o Claude Code avisou um claude que
+ * não passou pelo shim (caminho absoluto, npx). */
+export type ShimRoute = "passthrough" | "ungated" | "fallback" | "raw";
+
+/** M6-B: a integração com o Claude Code (plugin do TYBA). */
+export interface ClaudePluginStatus {
+  available: boolean;
+  installed: boolean;
+  blocked: "disable_all_hooks" | "managed_hooks_only" | null;
+}
+
+export const claudePluginStatus = () =>
+  invoke<ClaudePluginStatus>("claude_plugin_status");
+
+/** Mexe na config global do Claude: só por clique do usuário. */
+export const installClaudePlugin = () =>
+  invoke<ClaudePluginStatus>("install_claude_plugin");
+
+export const uninstallClaudePlugin = () =>
+  invoke<ClaudePluginStatus>("uninstall_claude_plugin");
+export type NoJailReason = "home" | "hidden_dir" | "outside_home" | "sandbox";
 
 export const detectedAgent = (sessionId: SessionId) =>
   invoke<AgentDetectedPayload | null>("detected_agent", { sessionId });
 
+/** O que o `kill_shell_agent` devolve: a pasta do agente encerrado e o id da
+ * conversa que ele tinha aberta (null quando o core não a identificou). */
+export interface ShellAgentReopen {
+  cwd: string;
+  conversation_id: string | null;
+}
+
 export const killShellAgent = (sessionId: SessionId) =>
-  invoke<string>("kill_shell_agent", { sessionId });
+  invoke<ShellAgentReopen>("kill_shell_agent", { sessionId });
 
 /** Se o core consegue retomar a conversa nativa desta sessão morta — id
  * capturado, binário do runner no PATH e pasta ainda no lugar. A decisão é do
@@ -907,9 +1037,18 @@ export const connectHostGroup = (
 ) =>
   invoke<Session[]>("connect_host_group", { hostIds, name, color, group });
 
-/** Conecta a um Host abrindo uma SSH Session (reusa create_session). */
-export const connectHost = (hostId: string, cols: number, rows: number) =>
-  createSession({ kind: { type: "ssh", host_id: hostId }, cols, rows });
+/** O que o "Conectar" fez. Espelha `ConnectHostResult` do core. */
+export type ConnectHostResult =
+  | { type: "opened"; session: Session }
+  /** Já havia conexão a este Host conectando; o core focou o pane dela. */
+  | { type: "existing"; session: Session }
+  /** O pedido anterior ainda não tem sessão; nada foi aberto. */
+  | { type: "already_connecting" };
+
+/** "Conectar" de um Host salvo: sessão + workspace. Idempotente por Host
+ * enquanto a conexão está em voo — quem garante é o core. */
+export const connectHost = (hostId: string) =>
+  invoke<ConnectHostResult>("connect_host", { hostId });
 
 export const reconnectSsh = (id: SessionId) =>
   invoke<void>("reconnect_ssh", { id });
@@ -945,14 +1084,41 @@ export const disposeSession = (id: SessionId) =>
 export type RiskLevel = "green" | "yellow" | "red";
 export type ApprovalDecision = "approved" | "denied" | "approved_always";
 
+/** Chave estável (i18n) do motivo de um pedido ser vermelho — `RedReason::key`
+ *  no core. A tradução é da interface; o core não manda texto. */
+export type RedReasonKey =
+  | "sudo"
+  | "network"
+  | "pipe_to_shell"
+  | "recursive_force_remove"
+  | "permissions"
+  | "git_push"
+  | "pr_create"
+  | "forge_write"
+  | "outside_worktree"
+  | "web_access"
+  | "claude_config_write";
+
+/** Por que o pedido é vermelho: chave + argumento opcional (o caminho, em
+ *  `outside_worktree`; a ação, em `forge_write`). */
+export interface RiskReason {
+  key: RedReasonKey;
+  arg?: string;
+}
+
 export interface ApprovalRequest {
   id: number;
   session_id: SessionId;
+  /** Texto inteiro até 64 KiB; acima disso termina em `\n…[+N bytes]`. */
   command: string;
   cwd: string | null;
   risk: RiskLevel;
+  /** Só no vermelho; `null` nos demais. */
+  risk_reason: RiskReason | null;
   context: string | null;
   requested_at_ms: number;
+  /** Subagente que pediu; `null` é o agente principal. */
+  agent_id?: string | null;
 }
 
 export const requestApproval = (
@@ -1395,6 +1561,12 @@ export interface SubagentRun {
   ended_at_ms: number | null;
   summary: string | null;
   interrupted: boolean;
+  /** Rodada do nó (1, 2, …), contada pelo core. */
+  round: number;
+  /** Ferramenta em curso (`Bash`, `Read`…), pelo core; ausente se parado. */
+  activity_tool?: string | null;
+  /** Argumento curto da ferramenta (comando, caminho), redigido pelo core. */
+  activity_detail?: string | null;
 }
 
 export interface SubagentSnapshot {
@@ -1527,6 +1699,8 @@ export interface ContainerInfo {
   config_files: string | null;
   working_dir_status: PathStatus | null;
   compose_file_status: PathStatus | null;
+  /** Do projeto compose do repo pedido (o core decide, regra do `filter_project`). */
+  in_repo: boolean;
 }
 
 export type ComposeOp = "up" | "down" | "restart";
@@ -1545,9 +1719,6 @@ export const dockerListContainers = (
     all,
     host: host ?? null,
   });
-
-export const dockerOpenLogs = (containerId: string, host?: string | null) =>
-  invoke<void>("docker_open_logs", { containerId, host: host ?? null });
 
 export const dockerOpenShell = (containerId: string, host?: string | null) =>
   invoke<void>("docker_open_shell", { containerId, host: host ?? null });
@@ -1607,6 +1778,36 @@ export const dockerRemoveContainer = (
   containerId: string,
   host?: string | null,
 ) => invoke<void>("docker_remove_container", { containerId, host: host ?? null });
+
+export type ContainerOp = "start" | "restart" | "stop";
+
+export interface ContainerUsage {
+  id: string;
+  cpu_percent: number | null;
+  mem_bytes: number | null;
+}
+
+export interface ExitReason {
+  id: string;
+  oom_killed: boolean;
+  exit_code: number | null;
+}
+
+export interface PanelUsage {
+  usage: ContainerUsage[];
+  exits: ExitReason[];
+}
+
+/** CPU/RAM (`docker stats`) e motivo de saída — só o painel Docker aberto pede. */
+export const dockerPanelUsage = (exited: string[], host?: string | null) =>
+  invoke<PanelUsage>("docker_panel_usage", { exited, host: host ?? null });
+
+export const dockerContainerOp = (
+  containerId: string,
+  op: ContainerOp,
+  host?: string | null,
+) =>
+  invoke<void>("docker_container_op", { containerId, op, host: host ?? null });
 
 export const dockerOpenDesktop = () =>
   invoke<void>("docker_open_desktop");
@@ -1668,8 +1869,15 @@ export const onThemeChanged = (
 export const setAppMenu = (spec: MenuSpec) =>
   invoke<void>("set_app_menu", { spec });
 
+/**
+ * O que o Enter da linha do TYBA fez. `incomplete`: o core julgou o comando
+ * pela metade (`ls \`, aspas abertas, heredoc sem terminador) e NÃO escreveu
+ * nada no PTY — a caixa quebra a linha no caret.
+ */
+export type ShellSubmit = "sent" | "incomplete";
+
 export const submitShellLine = (id: SessionId, text: string) =>
-  invoke<void>("submit_shell_line", { id, text });
+  invoke<ShellSubmit>("submit_shell_line", { id, text });
 
 export const writeControl = (id: SessionId, bytes: string) =>
   invoke<void>("write_control", { id, bytes });
@@ -1692,7 +1900,10 @@ export const completePath = (cwd: string, token: string) =>
   invoke<string[]>("complete_path", { cwd, token });
 
 export interface LineSuggestions {
+  /** Em ordem de execução, o mais recente primeiro. */
   commands: CommandSuggestion[];
+  /** O comando do cinza, por frecência — outra ordem que a da lista. */
+  ghost: string | null;
   paths: string[];
   arguments: ArgumentSuggestion[];
   binaries: BinarySuggestion[];
@@ -1971,6 +2182,8 @@ export interface SessionCommand {
    * diferentes do mesmo ciclo.
    */
   continuation: boolean;
+  /** Quando o comando em execução começou (ms desde a época); `null` ocioso. */
+  started_at_ms?: number | null;
 }
 
 export const submitRichInput = (id: SessionId, text: string, submit: boolean) =>
@@ -2211,9 +2424,6 @@ export interface FileSearchResult {
 export const filesSearch = (id: SessionId, query: string, limit?: number) =>
   invoke<FileSearchResult>("files_search", { id, query, limit: limit ?? null });
 
-export const filesFocus = (id: SessionId, path: string | null) =>
-  invoke<GutterMarker[]>("files_focus", { id, path });
-
 export const filesGutter = (id: SessionId, path: string) =>
   invoke<GutterMarker[]>("files_gutter", { id, path });
 
@@ -2261,6 +2471,7 @@ export interface LspDiagnostic {
   severity: number;
   message: string;
   source: string | null;
+  code?: string | number | null;
 }
 
 export interface LspCompletionItem {
@@ -2326,14 +2537,21 @@ export type LspStatus =
   | {
       state: "absent";
       server: string;
+      missing: string | null;
       install: LspInstallHint | null;
       alternatives: LspInstallHint[];
     }
   | { state: "available"; server: string }
   | { state: "starting"; server: string }
+  | { state: "restarting"; server: string; reason: string | null }
   | { state: "ready"; server: string; diagnostics: number; truncated: boolean }
   | { state: "crashed"; server: string; reason: string | null }
-  | { state: "managed_offer"; server: string; card: LspManagedCard }
+  | {
+      state: "managed_offer";
+      server: string;
+      missing: string | null;
+      card: LspManagedCard;
+    }
   | {
       state: "installing";
       server: string;
@@ -2447,6 +2665,13 @@ export const onLspManagedError = (
     cb(e.payload),
   );
 
+/** O core avisa quando o server da sessão muda de estado (subiu, caiu,
+ * reiniciando, indisponível) — o painel repergunta o status do arquivo aberto. */
+export const onLspStatus = (
+  id: SessionId,
+  handler: () => void,
+): Promise<UnlistenFn> => listen(`lsp://status/${id}`, () => handler());
+
 export const onLspDiagnostics = (
   id: SessionId,
   handler: (
@@ -2460,3 +2685,285 @@ export const onLspDiagnostics = (
   }>(`lsp://diagnostics/${id}`, (e) =>
     handler(e.payload.files, e.payload.files_truncated),
   );
+
+// --- Abas de conteúdo (editor, container) -----------------------------------
+
+export interface EditorTabOpened {
+  session: SessionId;
+  rel: string;
+  view: string;
+}
+
+export const openEditorTabCmd = (session: SessionId | null, path: string) =>
+  invoke<EditorTabOpened>("open_editor_tab", { session, path });
+
+/** Diff da sessão como aba de conteúdo (não o painel lateral). */
+export const openDiffContentTab = (id: SessionId) =>
+  invoke<void>("open_diff_content_tab", { id });
+
+// --- histórico do repo (aba "git · histórico") -----------------------------
+
+export type RefKind = "head" | "branch" | "remote" | "tag" | "agent";
+
+export interface RefLabel {
+  name: string;
+  kind: RefKind;
+  /** `HEAD -> <esta branch>`. */
+  is_head: boolean;
+}
+
+export interface LogRow {
+  sha: string;
+  parents: string[];
+  author: string;
+  authored_at: string;
+  refs: RefLabel[];
+  subject: string;
+}
+
+/** Opaco: só se devolve ao core para pedir a próxima página. */
+export type LogCursor = Record<string, unknown>;
+
+/** Aresta de uma linha do grafo (calculada no core). `pass` atravessa a
+ *  linha; `in` desce do topo da coluna `from` até o nó; `out` sai do nó até
+ *  a base da coluna `to`. */
+export type GraphEdge =
+  | { kind: "pass"; lane: number; color: number }
+  | { kind: "in"; from: number; color: number }
+  | { kind: "out"; to: number; color: number };
+
+export interface GraphRow {
+  lane: number;
+  /** 0 = branch de agente (âmbar); 1..7 = paleta. */
+  color: number;
+  edges: GraphEdge[];
+  width: number;
+}
+
+export interface LogPage {
+  rows: LogRow[];
+  /** `null` = acabou o histórico. */
+  cursor: LogCursor | null;
+  /** Página filtrada: sem grafo. */
+  filtered: boolean;
+  /** Um por `rows[i]`; vazio na página filtrada. */
+  graph: GraphRow[];
+}
+
+export interface LogStats {
+  total: number | null;
+  has_commit_graph: boolean;
+  suggest_commit_graph: boolean;
+}
+
+export const repoLogStats = (id: SessionId, filter: LogFilter) =>
+  invoke<LogStats>("repo_log_stats", { id, filter });
+
+/** Escreve `objects/info/commit-graph` no repo — só depois de confirmar. */
+export const repoCommitGraphWrite = (id: SessionId) =>
+  invoke<void>("repo_commit_graph_write", { id });
+
+export interface LogFilter {
+  refName?: string | null;
+  allBranches?: boolean;
+  author?: string | null;
+  path?: string | null;
+  query?: string | null;
+}
+
+export interface CommitDetail {
+  sha: string;
+  parents: string[];
+  author_name: string;
+  author_email: string;
+  authored_at: string;
+  committer_name: string;
+  committed_at: string;
+  refs: RefLabel[];
+  subject: string;
+  body: string;
+  files: FileDiff[];
+  files_truncated: number;
+}
+
+export type CommitAction = "checkout" | "cherry_pick" | "revert";
+
+export const repoLog = (
+  id: SessionId,
+  filter: LogFilter,
+  cursor: LogCursor | null,
+  limit?: number,
+) => invoke<LogPage>("repo_log", { id, filter, cursor, limit: limit ?? null });
+
+export const repoCommitDetail = (id: SessionId, sha: string) =>
+  invoke<CommitDetail>("repo_commit_detail", { id, sha });
+
+export const repoCommitHunks = (
+  id: SessionId,
+  sha: string,
+  path: string,
+  oldPath?: string | null,
+) =>
+  invoke<FileHunks>("repo_commit_hunks", {
+    id,
+    sha,
+    path,
+    oldPath: oldPath ?? null,
+  });
+
+export const repoCommitAction = (
+  id: SessionId,
+  sha: string,
+  action: CommitAction,
+  allowDirty: boolean,
+) => invoke<void>("repo_commit_action", { id, sha, action, allowDirty });
+
+/** Histórico do repo da sessão como aba de conteúdo. */
+export const openGitLogTab = (id: SessionId) =>
+  invoke<void>("open_git_log_tab", { id });
+
+/** ⌘[ — `false` quando não há aba anterior no histórico do workspace. */
+export const backTab = () => invoke<boolean>("back_tab");
+
+export type ContainerTabKind = "logs" | "shell" | "files";
+
+export const containerOpenTab = (
+  kind: ContainerTabKind,
+  containerId: string,
+  host?: string | null,
+) =>
+  invoke<void>("container_open_tab", {
+    kind,
+    containerId,
+    host: host ?? null,
+  });
+
+export type LogLevel = "error" | "warn" | "info" | "debug";
+
+export interface LogFrame {
+  path: string;
+  line: number;
+  col: number | null;
+  /** Mesmo arquivo no host (bind mount); `null` = link desabilitado. */
+  host_path: string | null;
+}
+
+export interface LogLine {
+  seq: number;
+  ts: string | null;
+  ts_ms: number | null;
+  level: LogLevel | null;
+  continuation: boolean;
+  stderr: boolean;
+  text: string;
+  frame: LogFrame | null;
+}
+
+export interface LogsSnapshot {
+  lines: LogLine[];
+  following: boolean;
+}
+
+export const dockerLogsStart = (containerId: string) =>
+  invoke<LogsSnapshot>("docker_logs_start", { containerId });
+
+export const onDockerLogs = (
+  containerId: string,
+  handler: (lines: LogLine[], ended: boolean) => void,
+): Promise<UnlistenFn> =>
+  listen<{ lines: LogLine[]; ended: boolean }>(
+    `docker-logs://${containerId}`,
+    (e) => handler(e.payload.lines, e.payload.ended),
+  );
+
+export interface ContainerDetail {
+  id: string;
+  name: string;
+  image: string;
+  state: string;
+  started_at: string | null;
+  workdir: string | null;
+  mounts: { source: string; destination: string }[];
+  ports: string[];
+}
+
+export interface ContainerStats {
+  cpu: string;
+  mem: string;
+}
+
+export const dockerContainerDetail = (containerId: string, host?: string | null) =>
+  invoke<ContainerDetail>("docker_container_detail", {
+    containerId,
+    host: host ?? null,
+  });
+
+export const dockerContainerStats = (containerId: string, host?: string | null) =>
+  invoke<ContainerStats>("docker_container_stats", {
+    containerId,
+    host: host ?? null,
+  });
+
+export const dockerContainerAction = (
+  containerId: string,
+  action: "restart" | "stop",
+  host?: string | null,
+) =>
+  invoke<void>("docker_container_action", {
+    containerId,
+    action,
+    host: host ?? null,
+  });
+
+export interface ContainerFsEntry {
+  name: string;
+  is_dir: boolean;
+  /** Bytes, só para arquivo comum. */
+  size: number | null;
+  /** Alvo, quando é link simbólico. */
+  link_target: string | null;
+}
+
+export interface ContainerFsFile {
+  text: string;
+  truncated: boolean;
+  binary: boolean;
+}
+
+export const dockerFsList = (containerId: string, path: string) =>
+  invoke<ContainerFsEntry[]>("docker_fs_list", { containerId, path });
+
+export const dockerFsRead = (containerId: string, path: string) =>
+  invoke<ContainerFsFile>("docker_fs_read", { containerId, path });
+
+/** Texto com segredos mascarados pelo core (#10), para copiar. */
+export const exportRedacted = (lines: string[]) =>
+  invoke<string>("export_redacted", { lines });
+
+/** Grava o texto mascarado em ~/Downloads; devolve o caminho. */
+export const exportDownload = (name: string, lines: string[]) =>
+  invoke<string>("export_download", { name, lines });
+
+export interface LspTextEdit {
+  range: LspRange;
+  new_text: string;
+}
+
+export interface LspQuickFix {
+  title: string;
+  preferred: boolean;
+  edits: LspTextEdit[];
+}
+
+export const lspCodeActions = (
+  id: SessionId,
+  path: string,
+  diagnostics: LspDiagnostic[],
+) => invoke<LspQuickFix[]>("lsp_code_actions", { id, path, diagnostics });
+
+export const lspSymbolPath = (
+  id: SessionId,
+  path: string,
+  line: number,
+  character: number,
+) => invoke<string[]>("lsp_symbol_path", { id, path, line, character });

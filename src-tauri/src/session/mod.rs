@@ -57,6 +57,10 @@ pub enum AwaitingReason {
     Approval,
     #[default]
     Reply,
+    /// O prompt de permissão do próprio agente (Claude) está aberto no
+    /// terminal da sessão. Não é o gate do TYBA: quem decide é o usuário, no
+    /// prompt nativo; o TYBA só sabe que o agente está parado esperando.
+    NativePrompt,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -131,6 +135,17 @@ pub enum ObservedState {
     Idle,
 }
 
+/// Do que um agente parado está esperando, quando ele mesmo diz — hoje só pelo
+/// OSC 7501 (`kind=`). A tela não sabe distinguir, então o palpite de manifesto
+/// nunca preenche isto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedWait {
+    Permission,
+    Question,
+    Auth,
+}
+
 /// Agente **deduzido** da tela, numa sessão que o TYBA não lançou.
 ///
 /// Mora em campo próprio, e não em [`SessionStatus`], por decisão de
@@ -147,6 +162,9 @@ pub struct ObservedAgent {
     /// título identifica mas não carrega estado. A UI mostra "sem sinal" — nunca
     /// um ponto colorido fingindo saber.
     pub state: Option<ObservedState>,
+    /// Só com `state == AwaitingInput` e só quando o programa disse (OSC 7501).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ObservedWait>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -180,6 +198,16 @@ pub struct Session {
     /// afirmaria um agente que pode ter morrido enquanto o app estava fechado.
     #[serde(default, skip_deserializing)]
     pub observed: Option<ObservedAgent>,
+    /// Modelo ativo do agente, lido do campo `model` dos payloads de hook do
+    /// fio principal. **Nunca persistido**: o modelo pode mudar no meio da
+    /// sessão (`/model`) e vale o que o agente disse por último neste processo.
+    #[serde(default, skip_deserializing)]
+    pub agent_model: Option<String>,
+    /// Nota curta sobre o que o agente faz agora, além do status (ex.:
+    /// "compactando contexto" entre `PreCompact` e o próximo evento). Mesmo
+    /// tratamento in-memory de `agent_model`.
+    #[serde(default, skip_deserializing)]
+    pub status_note: Option<String>,
     /// A sessão nasceu do gate (`reopenShellAgentManaged`) em vez de review,
     /// resolução de conflito ou clique manual do usuário. Puramente do core —
     /// nunca vai para o front. **In-memory, como `attention`**: não é coluna do
@@ -199,6 +227,11 @@ pub struct Session {
     /// vida atual do processo, não sobre o histórico da conversa.
     #[serde(skip)]
     pub did_work: bool,
+    /// Modelo, contexto, tokens, custo e limites que o `statusLine` do Claude
+    /// reportou (ver [`crate::agent::usage`]). **Nunca persistido**: vai ao
+    /// front com a sessão e morre com o processo, como `observed`.
+    #[serde(default, skip_deserializing)]
+    pub agent_usage: Option<crate::agent::usage::AgentUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -226,6 +259,14 @@ pub struct CreateSessionOpts {
     /// disso no instante do spawn — ver [`Session::opened_by_gate`].
     #[serde(default)]
     pub opened_by_gate: bool,
+    /// Id da conversa nativa a retomar no attach do gate (M1 do
+    /// claude-monitor): o `kill_shell_agent` devolve o id do transcript que o
+    /// disk observer tinha ligado, e a sessão gerenciada sobe com `--resume`
+    /// nele em vez de começar vazia. Dado que volta do webview: o core valida
+    /// com [`crate::agent::conversation::is_plausible`] antes de virar argv.
+    /// Só vale para `attach_existing`.
+    #[serde(default)]
+    pub resume_conversation: Option<String>,
 }
 
 /// O que a sessão nova herda de `previous` (a que ocupava o mesmo `SessionId`
@@ -260,6 +301,9 @@ pub struct SessionManager {
     /// `SessionManager` nasce antes do `AppState` — e porque o construtor é o
     /// mesmo que os testes de outros módulos usam.
     host_queries: OnceLock<crate::ssh::query::SharedHostQueries>,
+    /// M6-B: o token de cada pane (`TYBA_PANE_TOKEN`). O plugin do Claude
+    /// Code o manda em todo evento; sem um token válido o core ignora.
+    pane_tokens: parking_lot::Mutex<HashMap<SessionId, String>>,
 }
 
 impl SessionManager {
@@ -338,6 +382,7 @@ impl SessionManager {
             store,
             canos: parking_lot::Mutex::new(HashMap::new()),
             host_queries: OnceLock::new(),
+            pane_tokens: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -780,6 +825,37 @@ impl SessionManager {
         if let Ok(exe) = std::env::current_exe() {
             cmd.env("TYBA_BIN", exe);
         }
+        // M6-B: token do pane, para o plugin do Claude Code se autenticar no
+        // canal. Aleatório (2 × UUID v4), só em memória, um por sessão.
+        let token = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        cmd.env("TYBA_PANE_TOKEN", &token);
+        self.pane_tokens.lock().insert(id, token);
+        // M6-A: o wrapper `claude` no PATH do pane (o rc o põe na frente) e o
+        // claude de verdade, resolvido aqui — o `_jail` e o wrapper executam
+        // este caminho, nunca o wrapper, e por isso não entram em loop. Só com
+        // o PATH de login já resolvido: o spawn do pane nunca espera o
+        // `$SHELL -lic`. Sem ele, os dois procuram no PATH pulando o wrapper.
+        #[cfg(unix)]
+        {
+            let wrapper = agent_wrapper_dir();
+            if let Some(dir) = wrapper {
+                cmd.env("TYBA_WRAPPER_DIR", dir);
+            }
+            if let Some(real) = crate::shell_path::agent_path_if_resolved().and_then(|path| {
+                crate::agent::claude_cli::real_claude(
+                    None,
+                    Some(&path),
+                    wrapper,
+                    is_executable_file,
+                )
+            }) {
+                cmd.env("TYBA_REAL_CLAUDE", real);
+            }
+        }
 
         if let Some(command) = self.preferred_editor_command() {
             cmd.env("EDITOR", &command);
@@ -826,8 +902,11 @@ impl SessionManager {
             connection_failure,
             agent_conversation_id: previous.and_then(|s| s.agent_conversation_id),
             observed: None,
+            agent_model: None,
+            status_note: None,
             opened_by_gate,
             did_work,
+            agent_usage: None,
         };
         self.sessions.write().insert(id, session.clone());
         let _ = self.store.upsert_session(&session);
@@ -930,6 +1009,35 @@ impl SessionManager {
         Some(s.clone())
     }
 
+    /// Grava o uso que o `statusLine` reportou e avisa o front. Só memória:
+    /// sem `upsert_session`, porque nada daqui vai para o SQLite.
+    pub fn set_agent_usage(
+        &self,
+        app: &AppHandle,
+        id: SessionId,
+        usage: Option<crate::agent::usage::AgentUsage>,
+    ) {
+        if let Some(session) = self.apply_agent_usage(id, usage) {
+            emit_status(app, &session);
+        }
+    }
+
+    /// A mutação, sem IPC (mesmo corte de [`Self::apply_observed`]). `None`
+    /// quando nada mudou.
+    pub(crate) fn apply_agent_usage(
+        &self,
+        id: SessionId,
+        usage: Option<crate::agent::usage::AgentUsage>,
+    ) -> Option<Session> {
+        let mut sessions = self.sessions.write();
+        let s = sessions.get_mut(&id)?;
+        if s.agent_usage == usage {
+            return None;
+        }
+        s.agent_usage = usage;
+        Some(s.clone())
+    }
+
     /// Grava o id da conversa nativa do agente. Chamado de dentro do handler de
     /// hooks, que roda a cada evento: sai cedo quando nada mudou, para não
     /// transformar `PreToolUse` num `UPDATE` por ferramenta executada.
@@ -951,6 +1059,56 @@ impl SessionManager {
         s.agent_conversation_id = Some(conversation.to_string());
         let _ = self.store.upsert_session(s);
         emit_status(app, s);
+    }
+
+    /// Guarda o modelo que o agente declarou no payload do hook. Chamado a cada
+    /// evento: sai cedo quando nada mudou. Não vai ao SQLite.
+    pub fn set_agent_model(&self, app: &AppHandle, id: SessionId, model: &str) {
+        if let Some(session) = self.apply_agent_model(id, model) {
+            emit_status(app, &session);
+        }
+    }
+
+    fn apply_agent_model(&self, id: SessionId, model: &str) -> Option<Session> {
+        let model = plausible_model(model)?;
+        let mut sessions = self.sessions.write();
+        let s = sessions.get_mut(&id)?;
+        if s.agent_model.as_deref() == Some(model) {
+            return None;
+        }
+        s.agent_model = Some(model.to_string());
+        Some(s.clone())
+    }
+
+    /// Põe ou tira a nota de atividade da sessão. Não vai ao SQLite.
+    pub fn set_status_note(&self, app: &AppHandle, id: SessionId, note: Option<&str>) {
+        if let Some(session) = self.apply_status_note(id, note) {
+            emit_status(app, &session);
+        }
+    }
+
+    fn apply_status_note(&self, id: SessionId, note: Option<&str>) -> Option<Session> {
+        let mut sessions = self.sessions.write();
+        let s = sessions.get_mut(&id)?;
+        if s.status_note.as_deref() == note {
+            return None;
+        }
+        s.status_note = note.map(str::to_string);
+        Some(s.clone())
+    }
+
+    /// A sessão dona de um token de pane (M6-B), comparando em tempo
+    /// constante. `None` para token desconhecido ou de sessão que já saiu.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn session_for_pane_token(&self, token: &str) -> Option<SessionId> {
+        let tokens = self.pane_tokens.lock();
+        let mut found = None;
+        for (id, known) in tokens.iter() {
+            if crate::agent::claude_plugin::token_eq(known, token) {
+                found = Some(*id);
+            }
+        }
+        found.filter(|id| self.sessions.read().contains_key(id))
     }
 
     /// Começa (ou recomeça) o ciclo do Cano de uma sessão, e leva a fase dele
@@ -1101,6 +1259,7 @@ impl SessionManager {
     pub fn dispose(&self, pty_pool: &SharedPtyPool, id: SessionId) {
         self.sessions.write().remove(&id);
         self.canos.lock().remove(&id);
+        self.pane_tokens.lock().remove(&id);
         crate::history::forget_session_host(&id.to_string());
         // O canal por Host sobrevive à sessão (ele é do Host), então o que é
         // por sessão sai daqui — senão cada SSH Session que já existiu deixa um
@@ -1152,6 +1311,7 @@ impl SessionManager {
     pub fn forget(&self, id: SessionId) {
         self.sessions.write().remove(&id);
         self.canos.lock().remove(&id);
+        self.pane_tokens.lock().remove(&id);
         let _ = self.store.remove_session(id);
     }
 }
@@ -1184,6 +1344,18 @@ impl StartupMode {
             _ => StartupMode::Resume,
         }
     }
+}
+
+const MODEL_MAX_CHARS: usize = 128;
+
+/// O `model` do payload vira texto na tela: aparado, sem controle e curto. Um
+/// slug real (`gpt-5.5-codex`, `claude-opus-4-1`) passa; lixo some.
+fn plausible_model(model: &str) -> Option<&str> {
+    let model = model.trim();
+    (!model.is_empty()
+        && model.chars().count() <= MODEL_MAX_CHARS
+        && !model.chars().any(char::is_control))
+    .then_some(model)
 }
 
 fn emit_status(app: &AppHandle, session: &Session) {
@@ -1457,6 +1629,34 @@ fn write_bash_integration() -> std::io::Result<PathBuf> {
     let dir = integration_dir("bash")?;
     write_private(&dir, TYBA_BASH_RC_NAME, TYBA_BASH_RC)?;
     Ok(dir.join(TYBA_BASH_RC_NAME))
+}
+
+pub(crate) const TYBA_CLAUDE_WRAPPER: &str = include_str!("tyba-claude-wrapper.sh");
+
+/// Diretório com o wrapper `claude` do TYBA (M6-A do claude-monitor), que o
+/// rc põe na frente do PATH do pane. Privado (0700, do usuário, verificado
+/// por `integration_dir`): ninguém mais pode trocar o que o pane executa
+/// quando alguém roda `claude`.
+#[cfg(unix)]
+fn agent_wrapper_dir() -> Option<&'static Path> {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    cached_integration_path(&DIR, write_agent_wrapper, "wrapper do claude")
+}
+
+#[cfg(unix)]
+fn write_agent_wrapper() -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = integration_dir("bin")?;
+    write_private(&dir, "claude", TYBA_CLAUDE_WRAPPER)?;
+    std::fs::set_permissions(dir.join("claude"), std::fs::Permissions::from_mode(0o700))?;
+    Ok(dir)
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 fn current_uid() -> String {
@@ -1836,8 +2036,11 @@ mod tests {
             connection_failure: None,
             agent_conversation_id: None,
             observed: None,
+            agent_model: None,
+            status_note: None,
             opened_by_gate: false,
             did_work: false,
+            agent_usage: None,
         }
     }
 
@@ -2089,9 +2292,15 @@ command claude beta
         script: &str,
         envs: &[(&str, &str)],
     ) -> Option<String> {
+        // Hermético: HOME e ZDOTDIR vazios, para o rc do dono (que pode ter a
+        // sua própria função `claude`) nunca vazar para o teste.
+        let home = tempfile::tempdir().ok()?;
         let mut cmd = std::process::Command::new(shell);
         cmd.arg("-i")
-            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env("HOME", home.path())
+            .env("ZDOTDIR", home.path())
+            .env_remove("TYBA_WRAPPER_DIR")
+            .env_remove("TYBA_REAL_CLAUDE")
             .env(
                 "PATH",
                 format!(
@@ -2123,10 +2332,11 @@ command claude beta
 
     /// Um par de stubs (`claude`, `tyba`) num diretório privado de teste. O
     /// stub `tyba` só entende `_jail`: registra a chamada em `$TYBA_BIN_LOG`
-    /// e faz o MESMO que o binário de verdade faria no caminho feliz —
-    /// `exec claude` sem argumento nenhum (Q1: só `claude` puro chega até
-    /// aqui) — para que o teste prove a cadeia inteira, não só o primeiro
-    /// salto.
+    /// e faz o MESMO que o binário de verdade faria no caminho feliz — `exec`
+    /// do claude de verdade (o stub irmão, por caminho absoluto, nunca pelo
+    /// PATH, onde o wrapper do TYBA pode estar na frente) com os args que
+    /// vieram depois de `--` — para que o teste prove a cadeia inteira, não só
+    /// o primeiro salto.
     #[cfg(unix)]
     fn write_shim_v2_stubs() -> (tempfile::TempDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
@@ -2142,7 +2352,9 @@ command claude beta
             "#!/bin/sh\n\
              [ \"$1\" = \"_jail\" ] || exit 1\n\
              echo \"TYBA-BIN-CALLED $*\" >> \"$TYBA_BIN_LOG\"\n\
-             exec claude\n",
+             shift\n\
+             [ \"$1\" = \"--\" ] && shift\n\
+             exec \"${0%/*}/claude\" \"$@\"\n",
         )
         .unwrap();
         std::fs::set_permissions(&tyba, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -2200,12 +2412,12 @@ command claude beta
         );
     }
 
-    /// Item 27: `claude <args>` cai cru — nunca toca o canal, mesmo com
-    /// `TYBA_BIN` presente. Encaminhar `"$@"` reabriria o canal
-    /// anti-bypass que este teste fecha (ADR 2026-09-02, Q1).
+    /// M6-A (substitui o item 27): `claude <args>` também passa pelo
+    /// `$TYBA_BIN _jail`, com os args depois de `--`, um por argumento —
+    /// quem decide o caminho é o `_jail`, não a shell.
     #[test]
     #[cfg(unix)]
-    fn claude_with_args_never_touches_the_channel() {
+    fn claude_with_args_goes_through_tyba_jail_with_args_after_double_dash() {
         let (dir, bin_path) = write_shim_v2_stubs();
         let rc = dir.path().join("rc.sh");
         std::fs::write(&rc, TYBA_BASH_RC).unwrap();
@@ -2224,13 +2436,14 @@ command claude beta
         );
         let Some(texto) = out else { return };
 
+        let bin_log_body = std::fs::read_to_string(&bin_log).unwrap_or_default();
         assert!(
-            texto.contains("STUB-RODOU --resume alfa"),
-            "`claude --resume alfa` deveria ter chegado cru ao binário real: {texto:?}"
+            bin_log_body.contains("TYBA-BIN-CALLED _jail -- --resume alfa"),
+            "`claude --resume alfa` deveria ter passado por `$TYBA_BIN _jail --`: {bin_log_body:?}"
         );
         assert!(
-            !bin_log.exists(),
-            "`claude` COM args nunca deveria chamar `$TYBA_BIN _jail` — reabriria o canal anti-bypass"
+            texto.contains("STUB-RODOU --resume alfa"),
+            "os args chegam intactos ao fim da cadeia: {texto:?}"
         );
     }
 
@@ -2393,10 +2606,9 @@ command claude beta
         assert!(texto.contains("RC:3"), "{texto:?}");
     }
 
-    /// Item 30: o mesmo par de decisões (bare gateia, com args cai cru) vale
-    /// em zsh — shell diferente, mesmo idioma de função. Pula em silêncio
-    /// quando zsh não está instalado na máquina (reserva de aceitação —
-    /// ver o report da entrega).
+    /// Item 30 (M6-A): em zsh, `claude` com ou sem args passa pelo `_jail`;
+    /// `command claude` sem o wrapper no PATH pula a função. Pula em silêncio
+    /// quando zsh não está instalado na máquina.
     #[test]
     #[cfg(unix)]
     fn zsh_mirrors_the_same_bare_vs_args_routing() {
@@ -2431,12 +2643,244 @@ command claude beta
 
         assert_eq!(
             bin_log_body.lines().count(),
-            1,
-            "só o `claude` bare deveria ter passado por `$TYBA_BIN _jail`: {bin_log_body:?}"
+            2,
+            "`claude` e `claude com args` passam por `$TYBA_BIN _jail`: {bin_log_body:?}"
         );
+        assert!(bin_log_body.contains("TYBA-BIN-CALLED _jail -- com args"));
         assert!(texto.contains("STUB-RODOU"));
         assert!(texto.contains("STUB-RODOU direto"));
         assert!(texto.contains("STUB-RODOU com args"));
+    }
+
+    /// M6-A: toda forma de chamar `claude` chega ao `_jail` com os args um
+    /// por um, nos dois shells — inclusive argumento com espaço e
+    /// metacaractere, que não pode ser reinterpretado pela shell.
+    #[test]
+    #[cfg(unix)]
+    fn every_claude_form_reaches_tyba_jail_with_args_verbatim() {
+        for (shell, rc_body) in [("bash", TYBA_BASH_RC), ("zsh", TYBA_ZSH_RC)] {
+            if std::process::Command::new(shell)
+                .arg("--version")
+                .output()
+                .is_err()
+            {
+                continue;
+            }
+            let (dir, bin_path) = write_shim_v2_stubs();
+            let rc = dir.path().join("rc.sh");
+            std::fs::write(&rc, rc_body).unwrap();
+            let tyba_bin = bin_path.join("tyba");
+            let bin_log = dir.path().join("tyba-bin.log");
+            let script = format!(
+                "source {}
+claude
+claude -c
+claude --resume 11111111-2222-3333-4444-555555555555
+claude -p 'a; echo PWNED $(id)'
+claude --version
+claude mcp list
+",
+                rc.display()
+            );
+            let Some(texto) = run_interactive_shell(
+                shell,
+                &bin_path,
+                &script,
+                &[
+                    ("TYBA_BIN", tyba_bin.to_str().unwrap()),
+                    ("TYBA_BIN_LOG", bin_log.to_str().unwrap()),
+                ],
+            ) else {
+                continue;
+            };
+            let log = std::fs::read_to_string(&bin_log).unwrap_or_default();
+            for expected in [
+                "TYBA-BIN-CALLED _jail --\n",
+                "TYBA-BIN-CALLED _jail -- -c\n",
+                "TYBA-BIN-CALLED _jail -- --resume 11111111-2222-3333-4444-555555555555\n",
+                "TYBA-BIN-CALLED _jail -- -p a; echo PWNED $(id)\n",
+                "TYBA-BIN-CALLED _jail -- --version\n",
+                "TYBA-BIN-CALLED _jail -- mcp list\n",
+            ] {
+                assert!(
+                    log.contains(expected),
+                    "{shell}: faltou {expected:?} em {log:?}"
+                );
+            }
+            assert!(
+                !texto.contains("PWNED uid"),
+                "{shell}: o prompt foi interpretado pela shell: {texto:?}"
+            );
+            assert!(
+                texto.contains("STUB-RODOU -p a; echo PWNED $(id)"),
+                "{shell}: {texto:?}"
+            );
+        }
+    }
+
+    /// M6-A: com o wrapper do TYBA no PATH, `command claude` (o que scripts e
+    /// Makefiles fazem) também passa pelo `_jail`.
+    #[test]
+    #[cfg(unix)]
+    fn the_rc_puts_the_wrapper_first_so_command_claude_is_caught() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, bin_path) = write_shim_v2_stubs();
+        let wrapper_dir = dir.path().join("wrapper");
+        std::fs::create_dir(&wrapper_dir).unwrap();
+        let wrapper = wrapper_dir.join("claude");
+        std::fs::write(&wrapper, TYBA_CLAUDE_WRAPPER).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let rc = dir.path().join("rc.sh");
+        std::fs::write(&rc, TYBA_BASH_RC).unwrap();
+        let tyba_bin = bin_path.join("tyba");
+        let bin_log = dir.path().join("tyba-bin.log");
+        let script = format!(
+            "source {}
+command claude via-command
+sh -c 'claude via-script'
+",
+            rc.display()
+        );
+        let Some(texto) = run_interactive_shell(
+            "bash",
+            &bin_path,
+            &script,
+            &[
+                ("TYBA_BIN", tyba_bin.to_str().unwrap()),
+                ("TYBA_BIN_LOG", bin_log.to_str().unwrap()),
+                ("TYBA_WRAPPER_DIR", wrapper_dir.to_str().unwrap()),
+            ],
+        ) else {
+            return;
+        };
+        let log = std::fs::read_to_string(&bin_log).unwrap_or_default();
+        assert!(log.contains("_jail -- via-command"), "{log:?} / {texto:?}");
+        assert!(log.contains("_jail -- via-script"), "{log:?} / {texto:?}");
+    }
+
+    /// Roda o wrapper direto, com `PATH`/env controlados.
+    #[cfg(unix)]
+    fn run_wrapper(
+        wrapper: &Path,
+        path: &str,
+        envs: &[(&str, &str)],
+        args: &[&str],
+    ) -> (i32, String) {
+        let mut cmd = std::process::Command::new(wrapper);
+        cmd.args(args)
+            .env_clear()
+            .env("PATH", path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().expect("wrapper roda");
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    }
+
+    /// M6-A: o wrapper nunca chama a si mesmo. Sem `tyba`, executa o claude
+    /// de verdade — pelo caminho resolvido ou pelo PATH pulando o próprio
+    /// diretório — com os args intactos; sem nenhum, sai com 127 em vez de
+    /// entrar em loop.
+    #[test]
+    #[cfg(unix)]
+    fn the_wrapper_never_recurses_into_itself() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, bin_path) = write_shim_v2_stubs();
+        let wrapper_dir = dir.path().join("wrapper");
+        std::fs::create_dir(&wrapper_dir).unwrap();
+        let wrapper = wrapper_dir.join("claude");
+        std::fs::write(&wrapper, TYBA_CLAUDE_WRAPPER).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let wrapper_s = wrapper.to_str().unwrap();
+        let wrapper_dir_s = wrapper_dir.to_str().unwrap();
+        let real = bin_path.join("claude");
+
+        // TYBA_REAL_CLAUDE apontando para o PRÓPRIO wrapper, e o wrapper
+        // primeiro no PATH: pula os dois e acha o claude de verdade depois.
+        let path = format!("{wrapper_dir_s}:{}:/usr/bin:/bin", bin_path.display());
+        let (code, out) = run_wrapper(
+            &wrapper,
+            &path,
+            &[("TYBA_REAL_CLAUDE", wrapper_s)],
+            &["-p", "a b; $(x)"],
+        );
+        assert_eq!(code, 0, "{out:?}");
+        assert!(out.contains("STUB-RODOU -p a b; $(x)"), "{out:?}");
+
+        // Caminho resolvido válido vence o PATH.
+        let (code, out) = run_wrapper(
+            &wrapper,
+            &format!("{wrapper_dir_s}:/usr/bin:/bin"),
+            &[("TYBA_REAL_CLAUDE", real.to_str().unwrap())],
+            &["-c"],
+        );
+        assert_eq!(code, 0);
+        assert!(out.contains("STUB-RODOU -c"), "{out:?}");
+
+        // Só o wrapper existe: 127, nunca loop.
+        let (code, _) = run_wrapper(
+            &wrapper,
+            &format!("{wrapper_dir_s}:/usr/bin:/bin"),
+            &[],
+            &[],
+        );
+        assert_eq!(code, 127);
+    }
+
+    /// M6-A: com o `tyba` disponível, o wrapper só repassa para `_jail --`.
+    #[test]
+    #[cfg(unix)]
+    fn the_wrapper_hands_every_call_to_tyba_jail() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, bin_path) = write_shim_v2_stubs();
+        let wrapper_dir = dir.path().join("wrapper");
+        std::fs::create_dir(&wrapper_dir).unwrap();
+        let wrapper = wrapper_dir.join("claude");
+        std::fs::write(&wrapper, TYBA_CLAUDE_WRAPPER).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let bin_log = dir.path().join("tyba-bin.log");
+        let path = format!("{}:/usr/bin:/bin", bin_path.display());
+        let (code, out) = run_wrapper(
+            &wrapper,
+            &path,
+            &[
+                ("TYBA_BIN", bin_path.join("tyba").to_str().unwrap()),
+                ("TYBA_BIN_LOG", bin_log.to_str().unwrap()),
+            ],
+            &["--resume", "x y"],
+        );
+        assert_eq!(code, 0);
+        let log = std::fs::read_to_string(&bin_log).unwrap_or_default();
+        assert!(
+            log.contains("TYBA-BIN-CALLED _jail -- --resume x y"),
+            "{log:?}"
+        );
+        assert!(out.contains("STUB-RODOU --resume x y"), "{out:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_wrapper_dir_is_private_and_the_wrapper_executable() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = write_agent_wrapper().expect("wrapper");
+        let meta = std::fs::metadata(&dir).unwrap();
+        assert_eq!(meta.uid(), unsafe { libc::getuid() });
+        assert_eq!(
+            meta.mode() & 0o077,
+            0,
+            "dir do wrapper fechado para os outros"
+        );
+        let wrapper = std::fs::metadata(dir.join("claude")).unwrap();
+        assert_eq!(wrapper.permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("claude")).unwrap(),
+            TYBA_CLAUDE_WRAPPER
+        );
     }
 
     /// O hook do bash roda de verdade, num bash interativo.
@@ -2580,6 +3024,19 @@ echo beta
     }
 
     #[test]
+    fn prompt_nativo_serializa_como_native_prompt() {
+        let status = SessionStatus::AwaitingInput {
+            hint: Some("cargo test".into()),
+            reason: AwaitingReason::NativePrompt,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains(r#""reason":"native_prompt""#), "{json}");
+        let back: SessionStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, status);
+        assert!(status.wants_attention());
+    }
+
+    #[test]
     fn redacted_scrubs_hint_and_failure_reason() {
         let hint = SessionStatus::AwaitingInput {
             hint: Some("export KEY=sk-abcdef1234567890ABCDEFghijkl".into()),
@@ -2644,6 +3101,82 @@ echo beta
         assert_eq!(manager.dead_sessions().len(), 1);
     }
 
+    fn restored_agent() -> (Arc<Store>, SessionManager, SessionId) {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let agent = make(
+            SessionKind::Agent {
+                runner: AgentRunnerKind::Codex,
+            },
+            SessionStatus::Running,
+        );
+        store.upsert_session(&agent).unwrap();
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+        let id = manager.list()[0].id;
+        (store, manager, id)
+    }
+
+    #[test]
+    fn modelo_do_hook_fica_na_sessao_e_so_emite_quando_muda() {
+        let (store, manager, id) = restored_agent();
+        assert!(manager.apply_agent_model(id, " gpt-5.5-codex ").is_some());
+        assert_eq!(
+            manager.get(id).unwrap().agent_model.as_deref(),
+            Some("gpt-5.5-codex")
+        );
+        assert!(manager.apply_agent_model(id, "gpt-5.5-codex").is_none());
+        assert!(manager.apply_agent_model(id, "o4-mini").is_some());
+        // Nunca persistido: o restore seguinte nasce sem modelo.
+        let fresh = SessionManager::new(store);
+        fresh.restore().unwrap();
+        assert_eq!(fresh.get(id).unwrap().agent_model, None);
+    }
+
+    #[test]
+    fn modelo_implausivel_e_descartado() {
+        let (_store, manager, id) = restored_agent();
+        for junk in ["", "   ", "linha\nquebrada", &"m".repeat(129)] {
+            assert!(manager.apply_agent_model(id, junk).is_none(), "{junk:?}");
+        }
+        assert_eq!(manager.get(id).unwrap().agent_model, None);
+    }
+
+    #[test]
+    fn nota_de_status_liga_e_desliga_sem_mexer_no_status() {
+        let (_store, manager, id) = restored_agent();
+        let antes = manager.get(id).unwrap().status;
+        assert!(manager
+            .apply_status_note(id, Some("compactando contexto"))
+            .is_some());
+        assert!(manager
+            .apply_status_note(id, Some("compactando contexto"))
+            .is_none());
+        let s = manager.get(id).unwrap();
+        assert_eq!(s.status_note.as_deref(), Some("compactando contexto"));
+        assert_eq!(s.status, antes);
+        assert!(manager.apply_status_note(id, None).is_some());
+        assert!(manager.apply_status_note(id, None).is_none());
+    }
+
+    /// O uso do `statusLine` vive só em memória: grava, avisa, e nunca chega
+    /// ao SQLite.
+    #[test]
+    fn uso_do_agente_fica_em_memoria() {
+        let (store, manager, id) = restored_agent();
+        let usage = crate::agent::usage::AgentUsage {
+            model: Some("Opus 5.5".into()),
+            cost_usd: Some(0.42),
+            ..Default::default()
+        };
+        assert!(manager.apply_agent_usage(id, Some(usage.clone())).is_some());
+        assert!(manager.apply_agent_usage(id, Some(usage.clone())).is_none());
+        assert_eq!(manager.get(id).unwrap().agent_usage, Some(usage));
+
+        let renascido = SessionManager::new(Arc::clone(&store));
+        renascido.restore().unwrap();
+        assert_eq!(renascido.get(id).unwrap().agent_usage, None);
+    }
+
     /// A prova que dá sentido ao campo separado: o palpite não alcança o fato.
     #[test]
     fn o_palpite_de_tela_nao_toca_status_nem_attention() {
@@ -2660,6 +3193,7 @@ echo beta
             Some(ObservedAgent {
                 agent: "codex".into(),
                 state: Some(ObservedState::AwaitingInput),
+                kind: None,
             }),
         );
 
@@ -2690,6 +3224,7 @@ echo beta
             Some(ObservedAgent {
                 agent: "gemini".into(),
                 state: None,
+                kind: None,
             }),
         );
 
@@ -2726,6 +3261,7 @@ echo beta
             Some(ObservedAgent {
                 agent: "claude".into(),
                 state: Some(ObservedState::Running),
+                kind: None,
             }),
         );
 
@@ -2751,6 +3287,7 @@ echo beta
             Some(ObservedAgent {
                 agent: "codex".into(),
                 state: Some(ObservedState::Running),
+                kind: None,
             }),
         );
 

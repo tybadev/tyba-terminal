@@ -818,6 +818,86 @@ pub fn derived_read_grants(
     grants
 }
 
+pub const TS_SERVER_ID: &str = "typescript-language-server";
+
+fn tsserver_under(node_modules: &Path) -> bool {
+    node_modules.join("typescript/lib/tsserver.js").is_file()
+}
+
+/// O `node_modules/typescript` do projeto — o primeiro lugar onde o
+/// typescript-language-server procura o tsserver.
+pub fn project_has_tsserver(root: &Path) -> bool {
+    tsserver_under(&root.join("node_modules"))
+}
+
+/// O typescript "bundled" que o typescript-language-server acha sozinho
+/// (`require.resolve('typescript')` a partir do próprio pacote): o vizinho no
+/// mesmo `node_modules` ou um aninhado. O TypeScript 7 (nativo) instalado
+/// global não traz `lib/tsserver.js` — aí esse server não tem com o que rodar.
+pub fn global_has_tsserver(ts_ls_binary: &Path) -> bool {
+    let real = resolve_real(ts_ls_binary);
+    let Some(nm) = node_modules_root(&real) else {
+        return false;
+    };
+    tsserver_under(&nm) || tsserver_under(&nm.join(TS_SERVER_ID).join("node_modules"))
+}
+
+/// Com que binário o server sobe — ou o que falta, dito para o dono.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Launch {
+    /// O do usuário (PATH, gerenciador de versões, node_modules/.bin).
+    Discovered(PathBuf),
+    /// O baixado pelo TYBA, com checksum pinado.
+    Managed,
+    /// Nada utilizável; o texto diz o que falta.
+    Missing(String),
+}
+
+/// Ordem de escolha. Para o typescript-language-server o que importa é ter um
+/// tsserver: (1) TypeScript do projeto → qualquer ts-ls serve, o do usuário
+/// primeiro; (2) o gerenciado, que traz o TypeScript 5 junto; (3) o ts-ls do
+/// usuário se o TypeScript ao lado dele tem tsserver. Um TypeScript 7 global
+/// nunca é escolhido — ele derrubava o initialize.
+pub fn choose_launch(
+    entry: &ServerEntry,
+    discovered: Option<PathBuf>,
+    managed_installed: bool,
+    root: &Path,
+) -> Launch {
+    if entry.id != TS_SERVER_ID {
+        return match (discovered, managed_installed) {
+            (Some(bin), _) => Launch::Discovered(bin),
+            (None, true) => Launch::Managed,
+            (None, false) => Launch::Missing(format!("{} não está instalado", entry.label)),
+        };
+    }
+    if project_has_tsserver(root) {
+        if let Some(bin) = discovered {
+            return Launch::Discovered(bin);
+        }
+        if managed_installed {
+            return Launch::Managed;
+        }
+        return Launch::Missing(
+            "falta o typescript-language-server (o TypeScript do projeto já serve)".into(),
+        );
+    }
+    if managed_installed {
+        return Launch::Managed;
+    }
+    match discovered {
+        Some(bin) if global_has_tsserver(&bin) => Launch::Discovered(bin),
+        Some(_) => Launch::Missing(
+            "o projeto não tem node_modules/typescript e o TypeScript ao lado do seu \
+             typescript-language-server não traz tsserver (o TypeScript 7 é nativo, sem tsserver)"
+                .into(),
+        ),
+        None => Launch::Missing(
+            "falta o typescript-language-server e um TypeScript com tsserver".into(),
+        ),
+    }
+}
+
 fn install_prefix(binary: &Path) -> PathBuf {
     let parent = binary.parent().unwrap_or(binary);
     if parent.file_name().map(|n| n == "bin").unwrap_or(false) {
@@ -830,6 +910,129 @@ fn install_prefix(binary: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "// sintético\n").unwrap();
+    }
+
+    /// Prefixo de node global sintético: `bin/typescript-language-server`
+    /// apontando para `lib/node_modules/typescript-language-server/lib/cli.mjs`
+    /// e, se `with_tsserver`, um `typescript` vizinho com `lib/tsserver.js`
+    /// (TypeScript 5); senão um `typescript` sem tsserver (como o TS 7).
+    fn global_prefix(with_tsserver: bool) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let nm = dir.path().join("lib/node_modules");
+        let cli = nm.join("typescript-language-server/lib/cli.mjs");
+        touch(&cli);
+        if with_tsserver {
+            touch(&nm.join("typescript/lib/tsserver.js"));
+        } else {
+            touch(&nm.join("typescript/lib/tsc.js"));
+        }
+        let bin = dir.path().join("bin/typescript-language-server");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&cli, &bin).unwrap();
+        #[cfg(not(unix))]
+        std::fs::copy(&cli, &bin).unwrap();
+        (dir, bin)
+    }
+
+    fn ts() -> &'static ServerEntry {
+        entry_by_id(TS_SERVER_ID).unwrap()
+    }
+
+    #[test]
+    fn project_typescript_wins_and_uses_the_users_server() {
+        let root = tempfile::tempdir().unwrap();
+        touch(&root.path().join("node_modules/typescript/lib/tsserver.js"));
+        let (_g, bin) = global_prefix(false);
+        assert_eq!(
+            choose_launch(ts(), Some(bin.clone()), true, root.path()),
+            Launch::Discovered(bin),
+            "com TypeScript no projeto, o ts-ls do usuário serve mesmo com TS 7 global"
+        );
+        assert_eq!(
+            choose_launch(ts(), None, true, root.path()),
+            Launch::Managed
+        );
+        assert!(matches!(
+            choose_launch(ts(), None, false, root.path()),
+            Launch::Missing(_)
+        ));
+    }
+
+    #[test]
+    fn managed_beats_a_global_typescript_without_tsserver() {
+        let root = tempfile::tempdir().unwrap();
+        let (_g, bin) = global_prefix(false);
+        assert_eq!(
+            choose_launch(ts(), Some(bin), true, root.path()),
+            Launch::Managed
+        );
+    }
+
+    #[test]
+    fn managed_beats_even_a_healthy_global_when_installed() {
+        let root = tempfile::tempdir().unwrap();
+        let (_g, bin) = global_prefix(true);
+        assert_eq!(
+            choose_launch(ts(), Some(bin), true, root.path()),
+            Launch::Managed
+        );
+    }
+
+    #[test]
+    fn global_with_tsserver_is_used_when_nothing_better_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let (_g, bin) = global_prefix(true);
+        assert!(global_has_tsserver(&bin));
+        assert_eq!(
+            choose_launch(ts(), Some(bin.clone()), false, root.path()),
+            Launch::Discovered(bin)
+        );
+    }
+
+    #[test]
+    fn global_typescript_7_is_never_chosen_and_the_reason_says_why() {
+        let root = tempfile::tempdir().unwrap();
+        let (_g, bin) = global_prefix(false);
+        assert!(!global_has_tsserver(&bin));
+        match choose_launch(ts(), Some(bin), false, root.path()) {
+            Launch::Missing(why) => {
+                assert!(why.contains("tsserver"), "{why}");
+                assert!(!why.contains("não encontrado"), "{why}");
+            }
+            other => panic!("TS 7 sem tsserver não pode subir: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nested_typescript_inside_the_server_package_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let nm = dir.path().join("lib/node_modules");
+        let cli = nm.join("typescript-language-server/lib/cli.mjs");
+        touch(&cli);
+        touch(&nm.join("typescript-language-server/node_modules/typescript/lib/tsserver.js"));
+        assert!(global_has_tsserver(&cli));
+    }
+
+    #[test]
+    fn other_servers_prefer_the_users_binary_then_managed() {
+        let entry = entry_by_id("rust-analyzer").unwrap();
+        let root = Path::new("/private/wt/proj");
+        let bin = PathBuf::from("/opt/bin/rust-analyzer");
+        assert_eq!(
+            choose_launch(entry, Some(bin.clone()), true, root),
+            Launch::Discovered(bin)
+        );
+        assert_eq!(choose_launch(entry, None, true, root), Launch::Managed);
+        match choose_launch(entry, None, false, root) {
+            Launch::Missing(why) => assert!(why.contains("rust-analyzer"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     #[test]
     fn resolves_by_extension() {

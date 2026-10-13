@@ -42,7 +42,7 @@ import {
   searchKeymap,
 } from "@codemirror/search";
 
-import type { GutterMarker, LspDiagnostic } from "@/lib/ipc";
+import type { GutterMarker, LspDiagnostic, LspTextEdit } from "@/lib/ipc";
 import { cmEditorTheme, cmHighlightStyle } from "@/lib/cmTheme";
 import { langExtension } from "@/lib/cmLang";
 import { applyLspDiagnostics, lspExtensions, type LspBridge } from "@/lib/cmLsp";
@@ -50,6 +50,10 @@ import { applyLspDiagnostics, lspExtensions, type LspBridge } from "@/lib/cmLsp"
 export interface CodeEditorHandle {
   getValue: () => string;
   markSaved: () => void;
+  /** Leva o cursor à linha (1-based) e a centraliza. */
+  revealLine: (line: number) => void;
+  /** Aplica edições LSP (posições 0-based, UTF-16 — as mesmas do CodeMirror). */
+  applyEdits: (edits: LspTextEdit[]) => void;
 }
 
 interface Props {
@@ -61,6 +65,8 @@ interface Props {
   diagnostics?: LspDiagnostic[];
   onDirtyChange: (dirty: boolean) => void;
   onSave: () => void;
+  /** Linha/coluna do cursor (1-based), para a linha de status. */
+  onCursor?: (line: number, col: number) => void;
 }
 
 class DiffGutterMarker extends CMGutterMarker {
@@ -115,9 +121,11 @@ const diffGutter = gutter({
 });
 
 export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
-  { doc, filename, dark, markers, lsp, diagnostics, onDirtyChange, onSave },
+  { doc, filename, dark, markers, lsp, diagnostics, onDirtyChange, onSave, onCursor },
   ref,
 ) {
+  const cursorRef = useRef(onCursor);
+  cursorRef.current = onCursor;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const saveRef = useRef(onSave);
@@ -156,6 +164,35 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
           ),
         });
       }
+    },
+    revealLine: (line: number) => {
+      const view = viewRef.current;
+      if (!view) return;
+      const target = view.state.doc.line(
+        Math.min(Math.max(1, line), view.state.doc.lines),
+      );
+      view.dispatch({
+        selection: { anchor: target.from },
+        effects: EditorView.scrollIntoView(target.from, { y: "center" }),
+      });
+      view.focus();
+    },
+    applyEdits: (edits: LspTextEdit[]) => {
+      const view = viewRef.current;
+      if (!view || edits.length === 0) return;
+      const doc = view.state.doc;
+      const offset = (line: number, character: number) => {
+        const l = doc.line(Math.min(line + 1, doc.lines));
+        return Math.min(l.from + character, l.to);
+      };
+      view.dispatch({
+        changes: edits.map((e) => ({
+          from: offset(e.range.start.line, e.range.start.character),
+          to: offset(e.range.end.line, e.range.end.character),
+          insert: e.new_text,
+        })),
+      });
+      view.focus();
     },
   }));
 
@@ -205,9 +242,18 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
         ),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
+            // Tamanho diferente já é sujo: sem montar o texto inteiro a cada
+            // tecla (o `toString` é O(arquivo)).
+            const doc = update.state.doc;
             dirtyRef.current(
-              update.state.doc.toString() !== baselineRef.current,
+              doc.length !== baselineRef.current.length ||
+                doc.toString() !== baselineRef.current,
             );
+          }
+          if (update.selectionSet || update.docChanged) {
+            const head = update.state.selection.main.head;
+            const line = update.state.doc.lineAt(head);
+            cursorRef.current?.(line.number, head - line.from + 1);
           }
         }),
       ],

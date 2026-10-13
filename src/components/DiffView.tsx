@@ -11,14 +11,13 @@ import {
   Check,
   CircleNotch,
   GitBranch,
+  GitDiff,
   GitCommit,
   Minus,
   Sparkle,
   Warning,
   PaperPlaneTilt,
   Plus,
-  Rows,
-  SquareSplitHorizontal,
   Trash,
   UploadSimple,
   X,
@@ -64,6 +63,7 @@ import {
   type Row,
   type SectionOpenState,
 } from "../lib/diff";
+import { openEditorTab } from "../lib/contentTabs";
 import { translateError } from "../lib/errors";
 import { highlightBlock, type TokenSpan } from "../lib/highlight";
 import { BranchPicker } from "./BranchPicker";
@@ -143,10 +143,12 @@ function LineText({
   );
 }
 
+// Mockup Diff: fundo a 9% e o texto tingido (verde/vermelho a 45% sobre o
+// texto — #c9ecaa/#f3b2a8 no escuro, #1f4d0a/#7a2215 no claro).
 const LINE_BG: Record<string, string> = {
-  add: "bg-tyba-green/[.07]",
-  del: "bg-tyba-red/[.07]",
-  context: "",
+  add: "bg-tyba-green/[.09] text-[color-mix(in_srgb,var(--tyba-green)_45%,var(--tyba-text))]",
+  del: "bg-tyba-red/[.09] text-[color-mix(in_srgb,var(--tyba-red)_45%,var(--tyba-text))]",
+  context: "text-tyba-text/90",
 };
 
 const GUTTER_SIGN: Record<string, { sign: string; cls: string }> = {
@@ -517,7 +519,7 @@ export function DiffView({
     getScrollElement: () => scrollRef.current,
     estimateSize: (index) => {
       const kind = displayRows[index]?.kind;
-      if (kind === "line" || kind === "split") return 20;
+      if (kind === "line" || kind === "split") return 21;
       if (kind === "hunk") return 24;
       if (kind === "file") return 40;
       if (kind === "section") return 40;
@@ -666,9 +668,11 @@ export function DiffView({
             title={t("diffOpenFile")}
             aria-label={t("diffOpenFile")}
             onClick={() =>
-              void openWorktreeFile(session.id, file.path, editor).catch(
-                (e) => setActionError(String(e)),
-              )
+              // Abre como aba de editor do TYBA; o caminho do diff é do repo
+              // e o core o resolve contra a raiz da sessão.
+              void openEditorTab(file.path, undefined, {
+                session: session.id,
+              }).catch((e) => setActionError(String(e)))
             }
             className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-text"
           >
@@ -845,10 +849,13 @@ export function DiffView({
     switch (row.kind) {
       case "comment":
         return (
-          <div className="flex items-start gap-2 border-l-2 border-tyba-green/50 bg-tyba-green/[.04] py-1.5 pl-[104px] pr-4">
+          // Mockup Diff: cartão violeta (borda 0,35, fundo 0,06, cantos de 8px)
+          // recuado até a coluna do código.
+          <div className="py-1.5 pl-24 pr-4">
+          <div className="flex items-start gap-2 rounded-[8px] border border-tyba-violet/35 bg-tyba-violet/[.06] px-3 py-2.5">
             <ChatCircleText
               size={13}
-              className="mt-0.5 shrink-0 text-tyba-green"
+              className="mt-0.5 shrink-0 text-tyba-violet"
             />
             <span className="min-w-0 flex-1 whitespace-pre-wrap text-[12px] leading-snug text-tyba-text">
               {row.comment.text}
@@ -867,10 +874,12 @@ export function DiffView({
               <Trash size={12} />
             </button>
           </div>
+          </div>
         );
       case "commentEditor":
         return (
-          <div className="flex flex-col gap-1.5 border-l-2 border-tyba-green/50 bg-tyba-green/[.04] py-2 pl-[104px] pr-4">
+          <div className="py-1.5 pl-24 pr-4">
+          <div className="flex flex-col gap-1.5 rounded-[8px] border border-tyba-violet/35 bg-tyba-violet/[.06] px-3 py-2.5">
             <textarea
               autoCapitalize="sentences"
               autoCorrect="on"
@@ -890,7 +899,7 @@ export function DiffView({
                 }
               }}
               placeholder={t("diffCommentPlaceholder")}
-              className="min-h-[52px] w-full max-w-xl resize-y rounded-[4px] border border-tyba-border bg-black/30 p-2 font-sans text-[12px] text-tyba-text outline-none focus:border-tyba-green/50"
+              className="min-h-[52px] w-full max-w-xl resize-y rounded-[6px] border border-tyba-border-field bg-tyba-sunken p-2 font-sans text-[12px] text-tyba-text outline-none focus:border-tyba-violet/50"
             />
             <div className="flex gap-2">
               <Button size="sm" className="h-6 px-2 text-[11px]" onClick={() => saveDraft(row.anchor)}>
@@ -908,6 +917,7 @@ export function DiffView({
                 {t("cancel")}
               </Button>
             </div>
+          </div>
           </div>
         );
       case "section":
@@ -972,9 +982,9 @@ export function DiffView({
         const spans = tokens[row.hunkKey]?.[row.idx];
         return (
           <div
-            className={`group/line flex items-stretch font-mono text-[12px] leading-[20px] ${LINE_BG[row.line.kind]}`}
+            className={`group/line flex items-stretch font-mono text-[12.5px] leading-[21px] ${LINE_BG[row.line.kind]}`}
           >
-            <span className="relative w-12 shrink-0 select-none pr-2 text-right text-[10px] leading-[20px] text-tyba-text-faint">
+            <span className="relative w-10 shrink-0 select-none pr-2.5 text-right text-[12px] leading-[21px] text-tyba-text-ghost">
               <button
                 aria-label={t("diffCommentAdd")}
                 onClick={() => {
@@ -987,7 +997,7 @@ export function DiffView({
               </button>
               {row.oldNo ?? ""}
             </span>
-            <span className="w-12 shrink-0 select-none pr-2 text-right text-[10px] leading-[20px] text-tyba-text-faint">
+            <span className="w-10 shrink-0 select-none pr-2.5 text-right text-[12px] leading-[21px] text-tyba-text-ghost">
               {row.newNo ?? ""}
             </span>
             <span
@@ -995,7 +1005,7 @@ export function DiffView({
             >
               {gutter.sign}
             </span>
-            <span className="min-w-0 flex-1 whitespace-pre pr-4 text-tyba-text/90">
+            <span className="min-w-0 flex-1 whitespace-pre pr-4">
               <LineText text={row.line.text} spans={spans} />
             </span>
           </div>
@@ -1014,7 +1024,7 @@ export function DiffView({
             <div
               className={`flex min-w-0 flex-1 items-stretch ${LINE_BG[entry.kind]}`}
             >
-              <span className="w-10 shrink-0 select-none pr-2 text-right text-[10px] leading-[20px] text-tyba-text-faint">
+              <span className="w-10 shrink-0 select-none pr-2.5 text-right text-[12px] leading-[21px] text-tyba-text-ghost">
                 {entry.no}
               </span>
               <span
@@ -1022,7 +1032,7 @@ export function DiffView({
               >
                 {gutter.sign}
               </span>
-              <span className="min-w-0 flex-1 truncate whitespace-pre pr-3 text-tyba-text/90">
+              <span className="min-w-0 flex-1 truncate whitespace-pre pr-3">
                 <LineText text={entry.text} spans={spans} />
               </span>
               {signKind === "left" && (
@@ -1032,7 +1042,7 @@ export function DiffView({
           );
         };
         return (
-          <div className="flex font-mono text-[12px] leading-[20px]">
+          <div className="flex font-mono text-[12.5px] leading-[21px] text-tyba-text/90">
             {side(row.left, "left")}
             {side(row.right, "right")}
           </div>
@@ -1074,10 +1084,11 @@ export function DiffView({
   return (
     <div
       ref={containerRef}
-      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-tyba-bg"
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-tyba-sunken"
     >
-      <header className="flex h-8 shrink-0 items-center gap-2 tyba-divide-b px-3">
-        <GitBranch size={13} className="shrink-0 text-tyba-green" />
+      {/* Mockup Diff: faixa de 40px na superfície (vidro no claro), 12px. */}
+      <header className="flex h-10 shrink-0 items-center gap-2 tyba-divide-b bg-[var(--tyba-panel-bg)] px-4 text-[12px] text-tyba-text-muted">
+        <GitDiff size={13} className="shrink-0 text-tyba-violet" />
         <span className="min-w-0 truncate text-[12px] text-tyba-text">
           {session.title}
         </span>
@@ -1093,29 +1104,27 @@ export function DiffView({
           onBrowse={browseTo}
         />
         <div className="flex-1" />
-        <div className="flex items-center gap-0.5 rounded-[5px] border border-tyba-border p-0.5">
+        <div className="flex items-center gap-0.5 rounded-[6px] bg-tyba-sunken p-0.5">
           <button
             aria-pressed={mode === "unified"}
             onClick={() => setMode("unified")}
-            className={`flex h-6 items-center gap-1.5 rounded-[3px] px-2 text-[11px] ${
+            className={`flex h-5 items-center rounded-[4px] px-2 text-[12px] ${
               mode === "unified"
-                ? "bg-tyba-text/[.06] text-tyba-text"
-                : "text-tyba-text-faint hover:text-tyba-text"
+                ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]"
+                : "text-tyba-text-muted hover:text-tyba-text"
             }`}
           >
-            <Rows size={12} />
             {t("diffUnified")}
           </button>
           <button
             aria-pressed={mode === "split"}
             onClick={() => setMode("split")}
-            className={`flex h-6 items-center gap-1.5 rounded-[3px] px-2 text-[11px] ${
+            className={`flex h-5 items-center rounded-[4px] px-2 text-[12px] ${
               mode === "split"
-                ? "bg-tyba-text/[.06] text-tyba-text"
-                : "text-tyba-text-faint hover:text-tyba-text"
+                ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]"
+                : "text-tyba-text-muted hover:text-tyba-text"
             }`}
           >
-            <SquareSplitHorizontal size={12} />
             {t("diffSplit")}
           </button>
         </div>
@@ -1310,6 +1319,11 @@ export function DiffView({
                   </span>
                 </div>
               ))}
+              {diff.commits_truncated && (
+                <span className="px-2 py-1 text-[11px] text-tyba-text-faint">
+                  {t("diffCommitsMore")}
+                </span>
+              )}
             </div>
           )}
           {diff && sidebarSection("committed", diff.files)}

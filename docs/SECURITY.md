@@ -19,7 +19,7 @@ Implementada no core Rust (denylist/allowlist de padrões), exibida na UI de apr
 - **Verde (auto-aprovado pelo core)**: read-only — `ls`, `cat`, `git status`, `git log`, `grep`, builds sem side effects.
 - **Amarelo (aprovação padrão)**: escrita dentro do worktree, `git commit`, instalação de deps no worktree.
 - **Vermelho (aprovação humana SEMPRE, nunca em allowlist)**:
-  - `git push`, `gh pr create` (dano público/irreversível)
+  - `git push`, `gh pr create` e toda escrita na forja por `gh`/`glab` (merge, review, comentário, issue, release, workflow, `api` com método que escreve ou com campo — POST implícito); só ações de leitura (`view`, `list`, `status`, `checks`, `diff`, …) e `api` GET ficam fora (dano público/irreversível)
   - `sudo`, escrita fora do worktree, mudança de permissões
   - acesso à rede iniciado pelo agente (`curl`, `wget`, especialmente com pipe para shell)
   - `rm -rf`, operações destrutivas em massa

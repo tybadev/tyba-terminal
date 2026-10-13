@@ -28,6 +28,7 @@ import { Switch } from "@/components/ui/switch";
 import { IS_MAC } from "@/lib/platform";
 import { NOTIFY_KINDS, notifyEnabled } from "@/lib/notifyPrefs";
 import { DockerIcon } from "./icons/DockerIcon";
+import { ClaudePluginSetting } from "./ClaudePluginSetting";
 import { LANGUAGES, setLanguage, type LanguageCode } from "../i18n";
 import {
   getUiFont,
@@ -978,6 +979,8 @@ export function SettingsView({
                 className="mt-0.5"
               />
             </div>
+
+            <ClaudePluginSetting />
 
             <span className="tyba-label mt-6 block">{t("defaultEditor")}</span>
             <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">

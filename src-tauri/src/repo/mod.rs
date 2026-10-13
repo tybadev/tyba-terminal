@@ -202,7 +202,9 @@ pub fn branch(root: &Path) -> Option<String> {
         .output()
         .ok()?;
     if !out.status.success() {
-        return None;
+        // Branch ainda sem commit (repo recém-criado): o `rev-parse` falha, mas
+        // a branch já tem nome — e a barra de status do mockup mostra a branch.
+        return unborn_branch(root);
     }
     let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if branch.is_empty() {
@@ -210,6 +212,18 @@ pub fn branch(root: &Path) -> Option<String> {
     } else {
         Some(branch)
     }
+}
+
+fn unborn_branch(root: &Path) -> Option<String> {
+    let out = git_in(root)
+        .args(["symbolic-ref", "--short", "-q", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 fn diff_numstat(root: &Path) -> (u32, u32) {
@@ -605,6 +619,16 @@ mod tests {
         let got = std::fs::canonicalize(&seen).unwrap();
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
         assert_eq!(got, want, "cwd real divergiu");
+    }
+
+    #[test]
+    fn branch_of_a_repo_without_commits_is_the_unborn_name() {
+        let base = std::env::temp_dir().join(format!("tyba-repo-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        git(&base, &["init", "-q", "-b", "trunk"]);
+        let got = super::branch(&base);
+        std::fs::remove_dir_all(&base).ok();
+        assert_eq!(got.as_deref(), Some("trunk"));
     }
 
     #[test]

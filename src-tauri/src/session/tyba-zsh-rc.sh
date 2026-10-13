@@ -194,10 +194,19 @@ fi
 # aconteceu. Funcao de shell bloqueia, e e o idioma que direnv, nvm e pyenv
 # usam ha anos — inspecionavel com `type claude`, com escotilha conhecida.
 #
-# SO `claude` PURO, SEM ARGUMENTO NENHUM, GATEIA (Q1, ADR 2026-09-02):
-# `claude <args>` cai cru pra `command claude "$@"`. Encaminhar "$@" pro canal
-# reabriria a superfície que o teste anti-bypass fecha — o pedido ao core e
-# sempre "hospede claude", nunca "execute isto com estes argumentos".
+# TODA FORMA DE CHAMAR `claude` PASSA PELO `_jail` (M6-A do claude-monitor):
+# `claude`, `claude -c`, `claude --resume <id>`, `claude -p "..."`. Os args vao
+# como "$@" depois de `--` (argv, um por argumento — nunca string de shell), e
+# quem decide o caminho e o `_jail` e, de novo, o core: sessao de agente sobe
+# hospedada com gate; versao, ajuda e subcomandos de configuracao passam crus;
+# flag que desligaria o gate e recusada.
+#
+# WRAPPER NO PATH. A funcao so pega o que a shell interativa digita. `command
+# claude`, scripts e Makefiles procuram `claude` no PATH — por isso o
+# diretorio do wrapper do TYBA (`$TYBA_WRAPPER_DIR`, 0700, do usuario) entra
+# na FRENTE do PATH aqui, depois de toda a config do usuario ter rodado. O
+# wrapper faz o mesmo `_jail -- "$@"`, e o `_jail` sempre executa o claude de
+# verdade pelo caminho resolvido (`$TYBA_REAL_CLAUDE`), nunca o wrapper.
 #
 # SEM exec: `"$TYBA_BIN" _jail` roda como FILHO desta funcao, no MESMO pane. O
 # `exec` substituiria o PROPRIO shell — sair do agente mataria a aba. A cadeia
@@ -207,10 +216,10 @@ fi
 # FALHA ABERTA e a regra permanente: sem TYBA_BIN, o shim inteiro nem se
 # instala (bloco abaixo). Com TYBA_BIN setado mas inalcancavel (arquivo sumiu,
 # sem permissao de execucao), o `else` cai pro binario de verdade e sai do
-# caminho. Sem o core respondendo, ou sem jaula, quem cai pro binario de
-# verdade e o PROPRIO `tyba _jail` (ele faz `exec claude` por dentro). Um
-# terminal que se recusa a rodar o que foi digitado esta quebrado, e ligado
-# por padrao o raio disso e todo mundo.
+# caminho. Sem o core respondendo, quem cai pro binario de verdade e o
+# PROPRIO `tyba _jail` — avisando, e marcando o processo para o pane mostrar
+# "sem gate" em vermelho. Um terminal que se recusa a rodar o que foi
+# digitado esta quebrado, e ligado por padrao o raio disso e todo mundo.
 #
 # NUNCA `"$TYBA_BIN" _jail || command claude`: o `_jail` da `exec` na cadeia
 # hospedada, entao o status que volta pra shell e o do claude HOSPEDADO. Um
@@ -228,14 +237,17 @@ if [ -n "${TYBA_BIN:-}" ] && [ "${TYBA_AGENT_SHIM:-1}" = "1" ]; then
 
   claude() {
     __tyba_shim_record "claude"
-    if [ "$#" -eq 0 ]; then
-      if [ -x "$TYBA_BIN" ]; then
-        "$TYBA_BIN" _jail
-      else
-        command claude
-      fi
+    if [ -x "$TYBA_BIN" ]; then
+      "$TYBA_BIN" _jail -- "$@"
     else
       command claude "$@"
     fi
   }
+
+  if [ -n "${TYBA_WRAPPER_DIR:-}" ] && [ -x "$TYBA_WRAPPER_DIR/claude" ]; then
+    case ":$PATH:" in
+      *":$TYBA_WRAPPER_DIR:"*) ;;
+      *) PATH="$TYBA_WRAPPER_DIR:$PATH"; export PATH ;;
+    esac
+  fi
 fi

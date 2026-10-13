@@ -9,6 +9,8 @@
 pub mod branches;
 pub mod conflicts;
 pub mod diff;
+pub mod graph;
+pub mod log;
 pub mod ops;
 
 use std::collections::HashSet;

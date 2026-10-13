@@ -14,12 +14,23 @@
  * entram os que têm superfície de SUBCOMANDO — `cd`, `ls`, `cp` já têm
  * completação de caminho e quase não têm flag que se procure.
  */
-import { extrai, type Linha } from "./figExtract";
+import { enxerta, extrai, semRepetir, type Linha } from "./figExtract";
 
-/** Versão fixada. Base é artefato datado; "latest" faria o TSV mudar sozinho. */
+/**
+ * Versão fixada. Base é artefato datado; "latest" faria o TSV mudar sozinho.
+ *
+ * Licença MIT, Copyright (c) 2021 Hercules Labs Inc. (Fig) — o aviso viaja
+ * junto em `THIRD_PARTY_NOTICES.md`, como a licença exige.
+ */
 const VERSAO = "2.692.3";
 
-/** Ver a tech-spec 03 para o porquê de cada um — e de `sudo` ficar fora. */
+/**
+ * Ver a tech-spec 03 para o porquê de cada um — e de `sudo` ficar fora.
+ *
+ * `ls`, `cat`, `grep` e `find` entraram em 2026-10-12, depois de o dono dizer
+ * que faltavam comandos: eles têm completação de caminho, mas as flags (`ls
+ * -lah`, `grep -rn`, `find -name`) são justamente o que se procura.
+ */
 const COMANDOS = [
   "git",
   "docker",
@@ -36,7 +47,17 @@ const COMANDOS = [
   "curl",
   "gh",
   "kubectl",
+  "ls",
+  "cat",
+  "grep",
+  "find",
 ];
+
+/**
+ * Specs que entram PENDURADOS em outro comando: `[spec, comando, subcomando]`.
+ * Ver `enxerta`.
+ */
+const ENXERTOS: [string, string, string][] = [["docker-compose", "docker", "compose"]];
 
 const alvo = new URL("../src-tauri/src/session/command_spec.tsv", import.meta.url);
 const cache = new URL("../.fig-cache/", import.meta.url);
@@ -72,13 +93,37 @@ for (const cmd of COMANDOS) {
   console.log(`  ${cmd.padEnd(10)} ${String(doComando.length).padStart(5)} entradas`);
 }
 
-const tsv = linhas
+for (const [spec, comando, sob] of ENXERTOS) {
+  const caminho = await baixa(spec);
+  if (!caminho) {
+    faltando.push(spec);
+    continue;
+  }
+  const mod = await import(caminho);
+  const enxertadas = enxerta(extrai(mod.default), comando, sob);
+  linhas.push(...enxertadas);
+  console.log(`  ${`${comando} ${sob}`.padEnd(10)} ${String(enxertadas.length).padStart(5)} entradas (de ${spec})`);
+}
+
+// Linhas de OUTRAS fontes ficam: o `openssl` não vem do Fig (ver
+// `gen-openssl-spec.ts`), e regenerar não pode apagá-lo em silêncio.
+const geradas = new Set(linhas.map((l) => l.command));
+const anterior = Bun.file(alvo);
+const preservadas: string[] = (await anterior.exists())
+  ? (await anterior.text())
+      .split("\n")
+      .filter((l) => l && !geradas.has(l.split("\t")[0]))
+  : [];
+
+const tsv = semRepetir(linhas)
   .map((l) =>
     [limpo(l.command), limpo(l.path), l.kind, limpo(l.description ?? "")].join("\t"),
   )
+  .concat(preservadas)
   .join("\n");
 
 await Bun.write(alvo, tsv + "\n");
+if (preservadas.length) console.log(`  (${preservadas.length} linhas de outras fontes preservadas)`);
 
 console.log(`\n${linhas.length} entradas · ${(tsv.length / 1024).toFixed(0)} KB`);
 console.log(`fonte: @withfig/autocomplete@${VERSAO}`);

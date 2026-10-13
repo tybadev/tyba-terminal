@@ -2,12 +2,15 @@ pub mod auth_alert;
 pub mod auth_preflight;
 pub mod auth_watch;
 pub mod browser_bridge;
-// O handler do canal shim↔core (shim v2) é escopo Linux nesta entrega (§15 do
-// tech-spec): o socket (`hook_ipc::channel::ChannelServer`) só liga sob
-// `target_os = "linux"`, e este módulo só existe para atendê-lo — gate
-// consistente, não `cfg(unix)` (macOS é unix e não deve compilar isto).
-#[cfg(target_os = "linux")]
+pub mod claude_cli;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod claude_plugin;
+// O handler do canal shim↔core (shim v2): existe onde o socket
+// (`hook_ipc::channel::ChannelServer`) liga — Linux e macOS (M3 do
+// claude-monitor). Windows não tem shim.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod channel_host;
+pub mod claude_settings;
 pub mod codex_hooks;
 pub mod conversation;
 pub mod credentials;
@@ -16,8 +19,10 @@ pub mod hooks_settings;
 pub mod notify;
 pub mod process_probe;
 pub mod session;
+pub mod statusline;
 pub mod subagents;
 pub mod suggest;
+pub mod usage;
 
 #[cfg(test)]
 mod codex_e2e_tests;
@@ -105,6 +110,14 @@ pub trait AgentRunner: Send + Sync {
     }
 
     fn sandbox_access(&self, _home: &Path, _worktree: &Path) -> AgentAccess {
+        AgentAccess::default()
+    }
+
+    /// Acesso extra que só a conversa `conversation` precisa, somado ao
+    /// [`Self::sandbox_access`] quando o id dela é conhecido no spawn. Quem
+    /// chama já validou o id ([`conversation::is_plausible`]): ele vira
+    /// componente de path, então nada com `/` ou `..` chega aqui.
+    fn conversation_access(&self, _home: &Path, _conversation: &str) -> AgentAccess {
         AgentAccess::default()
     }
 }
@@ -460,6 +473,19 @@ impl AgentRunner for ClaudeCodeRunner {
             ],
         }
     }
+
+    /// M5 do claude-monitor (decisão do dono, opção a): o `/rewind` lê e grava
+    /// `~/.claude/file-history/<sessão>`. Só a pasta DESTA conversa volta para
+    /// dentro da jaula — o resto de `file-history/` e o `history.jsonl`
+    /// continuam escondidos pelo except de leitura do `sandbox_access`, pela
+    /// mesma privacidade entre repos de `projects/`.
+    fn conversation_access(&self, home: &Path, conversation: &str) -> AgentAccess {
+        let own = home.join(".claude").join("file-history").join(conversation);
+        AgentAccess {
+            read: vec![RuleSet::allow(vec![Rule::Node(own.clone())])],
+            write: vec![RuleSet::allow(vec![Rule::Node(own)])],
+        }
+    }
 }
 
 pub struct CodexRunner;
@@ -679,7 +705,7 @@ mod tests {
         assert_eq!(argv[sandbox + 1], "workspace-write");
         let approval = argv.iter().position(|a| a == "--ask-for-approval").unwrap();
         assert_eq!(argv[approval + 1], "on-request");
-        assert!(argv.iter().filter(|a| *a == "--config").count() == 5);
+        assert!(argv.iter().filter(|a| *a == "--config").count() == 13);
     }
 
     #[test]
@@ -747,12 +773,20 @@ mod tests {
             .filter(|(i, _)| *i > 0 && argv[i - 1] == "--config")
             .map(|(_, a)| a)
             .collect();
-        assert_eq!(overrides.len(), 5);
+        assert_eq!(overrides.len(), 13);
         for key in [
             "hooks.PreToolUse=",
             "hooks.PermissionRequest=",
             "hooks.SessionStart=",
             "hooks.Stop=",
+            "hooks.PostToolUse=",
+            "hooks.UserPromptSubmit=",
+            "hooks.SubagentStart=",
+            "hooks.SubagentStop=",
+            "hooks.PreCompact=",
+            "hooks.PostCompact=",
+            "hooks.SessionEnd=",
+            "hooks.Interrupt=",
             "hooks.state=",
         ] {
             assert!(
@@ -784,6 +818,43 @@ mod tests {
         assert!(access.read[1].allow.contains(&Rule::Node(PathBuf::from(
             "/Users/x/.claude/projects/-private-wt-a"
         ))));
+    }
+
+    #[test]
+    fn claude_conversation_access_grants_only_its_own_file_history() {
+        let access = ClaudeCodeRunner.conversation_access(Path::new("/Users/x"), "abc12345-conv");
+        let own = Rule::Node(PathBuf::from("/Users/x/.claude/file-history/abc12345-conv"));
+        assert_eq!(access.read.len(), 1);
+        assert_eq!(access.read[0].allow, vec![own.clone()]);
+        assert_eq!(access.write.len(), 1);
+        assert_eq!(access.write[0].allow, vec![own]);
+
+        // O que a jaula base esconde continua escondido: a concessão é só da
+        // pasta da conversa, nunca de `file-history/` nem do `history.jsonl`.
+        let base =
+            ClaudeCodeRunner.sandbox_access(Path::new("/Users/x"), Path::new("/private/wt/a"));
+        assert!(base.read[0].except.contains(&Rule::Subpath(PathBuf::from(
+            "/Users/x/.claude/file-history"
+        ))));
+        assert!(base.read[0].except.contains(&Rule::Literal(PathBuf::from(
+            "/Users/x/.claude/history.jsonl"
+        ))));
+        let other = Path::new("/Users/x/.claude/file-history/outra-sessao");
+        assert!(!access
+            .read
+            .iter()
+            .any(|set| set.allow.iter().any(|r| rule_matches(r, other))));
+        let history = Path::new("/Users/x/.claude/history.jsonl");
+        assert!(!access
+            .read
+            .iter()
+            .any(|set| set.allow.iter().any(|r| rule_matches(r, history))));
+    }
+
+    #[test]
+    fn codex_has_no_conversation_access() {
+        let access = CodexRunner.conversation_access(Path::new("/Users/x"), "abc12345-conv");
+        assert!(access.read.is_empty() && access.write.is_empty());
     }
 
     fn rule_matches(rule: &Rule, candidate: &Path) -> bool {

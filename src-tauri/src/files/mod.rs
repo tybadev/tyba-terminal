@@ -232,6 +232,57 @@ pub fn find_repo_root_bounded(start: &Path, home: Option<&Path>) -> Option<PathB
     None
 }
 
+fn rel_string(rel: &Path) -> String {
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Caminho pedido para a aba de editor → relativo à raiz do painel da sessão.
+///
+/// Absoluto (link de log mapeado para o host) precisa cair dentro da raiz.
+/// Relativo tenta a raiz e depois o topo do repo (o diff fala em caminhos do
+/// repo; a raiz pode ser uma subpasta). `exists` decide se o candidato vale —
+/// no remoto não dá para olhar o disco daqui, e ele aceita tudo.
+pub fn editor_rel_path(
+    root: &Path,
+    repo_root: Option<&Path>,
+    path: &str,
+    exists: impl Fn(&Path) -> bool,
+) -> Result<String, String> {
+    let asked = Path::new(path);
+    if asked
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!("caminho inválido: {path}"));
+    }
+    let candidates: Vec<PathBuf> = if asked.is_absolute() {
+        vec![asked.to_path_buf(), crate::repo::canonicalize_or(asked)]
+    } else {
+        std::iter::once(root.join(asked))
+            .chain(repo_root.map(|r| r.join(asked)))
+            .collect()
+    };
+    let mut outside = false;
+    for candidate in candidates {
+        match candidate.strip_prefix(root) {
+            Ok(rel) if !rel.as_os_str().is_empty() => {
+                if exists(&candidate) {
+                    return Ok(rel_string(rel));
+                }
+            }
+            _ => outside = true,
+        }
+    }
+    if outside && asked.is_absolute() {
+        Err(format!("arquivo fora da raiz da sessão: {path}"))
+    } else {
+        Err(format!("arquivo não encontrado: {path}"))
+    }
+}
+
 pub fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel = rel.trim_start_matches('/');
     let candidate = if rel.is_empty() {
@@ -748,30 +799,6 @@ impl FilesManager {
         gutter::compute(&root, &context, rel)
     }
 
-    pub fn set_open(&self, id: SessionId, rel: Option<String>) {
-        let mut panels = self.panels.lock();
-        let Some(panel) = panels.get_mut(&id) else {
-            return;
-        };
-        match rel {
-            None => {
-                *panel.open.lock() = None;
-            }
-            Some(rel) => {
-                let Ok(abs) = resolve_within(&panel.root, &rel) else {
-                    return;
-                };
-                panel.watch_parent(&abs);
-                *panel.open.lock() = Some(OpenFile {
-                    rel,
-                    abs,
-                    editing: false,
-                    hash: None,
-                });
-            }
-        }
-    }
-
     pub fn edit_begin(&self, id: SessionId, rel: &str) -> Result<(String, String), String> {
         let (root, _) = self.info(id).ok_or("painel não encontrado")?;
         let full = resolve_within(&root, rel)?;
@@ -989,6 +1016,42 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tyba-files-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn editor_rel_path_maps_absolute_relative_and_repo_paths() {
+        let repo = tmp();
+        let root = repo.join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/server.js"), "x").unwrap();
+        std::fs::write(repo.join("README.md"), "x").unwrap();
+        let exists = |p: &Path| p.is_file();
+
+        let abs = root.join("src/server.js");
+        assert_eq!(
+            editor_rel_path(&root, Some(&repo), abs.to_str().unwrap(), exists).unwrap(),
+            "src/server.js"
+        );
+        assert_eq!(
+            editor_rel_path(&root, Some(&repo), "src/server.js", exists).unwrap(),
+            "src/server.js"
+        );
+        // Caminho do diff (relativo ao repo) cuja raiz é subpasta.
+        assert_eq!(
+            editor_rel_path(&root, Some(&repo), "app/src/server.js", exists).unwrap(),
+            "src/server.js"
+        );
+        let out = editor_rel_path(&root, Some(&repo), "README.md", exists).unwrap_err();
+        assert!(out.contains("não encontrado"), "{out}");
+        let outside = editor_rel_path(&root, Some(&repo), "/etc/hosts", exists).unwrap_err();
+        assert!(outside.contains("fora da raiz"), "{outside}");
+        assert!(editor_rel_path(&root, None, "../README.md", exists).is_err());
+        assert_eq!(
+            editor_rel_path(&root, None, "nao/existe.rs", |_| true).unwrap(),
+            "nao/existe.rs",
+            "remoto aceita sem olhar o disco"
+        );
+        std::fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -1256,6 +1319,8 @@ mod tests {
                 fd("src/a.rs", FileStatus::Modified),
                 fd("src/c.rs", FileStatus::Added),
             ],
+            untracked: vec!["src/c.rs".into()],
+            commits_truncated: false,
         };
         let decos = decorations_from_diff(&diff);
         let by: HashMap<&str, DecoStatus> =

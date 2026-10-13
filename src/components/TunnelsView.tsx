@@ -1,16 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ArrowsOutSimple,
-  ArrowsInSimple,
-  ArrowUUpLeft,
-  Plus,
-  Trash,
-  X,
-} from "@phosphor-icons/react";
+import { ArrowsOutSimple, ArrowsInSimple, X } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { RiskyTunnelConfirm } from "@/components/RiskyTunnelConfirm";
+import { PanelIcon } from "@/components/SidePanelBar";
 import type { Session, SessionTunnel, Tunnel, TunnelKind } from "@/lib/ipc";
 import {
   closeSessionTunnel,
@@ -18,7 +12,7 @@ import {
   onSessionTunnels,
   openSessionTunnel,
 } from "@/lib/ipc";
-import { BLANK_TUNNEL, describeTunnel, tunnelFlag } from "@/lib/tunnels";
+import { BLANK_TUNNEL, describeTunnel } from "@/lib/tunnels";
 
 interface Props {
   session: Session;
@@ -31,8 +25,28 @@ interface Props {
 function dotClass(t: SessionTunnel): string {
   if (t.state.state === "live") return "bg-tyba-green";
   if (t.state.state === "error") return "bg-tyba-red";
-  return "bg-tyba-text-faint animate-pulse";
+  return "bg-tyba-text-faint tyba-pulse";
 }
+
+/** Mockup Tuneis: o sentido do túnel em palavras, na cor de quem ele expõe. */
+const DIRECTION: Record<TunnelKind, { key: string; cls: string }> = {
+  local: { key: "tunnelsDirLocal", cls: "bg-tyba-cyan-tint text-tyba-cyan" },
+  remote: { key: "tunnelsDirRemote", cls: "bg-tyba-amber-tint text-tyba-amber" },
+  dynamic: { key: "tunnelsDirDynamic", cls: "bg-tyba-cyan-tint text-tyba-cyan" },
+};
+
+const KIND_LABEL: Record<TunnelKind, string> = {
+  local: "tunnelsKindLocal",
+  remote: "tunnelsKindRemote",
+  dynamic: "tunnelsKindDynamic",
+};
+
+/** O `.btn` dos mockups: 11px, contorno 0,14, cantos de 5px. */
+const BTN =
+  "shrink-0 rounded-[5px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text";
+
+const FIELD =
+  "h-[30px] rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2 font-mono text-[12px] text-tyba-text outline-none focus:border-tyba-cyan/50";
 
 export function TunnelsView({
   session,
@@ -103,15 +117,23 @@ export function TunnelsView({
   );
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-tyba-bg">
-      <header className="flex h-8 shrink-0 items-center gap-2 tyba-divide-b px-3">
-        <span className="min-w-0 truncate text-[12px] text-tyba-text">
-          {t("tunnelsTitle")}
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/* Fundo do painel lateral que o contém; cabeçalho como o dos mockups
+          Painel*: `padding: 12px 16px`, ícone 16, título 13px. */}
+      <header className="flex shrink-0 items-center gap-2.5 tyba-divide-b px-4 py-3">
+        <PanelIcon kind="tunnels" size={16} className="shrink-0 text-tyba-cyan" />
+        <span className="min-w-0 flex-1 truncate text-[13px] text-tyba-text">
+          {t("tunnelsTitle")} · {hostAlias}
         </span>
-        <span className="truncate font-mono text-[11px] text-tyba-text-muted">
-          {hostAlias}
-        </span>
-        <div className="flex-1" />
+        {!adding && !pendingRisky && (
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className={`${BTN} border-tyba-cyan/40 text-tyba-cyan hover:text-tyba-cyan`}
+          >
+            {t("tunnelsNew")}
+          </button>
+        )}
         <button
           onClick={onToggleExpand}
           aria-label={t(expanded ? "tunnelsCollapse" : "tunnelsExpand")}
@@ -132,53 +154,62 @@ export function TunnelsView({
         </button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
         {tunnels.length === 0 && !adding && (
-          <p className="px-1 py-3 text-[12px] text-tyba-text-faint">
+          <p className="py-1 text-[12px] text-tyba-text-faint">
             {t("tunnelsEmpty")}
           </p>
         )}
 
-        <ul className="flex flex-col gap-1">
-          {tunnels.map((tn) => (
-            <li
-              key={tn.id}
-              className="rounded-[5px] border border-tyba-border px-2 py-1.5"
-            >
-              <div className="flex items-center gap-2">
-                <span
-                  className={`size-1.5 shrink-0 rounded-full ${dotClass(tn)}`}
-                />
-                <span className="shrink-0 font-mono text-[11px] text-tyba-text-muted">
-                  {tunnelFlag(tn)}
-                </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-tyba-text">
-                  {describeTunnel(tn)}
-                </span>
-                <button
-                  onClick={() => void remove(tn.id)}
-                  aria-label={t("tunnelsRemove")}
-                  className="shrink-0 text-tyba-text-faint hover:text-tyba-red"
-                >
-                  <Trash size={12} />
-                </button>
-              </div>
-              {tn.state.state === "error" && (
-                <div className="mt-1 flex items-center gap-2 pl-[14px]">
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-tyba-red">
-                    {tn.state.detail}
+        <ul className="flex flex-col gap-2">
+          {tunnels.map((tn) => {
+            const dir = DIRECTION[tn.kind];
+            const broke = tn.state.state === "error";
+            return (
+              <li
+                key={tn.id}
+                // Mockup: cartão sem contorno, cantos de 8px; o que falhou ganha
+                // o véu vermelho.
+                className={`-mx-2.5 flex flex-col gap-[5px] rounded-[8px] p-2.5 ${
+                  broke ? "bg-tyba-red/[.07]" : "hover:bg-tyba-raised hover:shadow-[var(--tyba-row-raised)]"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`size-[7px] shrink-0 rounded-full ${dotClass(tn)}`}
+                  />
+                  <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-tyba-text">
+                    {describeTunnel(tn)}
                   </span>
+                  <span className={`shrink-0 rounded-[4px] px-1.5 py-px text-[10.5px] ${dir.cls}`}>
+                    {t(dir.key)}
+                  </span>
+                </div>
+                {tn.state.state === "error" && (
+                  <div className="text-[11px] text-tyba-red">{tn.state.detail}</div>
+                )}
+                <div className="flex gap-1.5">
+                  {broke && (
+                    <button
+                      type="button"
+                      onClick={() => void retry(tn)}
+                      className={`${BTN} text-tyba-text`}
+                    >
+                      {t("tunnelsRetry")}
+                    </button>
+                  )}
                   <button
-                    onClick={() => void retry(tn)}
-                    className="flex shrink-0 items-center gap-1 text-[11px] text-tyba-text-faint hover:text-tyba-text"
+                    type="button"
+                    onClick={() => void remove(tn.id)}
+                    aria-label={t("tunnelsRemove")}
+                    className={BTN}
                   >
-                    <ArrowUUpLeft size={11} />
-                    {t("tunnelsRetry")}
+                    {t("tunnelsRemove")}
                   </button>
                 </div>
-              )}
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
 
         {pendingRisky && (
@@ -195,31 +226,40 @@ export function TunnelsView({
 
         {adding && !pendingRisky && (
           <form
-            className="mt-2 flex flex-col gap-1.5 rounded-[5px] border border-tyba-border p-2"
+            // Mockup: cartão de contorno 0,08, 12px de respiro, campos afundados.
+            className="mt-3 flex flex-col gap-2.5 rounded-[8px] border border-tyba-text/[.08] p-3"
             onSubmit={(e) => {
               e.preventDefault();
               void submit(draft, false);
             }}
           >
-            <div className="flex gap-1.5">
-              <select
-                aria-label={t("tunnelsKind")}
-                value={draft.kind}
-                onChange={(e) =>
-                  setDraft({
-                    ...draft,
-                    kind: e.target.value as TunnelKind,
-                    target_host:
-                      e.target.value === "dynamic" ? null : "localhost",
-                    target_port: e.target.value === "dynamic" ? null : draft.target_port,
-                  })
-                }
-                className="h-7 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 text-[11px] text-tyba-text"
-              >
-                <option value="local">-L</option>
-                <option value="remote">-R</option>
-                <option value="dynamic">-D</option>
-              </select>
+            <div className="text-[12px] text-tyba-text">{t("tunnelsNew")}</div>
+            <div role="radiogroup" aria-label={t("tunnelsKind")} className="flex flex-wrap gap-1.5">
+              {(["local", "remote", "dynamic"] as TunnelKind[]).map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  role="radio"
+                  aria-checked={draft.kind === kind}
+                  onClick={() =>
+                    setDraft({
+                      ...draft,
+                      kind,
+                      target_host: kind === "dynamic" ? null : (draft.target_host ?? "localhost"),
+                      target_port: kind === "dynamic" ? null : draft.target_port,
+                    })
+                  }
+                  className={`rounded-[4px] px-2 py-1 text-[10.5px] ${
+                    draft.kind === kind
+                      ? DIRECTION[kind].cls
+                      : "border border-tyba-border-field text-tyba-text-muted hover:text-tyba-text"
+                  }`}
+                >
+                  {t(KIND_LABEL[kind])}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-end gap-2">
               <input
                 aria-label={t("tunnelsListenPort")}
                 type="number"
@@ -231,10 +271,11 @@ export function TunnelsView({
                 onChange={(e) =>
                   setDraft({ ...draft, listen_port: Number(e.target.value) })
                 }
-                className="h-7 w-20 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
+                className={`${FIELD} w-20`}
               />
               {draft.kind !== "dynamic" && (
                 <>
+                  <span className="pb-1.5 text-tyba-text-faint">→</span>
                   <input
                     spellCheck={false}
                     autoCapitalize="off"
@@ -246,7 +287,7 @@ export function TunnelsView({
                     onChange={(e) =>
                       setDraft({ ...draft, target_host: e.target.value })
                     }
-                    className="h-7 min-w-0 flex-1 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
+                    className={`${FIELD} min-w-0 flex-1`}
                   />
                   <input
                     aria-label={t("tunnelsTargetPort")}
@@ -259,39 +300,32 @@ export function TunnelsView({
                     onChange={(e) =>
                       setDraft({ ...draft, target_port: Number(e.target.value) })
                     }
-                    className="h-7 w-20 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 font-mono text-[11px] text-tyba-text"
+                    className={`${FIELD} w-20`}
                   />
                 </>
               )}
             </div>
             {error && <p className="text-[11px] text-tyba-red">{error}</p>}
-            <div className="flex gap-1.5">
-              <Button size="sm" type="submit">
-                {t("tunnelsOpen")}
-              </Button>
+            <div className="flex gap-2">
               <Button
                 size="sm"
-                variant="ghost"
+                type="submit"
+                className="h-auto flex-1 rounded-[6px] bg-tyba-cyan px-3.5 py-[7px] text-[12px] font-normal text-tyba-text-inverse hover:bg-tyba-cyan/90"
+              >
+                {t("tunnelsOpen")}
+              </Button>
+              <button
                 type="button"
+                className={BTN}
                 onClick={() => {
                   setAdding(false);
                   setError(null);
                 }}
               >
                 {t("tunnelsCancel")}
-              </Button>
+              </button>
             </div>
           </form>
-        )}
-
-        {!adding && !pendingRisky && (
-          <button
-            onClick={() => setAdding(true)}
-            className="mt-2 flex items-center gap-1.5 px-1 text-[11px] text-tyba-text-faint hover:text-tyba-text"
-          >
-            <Plus size={11} />
-            {t("tunnelsNew")}
-          </button>
         )}
       </div>
     </div>

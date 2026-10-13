@@ -19,6 +19,7 @@ const makeApproval = (
   command: "rm -rf build",
   cwd: null,
   risk: "green",
+  risk_reason: null,
   context: null,
   requested_at_ms: 0,
   ...overrides,

@@ -30,6 +30,9 @@ pub struct TranscriptCandidate {
     pub path: PathBuf,
     pub mtime_ms: u64,
     pub first_msg_ms: Option<u64>,
+    /// Tamanho em bytes — é o que diz se o transcript está CRESCENDO entre
+    /// dois ticks (ver [`DiskObserver::observe`]).
+    pub len: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,20 +103,30 @@ pub fn choose_active_transcript(
     }
 }
 
-/// Lista `~/.claude/projects/<slug>/<sessionId>.jsonl` e escolhe o ativo pelo
-/// `agent_start_ms` do agente detectado pela F1. `None` quando o slug não existe
-/// ou está vazio — tolerante, nunca panica.
-pub fn active_transcript_for_cwd(cwd: &Path, agent_start_ms: u64) -> Option<ActiveTranscript> {
-    let dir = claude_projects_dir()?.join(claude_project_dir_name(cwd));
-    let candidates = list_transcript_candidates(&dir);
-    choose_active_transcript(&candidates, agent_start_ms)
+/// Lista `~/.claude/projects/<slug>/<sessionId>.jsonl` do cwd do agente. Vazio
+/// quando o slug não existe — tolerante, nunca panica.
+fn slug_candidates(cwd: &Path, agent_start_ms: u64) -> Vec<TranscriptCandidate> {
+    claude_projects_dir()
+        .map(|dir| {
+            list_transcript_candidates(&dir.join(claude_project_dir_name(cwd)), agent_start_ms)
+        })
+        .unwrap_or_default()
+}
+
+/// Escrito perto do nascimento do agente ou depois — o filtro de
+/// plausibilidade de [`choose_active_transcript`].
+fn is_fresh(candidate: &TranscriptCandidate, agent_start_ms: u64) -> bool {
+    candidate.mtime_ms.saturating_add(HEURISTIC_SLACK_MS) >= agent_start_ms
 }
 
 fn claude_projects_dir() -> Option<PathBuf> {
     crate::ssh::home_dir().map(|home| home.join(".claude").join("projects"))
 }
 
-fn list_transcript_candidates(dir: &Path) -> Vec<TranscriptCandidate> {
+/// Só lê a primeira mensagem dos candidatos frescos (ver [`is_fresh`]): os
+/// frios nunca concorrem na heurística, e o poll re-resolve a cada tick — ler
+/// o cabeçalho de todo transcript antigo do slug seria I/O jogado fora.
+fn list_transcript_candidates(dir: &Path, agent_start_ms: u64) -> Vec<TranscriptCandidate> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return out;
@@ -130,10 +143,12 @@ fn list_transcript_candidates(dir: &Path) -> Vec<TranscriptCandidate> {
             continue;
         }
         let mtime_ms = meta.modified().ok().and_then(system_time_ms).unwrap_or(0);
+        let fresh = mtime_ms.saturating_add(HEURISTIC_SLACK_MS) >= agent_start_ms;
         out.push(TranscriptCandidate {
-            path: path.clone(),
+            first_msg_ms: fresh.then(|| first_message_ms(&path)).flatten(),
+            path,
             mtime_ms,
-            first_msg_ms: first_message_ms(&path),
+            len: meta.len(),
         });
     }
     out
@@ -233,11 +248,11 @@ fn read_agent_meta(sidecar: &Path, agent_id: &str) -> Option<(String, Option<Str
     Some((agent_type, description))
 }
 
-/// Bind provisório re-resolve por ~90s (45 ticks × 2s da F1) e então assenta:
-/// o candidato forte, quando existe, nasce nos primeiros segundos (primeiro
-/// prompt do claude); depois disso re-resolver é só I/O perpétuo no slug
-/// (`--resume` nunca ganha candidato forte). Melhor-esforço documentado da
-/// decisão 5.
+/// Bind provisório re-resolve pela heurística por ~90s (45 ticks × 2s da F1)
+/// e então assenta: o candidato forte, quando existe, nasce nos primeiros
+/// segundos (primeiro prompt do claude). Assentado, a heurística não mexe mais
+/// no bind — só o crescimento do transcript o migra (ver
+/// [`DiskObserver::observe`]). Melhor-esforço documentado da decisão 5.
 const PROVISIONAL_SETTLE_TICKS: u32 = 45;
 
 struct SessionObserver {
@@ -245,6 +260,13 @@ struct SessionObserver {
     poll_stop: Arc<AtomicBool>,
     provisional: bool,
     stable_ticks: u32,
+    /// Tamanho de cada transcript do slug no tick anterior: é a régua do
+    /// "está crescendo".
+    sizes: HashMap<PathBuf, u64>,
+    /// Transcripts que já estavam sendo escritos quando o bind nasceu, fora o
+    /// ligado — de outro `claude` vivo no mesmo cwd. Nunca viram alvo de
+    /// migração, senão o painel pularia para a conversa do vizinho.
+    foreign: HashSet<PathBuf>,
 }
 
 impl SessionObserver {
@@ -290,13 +312,23 @@ impl DiskObserver {
     }
 
     /// A F1 reporta um agente Claude na sessão de shell: resolve o transcript
-    /// ativo e passa a observar seu sidecar. Idempotente enquanto o transcript
-    /// for o mesmo; um transcript novo (ou reinício após o agente sumir)
-    /// recomeça do zero com o painel limpo. Bind provisório é pegajoso: outra
-    /// resolução provisória não o desaloja (senão dois candidatos vivos fariam
-    /// o painel zerar em flapping) — só uma resolução forte rebinda, e depois
-    /// de [`PROVISIONAL_SETTLE_TICKS`] re-resoluções estáveis o bind assenta
-    /// sozinho, encerrando o I/O de re-resolução (caso `--resume`).
+    /// ativo e passa a observar seu sidecar. Chamado a CADA tick enquanto o
+    /// agente vive — o vínculo é com a conversa, não com o processo (M2 do
+    /// claude-monitor). Devolve `true` quando o transcript ligado mudou.
+    ///
+    /// Duas réguas, nesta ordem:
+    /// 1. **Crescimento.** O ligado parou e outro transcript do slug cresceu
+    ///    neste tick (`/clear` abre um arquivo novo; `/resume` volta a escrever
+    ///    num antigo): o bind migra para ele e o painel é ARQUIVADO — os
+    ///    subagentes da conversa anterior ficam, nada é zerado. Transcript que
+    ///    já estava fresco quando o bind nasceu é de outro `claude`
+    ///    (`foreign`) e nunca é alvo.
+    /// 2. **Heurística** ([`choose_active_transcript`]) para o primeiro bind e
+    ///    para o provisório. Bind provisório é pegajoso: outra resolução
+    ///    provisória não o desaloja (senão dois candidatos vivos fariam o
+    ///    painel zerar em flapping) — só uma resolução forte rebinda, e depois
+    ///    de [`PROVISIONAL_SETTLE_TICKS`] re-resoluções estáveis o bind assenta.
+    ///    Bind forte a heurística não mexe mais.
     pub fn observe<R: Runtime>(
         &self,
         app: &AppHandle<R>,
@@ -304,10 +336,91 @@ impl DiskObserver {
         session: SessionId,
         cwd: &Path,
         agent_start_ms: u64,
-    ) {
-        self.observe_with(app, tracker, session, || {
-            active_transcript_for_cwd(cwd, agent_start_ms)
+    ) -> bool {
+        let candidates = slug_candidates(cwd, agent_start_ms);
+        self.observe_candidates(app, tracker, session, &candidates, agent_start_ms)
+    }
+
+    fn observe_candidates<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        tracker: &SharedSubagents,
+        session: SessionId,
+        candidates: &[TranscriptCandidate],
+        agent_start_ms: u64,
+    ) -> bool {
+        if let Some(grown) = self.growth_target(session, candidates) {
+            self.bind(app, tracker, session, grown, false, true);
+            self.seed(session, candidates, agent_start_ms, true);
+            return true;
+        }
+        let changed = self.observe_with(app, tracker, session, || {
+            choose_active_transcript(candidates, agent_start_ms)
         });
+        if changed {
+            self.seed(session, candidates, agent_start_ms, false);
+        }
+        changed
+    }
+
+    /// O transcript para onde o bind deve migrar, ou `None`. Atualiza a régua
+    /// de tamanhos em todo tick. Só migra quando o ligado NÃO cresceu: com os
+    /// dois crescendo juntos (o `claude` ainda fecha a conversa antiga), espera
+    /// o próximo tick.
+    fn growth_target(
+        &self,
+        session: SessionId,
+        candidates: &[TranscriptCandidate],
+    ) -> Option<PathBuf> {
+        let mut map = self.sessions.lock().expect("disk observer lock");
+        let observer = map.get_mut(&session)?;
+        if observer.poll_stop.load(Ordering::SeqCst) {
+            return None;
+        }
+        let sizes = &observer.sizes;
+        let grew = |c: &TranscriptCandidate| c.len > sizes.get(&c.path).copied().unwrap_or(0);
+        let bound_grew = candidates
+            .iter()
+            .any(|c| c.path == observer.parent && grew(c));
+        let target = if bound_grew {
+            None
+        } else {
+            candidates
+                .iter()
+                .filter(|c| c.path != observer.parent && !observer.foreign.contains(&c.path))
+                .filter(|c| grew(c))
+                .max_by_key(|c| c.mtime_ms)
+                .map(|c| c.path.clone())
+        };
+        observer.sizes = candidates.iter().map(|c| (c.path.clone(), c.len)).collect();
+        target
+    }
+
+    /// Fotografa o slug logo depois de um bind: os tamanhos viram a régua do
+    /// próximo tick e, num bind novo (não migração), o que já estava fresco
+    /// vira `foreign`. Migração mantém o `foreign` do bind original — a
+    /// conversa anterior do PRÓPRIO agente continua elegível (`/resume` nela
+    /// de volta).
+    fn seed(
+        &self,
+        session: SessionId,
+        candidates: &[TranscriptCandidate],
+        agent_start_ms: u64,
+        keep_foreign: bool,
+    ) {
+        let mut map = self.sessions.lock().expect("disk observer lock");
+        let Some(observer) = map.get_mut(&session) else {
+            return;
+        };
+        observer.sizes = candidates.iter().map(|c| (c.path.clone(), c.len)).collect();
+        if !keep_foreign {
+            let parent = observer.parent.clone();
+            observer.foreign = candidates
+                .iter()
+                .filter(|c| c.path != parent && is_fresh(c, agent_start_ms))
+                .map(|c| c.path.clone())
+                .collect();
+        }
     }
 
     /// `true` enquanto uma thread de varredura está viva para a sessão. `false`
@@ -321,10 +434,25 @@ impl DiskObserver {
             .unwrap_or(false)
     }
 
-    /// `true` só com uma thread viva num bind forte — é o gancho que o poll da
-    /// F1 usa para re-tentar `observe`: sessão não observada re-tenta até o
-    /// transcript nascer, e bind provisório re-resolve até um candidato forte
-    /// aparecer (ou o agente sumir).
+    /// Id da conversa do transcript ligado enquanto a observação está viva — é
+    /// o que o "Reabrir com gate" retoma (M1 do claude-monitor). Observação
+    /// congelada devolve `None`: o bind é de um agente que já sumiu, e retomar
+    /// a conversa dele no lugar da do agente atual seria trocar de conversa às
+    /// cegas. O id já sai validado por [`crate::agent::conversation`].
+    pub fn bound_conversation(&self, session: SessionId) -> Option<String> {
+        let parent = self
+            .sessions
+            .lock()
+            .expect("disk observer lock")
+            .get(&session)
+            .filter(|observer| !observer.poll_stop.load(Ordering::SeqCst))
+            .map(|observer| observer.parent.clone())?;
+        crate::agent::conversation::from_transcript(&parent)
+    }
+
+    /// `true` só com uma thread viva num bind forte. Só os testes perguntam:
+    /// desde o M2 o poll da F1 chama `observe` em todo tick, assentado ou não.
+    #[cfg(test)]
     pub fn is_settled(&self, session: SessionId) -> bool {
         self.sessions
             .lock()
@@ -340,52 +468,97 @@ impl DiskObserver {
         tracker: &SharedSubagents,
         session: SessionId,
         resolve: impl FnOnce() -> Option<ActiveTranscript>,
-    ) {
+    ) -> bool {
         let Some(active) = resolve() else {
-            return;
+            return false;
         };
         {
             let mut map = self.sessions.lock().expect("disk observer lock");
-            match map.get_mut(&session) {
-                Some(observer) if !observer.poll_stop.load(Ordering::SeqCst) => {
-                    if observer.parent == active.path {
-                        if !active.provisional {
-                            observer.provisional = false;
-                        } else if observer.provisional {
-                            observer.tick_provisional();
-                        }
-                        return;
+            if let Some(observer) = map
+                .get_mut(&session)
+                .filter(|o| !o.poll_stop.load(Ordering::SeqCst))
+            {
+                if observer.parent == active.path {
+                    if !active.provisional {
+                        observer.provisional = false;
+                    } else if observer.provisional {
+                        observer.tick_provisional();
                     }
-                    if active.provisional {
-                        if observer.provisional {
-                            observer.tick_provisional();
-                        }
-                        return;
-                    }
-                    observer.poll_stop.store(true, Ordering::SeqCst);
+                    return false;
                 }
-                Some(observer) => observer.poll_stop.store(true, Ordering::SeqCst),
-                None => {}
+                // Bind forte só migra por crescimento (`observe`): a heurística
+                // mudar de ideia — o empate por mtime oscila a cada escrita —
+                // não é troca de conversa.
+                if !observer.provisional {
+                    return false;
+                }
+                if active.provisional {
+                    observer.tick_provisional();
+                    return false;
+                }
             }
         }
-        tracker.remove_session(app, session);
+        // Provisório corrigido por um forte, ou agente novo depois de outro ter
+        // sumido: o palpite anterior não era desta conversa, painel limpo.
+        self.bind(
+            app,
+            tracker,
+            session,
+            active.path,
+            active.provisional,
+            false,
+        );
+        true
+    }
+
+    /// Liga a sessão a `parent` e sobe a varredura do sidecar dele, parando a
+    /// anterior. `archive` decide o painel: `true` (migração de conversa) o
+    /// mantém — os subagentes da conversa anterior continuam lá, com seus
+    /// watchers terminando sozinhos —; `false` (palpite corrigido, agente
+    /// novo) o zera como antes.
+    fn bind<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        tracker: &SharedSubagents,
+        session: SessionId,
+        parent: PathBuf,
+        provisional: bool,
+        archive: bool,
+    ) {
+        let foreign = {
+            let mut map = self.sessions.lock().expect("disk observer lock");
+            map.get_mut(&session).map(|observer| {
+                observer.poll_stop.store(true, Ordering::SeqCst);
+                std::mem::take(&mut observer.foreign)
+            })
+        };
+        if !archive {
+            tracker.remove_session(app, session);
+        }
         tracker.register_session(session);
         let poll_stop = Arc::new(AtomicBool::new(false));
         spawn_sidecar_poll(
             app.clone(),
             Arc::clone(tracker),
             session,
-            active.path.clone(),
+            parent.clone(),
             Arc::clone(&poll_stop),
             Arc::clone(&self.coordinate),
         );
+        let foreign = if archive {
+            foreign.unwrap_or_default()
+        } else {
+            HashSet::new()
+        };
         self.sessions.lock().expect("disk observer lock").insert(
             session,
             SessionObserver {
-                parent: active.path,
+                parent,
                 poll_stop,
-                provisional: active.provisional,
+                provisional,
                 stable_ticks: 0,
+                sizes: HashMap::new(),
+                foreign,
             },
         );
     }
@@ -454,7 +627,15 @@ fn spawn_sidecar_poll<R: Runtime>(
     let spawned = std::thread::Builder::new()
         .name("disk-observer-sidecar".into())
         .spawn(move || {
-            let mut known: HashSet<String> = HashSet::new();
+            // Painel arquivado (migração de volta para uma conversa já vista)
+            // já tem estes subagentes: re-anunciá-los duplicaria a entrada,
+            // porque `promote` não deduplica por `agent_id`.
+            let mut known: HashSet<String> = tracker
+                .snapshot(session)
+                .subagents
+                .into_iter()
+                .filter_map(|run| run.agent_id)
+                .collect();
             while !poll_stop.load(Ordering::SeqCst) {
                 for coordination in
                     poll_once(&app, &tracker, session, &sidecar, &parent, &mut known)
@@ -506,6 +687,7 @@ mod tests {
             path: PathBuf::from(path),
             mtime_ms,
             first_msg_ms,
+            len: 0,
         }
     }
 
@@ -643,7 +825,7 @@ mod tests {
             "{\"type\":\"user\",\"timestamp\":\"2026-07-23T20:00:00.000Z\",\"message\":{\"content\":\"oi\"}}\n{\"type\":\"assistant\",\"timestamp\":\"2026-07-23T20:00:05.000Z\",\"message\":{\"content\":[]}}\n",
         );
         write(&dir.path().join("ignore.txt"), "x");
-        let candidates = list_transcript_candidates(dir.path());
+        let candidates = list_transcript_candidates(dir.path(), 0);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].path, path);
         assert_eq!(
@@ -655,7 +837,7 @@ mod tests {
 
     #[test]
     fn missing_slug_dir_yields_no_candidates() {
-        assert!(list_transcript_candidates(Path::new("/nope/does/not/exist")).is_empty());
+        assert!(list_transcript_candidates(Path::new("/nope/does/not/exist"), 0).is_empty());
     }
 
     fn sidecar_with(files: &[(&str, &str)]) -> TempDir {
@@ -947,7 +1129,7 @@ mod tests {
 
         // Tick 1: agente acabou de nascer, nada foi escrito ainda — todos os
         // candidatos são frios ⇒ nenhum bind, o retry fica armado.
-        let candidates = list_transcript_candidates(slug.path());
+        let candidates = list_transcript_candidates(slug.path(), now_ms);
         observer.observe_with(&handle, &tracker, session, || {
             choose_active_transcript(&candidates, now_ms)
         });
@@ -964,7 +1146,7 @@ mod tests {
 
         // Tick 2: o retomado vira o único plausível ⇒ bind provisório, e a
         // thread captura o sidecar novo do diretório antigo.
-        let candidates = list_transcript_candidates(slug.path());
+        let candidates = list_transcript_candidates(slug.path(), now_ms);
         let chosen = choose_active_transcript(&candidates, now_ms);
         assert_eq!(
             chosen,
@@ -1096,6 +1278,240 @@ mod tests {
             false
         });
         assert!(coordinated);
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
+    }
+
+    #[test]
+    fn bound_conversation_is_the_live_transcript_id_and_none_once_frozen() {
+        // M1: o "Reabrir com gate" retoma a conversa ligada. Fixture
+        // sintética: id escrito à mão, nada copiado de ~/.claude/projects.
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let observer = DiskObserver::new();
+        let session = SessionId::new_v4();
+        assert_eq!(observer.bound_conversation(session), None);
+
+        let dir = TempDir::new().unwrap();
+        let id = "11111111-2222-3333-4444-555555555555";
+        let parent = dir.path().join(format!("{id}.jsonl"));
+        write(
+            &parent,
+            &format!("{{\"type\":\"user\",\"sessionId\":\"{id}\",\"message\":{{}}}}\n"),
+        );
+        observer.begin(&handle, &tracker, session, parent);
+        assert_eq!(observer.bound_conversation(session).as_deref(), Some(id));
+
+        // Agente sumiu: o bind congelado é de outro processo, nunca se retoma.
+        observer.stop(&handle, &tracker, session);
+        assert_eq!(observer.bound_conversation(session), None);
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
+    }
+
+    #[test]
+    fn bound_conversation_rejects_an_implausible_id() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let observer = DiskObserver::new();
+        let session = SessionId::new_v4();
+        let dir = TempDir::new().unwrap();
+        // Nem o `sessionId` interno nem o nome do arquivo são id plausível: o
+        // `-` inicial viraria opção no argv do claude.
+        let parent = dir.path().join("--dangerously-x.jsonl");
+        write(
+            &parent,
+            "{\"type\":\"user\",\"sessionId\":\"--dangerously-skip-permissions\"}\n",
+        );
+        observer.begin(&handle, &tracker, session, parent);
+        assert_eq!(observer.bound_conversation(session), None);
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
+    }
+
+    // --- M2 do claude-monitor: o vínculo segue a conversa que cresce ---
+    //
+    // Fixtures sintéticas, escritas à mão: ids e conteúdo inventados, nada
+    // copiado de ~/.claude/projects.
+
+    const CONV_A: &str = "aaaaaaaa-0000-4000-8000-000000000001";
+    const CONV_B: &str = "bbbbbbbb-0000-4000-8000-000000000002";
+    const CONV_C: &str = "cccccccc-0000-4000-8000-000000000003";
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    fn append_turn(slug: &Path, conversation: &str) -> PathBuf {
+        use std::io::Write as _;
+        let path = slug.join(format!("{conversation}.jsonl"));
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","sessionId":"{conversation}","timestamp":"{}","message":{{"content":"oi"}}}}"#,
+            chrono::Utc::now().to_rfc3339()
+        )
+        .unwrap();
+        path
+    }
+
+    struct Tick<'a> {
+        observer: &'a DiskObserver,
+        handle: &'a AppHandle<tauri::test::MockRuntime>,
+        tracker: &'a SharedSubagents,
+        session: SessionId,
+        slug: &'a Path,
+        start: u64,
+    }
+
+    impl Tick<'_> {
+        fn run(&self) -> bool {
+            let candidates = list_transcript_candidates(self.slug, self.start);
+            self.observer.observe_candidates(
+                self.handle,
+                self.tracker,
+                self.session,
+                &candidates,
+                self.start,
+            )
+        }
+    }
+
+    #[test]
+    fn clear_migrates_the_bind_to_the_growing_transcript_and_archives_the_panel() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let observer = DiskObserver::new();
+        let session = SessionId::new_v4();
+        let slug = TempDir::new().unwrap();
+        let tick = Tick {
+            observer: &observer,
+            handle: &handle,
+            tracker: &tracker,
+            session,
+            slug: slug.path(),
+            start: now_ms().saturating_sub(1_000),
+        };
+
+        // O claude nasceu e escreveu a conversa A: bind forte nela.
+        let a = append_turn(slug.path(), CONV_A);
+        assert!(tick.run());
+        assert_eq!(observer.bound_parent(session), Some(a.clone()));
+        tracker.on_subagent_started(
+            &handle,
+            session,
+            "a1b2c3d4e5".into(),
+            "explorer".into(),
+            None,
+            Some(&a),
+        );
+
+        // `/clear`: a conversa B nasce e cresce, a A para.
+        let b = append_turn(slug.path(), CONV_B);
+        assert!(tick.run());
+        assert_eq!(observer.bound_parent(session), Some(b.clone()));
+        assert_eq!(
+            observer.bound_conversation(session).as_deref(),
+            Some(CONV_B)
+        );
+        // Arquivado, nunca zerado: o subagente da conversa A segue no painel.
+        assert!(tracker
+            .snapshot(session)
+            .subagents
+            .iter()
+            .any(|run| run.agent_id.as_deref() == Some("a1b2c3d4e5")));
+
+        // Nada cresceu: a heurística (que prefere A, mais perto do start) não
+        // desfaz a migração.
+        assert!(!tick.run());
+        assert_eq!(observer.bound_parent(session), Some(b));
+
+        // `/resume` de volta para A: A cresce, B parou — o bind volta, sem
+        // duplicar o subagente que o painel arquivado já tinha.
+        append_turn(slug.path(), CONV_A);
+        assert!(tick.run());
+        assert_eq!(observer.bound_parent(session), Some(a));
+        std::thread::sleep(SIDECAR_POLL_INTERVAL + Duration::from_millis(200));
+        let runs = tracker.snapshot(session).subagents;
+        assert_eq!(
+            runs.iter()
+                .filter(|run| run.agent_id.as_deref() == Some("a1b2c3d4e5"))
+                .count(),
+            1
+        );
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
+    }
+
+    #[test]
+    fn bind_stays_while_the_bound_transcript_is_still_growing() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let observer = DiskObserver::new();
+        let session = SessionId::new_v4();
+        let slug = TempDir::new().unwrap();
+        let tick = Tick {
+            observer: &observer,
+            handle: &handle,
+            tracker: &tracker,
+            session,
+            slug: slug.path(),
+            start: now_ms().saturating_sub(1_000),
+        };
+
+        let a = append_turn(slug.path(), CONV_A);
+        assert!(tick.run());
+        // Os dois crescem no mesmo tick (o claude ainda fecha a conversa
+        // antiga): espera, não migra.
+        append_turn(slug.path(), CONV_A);
+        append_turn(slug.path(), CONV_B);
+        assert!(!tick.run());
+        assert_eq!(observer.bound_parent(session), Some(a));
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
+    }
+
+    #[test]
+    fn transcript_already_live_at_bind_never_steals_it() {
+        // Outro claude no mesmo cwd já escrevia C quando o bind em A nasceu:
+        // C crescer com A parado (o dono pensando) não é troca de conversa.
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let observer = DiskObserver::new();
+        let session = SessionId::new_v4();
+        let slug = TempDir::new().unwrap();
+        let start = now_ms().saturating_sub(1_000);
+        let tick = Tick {
+            observer: &observer,
+            handle: &handle,
+            tracker: &tracker,
+            session,
+            slug: slug.path(),
+            start,
+        };
+
+        append_turn(slug.path(), CONV_C);
+        let a = append_turn(slug.path(), CONV_A);
+        let candidates = list_transcript_candidates(slug.path(), start);
+        let bind = strong_transcript(&a);
+        assert!(observer.observe_with(&handle, &tracker, session, move || Some(bind)));
+        observer.seed(session, &candidates, start, false);
+
+        append_turn(slug.path(), CONV_C);
+        assert!(!tick.run());
+        assert_eq!(observer.bound_parent(session), Some(a));
 
         observer.retain_live(&handle, &tracker, &HashSet::new());
     }

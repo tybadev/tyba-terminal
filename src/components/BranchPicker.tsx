@@ -143,7 +143,8 @@ export function BranchPicker({
                 }`
           }
         >
-          <GitBranch size={variant === "chip" ? 12 : 10} className="shrink-0" />
+          {/* Na barra de status, só o nome em azul (mockup Proposta). */}
+          {variant !== "chip" && <GitBranch size={10} className="shrink-0" />}
           <span className="truncate">{label}</span>
         </button>
       </PopoverTrigger>

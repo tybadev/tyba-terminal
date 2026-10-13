@@ -210,6 +210,81 @@ export function keyboardOwner({
   return "tybaLine";
 }
 
+/** A linha de UM painel: se está na tela, em que estado, e se é dona do teclado. */
+export interface PaneLine {
+  visible: boolean;
+  state: LineState;
+  owns: boolean;
+}
+
+/**
+ * A linha do TYBA de uma sessão, calculada só com o estado DELA.
+ *
+ * Existe porque cada painel tem a própria linha (decidido em 02/08, "Uma linha
+ * por painel"). Antes tudo isto era calculado uma vez, para a sessão ativa, e
+ * o resultado era aplicado a qualquer painel — o vizinho herdava o "comando
+ * rodando" ou o "vim aberto" de quem tinha o foco. Quem chama passa o estado
+ * da sessão do painel; nenhuma entrada aqui sabe qual sessão está ativa, e é
+ * isso que impede a decisão de vazar de um painel para o outro.
+ */
+export function paneLine(input: {
+  kind: SessionKind | undefined;
+  sessionIntegration?: Integration | null | undefined;
+  /** O que o shell relatou por `633;P`. Ausente = ainda não relatou. */
+  reported: boolean | undefined;
+  promptModePref: boolean;
+  hookExpected: boolean | undefined;
+  broadcasting: boolean;
+  altScreen: boolean;
+  command: SessionCommand | undefined;
+}): PaneLine {
+  const promptMode = input.reported ?? false;
+  const owner: OwnerInput = {
+    promptMode,
+    kind: input.kind,
+    sessionIntegration: input.sessionIntegration,
+    altScreen: input.altScreen,
+    command: input.command,
+    integrated: promptMode,
+    broadcasting: input.broadcasting,
+  };
+  return {
+    visible: lineVisible({
+      kind: input.kind,
+      sessionIntegration: input.sessionIntegration,
+      promptMode,
+      promptModePref: input.promptModePref,
+      hookExpected: input.hookExpected,
+    }),
+    state: lineState({ ...owner, reported: input.reported }),
+    owns: keyboardOwner(owner) === "tybaLine",
+  };
+}
+
+/**
+ * Em que linha do rascunho o caret está — primeira, última, as duas (rascunho
+ * de uma linha só) ou nenhuma (no meio).
+ *
+ * Decide o que ↑ e ↓ fazem na caixa. Num rascunho multilinha elas movem o
+ * caret entre as linhas, como em qualquer editor; só na borda viram o gesto do
+ * shell: ↑ na primeira linha abre o histórico, ↓ na última abre a lista. Sem
+ * isto não havia como voltar à linha 1 de um comando escrito com Shift+Enter.
+ *
+ * Linha é linha LÓGICA (`\n`), não a visual de uma linha longa que quebrou: a
+ * quebra visual depende da largura do painel, e a borda mudaria de lugar a
+ * cada redimensionamento.
+ */
+export function caretLine(
+  text: string,
+  caret: number,
+): { first: boolean; last: boolean } {
+  const at = Math.max(0, Math.min(caret, text.length));
+  return {
+    first: !text.slice(0, at).includes("\n"),
+    last: !text.slice(at).includes("\n"),
+  };
+}
+
 /** As quatro setas, pelo `key` do evento de teclado. */
 const ARROW_KEYS = new Set([
   "ArrowUp",
@@ -631,4 +706,116 @@ export function ghostDoToken(
         { texto: caminho, fonte: "caminho" },
       ];
   return ordem.find((g) => g.texto !== "") ?? { texto: "", fonte: null };
+}
+
+/**
+ * Um item da lista de sugestões, venha de onde vier.
+ *
+ * Antes eram quatro listas desenhadas uma embaixo da outra e só a de histórico
+ * andava com as setas: subcomando, comando do `$PATH` e caminho só se
+ * escolhiam com o mouse. Uma lista só é o que deixa ↑/↓ alcançarem tudo.
+ */
+export type MenuItem =
+  | {
+      kind: "history" | "snippet";
+      key: string;
+      command: string;
+      label: string | null;
+    }
+  | { kind: "argument"; key: string; value: string; description: string | null }
+  | { kind: "binary"; key: string; name: string; binKind: string }
+  | { kind: "path"; key: string; value: string };
+
+export interface MenuSources {
+  /** Em ordem de execução, o mais recente primeiro — como o core manda. */
+  commands: {
+    command: string;
+    failed: boolean;
+    kind: "history" | "snippet";
+    label: string | null;
+  }[];
+  args: { value: string; description: string | null }[];
+  bins: { name: string; kind: string }[];
+  paths: string[];
+}
+
+/**
+ * Os itens em ORDEM DE PROXIMIDADE: o índice 0 é o que fica colado na caixa.
+ *
+ * A lista abre ACIMA da linha, então "primeiro" quer dizer "mais perto de onde
+ * se digita" — e é ali que o último comando executado tem de estar, já
+ * escolhido. Ela abria de cima para baixo, com o mais recente no topo e longe
+ * do cursor, e o ↑ que todo shell usa para "o anterior" descia em direção ao
+ * mais novo: a ordem inteira estava de cabeça para baixo.
+ *
+ * Depois do histórico vem o que o comando oferece (subcomando, flag, branch),
+ * depois os comandos que existem na máquina, depois caminho. Repetição de
+ * comando fica com a PRIMEIRA ocorrência, que é a mais recente.
+ *
+ * Comando que só falhou não vira item: devolver `lljh` numa lista é sugerir o
+ * próprio erro de digitação.
+ */
+export function menuItems(sources: MenuSources): MenuItem[] {
+  const items: MenuItem[] = [];
+  const seen = new Set<string>();
+  for (const hit of sources.commands) {
+    if (hit.failed || seen.has(hit.command)) continue;
+    seen.add(hit.command);
+    items.push({
+      kind: hit.kind,
+      key: `${hit.kind}:${hit.command}`,
+      command: hit.command,
+      label: hit.label,
+    });
+  }
+  for (const arg of sources.args) {
+    items.push({
+      kind: "argument",
+      key: `arg:${arg.value}`,
+      value: arg.value,
+      description: arg.description,
+    });
+  }
+  for (const bin of sources.bins) {
+    items.push({
+      kind: "binary",
+      key: `bin:${bin.name}`,
+      name: bin.name,
+      binKind: bin.kind,
+    });
+  }
+  for (const path of sources.paths) {
+    items.push({ kind: "path", key: `path:${path}`, value: path });
+  }
+  return items;
+}
+
+/**
+ * A ordem em que a lista é DESENHADA, de cima para baixo.
+ *
+ * É a de {@link menuItems} invertida: o item 0 vai para a última linha, a que
+ * encosta na caixa. Separado da ordem lógica para que a seleção continue sendo
+ * "a distância até a caixa" e não dependa de quantos itens couberam.
+ */
+export function menuRows<T>(items: T[]): { item: T; index: number }[] {
+  return items.map((item, index) => ({ item, index })).reverse();
+}
+
+/**
+ * Para onde a seleção vai com uma seta, ou `-1` para voltar à caixa.
+ *
+ * ↑ SOBE na tela, e subir é ir para o mais antigo — o mesmo gesto do shell.
+ * ↓ desce em direção à caixa; do item colado nela, mais um ↓ devolve o cursor
+ * para a linha (`-1`, nada escolhido), e com nada escolhido o Enter roda o que
+ * está escrito. Não dá a volta: do mais antigo, outro ↑ fica onde está — pular
+ * de lá para o mais novo seria o ↑ trazer o comando de agora há pouco.
+ */
+export function moveSelection(
+  index: number,
+  key: "ArrowUp" | "ArrowDown",
+  length: number,
+): number {
+  if (length <= 0) return -1;
+  if (key === "ArrowUp") return Math.min(Math.max(index, -1) + 1, length - 1);
+  return index <= 0 ? -1 : Math.min(index - 1, length - 1);
 }

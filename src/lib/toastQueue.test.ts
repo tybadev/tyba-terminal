@@ -15,6 +15,7 @@ const makeApproval = (
   command: "git push",
   cwd: null,
   risk: "yellow",
+  risk_reason: null,
   context: null,
   requested_at_ms: 0,
   ...overrides,

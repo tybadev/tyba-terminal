@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { extrai, type Linha } from "./figExtract";
+import { enxerta, extrai, semRepetir, type Linha } from "./figExtract";
 
 /** O formato que um spec do Fig tem depois de compilado. */
 const spec = (extra: Record<string, unknown> = {}) => ({
@@ -58,11 +58,33 @@ describe("extração do spec do Fig", () => {
     }
   });
 
-  it("nome em array vira o primeiro, não uma string colada", () => {
+  it("cada nome do array vira a sua linha, nunca uma string colada", () => {
     // `["-f", "--force"]` é como o Fig declara alias de flag. Juntar viraria
-    // `-f,--force`, que não é um nome e nunca casaria com o que se digita.
-    const linhas = extrai(spec({ options: [{ name: ["-f", "--force"] }] }));
-    expect(linhas[0].path).toBe("-f");
+    // `-f,--force`, que não é um nome e nunca casaria com o que se digita; e
+    // ficar só com o primeiro perdia o `--force`, que é o que se digita
+    // procurando.
+    const linhas = extrai(
+      spec({ options: [{ name: ["-f", "--force"], description: "Força" }] }),
+    );
+    expect(linhas.map((l) => [l.path, l.description])).toEqual([
+      ["-f", "Força"],
+      ["--force", "Força"],
+    ]);
+  });
+
+  it("apelido de subcomando vira linha mas não duplica a árvore", () => {
+    const linhas = extrai(
+      spec({
+        subcommands: [
+          { name: ["remove", "rm"], options: [{ name: "--force" }] },
+        ],
+      }),
+    );
+    expect(caminhos(linhas)).toEqual([
+      "subcommand:remove",
+      "subcommand:rm",
+      "option:remove --force",
+    ]);
   });
 
   it("subcomando aninhado chega com o caminho inteiro", () => {
@@ -128,5 +150,26 @@ describe("extração do spec do Fig", () => {
     // coluna `command`, não uma entrada.
     const linhas = extrai(spec());
     expect(linhas).toEqual([]);
+  });
+});
+
+describe("enxerto e repetição", () => {
+  it("pendura a árvore de um spec debaixo do subcomando de outro", () => {
+    // `docker compose up` vem do spec do `docker-compose`.
+    const linhas = enxerta(
+      [{ command: "docker-compose", path: "up --build", kind: "option", description: "x" }],
+      "docker",
+      "compose",
+    );
+    expect(linhas).toEqual([
+      { command: "docker", path: "compose up --build", kind: "option", description: "x" },
+    ]);
+  });
+
+  it("semRepetir fica com a primeira linha de cada chave da tabela", () => {
+    const a: Linha = { command: "docker", path: "compose", kind: "subcommand", description: "1" };
+    const b: Linha = { ...a, description: "2" };
+    const c: Linha = { ...a, kind: "option" };
+    expect(semRepetir([a, b, c])).toEqual([a, c]);
   });
 });

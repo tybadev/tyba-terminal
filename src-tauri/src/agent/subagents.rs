@@ -27,6 +27,10 @@ const SUMMARY_MAX_CHARS: usize = 280;
 
 const MIN_SUBAGENT_ID_LEN: usize = 8;
 
+/// Quantos subagentes concluídos o painel guarda por sessão. O histórico
+/// completo vive no transcript; o painel só precisa do recente.
+const MAX_SETTLED_RUNS: usize = 40;
+
 /// Um `agent_id` real de subagente do Claude Code é hexadecimal (17 chars nesta
 /// máquina). Item de fila / prompt enfileirado não carrega um id assim — o gate
 /// evita transformar stop espúrio em entrada fantasma no painel.
@@ -52,8 +56,22 @@ pub struct SubagentRun {
     pub ended_at_ms: Option<u64>,
     pub summary: Option<String>,
     pub interrupted: bool,
+    /// Rodada a que o nó pertence (1, 2, …). O painel agrupa por ela: com
+    /// descrições iguais entre rodadas, a lista plana parecia duplicada.
+    pub round: u32,
     pub transcript_path: Option<PathBuf>,
     pub parent_transcript_path: Option<PathBuf>,
+    /// O que o subagente está fazendo AGORA: a última ferramenta que ele
+    /// chamou (`PreToolUse` com `agent_id`). Some quando ele termina — aí quem
+    /// fala é o `summary`.
+    pub activity: Option<ToolActivity>,
+}
+
+/// Ferramenta + argumento curto, já recortados para uma linha.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolActivity {
+    pub tool: String,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,6 +84,12 @@ pub struct SubagentRunDto {
     pub ended_at_ms: Option<u64>,
     pub summary: Option<String>,
     pub interrupted: bool,
+    pub round: u32,
+    /// Ferramenta em curso (`Bash`, `Read`…); `None` sem atividade ou já
+    /// terminado.
+    pub activity_tool: Option<String>,
+    /// O argumento curto dela (comando, caminho, padrão), redigido.
+    pub activity_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,7 +116,60 @@ impl SubagentRunDto {
             ended_at_ms: run.ended_at_ms,
             summary: run.summary.as_deref().map(|s| redact(s).into_owned()),
             interrupted: run.interrupted,
+            round: run.round,
+            activity_tool: live_activity(run).map(|a| a.tool.clone()),
+            activity_detail: live_activity(run)
+                .and_then(|a| a.detail.as_deref())
+                .map(|d| redact(d).into_owned()),
         }
+    }
+}
+
+/// Atividade só de quem ainda roda: terminado, a linha mostra o resultado.
+fn live_activity(run: &SubagentRun) -> Option<&ToolActivity> {
+    (run.status != SubagentStatus::Done)
+        .then_some(run.activity.as_ref())
+        .flatten()
+}
+
+/// Teto do argumento mostrado: a linha do painel tem ~40 colunas, e o texto
+/// inteiro de um heredoc não cabe nem é lido ali.
+const ACTIVITY_MAX_CHARS: usize = 120;
+
+/// A atividade de uma chamada de ferramenta, numa linha.
+///
+/// `fallback` é a descrição normalizada do gate (`NormalizedToolUse`), que já
+/// traz o argumento das ferramentas de escrita e de rede. As de leitura saem
+/// dela só com o nome — aqui se pega o campo que diz O QUE se lê.
+pub(crate) fn tool_activity(tool: &str, input: Option<&Value>, fallback: &str) -> ToolActivity {
+    let field = |key: &str| input.and_then(|v| v.get(key)).and_then(Value::as_str);
+    let detail = match tool {
+        "Bash" => field("command"),
+        "Read" | "Write" | "Edit" | "MultiEdit" => field("file_path"),
+        "NotebookRead" | "NotebookEdit" => field("notebook_path"),
+        "Grep" | "Glob" => field("pattern"),
+        "LS" => field("path"),
+        "WebFetch" => field("url"),
+        "WebSearch" => field("query"),
+        _ => fallback
+            .strip_prefix(tool)
+            .map(str::trim)
+            .or(Some(fallback)),
+    };
+    let detail = detail
+        .and_then(|d| d.lines().map(str::trim).find(|l| !l.is_empty()))
+        .filter(|d| *d != tool)
+        .map(|d| {
+            if d.chars().count() > ACTIVITY_MAX_CHARS {
+                let cut: String = d.chars().take(ACTIVITY_MAX_CHARS).collect();
+                format!("{cut}…")
+            } else {
+                d.to_string()
+            }
+        });
+    ToolActivity {
+        tool: tool.to_string(),
+        detail,
     }
 }
 
@@ -110,29 +187,82 @@ pub(crate) struct SessionSubagents {
     panel_disarmed: bool,
     orchestrator_idle: bool,
     orchestrator_idle_summary: Option<String>,
+    /// Rodada corrente. 0 antes do primeiro subagente.
+    round: u32,
 }
 
 impl SessionSubagents {
     /// Rodada nova (primeiro subagente chegando com TODOS os anteriores Done)
-    /// re-arma a coordenação — o painel/viewer voltam a auto-abrir — e limpa os
-    /// nós da rodada anterior: o painel representa A RODADA, não o histórico
-    /// (que vive no transcript). Sem o re-arm, o coordinate-once valia pra
-    /// sessão inteira e as rodadas seguintes rodavam às cegas; sem a limpeza,
-    /// as rodadas se empilhavam numa lista confusa (E2E de 2026-07-24).
+    /// re-arma a coordenação: o painel volta a auto-abrir mesmo que o usuário
+    /// o tenha fechado na rodada anterior. Fechar é dispensar ESTA rodada, não
+    /// todas as próximas.
+    ///
+    /// Os nós das rodadas anteriores FICAM: o painel é a árvore da sessão, com
+    /// a rodada que roda no topo e as concluídas embaixo (A5.3). Limpar a cada
+    /// rodada escondia o que acabou de acontecer, e a ordem do snapshot já
+    /// separa o que roda do que terminou. O teto `MAX_SETTLED_RUNS` impede a
+    /// lista de crescer sem fim numa sessão longa.
+    ///
+    /// "Assentada" olha só a rodada corrente: algum nó dela já terminou e
+    /// nenhum está `Running`. Um `Starting` não segura a rodada: é placeholder
+    /// de spawn que pode nunca virar `Running` (spawn aprovado cujo
+    /// `SubagentStart` não chegou), e exigir `Done` de todos deixava o
+    /// `panel_disarmed` grudado para sempre — fechou o painel uma vez, nunca
+    /// mais abria sozinho. Exigir um `Done` da rodada corrente é o que impede
+    /// o próprio placeholder da rodada nova (`push_pending` → `promote`) de
+    /// abrir outra rodada.
     fn rearm_for_new_round(&mut self) {
-        let round_settled = !self.runs.is_empty()
-            && self
-                .runs
-                .iter()
-                .all(|run| run.status == SubagentStatus::Done);
+        let current = self.runs.iter().filter(|run| run.round == self.round);
+        let (mut any_done, mut any_running) = (false, false);
+        for run in current {
+            any_done |= run.status == SubagentStatus::Done;
+            any_running |= run.status == SubagentStatus::Running;
+        }
+        let round_settled = any_done && !any_running;
+        if self.round == 0 || round_settled {
+            self.round += 1;
+        }
         if round_settled {
-            self.runs.clear();
             self.focused = None;
             self.coordinated = false;
             self.viewer_disarmed = false;
             self.panel_disarmed = false;
             self.orchestrator_idle = false;
             self.orchestrator_idle_summary = None;
+            self.trim_settled();
+        }
+    }
+
+    /// Descarta os `Done` mais antigos além do teto. Nunca toca em ativo.
+    fn trim_settled(&mut self) {
+        let settled = self
+            .runs
+            .iter()
+            .filter(|run| run.status == SubagentStatus::Done)
+            .count();
+        let mut excess = settled.saturating_sub(MAX_SETTLED_RUNS);
+        if excess == 0 {
+            return;
+        }
+        let mut oldest: Vec<(u64, usize)> = self
+            .runs
+            .iter()
+            .enumerate()
+            .filter(|(_, run)| run.status == SubagentStatus::Done)
+            .map(|(i, run)| (run.started_at_ms, i))
+            .collect();
+        oldest.sort();
+        let mut drop: Vec<usize> = Vec::new();
+        for (_, index) in oldest {
+            if excess == 0 {
+                break;
+            }
+            drop.push(index);
+            excess -= 1;
+        }
+        drop.sort_unstable_by(|a, b| b.cmp(a));
+        for index in drop {
+            self.runs.remove(index);
         }
     }
 
@@ -147,8 +277,10 @@ impl SessionSubagents {
             ended_at_ms: None,
             summary: None,
             interrupted: false,
+            round: self.round.max(1),
             transcript_path: None,
             parent_transcript_path: None,
+            activity: None,
         });
     }
 
@@ -192,8 +324,10 @@ impl SessionSubagents {
                     ended_at_ms: None,
                     summary: None,
                     interrupted: false,
+                    round: self.round.max(1),
                     transcript_path,
                     parent_transcript_path: parent_transcript_path.map(Path::to_path_buf),
+                    activity: None,
                 });
             }
         }
@@ -267,9 +401,27 @@ impl SessionSubagents {
             ended_at_ms: Some(now),
             summary,
             interrupted: false,
+            round: self.round.max(1),
             transcript_path: None,
             parent_transcript_path: None,
+            activity: None,
         });
+        true
+    }
+
+    /// Guarda o que o subagente `agent_id` está fazendo. `false` quando nada
+    /// mudou (subagente desconhecido, já terminado, ou a mesma atividade):
+    /// aí não há o que emitir.
+    fn note_activity(&mut self, agent_id: &str, activity: ToolActivity) -> bool {
+        let Some(run) = self.runs.iter_mut().find(|run| {
+            run.agent_id.as_deref() == Some(agent_id) && run.status != SubagentStatus::Done
+        }) else {
+            return false;
+        };
+        if run.activity.as_ref() == Some(&activity) {
+            return false;
+        }
+        run.activity = Some(activity);
         true
     }
 
@@ -351,8 +503,15 @@ impl SessionSubagents {
     }
 
     fn to_snapshot(&self) -> SubagentSnapshot {
+        // Quem roda vem antes de quem terminou; dentro de cada grupo, o mais
+        // novo primeiro. É a ordem da árvore: a rodada viva no topo.
         let mut ordered: Vec<&SubagentRun> = self.runs.iter().collect();
-        ordered.sort_by_key(|run| run.started_at_ms);
+        ordered.sort_by_key(|run| {
+            (
+                run.status == SubagentStatus::Done,
+                std::cmp::Reverse(run.started_at_ms),
+            )
+        });
         SubagentSnapshot {
             focused: self.focused.clone(),
             subagents: ordered.into_iter().map(SubagentRunDto::redacted).collect(),
@@ -559,6 +718,29 @@ impl SubagentTracker {
         idle
     }
 
+    /// Um subagente chamou uma ferramenta (`PreToolUse` com `agent_id`): o
+    /// painel passa a dizer o que ele está fazendo agora.
+    pub fn on_tool_use<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session: SessionId,
+        agent_id: &str,
+        activity: ToolActivity,
+    ) {
+        let agent_id = strip_agent_prefix(agent_id);
+        let payload = {
+            let mut sessions = self.sessions.lock().expect("subagents lock");
+            let Some(entry) = sessions.get_mut(&session) else {
+                return;
+            };
+            if !entry.note_activity(&agent_id, activity) {
+                return;
+            }
+            changed_payload(session, entry)
+        };
+        let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
+    }
+
     pub fn on_session_ended<R: Runtime>(&self, app: &AppHandle<R>, session: SessionId) {
         let (payload, targets) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
@@ -712,7 +894,7 @@ pub(crate) fn emit_snapshot<R: Runtime>(
     );
 }
 
-fn strip_agent_prefix(agent_id: &str) -> String {
+pub(crate) fn strip_agent_prefix(agent_id: &str) -> String {
     agent_id
         .strip_prefix("agent-")
         .unwrap_or(agent_id)
@@ -910,6 +1092,69 @@ mod tests {
     }
 
     #[test]
+    fn activity_shows_while_running_and_gives_way_to_the_summary() {
+        let mut session = SessionSubagents::default();
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 10);
+        let input = serde_json::json!({ "command": "bun test src/api\nmais" });
+        let activity = tool_activity("Bash", Some(&input), "bun test src/api\nmais");
+        assert!(session.note_activity("a1", activity.clone()));
+        assert!(
+            !session.note_activity("a1", activity),
+            "mesma atividade não reemite"
+        );
+        let dto = SubagentRunDto::redacted(&session.runs[0]);
+        assert_eq!(dto.activity_tool.as_deref(), Some("Bash"));
+        assert_eq!(dto.activity_detail.as_deref(), Some("bun test src/api"));
+
+        session.mark_stopped("a1".into(), None, Some("pronto".into()), 20);
+        let dto = SubagentRunDto::redacted(&session.runs[0]);
+        assert_eq!(dto.activity_tool, None);
+        assert_eq!(dto.activity_detail, None);
+        assert_eq!(dto.summary.as_deref(), Some("pronto"));
+    }
+
+    #[test]
+    fn activity_of_unknown_or_finished_agent_is_ignored() {
+        let mut session = SessionSubagents::default();
+        let activity = tool_activity("Read", None, "Read");
+        assert!(!session.note_activity("ghost", activity.clone()));
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 10);
+        session.mark_stopped("a1".into(), None, None, 20);
+        assert!(!session.note_activity("a1", activity));
+    }
+
+    #[test]
+    fn tool_activity_picks_the_argument_that_says_what_it_does() {
+        let read = serde_json::json!({ "file_path": "/repo/src/main.rs" });
+        assert_eq!(
+            tool_activity("Read", Some(&read), "Read"),
+            ToolActivity {
+                tool: "Read".into(),
+                detail: Some("/repo/src/main.rs".into())
+            }
+        );
+        let grep = serde_json::json!({ "pattern": "fn main" });
+        assert_eq!(
+            tool_activity("Grep", Some(&grep), "Grep").detail.as_deref(),
+            Some("fn main")
+        );
+        // Sem argumento conhecido, o nome sozinho — sem repetir o nome no detalhe.
+        assert_eq!(tool_activity("TodoWrite", None, "TodoWrite").detail, None);
+        // Ferramenta desconhecida cai na descrição normalizada, sem o nome na frente.
+        assert_eq!(
+            tool_activity("Mcp", None, "Mcp search docs")
+                .detail
+                .as_deref(),
+            Some("search docs")
+        );
+        let long = "x".repeat(300);
+        let input = serde_json::json!({ "command": long });
+        let detail = tool_activity("Bash", Some(&input), "").detail.unwrap();
+        assert_eq!(detail.chars().count(), ACTIVITY_MAX_CHARS + 1);
+        assert!(detail.ends_with('…'));
+    }
+
+    #[test]
     fn stop_summary_truncates_at_280_chars() {
         let mut session = SessionSubagents::default();
         session.promote("a1".into(), "reviewer".into(), None, None, None, 10);
@@ -1031,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_orders_by_started_at_and_redacts() {
+    fn snapshot_orders_newest_first_and_redacts() {
         let mut session = SessionSubagents::default();
         session.push_pending(
             Some("reviewer".into()),
@@ -1041,12 +1286,112 @@ mod tests {
         session.push_pending(Some("explorer".into()), Some("primeiro".into()), 10);
         let snapshot = session.to_snapshot();
         assert_eq!(snapshot.subagents.len(), 2);
-        assert_eq!(snapshot.subagents[0].started_at_ms, 10);
-        assert_eq!(snapshot.subagents[1].started_at_ms, 30);
-        assert!(!snapshot.subagents[1]
+        assert_eq!(snapshot.subagents[0].started_at_ms, 30);
+        assert_eq!(snapshot.subagents[1].started_at_ms, 10);
+        assert!(!snapshot.subagents[0]
             .description
             .contains("sk-abcdef1234567890ABCDEFghijkl"));
-        assert!(snapshot.subagents[1].description.contains("[REDACTED]"));
+        assert!(snapshot.subagents[0].description.contains("[REDACTED]"));
+    }
+
+    /// A5.3, tela 4 do dono: duas rodadas de subagentes na MESMA sessão
+    /// ("de novo por favor"). A segunda rodada não pode apagar a primeira, e
+    /// quem roda vem no topo, acima de quem terminou. Dados sintéticos.
+    #[test]
+    fn second_round_lists_both_rounds_running_on_top() {
+        let mut session = SessionSubagents::default();
+        for (i, id) in ["aaaa0001", "aaaa0002", "aaaa0003", "aaaa0004"]
+            .iter()
+            .enumerate()
+        {
+            session.promote(
+                (*id).into(),
+                "general-purpose".into(),
+                Some(format!("Teste {}: rodada 1", i + 1)),
+                None,
+                None,
+                100 + i as u64,
+            );
+        }
+        for id in ["aaaa0001", "aaaa0002", "aaaa0003", "aaaa0004"] {
+            assert!(session.mark_stopped(id.into(), None, Some("ok".into()), 200));
+        }
+
+        for (i, id) in ["bbbb0001", "bbbb0002", "bbbb0003", "bbbb0004"]
+            .iter()
+            .enumerate()
+        {
+            session.push_pending(
+                Some("general-purpose".into()),
+                Some(format!("Teste {}: rodada 2", i + 1)),
+                300 + i as u64,
+            );
+            session.promote(
+                (*id).into(),
+                "general-purpose".into(),
+                None,
+                None,
+                None,
+                300 + i as u64,
+            );
+        }
+        // Dois da rodada 2 já terminaram; dois seguem rodando.
+        session.mark_stopped("bbbb0001".into(), None, None, 320);
+        session.mark_stopped("bbbb0002".into(), None, None, 321);
+
+        let snapshot = session.to_snapshot();
+        let ids: Vec<&str> = snapshot
+            .subagents
+            .iter()
+            .map(|run| run.agent_id.as_deref().unwrap())
+            .collect();
+        assert_eq!(snapshot.subagents.len(), 8, "as duas rodadas aparecem");
+        assert_eq!(
+            ids,
+            [
+                "bbbb0004", "bbbb0003", // rodando, mais novo primeiro
+                "bbbb0002", "bbbb0001", // rodada 2 concluída
+                "aaaa0004", "aaaa0003", "aaaa0002", "aaaa0001", // rodada 1
+            ]
+        );
+        assert_eq!(snapshot.subagents[0].status, SubagentStatus::Running);
+        assert_eq!(snapshot.subagents[2].status, SubagentStatus::Done);
+        assert_eq!(snapshot.focused.as_deref(), Some("bbbb0001"));
+        let rounds: Vec<u32> = snapshot.subagents.iter().map(|run| run.round).collect();
+        assert_eq!(
+            rounds,
+            [2, 2, 2, 2, 1, 1, 1, 1],
+            "cada nó sabe a sua rodada"
+        );
+    }
+
+    #[test]
+    fn settled_history_is_capped_without_touching_active() {
+        let mut session = SessionSubagents::default();
+        for round in 0..(MAX_SETTLED_RUNS as u64 + 5) {
+            let id = format!("cafe{round:08x}");
+            session.promote(id.clone(), "explorer".into(), None, None, None, round);
+            session.mark_stopped(id, None, None, round);
+        }
+        session.promote(
+            "beef00000001".into(),
+            "explorer".into(),
+            None,
+            None,
+            None,
+            999,
+        );
+        let snapshot = session.to_snapshot();
+        assert_eq!(
+            snapshot.subagents[0].agent_id.as_deref(),
+            Some("beef00000001")
+        );
+        assert!(snapshot.subagents.len() <= MAX_SETTLED_RUNS + 1);
+        // O mais antigo saiu, o mais novo dos concluídos ficou.
+        assert!(!snapshot
+            .subagents
+            .iter()
+            .any(|run| run.agent_id.as_deref() == Some("cafe00000000")));
     }
 
     #[test]
@@ -1173,6 +1518,53 @@ mod tests {
 
         tracker.remove_session(&handle, session);
         assert!(tracker.snapshot(session).subagents.is_empty());
+    }
+
+    /// Subagente do Codex: `agent_id` é id de thread (com hífens, não hex), não
+    /// há sidecar `subagents/agent-<id>.jsonl` ao lado do rollout, e quem
+    /// fecha o nó é o `SubagentStop` com `last_assistant_message`.
+    #[test]
+    fn codex_subagent_runs_through_start_and_stop_hooks() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        let dir = TempDir::new().unwrap();
+        let rollout = dir.path().join("rollout-2026-10-12T10-00-00-thr.jsonl");
+        fs::write(&rollout, "").unwrap();
+        let agent_id = "019a3f2e-7c1b-7d40-9f3e-5b2c8a1d4e6f";
+
+        tracker.register_session(session);
+        tracker.on_subagent_started(
+            &handle,
+            session,
+            agent_id.into(),
+            "worker".into(),
+            None,
+            Some(&rollout),
+        );
+        let snapshot = tracker.snapshot(session);
+        assert_eq!(snapshot.subagents.len(), 1);
+        let run = &snapshot.subagents[0];
+        assert_eq!(run.agent_id.as_deref(), Some(agent_id));
+        assert_eq!(run.agent_type, "worker");
+        assert_eq!(run.status, SubagentStatus::Running);
+        assert_eq!(snapshot.focused.as_deref(), Some(agent_id));
+        assert_eq!(tracker.resolve_transcript_path(session, agent_id), None);
+
+        tracker.note_orchestrator_idle(session, Some("orquestrador pronto".into()));
+        let idle = tracker.on_subagent_stopped(
+            &handle,
+            session,
+            agent_id.into(),
+            Some("worker".into()),
+            Some("Testes verdes.".into()),
+        );
+        assert_eq!(idle, Some(Some("orquestrador pronto".into())));
+        let run = &tracker.snapshot(session).subagents[0];
+        assert_eq!(run.status, SubagentStatus::Done);
+        assert_eq!(run.summary.as_deref(), Some("Testes verdes."));
+        assert!(!tracker.has_active(session));
     }
 
     #[test]
@@ -1307,6 +1699,47 @@ mod tests {
             None,
         );
         assert!(same_round.is_none(), "coordenação continua once POR RODADA");
+    }
+
+    /// "Fechei a janela de subagentes e nunca mais consigo abrir": um spawn
+    /// que ficou `Starting` (o `SubagentStart` dele nunca chegou) segurava a
+    /// rodada como "em andamento" para sempre, e o `panel_disarmed` do
+    /// fechamento grudava. A rodada seguinte tem que re-coordenar.
+    #[test]
+    fn closed_panel_rearms_even_with_a_stuck_starting_placeholder() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+
+        tracker.on_spawn_requested(&handle, session, Some("explorer".into()), Some("a".into()));
+        tracker.on_spawn_requested(&handle, session, Some("ghost".into()), Some("b".into()));
+        tracker
+            .on_subagent_started(
+                &handle,
+                session,
+                "aaaa1111".into(),
+                "explorer".into(),
+                None,
+                None,
+            )
+            .expect("rodada 1 coordena");
+        tracker.mark_coordinated(session);
+        tracker.on_subagent_stopped(&handle, session, "aaaa1111".into(), None, None);
+        tracker.disarm_panel(session); // o dono fechou o painel
+
+        let next = tracker
+            .on_subagent_started(
+                &handle,
+                session,
+                "bbbb2222".into(),
+                "reviewer".into(),
+                None,
+                None,
+            )
+            .expect("rodada nova re-coordena mesmo com placeholder preso");
+        assert!(!next.panel_disarmed, "fechar não suprime a rodada seguinte");
     }
 
     #[test]

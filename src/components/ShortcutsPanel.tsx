@@ -7,6 +7,8 @@ import {
   actionsByCategory,
   ACTION_LABEL_KEYS,
   KEY_CATEGORY_LABEL_KEYS,
+  TAB_BACK_EDITOR_COMBO,
+  formatCombo,
   type Bindings,
 } from "../lib/keys";
 
@@ -62,7 +64,20 @@ export function ShortcutsPanel({
                     <span className="min-w-0 truncate">
                       {t(ACTION_LABEL_KEYS[action])}
                     </span>
-                    <Shortcut combo={bindings[action]} />
+                    {action === "tabBack" ? (
+                      <span
+                        className="flex items-center gap-2"
+                        title={t("tabBackEditorHint", { combo: formatCombo(bindings.tabBack) })}
+                      >
+                        <Shortcut combo={bindings[action]} />
+                        <span className="text-[11px] text-tyba-text-faint">
+                          {t("tabBackInEditor")}
+                        </span>
+                        <Shortcut combo={TAB_BACK_EDITOR_COMBO} />
+                      </span>
+                    ) : (
+                      <Shortcut combo={bindings[action]} />
+                    )}
                   </div>
                 ))}
               </div>

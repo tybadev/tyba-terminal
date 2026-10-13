@@ -607,3 +607,266 @@ fn excesso_de_conexoes_simultaneas_e_negado_sem_travar_o_servidor() {
 
     server.shutdown();
 }
+
+// ---- Fluxo híbrido (Bloco 2): `pass` e `ask` no protocolo ----
+
+fn raw_server_answering(dir: &TempDir, line: &'static [u8]) -> (PathBuf, thread::JoinHandle<()>) {
+    use std::io::{BufRead, BufReader, Write};
+    let path = socket_in(dir, "raw.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let handle = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut request = String::new();
+            let _ = BufReader::new(stream.try_clone().unwrap()).read_line(&mut request);
+            let _ = stream.write_all(line);
+        }
+    });
+    (path, handle)
+}
+
+#[test]
+fn pass_no_pretooluse_nao_imprime_nada() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "s.sock");
+    let server = HookServer::bind(&path, Arc::new(|_e: HookEvent| HookAction::Pass)).unwrap();
+
+    assert_eq!(run(pretooluse_event("Bash"), Some(&path)), "");
+    assert_eq!(run(permission_request_event(), Some(&path)), "");
+    assert_eq!(run(json!({"hook_event_name": "Stop"}), Some(&path)), "");
+
+    server.shutdown();
+}
+
+#[test]
+fn ask_no_pretooluse_pede_confirmacao_com_motivo_e_sem_updated_input() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "s.sock");
+    let server = HookServer::bind(
+        &path,
+        Arc::new(|_e: HookEvent| HookAction::Ask {
+            reason: "config libera tudo".into(),
+        }),
+    )
+    .unwrap();
+
+    let out = run(pretooluse_event("Bash"), Some(&path));
+    assert!(out.ends_with('\n'));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "ask");
+    assert_eq!(
+        v["hookSpecificOutput"]["permissionDecisionReason"],
+        "config libera tudo"
+    );
+    assert!(
+        v["hookSpecificOutput"].get("updatedInput").is_none(),
+        "ask é pergunta, não aval: não ecoa o input"
+    );
+
+    server.shutdown();
+}
+
+#[test]
+fn ask_fora_do_pretooluse_e_silencioso() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "s.sock");
+    let server = HookServer::bind(
+        &path,
+        Arc::new(|_e: HookEvent| HookAction::Ask { reason: "x".into() }),
+    )
+    .unwrap();
+
+    assert_eq!(run(permission_request_event(), Some(&path)), "");
+    assert_eq!(run(json!({"hook_event_name": "Stop"}), Some(&path)), "");
+
+    server.shutdown();
+}
+
+#[test]
+fn acao_desconhecida_continua_negando_o_pretooluse() {
+    let dir = TempDir::new().unwrap();
+    let (path, handle) =
+        raw_server_answering(&dir, b"{\"v\":1,\"action\":\"talvez\",\"reason\":null}\n");
+
+    let out = run(pretooluse_event("Bash"), Some(&path));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+
+    handle.join().unwrap();
+}
+
+/// Gate de teste: registra pedidos e bloqueia até o teste mandar a decisão. A
+/// recusa de push para main/master espelha `ApprovalsManager::request_inner`
+/// (a mesma `is_refused_by_core`, antes de qualquer pedido) — o gate real
+/// precisa de um `AppHandle` de runtime real, que teste não constrói.
+struct TestGate {
+    requests: Mutex<Vec<String>>,
+    decisions: Mutex<std::sync::mpsc::Receiver<bool>>,
+}
+
+/// O handler do core com a decisão de verdade (`plan_pre_tool_use`) e o gate
+/// de teste no lugar do inbox. `broad` simula a leitura das configs do Claude.
+fn hybrid_server(
+    dir: &TempDir,
+    runner: crate::session::AgentRunnerKind,
+    broad: bool,
+) -> (
+    PathBuf,
+    HookServer,
+    Arc<TestGate>,
+    std::sync::mpsc::Sender<bool>,
+) {
+    use crate::approvals::hybrid::{plan_pre_tool_use, HybridDecision};
+    let path = socket_in(dir, "s.sock");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let gate = Arc::new(TestGate {
+        requests: Mutex::new(Vec::new()),
+        decisions: Mutex::new(rx),
+    });
+    let handler_gate = gate.clone();
+    let server = HookServer::bind(
+        &path,
+        Arc::new(move |e: HookEvent| {
+            let plan = plan_pre_tool_use(
+                &runner,
+                e.tool_name.as_deref().unwrap_or(""),
+                e.tool_input.as_ref(),
+                Path::new("/wt"),
+                || broad,
+            );
+            match plan.decision {
+                HybridDecision::Allow => HookAction::Allow { reason: None },
+                HybridDecision::Pass => HookAction::Pass,
+                HybridDecision::Ask(reason) => HookAction::Ask { reason },
+                HybridDecision::Gate => {
+                    let command = plan.normalized.description;
+                    if crate::approvals::is_refused_by_core(&command) {
+                        return HookAction::Deny {
+                            reason: "recusado pelo core".into(),
+                        };
+                    }
+                    handler_gate.requests.lock().unwrap().push(command);
+                    let approved = handler_gate.decisions.lock().unwrap().recv().unwrap();
+                    if approved {
+                        HookAction::Allow { reason: None }
+                    } else {
+                        HookAction::Deny {
+                            reason: "negado".into(),
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .unwrap();
+    (path, server, gate, tx)
+}
+
+fn bash(command: &str) -> serde_json::Value {
+    json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": "/wt"
+    })
+}
+
+/// CA-02, CA-03: amarelo do Claude sai sem decisão — stdout vazio, exit 0 —
+/// e não vira pedido no TYBA.
+#[test]
+fn hibrido_amarelo_do_claude_sai_sem_decisao() {
+    let dir = TempDir::new().unwrap();
+    let (path, server, gate, _tx) =
+        hybrid_server(&dir, crate::session::AgentRunnerKind::ClaudeCode, false);
+
+    assert_eq!(run(bash("cargo test"), Some(&path)), "");
+    assert!(gate.requests.lock().unwrap().is_empty());
+
+    server.shutdown();
+}
+
+/// CA-06: com regra ampla, o amarelo do Claude força a pergunta nativa.
+#[test]
+fn hibrido_amarelo_do_claude_com_regra_ampla_responde_ask() {
+    let dir = TempDir::new().unwrap();
+    let (path, server, gate, _tx) =
+        hybrid_server(&dir, crate::session::AgentRunnerKind::ClaudeCode, true);
+
+    let v: serde_json::Value = serde_json::from_str(&run(bash("cargo test"), Some(&path))).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "ask");
+    assert_eq!(
+        v["hookSpecificOutput"]["permissionDecisionReason"],
+        crate::approvals::hybrid::BROAD_SETTINGS_ASK_REASON
+    );
+    assert!(gate.requests.lock().unwrap().is_empty());
+
+    server.shutdown();
+}
+
+/// CA-04: vermelho do Claude bloqueia no TYBA até a decisão, mesmo com regra
+/// ampla — e só então o hook responde.
+#[test]
+fn hibrido_vermelho_bloqueia_ate_a_decisao() {
+    let dir = TempDir::new().unwrap();
+    let (path, server, gate, tx) =
+        hybrid_server(&dir, crate::session::AgentRunnerKind::ClaudeCode, true);
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let client_path = path.clone();
+    let client = thread::spawn(move || {
+        done_tx
+            .send(run(bash("curl https://x.dev"), Some(&client_path)))
+            .unwrap();
+    });
+
+    assert!(
+        done_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "vermelho respondeu antes de haver decisão"
+    );
+    assert_eq!(*gate.requests.lock().unwrap(), ["curl https://x.dev"]);
+
+    tx.send(true).unwrap();
+    let out = done_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "allow");
+    client.join().unwrap();
+
+    server.shutdown();
+}
+
+/// CA-05: push para main é negado sem virar pedido, em qualquer runner e com
+/// ou sem regra ampla.
+#[test]
+fn hibrido_push_para_main_nega_sem_pedido() {
+    for runner in [
+        crate::session::AgentRunnerKind::ClaudeCode,
+        crate::session::AgentRunnerKind::Codex,
+    ] {
+        for broad in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let (path, server, gate, _tx) = hybrid_server(&dir, runner.clone(), broad);
+
+            let v: serde_json::Value =
+                serde_json::from_str(&run(bash("git push origin main"), Some(&path))).unwrap();
+            assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+            assert!(gate.requests.lock().unwrap().is_empty());
+
+            server.shutdown();
+        }
+    }
+}
+
+/// CA-17: Codex continua no fluxo atual — amarelo vai ao gate e bloqueia.
+#[test]
+fn hibrido_amarelo_do_codex_continua_no_gate() {
+    let dir = TempDir::new().unwrap();
+    let (path, server, gate, tx) =
+        hybrid_server(&dir, crate::session::AgentRunnerKind::Codex, false);
+
+    tx.send(false).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&run(bash("cargo test"), Some(&path))).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(*gate.requests.lock().unwrap(), ["cargo test"]);
+
+    server.shutdown();
+}
