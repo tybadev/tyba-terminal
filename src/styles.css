@@ -299,7 +299,7 @@
   /* Claro A · Aurora (2026-10-12): base branca fria, a aurora tripla da
      marca no topo do canvas, cromo de vidro branco e conteúdo branco. */
   --tyba-bg: #fafbff;
-  --tyba-surface: #ffffff;         /* vidro a 62% (glass-alpha): a aurora passa */
+  --tyba-surface: #ffffff;         /* vidro a 50% (glass-alpha): a aurora passa */
   --tyba-raised: #ffffff;
   --tyba-overlay: #ffffff;
   --tyba-border: rgba(0, 0, 0, 0.07);        /* espelha o :root, invertido */
@@ -333,7 +333,9 @@
   --tyba-glow-alpha: 28%;
   --tyba-halo-alpha: 10%;
   --tyba-selection-alpha: 25%;
-  --tyba-glass-alpha: 62%;
+  /* 50%, e não os 62% do mockup: a 62% o vidro apagava a aurora já no topo
+     da sidebar e do painel, e o claro lia como branco chapado (2026-10-13). */
+  --tyba-glass-alpha: 50%;
 
   /* No claro a aresta de luz não existe (branco sobre branco). A aurora
      é a tripla da marca, mais presente que no escuro: sobre branco frio
@@ -348,10 +350,15 @@
      segmentado ganha o véu violeta (mockup PropostaClaro). */
   --tyba-raised-ring: inset 0 0 0 1px var(--tyba-border);
   --tyba-segment-bg: color-mix(in srgb, var(--tyba-violet) 9%, transparent);
+  /* Mais forte e mais funda que a do mockup (13/11/9%, 460/400/340px): ela só
+     aparece onde não há conteúdo — header e faixa de abas transparentes,
+     sidebar e painel de vidro —, e com os valores do mockup sobrava ~7% de
+     cor numa faixa de 72px, que no app lia como branco chapado. O terminal é
+     `sunken` opaco: a aurora não chega ao texto dele. */
   --tyba-aurora:
-    radial-gradient(1100px 460px at 70% -12%, color-mix(in srgb, var(--tyba-violet) 13%, transparent), transparent 62%),
-    radial-gradient(800px 400px at 20% -10%, color-mix(in srgb, var(--tyba-cyan) 11%, transparent), transparent 60%),
-    radial-gradient(600px 340px at 45% -8%, color-mix(in srgb, var(--tyba-green) 9%, transparent), transparent 58%);
+    radial-gradient(1100px 620px at 70% -12%, color-mix(in srgb, var(--tyba-violet) 20%, transparent), transparent 62%),
+    radial-gradient(800px 540px at 20% -10%, color-mix(in srgb, var(--tyba-cyan) 16%, transparent), transparent 60%),
+    radial-gradient(600px 460px at 45% -8%, color-mix(in srgb, var(--tyba-green) 13%, transparent), transparent 58%);
 
   --tyba-shadow-sm: 0 1px 2px rgba(23, 23, 28, 0.08);
   --tyba-shadow-md: 0 4px 16px rgba(23, 23, 28, 0.1);
