@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { PANEL_SECTION, SidePanelHeader } from "./SidePanelBar";
+import { useRelative } from "./GitHistoryView";
 import { translateError } from "../lib/errors";
 import { requestConfirm } from "../lib/confirm";
 import {
@@ -15,9 +16,11 @@ import {
 } from "../lib/gitPanel";
 import {
   onRepoChanged,
+  repoLog,
   sessionDiff,
   worktreeCommit,
   worktreeStage,
+  type LogRow,
   type RepoSnapshot,
   type Session,
   type SessionDiff,
@@ -79,6 +82,9 @@ export function GitPanel({
 }) {
   const { t } = useTranslation();
   const [diff, setDiff] = useState<SessionDiff | null>(null);
+  // O último commit é o do HEAD, não o da sessão: `diff.commits` só tem o que
+  // veio depois da base e fica vazio num repo em dia.
+  const [head, setHead] = useState<LogRow | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -91,6 +97,9 @@ export function GitPanel({
         setLoadError(null);
       })
       .catch((e) => setLoadError(translateError(e, t)));
+    repoLog(session.id, {}, null, 1)
+      .then((page) => setHead(page.rows[0] ?? null))
+      .catch(() => setHead(null));
   }, [session.id, t]);
 
   // Mesma cadência do Diff: evento do core para index/HEAD, poll leve para
@@ -138,7 +147,8 @@ export function GitPanel({
   };
   const upstream = upstreamLine(snapshot?.ahead, snapshot?.behind);
   const shownBranch = snapshot?.branch ?? branch;
-  const lastCommit = diff?.commits[0] ?? null;
+  const relative = useRelative();
+  const upstreamName = snapshot?.upstream ?? "@{upstream}";
 
   const commit = async () => {
     if (busy || !message.trim() || plan.mode === "nothing") return;
@@ -172,12 +182,19 @@ export function GitPanel({
                 {shownBranch ?? "HEAD"}
               </span>
               <span className="shrink-0 text-[11px] text-tyba-text-muted">
-                {t(upstream.key, { ahead: upstream.ahead, behind: upstream.behind })}
+                {t(upstream.key, {
+                  ahead: upstream.ahead,
+                  behind: upstream.behind,
+                  upstream: upstreamName,
+                })}
               </span>
             </div>
-            {lastCommit && (
-              <div className="truncate text-[11px] text-tyba-text-faint">
-                {t("gitPanelLastCommit", { subject: lastCommit.subject })}
+            {head && (
+              <div className="truncate text-[11px] text-tyba-text-faint" title={head.subject}>
+                {t("gitPanelLastCommit", {
+                  ago: relative(head.authored_at, Date.now()),
+                  subject: head.subject,
+                })}
               </div>
             )}
           </div>

@@ -153,7 +153,7 @@ function useDebounced<T>(value: T, ms: number): T {
   return debounced;
 }
 
-function useRelative() {
+export function useRelative() {
   const { t, i18n } = useTranslation();
   return useCallback(
     (iso: string, now: number) => {

@@ -15,6 +15,7 @@ const snap = (root: string, branch = "main"): RepoSnapshot => ({
   status: null,
   ahead: null,
   behind: null,
+  upstream: null,
 });
 
 describe("snapshotForDir", () => {

@@ -51,6 +51,8 @@ pub struct RepoSnapshot {
     pub status: Option<RepoStatus>,
     pub ahead: Option<u32>,
     pub behind: Option<u32>,
+    /// Nome curto do upstream (`origin/main`); `None` sem upstream.
+    pub upstream: Option<String>,
 }
 
 pub fn count_status_entries(stdout: &[u8]) -> u32 {
@@ -385,6 +387,18 @@ fn ahead_behind(root: &Path) -> Option<(u32, u32)> {
     Some((ahead, behind))
 }
 
+fn upstream(root: &Path) -> Option<String> {
+    let out = git_in(root)
+        .args(["rev-parse", "--abbrev-ref", "@{upstream}"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
 pub fn snapshot(root: &Path, cache: &mut UntrackedCache) -> RepoSnapshot {
     let (ahead, behind) = match ahead_behind(root) {
         Some((ahead, behind)) => (Some(ahead), Some(behind)),
@@ -396,6 +410,7 @@ pub fn snapshot(root: &Path, cache: &mut UntrackedCache) -> RepoSnapshot {
         status: status(root, cache),
         ahead,
         behind,
+        upstream: upstream(root),
     }
 }
 
@@ -831,6 +846,7 @@ mod tests {
         let repo = temp_repo();
         let no_upstream = super::snapshot(&repo, &mut super::UntrackedCache::default());
         assert_eq!((no_upstream.ahead, no_upstream.behind), (None, None));
+        assert_eq!(no_upstream.upstream, None);
 
         let base = repo.parent().unwrap();
         let clone = base.join("clone");
@@ -853,6 +869,7 @@ mod tests {
 
         let synced = super::snapshot(&clone, &mut super::UntrackedCache::default());
         assert_eq!((synced.ahead, synced.behind), (Some(0), Some(0)));
+        assert!(synced.upstream.as_deref().is_some_and(|u| u.starts_with("origin/")));
 
         std::fs::write(clone.join("c.txt"), "c\n").unwrap();
         git(&clone, &["add", "-A"]);

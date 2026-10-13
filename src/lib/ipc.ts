@@ -1651,6 +1651,8 @@ export const onSubagentTranscript = (
 export interface RepoSnapshot {
   ahead: number | null;
   behind: number | null;
+  /** `origin/main`; `null` sem upstream. */
+  upstream: string | null;
   root: string;
   branch: string | null;
   status: RepoStatus | null;
