@@ -2,12 +2,13 @@ import type { RepoStatus } from "@/lib/ipc";
 
 interface Props {
   status: RepoStatus;
-  size?: "sm" | "md";
+  size?: "sm" | "md" | "lg";
 }
 
 export function DiffStat({ status, size = "sm" }: Props) {
   const { changed, insertions, deletions } = status;
-  const text = size === "sm" ? "text-[9px]" : "text-[10px]";
+  const text =
+    size === "sm" ? "text-[9px]" : size === "md" ? "text-[10px]" : "text-[11px]";
   const hasLines = insertions > 0 || deletions > 0;
 
   return (

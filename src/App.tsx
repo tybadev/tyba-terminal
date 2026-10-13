@@ -4940,13 +4940,13 @@ export default function App() {
                         className={`size-1 shrink-0 rounded-full ${agentStatus.visual.dotClass}`}
                       />
                       <span
-                        className={`min-w-0 truncate font-mono text-[10px] leading-none ${agentStatus.visual.textClass}`}
+                        className={`min-w-0 truncate font-mono text-[11px] leading-none ${agentStatus.visual.textClass}`}
                       >
                         {agentDetail}
                       </span>
                     </span>
                   ) : runningCmd ? (
-                    <span className="min-w-0 truncate font-mono text-[10px] leading-none text-tyba-text-muted">
+                    <span className="min-w-0 truncate font-mono text-[11px] leading-none text-tyba-text-muted">
                       {runningCmd}
                     </span>
                   ) : null}
@@ -4955,9 +4955,9 @@ export default function App() {
                   {branch && !agentDetail && !runningCmd && (
                     <span
                       title={branch}
-                      className="flex min-w-0 items-center gap-0.5 font-mono text-[10px] leading-none text-tyba-text-faint"
+                      className="flex min-w-0 items-center gap-0.5 font-mono text-[11px] leading-none text-tyba-text-faint"
                     >
-                      <GitBranch size={9} className="shrink-0" />
+                      <GitBranch size={10} className="shrink-0" />
                       <span className="truncate">{branch}</span>
                     </span>
                   )}
@@ -4968,16 +4968,16 @@ export default function App() {
                           ? t("gitChanges", { count: gitStatus.changed })
                           : t("toolbarRemoteDiff")
                       }
-                      className="flex shrink-0 items-center gap-1 rounded-[3px] bg-tyba-amber-tint px-1 py-px"
+                      className="flex shrink-0 items-center gap-1"
                     >
-                      <span className="size-1 shrink-0 rounded-full bg-tyba-amber" />
+                      <span className="size-1.5 shrink-0 rounded-full bg-tyba-amber" />
                       {gitStatus?.dirty ? (
-                        <DiffStat status={gitStatus} />
+                        <DiffStat status={gitStatus} size="lg" />
                       ) : (
                         // O servidor responde só quantos arquivos mudaram
                         // (regra 24): o número sozinho é o que o `DiffStat`
                         // desenha quando não há linhas a mostrar.
-                        <span className="font-mono text-[9px] leading-none text-tyba-amber">
+                        <span className="font-mono text-[11px] leading-none text-tyba-amber">
                           {chips.remoteChanged}
                         </span>
                       )}
