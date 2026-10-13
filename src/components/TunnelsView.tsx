@@ -23,8 +23,8 @@ interface Props {
 }
 
 function dotClass(t: SessionTunnel): string {
-  if (t.state.state === "live") return "bg-tyba-green";
-  if (t.state.state === "error") return "bg-tyba-red";
+  if (t.state.state === "live") return "bg-tyba-green-fill";
+  if (t.state.state === "error") return "bg-tyba-red-fill";
   return "bg-tyba-text-faint tyba-pulse";
 }
 

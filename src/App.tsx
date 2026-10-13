@@ -4979,7 +4979,7 @@ export default function App() {
                       }
                       className="flex shrink-0 items-center gap-1"
                     >
-                      <span className="size-1.5 shrink-0 rounded-full bg-tyba-amber" />
+                      <span className="size-1.5 shrink-0 rounded-full bg-tyba-amber-fill" />
                       {gitStatus?.dirty ? (
                         <DiffStat status={gitStatus} size="lg" />
                       ) : (
@@ -5697,7 +5697,7 @@ export default function App() {
                               className={
                                 open
                                   ? "ml-auto rounded-[4px] bg-tyba-amber-tint px-1.5 text-[11px] text-tyba-amber"
-                                  : "absolute right-1 top-1 size-1.5 rounded-full bg-tyba-amber"
+                                  : "absolute right-1 top-1 size-1.5 rounded-full bg-tyba-amber-fill"
                               }
                             >
                               {open

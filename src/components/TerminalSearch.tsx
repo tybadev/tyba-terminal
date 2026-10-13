@@ -126,7 +126,7 @@ export function TerminalSearch({ sessionId, onClose }: Props) {
         type="button"
         aria-label={t("searchPlaceholder")}
         onClick={() => step(true)}
-        className="rounded-[3px] p-1 text-tyba-text-faint hover:bg-tyba-hover hover:text-tyba-text"
+        className="rounded-[3px] p-1 text-tyba-text-faint hover:bg-tyba-text/[.06] hover:text-tyba-text"
       >
         <CaretUp size={12} weight="bold" />
       </button>
@@ -134,7 +134,7 @@ export function TerminalSearch({ sessionId, onClose }: Props) {
         type="button"
         aria-label={t("searchPlaceholder")}
         onClick={() => step(false)}
-        className="rounded-[3px] p-1 text-tyba-text-faint hover:bg-tyba-hover hover:text-tyba-text"
+        className="rounded-[3px] p-1 text-tyba-text-faint hover:bg-tyba-text/[.06] hover:text-tyba-text"
       >
         <CaretDown size={12} weight="bold" />
       </button>
@@ -142,7 +142,7 @@ export function TerminalSearch({ sessionId, onClose }: Props) {
         type="button"
         aria-label={t("hintClose")}
         onClick={close}
-        className="rounded-[3px] p-1 text-tyba-text-faint hover:bg-tyba-hover hover:text-tyba-text"
+        className="rounded-[3px] p-1 text-tyba-text-faint hover:bg-tyba-text/[.06] hover:text-tyba-text"
       >
         <X size={12} weight="bold" />
       </button>

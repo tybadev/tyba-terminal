@@ -105,7 +105,7 @@ function WorktreeRow({
             onClick={() => onFocusSession(wt.session_id as SessionId)}
             className="flex items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-[11px] text-tyba-green transition-colors hover:bg-tyba-text/[.06]"
           >
-            <span className="size-1.5 rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)]" />
+            <span className="size-1.5 rounded-full bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)]" />
             {t("worktreeSessionActive")}
           </button>
         ) : (

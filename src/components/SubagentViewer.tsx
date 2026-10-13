@@ -51,11 +51,11 @@ function useLiveClock(active: boolean): number {
 function StatusDot({ status }: { status: SubagentRun["status"] }) {
   if (status === "running")
     return (
-      <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-tyba-green [box-shadow:var(--tyba-glow-green)]" />
+      <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)]" />
     );
   if (status === "starting")
     return (
-      <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-tyba-amber" />
+      <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-tyba-amber-fill" />
     );
   return <span className="size-1.5 shrink-0 rounded-full bg-tyba-text-faint" />;
 }

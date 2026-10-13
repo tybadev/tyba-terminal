@@ -11,9 +11,9 @@ export interface ApprovalNotification {
 export type NotificationItem = ApprovalNotification;
 
 export const RISK_DOT: Record<RiskLevel, string> = {
-  green: "bg-tyba-green",
-  yellow: "bg-tyba-amber",
-  red: "bg-tyba-red",
+  green: "bg-tyba-green-fill",
+  yellow: "bg-tyba-amber-fill",
+  red: "bg-tyba-red-fill",
 };
 
 export const RISK_LABEL: Record<RiskLevel, string> = {

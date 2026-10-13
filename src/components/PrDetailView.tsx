@@ -299,9 +299,9 @@ export function PrDetailView({
                 key={i}
                 className={`truncate whitespace-pre px-2.5 ${
                   l.kind === "add"
-                    ? "bg-tyba-green/[.09] text-[color-mix(in_srgb,var(--tyba-green)_45%,var(--tyba-text))]"
+                    ? "bg-tyba-diff-add-bg text-tyba-diff-add-text"
                     : l.kind === "del"
-                      ? "bg-tyba-red/[.09] text-[color-mix(in_srgb,var(--tyba-red)_45%,var(--tyba-text))]"
+                      ? "bg-tyba-diff-del-bg text-tyba-diff-del-text"
                       : "text-tyba-text-muted"
                 }`}
               >

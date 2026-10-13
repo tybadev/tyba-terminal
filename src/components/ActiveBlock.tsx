@@ -123,7 +123,7 @@ export function ActiveBlockHeader({
       {/* O ponto fica: o filete diz "algo corre", o ponto diz "é este bloco".
           Aceso (glow) porque está vivo; o pulso para em reduced-motion. */}
       <span className="flex shrink-0 items-center gap-2 font-mono text-[11px] leading-5 text-tyba-green">
-        <span className="size-[7px] shrink-0 rounded-full bg-tyba-green shadow-[var(--tyba-glow-green)] tyba-pulse" />
+        <span className="size-[7px] shrink-0 rounded-full bg-tyba-green-fill shadow-[var(--tyba-glow-green)] tyba-pulse" />
         {elapsed && t("blockRunningFor", { time: elapsed })}
       </span>
     </div>

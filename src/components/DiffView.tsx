@@ -143,11 +143,11 @@ function LineText({
   );
 }
 
-// Mockup Diff: fundo a 9% e o texto tingido (verde/vermelho a 45% sobre o
-// texto — #c9ecaa/#f3b2a8 no escuro, #1f4d0a/#7a2215 no claro).
+// Mockup Diff: fundo e texto tingido vêm dos tokens `--tyba-diff-*`
+// (literais do mockup no TYBA escuro e claro; fórmula nos outros temas).
 const LINE_BG: Record<string, string> = {
-  add: "bg-tyba-green/[.09] text-[color-mix(in_srgb,var(--tyba-green)_45%,var(--tyba-text))]",
-  del: "bg-tyba-red/[.09] text-[color-mix(in_srgb,var(--tyba-red)_45%,var(--tyba-text))]",
+  add: "bg-tyba-diff-add-bg text-tyba-diff-add-text",
+  del: "bg-tyba-diff-del-bg text-tyba-diff-del-text",
   context: "text-tyba-text/90",
 };
 

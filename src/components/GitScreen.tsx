@@ -200,7 +200,7 @@ export function GitScreen({
                 {changed > 99 ? "99+" : changed}
               </span>
             ) : key === "ci" && ciFailing ? (
-              <span className="absolute right-1 top-1 size-1.5 rounded-full bg-tyba-red" />
+              <span className="absolute right-1 top-1 size-1.5 rounded-full bg-tyba-red-fill" />
             ) : null;
           return (
             <button

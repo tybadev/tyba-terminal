@@ -129,7 +129,7 @@ export function PromptModePicker({ value, onChange }: Props) {
                 }`}
               >
                 {selected && (
-                  <span className="h-1.5 w-1.5 rounded-full bg-tyba-green" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-tyba-green-fill" />
                 )}
               </span>
               <span className="text-[13px] text-tyba-text">{option.title}</span>

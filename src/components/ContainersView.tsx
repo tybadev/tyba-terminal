@@ -310,7 +310,7 @@ export function ContainersView({
           <span
             className={`size-1.5 shrink-0 rounded-full ${
               isRunning
-                ? "bg-tyba-green [box-shadow:var(--tyba-glow-green)]"
+                ? "bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)]"
                 : "bg-tyba-text-faint"
             }`}
           />
@@ -397,7 +397,7 @@ export function ContainersView({
           </span>
           {running.length > 0 && (
             <span className="flex items-center gap-1 font-mono text-[10px] text-tyba-green">
-              <span className="size-1 rounded-full bg-tyba-green" />
+              <span className="size-1 rounded-full bg-tyba-green-fill" />
               {running.length}
             </span>
           )}

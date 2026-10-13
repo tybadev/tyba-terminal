@@ -253,7 +253,7 @@ export function DockerPanel({
             className={`size-[7px] shrink-0 rounded-full ${
               // Parado é o ponto fantasma (mockup): quem diz que falhou é o
               // "saiu com N" em vermelho à direita.
-              running ? "bg-tyba-green" : "bg-tyba-text-ghost"
+              running ? "bg-tyba-green-fill" : "bg-tyba-text-ghost"
             }`}
           />
           {/* O nome ganha sempre: só trunca depois que a imagem já sumiu. */}

@@ -72,7 +72,7 @@ function PendingBadge({ count }: { count: number }) {
   if (count === 0) return null;
   return (
     <span
-      className="shrink-0 rounded-full bg-tyba-amber/[.15] px-1.5 font-mono text-[10px] leading-4 text-tyba-amber"
+      className="shrink-0 rounded-full bg-tyba-amber-tint px-1.5 font-mono text-[10px] leading-4 text-tyba-amber"
       title={t("agentsPendingApprovals", { count })}
     >
       {count}
@@ -358,11 +358,12 @@ function SubagentRow({
   const awaiting = row.light === "awaiting" && approval !== null;
   return (
     <li
-      // Quem espera por você ganha o tint âmbar — a cor que o sistema reserva
-      // para agente pedindo alguém — e o halo de luz: está vivo, parado em você.
+      // Quem espera por você ganha o tint âmbar (8%, mockup) — a cor que o sistema
+      // reserva para agente pedindo alguém — e o halo de luz só onde há brilho
+      // (escuro: 3× o glow do tema; claro: glow 0, sem halo).
       className={`min-w-0 rounded-[8px] ${
         awaiting
-          ? "-mx-2.5 bg-tyba-amber-tint px-2.5 py-1.5 shadow-[0_0_24px_var(--tyba-amber-tint)]"
+          ? "-mx-2.5 bg-tyba-amber/[.08] px-2.5 py-1.5 shadow-[0_0_calc(var(--tyba-glow-size)*3)_color-mix(in_srgb,var(--tyba-amber)_8%,transparent)]"
           : ""
       }`}
     >

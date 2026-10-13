@@ -57,9 +57,9 @@ const REFRESH_MS = 15000;
 type Tab = "ci" | "prs";
 
 const TONE_DOT_CLASS: Record<CheckTone, string> = {
-  success: "bg-tyba-green",
-  failure: "bg-tyba-red",
-  pending: "bg-tyba-amber",
+  success: "bg-tyba-green-fill",
+  failure: "bg-tyba-red-fill",
+  pending: "bg-tyba-amber-fill",
 };
 
 function ToneDot({ tone }: { tone: CheckTone }) {

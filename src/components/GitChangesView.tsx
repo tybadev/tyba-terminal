@@ -51,8 +51,8 @@ const LETTER_TONE: Record<FileDiff["status"], string> = {
 };
 
 const LINE: Record<string, string> = {
-  add: "bg-tyba-green/[.09] text-[color-mix(in_srgb,var(--tyba-green)_45%,var(--tyba-text))]",
-  del: "bg-tyba-red/[.09] text-[color-mix(in_srgb,var(--tyba-red)_45%,var(--tyba-text))]",
+  add: "bg-tyba-diff-add-bg text-tyba-diff-add-text",
+  del: "bg-tyba-diff-del-bg text-tyba-diff-del-text",
   context: "text-tyba-text-muted",
 };
 

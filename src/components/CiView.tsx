@@ -24,9 +24,9 @@ const TONE_TEXT: Record<CheckTone, string> = {
   pending: "text-tyba-amber",
 };
 const TONE_DOT: Record<CheckTone, string> = {
-  success: "bg-tyba-green",
-  failure: "bg-tyba-red",
-  pending: "bg-tyba-amber",
+  success: "bg-tyba-green-fill",
+  failure: "bg-tyba-red-fill",
+  pending: "bg-tyba-amber-fill",
 };
 const STATUS_KEY: Record<CheckTone, string> = {
   success: "ciRunPassed",
@@ -296,7 +296,7 @@ export function CiView({
                   data-line={i}
                   className={`flex whitespace-pre ${
                     isErrorLine(line)
-                      ? "bg-tyba-red/[.10] text-[color-mix(in_srgb,var(--tyba-red)_45%,var(--tyba-text))]"
+                      ? "bg-tyba-diff-del-bg text-tyba-diff-del-text"
                       : "text-tyba-text-muted"
                   }`}
                 >

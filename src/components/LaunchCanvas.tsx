@@ -183,7 +183,7 @@ export function LaunchCanvas({
           >
             <span
               className={`absolute transition-colors ${
-                active ? "bg-tyba-green" : "bg-transparent"
+                active ? "bg-tyba-green-fill" : "bg-transparent"
               } ${
                 vertical
                   ? "left-1/2 top-0 h-full w-px -translate-x-1/2"

@@ -45,7 +45,7 @@ export function SessionHoverCard({
             agentVisual
               ? agentVisual.dotClass
               : running
-                ? "bg-tyba-green [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse"
+                ? "bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse"
                 : "bg-tyba-text-faint"
           }`}
         />

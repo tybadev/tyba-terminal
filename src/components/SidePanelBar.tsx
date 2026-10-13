@@ -25,12 +25,12 @@ import type { PanelIndicator, PanelKind } from "../lib/sidePanel";
  * (`--tyba-lit-bg`/`--tyba-lit-glow`), então basta a cor de texto da área.
  */
 const AREA: Record<PanelKind, { text: string; bar: string }> = {
-  history: { text: "text-tyba-green", bar: "bg-tyba-green" },
+  history: { text: "text-tyba-green", bar: "bg-tyba-green-fill" },
   docker: { text: "text-tyba-blue", bar: "bg-tyba-blue" },
   git: { text: "text-tyba-blue", bar: "bg-tyba-blue" },
   files: { text: "text-tyba-cyan", bar: "bg-tyba-cyan" },
   tunnels: { text: "text-tyba-cyan", bar: "bg-tyba-cyan" },
-  agents: { text: "text-tyba-amber", bar: "bg-tyba-amber" },
+  agents: { text: "text-tyba-amber", bar: "bg-tyba-amber-fill" },
   diff: { text: "text-tyba-violet", bar: "bg-tyba-violet" },
 };
 
@@ -70,9 +70,9 @@ export function PanelIcon({
 export const areaText = (kind: PanelKind) => AREA[kind].text;
 
 const DOT: Record<NonNullable<PanelIndicator["dot"]>, string> = {
-  green: "bg-tyba-green",
-  amber: "bg-tyba-amber",
-  red: "bg-tyba-red",
+  green: "bg-tyba-green-fill",
+  amber: "bg-tyba-amber-fill",
+  red: "bg-tyba-red-fill",
 };
 
 export type PanelTab = {

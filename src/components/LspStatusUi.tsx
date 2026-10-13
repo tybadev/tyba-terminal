@@ -146,7 +146,7 @@ export function LspStatusChip({ stat, truncated, onRetry }: ChipProps) {
     case "ready":
       return (
         <span className="flex items-center gap-1.5" title={truncated ? t("lspTruncated") : stat.server}>
-          {dot("bg-tyba-green shadow-[var(--tyba-glow-green)]")}
+          {dot("bg-tyba-green-fill shadow-[var(--tyba-glow-green)]")}
           {t("editorLspServer", { server: stat.server })}
           {(truncated || stat.truncated) && <span className="font-mono">+</span>}
         </span>
@@ -164,14 +164,14 @@ export function LspStatusChip({ stat, truncated, onRetry }: ChipProps) {
     case "available":
       return (
         <span className="flex items-center gap-1.5" title={stat.server}>
-          {dot("bg-tyba-amber", true)}
+          {dot("bg-tyba-amber-fill", true)}
           {t("lspStarting")}
         </span>
       );
     case "restarting":
       return (
         <span className="flex items-center gap-1.5" title={stat.reason ?? stat.server}>
-          {dot("bg-tyba-amber", true)}
+          {dot("bg-tyba-amber-fill", true)}
           {t("lspRestarting")}
         </span>
       );

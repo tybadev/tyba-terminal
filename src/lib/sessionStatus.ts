@@ -88,7 +88,7 @@ export const statusVisual = (
   switch (status.state) {
     case "failed":
       return {
-        dotClass: "bg-tyba-red",
+        dotClass: "bg-tyba-red-fill",
         textClass: "text-tyba-red",
         labelKey: "sessionFailed",
         rank: 4,
@@ -96,7 +96,7 @@ export const statusVisual = (
     case "awaiting_input":
       return {
         dotClass:
-          "bg-tyba-amber [box-shadow:var(--tyba-glow-amber)] motion-safe:animate-pulse",
+          "bg-tyba-amber-fill [box-shadow:var(--tyba-glow-amber)] motion-safe:animate-pulse",
         textClass: "text-tyba-amber",
         labelKey: awaitingLabelKey(status.reason),
         rank: 3,
@@ -104,7 +104,7 @@ export const statusVisual = (
     case "idle":
       if (!attention) return null;
       return {
-        dotClass: "bg-tyba-green",
+        dotClass: "bg-tyba-green-fill",
         textClass: "text-tyba-green",
         labelKey: "sessionFinished",
         rank: 2,

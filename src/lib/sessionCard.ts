@@ -36,9 +36,9 @@ export const sessionDot = ({
 
 /** Classes do ponto, nos tokens do tema — valem nos dois temas. */
 export const SESSION_DOT_CLASS: Record<SessionDot, string> = {
-  attention: "bg-tyba-amber [box-shadow:var(--tyba-glow-amber)]",
+  attention: "bg-tyba-amber-fill [box-shadow:var(--tyba-glow-amber)]",
   running:
-    "bg-tyba-green [box-shadow:var(--tyba-glow-green)] tyba-pulse",
+    "bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)] tyba-pulse",
   idle: "bg-tyba-text-ghost", // mockup: #3a3a3f / #d4d4da
 };
 
