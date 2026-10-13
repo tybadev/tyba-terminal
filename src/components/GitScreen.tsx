@@ -1,14 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ClockCounterClockwise,
-  Files,
-  GitDiff,
-  GitPullRequest,
-  Lightning,
-  X,
-  type Icon,
-} from "@phosphor-icons/react";
 
 import "./gitScreen.css";
 import { CiView } from "./CiView";
@@ -20,7 +11,6 @@ import { PrListView } from "./PrListView";
 import { requestConfirm } from "../lib/confirm";
 import { translateError } from "../lib/errors";
 import {
-  railSections,
   resolvePlace,
   setGitPlace,
   slideOf,
@@ -40,16 +30,34 @@ import {
 } from "../lib/ipc";
 import { snapshotForDir } from "../lib/repoSnapshots";
 
-const RAIL: Record<GitSection, { icon: Icon; label: string }> = {
-  changes: { icon: Files, label: "gitScreenChanges" },
-  review: { icon: GitDiff, label: "gitScreenReview" },
-  history: { icon: ClockCounterClockwise, label: "gitScreenHistory" },
-  prs: { icon: GitPullRequest, label: "gitScreenPrs" },
-  ci: { icon: Lightning, label: "gitScreenCi" },
+const TITLE: Record<GitSection, string> = {
+  changes: "gitScreenChanges",
+  review: "gitScreenReview",
+  history: "gitScreenHistory",
+  prs: "gitScreenPrs",
+  ci: "gitScreenCi",
 };
 
-const RAIL_STEP_PX = 42;
-const RAIL_TOP_PX = 12;
+/** O último run da branch falhou? (ponto vermelho no CI do trilho) */
+export function useCiFailing(sessionId: SessionId | null, branch: string | null): boolean {
+  const [failing, setFailing] = useState(false);
+  useEffect(() => {
+    setFailing(false);
+    if (!sessionId) return;
+    let alive = true;
+    void forgeWorkflowRuns(sessionId, false)
+      .then((runs) => {
+        if (!alive || !runs) return;
+        const latest = runs.find((r) => !branch || r.head_branch === branch);
+        setFailing(latest?.conclusion === "failure");
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [sessionId, branch]);
+  return failing;
+}
 
 const BTN =
   "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-strong px-2.5 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
@@ -91,7 +99,6 @@ export function GitScreen({
   const [slide, setSlide] = useState<"up" | "down" | "left" | "right">("up");
   const [busy, setBusy] = useState<null | "fetch" | "pull" | "push">(null);
   const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
-  const [ciFailing, setCiFailing] = useState(false);
 
   const go = (next: GitPlace) => {
     setSlide(slideOf(prev.current, next));
@@ -107,22 +114,7 @@ export function GitScreen({
   }, [place]);
 
   const snapshot = repoRoot ? snapshotForDir(snapshots, repoRoot) : undefined;
-  const sections = railSections(hasWorktree);
 
-  useEffect(() => {
-    let alive = true;
-    void forgeWorkflowRuns(session.id, false)
-      .then((runs) => {
-        if (!alive || !runs) return;
-        const branch = snapshot?.branch;
-        const latest = runs.find((r) => !branch || r.head_branch === branch);
-        setCiFailing(latest?.conclusion === "failure");
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [session.id, snapshot?.branch]);
 
   const run = async (kind: "fetch" | "pull" | "push") => {
     if (busy) return;
@@ -155,10 +147,9 @@ export function GitScreen({
   };
 
   const titleKey =
-    place.section === "prs" && place.pr !== null ? "tabPr" : RAIL[place.section].label;
+    place.section === "prs" && place.pr !== null ? "tabPr" : TITLE[place.section];
   const ahead = snapshot?.ahead ?? null;
   const behind = snapshot?.behind ?? null;
-  const changed = snapshot?.status?.changed ?? 0;
   const animClass = `tyba-git-in-${slide}`;
   const sectionKey = `${place.section}:${place.pr ?? ""}`;
 
@@ -166,7 +157,7 @@ export function GitScreen({
     <section
       aria-label={t("gitScreenTitle")}
       data-exiting={exiting}
-      className="tyba-git-screen absolute inset-0 z-30 flex flex-row-reverse bg-tyba-bg shadow-[-30px_0_60px_rgba(0,0,0,0.45)]"
+      className="tyba-git-screen absolute inset-0 z-30 flex bg-tyba-bg shadow-[-30px_0_60px_rgba(0,0,0,0.45)]"
       onKeyDown={(e) => {
         if (e.key !== "Escape" || e.defaultPrevented) return;
         const target = e.target as HTMLElement;
@@ -182,54 +173,6 @@ export function GitScreen({
         onClose();
       }}
     >
-      <nav
-        aria-label={t("gitScreenSections")}
-        className="relative flex w-[52px] shrink-0 flex-col items-center gap-1.5 tyba-divide-l bg-[var(--tyba-panel-bg)] pt-3"
-      >
-        <span
-          aria-hidden
-          className="tyba-git-rail-marker absolute right-0 h-7 w-0.5 rounded-l-[2px] bg-tyba-blue shadow-[0_0_10px_var(--tyba-blue)]"
-          style={{ top: RAIL_TOP_PX + sections.indexOf(place.section) * RAIL_STEP_PX + 4 }}
-        />
-        {sections.map((key) => {
-          const { icon: SectionIcon, label } = RAIL[key];
-          const on = key === place.section;
-          const badge =
-            key === "changes" && changed > 0 ? (
-              <span className="absolute right-0 top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-tyba-amber px-1 text-[9px] text-tyba-text-inverse">
-                {changed > 99 ? "99+" : changed}
-              </span>
-            ) : key === "ci" && ciFailing ? (
-              <span className="absolute right-1 top-1 size-1.5 rounded-full bg-tyba-red" />
-            ) : null;
-          return (
-            <button
-              key={key}
-              type="button"
-              aria-label={t(label)}
-              aria-pressed={on}
-              title={t(label)}
-              onClick={() => go({ section: key, pr: null })}
-              className={`relative flex size-9 items-center justify-center rounded-[8px] transition-colors ${
-                on ? "bg-tyba-blue/[.12] text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
-              }`}
-            >
-              <SectionIcon size={17} />
-              {badge}
-            </button>
-          );
-        })}
-        <span className="flex-1" />
-        <button
-          type="button"
-          aria-label={t("gitScreenClose")}
-          title={t("gitScreenClose")}
-          onClick={onClose}
-          className="mb-2.5 flex size-9 items-center justify-center rounded-[8px] text-tyba-text-faint hover:text-tyba-text"
-        >
-          <X size={15} />
-        </button>
-      </nav>
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-[46px] shrink-0 items-center gap-3 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12px]">
