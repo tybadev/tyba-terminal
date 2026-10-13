@@ -248,7 +248,6 @@ import {
   type SessionTransport,
   filesSearch,
   type FileSearchResult,
-  openDiffTab,
   backTab,
   openFilesPanel,
   openTunnelsPanel,
@@ -2660,7 +2659,8 @@ export default function App() {
       tunnels: openTunnelsPanel,
       files: openFilesPanel,
       git: openGitPanel,
-      diff: openDiffTab,
+      // O Diff é aba (mockup Diff), não painel lateral.
+      diff: openDiffContentTab,
       agents: openAgentsPanel,
     }[kind];
     void open(fileSessionId).catch(() => {});
@@ -4666,7 +4666,7 @@ export default function App() {
           className="text-xs"
           onSelect={() => {
             const target = worktreeSessionOf(w);
-            if (target) void openDiffTab(target.id).catch(() => {});
+            if (target) void openDiffContentTab(target.id).catch(() => {});
           }}
         >
           {t("diffReviewAction")}
@@ -5339,7 +5339,11 @@ export default function App() {
 
           <SidePanelBar
             tabs={panelTabs}
-            lit={litPanel(sideView, fileSessionId)}
+            lit={
+              activeContent?.kind === "session-diff"
+                ? "diff"
+                : litPanel(sideView, fileSessionId)
+            }
             onClick={onPanelClick}
             onEscape={() => {
               if (activeWorkspace) {
@@ -5851,6 +5855,7 @@ export default function App() {
                             reviewAgent.trim() === "codex" ? "codex" : "claude"
                           }
                           expanded
+                          asTab
                           onToggleExpand={() => {}}
                           onClose={() =>
                             activeTab && void closeTabAndRefresh(activeTab.id)
@@ -5924,7 +5929,7 @@ export default function App() {
                         }
                         onFocusSession={goToSession}
                         onReviewSession={(id) =>
-                          void openDiffTab(id).catch(() => {})
+                          void openDiffContentTab(id).catch(() => {})
                         }
                       />
                     </div>
@@ -6660,7 +6665,7 @@ export default function App() {
                           hostingBySession={hostingBySession}
                           onJump={jumpToAgent}
                           onReviewDiff={(id) =>
-                            void openDiffTab(id).catch(() => {})
+                            void openDiffContentTab(id).catch(() => {})
                           }
                           onClose={() =>
                             void closeSideView(activeWorkspace.id).catch(
@@ -6779,7 +6784,7 @@ export default function App() {
                               )
                             }
                             onJumpToDiff={() =>
-                              void openDiffTab(filesTarget.id).catch(() => {})
+                              void openDiffContentTab(filesTarget.id).catch(() => {})
                             }
                             finderShortcut={formatCombo(bindings.filesFinder)}
                             editorOpen={editorTabs.some(
@@ -6859,7 +6864,7 @@ export default function App() {
               const target = activeSession?.worktree
                 ? activeSession
                 : (worktreeSessionOf(activeWorkspace) ?? activeSession);
-              if (target) void openDiffTab(target.id).catch(() => {});
+              if (target) void openDiffContentTab(target.id).catch(() => {});
             }}
             showRichInput={richInputEligible && !richInputVisible}
             richInputCombo={bindings.richInput}

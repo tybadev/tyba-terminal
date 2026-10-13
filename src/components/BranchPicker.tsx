@@ -32,9 +32,10 @@ interface Props {
    *
    * `pill` é o do painel de diff, que flutua sobre conteúdo e precisa de
    * contorno para existir. `chip` é o da barra de status, onde ele convive com
-   * os outros chips e um contorno o faria destoar de todos eles.
+   * os outros chips e um contorno o faria destoar de todos eles. `base` é o
+   * SHA da base no cabeçalho do Diff (mockup Diff: chip com fundo, sem ícone).
    */
-  variant?: "pill" | "chip";
+  variant?: "pill" | "chip" | "base";
   /**
    * A lista serve para NAVEGAR até uma branch, ou só para trocar de branch?
    *
@@ -136,7 +137,11 @@ export function BranchPicker({
           className={
             variant === "chip"
               ? "flex min-w-0 shrink items-center gap-1 rounded-[3px] px-1 -mx-1 transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
-              : `flex min-w-0 shrink items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[10px] transition-colors ${
+              : variant === "base"
+                ? `flex min-w-0 shrink items-center rounded-[4px] bg-tyba-raised px-1.5 py-px font-mono text-[12px] transition-colors hover:bg-tyba-text/[.08] ${
+                    browsing ? "text-tyba-violet" : "text-tyba-text"
+                  }`
+                : `flex min-w-0 shrink items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[10px] transition-colors ${
                   browsing
                     ? "border-tyba-violet/50 text-tyba-violet hover:bg-tyba-violet/10"
                     : "border-tyba-border text-tyba-text-faint hover:bg-tyba-text/[.04] hover:text-tyba-text"
@@ -144,7 +149,7 @@ export function BranchPicker({
           }
         >
           {/* Na barra de status, só o nome em azul (mockup Proposta). */}
-          {variant !== "chip" && <GitBranch size={10} className="shrink-0" />}
+          {variant === "pill" && <GitBranch size={10} className="shrink-0" />}
           <span className="truncate">{label}</span>
         </button>
       </PopoverTrigger>

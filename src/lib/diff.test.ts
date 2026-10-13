@@ -10,6 +10,7 @@ import {
   isSectionOpen,
   langOfPath,
   numberHunk,
+  reviewProgress,
   splitPairs,
   toggleSection,
 } from "./diff";
@@ -202,5 +203,28 @@ describe("buildReviewPrompt", () => {
     expect(prompt).toContain("> let total = soma(1, 2) * 2;");
     expect(prompt).toContain("linha removida 40");
     expect(prompt).toContain("2 comentário(s)");
+  });
+});
+
+describe("reviewProgress", () => {
+  const file = (path: string) =>
+    ({ path, status: "modified", insertions: 1, deletions: 0 }) as FileDiff;
+
+  test("conta vistos por escopo e ignora arquivo que saiu do diff", () => {
+    const viewed = new Set([
+      fileKeyOf("unstaged", "a.js"),
+      fileKeyOf("staged", "a.js"),
+      fileKeyOf("unstaged", "sumiu.js"),
+    ]);
+    expect(
+      reviewProgress(
+        { staged: [file("b.js")], unstaged: [file("a.js"), file("c.js")] },
+        viewed,
+      ),
+    ).toEqual({ viewed: 1, total: 3 });
+  });
+
+  test("diff vazio", () => {
+    expect(reviewProgress({}, new Set())).toEqual({ viewed: 0, total: 0 });
   });
 });

@@ -18,6 +18,23 @@ export const keyScope = (key: string): string =>
 export const keyPath = (key: string): string =>
   key.slice(key.indexOf("\u0000") + 1);
 
+/** "2 de 3 vistos" (mockup Diff): conta só arquivos que ainda estão no diff,
+ *  então um arquivo visto que saiu (commitado, descartado) não infla o total. */
+export function reviewProgress(
+  scopes: Partial<Record<DiffScopeKey, FileDiff[]>>,
+  viewed: ReadonlySet<string>,
+): { viewed: number; total: number } {
+  let total = 0;
+  let seen = 0;
+  for (const [scope, files] of Object.entries(scopes) as [DiffScopeKey, FileDiff[]][]) {
+    for (const file of files) {
+      total += 1;
+      if (viewed.has(fileKeyOf(scope, file.path))) seen += 1;
+    }
+  }
+  return { viewed: seen, total };
+}
+
 const GENERATED_PATTERNS: RegExp[] = [
   /(^|\/)bun\.lockb?$/,
   /(^|\/)package-lock\.json$/,

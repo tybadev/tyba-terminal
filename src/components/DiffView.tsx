@@ -16,7 +16,6 @@ import {
   Minus,
   Sparkle,
   Warning,
-  PaperPlaneTilt,
   Plus,
   Trash,
   UploadSimple,
@@ -56,6 +55,7 @@ import {
   keyPath,
   keyScope,
   langOfPath,
+  reviewProgress,
   toggleSection,
   type DiffMode,
   type DiffScopeKey,
@@ -166,6 +166,9 @@ interface Props {
   onClose: () => void;
   onSendToAgent: (prompt: string) => Promise<void>;
   onResolveConflicts: (state: ConflictState) => Promise<void>;
+  /** Aberto como aba (mockup Diff): o rótulo da aba já diz sessão e branch,
+   *  e fechar é na aba — some o título, expandir e fechar do cabeçalho. */
+  asTab?: boolean;
 }
 
 type DisplayRow =
@@ -201,6 +204,7 @@ export function DiffView({
   onClose,
   onSendToAgent,
   onResolveConflicts,
+  asTab = false,
 }: Props) {
   const { t } = useTranslation();
   const [diff, setDiff] = useState<SessionDiff | null>(
@@ -234,6 +238,8 @@ export function DiffView({
   const [resolvingConflicts, setResolvingConflicts] = useState(false);
   const [conflictBusy, setConflictBusy] = useState<string | null>(null);
   const [suggesting, setSuggesting] = useState(false);
+  // "Visto" por arquivo (chave escopo+caminho), só desta montagem.
+  const [viewed, setViewed] = useState<Set<string>>(() => new Set());
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestedRef = useRef(new Set<string>());
@@ -499,7 +505,7 @@ export function DiffView({
       out.push(row);
       if (row.kind !== "line") continue;
       const saved = comments[row.key];
-      if (saved) {
+      if (saved && draftAnchor !== row.key) {
         out.push({
           kind: "comment",
           key: `${row.key}:c`,
@@ -507,7 +513,7 @@ export function DiffView({
           anchor: row.key,
         });
       }
-      if (draftAnchor === row.key && !saved) {
+      if (draftAnchor === row.key) {
         out.push({ kind: "commentEditor", key: `${row.key}:e`, anchor: row.key });
       }
     }
@@ -605,6 +611,49 @@ export function DiffView({
   const stagedCount = diff?.staged_files.length ?? 0;
   const unstagedCount = diff?.unstaged_files.length ?? 0;
 
+  const progress = reviewProgress(
+    diff
+      ? {
+          committed: diff.files,
+          staged: diff.staged_files,
+          unstaged: diff.unstaged_files,
+        }
+      : {},
+    viewed,
+  );
+  const totals = useMemo(() => {
+    const all = diff ? [...diff.files, ...diff.staged_files, ...diff.unstaged_files] : [];
+    return {
+      files: new Set(all.map((f) => f.path)).size,
+      insertions: all.reduce((n, f) => n + (f.insertions ?? 0), 0),
+      deletions: all.reduce((n, f) => n + (f.deletions ?? 0), 0),
+    };
+  }, [diff]);
+  const commentsByPath = useMemo(() => {
+    const out = new Map<string, number>();
+    for (const c of commentList) out.set(c.path, (out.get(c.path) ?? 0) + 1);
+    return out;
+  }, [commentList]);
+
+  // Marcar visto recolhe o arquivo; desmarcar abre de novo.
+  const toggleViewed = (key: string) => {
+    const next = !viewed.has(key);
+    setViewed((prev) => {
+      const out = new Set(prev);
+      if (next) out.add(key);
+      else out.delete(key);
+      return out;
+    });
+    toggleFile(key, next);
+  };
+
+  const openInEditor = (file: FileDiff) =>
+    // Abre como aba de editor do TYBA; o caminho do diff é do repo
+    // e o core o resolve contra a raiz da sessão.
+    void openEditorTab(file.path, undefined, {
+      session: session.id,
+    }).catch((e) => setActionError(String(e)));
+
   const fileActions = (scope: DiffScopeKey, file: FileDiff) => {
     const discardKey = `file:${file.path}`;
     return (
@@ -663,22 +712,6 @@ export function DiffView({
               <Trash size={12} />
             </button>
           ))}
-        {file.status !== "deleted" && (
-          <button
-            title={t("diffOpenFile")}
-            aria-label={t("diffOpenFile")}
-            onClick={() =>
-              // Abre como aba de editor do TYBA; o caminho do diff é do repo
-              // e o core o resolve contra a raiz da sessão.
-              void openEditorTab(file.path, undefined, {
-                session: session.id,
-              }).catch((e) => setActionError(String(e)))
-            }
-            className="flex size-5 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-text"
-          >
-            <ArrowSquareOut size={12} />
-          </button>
-        )}
       </span>
     );
   };
@@ -819,25 +852,34 @@ export function DiffView({
           files.map((file) => {
             const key = fileKeyOf(scope, file.path);
             const active = stickyFile?.key === key;
+            const seen = viewed.has(key);
+            const notes = commentsByPath.get(file.path) ?? 0;
             return (
               <button
                 key={key}
                 onClick={() => jumpTo(key)}
-                className={`flex items-center gap-2 rounded-[4px] px-2 py-1 text-left transition-colors ${
+                className={`flex items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left font-mono text-[12.5px] transition-colors ${
                   active
-                    ? "bg-tyba-text/[.06] text-tyba-text"
-                    : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
+                    ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]"
+                    : seen
+                      ? "text-tyba-text-faint hover:bg-tyba-text/[.03]"
+                      : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
                 }`}
               >
-                <span
-                  className={`w-3 shrink-0 text-center font-mono text-[10px] ${STATUS_COLOR[file.status]}`}
-                >
+                <span className={`shrink-0 ${STATUS_COLOR[file.status]}`}>
                   {STATUS_LETTER[file.status]}
                 </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+                <span className="min-w-0 flex-1 truncate" title={file.path}>
                   {file.path}
+                  {seen && " ✓"}
                 </span>
-                <Numstat file={file} />
+                {notes > 0 ? (
+                  <span className="shrink-0 text-[11px] text-tyba-violet">
+                    {t("diffCommentCount", { count: notes })}
+                  </span>
+                ) : (
+                  <Numstat file={file} />
+                )}
               </button>
             );
           })}
@@ -852,27 +894,40 @@ export function DiffView({
           // Mockup Diff: cartão violeta (borda 0,35, fundo 0,06, cantos de 8px)
           // recuado até a coluna do código.
           <div className="py-1.5 pl-24 pr-4">
-          <div className="flex items-start gap-2 rounded-[8px] border border-tyba-violet/35 bg-tyba-violet/[.06] px-3 py-2.5">
-            <ChatCircleText
-              size={13}
-              className="mt-0.5 shrink-0 text-tyba-violet"
-            />
-            <span className="min-w-0 flex-1 whitespace-pre-wrap text-[12px] leading-snug text-tyba-text">
+          <div className="flex flex-col gap-2 rounded-[8px] border border-tyba-violet/35 bg-tyba-violet/[.06] px-3 py-2.5 text-[12px]">
+            <span className="text-[color-mix(in_srgb,var(--tyba-violet)_60%,var(--tyba-text))]">
+              {t("diffCommentYours", {
+                line: row.comment.newNo ?? row.comment.oldNo ?? "",
+              })}
+            </span>
+            <span className="whitespace-pre-wrap leading-snug text-tyba-text">
               {row.comment.text}
             </span>
-            <button
-              aria-label={t("diffCommentRemove")}
-              onClick={() =>
-                setComments((prev) => {
-                  const next = { ...prev };
-                  delete next[row.anchor];
-                  return next;
-                })
-              }
-              className="shrink-0 text-tyba-text-faint hover:text-tyba-red"
-            >
-              <Trash size={12} />
-            </button>
+            <span className="flex flex-wrap items-center gap-3 text-[11px] text-tyba-text-muted">
+              <button
+                onClick={() => {
+                  setDraftAnchor(row.anchor);
+                  setDraftText(row.comment.text);
+                }}
+                className="hover:text-tyba-text"
+              >
+                {t("diffCommentEdit")}
+              </button>
+              <button
+                aria-label={t("diffCommentRemove")}
+                onClick={() =>
+                  setComments((prev) => {
+                    const next = { ...prev };
+                    delete next[row.anchor];
+                    return next;
+                  })
+                }
+                className="hover:text-tyba-red"
+              >
+                {t("diffCommentDelete")}
+              </button>
+              <span className="text-tyba-text-faint">{t("diffCommentPending")}</span>
+            </span>
           </div>
           </div>
         );
@@ -958,16 +1013,40 @@ export function DiffView({
             >
               {STATUS_LETTER[file.status]}
             </span>
-            <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-tyba-text">
+            <span className="min-w-0 truncate font-mono text-[12px] text-tyba-text">
               {file.old_path ? `${file.old_path} → ${file.path}` : file.path}
             </span>
+            <Numstat file={file} />
             {row.generated && (
               <span className="shrink-0 rounded-full bg-tyba-text/[.06] px-1.5 text-[9px] text-tyba-text-faint">
                 {t("diffGenerated")}
               </span>
             )}
+            <span className="flex-1" />
             {fileActions(row.scope, file)}
-            <Numstat file={file} />
+            <span
+              className="flex shrink-0 items-center gap-3.5 text-[11px] text-tyba-text-muted"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+            >
+              {file.status !== "deleted" && (
+                <button
+                  onClick={() => openInEditor(file)}
+                  className="hover:text-tyba-text"
+                >
+                  {t("diffOpenInEditor")}
+                </button>
+              )}
+              <label className="flex cursor-pointer items-center gap-1.5 hover:text-tyba-text">
+                <input
+                  type="checkbox"
+                  checked={viewed.has(row.key)}
+                  onChange={() => toggleViewed(row.key)}
+                  className="accent-tyba-green"
+                />
+                {t("diffViewed")}
+              </label>
+            </span>
           </div>
         );
       }
@@ -1087,23 +1166,37 @@ export function DiffView({
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-tyba-sunken"
     >
       {/* Mockup Diff: faixa de 40px na superfície (vidro no claro), 12px. */}
-      <header className="flex h-10 shrink-0 items-center gap-2 tyba-divide-b bg-[var(--tyba-panel-bg)] px-4 text-[12px] text-tyba-text-muted">
-        <GitDiff size={13} className="shrink-0 text-tyba-violet" />
-        <span className="min-w-0 truncate text-[12px] text-tyba-text">
-          {session.title}
+      <header className="flex h-10 shrink-0 items-center gap-3.5 tyba-divide-b bg-[var(--tyba-panel-bg)] px-4 text-[12px] text-tyba-text-muted">
+        {!asTab && (
+          <span className="flex min-w-0 shrink items-center gap-2">
+            <GitDiff size={13} className="shrink-0 text-tyba-violet" />
+            <span className="min-w-0 truncate text-tyba-text">{session.title}</span>
+            <span className="truncate font-mono text-[11px]">{branch}</span>
+          </span>
+        )}
+        <span className="flex min-w-0 shrink items-center gap-1.5 whitespace-nowrap">
+          {!browseBranch && <span className="shrink-0">{t("diffComparingBase")}</span>}
+          <BranchPicker
+            sessionId={session.id}
+            browsing={browseBranch}
+            label={browseBranch ?? baseShort}
+            onBrowse={browseTo}
+            variant="base"
+          />
+          {!browseBranch && (
+            <span className="min-w-0 truncate text-tyba-text-faint">
+              {t("diffBaseFrozen")}
+            </span>
+          )}
         </span>
-        <span className="truncate font-mono text-[11px] text-tyba-text-muted">
-          {branch}
-        </span>
-        <BranchPicker
-          sessionId={session.id}
-          browsing={browseBranch}
-          label={
-            browseBranch ?? `${t("diffBase")} ${baseShort} ‥ HEAD`
-          }
-          onBrowse={browseTo}
-        />
         <div className="flex-1" />
+        {diff && totals.files > 0 && (
+          <span className="shrink-0 whitespace-nowrap">
+            {t("diffFilesSummary", { count: totals.files })} ·{" "}
+            <span className="text-tyba-green">+{totals.insertions}</span>{" "}
+            <span className="text-tyba-red">−{totals.deletions}</span>
+          </span>
+        )}
         <div className="flex items-center gap-0.5 rounded-[6px] bg-tyba-sunken p-0.5">
           <button
             aria-pressed={mode === "unified"}
@@ -1128,24 +1221,28 @@ export function DiffView({
             {t("diffSplit")}
           </button>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={expanded ? t("diffCollapse") : t("diffExpand")}
-          onClick={onToggleExpand}
-          className="size-6"
-        >
-          {expanded ? <ArrowsInSimple size={13} /> : <ArrowsOutSimple size={13} />}
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={t("diffClose")}
-          onClick={onClose}
-          className="size-6"
-        >
-          <X size={13} />
-        </Button>
+        {!asTab && (
+          <>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={expanded ? t("diffCollapse") : t("diffExpand")}
+              onClick={onToggleExpand}
+              className="size-6"
+            >
+              {expanded ? <ArrowsInSimple size={13} /> : <ArrowsOutSimple size={13} />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={t("diffClose")}
+              onClick={onClose}
+              className="size-6"
+            >
+              <X size={13} />
+            </Button>
+          </>
+        )}
       </header>
 
       {conflicts && !browseBranch && (
@@ -1296,10 +1393,15 @@ export function DiffView({
 
       <div className="flex min-h-0 flex-1">
         <aside
-          className={`w-64 shrink-0 flex-col overflow-y-auto tyba-divide-r px-2 py-2 ${
+          className={`w-[260px] shrink-0 flex-col overflow-y-auto tyba-divide-r p-2.5 ${
             expanded ? "flex" : "hidden xl:flex"
           }`}
         >
+          {progress.total > 0 && (
+            <span className="px-2.5 pb-2 pt-0.5 text-[11px] text-tyba-text-faint">
+              {t("diffViewedCount", progress)}
+            </span>
+          )}
           {diff && diff.commits.length > 0 && (
             <div className="flex flex-col gap-px">
               <span className="tyba-label px-2 pb-1 pt-1">
@@ -1470,71 +1572,66 @@ export function DiffView({
         </div>
       )}
 
-      {browseBranch === null && (
-      <div className="max-h-[45%] shrink-0 overflow-y-auto">
-        <DeliverySection
-          session={session}
-          hasUncommittedWork={
-            (diff?.staged_files.length ?? 0) > 0 ||
-            (diff?.unstaged_files.length ?? 0) > 0
-          }
-          aheadCount={diff?.commits.length ?? 0}
-          isWorktree={Boolean(session.worktree)}
-          onSendToAgent={onSendToAgent}
-          onResolveConflicts={onResolveConflicts}
-          onClose={onClose}
-        />
-      </div>
-      )}
-
-      <footer className="flex h-6 shrink-0 items-center gap-3 tyba-divide-t px-4 font-mono text-[11px] text-tyba-text-muted">
-        <GitBranch size={12} className="shrink-0" />
-        <span>
-          {browseBranch
-            ? t("branchExploring", { branch: browseBranch })
-            : t("diffAhead", { count: diff?.commits.length ?? 0 })}
-        </span>
-        <span className="text-tyba-text-faint">·</span>
-        <span className={stagedCount + unstagedCount > 0 ? "text-tyba-amber" : ""}>
-          {browseBranch
-            ? t("diffAhead", { count: diff?.commits.length ?? 0 })
-            : stagedCount + unstagedCount > 0
-              ? t("diffDirty")
-              : t("diffClean")}
-        </span>
-        <div className="flex-1" />
-        {actionError && (
-          <span className="max-w-md truncate text-tyba-red" title={actionError}>
-            {actionError}
-          </span>
-        )}
-        {pushedInfo !== null && !actionError && (
-          <span className="max-w-md truncate text-tyba-green">
-            {t("diffPushed")}
-          </span>
-        )}
-        {sendState === "sent" && commentList.length === 0 && (
-          <span className="text-tyba-green">{t("diffCommentsSent")}</span>
-        )}
-        {sendError && <span className="max-w-md truncate text-tyba-red">{sendError}</span>}
-        {commentList.length > 0 && (
+      {(() => {
+        const ahead = diff?.commits.length ?? 0;
+        const dirty = stagedCount + unstagedCount > 0;
+        // Esquerda da barra: com comentário, o envio ao agente (mockup);
+        // sem, o estado do worktree. Mensagens de ação ficam junto.
+        const leading = (
+          <>
+            {commentList.length > 0 ? (
+              <>
+                <Button
+                  size="sm"
+                  className="h-auto shrink-0 gap-1.5 rounded-[6px] bg-tyba-violet px-3.5 py-1.5 text-[12px] font-normal text-white hover:bg-tyba-violet/90"
+                  disabled={sendState === "sending"}
+                  onClick={() => void sendToAgent()}
+                >
+                  {sendState === "sending"
+                    ? t("diffCommentsSending")
+                    : t("diffCommentsSend", { count: commentList.length })}
+                </Button>
+                <span className="truncate text-[11px] text-tyba-text-faint">
+                  {t("diffSendHint", { agent: suggestAgent })}
+                </span>
+              </>
+            ) : (
+              <span className="flex min-w-0 items-center gap-2 truncate font-mono text-[11px] text-tyba-text-muted">
+                <GitBranch size={12} className="shrink-0" />
+                {browseBranch
+                  ? t("branchExploring", { branch: browseBranch })
+                  : t("diffAhead", { count: ahead })}
+                <span className="text-tyba-text-faint">·</span>
+                <span className={dirty ? "text-tyba-amber" : ""}>
+                  {browseBranch
+                    ? t("diffAhead", { count: ahead })
+                    : dirty
+                      ? t("diffDirty")
+                      : t("diffClean")}
+                </span>
+              </span>
+            )}
+            {actionError && (
+              <span className="min-w-0 truncate text-[11px] text-tyba-red" title={actionError}>
+                {actionError}
+              </span>
+            )}
+            {pushedInfo !== null && !actionError && (
+              <span className="truncate text-[11px] text-tyba-green">{t("diffPushed")}</span>
+            )}
+            {sendState === "sent" && commentList.length === 0 && (
+              <span className="text-[11px] text-tyba-green">{t("diffCommentsSent")}</span>
+            )}
+            {sendError && (
+              <span className="min-w-0 truncate text-[11px] text-tyba-red">{sendError}</span>
+            )}
+          </>
+        );
+        const push = browseBranch === null && ahead > 0 && (
           <Button
+            variant="ghost"
             size="sm"
-            className="h-6 gap-1.5 px-2.5 text-[11px]"
-            disabled={sendState === "sending"}
-            onClick={() => void sendToAgent()}
-          >
-            <PaperPlaneTilt size={12} />
-            {sendState === "sending"
-              ? t("diffCommentsSending")
-              : t("diffCommentsSend", { count: commentList.length })}
-          </Button>
-        )}
-        {browseBranch === null && (diff?.commits.length ?? 0) > 0 && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-6 gap-1.5 px-2.5 text-[11px]"
+            className="h-auto shrink-0 gap-1.5 rounded-[6px] border border-tyba-border-strong bg-transparent px-3 py-[5px] text-[12px] font-normal text-tyba-text-muted hover:bg-transparent hover:text-tyba-text"
             disabled={busy !== null}
             onClick={() =>
               void gitAction(async () => {
@@ -1550,8 +1647,27 @@ export function DiffView({
             <UploadSimple size={12} />
             {busy === "push" ? t("diffPushing") : t("diffPush")}
           </Button>
-        )}
-      </footer>
+        );
+        return browseBranch === null ? (
+          <div className="max-h-[45%] shrink-0 overflow-y-auto">
+            <DeliverySection
+              session={session}
+              hasUncommittedWork={dirty}
+              aheadCount={ahead}
+              isWorktree={Boolean(session.worktree)}
+              onSendToAgent={onSendToAgent}
+              onResolveConflicts={onResolveConflicts}
+              onClose={onClose}
+              leading={leading}
+              trailing={push}
+            />
+          </div>
+        ) : (
+          <div className="flex shrink-0 items-center gap-2.5 tyba-divide-t bg-[var(--tyba-panel-bg)] px-4 py-3">
+            {leading}
+          </div>
+        );
+      })()}
     </div>
   );
 }

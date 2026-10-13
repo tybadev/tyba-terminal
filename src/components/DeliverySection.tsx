@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowSquareOut,
   CheckCircle,
   CircleNotch,
-  GitMerge,
-  GitPullRequest,
   XCircle,
 } from "@phosphor-icons/react";
 
@@ -38,6 +36,10 @@ interface Props {
   onSendToAgent: (prompt: string) => Promise<void>;
   onResolveConflicts: (state: ConflictState) => Promise<void>;
   onClose: () => void;
+  /** Esquerda da barra (mockup Diff: enviar comentários ao agente). */
+  leading?: ReactNode;
+  /** Antes de Merge local e PR (o push do Diff). */
+  trailing?: ReactNode;
 }
 
 const CHECK_ICON = {
@@ -54,6 +56,8 @@ export function DeliverySection({
   onSendToAgent,
   onResolveConflicts,
   onClose,
+  leading,
+  trailing,
 }: Props) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<ForgeStatus | null | undefined>(
@@ -98,8 +102,9 @@ export function DeliverySection({
 
   return (
     <div className="flex flex-col tyba-divide-t">
-      <div className="flex h-10 shrink-0 items-center gap-2 px-4">
-        <span className="tyba-label">{t("deliveryTitle")}</span>
+      {/* Mockup Diff: uma barra só — enviar à esquerda, entregar à direita. */}
+      <div className="flex shrink-0 items-center gap-2.5 bg-[var(--tyba-panel-bg)] px-4 pb-2.5 pt-3">
+        {leading ?? <span className="tyba-label">{t("deliveryTitle")}</span>}
         <div className="flex-1" />
         {status === null && !statusError && (
           <span className="text-[11px] text-tyba-text-faint">
@@ -115,6 +120,15 @@ export function DeliverySection({
             {t("deliveryStatusError")}
           </button>
         )}
+        {trailing}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-auto shrink-0 rounded-[6px] border border-tyba-border-strong bg-transparent px-3 py-[5px] text-[12px] font-normal text-tyba-text-muted hover:bg-transparent hover:text-tyba-text"
+          onClick={() => setOpenMerge(true)}
+        >
+          {t("deliveryMergeLocal")}
+        </Button>
         {status &&
           (() => {
             const deliverable = !isWorktree || aheadCount > 0;
@@ -124,28 +138,25 @@ export function DeliverySection({
               <Button
                 size="sm"
                 variant={demoted || blocked ? "outline" : "default"}
-                className="h-6 gap-1.5 px-2.5 text-[11px]"
+                className={`h-auto shrink-0 rounded-[6px] px-3.5 py-1.5 text-[12px] font-normal ${
+                  demoted || blocked
+                    ? ""
+                    : "bg-tyba-green text-tyba-text-inverse hover:bg-tyba-green/90"
+                }`}
                 disabled={blocked}
                 title={blocked ? t("deliveryCommitFirst") : undefined}
                 onClick={() =>
                   pr ? void openExternalUrl(pr.url) : setOpenPr(true)
                 }
               >
-                <GitPullRequest size={12} />
                 {t(buttonLabelKey[buttonKind])}
               </Button>
             );
           })()}
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-6 gap-1.5 px-2.5 text-[11px] text-tyba-red hover:bg-tyba-red/10 hover:text-tyba-red"
-          onClick={() => setOpenMerge(true)}
-        >
-          <GitMerge size={12} />
-          {t("deliveryMergeLocal")}
-        </Button>
       </div>
+      <p className="bg-[var(--tyba-panel-bg)] px-4 pb-2.5 text-right text-[11px] text-tyba-text-faint">
+        {t("deliveryApprovalNote")}
+      </p>
 
       {pr && (
         <div className="flex h-9 shrink-0 items-center gap-2 tyba-divide-t px-4 text-[11px]">
