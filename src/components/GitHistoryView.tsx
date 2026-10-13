@@ -589,9 +589,9 @@ export function GitHistoryView({ session }: { session: Session }) {
                       showGraph ? "" : "pl-3.5"
                     } ${
                       isSel
-                        ? "bg-tyba-raised shadow-[var(--tyba-edge),inset_2px_0_0_var(--tyba-blue)]"
+                        ? "bg-tyba-raised shadow-[var(--tyba-edge)]"
                         : "hover:bg-tyba-raised/60"
-                    } ${isFocus && !isSel ? "shadow-[inset_2px_0_0_var(--tyba-border-strong)]" : ""}`}
+                    } ${isFocus && !isSel ? "bg-tyba-raised/60" : ""}`}
                     style={{ top: item.start, height: ROW_PX }}
                   >
                     {showGraph &&
