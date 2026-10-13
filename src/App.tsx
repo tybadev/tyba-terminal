@@ -6589,11 +6589,7 @@ export default function App() {
                                 ? (activeGitStatus?.branch ?? null)
                                 : null
                             }
-                            snapshot={
-                              gitPanelTarget.id === activeId
-                                ? activeRepoSnapshot
-                                : undefined
-                            }
+                            snapshots={repoSnapshots}
                             onOpenDiff={() =>
                               void openDiffContentTab(gitPanelTarget.id).catch(
                                 () => {},

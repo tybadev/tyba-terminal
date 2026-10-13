@@ -1175,7 +1175,12 @@ export function DiffView({
           </span>
         )}
         <span className="flex min-w-0 shrink items-center gap-1.5 whitespace-nowrap">
-          {!browseBranch && <span className="shrink-0">{t("diffComparingBase")}</span>}
+          {/* Sem worktree não há base congelada: o diff é contra o HEAD. */}
+          {!browseBranch && (
+            <span className="shrink-0">
+              {t(session.worktree ? "diffComparingBase" : "diffComparingHead")}
+            </span>
+          )}
           <BranchPicker
             sessionId={session.id}
             browsing={browseBranch}
@@ -1183,7 +1188,7 @@ export function DiffView({
             onBrowse={browseTo}
             variant="base"
           />
-          {!browseBranch && (
+          {!browseBranch && session.worktree && (
             <span className="min-w-0 truncate text-tyba-text-faint">
               {t("diffBaseFrozen")}
             </span>

@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { PANEL_SECTION, SidePanelHeader } from "./SidePanelBar";
 import { useRelative } from "./GitHistoryView";
+import { snapshotForDir } from "../lib/repoSnapshots";
 import { translateError } from "../lib/errors";
 import { requestConfirm } from "../lib/confirm";
 import {
@@ -68,14 +69,16 @@ function Counts({ row }: { row: GitChangeRow }) {
 export function GitPanel({
   session,
   branch,
-  snapshot,
+  snapshots,
   onOpenDiff,
   onOpenHistory,
   onClose,
 }: {
   session: Session;
   branch: string | null;
-  snapshot: RepoSnapshot | undefined;
+  /** Todos os snapshots; o do painel sai da raiz do diff, não do pane
+   *  ativo — com a aba de diff em foco não há pane ativo. */
+  snapshots: Record<string, RepoSnapshot>;
   onOpenDiff: () => void;
   onOpenHistory: () => void;
   onClose: () => void;
@@ -145,6 +148,7 @@ export function GitPanel({
     });
     if (ok) setChosen((prev) => toggleUntracked(prev, path, true).chosen);
   };
+  const snapshot = diff ? snapshotForDir(snapshots, diff.root) : undefined;
   const upstream = upstreamLine(snapshot?.ahead, snapshot?.behind);
   const shownBranch = snapshot?.branch ?? branch;
   const relative = useRelative();
@@ -256,36 +260,36 @@ export function GitPanel({
               )}
             </div>
 
-            {plan.mode !== "nothing" && (
-              <label className="flex flex-col gap-1.5 text-[11px] text-tyba-text-faint">
-                {t("gitPanelCommitMessage")}
-                <input
-                  type="text"
-                  spellCheck={false}
-                  autoCapitalize="off"
-                  autoCorrect="off"
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void commit();
-                  }}
-                  className="rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2.5 py-2 text-[13px] text-tyba-text outline-none focus:border-tyba-green/50"
-                />
-              </label>
-            )}
+            <label className="flex flex-col gap-1.5 text-[11px] text-tyba-text-faint">
+              {t("gitPanelCommitMessage")}
+              <input
+                type="text"
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                value={message}
+                disabled={plan.mode === "nothing"}
+                placeholder={plan.mode === "nothing" ? t("gitPanelClean") : undefined}
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void commit();
+                }}
+                className="rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2.5 py-2 text-[13px] text-tyba-text outline-none focus:border-tyba-green/50 disabled:opacity-50"
+              />
+            </label>
             <div className="flex gap-2">
-              {plan.mode !== "nothing" && (
-                <Button
-                  size="sm"
-                  className="h-auto flex-1 rounded-[6px] bg-tyba-green px-3.5 py-[7px] text-[12px] font-normal text-tyba-text-inverse hover:bg-tyba-green/90"
-                  disabled={busy || !message.trim()}
-                  onClick={() => void commit()}
-                >
-                  {plan.mode === "staged"
-                    ? t("gitPanelCommitStaged", { count: diff?.staged_files.length ?? 0 })
-                    : t("gitPanelCommitTracked")}
-                </Button>
-              )}
+              <Button
+                size="sm"
+                className="h-auto flex-1 rounded-[6px] bg-tyba-green px-3.5 py-[7px] text-[12px] font-normal text-tyba-text-inverse hover:bg-tyba-green/90"
+                disabled={busy || !message.trim() || plan.mode === "nothing"}
+                onClick={() => void commit()}
+              >
+                {plan.mode === "staged"
+                  ? t("gitPanelCommitStaged", { count: diff?.staged_files.length ?? 0 })
+                  : plan.mode === "tracked"
+                    ? t("gitPanelCommitTracked")
+                    : t("gitPanelCommit")}
+              </Button>
               <Button
                 size="sm"
                 variant="ghost"

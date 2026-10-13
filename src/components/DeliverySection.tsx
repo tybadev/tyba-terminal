@@ -155,7 +155,7 @@ export function DeliverySection({
           })()}
       </div>
       <p className="bg-[var(--tyba-panel-bg)] px-4 pb-2.5 text-right text-[11px] text-tyba-text-faint">
-        {t("deliveryApprovalNote")}
+        {t(status ? "deliveryApprovalNote" : "deliveryApprovalNoteMergeOnly")}
       </p>
 
       {pr && (
