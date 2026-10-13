@@ -137,7 +137,6 @@ import { StatsView } from "./components/StatsView";
 import { DiffView } from "./components/DiffView";
 import { TunnelsView } from "./components/TunnelsView";
 import { FilesPanel } from "./components/FilesPanel";
-import { GitPanel } from "./components/GitPanel";
 import { GitHistoryView } from "./components/GitHistoryView";
 import { DockerPanel } from "./components/DockerPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
@@ -169,6 +168,8 @@ import {
 } from "./lib/contentTabs";
 import { AgentsPanel } from "./components/AgentsPanel";
 import { PrListView } from "./components/PrListView";
+import { GitScreen } from "./components/GitScreen";
+import { openGitScreen } from "./lib/gitScreen";
 import { PrDetailView } from "./components/PrDetailView";
 import { SubagentViewer } from "./components/SubagentViewer";
 import { ForgePanel } from "./components/ForgePanel";
@@ -1632,6 +1633,12 @@ export default function App() {
     () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   );
+  // Tela cheia de Git: `git:<id>` no slot vira a tela por cima da área
+  // principal, não um painel de 380px. Fica montada durante a saída.
+  const gitMotion = usePresence(gitPanelTarget !== null, reducedMotion ? 0 : 260);
+  const lastGitSessionRef = useRef<Session | null>(null);
+  if (gitPanelTarget) lastGitSessionRef.current = gitPanelTarget;
+  const gitScreenSession = gitPanelTarget ?? (gitMotion.mounted ? lastGitSessionRef.current : null);
   const agentsSideActive = Boolean(sideView?.startsWith("agents:"));
   const agentsMotion = usePresence(agentsSideActive, reducedMotion ? 0 : 150);
   const lastAgentsSessionRef = useRef<SessionId | null>(null);
@@ -1648,7 +1655,7 @@ export default function App() {
   // terminal fica com o resto. Expandida, ocupa tudo como as outras views.
   const { sideVisible, renderSideView, agentsSideNarrow, slot: mainSlot } =
     mainColumn(
-      sideView,
+      gitPanelTarget ? null : sideView,
       agentsMotion.mounted,
       lastAgentsSessionRef.current,
       sideExpanded,
@@ -5731,7 +5738,23 @@ export default function App() {
                 </aside>
               )}
 
-              <main ref={mainAreaRef} className="flex min-h-0 min-w-0 flex-1">
+              <main ref={mainAreaRef} className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+                {gitScreenSession && activeWorkspace && (
+                  <GitScreen
+                    key={gitScreenSession.id}
+                    session={gitScreenSession}
+                    repoRoot={workspaceGitDir(activeWorkspace)}
+                    snapshots={repoSnapshots}
+                    exiting={gitMotion.exiting}
+                    editor={editorPref}
+                    suggestAgent={reviewAgent.trim() === "codex" ? "codex" : "claude"}
+                    onClose={() => void closeSideView(activeWorkspace.id).catch(() => {})}
+                    onFocusSession={goToSession}
+                    findSession={(id) => sessionById.get(id)}
+                    onSendToAgent={sendReviewToAgent}
+                    onResolveConflicts={resolveConflictsWithAgent}
+                  />
+                )}
                 <div
                   // Sem `px-2`, de propósito. O respiro morava AQUI, e o que
                   // ele abria era uma faixa de 8px do fundo do app entre a
@@ -5887,6 +5910,9 @@ export default function App() {
                         key={activeContent.session}
                         session={sessionById.get(activeContent.session) as Session}
                         onFocusSession={goToSession}
+                        onOpenPr={(n) =>
+                          void openGitScreen(activeContent.session, "prs", n).catch(() => {})
+                        }
                       />
                     ) : (
                       <div className="absolute inset-0 flex items-center justify-center text-[12px] text-tyba-text-faint">
@@ -6609,39 +6635,7 @@ export default function App() {
                         }
                       }}
                     >
-                      {renderSideView?.startsWith("git:") ? (
-                        gitPanelTarget ? (
-                          <GitPanel
-                            key={gitPanelTarget.id}
-                            session={gitPanelTarget}
-                            branch={
-                              gitPanelTarget.id === activeId
-                                ? (activeGitStatus?.branch ?? null)
-                                : null
-                            }
-                            snapshots={repoSnapshots}
-                            onOpenDiff={() =>
-                              void openDiffContentTab(gitPanelTarget.id).catch(
-                                () => {},
-                              )
-                            }
-                            onOpenHistory={() =>
-                              void openHistoryTab(gitPanelTarget.id).catch(
-                                () => {},
-                              )
-                            }
-                            onClose={() =>
-                              void closeSideView(activeWorkspace.id).catch(
-                                () => {},
-                              )
-                            }
-                          />
-                        ) : (
-                          <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
-                            {t("diffSessionGone")}
-                          </div>
-                        )
-                      ) : renderSideView?.startsWith("docker:") ? (
+                      {renderSideView?.startsWith("docker:") ? (
                         <DockerPanel
                           key={dockerPanelTarget?.id ?? "docker"}
                           host={dockerPanelHost}

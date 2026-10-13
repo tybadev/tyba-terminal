@@ -14,9 +14,14 @@ import {
 
 import { useRelative } from "./GitHistoryView";
 import { openExternalUrl } from "../lib/clipboard";
+import { requestConfirm } from "../lib/confirm";
 import { translateError } from "../lib/errors";
 import {
   forgePrDetail,
+  forgePrMerge,
+  forgePrReview,
+  type PrMergeStrategy,
+  type PrReviewEvent,
   type PrCheck,
   type PrDetail,
   type PrReview,
@@ -119,6 +124,11 @@ export function PrDetailView({
   const [section, setSection] = useState<Section>("conversation");
   const [forwarded, setForwarded] = useState<Set<string>>(() => new Set());
   const [now, setNow] = useState(() => Date.now());
+  const [reviewBody, setReviewBody] = useState("");
+  const [reviewEvent, setReviewEvent] = useState<PrReviewEvent>("comment");
+  const [strategy, setStrategy] = useState<PrMergeStrategy>("squash");
+  const [acting, setActing] = useState<null | "review" | "merge">(null);
+  const [actionNote, setActionNote] = useState<{ text: string; error: boolean } | null>(null);
 
   const load = useCallback(
     (fresh: boolean) => {
@@ -158,6 +168,59 @@ export function PrDetailView({
       <p className="absolute inset-0 p-6 text-[12px] text-tyba-text-faint">{t("prListUnsupported")}</p>
     );
   }
+
+  const mergeReady =
+    pr.state === "open" && pr.mergeable !== "conflicting" && checks.tone !== "red";
+
+  const submitReview = async () => {
+    if (acting) return;
+    const body = reviewBody.trim();
+    const ok = await requestConfirm({
+      title: t(`prReviewConfirm_${reviewEvent}`, { number: pr.number }),
+      detail: body ? `${pr.title}\n\n${body}` : pr.title,
+      confirmLabel: t(`prReviewEvent_${reviewEvent}`),
+      destructive: reviewEvent === "request_changes",
+    });
+    if (!ok) return;
+    setActing("review");
+    setActionNote(null);
+    try {
+      await forgePrReview(session.id, pr.number, reviewEvent, body, pr.head_sha);
+      setReviewBody("");
+      setActionNote({ text: t("prReviewSent"), error: false });
+      load(true);
+    } catch (e) {
+      setActionNote({ text: translateError(e, t), error: true });
+      load(true);
+    } finally {
+      setActing(null);
+    }
+  };
+
+  const merge = async () => {
+    if (acting) return;
+    const ok = await requestConfirm({
+      title: t("prMergeConfirm", { number: pr.number, base: pr.base }),
+      detail: `${pr.title}\n${pr.head} → ${pr.base} · ${t(
+        strategy === "squash" ? "prMergeSquash" : strategy === "merge" ? "prMergeCommit" : "prMergeRebase",
+      )} · ${pr.head_sha.slice(0, 7)}`,
+      confirmLabel: t("prMergeAction"),
+      destructive: true,
+    });
+    if (!ok) return;
+    setActing("merge");
+    setActionNote(null);
+    try {
+      await forgePrMerge(session.id, pr.number, strategy, pr.head_sha);
+      setActionNote({ text: t("prMerged"), error: false });
+      load(true);
+    } catch (e) {
+      setActionNote({ text: translateError(e, t), error: true });
+      load(true);
+    } finally {
+      setActing(null);
+    }
+  };
 
   const target = pr.session?.agent ? pr.session.session : null;
   const forwardButton = (id: string, prompt: () => string) =>
@@ -486,7 +549,8 @@ export function PrDetailView({
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-[3] overflow-y-auto px-[22px] py-4">
+        <div className="flex min-w-0 flex-[3] flex-col">
+        <div className="min-h-0 flex-1 overflow-y-auto px-[22px] py-4">
           {section === "conversation" && (
             <div className="relative flex flex-col gap-3.5 pl-[30px]">
               <div className="absolute bottom-0 left-[10px] top-2 w-px bg-tyba-border" />
@@ -541,6 +605,83 @@ export function PrDetailView({
               {pr.checks.length === 0 && <li className="py-3 text-[12px] text-tyba-text-faint">{t("prChecksNone")}</li>}
             </ul>
           )}
+        </div>
+        {pr.state !== "merged" && pr.state !== "closed" && (
+          <form
+            aria-label={t("prReviewForm")}
+            className="flex shrink-0 flex-col gap-2 tyba-divide-t bg-tyba-raised px-[22px] pb-2.5 pt-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submitReview();
+            }}
+          >
+            <label htmlFor="pr-review-body" className="text-[11px] text-tyba-text-faint">
+              {t("prReviewBodyLabel")}
+            </label>
+            <textarea
+              id="pr-review-body"
+              rows={2}
+              spellCheck
+              autoCorrect="on"
+              autoCapitalize="sentences"
+              value={reviewBody}
+              onChange={(e) => setReviewBody(e.target.value)}
+              placeholder={t("prReviewBodyPlaceholder")}
+              className="resize-none rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2.5 py-2 text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-blue/50"
+            />
+            <div className="flex flex-wrap items-center gap-2 text-[12px]">
+              <fieldset className="flex flex-wrap gap-1.5">
+                <legend className="sr-only">{t("prReviewDecision")}</legend>
+                {(["comment", "approve", "request_changes"] as const).map((ev) => {
+                  const on = reviewEvent === ev;
+                  const tone =
+                    ev === "approve"
+                      ? on
+                        ? "border-tyba-green/50 bg-tyba-green/[.08] text-tyba-green"
+                        : "border-tyba-border-strong text-tyba-green"
+                      : ev === "request_changes"
+                        ? on
+                          ? "border-tyba-red/50 bg-tyba-red/[.08] text-tyba-red"
+                          : "border-tyba-border-strong text-tyba-red"
+                        : on
+                          ? "border-tyba-text/30 bg-tyba-text/[.05] text-tyba-text"
+                          : "border-tyba-border-strong text-tyba-text-muted";
+                  return (
+                    <label
+                      key={ev}
+                      className={`flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-[6px] border px-2.5 py-1 ${tone}`}
+                    >
+                      <input
+                        type="radio"
+                        name="pr-review-event"
+                        checked={on}
+                        onChange={() => setReviewEvent(ev)}
+                        className="m-0"
+                      />
+                      {t(`prReviewEvent_${ev}`)}
+                    </label>
+                  );
+                })}
+              </fieldset>
+              <span className="flex-1" />
+              <button
+                type="submit"
+                disabled={
+                  acting !== null || (reviewEvent !== "approve" && !reviewBody.trim())
+                }
+                className="shrink-0 whitespace-nowrap rounded-[6px] bg-tyba-text px-3.5 py-1.5 font-medium text-tyba-text-inverse disabled:opacity-40"
+              >
+                {acting === "review" ? t("prReviewSending") : t("prReviewSend")}
+              </button>
+            </div>
+            {actionNote && (
+              <p role="status" className={`text-[11px] ${actionNote.error ? "text-tyba-red" : "text-tyba-green"}`}>
+                {actionNote.text}
+              </p>
+            )}
+            <p className="text-right text-[11px] text-tyba-text-faint">{t("prReviewNote")}</p>
+          </form>
+        )}
         </div>
 
         <aside className="flex min-w-0 flex-[2] flex-col tyba-divide-l bg-[var(--tyba-panel-bg)]">
@@ -629,6 +770,28 @@ export function PrDetailView({
                     {t("prMergeAwaitingReview", { author: r.author })}
                   </span>
                 ))}
+              <label htmlFor="pr-merge-strategy" className="pt-1 text-[11px] text-tyba-text-faint">
+                {t("prMergeStrategy")}
+              </label>
+              <select
+                id="pr-merge-strategy"
+                value={strategy}
+                onChange={(e) => setStrategy(e.target.value as PrMergeStrategy)}
+                className="rounded-[6px] border border-tyba-border-field bg-tyba-raised px-2.5 py-1.5 text-[12px] text-tyba-text outline-none"
+              >
+                <option value="squash">{t("prMergeSquash")}</option>
+                <option value="merge">{t("prMergeCommit")}</option>
+                <option value="rebase">{t("prMergeRebase")}</option>
+              </select>
+              <button
+                type="button"
+                disabled={!mergeReady || acting !== null}
+                title={mergeReady ? undefined : t("prMergeBlocked")}
+                onClick={() => void merge()}
+                className="whitespace-nowrap rounded-[6px] border border-tyba-green/55 px-3 py-1.5 text-[12px] text-tyba-green hover:bg-tyba-green/[.08] disabled:border-tyba-border-strong disabled:text-tyba-text-faint disabled:hover:bg-transparent"
+              >
+                {acting === "merge" ? t("prMerging") : t("prMergeAction")}
+              </button>
             </section>
           )}
           <div className="flex-1" />

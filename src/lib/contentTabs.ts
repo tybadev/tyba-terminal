@@ -8,13 +8,11 @@
 
 import { useSyncExternalStore } from "react";
 
+import { openGitScreen } from "./gitScreen";
+
 import {
   containerOpenTab,
-  openDiffContentTab,
   openEditorTabCmd,
-  openGitLogTab,
-  openPrListTab,
-  openPrTab as openPrTabCmd,
   type ContainerTabKind,
   type EditorTabOpened,
   type SessionId,
@@ -192,23 +190,25 @@ export async function openEditorTab(
 }
 
 /** Diff da sessão como aba (o conteúdo é o mesmo do painel de diff). */
+// Diff, PRs e histórico moram na tela cheia de Git (seções do trilho); as
+// abas de conteúdo antigas só reabrem quando o layout salvo as tem.
 export function openDiffTab(sessionId: SessionId): Promise<void> {
-  return openDiffContentTab(sessionId);
+  return openGitScreen(sessionId, "review");
 }
 
 /** Lista de PRs do repo da sessão como aba. */
 export function openPrsTab(sessionId: SessionId): Promise<void> {
-  return openPrListTab(sessionId);
+  return openGitScreen(sessionId, "prs");
 }
 
 /** Um PR como aba. */
 export function openPrTab(sessionId: SessionId, number: number): Promise<void> {
-  return openPrTabCmd(sessionId, number);
+  return openGitScreen(sessionId, "prs", number);
 }
 
 /** Histórico (log + grafo) do repo da sessão como aba. */
 export function openHistoryTab(sessionId: SessionId): Promise<void> {
-  return openGitLogTab(sessionId);
+  return openGitScreen(sessionId, "history");
 }
 
 // --- apresentação -----------------------------------------------------------

@@ -18,7 +18,6 @@ import {
 } from "@/components/ui/tooltip";
 import { PrStatusIcon } from "@/components/icons/PrStatusIcon";
 import { useRelative } from "./GitHistoryView";
-import { openPrsTab } from "@/lib/contentTabs";
 import { GitHubIcon } from "@/components/icons/GitHubIcon";
 import { GitLabIcon } from "@/components/icons/GitLabIcon";
 import { openExternalUrl } from "@/lib/clipboard";
@@ -372,25 +371,8 @@ export function ForgePanel({
   const Logo = isMr ? GitLabIcon : GitHubIcon;
   const title = t(isMr ? "headerMrPanelTitle" : "headerPrPanelTitle");
 
-  // GitHub tem a lista rica em aba (mockup GitPRs), com o CI num filtro dela.
-  if (!isMr) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={title}
-            onClick={() => void openPrsTab(sessionId).catch(() => {})}
-            className="h-7 w-[30px] rounded-[6px] text-tyba-text-faint hover:text-tyba-text"
-          >
-            <Logo size={16} />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">{title}</TooltipContent>
-      </Tooltip>
-    );
-  }
+  // GitHub: PRs e CI moram na tela cheia de Git (seções PRs e CI).
+  if (!isMr) return null;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

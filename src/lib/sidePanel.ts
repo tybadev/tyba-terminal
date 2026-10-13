@@ -147,8 +147,10 @@ export function visiblePanels(input: VisibilityInput): PanelKind[] {
       case "tunnels":
         return input.isSsh;
       case "git":
-      case "diff":
         return input.hasRepo;
+      // O Diff é seção da tela de Git (Revisar), não ícone no header.
+      case "diff":
+        return false;
       case "agents":
         return input.agentsAvailable;
       default:

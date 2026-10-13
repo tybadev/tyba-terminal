@@ -15,7 +15,6 @@ import { useRelative } from "./GitHistoryView";
 import { OpenPrDialog } from "./OpenPrDialog";
 import { CiTab } from "./ForgePanel";
 import { translateError } from "../lib/errors";
-import { openPrTab } from "../lib/contentTabs";
 import { primaryDeliveryAction } from "../lib/forge";
 import {
   forgePrPage,
@@ -88,9 +87,11 @@ function Avatar({ name, agent }: { name: string; agent: boolean }) {
 export function PrListView({
   session,
   onFocusSession,
+  onOpenPr,
 }: {
   session: Session;
   onFocusSession: (id: SessionId) => void;
+  onOpenPr: (number: number) => void;
 }) {
   const { t } = useTranslation();
   const relative = useRelative();
@@ -154,9 +155,9 @@ export function PrListView({
         key={item.number}
         role="button"
         tabIndex={0}
-        onClick={() => void openPrTab(session.id, item.number).catch(() => {})}
+        onClick={() => onOpenPr(item.number)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") void openPrTab(session.id, item.number).catch(() => {});
+          if (e.key === "Enter") onOpenPr(item.number);
         }}
         className={`${GRID} group/pr cursor-pointer tyba-divide-b py-3 text-[13px] outline-none hover:bg-tyba-raised hover:shadow-[var(--tyba-row-raised)] focus-visible:bg-tyba-raised ${
           dim ? "opacity-75" : ""
@@ -355,7 +356,7 @@ export function PrListView({
           onCreated={(created) => {
             setCreating(false);
             load(true);
-            void openPrTab(session.id, created.number).catch(() => {});
+            onOpenPr(created.number);
           }}
         />
       )}

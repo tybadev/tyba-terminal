@@ -1,0 +1,50 @@
+/* Tela cheia de Git: entra deslizando da direita; o conteúdo de cada seção
+   entra na direção do trilho. Com "reduzir movimento", só fade. */
+
+@keyframes tyba-git-screen-in {
+  from { transform: translateX(100%); }
+  to { transform: none; }
+}
+@keyframes tyba-git-screen-out {
+  from { transform: none; }
+  to { transform: translateX(100%); }
+}
+@keyframes tyba-git-in-up {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes tyba-git-in-down {
+  from { opacity: 0; transform: translateY(-18px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes tyba-git-in-left {
+  from { opacity: 0; transform: translateX(28px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes tyba-git-in-right {
+  from { opacity: 0; transform: translateX(-28px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes tyba-git-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.tyba-git-screen { animation: tyba-git-screen-in 340ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.tyba-git-screen[data-exiting="true"] { animation: tyba-git-screen-out 260ms cubic-bezier(0.4, 0, 1, 1) both; }
+.tyba-git-in-up { animation: tyba-git-in-up 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.tyba-git-in-down { animation: tyba-git-in-down 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.tyba-git-in-left { animation: tyba-git-in-left 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.tyba-git-in-right { animation: tyba-git-in-right 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.tyba-git-rail-marker { transition: top 260ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .tyba-git-screen,
+  .tyba-git-screen[data-exiting="true"],
+  .tyba-git-in-up,
+  .tyba-git-in-down,
+  .tyba-git-in-left,
+  .tyba-git-in-right { animation: tyba-git-fade 120ms both; }
+  .tyba-git-screen[data-exiting="true"] { animation-direction: reverse; }
+  .tyba-git-rail-marker { transition: none; }
+}
