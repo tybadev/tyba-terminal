@@ -13,6 +13,8 @@ import {
   openDiffContentTab,
   openEditorTabCmd,
   openGitLogTab,
+  openPrListTab,
+  openPrTab as openPrTabCmd,
   type ContainerTabKind,
   type EditorTabOpened,
   type SessionId,
@@ -23,12 +25,16 @@ export const CONTAINER_LOGS_PREFIX = "container-logs:";
 export const CONTAINER_FILES_PREFIX = "container-files:";
 export const SESSION_DIFF_PREFIX = "session-diff:";
 export const GIT_LOG_PREFIX = "git-log:";
+export const PR_LIST_PREFIX = "prs:";
+export const PR_PREFIX = "pr:";
 
 export type ContentView =
   | { kind: "editor"; session: SessionId; rel: string }
   | { kind: "container-logs"; containerId: string }
   | { kind: "session-diff"; session: SessionId }
-  | { kind: "git-log"; session: SessionId };
+  | { kind: "git-log"; session: SessionId }
+  | { kind: "pr-list"; session: SessionId }
+  | { kind: "pr"; session: SessionId; number: number };
 
 const UUID_LEN = 36;
 
@@ -49,6 +55,18 @@ export function parseContentView(view: string | null | undefined): ContentView |
   if (view.startsWith(GIT_LOG_PREFIX)) {
     const session = view.slice(GIT_LOG_PREFIX.length);
     return session.length === UUID_LEN ? { kind: "git-log", session } : null;
+  }
+  if (view.startsWith(PR_LIST_PREFIX)) {
+    const session = view.slice(PR_LIST_PREFIX.length);
+    return session.length === UUID_LEN ? { kind: "pr-list", session } : null;
+  }
+  if (view.startsWith(PR_PREFIX)) {
+    // `pr:<sessão>:<número>`
+    const rest = view.slice(PR_PREFIX.length);
+    const session = rest.slice(0, UUID_LEN);
+    const number = Number(rest.slice(UUID_LEN + 1));
+    if (session.length !== UUID_LEN || rest.charAt(UUID_LEN) !== ":") return null;
+    return Number.isInteger(number) && number > 0 ? { kind: "pr", session, number } : null;
   }
   if (view.startsWith(CONTAINER_LOGS_PREFIX)) {
     const containerId = view.slice(CONTAINER_LOGS_PREFIX.length);
@@ -176,6 +194,16 @@ export async function openEditorTab(
 /** Diff da sessão como aba (o conteúdo é o mesmo do painel de diff). */
 export function openDiffTab(sessionId: SessionId): Promise<void> {
   return openDiffContentTab(sessionId);
+}
+
+/** Lista de PRs do repo da sessão como aba. */
+export function openPrsTab(sessionId: SessionId): Promise<void> {
+  return openPrListTab(sessionId);
+}
+
+/** Um PR como aba. */
+export function openPrTab(sessionId: SessionId, number: number): Promise<void> {
+  return openPrTabCmd(sessionId, number);
 }
 
 /** Histórico (log + grafo) do repo da sessão como aba. */

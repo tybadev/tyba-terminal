@@ -168,6 +168,8 @@ import {
   setEditorDirty,
 } from "./lib/contentTabs";
 import { AgentsPanel } from "./components/AgentsPanel";
+import { PrListView } from "./components/PrListView";
+import { PrDetailView } from "./components/PrDetailView";
 import { SubagentViewer } from "./components/SubagentViewer";
 import { ForgePanel } from "./components/ForgePanel";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
@@ -5874,6 +5876,34 @@ export default function App() {
                           }
                         />
                       </div>
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center text-[12px] text-tyba-text-faint">
+                        {t("diffSessionGone")}
+                      </div>
+                    ))}
+                  {activeContent?.kind === "pr-list" &&
+                    (sessionById.get(activeContent.session) ? (
+                      <PrListView
+                        key={activeContent.session}
+                        session={sessionById.get(activeContent.session) as Session}
+                        onFocusSession={goToSession}
+                      />
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center text-[12px] text-tyba-text-faint">
+                        {t("diffSessionGone")}
+                      </div>
+                    ))}
+                  {activeContent?.kind === "pr" &&
+                    (sessionById.get(activeContent.session) ? (
+                      <PrDetailView
+                        key={`${activeContent.session}:${activeContent.number}`}
+                        session={sessionById.get(activeContent.session) as Session}
+                        number={activeContent.number}
+                        onForward={async (sid, prompt) => {
+                          const target = sessionById.get(sid);
+                          if (target) await sendReviewToAgent(target, prompt);
+                        }}
+                      />
                     ) : (
                       <div className="absolute inset-0 flex items-center justify-center text-[12px] text-tyba-text-faint">
                         {t("diffSessionGone")}

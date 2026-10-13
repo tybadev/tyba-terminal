@@ -49,6 +49,11 @@ describe("parseContentView", () => {
       session: SID,
     });
     expect(parseContentView("git-log:curto")).toBeNull();
+    expect(parseContentView(`prs:${SID}`)).toEqual({ kind: "pr-list", session: SID });
+    expect(parseContentView(`pr:${SID}:42`)).toEqual({ kind: "pr", session: SID, number: 42 });
+    expect(parseContentView(`pr:${SID}:0`)).toBeNull();
+    expect(parseContentView(`pr:${SID}:x`)).toBeNull();
+    expect(parseContentView(`pr:${SID}`)).toBeNull();
   });
 
   it("recusa views que não são de conteúdo ou estão quebradas", () => {

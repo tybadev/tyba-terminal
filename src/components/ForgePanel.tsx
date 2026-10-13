@@ -17,6 +17,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PrStatusIcon } from "@/components/icons/PrStatusIcon";
+import { useRelative } from "./GitHistoryView";
+import { openPrsTab } from "@/lib/contentTabs";
 import { GitHubIcon } from "@/components/icons/GitHubIcon";
 import { GitLabIcon } from "@/components/icons/GitLabIcon";
 import { openExternalUrl } from "@/lib/clipboard";
@@ -144,8 +146,22 @@ function Jobs({ sessionId, runId }: { sessionId: SessionId; runId: number }) {
   );
 }
 
-function CiTab({ sessionId }: { sessionId: SessionId }) {
+const RUN_STATUS_KEY: Record<CheckTone, string> = {
+  success: "ciRunPassed",
+  failure: "ciRunFailed",
+  pending: "ciRunRunning",
+};
+
+const RUN_STATUS_CLASS: Record<CheckTone, string> = {
+  success: "text-tyba-green",
+  failure: "text-tyba-red",
+  pending: "text-tyba-amber",
+};
+
+/** Runs de CI da sessão. `wide` é o filtro "CI" da aba de PRs (sem teto de altura). */
+export function CiTab({ sessionId, wide = false }: { sessionId: SessionId; wide?: boolean }) {
   const { t } = useTranslation();
+  const relative = useRelative();
   const [runs, setRuns] = useState<WorkflowRun[] | null>(null);
   const [supported, setSupported] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -183,9 +199,10 @@ function CiTab({ sessionId }: { sessionId: SessionId }) {
   if (runs.length === 0) return <Message>{t("ciEmpty")}</Message>;
 
   return (
-    <ul className="flex max-h-80 flex-col gap-0.5 overflow-y-auto p-1">
+    <ul className={`flex flex-col gap-0.5 p-1 ${wide ? "" : "max-h-80 overflow-y-auto"}`}>
       {sortRuns(runs).map((run) => {
         const open = expanded === run.id;
+        const tone = runTone(run);
         return (
           <li key={run.id}>
             <div className="flex items-center gap-1">
@@ -199,10 +216,19 @@ function CiTab({ sessionId }: { sessionId: SessionId }) {
                 onClick={() => void openExternalUrl(run.url)}
                 className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1.5 text-left text-xs hover:bg-tyba-text/[.04]"
               >
-                <ToneDot tone={runTone(run)} />
-                <span className="min-w-0 truncate">{run.name}</span>
-                <span className="ml-auto shrink-0 truncate font-mono text-[10px] text-tyba-text-faint">
+                <ToneDot tone={tone} />
+                <span className="min-w-0 flex-1 truncate">
+                  {run.name}
+                  <span className="text-tyba-text-faint"> · {run.event}</span>
+                </span>
+                <span className="shrink-0 truncate font-mono text-[10px] text-tyba-text-faint">
                   {run.head_branch}
+                </span>
+                <span className={`shrink-0 text-[11px] ${RUN_STATUS_CLASS[tone]}`}>
+                  {t(RUN_STATUS_KEY[tone])}
+                </span>
+                <span className="shrink-0 text-[10px] text-tyba-text-faint">
+                  {relative(run.created_at, Date.now())}
                 </span>
               </button>
             </div>
@@ -345,6 +371,26 @@ export function ForgePanel({
   const isMr = status?.kind === "gitlab";
   const Logo = isMr ? GitLabIcon : GitHubIcon;
   const title = t(isMr ? "headerMrPanelTitle" : "headerPrPanelTitle");
+
+  // GitHub tem a lista rica em aba (mockup GitPRs), com o CI num filtro dela.
+  if (!isMr) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={title}
+            onClick={() => void openPrsTab(sessionId).catch(() => {})}
+            className="h-7 w-[30px] rounded-[6px] text-tyba-text-faint hover:text-tyba-text"
+          >
+            <Logo size={16} />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{title}</TooltipContent>
+      </Tooltip>
+    );
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

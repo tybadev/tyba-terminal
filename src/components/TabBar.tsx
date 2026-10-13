@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, X } from "@phosphor-icons/react";
+import { GitPullRequest, Plus, X } from "@phosphor-icons/react";
 
 import { AgentIcon } from "./icons/AgentIcon";
 import { DockerIcon } from "./icons/DockerIcon";
@@ -95,6 +95,9 @@ function tabIcon(tab: Tab, sessions: Map<SessionId, Session>): React.ReactNode {
   }
   if (content?.kind === "session-diff") return <GitIcon size={12} />;
   if (content?.kind === "git-log") return <GitIcon size={12} className="text-tyba-blue" />;
+  if (content?.kind === "pr-list" || content?.kind === "pr") {
+    return <GitPullRequest size={12} className="text-tyba-blue" />;
+  }
   if (tab.root) {
     for (const sid of leafSessions(tab.root)) {
       const session = sessions.get(sid);
@@ -127,6 +130,8 @@ function tabLabel(
     return i18n.t("tabContainerLogs", { name: containerName(content.containerId) });
   }
   if (content?.kind === "git-log") return i18n.t("tabGitHistory");
+  if (content?.kind === "pr-list") return i18n.t("tabPrList");
+  if (content?.kind === "pr") return i18n.t("tabPr", { number: content.number });
   if (content?.kind === "session-diff") {
     const cwd = cwds[content.session]?.cwd;
     return cwd ? `${i18n.t("tabSessionDiff")} · ${compactPath(cwd)}` : i18n.t("tabSessionDiff");
