@@ -1,18 +1,33 @@
 {
   "jobs": [
     {
+      "databaseId": 9000000001,
       "name": "gates / frontend",
       "status": "completed",
       "conclusion": "success",
-      "url": "https://github.com/acme/widget/actions/runs/111111111/job/1"
+      "startedAt": "2026-01-02T10:00:00Z",
+      "completedAt": "2026-01-02T10:03:10Z",
+      "url": "https://github.com/acme/widget/actions/runs/111111111/job/1",
+      "steps": [
+        { "name": "Set up job", "status": "completed", "conclusion": "success", "number": 1 },
+        { "name": "bun run test", "status": "completed", "conclusion": "success", "number": 2 },
+        { "name": "Post checkout", "status": "completed", "conclusion": "skipped", "number": 3 }
+      ]
     },
     {
+      "databaseId": 9000000002,
       "name": "build (ubuntu-22.04)",
       "status": "in_progress",
       "conclusion": null,
-      "url": "https://github.com/acme/widget/actions/runs/111111111/job/2"
+      "startedAt": "2026-01-02T10:00:05Z",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "url": "https://github.com/acme/widget/actions/runs/111111111/job/2",
+      "steps": [
+        { "name": "cargo build", "status": "in_progress", "conclusion": "", "number": 1 }
+      ]
     },
     {
+      "databaseId": 9000000003,
       "name": "publish",
       "status": "queued",
       "conclusion": null,

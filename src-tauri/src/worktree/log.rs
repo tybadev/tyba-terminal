@@ -234,7 +234,7 @@ fn invalid(detail: impl Into<String>) -> String {
 
 /// `git <args> --stdin` com as revisões no stdin: centenas de branches não
 /// estouram argv, e nenhum sha vira flag.
-fn run_git_stdin(mut cmd: Command, input: &str, what: &str) -> Result<Vec<u8>, String> {
+pub(super) fn run_git_stdin(mut cmd: Command, input: &[u8], what: &str) -> Result<Vec<u8>, String> {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -242,9 +242,9 @@ fn run_git_stdin(mut cmd: Command, input: &str, what: &str) -> Result<Vec<u8>, S
     let mut stdin = child.stdin.take().ok_or_else(|| format!("{what}: stdin"))?;
     // Escreve numa thread: o git começa a cuspir saída antes de ler tudo, e
     // com pipe cheio dos dois lados ninguém anda.
-    let input = input.to_string();
+    let input = input.to_vec();
     let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(input.as_bytes());
+        let _ = stdin.write_all(&input);
     });
     let out = child
         .wait_with_output()
@@ -438,7 +438,7 @@ pub fn log_page(
     // Pede um a mais: se vier, existe próxima página — sem `rev-list --count`.
     let mut cmd = base_log(repo, limit + 1);
     cmd.arg("--stdin");
-    let raw = run_git_stdin(cmd, &revs, "git log")?;
+    let raw = run_git_stdin(cmd, revs.as_bytes(), "git log")?;
     let mut rows = parse_log_rows(&raw);
     let more = rows.len() > limit;
     rows.truncate(limit);

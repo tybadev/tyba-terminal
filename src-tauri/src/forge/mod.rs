@@ -70,11 +70,32 @@ pub struct WorkflowRun {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkflowStep {
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkflowJob {
+    /// id do job no GitHub — é com ele que se pede o log.
+    pub id: u64,
     pub name: String,
     pub status: String,
     pub conclusion: Option<String>,
     pub url: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub steps: Vec<WorkflowStep>,
+}
+
+/// Log de um job, já cortado no teto e com segredos mascarados.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RunLog {
+    pub text: String,
+    /// O começo foi cortado para caber no teto (o fim, onde está o erro, fica).
+    pub truncated: bool,
+    pub failed_step: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -499,8 +499,27 @@ pub fn file_hunks(
     path: &str,
     old_path: Option<&str>,
 ) -> Result<FileHunks, String> {
+    let out = file_diff_raw(worktree, base_ref, scope, path, old_path)?;
+    // Diff vazio no escopo unstaged pode ser untracked (git diff não
+    // enxerga) — mas só cai no --no-index se o arquivo é untracked mesmo,
+    // senão um tracked limpo voltaria inteiro como adição.
+    if out.is_empty() && scope == DiffScope::Unstaged && is_untracked(worktree, path)? {
+        return untracked_hunks(worktree, path);
+    }
+    Ok(parse_unified_hunks(&String::from_utf8_lossy(&out)))
+}
+
+/// O unified diff cru de um arquivo num escopo — a fonte de `file_hunks` e
+/// do patch de um trecho só (`ops::hunk_action`), para os dois verem o mesmo.
+pub(crate) fn file_diff_raw(
+    worktree: &Path,
+    base_ref: &str,
+    scope: DiffScope,
+    path: &str,
+    old_path: Option<&str>,
+) -> Result<Vec<u8>, String> {
     let range = format!("{base_ref}..HEAD");
-    let out = run_git(
+    run_git(
         {
             let mut c = git_in(worktree);
             c.args(["diff", "--no-ext-diff", "--no-color", "-M"]);
@@ -520,17 +539,10 @@ pub fn file_hunks(
             c
         },
         "git diff",
-    )?;
-    // Diff vazio no escopo unstaged pode ser untracked (git diff não
-    // enxerga) — mas só cai no --no-index se o arquivo é untracked mesmo,
-    // senão um tracked limpo voltaria inteiro como adição.
-    if out.is_empty() && scope == DiffScope::Unstaged && is_untracked(worktree, path)? {
-        return untracked_hunks(worktree, path);
-    }
-    Ok(parse_unified_hunks(&String::from_utf8_lossy(&out)))
+    )
 }
 
-fn is_untracked(worktree: &Path, path: &str) -> Result<bool, String> {
+pub(crate) fn is_untracked(worktree: &Path, path: &str) -> Result<bool, String> {
     let out = run_git(
         {
             let mut c = git_in(worktree);

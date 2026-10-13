@@ -219,6 +219,64 @@ pub fn checkout(repo: &Path, branch: &str, is_remote: bool) -> Result<(), AppErr
     Ok(())
 }
 
+fn branch_invalid(detail: impl Into<String>) -> AppError {
+    AppError::new("git.branch_invalid").with("detail", detail.into())
+}
+
+/// `git branch -- <name> <sha>`: cria a branch em `at` sem trocar de branch.
+/// `at` é um sha (7–40 hex) que precisa ser um commit deste repo.
+pub fn create(repo: &Path, name: &str, at: &str) -> Result<(), AppError> {
+    let name = name.trim();
+    validate_ref_name(name).map_err(branch_invalid)?;
+    let at = at.trim();
+    if !(7..=40).contains(&at.len()) || !at.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(branch_invalid(format!("sha inválido: {at}")));
+    }
+    let sha = git_text(
+        {
+            let mut c = git_in(repo);
+            c.args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{at}^{{commit}}"),
+            ]);
+            c
+        },
+        "git rev-parse",
+    )
+    .ok()
+    .filter(|s| !s.is_empty())
+    .ok_or_else(|| AppError::new("git.commit_not_found").with("sha", at))?;
+    let exists = git_text(
+        {
+            let mut c = git_in(repo);
+            c.args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{name}"),
+            ]);
+            c
+        },
+        "git rev-parse",
+    )
+    .is_ok_and(|s| !s.is_empty());
+    if exists {
+        return Err(AppError::new("git.branch_exists").with("branch", name));
+    }
+    run_git(
+        {
+            let mut c = git_in_rw(repo);
+            c.args(["branch", "--", name, &sha]);
+            c
+        },
+        "git branch",
+    )
+    .map_err(|e| AppError::new("git.branch_create_failed").with("detail", e))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +452,67 @@ mod tests {
         let repo = checkout_repo();
         let err = checkout(&repo, "-rf", false).unwrap_err();
         assert_eq!(err.code, "checkout.failed", "{err}");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    fn rev(repo: &Path, what: &str) -> String {
+        git_text(
+            {
+                let mut c = git_in(repo);
+                c.args(["rev-parse", what]);
+                c
+            },
+            "rev-parse",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn create_points_the_branch_at_the_commit_without_checkout() {
+        let repo = temp_repo();
+        let base = rev(&repo, "HEAD");
+        std::fs::write(repo.join("a.txt"), "depois\n").unwrap();
+        git(&repo, &["commit", "-qam", "depois"]);
+
+        create(&repo, "feat/daqui", &base[..7]).unwrap();
+        assert_eq!(rev(&repo, "refs/heads/feat/daqui"), base);
+        let current = git_text(
+            {
+                let mut c = git_in(&repo);
+                c.args(["symbolic-ref", "--short", "HEAD"]);
+                c
+            },
+            "symbolic-ref",
+        )
+        .unwrap();
+        assert_eq!(current, "main");
+
+        let err = create(&repo, "feat/daqui", &base).unwrap_err();
+        assert_eq!(err.code, "git.branch_exists", "{err}");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn create_rejects_bad_names_and_shas() {
+        let repo = temp_repo();
+        let head = rev(&repo, "HEAD");
+        for name in ["-x", "a..b", "com espaco", ""] {
+            assert_eq!(
+                create(&repo, name, &head).unwrap_err().code,
+                "git.branch_invalid"
+            );
+        }
+        for at in ["HEAD", "abc", "main", &"a".repeat(41)] {
+            assert_eq!(
+                create(&repo, "ok", at).unwrap_err().code,
+                "git.branch_invalid",
+                "{at}"
+            );
+        }
+        assert_eq!(
+            create(&repo, "ok", "deadbeefdeadbeef").unwrap_err().code,
+            "git.commit_not_found"
+        );
         std::fs::remove_dir_all(&repo).ok();
     }
 }

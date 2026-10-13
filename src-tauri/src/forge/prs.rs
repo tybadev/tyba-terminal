@@ -794,11 +794,11 @@ fn github_remote(repo_root: &Path) -> Option<Remote> {
     valid.then_some(remote)
 }
 
-fn repo_flag(remote: &Remote) -> String {
+pub(super) fn repo_flag(remote: &Remote) -> String {
     format!("{}/{}/{}", remote.host, remote.owner, remote.repo)
 }
 
-fn gh(repo_root: &Path, args: &[&str]) -> Result<Vec<u8>, AppError> {
+pub(super) fn gh(repo_root: &Path, args: &[&str]) -> Result<Vec<u8>, AppError> {
     let out = exec::run(github::CLI, args, repo_root, None, NETWORK_TIMEOUT).map_err(cli_failed)?;
     if !out.ok {
         return Err(cli_failed(out.stderr_message()));
@@ -1109,7 +1109,7 @@ pub fn parse_head(stdout: &[u8]) -> Result<String, String> {
 }
 
 /// Ação só existe no GitHub com `gh`: sem isso, não há o que degradar.
-fn action_remote(repo_root: &Path) -> Result<Remote, AppError> {
+pub(super) fn action_remote(repo_root: &Path) -> Result<Remote, AppError> {
     github_remote(repo_root).ok_or_else(|| AppError::new("forge.pr_actions_unsupported"))
 }
 
@@ -1132,7 +1132,11 @@ fn current_head(repo_root: &Path, repo: &str, number: u64) -> Result<String, App
     parse_head(&out).map_err(cli_failed)
 }
 
-fn gh_write(repo_root: &Path, args: &[String], stdin: Option<&[u8]>) -> Result<(), AppError> {
+pub(super) fn gh_write(
+    repo_root: &Path,
+    args: &[String],
+    stdin: Option<&[u8]>,
+) -> Result<(), AppError> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let out =
         exec::run(github::CLI, &args, repo_root, stdin, NETWORK_TIMEOUT).map_err(cli_failed)?;

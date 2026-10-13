@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use super::diff::DiffScope;
 use super::{git_in, git_in_net, git_in_rw, git_text, run_git};
 use crate::error::AppError;
 
@@ -174,6 +175,242 @@ pub fn commit(worktree: &Path, message: &str) -> Result<(), String> {
     let mut c = git_in_rw(worktree);
     c.args(["commit", "-m", message]);
     run_git(c, "git commit")?;
+    Ok(())
+}
+
+fn git_failed(code: &str, detail: impl Into<String>) -> AppError {
+    AppError::new(code).with("detail", detail.into())
+}
+
+/// `true`/`false` do `merge-base --is-ancestor`; outro código (ref que não
+/// existe, sem upstream) é erro.
+fn is_ancestor(worktree: &Path, ancestor: &str, of: &str) -> Result<bool, String> {
+    let out = {
+        let mut c = git_in(worktree);
+        c.args(["merge-base", "--is-ancestor", ancestor, of]);
+        c.output().map_err(|e| format!("git merge-base: {e}"))?
+    };
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!(
+            "git merge-base: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+    }
+}
+
+/// `git commit --amend -m`, com as regras do `commit`. Recusa se o HEAD já
+/// está no upstream: reescrever o que foi publicado obriga a um force-push.
+/// Sem upstream (ou HEAD solto), não há o que proteger e permite.
+pub fn commit_amend(worktree: &Path, message: &str) -> Result<(), AppError> {
+    let message = message.trim();
+    if message.is_empty() {
+        return Err(git_failed("git.amend_failed", "mensagem de commit vazia"));
+    }
+    if is_ancestor(worktree, "HEAD", "@{upstream}").unwrap_or(false) {
+        return Err(AppError::new("git.amend_published"));
+    }
+    let mut c = git_in_rw(worktree);
+    c.args(["commit", "--amend", "-m", message]);
+    run_git(c, "git commit --amend").map_err(|e| git_failed("git.amend_failed", e))?;
+    Ok(())
+}
+
+/// Equivale a `git pull --ff-only`, em dois passos: o `fetch` roda no perfil
+/// de rede e o avanço (`merge --ff-only`, que escreve arquivos e pode rodar
+/// filtro de conteúdo) roda na jaula de escrita — um `pull` inteiro no perfil
+/// de rede escaparia dela. Só por clique; nunca rebase nem merge commit.
+pub fn pull(worktree: &Path) -> Result<String, AppError> {
+    let upstream = git_text(
+        {
+            let mut c = git_in(worktree);
+            c.args([
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}",
+            ]);
+            c
+        },
+        "git rev-parse @{upstream}",
+    )
+    .map_err(|_| AppError::new("git.no_upstream"))?;
+    run_git(
+        {
+            let mut c = git_in_net(worktree);
+            c.arg("fetch");
+            c
+        },
+        "git fetch",
+    )
+    .map_err(|e| git_failed("git.pull_failed", e))?;
+    let failed = |e: String| git_failed("git.pull_failed", e);
+    if is_ancestor(worktree, "@{upstream}", "HEAD").map_err(failed)? {
+        return Ok("já em dia".into());
+    }
+    if !is_ancestor(worktree, "HEAD", "@{upstream}").map_err(failed)? {
+        return Err(AppError::new("git.pull_not_ff").with("upstream", upstream));
+    }
+    let before = super::head_sha(worktree).map_err(failed)?;
+    run_git(
+        {
+            let mut c = git_in_rw(worktree);
+            c.args(["merge", "--ff-only", "@{upstream}"]);
+            c
+        },
+        "git merge --ff-only",
+    )
+    .map_err(failed)?;
+    let count = git_text(
+        {
+            let mut c = git_in(worktree);
+            c.args(["rev-list", "--count", &format!("{before}..HEAD")]);
+            c
+        },
+        "git rev-list --count",
+    )
+    .map_err(failed)?;
+    Ok(match count.as_str() {
+        "0" => "já em dia".into(),
+        "1" => "1 commit".into(),
+        n => format!("{n} commits"),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HunkAction {
+    Stage,
+    Unstage,
+    Discard,
+}
+
+fn hunk_invalid(detail: impl Into<String>) -> AppError {
+    git_failed("git.hunk_invalid", detail)
+}
+
+fn hunk_unsupported(kind: &str) -> AppError {
+    AppError::new("git.hunk_unsupported").with("kind", kind)
+}
+
+/// Cabeçalho do arquivo (`diff --git`, `index`, `---`, `+++`) mais o trecho
+/// `index`, em bytes crus: CRLF e "\ No newline at end of file" sobrevivem.
+/// Recorta como `parse_unified_hunks`: um trecho começa em `@@`, e o diff
+/// acaba no segundo `diff --git`.
+fn single_hunk_patch(raw: &[u8], index: usize) -> Option<Vec<u8>> {
+    let mut patch = Vec::new();
+    let mut hunk = Vec::new();
+    let mut current: Option<usize> = None;
+    let mut past_first_file = false;
+    for line in raw.split_inclusive(|b| *b == b'\n') {
+        if line.starts_with(b"diff --git ") {
+            if past_first_file {
+                break;
+            }
+            past_first_file = true;
+        }
+        if line.starts_with(b"@@") {
+            current = Some(current.map_or(0, |n| n + 1));
+        }
+        match current {
+            None => patch.extend_from_slice(line),
+            Some(n) if n == index => hunk.extend_from_slice(line),
+            Some(n) if n > index => break,
+            Some(_) => {}
+        }
+    }
+    if hunk.is_empty() {
+        return None;
+    }
+    patch.extend_from_slice(&hunk);
+    Some(patch)
+}
+
+fn is_staged_rename(worktree: &Path, path: &str) -> Result<bool, String> {
+    let raw = run_git(
+        {
+            let mut c = git_in(worktree);
+            c.args([
+                "diff",
+                "--no-ext-diff",
+                "--no-color",
+                "--cached",
+                "--name-status",
+                "-M",
+                "-z",
+            ]);
+            c
+        },
+        "git diff --cached --name-status",
+    )?;
+    Ok(super::diff::parse_name_status_z(&raw)
+        .into_iter()
+        .any(|(_, old, new)| old.is_some_and(|old| old == path || new == path)))
+}
+
+/// Age num trecho só: stage/discard no escopo unstaged, unstage no staged.
+/// Recalcula o diff com a mesma fonte do `session_diff_hunks` e recusa se o
+/// trecho `hunk_index` não tem mais o `header` que a UI mostrou.
+pub fn hunk_action(
+    worktree: &Path,
+    base_ref: &str,
+    path: &str,
+    scope: DiffScope,
+    hunk_index: usize,
+    header: &str,
+    action: HunkAction,
+) -> Result<(), AppError> {
+    let valid = matches!(
+        (action, scope),
+        (HunkAction::Stage | HunkAction::Discard, DiffScope::Unstaged)
+            | (HunkAction::Unstage, DiffScope::Staged)
+    );
+    if !valid {
+        return Err(hunk_invalid(format!(
+            "{action:?} não vale no escopo {scope:?}"
+        )));
+    }
+    ensure_relative(path).map_err(hunk_invalid)?;
+    let raw = super::diff::file_diff_raw(worktree, base_ref, scope, path, None)
+        .map_err(|e| git_failed("git.hunk_apply_failed", e))?;
+    if raw.is_empty() {
+        let untracked = scope == DiffScope::Unstaged
+            && super::diff::is_untracked(worktree, path).map_err(hunk_invalid)?;
+        return Err(if untracked {
+            hunk_unsupported("untracked")
+        } else {
+            AppError::new("git.hunk_changed")
+        });
+    }
+    let parsed = super::diff::parse_unified_hunks(&String::from_utf8_lossy(&raw));
+    if parsed.binary {
+        return Err(hunk_unsupported("binary"));
+    }
+    let renamed = raw
+        .split(|b| *b == b'\n')
+        .take_while(|l| !l.starts_with(b"@@"))
+        .any(|l| l.starts_with(b"rename from ") || l.starts_with(b"copy from "));
+    if renamed
+        || (scope == DiffScope::Staged && is_staged_rename(worktree, path).map_err(hunk_invalid)?)
+    {
+        return Err(hunk_unsupported("rename"));
+    }
+    if parsed.hunks.get(hunk_index).map(|h| h.header.as_str()) != Some(header) {
+        return Err(AppError::new("git.hunk_changed"));
+    }
+    let patch =
+        single_hunk_patch(&raw, hunk_index).ok_or_else(|| AppError::new("git.hunk_changed"))?;
+    let mut c = git_in_rw(worktree);
+    c.arg("apply");
+    match action {
+        HunkAction::Stage => c.arg("--cached"),
+        HunkAction::Unstage => c.args(["--cached", "--reverse"]),
+        HunkAction::Discard => c.arg("--reverse"),
+    };
+    c.arg("-");
+    super::log::run_git_stdin(c, &patch, "git apply")
+        .map_err(|e| git_failed("git.hunk_apply_failed", e))?;
     Ok(())
 }
 
@@ -860,6 +1097,270 @@ mod tests {
         let repo = temp_repo();
         assert!(stage(&repo, &["../fora.txt".into()]).is_err());
         assert!(discard(&repo, &["/etc/passwd".into()]).is_err());
+        fs::remove_dir_all(&repo).ok();
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn sha(dir: &Path, what: &str) -> String {
+        git_text(
+            {
+                let mut c = git_in(dir);
+                c.args(["rev-parse", what]);
+                c
+            },
+            "rev-parse",
+        )
+        .unwrap()
+    }
+
+    /// Clone de `temp_repo` com upstream em origin/main.
+    fn cloned(origin: &Path) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tyba-ops-clone-{}", uuid::Uuid::new_v4()));
+        git_ok(
+            Path::new("."),
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                dir.to_str().unwrap(),
+            ],
+        );
+        git_ok(&dir, &["config", "commit.gpgsign", "false"]);
+        git_ok(&dir, &["config", "user.email", "t@t"]);
+        git_ok(&dir, &["config", "user.name", "t"]);
+        dir
+    }
+
+    #[test]
+    fn amend_rewrites_a_local_commit_and_refuses_a_published_one() {
+        let origin = temp_repo();
+        let repo = cloned(&origin);
+        // HEAD == origin/main: já publicado.
+        let err = commit_amend(&repo, "outra mensagem").unwrap_err();
+        assert_eq!(err.code, "git.amend_published", "{err}");
+
+        fs::write(repo.join("a.txt"), "local\n").unwrap();
+        git_ok(&repo, &["commit", "-qam", "local"]);
+        assert_eq!(
+            commit_amend(&repo, "  ").unwrap_err().code,
+            "git.amend_failed"
+        );
+        let before = sha(&repo, "HEAD");
+        commit_amend(&repo, "local reescrito").unwrap();
+        assert_ne!(sha(&repo, "HEAD"), before);
+        assert_eq!(sha(&repo, "HEAD~1"), sha(&repo, "origin/main"));
+
+        // Sem upstream, permite.
+        let solo = temp_repo();
+        commit_amend(&solo, "init reescrito").unwrap();
+        for d in [origin, repo, solo] {
+            fs::remove_dir_all(&d).ok();
+        }
+    }
+
+    #[test]
+    fn pull_fast_forwards_and_refuses_divergence_or_missing_upstream() {
+        let origin = temp_repo();
+        let repo = cloned(&origin);
+        assert_eq!(pull(&repo).unwrap(), "já em dia");
+
+        for (i, msg) in ["um", "dois"].iter().enumerate() {
+            fs::write(origin.join("a.txt"), format!("{i}\n")).unwrap();
+            git_ok(&origin, &["commit", "-qam", msg]);
+        }
+        assert_eq!(pull(&repo).unwrap(), "2 commits");
+        assert_eq!(sha(&repo, "HEAD"), sha(&origin, "HEAD"));
+
+        fs::write(origin.join("a.txt"), "remoto\n").unwrap();
+        git_ok(&origin, &["commit", "-qam", "remoto"]);
+        fs::write(repo.join("b.txt"), "local\n").unwrap();
+        git_ok(&repo, &["add", "-A"]);
+        git_ok(&repo, &["commit", "-qm", "local"]);
+        let local = sha(&repo, "HEAD");
+        assert_eq!(pull(&repo).unwrap_err().code, "git.pull_not_ff");
+        assert_eq!(sha(&repo, "HEAD"), local, "pull recusado não mexe no HEAD");
+
+        let solo = temp_repo();
+        assert_eq!(pull(&solo).unwrap_err().code, "git.no_upstream");
+        for d in [origin, repo, solo] {
+            fs::remove_dir_all(&d).ok();
+        }
+    }
+
+    const TWENTY: &str = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\nl16\nl17\nl18\nl19\nl20\n";
+
+    /// `f.txt` commitado com 20 linhas e duas mudanças longe uma da outra:
+    /// dois trechos no escopo unstaged.
+    fn two_hunks_repo() -> PathBuf {
+        let repo = temp_repo();
+        fs::write(repo.join("f.txt"), TWENTY).unwrap();
+        git_ok(&repo, &["add", "-A"]);
+        git_ok(&repo, &["commit", "-qm", "f"]);
+        let edited = TWENTY
+            .replace("l2\n", "DOIS\n")
+            .replace("l19\n", "DEZENOVE\n");
+        fs::write(repo.join("f.txt"), edited).unwrap();
+        repo
+    }
+
+    fn hunks(repo: &Path, scope: DiffScope) -> Vec<super::super::diff::Hunk> {
+        super::super::diff::file_hunks(repo, "HEAD", scope, "f.txt", None)
+            .unwrap()
+            .hunks
+    }
+
+    fn act(
+        repo: &Path,
+        scope: DiffScope,
+        index: usize,
+        action: HunkAction,
+    ) -> Result<(), AppError> {
+        let header = hunks(repo, scope)[index].header.clone();
+        hunk_action(repo, "HEAD", "f.txt", scope, index, &header, action)
+    }
+
+    #[test]
+    fn stage_one_hunk_leaves_the_other_unstaged_and_unstage_brings_it_back() {
+        let repo = two_hunks_repo();
+        assert_eq!(hunks(&repo, DiffScope::Unstaged).len(), 2);
+
+        act(&repo, DiffScope::Unstaged, 0, HunkAction::Stage).unwrap();
+        let staged = hunks(&repo, DiffScope::Staged);
+        let unstaged = hunks(&repo, DiffScope::Unstaged);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(unstaged.len(), 1);
+        assert!(staged[0].lines.iter().any(|l| l.text == "DOIS"));
+        assert!(unstaged[0].lines.iter().any(|l| l.text == "DEZENOVE"));
+
+        act(&repo, DiffScope::Staged, 0, HunkAction::Unstage).unwrap();
+        assert!(hunks(&repo, DiffScope::Staged).is_empty());
+        assert_eq!(hunks(&repo, DiffScope::Unstaged).len(), 2);
+        fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn discard_one_hunk_removes_only_that_change() {
+        let repo = two_hunks_repo();
+        act(&repo, DiffScope::Unstaged, 1, HunkAction::Discard).unwrap();
+        assert_eq!(
+            fs::read_to_string(repo.join("f.txt")).unwrap(),
+            TWENTY.replace("l2\n", "DOIS\n")
+        );
+        fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn hunk_action_refuses_changed_header_bad_scope_and_unsupported_files() {
+        let repo = two_hunks_repo();
+        let header = hunks(&repo, DiffScope::Unstaged)[0].header.clone();
+        let err = hunk_action(
+            &repo,
+            "HEAD",
+            "f.txt",
+            DiffScope::Unstaged,
+            1,
+            &header,
+            HunkAction::Stage,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "git.hunk_changed");
+        let err = hunk_action(
+            &repo,
+            "HEAD",
+            "f.txt",
+            DiffScope::Unstaged,
+            9,
+            &header,
+            HunkAction::Stage,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "git.hunk_changed");
+        assert!(
+            hunks(&repo, DiffScope::Staged).is_empty(),
+            "recusa não mexe no index"
+        );
+
+        for (scope, action) in [
+            (DiffScope::Staged, HunkAction::Stage),
+            (DiffScope::Staged, HunkAction::Discard),
+            (DiffScope::Unstaged, HunkAction::Unstage),
+            (DiffScope::Committed, HunkAction::Stage),
+        ] {
+            let err = hunk_action(&repo, "HEAD", "f.txt", scope, 0, &header, action).unwrap_err();
+            assert_eq!(err.code, "git.hunk_invalid", "{scope:?} {action:?}");
+        }
+        for bad in ["../f.txt", "/etc/passwd"] {
+            let err = hunk_action(
+                &repo,
+                "HEAD",
+                bad,
+                DiffScope::Unstaged,
+                0,
+                &header,
+                HunkAction::Stage,
+            )
+            .unwrap_err();
+            assert_eq!(err.code, "git.hunk_invalid", "{bad}");
+        }
+
+        fs::write(repo.join("novo.txt"), "x\n").unwrap();
+        let err = hunk_action(
+            &repo,
+            "HEAD",
+            "novo.txt",
+            DiffScope::Unstaged,
+            0,
+            "@@ -0,0 +1 @@",
+            HunkAction::Stage,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "git.hunk_unsupported");
+        assert_eq!(
+            err.params.get("kind").map(String::as_str),
+            Some("untracked")
+        );
+
+        fs::write(repo.join("bin.dat"), [0u8, 1, 2, 3]).unwrap();
+        git_ok(&repo, &["add", "bin.dat"]);
+        git_ok(&repo, &["commit", "-qm", "bin"]);
+        fs::write(repo.join("bin.dat"), [0u8, 9, 9, 9]).unwrap();
+        let err = hunk_action(
+            &repo,
+            "HEAD",
+            "bin.dat",
+            DiffScope::Unstaged,
+            0,
+            "x",
+            HunkAction::Stage,
+        )
+        .unwrap_err();
+        assert_eq!(err.params.get("kind").map(String::as_str), Some("binary"));
+
+        git_ok(&repo, &["mv", "a.txt", "renomeado.txt"]);
+        let err = hunk_action(
+            &repo,
+            "HEAD",
+            "renomeado.txt",
+            DiffScope::Staged,
+            0,
+            "x",
+            HunkAction::Unstage,
+        )
+        .unwrap_err();
+        assert_eq!(err.params.get("kind").map(String::as_str), Some("rename"));
         fs::remove_dir_all(&repo).ok();
     }
 

@@ -2951,6 +2951,51 @@ async fn worktree_commit(
     worktree::ops::commit(&ctx.path, &message)
 }
 
+/// Mesmas regras do `worktree_commit`; recusa amend de commit já publicado.
+#[tauri::command]
+async fn worktree_commit_amend(
+    state: State<'_, AppState>,
+    id: SessionId,
+    message: String,
+) -> Result<(), AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    forge_blocking(move || worktree::ops::commit_amend(&path, &message)).await
+}
+
+/// Rede por clique do usuário (como `session_fetch`), não ação automática.
+#[tauri::command]
+async fn worktree_pull(state: State<'_, AppState>, id: SessionId) -> Result<String, AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    forge_blocking(move || worktree::ops::pull(&path)).await
+}
+
+#[tauri::command]
+async fn worktree_hunk_action(
+    state: State<'_, AppState>,
+    id: SessionId,
+    path: String,
+    scope: worktree::diff::DiffScope,
+    hunk_index: usize,
+    header: String,
+    action: worktree::ops::HunkAction,
+) -> Result<(), AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    forge_blocking(move || {
+        worktree::ops::hunk_action(
+            &ctx.path,
+            &ctx.base_ref,
+            &path,
+            scope,
+            hunk_index,
+            &header,
+            action,
+        )
+    })
+    .await
+}
+
 #[tauri::command]
 async fn worktree_push(state: State<'_, AppState>, id: SessionId) -> Result<String, AppError> {
     let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
@@ -3092,6 +3137,32 @@ async fn forge_workflow_jobs(
     let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
     let path = ctx.path;
     forge_blocking(move || forge::workflow_jobs(&path, run_id)).await
+}
+
+/// Log de um job (`gh run view --job <id> --log`), com teto e redação.
+#[tauri::command]
+async fn forge_run_log(
+    state: State<'_, AppState>,
+    id: SessionId,
+    job_id: u64,
+) -> Result<forge::RunLog, AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    forge_blocking(move || forge::github::run_log(&path, job_id)).await
+}
+
+/// VERMELHO: só a UI chama, depois da confirmação (como `forge_pr_merge`).
+/// `gh run rerun` digitado por agente cai no classificador de aprovações.
+#[tauri::command]
+async fn forge_run_rerun(
+    state: State<'_, AppState>,
+    id: SessionId,
+    run_id: u64,
+    failed_only: bool,
+) -> Result<(), AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    forge_blocking(move || forge::github::run_rerun(&path, run_id, failed_only)).await
 }
 
 /// Sessão do TYBA cujo worktree está na branch `head` do PR — no mesmo repo da
@@ -3491,6 +3562,19 @@ async fn repo_log_stats(
         worktree::log::log_stats(&ctx.path, &filter)
     })
     .await?
+}
+
+/// Cria branch em `at` sem trocar de branch. Só a UI chama, por clique.
+#[tauri::command]
+async fn repo_branch_create(
+    state: State<'_, AppState>,
+    id: SessionId,
+    name: String,
+    at: String,
+) -> Result<(), AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    forge_blocking(move || worktree::branches::create(&path, &name, &at)).await
 }
 
 /// Grava o commit-graph (escreve no repo) — só por clique, depois da
@@ -7847,6 +7931,7 @@ pub fn run() {
             repo_commit_detail,
             repo_commit_hunks,
             repo_commit_action,
+            repo_branch_create,
             repo_log_stats,
             repo_commit_graph_write,
             open_git_log_tab,
@@ -7900,6 +7985,9 @@ pub fn run() {
             worktree_unstage,
             worktree_discard,
             worktree_commit,
+            worktree_commit_amend,
+            worktree_pull,
+            worktree_hunk_action,
             worktree_push,
             worktree_merge_preview,
             worktree_merge_materialize,
@@ -7915,6 +8003,8 @@ pub fn run() {
             forge_pr_review,
             forge_pr_merge,
             forge_workflow_jobs,
+            forge_run_log,
+            forge_run_rerun,
             session_git_status,
             open_worktree_file,
             repo_snapshots,

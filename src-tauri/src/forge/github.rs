@@ -4,7 +4,10 @@ use serde::Deserialize;
 
 use super::exec::{self, LOCAL_TIMEOUT, NETWORK_TIMEOUT};
 use super::remote::Remote;
-use super::{is_auth_error, CheckRun, PullRequest, ReviewComment, WorkflowJob, WorkflowRun};
+use super::{
+    is_auth_error, CheckRun, PullRequest, ReviewComment, RunLog, WorkflowJob, WorkflowRun,
+    WorkflowStep,
+};
 use crate::error::AppError;
 
 pub const CLI: &str = "gh";
@@ -74,22 +77,58 @@ struct GhJobs {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GhJob {
+    database_id: u64,
     name: String,
     status: String,
     conclusion: Option<String>,
     url: Option<String>,
+    #[serde(default)]
+    started_at: Option<String>,
+    #[serde(default)]
+    completed_at: Option<String>,
+    #[serde(default)]
+    steps: Vec<GhStep>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhStep {
+    name: String,
+    status: String,
+    #[serde(default)]
+    conclusion: Option<String>,
+}
+
+fn job_conclusion(conclusion: Option<String>) -> Option<String> {
+    conclusion
+        .filter(|c| !c.is_empty())
+        .map(|c| c.to_lowercase())
+}
+
+/// O `gh` serializa horário que ainda não aconteceu como o zero do Go
+/// (`0001-01-01T00:00:00Z`), não como `null`.
+fn job_time(value: Option<String>) -> Option<String> {
+    value.filter(|t| !t.is_empty() && !t.starts_with("0001-"))
 }
 
 impl From<GhJob> for WorkflowJob {
     fn from(j: GhJob) -> Self {
         WorkflowJob {
+            id: j.database_id,
             name: j.name,
             status: j.status.to_lowercase(),
-            conclusion: j
-                .conclusion
-                .filter(|c| !c.is_empty())
-                .map(|c| c.to_lowercase()),
+            conclusion: job_conclusion(j.conclusion),
             url: j.url,
+            started_at: job_time(j.started_at),
+            completed_at: job_time(j.completed_at),
+            steps: j
+                .steps
+                .into_iter()
+                .map(|s| WorkflowStep {
+                    name: s.name,
+                    status: s.status.to_lowercase(),
+                    conclusion: job_conclusion(s.conclusion),
+                })
+                .collect(),
         }
     }
 }
@@ -358,6 +397,102 @@ pub fn run_jobs(repo: &Path, run_id: u64) -> Result<Vec<WorkflowJob>, AppError> 
     parse_jobs(&out.stdout).map_err(cli_failed)
 }
 
+/// Teto do log devolvido à UI. O log de um job falho passa fácil de MB; o
+/// erro está no fim, então é o fim que fica.
+pub const RUN_LOG_MAX_BYTES: usize = 400 * 1024;
+
+fn looks_like_timestamp(value: &str) -> bool {
+    let b = value.as_bytes();
+    b.len() >= 20 && b[..4].iter().all(u8::is_ascii_digit) && b[4] == b'-' && value.ends_with('Z')
+}
+
+/// `gh run view --log` prefixa cada linha com `<job>\t<step>\t<timestamp> `.
+/// Devolve o passo (se veio) e só o texto.
+fn split_log_line(line: &str) -> (Option<&str>, &str) {
+    let mut parts = line.splitn(3, '\t');
+    let (Some(_job), Some(step), Some(rest)) = (parts.next(), parts.next(), parts.next()) else {
+        return (None, line);
+    };
+    let rest = rest.trim_start_matches('\u{feff}');
+    let body = match rest.split_once(' ') {
+        Some((ts, body)) if looks_like_timestamp(ts) => body,
+        _ if looks_like_timestamp(rest) => "",
+        _ => rest,
+    };
+    (Some(step), body)
+}
+
+/// Tira os prefixos, acha o primeiro passo com `##[error]`, guarda o FIM do
+/// log até `max` bytes (começando numa linha inteira) e mascara segredos.
+pub fn parse_run_log(stdout: &[u8], max: usize) -> RunLog {
+    let raw = String::from_utf8_lossy(stdout);
+    let mut failed_step: Option<&str> = None;
+    let mut text = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        let (step, body) = split_log_line(line);
+        if failed_step.is_none() && body.contains("##[error]") {
+            failed_step = step.filter(|s| !s.is_empty() && *s != "UNKNOWN STEP");
+        }
+        text.push_str(body);
+        text.push('\n');
+    }
+    let truncated = text.len() > max;
+    if truncated {
+        let mut cut = text.len() - max;
+        while !text.is_char_boundary(cut) {
+            cut += 1;
+        }
+        if let Some(nl) = text[cut..].find('\n') {
+            cut += nl + 1;
+        }
+        text.drain(..cut);
+    }
+    let redact = crate::session::redact::redact;
+    RunLog {
+        text: redact(&text).into_owned(),
+        truncated,
+        failed_step: failed_step.map(|s| redact(s).into_owned()),
+    }
+}
+
+pub fn run_log(repo_root: &Path, job_id: u64) -> Result<RunLog, AppError> {
+    if job_id == 0 {
+        return Err(cli_failed("id de job inválido"));
+    }
+    let remote = super::prs::action_remote(repo_root)?;
+    let repo = super::prs::repo_flag(&remote);
+    let job = job_id.to_string();
+    let out = super::prs::gh(
+        repo_root,
+        &["run", "view", "--repo", &repo, "--job", &job, "--log"],
+    )?;
+    Ok(parse_run_log(&out, RUN_LOG_MAX_BYTES))
+}
+
+/// argv do `gh run rerun`; `--failed` reroda só os jobs que falharam.
+pub fn rerun_args(repo: &str, run_id: u64, failed_only: bool) -> Result<Vec<String>, AppError> {
+    if run_id == 0 {
+        return Err(cli_failed("id de run inválido"));
+    }
+    let mut args: Vec<String> = ["run", "rerun", "--repo", repo].map(String::from).to_vec();
+    if failed_only {
+        args.push("--failed".into());
+    }
+    args.extend(["--".into(), run_id.to_string()]);
+    Ok(args)
+}
+
+/// VERMELHO: só a UI chama, depois da confirmação (como o merge de PR). O
+/// mesmo `gh run rerun` digitado por agente é vermelho no classificador.
+pub fn run_rerun(repo_root: &Path, run_id: u64, failed_only: bool) -> Result<(), AppError> {
+    if run_id == 0 {
+        return Err(cli_failed("id de run inválido"));
+    }
+    let remote = super::prs::action_remote(repo_root)?;
+    let args = rerun_args(&super::prs::repo_flag(&remote), run_id, failed_only)?;
+    super::prs::gh_write(repo_root, &args, None)
+}
+
 pub fn pr_list(repo: &Path) -> Result<Vec<PullRequest>, AppError> {
     let out = exec::run(
         CLI,
@@ -543,6 +678,100 @@ mod tests {
         // Job na fila ainda não tem url — e a UI não pode explodir por isso.
         assert_eq!(jobs[2].status, "queued");
         assert_eq!(jobs[2].url, None);
+    }
+
+    #[test]
+    fn parse_jobs_traz_id_horarios_e_passos() {
+        let jobs = parse_jobs(include_str!("fixtures/gh_run_jobs.json").as_bytes()).unwrap();
+        assert_eq!(jobs[0].id, 9_000_000_001);
+        assert_eq!(jobs[0].started_at.as_deref(), Some("2026-01-02T10:00:00Z"));
+        assert_eq!(
+            jobs[0].completed_at.as_deref(),
+            Some("2026-01-02T10:03:10Z")
+        );
+        assert_eq!(jobs[0].steps.len(), 3);
+        assert_eq!(jobs[0].steps[1].name, "bun run test");
+        assert_eq!(jobs[0].steps[2].conclusion.as_deref(), Some("skipped"));
+        // Zero do Go = ainda não terminou; conclusão vazia = passo rodando.
+        assert_eq!(jobs[1].completed_at, None);
+        assert_eq!(jobs[1].steps[0].conclusion, None);
+        // Job na fila não traz horário nem passos.
+        assert_eq!(jobs[2].started_at, None);
+        assert!(jobs[2].steps.is_empty());
+    }
+
+    // Log sintético no formato do `gh run view --job <id> --log`.
+    const RUN_LOG: &str = "build\tSet up job\t\u{feff}2026-01-02T10:00:00.1234567Z Current runner version: '2.300.0'\n\
+build\tRun tests\t2026-01-02T10:00:01.0000000Z running 3 tests\n\
+build\tRun tests\t2026-01-02T10:00:02.0000000Z token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\n\
+build\tRun tests\t2026-01-02T10:00:03.0000000Z ##[error]Process completed with exit code 1.\n\
+build\tPost checkout\t2026-01-02T10:00:04.0000000Z ##[error]outro erro depois\n";
+
+    #[test]
+    fn run_log_tira_o_prefixo_e_acha_o_passo_que_falhou() {
+        let log = parse_run_log(RUN_LOG.as_bytes(), RUN_LOG_MAX_BYTES);
+        assert!(!log.truncated);
+        assert_eq!(log.failed_step.as_deref(), Some("Run tests"));
+        let lines: Vec<&str> = log.text.lines().collect();
+        assert_eq!(lines[0], "Current runner version: '2.300.0'");
+        assert_eq!(lines[1], "running 3 tests");
+        assert_eq!(lines[3], "##[error]Process completed with exit code 1.");
+    }
+
+    #[test]
+    fn run_log_mascara_segredos() {
+        let log = parse_run_log(RUN_LOG.as_bytes(), RUN_LOG_MAX_BYTES);
+        assert!(!log.text.contains("ghp_"), "{}", log.text);
+        assert!(log.text.contains("token=[REDACTED]"));
+    }
+
+    #[test]
+    fn run_log_grande_guarda_o_fim_a_partir_de_linha_inteira() {
+        let mut raw = String::new();
+        for i in 0..1000 {
+            raw.push_str(&format!("linha {i}\n"));
+        }
+        let log = parse_run_log(raw.as_bytes(), 100);
+        assert!(log.truncated);
+        assert!(log.text.len() <= 100);
+        assert!(log.text.starts_with("linha "), "{}", log.text);
+        assert!(log.text.ends_with("linha 999\n"));
+        // Sem prefixo do gh, a linha passa inteira e não há passo.
+        assert_eq!(log.failed_step, None);
+    }
+
+    #[test]
+    fn rerun_monta_argv_com_failed_so_quando_pedido() {
+        assert_eq!(
+            rerun_args("github.com/acme/widget", 42, false).unwrap(),
+            [
+                "run",
+                "rerun",
+                "--repo",
+                "github.com/acme/widget",
+                "--",
+                "42"
+            ]
+        );
+        assert_eq!(
+            rerun_args("github.com/acme/widget", 42, true).unwrap(),
+            [
+                "run",
+                "rerun",
+                "--repo",
+                "github.com/acme/widget",
+                "--failed",
+                "--",
+                "42"
+            ]
+        );
+        assert!(rerun_args("github.com/acme/widget", 0, true).is_err());
+    }
+
+    #[test]
+    fn run_log_recusa_job_zero_antes_da_rede() {
+        assert!(run_log(Path::new("/"), 0).is_err());
+        assert!(run_rerun(Path::new("/"), 0, false).is_err());
     }
 
     #[test]
