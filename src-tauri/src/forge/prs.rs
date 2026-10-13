@@ -31,7 +31,7 @@ updatedAt,mergedAt,mergedBy,statusCheckRollup,reviewDecision,latestReviews,revie
 comments,additions,deletions";
 
 const DETAIL_FIELDS: &str = "number,title,url,state,isDraft,author,headRefName,baseRefName,\
-createdAt,body,additions,deletions,changedFiles,commits,files,statusCheckRollup,reviews,\
+headRefOid,createdAt,body,additions,deletions,changedFiles,commits,files,statusCheckRollup,reviews,\
 reviewRequests,comments,reviewDecision,mergeable,mergeStateStatus";
 
 // --- contrato (espelha `src/lib/ipc.ts`, seção "PRs ricos") -----------------
@@ -202,6 +202,7 @@ pub struct PrDetail {
     pub state: PrState,
     pub author: String,
     pub head: String,
+    pub head_sha: String,
     pub base: String,
     pub created_at: String,
     pub body: String,
@@ -388,6 +389,8 @@ struct GhDetailPr {
     head_ref_name: String,
     #[serde(default)]
     base_ref_name: String,
+    #[serde(default)]
+    head_ref_oid: String,
     #[serde(default)]
     created_at: String,
     #[serde(default)]
@@ -657,6 +660,7 @@ pub fn parse_detail(stdout: &[u8]) -> Result<PrDetail, String> {
         state: pr_state(&pr.state, pr.is_draft),
         author: login(pr.author),
         head: pr.head_ref_name,
+        head_sha: pr.head_ref_oid,
         base: pr.base_ref_name,
         created_at: pr.created_at,
         body: pr.body,
@@ -971,6 +975,215 @@ pub fn detail(repo_root: &Path, number: u64, fresh: bool) -> Result<Option<PrDet
     .map(Some)
 }
 
+// --- revisar e mergear (fatias 5–6): VERMELHO ------------------------------------
+//
+// Só a UI dispara, depois de uma confirmação que mostra o PR e o texto — do
+// mesmo jeito que `forge_create_pr` e o merge local: são commands do Tauri, que
+// o agente não alcança. Agente que digita `gh pr review`/`gh pr merge` no
+// terminal cai no classificador (`approvals`, `RedReason::ForgeWrite`), que
+// sempre pede aprovação.
+//
+// `head_sha` amarra a ação ao que o usuário viu. Se o PR andou, recusa com
+// `forge.pr_head_moved` para a UI pedir uma nova revisão.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrReviewEvent {
+    Comment,
+    Approve,
+    RequestChanges,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrMergeStrategy {
+    Squash,
+    Merge,
+    Rebase,
+}
+
+fn invalid_number() -> AppError {
+    cli_failed("número de PR inválido")
+}
+
+fn is_full_sha(value: &str) -> bool {
+    value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn check_target(number: u64, head_sha: &str) -> Result<(), AppError> {
+    if number == 0 {
+        return Err(invalid_number());
+    }
+    if !is_full_sha(head_sha) {
+        return Err(AppError::new("forge.pr_invalid_head"));
+    }
+    Ok(())
+}
+
+/// A decisão do "o PR andou?", sem rede: `current` é o `headRefOid` de agora.
+pub fn ensure_head(expected: &str, current: &str) -> Result<(), AppError> {
+    if expected.eq_ignore_ascii_case(current.trim()) {
+        Ok(())
+    } else {
+        Err(AppError::new("forge.pr_head_moved")
+            .with("expected", expected)
+            .with("current", current.trim()))
+    }
+}
+
+/// argv do `gh pr review` e o stdin. O corpo vai SEMPRE pelo stdin
+/// (`--body-file -`), nunca em argv; `approve` sem corpo não manda nenhum.
+pub fn review_args(
+    repo: &str,
+    number: u64,
+    event: PrReviewEvent,
+    body: &str,
+    head_sha: &str,
+) -> Result<(Vec<String>, Option<Vec<u8>>), AppError> {
+    check_target(number, head_sha)?;
+    let empty = body.trim().is_empty();
+    if empty && event != PrReviewEvent::Approve {
+        return Err(AppError::new("forge.pr_review_body_empty"));
+    }
+    let flag = match event {
+        PrReviewEvent::Comment => "--comment",
+        PrReviewEvent::Approve => "--approve",
+        PrReviewEvent::RequestChanges => "--request-changes",
+    };
+    let mut args: Vec<String> = ["pr", "review", "--repo", repo, flag]
+        .map(String::from)
+        .to_vec();
+    let stdin = if empty {
+        None
+    } else {
+        args.extend(["--body-file".into(), "-".into()]);
+        Some(body.as_bytes().to_vec())
+    };
+    args.extend(["--".into(), number.to_string()]);
+    Ok((args, stdin))
+}
+
+/// argv do `gh pr merge`. Nunca `--admin` (pula proteção de branch), nunca
+/// `--auto` (merge depois, sem ninguém olhando), nunca `--delete-branch`.
+/// `--match-head-commit` faz o GitHub recusar se o head mudou desde a checagem.
+///
+/// Mergear para main/master é permitido aqui: a regra 5 do CLAUDE.md recusa
+/// PUSH de sessão de agente para main; isto é o dono mergeando pela UI.
+pub fn merge_args(
+    repo: &str,
+    number: u64,
+    strategy: PrMergeStrategy,
+    head_sha: &str,
+) -> Result<Vec<String>, AppError> {
+    check_target(number, head_sha)?;
+    let flag = match strategy {
+        PrMergeStrategy::Squash => "--squash",
+        PrMergeStrategy::Merge => "--merge",
+        PrMergeStrategy::Rebase => "--rebase",
+    };
+    Ok([
+        "pr",
+        "merge",
+        "--repo",
+        repo,
+        flag,
+        "--match-head-commit",
+        head_sha,
+        "--",
+        &number.to_string(),
+    ]
+    .map(String::from)
+    .to_vec())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhHead {
+    head_ref_oid: String,
+}
+
+pub fn parse_head(stdout: &[u8]) -> Result<String, String> {
+    serde_json::from_slice::<GhHead>(stdout)
+        .map(|h| h.head_ref_oid)
+        .map_err(|e| format!("resposta inesperada de `gh pr view`: {e}"))
+}
+
+/// Ação só existe no GitHub com `gh`: sem isso, não há o que degradar.
+fn action_remote(repo_root: &Path) -> Result<Remote, AppError> {
+    github_remote(repo_root).ok_or_else(|| AppError::new("forge.pr_actions_unsupported"))
+}
+
+/// Head de agora, sem cache: o do cache pode ter 30s.
+fn current_head(repo_root: &Path, repo: &str, number: u64) -> Result<String, AppError> {
+    let n = number.to_string();
+    let out = gh(
+        repo_root,
+        &[
+            "pr",
+            "view",
+            "--repo",
+            repo,
+            "--json",
+            "headRefOid",
+            "--",
+            &n,
+        ],
+    )?;
+    parse_head(&out).map_err(cli_failed)
+}
+
+fn gh_write(repo_root: &Path, args: &[String], stdin: Option<&[u8]>) -> Result<(), AppError> {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out =
+        exec::run(github::CLI, &args, repo_root, stdin, NETWORK_TIMEOUT).map_err(cli_failed)?;
+    if !out.ok {
+        return Err(cli_failed(out.stderr_message()));
+    }
+    Ok(())
+}
+
+fn invalidate(repo: &str, number: u64) {
+    detail_cache()
+        .lock()
+        .retain(|(r, n), _| !(r == repo && *n == number));
+    page_cache().lock().retain(|(r, _), _| r != repo);
+}
+
+/// Sobra uma janela entre a checagem do head e o review: o `gh pr review` não
+/// aceita commit alvo. No merge, `--match-head-commit` fecha essa janela.
+pub fn review(
+    repo_root: &Path,
+    number: u64,
+    event: PrReviewEvent,
+    body: &str,
+    head_sha: &str,
+) -> Result<(), AppError> {
+    check_target(number, head_sha)?;
+    let remote = action_remote(repo_root)?;
+    let repo = repo_flag(&remote);
+    let (args, stdin) = review_args(&repo, number, event, body, head_sha)?;
+    ensure_head(head_sha, &current_head(repo_root, &repo, number)?)?;
+    gh_write(repo_root, &args, stdin.as_deref())?;
+    invalidate(&repo, number);
+    Ok(())
+}
+
+pub fn merge(
+    repo_root: &Path,
+    number: u64,
+    strategy: PrMergeStrategy,
+    head_sha: &str,
+) -> Result<(), AppError> {
+    check_target(number, head_sha)?;
+    let remote = action_remote(repo_root)?;
+    let repo = repo_flag(&remote);
+    let args = merge_args(&repo, number, strategy, head_sha)?;
+    ensure_head(head_sha, &current_head(repo_root, &repo, number)?)?;
+    gh_write(repo_root, &args, None)?;
+    invalidate(&repo, number);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1064,6 +1277,7 @@ mod tests {
     fn detail_maps_checks_with_workflow_and_mergeable() {
         let d = parse_detail(VIEW.as_bytes()).unwrap();
         assert_eq!(d.number, 42);
+        assert_eq!(d.head_sha, "2222222222222222222222222222222222222222");
         assert_eq!(d.state, PrState::Open);
         assert_eq!(d.changed_files, 2);
         assert_eq!(d.mergeable, PrMergeable::Conflicting);
@@ -1184,5 +1398,197 @@ mod tests {
     #[test]
     fn detail_rejects_number_zero() {
         assert!(detail(Path::new("/"), 0, false).is_err());
+    }
+
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+    const REPO: &str = "github.com/exemplo/app";
+
+    #[test]
+    fn review_body_goes_to_stdin_never_argv() {
+        let corpo = "texto do review --admin";
+        for (event, flag) in [
+            (PrReviewEvent::Comment, "--comment"),
+            (PrReviewEvent::Approve, "--approve"),
+            (PrReviewEvent::RequestChanges, "--request-changes"),
+        ] {
+            let (args, stdin) = review_args(REPO, 7, event, corpo, SHA).unwrap();
+            assert_eq!(
+                args,
+                [
+                    "pr",
+                    "review",
+                    "--repo",
+                    REPO,
+                    flag,
+                    "--body-file",
+                    "-",
+                    "--",
+                    "7"
+                ]
+            );
+            assert_eq!(stdin.as_deref(), Some(corpo.as_bytes()));
+            assert!(!args.iter().any(|a| a.contains("texto")));
+        }
+    }
+
+    #[test]
+    fn empty_body_only_for_approve() {
+        let (args, stdin) = review_args(REPO, 7, PrReviewEvent::Approve, "  ", SHA).unwrap();
+        assert_eq!(
+            args,
+            ["pr", "review", "--repo", REPO, "--approve", "--", "7"]
+        );
+        assert_eq!(stdin, None);
+        for event in [PrReviewEvent::Comment, PrReviewEvent::RequestChanges] {
+            let err = review_args(REPO, 7, event, " \n", SHA).unwrap_err();
+            assert_eq!(err.code, "forge.pr_review_body_empty");
+        }
+    }
+
+    #[test]
+    fn merge_args_by_strategy_without_dangerous_flags() {
+        for (strategy, flag) in [
+            (PrMergeStrategy::Squash, "--squash"),
+            (PrMergeStrategy::Merge, "--merge"),
+            (PrMergeStrategy::Rebase, "--rebase"),
+        ] {
+            let args = merge_args(REPO, 9, strategy, SHA).unwrap();
+            assert_eq!(
+                args,
+                [
+                    "pr",
+                    "merge",
+                    "--repo",
+                    REPO,
+                    flag,
+                    "--match-head-commit",
+                    SHA,
+                    "--",
+                    "9"
+                ]
+            );
+            for proibida in ["--admin", "--auto", "--delete-branch", "-d"] {
+                assert!(!args.iter().any(|a| a == proibida), "{proibida}");
+            }
+        }
+    }
+
+    #[test]
+    fn actions_validate_number_and_head_sha() {
+        let curto = &SHA[..39];
+        let nao_hex = "g123456789abcdef0123456789abcdef01234567";
+        for sha in [curto, nao_hex, "", "--admin"] {
+            assert_eq!(
+                merge_args(REPO, 1, PrMergeStrategy::Squash, sha)
+                    .unwrap_err()
+                    .code,
+                "forge.pr_invalid_head",
+                "{sha}"
+            );
+            assert_eq!(
+                review_args(REPO, 1, PrReviewEvent::Approve, "", sha)
+                    .unwrap_err()
+                    .code,
+                "forge.pr_invalid_head"
+            );
+        }
+        assert_eq!(
+            merge_args(REPO, 0, PrMergeStrategy::Squash, SHA)
+                .unwrap_err()
+                .code,
+            "forge.cli_failed"
+        );
+        assert!(review_args(REPO, 0, PrReviewEvent::Approve, "", SHA).is_err());
+        // A validação vem antes de qualquer rede.
+        assert!(merge(Path::new("/"), 0, PrMergeStrategy::Merge, SHA).is_err());
+        assert_eq!(
+            review(Path::new("/"), 1, PrReviewEvent::Approve, "", "x")
+                .unwrap_err()
+                .code,
+            "forge.pr_invalid_head"
+        );
+    }
+
+    #[test]
+    fn head_moved_is_refused() {
+        assert!(ensure_head(SHA, SHA).is_ok());
+        assert!(ensure_head(SHA, &format!("{}\n", SHA.to_uppercase())).is_ok());
+        let outro = "fedcba9876543210fedcba9876543210fedcba98";
+        let err = ensure_head(SHA, outro).unwrap_err();
+        assert_eq!(err.code, "forge.pr_head_moved");
+        assert_eq!(err.params["current"], outro);
+        assert_eq!(err.params["expected"], SHA);
+    }
+
+    #[test]
+    fn head_parses_from_gh_pr_view() {
+        let json = format!(r#"{{"headRefOid":"{SHA}"}}"#);
+        assert_eq!(parse_head(json.as_bytes()).unwrap(), SHA);
+        assert!(parse_head(b"{}").is_err());
+    }
+
+    #[test]
+    fn events_and_strategies_use_the_ts_contract_names() {
+        let e: PrReviewEvent = serde_json::from_str(r#""request_changes""#).unwrap();
+        assert_eq!(e, PrReviewEvent::RequestChanges);
+        let s: PrMergeStrategy = serde_json::from_str(r#""squash""#).unwrap();
+        assert_eq!(s, PrMergeStrategy::Squash);
+        assert!(serde_json::from_str::<PrMergeStrategy>(r#""admin""#).is_err());
+    }
+
+    #[test]
+    fn gitlab_has_no_pr_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["remote", "add", "origin", "https://gitlab.com/g/a.git"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(&args)
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success());
+        }
+        assert_eq!(
+            merge(dir.path(), 1, PrMergeStrategy::Squash, SHA)
+                .unwrap_err()
+                .code,
+            "forge.pr_actions_unsupported"
+        );
+    }
+
+    #[test]
+    fn success_invalidates_detail_and_lists_of_the_repo() {
+        let repo = "github.com/invalida/teste";
+        let page = PrPage {
+            items: Vec::new(),
+            recent_merged: Vec::new(),
+            counts: PrCounts::default(),
+            repo: "invalida/teste".into(),
+            forge: ForgeKind::GitHub,
+            fetched_at: String::new(),
+        };
+        let now = Instant::now();
+        let detail = parse_detail(VIEW.as_bytes()).unwrap();
+        {
+            let mut pages = page_cache().lock();
+            pages.insert((repo.into(), PrFilter::Open), (now, page.clone()));
+            pages.insert((repo.into(), PrFilter::Mine), (now, page.clone()));
+            pages.insert(
+                ("github.com/outro/repo".into(), PrFilter::Open),
+                (now, page),
+            );
+            let mut details = detail_cache().lock();
+            details.insert((repo.into(), 42), (now, detail.clone()));
+            details.insert((repo.into(), 43), (now, detail));
+        }
+        invalidate(repo, 42);
+        let pages = page_cache().lock();
+        assert!(!pages.keys().any(|(r, _)| r == repo));
+        assert!(pages.contains_key(&("github.com/outro/repo".to_string(), PrFilter::Open)));
+        let details = detail_cache().lock();
+        assert!(!details.contains_key(&(repo.to_string(), 42)));
+        assert!(details.contains_key(&(repo.to_string(), 43)));
     }
 }

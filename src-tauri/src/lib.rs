@@ -3160,6 +3160,37 @@ async fn forge_pr_detail(
     Ok(detail)
 }
 
+/// VERMELHO: só a UI chama, depois da confirmação (como `forge_create_pr`).
+/// Agente não alcança command do Tauri; `gh pr review` digitado por agente cai
+/// no classificador de aprovações, que sempre pergunta.
+#[tauri::command]
+async fn forge_pr_review(
+    state: State<'_, AppState>,
+    id: SessionId,
+    number: u64,
+    event: forge::prs::PrReviewEvent,
+    body: String,
+    head_sha: String,
+) -> Result<(), AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    forge_blocking(move || forge::prs::review(&path, number, event, &body, &head_sha)).await
+}
+
+/// VERMELHO: só a UI chama, depois da confirmação. Ver [`forge::prs::merge`].
+#[tauri::command]
+async fn forge_pr_merge(
+    state: State<'_, AppState>,
+    id: SessionId,
+    number: u64,
+    strategy: forge::prs::PrMergeStrategy,
+    head_sha: String,
+) -> Result<(), AppError> {
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    forge_blocking(move || forge::prs::merge(&path, number, strategy, &head_sha)).await
+}
+
 /// Abre um arquivo do worktree como TEXTO — nunca "executa" o arquivo.
 /// `open <arquivo>`/`xdg-open` rodariam um script/app deixado por um
 /// agente no worktree com um clique; aqui só editor configurado ou
@@ -7881,6 +7912,8 @@ pub fn run() {
             forge_workflow_runs,
             forge_pr_page,
             forge_pr_detail,
+            forge_pr_review,
+            forge_pr_merge,
             forge_workflow_jobs,
             session_git_status,
             open_worktree_file,
