@@ -17,6 +17,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PrStatusIcon } from "@/components/icons/PrStatusIcon";
+import { ForgeLoading } from "./ForgeLoading";
 import { useRelative } from "./GitHistoryView";
 import { GitHubIcon } from "@/components/icons/GitHubIcon";
 import { GitLabIcon } from "@/components/icons/GitLabIcon";
@@ -107,6 +108,7 @@ function Expander({
 function Jobs({ sessionId, runId }: { sessionId: SessionId; runId: number }) {
   const { t } = useTranslation();
   const [jobs, setJobs] = useState<WorkflowJob[] | null>(null);
+  const [startedAt] = useState(() => Date.now());
 
   useEffect(() => {
     let alive = true;
@@ -120,9 +122,7 @@ function Jobs({ sessionId, runId }: { sessionId: SessionId; runId: number }) {
 
   if (jobs === null) {
     return (
-      <p className="py-1 pl-6 text-[11px] text-tyba-text-faint">
-        {t("ciLoading")}
-      </p>
+      <ForgeLoading step={t("loadForgeJobs")} startedAt={startedAt} shape={null} className="pl-3" />
     );
   }
 
@@ -165,6 +165,7 @@ export function CiTab({ sessionId, wide = false }: { sessionId: SessionId; wide?
   const [supported, setSupported] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [startedAt, setStartedAt] = useState(() => Date.now());
 
   const load = useCallback(async () => {
     try {
@@ -193,7 +194,19 @@ export function CiTab({ sessionId, wide = false }: { sessionId: SessionId; wide?
   if (error) {
     return <div className="px-2 py-5 text-center text-xs text-tyba-red">{error}</div>;
   }
-  if (runs === null) return <Message>{t("ciLoading")}</Message>;
+  if (runs === null) {
+    return (
+      <ForgeLoading
+        step={t("loadForgeRuns")}
+        startedAt={startedAt}
+        onRetry={() => {
+          setStartedAt(Date.now());
+          void load();
+        }}
+        rows={3}
+      />
+    );
+  }
   if (!supported) return <Message>{t("ciUnsupported")}</Message>;
   if (runs.length === 0) return <Message>{t("ciEmpty")}</Message>;
 
@@ -244,6 +257,7 @@ function PrsTab({ sessionId, isMr }: { sessionId: SessionId; isMr: boolean }) {
   const [prs, setPrs] = useState<PullRequest[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [startedAt] = useState(() => Date.now());
 
   useEffect(() => {
     let alive = true;
@@ -262,7 +276,16 @@ function PrsTab({ sessionId, isMr }: { sessionId: SessionId; isMr: boolean }) {
   if (error) {
     return <div className="px-2 py-5 text-center text-xs text-tyba-red">{error}</div>;
   }
-  if (prs === null) return <Message>{t("ciLoading")}</Message>;
+  if (prs === null) {
+    return (
+      <ForgeLoading
+        step={t(isMr ? "loadForgeMrs" : "loadForgePrs", { forge: isMr ? "GitLab" : "GitHub" })}
+        em={[isMr ? "GitLab" : "GitHub"]}
+        startedAt={startedAt}
+        shape="prs"
+      />
+    );
+  }
   if (prs.length === 0) {
     return (
       <Message>{t(isMr ? "headerPrPanelEmptyMr" : "headerPrPanelEmpty")}</Message>

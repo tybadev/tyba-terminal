@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { translateError } from "../lib/errors";
+import { GitLoading } from "./GitLoading";
 import { GitMerge, WarningCircle } from "@phosphor-icons/react";
 
 import {
@@ -46,9 +47,11 @@ export function MergeLocalDialog({
   const [busy, setBusy] = useState(false);
   const [resolveBusy, setResolveBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadAt, setLoadAt] = useState(() => Date.now());
 
   useEffect(() => {
     if (!open) return;
+    setLoadAt(Date.now());
     setPreview(null);
     setLoadError(null);
     setArmed(false);
@@ -137,9 +140,15 @@ export function MergeLocalDialog({
         )}
 
         {!preview && !loadError && (
-          <div className="p-2 text-[12px] text-tyba-text-faint">
-            {t("mergeDialogLoading")}
-          </div>
+          <GitLoading
+            op="merge"
+            step={t("loadMergePreview", { branch: session.worktree?.branch ?? "…" })}
+            em={[session.worktree?.branch ?? ""]}
+            startedAt={loadAt}
+            shape="lines"
+            rows={3}
+            className="rounded-[6px] border border-tyba-border"
+          />
         )}
 
         {preview && (

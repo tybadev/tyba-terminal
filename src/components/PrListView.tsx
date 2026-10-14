@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { useRelative } from "./GitHistoryView";
 import { OpenPrDialog } from "./OpenPrDialog";
 import { CiTab } from "./ForgePanel";
+import { ForgeLoading } from "./ForgeLoading";
 import { translateError } from "../lib/errors";
 import { primaryDeliveryAction } from "../lib/forge";
 import {
@@ -110,6 +111,7 @@ export function PrListView({
   const [page, setPage] = useState<PrPage | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadAt, setLoadAt] = useState(() => Date.now());
   const [query, setQuery] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [status, setStatus] = useState<ForgeStatus | null>(null);
@@ -124,6 +126,7 @@ export function PrListView({
     (fresh: boolean) => {
       const seq = ++requestSeq.current;
       setLoading(true);
+      setLoadAt(Date.now());
       forgePrPage(session.id, filter === "ci" ? "open" : filter, fresh, limit)
         .then((p) => {
           if (seq !== requestSeq.current) return;
@@ -356,10 +359,24 @@ export function PrListView({
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {page === undefined && !error && (
-          <p className="p-6 text-[12px] text-tyba-text-faint">{t("diffLoading")}</p>
+        {page === undefined && (
+          <ForgeLoading
+            step={
+              status
+                ? t(status.kind === "gitlab" ? "loadForgeMrs" : "loadForgePrs", {
+                    forge: status.kind === "gitlab" ? "GitLab" : "GitHub",
+                  })
+                : t("loadForgePrsAny")
+            }
+            em={["GitHub", "GitLab"]}
+            startedAt={loadAt}
+            error={error}
+            onRetry={() => load(true)}
+            shape="prs"
+            rows={5}
+          />
         )}
-        {error && <p className="p-6 text-[12px] text-tyba-red">{error}</p>}
+        {error && page !== undefined && <p className="p-6 text-[12px] text-tyba-red">{error}</p>}
         {page === null && !error && (
           <p className="p-6 text-[12px] text-tyba-text-faint">{t("prListUnsupported")}</p>
         )}
@@ -390,7 +407,9 @@ export function PrListView({
                   onClick={() => setLimit((l) => nextPrLimit(l) ?? l)}
                   className="rounded-[6px] border border-tyba-border-strong px-3 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50"
                 >
-                  {loading ? t("diffLoading") : t("prLoadMore")}
+                  {loading
+                    ? t("loadForgeMore", { count: (nextPrLimit(limit) ?? limit) - limit })
+                    : t("prLoadMore")}
                 </button>
               </div>
             )}

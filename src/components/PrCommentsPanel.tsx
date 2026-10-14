@@ -20,6 +20,7 @@ import {
   type PullRequest,
 } from "../lib/ipc";
 import { buildForgeCommentPrompt } from "../lib/forge";
+import { ForgeLoading } from "./ForgeLoading";
 
 interface Props {
   sessionId: string;
@@ -37,8 +38,10 @@ export function PrCommentsPanel({ sessionId, pr, onSendToAgent }: Props) {
   >("idle");
   const [sendError, setSendError] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(true);
+  const [loadAt, setLoadAt] = useState(() => Date.now());
 
   useEffect(() => {
+    setLoadAt(Date.now());
     setComments(null);
     setLoadError(null);
     setSelected(new Set());
@@ -111,9 +114,14 @@ export function PrCommentsPanel({ sessionId, pr, onSendToAgent }: Props) {
         <div className="text-[12px] text-tyba-red">{loadError}</div>
       )}
       {!comments && !loadError && (
-        <div className="text-[12px] text-tyba-text-faint">
-          {t("prCommentsLoading")}
-        </div>
+        <ForgeLoading
+          step={t("loadForgeComments", { number: pr.number })}
+          em={[`#${pr.number}`]}
+          startedAt={loadAt}
+          shape="list"
+          rows={3}
+          className="-mx-3"
+        />
       )}
       {comments && comments.length === 0 && (
         <div className="text-[12px] text-tyba-text-faint">

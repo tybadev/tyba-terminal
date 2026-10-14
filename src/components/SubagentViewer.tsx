@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleNotch, Gear, X } from "@phosphor-icons/react";
+import { Gear, X } from "@phosphor-icons/react";
 
 import { AgentIcon } from "./icons/AgentIcon";
+import { LoadingState } from "./ui/loading";
 
 import type {
   SessionId,
@@ -121,6 +122,7 @@ export function SubagentTranscript({
 
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadAt, setLoadAt] = useState(() => Date.now());
   const [trimmed, setTrimmed] = useState(false);
   const cursorRef = useRef(0);
   const receivedRef = useRef(0);
@@ -135,6 +137,7 @@ export function SubagentTranscript({
     }
     let cancelled = false;
     setLoading(true);
+    setLoadAt(Date.now());
     setEntries([]);
     setTrimmed(false);
     cursorRef.current = 0;
@@ -218,10 +221,14 @@ export function SubagentTranscript({
             </div>
           )}
           {loading && entries.length === 0 && (
-            <div className="flex items-center gap-1.5 px-1 py-3 text-[12px] text-tyba-text-faint">
-              <CircleNotch size={13} className="animate-spin" />
-              {t("subagentsViewerLoading")}
-            </div>
+            <LoadingState
+              op="subagent"
+              step={t("loadSubagent")}
+              startedAt={loadAt}
+              slowCause={t("loadSubagentSlow")}
+              shape="lines"
+              rows={6}
+            />
           )}
           {!loading && entries.length === 0 && (
             <p className="px-1 py-3 text-[12px] text-tyba-text-faint">

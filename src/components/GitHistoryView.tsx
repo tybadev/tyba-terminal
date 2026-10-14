@@ -11,6 +11,8 @@ import {
 
 import { GitIcon } from "./icons/GitIcon";
 import { PromptDialog } from "./PromptDialog";
+import { GitLoading } from "./GitLoading";
+import { dirLabel } from "../lib/workspaceCwd";
 import { translateError } from "../lib/errors";
 import { requestConfirm } from "../lib/confirm";
 import {
@@ -244,6 +246,7 @@ function FilterField({
  */
 export function GitHistoryView({ session }: { session: Session }) {
   const { t, i18n } = useTranslation();
+  const repoName = session.repo_root ? dirLabel(session.repo_root) : "…";
   const relative = useRelative();
   const now = useNow(5000);
 
@@ -273,6 +276,7 @@ export function GitHistoryView({ session }: { session: Session }) {
   const [cursor, setCursor] = useState<LogCursor | null>(null);
   const [filtered, setFiltered] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadAt, setLoadAt] = useState(() => Date.now());
   const [error, setError] = useState<string | null>(null);
   const [loadedAt, setLoadedAt] = useState<number | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -289,6 +293,7 @@ export function GitHistoryView({ session }: { session: Session }) {
     const gen = ++generation.current;
     loadingRef.current = true;
     setLoading(true);
+    setLoadAt(Date.now());
     repoLog(session.id, filter, null, HISTORY_PAGE)
       .then((page) => {
         if (gen !== generation.current) return;
@@ -643,18 +648,37 @@ export function GitHistoryView({ session }: { session: Session }) {
                 );
               })}
             </div>
+            {loading && rows.length === 0 && (
+              <GitLoading
+                op="gitLog"
+                step={t("loadGitLog", { repo: repoName })}
+                em={[repoName]}
+                startedAt={loadAt}
+                shape="list"
+                rows={8}
+              />
+            )}
             {!loading && rows.length === 0 && (
               <div className="p-6 text-center text-[12px] text-tyba-text-faint">
                 {error ?? (hasFilter ? t("gitLogEmptyFiltered") : t("gitLogEmpty"))}
               </div>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-2 border-t border-tyba-border-soft px-3.5 py-2.5 text-[11px] text-tyba-text-faint">
-            {loading && (
+          <div className="relative flex shrink-0 items-center gap-2 border-t border-tyba-border-soft px-3.5 py-2.5 text-[11px] text-tyba-text-faint">
+            {/* Mais uma página a caminho: o filamento na aresta e a etapa. O
+                "N de M" ao lado já é o progresso que o core sabe. */}
+            {loading && rows.length > 0 && (
               <>
-                <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-tyba-border-strong border-t-tyba-blue" />
-                <span className="text-tyba-text-muted">
-                  {t("gitLogLoadingMore", { count: HISTORY_PAGE })}
+                <span
+                  aria-hidden
+                  className="tyba-flow-line tyba-flow-line--live pointer-events-none absolute inset-x-0 top-0"
+                />
+                <span role="status" className="text-tyba-text-muted">
+                  <span
+                    aria-hidden
+                    className="tyba-pulse mr-2 inline-block size-1.5 rounded-full bg-tyba-cyan align-[1px]"
+                  />
+                  {t("loadGitLogMore", { count: HISTORY_PAGE })}
                 </span>
               </>
             )}
