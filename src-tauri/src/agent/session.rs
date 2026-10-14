@@ -1637,7 +1637,7 @@ pub(crate) fn sandbox_spec(
     let read_allow_extra = match crate::user_config::load(&home) {
         Ok(c) => c.sandbox_read_allow,
         Err(e) => {
-            eprintln!("[tyba] sandbox: read_allow ignorado: {e}");
+            eprintln!("[tyba] sandbox: sessão sem o read_allow do usuário ({e})");
             Vec::new()
         }
     };
