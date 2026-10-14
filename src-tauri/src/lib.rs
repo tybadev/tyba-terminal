@@ -4732,25 +4732,6 @@ fn create_workspace(
     Ok(id)
 }
 
-/// O painel de containers é singleton e o alvo dele muda: o workspace segue o
-/// que está na tela (nome, cor e grupo do host, ou "Docker" quando é local).
-/// Numa chamada só — nome/cor/grupo em três round-trips fazem a sidebar piscar.
-#[tauri::command]
-fn tag_workspace(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: layout::WorkspaceId,
-    name: String,
-    tag: WorkspaceTag,
-) -> Result<(), String> {
-    state
-        .layout
-        .tag_workspace(id, &name, tag.into())
-        .map_err(|e| e.to_string())?;
-    emit_layout(&app, &state);
-    Ok(())
-}
-
 #[derive(Debug, serde::Deserialize)]
 struct WorkspaceTag {
     #[serde(default)]
@@ -8442,7 +8423,6 @@ pub fn run() {
             save_launch_config,
             delete_launch_config,
             launch_config_seed,
-            tag_workspace,
             close_workspace,
             activate_workspace,
             rename_workspace,

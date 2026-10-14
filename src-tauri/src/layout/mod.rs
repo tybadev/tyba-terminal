@@ -1049,22 +1049,6 @@ impl LayoutManager {
         self.persist()
     }
 
-    /// Nome + cor + grupo de uma vez (ver [`Tag`]).
-    pub fn tag_workspace(&self, id: WorkspaceId, name: &str, tag: Tag) -> Result<(), LayoutError> {
-        let mut inner = self.inner.write();
-        let idx = ws_index(&inner.workspaces, id)?;
-        let ws = &mut inner.workspaces[idx];
-        let trimmed = name.trim();
-        if !trimmed.is_empty() {
-            ws.name = trimmed.to_string();
-            ws.name_locked = tag.lock_name;
-        }
-        ws.color = tag.color;
-        ws.group = tag.group;
-        drop(inner);
-        self.persist()
-    }
-
     pub fn workspace_of_session(&self, session: SessionId) -> Option<WorkspaceId> {
         let inner = self.inner.read();
         find_session_pane(&inner.workspaces, session).map(|(ws, _, _)| ws)
