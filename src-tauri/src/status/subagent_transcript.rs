@@ -798,7 +798,11 @@ fn finish_target<R: Runtime>(
         session,
         &completion.agent_id,
         completion.summary,
-        completion.interrupted,
+        if completion.interrupted {
+            crate::agent::subagents::RunEnd::Interrupted
+        } else {
+            crate::agent::subagents::RunEnd::Completed
+        },
     );
 }
 

@@ -34,6 +34,8 @@ pub enum CompletionOutcome {
     Completed { summary: Option<String> },
     /// `failed` ou `killed`: acabou sem resultado.
     Interrupted,
+    /// `blocked`: parou esperando algo e não segue sozinho ("parado").
+    Blocked { summary: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,15 +117,19 @@ fn parse_notification(text: &str) -> Option<SubagentCompletion> {
     if !is_plausible_subagent_id(agent_id) {
         return None;
     }
+    let result = || {
+        between(body, "<result>", "</result>")
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(str::to_string)
+    };
     let outcome = match between(body, "<status>", "</status>")?.trim() {
-        "completed" => CompletionOutcome::Completed {
-            summary: between(body, "<result>", "</result>")
-                .map(str::trim)
-                .filter(|r| !r.is_empty())
-                .map(str::to_string),
-        },
+        "completed" => CompletionOutcome::Completed { summary: result() },
         "failed" | "killed" => CompletionOutcome::Interrupted,
-        // `blocked` e o que vier depois: não é fim que se possa afirmar.
+        // Decisão do dono (2026-10-14): `blocked` é fim — "parado". Sem isso
+        // o subagente ficava `Running` e segurava a sessão em "trabalhando".
+        "blocked" => CompletionOutcome::Blocked { summary: result() },
+        // Status que o Claude acrescente depois: não é fim que se afirme.
         _ => return None,
     };
     Some(SubagentCompletion {
@@ -371,8 +377,19 @@ mod tests {
     }
 
     #[test]
-    fn blocked_or_unknown_status_is_not_an_end() {
-        for status in ["blocked", "running", ""] {
+    fn blocked_is_an_end_of_its_own_with_the_result() {
+        let line = enqueue(&notification(A, "blocked", "esperando aprovação"));
+        assert_eq!(
+            parse_completion(&line).unwrap().outcome,
+            CompletionOutcome::Blocked {
+                summary: Some("esperando aprovação".into())
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_status_is_not_an_end() {
+        for status in ["running", ""] {
             assert_eq!(
                 parse_completion(&enqueue(&notification(A, status, ""))),
                 None

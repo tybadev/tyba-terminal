@@ -529,6 +529,23 @@ fn session_end_ends_subagents(raw: &serde_json::Value) -> bool {
 /// `SubagentStart` com a sessão ociosa: um subagente em background acordado
 /// pela própria tarefa volta a trabalhar, e a sessão volta a `Running`. Só
 /// sai de `Idle` — prompt aberto, saída e falha continuam mandando.
+/// A sessão segue `Running` só por subagente (turno do orquestrador
+/// encerrado): a UI troca "em andamento" por "subagentes trabalhando". Prompt
+/// aberto (`AwaitingInput`) não ganha a marca — esperar alguém vence.
+///
+/// Só sessão de agente: num shell (claude hospedado) o que a UI mostra é o
+/// palpite de tela, e a marca ali vem do `ObservedHold`, que olha a mesma
+/// tela — duas fontes escrevendo o campo brigariam a cada poll.
+fn mark_held_by_subagents(ctx: &HandlerCtx) {
+    let running = ctx.sessions.get(ctx.session_id).is_some_and(|s| {
+        matches!(s.kind, SessionKind::Agent { .. }) && matches!(s.status, SessionStatus::Running)
+    });
+    if running {
+        ctx.sessions
+            .set_subagents_working(&ctx.app, ctx.session_id, true);
+    }
+}
+
 fn status_on_subagent_start(current: &SessionStatus, active: bool) -> Option<SessionStatus> {
     (active && matches!(current, SessionStatus::Idle { .. })).then_some(SessionStatus::Running)
 }
@@ -854,6 +871,8 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     .and_then(|s| status_on_subagent_start(&s.status, active))
                 {
                     ctx.sessions.set_status(&ctx.app, ctx.session_id, next);
+                    // Saiu de `Idle` por subagente, não pelo orquestrador.
+                    mark_held_by_subagents(ctx);
                 }
             }
         }
@@ -917,10 +936,12 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
             // até o último terminar.
             ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
             let summary = Some(INTERRUPTED_SUMMARY.to_string());
-            if !ctx
+            if ctx
                 .subagents
                 .on_orchestrator_stop(&ctx.app, ctx.session_id, summary)
             {
+                mark_held_by_subagents(ctx);
+            } else {
                 if let Some(status) = ctx
                     .sessions
                     .get(ctx.session_id)
@@ -937,10 +958,22 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
             use std::sync::atomic::Ordering;
             match status_for(&signal) {
                 Some(SessionStatus::Running) => {
-                    ctx.subagents.note_orchestrator_working(ctx.session_id);
-                    ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+                    // Ferramenta de subagente (`agent_id` no payload) não é o
+                    // orquestrador voltando a trabalhar: o turno dele segue
+                    // encerrado, e o motivo do `Running` continua sendo os
+                    // subagentes.
+                    let from_subagent = event.agent_id.is_some();
+                    if !from_subagent {
+                        ctx.subagents.note_orchestrator_working(ctx.session_id);
+                        ctx.sessions
+                            .set_subagents_working(&ctx.app, ctx.session_id, false);
+                        ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+                    }
                     ctx.sessions
                         .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
+                    if from_subagent && ctx.subagents.orchestrator_idle(ctx.session_id) {
+                        mark_held_by_subagents(ctx);
+                    }
                 }
                 Some(status @ SessionStatus::AwaitingInput { .. }) => {
                     // O `idle_prompt` não rebaixa o prompt nativo a `Reply`: a
@@ -975,6 +1008,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                         {
                             ctx.sessions.set_status(&ctx.app, ctx.session_id, next);
                         }
+                        mark_held_by_subagents(ctx);
                     } else {
                         ctx.sessions.set_status(
                             &ctx.app,

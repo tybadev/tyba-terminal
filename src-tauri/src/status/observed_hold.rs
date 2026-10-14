@@ -21,6 +21,15 @@ use std::sync::Mutex;
 use crate::agent::subagents::SharedSubagents;
 use crate::session::{ObservedAgent, ObservedState, SessionId};
 
+/// O palpite foi segurado: a tela diz ocioso, mas há subagente trabalhando.
+/// É o que vira `Session::subagents_working` num shell.
+pub fn is_held(screen: &Option<ObservedAgent>, subagents_active: bool) -> bool {
+    subagents_active
+        && screen
+            .as_ref()
+            .is_some_and(|agent| agent.state == Some(ObservedState::Idle))
+}
+
 /// O que a sessão mostra, dado o palpite da tela e se há subagente ativo.
 pub fn held(screen: Option<ObservedAgent>, subagents_active: bool) -> Option<ObservedAgent> {
     match screen {
@@ -48,28 +57,33 @@ impl ObservedHold {
         }
     }
 
-    /// Palpite novo da tela. `apply` recebe o que a sessão deve mostrar e roda
+    /// Palpite novo da tela. `apply` recebe o que a sessão deve mostrar (e se
+    /// foi segurado por subagente) e roda
     /// sob o lock daqui: palpite e reavaliação não se cruzam (um `refresh` com o
     /// palpite velho não sobrescreve o novo).
     pub fn screen(
         &self,
         id: SessionId,
         screen: Option<ObservedAgent>,
-        apply: impl FnOnce(Option<ObservedAgent>),
+        apply: impl FnOnce(Option<ObservedAgent>, bool),
     ) {
         let subagents_active = self.subagents.has_active(id);
         let mut map = self.screen.lock().expect("observed hold lock");
         map.insert(id, screen.clone());
-        apply(held(screen, subagents_active));
+        let was_held = is_held(&screen, subagents_active);
+        apply(held(screen, subagents_active), was_held);
     }
 
     /// Reavalia com o último palpite — quando os subagentes começam ou acabam
     /// sem a tela mudar. Sem palpite ainda, não faz nada.
-    pub fn refresh(&self, id: SessionId, apply: impl FnOnce(Option<ObservedAgent>)) {
+    pub fn refresh(&self, id: SessionId, apply: impl FnOnce(Option<ObservedAgent>, bool)) {
         let subagents_active = self.subagents.has_active(id);
         let map = self.screen.lock().expect("observed hold lock");
         if let Some(screen) = map.get(&id) {
-            apply(held(screen.clone(), subagents_active));
+            apply(
+                held(screen.clone(), subagents_active),
+                is_held(screen, subagents_active),
+            );
         }
     }
 
@@ -85,7 +99,7 @@ impl ObservedHold {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::subagents::SubagentTracker;
+    use crate::agent::subagents::{RunEnd, SubagentTracker};
     use crate::session::ObservedWait;
 
     fn claude(state: Option<ObservedState>) -> Option<ObservedAgent> {
@@ -106,6 +120,15 @@ mod tests {
             held(claude(Some(ObservedState::Idle)), false),
             claude(Some(ObservedState::Idle))
         );
+    }
+
+    #[test]
+    fn held_only_when_the_idle_screen_was_turned_into_working() {
+        assert!(is_held(&claude(Some(ObservedState::Idle)), true));
+        assert!(!is_held(&claude(Some(ObservedState::Idle)), false));
+        assert!(!is_held(&claude(Some(ObservedState::Running)), true));
+        assert!(!is_held(&claude(Some(ObservedState::AwaitingInput)), true));
+        assert!(!is_held(&None, true));
     }
 
     #[test]
@@ -136,21 +159,23 @@ mod tests {
         tracker.on_subagent_started(&handle, id, agent.into(), "explorer".into(), None, None);
 
         let mut shown = Vec::new();
-        hold.refresh(id, |o| shown.push(o));
+        hold.refresh(id, |o, h| shown.push((o, h)));
         assert!(shown.is_empty(), "sem palpite, nada a mostrar");
 
-        hold.screen(id, claude(Some(ObservedState::Idle)), |o| shown.push(o));
-        tracker.on_subagent_completed(&handle, id, agent, None, false);
-        hold.refresh(id, |o| shown.push(o));
+        hold.screen(id, claude(Some(ObservedState::Idle)), |o, h| {
+            shown.push((o, h))
+        });
+        tracker.on_subagent_completed(&handle, id, agent, None, RunEnd::Completed);
+        hold.refresh(id, |o, h| shown.push((o, h)));
         assert_eq!(
             shown,
             vec![
-                claude(Some(ObservedState::Running)),
-                claude(Some(ObservedState::Idle))
+                (claude(Some(ObservedState::Running)), true),
+                (claude(Some(ObservedState::Idle)), false)
             ]
         );
 
         hold.retain(&HashSet::new());
-        hold.refresh(id, |_| panic!("sessão esquecida"));
+        hold.refresh(id, |_, _| panic!("sessão esquecida"));
     }
 }

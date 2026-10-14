@@ -319,8 +319,9 @@ fn install_screen_observers(
                 .map(str::to_string)
         }),
         observed: Arc::new(move |id, observed| {
-            observed_hold.screen(id, observed, |shown| {
-                observed_sessions.set_observed(&observed_app, id, shown)
+            observed_hold.screen(id, observed, |shown, held| {
+                observed_sessions.set_observed(&observed_app, id, shown);
+                observed_sessions.set_subagents_working(&observed_app, id, held);
             })
         }),
         // O palpite sai pelo mesmo `notify_native` do agente com hook — mesma
@@ -432,8 +433,9 @@ fn poll_agent_probers(app: &AppHandle) {
     // O fim (ou o começo) de um subagente não mexe na tela: reavalia aqui o
     // palpite segurado, senão o "trabalhando" ficaria preso até a tela mudar.
     for session_id in &live {
-        state.observed_hold.refresh(*session_id, |shown| {
-            state.sessions.set_observed(app, *session_id, shown)
+        state.observed_hold.refresh(*session_id, |shown, held| {
+            state.sessions.set_observed(app, *session_id, shown);
+            state.sessions.set_subagents_working(app, *session_id, held);
         });
     }
     state.observed_hold.retain(&live);
@@ -9547,6 +9549,7 @@ mod tests {
             observed: None,
             agent_model: None,
             status_note: None,
+            subagents_working: false,
             opened_by_gate: false,
             did_work: false,
             agent_usage: None,

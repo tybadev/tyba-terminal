@@ -10,7 +10,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Runtime};
 
 use crate::agent::subagents::{
-    is_plausible_subagent_id, sidecar_dir, Coordination, SharedSubagents,
+    is_plausible_subagent_id, sidecar_dir, Coordination, RunEnd, SharedSubagents,
 };
 use crate::session::SessionId;
 use crate::status::subagent_completion::{CompletionOutcome, ParentCursor};
@@ -830,11 +830,12 @@ impl ParentEnds {
             let Some(outcome) = self.unmatched.remove(&agent_id) else {
                 continue;
             };
-            let (summary, interrupted) = match outcome {
-                CompletionOutcome::Completed { summary } => (summary, false),
-                CompletionOutcome::Interrupted => (None, true),
+            let (summary, end) = match outcome {
+                CompletionOutcome::Completed { summary } => (summary, RunEnd::Completed),
+                CompletionOutcome::Interrupted => (None, RunEnd::Interrupted),
+                CompletionOutcome::Blocked { summary } => (summary, RunEnd::Blocked),
             };
-            tracker.on_subagent_completed(app, session, &agent_id, summary, interrupted);
+            tracker.on_subagent_completed(app, session, &agent_id, summary, end);
         }
     }
 }
@@ -1969,6 +1970,7 @@ mod tests {
         const A: &str = "a1111111111111111";
         const B: &str = "a2222222222222222";
         const C: &str = "a4444444444444444";
+        const D: &str = "a5555555555555555";
 
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
@@ -1985,6 +1987,7 @@ mod tests {
             (A, "toolu_a", Some("um")),
             (B, "toolu_b", None),
             (C, "toolu_c", None),
+            (D, "toolu_d", None),
         ] {
             write(
                 &sidecar.join(format!("agent-{id}.jsonl")),
@@ -2012,6 +2015,8 @@ mod tests {
             pai::enqueue(&pai::notification("bshell0001", "completed", "")),
             pai::enqueue(&pai::notification("a5555555555555555", "completed", "")),
             pai::delivered_notification(&pai::notification(B, "killed", "")),
+            // `blocked` é fim: "parado", nunca segura a sessão em "trabalhando".
+            pai::enqueue(&pai::notification(D, "blocked", "esperando aprovação")),
         ];
         write(&parent, &(lines.join("\n") + "\n"));
 
@@ -2024,18 +2029,22 @@ mod tests {
                 .find(|run| run.agent_id.as_deref() == Some(id))
         };
         assert!(wait_until(|| {
-            [A, B]
+            [A, B, D]
                 .iter()
                 .all(|id| status_of(id).is_some_and(|run| run.status == SubagentStatus::Done))
         }));
 
         let snapshot = tracker.snapshot(session);
-        assert_eq!(snapshot.subagents.len(), 3, "fila não vira subagente");
+        assert_eq!(snapshot.subagents.len(), 4, "fila não vira subagente");
         let a = status_of(A).unwrap();
         assert_eq!(a.summary.as_deref(), Some("um"));
         assert!(!a.interrupted);
         assert!(status_of(B).unwrap().interrupted);
         assert_eq!(status_of(C).unwrap().status, SubagentStatus::Running);
+        let d = status_of(D).unwrap();
+        assert!(d.blocked && !d.interrupted);
+        assert_eq!(d.summary.as_deref(), Some("esperando aprovação"));
+        assert!(!status_of(A).unwrap().blocked);
         assert!(tracker.has_active(session));
 
         // O fim de C chega depois, numa linha nova do pai.
@@ -2050,7 +2059,7 @@ mod tests {
             || status_of(C).is_some_and(|run| run.status == SubagentStatus::Done)
         ));
         assert!(!tracker.has_active(session));
-        assert_eq!(tracker.snapshot(session).subagents.len(), 3);
+        assert_eq!(tracker.snapshot(session).subagents.len(), 4);
 
         observer.retain_live(&handle, &tracker, &HashSet::new());
     }

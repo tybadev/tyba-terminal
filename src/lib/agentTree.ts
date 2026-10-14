@@ -8,8 +8,15 @@ import type { ApprovalRequest, SessionId, SubagentRun } from "./ipc";
  * - `awaiting`: tem aprovação pendente (âmbar fixo)
  * - `done`: concluído (apagado)
  * - `failed`: interrompido sem resposta final (vermelho)
+ * - `blocked`: parado esperando algo, não segue sozinho (âmbar fixo, contorno)
  */
-export type AgentLight = "running" | "starting" | "awaiting" | "done" | "failed";
+export type AgentLight =
+  | "running"
+  | "starting"
+  | "awaiting"
+  | "done"
+  | "failed"
+  | "blocked";
 
 export interface AgentTreeRow {
   key: string;
@@ -34,7 +41,8 @@ const lightOf = (run: SubagentRun, pending: number): AgentLight => {
   if (pending > 0) return "awaiting";
   if (run.status === "running") return "running";
   if (run.status === "starting") return "starting";
-  return run.interrupted ? "failed" : "done";
+  if (run.interrupted) return "failed";
+  return run.blocked ? "blocked" : "done";
 };
 
 /**
@@ -125,6 +133,7 @@ export function groupByRound(rows: AgentTreeRow[]): AgentRound[] {
       awaiting: 0,
       done: 0,
       failed: 0,
+      blocked: 0,
     };
     for (const row of list) counts[row.light] += 1;
     return {
@@ -163,6 +172,7 @@ export const LIGHT_CLASS: Record<AgentLight, string> = {
   awaiting: "bg-tyba-amber-fill",
   done: "bg-tyba-text-faint",
   failed: "bg-tyba-red-fill",
+  blocked: "bg-transparent ring-1 ring-inset ring-tyba-amber",
 };
 
 export function formatElapsed(ms: number): string {

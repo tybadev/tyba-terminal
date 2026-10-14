@@ -99,6 +99,9 @@ export interface Session {
   /** Nota curta do que o agente faz além do status (ex.: "compactando
    * contexto"). Só em memória no core. */
   status_note?: string | null;
+  /** A sessão está rodando só porque há subagente trabalhando (o turno do
+   * orquestrador acabou). Decidido pelo core; só em memória. */
+  subagents_working?: boolean;
   /** O que o `statusLine` do Claude reportou. Só memória no core. */
   agent_usage?: AgentUsage | null;
   /** Shell restaurado com uma conversa do Claude que ainda dá para retomar.
@@ -2042,6 +2045,8 @@ export interface SubagentRun {
   ended_at_ms: number | null;
   summary: string | null;
   interrupted: boolean;
+  /** Acabou parado (`blocked`): não concluiu nem foi interrompido. */
+  blocked?: boolean;
   /** Rodada do nó (1, 2, …), contada pelo core. */
   round: number;
   /** Ferramenta em curso (`Bash`, `Read`…), pelo core; ausente se parado. */

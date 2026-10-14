@@ -56,6 +56,10 @@ pub struct SubagentRun {
     pub ended_at_ms: Option<u64>,
     pub summary: Option<String>,
     pub interrupted: bool,
+    /// Acabou parado (`<status>blocked</status>` na fila do pai): não
+    /// concluiu nem foi interrompido — está esperando algo e não vai seguir
+    /// sozinho. Mostrado como "parado".
+    pub blocked: bool,
     /// Rodada a que o nó pertence (1, 2, …). O painel agrupa por ela: com
     /// descrições iguais entre rodadas, a lista plana parecia duplicada.
     pub round: u32,
@@ -88,6 +92,7 @@ pub struct SubagentRunDto {
     pub ended_at_ms: Option<u64>,
     pub summary: Option<String>,
     pub interrupted: bool,
+    pub blocked: bool,
     pub round: u32,
     /// Ferramenta em curso (`Bash`, `Read`…); `None` sem atividade ou já
     /// terminado.
@@ -120,6 +125,7 @@ impl SubagentRunDto {
             ended_at_ms: run.ended_at_ms,
             summary: run.summary.as_deref().map(|s| redact(s).into_owned()),
             interrupted: run.interrupted,
+            blocked: run.blocked,
             round: run.round,
             activity_tool: live_activity(run).map(|a| a.tool.clone()),
             activity_detail: live_activity(run)
@@ -175,6 +181,16 @@ pub(crate) fn tool_activity(tool: &str, input: Option<&Value>, fallback: &str) -
         tool: tool.to_string(),
         detail,
     }
+}
+
+/// Como um subagente acabou, pelo sinal de disco.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunEnd {
+    Completed,
+    /// `failed`/`killed`, ou morto sem resposta final.
+    Interrupted,
+    /// `blocked`: parou esperando algo; não segue sozinho.
+    Blocked,
 }
 
 pub struct Coordination {
@@ -281,6 +297,7 @@ impl SessionSubagents {
             ended_at_ms: None,
             summary: None,
             interrupted: false,
+            blocked: false,
             round: self.round.max(1),
             transcript_path: None,
             parent_transcript_path: None,
@@ -340,6 +357,7 @@ impl SessionSubagents {
                     ended_at_ms: None,
                     summary: None,
                     interrupted: false,
+                    blocked: false,
                     round: self.round.max(1),
                     transcript_path,
                     parent_transcript_path: parent_transcript_path.map(Path::to_path_buf),
@@ -381,6 +399,7 @@ impl SessionSubagents {
             run.ended_at_ms = None;
             run.summary = None;
             run.interrupted = false;
+            run.blocked = false;
             run.activity = None;
             // O sidecar ainda termina no fim da volta anterior: sem isto, o
             // watcher o leria de novo e fecharia o subagente recém-acordado.
@@ -469,6 +488,7 @@ impl SessionSubagents {
             ended_at_ms: Some(now),
             summary,
             interrupted: false,
+            blocked: false,
             round: self.round.max(1),
             transcript_path: None,
             parent_transcript_path: None,
@@ -525,6 +545,23 @@ impl SessionSubagents {
         run.status = SubagentStatus::Done;
         run.ended_at_ms = Some(now);
         run.summary = summary.and_then(|s| clean_summary(&s, SUMMARY_MAX_CHARS));
+        true
+    }
+
+    fn finish_running_blocked(
+        &mut self,
+        agent_id: &str,
+        summary: Option<String>,
+        now: u64,
+    ) -> bool {
+        if !self.finish_running_by_file(agent_id, summary, now) {
+            return false;
+        }
+        if let Some(run) = self.runs.iter_mut().find(|run| {
+            run.agent_id.as_deref() == Some(agent_id) && run.status == SubagentStatus::Done
+        }) {
+            run.blocked = true;
+        }
         true
     }
 
@@ -685,7 +722,7 @@ impl SubagentTracker {
         session: SessionId,
         agent_id: &str,
         summary: Option<String>,
-        interrupted: bool,
+        end: RunEnd,
     ) {
         let agent_id = strip_agent_prefix(agent_id);
         if !complete_running(
@@ -695,7 +732,7 @@ impl SubagentTracker {
             session,
             &agent_id,
             summary,
-            interrupted,
+            end,
         ) {
             return;
         }
@@ -707,6 +744,11 @@ impl SubagentTracker {
             .map(SessionSubagents::running_targets)
             .unwrap_or_default();
         self.sync_watchers(app, session, targets);
+    }
+
+    /// O orquestrador encerrou o turno (e não voltou a trabalhar desde então).
+    pub fn orchestrator_idle(&self, session: SessionId) -> bool {
+        session_orchestrator_idle(&self.sessions, session)
     }
 
     pub fn has_active(&self, session: SessionId) -> bool {
@@ -1004,6 +1046,22 @@ pub(crate) fn session_orchestrator_idle(sessions: &SharedSessions, session: Sess
         .unwrap_or(false)
 }
 
+pub(crate) fn finish_by_file_blocked(
+    sessions: &SharedSessions,
+    session: SessionId,
+    agent_id: &str,
+    summary: Option<String>,
+    now: u64,
+) -> Option<(SubagentSnapshot, Option<Option<String>>)> {
+    let mut map = sessions.lock().ok()?;
+    let entry = map.get_mut(&session)?;
+    if !entry.finish_running_blocked(agent_id, summary, now) {
+        return None;
+    }
+    let idle = entry.idle_transition();
+    Some((entry.to_snapshot(), idle))
+}
+
 pub(crate) fn finish_by_file_interrupted(
     sessions: &SharedSessions,
     session: SessionId,
@@ -1029,12 +1087,12 @@ pub(crate) fn complete_running<R: Runtime>(
     session: SessionId,
     agent_id: &str,
     summary: Option<String>,
-    interrupted: bool,
+    end: RunEnd,
 ) -> bool {
-    let outcome = if interrupted {
-        finish_by_file_interrupted(sessions, session, agent_id, now_ms())
-    } else {
-        finish_by_file(sessions, session, agent_id, summary, now_ms())
+    let outcome = match end {
+        RunEnd::Interrupted => finish_by_file_interrupted(sessions, session, agent_id, now_ms()),
+        RunEnd::Completed => finish_by_file(sessions, session, agent_id, summary, now_ms()),
+        RunEnd::Blocked => finish_by_file_blocked(sessions, session, agent_id, summary, now_ms()),
     };
     let Some((snapshot, idle)) = outcome else {
         return false;
@@ -2432,7 +2490,7 @@ mod tests {
             session,
             "a1b2c3d4e5f60718",
             Some("do disco".into()),
-            false,
+            RunEnd::Completed,
         );
         assert_eq!(
             tracker.on_subagent_stopped(
@@ -2454,9 +2512,21 @@ mod tests {
                 Some("fim".into())
             )
             .is_some());
-        tracker.on_subagent_completed(&handle, session, "b1b2c3d4e5f60718", None, true);
+        tracker.on_subagent_completed(
+            &handle,
+            session,
+            "b1b2c3d4e5f60718",
+            None,
+            RunEnd::Interrupted,
+        );
         // Fim de quem o tracker nunca viu não cria nada.
-        tracker.on_subagent_completed(&handle, session, "c1b2c3d4e5f60718", None, false);
+        tracker.on_subagent_completed(
+            &handle,
+            session,
+            "c1b2c3d4e5f60718",
+            None,
+            RunEnd::Completed,
+        );
 
         let snapshot = tracker.snapshot(session);
         assert_eq!(snapshot.subagents.len(), 2);
@@ -2503,7 +2573,7 @@ mod tests {
             session,
             "a1b2c3d4e5f60718",
             Some("ok".into()),
-            false,
+            RunEnd::Completed,
         );
         assert_eq!(*flips.lock().unwrap(), vec![Some("turno".to_string())]);
     }

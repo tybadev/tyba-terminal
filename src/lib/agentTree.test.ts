@@ -184,3 +184,27 @@ describe("groupByRound", () => {
     expect(roundAge(0, 2 * 3_600_000)).toEqual({ unit: "h", count: 2 });
   });
 });
+
+describe("subagente parado (blocked)", () => {
+  test("acabou parado tem luz própria, distinta de concluído e interrompido", () => {
+    const tree = buildAgentTree(
+      SESSION,
+      [
+        run("a1", 1, "done", { blocked: true, summary: "esperando aprovação" }),
+        run("a2", 2, "done", { interrupted: true }),
+        run("a3", 3, "done"),
+      ],
+      [],
+      100_000,
+    );
+    const light = (id: string) => tree.rows.find((r) => r.run.agent_id === id)?.light;
+    expect(light("a1")).toBe("blocked");
+    expect(light("a2")).toBe("failed");
+    expect(light("a3")).toBe("done");
+    expect(tree.active).toBe(0);
+    const [round] = groupByRound(tree.rows);
+    expect(round.counts.blocked).toBe(1);
+    // Parado não segura a rodada recolhida: ninguém ali está vivo.
+    expect(collapsedRows(round)).toHaveLength(0);
+  });
+});
