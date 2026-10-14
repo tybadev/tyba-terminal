@@ -134,6 +134,9 @@ struct ScreenState {
     /// a linha do TYBA consultar: na continuação o texto é o RESTO de um
     /// comando, e julgá-lo sozinho como "pela metade" prenderia o usuário.
     continuation: bool,
+    /// Cópia de [`capture::CaptureMachine::ready_at_prompt`] depois de cada
+    /// chunk: a máquina mora na thread de leitura, e quem pergunta é o pool.
+    prompt_ready: bool,
 }
 
 impl ScreenState {
@@ -146,6 +149,7 @@ impl ScreenState {
             hook_expected: false,
             line_editor: Arc::new(LineEditorGate::default()),
             continuation: false,
+            prompt_ready: false,
         }
     }
 
@@ -595,6 +599,7 @@ fn ingest_chunk(
     let alt_screen = state.parser.screen().alternate_screen();
     let actions = machine.on_chunk(chunk, now_ms, alt_screen);
     apply_screen(state, chunk, &actions);
+    state.prompt_ready = machine.ready_at_prompt();
     actions
 }
 
@@ -1567,6 +1572,36 @@ impl PtyPool {
 
     #[cfg(not(unix))]
     pub fn line_echo(&self, _id: PtyId) -> Option<bool> {
+        None
+    }
+
+    /// O shell da sessão está no prompt: a integração (OSC 133) diz que o
+    /// prompt primário foi pintado e nada foi submetido desde então, e o grupo
+    /// em primeiro plano do terminal é o do próprio líder (nenhum programa
+    /// rodando por cima dele). É a condição para o core digitar alguma coisa
+    /// no shell em nome do dono.
+    ///
+    /// As duas réguas cobrem buracos diferentes: o OSC 133 pega o `exec`
+    /// (mesmo pid e mesmo grupo, mas o prompt nunca volta) e o `read` do rc
+    /// (prompt ainda não pintado); o grupo pega um job que tomou o terminal sem
+    /// o shell ter marcado nada. Sem integração, `false`: falha fechado.
+    ///
+    /// `None` quando não dá para saber (Windows, líder morto ou reusado) —
+    /// quem pergunta trata como "não".
+    #[cfg(unix)]
+    pub fn shell_at_prompt(&self, id: PtyId) -> Option<bool> {
+        let leader = self.leader_pid(id)?;
+        let foreground = self.ptys.lock().get(&id)?.master.process_group_leader()?;
+        let (ready, continuing) = {
+            let screen = self.screen_of(id)?;
+            let state = screen.lock();
+            (state.prompt_ready, state.continuation)
+        };
+        Some(ready && u32::try_from(foreground).ok() == Some(leader) && !continuing)
+    }
+
+    #[cfg(not(unix))]
+    pub fn shell_at_prompt(&self, _id: PtyId) -> Option<bool> {
         None
     }
 
@@ -3243,6 +3278,69 @@ mod tests {
         pool.ptys.lock().insert(uuid::Uuid::new_v4(), handle);
 
         (leader_pid, child_pid)
+    }
+
+    /// Uma sessão no pool cujo líder roda `script` num `sh`. Mesma montagem
+    /// do `pooled_session`, sem a leitura dos pids.
+    fn pooled_script(pool: &super::PtyPool, script: &str) -> super::PtyId {
+        use portable_pty::native_pty_system;
+        use std::sync::Arc;
+
+        let pair = native_pty_system()
+            .openpty(super::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        let mut cmd = super::CommandBuilder::new("sh");
+        cmd.arg("-c");
+        cmd.arg(script);
+        let child = pair.slave.spawn_command(cmd).expect("spawn in pty");
+        drop(pair.slave);
+        let writer = pair.master.take_writer().expect("writer");
+        let id = uuid::Uuid::new_v4();
+        let handle = super::PtyHandle {
+            master: pair.master,
+            writer: Arc::new(parking_lot::Mutex::new(writer)),
+            leader_pid: child.process_id(),
+            child,
+            leader_start: None,
+            screen: Arc::new(parking_lot::Mutex::new(super::ScreenState::new(24, 80))),
+            size: (80, 24),
+            nudge: std::sync::Weak::new(),
+            transport: super::Transport::Raw,
+            control: None,
+        };
+        pool.ptys.lock().insert(id, handle);
+        id
+    }
+
+    #[test]
+    fn shell_at_prompt_sabe_quando_um_programa_tomou_o_terminal() {
+        let pool = super::PtyPool::new();
+        // Shell sozinho no terminal: é o grupo em primeiro plano.
+        let idle = pooled_script(&pool, "sleep 60");
+        // Sem OSC 133 nenhum, nem o shell parado serve: falha fechado.
+        assert_eq!(pool.shell_at_prompt(idle), Some(false));
+        // A integração disse "prompt pintado" (o que a máquina de captura
+        // copia para a tela depois de cada chunk).
+        pool.screen_of(idle).unwrap().lock().prompt_ready = true;
+        // Com controle de job, o `sleep` ganha grupo próprio e o terminal —
+        // é o `vim`/`less` aberto em cima do prompt.
+        let busy = pooled_script(&pool, "set -m; sleep 60; sleep 60");
+        // Mesmo com o prompt dado como pintado, o grupo em primeiro plano não é
+        // o do shell.
+        pool.screen_of(busy).unwrap().lock().prompt_ready = true;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while pool.shell_at_prompt(busy) != Some(false) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(pool.shell_at_prompt(idle), Some(true));
+        assert_eq!(pool.shell_at_prompt(busy), Some(false));
+        assert_eq!(pool.shell_at_prompt(super::PtyId::new_v4()), None);
+        pool.kill_all();
     }
 
     #[test]

@@ -232,6 +232,22 @@ pub struct Session {
     /// front com a sessão e morre com o processo, como `observed`.
     #[serde(default, skip_deserializing)]
     pub agent_usage: Option<crate::agent::usage::AgentUsage>,
+    /// O restart trouxe de volta um shell em que rodava uma conversa do Claude
+    /// que continua no disco, e o pane oferece retomá-la. **In-memory**: nasce
+    /// só no `resume_startup` e some quando o dono aceita, dispensa ou roda um
+    /// agente nesse shell. Retomar nunca é automático: o core só digita o
+    /// `claude --resume` no clique ([`SessionManager::shell_resume_target`]).
+    #[serde(default, skip_deserializing)]
+    pub shell_resume_offer: bool,
+    /// A pasta em que a conversa `agent_conversation_id` rodava — é ela que dá
+    /// o slug onde o `claude --resume` procura o transcript. Anda sempre em par
+    /// com o id (gravar um id novo troca a pasta junto) e vai ao SQLite com
+    /// ele. Fica no core: o front não precisa dela.
+    ///
+    /// Dado não confiável (vem do payload do hook ou do cwd do processo): só
+    /// vira `cd` depois de [`crate::agent::claude_resume_dir`].
+    #[serde(skip)]
+    pub agent_conversation_cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -900,13 +916,17 @@ impl SessionManager {
             cwd,
             connection,
             connection_failure,
-            agent_conversation_id: previous.and_then(|s| s.agent_conversation_id),
+            agent_conversation_id: previous
+                .as_ref()
+                .and_then(|s| s.agent_conversation_id.clone()),
             observed: None,
             agent_model: None,
             status_note: None,
             opened_by_gate,
             did_work,
             agent_usage: None,
+            shell_resume_offer: false,
+            agent_conversation_cwd: previous.and_then(|s| s.agent_conversation_cwd),
         };
         self.sessions.write().insert(id, session.clone());
         let _ = self.store.upsert_session(&session);
@@ -1054,7 +1074,17 @@ impl SessionManager {
     /// Id implausível é descartado em silêncio — ele viraria argumento de
     /// `claude --resume` / `codex resume`, e o que não passa por
     /// [`crate::agent::conversation::is_plausible`] não chega ao argv.
-    pub fn set_agent_conversation_id(&self, app: &AppHandle, id: SessionId, conversation: &str) {
+    ///
+    /// `cwd` é a pasta em que a conversa roda, e anda em par com o id: um id
+    /// novo troca a pasta junto (mesmo para `None`); o mesmo id só a atualiza
+    /// quando vem uma (`None` ali é "não sei", não "esqueça").
+    pub fn set_agent_conversation_id(
+        &self,
+        app: &AppHandle,
+        id: SessionId,
+        conversation: &str,
+        cwd: Option<&Path>,
+    ) {
         if !crate::agent::conversation::is_plausible(conversation) {
             return;
         }
@@ -1062,12 +1092,66 @@ impl SessionManager {
         let Some(s) = sessions.get_mut(&id) else {
             return;
         };
-        if s.agent_conversation_id.as_deref() == Some(conversation) {
+        if !pair_conversation(s, conversation, cwd) {
             return;
         }
-        s.agent_conversation_id = Some(conversation.to_string());
         let _ = self.store.upsert_session(s);
         emit_status(app, s);
+    }
+
+    /// Liga o convite de retomar a conversa do Claude num shell restaurado.
+    /// Só para shell com id de conversa plausível — o resto não tem o que
+    /// retomar por este caminho.
+    pub fn offer_shell_resume(&self, app: &AppHandle, id: SessionId) {
+        let mut sessions = self.sessions.write();
+        let Some(s) = sessions.get_mut(&id) else {
+            return;
+        };
+        let plausible = s
+            .agent_conversation_id
+            .as_deref()
+            .is_some_and(crate::agent::conversation::is_plausible);
+        if !matches!(s.kind, SessionKind::Shell) || !plausible || s.shell_resume_offer {
+            return;
+        }
+        s.shell_resume_offer = true;
+        emit_status(app, s);
+    }
+
+    /// Desliga o convite (dono dispensou, aceitou, ou um agente subiu no
+    /// shell). Idempotente: sem convite, não emite nada.
+    pub fn clear_shell_resume_offer(&self, app: &AppHandle, id: SessionId) {
+        let mut sessions = self.sessions.write();
+        let Some(s) = sessions.get_mut(&id) else {
+            return;
+        };
+        if !s.shell_resume_offer {
+            return;
+        }
+        s.shell_resume_offer = false;
+        emit_status(app, s);
+    }
+
+    /// Desliga o convite de todo shell que oferecia retomar `conversation` —
+    /// ela acabou de ser retomada em um deles.
+    pub fn clear_shell_resume_offers_for(&self, app: &AppHandle, conversation: &str) {
+        let mut sessions = self.sessions.write();
+        for s in sessions.values_mut() {
+            if s.shell_resume_offer && s.agent_conversation_id.as_deref() == Some(conversation) {
+                s.shell_resume_offer = false;
+                emit_status(app, s);
+            }
+        }
+    }
+
+    /// A conversa que o clique em "Retomar" deve retomar (com a pasta gravada
+    /// junto, ainda não validada), ou o motivo de não dar. Só shell vivo, com o
+    /// convite ainda de pé e id plausível — o id veio do disco e vira texto
+    /// digitado no shell.
+    pub fn shell_resume_target(&self, id: SessionId) -> Result<(String, Option<PathBuf>), String> {
+        let sessions = self.sessions.read();
+        let s = sessions.get(&id).ok_or("a sessão não existe mais")?;
+        shell_resume_target_of(s)
     }
 
     /// Guarda o modelo que o agente declarou no payload do hook. Chamado a cada
@@ -1365,6 +1449,44 @@ fn plausible_model(model: &str) -> Option<&str> {
         && model.chars().count() <= MODEL_MAX_CHARS
         && !model.chars().any(char::is_control))
     .then_some(model)
+}
+
+/// Grava o par (conversa, pasta) em `s`. Devolve se algo mudou — ver
+/// [`SessionManager::set_agent_conversation_id`].
+fn pair_conversation(s: &mut Session, conversation: &str, cwd: Option<&Path>) -> bool {
+    if s.agent_conversation_id.as_deref() != Some(conversation) {
+        s.agent_conversation_id = Some(conversation.to_string());
+        s.agent_conversation_cwd = cwd.map(Path::to_path_buf);
+        return true;
+    }
+    match cwd {
+        Some(dir) if s.agent_conversation_cwd.as_deref() != Some(dir) => {
+            s.agent_conversation_cwd = Some(dir.to_path_buf());
+            true
+        }
+        _ => false,
+    }
+}
+
+/// A regra de [`SessionManager::shell_resume_target`], separada para teste.
+fn shell_resume_target_of(s: &Session) -> Result<(String, Option<PathBuf>), String> {
+    if !matches!(s.kind, SessionKind::Shell) {
+        return Err("retomar conversa por aqui só vale para sessão de shell".into());
+    }
+    if !s.shell_resume_offer {
+        return Err("não há conversa para retomar neste terminal".into());
+    }
+    if matches!(
+        s.status,
+        SessionStatus::Exited { .. } | SessionStatus::Failed { .. }
+    ) {
+        return Err("o terminal já foi encerrado".into());
+    }
+    s.agent_conversation_id
+        .clone()
+        .filter(|c| crate::agent::conversation::is_plausible(c))
+        .map(|c| (c, s.agent_conversation_cwd.clone()))
+        .ok_or_else(|| "a sessão não tem conversa registrada".into())
 }
 
 fn emit_status(app: &AppHandle, session: &Session) {
@@ -2052,7 +2174,89 @@ mod tests {
             opened_by_gate: false,
             did_work: false,
             agent_usage: None,
+            shell_resume_offer: false,
+            agent_conversation_cwd: None,
         }
+    }
+
+    // --- item 3 do claude-monitor: retomar a conversa no shell restaurado ---
+
+    fn offered_shell(conversation: Option<&str>) -> Session {
+        let mut s = make(SessionKind::Shell, SessionStatus::Running);
+        s.agent_conversation_id = conversation.map(str::to_string);
+        s.shell_resume_offer = true;
+        s
+    }
+
+    #[test]
+    fn shell_resume_target_is_the_conversation_of_an_offered_live_shell() {
+        let mut s = offered_shell(Some("5f2a1c40-0000-4000-8000-00000000abcd"));
+        s.agent_conversation_cwd = Some(PathBuf::from("/home/u/repo"));
+        assert_eq!(
+            shell_resume_target_of(&s),
+            Ok((
+                "5f2a1c40-0000-4000-8000-00000000abcd".to_string(),
+                Some(PathBuf::from("/home/u/repo"))
+            ))
+        );
+    }
+
+    #[test]
+    fn a_new_conversation_takes_its_own_dir_and_never_inherits_the_old_one() {
+        let mut s = make(SessionKind::Shell, SessionStatus::Running);
+        assert!(pair_conversation(
+            &mut s,
+            "aaaaaaaa-1",
+            Some(Path::new("/home/u/a"))
+        ));
+        // Mesmo id sem pasta: "não sei", mantém a que tinha.
+        assert!(!pair_conversation(&mut s, "aaaaaaaa-1", None));
+        assert_eq!(
+            s.agent_conversation_cwd.as_deref(),
+            Some(Path::new("/home/u/a"))
+        );
+        // Id novo sem pasta: a da conversa anterior NÃO vem junto.
+        assert!(pair_conversation(&mut s, "bbbbbbbb-2", None));
+        assert_eq!(s.agent_conversation_cwd, None);
+        // Mesmo id, pasta chegando depois: grava.
+        assert!(pair_conversation(
+            &mut s,
+            "bbbbbbbb-2",
+            Some(Path::new("/home/u/b"))
+        ));
+        assert_eq!(
+            s.agent_conversation_cwd.as_deref(),
+            Some(Path::new("/home/u/b"))
+        );
+    }
+
+    #[test]
+    fn shell_resume_target_refuses_without_offer_dead_shell_or_agent_session() {
+        let mut s = offered_shell(Some("5f2a1c40-0000-4000-8000-00000000abcd"));
+        s.shell_resume_offer = false;
+        assert!(shell_resume_target_of(&s).is_err());
+
+        let mut s = offered_shell(Some("5f2a1c40-0000-4000-8000-00000000abcd"));
+        s.status = SessionStatus::Exited { code: 0 };
+        assert!(shell_resume_target_of(&s).is_err());
+
+        let mut s = offered_shell(Some("5f2a1c40-0000-4000-8000-00000000abcd"));
+        s.kind = SessionKind::Agent {
+            runner: AgentRunnerKind::ClaudeCode,
+        };
+        assert!(shell_resume_target_of(&s).is_err());
+    }
+
+    #[test]
+    fn shell_resume_target_never_hands_out_an_implausible_id() {
+        // Vira texto digitado no shell: nada com espaço, `;` ou `-` inicial.
+        for bad in ["--dangerously-skip-permissions", "abc; rm -rf ~", "", "x"] {
+            assert!(
+                shell_resume_target_of(&offered_shell(Some(bad))).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(shell_resume_target_of(&offered_shell(None)).is_err());
     }
 
     fn scratch_dir(tag: &str) -> PathBuf {

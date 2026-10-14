@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL,
     cwd TEXT,
     agent_conversation_id TEXT,
+    agent_conversation_cwd TEXT,
     ssh_logged_in INTEGER NOT NULL DEFAULT 0,
     ssh_integration TEXT
 );
@@ -533,6 +534,10 @@ pub enum StoreError {
 ///     `grep`, `find`, a árvore do `docker compose` e o nome longo de cada
 ///     flag (`--all` além de `-a`). Mesmo motivo do 7. Conferido em
 ///     2026-10-12: nenhuma branch local usava 11.
+/// 12 — `sessions.agent_conversation_cwd` entra: a pasta em que a conversa do
+///     agente rodava, em par com `agent_conversation_id`. É o que deixa o
+///     shell restaurado retomar a conversa mesmo depois de um `cd`. Conferido
+///     em 2026-10-14: nenhuma branch local nem remota usava 12.
 ///
 /// Degrau próprio para cada um, e nunca linha nova na [`BASELINE_COLUMNS`]: a
 /// base só roda em banco na versão 0, então quem já subiu de versão nunca mais
@@ -544,7 +549,7 @@ pub enum StoreError {
 /// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
 /// de cada um passa isolado, porque simula o banco na versão anterior, que é
 /// justamente o caso em que ambos rodam.
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -1032,6 +1037,28 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
+    let conversation_cwd_applied = if from < 12 {
+        match has_column(conn, "sessions", "agent_conversation_cwd") {
+            Ok(true) => true,
+            Ok(false) => match conn.execute(
+                "ALTER TABLE sessions ADD COLUMN agent_conversation_cwd TEXT",
+                [],
+            ) {
+                Ok(_) => true,
+                Err(e) => {
+                    skipped.push(format!("sessions.agent_conversation_cwd: {e}"));
+                    false
+                }
+            },
+            Err(e) => {
+                skipped.push(format!("sessions.agent_conversation_cwd: {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
     let reached = match (
         baseline_applied,
         scrollback_applied,
@@ -1043,18 +1070,20 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         ssh_integration_applied,
         approval_origin_applied,
         spec_reseed_applied,
+        conversation_cwd_applied,
     ) {
-        (true, true, true, true, true, true, true, true, true, true) => SCHEMA_VERSION,
-        (true, true, true, true, true, true, true, true, true, false) => 10,
-        (true, true, true, true, true, true, true, true, false, _) => 9,
-        (true, true, true, true, true, true, true, false, _, _) => 8,
-        (true, true, true, true, true, true, false, _, _, _) => 7,
-        (true, true, true, true, true, false, _, _, _, _) => 5,
-        (true, true, true, true, false, _, _, _, _, _) => 4,
-        (true, true, true, false, _, _, _, _, _, _) => 3,
-        (true, true, false, _, _, _, _, _, _, _) => 2,
-        (true, false, _, _, _, _, _, _, _, _) => 1,
-        (false, _, _, _, _, _, _, _, _, _) => from,
+        (true, true, true, true, true, true, true, true, true, true, true) => SCHEMA_VERSION,
+        (true, true, true, true, true, true, true, true, true, true, false) => 11,
+        (true, true, true, true, true, true, true, true, true, false, _) => 10,
+        (true, true, true, true, true, true, true, true, false, _, _) => 9,
+        (true, true, true, true, true, true, true, false, _, _, _) => 8,
+        (true, true, true, true, true, true, false, _, _, _, _) => 7,
+        (true, true, true, true, true, false, _, _, _, _, _) => 5,
+        (true, true, true, true, false, _, _, _, _, _, _) => 4,
+        (true, true, true, false, _, _, _, _, _, _, _) => 3,
+        (true, true, false, _, _, _, _, _, _, _, _) => 2,
+        (true, false, _, _, _, _, _, _, _, _, _) => 1,
+        (false, _, _, _, _, _, _, _, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -1154,18 +1183,27 @@ impl Store {
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned());
         let cwd = s.cwd.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let conversation_cwd = s
+            .agent_conversation_cwd
+            .as_ref()
+            .and_then(|p| p.to_str().map(str::to_string));
 
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO sessions (id, kind, title, repo_root, worktree, status, created_at, cwd,
-                                   agent_conversation_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                                   agent_conversation_id, agent_conversation_cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET
                 kind = ?2, title = ?3, repo_root = ?4, worktree = ?5, status = ?6, cwd = ?8,
                 -- Nunca apaga um id já gravado: o upsert corre a cada troca de
                 -- status, e a `Session` em memória pode ainda não ter lido o
                 -- transcript. Quem esquece a conversa é o descarte da sessão.
-                agent_conversation_id = COALESCE(?9, agent_conversation_id)",
+                agent_conversation_id = COALESCE(?9, agent_conversation_id),
+                -- A pasta anda em PAR com o id: só muda quando vem id, e então
+                -- vale a que veio junto (mesmo NULL). Senão um id novo herdaria
+                -- a pasta da conversa anterior.
+                agent_conversation_cwd = CASE WHEN ?9 IS NULL
+                    THEN agent_conversation_cwd ELSE ?10 END",
             params![
                 s.id.to_string(),
                 kind,
@@ -1176,6 +1214,7 @@ impl Store {
                 s.created_at.to_rfc3339(),
                 cwd,
                 s.agent_conversation_id,
+                conversation_cwd,
             ],
         )?;
         Ok(())
@@ -2941,7 +2980,7 @@ impl Store {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, kind, title, repo_root, worktree, status, created_at, cwd,
-                    agent_conversation_id
+                    agent_conversation_id, agent_conversation_cwd
              FROM sessions ORDER BY created_at",
         )?;
         let raw = stmt
@@ -2956,6 +2995,7 @@ impl Store {
                     created_at: row.get(6)?,
                     cwd: row.get(7)?,
                     agent_conversation_id: row.get(8)?,
+                    agent_conversation_cwd: row.get(9)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -3271,6 +3311,7 @@ struct RawSession {
     created_at: String,
     cwd: Option<String>,
     agent_conversation_id: Option<String>,
+    agent_conversation_cwd: Option<String>,
 }
 
 impl RawSession {
@@ -3283,6 +3324,14 @@ impl RawSession {
         };
         let created_at: DateTime<Utc> =
             DateTime::parse_from_rfc3339(&self.created_at)?.with_timezone(&Utc);
+        let agent_conversation_id = self
+            .agent_conversation_id
+            .filter(|id| crate::agent::conversation::is_plausible(id));
+        // Sem id, a pasta não tem de quem ser.
+        let conversation_cwd = agent_conversation_id
+            .as_ref()
+            .and(self.agent_conversation_cwd)
+            .map(PathBuf::from);
 
         Ok(Session {
             id: SessionId::parse_str(&self.id)?,
@@ -3299,15 +3348,15 @@ impl RawSession {
             cwd: self.cwd.map(PathBuf::from),
             connection: crate::session::ConnectionState::default(),
             connection_failure: None,
-            agent_conversation_id: self
-                .agent_conversation_id
-                .filter(|id| crate::agent::conversation::is_plausible(id)),
+            agent_conversation_id,
             // In-memory como `attention`: o restore não sabe se a sessão
             // morta veio do gate nem se chegou a trabalhar — afirmar
             // qualquer um dos dois aqui seria palpite, não fato.
             opened_by_gate: false,
             did_work: false,
             agent_usage: None,
+            shell_resume_offer: false,
+            agent_conversation_cwd: conversation_cwd,
         })
     }
 }
@@ -3414,6 +3463,8 @@ mod tests {
             opened_by_gate: false,
             did_work: false,
             agent_usage: None,
+            shell_resume_offer: false,
+            agent_conversation_cwd: None,
         }
     }
 
@@ -3442,6 +3493,32 @@ mod tests {
             store.load_sessions().unwrap()[0].agent_conversation_id,
             s.agent_conversation_id
         );
+    }
+
+    /// A pasta da conversa anda em par com o id: sobrevive ao reload, um upsert
+    /// sem id não a apaga, e um id novo sem pasta não herda a da anterior.
+    #[test]
+    fn conversation_cwd_travels_with_its_conversation_id() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s = sample("shell");
+        s.agent_conversation_id = Some("aaaaaaaa-0000-4000-8000-000000000001".into());
+        s.agent_conversation_cwd = Some(PathBuf::from("/home/u/repo"));
+        store.upsert_session(&s).unwrap();
+        let cwd = |store: &Store| {
+            store.load_sessions().unwrap()[0]
+                .agent_conversation_cwd
+                .clone()
+        };
+        assert_eq!(cwd(&store), Some(PathBuf::from("/home/u/repo")));
+
+        s.agent_conversation_id = None;
+        s.agent_conversation_cwd = None;
+        store.upsert_session(&s).unwrap();
+        assert_eq!(cwd(&store), Some(PathBuf::from("/home/u/repo")));
+
+        s.agent_conversation_id = Some("bbbbbbbb-0000-4000-8000-000000000002".into());
+        store.upsert_session(&s).unwrap();
+        assert_eq!(cwd(&store), None);
     }
 
     /// O upsert corre a cada troca de status. Um `Session` sem o id em memória
@@ -3849,6 +3926,7 @@ mod tests {
         (8, "sessions", "ssh_logged_in"),
         (9, "command_history", "host_id"),
         (10, "approval_history", "origin"),
+        (12, "sessions", "agent_conversation_cwd"),
     ];
 
     /// Colunas que nascem num degrau que já tem linha em [`STEP_COLUMNS`]. Lista

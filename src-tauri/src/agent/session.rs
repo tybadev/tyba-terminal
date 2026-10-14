@@ -457,6 +457,11 @@ fn deny_subagent_spawn(ctx: &HandlerCtx, spawn: &Option<(Option<String>, Option<
 /// transcript/rollout dela, e o caminho desse arquivo chega aqui pelo payload do
 /// hook. Sem isto, uma sessão de agente que morre com o app não tem como ser
 /// retomada — o histórico existe no disco, mas ninguém sabe qual conversa é.
+/// Teto do `cwd` do payload gravado com a conversa: o `PATH_MAX` comum. Acima
+/// disso não é pasta de verdade, e o payload não escolhe o tamanho do que vai
+/// para o SQLite.
+const MAX_CONVERSATION_CWD: usize = 4096;
+
 fn capture_conversation_id(ctx: &HandlerCtx, event: &HookEvent) {
     let path = event
         .raw
@@ -479,8 +484,18 @@ fn capture_conversation_id(ctx: &HandlerCtx, event: &HookEvent) {
         *ctx.seen_transcript.lock().expect("seen transcript lock") = Some(path.to_string());
     }
     if let Some(id) = found {
+        // A pasta da conversa, para o restart poder retomá-la de onde ela
+        // rodava. Dado do payload: só vira `cd` depois de validado
+        // (`agent::claude_resume_dir`).
+        let cwd = event
+            .raw
+            .get("cwd")
+            .and_then(|c| c.as_str())
+            .filter(|c| c.len() <= MAX_CONVERSATION_CWD)
+            .map(Path::new)
+            .filter(|c| c.is_absolute());
         ctx.sessions
-            .set_agent_conversation_id(&ctx.app, ctx.session_id, &id);
+            .set_agent_conversation_id(&ctx.app, ctx.session_id, &id, cwd);
     }
 }
 

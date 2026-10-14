@@ -268,6 +268,8 @@ import {
   killShellAgent,
   canResumeAgentSession,
   resumeAgentSession,
+  resumeShellConversation,
+  dismissShellResumeOffer,
   type AgentRunner,
   onAgentDetected,
   type AgentDetectedPayload,
@@ -2281,6 +2283,20 @@ export default function App() {
   const dismissResumeInvite = useCallback((sessionId: SessionId) => {
     setDismissedResumeInvites((prev) => new Set(prev).add(sessionId));
   }, []);
+
+  // Shell restaurado: o convite e a retomada são do core (ele digita o
+  // `claude --resume` no próprio shell). Aqui só a intenção e o erro.
+  const resumeShellClaude = useCallback(
+    async (sessionId: SessionId) => {
+      try {
+        await resumeShellConversation(sessionId);
+        goToSession(sessionId);
+      } catch (e) {
+        toastError(t("agentResumeFailed"), translateError(e, t));
+      }
+    },
+    [goToSession, t],
+  );
 
   // Sessão com agente vivo recebe o prompt direto; sessão plain (ou morta)
   // ganha uma sessão de agente nova apontada pro repo conflitado.
@@ -6183,6 +6199,14 @@ export default function App() {
                               void resumeAgentConversation(s.id)
                             }
                             onDismissResume={() => dismissResumeInvite(s.id)}
+                            shellResumeNotice={
+                              s.kind.type === "shell" &&
+                              Boolean(s.shell_resume_offer)
+                            }
+                            onResumeShell={() => void resumeShellClaude(s.id)}
+                            onDismissShellResume={() =>
+                              void dismissShellResumeOffer(s.id).catch(() => {})
+                            }
                             authAlert={
                               runtimeAuthAlerts.has(s.id)
                                 ? { kind: runtimeAuthAlerts.get(s.id)! }

@@ -104,3 +104,19 @@ describe("sameObserved", () => {
     ).toBe(false);
   });
 });
+
+describe("convite de retomar a conversa no shell restaurado", () => {
+  test("o core desligar o convite chega ao pane", () => {
+    const antes = shell({ shell_resume_offer: true });
+    const depois = shell({ shell_resume_offer: false });
+
+    const merged = mergeSessionUpdate(antes, depois);
+
+    expect(merged?.shell_resume_offer).toBe(false);
+  });
+
+  test("convite igual dos dois lados não é novidade", () => {
+    const antes = shell({ shell_resume_offer: true });
+    expect(mergeSessionUpdate(antes, shell({ shell_resume_offer: true }))).toBeNull();
+  });
+});

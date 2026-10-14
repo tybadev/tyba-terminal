@@ -101,6 +101,9 @@ export interface Session {
   status_note?: string | null;
   /** O que o `statusLine` do Claude reportou. Só memória no core. */
   agent_usage?: AgentUsage | null;
+  /** Shell restaurado com uma conversa do Claude que ainda dá para retomar.
+   * Decidido pelo core no boot; só em memória. */
+  shell_resume_offer?: boolean;
 }
 
 export interface RateWindow {
@@ -972,6 +975,15 @@ export const canResumeAgentSession = (id: SessionId) =>
  * resume da CLI dele. Só por clique do usuário — nunca no boot. */
 export const resumeAgentSession = (id: SessionId, cols = 100, rows = 30) =>
   invoke<Session>("resume_agent_session", { id, cols, rows });
+
+/** Retoma, no shell restaurado, a conversa do Claude de antes do restart: o
+ * core digita `claude --resume <id>` no próprio shell, que passa pelo gate
+ * como qualquer `claude` digitado. Só por clique. */
+export const resumeShellConversation = (id: SessionId) =>
+  invoke<void>("resume_shell_conversation", { id });
+
+export const dismissShellResumeOffer = (id: SessionId) =>
+  invoke<void>("dismiss_shell_resume_offer", { id });
 
 export const onAgentDetected = (
   handler: (p: AgentDetectedPayload) => void,

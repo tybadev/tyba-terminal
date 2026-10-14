@@ -291,6 +291,15 @@ interface Props {
   onResumeAgent?: () => void;
   onDismissResume?: () => void;
   /**
+   * O irmão do `resumeNotice` para shell: o restart trouxe de volta um shell em
+   * que rodava uma conversa do Claude, e ela ainda pode ser retomada. Quem
+   * decide se aparece é o core (`shell_resume_offer`); o clique só emite a
+   * intenção, e é o core que digita o `claude --resume` no shell.
+   */
+  shellResumeNotice?: boolean;
+  onResumeShell?: () => void;
+  onDismissShellResume?: () => void;
+  /**
    * Entrega C -- faixa de auth de RUNTIME (F2/F8 do contrato de cobertura).
    * `null` some da tela: o dono dispensou (`onDismissAuthAlert`) ou a
    * sessão voltou a `running` (recovery), decidido em `App.tsx` -- este
@@ -492,6 +501,9 @@ export function TerminalView({
   resumeNotice,
   onResumeAgent,
   onDismissResume,
+  shellResumeNotice,
+  onResumeShell,
+  onDismissShellResume,
   authAlert,
   onDismissAuthAlert,
   approvalRequest,
@@ -1257,6 +1269,18 @@ export function TerminalView({
           )
         }
         message={i18n.t(remoteNotice.messageKey, remoteNotice.params)}
+      />
+    )}
+    {shellResumeNotice && rect && visible && !exited && (
+      <SessionNoticeBar
+        rect={rect}
+        tone="cyan"
+        icon={<ArrowCounterClockwise size={12} weight="bold" />}
+        message={i18n.t("shellResumeNotice")}
+        actionLabel={onResumeShell ? i18n.t("agentResume") : undefined}
+        onAction={onResumeShell}
+        dismissLabel={onDismissShellResume ? i18n.t("agentResumeIgnore") : undefined}
+        onDismiss={onDismissShellResume}
       />
     )}
     {exitedNotice && rect && visible && exited && (
