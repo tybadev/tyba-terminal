@@ -49,12 +49,17 @@ pub fn parse(content: &str, home: &Path) -> Result<UserConfig, String> {
 
 pub fn load(home: &Path) -> Result<UserConfig, String> {
     let path = config_path(home);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(UserConfig::default()),
-        Err(e) => return Err(format!("leitura de ~/.tyba/config.toml: {e}")),
-    };
-    parse(&content, home)
+    let root = home.join(".tyba");
+    if !root.exists() {
+        return Ok(UserConfig::default());
+    }
+    // Mesma leitura guardada do resto do arquivo (teto, symlink, dono): o
+    // `read_allow` abre a jaula, e é o último lugar para aceitar arquivo alheio.
+    match crate::config::fsguard::read_capped(&root, &path, crate::config::MAX_BYTES) {
+        Ok(Some(content)) => parse(&content, home),
+        Ok(None) => Ok(UserConfig::default()),
+        Err(e) => Err(format!("leitura de ~/.tyba/config.toml: {e}")),
+    }
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ pub mod approvals;
 pub mod blocks;
 pub mod boot;
 pub mod completion;
+pub mod config;
 pub mod docker;
 pub mod editor;
 pub mod error;
