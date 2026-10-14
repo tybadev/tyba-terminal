@@ -16,6 +16,7 @@ pub mod transcript;
 
 pub mod auth_scan;
 pub mod manifest;
+pub mod observed_hold;
 pub mod observed_notify;
 pub mod observer;
 pub mod program_status;
