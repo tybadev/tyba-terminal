@@ -701,8 +701,9 @@ export function DockerScreen({
         ) : state.section !== "containers" ? (
           <ReadOnlyList section={state.section} host={host} />
         ) : (
-          <div className="flex min-h-0 flex-1">
-            <div className="flex w-[300px] shrink-0 flex-col border-r border-[var(--tyba-border-soft)] bg-[var(--tyba-panel-bg)]">
+          // Coluna à direita, junto do trilho, como em Arquivos (dono, 2026-10-14).
+          <div className="flex min-h-0 flex-1 flex-row-reverse">
+            <div className="flex w-[300px] shrink-0 flex-col border-l border-[var(--tyba-border-soft)] bg-[var(--tyba-panel-bg)]">
               <div className="flex shrink-0 items-center gap-2 px-3.5 pb-1.5 pt-3 text-[11px] text-tyba-text-faint">
                 <span className="flex-1">
                   {t("dockerScreenContainersCount", { count: list?.length ?? 0 })}
