@@ -154,6 +154,40 @@ mod tests {
         assert!(c.fire(t0 + Duration::from_secs(1) + Q));
     }
 
+    /// O watcher de verdade, em pasta temporária: uma rajada de escritas e um
+    /// salvamento por rename viram um disparo cada; arquivo vizinho, nenhum.
+    #[test]
+    fn real_watcher_fires_once_per_save() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        spawn(&root, "config.toml", move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        let wait_for = |n: usize| {
+            let t0 = Instant::now();
+            while hits.load(Ordering::SeqCst) < n && t0.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            std::thread::sleep(QUIET * 3);
+            hits.load(Ordering::SeqCst)
+        };
+        for i in 0..5 {
+            std::fs::write(root.join("config.toml"), format!("a = {i}\n")).unwrap();
+        }
+        assert_eq!(wait_for(1), 1);
+        std::fs::write(root.join("tmp"), "a = 9\n").unwrap();
+        std::fs::rename(root.join("tmp"), root.join("config.toml")).unwrap();
+        assert_eq!(wait_for(2), 2);
+        std::fs::write(root.join("outro.json"), "{}").unwrap();
+        std::thread::sleep(Duration::from_secs(1));
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn only_the_config_file_counts() {
         let root = PathBuf::from("/h/.tyba");
