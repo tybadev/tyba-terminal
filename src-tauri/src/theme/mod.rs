@@ -595,15 +595,13 @@ impl ThemeManager {
         if base.is_empty() {
             return Err(ThemeError::InvalidName);
         }
-        // Nome que já existe: o mesmo tema reimportado sobrescreve o seu
-        // arquivo; outro tema (ou um embutido) ganha `-2`, `-3`…
+        // Id que já existe ganha `-2`, `-3`… sempre — inclusive o mesmo tema
+        // reimportado: importar nunca sobrescreve um arquivo.
         let existing = self.scan();
-        let name = file.name.trim();
         let id = free_id(&base, |id| {
             is_reserved(id)
-                || existing.iter().any(|t| t.id == id && t.name != name)
-                || (self.themes_dir.join(format!("{id}.json")).exists()
-                    && !existing.iter().any(|t| t.id == id && t.name == name))
+                || existing.iter().any(|t| t.id == id)
+                || self.themes_dir.join(format!("{id}.json")).exists()
         });
         let canonical = serde_json::to_string_pretty(&file)?;
         crate::config::fsguard::create_dir_private(&self.themes_dir)?;
@@ -1076,21 +1074,25 @@ mod tests {
     }
 
     #[test]
-    fn import_overwrites_existing_file_with_same_slug() {
+    fn reimport_of_the_same_theme_gets_a_suffix_and_keeps_the_first() {
         let (mgr, dir) = manager();
         let src = temp_source("nord-variant");
+        fs::write(&src, r#"{ "name": "Nord", "base": "dark" }"#).unwrap();
+        let (id, _) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, "nord");
+        let first = fs::read_to_string(dir.join("nord.json")).unwrap();
+
         fs::write(
             &src,
             r##"{ "name": "Nord", "base": "dark", "ui": { "bg": "#000000" } }"##,
         )
         .unwrap();
-
-        mgr.import_validated(src.to_str().unwrap()).unwrap();
-        let on_disk = fs::read_to_string(dir.join("nord.json")).unwrap();
-        assert!(on_disk.contains("#000000"));
-
-        let ids: Vec<_> = mgr.list().into_iter().map(|t| t.id).collect();
-        assert_eq!(ids.iter().filter(|id| id.as_str() == "nord").count(), 1);
+        let (id, _) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, "nord-2");
+        assert_eq!(fs::read_to_string(dir.join("nord.json")).unwrap(), first);
+        assert!(fs::read_to_string(dir.join("nord-2.json"))
+            .unwrap()
+            .contains("#000000"));
 
         let _ = fs::remove_file(&src);
         let _ = fs::remove_dir_all(dir);
