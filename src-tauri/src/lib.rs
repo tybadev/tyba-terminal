@@ -6069,15 +6069,25 @@ fn open_view_tab(app: AppHandle, state: State<'_, AppState>, view: String) -> Re
 /// aqui depois da confirmação da tela.
 #[tauri::command]
 async fn docker_compose_op(
+    app: AppHandle,
     state: State<'_, AppState>,
     project: String,
     op: docker::ComposeOp,
 ) -> Result<(), String> {
     let docker = Arc::clone(&state.docker);
-    docker_blocking(move || docker.compose_op(&project, op).map_err(|e| e.to_string())).await?
+    docker_blocking(move || {
+        // Saída em lotes (o core junta ~16 ms), nunca um evento por pedaço.
+        docker
+            .compose_op(&project, op, |batch| {
+                let _ = app.emit("docker-compose-output", batch);
+            })
+            .map_err(|e| e.to_string())
+    })
+    .await?
 }
 
-/// Compose em andamento e última falha por projeto: a tela pede junto do refresh.
+/// Compose em andamento, última falha e saída por projeto: a tela pede junto
+/// do refresh e junta os lotes de `docker-compose-output` por posição.
 #[tauri::command]
 fn docker_compose_runs(
     state: State<'_, AppState>,
@@ -6143,37 +6153,75 @@ fn docker_open_project(
     Ok(())
 }
 
-/// Abre o(s) arquivo(s) compose do projeto na tela de Arquivos da sessão —
-/// todo "abrir arquivo" cai lá. Só sessão local (o caminho é desta máquina) e
-/// só dentro da raiz dela; o primeiro arquivo fica em foco.
+/// Abre o(s) arquivo(s) compose do projeto na tela de Arquivos da sessão,
+/// **só leitura** (view `compose-file:`): vale para projeto de qualquer pasta,
+/// porque nada é gravado fora do worktree. Só sessão local (o caminho é desta
+/// máquina); o primeiro arquivo fica em foco.
 #[tauri::command]
-async fn docker_open_compose_file(
+fn docker_open_compose_file(
     app: AppHandle,
     state: State<'_, AppState>,
     session: SessionId,
     project: String,
 ) -> Result<(), String> {
+    if state.sessions.get(session).is_none() {
+        return Err(format!("sessão não encontrada: {session}"));
+    }
     if remote_target(&state, session).is_some() {
         return Err("compose só na máquina local".into());
+    }
+    if !docker::is_valid_project_name(&project) {
+        return Err("projeto inválido".into());
     }
     let info = state
         .docker
         .project_info(&project)
         .map_err(|e| e.to_string())?;
-    let files = info.config_files;
-    if files.is_empty() {
+    if info.config_files.is_empty() {
         return Err("projeto sem arquivo compose".into());
     }
-    for file in &files {
-        docker::validate_compose_file(file).map_err(|e| e.to_string())?;
+    let views: Vec<String> = info
+        .config_files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| {
+            docker::validate_compose_file(file).map_err(|e| e.to_string())?;
+            let name = std::path::Path::new(file)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "compose.yml".into());
+            Ok(layout::compose_file_view(session, &project, index, &name))
+        })
+        .collect::<Result<_, String>>()?;
+    let previous = session_side_view(&state, session);
+    for view in views
+        .iter()
+        .chain(views.first().filter(|_| views.len() > 1))
+    {
+        state
+            .layout
+            .open_file_screen(session, view, false)
+            .map_err(|e| e.to_string())?;
     }
-    for file in &files {
-        open_in_files_screen(&app, &state, vec![session], file, false).await?;
-    }
-    if files.len() > 1 {
-        open_in_files_screen(&app, &state, vec![session], &files[0], false).await?;
-    }
+    close_orphaned_files_panel(&state, previous, Some(&layout::files_view(session)));
+    emit_layout(&app, &state);
     Ok(())
+}
+
+/// O texto de um arquivo compose (só leitura) para a aba `compose-file:`.
+#[tauri::command]
+async fn docker_compose_file(
+    state: State<'_, AppState>,
+    project: String,
+    index: usize,
+) -> Result<docker::ComposeFile, String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || {
+        docker
+            .compose_file(&project, index)
+            .map_err(|e| e.to_string())
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -8477,6 +8525,7 @@ pub fn run() {
             docker_open_desktop,
             docker_compose_op,
             docker_compose_runs,
+            docker_compose_file,
             docker_open_project,
             docker_open_compose_file,
             open_view_tab,

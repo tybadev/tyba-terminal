@@ -402,6 +402,15 @@ pub fn history_view(session: SessionId) -> String {
     format!("{VIEW_HISTORY_PREFIX}{session}")
 }
 
+/// Aba só leitura da tela de Arquivos com um arquivo compose de qualquer
+/// projeto: `compose-file:<sessão>:<projeto>:<índice>:<nome>`. Não volta no
+/// reinício (o projeto é do retrato de containers desta execução).
+pub const VIEW_COMPOSE_FILE_PREFIX: &str = "compose-file:";
+
+pub fn compose_file_view(session: SessionId, project: &str, index: usize, name: &str) -> String {
+    format!("{VIEW_COMPOSE_FILE_PREFIX}{session}:{project}:{index}:{name}")
+}
+
 pub fn editor_view(session: SessionId, rel: &str) -> String {
     format!("{VIEW_EDITOR_PREFIX}{session}:{rel}")
 }
@@ -411,6 +420,15 @@ pub fn editor_view_session(view: &str) -> Option<SessionId> {
     let rest = view.strip_prefix(VIEW_EDITOR_PREFIX)?;
     let (sid, _) = rest.split_once(':')?;
     Uuid::parse_str(sid).ok()
+}
+
+/// Sessão dona de uma aba da tela de Arquivos: editor ou compose só leitura.
+pub fn screen_file_session(view: &str) -> Option<SessionId> {
+    editor_view_session(view).or_else(|| {
+        let rest = view.strip_prefix(VIEW_COMPOSE_FILE_PREFIX)?;
+        let (sid, _) = rest.split_once(':')?;
+        Uuid::parse_str(sid).ok()
+    })
 }
 
 /// Containers com aba de logs aberta em algum workspace — o que pode ter um
@@ -1339,7 +1357,7 @@ impl LayoutManager {
         for ws in inner.workspaces.iter_mut() {
             ws.screens
                 .files
-                .retain(|view| editor_view_session(view) != Some(session));
+                .retain(|view| screen_file_session(view) != Some(session));
         }
         let mut wi = 0;
         while wi < inner.workspaces.len() {
@@ -3297,6 +3315,11 @@ mod tests {
         assert_eq!(editor_view_session(&v), Some(s));
         assert_eq!(editor_view_session("container-logs:abc"), None);
         assert_eq!(editor_view_session("editor:not-a-uuid:x"), None);
+        let c = compose_file_view(s, "poc", 0, "compose.yml");
+        assert_eq!(c, format!("compose-file:{s}:poc:0:compose.yml"));
+        assert_eq!(screen_file_session(&c), Some(s));
+        assert_eq!(editor_view_session(&c), None);
+        assert_eq!(screen_file_session(&v), Some(s));
     }
 
     #[test]
