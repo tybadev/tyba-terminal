@@ -424,7 +424,7 @@ pub type SharedThemes = Arc<ThemeManager>;
 impl ThemeManager {
     pub fn new(config: SharedConfig, themes_dir: PathBuf) -> Self {
         if config.usable() {
-            let _ = fs::create_dir_all(&themes_dir);
+            let _ = crate::config::fsguard::create_dir_private(&themes_dir);
         }
         Self { config, themes_dir }
     }
@@ -601,7 +601,7 @@ impl ThemeManager {
                     && !existing.iter().any(|t| t.id == id && t.name == name))
         });
         let canonical = serde_json::to_string_pretty(&file)?;
-        fs::create_dir_all(&self.themes_dir)?;
+        crate::config::fsguard::create_dir_private(&self.themes_dir)?;
         // `0600` e sem seguir symlink para fora da pasta: o mesmo arquivo passa
         // depois pela leitura guardada do `scan`.
         crate::config::fsguard::write_atomic(

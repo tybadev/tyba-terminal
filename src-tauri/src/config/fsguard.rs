@@ -6,7 +6,7 @@
 //!   raiz), também para fora — o estilo stow/chezmoi de dotfiles —, desde que o
 //!   alvo final seja arquivo comum do usuário, sem escrita de grupo/outros
 //!   ([`Links`]);
-//! - no Unix, arquivo e pasta precisam ser do usuário e não graváveis por grupo
+//! - no Unix, a raiz e o arquivo precisam ser do usuário e não graváveis por grupo
 //!   nem por outros;
 //! - a pasta nasce `0700` e o arquivo `0600`, e a gravação é atômica (temp +
 //!   rename), para que o watcher e um leitor concorrente nunca vejam meio
@@ -54,19 +54,22 @@ pub fn check_root(root: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+/// Cria `dir` (e o que faltar acima) com `0700`. Já existente: nada muda.
+pub fn create_dir_private(dir: &Path) -> std::io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
 /// Cria a raiz (`0700`) se faltar e devolve o caminho canônico, já conferido.
 pub fn ensure_root(root: &Path) -> Result<PathBuf, String> {
     if !root.exists() {
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder
-            .create(root)
-            .map_err(|e| err(root, &format!("não deu para criar: {e}")))?;
+        create_dir_private(root).map_err(|e| err(root, &format!("não deu para criar: {e}")))?;
     }
     check_root(root)
 }
@@ -190,10 +193,7 @@ fn write_with(root: &Path, path: &Path, contents: &str, links: Links) -> Result<
         .parent()
         .ok_or_else(|| err(path, "sem pasta-mãe"))?
         .to_path_buf();
-    // A temp nasce ao lado do alvo (o rename precisa do mesmo disco), e essa
-    // pasta também tem de ser só do usuário.
-    let dir_meta = fs::metadata(&dir).map_err(|e| err(&dir, &e.to_string()))?;
-    check_owner(&dir, &dir_meta)?;
+    // A temp nasce ao lado do alvo (o rename precisa do mesmo disco).
     let tmp = dir.join(format!(".tyba-{}.tmp", uuid::Uuid::new_v4()));
     let write = || -> std::io::Result<()> {
         let mut opts = OpenOptions::new();
@@ -330,15 +330,42 @@ mod tests {
         // nenhuma temp sobrando ao lado do alvo
         assert_eq!(fs::read_dir(&dotfiles).unwrap().count(), 1);
 
-        // alvo gravável por outros, ou pasta do alvo gravável por outros: não
+        // alvo gravável por outros: não
         fs::set_permissions(&real, fs::Permissions::from_mode(0o666)).unwrap();
         assert!(read_linked(&root, &path, 1024).is_err());
         assert!(write_linked(&root, &path, "x").is_err());
-        fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
-        fs::set_permissions(&dotfiles, fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(write_linked(&root, &path, "x").is_err());
         assert_eq!(fs::read_to_string(&real).unwrap(), "a = 2\n");
-        fs::set_permissions(&dotfiles, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn group_writable_target_dir_does_not_block_the_write() {
+        // repositório de dotfiles (ou pasta de temas) sob umask 002
+        use std::os::unix::fs::PermissionsExt;
+        let (d, root) = root();
+        let root = ensure_root(&root).unwrap();
+        let dotfiles = d.path().join("dotfiles");
+        fs::create_dir(&dotfiles).unwrap();
+        fs::set_permissions(&dotfiles, fs::Permissions::from_mode(0o775)).unwrap();
+        let real = dotfiles.join("tyba.toml");
+        fs::write(&real, "a = 1\n").unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o644)).unwrap();
+        let path = root.join("config.toml");
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        write_linked(&root, &path, "a = 2\n").unwrap();
+        assert_eq!(fs::read_to_string(&real).unwrap(), "a = 2\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_dir_is_born_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, _) = root();
+        let dir = d.path().join("a/themes");
+        create_dir_private(&dir).unwrap();
+        let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
     }
 
     #[cfg(unix)]

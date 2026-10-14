@@ -193,7 +193,7 @@ pub fn migrate_themes(old: &Path, new: &Path) -> usize {
     let Ok(entries) = fs::read_dir(old) else {
         return 0;
     };
-    let _ = fs::create_dir_all(new);
+    let _ = fsguard::create_dir_private(new);
     let mut moved = 0;
     for entry in entries.flatten() {
         let src = entry.path();
