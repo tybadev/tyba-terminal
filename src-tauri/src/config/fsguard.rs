@@ -184,6 +184,22 @@ pub fn read_capped(root: &Path, path: &Path, max: u64) -> Result<Option<String>,
     Ok(read_with(root, path, max, Links::InsideRoot)?.map(|(text, _)| text))
 }
 
+/// Como [`read_capped`], devolvendo também a identidade do arquivo lido.
+pub fn read_capped_with_id(
+    root: &Path,
+    path: &Path,
+    max: u64,
+) -> Result<Option<(String, FileId)>, String> {
+    read_with(root, path, max, Links::InsideRoot)
+}
+
+/// Identidade da entrada `path` em si (sem seguir symlink). `None` se não
+/// existe. Fora do Unix não há inode: só serve para comparar no Unix.
+#[cfg(unix)]
+pub fn entry_id(path: &Path) -> Option<FileId> {
+    fs::symlink_metadata(path).ok().map(|m| file_id(&m))
+}
+
 /// Como [`read_capped`], aceitando symlink para fora com alvo do usuário.
 pub fn read_linked(root: &Path, path: &Path, max: u64) -> Result<Option<String>, String> {
     Ok(read_linked_with_id(root, path, max)?.map(|(text, _)| text))

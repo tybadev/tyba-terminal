@@ -431,6 +431,12 @@ pub struct ThemeManager {
 /// destino existe (atômico, inclusive contra corrida), e só então a origem
 /// sai. Os dois moram na pasta de temas.
 fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    // Disco que não diferencia caixa (APFS, NTFS): `Solar.json` e `solar.json`
+    // são a mesma entrada, o link falharia sempre, e o rename só troca a caixa
+    // — não há outro arquivo para sobrescrever.
+    if same_entry(from, to) {
+        return fs::rename(from, to);
+    }
     fs::hard_link(from, to)?;
     if let Err(e) = fs::remove_file(from) {
         let _ = fs::remove_file(to);
@@ -440,6 +446,18 @@ fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 pub type SharedThemes = Arc<ThemeManager>;
+
+#[cfg(unix)]
+fn same_entry(from: &Path, to: &Path) -> bool {
+    use crate::config::fsguard::entry_id;
+    matches!((entry_id(from), entry_id(to)), (Some(a), Some(b)) if a == b)
+}
+
+#[cfg(not(unix))]
+fn same_entry(from: &Path, to: &Path) -> bool {
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
+    from.parent() == to.parent() && to.exists() && name(from) == name(to)
+}
 
 impl ThemeManager {
     pub fn new(config: SharedConfig, themes_dir: PathBuf) -> Self {
@@ -500,12 +518,12 @@ impl ThemeManager {
         .filter_map(|(id, path)| {
             // Pasta editável à mão: mesma leitura guardada do config.toml
             // (teto de tamanho, sem symlink para fora, dono).
-            let json = match crate::config::fsguard::read_capped(
+            let (json, read_id) = match crate::config::fsguard::read_capped_with_id(
                 &self.themes_dir,
                 &path,
                 MAX_THEME_FILE_BYTES,
             ) {
-                Ok(Some(json)) => json,
+                Ok(Some(read)) => read,
                 Ok(None) => return None,
                 Err(err) => {
                     eprintln!("tyba: tema ignorado: {err}");
@@ -514,7 +532,7 @@ impl ThemeManager {
             };
             match parse_theme(&json) {
                 Ok(file) => {
-                    self.settle_file_name(&id, &path);
+                    self.settle_file_name(&id, &path, read_id);
                     Some(resolve(id, file))
                 }
                 Err(err) => {
@@ -532,11 +550,19 @@ impl ThemeManager {
     /// chamar `<id>.json` no disco: o id fica estável mesmo que outro arquivo
     /// apareça depois. Só tema válido, lido pela leitura guardada, e nunca por
     /// cima de arquivo existente.
-    fn settle_file_name(&self, id: &str, path: &Path) {
+    fn settle_file_name(&self, id: &str, path: &Path, read_id: crate::config::fsguard::FileId) {
         let current = path.file_stem().and_then(|s| s.to_str());
         if current == Some(id) {
             return;
         }
+        // Renomeia só o arquivo que foi lido e validado: trocado nesse meio
+        // tempo (ou symlink), fica para a próxima leitura.
+        #[cfg(unix)]
+        if crate::config::fsguard::entry_id(path) != Some(read_id) {
+            return;
+        }
+        #[cfg(not(unix))]
+        let _ = read_id;
         let target = self.themes_dir.join(format!("{id}.json"));
         let old = path
             .file_name()
@@ -1011,6 +1037,27 @@ mod tests {
         let c = dir.path().join("c.json");
         rename_no_replace(&a, &c).unwrap();
         assert!(!a.exists() && fs::read_to_string(&c).unwrap() == "a");
+    }
+
+    #[test]
+    fn case_only_difference_is_renamed_too() {
+        let (mgr, dir) = manager();
+        fs::write(
+            dir.join("Solar.json"),
+            r#"{ "name": "Solar", "base": "dark" }"#,
+        )
+        .unwrap();
+        let ids: Vec<_> = mgr.scan().into_iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["solar".to_string()]);
+        let names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".json"))
+            .collect();
+        assert_eq!(names, vec!["solar.json".to_string()]);
+        assert_eq!(mgr.rename_warnings().len(), 1);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
