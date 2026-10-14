@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowsClockwise,
@@ -26,7 +26,18 @@ import {
   type Session,
   type SessionId,
 } from "../lib/ipc";
-import { ciCell, initials, matchesPr, reviewChips, type ReviewChip, type Tone } from "../lib/prs";
+import {
+  ciCell,
+  initials,
+  linkedSession,
+  matchesPr,
+  nextPrLimit,
+  PR_PAGE_LIMIT,
+  prCountLabel,
+  reviewChips,
+  type ReviewChip,
+  type Tone,
+} from "../lib/prs";
 
 const TONE_TEXT: Record<Tone, string> = {
   green: "text-tyba-green",
@@ -67,13 +78,9 @@ function StateIcon({ state }: { state: PrListItem["state"] }) {
   return <GitPullRequest size={16} className={tone} aria-hidden />;
 }
 
-function Avatar({ name, agent }: { name: string; agent: boolean }) {
+function Avatar({ name }: { name: string }) {
   return (
-    <span
-      className={`flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full px-1 text-[9px] ${
-        agent ? "bg-tyba-amber/[.16] text-tyba-amber" : "bg-tyba-blue/[.18] text-tyba-blue"
-      }`}
-    >
+    <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-tyba-blue/[.18] px-1 text-[9px] text-tyba-blue">
       {initials(name)}
     </span>
   );
@@ -103,19 +110,26 @@ export function PrListView({
   const [now, setNow] = useState(() => Date.now());
   const [status, setStatus] = useState<ForgeStatus | null>(null);
   const [creating, setCreating] = useState(false);
+  // "Carregar mais" sobe o limit de 100 em 100; trocar de filtro volta a 100.
+  const [limit, setLimit] = useState(PR_PAGE_LIMIT);
+  // Só a resposta do pedido mais novo entra: trocar de filtro rápido não deixa
+  // a lista de um filtro aparecer sob o rótulo de outro.
+  const requestSeq = useRef(0);
 
   const load = useCallback(
     (fresh: boolean) => {
+      const seq = ++requestSeq.current;
       setLoading(true);
-      forgePrPage(session.id, filter === "ci" ? "open" : filter, fresh)
+      forgePrPage(session.id, filter === "ci" ? "open" : filter, fresh, limit)
         .then((p) => {
+          if (seq !== requestSeq.current) return;
           setPage(p);
           setError(null);
         })
-        .catch((e) => setError(translateError(e, t)))
-        .finally(() => setLoading(false));
+        .catch((e) => seq === requestSeq.current && setError(translateError(e, t)))
+        .finally(() => seq === requestSeq.current && setLoading(false));
     },
-    [session.id, filter, t],
+    [session.id, filter, limit, t],
   );
 
   useEffect(() => {
@@ -149,7 +163,12 @@ export function PrListView({
   const row = (item: PrListItem, dim = false) => {
     const ci = ciCell(item.ci);
     const chips = reviewChips(item);
-    const agent = item.session?.agent ?? null;
+    // O autor real aparece sempre (segurança: quem escreveu o PR não some
+    // atrás do nome de uma sessão). A sessão é complemento, e só vale quando o
+    // PR não vem de fork.
+    const linked = linkedSession(item);
+    const agent = linked?.agent ?? null;
+    const author = item.author_name ?? item.author;
     return (
       <div
         key={item.number}
@@ -180,11 +199,10 @@ export function PrListView({
             )}
           </div>
           <div className="mt-1 flex min-w-0 items-center gap-2.5 text-[11px] text-tyba-text-faint">
-            <Avatar name={agent ? agent : (item.author_name ?? item.author)} agent={Boolean(agent)} />
+            <Avatar name={author} />
             <span className="truncate">
-              {item.session && agent
-                ? t("prBySession", { title: item.session.title })
-                : (item.author_name ?? item.author)}
+              {author}
+              {linked && <> · {t("prBySession", { title: linked.title })}</>}
             </span>
             <span className="truncate font-mono text-tyba-blue/80">
               {item.head} → {item.base}
@@ -197,11 +215,11 @@ export function PrListView({
                   })
                 : t("prUpdatedAgo", { ago: relative(item.updated_at, now) })}
             </span>
-            {item.session && (
+            {linked && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (item.session) onFocusSession(item.session.session);
+                  onFocusSession(linked.session);
                 }}
                 className="hidden shrink-0 text-tyba-blue hover:underline group-hover/pr:inline"
               >
@@ -248,14 +266,19 @@ export function PrListView({
                 key={f.key}
                 role="tab"
                 aria-selected={on}
-                onClick={() => setFilter(f.key)}
+                onClick={() => {
+                  setFilter(f.key);
+                  setLimit(PR_PAGE_LIMIT);
+                }}
                 className={`flex items-center gap-1.5 rounded-[5px] px-2.5 py-1 ${
                   on ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]" : "hover:text-tyba-text"
                 }`}
               >
                 {t(f.label)}
                 {count !== null && count > 0 && (
-                  <span className={f.key === "review" ? "text-tyba-amber" : "text-tyba-text-muted"}>{count}</span>
+                  <span className={f.key === "review" ? "text-tyba-amber" : "text-tyba-text-muted"}>
+                    {prCountLabel(count, page?.capped ?? false)}
+                  </span>
                 )}
               </button>
             );
@@ -330,6 +353,18 @@ export function PrListView({
             {items.map((item) => row(item))}
             {items.length === 0 && (
               <p className="px-4 py-6 text-[12px] text-tyba-text-faint">{t("prListEmpty")}</p>
+            )}
+            {page.capped && nextPrLimit(limit) !== null && (
+              <div className="flex justify-center px-4 py-3">
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => setLimit((l) => nextPrLimit(l) ?? l)}
+                  className="rounded-[6px] border border-tyba-border-strong px-3 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50"
+                >
+                  {loading ? t("diffLoading") : t("prLoadMore")}
+                </button>
+              </div>
             )}
             {merged.length > 0 && (
               <>

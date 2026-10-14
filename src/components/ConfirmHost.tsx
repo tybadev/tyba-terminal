@@ -30,25 +30,33 @@ export function ConfirmHost() {
         if (!open) answerConfirm(request.id, false);
       }}
     >
+      {/* Altura limitada: título e botões ficam sempre à vista e só o
+          detalhe rola. Em confirmação destrutiva o foco começa em Cancelar,
+          para um Enter distraído não confirmar. */}
       <DialogContent
-        className="max-w-[440px] border-tyba-border-strong bg-tyba-surface"
+        className="flex max-h-[80vh] max-w-[440px] flex-col border-tyba-border-strong bg-tyba-surface"
         showCloseButton={false}
       >
-        <DialogHeader>
+        <DialogHeader className="shrink-0">
           <DialogTitle>{request.title}</DialogTitle>
-          {request.detail && (
-            <DialogDescription>{request.detail}</DialogDescription>
-          )}
         </DialogHeader>
-        <div className="flex justify-end gap-2">
+        {request.detail && (
+          <DialogDescription asChild>
+            <div className="min-h-0 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-tyba-sunken px-3 py-2">
+              {request.detail}
+            </div>
+          </DialogDescription>
+        )}
+        <div className="flex shrink-0 justify-end gap-2">
           <Button
+            autoFocus={request.destructive}
             variant="ghost"
             onClick={() => answerConfirm(request.id, false)}
           >
             {request.cancelLabel ?? t("cancel")}
           </Button>
           <Button
-            autoFocus
+            autoFocus={!request.destructive}
             variant={request.destructive ? "destructive" : "default"}
             onClick={() => answerConfirm(request.id, true)}
           >

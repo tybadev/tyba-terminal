@@ -18,6 +18,27 @@ export const keyScope = (key: string): string =>
 export const keyPath = (key: string): string =>
   key.slice(key.indexOf("\u0000") + 1);
 
+/** Assinatura de um arquivo do diff para o "visto": se as contagens ou o
+ *  caminho antigo mudam, o arquivo mudou depois de visto. */
+export const fileSignature = (file: FileDiff): string =>
+  `${file.insertions ?? "?"}:${file.deletions ?? "?"}:${file.old_path ?? ""}`;
+
+/** Chaves que continuam vistas: a assinatura guardada ao marcar bate com a
+ *  atual. Arquivo que mudou (ou saiu do diff) volta a desmarcado. */
+export function viewedNow(
+  marked: ReadonlyMap<string, string>,
+  scopes: Partial<Record<DiffScopeKey, FileDiff[]>>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const [scope, files] of Object.entries(scopes) as [DiffScopeKey, FileDiff[]][]) {
+    for (const file of files) {
+      const key = fileKeyOf(scope, file.path);
+      if (marked.get(key) === fileSignature(file)) out.add(key);
+    }
+  }
+  return out;
+}
+
 /** "2 de 3 vistos" (mockup Diff): conta só arquivos que ainda estão no diff,
  *  então um arquivo visto que saiu (commitado, descartado) não infla o total. */
 export function reviewProgress(

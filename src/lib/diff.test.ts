@@ -6,6 +6,7 @@ import {
   buildRows,
   defaultCollapsed,
   fileKeyOf,
+  fileSignature,
   isGeneratedPath,
   isSectionOpen,
   langOfPath,
@@ -13,6 +14,7 @@ import {
   reviewProgress,
   splitPairs,
   toggleSection,
+  viewedNow,
 } from "./diff";
 
 const hunk: Hunk = {
@@ -226,5 +228,32 @@ describe("reviewProgress", () => {
 
   test("diff vazio", () => {
     expect(reviewProgress({}, new Set())).toEqual({ viewed: 0, total: 0 });
+  });
+});
+
+describe("viewedNow", () => {
+  const file = (path: string, insertions: number, deletions: number, old_path: string | null = null) =>
+    ({ path, old_path, status: "modified", insertions, deletions }) as FileDiff;
+
+  test("arquivo que mudou depois de visto volta a desmarcado", () => {
+    const a = file("a.js", 3, 1);
+    const b = file("b.js", 2, 0);
+    const marked = new Map([
+      [fileKeyOf("unstaged", "a.js"), fileSignature(a)],
+      [fileKeyOf("unstaged", "b.js"), fileSignature(b)],
+    ]);
+    const now = viewedNow(marked, { unstaged: [file("a.js", 3, 1), file("b.js", 5, 0)] });
+    expect([...now]).toEqual([fileKeyOf("unstaged", "a.js")]);
+  });
+
+  test("rename novo (old_path) também conta como mudança", () => {
+    const a = file("a.js", 1, 0);
+    const marked = new Map([[fileKeyOf("staged", "a.js"), fileSignature(a)]]);
+    expect(viewedNow(marked, { staged: [file("a.js", 1, 0, "velho.js")] }).size).toBe(0);
+  });
+
+  test("arquivo que saiu do diff não conta", () => {
+    const marked = new Map([[fileKeyOf("staged", "x.js"), "1:0:"]]);
+    expect(viewedNow(marked, { staged: [] }).size).toBe(0);
   });
 });

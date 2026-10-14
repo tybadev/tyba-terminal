@@ -102,6 +102,20 @@ export function commitPlan(
 }
 
 /**
+ * O que o amend leva. Nunca prepara os rastreados sozinho: amend sem nada
+ * preparado só troca a mensagem do último commit. Entra o que já está staged
+ * (já está no índice) e os untracked marcados.
+ */
+export function amendPlan(
+  diff: SessionDiff | null,
+  chosen: ReadonlySet<string> = new Set(),
+): { stage: string[]; messageOnly: boolean } {
+  if (!diff) return { stage: [], messageOnly: true };
+  const stage = diff.untracked.filter((p) => chosen.has(p));
+  return { stage, messageOnly: diff.staged_files.length === 0 && stage.length === 0 };
+}
+
+/**
  * Marcar um untracked. Arquivo que parece segredo só entra com confirmação
  * explícita (`confirmed`); desmarcar é sempre livre.
  */

@@ -48,9 +48,6 @@ const RAIL: Record<GitSection, { icon: Icon; label: string }> = {
   ci: { icon: Lightning, label: "gitScreenCi" },
 };
 
-const RAIL_STEP_PX = 42;
-const RAIL_TOP_PX = 12;
-
 const BTN =
   "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-strong px-2.5 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
 
@@ -92,6 +89,11 @@ export function GitScreen({
   const [busy, setBusy] = useState<null | "fetch" | "pull" | "push">(null);
   const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
   const [ciFailing, setCiFailing] = useState(false);
+  // Foco na tela ao abrir: sem isso o Esc cai no terminal por baixo.
+  const sectionRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    sectionRef.current?.focus({ preventScroll: true });
+  }, []);
 
   const go = (next: GitPlace) => {
     setSlide(slideOf(prev.current, next));
@@ -164,9 +166,11 @@ export function GitScreen({
 
   return (
     <section
+      ref={sectionRef}
+      tabIndex={-1}
       aria-label={t("gitScreenTitle")}
       data-exiting={exiting}
-      className="tyba-git-screen absolute inset-0 z-30 flex flex-row-reverse bg-tyba-bg shadow-[-30px_0_60px_rgba(0,0,0,0.45)]"
+      className="tyba-git-screen absolute inset-0 z-30 flex outline-none flex-row-reverse bg-tyba-bg shadow-[-30px_0_60px_rgba(0,0,0,0.45)]"
       onKeyDown={(e) => {
         if (e.key !== "Escape" || e.defaultPrevented) return;
         const target = e.target as HTMLElement;
@@ -186,11 +190,6 @@ export function GitScreen({
         aria-label={t("gitScreenSections")}
         className="relative flex w-[52px] shrink-0 flex-col items-center gap-1.5 tyba-divide-l bg-[var(--tyba-panel-bg)] pt-3"
       >
-        <span
-          aria-hidden
-          className="tyba-git-rail-marker absolute right-0 h-7 w-0.5 rounded-l-[2px] bg-tyba-blue shadow-[0_0_10px_var(--tyba-blue)]"
-          style={{ top: RAIL_TOP_PX + sections.indexOf(place.section) * RAIL_STEP_PX + 4 }}
-        />
         {sections.map((key) => {
           const { icon: SectionIcon, label } = RAIL[key];
           const on = key === place.section;

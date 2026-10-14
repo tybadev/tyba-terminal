@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useRelative } from "./GitHistoryView";
-import { ciFailurePrompt, firstErrorLine, isErrorLine } from "../lib/ci";
+import { ciFailurePrompt, errorTarget, isErrorLine } from "../lib/ci";
 import { openExternalUrl, writeClipboardText } from "../lib/clipboard";
 import { requestConfirm } from "../lib/confirm";
 import { translateError } from "../lib/errors";
@@ -100,59 +100,83 @@ export function CiView({
   );
   const run = shown.find((r) => r.id === runId) ?? shown[0] ?? null;
 
+  // Jobs e log são rebuscados quando o run escolhido muda de estado (fila →
+  // rodando → concluído) e depois do rerun; só a troca de run limpa a tela.
+  const runKey = run ? `${run.id}:${run.status}:${run.conclusion ?? ""}` : null;
+  const [jobsTick, setJobsTick] = useState(0);
+  const jobsRunId = useRef<number | null>(null);
   useEffect(() => {
-    setJobs(null);
-    setJobId(null);
+    const changedRun = jobsRunId.current !== (run?.id ?? null);
+    jobsRunId.current = run?.id ?? null;
+    if (changedRun) {
+      setJobs(null);
+      setJobId(null);
+    }
     if (!run) return;
     let alive = true;
     forgeWorkflowJobs(session.id, run.id)
       .then((j) => {
         if (!alive) return;
         setJobs(j);
-        const failed = j.find((x) => x.conclusion === "failure") ?? j[0];
-        setJobId(failed?.id ?? null);
+        setJobId((prev) => {
+          if (!changedRun && prev != null && j.some((x) => x.id === prev)) return prev;
+          return (j.find((x) => x.conclusion === "failure") ?? j[0])?.id ?? null;
+        });
       })
-      .catch(() => alive && setJobs([]));
+      .catch(() => alive && changedRun && setJobs([]));
     return () => {
       alive = false;
     };
-  }, [session.id, run?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [session.id, runKey, jobsTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const job = jobs?.find((j) => j.id === jobId) ?? null;
 
+  const jobKey = job ? `${job.id}:${job.status}:${job.conclusion ?? ""}` : null;
+  const logJobId = useRef<number | null>(null);
   useEffect(() => {
-    setLog(null);
-    setLogError(null);
+    const changedJob = logJobId.current !== (job?.id ?? null);
+    logJobId.current = job?.id ?? null;
+    if (changedJob) {
+      setLog(null);
+      setLogError(null);
+    }
     if (!job) return;
     let alive = true;
     forgeRunLog(session.id, job.id)
-      .then((l) => alive && setLog(l))
+      .then((l) => {
+        if (!alive) return;
+        setLog(l);
+        setLogError(null);
+      })
       .catch((e) => alive && setLogError(translateError(e, t)));
     return () => {
       alive = false;
     };
-  }, [session.id, job?.id, t]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [session.id, jobKey, t]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const lines = useMemo(() => (log ? log.text.split("\n") : []), [log]);
 
   const goToError = () => {
-    const i = firstErrorLine(lines);
+    const i = errorTarget(lines, log?.error_line);
     if (i < 0) return;
     logRef.current?.querySelector(`[data-line="${i}"]`)?.scrollIntoView({ block: "center" });
   };
 
   const rerun = async () => {
     if (!run) return;
+    // `--failed` só quando o run falhou; o texto da confirmação diz qual dos dois.
+    const failedOnly = run.conclusion === "failure";
     const ok = await requestConfirm({
       title: t("ciRerunConfirm", { name: run.name, branch: run.head_branch }),
-      detail: t("ciRerunConfirmDetail"),
+      detail: t(failedOnly ? "ciRerunConfirmDetailFailed" : "ciRerunConfirmDetail"),
       confirmLabel: t("ciRerun"),
     });
     if (!ok) return;
     try {
-      await forgeRunRerun(session.id, run.id, run.conclusion === "failure");
+      await forgeRunRerun(session.id, run.id, failedOnly);
       setNote(t("ciRerunStarted"));
       load(true);
+      setJobsTick((n) => n + 1);
     } catch (e) {
       setNote(translateError(e, t));
     }
@@ -295,7 +319,7 @@ export function CiView({
                   key={i}
                   data-line={i}
                   className={`flex whitespace-pre ${
-                    isErrorLine(line)
+                    isErrorLine(line) || i === log?.error_line
                       ? "bg-tyba-diff-del-bg text-tyba-diff-del-text"
                       : "text-tyba-text-muted"
                   }`}
@@ -306,7 +330,8 @@ export function CiView({
               ))}
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-2 tyba-divide-t bg-[var(--tyba-panel-bg)] px-4 py-2.5">
-              {log && job && job.conclusion === "failure" && (
+              {/* Só em sessão de agente: numa de shell o prompt cairia no shell. */}
+              {session.kind.type === "agent" && log && job && job.conclusion === "failure" && (
                 <button
                   type="button"
                   onClick={() =>

@@ -39,6 +39,7 @@ import {
   forwardPrompt,
   initials,
   reviewerStates,
+  timelineEventId,
   type TimelineEvent,
   type Tone,
 } from "../lib/prs";
@@ -132,7 +133,11 @@ export function PrDetailView({
   const [reviewEvent, setReviewEvent] = useState<PrReviewEvent>("comment");
   const [strategy, setStrategy] = useState<PrMergeStrategy>("squash");
   const [acting, setActing] = useState<null | "review" | "merge">(null);
-  const [actionNote, setActionNote] = useState<{ text: string; error: boolean } | null>(null);
+  // `from` decide onde o aviso aparece: o de revisão no formulário, o de merge
+  // na seção Merge (que continua na tela depois que o PR vira "merged").
+  const [actionNote, setActionNote] = useState<
+    { text: string; error: boolean; from: "review" | "merge" } | null
+  >(null);
 
   const load = useCallback(
     (fresh: boolean) => {
@@ -191,10 +196,10 @@ export function PrDetailView({
     try {
       await forgePrReview(session.id, pr.number, reviewEvent, body, pr.head_sha);
       setReviewBody("");
-      setActionNote({ text: t("prReviewSent"), error: false });
+      setActionNote({ text: t("prReviewSent"), error: false, from: "review" });
       load(true);
     } catch (e) {
-      setActionNote({ text: translateError(e, t), error: true });
+      setActionNote({ text: translateError(e, t), error: true, from: "review" });
       load(true);
     } finally {
       setActing(null);
@@ -216,10 +221,10 @@ export function PrDetailView({
     setActionNote(null);
     try {
       await forgePrMerge(session.id, pr.number, strategy, pr.head_sha);
-      setActionNote({ text: t("prMerged"), error: false });
+      setActionNote({ text: t("prMerged"), error: false, from: "merge" });
       load(true);
     } catch (e) {
-      setActionNote({ text: translateError(e, t), error: true });
+      setActionNote({ text: translateError(e, t), error: true, from: "merge" });
       load(true);
     } finally {
       setActing(null);
@@ -340,8 +345,8 @@ export function PrDetailView({
     return <span className={`${base} text-tyba-text-muted`}><ChatTeardrop size={12} /></span>;
   };
 
-  const renderEvent = (event: TimelineEvent, index: number) => {
-    const id = `${event.kind}:${index}`;
+  const renderEvent = (event: TimelineEvent) => {
+    const id = timelineEventId(event);
     let body: React.ReactNode = null;
     switch (event.kind) {
       case "opened":
@@ -372,14 +377,15 @@ export function PrDetailView({
         );
         break;
       case "commits": {
+        // Autor real do commit sempre; a sessão do agente é complemento e só
+        // aparece com sessão ligada ao PR.
         const author = event.commits[0].author;
         const agent = pr.session?.agent ?? null;
         body = (
           <div className="flex flex-col gap-1 pt-0.5 text-[12px]">
             <span className="text-tyba-text-muted">
-              <span className={agent ? "text-tyba-amber" : "text-tyba-text"}>
-                {agent ? t("prAgentSession", { agent }) : author}
-              </span>{" "}
+              <span className="text-tyba-text">{author}</span>
+              {agent && <span className="text-tyba-amber"> · {t("prAgentSession", { agent })}</span>}{" "}
               {t("prPushedCommits", { count: event.commits.length })}{" "}
               <span className="text-tyba-text-faint">· {relative(event.at, now)}</span>
             </span>
@@ -543,6 +549,15 @@ export function PrDetailView({
             {t("prCommitsCount", { count: pr.commits.length })}
           </span>
         </div>
+        {/* A atualização falhou mas há dado na tela: avisa sem esconder o PR. */}
+        {error && (
+          <p role="status" className="text-[11px] text-tyba-amber" title={error}>
+            {t("gitRefreshFailed")} ·{" "}
+            <button type="button" onClick={() => load(true)} className="hover:underline">
+              {t("gitRefreshRetry")}
+            </button>
+          </p>
+        )}
       </div>
 
       <div role="tablist" className="flex shrink-0 gap-1 tyba-divide-b px-[22px] text-[12px]">
@@ -692,7 +707,7 @@ export function PrDetailView({
                 {acting === "review" ? t("prReviewSending") : t("prReviewSend")}
               </button>
             </div>
-            {actionNote && (
+            {actionNote?.from === "review" && (
               <p role="status" className={`text-[11px] ${actionNote.error ? "text-tyba-red" : "text-tyba-green"}`}>
                 {actionNote.text}
               </p>
@@ -753,6 +768,16 @@ export function PrDetailView({
               </div>
             ))}
           </section>
+          {/* Depois do merge o formulário e os controles somem; o resultado fica. */}
+          {pr.state === "merged" && (
+            <section className="flex flex-col gap-2 px-[18px] py-3.5 text-[12px] text-tyba-text-muted">
+              <span className="tyba-label text-[11px] text-tyba-text-faint">{t("prMerge")}</span>
+              <span role="status" className="flex items-center gap-2 text-tyba-violet">
+                <GitMerge size={12} />
+                {t("prMerged")}
+              </span>
+            </section>
+          )}
           {pr.state !== "merged" && pr.state !== "closed" && (
             <section className="flex flex-col gap-2 px-[18px] py-3.5 text-[12px] text-tyba-text-muted">
               <span className="tyba-label text-[11px] text-tyba-text-faint">{t("prMerge")}</span>
@@ -810,6 +835,11 @@ export function PrDetailView({
               >
                 {acting === "merge" ? t("prMerging") : t("prMergeAction")}
               </button>
+              {actionNote?.from === "merge" && (
+                <p role="status" className={`text-[11px] ${actionNote.error ? "text-tyba-red" : "text-tyba-green"}`}>
+                  {actionNote.text}
+                </p>
+              )}
             </section>
           )}
           <div className="flex-1" />

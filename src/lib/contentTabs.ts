@@ -189,19 +189,19 @@ export async function openEditorTab(
   return opened;
 }
 
-/** Diff da sessão como aba (o conteúdo é o mesmo do painel de diff). */
+/** Abre a tela de Git da sessão na seção Revisar (o diff da sessão). */
 // Diff, PRs e histórico moram na tela cheia de Git (seções do trilho); as
 // abas de conteúdo antigas só reabrem quando o layout salvo as tem.
 export function openDiffTab(sessionId: SessionId): Promise<void> {
   return openGitScreen(sessionId, "review");
 }
 
-/** Lista de PRs do repo da sessão como aba. */
+/** Abre a tela de Git da sessão na seção PRs (lista do repo). */
 export function openPrsTab(sessionId: SessionId): Promise<void> {
   return openGitScreen(sessionId, "prs");
 }
 
-/** Um PR como aba. */
+/** Abre a tela de Git da sessão na seção PRs, já no PR `number`. */
 export function openPrTab(sessionId: SessionId, number: number): Promise<void> {
   return openGitScreen(sessionId, "prs", number);
 }

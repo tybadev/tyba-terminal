@@ -51,18 +51,21 @@ import {
   defaultCollapsed,
   MANY_FILES_AUTO_COLLAPSE,
   fileKeyOf,
+  fileSignature,
   isSectionOpen,
   keyPath,
   keyScope,
   langOfPath,
   reviewProgress,
   toggleSection,
+  viewedNow,
   type DiffMode,
   type DiffScopeKey,
   type ReviewComment,
   type Row,
   type SectionOpenState,
 } from "../lib/diff";
+import { requestConfirm } from "../lib/confirm";
 import { openEditorTab } from "../lib/contentTabs";
 import { translateError } from "../lib/errors";
 import { highlightBlock, type TokenSpan } from "../lib/highlight";
@@ -238,8 +241,9 @@ export function DiffView({
   const [resolvingConflicts, setResolvingConflicts] = useState(false);
   const [conflictBusy, setConflictBusy] = useState<string | null>(null);
   const [suggesting, setSuggesting] = useState(false);
-  // "Visto" por arquivo (chave escopo+caminho), só desta montagem.
-  const [viewed, setViewed] = useState<Set<string>>(() => new Set());
+  // "Visto" por arquivo (chave escopo+caminho → assinatura do arquivo quando
+  // foi marcado), só desta montagem. Se o arquivo muda, deixa de contar.
+  const [viewedMarks, setViewedMarks] = useState<Map<string, string>>(() => new Map());
   // Mockup Diff: na tela de Git (asTab) mostra um arquivo por vez.
   const single = asTab;
   const [focusKey, setFocusKey] = useState<string | null>(null);
@@ -547,6 +551,11 @@ export function DiffView({
     }
   }, [single, rows, focusKey]);
 
+  // Um arquivo por vez: trocar de arquivo começa do topo dele.
+  useEffect(() => {
+    if (single) scrollRef.current?.scrollTo({ top: 0 });
+  }, [single, focusKey]);
+
   const virtualizer = useVirtualizer({
     count: displayRows.length,
     getScrollElement: () => scrollRef.current,
@@ -638,16 +647,15 @@ export function DiffView({
   const stagedCount = diff?.staged_files.length ?? 0;
   const unstagedCount = diff?.unstaged_files.length ?? 0;
 
-  const progress = reviewProgress(
-    diff
-      ? {
-          committed: diff.files,
-          staged: diff.staged_files,
-          unstaged: diff.unstaged_files,
-        }
-      : {},
-    viewed,
+  const viewedScopes = useMemo(
+    () =>
+      diff
+        ? { committed: diff.files, staged: diff.staged_files, unstaged: diff.unstaged_files }
+        : {},
+    [diff],
   );
+  const viewed = useMemo(() => viewedNow(viewedMarks, viewedScopes), [viewedMarks, viewedScopes]);
+  const progress = reviewProgress(viewedScopes, viewed);
   const totals = useMemo(() => {
     const all = diff ? [...diff.files, ...diff.staged_files, ...diff.unstaged_files] : [];
     return {
@@ -665,9 +673,12 @@ export function DiffView({
   // Marcar visto recolhe o arquivo; desmarcar abre de novo.
   const toggleViewed = (key: string) => {
     const next = !viewed.has(key);
-    setViewed((prev) => {
-      const out = new Set(prev);
-      if (next) out.add(key);
+    const file = (viewedScopes[keyScope(key) as DiffScopeKey] ?? []).find(
+      (f) => f.path === keyPath(key),
+    );
+    setViewedMarks((prev) => {
+      const out = new Map(prev);
+      if (next && file) out.set(key, fileSignature(file));
       else out.delete(key);
       return out;
     });
@@ -1673,7 +1684,14 @@ export function DiffView({
             size="sm"
             className="h-auto shrink-0 gap-1.5 rounded-[6px] border border-tyba-border-strong bg-transparent px-3 py-[5px] text-[12px] font-normal text-tyba-text-muted hover:bg-transparent hover:text-tyba-text"
             disabled={busy !== null}
-            onClick={() =>
+            onClick={async () => {
+              // Push é vermelho: confirmação toda vez, como na tela de Git.
+              const ok = await requestConfirm({
+                title: t("gitScreenPushConfirm", { branch: branch || "HEAD" }),
+                detail: t("gitScreenPushConfirmDetail"),
+                confirmLabel: t("gitScreenPush"),
+              });
+              if (!ok) return;
               void gitAction(async () => {
                 const info = await worktreePush(session.id);
                 setPushedInfo(info);
@@ -1681,8 +1699,8 @@ export function DiffView({
                   () => setPushedInfo((cur) => (cur === info ? null : cur)),
                   5000,
                 );
-              }, "push")
-            }
+              }, "push");
+            }}
           >
             <UploadSimple size={12} />
             {busy === "push" ? t("diffPushing") : t("diffPush")}

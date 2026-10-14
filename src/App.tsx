@@ -2668,7 +2668,7 @@ export default function App() {
       tunnels: openTunnelsPanel,
       files: openFilesPanel,
       git: openGitPanel,
-      // O Diff é aba (mockup Diff), não painel lateral.
+      // O Diff abre a tela de Git na seção Revisar, não um painel lateral.
       diff: openDiffContentTab,
       agents: openAgentsPanel,
     }[kind];
@@ -4096,8 +4096,12 @@ export default function App() {
   const focusLine = useCallback((id: SessionId) => {
     setLineFocusNonces((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
   }, []);
+  // Com a tela de Git aberta o teclado é dela (Esc, campos): nada de puxar o
+  // foco de volta por baixo. Quando ela desmonta, o effect roda de novo e o
+  // foco volta ao terminal.
+  const gitScreenOpen = gitScreenSession !== null;
   useEffect(() => {
-    if (!activeId) return;
+    if (!activeId || gitScreenOpen) return;
     if (ownsCommandLine) {
       focusLine(activeId);
       return;
@@ -4106,7 +4110,7 @@ export default function App() {
     // desligado): o foco vai junto, senão as teclas caem numa caixa que já não
     // é dona da linha.
     getTerm(activeId)?.term.focus();
-  }, [ownsCommandLine, activeId, focusLine]);
+  }, [ownsCommandLine, activeId, focusLine, gitScreenOpen]);
 
   // Quem responde se o PS1 saiu da tela é o SHELL, não o app: o hook relata por
   // `633;P` a cada prompt. Assumir pela preferência mentiria quando o hook não
@@ -5743,7 +5747,10 @@ export default function App() {
                   <GitScreen
                     key={gitScreenSession.id}
                     session={gitScreenSession}
-                    repoRoot={workspaceGitDir(activeWorkspace)}
+                    // O repo da PRÓPRIA sessão da tela (worktree, senão o cwd
+                    // dela), não o do painel em foco: branch, ↑↓, Pull, push e
+                    // o "esta branch" do CI têm de bater com ela.
+                    repoRoot={gitScreenSession.worktree?.path ?? cwdKeyOf(gitScreenSession.id)}
                     snapshots={repoSnapshots}
                     exiting={gitMotion.exiting}
                     editor={editorPref}

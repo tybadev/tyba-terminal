@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { FileDiff, SessionDiff } from "./ipc";
 import {
+  amendPlan,
   commitPlan,
   gitChangeRows,
   pruneChosen,
@@ -84,6 +85,22 @@ describe("gitChangeRows", () => {
       insertions: 0,
       deletions: 0,
     });
+  });
+});
+
+describe("amendPlan", () => {
+  test("sem nada preparado, não prepara os rastreados: só a mensagem", () => {
+    const d = diff([], [file("b", "modified", 1, 0)], []);
+    expect(amendPlan(d)).toEqual({ stage: [], messageOnly: true });
+    expect(amendPlan(null)).toEqual({ stage: [], messageOnly: true });
+  });
+  test("com algo staged, leva o staged e mais nada", () => {
+    const d = diff([file("a", "modified", 1, 0)], [file("b", "modified", 1, 0)]);
+    expect(amendPlan(d)).toEqual({ stage: [], messageOnly: false });
+  });
+  test("untracked marcado entra", () => {
+    const d = diff([], [file("b", "modified", 1, 0), file("solto.txt", "added", 2, 0)], ["solto.txt"]);
+    expect(amendPlan(d, new Set(["solto.txt", "b"]))).toEqual({ stage: ["solto.txt"], messageOnly: false });
   });
 });
 

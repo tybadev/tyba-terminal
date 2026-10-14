@@ -7,7 +7,7 @@ import { requestConfirm } from "../lib/confirm";
 import { openEditorTab } from "../lib/contentTabs";
 import { numberHunk } from "../lib/diff";
 import { translateError } from "../lib/errors";
-import { commitPlan, pruneChosen, toggleUntracked } from "../lib/gitPanel";
+import { amendPlan, commitPlan, pruneChosen, toggleUntracked } from "../lib/gitPanel";
 import {
   onRepoChanged,
   sessionDiff,
@@ -120,6 +120,8 @@ export function GitChangesView({
   const unstaged = (diff?.unstaged_files ?? []).filter((f) => !untrackedSet.has(f.path));
   const untracked = (diff?.unstaged_files ?? []).filter((f) => untrackedSet.has(f.path));
   const plan = useMemo(() => commitPlan(diff, chosen), [diff, chosen]);
+  // Amend não prepara rastreados sozinho: sem nada preparado, só a mensagem.
+  const amending = useMemo(() => amendPlan(diff, chosen), [diff, chosen]);
 
   useEffect(() => {
     setChosen((prev) => pruneChosen(prev, diff));
@@ -208,7 +210,8 @@ export function GitChangesView({
     setBusy(true);
     setActionError(null);
     try {
-      if (plan.stage.length > 0) await worktreeStage(session.id, plan.stage);
+      const stage = amend ? amending.stage : plan.stage;
+      if (stage.length > 0) await worktreeStage(session.id, stage);
       if (amend) await worktreeCommitAmend(session.id, message);
       else await worktreeCommit(session.id, message);
       setMessage("");
@@ -300,7 +303,7 @@ export function GitChangesView({
 
   const total = staged.length + unstaged.length + untracked.length;
   const commitLabel = amend
-    ? t("gitChangesAmend")
+    ? t(amending.messageOnly ? "gitChangesAmendMessageOnly" : "gitChangesAmend")
     : plan.mode === "staged"
       ? t("gitPanelCommitStaged", { count: staged.length })
       : plan.mode === "tracked"
@@ -312,6 +315,15 @@ export function GitChangesView({
       <div className="flex w-[360px] shrink-0 flex-col tyba-divide-r">
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {loadError && !diff && <p className="p-3 text-[12px] text-tyba-text-faint">{t("gitPanelNoRepo")}</p>}
+          {/* A atualização falhou mas a lista anterior segue na tela: avisa. */}
+          {loadError && diff && (
+            <p role="status" className="px-2 pb-1 text-[11px] text-tyba-amber" title={loadError}>
+              {t("gitRefreshFailed")} ·{" "}
+              <button type="button" onClick={refresh} className="hover:underline">
+                {t("gitRefreshRetry")}
+              </button>
+            </p>
+          )}
           {diff && total === 0 && (
             <p className="flex items-center gap-2 p-3 text-[12px] text-tyba-text-muted">
               <span className="text-tyba-green">✓</span>

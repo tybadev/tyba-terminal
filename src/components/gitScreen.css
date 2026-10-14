@@ -36,7 +36,6 @@
 .tyba-git-in-down { animation: tyba-git-in-down 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 .tyba-git-in-left { animation: tyba-git-in-left 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 .tyba-git-in-right { animation: tyba-git-in-right 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
-.tyba-git-rail-marker { transition: top 260ms cubic-bezier(0.2, 0.8, 0.2, 1); }
 
 @media (prefers-reduced-motion: reduce) {
   .tyba-git-screen,
@@ -46,7 +45,6 @@
   .tyba-git-in-left,
   .tyba-git-in-right { animation: tyba-git-fade 120ms both; }
   .tyba-git-screen[data-exiting="true"] { animation-direction: reverse; }
-  .tyba-git-rail-marker { transition: none; }
 }
 
 /* Markdown de PR e comentário (conteúdo de terceiro, sem HTML cru): compacto. */
