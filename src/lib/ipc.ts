@@ -554,7 +554,34 @@ export interface PrPage {
   forge: ForgeKind;
   /** ISO; quando o core buscou (o cache pode devolver algo de antes). */
   fetched_at: string;
+  /** Limite da API baixo: a revalidação automática parou até `reset_at`. */
+  rate_limit: ForgeRateLimit | null;
 }
+
+/** Balde de limite da API do GitHub (`core` = REST, `graphql`). */
+export interface ForgeRateLimit {
+  resource: string;
+  /** `0` = limite desconhecido (erro de limite sem os cabeçalhos). */
+  limit: number;
+  remaining: number;
+  /** ISO (UTC). */
+  reset_at: string;
+}
+
+/**
+ * Revalidação em segundo plano (stale-while-revalidate) achou dado novo:
+ * quem mostra `repo` relê pelo cache (`fresh: false`). `number` nulo é a
+ * lista; com número, o detalhe daquele PR.
+ */
+export interface ForgeChange {
+  repo: string;
+  number: number | null;
+}
+
+export const EVENT_FORGE_CHANGED = "forge://changed";
+
+export const onForgeChanged = (handler: (change: ForgeChange) => void): Promise<UnlistenFn> =>
+  listen<ForgeChange>(EVENT_FORGE_CHANGED, (e) => handler(e.payload));
 
 export interface PrCommit {
   sha: string;
@@ -616,6 +643,8 @@ export interface PrDetail {
   additions: number;
   deletions: number;
   changed_files: number;
+  /** Total de commits do PR; `commits` pode trazer só os 100 últimos. */
+  commits_total: number;
   commits: PrCommit[];
   files: PrFile[];
   checks: PrCheck[];
@@ -630,6 +659,13 @@ export interface PrDetail {
   /** `mergeStateStatus` do GitHub em minúsculas: clean, behind, blocked, dirty… */
   merge_state: string;
   session: PrSessionLink | null;
+  /**
+   * O core trouxe no máximo 100 commits/checks/threads/comentários/revisões/
+   * arquivos e o PR tem mais.
+   */
+  truncated: boolean;
+  /** Ver `PrPage.rate_limit`. */
+  rate_limit: ForgeRateLimit | null;
 }
 
 /** `null` = a forja da sessão não tem lista rica (GitLab por enquanto). */
