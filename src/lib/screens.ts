@@ -114,3 +114,16 @@ export function escClosesScreen(event: {
   if (t.isContentEditable) return false;
   return !["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName ?? "");
 }
+
+/**
+ * O que ⌘W fecha com uma tela cheia aberta: o pane de terminal fica escondido
+ * por baixo, então nunca é ele. Na de Arquivos, a aba interna ativa; sem aba
+ * (ou em Git/Docker), a própria tela. Sem tela, o pane como sempre.
+ */
+export function closeTarget(
+  screen: ScreenKind | null,
+  activeFile: string | null,
+): "file" | "screen" | "pane" {
+  if (!screen) return "pane";
+  return screen === "files" && activeFile ? "file" : "screen";
+}

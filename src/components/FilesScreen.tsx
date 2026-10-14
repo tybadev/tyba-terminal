@@ -12,6 +12,7 @@ import {
 } from "@phosphor-icons/react";
 
 import "./gitScreen.css";
+import i18n from "../i18n";
 import { EditorTab } from "./EditorTab";
 import { FilesTree } from "./FilesTree";
 import { requestConfirm } from "../lib/confirm";
@@ -38,6 +39,7 @@ import {
   type Session,
   type SessionId,
   type Workspace,
+  type WorkspaceId,
 } from "../lib/ipc";
 import {
   FILES_SECTIONS,
@@ -218,6 +220,20 @@ function RecentColumn({ rels, onOpen }: { rels: string[]; onOpen: (rel: string) 
  * INTERNAS da tela. Os editores ficam montados mesmo com a tela fechada (o
  * buffer não salvo é do CodeMirror); fechada, a tela só some.
  */
+/** Fecha uma aba interna da tela; buffer sujo pede confirmação antes (botão e ⌘W). */
+export async function closeScreenFile(workspace: WorkspaceId, view: string) {
+  if (isEditorDirty(view)) {
+    const ok = await requestConfirm({
+      title: i18n.t("filesDiscardTitle"),
+      detail: i18n.t("filesDiscardDetail"),
+      confirmLabel: i18n.t("filesDiscardConfirm"),
+      destructive: true,
+    });
+    if (!ok) return;
+  }
+  void filesScreenClose(workspace, view).catch(() => {});
+}
+
 export function FilesScreen({
   open,
   exiting,
@@ -304,17 +320,7 @@ export function FilesScreen({
   };
 
   const closeTab = async (view: string) => {
-    if (!workspace) return;
-    if (isEditorDirty(view)) {
-      const ok = await requestConfirm({
-        title: t("filesDiscardTitle"),
-        detail: t("filesDiscardDetail"),
-        confirmLabel: t("filesDiscardConfirm"),
-        destructive: true,
-      });
-      if (!ok) return;
-    }
-    void filesScreenClose(workspace.id, view).catch(() => {});
+    if (workspace) await closeScreenFile(workspace.id, view);
   };
 
   const create = (isDir: boolean) => {

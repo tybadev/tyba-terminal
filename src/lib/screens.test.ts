@@ -4,6 +4,7 @@ import type { FilesScreenState, Workspace } from "./ipc";
 import {
   activeFile,
   allScreenEditors,
+  closeTarget,
   escClosesScreen,
   recentFiles,
   screenOf,
@@ -108,5 +109,20 @@ describe("Esc fecha a tela", () => {
     expect(escClosesScreen(ev("DIV", { isContentEditable: true }))).toBe(false);
     expect(escClosesScreen(ev("DIV", { defaultPrevented: true }))).toBe(false);
     expect(escClosesScreen({ ...ev("DIV"), key: "Enter" })).toBe(false);
+  });
+});
+
+describe("closeTarget", () => {
+  test("sem tela, ⌘W fecha o pane", () => {
+    expect(closeTarget(null, null)).toBe("pane");
+    expect(closeTarget(null, ed(A, "a.ts"))).toBe("pane");
+  });
+  test("Arquivos com aba ativa fecha a aba; sem aba, a tela", () => {
+    expect(closeTarget("files", ed(A, "a.ts"))).toBe("file");
+    expect(closeTarget("files", null)).toBe("screen");
+  });
+  test("Git e Docker fecham a tela, nunca o pane escondido", () => {
+    expect(closeTarget("git", null)).toBe("screen");
+    expect(closeTarget("docker", ed(A, "a.ts"))).toBe("screen");
   });
 });

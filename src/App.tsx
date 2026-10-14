@@ -136,7 +136,7 @@ import { WorktreesView } from "./components/WorktreesView";
 import { StatsView } from "./components/StatsView";
 import { DiffView } from "./components/DiffView";
 import { TunnelsView } from "./components/TunnelsView";
-import { FilesScreen } from "./components/FilesScreen";
+import { FilesScreen, closeScreenFile } from "./components/FilesScreen";
 import { GitHistoryView } from "./components/GitHistoryView";
 import { DockerScreen } from "./components/DockerScreen";
 import { HistoryPanel } from "./components/HistoryPanel";
@@ -168,7 +168,7 @@ import {
 import { AgentsPanel } from "./components/AgentsPanel";
 import { PrListView } from "./components/PrListView";
 import { GitScreen } from "./components/GitScreen";
-import { allScreenEditors, sideSlotView } from "./lib/screens";
+import { activeFile, allScreenEditors, closeTarget, screenOf, sideSlotView } from "./lib/screens";
 import { openGitScreen } from "./lib/gitScreen";
 import { PrDetailView } from "./components/PrDetailView";
 import { SubagentViewer } from "./components/SubagentViewer";
@@ -3608,6 +3608,18 @@ export default function App() {
   );
 
   const closeActivePane = useCallback(async () => {
+    // Tela cheia aberta: o pane fica escondido por baixo e não é o alvo.
+    const screen = screenOf(sideView);
+    if (screen && activeWorkspace) {
+      const file =
+        screen.kind === "files" ? activeFile(activeWorkspace.screens.files, screen.session) : null;
+      if (closeTarget(screen.kind, file) === "file" && file) {
+        await closeScreenFile(activeWorkspace.id, file);
+      } else {
+        await closeSideView(activeWorkspace.id).catch(() => {});
+      }
+      return;
+    }
     if (!activeTab) return;
     if (!activeTab.active_pane && !(await confirmCloseDirtyEditors(activeTab))) return;
     if (activeTab.active_pane) {
@@ -3623,6 +3635,8 @@ export default function App() {
     }
     await refreshSessions();
   }, [
+    sideView,
+    activeWorkspace,
     activeTab,
     sessionById,
     confirmCloseWithRunningAgent,
@@ -5775,10 +5789,12 @@ export default function App() {
                         : null
                     }
                     exiting={dockerMotion.exiting}
+                    // Sessão que a lista ainda não tem acabou de nascer, não morreu.
                     exitedOf={(id) => {
                       const s = sessionById.get(id);
-                      return !s || isFinishedStatus(s.status);
+                      return s ? isFinishedStatus(s.status) : false;
                     }}
+                    onSessionsChanged={() => void refreshSessions()}
                     onClose={() => void closeSideView(activeWorkspace.id).catch(() => {})}
                     onOpenDashboard={() => void dockerOpenDashboard().catch(() => {})}
                   />
@@ -5810,7 +5826,11 @@ export default function App() {
                       activeWorkspace && void closeSideView(activeWorkspace.id).catch(() => {})
                     }
                     onOpenDiff={(sid) => void openDiffContentTab(sid).catch(() => {})}
-                    onRunInTerminal={runInTerminal}
+                    // O terminal novo nasce debaixo da tela: fecha ela para ele aparecer.
+                    onRunInTerminal={(command) => {
+                      if (activeWorkspace) void closeSideView(activeWorkspace.id).catch(() => {});
+                      void runInTerminal(command);
+                    }}
                   />
                 )}
                 <div

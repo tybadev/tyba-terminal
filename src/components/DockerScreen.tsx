@@ -42,6 +42,8 @@ import {
   dockerListVolumes,
   dockerOpenDesktop,
   dockerPanelUsage,
+  dockerRemoveContainer,
+  dockerScreenLogs,
   dockerScreenPane,
   dockerScreenSection,
   dockerScreenSelect,
@@ -87,28 +89,38 @@ const BTN =
 const FULL_RECT = { left: 0, top: 0, width: 100, height: 100 } as const;
 
 /** O shell do container dentro da tela: `docker exec` no container, nunca na
- *  máquina local — a faixa azul diz isso antes de qualquer comando. */
+ *  máquina local — a faixa azul diz isso antes de qualquer comando. Em sessão
+ *  SSH os logs são a mesma coisa sem a faixa: um `docker logs -f` no servidor. */
 function ShellPane({
+  kind = "shell",
   containerId,
   host,
   exitedOf,
+  onSessionsChanged,
 }: {
+  kind?: "shell" | "logs";
   containerId: string;
   host: string | null;
   exitedOf: (id: SessionId) => boolean;
+  /** A sessão nasce no core: a lista do webview precisa recarregar. */
+  onSessionsChanged: () => void;
 }) {
   const { t } = useTranslation();
   const [sessionId, setSessionId] = useState<SessionId | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  // Fora das deps do spawn: um callback novo do pai não pode abrir outro shell.
+  const changedRef = useRef(onSessionsChanged);
+  changedRef.current = onSessionsChanged;
 
   useEffect(() => {
     let alive = true;
     setSessionId(null);
     setError(null);
-    void dockerScreenShell(containerId, host)
+    void (kind === "logs" ? dockerScreenLogs : dockerScreenShell)(containerId, host)
       .then((id) => {
         if (alive) setSessionId(id);
+        changedRef.current();
       })
       .catch((e) => {
         if (alive) setError(translateError(e, t));
@@ -116,12 +128,12 @@ function ShellPane({
     return () => {
       alive = false;
     };
-  }, [containerId, host, nonce, t]);
+  }, [kind, containerId, host, nonce, t]);
 
   const exited = sessionId ? exitedOf(sessionId) : false;
   return (
     <div className="absolute inset-0 flex flex-col">
-      <ContainerShellBanner containerId={containerId} />
+      {kind === "shell" && <ContainerShellBanner containerId={containerId} />}
       {error ? (
         <p role="alert" className="px-[18px] py-3 text-[12px] text-tyba-red">
           {error}
@@ -136,6 +148,7 @@ function ShellPane({
               focused
               rect={FULL_RECT}
               exited={exited}
+              onExit={onSessionsChanged}
             />
           )}
           {exited && (
@@ -144,7 +157,7 @@ function ShellPane({
               onClick={() => setNonce((n) => n + 1)}
               className={`absolute bottom-3 right-4 ${BTN}`}
             >
-              {t("dockerScreenShellReopen")}
+              {t(kind === "logs" ? "dockerScreenLogsReopen" : "dockerScreenShellReopen")}
             </button>
           )}
         </div>
@@ -315,6 +328,7 @@ export function DockerScreen({
   repoRoot,
   exiting,
   exitedOf,
+  onSessionsChanged,
   onClose,
   onOpenDashboard,
 }: {
@@ -326,6 +340,7 @@ export function DockerScreen({
   repoRoot: string | null;
   exiting: boolean;
   exitedOf: (id: SessionId) => boolean;
+  onSessionsChanged: () => void;
   onClose: () => void;
   /** O workspace Docker antigo (projetos compose: subir/derrubar). */
   onOpenDashboard: () => void;
@@ -449,6 +464,27 @@ export function DockerScreen({
     }
   };
 
+  const remove = async (c: ContainerInfo) => {
+    if (busy) return;
+    const ok = await requestConfirm({
+      title: t("dockerPanelRemoveTitle", { name: displayName(c) }),
+      detail: t("dockerPanelRemoveDetail"),
+      confirmLabel: t("dockerPanelRemove"),
+      destructive: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await dockerRemoveContainer(c.id, host);
+      await refresh();
+    } catch (e) {
+      setError(translateError(e, t));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const card = (c: ContainerInfo) => {
     const running = c.state === "running";
     const on = c.id === selected?.id;
@@ -471,10 +507,10 @@ export function DockerScreen({
         onClick={() => pick(c.id)}
         title={`${c.name}\n${image.full}\n${c.status}`}
         // Escolhido = fundo elevado com contorno inteiro; nunca barra lateral.
-        className={`flex w-full flex-col gap-[5px] rounded-[6px] border px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
+        className={`flex w-full flex-col gap-[5px] rounded-[6px] px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
           on
-            ? "border-[var(--tyba-border-soft)] bg-tyba-raised shadow-[var(--tyba-row-raised)]"
-            : "border-transparent hover:bg-tyba-text/[.03]"
+            ? "bg-tyba-raised shadow-[var(--tyba-raised-ring)]"
+            : "hover:bg-tyba-text/[.03]"
         } ${running ? "text-tyba-text" : "text-tyba-text-muted"}`}
       >
         <span className="flex w-full items-center justify-between gap-2">
@@ -746,8 +782,8 @@ export function DockerScreen({
                     >
                       {CONTAINER_PANES.map((pane) => {
                         const on = pane === state.pane;
-                        // Logs estruturados e arquivos leem o docker local.
-                        const disabled = host !== null && (pane === "files" || pane === "logs");
+                        // Arquivos lê o docker local; logs remotos viram terminal.
+                        const disabled = host !== null && pane === "files";
                         return (
                           <button
                             key={pane}
@@ -757,10 +793,10 @@ export function DockerScreen({
                             disabled={disabled}
                             title={disabled ? t("dockerScreenLocalOnly") : undefined}
                             onClick={() => showPane(pane)}
-                            className={`rounded-[6px] border px-3 py-[5px] text-[12px] disabled:opacity-40 ${
+                            className={`rounded-[6px] px-3 py-[5px] text-[12px] disabled:opacity-40 ${
                               on
-                                ? "border-[var(--tyba-border-soft)] bg-tyba-raised text-tyba-text shadow-[var(--tyba-row-raised)]"
-                                : "border-transparent text-tyba-text-faint hover:text-tyba-text"
+                                ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]"
+                                : "text-tyba-text-faint hover:text-tyba-text"
                             }`}
                           >
                             {t(PANE_LABEL[pane])}
@@ -768,13 +804,28 @@ export function DockerScreen({
                         );
                       })}
                     </span>
+                    {selected.state !== "running" && (
+                      <button
+                        type="button"
+                        className={`ml-auto ${BTN}`}
+                        disabled={busy}
+                        onClick={() => void remove(selected)}
+                      >
+                        {t("dockerPanelRemove")}
+                      </button>
+                    )}
                   </div>
                   <div className="relative min-h-0 flex-1">
                     {state.pane === "logs" &&
                       (host ? (
-                        <p className="px-[18px] py-3 text-[12px] text-tyba-text-faint">
-                          {t("dockerScreenLocalOnly")}
-                        </p>
+                        <ShellPane
+                          key={selected.id}
+                          kind="logs"
+                          containerId={selected.id}
+                          host={host}
+                          exitedOf={exitedOf}
+                          onSessionsChanged={onSessionsChanged}
+                        />
                       ) : (
                         <ContainerLogsView
                           key={selected.id}
@@ -784,7 +835,12 @@ export function DockerScreen({
                       ))}
                     {state.pane === "shell" &&
                       (selected.state === "running" ? (
-                        <ShellPane containerId={selected.id} host={host} exitedOf={exitedOf} />
+                        <ShellPane
+                          containerId={selected.id}
+                          host={host}
+                          exitedOf={exitedOf}
+                          onSessionsChanged={onSessionsChanged}
+                        />
                       ) : (
                         <p className="px-[18px] py-3 text-[12px] text-tyba-text-faint">
                           {t("dockerScreenShellStopped")}

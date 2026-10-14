@@ -680,14 +680,14 @@ export function FilesTree({
                   aria-selected={isSelected}
                   // Seleção = fundo elevado com contorno inteiro, nunca barra
                   // de um lado só.
-                  className={`group flex h-[26px] cursor-pointer items-center gap-[7px] rounded-[5px] border pr-2.5 text-[12.5px] ${
+                  className={`group flex h-[26px] cursor-pointer items-center gap-[7px] rounded-[5px] pr-2.5 text-[12.5px] ${
                     isSelected
-                      ? "border-[var(--tyba-border-soft)] bg-tyba-raised text-tyba-text shadow-[var(--tyba-row-raised)]"
+                      ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]"
                       : deco === "deleted"
-                        ? "border-transparent text-tyba-red hover:bg-tyba-text/[.04]"
+                        ? "text-tyba-red hover:bg-tyba-text/[.04]"
                         : isOpenDir || (deco && deco !== "untracked")
-                          ? "border-transparent text-tyba-text hover:bg-tyba-text/[.04]"
-                          : "border-transparent text-tyba-text-muted hover:bg-tyba-text/[.04]"
+                          ? "text-tyba-text hover:bg-tyba-text/[.04]"
+                          : "text-tyba-text-muted hover:bg-tyba-text/[.04]"
                   } ${entry.gitignored ? "opacity-50" : ""}`}
                   style={{ paddingLeft: `${10 + depth * 16}px` }}
                 >

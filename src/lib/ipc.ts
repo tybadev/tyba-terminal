@@ -1519,6 +1519,10 @@ export const dockerScreenPane = (workspace: WorkspaceId, pane: ContainerPane) =>
 export const dockerScreenShell = (containerId: string, host?: string | null) =>
   invoke<SessionId>("docker_screen_shell", { containerId, host: host ?? null });
 
+/** Os logs (`docker logs -f`) da tela de Docker em sessão SSH: sessão de terminal sem aba. */
+export const dockerScreenLogs = (containerId: string, host?: string | null) =>
+  invoke<SessionId>("docker_screen_logs", { containerId, host: host ?? null });
+
 export interface ImageInfo {
   id: string;
   repository: string;
