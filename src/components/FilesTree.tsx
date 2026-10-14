@@ -43,6 +43,8 @@ import { fileIcon } from "@/lib/fileIcon";
 import { isSensitivePath } from "@/lib/sensitivePaths";
 import { toastError } from "@/lib/toast";
 import { LspStatusChip, useLspStatus } from "./LspStatusUi";
+import { LoadingState } from "./ui/loading";
+import { compactPath } from "@/lib/workspaceCwd";
 
 interface Props {
   session: Session;
@@ -123,13 +125,17 @@ export function FilesTree({
   const { t } = useTranslation();
   const [treeQuery, setTreeQuery] = useState("");
   const [treeHits, setTreeHits] = useState<string[] | null>(null);
+  /** Busca pedida ao core e ainda sem resposta: quando começou. */
+  const [searchAt, setSearchAt] = useState<number | null>(null);
   useEffect(() => {
     const q = treeQuery.trim();
     if (!q) {
       setTreeHits(null);
+      setSearchAt(null);
       return;
     }
     let alive = true;
+    setSearchAt(Date.now());
     const timer = window.setTimeout(() => {
       void filesSearch(session.id, q, 200)
         .then((r) => {
@@ -137,6 +143,9 @@ export function FilesTree({
         })
         .catch(() => {
           if (alive) setTreeHits([]);
+        })
+        .finally(() => {
+          if (alive) setSearchAt(null);
         });
     }, 120);
     return () => {
@@ -160,8 +169,12 @@ export function FilesTree({
   const [treeEdit, setTreeEdit] = useState<TreeEdit | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [busyAt, setBusyAt] = useState(() => Date.now());
 
   const remote = info?.remote ?? false;
+  // A raiz que o core ancorou, encurtada como no resto do app; antes de ela
+  // chegar, reticências — nunca um caminho chutado.
+  const rootLabel = info ? compactPath(info.root) : "…";
   const connectionDown = session.connection && session.connection !== "live";
 
   const entriesRef = useRef(entriesByDir);
@@ -203,6 +216,7 @@ export function FilesTree({
       })
       .catch(() => {});
     setBusy(true);
+    setBusyAt(Date.now());
     void filesListDir(session.id, "")
       .then((listing) => {
         if (!alive) return;
@@ -271,6 +285,7 @@ export function FilesTree({
 
   const doRefresh = useCallback(async () => {
     setBusy(true);
+    setBusyAt(Date.now());
     try {
       await filesRefresh(session.id).catch(() => {});
       const dirs = ["", ...Array.from(expandedDirs)];
@@ -561,7 +576,23 @@ export function FilesTree({
         </div>
       )}
 
-      {treeHits !== null ? (
+      {treeHits === null && searchAt !== null ? (
+        <LoadingState
+          op="filesSearch"
+          remote={remote}
+          step={
+            remote && info?.host
+              ? t("loadFilesSearchRemote", { host: info.host, q: treeQuery.trim(), path: rootLabel })
+              : t("loadFilesSearch", { q: treeQuery.trim(), path: rootLabel })
+          }
+          em={[info?.host ?? "", rootLabel]}
+          startedAt={searchAt}
+          slowCause={
+            remote && info?.host ? t("loadRemoteSlow", { host: info.host }) : t("loadFilesSlow")
+          }
+          className="min-h-0 flex-1"
+        />
+      ) : treeHits !== null ? (
         <ul className="min-h-0 flex-1 overflow-auto px-1.5 py-2">
           {treeHits.length === 0 && (
             <li className="px-2 py-2 text-[11px] text-tyba-text-faint">
@@ -630,10 +661,23 @@ export function FilesTree({
             <div className="px-3 py-1 text-[10px] text-tyba-red">{treeError}</div>
           )}
           {busy && rows.length === 0 ? (
-            <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-tyba-text-faint">
-              <ArrowClockwise size={12} className="animate-spin" />
-              {t("filesLoading")}
-            </div>
+            <LoadingState
+              op="files"
+              remote={remote}
+              step={
+                remote && info?.host
+                  ? t("loadFilesReadRemote", { host: info.host, path: rootLabel })
+                  : t("loadFilesRead", { path: rootLabel })
+              }
+              em={[info?.host ?? "", rootLabel]}
+              startedAt={busyAt}
+              slowCause={
+                remote && info?.host ? t("loadRemoteSlow", { host: info.host }) : t("loadFilesSlow")
+              }
+              onRetry={() => void doRefresh()}
+              shape="tree"
+              className="-mx-1.5 -my-2"
+            />
           ) : rows.length === 0 && !treeEdit ? (
             <div className="px-3 py-2 text-[11px] text-tyba-text-faint">
               {t("filesEmptyDir")}

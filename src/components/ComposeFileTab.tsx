@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { CodeEditor } from "./CodeEditor";
+import { LoadingState } from "./ui/loading";
 import { getEffectiveBase, onEffectiveBaseChange } from "@/theme";
 import { translateError } from "../lib/errors";
 import { dockerComposeFile } from "../lib/ipc";
@@ -15,6 +16,7 @@ export function ComposeFileTab({ project, index }: { project: string; index: num
   const { t } = useTranslation();
   const [file, setFile] = useState<{ path: string; text: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [startedAt, setStartedAt] = useState(() => Date.now());
   const [isDark, setIsDark] = useState(() => getEffectiveBase() === "dark");
   useEffect(() => onEffectiveBaseChange(() => setIsDark(getEffectiveBase() === "dark")), []);
 
@@ -22,6 +24,7 @@ export function ComposeFileTab({ project, index }: { project: string; index: num
     let alive = true;
     setFile(null);
     setError(null);
+    setStartedAt(Date.now());
     void dockerComposeFile(project, index)
       .then((f) => alive && setFile(f))
       .catch((e) => alive && setError(translateError(e, t)));
@@ -46,7 +49,16 @@ export function ComposeFileTab({ project, index }: { project: string; index: num
             {error}
           </p>
         ) : !file ? (
-          <p className="px-[18px] py-3 text-[12px] text-tyba-text-faint">{t("filesLoading")}</p>
+          <LoadingState
+            op="editor"
+            step={t("loadComposeFile", { project })}
+            em={[project]}
+            startedAt={startedAt}
+            slowCause={t("loadFilesSlow")}
+            shape="lines"
+            rows={8}
+            className="absolute inset-0"
+          />
         ) : (
           <div className="absolute inset-0">
             <CodeEditor

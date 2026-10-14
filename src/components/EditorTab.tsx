@@ -53,6 +53,7 @@ import { lineDiff } from "@/lib/lineDiff";
 import { CodeEditor, type CodeEditorHandle } from "./CodeEditor";
 import { HighlightedSource, MarkdownView } from "./MarkdownView";
 import { LspBanners, LspStatusChip, useLspStatus } from "./LspStatusUi";
+import { LoadingState } from "./ui/loading";
 
 interface Props {
   session: Session;
@@ -68,7 +69,7 @@ interface Props {
 }
 
 type Loaded =
-  | { kind: "loading" }
+  | { kind: "loading"; at: number }
   | { kind: "error"; message: string }
   | { kind: "ready"; text: string; version: number };
 
@@ -92,7 +93,7 @@ export function EditorTab({
   onRunInTerminal,
 }: Props) {
   const { t } = useTranslation();
-  const [loaded, setLoaded] = useState<Loaded>({ kind: "loading" });
+  const [loaded, setLoaded] = useState<Loaded>(() => ({ kind: "loading", at: Date.now() }));
   const [savedHash, setSavedHash] = useState("");
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState<{ diskHash: string | null } | null>(null);
@@ -153,7 +154,7 @@ export function EditorTab({
   // passa a vigiar este arquivo).
   useEffect(() => {
     let alive = true;
-    setLoaded({ kind: "loading" });
+    setLoaded({ kind: "loading", at: Date.now() });
     void filesEditBegin(session.id, rel)
       .then((base) => {
         if (!alive) return;
@@ -575,7 +576,17 @@ export function EditorTab({
 
       <div className="relative min-h-0 flex-1">
         {loaded.kind === "loading" && (
-          <div className="p-4 text-[12px] text-tyba-text-faint">{t("filesLoading")}</div>
+          <LoadingState
+            op="editor"
+            remote={remote}
+            step={t("loadFilesRead", { path: rel })}
+            em={[rel]}
+            startedAt={loaded.at}
+            slowCause={remote ? undefined : t("loadFilesSlow")}
+            shape="lines"
+            rows={8}
+            className="absolute inset-0"
+          />
         )}
         {loaded.kind === "error" && (
           <div className="flex flex-col items-start gap-2 p-4 text-[12px] text-tyba-text-muted">

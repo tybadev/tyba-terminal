@@ -15,6 +15,7 @@ import { ContainerFilesPanel } from "./ContainerFilesPanel";
 import { ContainerLogsView } from "./ContainerLogsView";
 import { ContainerShellBanner, ContainerStrip } from "./ContainerStrip";
 import { DockerComposeSection } from "./DockerComposeSection";
+import { DockerLoading } from "./DockerLoading";
 import { PanelIcon } from "./SidePanelBar";
 import { TerminalView } from "./TerminalView";
 import { requestConfirm } from "../lib/confirm";
@@ -185,6 +186,7 @@ function DetailsPane({ containerId, host }: { containerId: string; host: string 
   const { t } = useTranslation();
   const [detail, setDetail] = useState<ContainerDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [startedAt] = useState(() => Date.now());
   useEffect(() => {
     let alive = true;
     void dockerContainerDetail(containerId, host)
@@ -202,7 +204,15 @@ function DetailsPane({ containerId, host }: { containerId: string; host: string 
     return <p className="px-[18px] py-3 text-[12px] text-tyba-red">{error}</p>;
   }
   if (!detail) {
-    return <p className="px-[18px] py-3 text-[12px] text-tyba-text-faint">{t("filesLoading")}</p>;
+    return (
+      <DockerLoading
+        host={host}
+        cmd={`inspect ${containerId.slice(0, 12)}`}
+        startedAt={startedAt}
+        shape="lines"
+        className="absolute inset-0"
+      />
+    );
   }
   const row = (label: string, value: React.ReactNode) => (
     <div className="flex gap-4 py-1.5">
@@ -241,6 +251,7 @@ function ReadOnlyList({ section, host }: { section: "images" | "volumes"; host: 
   const [images, setImages] = useState<ImageInfo[] | null>(null);
   const [volumes, setVolumes] = useState<VolumeInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [startedAt, setStartedAt] = useState(() => Date.now());
   useEffect(() => {
     let alive = true;
     setError(null);
@@ -259,7 +270,7 @@ function ReadOnlyList({ section, host }: { section: "images" | "volumes"; host: 
     return () => {
       alive = false;
     };
-  }, [section, host, t]);
+  }, [section, host, t, startedAt]);
   const rows = section === "images" ? images : volumes;
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-tyba-sunken">
@@ -271,12 +282,19 @@ function ReadOnlyList({ section, host }: { section: "images" | "volumes"; host: 
         {t("dockerScreenReadOnly")}
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-[18px] py-2 text-[12.5px]">
-        {error ? (
+        {rows === null ? (
+          <DockerLoading
+            host={host}
+            cmd={section === "images" ? "image ls" : "volume ls"}
+            startedAt={startedAt}
+            error={error}
+            onRetry={() => setStartedAt(Date.now())}
+            className="-mx-[18px] -my-2"
+          />
+        ) : error ? (
           <p role="alert" className="py-2 text-tyba-red">
             {error}
           </p>
-        ) : rows === null ? (
-          <p className="py-2 text-tyba-text-faint">{t("filesLoading")}</p>
         ) : rows.length === 0 ? (
           <p className="py-2 text-tyba-text-faint">
             {section === "images" ? t("dockerScreenNoImages") : t("dockerScreenNoVolumes")}
@@ -364,6 +382,9 @@ export function DockerScreen({
   const [error, setError] = useState<string | null>(null);
   const [logsRestart, setLogsRestart] = useState(0);
   const [composeRuns, setComposeRuns] = useState<Record<string, ComposeRun>>({});
+  // A etapa da primeira leitura: o comando que o core está rodando agora.
+  const [loadCmd, setLoadCmd] = useState<"version" | "ps -a">("version");
+  const [loadStart, setLoadStart] = useState(() => Date.now());
 
   const sectionRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -379,12 +400,14 @@ export function DockerScreen({
         () => {},
       );
     try {
+      setLoadCmd("version");
       const ok = await dockerAvailable(host);
       setAvailable(ok);
       if (!ok) {
         setList([]);
         return;
       }
+      setLoadCmd("ps -a");
       const next = await dockerListContainers(host ? null : repoRoot, true, host);
       for (const c of next) rememberContainerName(c.id, c.name);
       setList(next);
@@ -392,6 +415,23 @@ export function DockerScreen({
       setError(translateError(e, t));
     }
   }, [host, repoRoot, t]);
+
+  const retryLoad = useCallback(() => {
+    setError(null);
+    setLoadStart(Date.now());
+    void refresh();
+  }, [refresh]);
+  const firstLoad = (shape: "list" | null, className?: string) => (
+    <DockerLoading
+      host={host}
+      cmd={loadCmd}
+      startedAt={loadStart}
+      error={error}
+      onRetry={retryLoad}
+      shape={shape}
+      className={className}
+    />
+  );
 
   // Saída ao vivo do compose: lotes do core juntados ao retrato por posição.
   useEffect(() => {
@@ -769,6 +809,7 @@ export function DockerScreen({
           <DockerComposeSection
             projects={projects}
             loaded={list !== null}
+            loading={firstLoad("list")}
             selected={state.project}
             hideStopped={state.hide_stopped}
             host={host}
@@ -779,7 +820,7 @@ export function DockerScreen({
             onChanged={refresh}
           />
         ) : state.section !== "containers" ? (
-          <ReadOnlyList section={state.section} host={host} />
+          <ReadOnlyList key={state.section} section={state.section} host={host} />
         ) : (
           // Coluna à direita, junto do trilho, como em Arquivos (dono, 2026-10-14).
           <div className="flex min-h-0 flex-1 flex-row-reverse">
@@ -815,7 +856,7 @@ export function DockerScreen({
               )}
               <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1">
                 {list === null ? (
-                  <p className="px-2 py-2 text-[12px] text-tyba-text-faint">{t("filesLoading")}</p>
+                  firstLoad("list", "-mx-2 -my-1")
                 ) : list.length === 0 ? (
                   <p className="px-2 py-2 text-[12px] text-tyba-text-faint">
                     {t("dockerPanelEmptyAll")}
@@ -937,9 +978,9 @@ export function DockerScreen({
                     )}
                   </div>
                 </>
-              ) : (
+              ) : list === null ? null : (
                 <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
-                  {list && list.length > 0 ? t("dockerScreenPick") : t("dockerPanelEmptyAll")}
+                  {list.length > 0 ? t("dockerScreenPick") : t("dockerPanelEmptyAll")}
                 </div>
               )}
             </div>
