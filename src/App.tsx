@@ -3519,26 +3519,29 @@ export default function App() {
     }
   }, [activeWorkspace, openNewSession, workspaceSshHostId]);
 
-  // Sessão aberta pelo core para um PR ("Abrir no TYBA"): se já existia, só
-  // vai até ela; se é nova, ganha uma aba no workspace ativo. Nos dois casos a
-  // tela de Git fecha, para o shell do PR aparecer.
+  // Sessão aberta pelo core para um PR ("Abrir no TYBA"): se já existia e
+  // está numa aba, só vai até ela; senão ganha uma aba no workspace ativo. Nos
+  // dois casos a tela de Git fecha, para o shell do PR aparecer. Falha ao criar
+  // a aba sobe para quem chamou (o detalhe do PR mostra o erro); a sessão só é
+  // descartada se acabou de nascer.
   const adoptOpenedSession = useCallback(
     async (opened: Session) => {
       if (!activeWorkspace) return;
-      if (sessionById.has(opened.id)) {
+      const known = sessionById.has(opened.id);
+      if (known && findSessionLocation(layout.workspaces, opened.id)) {
         goToSession(opened.id);
       } else {
-        setSessions((prev) => [...prev, opened]);
+        if (!known) setSessions((prev) => [...prev, opened]);
         try {
           await createTab(opened.id, activeWorkspace.id);
-        } catch {
-          void disposeSession(opened.id).catch(() => {});
-          return;
+        } catch (e) {
+          if (!known) void disposeSession(opened.id).catch(() => {});
+          throw e;
         }
       }
       void closeSideView(activeWorkspace.id).catch(() => {});
     },
-    [activeWorkspace, sessionById, goToSession],
+    [activeWorkspace, sessionById, goToSession, layout.workspaces],
   );
 
   const runInTerminal = useCallback(

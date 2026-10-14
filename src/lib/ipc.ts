@@ -705,7 +705,7 @@ export const forgePrMerge = (
 // Só pela UI, sempre depois de confirmação. O core busca `refs/pull/<n>/head`,
 // confere contra `headSha` (o que o usuário viu) e nunca empurra nada.
 
-/** Sessão de shell num worktree NOVO no head do PR (branch `tyba/pr-<n>-…`);
+/** Sessão de shell num worktree NOVO no head do PR (branch `tyba/pr/<n>-…`);
  *  o checkout do usuário não muda. Se uma sessão já abriu o PR, devolve ela. */
 export const forgePrOpenSession = (
   id: SessionId,

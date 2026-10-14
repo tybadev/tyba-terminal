@@ -7,14 +7,15 @@
 //! usuário viu na tela; se o PR andou, recusa com `forge.pr_head_moved`.
 //!
 //! - **Abrir no TYBA** nunca toca no checkout do usuário: cria um worktree
-//!   gerido (`~/.tyba/worktrees`) numa branch `tyba/pr-<n>-<sufixo>` no head
+//!   gerido (`~/.tyba/worktrees`) numa branch `tyba/pr/<n>-<sufixo>` no head
 //!   do PR. O nome da branch é do TYBA, nunca o `headRefName` do PR — esse é
 //!   escolhido pelo autor (num fork, por terceiros) e poderia coincidir com uma
 //!   branch do usuário. O script de setup do repo **não** roda: o conteúdo é
 //!   do PR, não do usuário.
 //! - **Checkout** troca o checkout do usuário para o head do PR em **HEAD
 //!   destacado** (`git switch --detach`): não cria nem move branch, e volta
-//!   com `git switch -`. Recusa árvore suja e recusa rodar no worktree de uma
+//!   com `git switch -`. Recusa árvore suja, recusa sobrescrever arquivo
+//!   ignorado (um `.env` que o PR versiona) e recusa rodar no worktree de uma
 //!   sessão (ali o diff tem base congelada; o caminho é "Abrir no TYBA").
 
 use std::path::{Path, PathBuf};
@@ -24,9 +25,9 @@ use crate::error::AppError;
 use crate::worktree::{self, Worktree};
 
 /// Prefixo das branches criadas por "Abrir no TYBA" para o PR `number`. É ele
-/// que acha a sessão que já abriu este PR (`tyba/pr-<n>-<sufixo>`).
+/// que acha a sessão que já abriu este PR (`tyba/pr/<n>-<sufixo>`).
 pub fn branch_prefix(number: u64) -> String {
-    format!("tyba/pr-{number}-")
+    worktree::pr_branch_prefix(number)
 }
 
 /// argv do fetch do head do PR: ref fixo montado de um `u64`, sem tags, sem
@@ -86,7 +87,7 @@ pub fn open_worktree(
     action_remote(repo_root)?;
     let main = main_repo(repo_root)?;
     fetch_head(&main, number, head_sha)?;
-    let wt = worktree::create_at(&main, &format!("pr-{number}"), head_sha).map_err(failed)?;
+    let wt = worktree::create_at(&main, number, head_sha).map_err(failed)?;
     Ok((wt, main))
 }
 
@@ -107,15 +108,27 @@ fn checkout_fetched(repo: &Path, number: u64, head_sha: &str) -> Result<(), AppE
     if worktree::is_dirty(repo).map_err(failed)? {
         return Err(AppError::new("forge.pr_checkout_dirty"));
     }
+    // `--no-overwrite-ignore`: o `status` não vê arquivo ignorado, e sem a
+    // flag o switch sobrescreveria em silêncio um `.env` do usuário que o PR
+    // versiona (e o `git switch -` de volta apagaria o arquivo). `LC_ALL=C`
+    // para a recusa do git ser reconhecível.
     let out = {
         let mut c = worktree::git_in_rw(repo);
-        c.args(["switch", "--detach", "--no-guess", head_sha]);
+        c.env("LC_ALL", "C").args([
+            "switch",
+            "--detach",
+            "--no-guess",
+            "--no-overwrite-ignore",
+            head_sha,
+        ]);
         c.output().map_err(|e| failed(format!("git switch: {e}")))?
     };
     if !out.status.success() {
-        return Err(failed(
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("would be overwritten") {
+            return Err(AppError::new("forge.pr_checkout_ignored"));
+        }
+        return Err(failed(stderr.trim().to_string()));
     }
     Ok(())
 }
@@ -143,8 +156,11 @@ mod tests {
 
     #[test]
     fn branch_prefix_is_the_tyba_namespace() {
-        assert_eq!(branch_prefix(7), "tyba/pr-7-");
-        assert!(!branch_prefix(7).starts_with("tyba/pr-70"));
+        assert_eq!(branch_prefix(7), "tyba/pr/7-");
+        assert!(!"tyba/pr/70-abcd1234".starts_with(&branch_prefix(7)));
+        // Uma task chamada "PR 7" vira `tyba/pr-7-…`: fora do namespace.
+        let task = format!("tyba/{}-abcd1234", worktree::slugify("PR 7 conserta"));
+        assert!(!task.starts_with(&branch_prefix(7)), "{task}");
     }
 
     fn repo_with_origin(origin: &str) -> tempfile::TempDir {
@@ -269,6 +285,36 @@ mod tests {
             "nenhuma branch criada ou movida"
         );
         assert!(clone.join("pr.txt").exists());
+    }
+
+    #[test]
+    fn checkout_refuses_to_overwrite_an_ignored_file_the_pr_tracks() {
+        let (dir, clone, _) = origin_with_pull_ref();
+        // PR que versiona `.env`, num repo onde o `.env` do usuário é ignorado.
+        let origin = dir.path().join("origin");
+        std::fs::write(origin.join(".gitignore"), ".env\n").unwrap();
+        git(&origin, &["add", "-A"]);
+        git(&origin, &["commit", "-qm", "ignora env"]);
+        git(&origin, &["switch", "-q", "-c", "vaza-env"]);
+        std::fs::write(origin.join(".env"), "TOKEN=do-pr\n").unwrap();
+        git(&origin, &["add", "-f", ".env"]);
+        git(&origin, &["commit", "-qm", "pr com env"]);
+        let pr_sha = git(&origin, &["rev-parse", "HEAD"]);
+        git(&origin, &["update-ref", "refs/pull/9/head", &pr_sha]);
+        git(&origin, &["switch", "-q", "main"]);
+        git(&clone, &["pull", "-q", "--ff-only"]);
+        std::fs::write(clone.join(".env"), "TOKEN=do-usuario\n").unwrap();
+        let before = git(&clone, &["rev-parse", "HEAD"]);
+
+        let err = checkout_fetched(&clone, 9, &pr_sha).unwrap_err();
+
+        assert_eq!(err.code, "forge.pr_checkout_ignored");
+        assert_eq!(
+            std::fs::read_to_string(clone.join(".env")).unwrap(),
+            "TOKEN=do-usuario\n"
+        );
+        assert_eq!(git(&clone, &["rev-parse", "HEAD"]), before, "nada trocou");
+        assert_eq!(git(&clone, &["branch", "--show-current"]), "main");
     }
 
     #[test]

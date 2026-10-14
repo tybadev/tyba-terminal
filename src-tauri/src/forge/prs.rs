@@ -1209,9 +1209,39 @@ fn teams_cache() -> &'static Cache<String, Vec<String>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Itens por página de `user/teams` e o teto de páginas buscadas.
+const TEAMS_PER_PAGE: usize = 100;
+const TEAMS_MAX_PAGES: u32 = 10;
+
+fn teams_endpoint(page: u32) -> String {
+    if page == 1 {
+        format!("user/teams?per_page={TEAMS_PER_PAGE}")
+    } else {
+        format!("user/teams?per_page={TEAMS_PER_PAGE}&page={page}")
+    }
+}
+
 fn fetch_teams(repo_root: &Path, host: &str) -> Result<Vec<String>, AppError> {
-    let body = super::conditional::get(repo_root, host, "user/teams?per_page=100")?;
-    parse_teams(&body).map_err(cli_failed)
+    collect_team_pages(|page| super::conditional::get(repo_root, host, &teams_endpoint(page)))
+}
+
+/// Junta as páginas de `user/teams`: segue para a próxima enquanto a página
+/// vem cheia, até [`TEAMS_MAX_PAGES`]. Erro em qualquer página é erro do todo.
+fn collect_team_pages(
+    mut fetch: impl FnMut(u32) -> Result<Vec<u8>, AppError>,
+) -> Result<Vec<String>, AppError> {
+    let mut teams = Vec::new();
+    for page in 1..=TEAMS_MAX_PAGES {
+        let body = fetch(page)?;
+        let items = serde_json::from_slice::<Vec<serde::de::IgnoredAny>>(&body)
+            .map_err(|e| cli_failed(format!("resposta inesperada de `user/teams`: {e}")))?
+            .len();
+        teams.extend(parse_teams(&body).map_err(cli_failed)?);
+        if items < TEAMS_PER_PAGE {
+            break;
+        }
+    }
+    Ok(teams)
 }
 
 /// Times do usuário (para "Para revisar" contar pedido a time), com o mesmo
@@ -2814,5 +2844,53 @@ mod tests {
         assert_eq!(parse_teams(body).unwrap(), vec!["exemplo/time-core"]);
         assert_eq!(parse_teams(b"[]").unwrap(), Vec::<String>::new());
         assert!(parse_teams(b"{\"message\": \"Not Found\"}").is_err());
+    }
+
+    fn teams_page(start: usize, n: usize) -> Vec<u8> {
+        let items: Vec<String> = (start..start + n)
+            .map(|i| format!(r#"{{"slug": "t{i}", "organization": {{"login": "org"}}}}"#))
+            .collect();
+        format!("[{}]", items.join(",")).into_bytes()
+    }
+
+    #[test]
+    fn user_teams_follow_full_pages_up_to_the_cap() {
+        assert_eq!(teams_endpoint(1), "user/teams?per_page=100");
+        assert_eq!(teams_endpoint(3), "user/teams?per_page=100&page=3");
+
+        // 100 + 100 + 5: três páginas, para na que não vem cheia.
+        let mut asked = Vec::new();
+        let teams = collect_team_pages(|page| {
+            asked.push(page);
+            Ok(match page {
+                1 => teams_page(0, 100),
+                2 => teams_page(100, 100),
+                _ => teams_page(200, 5),
+            })
+        })
+        .unwrap();
+        assert_eq!(asked, [1, 2, 3]);
+        assert_eq!(teams.len(), 205);
+        assert_eq!(teams[204], "org/t204");
+
+        // Sempre cheia: para no teto.
+        let mut pages = 0;
+        collect_team_pages(|_| {
+            pages += 1;
+            Ok(teams_page(0, 100))
+        })
+        .unwrap();
+        assert_eq!(pages, TEAMS_MAX_PAGES);
+
+        // Erro numa página seguinte é erro do todo (o chamador cai para só
+        // os pedidos diretos).
+        let err = collect_team_pages(|page| {
+            if page == 1 {
+                Ok(teams_page(0, 100))
+            } else {
+                Err(AppError::new("forge.cli_failed"))
+            }
+        });
+        assert!(err.is_err());
     }
 }
