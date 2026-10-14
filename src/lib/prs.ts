@@ -4,6 +4,8 @@
 // renderizado como texto.
 
 import type {
+  ForgeChange,
+  ForgeRateLimit,
   PrCheck,
   PrCiSummary,
   PrCommit,
@@ -269,4 +271,25 @@ export function forwardPrompt(
     ">",
     body ? quote(body) : "> (sem texto)",
   ].join("\n");
+}
+
+/**
+ * O evento de revalidação (`forge://changed`) é desta tela? A lista quer o
+ * evento sem número; o detalhe, o do próprio PR. `repo` é `owner/repo`.
+ */
+export function forgeChangeHits(change: ForgeChange, repo: string | null, number: number | null): boolean {
+  if (repo !== null && change.repo !== repo) return false;
+  return change.number === number;
+}
+
+/** Poll só com a janela visível: aba escondida não gasta limite da API. */
+export function pageVisible(doc: Pick<Document, "visibilityState"> = document): boolean {
+  return doc.visibilityState === "visible";
+}
+
+/** "14:32": quando a revalidação automática volta. */
+export function rateResetTime(rate: ForgeRateLimit, locale?: string): string {
+  const at = new Date(rate.reset_at);
+  if (Number.isNaN(at.getTime())) return "";
+  return at.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
 }

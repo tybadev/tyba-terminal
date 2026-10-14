@@ -139,6 +139,55 @@ pub fn parse_runs(stdout: &[u8]) -> Result<Vec<WorkflowRun>, String> {
     Ok(runs.into_iter().map(Into::into).collect())
 }
 
+/// Run da REST (`GET repos/{o}/{r}/actions/runs`), o que o GET condicional traz.
+#[derive(Debug, Deserialize)]
+struct ApiRun {
+    id: u64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    head_branch: Option<String>,
+    #[serde(default)]
+    event: String,
+    #[serde(default)]
+    created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiRuns {
+    #[serde(default)]
+    workflow_runs: Vec<ApiRun>,
+}
+
+/// Mesmo contrato de [`parse_runs`], a partir da REST.
+pub fn parse_api_runs(body: &[u8]) -> Result<Vec<WorkflowRun>, String> {
+    let runs: ApiRuns = serde_json::from_slice(body)
+        .map_err(|e| format!("resposta inesperada da API de runs do GitHub: {e}"))?;
+    Ok(runs
+        .workflow_runs
+        .into_iter()
+        .map(|r| {
+            GhRun {
+                database_id: r.id,
+                name: r.name.unwrap_or_default(),
+                status: r.status.unwrap_or_default(),
+                conclusion: r.conclusion,
+                url: r.html_url,
+                head_branch: r.head_branch.unwrap_or_default(),
+                event: r.event,
+                created_at: r.created_at,
+            }
+            .into()
+        })
+        .collect())
+}
+
 pub fn parse_jobs(stdout: &[u8]) -> Result<Vec<WorkflowJob>, String> {
     let out: GhJobs = serde_json::from_slice(stdout)
         .map_err(|e| format!("resposta inesperada de `gh run view`: {e}"))?;
@@ -365,7 +414,19 @@ pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest
         .next())
 }
 
+/// Runs pela REST com GET condicional: o poll da CI só gasta limite quando
+/// algum run mudou. Sem remote GitHub válido, cai no `gh run list`.
 pub fn run_list(repo: &Path, limit: u32) -> Result<Vec<WorkflowRun>, AppError> {
+    if let Some(remote) = super::prs::github_remote(repo) {
+        let endpoint = format!(
+            "repos/{}/{}/actions/runs?per_page={}",
+            remote.owner,
+            remote.repo,
+            limit.clamp(1, 50)
+        );
+        let body = super::conditional::get(repo, &remote.host, &endpoint)?;
+        return parse_api_runs(&body).map_err(cli_failed);
+    }
     let limit = limit.clamp(1, 50).to_string();
     let out = exec::run(
         CLI,
@@ -673,6 +734,16 @@ mod tests {
         for r in &runs {
             assert_eq!(r.status, r.status.to_lowercase());
         }
+    }
+
+    #[test]
+    fn parse_api_runs_tem_o_mesmo_contrato_do_gh_run_list() {
+        let runs = parse_api_runs(include_bytes!("fixtures/gh_api_runs.json")).expect("parse");
+        let cli = parse_runs(include_bytes!("fixtures/gh_run_list.json")).expect("parse");
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs, cli[..3].to_vec());
+        assert!(parse_api_runs(b"nada").is_err());
+        assert_eq!(parse_api_runs(b"{}").expect("vazio"), Vec::new());
     }
 
     #[test]

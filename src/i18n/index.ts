@@ -962,6 +962,8 @@ const resources = {
       prNew: "Novo PR",
       prRefresh: "Atualizar agora",
       prFetchedAgo: "atualizado {{ago}}",
+      prRateLimited:
+        "Limite da API do GitHub baixo ({{remaining}} de {{limit}}). A atualização automática volta às {{time}}.",
       prListUnsupported: "A lista de PRs funciona com GitHub por enquanto.",
       prListSummary_one: "{{count}} aberto · {{drafts}} rascunho(s)",
       prListSummary_other: "{{count}} abertos · {{drafts}} rascunho(s)",
@@ -1488,6 +1490,7 @@ const resources = {
       "error.forge.cli_failed": "O comando {{cli}} falhou: {{detail}}",
       "error.forge.pr_head_moved": "O PR recebeu commit novo ({{current}}) depois que você o abriu. Veja de novo antes de revisar ou mergear.",
       "error.forge.pr_invalid_head": "SHA do PR inválido.",
+      "error.forge.rate_limited": "O limite da API do GitHub acabou. Tente de novo em alguns minutos.",
       "error.forge.pr_review_body_empty": "Comentar e pedir mudanças precisam de texto.",
       "error.forge.pr_actions_unsupported": "Esta ação só funciona com GitHub e o gh instalado.",
       "error.git.amend_published": "O último commit já está no remoto: amend exigiria force-push. Faça um commit novo.",
@@ -2660,6 +2663,8 @@ const resources = {
       prNew: "New PR",
       prRefresh: "Refresh now",
       prFetchedAgo: "updated {{ago}}",
+      prRateLimited:
+        "GitHub API limit is low ({{remaining}} of {{limit}}). Automatic refresh resumes at {{time}}.",
       prListUnsupported: "The PR list works with GitHub for now.",
       prListSummary_one: "{{count}} open · {{drafts}} draft(s)",
       prListSummary_other: "{{count}} open · {{drafts}} draft(s)",
@@ -3185,6 +3190,7 @@ const resources = {
       "error.forge.cli_failed": "The {{cli}} command failed: {{detail}}",
       "error.forge.pr_head_moved": "The PR got a new commit ({{current}}) after you opened it. Look again before reviewing or merging.",
       "error.forge.pr_invalid_head": "Invalid PR SHA.",
+      "error.forge.rate_limited": "The GitHub API limit ran out. Try again in a few minutes.",
       "error.forge.pr_review_body_empty": "Comment and request changes need text.",
       "error.forge.pr_actions_unsupported": "This action only works with GitHub and gh installed.",
       "error.git.amend_published": "The last commit is already on the remote: amending would need a force-push. Make a new commit.",

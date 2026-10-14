@@ -19,6 +19,7 @@ import { primaryDeliveryAction } from "../lib/forge";
 import {
   forgePrPage,
   forgeStatus as fetchForgeStatus,
+  onForgeChanged,
   type ForgeStatus,
   type PrFilter,
   type PrListItem,
@@ -28,12 +29,15 @@ import {
 } from "../lib/ipc";
 import {
   ciCell,
+  forgeChangeHits,
   initials,
   linkedSession,
   matchesPr,
   nextPrLimit,
+  pageVisible,
   PR_PAGE_LIMIT,
   prCountLabel,
+  rateResetTime,
   reviewChips,
   type ReviewChip,
   type Tone,
@@ -132,11 +136,27 @@ export function PrListView({
     [session.id, filter, limit, t],
   );
 
+  // O poll pede o cache (`fresh: false`): o core responde na hora e, se o
+  // dado venceu, revalida em segundo plano e avisa por `forge://changed`.
+  // Só existe com esta tela montada (tela de Git aberta) e a janela visível.
   useEffect(() => {
     load(false);
-    const timer = window.setInterval(() => load(true), REFRESH_MS);
+    const timer = window.setInterval(() => {
+      if (pageVisible()) load(false);
+    }, REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  const repo = page?.repo ?? null;
+  useEffect(() => {
+    if (repo === null) return;
+    const unlisten = onForgeChanged((change) => {
+      if (forgeChangeHits(change, repo, null)) load(false);
+    });
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [repo, load]);
 
   // Relógio do "atualizado há".
   useEffect(() => {
@@ -326,6 +346,16 @@ export function PrListView({
           </button>
         )}
       </header>
+
+      {page?.rate_limit && (
+        <p role="status" className="shrink-0 tyba-divide-b px-4 py-1.5 text-[11px] text-tyba-amber">
+          {t("prRateLimited", {
+            remaining: page.rate_limit.remaining,
+            limit: page.rate_limit.limit,
+            time: rateResetTime(page.rate_limit),
+          })}
+        </p>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {page === undefined && !error && (

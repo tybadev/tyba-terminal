@@ -1,8 +1,10 @@
 pub mod cli_hosts;
+pub mod conditional;
 pub mod exec;
 pub mod github;
 pub mod gitlab;
 pub mod prs;
+pub mod rate;
 pub mod remote;
 
 use std::collections::HashMap;

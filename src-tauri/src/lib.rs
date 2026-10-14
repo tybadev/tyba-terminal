@@ -3202,10 +3202,21 @@ fn pr_session_link(
     })
 }
 
+/// Mudou algo na forja depois de uma revalidação em segundo plano (SWR): a UI
+/// relê pelo cache. Payload: [`forge::prs::ForgeChange`].
+const EVENT_FORGE_CHANGED: &str = "forge://changed";
+
+fn forge_notify(app: AppHandle) -> forge::prs::Notify {
+    std::sync::Arc::new(move |change| {
+        let _ = app.emit(EVENT_FORGE_CHANGED, change);
+    })
+}
+
 /// Lista rica de PRs. `None` = a forja não tem lista rica (GitLab, sem `gh`).
 /// O vínculo com sessão é preenchido aqui, fora do cache da forja.
 #[tauri::command]
 async fn forge_pr_page(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     filter: forge::prs::PrFilter,
@@ -3216,7 +3227,9 @@ async fn forge_pr_page(
     let repo_root = state.sessions.get(id).and_then(|s| s.repo_root);
     let sessions = state.sessions.list();
     let path = ctx.path;
-    let mut page = forge_blocking(move || forge::prs::page(&path, filter, limit, fresh)).await?;
+    let notify = forge_notify(app);
+    let mut page =
+        forge_blocking(move || forge::prs::page(&path, filter, limit, fresh, notify)).await?;
     if let Some(page) = page.as_mut() {
         for item in page.items.iter_mut().chain(page.recent_merged.iter_mut()) {
             item.session =
@@ -3228,6 +3241,7 @@ async fn forge_pr_page(
 
 #[tauri::command]
 async fn forge_pr_detail(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     number: u64,
@@ -3237,7 +3251,9 @@ async fn forge_pr_detail(
     let repo_root = state.sessions.get(id).and_then(|s| s.repo_root);
     let sessions = state.sessions.list();
     let path = ctx.path;
-    let mut detail = forge_blocking(move || forge::prs::detail(&path, number, fresh)).await?;
+    let notify = forge_notify(app);
+    let mut detail =
+        forge_blocking(move || forge::prs::detail(&path, number, fresh, notify)).await?;
     if let Some(detail) = detail.as_mut() {
         detail.session = pr_session_link(
             &sessions,

@@ -22,6 +22,7 @@ import {
   forgePrDetail,
   forgePrMerge,
   forgePrReview,
+  onForgeChanged,
   type PrMergeStrategy,
   type PrReviewEvent,
   type PrCheck,
@@ -36,8 +37,11 @@ import {
   buildTimeline,
   checkDuration,
   checksSummary,
+  forgeChangeHits,
   forwardPrompt,
   initials,
+  pageVisible,
+  rateResetTime,
   reviewerStates,
   timelineEventId,
   type TimelineEvent,
@@ -151,11 +155,24 @@ export function PrDetailView({
     [session.id, number, t],
   );
 
+  // Mesmo esquema da lista: o poll lê o cache, o core revalida em segundo
+  // plano e avisa por `forge://changed` quando este PR mudou.
   useEffect(() => {
     load(false);
-    const timer = window.setInterval(() => load(true), 60_000);
+    const timer = window.setInterval(() => {
+      if (pageVisible()) load(false);
+    }, 60_000);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    const unlisten = onForgeChanged((change) => {
+      if (forgeChangeHits(change, null, number)) load(false);
+    });
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [number, load]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
@@ -549,6 +566,15 @@ export function PrDetailView({
             {t("prCommitsCount", { count: pr.commits.length })}
           </span>
         </div>
+        {pr.rate_limit && (
+          <p role="status" className="text-[11px] text-tyba-amber">
+            {t("prRateLimited", {
+              remaining: pr.rate_limit.remaining,
+              limit: pr.rate_limit.limit,
+              time: rateResetTime(pr.rate_limit),
+            })}
+          </p>
+        )}
         {/* A atualização falhou mas há dado na tela: avisa sem esconder o PR. */}
         {error && (
           <p role="status" className="text-[11px] text-tyba-amber" title={error}>

@@ -554,7 +554,33 @@ export interface PrPage {
   forge: ForgeKind;
   /** ISO; quando o core buscou (o cache pode devolver algo de antes). */
   fetched_at: string;
+  /** Limite da API baixo: a revalidação automática parou até `reset_at`. */
+  rate_limit: ForgeRateLimit | null;
 }
+
+/** Balde de limite da API do GitHub (`core` = REST, `graphql`). */
+export interface ForgeRateLimit {
+  resource: string;
+  limit: number;
+  remaining: number;
+  /** ISO (UTC). */
+  reset_at: string;
+}
+
+/**
+ * Revalidação em segundo plano (stale-while-revalidate) achou dado novo:
+ * quem mostra `repo` relê pelo cache (`fresh: false`). `number` nulo é a
+ * lista; com número, o detalhe daquele PR.
+ */
+export interface ForgeChange {
+  repo: string;
+  number: number | null;
+}
+
+export const EVENT_FORGE_CHANGED = "forge://changed";
+
+export const onForgeChanged = (handler: (change: ForgeChange) => void): Promise<UnlistenFn> =>
+  listen<ForgeChange>(EVENT_FORGE_CHANGED, (e) => handler(e.payload));
 
 export interface PrCommit {
   sha: string;
@@ -630,6 +656,8 @@ export interface PrDetail {
   /** `mergeStateStatus` do GitHub em minúsculas: clean, behind, blocked, dirty… */
   merge_state: string;
   session: PrSessionLink | null;
+  /** Ver `PrPage.rate_limit`. */
+  rate_limit: ForgeRateLimit | null;
 }
 
 /** `null` = a forja da sessão não tem lista rica (GitLab por enquanto). */
