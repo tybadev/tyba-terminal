@@ -2,8 +2,10 @@
 //!
 //! - teto de tamanho na leitura (o arquivo é lido por handle, nunca inteiro
 //!   antes de checar);
-//! - nada que, resolvido, aponte para fora da raiz — symlink dentro dela vale,
-//!   para fora não;
+//! - symlink: nos temas, só dentro da raiz; no `config.toml` (e na própria
+//!   raiz), também para fora — o estilo stow/chezmoi de dotfiles —, desde que o
+//!   alvo final seja arquivo comum do usuário, sem escrita de grupo/outros
+//!   ([`Links`]);
 //! - no Unix, arquivo e pasta precisam ser do usuário e não graváveis por grupo
 //!   nem por outros;
 //! - a pasta nasce `0700` e o arquivo `0600`, e a gravação é atômica (temp +
@@ -69,8 +71,19 @@ pub fn ensure_root(root: &Path) -> Result<PathBuf, String> {
     check_root(root)
 }
 
-/// Resolve `path` e confere que continua dentro de `root`. `None` se não existe.
-fn resolve_inside(root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
+/// Até onde um symlink pode levar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Links {
+    /// Só para dentro da raiz (pasta de temas).
+    InsideRoot,
+    /// Para qualquer lugar, se o alvo passar na conferência de dono e
+    /// permissão (o `config.toml` versionado num repositório de dotfiles).
+    OwnedTarget,
+}
+
+/// Resolve `path`; com [`Links::InsideRoot`], confere que continua dentro de
+/// `root`. `None` se não existe.
+fn resolve(root: &Path, path: &Path, links: Links) -> Result<Option<PathBuf>, String> {
     match fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(err(path, &e.to_string())),
@@ -82,10 +95,16 @@ fn resolve_inside(root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
         // Symlink quebrado: existe, mas não aponta para nada legível.
         Err(_) => return Err(err(path, "link simbólico quebrado; ignorado")),
     };
-    if !canonical.starts_with(&canonical_root) {
+    if links == Links::InsideRoot && !canonical.starts_with(&canonical_root) {
         return Err(err(path, "aponta para fora de ~/.tyba/; ignorado"));
     }
     Ok(Some(canonical))
+}
+
+/// Caminho final de `path` (o alvo, se for symlink) — é o que se vigia e onde
+/// se grava. `None` se não existe.
+pub fn target(root: &Path, path: &Path, links: Links) -> Result<Option<PathBuf>, String> {
+    resolve(root, path, links)
 }
 
 fn open_nofollow(path: &Path) -> std::io::Result<File> {
@@ -101,10 +120,19 @@ fn open_nofollow(path: &Path) -> std::io::Result<File> {
     opts.open(path)
 }
 
-/// Lê `path` (dentro de `root`) com teto de `max` bytes. `Ok(None)` quando o
-/// arquivo não existe.
+/// Lê `path` (dentro de `root`, symlink só para dentro) com teto de `max`
+/// bytes. `Ok(None)` quando o arquivo não existe.
 pub fn read_capped(root: &Path, path: &Path, max: u64) -> Result<Option<String>, String> {
-    let Some(target) = resolve_inside(root, path)? else {
+    read_with(root, path, max, Links::InsideRoot)
+}
+
+/// Como [`read_capped`], aceitando symlink para fora com alvo do usuário.
+pub fn read_linked(root: &Path, path: &Path, max: u64) -> Result<Option<String>, String> {
+    read_with(root, path, max, Links::OwnedTarget)
+}
+
+fn read_with(root: &Path, path: &Path, max: u64, links: Links) -> Result<Option<String>, String> {
+    let Some(target) = resolve(root, path, links)? else {
         return Ok(None);
     };
     let file = open_nofollow(&target).map_err(|e| err(path, &e.to_string()))?;
@@ -136,13 +164,36 @@ pub fn read_capped(root: &Path, path: &Path, max: u64) -> Result<Option<String>,
 }
 
 /// Grava `contents` em `path` de forma atômica, com `0600`. Se `path` é um
-/// symlink dentro da raiz, grava no alvo — o link do usuário continua link.
+/// symlink (dentro da raiz), grava no alvo — o link do usuário continua link.
 pub fn write_atomic(root: &Path, path: &Path, contents: &str) -> Result<(), String> {
-    let target = resolve_inside(root, path)?.unwrap_or_else(|| path.to_path_buf());
+    write_with(root, path, contents, Links::InsideRoot)
+}
+
+/// Como [`write_atomic`], seguindo symlink para fora com alvo do usuário.
+pub fn write_linked(root: &Path, path: &Path, contents: &str) -> Result<(), String> {
+    write_with(root, path, contents, Links::OwnedTarget)
+}
+
+fn write_with(root: &Path, path: &Path, contents: &str, links: Links) -> Result<(), String> {
+    let existing = resolve(root, path, links)?;
+    if let Some(target) = &existing {
+        // O que vai ser substituído: arquivo comum do usuário. FIFO, device ou
+        // arquivo alheio no alvo do link não viram vítima do rename.
+        let meta = fs::metadata(target).map_err(|e| err(path, &e.to_string()))?;
+        if !meta.is_file() {
+            return Err(err(path, "não é um arquivo comum; não gravei"));
+        }
+        check_owner(path, &meta)?;
+    }
+    let target = existing.unwrap_or_else(|| path.to_path_buf());
     let dir = target
         .parent()
         .ok_or_else(|| err(path, "sem pasta-mãe"))?
         .to_path_buf();
+    // A temp nasce ao lado do alvo (o rename precisa do mesmo disco), e essa
+    // pasta também tem de ser só do usuário.
+    let dir_meta = fs::metadata(&dir).map_err(|e| err(&dir, &e.to_string()))?;
+    check_owner(&dir, &dir_meta)?;
     let tmp = dir.join(format!(".tyba-{}.tmp", uuid::Uuid::new_v4()));
     let write = || -> std::io::Result<()> {
         let mut opts = OpenOptions::new();
@@ -245,6 +296,77 @@ mod tests {
         // e a escrita também não segue o link para fora
         assert!(write_atomic(&root, &path, "b = 2\n").is_err());
         assert_eq!(fs::read_to_string(&outside).unwrap(), "a = 1\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dotfiles_symlink_out_of_root_is_accepted_when_owned_and_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, root) = root();
+        let root = ensure_root(&root).unwrap();
+        let dotfiles = d.path().join("dotfiles");
+        fs::create_dir(&dotfiles).unwrap();
+        fs::set_permissions(&dotfiles, fs::Permissions::from_mode(0o755)).unwrap();
+        let real = dotfiles.join("tyba.toml");
+        fs::write(&real, "a = 1\n").unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o644)).unwrap();
+        let path = root.join("config.toml");
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+
+        assert_eq!(
+            read_linked(&root, &path, 1024).unwrap().as_deref(),
+            Some("a = 1\n")
+        );
+        assert_eq!(
+            target(&root, &path, Links::OwnedTarget).unwrap(),
+            Some(fs::canonicalize(&real).unwrap())
+        );
+        write_linked(&root, &path, "a = 2\n").unwrap();
+        assert!(fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "a = 2\n");
+        // nenhuma temp sobrando ao lado do alvo
+        assert_eq!(fs::read_dir(&dotfiles).unwrap().count(), 1);
+
+        // alvo gravável por outros, ou pasta do alvo gravável por outros: não
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(read_linked(&root, &path, 1024).is_err());
+        assert!(write_linked(&root, &path, "x").is_err());
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(&dotfiles, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(write_linked(&root, &path, "x").is_err());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "a = 2\n");
+        fs::set_permissions(&dotfiles, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dotfiles_symlink_to_a_fifo_is_refused_without_blocking() {
+        let (d, root) = root();
+        let root = ensure_root(&root).unwrap();
+        let fifo = d.path().join("fifo");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: caminho válido, terminado em NUL.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let path = root.join("config.toml");
+        std::os::unix::fs::symlink(&fifo, &path).unwrap();
+        assert!(read_linked(&root, &path, 1024).is_err());
+        assert!(write_linked(&root, &path, "x").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_root_is_accepted_when_private() {
+        let (d, root) = root();
+        let real = d.path().join("dotfiles-tyba");
+        ensure_root(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &root).unwrap();
+        let canonical = ensure_root(&root).unwrap();
+        assert_eq!(canonical, fs::canonicalize(&real).unwrap());
+        write_linked(&root, &root.join("config.toml"), "a = 1\n").unwrap();
+        assert!(real.join("config.toml").is_file());
     }
 
     #[cfg(unix)]

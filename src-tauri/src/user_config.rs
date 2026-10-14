@@ -64,7 +64,7 @@ pub fn load(home: &Path) -> Result<UserConfig, String> {
         .map_err(|e| format!("leitura de ~/.tyba/config.toml: {e}"))?;
     // Mesma leitura guardada do resto do arquivo (teto, symlink, dono): o
     // `read_allow` abre a jaula, e é o último lugar para aceitar arquivo alheio.
-    match crate::config::fsguard::read_capped(&root, &path, crate::config::MAX_BYTES) {
+    match crate::config::fsguard::read_linked(&root, &path, crate::config::MAX_BYTES) {
         Ok(Some(content)) => parse(&content, home),
         Ok(None) => Ok(UserConfig::default()),
         Err(e) => Err(format!("leitura de ~/.tyba/config.toml: {e}")),

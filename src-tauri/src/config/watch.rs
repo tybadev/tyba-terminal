@@ -52,19 +52,25 @@ impl Coalescer {
 
 /// O evento mexeu no arquivo vigiado? A pasta tem outros arquivos (temas, o
 /// temp da própria gravação), e eles não pedem reload.
-pub fn touches(paths: &[PathBuf], file_name: &str) -> bool {
-    paths
-        .iter()
-        .any(|p| p.file_name().and_then(|n| n.to_str()) == Some(file_name))
+pub fn touches(paths: &[PathBuf], names: &[String]) -> bool {
+    paths.iter().any(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| names.iter().any(|want| want == n))
+    })
 }
 
 /// Vigia `root` e chama `on_change` uma vez por rajada que tocou `file_name`.
 /// A thread é dona do watcher; ela e ele vivem enquanto o app vive.
-pub fn spawn(root: &Path, file_name: &'static str, on_change: impl Fn() + Send + 'static) {
+pub fn spawn(files: Vec<PathBuf>, on_change: impl Fn() + Send + 'static) {
+    let names: Vec<String> = files
+        .iter()
+        .filter_map(|f| f.file_name()?.to_str().map(str::to_owned))
+        .collect();
     let (tx, rx) = mpsc::channel::<()>();
     let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res {
-            if touches(&event.paths, file_name) {
+            if touches(&event.paths, &names) {
                 let _ = tx.send(());
             }
         }
@@ -77,10 +83,15 @@ pub fn spawn(root: &Path, file_name: &'static str, on_change: impl Fn() + Send +
         }
     };
     // Vigia a pasta, não o arquivo: salvar por rename troca o inode, e um
-    // watch no arquivo morreria no primeiro salvamento.
-    if let Err(e) = watcher.watch(root, RecursiveMode::NonRecursive) {
-        eprintln!("[tyba] config: não deu para vigiar {}: {e}", root.display());
-        return;
+    // watch no arquivo morreria no primeiro salvamento. Com `config.toml`
+    // ligado a um repositório de dotfiles, a pasta do alvo entra também — é
+    // lá que o editor salva.
+    let mut dirs: Vec<&Path> = files.iter().filter_map(|f| f.parent()).collect();
+    dirs.dedup();
+    for dir in dirs {
+        if let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive) {
+            eprintln!("[tyba] config: não deu para vigiar {}: {e}", dir.display());
+        }
     }
     let _ = std::thread::Builder::new()
         .name("config-watch".into())
@@ -164,7 +175,7 @@ mod tests {
         let root = std::fs::canonicalize(dir.path()).unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&hits);
-        spawn(&root, "config.toml", move || {
+        spawn(vec![root.join("config.toml")], move || {
             counter.fetch_add(1, Ordering::SeqCst);
         });
         std::thread::sleep(Duration::from_millis(300));
@@ -189,15 +200,19 @@ mod tests {
     }
 
     #[test]
-    fn only_the_config_file_counts() {
+    fn only_the_watched_files_count() {
         let root = PathBuf::from("/h/.tyba");
-        assert!(touches(&[root.join("config.toml")], "config.toml"));
+        let names = vec!["config.toml".to_string()];
+        assert!(touches(&[root.join("config.toml")], &names));
         assert!(touches(
             &[root.join(".tyba-x.tmp"), root.join("config.toml")],
-            "config.toml"
+            &names
         ));
-        assert!(!touches(&[root.join(".tyba-x.tmp")], "config.toml"));
-        assert!(!touches(&[root.join("themes/nord.json")], "config.toml"));
-        assert!(!touches(&[], "config.toml"));
+        assert!(!touches(&[root.join(".tyba-x.tmp")], &names));
+        assert!(!touches(&[root.join("themes/nord.json")], &names));
+        assert!(!touches(&[], &names));
+        // dotfiles: o alvo do link tem outro nome, e conta também
+        let both = vec!["config.toml".to_string(), "tyba.toml".to_string()];
+        assert!(touches(&[PathBuf::from("/h/dotfiles/tyba.toml")], &both));
     }
 }

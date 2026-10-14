@@ -7802,7 +7802,7 @@ pub fn run() {
                 let app = app.handle().clone();
                 let cfg = Arc::clone(&user_config);
                 let themes = Arc::clone(&themes);
-                config::watch::spawn(user_config.root(), config::FILE_NAME, move || {
+                config::watch::spawn(user_config.watch_files(), move || {
                     let changes = cfg.load();
                     emit_config_changes(&app, &cfg, &themes, changes);
                 });

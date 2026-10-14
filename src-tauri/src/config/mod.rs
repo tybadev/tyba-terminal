@@ -269,8 +269,21 @@ impl ConfigManager {
         mgr
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
+    /// O que o watcher vigia: `config.toml` na raiz e, se ele for symlink
+    /// (dotfiles), o alvo — o editor salva lá, e o evento chega com o nome dele.
+    pub fn watch_files(&self) -> Vec<PathBuf> {
+        let mut files = vec![self.path.clone()];
+        if let Ok(Some(target)) =
+            fsguard::target(&self.root, &self.path, fsguard::Links::OwnedTarget)
+        {
+            let canonical_here = fs::canonicalize(&self.root)
+                .map(|r| r.join(FILE_NAME))
+                .unwrap_or_else(|_| self.path.clone());
+            if target != canonical_here {
+                files.push(target);
+            }
+        }
+        files
     }
 
     pub fn themes_dir(&self) -> PathBuf {
@@ -286,7 +299,7 @@ impl ConfigManager {
         if let Some(e) = &self.root_error {
             return Err(e.clone());
         }
-        fsguard::read_capped(&self.root, &self.path, MAX_BYTES)
+        fsguard::read_linked(&self.root, &self.path, MAX_BYTES)
     }
 
     fn migrate(&self, store: &Store) -> Result<(), String> {
@@ -297,7 +310,7 @@ impl ConfigManager {
         let out = migrate_text(existing.as_deref(), store)
             .map_err(|e| format!("config.toml: {e}. A migração espera o arquivo ser corrigido."))?;
         if existing.as_deref() != Some(out.as_str()) {
-            fsguard::write_atomic(&self.root, &self.path, &out)?;
+            fsguard::write_linked(&self.root, &self.path, &out)?;
         }
         store
             .set_setting(MIGRATED_KEY, "1")
@@ -403,7 +416,7 @@ impl ConfigManager {
         let out = edit::set(&text, key, value)?;
         let parsed = schema::parse(&out)?;
         if out != text {
-            fsguard::write_atomic(&self.root, &self.path, &out)?;
+            fsguard::write_linked(&self.root, &self.path, &out)?;
         }
         Ok(Self::apply(
             &mut state,
@@ -679,6 +692,32 @@ mod tests {
             "[theme]\nmode = \"light\"\n"
         );
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dotfiles_symlinked_config_is_read_written_and_watched() {
+        let (d, root, store) = setup();
+        fs::create_dir_all(&root).unwrap();
+        let dotfiles = d.path().join("dotfiles");
+        fs::create_dir(&dotfiles).unwrap();
+        let real = dotfiles.join("tyba.toml");
+        fs::write(&real, "# meu dotfile\n[theme]\nmode = \"light\"\n").unwrap();
+        std::os::unix::fs::symlink(&real, root.join(FILE_NAME)).unwrap();
+
+        let cfg = ConfigManager::open(root.clone(), &store);
+        assert!(cfg.warnings().is_empty(), "{:?}", cfg.warnings());
+        assert_eq!(cfg.get(KEY_THEME_MODE).as_deref(), Some("light"));
+        cfg.set(KEY_THEME_MODE, "system").unwrap();
+        assert!(fs::symlink_metadata(root.join(FILE_NAME))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let text = fs::read_to_string(&real).unwrap();
+        assert!(text.starts_with("# meu dotfile\n") && text.contains("mode = \"system\""));
+        let files = cfg.watch_files();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[1], fs::canonicalize(&real).unwrap());
     }
 
     #[test]
