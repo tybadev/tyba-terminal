@@ -1,0 +1,81 @@
+/* Painel Notificações (mockups Notificacoes / NotificacoesClaro, aprovados
+   em 2026-10-14). As cores que já existem como token vêm do token; as que o
+   mockup combinou fora dos tokens ficam aqui, em classe de componente: a regra
+   base deriva do tema (serve aos 16 esquemas), e só os dois temas do TYBA
+   recebem o literal do mockup, no mesmo escopo que o styles.css usa. */
+
+/* Filtro (`.chip` do mockup). */
+.notif-chip {
+  border: 1px solid color-mix(in srgb, var(--tyba-text) 10%, transparent);
+  background: transparent;
+  color: var(--tyba-text-muted);
+}
+[data-theme$='light'] .notif-chip {
+  background: var(--tyba-raised);
+}
+.notif-chip:hover {
+  color: var(--tyba-text);
+}
+.notif-chip[aria-selected='true'] {
+  border-color: color-mix(in srgb, var(--tyba-blue) 40%, transparent);
+  background: color-mix(in srgb, var(--tyba-blue) 12%, transparent);
+  color: var(--tyba-text);
+}
+
+/* Ação principal do pedido (`.tbp`): "Aprovar" do amarelo. */
+.notif-primary {
+  border: 1px solid color-mix(in srgb, var(--tyba-amber) 40%, transparent);
+  background: color-mix(in srgb, var(--tyba-amber) 12%, transparent);
+  color: var(--tyba-amber);
+}
+
+/* Comando do pedido (`.cmd`). */
+.notif-cmd {
+  background: color-mix(in srgb, var(--tyba-text) 4%, transparent);
+  color: var(--tyba-text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Linha abaixo dos filtros, mais fraca que a do cabeçalho. */
+.notif-filters {
+  border-bottom: 1px solid color-mix(in srgb, var(--tyba-text) 5%, transparent);
+}
+
+/* ---------- Literais do mockup, só nos temas do TYBA ---------- */
+:root:not([data-theme]):not([data-imported]) .notif-chip {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+:root:not([data-theme]):not([data-imported]) .notif-chip[aria-selected='true'] {
+  border-color: rgba(76, 125, 240, 0.4);
+  background: rgba(76, 125, 240, 0.12);
+}
+:root:not([data-theme]):not([data-imported]) .notif-primary {
+  border-color: rgba(245, 169, 59, 0.4);
+  background: rgba(245, 169, 59, 0.12);
+}
+:root:not([data-theme]):not([data-imported]) .notif-cmd {
+  background: rgba(255, 255, 255, 0.04);
+}
+:root:not([data-theme]):not([data-imported]) .notif-filters {
+  border-bottom-color: rgba(255, 255, 255, 0.05);
+}
+
+[data-theme='light']:not([data-imported]) .notif-chip {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: #ffffff;
+}
+[data-theme='light']:not([data-imported]) .notif-chip[aria-selected='true'] {
+  border-color: rgba(59, 102, 214, 0.4);
+  background: rgba(59, 102, 214, 0.1);
+}
+[data-theme='light']:not([data-imported]) .notif-primary {
+  border-color: rgba(155, 98, 16, 0.4);
+  background: rgba(155, 98, 16, 0.08);
+  color: #9a5f0c;
+}
+[data-theme='light']:not([data-imported]) .notif-cmd {
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme='light']:not([data-imported]) .notif-filters {
+  border-bottom-color: rgba(0, 0, 0, 0.05);
+}
