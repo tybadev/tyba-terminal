@@ -25,7 +25,8 @@ import { pushToast, toastError } from "@/lib/toast";
 
 interface Props {
   containerId: string;
-  onClose: () => void;
+  /** Sem ele (dentro da tela de Docker) não há botão de fechar. */
+  onClose?: () => void;
 }
 
 function join(dir: string, name: string): string {
@@ -192,14 +193,16 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
           {t("containerFilesReadOnlyChip")}
         </span>
         <span className="flex-1" />
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={t("tunnelsClose")}
-          className="text-tyba-text-faint hover:text-tyba-text"
-        >
-          <X size={14} />
-        </button>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={t("tunnelsClose")}
+            className="text-tyba-text-faint hover:text-tyba-text"
+          >
+            <X size={14} />
+          </button>
+        )}
       </header>
       <div className="flex shrink-0 items-center gap-2 border-b border-[var(--tyba-border-soft)] px-4 py-2.5 font-mono text-[11px] text-tyba-text-faint">
         <nav

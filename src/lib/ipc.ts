@@ -1442,8 +1442,102 @@ export interface Workspace {
   side_view: string | null;
   side_ratio: number;
   side_expanded: boolean;
+  /** Telas cheias de Arquivos e Docker (estado do core, não persiste). */
+  screens: Screens;
   created_at: string;
 }
+
+export type FilesSection = "files" | "search" | "recent";
+
+export interface FileScreenTab {
+  /** `editor:<sessão>:<rel>` */
+  view: string;
+  /** Pré-visualização (itálico): o próximo arquivo aberto assim a substitui. */
+  preview: boolean;
+}
+
+export interface FilesScreenState {
+  section: FilesSection;
+  tabs: FileScreenTab[];
+  active: string | null;
+  recent: string[];
+}
+
+export type DockerSection = "containers" | "images" | "volumes";
+export type ContainerPane = "logs" | "shell" | "files" | "details";
+
+export interface DockerScreenState {
+  section: DockerSection;
+  container: string | null;
+  pane: ContainerPane;
+}
+
+export interface Screens {
+  files: FilesScreenState;
+  docker: DockerScreenState;
+}
+
+export const filesScreenActivate = (workspace: WorkspaceId, view: string) =>
+  invoke<void>("files_screen_activate", { workspace, view });
+
+export const filesScreenPin = (workspace: WorkspaceId, view: string) =>
+  invoke<void>("files_screen_pin", { workspace, view });
+
+export const filesScreenClose = (workspace: WorkspaceId, view: string) =>
+  invoke<void>("files_screen_close", { workspace, view });
+
+export const filesScreenSection = (workspace: WorkspaceId, section: FilesSection) =>
+  invoke<void>("files_screen_section", { workspace, section });
+
+export interface GrepHit {
+  path: string;
+  /** 1-based */
+  line: number;
+  /** Já redigido no core. */
+  text: string;
+}
+
+export interface GrepOutcome {
+  hits: GrepHit[];
+  truncated: boolean;
+}
+
+/** "Buscar no projeto": texto nos arquivos rastreados (`git grep`), só local. */
+export const filesGrep = (id: SessionId, query: string, limit?: number) =>
+  invoke<GrepOutcome>("files_grep", { id, query, limit: limit ?? null });
+
+export const dockerScreenSection = (workspace: WorkspaceId, section: DockerSection) =>
+  invoke<void>("docker_screen_section", { workspace, section });
+
+export const dockerScreenSelect = (workspace: WorkspaceId, container: string | null) =>
+  invoke<void>("docker_screen_select", { workspace, container });
+
+export const dockerScreenPane = (workspace: WorkspaceId, pane: ContainerPane) =>
+  invoke<void>("docker_screen_pane", { workspace, pane });
+
+/** O shell (`docker exec`) que mora na tela de Docker: devolve a sessão dele. */
+export const dockerScreenShell = (containerId: string, host?: string | null) =>
+  invoke<SessionId>("docker_screen_shell", { containerId, host: host ?? null });
+
+export interface ImageInfo {
+  id: string;
+  repository: string;
+  tag: string;
+  size: string;
+  created_since: string;
+}
+
+export interface VolumeInfo {
+  name: string;
+  driver: string;
+  mountpoint: string;
+}
+
+export const dockerListImages = (host?: string | null) =>
+  invoke<ImageInfo[]>("docker_list_images", { host: host ?? null });
+
+export const dockerListVolumes = (host?: string | null) =>
+  invoke<VolumeInfo[]>("docker_list_volumes", { host: host ?? null });
 
 export interface LayoutState {
   workspaces: Workspace[];
@@ -2935,8 +3029,11 @@ export interface EditorTabOpened {
   view: string;
 }
 
-export const openEditorTabCmd = (session: SessionId | null, path: string) =>
-  invoke<EditorTabOpened>("open_editor_tab", { session, path });
+export const openEditorTabCmd = (
+  session: SessionId | null,
+  path: string,
+  preview = false,
+) => invoke<EditorTabOpened>("open_editor_tab", { session, path, preview });
 
 /** Diff da sessão como aba de conteúdo (não o painel lateral). */
 export const openDiffContentTab = (id: SessionId) =>
