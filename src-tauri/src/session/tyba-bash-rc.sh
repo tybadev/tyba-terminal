@@ -185,7 +185,11 @@ if [ -z "${TYBA_BASH_HOOKS:-}" ] && case "$-" in *i*) true ;; *) false ;; esac; 
   # O Warp usa ^P para o kill-buffer e com isso ROUBA o history-up do usuario —
   # nao copiar essa escolha. Ponto unico a mudar se conflitar com algum plugin.
   bind -x '"\e~": __tyba_prompt_toggle' 2>/dev/null
-  bind '"\e=": kill-whole-line' 2>/dev/null
+  # Em todo keymap: no modo de comando do vi o texto do app viraria comando.
+  # La o `S` apaga a linha e entra em insercao.
+  bind -m emacs '"\e=": kill-whole-line' 2>/dev/null
+  bind -m vi-insert '"\e=": kill-whole-line' 2>/dev/null
+  bind -m vi-command '"\e=": "S"' 2>/dev/null
 
   trap '__tyba_preexec' DEBUG
 fi

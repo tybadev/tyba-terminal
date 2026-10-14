@@ -595,7 +595,7 @@ fn drive_disk_observer(
                 if let Some(id) = &exact {
                     state
                         .sessions
-                        .set_agent_conversation_id(app, session_id, id);
+                        .set_agent_conversation_id(app, session_id, id, Some(&cwd));
                 }
                 // A sessão de shell também guarda a conversa que está rodando
                 // nela (vai pro SQLite pelo mesmo `set_agent_conversation_id`
@@ -605,7 +605,7 @@ fn drive_disk_observer(
                     if let Some(id) = state.disk_observer.bound_conversation(session_id) {
                         state
                             .sessions
-                            .set_agent_conversation_id(app, session_id, &id);
+                            .set_agent_conversation_id(app, session_id, &id, Some(&cwd));
                     }
                 }
             }
@@ -1271,16 +1271,25 @@ fn resume_startup(
                 // A conversa do claude que rodava neste shell atravessa o
                 // restart junto com o cwd — `forget` apaga a linha antiga.
                 if let Some(conversation) = &old.agent_conversation_id {
-                    sessions.set_agent_conversation_id(app, fresh.id, conversation);
-                    // E o pane oferece retomá-la, se o `claude --resume`
-                    // digitado nesta pasta a acharia (item 3 do
-                    // claude-monitor). Só oferece: nada roda sem clique.
+                    sessions.set_agent_conversation_id(
+                        app,
+                        fresh.id,
+                        conversation,
+                        old.agent_conversation_cwd.as_deref(),
+                    );
+                    // E o pane oferece retomá-la, se o `claude --resume` a
+                    // acharia — na pasta em que ela rodava ou na que o shell
+                    // reabriu (item 3 do claude-monitor). Só oferece: nada
+                    // roda sem clique.
                     let on_disk = home.as_deref().is_some_and(|home| {
-                        agent::claude_conversation_on_disk(
+                        agent::claude_resume_dir(
+                            home,
                             &home.join(".claude").join("projects"),
-                            &reopened_in,
+                            old.agent_conversation_cwd.as_deref(),
+                            Some(&reopened_in),
                             conversation,
                         )
+                        .is_some()
                     });
                     if cfg!(unix) && on_disk {
                         sessions.offer_shell_resume(app, fresh.id);
@@ -6197,32 +6206,33 @@ async fn resume_shell_conversation(
     id: SessionId,
 ) -> Result<(), String> {
     let _ = wait_for_boot(Arc::clone(&state.boot)).await;
-    let conversation = state.sessions.shell_resume_target(id)?;
+    let (conversation, recorded) = state.sessions.shell_resume_target(id)?;
     if state.agent_prober.detected(id).is_some() {
         return Err("já há um agente rodando neste terminal".into());
     }
+    // A integração do shell (OSC 133) tem de dizer "prompt pintado, nada
+    // rodando". Sem ela — `exec ssh`, um `read` do rc, shell sem integração —
+    // não se digita nada: o convite fica e o dono tenta de novo no prompt.
     if state.pty_pool.shell_at_prompt(id) != Some(true) {
-        return Err("o terminal está ocupado: espere o prompt voltar".into());
+        return Err("o terminal não está no prompt: espere o prompt voltar".into());
     }
-    // A pasta de AGORA, não a do boot: depois de um `cd` o `claude --resume`
-    // procuraria a conversa em outro slug e abriria em "não encontrada".
-    let here = state
-        .pty_pool
-        .leader_pid(id)
-        .and_then(repo::process_cwd)
-        .ok_or("não deu para saber a pasta deste terminal")?;
-    let projects = crate::ssh::home_dir()
-        .map(|home| home.join(".claude").join("projects"))
-        .ok_or("HOME indisponível")?;
-    if !agent::claude_conversation_on_disk(&projects, &here, &conversation) {
-        return Err("a conversa não está nesta pasta: volte para a pasta em que ela rodava".into());
-    }
+    // A pasta gravada com a conversa, validada; senão a pasta de AGORA (não a
+    // do boot): depois de um `cd` o `--resume` procuraria em outro slug.
+    let here = state.pty_pool.leader_pid(id).and_then(repo::process_cwd);
+    let home = crate::ssh::home_dir().ok_or("HOME indisponível")?;
+    let dir = agent::claude_resume_dir(
+        &home,
+        &home.join(".claude").join("projects"),
+        recorded.as_deref(),
+        here.as_deref(),
+        &conversation,
+    )
+    .ok_or("a conversa não está mais no disco nem na pasta deste terminal")?;
+    let line = shell_resume_line(&conversation, &dir)
+        .ok_or("o caminho da conversa não dá para digitar no terminal")?;
     {
         let _submitting = state.rich_input_submit.lock();
-        state
-            .pty_pool
-            .write(id, &shell_resume_line(&conversation))
-            .map_err(|e| e.to_string())?;
+        state.pty_pool.write(id, &line).map_err(|e| e.to_string())?;
     }
     // Outro shell restaurado com a mesma conversa perde o convite: aceitar os
     // dois subiria dois `claude` escrevendo no mesmo transcript.
@@ -6233,15 +6243,27 @@ async fn resume_shell_conversation(
 }
 
 /// A linha que o [`resume_shell_conversation`] digita. Limpa a linha inteira
-/// antes: o [`KILL_LINE`] do rc do TYBA (`kill-whole-line` no bash,
-/// `kill-buffer` no zsh) e, de reserva, `^E^U` (fim da linha e apaga tudo
-/// para trás). Só `^U` não basta no bash: ele apaga do cursor para trás, e o
-/// que sobrasse depois do cursor iria junto no Enter.
-fn shell_resume_line(conversation: &str) -> Vec<u8> {
+/// antes: o [`KILL_LINE`] do rc do TYBA (em todo keymap, inclusive o modo de
+/// comando do vi) e, de reserva, `^E^U` (fim da linha e apaga tudo para trás).
+/// Só `^U` não basta no bash: ele apaga do cursor para trás, e o que sobrasse
+/// depois do cursor iria junto no Enter.
+///
+/// Com [`agent::ResumeDir::Cd`], entra antes na pasta da conversa, entre aspas
+/// simples e com `builtin` (um `cd` redefinido pelo dono, como o do zoxide,
+/// não decide para onde vai). `None` se o caminho não dá para digitar.
+fn shell_resume_line(conversation: &str, dir: &agent::ResumeDir) -> Option<Vec<u8>> {
+    let command = match dir {
+        agent::ResumeDir::Here => format!("claude --resume {conversation}"),
+        agent::ResumeDir::Cd(path) => format!(
+            "builtin cd -- {} && claude --resume {conversation}",
+            agent::shell_single_quote(path)?
+        ),
+    };
     let mut bytes = KILL_LINE.to_vec();
     bytes.extend_from_slice(b"\x05\x15");
-    bytes.extend_from_slice(format!("claude --resume {conversation}\r").as_bytes());
-    bytes
+    bytes.extend_from_slice(command.as_bytes());
+    bytes.push(b'\r');
+    Some(bytes)
 }
 
 /// O dono dispensou o convite de retomar a conversa no shell restaurado.
@@ -8917,6 +8939,7 @@ mod tests {
             did_work: false,
             agent_usage: None,
             shell_resume_offer: false,
+            agent_conversation_cwd: None,
         }
     }
 
@@ -9225,6 +9248,7 @@ mod tests {
             did_work: false,
             agent_usage: None,
             shell_resume_offer: false,
+            agent_conversation_cwd: None,
             ..agent_session(uuid::Uuid::new_v4(), None)
         };
         assert!(!should_auto_close_gate_tab(&s));
@@ -9266,10 +9290,21 @@ mod tests {
 
     #[test]
     fn shell_resume_line_clears_the_prompt_and_submits_the_resume() {
+        let id = "5f2a1c40-0000-4000-8000-00000000abcd";
         assert_eq!(
-            shell_resume_line("5f2a1c40-0000-4000-8000-00000000abcd"),
-            b"\x1b=\x05\x15claude --resume 5f2a1c40-0000-4000-8000-00000000abcd\r".to_vec()
+            shell_resume_line(id, &agent::ResumeDir::Here),
+            Some(b"\x1b=\x05\x15claude --resume 5f2a1c40-0000-4000-8000-00000000abcd\r".to_vec())
         );
+        let cd = agent::ResumeDir::Cd(std::path::PathBuf::from("/home/u/o 'repo'"));
+        assert_eq!(
+            shell_resume_line(id, &cd),
+            Some(
+                b"\x1b=\x05\x15builtin cd -- '/home/u/o '\\''repo'\\''' && claude --resume 5f2a1c40-0000-4000-8000-00000000abcd\r"
+                    .to_vec()
+            )
+        );
+        let newline = agent::ResumeDir::Cd(std::path::PathBuf::from("/home/u/a\nb"));
+        assert_eq!(shell_resume_line(id, &newline), None);
     }
 
     #[test]

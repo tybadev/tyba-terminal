@@ -202,6 +202,9 @@ pub(super) struct CaptureMachine {
     agent_match: bool,
     cwd: Option<PathBuf>,
     canonical_cwd: Option<PathBuf>,
+    /// O shell pintou o prompt primário (`133;B`) e nada foi submetido desde
+    /// então (`633;E`/`133;C`). Ver [`CaptureMachine::ready_at_prompt`].
+    prompt_drawn: bool,
 }
 
 impl CaptureMachine {
@@ -219,7 +222,21 @@ impl CaptureMachine {
             agent_match: false,
             cwd: None,
             canonical_cwd: None,
+            prompt_drawn: false,
         }
+    }
+
+    /// O shell está no prompt primário, pronto para comando novo: pintou o
+    /// `133;B` e desde então nenhuma linha foi submetida, nenhum comando está
+    /// rodando e não há `PS2` pendente. É o que autoriza o core a digitar no
+    /// shell em nome do dono.
+    ///
+    /// Shell sem integração (nenhum `133;B` jamais) fica `false` para sempre:
+    /// falha fechado. E um `exec ssh`/`exec nvim` derruba isto no `133;C` do
+    /// preexec e nada o religa, porque o shell que pintaria o próximo prompt
+    /// deixou de existir.
+    pub(super) fn ready_at_prompt(&self) -> bool {
+        self.prompt_drawn && !self.command.running && self.submission == Submission::Idle
     }
 
     pub(super) fn on_chunk(&mut self, chunk: &[u8], now_ms: i64, alt_screen: bool) -> Vec<Action> {
@@ -311,6 +328,7 @@ impl CaptureMachine {
                     // limpa.
                     self.agent_match = crate::rich_input::agent_matcher().matches(cmd.trim_start());
                     self.tracker.on_command_line(cmd);
+                    self.prompt_drawn = false;
                     // O `633;E` sai do preexec: se ele veio, o shell ACEITOU a
                     // linha e não está em continuação. Zerar aqui, e não só no
                     // `133;C`, evita anunciar continuação no intervalo entre os
@@ -318,6 +336,7 @@ impl CaptureMachine {
                     self.submission = Submission::Idle;
                 }
                 ShellEvent::CommandStart => {
+                    self.prompt_drawn = false;
                     self.tracker.on_start(now_ms);
                     // Bloco só existe com o modo prompt: sem ele o prompt é
                     // desenhado (e repintado) dentro da região, e o recorte
@@ -393,6 +412,7 @@ impl CaptureMachine {
                     // `133;B` é o PS1, ou seja prompt PRIMÁRIO: o shell está
                     // pronto para comando novo, não continuando um.
                     self.submission = Submission::Idle;
+                    self.prompt_drawn = true;
                 }
                 ShellEvent::PromptMode(on) => {
                     self.prompt_mode = Some(on);
@@ -613,6 +633,29 @@ mod tests {
             b64(command)
         )
         .into_bytes()
+    }
+
+    #[test]
+    fn ready_at_prompt_follows_the_prompt_and_the_command_cycle() {
+        let mut machine = CaptureMachine::new("s1".into());
+        // Sem integração nenhuma: nunca pronto (falha fechado).
+        machine.on_chunk(b"$ ", 500, false);
+        assert!(!machine.ready_at_prompt());
+
+        machine.on_chunk(b"\x1b]133;A\x07~ \x1b]133;B\x07", 1_000, false);
+        assert!(machine.ready_at_prompt());
+
+        // `exec nvim`: o preexec marca a linha e o início, e o prompt nunca
+        // mais volta.
+        let exec = format!("\x1b]633;E;{}\x07\x1b]133;C\x07", b64("exec nvim"));
+        machine.on_chunk(exec.as_bytes(), 2_000, false);
+        assert!(!machine.ready_at_prompt());
+
+        // Um comando comum termina e o prompt é pintado de novo: pronto.
+        machine.on_chunk(b"\x1b]133;D;0\x07", 3_000, false);
+        assert!(!machine.ready_at_prompt(), "fim de comando sem prompt novo");
+        machine.on_chunk(b"\x1b]133;A\x07~ \x1b]133;B\x07", 3_100, false);
+        assert!(machine.ready_at_prompt());
     }
 
     #[test]

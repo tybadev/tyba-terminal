@@ -134,6 +134,9 @@ struct ScreenState {
     /// a linha do TYBA consultar: na continuação o texto é o RESTO de um
     /// comando, e julgá-lo sozinho como "pela metade" prenderia o usuário.
     continuation: bool,
+    /// Cópia de [`capture::CaptureMachine::ready_at_prompt`] depois de cada
+    /// chunk: a máquina mora na thread de leitura, e quem pergunta é o pool.
+    prompt_ready: bool,
 }
 
 impl ScreenState {
@@ -146,6 +149,7 @@ impl ScreenState {
             hook_expected: false,
             line_editor: Arc::new(LineEditorGate::default()),
             continuation: false,
+            prompt_ready: false,
         }
     }
 
@@ -595,6 +599,7 @@ fn ingest_chunk(
     let alt_screen = state.parser.screen().alternate_screen();
     let actions = machine.on_chunk(chunk, now_ms, alt_screen);
     apply_screen(state, chunk, &actions);
+    state.prompt_ready = machine.ready_at_prompt();
     actions
 }
 
@@ -1570,10 +1575,16 @@ impl PtyPool {
         None
     }
 
-    /// O shell da sessão está no prompt: o grupo em primeiro plano do terminal
-    /// é o do próprio líder (nenhum programa rodando por cima dele) e não há
-    /// comando de várias linhas pela metade (`PS2`). É a condição para o core
-    /// digitar alguma coisa no shell em nome do dono.
+    /// O shell da sessão está no prompt: a integração (OSC 133) diz que o
+    /// prompt primário foi pintado e nada foi submetido desde então, e o grupo
+    /// em primeiro plano do terminal é o do próprio líder (nenhum programa
+    /// rodando por cima dele). É a condição para o core digitar alguma coisa
+    /// no shell em nome do dono.
+    ///
+    /// As duas réguas cobrem buracos diferentes: o OSC 133 pega o `exec`
+    /// (mesmo pid e mesmo grupo, mas o prompt nunca volta) e o `read` do rc
+    /// (prompt ainda não pintado); o grupo pega um job que tomou o terminal sem
+    /// o shell ter marcado nada. Sem integração, `false`: falha fechado.
     ///
     /// `None` quando não dá para saber (Windows, líder morto ou reusado) —
     /// quem pergunta trata como "não".
@@ -1581,8 +1592,12 @@ impl PtyPool {
     pub fn shell_at_prompt(&self, id: PtyId) -> Option<bool> {
         let leader = self.leader_pid(id)?;
         let foreground = self.ptys.lock().get(&id)?.master.process_group_leader()?;
-        let continuing = self.continuation(id).unwrap_or(false);
-        Some(u32::try_from(foreground).ok() == Some(leader) && !continuing)
+        let (ready, continuing) = {
+            let screen = self.screen_of(id)?;
+            let state = screen.lock();
+            (state.prompt_ready, state.continuation)
+        };
+        Some(ready && u32::try_from(foreground).ok() == Some(leader) && !continuing)
     }
 
     #[cfg(not(unix))]
@@ -3307,9 +3322,17 @@ mod tests {
         let pool = super::PtyPool::new();
         // Shell sozinho no terminal: é o grupo em primeiro plano.
         let idle = pooled_script(&pool, "sleep 60");
+        // Sem OSC 133 nenhum, nem o shell parado serve: falha fechado.
+        assert_eq!(pool.shell_at_prompt(idle), Some(false));
+        // A integração disse "prompt pintado" (o que a máquina de captura
+        // copia para a tela depois de cada chunk).
+        pool.screen_of(idle).unwrap().lock().prompt_ready = true;
         // Com controle de job, o `sleep` ganha grupo próprio e o terminal —
         // é o `vim`/`less` aberto em cima do prompt.
         let busy = pooled_script(&pool, "set -m; sleep 60; sleep 60");
+        // Mesmo com o prompt dado como pintado, o grupo em primeiro plano não é
+        // o do shell.
+        pool.screen_of(busy).unwrap().lock().prompt_ready = true;
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while pool.shell_at_prompt(busy) != Some(false) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));

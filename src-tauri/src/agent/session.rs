@@ -479,8 +479,17 @@ fn capture_conversation_id(ctx: &HandlerCtx, event: &HookEvent) {
         *ctx.seen_transcript.lock().expect("seen transcript lock") = Some(path.to_string());
     }
     if let Some(id) = found {
+        // A pasta da conversa, para o restart poder retomá-la de onde ela
+        // rodava. Dado do payload: só vira `cd` depois de validado
+        // (`agent::claude_resume_dir`).
+        let cwd = event
+            .raw
+            .get("cwd")
+            .and_then(|c| c.as_str())
+            .map(Path::new)
+            .filter(|c| c.is_absolute());
         ctx.sessions
-            .set_agent_conversation_id(&ctx.app, ctx.session_id, &id);
+            .set_agent_conversation_id(&ctx.app, ctx.session_id, &id, cwd);
     }
 }
 
