@@ -143,10 +143,27 @@ export function hiddenApprovalIds(params: {
 
 export type NotificationFilter = "all" | "requests" | "errors" | "done";
 
-/** Pedido pendente aparece ao vivo em "Precisa de você" (vem de `approvals`),
- *  não no histórico — senão aparece duas vezes. */
+/** Pedido (do TYBA ou do prompt nativo do Claude). */
+export function isRequestKind(e: NotificationEntry): boolean {
+  return e.kind === "approval" || e.kind === "native_approval";
+}
+
+/** Pedido pendente aparece ao vivo em "Precisa de você" (o do TYBA vem de
+ *  `approvals`; o do prompt nativo, de `nativePending`), não no histórico —
+ *  senão aparece duas vezes. */
 export function historyEntries(entries: NotificationEntry[]): NotificationEntry[] {
-  return entries.filter((e) => !(e.kind === "approval" && e.pending));
+  return entries.filter((e) => !(isRequestKind(e) && e.pending));
+}
+
+/** Amarelo do Claude esperando no prompt nativo. Só se decide no terminal:
+ *  no painel ele só tem "Abrir na sessão". */
+export function nativePending(entries: NotificationEntry[]): NotificationEntry[] {
+  return entries.filter((e) => e.kind === "native_approval" && e.pending);
+}
+
+/** Grupo atenuado (mockup Notificacoes, `.done`): tudo nele já concluiu. */
+export function isDoneGroup(items: NotificationEntry[]): boolean {
+  return items.length > 0 && items.every((e) => e.category === "done");
 }
 
 export function filterEntries(
@@ -156,7 +173,7 @@ export function filterEntries(
   if (filter === "all") return entries;
   if (filter === "errors") return entries.filter((e) => e.category === "error");
   if (filter === "done") return entries.filter((e) => e.category === "done");
-  return entries.filter((e) => e.kind === "approval");
+  return entries.filter(isRequestKind);
 }
 
 export type DayBucket = "today" | "yesterday" | "earlier";
@@ -206,9 +223,14 @@ export function groupBySession<T extends { session_id: SessionId }>(
   return [...groups.values()];
 }
 
-/** Badge do ícone: pedidos pendentes + erros não lidos ("pedem você"). */
+/** Badge do ícone: pedidos pendentes (do TYBA e do prompt nativo) + erros
+ *  não lidos ("pedem você"). */
 export function attentionCount(pendingApprovals: number, entries: NotificationEntry[]): number {
-  return pendingApprovals + entries.filter((e) => !e.read && e.category === "error").length;
+  return (
+    pendingApprovals +
+    nativePending(entries).length +
+    entries.filter((e) => !e.read && e.category === "error").length
+  );
 }
 
 export function unreadCount(entries: NotificationEntry[]): number {

@@ -1675,7 +1675,7 @@ impl Store {
         risk: &str,
         call_key: &str,
         now_ms: u64,
-    ) -> Result<(), StoreError> {
+    ) -> Result<i64, StoreError> {
         let command = redact(command);
         let cwd = cwd.map(|c| redact(c).into_owned());
         let conn = self.conn.lock();
@@ -1688,11 +1688,12 @@ impl Store {
                      'claude_native_inferred', ?6, 'pending')",
             params![session_id, command.as_ref(), cwd, risk, now_ms, call_key],
         )?;
-        Ok(())
+        Ok(conn.last_insert_rowid())
     }
 
     /// O `PostToolUse` da chamada chegou: ela rodou, logo o prompt nativo foi
-    /// aprovado. Devolve se alguma linha foi fechada.
+    /// aprovado. Devolve o `id` da linha fechada, se alguma foi (é por ele que
+    /// a entrada do histórico de notificações acompanha a linha).
     ///
     /// Pega a linha deduzida **mais recente** com a chave que ainda está
     /// pendente — ou que já foi fechada como `denied` por dedução. O segundo
@@ -1708,20 +1709,29 @@ impl Store {
         call_key: &str,
         decision: &str,
         now_ms: u64,
-    ) -> Result<bool, StoreError> {
+    ) -> Result<Option<i64>, StoreError> {
+        use rusqlite::OptionalExtension;
         let conn = self.conn.lock();
-        let changed = conn.execute(
-            "UPDATE approval_history
-             SET decision = ?3, status = 'resolved', resolved_at_ms = ?4
-             WHERE id = (
-                 SELECT id FROM approval_history
+        let id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM approval_history
                  WHERE session_id = ?1 AND call_key = ?2
                    AND origin = 'claude_native_inferred'
                    AND (status = 'pending' OR decision = 'denied')
-                 ORDER BY id DESC LIMIT 1)",
-            params![session_id, call_key, decision, now_ms],
-        )?;
-        Ok(changed > 0)
+                 ORDER BY id DESC LIMIT 1",
+                params![session_id, call_key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = id {
+            conn.execute(
+                "UPDATE approval_history
+                 SET decision = ?2, status = 'resolved', resolved_at_ms = ?3
+                 WHERE id = ?1",
+                params![id, decision, now_ms],
+            )?;
+        }
+        Ok(id)
     }
 
     /// Fecha como `denied` toda linha deduzida ainda pendente da sessão.
@@ -3155,6 +3165,37 @@ impl Store {
              SET pending = 0, decision = ?2, category = 'done', read = 1
              WHERE kind = 'approval' AND pending = 1 AND approval_id = ?1",
             params![approval_id as i64, decision],
+        )?)
+    }
+
+    /// O prompt nativo do Claude da linha deduzida `inferred_id` (id em
+    /// `approval_history`) foi aprovado: a entrada `native_approval` dela sai
+    /// de pendente. Pega também a já fechada como negada — é o conserto da
+    /// dedução, o mesmo de [`Store::resolve_inferred_by_call_key`].
+    pub fn approve_native_notification(&self, inferred_id: i64) -> Result<usize, StoreError> {
+        let conn = self.conn.lock();
+        Ok(conn.execute(
+            "UPDATE notification
+             SET pending = 0, decision = 'approved', category = 'done', read = 1
+             WHERE kind = 'native_approval' AND approval_id = ?1
+               AND (pending = 1 OR decision = 'denied')",
+            params![inferred_id],
+        )?)
+    }
+
+    /// O turno seguiu sem rodar a chamada (ou a sessão acabou): toda entrada
+    /// `native_approval` pendente da sessão vira negada, como as linhas
+    /// deduzidas de [`Store::deny_pending_inferred_for_session`].
+    pub fn deny_native_notifications_for_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<usize, StoreError> {
+        let conn = self.conn.lock();
+        Ok(conn.execute(
+            "UPDATE notification
+             SET pending = 0, decision = 'denied', category = 'done', read = 1
+             WHERE kind = 'native_approval' AND pending = 1 AND session_id = ?1",
+            params![session_id.to_string()],
         )?)
     }
 
@@ -4872,16 +4913,19 @@ mod tests {
         assert_eq!(status, "pending");
 
         // Chave de outra chamada, ou da mesma chave em outra sessão: nada.
-        assert!(!store
+        assert!(store
             .resolve_inferred_by_call_key("s1", "outra", "approved", 2_000)
-            .unwrap());
-        assert!(!store
+            .unwrap()
+            .is_none());
+        assert!(store
             .resolve_inferred_by_call_key("s2", "k1", "approved", 2_000)
-            .unwrap());
+            .unwrap()
+            .is_none());
 
         assert!(store
             .resolve_inferred_by_call_key("s1", "k1", "approved", 2_500)
-            .unwrap());
+            .unwrap()
+            .is_some());
         let (decision, _, _, status) = approval_row(&store, 0);
         assert_eq!(
             (decision.as_str(), status.as_str()),
@@ -4954,7 +4998,8 @@ mod tests {
 
         assert!(store
             .resolve_inferred_by_call_key("s1", "k1", "approved", 1_200)
-            .unwrap());
+            .unwrap()
+            .is_some());
         assert_eq!(approval_row(&store, 0).0, "approved");
     }
 
@@ -4967,9 +5012,10 @@ mod tests {
         negada.decision = "denied".into();
         store.insert_approval_history(&negada).unwrap();
 
-        assert!(!store
+        assert!(store
             .resolve_inferred_by_call_key("s1", "k1", "approved", 200)
-            .unwrap());
+            .unwrap()
+            .is_none());
         assert_eq!(
             store.deny_pending_inferred_for_session("s1", 300).unwrap(),
             0

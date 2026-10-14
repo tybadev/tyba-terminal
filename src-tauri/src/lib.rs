@@ -1113,6 +1113,7 @@ fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
     let _ = state
         .store
         .deny_pending_inferred_for_session(&id.to_string(), approvals::now_ms());
+    notifications::record(app, |n| n.native_prompts_denied(id));
 }
 
 /// Reabre no boot as sessões que morreram com o app anterior, conforme a pref de

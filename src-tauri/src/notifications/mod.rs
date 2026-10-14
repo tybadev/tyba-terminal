@@ -50,6 +50,12 @@ const EMIT_INTERVAL: Duration = Duration::from_millis(250);
 #[serde(rename_all = "snake_case")]
 pub enum NotificationKind {
     Approval,
+    /// Amarelo do Claude decidido no prompt nativo. Não passa pelo
+    /// `ApprovalsManager`: o core só observa (hooks `PermissionRequest` →
+    /// `PostToolUse`) e a decisão é DEDUZIDA, como a linha
+    /// `claude_native_inferred` do `approval_history`. `approval_id` é o id
+    /// dessa linha, não de um pedido do TYBA.
+    NativeApproval,
     AgentFinished,
     AgentFailed,
     UsageLimit,
@@ -95,6 +101,7 @@ impl NotificationKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             NotificationKind::Approval => "approval",
+            NotificationKind::NativeApproval => "native_approval",
             NotificationKind::AgentFinished => "agent_finished",
             NotificationKind::AgentFailed => "agent_failed",
             NotificationKind::UsageLimit => "usage_limit",
@@ -104,6 +111,7 @@ impl NotificationKind {
     pub(crate) fn parse(raw: &str) -> Option<Self> {
         Some(match raw {
             "approval" => NotificationKind::Approval,
+            "native_approval" => NotificationKind::NativeApproval,
             "agent_finished" => NotificationKind::AgentFinished,
             "agent_failed" => NotificationKind::AgentFailed,
             "usage_limit" => NotificationKind::UsageLimit,
@@ -442,6 +450,42 @@ impl Notifications {
     pub fn approval_resolved(&self, approval_id: u64, decision: Decision) -> bool {
         self.store
             .resolve_notification_approval(approval_id, decision)
+            .map(|n| n > 0)
+            .unwrap_or(false)
+    }
+
+    /// O prompt nativo do Claude abriu (`PermissionRequest`). Só registro: a
+    /// decisão continua no terminal, e esta entrada nunca vira pedido do TYBA.
+    /// Não passa pelo teto, como todo pedido. `inferred_id` é a linha
+    /// deduzida do `approval_history` que a resolução vai procurar.
+    pub fn native_prompt_opened(
+        &self,
+        session_id: SessionId,
+        inferred_id: i64,
+        risk: RiskLevel,
+        command: &str,
+    ) -> bool {
+        let mut e = self.entry(session_id, NotificationKind::NativeApproval);
+        e.category = NotificationCategory::Request;
+        e.pending = true;
+        e.approval_id = Some(inferred_id as u64);
+        e.risk = Some(risk);
+        e.command = Some(redact_cut(command, MAX_COMMAND_BYTES));
+        self.insert(&e)
+    }
+
+    /// A chamada rodou: aprovada no prompt nativo (deduzido).
+    pub fn native_prompt_approved(&self, inferred_id: i64) -> bool {
+        self.store
+            .approve_native_notification(inferred_id)
+            .map(|n| n > 0)
+            .unwrap_or(false)
+    }
+
+    /// O turno seguiu sem rodar (ou a sessão acabou): negadas (deduzido).
+    pub fn native_prompts_denied(&self, session_id: SessionId) -> bool {
+        self.store
+            .deny_native_notifications_for_session(session_id)
             .map(|n| n > 0)
             .unwrap_or(false)
     }
@@ -1129,6 +1173,127 @@ mod tests {
         assert_eq!(list[0].session_id, kept);
     }
 
+    fn native(store: &Store, session: SessionId) -> Vec<NotificationEntry> {
+        store
+            .list_notifications(now_ms())
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.session_id == session && e.kind == NotificationKind::NativeApproval)
+            .collect()
+    }
+
+    /// Amarelo do prompt nativo: abre pendente, e a chamada que rodou fecha a
+    /// MESMA entrada como aprovada (deduzido), sem tocar em pedido do TYBA com
+    /// o mesmo número.
+    #[test]
+    fn prompt_nativo_aberto_e_aprovado_na_mesma_entrada() {
+        let (n, store, session) = center();
+        assert!(n.approval_requested(&request(5, session.id, "git push origin feat")));
+        assert!(n.native_prompt_opened(session.id, 5, RiskLevel::Yellow, "cargo test"));
+        let list = native(&store, session.id);
+        assert_eq!(list.len(), 1);
+        let e = &list[0];
+        assert!(e.pending);
+        assert_eq!(e.category, NotificationCategory::Request);
+        assert_eq!(e.approval_id, Some(5));
+        assert_eq!(e.risk, Some(RiskLevel::Yellow));
+        assert_eq!(e.command.as_deref(), Some("cargo test"));
+        assert_eq!(e.agent.as_deref(), Some("claude"));
+
+        assert!(n.native_prompt_approved(5));
+        let list = native(&store, session.id);
+        assert_eq!(list.len(), 1, "resolver não cria outra entrada");
+        assert!(!list[0].pending);
+        assert_eq!(list[0].decision, Some(Decision::Approved));
+        assert_eq!(list[0].category, NotificationCategory::Done);
+        assert!(list[0].read);
+        // O pedido do TYBA com o mesmo número segue pendente.
+        let tyba = store
+            .list_notifications(now_ms())
+            .unwrap()
+            .into_iter()
+            .find(|e| e.kind == NotificationKind::Approval)
+            .unwrap();
+        assert!(tyba.pending);
+        // E o pedido do TYBA resolvido não mexe na entrada nativa.
+        assert!(n.approval_resolved(5, Decision::Denied));
+        assert_eq!(
+            native(&store, session.id)[0].decision,
+            Some(Decision::Approved)
+        );
+    }
+
+    /// O turno seguiu sem rodar: as pendentes nativas DESTA sessão viram
+    /// negadas; as de outra sessão e o pedido do TYBA ficam.
+    #[test]
+    fn prompt_nativo_negado_so_na_sessao() {
+        let (n, store, session) = center();
+        let other = SessionId::new_v4();
+        n.native_prompt_opened(session.id, 1, RiskLevel::Yellow, "cargo test");
+        n.native_prompt_opened(session.id, 2, RiskLevel::Yellow, "npm i");
+        n.native_prompt_opened(other, 3, RiskLevel::Yellow, "make");
+        n.approval_requested(&request(9, session.id, "git push origin feat"));
+
+        assert!(n.native_prompts_denied(session.id));
+        let mine = native(&store, session.id);
+        assert_eq!(mine.len(), 2);
+        assert!(mine
+            .iter()
+            .all(|e| !e.pending && e.decision == Some(Decision::Denied) && e.read));
+        assert!(native(&store, other)[0].pending);
+        let tyba = store
+            .list_notifications(now_ms())
+            .unwrap()
+            .into_iter()
+            .find(|e| e.kind == NotificationKind::Approval)
+            .unwrap();
+        assert!(tyba.pending, "negação deduzida nunca fecha pedido do TYBA");
+        // Nada mais pendente: negar de novo não muda nada.
+        assert!(!n.native_prompts_denied(session.id));
+    }
+
+    /// Mesma regra do `approval_history`: o `PostToolUse` prova que a chamada
+    /// rodou e conserta uma negação deduzida cedo demais.
+    #[test]
+    fn prompt_nativo_aprovado_depois_de_negado_por_deducao() {
+        let (n, store, session) = center();
+        n.native_prompt_opened(session.id, 1, RiskLevel::Yellow, "cargo test");
+        n.native_prompts_denied(session.id);
+        assert!(n.native_prompt_approved(1));
+        assert_eq!(
+            native(&store, session.id)[0].decision,
+            Some(Decision::Approved)
+        );
+        // Aprovada não volta a negada nem é aprovada de novo.
+        assert!(!n.native_prompts_denied(session.id));
+        assert!(!n.native_prompt_approved(1));
+    }
+
+    #[test]
+    fn prompt_nativo_mascara_o_comando_e_nao_passa_pelo_teto() {
+        let (n, store, session) = center();
+        for _ in 0..SESSION_CAP {
+            n.stop_failure(session.id, "falhou");
+        }
+        let secret = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let command = format!("curl -H 'x-api-key: {secret}' {}", "x".repeat(5_000));
+        assert!(n.native_prompt_opened(session.id, 1, RiskLevel::Yellow, &command));
+        let cmd = native(&store, session.id)[0].command.clone().unwrap();
+        assert!(!cmd.contains("sk-ant-api03"), "segredo vazou: {cmd}");
+        assert!(cmd.len() <= MAX_COMMAND_BYTES);
+    }
+
+    #[test]
+    fn prompt_nativo_pendente_vira_encerrado_ao_subir() {
+        let (n, store, session) = center();
+        n.native_prompt_opened(session.id, 1, RiskLevel::Yellow, "cargo test");
+        let sessions: SharedSessionManager = Arc::new(SessionManager::new(Arc::clone(&store)));
+        let _reboot = Notifications::new(Arc::clone(&store), sessions);
+        let e = &native(&store, session.id)[0];
+        assert!(!e.pending);
+        assert_eq!(e.decision, None);
+    }
+
     #[test]
     fn serializa_com_os_nomes_do_contrato() {
         let mut e = entry(SessionId::nil(), NOW);
@@ -1143,6 +1308,16 @@ mod tests {
         e.risk = Some(RiskLevel::Yellow);
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["kind"], "usage_limit");
+        e.kind = NotificationKind::NativeApproval;
+        assert_eq!(
+            serde_json::to_value(&e).unwrap()["kind"],
+            NotificationKind::NativeApproval.as_str()
+        );
+        assert_eq!(NotificationKind::NativeApproval.as_str(), "native_approval");
+        assert_eq!(
+            NotificationKind::parse("native_approval"),
+            Some(NotificationKind::NativeApproval)
+        );
         assert_eq!(v["category"], "info");
         assert_eq!(v["usage"]["window"], "seven_day");
         assert_eq!(v["decision"], "approved_always");

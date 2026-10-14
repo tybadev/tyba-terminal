@@ -1400,6 +1400,10 @@ export const onApprovalRequested = (
 export type NotificationKind =
   /** Pedido de aprovação; `pending` diz se ainda espera decisão. */
   | "approval"
+  /** Amarelo do Claude decidido no prompt NATIVO (fora do TYBA). O core só
+   *  observa os hooks; a decisão é deduzida (a chamada rodou = aprovado; o
+   *  turno seguiu sem ela = negado). Nunca se decide pelo painel. */
+  | "native_approval"
   /** Agente parou de trabalhar e voltou ao prompt (running → idle). */
   | "agent_finished"
   /** Turno falhou (`StopFailure`) ou sessão `failed`. Não vem de `exited`:
@@ -1422,7 +1426,8 @@ export interface NotificationEntry {
   /** request = approval pendente; error = agent_failed ou limite atingido;
    *  done = agent_finished ou approval resolvida; info = aviso de limite. */
   category: NotificationCategory;
-  /** approval: id do pedido. */
+  /** approval: id do pedido no ApprovalsManager. native_approval: id da
+   *  linha deduzida em `approval_history` (outro espaço de ids). */
   approval_id: number | null;
   /** approval: ainda sem decisão. Pedido encerrado sem decisão (o app
    *  reiniciou com ele aberto) fica `pending=false, decision=null`. */

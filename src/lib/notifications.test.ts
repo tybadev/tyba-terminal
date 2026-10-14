@@ -12,6 +12,8 @@ import {
   filterEntries,
   groupBySession,
   historyEntries,
+  isDoneGroup,
+  nativePending,
   resetParts,
   unreadCount,
 } from "./notifications";
@@ -222,17 +224,34 @@ describe("histórico de notificações", () => {
     expect(historyEntries(list).map((e) => e.id)).toEqual([2, 3]);
   });
 
+  test("prompt nativo pendente vai para Precisa de você, não para o histórico", () => {
+    const list = [
+      entry({ id: 1, kind: "native_approval", pending: true, category: "request", risk: "yellow" }),
+      entry({ id: 2, kind: "native_approval", pending: false, category: "done", decision: "denied" }),
+      entry({ id: 3, kind: "approval", pending: true, category: "request" }),
+    ];
+    expect(historyEntries(list).map((e) => e.id)).toEqual([2]);
+    expect(nativePending(list).map((e) => e.id)).toEqual([1]);
+  });
+
+  test("grupo concluído: só quando tudo nele concluiu", () => {
+    expect(isDoneGroup([entry({ id: 1 }), entry({ id: 2, kind: "approval", decision: "approved" })])).toBe(true);
+    expect(isDoneGroup([entry({ id: 1 }), entry({ id: 2, category: "error" })])).toBe(false);
+    expect(isDoneGroup([])).toBe(false);
+  });
+
   test("filtros", () => {
     const list = [
       entry({ id: 1, kind: "approval", category: "done" }),
       entry({ id: 2, kind: "agent_failed", category: "error" }),
       entry({ id: 3, kind: "usage_limit", category: "info" }),
       entry({ id: 4 }),
+      entry({ id: 5, kind: "native_approval", category: "done", decision: "approved" }),
     ];
-    expect(filterEntries(list, "requests").map((e) => e.id)).toEqual([1]);
+    expect(filterEntries(list, "requests").map((e) => e.id)).toEqual([1, 5]);
     expect(filterEntries(list, "errors").map((e) => e.id)).toEqual([2]);
-    expect(filterEntries(list, "done").map((e) => e.id)).toEqual([1, 4]);
-    expect(filterEntries(list, "all")).toHaveLength(4);
+    expect(filterEntries(list, "done").map((e) => e.id)).toEqual([1, 4, 5]);
+    expect(filterEntries(list, "all")).toHaveLength(5);
   });
 
   test("dayBucket", () => {
@@ -285,5 +304,8 @@ describe("histórico de notificações", () => {
     ];
     expect(attentionCount(2, list)).toBe(3);
     expect(unreadCount(list)).toBe(2);
+    // O amarelo esperando no prompt nativo também pede você.
+    const withNative = [...list, entry({ id: 4, kind: "native_approval", pending: true, category: "request", read: true })];
+    expect(attentionCount(2, withNative)).toBe(4);
   });
 });
