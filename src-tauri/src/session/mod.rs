@@ -1102,6 +1102,18 @@ impl SessionManager {
         emit_status(app, s);
     }
 
+    /// Desliga o convite de todo shell que oferecia retomar `conversation` —
+    /// ela acabou de ser retomada em um deles.
+    pub fn clear_shell_resume_offers_for(&self, app: &AppHandle, conversation: &str) {
+        let mut sessions = self.sessions.write();
+        for s in sessions.values_mut() {
+            if s.shell_resume_offer && s.agent_conversation_id.as_deref() == Some(conversation) {
+                s.shell_resume_offer = false;
+                emit_status(app, s);
+            }
+        }
+    }
+
     /// A conversa que o clique em "Retomar" deve retomar, ou o motivo de não
     /// dar. Só shell vivo, com o convite ainda de pé e id plausível — o id
     /// veio do disco e vira texto digitado no shell.

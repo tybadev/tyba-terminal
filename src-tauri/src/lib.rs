@@ -575,19 +575,33 @@ fn drive_disk_observer(
                     .and_then(|pid| repo::process_cwd(*pid))
             });
             if let Some(cwd) = cwd {
+                // O registro do próprio Claude (`~/.claude/sessions/<pid>.json`)
+                // é o vínculo exato; sem ele, a heurística de sempre.
+                let exact = agent::disk_observer::claude_sessions_dir().and_then(|dir| {
+                    agent::disk_observer::pid_file_conversation(&dir, agent.pid, agent.start_ms)
+                });
                 let rebound = state.disk_observer.observe(
                     app,
                     &state.subagents,
                     session_id,
                     &cwd,
-                    agent.pid,
+                    exact.as_deref(),
                     agent.start_ms,
                 );
+                // Com o registro, a conversa gravada é a dele, já — mesmo antes
+                // do transcript existir. Senão um palpite provisório do
+                // primeiro tick (registro ainda não escrito) ficaria gravado e
+                // viraria convite de retomar a conversa de OUTRO pane.
+                if let Some(id) = &exact {
+                    state
+                        .sessions
+                        .set_agent_conversation_id(app, session_id, id);
+                }
                 // A sessão de shell também guarda a conversa que está rodando
                 // nela (vai pro SQLite pelo mesmo `set_agent_conversation_id`
                 // do caminho com hook): é o que deixa um restart saber qual
                 // conversa retomar.
-                if rebound {
+                if rebound && exact.is_none() {
                     if let Some(id) = state.disk_observer.bound_conversation(session_id) {
                         state
                             .sessions
@@ -6190,21 +6204,44 @@ async fn resume_shell_conversation(
     if state.pty_pool.shell_at_prompt(id) != Some(true) {
         return Err("o terminal está ocupado: espere o prompt voltar".into());
     }
+    // A pasta de AGORA, não a do boot: depois de um `cd` o `claude --resume`
+    // procuraria a conversa em outro slug e abriria em "não encontrada".
+    let here = state
+        .pty_pool
+        .leader_pid(id)
+        .and_then(repo::process_cwd)
+        .ok_or("não deu para saber a pasta deste terminal")?;
+    let projects = crate::ssh::home_dir()
+        .map(|home| home.join(".claude").join("projects"))
+        .ok_or("HOME indisponível")?;
+    if !agent::claude_conversation_on_disk(&projects, &here, &conversation) {
+        return Err("a conversa não está nesta pasta: volte para a pasta em que ela rodava".into());
+    }
     {
         let _submitting = state.rich_input_submit.lock();
         state
             .pty_pool
-            .write(id, shell_resume_line(&conversation).as_bytes())
+            .write(id, &shell_resume_line(&conversation))
             .map_err(|e| e.to_string())?;
     }
-    state.sessions.clear_shell_resume_offer(&app, id);
+    // Outro shell restaurado com a mesma conversa perde o convite: aceitar os
+    // dois subiria dois `claude` escrevendo no mesmo transcript.
+    state
+        .sessions
+        .clear_shell_resume_offers_for(&app, &conversation);
     Ok(())
 }
 
-/// A linha que o [`resume_shell_conversation`] digita: `^U` (apaga a linha do
-/// prompt), o comando e Enter.
-fn shell_resume_line(conversation: &str) -> String {
-    format!("\u{15}claude --resume {conversation}\r")
+/// A linha que o [`resume_shell_conversation`] digita. Limpa a linha inteira
+/// antes: o [`KILL_LINE`] do rc do TYBA (`kill-whole-line` no bash,
+/// `kill-buffer` no zsh) e, de reserva, `^E^U` (fim da linha e apaga tudo
+/// para trás). Só `^U` não basta no bash: ele apaga do cursor para trás, e o
+/// que sobrasse depois do cursor iria junto no Enter.
+fn shell_resume_line(conversation: &str) -> Vec<u8> {
+    let mut bytes = KILL_LINE.to_vec();
+    bytes.extend_from_slice(b"\x05\x15");
+    bytes.extend_from_slice(format!("claude --resume {conversation}\r").as_bytes());
+    bytes
 }
 
 /// O dono dispensou o convite de retomar a conversa no shell restaurado.
@@ -9231,7 +9268,7 @@ mod tests {
     fn shell_resume_line_clears_the_prompt_and_submits_the_resume() {
         assert_eq!(
             shell_resume_line("5f2a1c40-0000-4000-8000-00000000abcd"),
-            "\u{15}claude --resume 5f2a1c40-0000-4000-8000-00000000abcd\r"
+            b"\x1b=\x05\x15claude --resume 5f2a1c40-0000-4000-8000-00000000abcd\r".to_vec()
         );
     }
 

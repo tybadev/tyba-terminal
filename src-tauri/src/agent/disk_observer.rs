@@ -126,7 +126,7 @@ fn claude_projects_dir() -> Option<PathBuf> {
     crate::ssh::home_dir().map(|home| home.join(".claude").join("projects"))
 }
 
-fn claude_sessions_dir() -> Option<PathBuf> {
+pub fn claude_sessions_dir() -> Option<PathBuf> {
     crate::ssh::home_dir().map(|home| home.join(".claude").join("sessions"))
 }
 
@@ -151,14 +151,9 @@ fn claude_sessions_dir() -> Option<PathBuf> {
 /// - o `sessionId` não passa por [`crate::agent::conversation::is_plausible`].
 pub fn pid_file_conversation(sessions_dir: &Path, pid: u32, agent_start_ms: u64) -> Option<String> {
     let path = sessions_dir.join(format!("{pid}.json"));
-    let meta = std::fs::symlink_metadata(&path).ok()?;
-    if !meta.file_type().is_file() || meta.len() > PID_FILE_MAX_BYTES {
-        return None;
-    }
+    let file = open_regular_nofollow(&path)?;
     let mut raw = Vec::new();
-    File::open(&path)
-        .ok()?
-        .take(PID_FILE_MAX_BYTES + 1)
+    file.take(PID_FILE_MAX_BYTES + 1)
         .read_to_end(&mut raw)
         .ok()?;
     if raw.len() as u64 > PID_FILE_MAX_BYTES {
@@ -174,6 +169,32 @@ pub fn pid_file_conversation(sessions_dir: &Path, pid: u32, agent_start_ms: u64)
     }
     let id = entry.get("sessionId").and_then(Value::as_str)?.trim();
     crate::agent::conversation::is_plausible(id).then(|| id.to_string())
+}
+
+/// Abre `path` só se for arquivo comum, decidido **pelo descritor aberto**:
+/// checar o caminho e depois abrir deixaria a troca por uma FIFO entre os dois
+/// passos travar o `open` — e com ele o poll de detecção de todos os panes.
+/// `O_NOFOLLOW` recusa symlink, `O_NONBLOCK` faz FIFO abrir sem esperar
+/// escritor (e ser recusada pelo `fstat` logo em seguida).
+#[cfg(unix)]
+fn open_regular_nofollow(path: &Path) -> Option<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    (meta.is_file() && meta.len() <= PID_FILE_MAX_BYTES).then_some(file)
+}
+
+#[cfg(not(unix))]
+fn open_regular_nofollow(path: &Path) -> Option<File> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.file_type().is_file() || meta.len() > PID_FILE_MAX_BYTES {
+        return None;
+    }
+    File::open(path).ok()
 }
 
 /// Só lê a primeira mensagem dos candidatos frescos (ver [`is_fresh`]): os
@@ -392,20 +413,11 @@ impl DiskObserver {
         tracker: &SharedSubagents,
         session: SessionId,
         cwd: &Path,
-        agent_pid: u32,
+        exact: Option<&str>,
         agent_start_ms: u64,
     ) -> bool {
         let candidates = slug_candidates(cwd, agent_start_ms);
-        let exact = claude_sessions_dir()
-            .and_then(|dir| pid_file_conversation(&dir, agent_pid, agent_start_ms));
-        self.observe_candidates(
-            app,
-            tracker,
-            session,
-            &candidates,
-            exact.as_deref(),
-            agent_start_ms,
-        )
+        self.observe_candidates(app, tracker, session, &candidates, exact, agent_start_ms)
     }
 
     fn observe_candidates<R: Runtime>(
@@ -1732,6 +1744,17 @@ mod tests {
         let elsewhere = dir.path().join("outro.json");
         fs::write(&elsewhere, pid_record(PID, CONV_A, 10_400)).unwrap();
         std::os::unix::fs::symlink(&elsewhere, dir.path().join(format!("{PID}.json"))).unwrap();
+        assert_eq!(pid_file_conversation(dir.path(), PID, 10_000), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_file_that_is_a_fifo_is_refused_without_blocking() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(format!("{PID}.json"));
+        let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        // Sem escritor: um `open` bloqueante pendurava aqui para sempre.
         assert_eq!(pid_file_conversation(dir.path(), PID, 10_000), None);
     }
 
