@@ -29,7 +29,7 @@ BRIDGE = """
   --secondary-foreground: var(--tyba-text);
   --muted: var(--tyba-raised);
   --muted-foreground: var(--tyba-text-muted);
-  --accent: var(--tyba-raised);
+  --accent: var(--tyba-hover);
   --accent-foreground: var(--tyba-text);
   --destructive: var(--tyba-red);
   --destructive-foreground: #ffffff;
@@ -88,6 +88,8 @@ tail = '''
   --color-tyba-border: var(--tyba-border);
   --color-tyba-border-strong: var(--tyba-border-strong);
   --color-tyba-border-field: var(--tyba-border-field);
+  --color-tyba-border-soft: var(--tyba-border-soft);
+  --color-tyba-hover: var(--tyba-hover);
   --color-tyba-block-border: var(--tyba-block-border);
 
   --color-tyba-text: var(--tyba-text);

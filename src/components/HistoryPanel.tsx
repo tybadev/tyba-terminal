@@ -137,7 +137,7 @@ export function HistoryPanel({
                 className="flex w-full flex-col gap-1 rounded-[6px] px-2.5 py-2 text-left outline-none hover:bg-tyba-raised hover:shadow-[var(--tyba-row-raised)] focus-visible:ring-2 focus-visible:ring-tyba-cyan"
               >
                 <span className="flex w-full items-start gap-2 font-mono text-[12.5px]">
-                  <span aria-hidden className="shrink-0 text-tyba-green">❯</span>
+                  <span aria-hidden className="shrink-0 text-tyba-green-fill">❯</span>
                   <span className="min-w-0 flex-1 truncate pr-14 text-tyba-text">
                     {run.command}
                   </span>

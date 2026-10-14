@@ -41,7 +41,7 @@
   /* Fantasma: o resto sugerido do comando, placeholder fora de foco e o ponto
      de sessão parada (mockups: #3a3a3f no escuro, #c4c4cc no claro).
      Derivado do faint rumo ao fundo, para todo tema ganhar o seu. */
-  --tyba-ghost-mix: 46%;          /* fantasma ≈ #3a3a3f (mockups) */
+  --tyba-ghost-mix: 58%;
   --tyba-text-ghost: color-mix(in srgb, var(--tyba-text-faint) var(--tyba-ghost-mix), var(--tyba-bg));
 
   /* ---------- Acentos da marca ---------- */
@@ -82,14 +82,15 @@
   --tyba-danger: var(--tyba-red);
   --tyba-info: var(--tyba-blue);
 
-  /* Tints translúcidos (fundos de badge/status) — derivados */
-  --tyba-green-tint: color-mix(in srgb, var(--tyba-green) var(--tyba-tint-alpha), transparent);
-  --tyba-amber-tint: color-mix(in srgb, var(--tyba-amber) var(--tyba-tint-alpha), transparent);
+  /* Tints translúcidos (fundos de badge/status) — derivados; do tom vivo
+     quando há (`*-fill`), como no mockup PropostaClaro */
+  --tyba-green-tint: color-mix(in srgb, var(--tyba-green-fill) var(--tyba-tint-alpha), transparent);
+  --tyba-amber-tint: color-mix(in srgb, var(--tyba-amber-fill) var(--tyba-tint-alpha), transparent);
   --tyba-magenta-tint: color-mix(in srgb, var(--tyba-magenta) var(--tyba-tint-alpha), transparent);
   --tyba-violet-tint: color-mix(in srgb, var(--tyba-violet) var(--tyba-tint-alpha), transparent);
   --tyba-blue-tint: color-mix(in srgb, var(--tyba-blue) var(--tyba-tint-alpha), transparent);
   --tyba-cyan-tint: color-mix(in srgb, var(--tyba-cyan) var(--tyba-tint-alpha), transparent);
-  --tyba-red-tint: color-mix(in srgb, var(--tyba-red) var(--tyba-tint-alpha), transparent);
+  --tyba-red-tint: color-mix(in srgb, var(--tyba-red-fill) var(--tyba-tint-alpha), transparent);
   --tyba-neutral-tint: color-mix(in srgb, var(--tyba-text-faint) var(--tyba-tint-alpha), transparent);
 
   /* Seleção de texto — derivada da primária */
@@ -138,6 +139,9 @@
   /* Contorno de campo (busca, mensagem de commit): 0,12 nos mockups —
      entre a linha fina e a forte. Derivado: vale em todo tema. */
   --tyba-border-field: color-mix(in srgb, var(--tyba-border-strong) 75%, transparent);
+  /* Hover/foco de item (lista, menu): véu do texto, aparece sobre qualquer
+     fundo — `raised` some sobre o overlay no escuro e sobre o branco no claro. */
+  --tyba-hover: color-mix(in srgb, var(--tyba-text) 6%, transparent);
   --tyba-sheen: linear-gradient(
     180deg,
     color-mix(in srgb, var(--tyba-raised) 97%, white),
@@ -280,7 +284,7 @@
   --secondary-foreground: var(--tyba-text);
   --muted: var(--tyba-raised);
   --muted-foreground: var(--tyba-text-muted);
-  --accent: var(--tyba-raised);
+  --accent: var(--tyba-hover);
   --accent-foreground: var(--tyba-text);
   --destructive: var(--tyba-red);
   --destructive-foreground: #ffffff;
@@ -329,7 +333,7 @@
      branco, #fafbff e o tint violeta (2026-10-13). */
   --tyba-text-faint: #6c6c77;
   --tyba-text-inverse: #ffffff;
-  --tyba-ghost-mix: 38%;          /* fantasma ≈ #c4c4cc */
+  --tyba-ghost-mix: 49%;
 
   /* Acentos: dois tons por cor, como o mockup PropostaClaro. O token base é
      o tom de TEXTO (passa AA); `*-fill` é o tom vivo de ponto e filete. */
@@ -362,17 +366,12 @@
      segmentado ganha o véu violeta (mockup PropostaClaro). */
   --tyba-raised-ring: inset 0 0 0 1px var(--tyba-border);
   --tyba-segment-bg: color-mix(in srgb, var(--tyba-violet) 9%, transparent);
-  /* Mais forte e mais funda que a do mockup (13/11/9%, 460/400/340px): ela só
-     aparece onde não há conteúdo — header e faixa de abas transparentes,
-     sidebar e painel de vidro —, e com os valores do mockup sobrava ~7% de
-     cor numa faixa de 72px, que no app lia como branco chapado. O terminal é
-     `sunken` opaco: a aurora não chega ao texto dele. */
-  /* Aurora do mockup aprovado (PropostaClaro, 2026-10-12), valores literais:
-     não deriva dos acentos do tema, que foram escurecidos para texto. */
+  /* Aurora tripla, derivada dos acentos do esquema. O claro do TYBA usa os
+     literais do mockup (bloco próprio, abaixo). */
   --tyba-aurora:
-    radial-gradient(1100px 460px at 70% -12%, rgba(122, 76, 232, 0.13), transparent 62%),
-    radial-gradient(800px 400px at 20% -10%, rgba(15, 157, 140, 0.11), transparent 60%),
-    radial-gradient(600px 340px at 45% -8%, rgba(78, 150, 34, 0.09), transparent 58%);
+    radial-gradient(1100px 460px at 70% -12%, color-mix(in srgb, var(--tyba-violet) 13%, transparent), transparent 62%),
+    radial-gradient(800px 400px at 20% -10%, color-mix(in srgb, var(--tyba-cyan) 11%, transparent), transparent 60%),
+    radial-gradient(600px 340px at 45% -8%, color-mix(in srgb, var(--tyba-green) 9%, transparent), transparent 58%);
 
   --tyba-shadow-sm: 0 1px 2px rgba(23, 23, 28, 0.08);
   --tyba-shadow-md: 0 4px 16px rgba(23, 23, 28, 0.1);
@@ -385,15 +384,24 @@
   --tyba-lift-cast: rgba(0, 0, 0, 0);
 }
 
-/* Só o escuro do TYBA (sem data-theme): diff com os literais do mockup. */
-:root:not([data-theme]) {
+/* Só o escuro do TYBA (sem data-theme). `data-imported` marca tema importado,
+   que usa o mesmo atributo de polaridade mas não leva os literais do TYBA. */
+:root:not([data-theme]):not([data-imported]) {
+  --tyba-ghost-mix: 46%;          /* fantasma ≈ #3a3a3f (mockups) */
   --tyba-diff-add-text: #c9ecaa;
   --tyba-diff-del-text: #f3b2a8;
 }
 
 /* Só o claro do TYBA (os outros claros herdam o bloco de cima e têm acentos
    próprios): tons vivos de ponto e filete do mockup PropostaClaro, literais. */
-[data-theme='light'] {
+[data-theme='light']:not([data-imported]) {
+  --tyba-ghost-mix: 38%;          /* fantasma ≈ #c4c4cc */
+  /* Aurora do mockup aprovado (PropostaClaro, 2026-10-12), valores literais:
+     não deriva dos acentos, que no claro foram escurecidos para texto. */
+  --tyba-aurora:
+    radial-gradient(1100px 460px at 70% -12%, rgba(122, 76, 232, 0.13), transparent 62%),
+    radial-gradient(800px 400px at 20% -10%, rgba(15, 157, 140, 0.11), transparent 60%),
+    radial-gradient(600px 340px at 45% -8%, rgba(78, 150, 34, 0.09), transparent 58%);
   --tyba-green-fill: #3d8a17;
   --tyba-diff-add-bg: rgba(56, 126, 21, 0.08);
   --tyba-diff-del-bg: rgba(201, 60, 43, 0.08);
@@ -915,6 +923,8 @@
   --color-tyba-border: var(--tyba-border);
   --color-tyba-border-strong: var(--tyba-border-strong);
   --color-tyba-border-field: var(--tyba-border-field);
+  --color-tyba-border-soft: var(--tyba-border-soft);
+  --color-tyba-hover: var(--tyba-hover);
   --color-tyba-block-border: var(--tyba-block-border);
 
   --color-tyba-text: var(--tyba-text);

@@ -29,14 +29,14 @@ function MiniScreen({ tybaLine }: { tybaLine: boolean }) {
       {tybaLine ? (
         <>
           <div className="px-1.5 pt-1.5">
-            <span className="text-tyba-green">❯</span>{" "}
+            <span className="text-tyba-green-fill">❯</span>{" "}
             <span className="text-tyba-text">ls</span>
           </div>
           <div className="px-1.5 pb-1.5 text-tyba-text-muted">arquivo.ts</div>
           {/* O filete é a peça que diz "aqui a leitura acaba e a escrita
               começa". É ele, e não a cor, que distingue os dois modos. */}
           <div className="tyba-divide-t bg-tyba-sunken px-1.5 py-1.5">
-            <span className="text-tyba-green">❯</span>{" "}
+            <span className="text-tyba-green-fill">❯</span>{" "}
             <span className="text-tyba-text-faint">
               {t("promptModeCardTypeHere")}
             </span>

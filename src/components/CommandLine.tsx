@@ -746,7 +746,7 @@ export function CommandLine({
           className={`shrink-0 select-none font-mono transition-all ${
             collapsed
               ? "text-[11px] leading-[17px] text-tyba-text-faint"
-              : `pt-1 text-[13px] leading-[20px] ${focused ? "text-tyba-green" : "text-tyba-text-ghost"}`
+              : `pt-1 text-[13px] leading-[20px] ${focused ? "text-tyba-green-fill" : "text-tyba-text-ghost"}`
           }`}
           style={
             focused && !collapsed

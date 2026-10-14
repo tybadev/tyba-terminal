@@ -44,9 +44,9 @@ const FALLBACK_DARK: TerminalPalette = {
 const FALLBACK_LIGHT: TerminalPalette = {
   background: "#ffffff",
   foreground: "#17171c",
-  cursor: "#387e15",
+  cursor: "#3d8a17",
   cursorAccent: "#ffffff",
-  selectionBackground: "#387e154d",
+  selectionBackground: "#3d8a174d",
   ansi: [
     "#2a2a31", "#d6402e", "#4e9622", "#c47c14",
     "#3b66d6", "#d33d84", "#0f9d8c", "#e9e9ee",
@@ -209,6 +209,9 @@ function apply() {
   appliedVars = [];
 
   const theme = activeTheme();
+  // Importado usa o atributo de polaridade do TYBA; esta marca o tira dos
+  // blocos de literais que só o TYBA leva (styles.css).
+  root.toggleAttribute("data-imported", !!theme && !theme.builtin);
   if (theme && !theme.builtin) {
     const vars = computeVars(theme);
     for (const [name, value] of Object.entries(vars)) {

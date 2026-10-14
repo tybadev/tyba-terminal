@@ -55,7 +55,7 @@ export function PromptDialog({
         <div className="flex h-10 items-center gap-2.5 tyba-divide-b px-3">
           <span
             aria-hidden
-            className="shrink-0 font-mono text-[13px] font-bold text-tyba-green"
+            className="shrink-0 font-mono text-[13px] font-bold text-tyba-green-fill"
           >
             ❯
           </span>

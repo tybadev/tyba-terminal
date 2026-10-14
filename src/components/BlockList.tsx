@@ -236,7 +236,7 @@ const BlockHeader = memo(function BlockHeader({
     >
       <span
         className={`shrink-0 font-mono text-[13px] leading-5 ${
-          broke ? "text-tyba-red" : "text-tyba-green"
+          broke ? "text-tyba-red-fill" : "text-tyba-green-fill"
         }`}
       >
         ❯

@@ -364,12 +364,18 @@ describe("claro A · aurora", () => {
     });
   }
 
-  it("a aurora do claro é a do mockup PropostaClaro, literal", () => {
+  const mockupAurora = ["rgba(122, 76, 232, 0.13)", "rgba(15, 157, 140, 0.11)", "rgba(78, 150, 34, 0.09)"];
+
+  it("a aurora do claro do TYBA é a do mockup PropostaClaro, literal", () => {
     // Literal de propósito: os acentos do claro são tons de texto (escuros)
     // e viravam cinza misturados no branco (2026-10-13).
-    const aurora = lightBase!.slice(lightBase!.indexOf("--tyba-aurora:"));
-    for (const color of ["rgba(122, 76, 232, 0.13)", "rgba(15, 157, 140, 0.11)", "rgba(78, 150, 34, 0.09)"]) {
-      expect(aurora).toContain(color);
-    }
+    const tybaLight = CSS.match(/^\[data-theme='light'\]:not\(\[data-imported\]\)\s*\{([\s\S]*?)^\}/m)?.[1];
+    expect(tybaLight).toBeDefined();
+    const aurora = tybaLight!.slice(tybaLight!.indexOf("--tyba-aurora:"));
+    for (const color of mockupAurora) expect(aurora).toContain(color);
+  });
+
+  it("os outros claros não herdam a aurora literal do TYBA", () => {
+    for (const color of mockupAurora) expect(lightBase).not.toContain(color);
   });
 });

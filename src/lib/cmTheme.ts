@@ -40,18 +40,18 @@ const TYBA_DARK: SyntaxPalette = {
   variable: "#f5f5f6",
 };
 
-/// Mockup EditorClaro: os acentos escurecidos do tema claro.
+/// Mockup EditorClaro, com os tons de texto da paleta do claro (PropostaClaro).
 const TYBA_LIGHT: SyntaxPalette = {
   comment: "#8b8b96",
   keyword: "#7a4ce8",
   control: "#55555f",
-  string: "#387e15",
+  string: "#3f7a1b",
   function: "#3b66d6",
-  number: "#9b6210",
+  number: "#9a5f0c",
   type: "#0c7c6f",
   variable: "#121218",
-  tag: "#c93c2b",
-  invalid: "#c93c2b",
+  tag: "#b5321f",
+  invalid: "#b5321f",
 };
 
 /// A paleta de sintaxe dos mockups Editor/EditorClaro. Função pura pra testar
