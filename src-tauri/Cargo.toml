@@ -46,11 +46,12 @@ libc = "0.2"
 rustix = { version = "1", features = ["fs"] }
 
 # Ícone do Dock em tempo de execução (`app_icon`). Já vêm do tao; aqui só as
-# features que o `NSApplication.applicationIconImage` pede.
+# features que o `NSApplication.applicationIconImage` e o selo do `NSDockTile`
+# pedem.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSImage"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSImage", "NSDockTile"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "0.5"

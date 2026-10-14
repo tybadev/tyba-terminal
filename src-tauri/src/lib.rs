@@ -4904,7 +4904,7 @@ fn new_window(app: AppHandle) -> Result<(), String> {
     {
         let window = builder.build().map_err(|e| e.to_string())?;
         let icon = app_icon::current(&app.state::<AppState>().config);
-        app_icon::apply_to_window(&app, &window, icon);
+        app_icon::apply_to_window(&window, icon);
     }
     Ok(())
 }
@@ -8023,12 +8023,8 @@ pub fn run() {
             }
 
             // O ícone do Dock trocado em tempo de execução morre com o processo:
-            // a escolha salva volta a cada abertura.
-            {
-                let state = app.state::<AppState>();
-                app_icon::follow_config(app.handle(), Arc::clone(&state.config));
-                app_icon::apply_at_startup(app.handle(), &state.config);
-            }
+            // a escolha salva volta a cada abertura (no `RunEvent::Ready`).
+            app_icon::follow_config(app.handle(), Arc::clone(&app.state::<AppState>().config));
 
             // Único passo caro que fica: montar o NSMenu é operação de main
             // thread, não há para onde mover.
@@ -8307,6 +8303,11 @@ pub fn run() {
                 if let Some(window) = app_handle.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
+                }
+            }
+            if matches!(event, tauri::RunEvent::Ready) {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    app_icon::apply_at_startup(app_handle, &state.config);
                 }
             }
             if matches!(event, tauri::RunEvent::Exit) {
