@@ -7755,7 +7755,10 @@ pub fn run() {
                     .unwrap_or_else(|| config_dir.join("user")),
                 &store,
             ));
-            config::migrate_themes(&config_dir.join("themes"), &user_config.themes_dir());
+            // Raiz recusada: nada se grava nela, e não há o que vigiar.
+            if user_config.usable() {
+                config::migrate_themes(&config_dir.join("themes"), &user_config.themes_dir());
+            }
             let themes: theme::SharedThemes = Arc::new(theme::ThemeManager::new(
                 Arc::clone(&user_config),
                 user_config.themes_dir(),
@@ -7763,7 +7766,7 @@ pub fn run() {
             // O splash nasce aqui, e não no `tauri.conf.json`: precisa do tema
             // salvo, que só existe depois de o banco abrir.
             splash::open(app.handle(), &theme::splash_boot_json(&themes.state()));
-            {
+            if user_config.usable() {
                 let app = app.handle().clone();
                 let cfg = Arc::clone(&user_config);
                 let themes = Arc::clone(&themes);

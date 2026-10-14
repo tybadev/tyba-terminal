@@ -106,6 +106,9 @@ struct State {
 pub struct ConfigManager {
     root: PathBuf,
     path: PathBuf,
+    /// Raiz recusada (de outro usuário, gravável por outros…): nada se lê nem
+    /// se grava nela, e os valores caem no SQLite (se não migrou) ou no padrão.
+    root_error: Option<String>,
     state: Mutex<State>,
 }
 
@@ -202,20 +205,20 @@ impl ConfigManager {
     /// falha: o que der errado vira aviso e o app segue com o padrão.
     pub fn open(root: PathBuf, store: &Store) -> Self {
         let path = root.join(FILE_NAME);
+        let root_error = fsguard::ensure_root(&root).err();
         let mgr = Self {
-            root: root.clone(),
+            root,
             path,
+            root_error,
             state: Mutex::new(State::default()),
         };
         let mut warnings = Vec::new();
-        match fsguard::ensure_root(&root) {
-            Ok(_) => {
-                if let Err(e) = mgr.migrate(store) {
-                    warnings.push(e);
-                }
+        if mgr.usable() {
+            if let Err(e) = mgr.migrate(store) {
+                warnings.push(e);
             }
-            Err(e) => warnings.push(e),
         }
+        // Com a raiz recusada, o load avisa o motivo (o `read` devolve o erro).
         mgr.load();
         // Arquivo ilegível falha na migração e de novo no load, com a mesma
         // causa: um aviso basta, e o do load diz o que o app fez.
@@ -248,7 +251,15 @@ impl ConfigManager {
         self.root.join(THEMES_DIR)
     }
 
+    /// `false` quando a raiz foi recusada: nem watcher nem migração de temas.
+    pub fn usable(&self) -> bool {
+        self.root_error.is_none()
+    }
+
     fn read(&self) -> Result<Option<String>, String> {
+        if let Some(e) = &self.root_error {
+            return Err(e.clone());
+        }
         fsguard::read_capped(&self.root, &self.path, MAX_BYTES)
     }
 
@@ -343,7 +354,8 @@ impl ConfigManager {
     /// quebrado: erro, e o disco fica como estava.
     pub fn set(&self, key: &str, value: &str) -> Result<Changes, String> {
         let mut state = self.state.lock();
-        let text = self.read()?.unwrap_or_default();
+        // Arquivo apagado renasce do modelo comentado, não vazio.
+        let text = self.read()?.unwrap_or_else(|| TEMPLATE.to_string());
         let out = edit::set(&text, key, value)?;
         let parsed = schema::parse(&out)?;
         if out != text {
@@ -568,7 +580,32 @@ mod tests {
         assert!(ch.theme && ch.prefs);
         assert_eq!(cfg.get(KEY_THEME_MODE), None);
         cfg.set(KEY_THEME_MODE, "light").unwrap();
-        assert!(root.join(FILE_NAME).is_file());
+        let text = fs::read_to_string(root.join(FILE_NAME)).unwrap();
+        assert!(text.starts_with("# Configuração do TYBA."), "{text}");
+        assert!(text.contains("mode = \"light\""), "{text}");
+        assert!(text.contains("# Tamanho da fonte do terminal"), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refused_root_is_neither_read_nor_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, root, store) = setup();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(FILE_NAME), "[theme]\nmode = \"light\"\n").unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
+
+        let cfg = ConfigManager::open(root.clone(), &store);
+        assert!(!cfg.usable());
+        assert_eq!(cfg.get(KEY_THEME_MODE), None);
+        assert_eq!(cfg.warnings().len(), 1, "{:?}", cfg.warnings());
+        assert!(cfg.warnings()[0].contains("outros usuários"));
+        assert!(cfg.set(KEY_THEME_MODE, "dark").is_err());
+        assert_eq!(
+            fs::read_to_string(root.join(FILE_NAME)).unwrap(),
+            "[theme]\nmode = \"light\"\n"
+        );
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]
