@@ -20,7 +20,7 @@ struct RawSandbox {
 }
 
 pub fn config_path(home: &Path) -> PathBuf {
-    home.join(".tyba").join("config.toml")
+    home.join(crate::profile::HOME_DIR).join("config.toml")
 }
 
 fn expand(entry: &str, home: &Path) -> Result<PathBuf, String> {
@@ -54,7 +54,7 @@ pub fn parse(content: &str, home: &Path) -> Result<UserConfig, String> {
 
 pub fn load(home: &Path) -> Result<UserConfig, String> {
     let path = config_path(home);
-    let root = home.join(".tyba");
+    let root = home.join(crate::profile::HOME_DIR);
     if !root.exists() {
         return Ok(UserConfig::default());
     }

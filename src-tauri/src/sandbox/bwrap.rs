@@ -322,6 +322,7 @@ fn secret_shadow_dirs(spec: &SandboxSpec) -> Vec<PathBuf> {
         home.join(".config/containers"),
         spec.tyba_data_dir.clone(),
         home.join(".tyba"),
+        home.join(".tyba-dev"),
     ];
     dirs.dedup();
     dirs
@@ -347,6 +348,13 @@ fn worktree_mounts(args: &mut Args, spec: &SandboxSpec) {
     let dot_tyba = spec.writable_root.join(".tyba");
     if dot_tyba.exists() {
         args.ro_bind(&dot_tyba);
+    }
+    // `config.toml` de dotfiles com o alvo dentro do worktree (sessão no
+    // próprio repositório de dotfiles): o bind de escrita alcançaria o alvo.
+    for target in super::config_link_targets(&spec.home) {
+        if target.starts_with(&spec.writable_root) {
+            args.ro_bind(&target);
+        }
     }
 }
 

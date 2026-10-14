@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
+    "tauri": "bun scripts/tauri.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -323,7 +323,16 @@ fn secret_denies(spec: &SandboxSpec) -> Vec<Rule> {
         Rule::Node(home.join(".config/gh")),
         Rule::Node(home.join("Library/Keychains")),
         Rule::Node(spec.tyba_data_dir.clone()),
-        Rule::Node(home.join("Library/Application Support/dev.tyba.app")),
+        // Os dois perfis: agente do build de dev não lê o banco do app
+        // instalado, e vice-versa.
+        Rule::Node(
+            home.join("Library/Application Support")
+                .join(crate::profile::RELEASE_IDENTIFIER),
+        ),
+        Rule::Node(
+            home.join("Library/Application Support")
+                .join(crate::profile::DEV_IDENTIFIER),
+        ),
         Rule::Prefix(home.join(".git-credentials")),
         Rule::Prefix(home.join(".netrc")),
         Rule::Prefix(home.join(".npmrc")),
@@ -338,10 +347,16 @@ fn secret_denies(spec: &SandboxSpec) -> Vec<Rule> {
 fn immutable_denies(spec: &SandboxSpec) -> Vec<Rule> {
     let mut rules = vec![
         Rule::Node(spec.home.join(".tyba/config.toml")),
+        Rule::Node(spec.home.join(".tyba-dev/config.toml")),
         Rule::Node(spec.readable_root.join(".tyba/config.toml")),
         Rule::Node(spec.writable_root.join(".tyba/config.toml")),
         Rule::Node(spec.runtime_dir.clone()),
     ];
+    rules.extend(
+        super::config_link_targets(&spec.home)
+            .into_iter()
+            .map(Rule::Node),
+    );
     // Sessão anexada ao checkout principal (review/conflitos num repo comum): ali
     // o gitdir do worktree É o `.git` do repo, e o allow de escrita do gitdir
     // alcançaria `refs/heads/main`. O agente não daria push — o core recusa —, mas
@@ -726,6 +741,31 @@ mod tests {
         assert!(deny.contains("/private/repo/.tyba/config.toml"));
         assert!(deny.contains("/private/wt/session-a/.tyba/config.toml"));
         assert!(deny.contains("/private/tmp/tyba-abc"));
+        assert!(deny.contains("/Users/nobody/.tyba-dev/config.toml"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dotfiles_config_target_is_never_writable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().canonicalize().unwrap();
+        let dotfiles = home.join("dotfiles");
+        std::fs::create_dir_all(home.join(".tyba")).unwrap();
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        std::fs::write(dotfiles.join("tyba.toml"), "").unwrap();
+        std::os::unix::fs::symlink(dotfiles.join("tyba.toml"), home.join(".tyba/config.toml"))
+            .unwrap();
+        let mut s = spec();
+        s.home = home.clone();
+        let policy = build_policy(&s);
+        let deny = policy
+            .lines()
+            .find(|l| l.starts_with("(deny file-write*"))
+            .unwrap();
+        assert!(
+            deny.contains(dotfiles.join("tyba.toml").to_str().unwrap()),
+            "{deny}"
+        );
     }
 
     #[test]

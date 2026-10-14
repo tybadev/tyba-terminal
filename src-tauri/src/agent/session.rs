@@ -1537,7 +1537,8 @@ fn default_data_dir(env: &HashMap<String, String>, home: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         let _ = env;
-        home.join("Library/Application Support/dev.tyba.app")
+        home.join("Library/Application Support")
+            .join(crate::profile::IDENTIFIER)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1545,7 +1546,7 @@ fn default_data_dir(env: &HashMap<String, String>, home: &Path) -> PathBuf {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .unwrap_or_else(|| home.join(".local/share"))
-            .join("dev.tyba.app")
+            .join(crate::profile::IDENTIFIER)
     }
 }
 

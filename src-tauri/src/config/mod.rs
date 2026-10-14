@@ -80,7 +80,8 @@ pub fn is_file_key(key: &str) -> bool {
     schema::FILE_KEYS.contains(&key)
 }
 
-/// `~/.tyba/` em todo SO — inclusive Linux, sem XDG (decisão do dono).
+/// `~/.tyba/` em todo SO — inclusive Linux, sem XDG (decisão do dono). O build
+/// de desenvolvimento usa `~/.tyba-dev/` (ver [`crate::profile`]).
 pub fn root_dir(home: Option<&Path>) -> Option<PathBuf> {
     #[cfg(debug_assertions)]
     if let Some(dir) = std::env::var_os(ENV_DIR).map(PathBuf::from) {
@@ -88,7 +89,7 @@ pub fn root_dir(home: Option<&Path>) -> Option<PathBuf> {
             return Some(dir);
         }
     }
-    home.map(|h| h.join(".tyba"))
+    home.map(|h| h.join(crate::profile::HOME_DIR))
 }
 
 /// O que mudou num reload — quem emite olha isto para não emitir à toa.

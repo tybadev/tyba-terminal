@@ -110,7 +110,7 @@ pub fn install(_app: &tauri::AppHandle, _spec: &MenuSpec) -> Result<(), String> 
 pub fn install_fallback(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::menu::{MenuBuilder, SubmenuBuilder};
 
-    let app_menu = SubmenuBuilder::new(app, "Tyba")
+    let app_menu = SubmenuBuilder::new(app, crate::profile::PRODUCT_NAME)
         .about(None)
         .separator()
         .services()
