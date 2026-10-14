@@ -8,14 +8,15 @@
  *
  * Fonte: a marca (`src-tauri/icons/art/tyba-mark.svg`) e a tabela `VARIANTS`
  * abaixo, cópia da prancha aprovada pelo dono em 2026-10-14 (fundo, modo da
- * marca e brilho de cada variante). Não usa ferramenta nova: rasteriza com o
+ * marca e brilho de cada variante). As proporções seguem o ícone do bundle, a
+ * pedido do dono, para que trocar de variante não mude o tamanho da marca. Não usa ferramenta nova: rasteriza com o
  * `tauri icon` (resvg) que o `gen-app-icons.ts` já usa.
  *
  * Saídas, para cada id:
  *
  * - `icons/app/src/<id>.svg` — o ladrilho 1024×1024 na grade de ícone do
  *   macOS: corpo de 824 centrado com 100 de margem transparente, cantos com
- *   raio de 22,37% do corpo. É a fonte versionada do PNG.
+ *   raio de ~22,37% do corpo. É a fonte versionada do PNG.
  * - `icons/app/<id>.png` — 1024×1024. O core embute (`include_bytes!`) e põe
  *   no Dock em tempo de execução.
  * - `icons/app/thumb/<id>.png` — 128×128 só do corpo (sem a margem), para a
@@ -29,16 +30,18 @@ const ROOT = resolve(import.meta.dir, "..");
 const ICONS = join(ROOT, "src-tauri", "icons");
 const OUT = join(ICONS, "app");
 
-/** Grade do macOS em 1024. */
+/**
+ * Grade do macOS em 1024, com as mesmas medidas do ícone do bundle
+ * (`gen-app-icons.ts`): corpo de 824 com 100 de margem, raio 185 (~22,37%),
+ * marca de 540 (~65% do corpo) e borda interna de 2.
+ */
 const CANVAS = 1024;
 const BODY = 824;
 const INSET = (CANVAS - BODY) / 2;
-const RADIUS = Math.round(BODY * 0.2237);
-/** Margem da marca dentro do corpo: 20% de cada lado, como na prancha. */
-const PAD = Math.round(BODY * 0.2);
-const MARK = BODY - 2 * PAD;
-/** A borda interna da prancha é 1px num ladrilho de 168: mesma proporção. */
-const EDGE = BODY / 168;
+const RADIUS = 185;
+const MARK = 540;
+const PAD = (BODY - MARK) / 2;
+const EDGE = 2;
 const THUMB = 128;
 
 type Radial = { kind: "radial"; rx: number; ry: number; cx: number; cy: number; stops: Stop[] };
