@@ -85,6 +85,14 @@ describe("buildAgentTree", () => {
     });
   });
 
+  test("com 8 rodando, quem espera por você vem primeiro", () => {
+    const runs = Array.from({ length: 8 }, (_, i) => run(`a${i}`, i, "running"));
+    const tree = buildAgentTree(SESSION, runs, [approval(1, "a0")], 100);
+    expect(tree.rows[0].key).toBe("a0");
+    expect(tree.rows[0].light).toBe("awaiting");
+    expect(tree.rows).toHaveLength(8);
+  });
+
   test("aprovação do subagente vira selo âmbar na linha dele", () => {
     const tree = buildAgentTree(
       SESSION,

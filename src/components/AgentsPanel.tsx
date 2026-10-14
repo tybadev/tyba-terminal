@@ -70,6 +70,9 @@ const LIGHT_LABEL: Record<AgentLight, string> = {
   blocked: "subagentsStatusBlocked",
 };
 
+/** Acima de tantos subagentes vivos na rodada, a caixa AGORA vira uma linha. */
+const COMPACT_NOW_AFTER = 3;
+
 function PendingBadge({ count }: { count: number }) {
   const { t } = useTranslation();
   if (count === 0) return null;
@@ -255,6 +258,12 @@ export function AgentsPanel({
             {rounds.map((round) => {
               const expanded = roundOpen[round.round] ?? round.latest;
               const visible = expanded ? round.rows : collapsedRows(round);
+              // Muitos rodando juntos: a caixa AGORA vira uma linha (o texto
+              // inteiro fica no hover e no detalhe aberto).
+              const compactNow =
+                round.rows.filter(
+                  (r) => r.light === "running" || r.light === "starting" || r.light === "awaiting",
+                ).length > COMPACT_NOW_AFTER;
               return (
                 <section key={round.round} className="min-w-0">
                   {rounds.length > 1 && (
@@ -276,6 +285,7 @@ export function AgentsPanel({
                         key={row.key}
                         sessionId={session.id}
                         row={row}
+                        compactNow={compactNow}
                         approval={
                           row.run.agent_id
                             ? (inline.get(row.run.agent_id) ?? null)
@@ -352,9 +362,12 @@ function SubagentRow({
   approval,
   open,
   onToggle,
+  compactNow = false,
 }: {
   sessionId: Session["id"];
   row: AgentTreeRow;
+  /** Muitos rodando na rodada: a ação em curso numa linha só. */
+  compactNow?: boolean;
   /** O pedido pendente mais antigo deste subagente, se houver. */
   approval: ApprovalRequest | null;
   open: boolean;
@@ -422,7 +435,9 @@ function SubagentRow({
       </button>
       {/* O que está executando AGORA, inteiro (mockup Subagentes): a linha
           cortada não deixava ver o comando. */}
-      {line && (line.kind === "run" || line.kind === "tool") && <NowBox line={line} />}
+      {line && (line.kind === "run" || line.kind === "tool") && (
+        <NowBox line={line} compact={compactNow && !open} />
+      )}
       {awaiting && approval && <InlineApproval approval={approval} />}
       {open && (
         <div className="min-w-0 pb-2 pl-[17px] pt-1">
@@ -447,19 +462,34 @@ function SubagentRow({
 }
 
 /** A ação em curso, inteira: ferramenta + comando ou caminho, em mono. */
-function NowBox({ line }: { line: NonNullable<ReturnType<typeof subagentLine>> }) {
+function NowBox({
+  line,
+  compact = false,
+}: {
+  line: NonNullable<ReturnType<typeof subagentLine>>;
+  compact?: boolean;
+}) {
   const { t } = useTranslation();
   if (line.kind !== "run" && line.kind !== "tool") return null;
   const tool = line.kind === "run" ? "Bash" : line.tool;
   const detail = line.detail;
   return (
-    <div className="ml-[17px] mt-1 mb-1.5 flex min-w-0 items-start gap-2 rounded-[6px] bg-tyba-sunken px-2.5 py-1.5 shadow-[inset_0_0_0_1px_var(--tyba-border)]">
+    <div
+      title={compact ? `${tool} ${detail ?? ""}` : undefined}
+      className={`ml-[17px] flex min-w-0 gap-2 rounded-[6px] bg-tyba-sunken px-2.5 shadow-[inset_0_0_0_1px_var(--tyba-border)] ${
+        compact ? "mb-1 items-center py-1" : "mb-1.5 mt-1 items-start py-1.5"
+      }`}
+    >
       <span className="shrink-0 pt-px text-[9.5px] tracking-[0.06em] text-tyba-cyan">
         {t("agentsNow")}
       </span>
       <span className="shrink-0 font-mono text-[11px] text-tyba-blue">{tool}</span>
       {detail && (
-        <span className="min-w-0 flex-1 break-all font-mono text-[12px] leading-[17px] text-tyba-text">
+        <span
+          className={`min-w-0 flex-1 font-mono text-[12px] leading-[17px] text-tyba-text ${
+            compact ? "truncate" : "break-all"
+          }`}
+        >
           {detail}
         </span>
       )}
