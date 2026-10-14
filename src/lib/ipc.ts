@@ -658,6 +658,8 @@ export interface PrDetail {
   mergeable: "mergeable" | "conflicting" | "unknown";
   /** `mergeStateStatus` do GitHub em minúsculas: clean, behind, blocked, dirty… */
   merge_state: string;
+  /** PR vindo de fork (`isCrossRepository`): código de terceiros. */
+  cross_repo: boolean;
   session: PrSessionLink | null;
   /**
    * O core trouxe no máximo 100 commits/checks/threads/comentários/revisões/
@@ -698,6 +700,25 @@ export const forgePrMerge = (
   strategy: PrMergeStrategy,
   headSha: string,
 ) => invoke<void>("forge_pr_merge", { id, number, strategy, headSha });
+
+// --- PR sem sessão: "Abrir no TYBA" e "Checkout" ---------------------------
+// Só pela UI, sempre depois de confirmação. O core busca `refs/pull/<n>/head`,
+// confere contra `headSha` (o que o usuário viu) e nunca empurra nada.
+
+/** Sessão de shell num worktree NOVO no head do PR (branch `tyba/pr-<n>-…`);
+ *  o checkout do usuário não muda. Se uma sessão já abriu o PR, devolve ela. */
+export const forgePrOpenSession = (
+  id: SessionId,
+  number: number,
+  headSha: string,
+  cols: number,
+  rows: number,
+) => invoke<Session>("forge_pr_open_session", { id, number, headSha, cols, rows });
+
+/** Checkout do head do PR no repo da sessão, em HEAD destacado. Recusa árvore
+ *  suja e sessão com worktree. */
+export const forgePrCheckout = (id: SessionId, number: number, headSha: string) =>
+  invoke<void>("forge_pr_checkout", { id, number, headSha });
 
 /** Aba "git · pull requests" do repo da sessão. */
 export const openPrListTab = (id: SessionId) =>

@@ -71,6 +71,7 @@ const detail = (over: Partial<PrDetail> = {}): PrDetail => ({
   review: null,
   mergeable: "mergeable",
   merge_state: "clean",
+  cross_repo: false,
   session: null,
   truncated: false,
   rate_limit: null,

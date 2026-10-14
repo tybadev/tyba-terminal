@@ -97,6 +97,11 @@ pub fn checkout(repo: &Path, number: u64, head_sha: &str) -> Result<(), AppError
         return Err(AppError::new("forge.pr_checkout_dirty"));
     }
     action_remote(repo)?;
+    checkout_fetched(repo, number, head_sha)
+}
+
+/// A parte local do checkout, depois das validações de alvo e forja.
+fn checkout_fetched(repo: &Path, number: u64, head_sha: &str) -> Result<(), AppError> {
     fetch_head(repo, number, head_sha)?;
     // Conferido de novo logo antes de trocar: o fetch leva segundos.
     if worktree::is_dirty(repo).map_err(failed)? {
@@ -191,5 +196,95 @@ mod tests {
             open_worktree(dir.path(), 1, SHA).unwrap_err().code,
             "forge.pr_actions_unsupported"
         );
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// `origin` local com `refs/pull/7/head` (o que o GitHub publica) e um
+    /// clone na `main`: o fetch traz o head, confere o sha e o checkout fica
+    /// destacado, sem branch nova.
+    fn origin_with_pull_ref() -> (tempfile::TempDir, PathBuf, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        for (k, v) in [
+            ("user.email", "t@t.invalid"),
+            ("user.name", "t"),
+            ("commit.gpgsign", "false"),
+        ] {
+            git(&origin, &["config", k, v]);
+        }
+        std::fs::write(origin.join("a.txt"), "a\n").unwrap();
+        git(&origin, &["add", "-A"]);
+        git(&origin, &["commit", "-qm", "init"]);
+        git(&origin, &["switch", "-q", "-c", "contribuicao"]);
+        std::fs::write(origin.join("pr.txt"), "pr\n").unwrap();
+        git(&origin, &["add", "-A"]);
+        git(&origin, &["commit", "-qm", "pr"]);
+        let pr_sha = git(&origin, &["rev-parse", "HEAD"]);
+        git(&origin, &["update-ref", "refs/pull/7/head", &pr_sha]);
+        git(&origin, &["switch", "-q", "main"]);
+        git(&origin, &["branch", "-qD", "contribuicao"]);
+        let clone = dir.path().join("clone");
+        git(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        (dir, clone, pr_sha)
+    }
+
+    #[test]
+    fn checkout_fetches_the_pull_ref_and_detaches_at_the_pr_head() {
+        let (_dir, clone, pr_sha) = origin_with_pull_ref();
+        let heads = |c: &Path| git(c, &["for-each-ref", "--format=%(refname)", "refs/heads"]);
+        let branches_before = heads(&clone);
+        checkout_fetched(&clone, 7, &pr_sha).expect("checkout");
+        assert_eq!(git(&clone, &["rev-parse", "HEAD"]), pr_sha);
+        assert_eq!(
+            git(&clone, &["branch", "--show-current"]),
+            "",
+            "HEAD destacado"
+        );
+        assert_eq!(
+            heads(&clone),
+            branches_before,
+            "nenhuma branch criada ou movida"
+        );
+        assert!(clone.join("pr.txt").exists());
+    }
+
+    #[test]
+    fn a_pr_that_moved_since_the_user_looked_is_refused() {
+        let (_dir, clone, _pr_sha) = origin_with_pull_ref();
+        let main_sha = git(&clone, &["rev-parse", "HEAD"]);
+        let err = checkout_fetched(&clone, 7, SHA).unwrap_err();
+        assert_eq!(err.code, "forge.pr_head_moved");
+        assert_eq!(git(&clone, &["rev-parse", "HEAD"]), main_sha, "nada trocou");
+    }
+
+    #[test]
+    fn missing_pull_ref_fails_without_touching_the_checkout() {
+        let (_dir, clone, pr_sha) = origin_with_pull_ref();
+        let err = checkout_fetched(&clone, 8, &pr_sha).unwrap_err();
+        assert_eq!(err.code, "forge.pr_local_failed");
+        assert_eq!(git(&clone, &["branch", "--show-current"]), "main");
     }
 }

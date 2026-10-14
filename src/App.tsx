@@ -3519,6 +3519,28 @@ export default function App() {
     }
   }, [activeWorkspace, openNewSession, workspaceSshHostId]);
 
+  // Sessão aberta pelo core para um PR ("Abrir no TYBA"): se já existia, só
+  // vai até ela; se é nova, ganha uma aba no workspace ativo. Nos dois casos a
+  // tela de Git fecha, para o shell do PR aparecer.
+  const adoptOpenedSession = useCallback(
+    async (opened: Session) => {
+      if (!activeWorkspace) return;
+      if (sessionById.has(opened.id)) {
+        goToSession(opened.id);
+      } else {
+        setSessions((prev) => [...prev, opened]);
+        try {
+          await createTab(opened.id, activeWorkspace.id);
+        } catch {
+          void disposeSession(opened.id).catch(() => {});
+          return;
+        }
+      }
+      void closeSideView(activeWorkspace.id).catch(() => {});
+    },
+    [activeWorkspace, sessionById, goToSession],
+  );
+
   const runInTerminal = useCallback(
     async (command: string) => {
       if (!activeWorkspace) {
@@ -5754,6 +5776,7 @@ export default function App() {
                     findSession={(id) => sessionById.get(id)}
                     onSendToAgent={sendReviewToAgent}
                     onResolveConflicts={resolveConflictsWithAgent}
+                    onOpenSession={adoptOpenedSession}
                   />
                 )}
                 <div
@@ -5930,6 +5953,7 @@ export default function App() {
                           const target = sessionById.get(sid);
                           if (target) await sendReviewToAgent(target, prompt);
                         }}
+                        onOpenSession={adoptOpenedSession}
                       />
                     ) : (
                       <div className="absolute inset-0 flex items-center justify-center text-[12px] text-tyba-text-faint">
