@@ -45,6 +45,14 @@ const lightOf = (run: SubagentRun, pending: number): AgentLight => {
   return run.blocked ? "blocked" : "done";
 };
 
+/** Chave i18n do status de um run no cabeçalho do visualizador. */
+export function runLabelKey(run: SubagentRun): string {
+  if (run.status === "running") return "subagentsStatusRunning";
+  if (run.status === "starting") return "subagentsStatusStarting";
+  if (run.interrupted) return "agentsInterrupted";
+  return run.blocked ? "subagentsStatusBlocked" : "subagentsStatusDone";
+}
+
 /**
  * Monta a árvore do painel: quem roda no topo (mais novo primeiro), quem
  * terminou embaixo (mais novo primeiro). O core já manda nessa ordem; ordenar

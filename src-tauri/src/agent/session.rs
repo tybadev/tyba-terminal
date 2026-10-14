@@ -409,6 +409,15 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
             );
             ctx.sessions
                 .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
+            // O `AwaitingInput` da aprovação apagou o "subagentes trabalhando";
+            // se quem pediu foi um subagente com o turno do orquestrador
+            // encerrado, a sessão continua segura só por eles.
+            if label_held_after_running(
+                event.agent_id.is_some(),
+                ctx.subagents.orchestrator_idle(ctx.session_id),
+            ) {
+                mark_held_by_subagents(ctx);
+            }
             match outcome {
                 Ok((_request, resolution)) => {
                     if resolution.decision.is_approval() {
@@ -537,13 +546,30 @@ fn session_end_ends_subagents(raw: &serde_json::Value) -> bool {
 /// palpite de tela, e a marca ali vem do `ObservedHold`, que olha a mesma
 /// tela — duas fontes escrevendo o campo brigariam a cada poll.
 fn mark_held_by_subagents(ctx: &HandlerCtx) {
-    let running = ctx.sessions.get(ctx.session_id).is_some_and(|s| {
-        matches!(s.kind, SessionKind::Agent { .. }) && matches!(s.status, SessionStatus::Running)
+    let held = ctx.sessions.get(ctx.session_id).is_some_and(|s| {
+        held_by_subagents(
+            matches!(s.kind, SessionKind::Agent { .. }),
+            &s.status,
+            ctx.subagents.has_active(ctx.session_id),
+        )
     });
-    if running {
+    if held {
         ctx.sessions
             .set_subagents_working(&ctx.app, ctx.session_id, true);
     }
+}
+
+/// A marca exige subagente ativo de fato: numa corrida com o watcher o último
+/// pode ter fechado entre o sinal e aqui, e a marca ficaria sem ninguém.
+fn held_by_subagents(is_agent: bool, status: &SessionStatus, has_active: bool) -> bool {
+    is_agent && matches!(status, SessionStatus::Running) && has_active
+}
+
+/// Depois de voltar a `Running` por evento de subagente (ferramenta, decisão
+/// de aprovação), a marca volta se o orquestrador segue com o turno
+/// encerrado. Evento do próprio orquestrador nunca a repõe.
+fn label_held_after_running(from_subagent: bool, orchestrator_idle: bool) -> bool {
+    from_subagent && orchestrator_idle
 }
 
 fn status_on_subagent_start(current: &SessionStatus, active: bool) -> Option<SessionStatus> {
@@ -971,7 +997,10 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     }
                     ctx.sessions
                         .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
-                    if from_subagent && ctx.subagents.orchestrator_idle(ctx.session_id) {
+                    if label_held_after_running(
+                        from_subagent,
+                        ctx.subagents.orchestrator_idle(ctx.session_id),
+                    ) {
                         mark_held_by_subagents(ctx);
                     }
                 }
@@ -2568,6 +2597,21 @@ mod subagent_status_tests {
                 "{current:?}"
             );
         }
+    }
+
+    #[test]
+    fn held_label_needs_an_active_subagent() {
+        assert!(held_by_subagents(true, &SessionStatus::Running, true));
+        assert!(!held_by_subagents(true, &SessionStatus::Running, false));
+        assert!(!held_by_subagents(false, &SessionStatus::Running, true));
+        assert!(!held_by_subagents(true, &awaiting(), true));
+    }
+
+    #[test]
+    fn held_label_returns_only_for_subagent_events_after_the_turn() {
+        assert!(label_held_after_running(true, true));
+        assert!(!label_held_after_running(true, false));
+        assert!(!label_held_after_running(false, true));
     }
 
     #[test]

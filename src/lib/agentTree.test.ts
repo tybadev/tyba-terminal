@@ -7,6 +7,7 @@ import {
   formatElapsed,
   groupByRound,
   roundAge,
+  runLabelKey,
 } from "./agentTree";
 
 const SESSION = "s-1";
@@ -206,5 +207,21 @@ describe("subagente parado (blocked)", () => {
     expect(round.counts.blocked).toBe(1);
     // Parado não segura a rodada recolhida: ninguém ali está vivo.
     expect(collapsedRows(round)).toHaveLength(0);
+  });
+});
+
+describe("runLabelKey", () => {
+  test("concluído parado e interrompido não dizem \"concluído\"", () => {
+    expect(runLabelKey(run("a", 1, "done", { blocked: true }))).toBe(
+      "subagentsStatusBlocked",
+    );
+    expect(runLabelKey(run("a", 1, "done", { interrupted: true }))).toBe(
+      "agentsInterrupted",
+    );
+    expect(runLabelKey(run("a", 1, "done"))).toBe("subagentsStatusDone");
+    expect(runLabelKey(run("a", 1, "running"))).toBe("subagentsStatusRunning");
+    expect(runLabelKey(run(null, 1, "starting"))).toBe(
+      "subagentsStatusStarting",
+    );
   });
 });

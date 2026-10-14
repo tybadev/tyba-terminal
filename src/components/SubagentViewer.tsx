@@ -11,6 +11,7 @@ import type {
   TranscriptEntry,
 } from "@/lib/ipc";
 import { onSubagentTranscript, subagentTranscript } from "@/lib/ipc";
+import { runLabelKey } from "@/lib/agentTree";
 
 const MAX_ENTRIES = 1000;
 
@@ -268,13 +269,7 @@ export function SubagentViewer({
   const statusLabel = focused
     ? sessionEnded && focused.status !== "done"
       ? t("subagentsViewerEnded")
-      : t(
-          focused.status === "running"
-            ? "subagentsStatusRunning"
-            : focused.status === "starting"
-              ? "subagentsStatusStarting"
-              : "subagentsStatusDone",
-        )
+      : t(runLabelKey(focused))
     : "";
 
   return (

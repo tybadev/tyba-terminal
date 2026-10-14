@@ -554,13 +554,32 @@ impl SessionSubagents {
         summary: Option<String>,
         now: u64,
     ) -> bool {
-        if !self.finish_running_by_file(agent_id, summary, now) {
+        if self.finish_running_by_file(agent_id, summary.clone(), now) {
+            if let Some(run) = self.runs.iter_mut().find(|run| {
+                run.agent_id.as_deref() == Some(agent_id) && run.status == SubagentStatus::Done
+            }) {
+                run.blocked = true;
+            }
+            return true;
+        }
+        // Outro caminho (hook `SubagentStop`, sidecar) pode ter fechado o run
+        // antes de a fila do pai trazer o `blocked`: sem isto o "parado" se
+        // perdia e o painel dizia "concluído". Run já `Done` (e não
+        // interrompido) ganha a marca e mantém o `ended_at` que tinha; já
+        // parado é no-op.
+        let Some(run) = self.runs.iter_mut().find(|run| {
+            run.agent_id.as_deref() == Some(agent_id)
+                && run.status == SubagentStatus::Done
+                && !run.interrupted
+        }) else {
+            return false;
+        };
+        if run.blocked {
             return false;
         }
-        if let Some(run) = self.runs.iter_mut().find(|run| {
-            run.agent_id.as_deref() == Some(agent_id) && run.status == SubagentStatus::Done
-        }) {
-            run.blocked = true;
+        run.blocked = true;
+        if run.summary.is_none() {
+            run.summary = summary.and_then(|s| clean_summary(&s, SUMMARY_MAX_CHARS));
         }
         true
     }
@@ -1058,6 +1077,10 @@ pub(crate) fn finish_by_file_blocked(
     if !entry.finish_running_blocked(agent_id, summary, now) {
         return None;
     }
+    // Quando só a marca de "parado" chegou tarde (o run já estava `Done`), a
+    // transição pode sair `Some` de novo e o coordenador ser chamado outra
+    // vez. Inofensivo: ele só desce sessão `Running`, e a primeira chamada
+    // (de quem fechou o run) já a desceu.
     let idle = entry.idle_transition();
     Some((entry.to_snapshot(), idle))
 }
@@ -2545,6 +2568,87 @@ mod tests {
         assert!(!b.interrupted);
         // O hook devolveu a transição ao chamador; o disco nunca a repete.
         assert_eq!(*flips.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn late_blocked_after_hook_stop_marks_the_done_run_once() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        tracker.on_subagent_started(
+            &handle,
+            session,
+            "a1b2c3d4e5f60718".into(),
+            "explorer".into(),
+            None,
+            None,
+        );
+        // O hook fecha primeiro, sem fala final.
+        tracker.on_subagent_stopped(
+            &handle,
+            session,
+            "a1b2c3d4e5f60718".into(),
+            Some("explorer".into()),
+            None,
+        );
+        let ended_at = tracker.snapshot(session).subagents[0].ended_at_ms;
+        // Depois a fila do pai traz o `blocked`.
+        tracker.on_subagent_completed(
+            &handle,
+            session,
+            "a1b2c3d4e5f60718",
+            Some("preciso da senha do banco".into()),
+            RunEnd::Blocked,
+        );
+        let run = tracker.snapshot(session).subagents[0].clone();
+        assert_eq!(run.status, SubagentStatus::Done);
+        assert!(run.blocked);
+        assert!(!run.interrupted);
+        assert_eq!(run.ended_at_ms, ended_at);
+        assert_eq!(run.summary.as_deref(), Some("preciso da senha do banco"));
+
+        // Repetir não muda nada.
+        tracker.on_subagent_completed(
+            &handle,
+            session,
+            "a1b2c3d4e5f60718",
+            Some("outro texto".into()),
+            RunEnd::Blocked,
+        );
+        let again = tracker.snapshot(session).subagents[0].clone();
+        assert!(again.blocked);
+        assert_eq!(again.summary.as_deref(), Some("preciso da senha do banco"));
+        assert_eq!(again.ended_at_ms, ended_at);
+    }
+
+    #[test]
+    fn late_blocked_keeps_hook_summary_and_skips_interrupted_runs() {
+        let mut session = SessionSubagents::default();
+        session.promote("a1".into(), "explorer".into(), None, None, None, 10);
+        session.promote("b1".into(), "explorer".into(), None, None, None, 10);
+        session.finish_running_by_file("a1", Some("fala do hook".into()), 20);
+        session.finish_running_interrupted("b1", 20);
+
+        assert!(session.finish_running_blocked("a1", Some("do disco".into()), 30));
+        assert!(!session.finish_running_blocked("a1", None, 40));
+        assert!(!session.finish_running_blocked("b1", None, 40));
+
+        let a = session
+            .runs
+            .iter()
+            .find(|r| r.agent_id.as_deref() == Some("a1"))
+            .unwrap();
+        assert!(a.blocked);
+        assert_eq!(a.summary.as_deref(), Some("fala do hook"));
+        assert_eq!(a.ended_at_ms, Some(20));
+        let b = session
+            .runs
+            .iter()
+            .find(|r| r.agent_id.as_deref() == Some("b1"))
+            .unwrap();
+        assert!(!b.blocked);
     }
 
     #[test]
