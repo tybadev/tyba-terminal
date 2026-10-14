@@ -3,19 +3,6 @@
   "app": {
     "windows": [
       {
-        "label": "splash",
-        "url": "splash.html",
-        "title": "Tyba",
-        "width": 360,
-        "height": 240,
-        "center": true,
-        "resizable": false,
-        "maximizable": false,
-        "minimizable": false,
-        "decorations": false,
-        "skipTaskbar": true
-      },
-      {
         "label": "main",
         "title": "Tyba",
         "width": 1200,
