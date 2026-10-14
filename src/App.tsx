@@ -109,7 +109,6 @@ import {
   type LaunchConfigDraftState,
 } from "./components/LaunchConfigDialog";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
-import { ContainersView } from "./components/ContainersView";
 import { ConnectionsView } from "./components/ConnectionsView";
 import {
   HostFormDialog,
@@ -137,9 +136,9 @@ import { WorktreesView } from "./components/WorktreesView";
 import { StatsView } from "./components/StatsView";
 import { DiffView } from "./components/DiffView";
 import { TunnelsView } from "./components/TunnelsView";
-import { FilesPanel } from "./components/FilesPanel";
+import { FilesScreen, closeScreenFile } from "./components/FilesScreen";
 import { GitHistoryView } from "./components/GitHistoryView";
-import { DockerPanel } from "./components/DockerPanel";
+import { DockerScreen } from "./components/DockerScreen";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { SidePanelBar, type PanelTab } from "./components/SidePanelBar";
 import {
@@ -152,7 +151,6 @@ import {
   visiblePanels,
   type PanelKind,
 } from "./lib/sidePanel";
-import { EditorTab } from "./components/EditorTab";
 import { ContainerLogsView } from "./components/ContainerLogsView";
 import { ContainerShellBanner, ContainerStrip } from "./components/ContainerStrip";
 import { ContainerFilesPanel } from "./components/ContainerFilesPanel";
@@ -170,6 +168,7 @@ import {
 import { AgentsPanel } from "./components/AgentsPanel";
 import { PrListView } from "./components/PrListView";
 import { GitScreen } from "./components/GitScreen";
+import { activeFile, allScreenEditors, closeTarget, screenOf, sideSlotView } from "./lib/screens";
 import { openGitScreen } from "./lib/gitScreen";
 import { PrDetailView } from "./components/PrDetailView";
 import { SubagentViewer } from "./components/SubagentViewer";
@@ -210,7 +209,6 @@ import {
   disposeSession,
   dockerAvailable,
   dockerListContainers,
-  dockerOpenDashboard,
   ackDriftWarning,
   bootGate,
   bootSnapshot,
@@ -319,7 +317,6 @@ import {
   listHosts,
   listHostGroups,
   onHostsChanged,
-  tagWorkspace,
   appVersion,
   updateCheck,
   setAppMenu,
@@ -1642,6 +1639,17 @@ export default function App() {
   const lastGitSessionRef = useRef<Session | null>(null);
   if (gitPanelTarget) lastGitSessionRef.current = gitPanelTarget;
   const gitScreenSession = gitPanelTarget ?? (gitMotion.mounted ? lastGitSessionRef.current : null);
+  // Tela cheia de Arquivos: mesma entrada/saída da de Git.
+  const filesMotion = usePresence(filesTarget !== null, reducedMotion ? 0 : 260);
+  const lastFilesSessionRef = useRef<Session | null>(null);
+  if (filesTarget) lastFilesSessionRef.current = filesTarget;
+  const filesScreenSession =
+    filesTarget ?? (filesMotion.mounted ? lastFilesSessionRef.current : null);
+  const dockerMotion = usePresence(dockerPanelTarget !== null, reducedMotion ? 0 : 260);
+  const lastDockerSessionRef = useRef<Session | null>(null);
+  if (dockerPanelTarget) lastDockerSessionRef.current = dockerPanelTarget;
+  const dockerScreenSession =
+    dockerPanelTarget ?? (dockerMotion.mounted ? lastDockerSessionRef.current : null);
   const agentsSideActive = Boolean(sideView?.startsWith("agents:"));
   const agentsMotion = usePresence(agentsSideActive, reducedMotion ? 0 : 150);
   const lastAgentsSessionRef = useRef<SessionId | null>(null);
@@ -1658,7 +1666,8 @@ export default function App() {
   // terminal fica com o resto. Expandida, ocupa tudo como as outras views.
   const { sideVisible, renderSideView, agentsSideNarrow, slot: mainSlot } =
     mainColumn(
-      gitPanelTarget ? null : sideView,
+      // Git, Arquivos e Docker são telas cheias por cima, não coluna lateral.
+      sideSlotView(sideView),
       agentsMotion.mounted,
       lastAgentsSessionRef.current,
       sideExpanded,
@@ -2602,19 +2611,12 @@ export default function App() {
 
   const activeSession = activeId ? sessionById.get(activeId) : undefined;
 
-  // Abas de conteúdo. Editores ficam montados em TODOS os workspaces enquanto
-  // a aba existe: o buffer não salvo é do CodeMirror.
+  // Abas de conteúdo. Editores moram na tela de Arquivos e ficam montados em
+  // TODOS os workspaces enquanto a aba interna existe: o buffer não salvo é do
+  // CodeMirror.
   const activeContent = parseContentView(activeTab?.view);
-  const editorTabs = useMemo(
-    () =>
-      layout.workspaces.flatMap((w) =>
-        w.tabs.flatMap((tab) => {
-          const parsed = parseContentView(tab.view);
-          return parsed?.kind === "editor"
-            ? [{ tab, workspace: w, session: parsed.session, rel: parsed.rel }]
-            : [];
-        }),
-      ),
+  const screenEditors = useMemo(
+    () => allScreenEditors(layout.workspaces),
     [layout.workspaces],
   );
   // Faixa de contexto: aba de logs estruturados, ou o shell (PTY) de um
@@ -3074,50 +3076,6 @@ export default function App() {
       if (next) void activateWorkspace(next.id);
     },
     [layout],
-  );
-
-  // O painel Docker segue a conexão vigente. Abrir o painel troca o workspace
-  // ativo (ele tem o seu), então o alvo é lembrado do último workspace de
-  // trabalho — as views (docker/settings/conexões) não mexem no contexto.
-  const [dockerSshHost, setDockerSshHost] = useState<string | null>(null);
-  useEffect(() => {
-    if (!activeWorkspace) return;
-    if (
-      activeWorkspace.kind === "docker" ||
-      isConfigWorkspace(activeWorkspace) ||
-      isConnectionsWorkspace(activeWorkspace) ||
-      isWorktreesWorkspace(activeWorkspace) ||
-      isStatsWorkspace(activeWorkspace) ||
-      isAgentBoardWorkspace(activeWorkspace)
-    ) {
-      return;
-    }
-    const id = workspaceSshHostId(activeWorkspace);
-    setDockerSshHost(
-      id ? (sshHosts.find((h) => h.id === id)?.alias ?? null) : null,
-    );
-  }, [activeWorkspace, workspaceSshHostId, sshHosts]);
-
-  // O painel de containers é um só e o alvo dele muda: o workspace do Docker
-  // segue o que está na tela, senão a sidebar diz "Docker" enquanto a lista
-  // mostra a VPS — e um `sh` na máquina errada é caro.
-  const tagDockerWorkspace = useCallback(
-    (alias: string | null) => {
-      const ws = layout.workspaces.find((w) => w.kind === "docker");
-      if (!ws) return;
-      const host = alias ? sshHosts.find((h) => h.alias === alias) : undefined;
-      const group = host?.group_id
-        ? (hostGroups.find((g) => g.id === host.group_id)?.name ?? null)
-        : null;
-      const name = host ? `${host.alias} · Docker` : "Docker";
-      if (ws.name === name && ws.color === (host?.color ?? null)) return;
-      void tagWorkspace(ws.id, name, {
-        lock_name: true,
-        color: host?.color ?? null,
-        group,
-      }).catch(() => {});
-    },
-    [layout.workspaces, sshHosts, hostGroups],
   );
 
   const connectGroup = useCallback(
@@ -3645,6 +3603,18 @@ export default function App() {
   );
 
   const closeActivePane = useCallback(async () => {
+    // Tela cheia aberta: o pane fica escondido por baixo e não é o alvo.
+    const screen = screenOf(sideView);
+    if (screen && activeWorkspace) {
+      const file =
+        screen.kind === "files" ? activeFile(activeWorkspace.screens.files, screen.session) : null;
+      if (closeTarget(screen.kind, file) === "file" && file) {
+        await closeScreenFile(activeWorkspace.id, file);
+      } else {
+        await closeSideView(activeWorkspace.id).catch(() => {});
+      }
+      return;
+    }
     if (!activeTab) return;
     if (!activeTab.active_pane && !(await confirmCloseDirtyEditors(activeTab))) return;
     if (activeTab.active_pane) {
@@ -3660,6 +3630,8 @@ export default function App() {
     }
     await refreshSessions();
   }, [
+    sideView,
+    activeWorkspace,
     activeTab,
     sessionById,
     confirmCloseWithRunningAgent,
@@ -4141,7 +4113,8 @@ export default function App() {
   // Com a tela de Git aberta o teclado é dela (Esc, campos): nada de puxar o
   // foco de volta por baixo. Quando ela desmonta, o effect roda de novo e o
   // foco volta ao terminal.
-  const gitScreenOpen = gitScreenSession !== null;
+  const gitScreenOpen =
+    gitScreenSession !== null || filesScreenSession !== null || dockerScreenSession !== null;
   useEffect(() => {
     if (!activeId || gitScreenOpen) return;
     if (ownsCommandLine) {
@@ -5416,10 +5389,15 @@ export default function App() {
             />
           </ErrorBoundary>
 
+          {/* A pasta do header abre a tela de Arquivos da sessão (pedido do dono,
+              2026-10-14); "Abrir pasta do projeto" fica no menu, na paleta e no
+              atalho. */}
           <IconAction
-            label={t("openProjectFolder")}
-            shortcut={bindings.openFolder}
-            onClick={() => void openProjectFolder()}
+            label={t("filesPanel")}
+            shortcut={bindings.files}
+            onClick={() => {
+              if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
+            }}
           >
             <FolderOpen size={16} />
           </IconAction>
@@ -5801,6 +5779,62 @@ export default function App() {
                     onOpenSession={adoptOpenedSession}
                   />
                 )}
+                {dockerScreenSession && activeWorkspace && (
+                  <DockerScreen
+                    key={dockerScreenSession.id}
+                    session={dockerScreenSession}
+                    workspaceId={activeWorkspace.id}
+                    state={activeWorkspace.screens.docker}
+                    host={dockerPanelHost}
+                    repoRoot={
+                      dockerScreenSession.id === activeId
+                        ? (activeGitStatus?.root ?? null)
+                        : null
+                    }
+                    exiting={dockerMotion.exiting}
+                    // Sessão que a lista ainda não tem acabou de nascer, não morreu.
+                    exitedOf={(id) => {
+                      const s = sessionById.get(id);
+                      return s ? isFinishedStatus(s.status) : false;
+                    }}
+                    onSessionsChanged={() => void refreshSessions()}
+                    onClose={() => void closeSideView(activeWorkspace.id).catch(() => {})}
+                  />
+                )}
+                {(filesScreenSession || screenEditors.length > 0) && (
+                  <FilesScreen
+                    open={filesTarget !== null}
+                    exiting={filesMotion.exiting}
+                    workspace={activeWorkspace ?? null}
+                    session={filesScreenSession}
+                    editors={screenEditors}
+                    findSession={(id) => sessionById.get(id)}
+                    snapshot={
+                      filesScreenSession
+                        ? snapshotForDir(
+                            repoSnapshots,
+                            filesScreenSession.worktree?.path ?? cwdKeyOf(filesScreenSession.id),
+                          )
+                        : undefined
+                    }
+                    editorPref={editorPref}
+                    finderShortcut={formatCombo(bindings.filesFinder)}
+                    rootLabelOf={(owner, wsId) => {
+                      const ws = layout.workspaces.find((w) => w.id === wsId);
+                      const root = ws?.repo_root ?? owner.worktree?.path ?? null;
+                      return root ? baseName(root.replace(/[/\\]+$/, "")) : (ws?.name ?? "");
+                    }}
+                    onClose={() =>
+                      activeWorkspace && void closeSideView(activeWorkspace.id).catch(() => {})
+                    }
+                    onOpenDiff={(sid) => void openDiffContentTab(sid).catch(() => {})}
+                    // O terminal novo nasce debaixo da tela: fecha ela para ele aparecer.
+                    onRunInTerminal={(command) => {
+                      if (activeWorkspace) void closeSideView(activeWorkspace.id).catch(() => {});
+                      void runInTerminal(command);
+                    }}
+                  />
+                )}
                 <div
                   // Sem `px-2`, de propósito. O respiro morava AQUI, e o que
                   // ele abria era uma faixa de 8px do fundo do app entre a
@@ -5880,34 +5914,6 @@ export default function App() {
                       onClose={() => setSearchOpen(false)}
                     />
                   )}
-                  {activeTab?.view === "containers" && (
-                    <div className="absolute inset-0 flex">
-                      <ContainersView
-                        sshHost={dockerSshHost}
-                        onTargetChange={tagDockerWorkspace}
-                        onAvailableChange={setDockerUp}
-                        onRunningChange={setDockerRunning}
-                      />
-                    </div>
-                  )}
-                  {editorTabs.map(({ tab, workspace, session, rel }) => {
-                    const owner = sessionById.get(session);
-                    if (!owner) return null;
-                    const root = workspace.repo_root ?? owner.worktree?.path ?? null;
-                    return (
-                      <EditorTab
-                        key={tab.id}
-                        session={owner}
-                        rel={rel}
-                        view={tab.view as string}
-                        active={tab.id === activeTab?.id}
-                        editor={editorPref}
-                        rootLabel={root ? baseName(root.replace(/[/\\]+$/, "")) : workspace.name}
-                        onOpenDiff={() => void openDiffContentTab(session).catch(() => {})}
-                        onRunInTerminal={runInTerminal}
-                      />
-                    );
-                  })}
                   {activeContent?.kind === "container-logs" && (
                     <ContainerLogsView
                       key={activeContent.containerId}
@@ -6690,25 +6696,7 @@ export default function App() {
                         }
                       }}
                     >
-                      {renderSideView?.startsWith("docker:") ? (
-                        <DockerPanel
-                          key={dockerPanelTarget?.id ?? "docker"}
-                          host={dockerPanelHost}
-                          repoRoot={
-                            dockerPanelTarget?.id === activeId
-                              ? (activeGitStatus?.root ?? null)
-                              : null
-                          }
-                          onOpenDashboard={() =>
-                            void dockerOpenDashboard().catch(() => {})
-                          }
-                          onClose={() =>
-                            void closeSideView(activeWorkspace.id).catch(
-                              () => {},
-                            )
-                          }
-                        />
-                      ) : renderSideView?.startsWith("history:") ? (
+                      {renderSideView?.startsWith("history:") ? (
                         historyPanelTarget ? (
                           <HistoryPanel
                             key={historyPanelTarget.id}
@@ -6835,42 +6823,6 @@ export default function App() {
                             void closeSideView(activeWorkspace.id).catch(() => {})
                           }
                         />
-                      ) : renderSideView?.startsWith("files:") ? (
-                        filesTarget ? (
-                          <FilesPanel
-                            key={filesTarget.id}
-                            session={filesTarget}
-                            expanded={sideExpanded}
-                            onOpenFile={(rel) =>
-                              void openEditorTab(rel, undefined, {
-                                session: filesTarget.id,
-                                preview: true,
-                              }).catch((e) => toastError(t("editorOpenError"), e))
-                            }
-                            onToggleExpand={() =>
-                              void setSideViewExpanded(
-                                activeWorkspace.id,
-                                !sideExpanded,
-                              ).catch(() => {})
-                            }
-                            onClose={() =>
-                              void closeSideView(activeWorkspace.id).catch(
-                                () => {},
-                              )
-                            }
-                            onJumpToDiff={() =>
-                              void openDiffContentTab(filesTarget.id).catch(() => {})
-                            }
-                            finderShortcut={formatCombo(bindings.filesFinder)}
-                            editorOpen={editorTabs.some(
-                              (e) => e.session === filesTarget.id,
-                            )}
-                          />
-                        ) : (
-                          <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
-                            {t("filesSessionGone")}
-                          </div>
-                        )
                       ) : sideTarget ? (
                         <DiffView
                           key={sideTarget.id}
