@@ -339,6 +339,7 @@ export function FilesPanel({
           }
           if (
             s.state === "starting" ||
+            s.state === "restarting" ||
             s.state === "available" ||
             s.state === "installing"
           ) {
@@ -360,7 +361,7 @@ export function FilesPanel({
       .then((s) => {
         if (selectedRef.current !== path) return;
         setLspStat(s);
-        if (s.state === "starting" || s.state === "available") {
+        if (s.state === "starting" || s.state === "restarting" || s.state === "available") {
           refreshLspStatus(path);
         }
       })
@@ -601,6 +602,7 @@ export function FilesPanel({
           setLspStat({
             state: "absent",
             server: label,
+            missing: null,
             install: hints.install,
             alternatives: hints.alternatives,
           });
@@ -808,7 +810,7 @@ export function FilesPanel({
           .then((s) => {
             if (selectedRef.current !== path) return;
             setLspStat(s);
-            if (s.state === "starting" || s.state === "available") {
+            if (s.state === "starting" || s.state === "restarting" || s.state === "available") {
               refreshLspStatus(path);
             }
           })
@@ -1444,7 +1446,7 @@ export function FilesPanel({
                 {lspStat?.state === "absent" && (
                   <button
                     onClick={() => setShowInstall((v) => !v)}
-                    title={t("lspAbsent", { server: lspStat.server })}
+                    title={lspStat.missing ?? t("lspAbsent", { server: lspStat.server })}
                     className="flex shrink-0 items-center gap-1 text-[10px] text-tyba-amber hover:text-tyba-text"
                   >
                     <Warning size={12} />
@@ -1486,6 +1488,15 @@ export function FilesPanel({
                   >
                     <span className="size-1.5 animate-pulse rounded-full bg-tyba-amber" />
                     <span>{t("lspStarting")}</span>
+                  </span>
+                )}
+                {lspStat?.state === "restarting" && (
+                  <span
+                    title={lspStat.reason ?? lspServer}
+                    className="flex shrink-0 items-center gap-1.5 text-[10px] text-tyba-text-faint"
+                  >
+                    <span className="size-1.5 animate-pulse rounded-full bg-tyba-amber" />
+                    <span>{t("lspRestarting")}</span>
                   </span>
                 )}
                 {lspStat?.state === "crashed" && (

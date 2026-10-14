@@ -364,6 +364,7 @@ const resources = {
       filesConflictEdited: "em edição",
       lspStarting: "subindo…",
       lspCrashed: "LSP caiu",
+      lspRestarting: "reiniciando…",
       lspAbsent: "{{server}} não instalado",
       lspInstall: "instalar",
       lspInstallHint:
@@ -1551,6 +1552,7 @@ const resources = {
       filesConflictEdited: "editing",
       lspStarting: "starting…",
       lspCrashed: "LSP crashed",
+      lspRestarting: "restarting…",
       lspAbsent: "{{server}} not installed",
       lspInstall: "install",
       lspInstallHint:

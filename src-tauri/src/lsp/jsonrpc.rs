@@ -18,6 +18,7 @@ fn parse_content_length(header: &str) -> Option<usize> {
 
 pub fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<Vec<u8>>> {
     let mut content_length: Option<usize> = None;
+    let mut saw_header = false;
     let mut line = Vec::new();
     loop {
         line.clear();
@@ -27,8 +28,16 @@ pub fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<Vec<u8>>> {
         }
         let trimmed = trim_crlf(&line);
         if trimmed.is_empty() {
+            // Linha em branco antes de qualquer header é ruído entre frames
+            // (server que solta um `\n` a mais), não o fim de um header vazio.
+            // Tratá-la como frame sem Content-Length derrubava o leitor — e o
+            // server junto.
+            if !saw_header {
+                continue;
+            }
             break;
         }
+        saw_header = true;
         if let Ok(text) = std::str::from_utf8(trimmed) {
             if let Some(len) = parse_content_length(text) {
                 content_length = Some(len);
@@ -169,6 +178,41 @@ mod tests {
         let empty: &[u8] = b"";
         let mut reader = BufReader::new(empty);
         assert!(read_message(&mut reader).unwrap().is_none());
+    }
+
+    #[test]
+    fn stray_blank_lines_between_frames_are_skipped() {
+        let mut stream = frame(r#"{"a":1}"#);
+        stream.extend_from_slice(b"\r\n\n");
+        stream.extend(frame(r#"{"b":2}"#));
+        let mut reader = BufReader::new(DripReader::new(stream, 3));
+        assert_eq!(read_message(&mut reader).unwrap().unwrap(), br#"{"a":1}"#);
+        assert_eq!(read_message(&mut reader).unwrap().unwrap(), br#"{"b":2}"#);
+        assert!(read_message(&mut reader).unwrap().is_none());
+    }
+
+    #[test]
+    fn trailing_blank_lines_then_eof_is_a_clean_end() {
+        let mut stream = frame(r#"{"a":1}"#);
+        stream.extend_from_slice(b"\n\n");
+        let mut reader = BufReader::new(&stream[..]);
+        assert_eq!(read_message(&mut reader).unwrap().unwrap(), br#"{"a":1}"#);
+        assert!(read_message(&mut reader).unwrap().is_none());
+    }
+
+    #[test]
+    fn body_cut_short_by_eof_is_an_error_not_a_hang() {
+        let mut stream = b"Content-Length: 50\r\n\r\n".to_vec();
+        stream.extend_from_slice(br#"{"partial":"#);
+        let mut reader = BufReader::new(&stream[..]);
+        assert!(read_message(&mut reader).is_err());
+    }
+
+    #[test]
+    fn oversized_frame_is_refused_before_allocating() {
+        let header = format!("Content-Length: {}\r\n\r\n", MAX_MESSAGE_BYTES + 1);
+        let mut reader = BufReader::new(header.as_bytes());
+        assert!(read_message(&mut reader).is_err());
     }
 
     #[test]

@@ -2326,14 +2326,22 @@ export type LspStatus =
   | {
       state: "absent";
       server: string;
+      /** O que falta, em pt-BR (ex.: TypeScript sem tsserver). */
+      missing: string | null;
       install: LspInstallHint | null;
       alternatives: LspInstallHint[];
     }
   | { state: "available"; server: string }
   | { state: "starting"; server: string }
+  | { state: "restarting"; server: string; reason: string | null }
   | { state: "ready"; server: string; diagnostics: number; truncated: boolean }
   | { state: "crashed"; server: string; reason: string | null }
-  | { state: "managed_offer"; server: string; card: LspManagedCard }
+  | {
+      state: "managed_offer";
+      server: string;
+      missing: string | null;
+      card: LspManagedCard;
+    }
   | {
       state: "installing";
       server: string;
