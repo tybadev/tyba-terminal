@@ -109,17 +109,8 @@ export function AgentsSidebar({ rows, open, onSelect }: Props) {
             aria-label={`${values.workspace} — ${values.state_text}`}
             className={`group relative flex shrink-0 flex-col gap-0.5 rounded-[4px] py-1 text-left transition-colors hover:bg-tyba-text/[.05] ${
               open ? "px-2" : "items-center px-0"
-            } ${marca ? "bg-tyba-amber/[.05]" : ""}`}
+            } ${marca ? "bg-tyba-amber/[.08]" : ""}`}
           >
-            {/* A marca. Mesma barra âmbar do painel, de propósito: as duas
-                superfícies falam do mesmo estado e não podem usar sinais
-                diferentes para ele. */}
-            {marca && (
-              <span
-                className="absolute inset-y-0.5 left-0 w-0.5 rounded-full bg-tyba-amber"
-                aria-hidden
-              />
-            )}
             {open ? (
               visibleRows(DEFAULT_AGENT_ROWS, values).map((tokens, i) => (
                 <span

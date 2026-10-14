@@ -387,12 +387,6 @@ export function ConnectionsView({
         }}
         className="group relative flex flex-col justify-between gap-3 overflow-hidden rounded-lg border border-tyba-border bg-tyba-text/[.02] p-3 transition-colors hover:border-tyba-border-strong hover:bg-tyba-text/[.04]"
       >
-        {accent && (
-          <span
-            className="absolute inset-y-0 left-0 w-0.5"
-            style={{ background: accent }}
-          />
-        )}
         <div className="flex items-start gap-2.5">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-tyba-text/[.04] text-tyba-text-muted">
             <HardDrives size={16} />

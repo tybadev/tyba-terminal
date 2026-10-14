@@ -5507,12 +5507,6 @@ export default function App() {
                               : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
                           }`}
                         >
-                          {activeTab?.view === "settings" && (
-                            <span
-                              className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
-                              style={{ background: "var(--tyba-gradient-soft)" }}
-                            />
-                          )}
                           <GearSix size={16} className="shrink-0" />
                           {open && (
                             <span className="min-w-0 flex-1 truncate text-left">

@@ -246,6 +246,9 @@ export function DiffView({
   const [viewedMarks, setViewedMarks] = useState<Map<string, string>>(() => new Map());
   // Mockup Diff: na tela de Git (asTab) mostra um arquivo por vez.
   const single = asTab;
+  // A coluna de arquivos (onde moram as ações em lote) só aparece expandida
+  // ou com >= 1280px; sem ela, o título de seção volta ao código, com as ações.
+  const columnShown = useMinWidth(1280) || expanded;
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -519,9 +522,20 @@ export function DiffView({
     const manySections = rows.filter((r) => r.kind === "section").length > 1;
     // Um arquivo por vez: só as linhas do arquivo em foco (até o próximo).
     let inFocus = !single;
+    let pendingSection: DisplayRow | null = null;
     for (const row of rows) {
-      if (row.kind === "section" && (single || !manySections)) continue;
-      if (single && row.kind === "file") inFocus = row.key === focusKey;
+      if (row.kind === "section") {
+        if (columnShown && (single || !manySections)) continue;
+        // Um arquivo por vez sem coluna: só o título da seção do arquivo em foco.
+        if (single) {
+          pendingSection = row;
+          continue;
+        }
+      }
+      if (single && row.kind === "file") {
+        inFocus = row.key === focusKey;
+        if (inFocus && pendingSection) out.push(pendingSection);
+      }
       if (!inFocus) continue;
       out.push(row);
       if (row.kind !== "line") continue;
@@ -539,7 +553,7 @@ export function DiffView({
       }
     }
     return out;
-  }, [rows, comments, draftAnchor, single, focusKey]);
+  }, [rows, comments, draftAnchor, single, focusKey, columnShown]);
 
   // Foco some (arquivo commitado, descartado) ou ainda não existe → o primeiro.
   useEffect(() => {
@@ -1027,11 +1041,14 @@ export function DiffView({
           </div>
         );
       case "section":
-        // Só existe com mais de uma seção (ver displayRows): rótulo fino que
-        // separa as seções; as ações ficam na coluna.
+        // Rótulo fino que separa as seções (ver displayRows). As ações ficam
+        // na coluna; sem ela, aqui.
         return (
-          <div className="tyba-label px-4 pb-1.5 pt-4">
-            {t(SECTION_LABEL_KEY[row.scope])} · {row.count}
+          <div className="flex items-center justify-between gap-2 px-4 pb-1.5 pt-4">
+            <span className="tyba-label">
+              {t(SECTION_LABEL_KEY[row.scope])} · {row.count}
+            </span>
+            {!columnShown && sectionActions(row.scope)}
           </div>
         );
       case "file": {
@@ -1728,4 +1745,17 @@ export function DiffView({
       })()}
     </div>
   );
+}
+
+function useMinWidth(px: number): boolean {
+  const query = `(min-width: ${px}px)`;
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const onChange = () => setMatches(media.matches);
+    onChange();
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
 }

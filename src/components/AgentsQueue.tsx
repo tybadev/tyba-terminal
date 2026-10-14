@@ -98,17 +98,9 @@ function Row({
   return (
     <li
       className={`relative tyba-divide-b px-3 py-2.5 [&:last-child]:shadow-none ${
-        espera ? "bg-tyba-amber/[.04]" : ""
+        espera ? "bg-tyba-amber/[.08]" : ""
       }`}
     >
-      {/* Barra de atenção: quem espera ganha a lateral âmbar, que é a cor que o
-          sistema já reserva para agente de IA pedindo alguém. */}
-      {espera && (
-        <span
-          className="absolute inset-y-0 left-0 w-0.5 bg-tyba-amber"
-          aria-hidden
-        />
-      )}
 
       <div className="flex items-center gap-2">
         <span
