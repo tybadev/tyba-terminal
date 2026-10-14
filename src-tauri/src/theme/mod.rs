@@ -267,13 +267,18 @@ fn validate(t: &ThemeFile) -> Result<(), ThemeError> {
 }
 
 /// Id livre a partir de `base`: ele mesmo, ou `base-2`, `base-3`… O id cabe
-/// no formato do config.toml (`[a-z0-9-]{1,64}`) mesmo com o sufixo.
+/// no formato do config.toml (`[a-z0-9-]{1,64}`) mesmo com o sufixo — a base
+/// só é encurtada quando o sufixo é preciso.
 pub fn free_id(base: &str, taken: impl Fn(&str) -> bool) -> String {
-    let base: String = base.chars().take(MAX_NAME_LEN - 4).collect();
-    let base = base.trim_end_matches('-');
-    if !taken(base) {
-        return base.to_string();
+    let cut = |len: usize| -> String {
+        let s: String = base.chars().take(len).collect();
+        s.trim_end_matches('-').to_string()
+    };
+    let whole = cut(MAX_NAME_LEN);
+    if !taken(&whole) {
+        return whole;
     }
+    let base = cut(MAX_NAME_LEN - 4);
     (2..)
         .map(|n| format!("{base}-{n}"))
         .find(|id| !taken(id))
@@ -885,8 +890,11 @@ mod tests {
         let taken = ["nord", "nord-2"];
         assert_eq!(free_id("nord", |id| taken.contains(&id)), "nord-3");
         assert_eq!(free_id("dracula", |_| false), "dracula");
+        // livre, a base de até 64 volta inteira
         let long = "a".repeat(64);
-        let id = free_id(&long, |id| id.len() == 60);
+        assert_eq!(free_id(&long, |_| false), long);
+        // ocupada, encurta para caber o sufixo
+        let id = free_id(&long, |id| id == long);
         assert_eq!(id, format!("{}-2", "a".repeat(60)));
         assert!(crate::config::schema::is_theme_id(&id));
     }
