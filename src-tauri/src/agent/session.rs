@@ -914,6 +914,8 @@ fn on_stop_failure(ctx: &HandlerCtx, event: &HookEvent) {
         .note_orchestrator_idle(ctx.session_id, summary.clone());
     // Cancela um aviso de "terminou" que um `Stop` anterior tenha agendado.
     ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+    // Antes do `set_status`: o `running → idle` que ele causa não é "terminou".
+    crate::notifications::record(&ctx.app, |n| n.stop_failure(ctx.session_id, reason));
     ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
     let _ = ctx.app.emit(
         EVENT_AGENT_ALERT,
@@ -947,6 +949,7 @@ fn on_statusline(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
         return HookAction::Ack;
     };
     let warnings = crate::agent::usage::observe_limits(&usage);
+    crate::notifications::record(&ctx.app, |n| n.usage(ctx.session_id, &usage));
     ctx.sessions
         .set_agent_usage(&ctx.app, ctx.session_id, Some(usage));
     let now = std::time::SystemTime::now()

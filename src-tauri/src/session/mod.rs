@@ -969,8 +969,10 @@ impl SessionManager {
     }
 
     pub fn set_status(&self, app: &AppHandle, id: SessionId, status: SessionStatus) {
+        let prev = self.sessions.read().get(&id).map(|s| s.status.clone());
         if let Some(session) = self.apply_status(id, status) {
             emit_status(app, &session);
+            crate::notifications::record(app, |n| n.status_changed(prev.as_ref(), &session));
         }
     }
 

@@ -1132,6 +1132,7 @@ impl ApprovalsManager {
             None,
         )?;
         let _ = app.emit("approvals://requested", request.clone());
+        crate::notifications::record(app, |n| n.approval_requested(&request));
         Ok(request)
     }
 
@@ -1146,6 +1147,7 @@ impl ApprovalsManager {
         let (tx, rx) = mpsc::channel();
         let request = self.request_inner(session_id, ask, Some(tx), agent_id)?;
         let _ = app.emit("approvals://requested", request.clone());
+        crate::notifications::record(app, |n| n.approval_requested(&request));
         let resolution = rx.recv().unwrap_or_else(|_| Resolution::denied());
         Ok((request, resolution))
     }
@@ -1201,6 +1203,7 @@ impl ApprovalsManager {
         let feedback = feedback.filter(|f| !f.trim().is_empty());
         let request = self.resolve_inner(id, Resolution { decision, feedback })?;
         let _ = app.emit("approvals://resolved", ApprovalResolved { id, decision });
+        crate::notifications::record(app, |n| n.approval_resolved(id, decision));
         Ok(request)
     }
 
@@ -1232,6 +1235,9 @@ impl ApprovalsManager {
                     decision: Decision::Denied,
                 },
             );
+            crate::notifications::record(app, |n| {
+                n.approval_resolved(request.id, Decision::Denied)
+            });
         }
         expired
     }
