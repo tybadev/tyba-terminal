@@ -31,6 +31,9 @@ const MIN_SUBAGENT_ID_LEN: usize = 8;
 /// completo vive no transcript; o painel só precisa do recente.
 const MAX_SETTLED_RUNS: usize = 40;
 
+/// Quantas ações anteriores o painel mostra embaixo do AGORA.
+const MAX_RECENT_ACTIVITY: usize = 2;
+
 /// Um `agent_id` real de subagente do Claude Code é hexadecimal (17 chars nesta
 /// máquina). Item de fila / prompt enfileirado não carrega um id assim — o gate
 /// evita transformar stop espúrio em entrada fantasma no painel.
@@ -69,6 +72,11 @@ pub struct SubagentRun {
     /// chamou (`PreToolUse` com `agent_id`). Some quando ele termina — aí quem
     /// fala é o `summary`.
     pub activity: Option<ToolActivity>,
+    /// Quando a `activity` atual começou (ms), para o "há Ns" do painel.
+    pub activity_at_ms: Option<u64>,
+    /// As ações anteriores, da mais nova para a mais antiga (até
+    /// [`MAX_RECENT_ACTIVITY`]). O painel mostra embaixo do AGORA.
+    pub recent: Vec<(ToolActivity, u64)>,
     /// Tamanho do sidecar quando o subagente foi acordado (Done→Running). O
     /// fim que já estava no arquivo é o da volta anterior: só conta fim por
     /// arquivo depois que ele crescer além disto.
@@ -99,6 +107,17 @@ pub struct SubagentRunDto {
     pub activity_tool: Option<String>,
     /// O argumento curto dela (comando, caminho, padrão), redigido.
     pub activity_detail: Option<String>,
+    /// Quando a ação em curso começou (ms).
+    pub activity_at_ms: Option<u64>,
+    /// Ações anteriores, mais nova primeiro, redigidas; vazio se terminado.
+    pub recent_activity: Vec<RecentActivityDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RecentActivityDto {
+    pub tool: String,
+    pub detail: Option<String>,
+    pub at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -131,6 +150,19 @@ impl SubagentRunDto {
             activity_detail: live_activity(run)
                 .and_then(|a| a.detail.as_deref())
                 .map(|d| redact(d).into_owned()),
+            activity_at_ms: live_activity(run).and(run.activity_at_ms),
+            recent_activity: if run.status == SubagentStatus::Done {
+                Vec::new()
+            } else {
+                run.recent
+                    .iter()
+                    .map(|(a, at_ms)| RecentActivityDto {
+                        tool: a.tool.clone(),
+                        detail: a.detail.as_deref().map(|d| redact(d).into_owned()),
+                        at_ms: *at_ms,
+                    })
+                    .collect()
+            },
         }
     }
 }
@@ -302,6 +334,8 @@ impl SessionSubagents {
             transcript_path: None,
             parent_transcript_path: None,
             activity: None,
+            activity_at_ms: None,
+            recent: Vec::new(),
             stale_end_len: None,
         });
     }
@@ -362,6 +396,8 @@ impl SessionSubagents {
                     transcript_path,
                     parent_transcript_path: parent_transcript_path.map(Path::to_path_buf),
                     activity: None,
+                    activity_at_ms: None,
+                    recent: Vec::new(),
                     stale_end_len: None,
                 });
             }
@@ -401,6 +437,8 @@ impl SessionSubagents {
             run.interrupted = false;
             run.blocked = false;
             run.activity = None;
+            run.activity_at_ms = None;
+            run.recent.clear();
             // O sidecar ainda termina no fim da volta anterior: sem isto, o
             // watcher o leria de novo e fecharia o subagente recém-acordado.
             run.stale_end_len = run
@@ -493,6 +531,8 @@ impl SessionSubagents {
             transcript_path: None,
             parent_transcript_path: None,
             activity: None,
+            activity_at_ms: None,
+            recent: Vec::new(),
             stale_end_len: None,
         });
         true
@@ -510,7 +550,14 @@ impl SessionSubagents {
         if run.activity.as_ref() == Some(&activity) {
             return false;
         }
+        let now = now_ms();
+        if let Some(prev) = run.activity.take() {
+            run.recent
+                .insert(0, (prev, run.activity_at_ms.unwrap_or(now)));
+            run.recent.truncate(MAX_RECENT_ACTIVITY);
+        }
         run.activity = Some(activity);
+        run.activity_at_ms = Some(now);
         true
     }
 
@@ -1365,6 +1412,34 @@ mod tests {
         assert_eq!(dto.activity_tool, None);
         assert_eq!(dto.activity_detail, None);
         assert_eq!(dto.summary.as_deref(), Some("pronto"));
+    }
+
+    #[test]
+    fn recent_activity_keeps_the_last_two_and_clears_on_done() {
+        let mut session = SessionSubagents::default();
+        session.promote("a1".into(), "explore".into(), None, None, None, 10);
+        for path in ["a.rs", "b.rs", "c.rs", "d.rs"] {
+            let input = serde_json::json!({ "file_path": path });
+            assert!(session.note_activity("a1", tool_activity("Read", Some(&input), path)));
+        }
+        let dto = SubagentRunDto::redacted(&session.runs[0]);
+        assert_eq!(dto.activity_detail.as_deref(), Some("d.rs"));
+        let recent: Vec<_> = dto
+            .recent_activity
+            .iter()
+            .map(|r| r.detail.as_deref())
+            .collect();
+        assert_eq!(
+            recent,
+            vec![Some("c.rs"), Some("b.rs")],
+            "mais nova primeiro, só 2"
+        );
+        assert!(dto.activity_at_ms.is_some());
+
+        session.mark_stopped("a1".into(), None, Some("pronto".into()), 20);
+        let dto = SubagentRunDto::redacted(&session.runs[0]);
+        assert!(dto.recent_activity.is_empty());
+        assert_eq!(dto.activity_at_ms, None);
     }
 
     #[test]

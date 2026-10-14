@@ -2053,6 +2053,10 @@ export interface SubagentRun {
   activity_tool?: string | null;
   /** Argumento curto da ferramenta (comando, caminho), redigido pelo core. */
   activity_detail?: string | null;
+  /** Quando a ação em curso começou (ms). */
+  activity_at_ms?: number | null;
+  /** Ações anteriores, mais nova primeiro (até 2), redigidas pelo core. */
+  recent_activity?: { tool: string; detail: string | null; at_ms: number }[];
 }
 
 export interface SubagentSnapshot {

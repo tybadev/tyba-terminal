@@ -436,7 +436,11 @@ function SubagentRow({
       {/* O que está executando AGORA, inteiro (mockup Subagentes): a linha
           cortada não deixava ver o comando. */}
       {line && (line.kind === "run" || line.kind === "tool") && (
-        <NowBox line={line} compact={compactNow && !open} />
+        <NowBox
+          line={line}
+          compact={compactNow && !open}
+          recent={compactNow && !open ? [] : (row.run.recent_activity ?? [])}
+        />
       )}
       {awaiting && approval && <InlineApproval approval={approval} />}
       {open && (
@@ -465,15 +469,19 @@ function SubagentRow({
 function NowBox({
   line,
   compact = false,
+  recent = [],
 }: {
   line: NonNullable<ReturnType<typeof subagentLine>>;
   compact?: boolean;
+  /** As ações anteriores, mais nova primeiro. */
+  recent?: { tool: string; detail: string | null; at_ms: number }[];
 }) {
   const { t } = useTranslation();
   if (line.kind !== "run" && line.kind !== "tool") return null;
   const tool = line.kind === "run" ? "Bash" : line.tool;
   const detail = line.detail;
   return (
+    <>
     <div
       title={compact ? `${tool} ${detail ?? ""}` : undefined}
       className={`ml-[17px] flex min-w-0 gap-2 rounded-[6px] bg-tyba-sunken px-2.5 shadow-[inset_0_0_0_1px_var(--tyba-border)] ${
@@ -494,6 +502,22 @@ function NowBox({
         </span>
       )}
     </div>
+      {recent.length > 0 && (
+        <ul className="mb-1.5 ml-[17px] flex min-w-0 flex-col gap-0.5">
+          {recent.map((r) => (
+            <li key={`${r.at_ms}-${r.tool}`} className="flex min-w-0 gap-2 text-[11px] text-tyba-text-faint">
+              <span className="w-[48px] shrink-0 tabular-nums">{t("agentsAgo", { time: formatElapsed(Date.now() - r.at_ms) })}</span>
+              <span className="shrink-0 font-mono">{r.tool}</span>
+              {r.detail && (
+                <span className="min-w-0 truncate font-mono text-tyba-text-muted" title={r.detail}>
+                  {r.detail}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 
