@@ -96,6 +96,11 @@ interface Props {
    */
   booting?: boolean;
   /**
+   * A rajada do broadcast está ligada nesta sessão: o teclado é do terminal
+   * (ver `OwnerInput.broadcasting`) e a linha em espera diz isso.
+   */
+  broadcasting?: boolean;
+  /**
    * Texto vindo de fora (paleta de histórico, snippet, colar).
    *
    * Com o terminal somente-leitura, injetar via `term.paste` seria engolido em
@@ -150,6 +155,7 @@ export function CommandLine({
   boot = null,
   bootHost = null,
   booting = false,
+  broadcasting = false,
   inject,
   draft = "",
   onDraftChange,
@@ -176,7 +182,9 @@ export function CommandLine({
   const bootStart = boot?.started_at_ms ?? mountedAt;
   const bootStep = shellBootStep(boot, bootHost);
   const bootPlaceholder = !bootVisible
-    ? ""
+    ? broadcasting
+      ? t("commandLineBroadcasting")
+      : ""
     : isSlow(bootStart, bootNow, "shell", bootHost !== null)
       ? t("shellBootSlow", { s: elapsedSeconds(bootStart, bootNow) })
       : t(bootStep.key, bootStep.params);

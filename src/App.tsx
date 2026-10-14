@@ -6454,6 +6454,11 @@ export default function App() {
                                 promptModes[s.id] !== true &&
                                 !isFinishedStatus(s.status)
                               }
+                              broadcasting={
+                                broadcastOn &&
+                                s.kind.type === "ssh" &&
+                                broadcastSet.includes(s.id)
+                              }
                               bootHost={
                                 s.kind.type === "ssh"
                                   ? (sshHosts.find(
