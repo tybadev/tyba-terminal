@@ -850,7 +850,13 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     event.agent_type.clone(),
                     last_assistant_message,
                 );
-                if let Some(summary) = idle {
+                // Só desce quem estava segurado em `Running`: um prompt
+                // nativo aberto nesse meio-tempo continua mandando.
+                let held = ctx
+                    .sessions
+                    .get(ctx.session_id)
+                    .is_some_and(|s| matches!(s.status, SessionStatus::Running));
+                if let (Some(summary), true) = (idle, held) {
                     ctx.sessions.set_status(
                         &ctx.app,
                         ctx.session_id,
@@ -890,9 +896,10 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
             // até o último terminar.
             ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
             let summary = Some(INTERRUPTED_SUMMARY.to_string());
-            ctx.subagents
-                .note_orchestrator_idle(ctx.session_id, summary);
-            if !ctx.subagents.has_active(ctx.session_id) {
+            if !ctx
+                .subagents
+                .on_orchestrator_stop(&ctx.app, ctx.session_id, summary)
+            {
                 if let Some(status) = ctx
                     .sessions
                     .get(ctx.session_id)
@@ -930,12 +937,15 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     let turn = turn_summary(&event);
                     let summary = turn.text;
                     let needs_settle = !turn.settled;
-                    ctx.subagents
-                        .note_orchestrator_idle(ctx.session_id, summary.clone());
-                    // Subagente async ativo segura a sessão em Running mesmo com o
-                    // turno do orquestrador encerrado — só desce a Idle quando o
-                    // último subagente termina (via hook ou fim por arquivo).
-                    if ctx.subagents.has_active(ctx.session_id) {
+                    // Subagente ativo segura a sessão em Running mesmo com o
+                    // turno do orquestrador encerrado — com subagente
+                    // trabalhando a sessão não está ociosa (decisão 4 revista).
+                    // Só desce a Idle quando o último termina (hook, sidecar
+                    // ou notificação na fila do pai).
+                    if ctx
+                        .subagents
+                        .on_orchestrator_stop(&ctx.app, ctx.session_id, summary.clone())
+                    {
                         ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
                         ctx.sessions
                             .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);

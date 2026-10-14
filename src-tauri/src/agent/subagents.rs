@@ -301,15 +301,26 @@ impl SessionSubagents {
         parent_transcript_path: Option<&Path>,
         now: u64,
     ) {
+        if self.reopen(&agent_id, transcript_path.clone(), parent_transcript_path) {
+            return;
+        }
         self.rearm_for_new_round();
+        // O tipo exato primeiro; senão, um `Agent` pedido sem `subagent_type`
+        // (o Claude escolhe o tipo, e o `SubagentStart` diz qual).
         let slot = self
             .runs
             .iter()
-            .position(|run| run.status == SubagentStatus::Starting && run.agent_type == agent_type);
+            .position(|run| run.status == SubagentStatus::Starting && run.agent_type == agent_type)
+            .or_else(|| {
+                self.runs.iter().position(|run| {
+                    run.status == SubagentStatus::Starting && run.agent_type.is_empty()
+                })
+            });
         match slot {
             Some(index) => {
                 let run = &mut self.runs[index];
                 run.agent_id = Some(agent_id.clone());
+                run.agent_type = agent_type;
                 run.status = SubagentStatus::Running;
                 run.transcript_path = transcript_path;
                 run.parent_transcript_path = parent_transcript_path.map(Path::to_path_buf);
@@ -334,6 +345,50 @@ impl SessionSubagents {
         if self.focused.is_none() {
             self.focused = Some(agent_id);
         }
+    }
+
+    /// Subagente que já tem entrada e começa de novo — no modo background ele
+    /// encerra o turno e é acordado pela própria tarefa de shell (`SubagentStart`
+    /// repetido com o mesmo id). Volta a `Running` na MESMA entrada, sem abrir
+    /// rodada: é o mesmo trabalho continuando. `false` quando o id é novo.
+    fn reopen(
+        &mut self,
+        agent_id: &str,
+        transcript_path: Option<PathBuf>,
+        parent_transcript_path: Option<&Path>,
+    ) -> bool {
+        let Some(run) = self
+            .runs
+            .iter_mut()
+            .find(|run| run.agent_id.as_deref() == Some(agent_id))
+        else {
+            return false;
+        };
+        if run.status == SubagentStatus::Done {
+            run.status = SubagentStatus::Running;
+            run.ended_at_ms = None;
+            run.summary = None;
+            run.interrupted = false;
+            run.activity = None;
+        }
+        if run.transcript_path.is_none() {
+            run.transcript_path = transcript_path;
+        }
+        if run.parent_transcript_path.is_none() {
+            run.parent_transcript_path = parent_transcript_path.map(Path::to_path_buf);
+        }
+        true
+    }
+
+    /// Descarta os pedidos de spawn que nenhum `SubagentStart` confirmou. Um
+    /// placeholder vive só dentro do turno que o pediu: no fim do turno, o
+    /// subagente de verdade já começou (o lançamento em background responde
+    /// `async_launched` depois do start). Devolve quantos saíram.
+    fn drop_unconfirmed(&mut self) -> usize {
+        let before = self.runs.len();
+        self.runs
+            .retain(|run| run.status != SubagentStatus::Starting);
+        before - self.runs.len()
     }
 
     fn remove_pending(&mut self, agent_type: Option<String>, description: Option<String>) {
@@ -575,6 +630,70 @@ impl SubagentTracker {
         }
     }
 
+    /// O orquestrador encerrou o turno (`Stop`, interrupção). Anota o turno
+    /// ocioso, descarta pedidos de spawn que não viraram subagente e devolve
+    /// `true` quando ainda há subagente trabalhando — a sessão NÃO está ociosa
+    /// (decisão 4 revista). O chamador aplica o status.
+    pub fn on_orchestrator_stop<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session: SessionId,
+        summary: Option<String>,
+    ) -> bool {
+        let (held, payload) = {
+            let mut sessions = self.sessions.lock().expect("subagents lock");
+            let Some(entry) = sessions.get_mut(&session) else {
+                return false;
+            };
+            entry.orchestrator_idle = true;
+            entry.orchestrator_idle_summary = summary;
+            let dropped = entry.drop_unconfirmed() > 0;
+            (
+                entry.active_count() > 0,
+                dropped.then(|| changed_payload(session, entry)),
+            )
+        };
+        if let Some(payload) = payload {
+            let _ = app.emit(EVENT_SUBAGENTS_CHANGED, payload);
+        }
+        held
+    }
+
+    /// Fim de subagente lido do disco (notificação na fila do pai). Só fecha
+    /// quem está `Running` — idempotente com o `SubagentStop` e com o fim pelo
+    /// sidecar, e nunca cria entrada para id desconhecido. Se era o último e o
+    /// orquestrador já tinha encerrado o turno, a sessão desce a `Idle` pelo
+    /// coordenador.
+    pub fn on_subagent_completed<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session: SessionId,
+        agent_id: &str,
+        summary: Option<String>,
+        interrupted: bool,
+    ) {
+        let agent_id = strip_agent_prefix(agent_id);
+        if !complete_running(
+            app,
+            &self.sessions,
+            &self.coordinator,
+            session,
+            &agent_id,
+            summary,
+            interrupted,
+        ) {
+            return;
+        }
+        let targets = self
+            .sessions
+            .lock()
+            .expect("subagents lock")
+            .get(&session)
+            .map(SessionSubagents::running_targets)
+            .unwrap_or_default();
+        self.sync_watchers(app, session, targets);
+    }
+
     pub fn has_active(&self, session: SessionId) -> bool {
         self.sessions
             .lock()
@@ -629,6 +748,12 @@ impl SubagentTracker {
         description: Option<String>,
         parent_transcript_path: Option<&Path>,
     ) -> Option<Coordination> {
+        // Agente interno do Claude (título, sugestão de prompt…) chega sem
+        // `agent_type`: não é subagente que o usuário pediu, e virava a
+        // entrada fantasma "subagente" do painel.
+        if agent_type.trim().is_empty() {
+            return None;
+        }
         let agent_id = strip_agent_prefix(&agent_id);
         let hint = {
             let sessions = self.sessions.lock().expect("subagents lock");
@@ -877,6 +1002,39 @@ pub(crate) fn finish_by_file_interrupted(
     }
     let idle = entry.idle_transition();
     Some((entry.to_snapshot(), idle))
+}
+
+/// Fecha um subagente `Running` por sinal do disco (sidecar ou fila do pai),
+/// reemite o painel e, se a sessão estava segura só por ele, chama o
+/// coordenador de `Idle`. `false` quando não havia o que fechar.
+pub(crate) fn complete_running<R: Runtime>(
+    app: &AppHandle<R>,
+    sessions: &SharedSessions,
+    coordinator: &SharedCoordinator,
+    session: SessionId,
+    agent_id: &str,
+    summary: Option<String>,
+    interrupted: bool,
+) -> bool {
+    let outcome = if interrupted {
+        finish_by_file_interrupted(sessions, session, agent_id, now_ms())
+    } else {
+        finish_by_file(sessions, session, agent_id, summary, now_ms())
+    };
+    let Some((snapshot, idle)) = outcome else {
+        return false;
+    };
+    emit_snapshot(app, session, snapshot);
+    if let Some(summary) = idle {
+        let coordinator = coordinator
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned());
+        if let Some(coordinator) = coordinator {
+            coordinator(session, summary);
+        }
+    }
+    true
 }
 
 pub(crate) fn emit_snapshot<R: Runtime>(
@@ -2083,5 +2241,231 @@ mod tests {
             run.status,
             SubagentStatus::Running | SubagentStatus::Starting
         )));
+    }
+
+    /// A sequência de hooks de uma rodada em background no TUI interativo,
+    /// como o Claude Code 2.1.300 manda (forma levantada no E2E de
+    /// 2026-10-14): `SubagentStop` de agente interno (sem `agent_type`) a cada
+    /// turno, `SubagentStop` sem `last_assistant_message` para quem entrega
+    /// pelo `SubagentHandback`, e o subagente acordado de novo pela própria
+    /// tarefa de shell (`SubagentStart` repetido com o mesmo id).
+    #[test]
+    fn real_async_hook_sequence_keeps_one_entry_per_subagent() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        const A: &str = "a4d108a5bed6fc5d7";
+        const B: &str = "ab78fadba39f1654c";
+        const INTERNAL: &str = "af34174e07698c39d";
+        let gp = || Some("general-purpose".to_string());
+
+        tracker.on_spawn_requested(&handle, session, gp(), Some("tarefa A".into()));
+        tracker.on_spawn_requested(&handle, session, gp(), Some("tarefa B".into()));
+        tracker.on_subagent_started(
+            &handle,
+            session,
+            A.into(),
+            "general-purpose".into(),
+            None,
+            None,
+        );
+        tracker.on_subagent_started(
+            &handle,
+            session,
+            B.into(),
+            "general-purpose".into(),
+            None,
+            None,
+        );
+        // Turno do orquestrador acaba com os dois em background: segura.
+        assert!(tracker.on_orchestrator_stop(&handle, session, Some("lancei".into())));
+        tracker.on_subagent_stopped(
+            &handle,
+            session,
+            INTERNAL.into(),
+            Some(String::new()),
+            Some("título".into()),
+        );
+        tracker.note_orchestrator_working(session);
+        tracker.on_subagent_stopped(&handle, session, B.into(), gp(), None);
+        tracker.on_subagent_stopped(&handle, session, A.into(), gp(), Some("dois".into()));
+        assert!(!tracker.on_orchestrator_stop(&handle, session, Some("ok".into())));
+        tracker.on_subagent_stopped(&handle, session, INTERNAL.into(), Some(String::new()), None);
+        assert_eq!(tracker.snapshot(session).subagents.len(), 2);
+
+        // A tarefa de shell do A termina e o acorda: mesma entrada, de volta.
+        tracker.on_subagent_started(
+            &handle,
+            session,
+            A.into(),
+            "general-purpose".into(),
+            None,
+            None,
+        );
+        let snapshot = tracker.snapshot(session);
+        assert_eq!(snapshot.subagents.len(), 2, "acordar não duplica");
+        let a = snapshot
+            .subagents
+            .iter()
+            .find(|r| r.agent_id.as_deref() == Some(A))
+            .unwrap();
+        assert_eq!(a.status, SubagentStatus::Running);
+        assert_eq!(a.description, "tarefa A");
+        assert!(a.ended_at_ms.is_none());
+        tracker.on_subagent_stopped(&handle, session, A.into(), gp(), None);
+        assert!(!tracker.has_active(session));
+        assert_eq!(tracker.snapshot(session).subagents.len(), 2);
+    }
+
+    #[test]
+    fn start_without_agent_type_is_not_a_subagent() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        let coordination = tracker.on_subagent_started(
+            &handle,
+            session,
+            "af34174e07698c39d".into(),
+            "  ".into(),
+            Some("já terminaram?".into()),
+            None,
+        );
+        assert!(coordination.is_none());
+        assert!(tracker.snapshot(session).subagents.is_empty());
+        assert!(!tracker.has_active(session));
+    }
+
+    #[test]
+    fn orchestrator_stop_drops_spawns_that_never_started() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        tracker.on_spawn_requested(&handle, session, None, Some("fantasma".into()));
+        assert!(tracker.has_active(session));
+        // Nenhum `SubagentStart` veio no turno: o placeholder não era subagente.
+        assert!(!tracker.on_orchestrator_stop(&handle, session, None));
+        assert!(tracker.snapshot(session).subagents.is_empty());
+    }
+
+    #[test]
+    fn untyped_spawn_is_confirmed_by_the_typed_start() {
+        let mut session = SessionSubagents::default();
+        // `Agent` sem `subagent_type`: o Claude escolhe o tipo, o hook diz qual.
+        session.push_pending(None, Some("mapear".into()), 10);
+        session.promote(
+            "a1b2c3d4e5".into(),
+            "general-purpose".into(),
+            None,
+            None,
+            None,
+            20,
+        );
+        assert_eq!(session.runs.len(), 1);
+        assert_eq!(session.runs[0].agent_type, "general-purpose");
+        assert_eq!(session.runs[0].description, "mapear");
+        assert_eq!(session.runs[0].status, SubagentStatus::Running);
+    }
+
+    #[test]
+    fn disk_and_hook_completions_are_idempotent_whichever_comes_first() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        let flips = Arc::new(Mutex::new(0));
+        let sink = Arc::clone(&flips);
+        tracker.set_idle_coordinator(Arc::new(move |_, _| *sink.lock().unwrap() += 1));
+        for id in ["a1b2c3d4e5f60718", "b1b2c3d4e5f60718"] {
+            tracker.on_subagent_started(&handle, session, id.into(), "explorer".into(), None, None);
+        }
+        tracker.on_orchestrator_stop(&handle, session, Some("turno".into()));
+
+        // Disco primeiro, hook depois.
+        tracker.on_subagent_completed(
+            &handle,
+            session,
+            "a1b2c3d4e5f60718",
+            Some("do disco".into()),
+            false,
+        );
+        assert_eq!(
+            tracker.on_subagent_stopped(
+                &handle,
+                session,
+                "a1b2c3d4e5f60718".into(),
+                Some("explorer".into()),
+                Some("do hook".into())
+            ),
+            None
+        );
+        // Hook primeiro, disco depois.
+        assert!(tracker
+            .on_subagent_stopped(
+                &handle,
+                session,
+                "b1b2c3d4e5f60718".into(),
+                Some("explorer".into()),
+                Some("fim".into())
+            )
+            .is_some());
+        tracker.on_subagent_completed(&handle, session, "b1b2c3d4e5f60718", None, true);
+        // Fim de quem o tracker nunca viu não cria nada.
+        tracker.on_subagent_completed(&handle, session, "c1b2c3d4e5f60718", None, false);
+
+        let snapshot = tracker.snapshot(session);
+        assert_eq!(snapshot.subagents.len(), 2);
+        let a = snapshot
+            .subagents
+            .iter()
+            .find(|r| r.agent_id.as_deref() == Some("a1b2c3d4e5f60718"))
+            .unwrap();
+        assert_eq!(a.summary.as_deref(), Some("do disco"));
+        let b = snapshot
+            .subagents
+            .iter()
+            .find(|r| r.agent_id.as_deref() == Some("b1b2c3d4e5f60718"))
+            .unwrap();
+        assert_eq!(b.summary.as_deref(), Some("fim"));
+        assert!(!b.interrupted);
+        // O hook devolveu a transição ao chamador; o disco nunca a repete.
+        assert_eq!(*flips.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn disk_completion_of_the_last_subagent_settles_the_held_session() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        let flips: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&flips);
+        tracker.set_idle_coordinator(Arc::new(move |_, summary| {
+            sink.lock().unwrap().push(summary)
+        }));
+        tracker.on_subagent_started(
+            &handle,
+            session,
+            "a1b2c3d4e5f60718".into(),
+            "explorer".into(),
+            None,
+            None,
+        );
+        assert!(tracker.on_orchestrator_stop(&handle, session, Some("turno".into())));
+        tracker.on_subagent_completed(
+            &handle,
+            session,
+            "a1b2c3d4e5f60718",
+            Some("ok".into()),
+            false,
+        );
+        assert_eq!(*flips.lock().unwrap(), vec![Some("turno".to_string())]);
     }
 }

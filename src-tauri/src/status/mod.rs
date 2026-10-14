@@ -10,6 +10,7 @@
 //! testes obrigatórios (convenção do repo).
 
 pub mod agent_events;
+pub mod subagent_completion;
 pub mod subagent_transcript;
 pub mod transcript;
 
