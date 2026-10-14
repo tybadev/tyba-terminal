@@ -98,14 +98,15 @@ pub fn status_on_session_end(current: &SessionStatus) -> Option<SessionStatus> {
 /// para "esperando resposta" esconderia que ela está bloqueada numa pergunta de
 /// permissão — o motivo que a faixa "precisa de você" e o selo usam. O prompt
 /// nativo só sai pelos eventos da tabela (ver `signal_for`).
-pub fn status_on_idle_prompt(current: &SessionStatus) -> Option<SessionStatus> {
-    match current {
-        SessionStatus::AwaitingInput {
-            reason: AwaitingReason::NativePrompt,
-            ..
-        } => None,
-        _ => status_for(&AgentSignal::AwaitingInput),
-    }
+/// O `idle_prompt` do Claude não muda mais o status.
+///
+/// Ele chega sempre que o Claude fica ~60 s parado depois de um turno, com ou
+/// sem pergunta, e virava "aguardando" em âmbar — a cor de "precisa de você" —
+/// num agente que só tinha terminado (print do dono, 2026-10-14). Com
+/// subagentes rodando, também derrubaria o "subagentes trabalhando". O status
+/// vem dos sinais reais: fim de turno (`Stop`), permissão e trabalho.
+pub fn status_on_idle_prompt(_current: &SessionStatus) -> Option<SessionStatus> {
+    None
 }
 
 /// O que o `Interrupt` faz com o status atual: o turno que rodava acaba.
@@ -238,19 +239,12 @@ mod tests {
     }
 
     #[test]
-    fn idle_prompt_ainda_vira_reply_nos_outros_estados() {
+    fn idle_prompt_nao_vira_aguardando() {
         for current in [
             SessionStatus::Running,
             SessionStatus::Idle { summary: None },
         ] {
-            assert_eq!(
-                status_on_idle_prompt(&current),
-                Some(SessionStatus::AwaitingInput {
-                    hint: None,
-                    reason: AwaitingReason::Reply,
-                }),
-                "{current:?}"
-            );
+            assert_eq!(status_on_idle_prompt(&current), None, "{current:?}");
         }
     }
 

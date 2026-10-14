@@ -363,10 +363,19 @@ impl SessionSubagents {
         self.rearm_for_new_round();
         // O tipo exato primeiro; senão, um `Agent` pedido sem `subagent_type`
         // (o Claude escolhe o tipo, e o `SubagentStart` diz qual).
-        let slot = self
-            .runs
-            .iter()
-            .position(|run| run.status == SubagentStatus::Starting && run.agent_type == agent_type)
+        let by_description = description.as_deref().and_then(|wanted| {
+            self.runs.iter().position(|run| {
+                run.status == SubagentStatus::Starting
+                    && (run.agent_type == agent_type || run.agent_type.is_empty())
+                    && run.description == wanted
+            })
+        });
+        let slot = by_description
+            .or_else(|| {
+                self.runs.iter().position(|run| {
+                    run.status == SubagentStatus::Starting && run.agent_type == agent_type
+                })
+            })
             .or_else(|| {
                 self.runs.iter().position(|run| {
                     run.status == SubagentStatus::Starting && run.agent_type.is_empty()
@@ -377,6 +386,9 @@ impl SessionSubagents {
                 let run = &mut self.runs[index];
                 run.agent_id = Some(agent_id.clone());
                 run.agent_type = agent_type;
+                if let Some(real) = description.as_deref().filter(|d| !d.trim().is_empty()) {
+                    run.description = real.to_owned();
+                }
                 run.status = SubagentStatus::Running;
                 run.transcript_path = transcript_path;
                 run.parent_transcript_path = parent_transcript_path.map(Path::to_path_buf);
@@ -891,6 +903,13 @@ impl SubagentTracker {
             &agent_type,
             hint.as_deref(),
         );
+        // A descrição de verdade mora no `agent-<id>.meta.json` do próprio
+        // subagente. Com vários do mesmo tipo disparados juntos, os starts
+        // chegam fora da ordem das chamadas, e casar pelo tipo trocava os nomes.
+        let description = transcript_path
+            .as_deref()
+            .and_then(meta_description)
+            .or(description);
         let (payload, targets, coordination) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let entry = sessions.get_mut(&session)?;
@@ -1212,6 +1231,22 @@ fn transcript_by_agent_id(sidecar: &Path, agent_id: &str) -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
+/// A descrição gravada pelo Claude no `agent-<id>.meta.json` ao lado do
+/// transcript do subagente. Leitura curta e defensiva: falha vira `None`.
+fn meta_description(transcript: &Path) -> Option<String> {
+    let name = transcript.file_name()?.to_str()?;
+    let base = name.strip_suffix(".jsonl")?;
+    let meta = transcript.with_file_name(format!("{base}.meta.json"));
+    let body = std::fs::read(&meta).ok().filter(|b| b.len() <= 64 * 1024)?;
+    let value: Value = serde_json::from_slice(&body).ok()?;
+    value
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_owned)
+}
+
 fn meta_sibling_jsonl(meta_path: &Path) -> PathBuf {
     let name = meta_path
         .file_name()
@@ -1412,6 +1447,78 @@ mod tests {
         assert_eq!(dto.activity_tool, None);
         assert_eq!(dto.activity_detail, None);
         assert_eq!(dto.summary.as_deref(), Some("pronto"));
+    }
+
+    #[test]
+    fn three_of_the_same_type_keep_their_own_names_when_starts_arrive_out_of_order() {
+        // Print do dono (2026-10-14): 3 Explore disparados juntos; os starts
+        // chegaram fora da ordem e os nomes trocaram de dono.
+        let mut session = SessionSubagents::default();
+        for d in [
+            "Listar arquivos .rs",
+            "Listar arquivos .ts",
+            "Contar linhas do README",
+        ] {
+            session.push_pending(Some("Explore".into()), Some(d.into()), 10);
+        }
+        // starts: README, .rs, .ts — com a descrição real lida do meta.json
+        session.promote(
+            "c".into(),
+            "Explore".into(),
+            Some("Contar linhas do README".into()),
+            None,
+            None,
+            11,
+        );
+        session.promote(
+            "a".into(),
+            "Explore".into(),
+            Some("Listar arquivos .rs".into()),
+            None,
+            None,
+            12,
+        );
+        session.promote(
+            "b".into(),
+            "Explore".into(),
+            Some("Listar arquivos .ts".into()),
+            None,
+            None,
+            13,
+        );
+        let name = |id: &str| {
+            session
+                .runs
+                .iter()
+                .find(|r| r.agent_id.as_deref() == Some(id))
+                .unwrap()
+                .description
+                .clone()
+        };
+        assert_eq!(name("a"), "Listar arquivos .rs");
+        assert_eq!(name("b"), "Listar arquivos .ts");
+        assert_eq!(name("c"), "Contar linhas do README");
+        assert_eq!(
+            session.runs.len(),
+            3,
+            "nenhum placeholder sobrando nem duplicado"
+        );
+    }
+
+    #[test]
+    fn meta_description_reads_the_agents_own_meta_json() {
+        let dir = TempDir::new().unwrap();
+        let jsonl = dir.path().join("agent-abc123.jsonl");
+        write(&jsonl, "{}");
+        write(
+            &dir.path().join("agent-abc123.meta.json"),
+            r#"{"agentType":"Explore","description":"  Listar arquivos .ts  "}"#,
+        );
+        assert_eq!(
+            meta_description(&jsonl).as_deref(),
+            Some("Listar arquivos .ts")
+        );
+        assert_eq!(meta_description(&dir.path().join("agent-zzz.jsonl")), None);
     }
 
     #[test]
