@@ -281,6 +281,17 @@ impl HostQuery {
         Ok(names)
     }
 
+    /// Um script fixo do core (nunca texto vindo da UI) no servidor, pela
+    /// conexão do canal: as portas da tela de Serviços (`services::remote`).
+    pub fn exec_script(
+        &self,
+        script: &str,
+    ) -> Result<crate::files::remote::fs::ExecOutput, AppError> {
+        self.fs()?
+            .exec(&["sh", "-c", script])
+            .map_err(|e| AppError::new("ssh.query_failed").with("detail", e.message()))
+    }
+
     /// O que o canal precisa saber do servidor ANTES de a sessão subir: o shell
     /// de login (regra 8) e se existe tmux ali (regra 13).
     ///

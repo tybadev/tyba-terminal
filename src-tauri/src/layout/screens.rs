@@ -232,11 +232,41 @@ impl DockerScreen {
     }
 }
 
-/// O estado das duas telas, por workspace.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServicesSection {
+    #[default]
+    Ports,
+    Processes,
+    Tunnels,
+}
+
+/// Tela de Serviços e portas. Memória de uso, não persiste.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ServicesScreen {
+    pub section: ServicesSection,
+    /// "Só das minhas sessões": ligado por padrão.
+    pub only_mine: bool,
+    /// Porta escolhida (o detalhe embaixo da tabela).
+    pub selected: Option<u16>,
+}
+
+impl Default for ServicesScreen {
+    fn default() -> Self {
+        Self {
+            section: ServicesSection::default(),
+            only_mine: true,
+            selected: None,
+        }
+    }
+}
+
+/// O estado das telas, por workspace.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Screens {
     pub files: FilesScreen,
     pub docker: DockerScreen,
+    pub services: ServicesScreen,
 }
 
 #[cfg(test)]
@@ -443,6 +473,18 @@ mod tests {
         d.pane = ContainerPane::Details;
         d.show_container("c2".into(), ContainerPane::Logs);
         assert_eq!(d.following(), Some("c2"));
+    }
+
+    #[test]
+    fn services_screen_defaults_to_ports_and_only_mine() {
+        let s = ServicesScreen::default();
+        assert_eq!(s.section, ServicesSection::Ports);
+        assert!(s.only_mine);
+        assert_eq!(s.selected, None);
+        assert_eq!(
+            serde_json::to_string(&ServicesSection::Tunnels).unwrap(),
+            "\"tunnels\""
+        );
     }
 
     #[test]

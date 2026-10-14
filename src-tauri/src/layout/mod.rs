@@ -329,7 +329,11 @@ pub const VIEW_WORKSPACE: &str = "workspace";
 pub const VIEW_CONNECTIONS: &str = "connections";
 pub const VIEW_STATS: &str = "stats";
 pub const VIEW_DIFF_PREFIX: &str = "diff:";
+/// Painel lateral antigo de túneis SSH: os túneis moram agora na seção Túneis
+/// da tela de Serviços. Só existe para migrar layout salvo.
 pub const VIEW_TUNNELS_PREFIX: &str = "tunnels:";
+/// Tela de Serviços e portas da sessão (portas, processos, túneis).
+pub const VIEW_SERVICES_PREFIX: &str = "services:";
 pub const VIEW_FILES_PREFIX: &str = "files:";
 pub const VIEW_AGENTS_PREFIX: &str = "agents:";
 /// Painel Git da sessão (branch, à frente/atrás, alterações, commit).
@@ -380,6 +384,10 @@ pub fn diff_view(session: SessionId) -> String {
 
 pub fn tunnels_view(session: SessionId) -> String {
     format!("{VIEW_TUNNELS_PREFIX}{session}")
+}
+
+pub fn services_view(session: SessionId) -> String {
+    format!("{VIEW_SERVICES_PREFIX}{session}")
 }
 
 pub fn files_view(session: SessionId) -> String {
@@ -498,6 +506,7 @@ fn side_view_session(view: &str) -> Option<SessionId> {
         .or_else(|| view.strip_prefix(VIEW_GIT_PREFIX))
         .or_else(|| view.strip_prefix(VIEW_DOCKER_PREFIX))
         .or_else(|| view.strip_prefix(VIEW_HISTORY_PREFIX))
+        .or_else(|| view.strip_prefix(VIEW_SERVICES_PREFIX))
         .and_then(|s| Uuid::parse_str(s).ok())
 }
 
@@ -2094,10 +2103,20 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
             let created_at = DateTime::parse_from_rfc3339(&w.created_at)
                 .ok()?
                 .with_timezone(&Utc);
-            let side_view = w
-                .side_view
-                .clone()
-                .filter(|view| side_view_session(view).is_none_or(|s| valid.contains(&s)));
+            // O painel antigo de túneis volta como a tela de Serviços, na seção
+            // Túneis.
+            let side_view =
+                w.side_view
+                    .as_deref()
+                    .map(|view| match view.strip_prefix(VIEW_TUNNELS_PREFIX) {
+                        Some(session) => {
+                            screens.services.section = screens::ServicesSection::Tunnels;
+                            format!("{VIEW_SERVICES_PREFIX}{session}")
+                        }
+                        None => view.to_string(),
+                    });
+            let side_view =
+                side_view.filter(|view| side_view_session(view).is_none_or(|s| valid.contains(&s)));
             Some(Workspace {
                 id: ws_id,
                 name: w.name.clone(),
@@ -2738,6 +2757,7 @@ mod tests {
             git_view,
             docker_view,
             tunnels_view,
+            services_view,
             files_view,
             agents_view,
             history_view,
@@ -2770,7 +2790,7 @@ mod tests {
 
     #[test]
     fn git_and_docker_panels_of_dead_session_do_not_come_back_on_boot() {
-        for view in [git_view, docker_view, history_view] {
+        for view in [git_view, docker_view, history_view, services_view] {
             let store = Arc::new(Store::open_in_memory().unwrap());
             let dead = sid();
             {
@@ -2821,6 +2841,26 @@ mod tests {
                  deixaria um painel de túneis pendurado numa sessão que não existe mais"
             );
         }
+    }
+
+    #[test]
+    fn painel_de_tuneis_salvo_volta_como_tela_de_servicos_na_secao_tuneis() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let alive = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("b", None, alive).unwrap();
+            mgr.open_workspace_side_view(alive, &tunnels_view(alive))
+                .unwrap();
+        }
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load(&HashSet::from([alive]));
+        let ws = &mgr.state().workspaces[0];
+        assert_eq!(ws.side_view, Some(services_view(alive)));
+        assert_eq!(
+            ws.screens.services.section,
+            screens::ServicesSection::Tunnels
+        );
     }
 
     #[test]
