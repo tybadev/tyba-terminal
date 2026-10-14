@@ -344,6 +344,9 @@ pub struct WatchSpec {
     pub description: Option<String>,
     pub parent_path: Option<PathBuf>,
     pub path: Option<PathBuf>,
+    /// Tamanho do sidecar quando o subagente foi acordado; ver
+    /// `SubagentRun::stale_end_len`.
+    pub stale_end_len: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -357,6 +360,7 @@ struct WatchTarget {
     last_len: Option<u64>,
     stable_cycles: u32,
     finished: bool,
+    stale_end_len: Option<u64>,
 }
 
 impl WatchTarget {
@@ -371,6 +375,7 @@ impl WatchTarget {
             last_len: None,
             stable_cycles: 0,
             finished: false,
+            stale_end_len: spec.stale_end_len,
         }
     }
 
@@ -650,6 +655,16 @@ fn advance_stable_cycles(
     }
 }
 
+/// Fim por arquivo só vale depois que o sidecar cresceu além do tamanho que
+/// tinha quando o subagente foi acordado — antes disso, o fim lido é o da
+/// volta anterior.
+fn end_is_fresh(file_len: Option<u64>, stale_end_len: Option<u64>) -> bool {
+    match stale_end_len {
+        None => true,
+        Some(stale) => file_len.is_some_and(|len| len > stale),
+    }
+}
+
 fn stall_is_dead(stable_cycles: u32, orchestrator_idle: bool) -> bool {
     orchestrator_idle && stable_cycles >= DEAD_SUBAGENT_STALL_CYCLES
 }
@@ -718,7 +733,10 @@ fn watch_loop<R: Runtime>(
                     advance_stable_cycles(target.stable_cycles, target.last_len, result.file_len);
                 target.stable_cycles = cycles;
                 target.last_len = last_len;
-                if !target.finished && target.stable_cycles >= STABLE_CYCLES {
+                if !target.finished
+                    && target.stable_cycles >= STABLE_CYCLES
+                    && end_is_fresh(result.file_len, target.stale_end_len)
+                {
                     if let Some(summary) = final_assistant_summary(&result.path) {
                         target.finished = true;
                         done.push(Completion {
@@ -1164,6 +1182,7 @@ mod tests {
                 description: None,
                 parent_path: None,
                 path: Some(path),
+                stale_end_len: None,
             }],
             Arc::new(Mutex::new(std::collections::HashMap::new())),
             Arc::new(Mutex::new(None)),
@@ -1246,5 +1265,24 @@ mod tests {
             tool_result("toolu_b"),
         ];
         assert_eq!(final_of(&lines), None);
+    }
+
+    /// Subagente acordado cujo sidecar ainda termina no `SubagentHandback` da
+    /// volta anterior: o arquivo diz "acabou", mas esse fim é velho.
+    #[test]
+    fn stale_end_of_a_reopened_subagent_is_not_an_end() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("agent-a1.jsonl");
+        let body: String = [handback("r"), tool_result("toolu_h")]
+            .iter()
+            .map(|l| format!("{l}\n"))
+            .collect();
+        write(&path, &body);
+        assert!(final_assistant_summary(&path).is_some());
+        let len = fs::metadata(&path).unwrap().len();
+        assert!(!end_is_fresh(Some(len), Some(len)));
+        assert!(!end_is_fresh(None, Some(len)));
+        assert!(end_is_fresh(Some(len + 1), Some(len)));
+        assert!(end_is_fresh(Some(len), None));
     }
 }

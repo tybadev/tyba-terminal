@@ -1966,9 +1966,9 @@ mod tests {
     #[test]
     fn async_round_on_disk_completes_and_queue_items_never_become_subagents() {
         use crate::status::subagent_completion::fixtures as pai;
-        const A: &str = "a4d108a5bed6fc5d7";
-        const B: &str = "ab78fadba39f1654c";
-        const C: &str = "a0123456789abcdef";
+        const A: &str = "a1111111111111111";
+        const B: &str = "a2222222222222222";
+        const C: &str = "a4444444444444444";
 
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
@@ -2009,8 +2009,8 @@ mod tests {
             pai::human_prompt("já terminaram?"),
             pai::enqueue(&format!("<agent-message from=\"{A}\">um</agent-message>")),
             pai::enqueue(&pai::notification(A, "completed", "um")),
-            pai::enqueue(&pai::notification("b8kjn0h1d", "completed", "")),
-            pai::enqueue(&pai::notification("abcdefabcdefabcde", "completed", "")),
+            pai::enqueue(&pai::notification("bshell0001", "completed", "")),
+            pai::enqueue(&pai::notification("a5555555555555555", "completed", "")),
             pai::delivered_notification(&pai::notification(B, "killed", "")),
         ];
         write(&parent, &(lines.join("\n") + "\n"));

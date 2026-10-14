@@ -65,6 +65,10 @@ pub struct SubagentRun {
     /// chamou (`PreToolUse` com `agent_id`). Some quando ele termina — aí quem
     /// fala é o `summary`.
     pub activity: Option<ToolActivity>,
+    /// Tamanho do sidecar quando o subagente foi acordado (Done→Running). O
+    /// fim que já estava no arquivo é o da volta anterior: só conta fim por
+    /// arquivo depois que ele crescer além disto.
+    pub stale_end_len: Option<u64>,
 }
 
 /// Ferramenta + argumento curto, já recortados para uma linha.
@@ -281,6 +285,7 @@ impl SessionSubagents {
             transcript_path: None,
             parent_transcript_path: None,
             activity: None,
+            stale_end_len: None,
         });
     }
 
@@ -339,6 +344,7 @@ impl SessionSubagents {
                     transcript_path,
                     parent_transcript_path: parent_transcript_path.map(Path::to_path_buf),
                     activity: None,
+                    stale_end_len: None,
                 });
             }
         }
@@ -364,18 +370,25 @@ impl SessionSubagents {
         else {
             return false;
         };
+        if run.transcript_path.is_none() {
+            run.transcript_path = transcript_path;
+        }
+        if run.parent_transcript_path.is_none() {
+            run.parent_transcript_path = parent_transcript_path.map(Path::to_path_buf);
+        }
         if run.status == SubagentStatus::Done {
             run.status = SubagentStatus::Running;
             run.ended_at_ms = None;
             run.summary = None;
             run.interrupted = false;
             run.activity = None;
-        }
-        if run.transcript_path.is_none() {
-            run.transcript_path = transcript_path;
-        }
-        if run.parent_transcript_path.is_none() {
-            run.parent_transcript_path = parent_transcript_path.map(Path::to_path_buf);
+            // O sidecar ainda termina no fim da volta anterior: sem isto, o
+            // watcher o leria de novo e fecharia o subagente recém-acordado.
+            run.stale_end_len = run
+                .transcript_path
+                .as_deref()
+                .and_then(|path| std::fs::metadata(path).ok())
+                .map(|meta| meta.len());
         }
         true
     }
@@ -460,6 +473,7 @@ impl SessionSubagents {
             transcript_path: None,
             parent_transcript_path: None,
             activity: None,
+            stale_end_len: None,
         });
         true
     }
@@ -584,6 +598,7 @@ impl SessionSubagents {
                     description: (!run.description.is_empty()).then(|| run.description.clone()),
                     parent_path: run.parent_transcript_path.clone(),
                     path: run.transcript_path.clone(),
+                    stale_end_len: run.stale_end_len,
                 })
             })
             .collect()
@@ -1996,6 +2011,30 @@ mod tests {
     }
 
     #[test]
+    fn reopen_records_the_stale_sidecar_length() {
+        let dir = TempDir::new().unwrap();
+        let jsonl = dir.path().join("agent-a1.jsonl");
+        write(&jsonl, "{\"type\":\"user\"}\n");
+        let mut session = SessionSubagents::default();
+        session.promote(
+            "a1".into(),
+            "reviewer".into(),
+            None,
+            Some(jsonl.clone()),
+            None,
+            10,
+        );
+        assert_eq!(session.runs[0].stale_end_len, None);
+        assert!(session.finish_running_by_file("a1", Some("pronto".into()), 20));
+        // Acordado: o fim que já está no arquivo é velho.
+        session.promote("a1".into(), "reviewer".into(), None, None, None, 30);
+        assert_eq!(session.runs[0].status, SubagentStatus::Running);
+        let len = fs::metadata(&jsonl).unwrap().len();
+        assert_eq!(session.runs[0].stale_end_len, Some(len));
+        assert_eq!(session.running_targets()[0].stale_end_len, Some(len));
+    }
+
+    #[test]
     fn active_count_reflects_starting_and_running() {
         let mut session = SessionSubagents::default();
         assert_eq!(session.active_count(), 0);
@@ -2256,9 +2295,9 @@ mod tests {
         let tracker = SubagentTracker::new();
         let session = SessionId::new_v4();
         tracker.register_session(session);
-        const A: &str = "a4d108a5bed6fc5d7";
-        const B: &str = "ab78fadba39f1654c";
-        const INTERNAL: &str = "af34174e07698c39d";
+        const A: &str = "a1111111111111111";
+        const B: &str = "a2222222222222222";
+        const INTERNAL: &str = "a3333333333333333";
         let gp = || Some("general-purpose".to_string());
 
         tracker.on_spawn_requested(&handle, session, gp(), Some("tarefa A".into()));
@@ -2329,7 +2368,7 @@ mod tests {
         let coordination = tracker.on_subagent_started(
             &handle,
             session,
-            "af34174e07698c39d".into(),
+            "a3333333333333333".into(),
             "  ".into(),
             Some("já terminaram?".into()),
             None,

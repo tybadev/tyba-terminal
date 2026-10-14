@@ -526,6 +526,19 @@ fn session_end_ends_subagents(raw: &serde_json::Value) -> bool {
     raw.get("reason").and_then(serde_json::Value::as_str) != Some("clear")
 }
 
+/// `SubagentStart` com a sessão ociosa: um subagente em background acordado
+/// pela própria tarefa volta a trabalhar, e a sessão volta a `Running`. Só
+/// sai de `Idle` — prompt aberto, saída e falha continuam mandando.
+fn status_on_subagent_start(current: &SessionStatus, active: bool) -> Option<SessionStatus> {
+    (active && matches!(current, SessionStatus::Idle { .. })).then_some(SessionStatus::Running)
+}
+
+/// `Stop` com subagente ativo segura a sessão em `Running` — menos quando há
+/// um prompt aberto (nativo, aprovação, resposta): esse continua mandando.
+fn status_on_held_stop(current: &SessionStatus) -> Option<SessionStatus> {
+    (!matches!(current, SessionStatus::AwaitingInput { .. })).then_some(SessionStatus::Running)
+}
+
 /// Para onde um evento de hook vai depois do sinal de status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HookRoute {
@@ -834,6 +847,14 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                 if let Some(coordination) = coordination {
                     crate::coordinate_subagent_viewer(&ctx.app, ctx.session_id, coordination);
                 }
+                let active = ctx.subagents.has_active(ctx.session_id);
+                if let Some(next) = ctx
+                    .sessions
+                    .get(ctx.session_id)
+                    .and_then(|s| status_on_subagent_start(&s.status, active))
+                {
+                    ctx.sessions.set_status(&ctx.app, ctx.session_id, next);
+                }
             }
         }
         Some(AgentSignal::SubagentEnded) => {
@@ -947,8 +968,13 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                         .on_orchestrator_stop(&ctx.app, ctx.session_id, summary.clone())
                     {
                         ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
-                        ctx.sessions
-                            .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
+                        if let Some(next) = ctx
+                            .sessions
+                            .get(ctx.session_id)
+                            .and_then(|s| status_on_held_stop(&s.status))
+                        {
+                            ctx.sessions.set_status(&ctx.app, ctx.session_id, next);
+                        }
                     } else {
                         ctx.sessions.set_status(
                             &ctx.app,
@@ -992,8 +1018,10 @@ fn on_stop_failure(ctx: &HandlerCtx, event: &HookEvent) {
     let SessionStatus::Idle { summary } = &status else {
         return;
     };
+    // Descarta placeholder não confirmado; o retorno não importa — o status
+    // da falha prevalece.
     ctx.subagents
-        .note_orchestrator_idle(ctx.session_id, summary.clone());
+        .on_orchestrator_stop(&ctx.app, ctx.session_id, summary.clone());
     // Cancela um aviso de "terminou" que um `Stop` anterior tenha agendado.
     ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
     // Antes do `set_status`: o `running → idle` que ele causa não é "terminou".
@@ -2471,6 +2499,53 @@ mod build_hosted_command_tests {
                 .any(|(k, _)| k == "TYBA_TEST_SHOULD_NEVER_LEAK"),
             "o env hospedado vazou algo fora da allowlist: {:?}",
             plan.env
+        );
+    }
+}
+
+#[cfg(test)]
+mod subagent_status_tests {
+    use super::*;
+
+    fn awaiting() -> SessionStatus {
+        SessionStatus::AwaitingInput {
+            hint: None,
+            reason: Default::default(),
+        }
+    }
+
+    #[test]
+    fn subagent_start_wakes_only_an_idle_session() {
+        let idle = SessionStatus::Idle { summary: None };
+        assert_eq!(
+            status_on_subagent_start(&idle, true),
+            Some(SessionStatus::Running)
+        );
+        assert_eq!(status_on_subagent_start(&idle, false), None);
+        for current in [
+            SessionStatus::Running,
+            awaiting(),
+            SessionStatus::Exited { code: 0 },
+            SessionStatus::Failed { reason: "x".into() },
+        ] {
+            assert_eq!(
+                status_on_subagent_start(&current, true),
+                None,
+                "{current:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn held_stop_keeps_an_open_prompt() {
+        assert_eq!(status_on_held_stop(&awaiting()), None);
+        assert_eq!(
+            status_on_held_stop(&SessionStatus::Running),
+            Some(SessionStatus::Running)
+        );
+        assert_eq!(
+            status_on_held_stop(&SessionStatus::Idle { summary: None }),
+            Some(SessionStatus::Running)
         );
     }
 }

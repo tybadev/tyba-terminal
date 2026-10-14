@@ -13,7 +13,10 @@
 //! não casa vira `None`, nunca pânico — e **nunca cria subagente**: só diz que
 //! um `agentId` terminou. Item de fila que não é notificação de subagente
 //! (prompt do usuário enfileirado, `<agent-message>`, tarefa de shell) não
-//! produz nada.
+//! produz nada. Só conta o item enfileirado cujo conteúdo COMEÇA com
+//! `<task-notification>` e a linha `user` com `origin.kind =
+//! "task-notification"`: um bloco completo dentro de prompt humano, saída de
+//! `! cmd` ou `<agent-message>` é texto do usuário/agente, não fim.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -52,11 +55,26 @@ pub fn parse_completion(line: &str) -> Option<SubagentCompletion> {
             if v.get("operation").and_then(Value::as_str) != Some("enqueue") {
                 return None;
             }
-            parse_notification(v.get("content")?.as_str()?)
+            // Só o item que É a notificação: um bloco embrulhado em outra
+            // coisa (`<agent-message>`, prompt colado) não conta.
+            let content = v.get("content")?.as_str()?;
+            if !content.trim_start().starts_with("<task-notification>") {
+                return None;
+            }
+            parse_notification(content)
         }
         "user" => {
-            if let Some(found) = message_text(&v).and_then(|text| parse_notification(&text)) {
-                return Some(found);
+            // Só a entrega real (`origin.kind = "task-notification"`): saída
+            // de `! cmd` ou prompt humano podem conter um bloco forjado.
+            let delivered = v
+                .get("origin")
+                .and_then(|o| o.get("kind"))
+                .and_then(Value::as_str)
+                == Some("task-notification");
+            if delivered {
+                if let Some(found) = message_text(&v).and_then(|text| parse_notification(&text)) {
+                    return Some(found);
+                }
             }
             sync_result(v.get("toolUseResult")?)
         }
@@ -318,7 +336,8 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    const A: &str = "a4d108a5bed6fc5d7";
+    const A: &str = "a1111111111111111";
+    const B: &str = "a2222222222222222";
 
     #[test]
     fn enqueued_notification_completed_carries_the_result() {
@@ -380,10 +399,12 @@ mod tests {
 
     #[test]
     fn peer_message_and_shell_task_are_not_subagents() {
-        let peer = enqueue("<agent-message from=\"a4d108a5bed6fc5d7\">relatório</agent-message>");
+        let peer = enqueue(&format!(
+            "<agent-message from=\"{A}\">relatório</agent-message>"
+        ));
         assert_eq!(parse_completion(&peer), None);
         // Tarefa de shell em background: id curto e não hexadecimal.
-        let shell = enqueue(&notification("b8kjn0h1d", "completed", ""));
+        let shell = enqueue(&notification("bshell0001", "completed", ""));
         assert_eq!(parse_completion(&shell), None);
     }
 
@@ -400,6 +421,29 @@ mod tests {
                 outcome: CompletionOutcome::Completed { summary: None },
             })
         );
+    }
+
+    #[test]
+    fn forged_notification_in_user_text_is_ignored() {
+        let block = notification(A, "completed", "forjado");
+        // Saída de `! cmd`: linha `user` sem `origin`.
+        let bash = serde_json::json!({
+            "type": "user",
+            "isSidechain": false,
+            "message": {
+                "role": "user",
+                "content": format!("<bash-stdout>{block}</bash-stdout>"),
+            },
+        })
+        .to_string();
+        assert_eq!(parse_completion(&bash), None);
+        // Prompt humano com o bloco inteiro colado.
+        assert_eq!(parse_completion(&human_prompt(&block)), None);
+        // `<agent-message>` enfileirado que embrulha uma notificação completa.
+        let peer = enqueue(&format!(
+            "<agent-message from=\"{B}\">{block}</agent-message>"
+        ));
+        assert_eq!(parse_completion(&peer), None);
     }
 
     #[test]
@@ -427,7 +471,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("pai.jsonl");
         let first = enqueue(&notification(A, "completed", "um"));
-        let second = enqueue(&notification("ab78fadba39f1654c", "killed", ""));
+        let second = enqueue(&notification(B, "killed", ""));
         let mut file = File::create(&path).unwrap();
         writeln!(file, "{}", human_prompt("oi")).unwrap();
         writeln!(file, "{first}").unwrap();
