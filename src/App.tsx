@@ -5345,10 +5345,15 @@ export default function App() {
             />
           </ErrorBoundary>
 
+          {/* A pasta do header abre a tela de Arquivos da sessão (pedido do dono,
+              2026-10-14); "Abrir pasta do projeto" fica no menu, na paleta e no
+              atalho. */}
           <IconAction
-            label={t("openProjectFolder")}
-            shortcut={bindings.openFolder}
-            onClick={() => void openProjectFolder()}
+            label={t("filesPanel")}
+            shortcut={bindings.files}
+            onClick={() => {
+              if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
+            }}
           >
             <FolderOpen size={16} />
           </IconAction>
