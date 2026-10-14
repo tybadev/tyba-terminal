@@ -483,6 +483,7 @@ import {
   KEY_ACTIONS,
   formatCombo,
   parseBindings,
+  bindingOverrides,
   BINDINGS_PREF_KEY,
   isTerminalAction,
   isPaneResizeChord,
@@ -3715,7 +3716,9 @@ export default function App() {
 
   const changeBindings = useCallback((value: Bindings) => {
     setBindings(value);
-    void setPref(BINDINGS_PREF_KEY, JSON.stringify(value)).catch(() => {});
+    void setPref(BINDINGS_PREF_KEY, JSON.stringify(bindingOverrides(value))).catch(
+      () => {},
+    );
   }, []);
 
   const changeShowContainers = useCallback((value: boolean) => {

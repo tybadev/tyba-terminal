@@ -18,6 +18,7 @@ import {
   isTabDigitChord,
   keydownGoesToPty,
   parseBindings,
+  bindingOverrides,
   PTY_NEWLINE,
   ptyNewlineFor,
   tabDigitCombo,
@@ -189,6 +190,24 @@ describe("OPEN_LATEST_SESSION_COMBO", () => {
     for (const action of KEY_ACTIONS) {
       expect(DEFAULT_BINDINGS[action]).not.toBe(OPEN_LATEST_SESSION_COMBO);
     }
+  });
+});
+
+describe("bindingOverrides", () => {
+  it("padrão inteiro vira objeto vazio", () => {
+    expect(bindingOverrides({ ...DEFAULT_BINDINGS })).toEqual({});
+  });
+
+  it("guarda só o que difere do padrão, e volta igual pelo parseBindings", () => {
+    const changed = { ...DEFAULT_BINDINGS, copy: "ctrl+alt+c" };
+    const out = bindingOverrides(changed);
+    expect(out).toEqual({ copy: "ctrl+alt+c" });
+    expect(parseBindings(JSON.stringify(out))).toEqual(changed);
+  });
+
+  it("compara com o padrão informado", () => {
+    expect(bindingOverrides(MAC_BINDINGS, PC_BINDINGS)).not.toEqual({});
+    expect(bindingOverrides(PC_BINDINGS, PC_BINDINGS)).toEqual({});
   });
 });
 
