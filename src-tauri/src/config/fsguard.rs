@@ -40,6 +40,18 @@ fn check_owner(_path: &Path, _meta: &fs::Metadata) -> Result<(), String> {
     Ok(())
 }
 
+/// Confere a raiz que já existe (pasta, do usuário, sem escrita de outros) e
+/// devolve o caminho canônico. Não cria nada.
+pub fn check_root(root: &Path) -> Result<PathBuf, String> {
+    let canonical = fs::canonicalize(root).map_err(|e| err(root, &e.to_string()))?;
+    let meta = fs::metadata(&canonical).map_err(|e| err(root, &e.to_string()))?;
+    if !meta.is_dir() {
+        return Err(err(root, "não é uma pasta"));
+    }
+    check_owner(root, &meta)?;
+    Ok(canonical)
+}
+
 /// Cria a raiz (`0700`) se faltar e devolve o caminho canônico, já conferido.
 pub fn ensure_root(root: &Path) -> Result<PathBuf, String> {
     if !root.exists() {
@@ -54,13 +66,7 @@ pub fn ensure_root(root: &Path) -> Result<PathBuf, String> {
             .create(root)
             .map_err(|e| err(root, &format!("não deu para criar: {e}")))?;
     }
-    let canonical = fs::canonicalize(root).map_err(|e| err(root, &e.to_string()))?;
-    let meta = fs::metadata(&canonical).map_err(|e| err(root, &e.to_string()))?;
-    if !meta.is_dir() {
-        return Err(err(root, "não é uma pasta"));
-    }
-    check_owner(root, &meta)?;
-    Ok(canonical)
+    check_root(root)
 }
 
 /// Resolve `path` e confere que continua dentro de `root`. `None` se não existe.
@@ -88,7 +94,9 @@ fn open_nofollow(path: &Path) -> std::io::Result<File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.custom_flags(libc::O_NOFOLLOW);
+        // O_NONBLOCK: um FIFO no lugar do arquivo travaria a abertura à espera
+        // de quem escreva. Em arquivo comum não muda nada.
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     opts.open(path)
 }
@@ -135,7 +143,7 @@ pub fn write_atomic(root: &Path, path: &Path, contents: &str) -> Result<(), Stri
         .parent()
         .ok_or_else(|| err(path, "sem pasta-mãe"))?
         .to_path_buf();
-    let tmp = dir.join(format!(".config.toml.{}.tmp", uuid::Uuid::new_v4()));
+    let tmp = dir.join(format!(".tyba-{}.tmp", uuid::Uuid::new_v4()));
     let write = || -> std::io::Result<()> {
         let mut opts = OpenOptions::new();
         opts.write(true).create_new(true);
@@ -280,6 +288,35 @@ mod tests {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
         assert!(ensure_root(&root).is_err());
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_in_place_of_the_file_does_not_hang() {
+        use std::os::unix::ffi::OsStrExt;
+        let (_d, root) = root();
+        let root = ensure_root(&root).unwrap();
+        let path = root.join("config.toml");
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: caminho válido terminado em NUL.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (r, p) = (root.clone(), path.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(read_capped(&r, &p, 1024));
+        });
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("read_capped travou num FIFO");
+        assert!(res.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_root_never_creates() {
+        let (_d, root) = root();
+        assert!(check_root(&root).is_err());
+        assert!(!root.exists());
     }
 
     #[test]

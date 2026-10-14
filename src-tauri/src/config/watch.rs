@@ -193,10 +193,10 @@ mod tests {
         let root = PathBuf::from("/h/.tyba");
         assert!(touches(&[root.join("config.toml")], "config.toml"));
         assert!(touches(
-            &[root.join(".config.toml.x.tmp"), root.join("config.toml")],
+            &[root.join(".tyba-x.tmp"), root.join("config.toml")],
             "config.toml"
         ));
-        assert!(!touches(&[root.join(".config.toml.x.tmp")], "config.toml"));
+        assert!(!touches(&[root.join(".tyba-x.tmp")], "config.toml"));
         assert!(!touches(&[root.join("themes/nord.json")], "config.toml"));
         assert!(!touches(&[], "config.toml"));
     }
