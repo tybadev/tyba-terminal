@@ -327,6 +327,7 @@ import {
   sessionBlocks,
   sessionLineEcho,
   sessionHookExpected,
+  sessionShellBoot,
   sessionPromptMode,
   togglePromptMode,
   renderSnippet,
@@ -528,6 +529,7 @@ import {
 } from "./lib/termRegistry";
 import { HoverCard, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Shortcut } from "@/components/ui/kbd";
+import type { ShellBoot } from "./lib/loading";
 
 const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
 type MenuParts = {
@@ -940,6 +942,8 @@ export default function App() {
    * linha do TYBA na tela dizendo "Carregando o shell…".
    */
   const [hookExpected, setHookExpected] = useState<Record<string, boolean>>({});
+  /** O shell e o rc de cada sessão local subindo: a etapa da linha em espera. */
+  const [shellBoots, setShellBoots] = useState<Record<string, ShellBoot | null>>({});
   const [blocks, setBlocks] = useState<Record<string, Block[]>>({});
   // Lido por handler de clique e de tecla; num deles é `window`, e reassinar o
   // listener a cada bloco que chega seria trabalho por nada.
@@ -4163,6 +4167,14 @@ export default function App() {
         .catch(() => {});
       // Ao contrário do modo prompt, esta resposta é definitiva no instante do
       // spawn: não muda depois, então basta perguntar uma vez.
+      // Também definitivo no spawn: o shell e o rc não mudam depois.
+      void sessionShellBoot(id)
+        .then((boot) => {
+          if (!disposed) {
+            setShellBoots((prev) => (id in prev ? prev : { ...prev, [id]: boot }));
+          }
+        })
+        .catch(() => {});
       void sessionHookExpected(id)
         .then((expected) => {
           if (!disposed) {
@@ -6437,6 +6449,16 @@ export default function App() {
                               focusOnMount={s.id === activeId && line.owns}
                               focusNonce={lineFocusNonces[s.id] ?? 0}
                               state={line.state}
+                              boot={shellBoots[s.id] ?? null}
+                              bootHost={
+                                s.kind.type === "ssh"
+                                  ? (sshHosts.find(
+                                      (h) =>
+                                        s.kind.type === "ssh" &&
+                                        h.id === s.kind.host_id,
+                                    )?.alias ?? null)
+                                  : null
+                              }
                               inject={injected[s.id] ?? null}
                               draft={drafts.current[s.id] ?? ""}
                               onDraftChange={rememberDraft}

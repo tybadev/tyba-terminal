@@ -11,6 +11,8 @@ import {
   type SessionId,
 } from "../lib/ipc";
 import { compactPath } from "../lib/workspaceCwd";
+import { elapsedSeconds, isSlow, shellBootStep, type ShellBoot } from "../lib/loading";
+import { useNow } from "./ui/loading";
 import { toastError } from "../lib/toast";
 import {
   boxAcceptsTyping,
@@ -39,7 +41,8 @@ const NO_PENDING: string[] = [];
 
 const PLACEHOLDER_BY_STATE: Record<LineState, string> = {
   own: "commandLinePlaceholder",
-  waiting: "commandLineWaiting",
+  // Em espera, o texto é a etapa real do shell subindo — ver `bootPlaceholder`.
+  waiting: "",
   continuation: "commandLineContinuation",
   running: "commandLineRunning",
   app: "commandLineApp",
@@ -79,6 +82,13 @@ interface Props {
    * voltar a cada comando redimensionava o terminal duas vezes por execução.
    */
   state: LineState;
+  /**
+   * O shell que está subindo, do core: em `waiting` a linha diz a etapa real
+   * ("carregando o ~/.zshrc") em vez de "carregando o shell". `bootHost` é o
+   * servidor numa SSH Session — lá o core não sabe o rc.
+   */
+  boot?: ShellBoot | null;
+  bootHost?: string | null;
   /**
    * Texto vindo de fora (paleta de histórico, snippet, colar).
    *
@@ -131,6 +141,8 @@ export function CommandLine({
   scope,
   focusNonce,
   state,
+  boot = null,
+  bootHost = null,
   inject,
   draft = "",
   onDraftChange,
@@ -148,6 +160,16 @@ export function CommandLine({
   // `~/…` como no mockup; caminho longo cai no mesmo `…/pai/pasta`.
   const where = cwd ? compactPath(cwd) : null;
   const { t } = useTranslation();
+  // A etapa do shell subindo, com o motivo provável passado o normal. O
+  // relógio só anda em espera; a referência de início é o spawn (do core) ou,
+  // sem ele, a montagem da linha.
+  const [mountedAt] = useState(() => Date.now());
+  const bootNow = useNow(state === "waiting");
+  const bootStart = boot?.started_at_ms ?? mountedAt;
+  const bootStep = shellBootStep(boot, bootHost);
+  const bootPlaceholder = isSlow(bootStart, bootNow, "shell", bootHost !== null)
+    ? t("shellBootSlow", { s: elapsedSeconds(bootStart, bootNow) })
+    : t(bootStep.key, bootStep.params);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState(draft);
   // No fim do rascunho, não no começo. Voltar para um pane e digitar no meio
@@ -691,6 +713,14 @@ export function CommandLine({
       }`}
       style={{ boxShadow: "var(--tyba-edge)" }}
     >
+      {/* Shell subindo: o filamento corre na aresta de cima enquanto o rc
+          carrega. Absoluto, para não mexer na altura da linha (resize). */}
+      {state === "waiting" && (
+        <div
+          aria-hidden
+          className="tyba-flow-line tyba-flow-line--live pointer-events-none absolute inset-x-0 top-0"
+        />
+      )}
       {showMenu && (
         // Desenhada INVERTIDA (`menuRows`): o item 0 — o último executado, ou o
         // mais provável — é a última linha, colada na caixa. Mais antigo é
@@ -829,7 +859,9 @@ export function CommandLine({
             autoCorrect="off"
             value={text}
             disabled={waiting}
-            placeholder={t(PLACEHOLDER_BY_STATE[state])}
+            placeholder={
+              state === "waiting" ? bootPlaceholder : t(PLACEHOLDER_BY_STATE[state])
+            }
             onChange={(e) => {
               setText(e.target.value);
               setCaret(e.target.selectionStart ?? 0);
