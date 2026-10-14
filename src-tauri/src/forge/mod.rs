@@ -1,8 +1,11 @@
 pub mod cli_hosts;
+pub mod conditional;
 pub mod exec;
 pub mod github;
 pub mod gitlab;
+pub mod local;
 pub mod prs;
+pub mod rate;
 pub mod remote;
 
 use std::collections::HashMap;
@@ -303,10 +306,11 @@ pub fn pr_list(repo_root: &Path) -> Result<Vec<PullRequest>, AppError> {
 /// não há repositório GitLab para exercitar o parser — escrever parser que
 /// ninguém roda é a mesma armadilha do teste de sandbox que passa com a jaula
 /// quebrada.
-/// Segurar o resultado por 30s tem um propósito único: o painel abre INSTANTÂNEO
-/// em vez de mostrar "carregando". Sem cache, pré-carregar ao focar a sessão
-/// custaria um processo `gh` por troca de aba — e o core divide máquina com os
-/// agentes.
+/// Segurar o resultado por 30s serve a dois usos. No painel de CI, o painel
+/// abre INSTANTÂNEO em vez de mostrar "carregando": sem cache, pré-carregar ao
+/// focar a sessão custaria um processo `gh` por troca de aba — e o core divide
+/// máquina com os agentes. Na lista e no detalhe de PR (`prs`), é a janela em
+/// que o cache responde sem revalidar (stale-while-revalidate).
 const CACHE_TTL: Duration = Duration::from_secs(30);
 
 type RunCache = HashMap<PathBuf, (Instant, Option<Vec<WorkflowRun>>)>;

@@ -17,6 +17,7 @@ import {
   Prohibit,
   SidebarSimple,
   SquaresFour,
+  Stack,
   TerminalWindow,
   User,
   X,
@@ -266,6 +267,8 @@ import {
   killShellAgent,
   canResumeAgentSession,
   resumeAgentSession,
+  resumeShellConversation,
+  dismissShellResumeOffer,
   type AgentRunner,
   onAgentDetected,
   type AgentDetectedPayload,
@@ -2291,6 +2294,20 @@ export default function App() {
     setDismissedResumeInvites((prev) => new Set(prev).add(sessionId));
   }, []);
 
+  // Shell restaurado: o convite e a retomada são do core (ele digita o
+  // `claude --resume` no próprio shell). Aqui só a intenção e o erro.
+  const resumeShellClaude = useCallback(
+    async (sessionId: SessionId) => {
+      try {
+        await resumeShellConversation(sessionId);
+        goToSession(sessionId);
+      } catch (e) {
+        toastError(t("agentResumeFailed"), translateError(e, t));
+      }
+    },
+    [goToSession, t],
+  );
+
   // Sessão com agente vivo recebe o prompt direto; sessão plain (ou morta)
   // ganha uma sessão de agente nova apontada pro repo conflitado.
   const resolveConflictsWithAgent = useCallback(
@@ -3476,6 +3493,31 @@ export default function App() {
       void disposeSession(session.id).catch(() => {});
     }
   }, [activeWorkspace, openNewSession, workspaceSshHostId]);
+
+  // Sessão aberta pelo core para um PR ("Abrir no TYBA"): se já existia e
+  // está numa aba, só vai até ela; senão ganha uma aba no workspace ativo. Nos
+  // dois casos a tela de Git fecha, para o shell do PR aparecer. Falha ao criar
+  // a aba sobe para quem chamou (o detalhe do PR mostra o erro); a sessão só é
+  // descartada se acabou de nascer.
+  const adoptOpenedSession = useCallback(
+    async (opened: Session) => {
+      if (!activeWorkspace) return;
+      const known = sessionById.has(opened.id);
+      if (known && findSessionLocation(layout.workspaces, opened.id)) {
+        goToSession(opened.id);
+      } else {
+        if (!known) setSessions((prev) => [...prev, opened]);
+        try {
+          await createTab(opened.id, activeWorkspace.id);
+        } catch (e) {
+          if (!known) void disposeSession(opened.id).catch(() => {});
+          throw e;
+        }
+      }
+      void closeSideView(activeWorkspace.id).catch(() => {});
+    },
+    [activeWorkspace, sessionById, goToSession, layout.workspaces],
+  );
 
   const runInTerminal = useCallback(
     async (command: string) => {
@@ -5294,6 +5336,7 @@ export default function App() {
                     aria-pressed
                     className="flex h-6 items-center gap-1.5 rounded-[6px] bg-tyba-raised px-3 text-[13px] text-tyba-text shadow-[var(--tyba-row-raised)]"
                   >
+                    <TerminalWindow size={14} aria-hidden />
                     {t("terminalView")}
                   </button>
                 </TooltipTrigger>
@@ -5309,6 +5352,7 @@ export default function App() {
                     disabled
                     className="flex h-6 cursor-not-allowed items-center gap-1.5 rounded-[6px] px-3 text-[13px] text-tyba-text-faint"
                   >
+                    <Stack size={14} aria-hidden />
                     {t("workspaceView")}
                   </button>
                 </TooltipTrigger>
@@ -5732,6 +5776,7 @@ export default function App() {
                     findSession={(id) => sessionById.get(id)}
                     onSendToAgent={sendReviewToAgent}
                     onResolveConflicts={resolveConflictsWithAgent}
+                    onOpenSession={adoptOpenedSession}
                   />
                 )}
                 {dockerScreenSession && activeWorkspace && (
@@ -5936,6 +5981,7 @@ export default function App() {
                           const target = sessionById.get(sid);
                           if (target) await sendReviewToAgent(target, prompt);
                         }}
+                        onOpenSession={adoptOpenedSession}
                       />
                     ) : (
                       <div className="absolute inset-0 flex items-center justify-center text-[12px] text-tyba-text-faint">
@@ -6189,6 +6235,14 @@ export default function App() {
                               void resumeAgentConversation(s.id)
                             }
                             onDismissResume={() => dismissResumeInvite(s.id)}
+                            shellResumeNotice={
+                              s.kind.type === "shell" &&
+                              Boolean(s.shell_resume_offer)
+                            }
+                            onResumeShell={() => void resumeShellClaude(s.id)}
+                            onDismissShellResume={() =>
+                              void dismissShellResumeOffer(s.id).catch(() => {})
+                            }
                             authAlert={
                               runtimeAuthAlerts.has(s.id)
                                 ? { kind: runtimeAuthAlerts.get(s.id)! }

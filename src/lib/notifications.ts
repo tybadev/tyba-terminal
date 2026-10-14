@@ -1,4 +1,10 @@
-import type { ApprovalDecision, ApprovalRequest, RiskLevel } from "./ipc";
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  NotificationEntry,
+  RiskLevel,
+  SessionId,
+} from "./ipc";
 
 export type NotificationKind = "approval";
 
@@ -133,10 +139,96 @@ export function hiddenApprovalIds(params: {
   return ids;
 }
 
-export function shouldAutoClosePopover(params: {
-  open: boolean;
-  previousCount: number;
-  nextCount: number;
-}): boolean {
-  return params.open && params.previousCount > 0 && params.nextCount === 0;
+// --- histórico (painel Notificações, mockup Notificacoes) -------------------
+
+export type NotificationFilter = "all" | "requests" | "errors" | "done";
+
+/** Pedido (do TYBA ou do prompt nativo do Claude). */
+export function isRequestKind(e: NotificationEntry): boolean {
+  return e.kind === "approval" || e.kind === "native_approval";
+}
+
+/** Pedido do TYBA pendente aparece ao vivo em "Precisa de você" (vem de
+ *  `approvals`), não no histórico — senão aparece duas vezes.
+ *
+ *  O amarelo do prompt nativo do Claude fica no histórico mesmo pendente: o
+ *  estado dele é DEDUZIDO dos hooks e erra para os dois lados (negar no
+ *  terminal não dispara hook nenhum; um `PreToolUse` paralelo fecha como
+ *  negado um prompt ainda aberto). Na superfície ao vivo e no badge isso
+ *  viraria alarme falso que não apaga, ou pedido real que some. */
+export function historyEntries(entries: NotificationEntry[]): NotificationEntry[] {
+  return entries.filter((e) => !(e.kind === "approval" && e.pending));
+}
+
+/** Grupo atenuado (mockup Notificacoes, `.done`): tudo nele já concluiu. */
+export function isDoneGroup(items: NotificationEntry[]): boolean {
+  return items.length > 0 && items.every((e) => e.category === "done");
+}
+
+export function filterEntries(
+  entries: NotificationEntry[],
+  filter: NotificationFilter,
+): NotificationEntry[] {
+  if (filter === "all") return entries;
+  if (filter === "errors") return entries.filter((e) => e.category === "error");
+  if (filter === "done") return entries.filter((e) => e.category === "done");
+  return entries.filter(isRequestKind);
+}
+
+export type DayBucket = "today" | "yesterday" | "earlier";
+
+/** Por data local, não por 24h fixas: o dia da troca de horário tem 23h ou 25h. */
+export function dayBucket(atMs: number, now: number): DayBucket {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  if (atMs >= start.getTime()) return "today";
+  start.setDate(start.getDate() - 1);
+  if (atMs >= start.getTime()) return "yesterday";
+  return "earlier";
+}
+
+/** Quando o limite volta, no fuso local: só a hora se for nas próximas 24h,
+ *  data + hora se depois — como `format_reset` no core (agent/usage.rs).
+ *  `resetsAt` em segundos. */
+export function resetParts(resetsAt: number, nowMs: number): { time: string; date: string | null } {
+  const at = new Date(resetsAt * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const time = `${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  if (resetsAt * 1000 - nowMs < 24 * 60 * 60 * 1000) return { time, date: null };
+  return { time, date: `${pad(at.getDate())}/${pad(at.getMonth() + 1)}` };
+}
+
+export interface SessionGroup<T> {
+  session: SessionId;
+  title: string;
+  agent: string | null;
+  items: T[];
+}
+
+/** Agrupa por sessão mantendo a ordem de quem tem o item mais recente. */
+export function groupBySession<T extends { session_id: SessionId }>(
+  items: T[],
+  meta: (item: T) => { title: string; agent: string | null },
+): SessionGroup<T>[] {
+  const groups = new Map<SessionId, SessionGroup<T>>();
+  for (const item of items) {
+    let g = groups.get(item.session_id);
+    if (!g) {
+      g = { session: item.session_id, ...meta(item), items: [] };
+      groups.set(item.session_id, g);
+    }
+    g.items.push(item);
+  }
+  return [...groups.values()];
+}
+
+/** Badge do ícone: pedidos pendentes do TYBA + erros não lidos ("pedem
+ *  você"). O pedido do prompt nativo não entra: o estado dele é deduzido
+ *  (ver `historyEntries`). */
+export function attentionCount(pendingApprovals: number, entries: NotificationEntry[]): number {
+  return pendingApprovals + entries.filter((e) => !e.read && e.category === "error").length;
+}
+
+export function unreadCount(entries: NotificationEntry[]): number {
+  return entries.filter((e) => !e.read).length;
 }

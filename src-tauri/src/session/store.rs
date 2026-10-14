@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL,
     cwd TEXT,
     agent_conversation_id TEXT,
+    agent_conversation_cwd TEXT,
     ssh_logged_in INTEGER NOT NULL DEFAULT 0,
     ssh_integration TEXT
 );
@@ -229,6 +230,26 @@ CREATE TABLE IF NOT EXISTS snippet (
     uses INTEGER NOT NULL DEFAULT 0,
     last_used_at_ms INTEGER
 );
+CREATE TABLE IF NOT EXISTS notification (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at_ms INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    session_title TEXT NOT NULL,
+    agent TEXT,
+    kind TEXT NOT NULL,
+    category TEXT NOT NULL,
+    approval_id INTEGER,
+    pending INTEGER NOT NULL DEFAULT 0,
+    decision TEXT,
+    risk TEXT,
+    command TEXT,
+    detail TEXT,
+    usage_window TEXT,
+    usage_pct REAL,
+    usage_resets_at INTEGER,
+    read INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS notification_by_time ON notification (at_ms);
 ";
 
 /// Teto do histórico. Sem ele a tabela cresce com o uso e nunca encolhe: é a
@@ -513,6 +534,10 @@ pub enum StoreError {
 ///     `grep`, `find`, a árvore do `docker compose` e o nome longo de cada
 ///     flag (`--all` além de `-a`). Mesmo motivo do 7. Conferido em
 ///     2026-10-12: nenhuma branch local usava 11.
+/// 12 — `sessions.agent_conversation_cwd` entra: a pasta em que a conversa do
+///     agente rodava, em par com `agent_conversation_id`. É o que deixa o
+///     shell restaurado retomar a conversa mesmo depois de um `cd`. Conferido
+///     em 2026-10-14: nenhuma branch local nem remota usava 12.
 ///
 /// Degrau próprio para cada um, e nunca linha nova na [`BASELINE_COLUMNS`]: a
 /// base só roda em banco na versão 0, então quem já subiu de versão nunca mais
@@ -524,7 +549,7 @@ pub enum StoreError {
 /// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
 /// de cada um passa isolado, porque simula o banco na versão anterior, que é
 /// justamente o caso em que ambos rodam.
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -1012,6 +1037,28 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
+    let conversation_cwd_applied = if from < 12 {
+        match has_column(conn, "sessions", "agent_conversation_cwd") {
+            Ok(true) => true,
+            Ok(false) => match conn.execute(
+                "ALTER TABLE sessions ADD COLUMN agent_conversation_cwd TEXT",
+                [],
+            ) {
+                Ok(_) => true,
+                Err(e) => {
+                    skipped.push(format!("sessions.agent_conversation_cwd: {e}"));
+                    false
+                }
+            },
+            Err(e) => {
+                skipped.push(format!("sessions.agent_conversation_cwd: {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
     let reached = match (
         baseline_applied,
         scrollback_applied,
@@ -1023,18 +1070,20 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         ssh_integration_applied,
         approval_origin_applied,
         spec_reseed_applied,
+        conversation_cwd_applied,
     ) {
-        (true, true, true, true, true, true, true, true, true, true) => SCHEMA_VERSION,
-        (true, true, true, true, true, true, true, true, true, false) => 10,
-        (true, true, true, true, true, true, true, true, false, _) => 9,
-        (true, true, true, true, true, true, true, false, _, _) => 8,
-        (true, true, true, true, true, true, false, _, _, _) => 7,
-        (true, true, true, true, true, false, _, _, _, _) => 5,
-        (true, true, true, true, false, _, _, _, _, _) => 4,
-        (true, true, true, false, _, _, _, _, _, _) => 3,
-        (true, true, false, _, _, _, _, _, _, _) => 2,
-        (true, false, _, _, _, _, _, _, _, _) => 1,
-        (false, _, _, _, _, _, _, _, _, _) => from,
+        (true, true, true, true, true, true, true, true, true, true, true) => SCHEMA_VERSION,
+        (true, true, true, true, true, true, true, true, true, true, false) => 11,
+        (true, true, true, true, true, true, true, true, true, false, _) => 10,
+        (true, true, true, true, true, true, true, true, false, _, _) => 9,
+        (true, true, true, true, true, true, true, false, _, _, _) => 8,
+        (true, true, true, true, true, true, false, _, _, _, _) => 7,
+        (true, true, true, true, true, false, _, _, _, _, _) => 5,
+        (true, true, true, true, false, _, _, _, _, _, _) => 4,
+        (true, true, true, false, _, _, _, _, _, _, _) => 3,
+        (true, true, false, _, _, _, _, _, _, _, _) => 2,
+        (true, false, _, _, _, _, _, _, _, _, _) => 1,
+        (false, _, _, _, _, _, _, _, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -1134,18 +1183,27 @@ impl Store {
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned());
         let cwd = s.cwd.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let conversation_cwd = s
+            .agent_conversation_cwd
+            .as_ref()
+            .and_then(|p| p.to_str().map(str::to_string));
 
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO sessions (id, kind, title, repo_root, worktree, status, created_at, cwd,
-                                   agent_conversation_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                                   agent_conversation_id, agent_conversation_cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET
                 kind = ?2, title = ?3, repo_root = ?4, worktree = ?5, status = ?6, cwd = ?8,
                 -- Nunca apaga um id já gravado: o upsert corre a cada troca de
                 -- status, e a `Session` em memória pode ainda não ter lido o
                 -- transcript. Quem esquece a conversa é o descarte da sessão.
-                agent_conversation_id = COALESCE(?9, agent_conversation_id)",
+                agent_conversation_id = COALESCE(?9, agent_conversation_id),
+                -- A pasta anda em PAR com o id: só muda quando vem id, e então
+                -- vale a que veio junto (mesmo NULL). Senão um id novo herdaria
+                -- a pasta da conversa anterior.
+                agent_conversation_cwd = CASE WHEN ?9 IS NULL
+                    THEN agent_conversation_cwd ELSE ?10 END",
             params![
                 s.id.to_string(),
                 kind,
@@ -1156,6 +1214,7 @@ impl Store {
                 s.created_at.to_rfc3339(),
                 cwd,
                 s.agent_conversation_id,
+                conversation_cwd,
             ],
         )?;
         Ok(())
@@ -1168,7 +1227,7 @@ impl Store {
     /// que a saída dela suma — deixá-la no disco esperando a retenção contraria
     /// justamente o gesto (princípio #10).
     ///
-    /// Numa transação porque as três apagam a mesma coisa: meio descarte é
+    /// Numa transação porque todas apagam a mesma coisa: meio descarte é
     /// output órfão que ninguém mais tem como listar nem apagar.
     pub fn remove_session(&self, id: SessionId) -> Result<(), StoreError> {
         let mut conn = self.conn.lock();
@@ -1178,6 +1237,12 @@ impl Store {
         tx.execute("DELETE FROM block WHERE session_id = ?1", params![key])?;
         tx.execute(
             "DELETE FROM block_checkpoint WHERE session_id = ?1",
+            params![key],
+        )?;
+        // O histórico de notificações também é saída da sessão. A auditoria
+        // de aprovações (`approval_history`) fica.
+        tx.execute(
+            "DELETE FROM notification WHERE session_id = ?1",
             params![key],
         )?;
         tx.commit()?;
@@ -1649,7 +1714,7 @@ impl Store {
         risk: &str,
         call_key: &str,
         now_ms: u64,
-    ) -> Result<(), StoreError> {
+    ) -> Result<i64, StoreError> {
         let command = redact(command);
         let cwd = cwd.map(|c| redact(c).into_owned());
         let conn = self.conn.lock();
@@ -1662,11 +1727,12 @@ impl Store {
                      'claude_native_inferred', ?6, 'pending')",
             params![session_id, command.as_ref(), cwd, risk, now_ms, call_key],
         )?;
-        Ok(())
+        Ok(conn.last_insert_rowid())
     }
 
     /// O `PostToolUse` da chamada chegou: ela rodou, logo o prompt nativo foi
-    /// aprovado. Devolve se alguma linha foi fechada.
+    /// aprovado. Devolve o `id` da linha fechada, se alguma foi (é por ele que
+    /// a entrada do histórico de notificações acompanha a linha).
     ///
     /// Pega a linha deduzida **mais recente** com a chave que ainda está
     /// pendente — ou que já foi fechada como `denied` por dedução. O segundo
@@ -1682,20 +1748,29 @@ impl Store {
         call_key: &str,
         decision: &str,
         now_ms: u64,
-    ) -> Result<bool, StoreError> {
+    ) -> Result<Option<i64>, StoreError> {
+        use rusqlite::OptionalExtension;
         let conn = self.conn.lock();
-        let changed = conn.execute(
-            "UPDATE approval_history
-             SET decision = ?3, status = 'resolved', resolved_at_ms = ?4
-             WHERE id = (
-                 SELECT id FROM approval_history
+        let id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM approval_history
                  WHERE session_id = ?1 AND call_key = ?2
                    AND origin = 'claude_native_inferred'
                    AND (status = 'pending' OR decision = 'denied')
-                 ORDER BY id DESC LIMIT 1)",
-            params![session_id, call_key, decision, now_ms],
-        )?;
-        Ok(changed > 0)
+                 ORDER BY id DESC LIMIT 1",
+                params![session_id, call_key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = id {
+            conn.execute(
+                "UPDATE approval_history
+                 SET decision = ?2, status = 'resolved', resolved_at_ms = ?3
+                 WHERE id = ?1",
+                params![id, decision, now_ms],
+            )?;
+        }
+        Ok(id)
     }
 
     /// Fecha como `denied` toda linha deduzida ainda pendente da sessão.
@@ -2905,7 +2980,7 @@ impl Store {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, kind, title, repo_root, worktree, status, created_at, cwd,
-                    agent_conversation_id
+                    agent_conversation_id, agent_conversation_cwd
              FROM sessions ORDER BY created_at",
         )?;
         let raw = stmt
@@ -2920,12 +2995,300 @@ impl Store {
                     created_at: row.get(6)?,
                     cwd: row.get(7)?,
                     agent_conversation_id: row.get(8)?,
+                    agent_conversation_cwd: row.get(9)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         raw.into_iter().map(RawSession::into_session).collect()
     }
+
+    /// Grava uma entrada do histórico de notificações e poda: some o que tem
+    /// mais de 7 dias e o que passa das 500 mais novas. Devolve o `id`.
+    ///
+    /// `session_title`, `command` e `detail` passam pela redação aqui de novo
+    /// (princípio #10): quem chama já mascarou e cortou, mas a garantia fica no
+    /// ponto de escrita.
+    /// O `id` é `AUTOINCREMENT` de propósito: depois da poda um id antigo nunca
+    /// volta, e um "marcar lido" atrasado não acerta linha nova.
+    pub fn insert_notification(
+        &self,
+        e: &crate::notifications::NotificationEntry,
+        now_ms: i64,
+    ) -> Result<u64, StoreError> {
+        use crate::notifications::{window_str, MAX_ENTRIES, RETENTION_MS};
+        let session_title = redact(&e.session_title).into_owned();
+        let command = e.command.as_deref().map(|c| redact(c).into_owned());
+        let detail = e.detail.as_deref().map(|d| redact(d).into_owned());
+        let decision = e.decision.map(enum_text).transpose()?;
+        let risk = e.risk.map(enum_text).transpose()?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO notification
+                 (at_ms, session_id, session_title, agent, kind, category, approval_id,
+                  pending, decision, risk, command, detail, usage_window, usage_pct,
+                  usage_resets_at, read)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                e.at_ms,
+                e.session_id.to_string(),
+                session_title,
+                e.agent,
+                e.kind.as_str(),
+                e.category.as_str(),
+                e.approval_id.map(|id| id as i64),
+                e.pending,
+                decision,
+                risk,
+                command,
+                detail,
+                e.usage.map(|u| window_str(u.window)),
+                e.usage.map(|u| u.pct),
+                e.usage.and_then(|u| u.resets_at).map(|r| r as i64),
+                e.read,
+            ],
+        )?;
+        let id = conn.last_insert_rowid() as u64;
+        conn.execute(
+            "DELETE FROM notification WHERE at_ms < ?1",
+            params![now_ms - RETENTION_MS],
+        )?;
+        conn.execute(
+            "DELETE FROM notification WHERE id NOT IN (
+                 SELECT id FROM notification ORDER BY at_ms DESC, id DESC LIMIT ?1)",
+            params![MAX_ENTRIES],
+        )?;
+        Ok(id)
+    }
+
+    /// Mais nova primeiro; até 500, dos últimos 7 dias. Linha que não se lê
+    /// (valor de enum desconhecido) fica de fora em vez de derrubar a lista.
+    pub fn list_notifications(
+        &self,
+        now_ms: i64,
+    ) -> Result<Vec<crate::notifications::NotificationEntry>, StoreError> {
+        use crate::notifications::{
+            parse_window, NotificationCategory, NotificationEntry, NotificationKind, UsageInfo,
+            MAX_ENTRIES, RETENTION_MS,
+        };
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, at_ms, session_id, session_title, agent, kind, category, approval_id,
+                    pending, decision, risk, command, detail, usage_window, usage_pct,
+                    usage_resets_at, read
+             FROM notification WHERE at_ms >= ?1
+             ORDER BY at_ms DESC, id DESC LIMIT ?2",
+        )?;
+        type Row = (
+            i64,
+            i64,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            Option<i64>,
+            bool,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<f64>,
+            Option<i64>,
+            bool,
+        );
+        let rows = stmt
+            .query_map(params![now_ms - RETENTION_MS, MAX_ENTRIES], |r| {
+                Ok::<Row, rusqlite::Error>((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                    r.get(11)?,
+                    r.get(12)?,
+                    r.get(13)?,
+                    r.get(14)?,
+                    r.get(15)?,
+                    r.get(16)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let out = rows
+            .into_iter()
+            .filter_map(|row| {
+                let (
+                    id,
+                    at_ms,
+                    session_id,
+                    session_title,
+                    agent,
+                    kind,
+                    category,
+                    approval_id,
+                    pending,
+                    decision,
+                    risk,
+                    command,
+                    detail,
+                    usage_window,
+                    usage_pct,
+                    usage_resets_at,
+                    read,
+                ) = row;
+                let usage = match (usage_window.as_deref().and_then(parse_window), usage_pct) {
+                    (Some(window), Some(pct)) => Some(UsageInfo {
+                        window,
+                        pct,
+                        resets_at: usage_resets_at.map(|r| r as u64),
+                    }),
+                    _ => None,
+                };
+                Some(NotificationEntry {
+                    id: id as u64,
+                    at_ms,
+                    session_id: SessionId::parse_str(&session_id).ok()?,
+                    session_title,
+                    agent,
+                    kind: NotificationKind::parse(&kind)?,
+                    category: NotificationCategory::parse(&category)?,
+                    approval_id: approval_id.map(|a| a as u64),
+                    pending,
+                    decision: decision.as_deref().and_then(enum_parse),
+                    risk: risk.as_deref().and_then(enum_parse),
+                    command,
+                    detail,
+                    usage,
+                    read,
+                })
+            })
+            .collect();
+        Ok(out)
+    }
+
+    /// `ids` = essas; `None` = todas. Devolve quantas mudaram.
+    pub fn mark_notifications_read(&self, ids: Option<&[u64]>) -> Result<usize, StoreError> {
+        let conn = self.conn.lock();
+        match ids {
+            None => Ok(conn.execute("UPDATE notification SET read = 1 WHERE read = 0", [])?),
+            Some(ids) => {
+                let mut stmt =
+                    conn.prepare("UPDATE notification SET read = 1 WHERE id = ?1 AND read = 0")?;
+                let mut changed = 0;
+                for id in ids {
+                    changed += stmt.execute(params![*id as i64])?;
+                }
+                Ok(changed)
+            }
+        }
+    }
+
+    /// O pedido `approval_id` foi decidido: a MESMA entrada sai de pendente.
+    /// Só a pendente — o contador de pedidos recomeça a cada processo, então o
+    /// mesmo `approval_id` existe em entradas antigas já resolvidas.
+    pub fn resolve_notification_approval(
+        &self,
+        approval_id: u64,
+        decision: crate::approvals::Decision,
+    ) -> Result<usize, StoreError> {
+        let decision = enum_text(decision)?;
+        let conn = self.conn.lock();
+        Ok(conn.execute(
+            "UPDATE notification
+             SET pending = 0, decision = ?2, category = 'done', read = 1
+             WHERE kind = 'approval' AND pending = 1 AND approval_id = ?1",
+            params![approval_id as i64, decision],
+        )?)
+    }
+
+    /// O prompt nativo do Claude da linha deduzida `inferred_id` (id em
+    /// `approval_history`) foi aprovado: a entrada `native_approval` dela sai
+    /// de pendente. Pega também a já fechada como negada — é o conserto da
+    /// dedução, o mesmo de [`Store::resolve_inferred_by_call_key`].
+    pub fn approve_native_notification(&self, inferred_id: i64) -> Result<usize, StoreError> {
+        let conn = self.conn.lock();
+        Ok(conn.execute(
+            "UPDATE notification
+             SET pending = 0, decision = 'approved', category = 'done', read = 1
+             WHERE kind = 'native_approval' AND approval_id = ?1
+               AND (pending = 1 OR decision = 'denied')",
+            params![inferred_id],
+        )?)
+    }
+
+    /// O turno seguiu sem rodar a chamada (ou a sessão acabou): toda entrada
+    /// `native_approval` pendente da sessão vira negada, como as linhas
+    /// deduzidas de [`Store::deny_pending_inferred_for_session`].
+    pub fn deny_native_notifications_for_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<usize, StoreError> {
+        let conn = self.conn.lock();
+        Ok(conn.execute(
+            "UPDATE notification
+             SET pending = 0, decision = 'denied', category = 'done', read = 1
+             WHERE kind = 'native_approval' AND pending = 1 AND session_id = ?1",
+            params![session_id.to_string()],
+        )?)
+    }
+
+    /// O settle corrigiu o resumo do turno: troca o `detail` da ÚLTIMA entrada
+    /// `agent_finished` da sessão, se ela não for mais velha que `since_ms`.
+    /// Devolve quantas mudaram (0 ou 1). Mascara aqui, como na inserção.
+    pub fn update_last_finished_detail(
+        &self,
+        session_id: SessionId,
+        detail: &str,
+        since_ms: i64,
+    ) -> Result<usize, StoreError> {
+        let detail = redact(detail).into_owned();
+        let conn = self.conn.lock();
+        Ok(conn.execute(
+            "UPDATE notification SET detail = ?2
+             WHERE at_ms >= ?3 AND id = (
+                 SELECT id FROM notification
+                 WHERE session_id = ?1 AND kind = 'agent_finished'
+                 ORDER BY at_ms DESC, id DESC LIMIT 1)",
+            params![session_id.to_string(), detail, since_ms],
+        )?)
+    }
+
+    /// Ao subir: pedido que o banco tem como pendente é de um processo que
+    /// morreu — os pedidos vivem só em memória. Sem decisão, e sem `request`,
+    /// que é a categoria de quem ainda espera.
+    pub fn abandon_pending_notifications(&self) -> Result<usize, StoreError> {
+        let conn = self.conn.lock();
+        Ok(conn.execute(
+            "UPDATE notification SET pending = 0, decision = NULL, category = 'done'
+             WHERE pending = 1",
+            [],
+        )?)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn count_notifications(&self) -> Result<i64, StoreError> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row("SELECT COUNT(*) FROM notification", [], |r| r.get(0))?)
+    }
+}
+
+/// Valor de enum serde de string (`"approved_always"`, `"red"`) como texto.
+fn enum_text<T: serde::Serialize>(value: T) -> Result<String, StoreError> {
+    match serde_json::to_value(value)? {
+        serde_json::Value::String(s) => Ok(s),
+        other => Ok(other.to_string()),
+    }
+}
+
+fn enum_parse<T: serde::de::DeserializeOwned>(raw: &str) -> Option<T> {
+    serde_json::from_value(serde_json::Value::String(raw.to_string())).ok()
 }
 
 pub struct ApprovalHistoryEntry {
@@ -2948,6 +3311,7 @@ struct RawSession {
     created_at: String,
     cwd: Option<String>,
     agent_conversation_id: Option<String>,
+    agent_conversation_cwd: Option<String>,
 }
 
 impl RawSession {
@@ -2960,6 +3324,14 @@ impl RawSession {
         };
         let created_at: DateTime<Utc> =
             DateTime::parse_from_rfc3339(&self.created_at)?.with_timezone(&Utc);
+        let agent_conversation_id = self
+            .agent_conversation_id
+            .filter(|id| crate::agent::conversation::is_plausible(id));
+        // Sem id, a pasta não tem de quem ser.
+        let conversation_cwd = agent_conversation_id
+            .as_ref()
+            .and(self.agent_conversation_cwd)
+            .map(PathBuf::from);
 
         Ok(Session {
             id: SessionId::parse_str(&self.id)?,
@@ -2976,15 +3348,15 @@ impl RawSession {
             cwd: self.cwd.map(PathBuf::from),
             connection: crate::session::ConnectionState::default(),
             connection_failure: None,
-            agent_conversation_id: self
-                .agent_conversation_id
-                .filter(|id| crate::agent::conversation::is_plausible(id)),
+            agent_conversation_id,
             // In-memory como `attention`: o restore não sabe se a sessão
             // morta veio do gate nem se chegou a trabalhar — afirmar
             // qualquer um dos dois aqui seria palpite, não fato.
             opened_by_gate: false,
             did_work: false,
             agent_usage: None,
+            shell_resume_offer: false,
+            agent_conversation_cwd: conversation_cwd,
         })
     }
 }
@@ -3091,6 +3463,8 @@ mod tests {
             opened_by_gate: false,
             did_work: false,
             agent_usage: None,
+            shell_resume_offer: false,
+            agent_conversation_cwd: None,
         }
     }
 
@@ -3119,6 +3493,32 @@ mod tests {
             store.load_sessions().unwrap()[0].agent_conversation_id,
             s.agent_conversation_id
         );
+    }
+
+    /// A pasta da conversa anda em par com o id: sobrevive ao reload, um upsert
+    /// sem id não a apaga, e um id novo sem pasta não herda a da anterior.
+    #[test]
+    fn conversation_cwd_travels_with_its_conversation_id() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s = sample("shell");
+        s.agent_conversation_id = Some("aaaaaaaa-0000-4000-8000-000000000001".into());
+        s.agent_conversation_cwd = Some(PathBuf::from("/home/u/repo"));
+        store.upsert_session(&s).unwrap();
+        let cwd = |store: &Store| {
+            store.load_sessions().unwrap()[0]
+                .agent_conversation_cwd
+                .clone()
+        };
+        assert_eq!(cwd(&store), Some(PathBuf::from("/home/u/repo")));
+
+        s.agent_conversation_id = None;
+        s.agent_conversation_cwd = None;
+        store.upsert_session(&s).unwrap();
+        assert_eq!(cwd(&store), Some(PathBuf::from("/home/u/repo")));
+
+        s.agent_conversation_id = Some("bbbbbbbb-0000-4000-8000-000000000002".into());
+        store.upsert_session(&s).unwrap();
+        assert_eq!(cwd(&store), None);
     }
 
     /// O upsert corre a cada troca de status. Um `Session` sem o id em memória
@@ -3526,6 +3926,7 @@ mod tests {
         (8, "sessions", "ssh_logged_in"),
         (9, "command_history", "host_id"),
         (10, "approval_history", "origin"),
+        (12, "sessions", "agent_conversation_cwd"),
     ];
 
     /// Colunas que nascem num degrau que já tem linha em [`STEP_COLUMNS`]. Lista
@@ -4590,16 +4991,19 @@ mod tests {
         assert_eq!(status, "pending");
 
         // Chave de outra chamada, ou da mesma chave em outra sessão: nada.
-        assert!(!store
+        assert!(store
             .resolve_inferred_by_call_key("s1", "outra", "approved", 2_000)
-            .unwrap());
-        assert!(!store
+            .unwrap()
+            .is_none());
+        assert!(store
             .resolve_inferred_by_call_key("s2", "k1", "approved", 2_000)
-            .unwrap());
+            .unwrap()
+            .is_none());
 
         assert!(store
             .resolve_inferred_by_call_key("s1", "k1", "approved", 2_500)
-            .unwrap());
+            .unwrap()
+            .is_some());
         let (decision, _, _, status) = approval_row(&store, 0);
         assert_eq!(
             (decision.as_str(), status.as_str()),
@@ -4672,7 +5076,8 @@ mod tests {
 
         assert!(store
             .resolve_inferred_by_call_key("s1", "k1", "approved", 1_200)
-            .unwrap());
+            .unwrap()
+            .is_some());
         assert_eq!(approval_row(&store, 0).0, "approved");
     }
 
@@ -4685,9 +5090,10 @@ mod tests {
         negada.decision = "denied".into();
         store.insert_approval_history(&negada).unwrap();
 
-        assert!(!store
+        assert!(store
             .resolve_inferred_by_call_key("s1", "k1", "approved", 200)
-            .unwrap());
+            .unwrap()
+            .is_none());
         assert_eq!(
             store.deny_pending_inferred_for_session("s1", 300).unwrap(),
             0

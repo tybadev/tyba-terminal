@@ -4,6 +4,8 @@
 // renderizado como texto.
 
 import type {
+  ForgeChange,
+  ForgeRateLimit,
   PrCheck,
   PrCiSummary,
   PrCommit,
@@ -269,4 +271,41 @@ export function forwardPrompt(
     ">",
     body ? quote(body) : "> (sem texto)",
   ].join("\n");
+}
+
+/**
+ * O evento de revalidação (`forge://changed`) é desta tela? A lista quer o
+ * evento sem número; o detalhe, o do próprio PR. `repo` é `owner/repo`.
+ */
+export function forgeChangeHits(change: ForgeChange, repo: string | null, number: number | null): boolean {
+  if (repo !== null && change.repo !== repo) return false;
+  return change.number === number;
+}
+
+/** Poll só com a janela visível: aba escondida não gasta limite da API. */
+export function pageVisible(doc: Pick<Document, "visibilityState"> = document): boolean {
+  return doc.visibilityState === "visible";
+}
+
+/** "14:32": quando a revalidação automática volta, no idioma da UI. */
+export function rateResetTime(rate: ForgeRateLimit, locale: string): string {
+  const at = new Date(rate.reset_at);
+  if (Number.isNaN(at.getTime())) return "";
+  return at.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * Aviso de limite da API: `limit` 0 é limite desconhecido (o core bateu no
+ * erro de limite sem os cabeçalhos), então não há "N de M" para mostrar.
+ */
+export function rateLimitNotice(
+  rate: ForgeRateLimit,
+  locale: string,
+): {
+  key: "prRateLimited" | "prRateLimitedUnknown";
+  params: { time: string; remaining?: number; limit?: number };
+} {
+  const time = rateResetTime(rate, locale);
+  if (rate.limit === 0) return { key: "prRateLimitedUnknown", params: { time } };
+  return { key: "prRateLimited", params: { time, remaining: rate.remaining, limit: rate.limit } };
 }

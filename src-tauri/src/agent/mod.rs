@@ -131,6 +131,100 @@ pub fn claude_project_dir_name(worktree: &Path) -> String {
         .collect()
 }
 
+/// Se a conversa `id` do Claude está onde um `claude --resume <id>` rodado em
+/// `cwd` a procura: `<projects>/<slug(cwd)>/<id>.jsonl`. É o que separa um
+/// convite de retomar que funciona de um que abre em "conversa não
+/// encontrada" — e o id passa por [`conversation::is_plausible`] antes de
+/// virar nome de arquivo.
+pub fn claude_conversation_on_disk(projects: &Path, cwd: &Path, id: &str) -> bool {
+    conversation::is_plausible(id)
+        && projects
+            .join(claude_project_dir_name(cwd))
+            .join(format!("{id}.jsonl"))
+            .is_file()
+}
+
+/// De onde o `claude --resume <id>` de um shell restaurado deve rodar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeDir {
+    /// A pasta atual do shell já acha a conversa: nada de `cd`.
+    Here,
+    /// A conversa rodava em outra pasta: `cd` nela antes do `--resume`.
+    Cd(PathBuf),
+}
+
+/// Decide de onde retomar a conversa `id` num shell que está em `here`.
+///
+/// Primeiro a pasta gravada com a conversa (`recorded`), que é onde ela de
+/// fato rodava — é o que cobre o `cd` feito antes de rodar o claude. Ela é
+/// dado não confiável (payload de hook, cwd de processo) e só vale se:
+/// - existe e é pasta;
+/// - é descendente estrito e visível da home, depois de resolver symlink — a
+///   mesma régua da jaula (M7). Nunca `/etc`, nunca outro usuário, e nunca a
+///   própria home nem um dot-dir: lá o `claude` sobe sem jaula, e a pasta
+///   gravada pode ter vindo de um payload de hook forjado por quem estava
+///   jaulado;
+/// - o transcript da conversa está no slug dela;
+/// - o caminho não tem caractere de controle (vira texto digitado no shell).
+///
+/// Sem pasta gravada que passe, vale a atual, se o transcript estiver no slug
+/// dela. Senão `None`: convite que abre em "conversa não encontrada" é pior
+/// que convite nenhum.
+pub fn claude_resume_dir(
+    home: &Path,
+    projects: &Path,
+    recorded: Option<&Path>,
+    here: Option<&Path>,
+    id: &str,
+) -> Option<ResumeDir> {
+    let here_canonical = here.and_then(|h| std::fs::canonicalize(h).ok());
+    let recorded = recorded
+        .and_then(|dir| std::fs::canonicalize(dir).ok())
+        .filter(|dir| dir.is_dir())
+        .filter(|dir| {
+            std::fs::canonicalize(home)
+                .map(|home| jail_eligible(dir, &home))
+                .unwrap_or(false)
+        })
+        .filter(|dir| {
+            dir.to_str()
+                .is_some_and(|s| !s.chars().any(char::is_control))
+        })
+        .filter(|dir| claude_conversation_on_disk(projects, dir, id));
+    if let Some(dir) = recorded {
+        return Some(if here_canonical.as_deref() == Some(dir.as_path()) {
+            ResumeDir::Here
+        } else {
+            ResumeDir::Cd(dir)
+        });
+    }
+    here.filter(|h| claude_conversation_on_disk(projects, h, id))
+        .map(|_| ResumeDir::Here)
+}
+
+/// A régua da jaula (M7): descendente estrito e visível da home. Sem shim no
+/// Windows, sem pasta gravada que sirva de `cd`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn jail_eligible(dir: &Path, home: &Path) -> bool {
+    channel_host::visible_strict_descendant(dir, home)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn jail_eligible(_dir: &Path, _home: &Path) -> bool {
+    false
+}
+
+/// `path` entre aspas simples para sh/bash/zsh: nada dentro é interpretado, e
+/// a aspa simples vira `'\''`. `None` para caminho que não é UTF-8 ou que tem
+/// caractere de controle — uma quebra de linha ali submeteria a linha no meio.
+pub fn shell_single_quote(path: &Path) -> Option<String> {
+    let raw = path.to_str()?;
+    if raw.chars().any(char::is_control) {
+        return None;
+    }
+    Some(format!("'{}'", raw.replace('\'', "'\\''")))
+}
+
 pub fn runner_binary(kind: &AgentRunnerKind) -> Option<&'static str> {
     match kind {
         AgentRunnerKind::ClaudeCode => Some("claude"),
@@ -797,6 +891,144 @@ mod tests {
         assert!(overrides
             .iter()
             .all(|o| !o.starts_with("hooks.state=") || o.contains("trusted_hash")));
+    }
+
+    #[test]
+    fn claude_conversation_on_disk_looks_in_the_slug_of_the_cwd() {
+        // Fixture sintética: id inventado, transcript vazio escrito à mão.
+        let home = tempfile::TempDir::new().unwrap();
+        let cwd = home.path().join("projeto");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let projects = home.path().join("projects");
+        let id = "5f2a1c40-0000-4000-8000-00000000abcd";
+        assert!(!claude_conversation_on_disk(&projects, &cwd, id));
+
+        let slug = projects.join(claude_project_dir_name(&cwd));
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join(format!("{id}.jsonl")), "").unwrap();
+        assert!(claude_conversation_on_disk(&projects, &cwd, id));
+
+        // Outra pasta, outro slug: o `--resume` de lá não acharia.
+        let other = home.path().join("outro");
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(!claude_conversation_on_disk(&projects, &other, id));
+        // Id que não é id nunca vira caminho.
+        assert!(!claude_conversation_on_disk(
+            &projects,
+            &cwd,
+            "../../etc/passwd"
+        ));
+    }
+
+    /// Home sintética com uma conversa inventada gravada no slug de `dir`.
+    fn home_with_conversation(dir: &str, id: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let home = tempfile::TempDir::new().unwrap();
+        let root = std::fs::canonicalize(home.path()).unwrap();
+        let cwd = root.join(dir);
+        std::fs::create_dir_all(&cwd).unwrap();
+        let projects = root.join(".claude").join("projects");
+        let slug = projects.join(claude_project_dir_name(&cwd));
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join(format!("{id}.jsonl")), "").unwrap();
+        (home, root, projects)
+    }
+
+    const CONV: &str = "5f2a1c40-0000-4000-8000-00000000abcd";
+
+    #[test]
+    fn resume_dir_cds_into_the_recorded_dir_when_the_shell_moved() {
+        let (_home, root, projects) = home_with_conversation("repo/sub", CONV);
+        let elsewhere = root.join("outro");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let recorded = root.join("repo/sub");
+        assert_eq!(
+            claude_resume_dir(&root, &projects, Some(&recorded), Some(&elsewhere), CONV),
+            Some(ResumeDir::Cd(recorded.clone()))
+        );
+        // Já está lá: sem `cd`.
+        assert_eq!(
+            claude_resume_dir(&root, &projects, Some(&recorded), Some(&recorded), CONV),
+            Some(ResumeDir::Here)
+        );
+    }
+
+    #[test]
+    fn resume_dir_falls_back_to_here_and_then_to_nothing() {
+        let (_home, root, projects) = home_with_conversation("repo", CONV);
+        let repo = root.join("repo");
+        // Sem pasta gravada (sessão de antes desta versão): a atual serve.
+        assert_eq!(
+            claude_resume_dir(&root, &projects, None, Some(&repo), CONV),
+            Some(ResumeDir::Here)
+        );
+        // Pasta gravada que sumiu: cai na atual.
+        let gone = root.join("apagada");
+        assert_eq!(
+            claude_resume_dir(&root, &projects, Some(&gone), Some(&repo), CONV),
+            Some(ResumeDir::Here)
+        );
+        // Nem uma nem outra tem a conversa: silêncio.
+        let other = root.join("outro");
+        std::fs::create_dir_all(&other).unwrap();
+        assert_eq!(
+            claude_resume_dir(&root, &projects, Some(&other), Some(&other), CONV),
+            None
+        );
+    }
+
+    #[test]
+    fn resume_dir_never_cds_into_the_home_itself_or_a_dot_dir() {
+        // Lá o claude subiria sem jaula: a pasta gravada não serve de `cd`.
+        let (_home, root, projects) = home_with_conversation(".config/x", CONV);
+        let hidden = root.join(".config/x");
+        assert_eq!(
+            claude_resume_dir(&root, &projects, Some(&hidden), None, CONV),
+            None
+        );
+        let slug = projects.join(claude_project_dir_name(&root));
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join(format!("{CONV}.jsonl")), "").unwrap();
+        assert_eq!(
+            claude_resume_dir(&root, &projects, Some(&root), None, CONV),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resume_dir_never_leaves_the_home() {
+        let (_home, root, projects) = home_with_conversation("repo", CONV);
+        // A conversa "existe" para uma pasta fora da home (slug forjado): não
+        // vira `cd`.
+        let outside = tempfile::TempDir::new().unwrap();
+        let outside = std::fs::canonicalize(outside.path()).unwrap();
+        let slug = projects.join(claude_project_dir_name(&outside));
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join(format!("{CONV}.jsonl")), "").unwrap();
+        assert_eq!(
+            claude_resume_dir(&root, &projects, Some(&outside), None, CONV),
+            None
+        );
+        // Symlink dentro da home apontando para fora também não.
+        let link = root.join("atalho");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert_eq!(
+            claude_resume_dir(&root, &projects, Some(&link), None, CONV),
+            None
+        );
+    }
+
+    #[test]
+    fn shell_single_quote_neutralizes_everything_the_shell_would_read() {
+        assert_eq!(
+            shell_single_quote(Path::new("/home/u/meu projeto")).as_deref(),
+            Some("'/home/u/meu projeto'")
+        );
+        assert_eq!(
+            shell_single_quote(Path::new("/home/u/it's; $(rm -rf ~)")).as_deref(),
+            Some("'/home/u/it'\\''s; $(rm -rf ~)'")
+        );
+        assert_eq!(shell_single_quote(Path::new("/home/u/a\nb")), None);
     }
 
     #[test]

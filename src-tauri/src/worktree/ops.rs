@@ -741,7 +741,7 @@ mod merge_tests {
         fs::write(repo.join("outro.txt"), "intacto\n").unwrap();
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-qm", "init"]);
-        let wt = super::super::create_in(&base.join("managed"), &repo, "tarefa").unwrap();
+        let wt = super::super::create_in(&base.join("managed"), &repo, "tarefa", None).unwrap();
         Fixture {
             base,
             repo,

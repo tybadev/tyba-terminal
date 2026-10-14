@@ -176,7 +176,21 @@ if [[ -o interactive ]] && autoload -Uz add-zsh-hook 2>/dev/null; then
   # nao copiar essa escolha. Se estas sequencias conflitarem com algum plugin,
   # sao o ponto unico a mudar.
   bindkey '\e~' __tyba_prompt_toggle
-  bindkey '\e=' kill-buffer
+  # Alt+= vale em TODO keymap, inclusive no modo de comando do vi: la o texto
+  # que o app envia viraria comando vi (`c`, `d`...). O widget limpa a linha e
+  # volta ao keymap principal, para o resto chegar como digitacao.
+  __tyba_kill_line() { zle kill-buffer; zle -K main; }
+  # O keymap do editor vai para o core a cada linha e a cada troca: no modo de
+  # comando do vi o core nao digita nada no shell (retomar conversa recusa).
+  __tyba_keymap() { __tyba_esc "633;P;tyba-keymap=$KEYMAP"; }
+  if autoload -Uz add-zle-hook-widget 2>/dev/null; then
+    add-zle-hook-widget line-init __tyba_keymap
+    add-zle-hook-widget keymap-select __tyba_keymap
+  fi
+  zle -N __tyba_kill_line
+  bindkey -M emacs '\e=' __tyba_kill_line
+  bindkey -M viins '\e=' __tyba_kill_line
+  bindkey -M vicmd '\e=' __tyba_kill_line
 
   __tyba_osc7
 fi
