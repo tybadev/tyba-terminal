@@ -16,8 +16,9 @@
 //! 26 acompanha claro/escuro e ficaria branco no modo claro — decisão do dono:
 //! BLACKOUT é sempre preto.
 //!
-//! Em build de desenvolvimento o Dock ganha o selo "DEV" ([`DEV_BADGE`]), para
-//! distinguir o app do `tauri dev` do instalado.
+//! No perfil de desenvolvimento ([`crate::profile::IS_DEV`]) o Dock ganha o
+//! selo "DEV" ([`DEV_BADGE`]), para distinguir o app do `tauri dev` do
+//! instalado.
 
 #[cfg(not(target_os = "macos"))]
 use tauri::Manager;
@@ -95,7 +96,8 @@ pub fn resolve(stored: Option<&str>) -> AppIcon {
 }
 
 /// Selo do Dock: só em build de desenvolvimento, nunca no release.
-pub const DEV_BADGE: Option<&str> = if cfg!(debug_assertions) {
+/// Segue o [`crate::profile`], a fonte única de dev × release.
+pub const DEV_BADGE: Option<&str> = if crate::profile::IS_DEV {
     Some("DEV")
 } else {
     None
@@ -239,7 +241,7 @@ mod tests {
 
     #[test]
     fn dev_badge_only_in_debug_builds() {
-        assert_eq!(DEV_BADGE.is_some(), cfg!(debug_assertions));
+        assert_eq!(DEV_BADGE.is_some(), crate::profile::IS_DEV);
     }
 
     #[test]
