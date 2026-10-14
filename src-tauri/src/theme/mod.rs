@@ -72,6 +72,8 @@ pub enum ThemeError {
     InvalidSource(String),
     #[error("config.toml: {0}")]
     Config(String),
+    #[error("{0}")]
+    Write(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -506,7 +508,14 @@ impl ThemeManager {
         }
         let canonical = serde_json::to_string_pretty(&file)?;
         fs::create_dir_all(&self.themes_dir)?;
-        fs::write(self.themes_dir.join(format!("{id}.json")), canonical)?;
+        // `0600` e sem seguir symlink para fora da pasta: o mesmo arquivo passa
+        // depois pela leitura guardada do `scan`.
+        crate::config::fsguard::write_atomic(
+            &self.themes_dir,
+            &self.themes_dir.join(format!("{id}.json")),
+            &canonical,
+        )
+        .map_err(ThemeError::Write)?;
         Ok((id, file))
     }
 
@@ -867,6 +876,15 @@ mod tests {
         assert_eq!(id, "nord");
         assert_eq!(file.name, "Nord");
         assert!(dir.join("nord.json").is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.join("nord.json"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
 
         let ids: Vec<_> = mgr.list().into_iter().map(|t| t.id).collect();
         assert!(ids.contains(&"nord".to_string()));

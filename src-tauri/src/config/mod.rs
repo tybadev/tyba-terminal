@@ -189,10 +189,19 @@ pub fn migrate_themes(old: &Path, new: &Path) -> usize {
             continue;
         }
         let dst = new.join(entry.file_name());
-        if dst.exists() {
+        // Qualquer entrada ocupa o nome — inclusive symlink quebrado, que o
+        // `exists()` daria como livre e a cópia seguiria.
+        if fs::symlink_metadata(&dst).is_ok() {
             continue;
         }
-        if fs::copy(&src, &dst).is_ok() {
+        let Ok(content) = fs::read_to_string(&src) else {
+            continue;
+        };
+        if content.len() as u64 > MAX_THEME_BYTES {
+            continue;
+        }
+        // `0600` como todo arquivo de `~/.tyba/`; o antigo só sai depois.
+        if fsguard::write_atomic(new, &dst, &content).is_ok() {
             let _ = fs::remove_file(&src);
             moved += 1;
         }
@@ -626,6 +635,32 @@ mod tests {
         assert_eq!(fs::read_to_string(new.join("taken.json")).unwrap(), "new");
         assert!(old.join("notes.txt").exists());
         assert_eq!(migrate_themes(&dir.path().join("nada"), &new), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migrated_theme_is_private_and_a_planted_link_is_not_followed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(&new).unwrap();
+        fs::write(old.join("nord.json"), "{}").unwrap();
+        fs::set_permissions(old.join("nord.json"), fs::Permissions::from_mode(0o664)).unwrap();
+        fs::write(old.join("evil.json"), "{}").unwrap();
+        let outside = dir.path().join("fora.json");
+        std::os::unix::fs::symlink(&outside, new.join("evil.json")).unwrap();
+
+        assert_eq!(migrate_themes(&old, &new), 1);
+        let mode = fs::metadata(new.join("nord.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(!outside.exists(), "a cópia seguiu o link quebrado");
+        assert!(old.join("evil.json").exists());
     }
 
     #[test]
