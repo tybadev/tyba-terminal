@@ -1640,6 +1640,8 @@ fn write_bash_integration() -> std::io::Result<PathBuf> {
     Ok(dir.join(TYBA_BASH_RC_NAME))
 }
 
+// Só Unix: o wrapper é um script sh e só `write_agent_wrapper` (cfg(unix)) o usa.
+#[cfg(unix)]
 pub(crate) const TYBA_CLAUDE_WRAPPER: &str = include_str!("tyba-claude-wrapper.sh");
 
 /// Diretório com o wrapper `claude` do TYBA (M6-A do claude-monitor), que o
