@@ -146,6 +146,19 @@ fn resolve(root: &Path, path: &Path, links: Links) -> Result<Option<PathBuf>, St
     Ok(Some(canonical))
 }
 
+/// `true` se a própria raiz é symlink ou `path` resolve para fora dela — o
+/// `config.toml` de dotfiles, que um agente na jaula pode alcançar (e editar)
+/// por um caminho que a jaula não esconde.
+pub fn linked_out_of_root(root: &Path, path: &Path) -> bool {
+    if fs::symlink_metadata(root).is_ok_and(|m| m.file_type().is_symlink()) {
+        return true;
+    }
+    let Ok(canonical_root) = fs::canonicalize(root) else {
+        return false;
+    };
+    fs::canonicalize(path).is_ok_and(|p| !p.starts_with(&canonical_root))
+}
+
 /// Caminho final de `path` (o alvo, se for symlink) — é o que se vigia e onde
 /// se grava. `None` se não existe.
 pub fn target(root: &Path, path: &Path, links: Links) -> Result<Option<PathBuf>, String> {

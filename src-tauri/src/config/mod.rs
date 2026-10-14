@@ -324,6 +324,14 @@ impl ConfigManager {
             .map_err(|e| e.to_string())
     }
 
+    /// `read_allow` num arquivo ligado para fora da raiz não vale (ver
+    /// [`crate::user_config::load`]); o aviso diz por quê.
+    fn link_warnings(&self, text: &str, warnings: &mut Vec<String>) {
+        if schema::has_read_allow(text) && fsguard::linked_out_of_root(&self.root, &self.path) {
+            warnings.push(crate::user_config::linked_read_allow_warning());
+        }
+    }
+
     fn apply(
         state: &mut State,
         text: Option<String>,
@@ -355,7 +363,8 @@ impl ConfigManager {
                     return Changes::default();
                 }
                 match schema::parse(&text) {
-                    Ok(parsed) => {
+                    Ok(mut parsed) => {
+                        self.link_warnings(&text, &mut parsed.warnings);
                         Self::apply(&mut state, Some(text), parsed.warnings, Some(parsed.values))
                     }
                     Err(e) => {
@@ -422,7 +431,8 @@ impl ConfigManager {
         let (text, expect) = self.read()?;
         let text = text.unwrap_or_else(|| TEMPLATE.to_string());
         let out = edit::set(&text, key, value)?;
-        let parsed = schema::parse(&out)?;
+        let mut parsed = schema::parse(&out)?;
+        self.link_warnings(&out, &mut parsed.warnings);
         if out != text {
             fsguard::write_linked(&self.root, &self.path, &out, expect)?;
         }
@@ -726,6 +736,26 @@ mod tests {
         let files = cfg.watch_files();
         assert_eq!(files.len(), 2);
         assert_eq!(files[1], fs::canonicalize(&real).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_allow_in_a_dotfiles_config_is_warned_as_ignored() {
+        let (d, root, store) = setup();
+        fs::create_dir_all(&root).unwrap();
+        let real = d.path().join("tyba.toml");
+        fs::write(&real, "[sandbox]\nread_allow = [\"/x\"]\n").unwrap();
+        std::os::unix::fs::symlink(&real, root.join(FILE_NAME)).unwrap();
+        let cfg = ConfigManager::open(root.clone(), &store);
+        let warned = |cfg: &ConfigManager| {
+            cfg.warnings()
+                .iter()
+                .any(|w| w.contains("não relaxa a jaula"))
+        };
+        assert!(warned(&cfg), "{:?}", cfg.warnings());
+        // e continua avisado depois de uma mudança pela UI
+        cfg.set(KEY_THEME_MODE, "light").unwrap();
+        assert!(warned(&cfg), "{:?}", cfg.warnings());
     }
 
     #[test]

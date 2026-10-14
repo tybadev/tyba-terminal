@@ -457,6 +457,20 @@ pub fn toml_error(text: &str, span: Option<std::ops::Range<usize>>) -> String {
     }
 }
 
+/// `[sandbox] read_allow` com alguma entrada — o que abre a jaula. Texto
+/// quebrado conta como sem (o `parse` já avisa dele).
+pub fn has_read_allow(text: &str) -> bool {
+    text.parse::<Document>()
+        .ok()
+        .and_then(|doc| {
+            doc.get(SECTION_SANDBOX)?
+                .get("read_allow")?
+                .as_array()
+                .map(|a| !a.is_empty())
+        })
+        .unwrap_or(false)
+}
+
 pub fn parse(text: &str) -> Result<Parsed, String> {
     let doc: Document = text
         .parse()
@@ -634,6 +648,15 @@ mod tests {
     fn sandbox_read_allow_is_known_but_not_ours() {
         let p = ok("[sandbox]\nread_allow = [\"~/.kube\"]\n");
         assert_eq!(p, Parsed::default());
+    }
+
+    #[test]
+    fn has_read_allow_only_with_entries() {
+        assert!(has_read_allow("[sandbox]\nread_allow = [\"~/.kube\"]\n"));
+        assert!(has_read_allow("sandbox = { read_allow = [\"/x\"] }\n"));
+        assert!(!has_read_allow("[sandbox]\nread_allow = []\n"));
+        assert!(!has_read_allow("[theme]\nmode = \"dark\"\n"));
+        assert!(!has_read_allow("[sandbox"));
     }
 
     #[test]
