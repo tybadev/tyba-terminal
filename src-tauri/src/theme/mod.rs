@@ -461,15 +461,53 @@ impl ThemeManager {
         }
     }
 
-    pub fn set_mode(&self, app: &AppHandle, mode: ThemeMode) -> Result<(), ThemeError> {
-        self.config
+    /// Slot apontando para tema que não existe (ou de outra base): o `state`
+    /// cai no embutido em silêncio; isto diz por quê. O id já passou pelo
+    /// formato `[a-z0-9-]` do schema, então repeti-lo não vaza nada.
+    pub fn slot_warnings(&self) -> Vec<String> {
+        [
+            (KEY_THEME_DARK, ThemeBase::Dark, "theme.dark", "escuro"),
+            (KEY_THEME_LIGHT, ThemeBase::Light, "theme.light", "claro"),
+        ]
+        .into_iter()
+        .filter_map(|(key, base, path, label)| {
+            let id = self.config.get(key)?;
+            if self.find(&id).is_some_and(|t| t.base == base) {
+                return None;
+            }
+            let id = if crate::config::schema::is_theme_id(&id) {
+                format!(" \"{id}\"")
+            } else {
+                String::new()
+            };
+            Some(format!(
+                "{path}: tema{id} não encontrado (ou não é {label}); usando o padrão."
+            ))
+        })
+        .collect()
+    }
+
+    /// Grava e emite `theme://changed`. As `Changes` voltam para quem chama
+    /// publicar o resto (avisos do arquivo, prefs).
+    pub fn set_mode(
+        &self,
+        app: &AppHandle,
+        mode: ThemeMode,
+    ) -> Result<crate::config::Changes, ThemeError> {
+        let changes = self
+            .config
             .set(KEY_THEME_MODE, mode.as_str())
             .map_err(ThemeError::Config)?;
         self.emit(app);
-        Ok(())
+        Ok(changes)
     }
 
-    pub fn set_slot(&self, app: &AppHandle, base: ThemeBase, id: &str) -> Result<(), ThemeError> {
+    pub fn set_slot(
+        &self,
+        app: &AppHandle,
+        base: ThemeBase,
+        id: &str,
+    ) -> Result<crate::config::Changes, ThemeError> {
         let theme = self
             .find(id)
             .ok_or_else(|| ThemeError::NotFound(id.to_string()))?;
@@ -484,9 +522,9 @@ impl ThemeManager {
             ThemeBase::Dark => KEY_THEME_DARK,
             ThemeBase::Light => KEY_THEME_LIGHT,
         };
-        self.config.set(key, id).map_err(ThemeError::Config)?;
+        let changes = self.config.set(key, id).map_err(ThemeError::Config)?;
         self.emit(app);
-        Ok(())
+        Ok(changes)
     }
 
     fn import_validated(&self, src: &str) -> Result<(String, ThemeFile), ThemeError> {
@@ -786,6 +824,25 @@ mod tests {
         mgr.config.set(KEY_THEME_LIGHT, "dracula").unwrap();
         let state = mgr.state();
         assert_eq!(state.light.id, BUILTIN_LIGHT);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn slot_warnings_name_missing_or_wrong_base_themes() {
+        let (mgr, dir) = manager();
+        assert!(mgr.slot_warnings().is_empty(), "{:?}", mgr.slot_warnings());
+        mgr.config.set(KEY_THEME_DARK, "deleted-theme").unwrap();
+        mgr.config.set(KEY_THEME_LIGHT, "dracula").unwrap();
+        assert_eq!(
+            mgr.slot_warnings(),
+            vec![
+                "theme.dark: tema \"deleted-theme\" não encontrado (ou não é escuro); usando o padrão.".to_string(),
+                "theme.light: tema \"dracula\" não encontrado (ou não é claro); usando o padrão.".to_string(),
+            ]
+        );
+        mgr.config.set(KEY_THEME_DARK, "dracula").unwrap();
+        mgr.config.set(KEY_THEME_LIGHT, "solarized-light").unwrap();
+        assert!(mgr.slot_warnings().is_empty(), "{:?}", mgr.slot_warnings());
         let _ = fs::remove_dir_all(dir);
     }
 
