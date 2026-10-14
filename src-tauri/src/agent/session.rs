@@ -829,6 +829,9 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     .get(ctx.session_id)
                     .and_then(|s| status_on_interrupt(&s.status))
                 {
+                    // Antes do `set_status`: o `running → idle` da interrupção
+                    // não é "terminou" no histórico.
+                    crate::notifications::record(&ctx.app, |n| n.interrupted(ctx.session_id));
                     ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
                 }
             }

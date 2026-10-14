@@ -10,8 +10,9 @@
 //!
 //! Retenção: 7 dias e no máximo 500 linhas, podadas na inserção.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -33,6 +34,17 @@ pub const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 pub const MAX_ENTRIES: i64 = 500;
 /// Teto do comando gravado num pedido de aprovação.
 const MAX_COMMAND_BYTES: usize = 2 * 1024;
+/// Teto de entradas por sessão numa janela de [`SESSION_CAP_WINDOW_MS`]. Um
+/// agente que gira `UserPromptSubmit → Stop` em laço não inunda o histórico
+/// (e com ele a poda das 500 apagando o resto). Pedido de aprovação não conta:
+/// pedido nunca se descarta.
+const SESSION_CAP: u32 = 20;
+const SESSION_CAP_WINDOW_MS: i64 = 60_000;
+/// Até quanto tempo depois do "terminou" o settle ainda corrige o resumo dele.
+const SUMMARY_FIX_MS: i64 = 10_000;
+/// Intervalo mínimo entre dois [`EVENT_NOTIFICATIONS_CHANGED`]: a UI relê a
+/// lista inteira a cada aviso.
+const EMIT_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -225,18 +237,103 @@ fn usage_band(pct: f64) -> Option<u8> {
     }
 }
 
-/// Chave de dedupe do limite: sessão, janela (o tipo e o `resets_at` que a
-/// identifica — janela nova rearma) e faixa.
-type UsageKey = (SessionId, &'static str, Option<u64>, u8);
+/// Estado do aviso de limite de UMA janela. O limite é da conta, não da
+/// sessão (mesmo motivo do [`crate::agent::usage::LimitTracker`]): quatro
+/// sessões não dão quatro entradas do mesmo 87%, e um agente que forja
+/// `_statusline` com `resets_at` diferente a cada evento não escapa da dedupe —
+/// o `resets_at` não é chave.
+#[derive(Debug, Clone, Copy, Default)]
+struct UsageWindowState {
+    /// Maior faixa já gravada nesta subida (0 = nenhuma).
+    band: u8,
+    /// Fim da janela que motivou a primeira entrada; passado, rearma. Só
+    /// guarda um instante FUTURO: um `resets_at` já vencido rearmaria a cada
+    /// evento.
+    resets_at: Option<u64>,
+}
+
+impl UsageWindowState {
+    /// A faixa a gravar agora, se houver. Rearma quando o uso cai abaixo de
+    /// 85% ou quando o fim da janela guardada passou.
+    fn observe(&mut self, pct: f64, resets_at: Option<u64>, now_secs: u64) -> Option<u8> {
+        if self.band > 0 {
+            let reset_passed = self.resets_at.is_some_and(|r| now_secs >= r);
+            if pct < USAGE_WARN_PCT || reset_passed {
+                *self = Self::default();
+            }
+        }
+        let band = usage_band(pct)?;
+        if band <= self.band {
+            return None;
+        }
+        if self.band == 0 {
+            self.resets_at = resets_at.filter(|r| *r > now_secs);
+        }
+        self.band = band;
+        Some(band)
+    }
+}
+
+/// Janela do teto por sessão.
+#[derive(Debug, Clone, Copy)]
+struct CapWindow {
+    start_ms: i64,
+    count: u32,
+    dropped: u32,
+}
+
+/// Agrupamento de [`EVENT_NOTIFICATIONS_CHANGED`]: no máximo um a cada
+/// [`EMIT_INTERVAL`], e sempre um depois da última mudança (trailing).
+#[derive(Debug, Default)]
+struct EmitThrottle {
+    last: Option<Instant>,
+    /// Já há uma emissão agendada; ela cobre o que mudar até sair.
+    scheduled: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum EmitAction {
+    Now,
+    After(Duration),
+    Skip,
+}
+
+impl EmitThrottle {
+    fn on_change(&mut self, now: Instant) -> EmitAction {
+        if self.scheduled {
+            return EmitAction::Skip;
+        }
+        match self.last {
+            Some(last) if now.duration_since(last) < EMIT_INTERVAL => {
+                self.scheduled = true;
+                EmitAction::After(EMIT_INTERVAL - now.duration_since(last))
+            }
+            _ => {
+                self.last = Some(now);
+                EmitAction::Now
+            }
+        }
+    }
+
+    /// A emissão agendada vai sair agora.
+    fn on_timer(&mut self, now: Instant) {
+        self.scheduled = false;
+        self.last = Some(now);
+    }
+}
 
 pub struct Notifications {
     store: Arc<Store>,
     sessions: SharedSessionManager,
-    usage_seen: Mutex<HashSet<UsageKey>>,
-    /// Sessões cujo turno acabou de falhar (`StopFailure`). O core leva a
-    /// sessão a `Idle` logo depois, e esse `running → idle` não é "terminou":
-    /// a falha já está no histórico. Sai daqui no próximo `Running`.
-    stop_failed: Mutex<HashSet<SessionId>>,
+    /// `[five_hour, seven_day]`: o estado não cresce.
+    usage_state: Mutex<[UsageWindowState; 2]>,
+    /// Sessões cujo próximo `running → idle` não é "terminou": o turno falhou
+    /// (`StopFailure`, a falha já está no histórico) ou o próprio usuário o
+    /// interrompeu. Sai daqui ao ser consumida ou no próximo `Running`.
+    suppress_finished: Mutex<HashSet<SessionId>>,
+    /// Teto por sessão; só sessões com janela aberta ficam aqui.
+    caps: Mutex<HashMap<SessionId, CapWindow>>,
+    emit: Mutex<EmitThrottle>,
 }
 
 impl Notifications {
@@ -250,8 +347,10 @@ impl Notifications {
         Self {
             store,
             sessions,
-            usage_seen: Mutex::new(HashSet::new()),
-            stop_failed: Mutex::new(HashSet::new()),
+            usage_state: Mutex::new([UsageWindowState::default(); 2]),
+            suppress_finished: Mutex::new(HashSet::new()),
+            caps: Mutex::new(HashMap::new()),
+            emit: Mutex::new(EmitThrottle::default()),
         }
     }
 
@@ -282,6 +381,40 @@ impl Notifications {
             usage: None,
             read: false,
         }
+    }
+
+    /// Cabe no teto da sessão? Conta a entrada se couber. As excedentes vão
+    /// para um log, uma linha por janela, quando a janela fecha.
+    fn admit(&self, session_id: SessionId, now_ms: i64) -> bool {
+        let mut caps = self.caps.lock();
+        caps.retain(|id, w| {
+            let open = now_ms - w.start_ms < SESSION_CAP_WINDOW_MS;
+            if !open && w.dropped > 0 {
+                eprintln!(
+                    "[tyba] notificações: sessão {id} passou de {SESSION_CAP} entradas por \
+                     minuto; {} descartadas",
+                    w.dropped
+                );
+            }
+            open
+        });
+        let w = caps.entry(session_id).or_insert(CapWindow {
+            start_ms: now_ms,
+            count: 0,
+            dropped: 0,
+        });
+        if w.count < SESSION_CAP {
+            w.count += 1;
+            true
+        } else {
+            w.dropped += 1;
+            false
+        }
+    }
+
+    /// Grava respeitando o teto da sessão. Tudo menos pedido de aprovação.
+    fn insert_capped(&self, entry: &NotificationEntry) -> bool {
+        self.admit(entry.session_id, entry.at_ms) && self.insert(entry)
     }
 
     fn insert(&self, entry: &NotificationEntry) -> bool {
@@ -316,27 +449,42 @@ impl Notifications {
     /// `agent://alert` `stop_failure`. `reason` é o motivo fixo em pt-BR do
     /// core ([`crate::agent::usage::stop_failure_reason`]), nunca texto da API.
     pub fn stop_failure(&self, session_id: SessionId, reason: &str) -> bool {
-        self.stop_failed.lock().insert(session_id);
+        self.suppress_finished.lock().insert(session_id);
         let mut e = self.entry(session_id, NotificationKind::AgentFailed);
         e.category = NotificationCategory::Error;
         e.detail = Some(redacted(reason));
-        self.insert(&e)
+        self.insert_capped(&e)
     }
 
-    /// Uso que o `statusLine` reportou. Uma entrada por (sessão, janela,
-    /// faixa); faixas 85, 95 e 100.
+    /// O usuário interrompeu o turno (`AgentSignal::Interrupted`). O
+    /// `running → idle` que vem a seguir não vira "terminou". Não grava nada.
+    pub fn interrupted(&self, session_id: SessionId) -> bool {
+        self.suppress_finished.lock().insert(session_id);
+        false
+    }
+
+    /// Uso que o `statusLine` reportou. Uma entrada por (janela, faixa) para
+    /// a conta inteira; faixas 85, 95 e 100. A entrada leva a sessão que
+    /// reportou primeiro.
     pub fn usage(&self, session_id: SessionId, usage: &AgentUsage) -> bool {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.usage_at(session_id, usage, now_secs)
+    }
+
+    fn usage_at(&self, session_id: SessionId, usage: &AgentUsage, now_secs: u64) -> bool {
         let mut changed = false;
-        for (window, rate) in [
-            (LimitWindow::FiveHour, usage.rate_5h),
-            (LimitWindow::SevenDay, usage.rate_7d),
+        for (i, window, rate) in [
+            (0, LimitWindow::FiveHour, usage.rate_5h),
+            (1, LimitWindow::SevenDay, usage.rate_7d),
         ] {
             let Some(rate) = rate else { continue };
-            let Some(band) = usage_band(rate.pct) else {
-                continue;
-            };
-            let key = (session_id, window_str(window), rate.resets_at, band);
-            if !self.usage_seen.lock().insert(key) {
+            if self.usage_state.lock()[i]
+                .observe(rate.pct, rate.resets_at, now_secs)
+                .is_none()
+            {
                 continue;
             }
             let mut e = self.entry(session_id, NotificationKind::UsageLimit);
@@ -350,7 +498,7 @@ impl Notifications {
                 pct: rate.pct,
                 resets_at: rate.resets_at,
             });
-            changed |= self.insert(&e);
+            changed |= self.insert_capped(&e);
         }
         changed
     }
@@ -362,19 +510,48 @@ impl Notifications {
             return false;
         }
         if matches!(session.status, SessionStatus::Running) {
-            self.stop_failed.lock().remove(&session.id);
+            self.suppress_finished.lock().remove(&session.id);
             return false;
+        }
+        if let (Some(SessionStatus::Idle { summary: old }), SessionStatus::Idle { summary: new }) =
+            (prev, &session.status)
+        {
+            return match new {
+                Some(new) if old.as_ref() != Some(new) => {
+                    self.fix_finished_summary(session.id, new)
+                }
+                _ => false,
+            };
         }
         let Some((kind, category, detail)) = status_transition(prev, &session.status) else {
             return false;
         };
-        if kind == NotificationKind::AgentFinished && self.stop_failed.lock().remove(&session.id) {
+        if kind == NotificationKind::AgentFinished
+            && self.suppress_finished.lock().remove(&session.id)
+        {
             return false;
         }
         let mut e = Self::entry_for(session.id, Some(session), kind);
         e.category = category;
         e.detail = detail;
-        self.insert(&e)
+        self.insert_capped(&e)
+    }
+
+    /// `Idle → Idle` com outro resumo: o settle leu a fala final que o `Stop`
+    /// ainda não tinha. Corrige a entrada "terminou" recém-gravada em vez de
+    /// deixá-la com o texto velho.
+    fn fix_finished_summary(&self, session_id: SessionId, summary: &str) -> bool {
+        match self.store.update_last_finished_detail(
+            session_id,
+            &redacted(summary),
+            now_ms() - SUMMARY_FIX_MS,
+        ) {
+            Ok(n) => n > 0,
+            Err(e) => {
+                eprintln!("[tyba] notificações: falha ao corrigir resumo: {e}");
+                false
+            }
+        }
     }
 
     /// Mais nova primeiro; até 500, dos últimos 7 dias.
@@ -388,9 +565,29 @@ impl Notifications {
     }
 }
 
-/// Avisa o webview que o histórico mudou.
+/// Avisa o webview que o histórico mudou, agrupado: no máximo um aviso a cada
+/// [`EMIT_INTERVAL`], com um último aviso depois da última mudança.
 pub fn emit_changed(app: &AppHandle) {
-    let _ = app.emit(EVENT_NOTIFICATIONS_CHANGED, ());
+    let Some(n) = app.try_state::<Notifications>() else {
+        return;
+    };
+    let action = n.emit.lock().on_change(Instant::now());
+    match action {
+        EmitAction::Now => {
+            let _ = app.emit(EVENT_NOTIFICATIONS_CHANGED, ());
+        }
+        EmitAction::After(wait) => {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(wait);
+                if let Some(n) = app.try_state::<Notifications>() {
+                    n.emit.lock().on_timer(Instant::now());
+                }
+                let _ = app.emit(EVENT_NOTIFICATIONS_CHANGED, ());
+            });
+        }
+        EmitAction::Skip => {}
+    }
 }
 
 /// Aplica `f` ao histórico (se já existe — antes do `manage` do boot não há
@@ -677,31 +874,38 @@ mod tests {
         assert_eq!(failed.category, NotificationCategory::Error);
     }
 
+    const NOW_SECS: u64 = 1_800_000_000;
+
+    fn rate5(pct: f64, resets_at: Option<u64>) -> AgentUsage {
+        AgentUsage {
+            rate_5h: Some(RateWindow { pct, resets_at }),
+            ..AgentUsage::default()
+        }
+    }
+
+    fn usage_entries(store: &Store, window: LimitWindow) -> Vec<NotificationEntry> {
+        store
+            .list_notifications(now_ms())
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.usage.is_some_and(|u| u.window == window))
+            .collect()
+    }
+
     #[test]
     fn usage_limit_uma_entrada_por_faixa() {
         let (n, store, session) = center();
-        let at = |pct: f64| AgentUsage {
-            rate_5h: Some(RateWindow {
-                pct,
-                resets_at: Some(1_900_000_000),
-            }),
-            ..AgentUsage::default()
-        };
-        assert!(!n.usage(session.id, &at(80.0)));
-        assert!(n.usage(session.id, &at(86.0)));
-        assert!(!n.usage(session.id, &at(90.0)));
-        assert!(n.usage(session.id, &at(96.0)));
-        assert!(!n.usage(session.id, &at(97.0)));
-        assert!(n.usage(session.id, &at(100.0)));
-        assert!(!n.usage(session.id, &at(100.0)));
-        // Outra sessão tem as próprias faixas.
-        assert!(n.usage(SessionId::new_v4(), &at(88.0)));
+        let at = |pct: f64| rate5(pct, Some(NOW_SECS + 3_600));
+        assert!(!n.usage_at(session.id, &at(80.0), NOW_SECS));
+        assert!(n.usage_at(session.id, &at(86.0), NOW_SECS));
+        assert!(!n.usage_at(session.id, &at(90.0), NOW_SECS));
+        assert!(n.usage_at(session.id, &at(96.0), NOW_SECS));
+        assert!(!n.usage_at(session.id, &at(97.0), NOW_SECS));
+        assert!(n.usage_at(session.id, &at(100.0), NOW_SECS));
+        assert!(!n.usage_at(session.id, &at(100.0), NOW_SECS));
 
-        let list = store.list_notifications(now_ms()).unwrap();
-        assert_eq!(list.len(), 4);
-        let mine: Vec<_> = list
+        let mine: Vec<_> = usage_entries(&store, LimitWindow::FiveHour)
             .iter()
-            .filter(|e| e.session_id == session.id)
             .map(|e| (e.usage.unwrap().pct, e.category))
             .collect();
         assert_eq!(
@@ -712,9 +916,217 @@ mod tests {
                 (86.0, NotificationCategory::Info),
             ]
         );
-        assert!(list
-            .iter()
-            .all(|e| e.usage.unwrap().window == LimitWindow::FiveHour));
+    }
+
+    /// `_statusline` forjado pelo socket de hook com `resets_at` diferente a
+    /// cada evento (no passado e no futuro) não escapa da dedupe.
+    #[test]
+    fn usage_forjado_com_resets_at_variando_nao_inunda() {
+        let (n, store, session) = center();
+        for i in 0..250u64 {
+            let usage = AgentUsage {
+                rate_5h: Some(RateWindow {
+                    pct: 85.0 + (i % 16) as f64,
+                    resets_at: Some(NOW_SECS - 500 + i * 7),
+                }),
+                rate_7d: Some(RateWindow {
+                    pct: 99.0 + (i % 3) as f64,
+                    resets_at: Some(NOW_SECS - 1 + i),
+                }),
+                ..AgentUsage::default()
+            };
+            n.usage_at(session.id, &usage, NOW_SECS);
+        }
+        assert!(usage_entries(&store, LimitWindow::FiveHour).len() <= 3);
+        assert!(usage_entries(&store, LimitWindow::SevenDay).len() <= 3);
+    }
+
+    /// O limite é da conta: quatro sessões no mesmo 87% dão uma entrada, com a
+    /// sessão que reportou primeiro.
+    #[test]
+    fn usage_de_quatro_sessoes_da_uma_entrada_por_faixa() {
+        let (n, store, session) = center();
+        let others: Vec<SessionId> = (0..3).map(|_| SessionId::new_v4()).collect();
+        let at = |pct: f64| rate5(pct, Some(NOW_SECS + 3_600));
+        assert!(n.usage_at(session.id, &at(87.0), NOW_SECS));
+        for id in &others {
+            assert!(!n.usage_at(*id, &at(87.0), NOW_SECS));
+        }
+        assert!(n.usage_at(others[1], &at(95.5), NOW_SECS));
+        assert!(!n.usage_at(session.id, &at(95.5), NOW_SECS));
+
+        let list = usage_entries(&store, LimitWindow::FiveHour);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[1].session_id, session.id);
+        assert_eq!(list[1].session_title, "corrige o parser");
+        assert_eq!(list[0].session_id, others[1]);
+    }
+
+    #[test]
+    fn usage_rearma_abaixo_de_85_e_quando_a_janela_reseta() {
+        let (n, store, session) = center();
+        let resets = NOW_SECS + 60;
+        assert!(n.usage_at(session.id, &rate5(90.0, Some(resets)), NOW_SECS));
+        assert!(!n.usage_at(session.id, &rate5(90.0, Some(resets)), NOW_SECS + 1));
+        // Caiu abaixo de 85: rearma.
+        assert!(!n.usage_at(session.id, &rate5(50.0, Some(resets)), NOW_SECS + 2));
+        assert!(n.usage_at(session.id, &rate5(88.0, Some(resets)), NOW_SECS + 3));
+        // A janela guardada passou: rearma mesmo sem cair.
+        assert!(!n.usage_at(session.id, &rate5(88.0, Some(resets)), NOW_SECS + 59));
+        assert!(n.usage_at(session.id, &rate5(88.0, Some(resets + 18_000)), resets));
+        assert_eq!(usage_entries(&store, LimitWindow::FiveHour).len(), 3);
+    }
+
+    /// Um agente em laço `UserPromptSubmit → Stop` não inunda o histórico;
+    /// pedido de aprovação nunca é descartado pelo teto.
+    #[test]
+    fn teto_por_sessao_descarta_excedentes_mas_nunca_pedido() {
+        let (n, store, _) = center();
+        let s = agent_session(SessionStatus::Idle {
+            summary: Some("pronto".into()),
+        });
+        let inserted = (0..30)
+            .filter(|_| n.status_changed(Some(&SessionStatus::Running), &s))
+            .count();
+        assert_eq!(inserted, SESSION_CAP as usize);
+        for id in 0..5 {
+            assert!(n.approval_requested(&request(id, s.id, "git push origin feat")));
+        }
+        // Outra sessão tem o próprio teto.
+        let other = agent_session(SessionStatus::Idle { summary: None });
+        assert!(n.status_changed(Some(&SessionStatus::Running), &other));
+
+        let list = store.list_notifications(now_ms()).unwrap();
+        let mine = |kind| {
+            list.iter()
+                .filter(|e| e.session_id == s.id && e.kind == kind)
+                .count()
+        };
+        assert_eq!(mine(NotificationKind::AgentFinished), SESSION_CAP as usize);
+        assert_eq!(mine(NotificationKind::Approval), 5);
+    }
+
+    #[test]
+    fn teto_por_sessao_reabre_na_janela_seguinte() {
+        let (n, _, _) = center();
+        let sid = SessionId::new_v4();
+        for _ in 0..SESSION_CAP {
+            assert!(n.admit(sid, NOW));
+        }
+        assert!(!n.admit(sid, NOW + 1));
+        assert!(!n.admit(sid, NOW + SESSION_CAP_WINDOW_MS - 1));
+        assert!(n.admit(sid, NOW + SESSION_CAP_WINDOW_MS));
+        // A janela fechada saiu do mapa: o estado não cresce com o tempo.
+        assert_eq!(n.caps.lock().len(), 1);
+    }
+
+    #[test]
+    fn emissao_agrupada_com_trailing() {
+        let t0 = Instant::now();
+        let ms = |m: u64| t0 + Duration::from_millis(m);
+        let mut t = EmitThrottle::default();
+        assert_eq!(t.on_change(ms(0)), EmitAction::Now);
+        // Dentro do intervalo: agenda uma, para o fim do intervalo.
+        assert_eq!(
+            t.on_change(ms(10)),
+            EmitAction::After(Duration::from_millis(240))
+        );
+        // As seguintes cabem na agendada.
+        for m in [20, 100, 249] {
+            assert_eq!(t.on_change(ms(m)), EmitAction::Skip);
+        }
+        t.on_timer(ms(250));
+        // Logo depois da agendada sair, nova mudança agenda outra (trailing).
+        assert_eq!(
+            t.on_change(ms(300)),
+            EmitAction::After(Duration::from_millis(200))
+        );
+        t.on_timer(ms(500));
+        // Depois de um silêncio, sai na hora.
+        assert_eq!(t.on_change(ms(900)), EmitAction::Now);
+    }
+
+    /// Interrupção do usuário leva a `Idle` e não é "terminou"; o turno
+    /// seguinte volta a avisar.
+    #[test]
+    fn interrupcao_nao_vira_agent_finished() {
+        let (n, store, session) = center();
+        assert!(!n.interrupted(session.id));
+        let mut s = session.clone();
+        s.status = SessionStatus::Idle {
+            summary: Some("qualquer texto".into()),
+        };
+        assert!(!n.status_changed(Some(&SessionStatus::Running), &s));
+        s.status = SessionStatus::Running;
+        n.status_changed(Some(&SessionStatus::Idle { summary: None }), &s);
+        s.status = SessionStatus::Idle { summary: None };
+        assert!(n.status_changed(Some(&SessionStatus::Running), &s));
+        assert_eq!(store.list_notifications(now_ms()).unwrap().len(), 1);
+    }
+
+    /// O settle troca o resumo (`Idle → Idle`): a entrada recente é corrigida,
+    /// não duplicada; uma entrada velha fica como está.
+    #[test]
+    fn settle_corrige_o_resumo_da_entrada_recente() {
+        let (n, store, _) = center();
+        let mut s = agent_session(SessionStatus::Idle {
+            summary: Some("velho".into()),
+        });
+        assert!(n.status_changed(Some(&SessionStatus::Running), &s));
+        let prev = s.status.clone();
+        s.status = SessionStatus::Idle {
+            summary: Some("novo ghp_abcdefghijklmnopqrstuvwxyz0123456789".into()),
+        };
+        assert!(n.status_changed(Some(&prev), &s));
+        let list = store.list_notifications(now_ms()).unwrap();
+        assert_eq!(list.len(), 1);
+        let detail = list[0].detail.as_deref().unwrap();
+        assert!(detail.starts_with("novo "));
+        assert!(!detail.contains("ghp_"));
+
+        // Entrada de mais de 10 s atrás: não é deste turno.
+        let old = agent_session(SessionStatus::Idle {
+            summary: Some("b".into()),
+        });
+        let mut e = entry(old.id, now_ms() - SUMMARY_FIX_MS - 1_000);
+        e.detail = Some("a".into());
+        store.insert_notification(&e, now_ms()).unwrap();
+        assert!(!n.status_changed(
+            Some(&SessionStatus::Idle {
+                summary: Some("a".into())
+            }),
+            &old
+        ));
+        let list = store.list_notifications(now_ms()).unwrap();
+        let kept = list.iter().find(|e| e.session_id == old.id).unwrap();
+        assert_eq!(kept.detail.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn titulo_da_sessao_sai_mascarado() {
+        let store = Store::open_in_memory().unwrap();
+        let mut e = entry(SessionId::new_v4(), NOW);
+        e.session_title = "deploy ghp_abcdefghijklmnopqrstuvwxyz0123456789".into();
+        store.insert_notification(&e, NOW).unwrap();
+        let title = &store.list_notifications(NOW).unwrap()[0].session_title;
+        assert!(!title.contains("ghp_"), "segredo vazou: {title}");
+    }
+
+    #[test]
+    fn descartar_a_sessao_apaga_o_historico_dela() {
+        let store = Store::open_in_memory().unwrap();
+        let gone = SessionId::new_v4();
+        let kept = SessionId::new_v4();
+        store
+            .insert_notification(&entry(gone, NOW - 2), NOW)
+            .unwrap();
+        store
+            .insert_notification(&entry(kept, NOW - 1), NOW)
+            .unwrap();
+        store.remove_session(gone).unwrap();
+        let list = store.list_notifications(NOW).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].session_id, kept);
     }
 
     #[test]

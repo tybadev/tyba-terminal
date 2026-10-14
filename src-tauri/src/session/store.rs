@@ -1188,7 +1188,7 @@ impl Store {
     /// que a saída dela suma — deixá-la no disco esperando a retenção contraria
     /// justamente o gesto (princípio #10).
     ///
-    /// Numa transação porque as três apagam a mesma coisa: meio descarte é
+    /// Numa transação porque todas apagam a mesma coisa: meio descarte é
     /// output órfão que ninguém mais tem como listar nem apagar.
     pub fn remove_session(&self, id: SessionId) -> Result<(), StoreError> {
         let mut conn = self.conn.lock();
@@ -1198,6 +1198,12 @@ impl Store {
         tx.execute("DELETE FROM block WHERE session_id = ?1", params![key])?;
         tx.execute(
             "DELETE FROM block_checkpoint WHERE session_id = ?1",
+            params![key],
+        )?;
+        // O histórico de notificações também é saída da sessão. A auditoria
+        // de aprovações (`approval_history`) fica.
+        tx.execute(
+            "DELETE FROM notification WHERE session_id = ?1",
             params![key],
         )?;
         tx.commit()?;
@@ -2950,8 +2956,9 @@ impl Store {
     /// Grava uma entrada do histórico de notificações e poda: some o que tem
     /// mais de 7 dias e o que passa das 500 mais novas. Devolve o `id`.
     ///
-    /// `command` e `detail` passam pela redação aqui de novo (princípio #10):
-    /// quem chama já mascarou e cortou, mas a garantia fica no ponto de escrita.
+    /// `session_title`, `command` e `detail` passam pela redação aqui de novo
+    /// (princípio #10): quem chama já mascarou e cortou, mas a garantia fica no
+    /// ponto de escrita.
     /// O `id` é `AUTOINCREMENT` de propósito: depois da poda um id antigo nunca
     /// volta, e um "marcar lido" atrasado não acerta linha nova.
     pub fn insert_notification(
@@ -2960,6 +2967,7 @@ impl Store {
         now_ms: i64,
     ) -> Result<u64, StoreError> {
         use crate::notifications::{window_str, MAX_ENTRIES, RETENTION_MS};
+        let session_title = redact(&e.session_title).into_owned();
         let command = e.command.as_deref().map(|c| redact(c).into_owned());
         let detail = e.detail.as_deref().map(|d| redact(d).into_owned());
         let decision = e.decision.map(enum_text).transpose()?;
@@ -2974,7 +2982,7 @@ impl Store {
             params![
                 e.at_ms,
                 e.session_id.to_string(),
-                e.session_title,
+                session_title,
                 e.agent,
                 e.kind.as_str(),
                 e.category.as_str(),
@@ -3147,6 +3155,27 @@ impl Store {
              SET pending = 0, decision = ?2, category = 'done', read = 1
              WHERE kind = 'approval' AND pending = 1 AND approval_id = ?1",
             params![approval_id as i64, decision],
+        )?)
+    }
+
+    /// O settle corrigiu o resumo do turno: troca o `detail` da ÚLTIMA entrada
+    /// `agent_finished` da sessão, se ela não for mais velha que `since_ms`.
+    /// Devolve quantas mudaram (0 ou 1). Mascara aqui, como na inserção.
+    pub fn update_last_finished_detail(
+        &self,
+        session_id: SessionId,
+        detail: &str,
+        since_ms: i64,
+    ) -> Result<usize, StoreError> {
+        let detail = redact(detail).into_owned();
+        let conn = self.conn.lock();
+        Ok(conn.execute(
+            "UPDATE notification SET detail = ?2
+             WHERE at_ms >= ?3 AND id = (
+                 SELECT id FROM notification
+                 WHERE session_id = ?1 AND kind = 'agent_finished'
+                 ORDER BY at_ms DESC, id DESC LIMIT 1)",
+            params![session_id.to_string(), detail, since_ms],
         )?)
     }
 

@@ -1078,12 +1078,29 @@ impl ApprovalsManager {
         Self::default()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// `new_request` + `enqueue` de uma vez, para os testes; o caminho real
+    /// grava o histórico entre os dois.
+    #[cfg(test)]
     fn request_inner(
         &self,
         session_id: SessionId,
         ask: ApprovalAsk,
         waiter: Option<mpsc::Sender<Resolution>>,
+        agent_id: Option<String>,
+    ) -> Result<ApprovalRequest, String> {
+        let request = self.new_request(session_id, ask, agent_id)?;
+        self.enqueue(&request, waiter);
+        Ok(request)
+    }
+
+    /// Monta o pedido (com id) SEM torná-lo resolvível: só [`Self::enqueue`]
+    /// o põe onde `resolve` o encontra. Entre os dois o histórico grava a
+    /// entrada pendente — gravada depois, um `resolve` rápido no meio não
+    /// acharia linha para atualizar e a entrada ficaria pendente para sempre.
+    fn new_request(
+        &self,
+        session_id: SessionId,
+        ask: ApprovalAsk,
         agent_id: Option<String>,
     ) -> Result<ApprovalRequest, String> {
         // `refused_by_core` vem de quem leu o texto INTEIRO; o texto exibido
@@ -1105,6 +1122,10 @@ impl ApprovalsManager {
             requested_at_ms: now_ms(),
             agent_id,
         };
+        Ok(request)
+    }
+
+    fn enqueue(&self, request: &ApprovalRequest, waiter: Option<mpsc::Sender<Resolution>>) {
         let mut pending = self.pending.lock().expect("approvals lock");
         pending.push(request.clone());
         if let Some(tx) = waiter {
@@ -1114,7 +1135,6 @@ impl ApprovalsManager {
                 .insert(request.id, tx);
         }
         drop(pending);
-        Ok(request)
     }
 
     pub fn request(
@@ -1125,14 +1145,14 @@ impl ApprovalsManager {
         cwd: Option<String>,
         context: Option<String>,
     ) -> Result<ApprovalRequest, String> {
-        let request = self.request_inner(
+        let request = self.new_request(
             session_id,
             ApprovalAsk::for_command(command, cwd, context),
             None,
-            None,
         )?;
-        let _ = app.emit("approvals://requested", request.clone());
         crate::notifications::record(app, |n| n.approval_requested(&request));
+        self.enqueue(&request, None);
+        let _ = app.emit("approvals://requested", request.clone());
         Ok(request)
     }
 
@@ -1145,9 +1165,10 @@ impl ApprovalsManager {
         agent_id: Option<String>,
     ) -> Result<(ApprovalRequest, Resolution), String> {
         let (tx, rx) = mpsc::channel();
-        let request = self.request_inner(session_id, ask, Some(tx), agent_id)?;
-        let _ = app.emit("approvals://requested", request.clone());
+        let request = self.new_request(session_id, ask, agent_id)?;
         crate::notifications::record(app, |n| n.approval_requested(&request));
+        self.enqueue(&request, Some(tx));
+        let _ = app.emit("approvals://requested", request.clone());
         let resolution = rx.recv().unwrap_or_else(|_| Resolution::denied());
         Ok((request, resolution))
     }
@@ -2672,6 +2693,30 @@ mod tests {
             .request_inner(session_id, ask(command, RiskLevel::Yellow), Some(tx), None)
             .expect("request deve entrar");
         (request, rx)
+    }
+
+    /// O histórico grava o pedido entre `new_request` e `enqueue`; nessa
+    /// janela o pedido ainda não pode ser resolvido, então o `resolve` nunca
+    /// chega antes da entrada pendente existir.
+    #[test]
+    fn new_request_is_not_resolvable_until_enqueued() {
+        let manager = ApprovalsManager::new();
+        let request = manager
+            .new_request(
+                SessionId::new_v4(),
+                ask("rm -rf build", RiskLevel::Red),
+                None,
+            )
+            .unwrap();
+        assert!(manager.list_pending().is_empty());
+        assert!(manager
+            .resolve_inner(request.id, approval(Decision::Approved))
+            .is_err());
+        manager.enqueue(&request, None);
+        assert_eq!(manager.list_pending().len(), 1);
+        assert!(manager
+            .resolve_inner(request.id, approval(Decision::Approved))
+            .is_ok());
     }
 
     fn ask(command: &str, risk: RiskLevel) -> ApprovalAsk {
