@@ -29,6 +29,7 @@ import { IS_MAC } from "@/lib/platform";
 import { NOTIFY_KINDS, notifyEnabled } from "@/lib/notifyPrefs";
 import { DockerIcon } from "./icons/DockerIcon";
 import { ClaudePluginSetting } from "./ClaudePluginSetting";
+import { AppIconPicker } from "./AppIconPicker";
 import { LANGUAGES, setLanguage, type LanguageCode } from "../i18n";
 import {
   getUiFont,
@@ -1170,6 +1171,10 @@ export function SettingsView({
                   </button>
                 );
               })}
+            </div>
+
+            <div className="pt-6">
+              <AppIconPicker />
             </div>
           </section>
         )}
