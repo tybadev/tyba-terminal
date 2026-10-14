@@ -1,4 +1,4 @@
-import { getPref, setPref } from "./lib/ipc";
+import { getPref, onConfigPrefs, setPref } from "./lib/ipc";
 
 export type UiFont = "mono" | "grotesk";
 
@@ -65,3 +65,8 @@ async function init() {
 
 apply();
 void init();
+// Edição na mão do ~/.tyba/config.toml: o core manda as prefs já validadas.
+void onConfigPrefs((prefs) => {
+  const next: UiFont = prefs[PREF_KEY] === "grotesk" ? "grotesk" : "mono";
+  if (next !== font) commit(next);
+}).catch(() => {});
