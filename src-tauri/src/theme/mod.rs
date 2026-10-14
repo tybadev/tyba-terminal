@@ -6,7 +6,8 @@ use std::sync::{Arc, OnceLock};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-use crate::session::store::Store;
+use crate::config::schema::{KEY_THEME_DARK, KEY_THEME_LIGHT, KEY_THEME_MODE};
+use crate::config::SharedConfig;
 
 mod schemes;
 
@@ -14,9 +15,6 @@ pub const EVENT_CHANGED: &str = "theme://changed";
 pub const BUILTIN_DARK: &str = "tyba-dark";
 pub const BUILTIN_LIGHT: &str = "tyba-light";
 
-const KEY_MODE: &str = "theme.mode";
-const KEY_SLOT_DARK: &str = "theme.slot.dark";
-const KEY_SLOT_LIGHT: &str = "theme.slot.light";
 const MAX_THEME_FILE_BYTES: u64 = 256 * 1024;
 const MAX_NAME_LEN: usize = 64;
 
@@ -72,8 +70,8 @@ pub enum ThemeError {
     TooLarge,
     #[error("origem de importação inválida (não é um arquivo regular): {0}")]
     InvalidSource(String),
-    #[error("store: {0}")]
-    Store(#[from] crate::session::store::StoreError),
+    #[error("config.toml: {0}")]
+    Config(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -368,17 +366,19 @@ fn resolve(id: String, file: ThemeFile) -> Theme {
     }
 }
 
+/// Modo e slots moram no `~/.tyba/config.toml` (ver [`crate::config`]); os
+/// temas importados, em `~/.tyba/themes/`.
 pub struct ThemeManager {
-    store: Arc<Store>,
+    config: SharedConfig,
     themes_dir: PathBuf,
 }
 
 pub type SharedThemes = Arc<ThemeManager>;
 
 impl ThemeManager {
-    pub fn new(store: Arc<Store>, themes_dir: PathBuf) -> Self {
+    pub fn new(config: SharedConfig, themes_dir: PathBuf) -> Self {
         let _ = fs::create_dir_all(&themes_dir);
-        Self { store, themes_dir }
+        Self { config, themes_dir }
     }
 
     pub fn themes_dir(&self) -> &PathBuf {
@@ -407,7 +407,20 @@ impl ThemeManager {
                 if is_reserved(&id) {
                     return None;
                 }
-                let json = fs::read_to_string(&path).ok()?;
+                // Pasta editável à mão: mesma leitura guardada do config.toml
+                // (teto de tamanho, sem symlink para fora, dono).
+                let json = match crate::config::fsguard::read_capped(
+                    &self.themes_dir,
+                    &path,
+                    MAX_THEME_FILE_BYTES,
+                ) {
+                    Ok(Some(json)) => json,
+                    Ok(None) => return None,
+                    Err(err) => {
+                        eprintln!("tyba: tema ignorado: {err}");
+                        return None;
+                    }
+                };
                 match parse_theme(&json) {
                     Ok(file) => Some(resolve(id, file)),
                     Err(err) => {
@@ -426,10 +439,8 @@ impl ThemeManager {
     }
 
     fn slot(&self, key: &str, base: ThemeBase) -> Theme {
-        self.store
-            .get_setting(key)
-            .ok()
-            .flatten()
+        self.config
+            .get(key)
             .and_then(|id| self.find(&id))
             .filter(|t| t.base == base)
             .unwrap_or_else(|| builtin(base))
@@ -437,21 +448,21 @@ impl ThemeManager {
 
     pub fn state(&self) -> ThemeState {
         let mode = self
-            .store
-            .get_setting(KEY_MODE)
-            .ok()
-            .flatten()
+            .config
+            .get(KEY_THEME_MODE)
             .and_then(|s| ThemeMode::parse(&s))
             .unwrap_or(ThemeMode::Dark);
         ThemeState {
             mode,
-            dark: self.slot(KEY_SLOT_DARK, ThemeBase::Dark),
-            light: self.slot(KEY_SLOT_LIGHT, ThemeBase::Light),
+            dark: self.slot(KEY_THEME_DARK, ThemeBase::Dark),
+            light: self.slot(KEY_THEME_LIGHT, ThemeBase::Light),
         }
     }
 
     pub fn set_mode(&self, app: &AppHandle, mode: ThemeMode) -> Result<(), ThemeError> {
-        self.store.set_setting(KEY_MODE, mode.as_str())?;
+        self.config
+            .set(KEY_THEME_MODE, mode.as_str())
+            .map_err(ThemeError::Config)?;
         self.emit(app);
         Ok(())
     }
@@ -468,10 +479,10 @@ impl ThemeManager {
             });
         }
         let key = match base {
-            ThemeBase::Dark => KEY_SLOT_DARK,
-            ThemeBase::Light => KEY_SLOT_LIGHT,
+            ThemeBase::Dark => KEY_THEME_DARK,
+            ThemeBase::Light => KEY_THEME_LIGHT,
         };
-        self.store.set_setting(key, id)?;
+        self.config.set(key, id).map_err(ThemeError::Config)?;
         self.emit(app);
         Ok(())
     }
@@ -505,7 +516,7 @@ impl ThemeManager {
         Ok(resolve(id, file))
     }
 
-    fn emit(&self, app: &AppHandle) {
+    pub fn emit(&self, app: &AppHandle) {
         let _ = app.emit(EVENT_CHANGED, self.state());
     }
 }
@@ -673,8 +684,9 @@ mod tests {
 
     fn manager() -> (ThemeManager, PathBuf) {
         let dir = std::env::temp_dir().join(format!("tyba-theme-test-{}", uuid::Uuid::new_v4()));
-        let store = Arc::new(Store::open_in_memory().unwrap());
-        (ThemeManager::new(store, dir.clone()), dir)
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+        let config = Arc::new(crate::config::ConfigManager::open(dir.join("cfg"), &store));
+        (ThemeManager::new(config, dir.clone()), dir)
     }
 
     #[test]
@@ -750,9 +762,7 @@ mod tests {
     #[test]
     fn state_falls_back_to_builtins_when_slot_is_stale() {
         let (mgr, dir) = manager();
-        mgr.store
-            .set_setting("theme.slot.dark", "deleted-theme")
-            .unwrap();
+        mgr.config.set(KEY_THEME_DARK, "deleted-theme").unwrap();
         let state = mgr.state();
         assert_eq!(state.mode, ThemeMode::Dark);
         assert_eq!(state.dark.id, BUILTIN_DARK);
@@ -764,9 +774,7 @@ mod tests {
     fn slot_ignores_theme_with_wrong_base() {
         let (mgr, dir) = manager();
         fs::write(dir.join("dracula.json"), VALID).unwrap();
-        mgr.store
-            .set_setting("theme.slot.light", "dracula")
-            .unwrap();
+        mgr.config.set(KEY_THEME_LIGHT, "dracula").unwrap();
         let state = mgr.state();
         assert_eq!(state.light.id, BUILTIN_LIGHT);
         let _ = fs::remove_dir_all(dir);
