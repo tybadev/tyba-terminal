@@ -415,15 +415,25 @@ function SubagentRow({
               />
             )}
           </span>
-          {!awaiting && line && <SubagentLineText line={line} />}
+          {!awaiting && line && line.kind !== "run" && line.kind !== "tool" && (
+            <SubagentLineText line={line} />
+          )}
         </span>
       </button>
+      {/* O que está executando AGORA, inteiro (mockup Subagentes): a linha
+          cortada não deixava ver o comando. */}
+      {line && (line.kind === "run" || line.kind === "tool") && <NowBox line={line} />}
       {awaiting && approval && <InlineApproval approval={approval} />}
       {open && (
         <div className="min-w-0 pb-2 pl-[17px] pt-1">
-          <p className="truncate pb-1 text-[10.5px] text-tyba-text-faint">
-            {row.run.agent_type || t("agentsUnknownType")} ·{" "}
-            {t(LIGHT_LABEL[row.light])}
+          <p className="flex min-w-0 items-center gap-2 pb-1 text-[10.5px] text-tyba-text-faint">
+            <span className="min-w-0 truncate">
+              {row.run.agent_type || t("agentsUnknownType")} ·{" "}
+              {t(LIGHT_LABEL[row.light])}
+            </span>
+            {row.run.status !== "done" && (
+              <span className="shrink-0 text-tyba-green">● {t("agentsLive")}</span>
+            )}
           </p>
           <SubagentTranscript
             sessionId={sessionId}
@@ -433,6 +443,27 @@ function SubagentRow({
         </div>
       )}
     </li>
+  );
+}
+
+/** A ação em curso, inteira: ferramenta + comando ou caminho, em mono. */
+function NowBox({ line }: { line: NonNullable<ReturnType<typeof subagentLine>> }) {
+  const { t } = useTranslation();
+  if (line.kind !== "run" && line.kind !== "tool") return null;
+  const tool = line.kind === "run" ? "Bash" : line.tool;
+  const detail = line.detail;
+  return (
+    <div className="ml-[17px] mt-1 mb-1.5 flex min-w-0 items-start gap-2 rounded-[6px] bg-tyba-sunken px-2.5 py-1.5 shadow-[inset_0_0_0_1px_var(--tyba-border)]">
+      <span className="shrink-0 pt-px text-[9.5px] tracking-[0.06em] text-tyba-cyan">
+        {t("agentsNow")}
+      </span>
+      <span className="shrink-0 font-mono text-[11px] text-tyba-blue">{tool}</span>
+      {detail && (
+        <span className="min-w-0 flex-1 break-all font-mono text-[12px] leading-[17px] text-tyba-text">
+          {detail}
+        </span>
+      )}
+    </div>
   );
 }
 
