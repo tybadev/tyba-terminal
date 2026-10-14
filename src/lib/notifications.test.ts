@@ -6,10 +6,15 @@ import {
   canAlwaysAllow,
   decideApproval,
   hiddenApprovalIds,
-  shouldAutoClosePopover,
   toNotificationItems,
+  attentionCount,
+  dayBucket,
+  filterEntries,
+  groupBySession,
+  historyEntries,
+  unreadCount,
 } from "./notifications";
-import type { ApprovalRequest } from "./ipc";
+import type { ApprovalRequest, NotificationEntry } from "./ipc";
 
 const makeApproval = (
   overrides: Partial<ApprovalRequest> = {},
@@ -55,31 +60,6 @@ describe("canAlwaysAllow", () => {
   });
 });
 
-describe("shouldAutoClosePopover", () => {
-  test("fecha quando o último pendente é resolvido com o popover aberto", () => {
-    expect(
-      shouldAutoClosePopover({ open: true, previousCount: 1, nextCount: 0 }),
-    ).toBe(true);
-  });
-
-  test("mantém aberto se ainda houver pendentes", () => {
-    expect(
-      shouldAutoClosePopover({ open: true, previousCount: 2, nextCount: 1 }),
-    ).toBe(false);
-  });
-
-  test("não reabre nem faz nada se já estava fechado", () => {
-    expect(
-      shouldAutoClosePopover({ open: false, previousCount: 1, nextCount: 0 }),
-    ).toBe(false);
-  });
-
-  test("não dispara quando a fila já estava zerada", () => {
-    expect(
-      shouldAutoClosePopover({ open: true, previousCount: 0, nextCount: 0 }),
-    ).toBe(false);
-  });
-});
 
 describe("toNotificationItems", () => {
   test("mapeia cada aprovação para um item com discriminador de tipo", () => {
@@ -209,5 +189,78 @@ describe("decideApproval", () => {
       decision: "denied",
       feedback: "usa o outro branch",
     });
+  });
+});
+
+describe("histórico de notificações", () => {
+  const entry = (over: Partial<NotificationEntry>): NotificationEntry => ({
+    id: 1,
+    at_ms: 0,
+    session_id: "s1",
+    session_title: "fix-health",
+    agent: "claude",
+    kind: "agent_finished",
+    category: "done",
+    approval_id: null,
+    pending: false,
+    decision: null,
+    risk: null,
+    command: null,
+    detail: null,
+    usage: null,
+    read: false,
+    ...over,
+  });
+
+  test("pedido pendente sai do histórico (está ao vivo em Precisa de você)", () => {
+    const list = [
+      entry({ id: 1, kind: "approval", pending: true, category: "request" }),
+      entry({ id: 2, kind: "approval", pending: false, category: "done" }),
+      entry({ id: 3 }),
+    ];
+    expect(historyEntries(list).map((e) => e.id)).toEqual([2, 3]);
+  });
+
+  test("filtros", () => {
+    const list = [
+      entry({ id: 1, kind: "approval", category: "done" }),
+      entry({ id: 2, kind: "agent_failed", category: "error" }),
+      entry({ id: 3, kind: "usage_limit", category: "info" }),
+      entry({ id: 4 }),
+    ];
+    expect(filterEntries(list, "requests").map((e) => e.id)).toEqual([1]);
+    expect(filterEntries(list, "errors").map((e) => e.id)).toEqual([2]);
+    expect(filterEntries(list, "done").map((e) => e.id)).toEqual([1, 4]);
+    expect(filterEntries(list, "all")).toHaveLength(4);
+  });
+
+  test("dayBucket", () => {
+    const now = new Date(2026, 9, 13, 15, 0).getTime();
+    expect(dayBucket(new Date(2026, 9, 13, 0, 5).getTime(), now)).toBe("today");
+    expect(dayBucket(new Date(2026, 9, 12, 23, 59).getTime(), now)).toBe("yesterday");
+    expect(dayBucket(new Date(2026, 9, 10).getTime(), now)).toBe("earlier");
+  });
+
+  test("groupBySession mantém a ordem do item mais recente", () => {
+    const list = [
+      entry({ id: 1, session_id: "b", session_title: "api" }),
+      entry({ id: 2, session_id: "a", session_title: "fix" }),
+      entry({ id: 3, session_id: "b", session_title: "api" }),
+    ];
+    const groups = groupBySession(list, (e) => ({ title: e.session_title, agent: e.agent }));
+    expect(groups.map((g) => [g.session, g.items.map((i) => i.id)])).toEqual([
+      ["b", [1, 3]],
+      ["a", [2]],
+    ]);
+  });
+
+  test("attentionCount soma pendentes e erros não lidos", () => {
+    const list = [
+      entry({ id: 1, category: "error" }),
+      entry({ id: 2, category: "error", read: true }),
+      entry({ id: 3 }),
+    ];
+    expect(attentionCount(2, list)).toBe(3);
+    expect(unreadCount(list)).toBe(2);
   });
 });
