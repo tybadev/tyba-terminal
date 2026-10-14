@@ -1265,6 +1265,7 @@ fn resume_startup(
             initial_prompt: None,
             opened_by_gate: false,
             resume_conversation: None,
+            prepared_worktree: None,
         };
         match sessions.create_shell_session(app.clone(), pty_pool, opts, move |id| {
             session_exited(&handle, id)
@@ -3341,6 +3342,135 @@ async fn forge_pr_merge(
     forge_blocking(move || forge::prs::merge(&path, number, strategy, &head_sha)).await
 }
 
+/// "Checkout" de um PR no checkout do próprio usuário, em HEAD destacado.
+/// Só a UI chama, depois da confirmação. Recusa árvore suja, o worktree de
+/// uma sessão e a pasta de outra sessão viva (lá o caminho é
+/// [`forge_pr_open_session`]). Ver `forge::local`.
+#[tauri::command]
+async fn forge_pr_checkout(
+    state: State<'_, AppState>,
+    id: SessionId,
+    number: u64,
+    head_sha: String,
+) -> Result<(), AppError> {
+    let session = state
+        .sessions
+        .get(id)
+        .ok_or_else(|| session_setup_error(format!("sessão não encontrada: {id}")))?;
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    if pr_checkout_in_worktree(&session, &path, &state.sessions.list()) {
+        return Err(AppError::new("forge.pr_checkout_in_worktree"));
+    }
+    forge_blocking(move || forge::local::checkout(&path, number, &head_sha)).await
+}
+
+/// O checkout cairia num worktree do TYBA: o da própria sessão ou, para um
+/// shell comum que entrou (`cd`) num worktree gerido — ou um shell de PR
+/// retomado depois de reiniciar, que perde o `worktree` —, o caminho do repo.
+/// Ou cairia debaixo de outra sessão viva: um agente in-place
+/// (`attach_agent_session`/`resume_agent_session`) trabalha na pasta do próprio
+/// usuário, que não é gerida, e trocar o checkout ali muda os arquivos sob ele.
+fn pr_checkout_in_worktree(
+    session: &Session,
+    repo_path: &std::path::Path,
+    sessions: &[Session],
+) -> bool {
+    if session.worktree.is_some() || worktree::is_managed(repo_path) {
+        return true;
+    }
+    let repo_path = repo::canonicalize_or(repo_path);
+    sessions.iter().any(|s| {
+        s.id != session.id
+            && !matches!(
+                s.status,
+                SessionStatus::Exited { .. } | SessionStatus::Failed { .. }
+            )
+            && s.worktree
+                .as_ref()
+                .is_some_and(|wt| repo::canonicalize_or(&wt.path).starts_with(&repo_path))
+    })
+}
+
+/// Sessão do TYBA que já abriu o PR `number` no repo `main` NESTE head: shell
+/// viva num worktree `tyba/pr/<n>-<8 hex>` (criado por [`forge_pr_open_session`])
+/// cujo `base_ref` é `head_sha`. Um PR que recebeu force-push depois ganha
+/// worktree novo, em vez de cair no antigo.
+fn pr_open_session(
+    sessions: &[session::Session],
+    main: &std::path::Path,
+    number: u64,
+    head_sha: &str,
+) -> Option<session::Session> {
+    sessions
+        .iter()
+        .find(|s| {
+            s.repo_root.as_deref() == Some(main)
+                && matches!(s.kind, SessionKind::Shell)
+                && !matches!(
+                    s.status,
+                    SessionStatus::Exited { .. } | SessionStatus::Failed { .. }
+                )
+                && s.worktree.as_ref().is_some_and(|wt| {
+                    worktree::is_pr_branch(&wt.branch, number)
+                        && wt.base_ref.eq_ignore_ascii_case(head_sha)
+                })
+        })
+        .cloned()
+}
+
+/// "Abrir no TYBA" para um PR sem sessão: busca o head do PR e abre uma sessão
+/// de shell num worktree NOVO e isolado, sem tocar no checkout do usuário. Se
+/// uma sessão já abriu este PR, devolve ela. Só a UI chama, depois da
+/// confirmação. Ver `forge::local`.
+#[tauri::command]
+async fn forge_pr_open_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    number: u64,
+    head_sha: String,
+    cols: u16,
+    rows: u16,
+) -> Result<Session, AppError> {
+    let _ = wait_for_boot(Arc::clone(&state.boot)).await;
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    if let Ok(main) = worktree::main_repo_of(&path) {
+        let main = repo::canonicalize_or(&main);
+        if let Some(existing) = pr_open_session(&state.sessions.list(), &main, number, &head_sha) {
+            return Ok(existing);
+        }
+    }
+    let prepared =
+        forge_blocking(move || forge::local::open_worktree(&path, number, &head_sha)).await?;
+    let handle = app.clone();
+    // Sem `run_setup_if_consented`: o script de setup veio com o PR, não é o
+    // que o usuário consentiu.
+    state
+        .sessions
+        .create_shell_session(
+            app.clone(),
+            &state.pty_pool,
+            CreateSessionOpts {
+                kind: SessionKind::Shell,
+                title: Some(format!("PR #{number}")),
+                cwd: None,
+                cols,
+                rows,
+                worktree_task: None,
+                attach_existing: false,
+                shell: None,
+                initial_prompt: None,
+                opened_by_gate: false,
+                resume_conversation: None,
+                prepared_worktree: Some(prepared),
+            },
+            move |sid| session_exited(&handle, sid),
+        )
+        .map_err(|e| session_setup_error(e.to_string()))
+}
+
 /// Abre um arquivo do worktree como TEXTO — nunca "executa" o arquivo.
 /// `open <arquivo>`/`xdg-open` rodariam um script/app deixado por um
 /// agente no worktree com um clique; aqui só editor configurado ou
@@ -4477,6 +4607,7 @@ async fn spawn_slot(
                 initial_prompt: slot.initial_prompt.clone(),
                 opened_by_gate: false,
                 resume_conversation: None,
+                prepared_worktree: None,
             },
         )
         .await;
@@ -4525,6 +4656,7 @@ async fn spawn_slot(
             initial_prompt: slot.initial_prompt.clone(),
             opened_by_gate: false,
             resume_conversation: None,
+            prepared_worktree: None,
         },
     )
     .await
@@ -5854,6 +5986,7 @@ fn docker_open_project(
                 initial_prompt: None,
                 opened_by_gate: false,
                 resume_conversation: None,
+                prepared_worktree: None,
             },
             move |id| session_exited(&handle, id),
         )
@@ -8211,6 +8344,8 @@ pub fn run() {
             forge_pr_detail,
             forge_pr_review,
             forge_pr_merge,
+            forge_pr_checkout,
+            forge_pr_open_session,
             forge_workflow_jobs,
             forge_run_log,
             forge_run_rerun,
@@ -9005,6 +9140,120 @@ mod tests {
             shell_resume_offer: false,
             agent_conversation_cwd: None,
         }
+    }
+
+    #[test]
+    fn pr_open_session_reuses_only_a_live_shell_on_the_same_pr_head() {
+        let main = std::path::PathBuf::from("/repos/app");
+        let head = "ab".repeat(20);
+        let pr_shell = |branch: &str, base_ref: &str| {
+            let mut s = agent_session(uuid::Uuid::new_v4(), Some("/wt/pr".into()));
+            s.kind = SessionKind::Shell;
+            s.status = SessionStatus::Running;
+            s.repo_root = Some(main.clone());
+            let wt = s.worktree.as_mut().unwrap();
+            wt.branch = branch.into();
+            wt.base_ref = base_ref.into();
+            s
+        };
+        let good = pr_shell("tyba/pr/7-abcd1234", &head);
+        let found = |sessions: &[Session], sha: &str| {
+            pr_open_session(sessions, &main, 7, sha).map(|s| s.id)
+        };
+
+        assert_eq!(found(std::slice::from_ref(&good), &head), Some(good.id));
+        // sha em maiúsculas é o mesmo commit.
+        assert_eq!(
+            found(std::slice::from_ref(&good), &head.to_ascii_uppercase()),
+            Some(good.id)
+        );
+        // O PR andou (force-push): worktree novo, não o antigo.
+        assert_eq!(found(std::slice::from_ref(&good), &"cd".repeat(20)), None);
+        // Task do usuário chamada "PR 7 …" (`tyba/pr-7-…`): não é do PR.
+        assert_eq!(
+            found(&[pr_shell("tyba/pr-7-conserta-abcd1234", &head)], &head),
+            None
+        );
+        // Outro PR com prefixo parecido.
+        assert_eq!(
+            found(&[pr_shell("tyba/pr/70-abcd1234", &head)], &head),
+            None
+        );
+        // Launch config chamado "PR" (`tyba/pr/<slot>`) e sufixos fora do
+        // formato `<8 hex>`: o namespace não é exclusivo, o prefixo não basta.
+        for branch in [
+            "tyba/pr/7-review",
+            "tyba/pr/7-abcd12345",
+            "tyba/pr/7-abcd123",
+            "tyba/pr/7-ABCD1234",
+            "tyba/pr/7-abcd123g",
+        ] {
+            assert_eq!(found(&[pr_shell(branch, &head)], &head), None, "{branch}");
+        }
+        // Sessão encerrada.
+        let mut exited = good.clone();
+        exited.status = SessionStatus::Exited { code: 0 };
+        assert_eq!(found(&[exited], &head), None);
+        let mut failed = good.clone();
+        failed.status = SessionStatus::Failed {
+            reason: "pty".into(),
+        };
+        assert_eq!(found(&[failed], &head), None);
+        // Sessão de agente no mesmo worktree.
+        let mut agent = good.clone();
+        agent.kind = SessionKind::Agent {
+            runner: session::AgentRunnerKind::ClaudeCode,
+        };
+        assert_eq!(found(&[agent], &head), None);
+        // Outro repo.
+        let mut other = good.clone();
+        other.repo_root = Some("/repos/outro".into());
+        assert_eq!(found(&[other], &head), None);
+    }
+
+    #[test]
+    fn pr_checkout_is_refused_in_any_tyba_worktree() {
+        let plain = agent_session(uuid::Uuid::new_v4(), None);
+        let user_repo = std::env::temp_dir().join("tyba-repo-do-usuario");
+        assert!(!pr_checkout_in_worktree(&plain, &user_repo, &[]));
+        // Shell comum que entrou num worktree gerido (ou shell de PR retomado
+        // sem o `worktree`).
+        let managed = worktree::managed_root().unwrap().join("app").join("pr-7-x");
+        assert!(pr_checkout_in_worktree(&plain, &managed, &[]));
+        // A sessão tem worktree.
+        let with_wt = agent_session(uuid::Uuid::new_v4(), Some("/wt/x".into()));
+        assert!(pr_checkout_in_worktree(&with_wt, &user_repo, &[]));
+    }
+
+    #[test]
+    fn pr_checkout_is_refused_under_a_live_in_place_agent() {
+        let user_repo = std::env::temp_dir().join("tyba-repo-do-usuario");
+        let plain = agent_session(uuid::Uuid::new_v4(), None);
+        // Agente in-place (`worktree::existing`) na pasta do usuário.
+        let mut agent = agent_session(uuid::Uuid::new_v4(), Some(user_repo.clone()));
+        agent.status = SessionStatus::Running;
+        let refused = |others: &[Session]| pr_checkout_in_worktree(&plain, &user_repo, others);
+
+        assert!(refused(std::slice::from_ref(&agent)));
+        // Numa subpasta do repo também é o mesmo checkout.
+        let mut in_subdir = agent.clone();
+        in_subdir.worktree.as_mut().unwrap().path = user_repo.join("src");
+        assert!(refused(&[in_subdir]));
+        // Encerrada ou falha: não segura nada.
+        let mut exited = agent.clone();
+        exited.status = SessionStatus::Exited { code: 0 };
+        let mut failed = agent.clone();
+        failed.status = SessionStatus::Failed {
+            reason: "pty".into(),
+        };
+        assert!(!refused(&[exited, failed]));
+        // Outra pasta, com prefixo de nome parecido.
+        let mut elsewhere = agent.clone();
+        elsewhere.worktree.as_mut().unwrap().path =
+            std::env::temp_dir().join("tyba-repo-do-usuario-2");
+        assert!(!refused(&[elsewhere]));
+        // A própria sessão na lista não conta contra ela.
+        assert!(!refused(std::slice::from_ref(&plain)));
     }
 
     #[test]

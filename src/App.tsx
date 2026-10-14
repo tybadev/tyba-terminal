@@ -3535,6 +3535,31 @@ export default function App() {
     }
   }, [activeWorkspace, openNewSession, workspaceSshHostId]);
 
+  // Sessão aberta pelo core para um PR ("Abrir no TYBA"): se já existia e
+  // está numa aba, só vai até ela; senão ganha uma aba no workspace ativo. Nos
+  // dois casos a tela de Git fecha, para o shell do PR aparecer. Falha ao criar
+  // a aba sobe para quem chamou (o detalhe do PR mostra o erro); a sessão só é
+  // descartada se acabou de nascer.
+  const adoptOpenedSession = useCallback(
+    async (opened: Session) => {
+      if (!activeWorkspace) return;
+      const known = sessionById.has(opened.id);
+      if (known && findSessionLocation(layout.workspaces, opened.id)) {
+        goToSession(opened.id);
+      } else {
+        if (!known) setSessions((prev) => [...prev, opened]);
+        try {
+          await createTab(opened.id, activeWorkspace.id);
+        } catch (e) {
+          if (!known) void disposeSession(opened.id).catch(() => {});
+          throw e;
+        }
+      }
+      void closeSideView(activeWorkspace.id).catch(() => {});
+    },
+    [activeWorkspace, sessionById, goToSession, layout.workspaces],
+  );
+
   const runInTerminal = useCallback(
     async (command: string) => {
       if (!activeWorkspace) {
@@ -5770,6 +5795,7 @@ export default function App() {
                     findSession={(id) => sessionById.get(id)}
                     onSendToAgent={sendReviewToAgent}
                     onResolveConflicts={resolveConflictsWithAgent}
+                    onOpenSession={adoptOpenedSession}
                   />
                 )}
                 <div
@@ -5946,6 +5972,7 @@ export default function App() {
                           const target = sessionById.get(sid);
                           if (target) await sendReviewToAgent(target, prompt);
                         }}
+                        onOpenSession={adoptOpenedSession}
                       />
                     ) : (
                       <div className="absolute inset-0 flex items-center justify-center text-[12px] text-tyba-text-faint">

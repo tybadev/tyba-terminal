@@ -20,7 +20,9 @@ import { requestConfirm } from "../lib/confirm";
 import { translateError } from "../lib/errors";
 import {
   forgePrDetail,
+  forgePrCheckout,
   forgePrMerge,
+  forgePrOpenSession,
   forgePrReview,
   onForgeChanged,
   type PrMergeStrategy,
@@ -118,11 +120,15 @@ export function PrDetailView({
   session,
   number,
   onForward,
+  onOpenSession,
 }: {
   session: Session;
   number: number;
   /** Manda o prompt para a sessão de agente ligada ao PR (`pr.session`). */
   onForward: (session: SessionId, prompt: string) => Promise<void>;
+  /** Sessão nova (ou a que já tinha aberto este PR) de "Abrir no TYBA":
+   *  quem monta a tela põe numa aba e foca. Sem isso, o botão não aparece. */
+  onOpenSession?: (opened: Session) => Promise<void>;
 }) {
   const { t, i18n } = useTranslation();
   const relative = useRelative();
@@ -136,7 +142,8 @@ export function PrDetailView({
   const dark = getEffectiveBase() === "dark";
   const [reviewEvent, setReviewEvent] = useState<PrReviewEvent>("comment");
   const [strategy, setStrategy] = useState<PrMergeStrategy>("squash");
-  const [acting, setActing] = useState<null | "review" | "merge">(null);
+  const [acting, setActing] = useState<null | "review" | "merge" | "local">(null);
+  const [localNote, setLocalNote] = useState<{ text: string; error: boolean } | null>(null);
   // `from` decide onde o aviso aparece: o de revisão no formulário, o de merge
   // na seção Merge (que continua na tela depois que o PR vira "merged").
   const [actionNote, setActionNote] = useState<
@@ -218,6 +225,65 @@ export function PrDetailView({
       load(true);
     } catch (e) {
       setActionNote({ text: translateError(e, t), error: true, from: "review" });
+      load(true);
+    } finally {
+      setActing(null);
+    }
+  };
+
+  // "Abrir no TYBA" e "Checkout" para PR sem sessão. Os dois escrevem no repo
+  // do usuário (worktree novo, ou troca do checkout), então sempre confirmam,
+  // mostrando o PR e o head que vai ser buscado. Fork avisa que é código de
+  // terceiros. Quem decide e valida é o core (`forge::local`).
+  const localDetail = (action: "open" | "checkout") =>
+    [
+      `${pr.title}\n${pr.head} · ${pr.head_sha.slice(0, 7)}`,
+      t(action === "open" ? "prOpenSessionDetail" : "prCheckoutDetail", {
+        number: pr.number,
+        sha: pr.head_sha.slice(0, 7),
+      }),
+      pr.cross_repo ? t("prLocalForkWarning") : null,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+  const openSession = async () => {
+    if (acting || !onOpenSession) return;
+    const ok = await requestConfirm({
+      title: t("prOpenSessionConfirm", { number: pr.number }),
+      detail: localDetail("open"),
+      confirmLabel: t("prOpenInTyba"),
+    });
+    if (!ok) return;
+    setActing("local");
+    setLocalNote(null);
+    try {
+      const opened = await forgePrOpenSession(session.id, pr.number, pr.head_sha, 100, 30);
+      await onOpenSession(opened);
+    } catch (e) {
+      setLocalNote({ text: translateError(e, t), error: true });
+      load(true);
+    } finally {
+      setActing(null);
+    }
+  };
+
+  const checkout = async () => {
+    if (acting) return;
+    const ok = await requestConfirm({
+      title: t("prCheckoutConfirm", { number: pr.number }),
+      detail: localDetail("checkout"),
+      confirmLabel: t("prCheckout"),
+      destructive: true,
+    });
+    if (!ok) return;
+    setActing("local");
+    setLocalNote(null);
+    try {
+      await forgePrCheckout(session.id, pr.number, pr.head_sha);
+      setLocalNote({ text: t("prCheckoutDone", { sha: pr.head_sha.slice(0, 7) }), error: false });
+    } catch (e) {
+      setLocalNote({ text: translateError(e, t), error: true });
       load(true);
     } finally {
       setActing(null);
@@ -531,6 +597,26 @@ export function PrDetailView({
           </h1>
           <span className="shrink-0 text-[17px] text-tyba-text-faint">#{pr.number}</span>
           <span className="flex-1" />
+          {!pr.session && onOpenSession && (
+            <button
+              type="button"
+              disabled={acting !== null}
+              onClick={() => void openSession()}
+              className="shrink-0 rounded-[6px] border border-tyba-border-strong px-2.5 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50"
+            >
+              {t("prOpenInTyba")}
+            </button>
+          )}
+          {!pr.session && !session.worktree && (
+            <button
+              type="button"
+              disabled={acting !== null}
+              onClick={() => void checkout()}
+              className="shrink-0 rounded-[6px] border border-tyba-border-strong px-2.5 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50"
+            >
+              {t("prCheckout")}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void openExternalUrl(pr.url)}
@@ -568,6 +654,11 @@ export function PrDetailView({
           </span>
         </div>
         {pr.truncated && <p className="text-[11px] text-tyba-amber">{t("prTruncated")}</p>}
+        {localNote && (
+          <p role="status" className={`text-[11px] ${localNote.error ? "text-tyba-red" : "text-tyba-text-muted"}`}>
+            {localNote.text}
+          </p>
+        )}
         {rateNotice && (
           <p role="status" className="text-[11px] text-tyba-amber">
             {t(rateNotice.key, rateNotice.params)}

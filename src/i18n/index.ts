@@ -1003,6 +1003,16 @@ const resources = {
       prMergedAgo: "mesclado {{ago}} por {{by}}",
       prUpdatedAgo: "atualizado {{ago}}",
       prOpenInTyba: "Abrir no TYBA",
+      prCheckout: "Checkout",
+      prOpenSessionConfirm: "Abrir o PR #{{number}} num worktree novo do TYBA?",
+      prOpenSessionDetail:
+        "O TYBA busca o head do PR (refs/pull/{{number}}/head, {{sha}}) e cria um worktree isolado numa branch tyba/pr/{{number}}-…, com uma sessão de shell. O seu checkout não muda e nada é enviado.",
+      prCheckoutConfirm: "Fazer checkout do PR #{{number}} neste repositório?",
+      prCheckoutDetail:
+        "O seu checkout vai para o head do PR ({{sha}}) em HEAD destacado: nenhuma branch é criada ou movida, e git switch - volta. Recusado se houver mudança não commitada.",
+      prLocalForkWarning:
+        "Este PR vem de um fork: o código é de terceiros. O script de setup do repositório não roda.",
+      prCheckoutDone: "Checkout feito: HEAD destacado em {{sha}}.",
       prSearchPlaceholder: "Buscar por título, número ou autor",
       prNew: "Novo PR",
       prRefresh: "Atualizar agora",
@@ -1535,8 +1545,12 @@ const resources = {
       "error.merge.worktree_dirty":
         "O worktree da sessão tem mudanças não commitadas — commite ou descarte antes de materializar o conflito.",
       "error.forge.cli_failed": "O comando {{cli}} falhou: {{detail}}",
-      "error.forge.pr_head_moved": "O PR recebeu commit novo ({{current}}) depois que você o abriu. Veja de novo antes de revisar ou mergear.",
+      "error.forge.pr_head_moved": "O PR recebeu commit novo ({{current}}) depois que você o abriu. Veja de novo antes de continuar.",
       "error.forge.pr_invalid_head": "SHA do PR inválido.",
+      "error.forge.pr_checkout_dirty": "O repositório tem mudança não commitada: commite ou descarte antes do checkout do PR.",
+      "error.forge.pr_checkout_ignored": "O PR versiona um arquivo que no seu checkout existe e é ignorado pelo git (ex.: .env). O checkout foi recusado para não sobrescrevê-lo: mova o arquivo ou use \"Abrir no TYBA\".",
+      "error.forge.pr_checkout_in_worktree": "Esta pasta é um worktree do TYBA ou outra sessão do TYBA trabalha nela. Use \"Abrir no TYBA\" para trazer o PR num worktree novo.",
+      "error.forge.pr_local_failed": "Não deu para trazer o PR: {{detail}}",
       "error.forge.rate_limited": "O limite da API do GitHub acabou. Tente de novo em alguns minutos.",
       "error.forge.pr_review_body_empty": "Comentar e pedir mudanças precisam de texto.",
       "error.forge.pr_actions_unsupported": "Esta ação só funciona com GitHub e o gh instalado.",
@@ -2751,6 +2765,16 @@ const resources = {
       prMergedAgo: "merged {{ago}} by {{by}}",
       prUpdatedAgo: "updated {{ago}}",
       prOpenInTyba: "Open in TYBA",
+      prCheckout: "Checkout",
+      prOpenSessionConfirm: "Open PR #{{number}} in a new TYBA worktree?",
+      prOpenSessionDetail:
+        "TYBA fetches the PR head (refs/pull/{{number}}/head, {{sha}}) and creates an isolated worktree on a tyba/pr/{{number}}-… branch, with a shell session. Your checkout does not change and nothing is pushed.",
+      prCheckoutConfirm: "Check out PR #{{number}} in this repository?",
+      prCheckoutDetail:
+        "Your checkout moves to the PR head ({{sha}}) as a detached HEAD: no branch is created or moved, and git switch - goes back. Refused if there are uncommitted changes.",
+      prLocalForkWarning:
+        "This PR comes from a fork: the code is third-party. The repository setup script does not run.",
+      prCheckoutDone: "Checked out: detached HEAD at {{sha}}.",
       prSearchPlaceholder: "Search by title, number or author",
       prNew: "New PR",
       prRefresh: "Refresh now",
@@ -3282,8 +3306,12 @@ const resources = {
       "error.merge.worktree_dirty":
         "The session worktree has uncommitted changes — commit or discard them before materializing the conflict.",
       "error.forge.cli_failed": "The {{cli}} command failed: {{detail}}",
-      "error.forge.pr_head_moved": "The PR got a new commit ({{current}}) after you opened it. Look again before reviewing or merging.",
+      "error.forge.pr_head_moved": "The PR got a new commit ({{current}}) after you opened it. Look again before continuing.",
       "error.forge.pr_invalid_head": "Invalid PR SHA.",
+      "error.forge.pr_checkout_dirty": "The repository has uncommitted changes: commit or discard them before checking out the PR.",
+      "error.forge.pr_checkout_ignored": "The PR tracks a file that exists in your checkout and is ignored by git (e.g. .env). The checkout was refused so it is not overwritten: move the file or use \"Open in TYBA\".",
+      "error.forge.pr_checkout_in_worktree": "This folder is a TYBA worktree or another TYBA session is working in it. Use \"Open in TYBA\" to bring the PR into a new worktree.",
+      "error.forge.pr_local_failed": "Could not bring the PR: {{detail}}",
       "error.forge.rate_limited": "The GitHub API limit ran out. Try again in a few minutes.",
       "error.forge.pr_review_body_empty": "Comment and request changes need text.",
       "error.forge.pr_actions_unsupported": "This action only works with GitHub and gh installed.",
