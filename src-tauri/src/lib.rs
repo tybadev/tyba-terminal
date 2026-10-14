@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod app_icon;
 pub mod approvals;
 pub mod blocks;
 pub mod boot;
@@ -4896,7 +4897,29 @@ fn new_window(app: AppHandle) -> Result<(), String> {
         .hidden_title(true);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.decorations(false);
+    #[cfg(target_os = "macos")]
     builder.build().map_err(|e| e.to_string())?;
+    // Fora do macOS o ícone mora em cada janela: a nova nasce com o do bundle.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let window = builder.build().map_err(|e| e.to_string())?;
+        let icon = app_icon::current(&*app.state::<AppState>().store);
+        app_icon::apply_to_window(&app, &window, icon);
+    }
+    Ok(())
+}
+
+/// O id do ícone do app em vigor (Configurações → Aparência).
+#[tauri::command]
+fn get_app_icon(state: State<'_, AppState>) -> &'static str {
+    app_icon::current(&*state.store).id()
+}
+
+/// Troca o ícone do app: só um id da lista embutida, nunca um caminho.
+#[tauri::command]
+fn set_app_icon(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let icon = app_icon::choose(&app, &*state.store, &id)?;
+    let _ = app.emit(app_icon::EVENT_CHANGED, icon.id());
     Ok(())
 }
 
@@ -7954,6 +7977,10 @@ pub fn run() {
                 });
             }
 
+            // O ícone do Dock trocado em tempo de execução morre com o processo:
+            // a escolha salva volta a cada abertura.
+            app_icon::apply_at_startup(app.handle(), &*store);
+
             // Único passo caro que fica: montar o NSMenu é operação de main
             // thread, não há para onde mover.
             let span = boot::Span::start("menu.install");
@@ -7975,6 +8002,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             boot_snapshot,
+            get_app_icon,
+            set_app_icon,
             config_warnings,
             boot_gate,
             agent_binary_available,
