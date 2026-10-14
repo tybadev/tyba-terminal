@@ -31,6 +31,8 @@ pub const THEMES_DIR: &str = "themes";
 pub const EVENT_PREFS: &str = "config://prefs";
 /// Payload: lista de avisos em pt-BR para o toast.
 pub const EVENT_WARNINGS: &str = "config://warnings";
+/// Payload: o id do ícone do app (um de [`schema::APP_ICONS`]).
+pub const EVENT_APP_ICON: &str = "config://app-icon";
 pub const MAX_BYTES: u64 = 64 * 1024;
 /// Só em build de desenvolvimento: aponta a configuração para outra pasta, para
 /// rodar o app sem tocar no `~/.tyba/` de verdade.
@@ -62,6 +64,11 @@ ui = "mono"
 # Tamanho da fonte do terminal, de 10 a 20
 terminal_size = 13
 
+[appearance]
+# Ícone do app: blackout, aurora, filamento, assinatura, fosforo, violeta,
+# grafite ou papel
+app_icon = "blackout"
+
 # Atalhos: ação = "modificadores+tecla", com meta, ctrl, alt e shift.
 # Ex.: paletteActions = "meta+p". O que não estiver aqui usa o padrão.
 [keybindings]
@@ -89,6 +96,7 @@ pub fn root_dir(home: Option<&Path>) -> Option<PathBuf> {
 pub struct Changes {
     pub theme: bool,
     pub prefs: bool,
+    pub app_icon: bool,
     /// `Some` só quando a lista de avisos mudou: salvar de novo o mesmo arquivo
     /// com o mesmo erro não vira outro toast.
     pub warnings: Option<Vec<String>>,
@@ -112,19 +120,23 @@ pub struct ConfigManager {
     state: Mutex<State>,
 }
 
-fn diff(old: &Values, new: &Values) -> (bool, bool) {
+/// (tema, prefs, ícone) — cada grupo tem o seu evento.
+fn diff(old: &Values, new: &Values) -> (bool, bool, bool) {
     let mut theme = false;
     let mut prefs = false;
+    let mut app_icon = false;
     for key in schema::FILE_KEYS {
         if old.get(key) != new.get(key) {
             if key.starts_with("pref.") {
                 prefs = true;
+            } else if *key == schema::KEY_APP_ICON {
+                app_icon = true;
             } else {
                 theme = true;
             }
         }
     }
-    (theme, prefs)
+    (theme, prefs, app_icon)
 }
 
 /// Só as entradas que o arquivo aceita: um atalho antigo estranho no SQLite não
@@ -295,7 +307,7 @@ impl ConfigManager {
     ) -> Changes {
         let mut changes = Changes::default();
         if let Some(values) = values {
-            (changes.theme, changes.prefs) = diff(&state.values, &values);
+            (changes.theme, changes.prefs, changes.app_icon) = diff(&state.values, &values);
             state.values = values;
         }
         if text.is_some() {
@@ -352,6 +364,24 @@ impl ConfigManager {
             .filter(|(k, _)| k.starts_with("pref."))
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect()
+    }
+
+    /// Ícone do app (`[appearance] app_icon`). Ausente ou inválido no arquivo:
+    /// [`schema::DEFAULT_APP_ICON`] — o inválido já virou aviso no parse.
+    pub fn app_icon(&self) -> &'static str {
+        let current = self.get(schema::KEY_APP_ICON);
+        schema::APP_ICONS
+            .iter()
+            .copied()
+            .find(|id| current.as_deref() == Some(*id))
+            .unwrap_or(schema::DEFAULT_APP_ICON)
+    }
+
+    /// Grava o ícone no arquivo. Id fora de [`schema::APP_ICONS`] é recusado
+    /// sem tocar no disco. Quem chama publica o `Changes` (em `lib.rs`,
+    /// `emit_config_changes`, que emite [`EVENT_APP_ICON`]).
+    pub fn set_app_icon(&self, icon: &str) -> Result<Changes, String> {
+        self.set(schema::KEY_APP_ICON, icon)
     }
 
     pub fn warnings(&self) -> Vec<String> {
@@ -489,6 +519,28 @@ mod tests {
     }
 
     #[test]
+    fn app_icon_defaults_reads_writes_and_reports_its_own_change() {
+        let (_d, root, store) = setup();
+        let cfg = ConfigManager::open(root.clone(), &store);
+        assert_eq!(cfg.app_icon(), "blackout");
+        let ch = cfg.set_app_icon("papel").unwrap();
+        assert!(ch.app_icon && !ch.theme && !ch.prefs);
+        assert_eq!(cfg.app_icon(), "papel");
+        let text = fs::read_to_string(root.join(FILE_NAME)).unwrap();
+        assert!(text.contains("app_icon = \"papel\""), "{text}");
+        assert!(text.contains("# Ícone do app"), "comentário preservado");
+        assert!(cfg.set_app_icon("neon").is_err());
+        assert_eq!(cfg.app_icon(), "papel");
+
+        // edição na mão com valor inválido: aviso e padrão
+        fs::write(root.join(FILE_NAME), text.replace("\"papel\"", "\"neon\"")).unwrap();
+        let ch = cfg.load();
+        assert!(ch.app_icon);
+        assert_eq!(ch.warnings.map(|w| w.len()), Some(1));
+        assert_eq!(cfg.app_icon(), "blackout");
+    }
+
+    #[test]
     fn set_writes_the_file_and_reports_what_changed() {
         let (_d, root, store) = setup();
         let cfg = ConfigManager::open(root.clone(), &store);
@@ -498,6 +550,7 @@ mod tests {
             Changes {
                 theme: true,
                 prefs: false,
+                app_icon: false,
                 warnings: None
             }
         );
@@ -507,6 +560,7 @@ mod tests {
             Changes {
                 theme: false,
                 prefs: true,
+                app_icon: false,
                 warnings: None
             }
         );

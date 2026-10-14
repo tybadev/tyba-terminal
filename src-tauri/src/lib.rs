@@ -4977,6 +4977,9 @@ fn emit_config_changes(
     if changes.prefs {
         let _ = app.emit(config::EVENT_PREFS, config.prefs());
     }
+    if changes.app_icon {
+        let _ = app.emit(config::EVENT_APP_ICON, config.app_icon());
+    }
     if let Some(warnings) = changes.warnings {
         let _ = app.emit(config::EVENT_WARNINGS, warnings);
     }

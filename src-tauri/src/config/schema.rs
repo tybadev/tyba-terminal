@@ -19,6 +19,20 @@ pub const KEY_THEME_LIGHT: &str = "theme.slot.light";
 pub const KEY_UI_FONT: &str = "pref.ui_font";
 pub const KEY_FONT_SIZE: &str = "pref.code.font_size";
 pub const KEY_BINDINGS: &str = "pref.keybindings";
+/// Não tem par no SQLite: nasceu no arquivo. Lida por
+/// [`super::ConfigManager::app_icon`].
+pub const KEY_APP_ICON: &str = "appearance.app_icon";
+pub const APP_ICONS: &[&str] = &[
+    "blackout",
+    "aurora",
+    "filamento",
+    "assinatura",
+    "fosforo",
+    "violeta",
+    "grafite",
+    "papel",
+];
+pub const DEFAULT_APP_ICON: &str = "blackout";
 
 /// Chave de `settings` → valor, no formato que ela tinha no SQLite.
 pub type Values = BTreeMap<&'static str, String>;
@@ -68,6 +82,12 @@ pub const FIELDS: &[Field] = &[
         key: KEY_FONT_SIZE,
         kind: Kind::Int(10, 20),
     },
+    Field {
+        section: "appearance",
+        name: "app_icon",
+        key: KEY_APP_ICON,
+        kind: Kind::Enum(APP_ICONS),
+    },
 ];
 
 pub const SECTION_BINDINGS: &str = "keybindings";
@@ -83,6 +103,7 @@ pub const FILE_KEYS: &[&str] = &[
     KEY_UI_FONT,
     KEY_FONT_SIZE,
     KEY_BINDINGS,
+    KEY_APP_ICON,
 ];
 
 /// Espelho de `KEY_ACTIONS` em `src/lib/keys.ts` — o teste
@@ -606,6 +627,20 @@ mod tests {
         assert_eq!(p.warnings.len(), 3, "{:?}", p.warnings);
         let map: BTreeMap<String, String> = serde_json::from_str(&p.values[KEY_BINDINGS]).unwrap();
         assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn app_icon_is_validated_strictly() {
+        let p = ok("[appearance]\napp_icon = \"aurora\"\n");
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert_eq!(p.values[KEY_APP_ICON], "aurora");
+        for bad in ["\"Aurora\"", "\"neon\"", "1"] {
+            let p = ok(&format!("[appearance]\napp_icon = {bad}\n"));
+            assert!(p.values.is_empty());
+            assert_eq!(p.warnings.len(), 1);
+            assert!(p.warnings[0].starts_with("appearance.app_icon: valor inválido"));
+        }
+        assert!(APP_ICONS.contains(&DEFAULT_APP_ICON));
     }
 
     #[test]
