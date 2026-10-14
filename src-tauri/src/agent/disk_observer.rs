@@ -24,6 +24,9 @@ const HEURISTIC_SLACK_MS: u64 = 5_000;
 const AMBIGUITY_WINDOW_MS: u64 = 2_000;
 const FIRST_MESSAGE_SCAN_BYTES: u64 = 64 * 1024;
 const FIRST_MESSAGE_SCAN_LINES: usize = 16;
+/// Teto de leitura do `~/.claude/sessions/<pid>.json`. O registro real tem
+/// meio KB; acima disto não é o arquivo que o Claude escreve, e não se lê.
+const PID_FILE_MAX_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptCandidate {
@@ -121,6 +124,56 @@ fn is_fresh(candidate: &TranscriptCandidate, agent_start_ms: u64) -> bool {
 
 fn claude_projects_dir() -> Option<PathBuf> {
     crate::ssh::home_dir().map(|home| home.join(".claude").join("projects"))
+}
+
+fn claude_sessions_dir() -> Option<PathBuf> {
+    crate::ssh::home_dir().map(|home| home.join(".claude").join("sessions"))
+}
+
+/// A conversa que o próprio Claude Code diz estar rodando no processo `pid`.
+///
+/// O Claude (2.1.x) registra cada processo em `~/.claude/sessions/<pid>.json`
+/// com `pid`, `sessionId` e `startedAt`, e reescreve o `sessionId` a cada troca
+/// de conversa (`/clear`, `/resume`). É o vínculo processo→conversa exato, sem
+/// heurística de tempo — e por isso vence a [`choose_active_transcript`]
+/// quando existe.
+///
+/// Só lê o arquivo do pid que a F1 detectou, nunca lista a pasta: os
+/// registros dos outros `claude` da máquina não são assunto deste pane. E
+/// trata o conteúdo como dado não confiável — `None`, e a heurística de
+/// sempre, para qualquer coisa fora do esperado:
+/// - não é arquivo comum (symlink, pasta, fifo) ou passa de
+///   [`PID_FILE_MAX_BYTES`];
+/// - o `pid` de dentro não é o pedido;
+/// - `startedAt` é anterior ao nascimento do processo: o arquivo é de um
+///   processo morto que tinha o mesmo pid (o Claude não apaga o registro
+///   quando morre por sinal);
+/// - o `sessionId` não passa por [`crate::agent::conversation::is_plausible`].
+pub fn pid_file_conversation(sessions_dir: &Path, pid: u32, agent_start_ms: u64) -> Option<String> {
+    let path = sessions_dir.join(format!("{pid}.json"));
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    if !meta.file_type().is_file() || meta.len() > PID_FILE_MAX_BYTES {
+        return None;
+    }
+    let mut raw = Vec::new();
+    File::open(&path)
+        .ok()?
+        .take(PID_FILE_MAX_BYTES + 1)
+        .read_to_end(&mut raw)
+        .ok()?;
+    if raw.len() as u64 > PID_FILE_MAX_BYTES {
+        return None;
+    }
+    let entry: Value = serde_json::from_slice(&raw).ok()?;
+    if entry.get("pid").and_then(Value::as_u64) != Some(u64::from(pid)) {
+        return None;
+    }
+    let started = entry.get("startedAt").and_then(Value::as_u64)?;
+    if started.saturating_add(HEURISTIC_SLACK_MS) < agent_start_ms {
+        return None;
+    }
+    let id = entry.get("sessionId").and_then(Value::as_str)?.trim();
+    crate::agent::conversation::is_plausible(id).then(|| id.to_string())
 }
 
 /// Só lê a primeira mensagem dos candidatos frescos (ver [`is_fresh`]): os
@@ -329,16 +382,30 @@ impl DiskObserver {
     ///    painel zerar em flapping) — só uma resolução forte rebinda, e depois
     ///    de [`PROVISIONAL_SETTLE_TICKS`] re-resoluções estáveis o bind assenta.
     ///    Bind forte a heurística não mexe mais.
+    ///
+    /// Antes das duas, o registro do próprio Claude ([`pid_file_conversation`]):
+    /// com ele, o bind é exato e as réguas não entram — ver
+    /// [`DiskObserver::observe_exact`].
     pub fn observe<R: Runtime>(
         &self,
         app: &AppHandle<R>,
         tracker: &SharedSubagents,
         session: SessionId,
         cwd: &Path,
+        agent_pid: u32,
         agent_start_ms: u64,
     ) -> bool {
         let candidates = slug_candidates(cwd, agent_start_ms);
-        self.observe_candidates(app, tracker, session, &candidates, agent_start_ms)
+        let exact = claude_sessions_dir()
+            .and_then(|dir| pid_file_conversation(&dir, agent_pid, agent_start_ms));
+        self.observe_candidates(
+            app,
+            tracker,
+            session,
+            &candidates,
+            exact.as_deref(),
+            agent_start_ms,
+        )
     }
 
     fn observe_candidates<R: Runtime>(
@@ -347,8 +414,19 @@ impl DiskObserver {
         tracker: &SharedSubagents,
         session: SessionId,
         candidates: &[TranscriptCandidate],
+        exact: Option<&str>,
         agent_start_ms: u64,
     ) -> bool {
+        if let Some(conversation) = exact {
+            return self.observe_exact(
+                app,
+                tracker,
+                session,
+                candidates,
+                conversation,
+                agent_start_ms,
+            );
+        }
         if let Some(grown) = self.growth_target(session, candidates) {
             self.bind(app, tracker, session, grown, false, true);
             self.seed(session, candidates, agent_start_ms, true);
@@ -361,6 +439,54 @@ impl DiskObserver {
             self.seed(session, candidates, agent_start_ms, false);
         }
         changed
+    }
+
+    /// Bind pela conversa que o Claude registrou para o processo. Mesma
+    /// semântica de painel das réguas: trocar de um bind assentado é migração
+    /// (arquiva), corrigir um palpite provisório ou ligar um agente novo zera.
+    ///
+    /// Conversa conhecida cujo transcript ainda não existe (conversa nova, antes
+    /// da primeira mensagem) **espera**: o bind atual fica, e nenhum palpite da
+    /// heurística entra no lugar — ela erraria justamente o que já se sabe.
+    /// A régua de tamanhos segue atualizada, para o caso de o registro sumir e
+    /// a régua de crescimento voltar a valer no tick seguinte.
+    fn observe_exact<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        tracker: &SharedSubagents,
+        session: SessionId,
+        candidates: &[TranscriptCandidate],
+        conversation: &str,
+        agent_start_ms: u64,
+    ) -> bool {
+        let target = candidates
+            .iter()
+            .find(|c| c.path.file_stem().and_then(|s| s.to_str()) == Some(conversation))
+            .map(|c| c.path.clone());
+        let current = {
+            let mut map = self.sessions.lock().expect("disk observer lock");
+            let live = map
+                .get_mut(&session)
+                .filter(|o| !o.poll_stop.load(Ordering::SeqCst));
+            match live {
+                Some(observer) => {
+                    observer.sizes = candidates.iter().map(|c| (c.path.clone(), c.len)).collect();
+                    if target.as_ref() == Some(&observer.parent) {
+                        observer.provisional = false;
+                        return false;
+                    }
+                    Some(observer.provisional)
+                }
+                None => None,
+            }
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        let archive = current == Some(false);
+        self.bind(app, tracker, session, target, false, archive);
+        self.seed(session, candidates, agent_start_ms, archive);
+        true
     }
 
     /// O transcript para onde o bind deve migrar, ou `None`. Atualiza a régua
@@ -1381,6 +1507,19 @@ mod tests {
                 self.tracker,
                 self.session,
                 &candidates,
+                None,
+                self.start,
+            )
+        }
+
+        fn run_exact(&self, conversation: &str) -> bool {
+            let candidates = list_transcript_candidates(self.slug, self.start);
+            self.observer.observe_candidates(
+                self.handle,
+                self.tracker,
+                self.session,
+                &candidates,
+                Some(conversation),
                 self.start,
             )
         }
@@ -1512,6 +1651,174 @@ mod tests {
         append_turn(slug.path(), CONV_C);
         assert!(!tick.run());
         assert_eq!(observer.bound_parent(session), Some(a));
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
+    }
+
+    // --- `~/.claude/sessions/<pid>.json`: vínculo exato processo→conversa ---
+    //
+    // Registros sintéticos, escritos à mão com os campos que o Claude grava;
+    // nenhum copiado de ~/.claude/sessions.
+
+    const PID: u32 = 4242;
+
+    fn write_pid_file(dir: &Path, pid: u32, body: &str) {
+        fs::write(dir.join(format!("{pid}.json")), body).unwrap();
+    }
+
+    fn pid_record(pid: u32, conversation: &str, started_at: u64) -> String {
+        format!(
+            r#"{{"pid":{pid},"sessionId":"{conversation}","cwd":"/tmp/projeto","startedAt":{started_at},"kind":"interactive","entrypoint":"cli","status":"idle"}}"#
+        )
+    }
+
+    #[test]
+    fn pid_file_gives_the_conversation_of_the_detected_process() {
+        let dir = TempDir::new().unwrap();
+        write_pid_file(dir.path(), PID, &pid_record(PID, CONV_A, 10_400));
+        assert_eq!(
+            pid_file_conversation(dir.path(), PID, 10_000).as_deref(),
+            Some(CONV_A)
+        );
+    }
+
+    #[test]
+    fn pid_file_absent_or_of_another_pid_is_none() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(pid_file_conversation(dir.path(), PID, 10_000), None);
+        // O nome diz 4242 e o conteúdo diz outro processo: não confia.
+        write_pid_file(dir.path(), PID, &pid_record(7, CONV_A, 10_400));
+        assert_eq!(pid_file_conversation(dir.path(), PID, 10_000), None);
+    }
+
+    #[test]
+    fn pid_file_older_than_the_process_is_a_recycled_pid() {
+        let dir = TempDir::new().unwrap();
+        // Registro de um claude morto há horas que tinha o mesmo pid.
+        write_pid_file(dir.path(), PID, &pid_record(PID, CONV_A, 1_000));
+        assert_eq!(pid_file_conversation(dir.path(), PID, 3_600_000), None);
+    }
+
+    #[test]
+    fn pid_file_with_an_implausible_id_or_garbage_is_none() {
+        let dir = TempDir::new().unwrap();
+        write_pid_file(
+            dir.path(),
+            PID,
+            &pid_record(PID, "--dangerously-skip-permissions", 10_400),
+        );
+        assert_eq!(pid_file_conversation(dir.path(), PID, 10_000), None);
+        write_pid_file(dir.path(), PID, "{\"pid\": 4242, \"sessionId\": ");
+        assert_eq!(pid_file_conversation(dir.path(), PID, 10_000), None);
+        write_pid_file(dir.path(), PID, r#"{"pid":4242,"startedAt":10400}"#);
+        assert_eq!(pid_file_conversation(dir.path(), PID, 10_000), None);
+    }
+
+    #[test]
+    fn pid_file_over_the_size_cap_is_not_read() {
+        let dir = TempDir::new().unwrap();
+        let padding = "x".repeat(PID_FILE_MAX_BYTES as usize);
+        let body = format!(
+            r#"{{"pid":{PID},"sessionId":"{CONV_A}","startedAt":10400,"pad":"{padding}"}}"#
+        );
+        write_pid_file(dir.path(), PID, &body);
+        assert_eq!(pid_file_conversation(dir.path(), PID, 10_000), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_file_that_is_a_symlink_is_not_followed() {
+        let dir = TempDir::new().unwrap();
+        let elsewhere = dir.path().join("outro.json");
+        fs::write(&elsewhere, pid_record(PID, CONV_A, 10_400)).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.path().join(format!("{PID}.json"))).unwrap();
+        assert_eq!(pid_file_conversation(dir.path(), PID, 10_000), None);
+    }
+
+    #[test]
+    fn exact_conversation_beats_the_heuristic_and_follows_clear() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let observer = DiskObserver::new();
+        let session = SessionId::new_v4();
+        let slug = TempDir::new().unwrap();
+        let tick = Tick {
+            observer: &observer,
+            handle: &handle,
+            tracker: &tracker,
+            session,
+            slug: slug.path(),
+            start: now_ms().saturating_sub(1_000),
+        };
+
+        // Dois transcripts frescos no slug — a heurística teria de adivinhar.
+        // O registro do processo diz B: o bind é B, forte.
+        append_turn(slug.path(), CONV_A);
+        let b = append_turn(slug.path(), CONV_B);
+        assert!(tick.run_exact(CONV_B));
+        assert_eq!(observer.bound_parent(session), Some(b.clone()));
+        assert!(observer.is_settled(session));
+        tracker.on_subagent_started(
+            &handle,
+            session,
+            "b1b2c3d4e5".into(),
+            "explorer".into(),
+            None,
+            Some(&b),
+        );
+
+        // A cresce (outro claude no mesmo cwd), o registro segue em B: fica.
+        append_turn(slug.path(), CONV_A);
+        assert!(!tick.run_exact(CONV_B));
+        assert_eq!(observer.bound_parent(session), Some(b.clone()));
+
+        // `/clear`: o registro já diz C, mas o transcript de C ainda não
+        // existe. Espera em B — nenhum palpite entra no lugar.
+        assert!(!tick.run_exact(CONV_C));
+        assert_eq!(observer.bound_parent(session), Some(b));
+
+        // C ganhou a primeira mensagem: migra e ARQUIVA o painel.
+        let c = append_turn(slug.path(), CONV_C);
+        assert!(tick.run_exact(CONV_C));
+        assert_eq!(observer.bound_parent(session), Some(c));
+        assert_eq!(
+            observer.bound_conversation(session).as_deref(),
+            Some(CONV_C)
+        );
+        assert!(tracker
+            .snapshot(session)
+            .subagents
+            .iter()
+            .any(|run| run.agent_id.as_deref() == Some("b1b2c3d4e5")));
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
+    }
+
+    #[test]
+    fn exact_conversation_corrects_a_provisional_guess() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let observer = DiskObserver::new();
+        let session = SessionId::new_v4();
+        let slug = TempDir::new().unwrap();
+        let tick = Tick {
+            observer: &observer,
+            handle: &handle,
+            tracker: &tracker,
+            session,
+            slug: slug.path(),
+            start: now_ms().saturating_sub(1_000),
+        };
+        let a = append_turn(slug.path(), CONV_A);
+        let b = append_turn(slug.path(), CONV_B);
+        let guess = provisional_transcript(&a);
+        assert!(observer.observe_with(&handle, &tracker, session, move || Some(guess)));
+
+        assert!(tick.run_exact(CONV_B));
+        assert_eq!(observer.bound_parent(session), Some(b));
+        assert!(observer.is_settled(session));
 
         observer.retain_live(&handle, &tracker, &HashSet::new());
     }

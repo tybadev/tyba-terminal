@@ -575,6 +575,7 @@ fn drive_disk_observer(
                     &state.subagents,
                     session_id,
                     &cwd,
+                    agent.pid,
                     agent.start_ms,
                 );
                 // A sessão de shell também guarda a conversa que está rodando
