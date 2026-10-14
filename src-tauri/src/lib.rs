@@ -5158,6 +5158,7 @@ async fn set_pref(
 fn config_warnings(state: State<'_, AppState>) -> Vec<String> {
     let mut warnings = state.config.warnings();
     warnings.extend(state.themes.slot_warnings());
+    warnings.extend(state.themes.rename_warnings());
     warnings
 }
 
@@ -8072,8 +8073,17 @@ fn render_snippet(
 }
 
 #[tauri::command]
-async fn list_themes(state: State<'_, AppState>) -> Result<Vec<theme::Theme>, String> {
-    Ok(state.themes.list())
+async fn list_themes(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<theme::Theme>, String> {
+    let themes = state.themes.list();
+    // Arquivo posto à mão que a leitura acabou de renomear para o id: avisa.
+    let renamed = state.themes.take_unannounced_renames();
+    if !renamed.is_empty() {
+        let _ = app.emit(config::EVENT_WARNINGS, renamed);
+    }
+    Ok(themes)
 }
 
 #[tauri::command]

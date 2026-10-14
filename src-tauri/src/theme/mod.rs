@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
@@ -422,6 +422,21 @@ fn assign_ids(mut paths: Vec<PathBuf>) -> Vec<(String, PathBuf)> {
 pub struct ThemeManager {
     config: SharedConfig,
     themes_dir: PathBuf,
+    /// Avisos de arquivo renomeado nesta execução, e quantos já foram
+    /// publicados ao vivo (ver [`ThemeManager::take_unannounced_renames`]).
+    renames: parking_lot::Mutex<(Vec<String>, usize)>,
+}
+
+/// Renomeia `from` para `to` sem nunca sobrescrever: o `hard_link` falha se o
+/// destino existe (atômico, inclusive contra corrida), e só então a origem
+/// sai. Os dois moram na pasta de temas.
+fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::hard_link(from, to)?;
+    if let Err(e) = fs::remove_file(from) {
+        let _ = fs::remove_file(to);
+        return Err(e);
+    }
+    Ok(())
 }
 
 pub type SharedThemes = Arc<ThemeManager>;
@@ -431,7 +446,27 @@ impl ThemeManager {
         if config.usable() {
             let _ = crate::config::fsguard::create_dir_private(&themes_dir);
         }
-        Self { config, themes_dir }
+        Self {
+            config,
+            themes_dir,
+            renames: parking_lot::Mutex::new((Vec::new(), 0)),
+        }
+    }
+
+    /// Todos os avisos de renomeação desta execução (segunda via do arranque:
+    /// o `config_warnings` do front). Marca todos como publicados.
+    pub fn rename_warnings(&self) -> Vec<String> {
+        let mut r = self.renames.lock();
+        r.1 = r.0.len();
+        r.0.clone()
+    }
+
+    /// Só os avisos ainda não publicados — para emitir ao vivo.
+    pub fn take_unannounced_renames(&self) -> Vec<String> {
+        let mut r = self.renames.lock();
+        let new = r.0[r.1..].to_vec();
+        r.1 = r.0.len();
+        new
     }
 
     pub fn themes_dir(&self) -> &PathBuf {
@@ -478,7 +513,10 @@ impl ThemeManager {
                 }
             };
             match parse_theme(&json) {
-                Ok(file) => Some(resolve(id, file)),
+                Ok(file) => {
+                    self.settle_file_name(&id, &path);
+                    Some(resolve(id, file))
+                }
                 Err(err) => {
                     eprintln!("tyba: tema ignorado ({}): {err}", path.display());
                     None
@@ -488,6 +526,35 @@ impl ThemeManager {
         .collect();
         themes.sort_by(|a, b| a.name.cmp(&b.name));
         themes
+    }
+
+    /// Arquivo posto à mão com nome que não é id (`Meu Tema.json`) passa a se
+    /// chamar `<id>.json` no disco: o id fica estável mesmo que outro arquivo
+    /// apareça depois. Só tema válido, lido pela leitura guardada, e nunca por
+    /// cima de arquivo existente.
+    fn settle_file_name(&self, id: &str, path: &Path) {
+        let current = path.file_stem().and_then(|s| s.to_str());
+        if current == Some(id) {
+            return;
+        }
+        let target = self.themes_dir.join(format!("{id}.json"));
+        let old = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match rename_no_replace(path, &target) {
+            Ok(()) => {
+                let msg = format!(
+                    "themes/{old}: renomeado para {id}.json — o id do tema é o nome do \
+                     arquivo, e assim ele não muda."
+                );
+                self.renames
+                    .lock()
+                    .0
+                    .push(crate::session::redact::redact(&msg).into_owned());
+            }
+            Err(e) => eprintln!("tyba: tema {old} não foi renomeado para {id}.json: {e}"),
+        }
     }
 
     fn find(&self, id: &str) -> Option<Theme> {
@@ -880,6 +947,80 @@ mod tests {
         // o id normalizado é o que o config.toml aceita e o slot encontra
         mgr.config.set(KEY_THEME_DARK, "meu-tema-2").unwrap();
         assert_eq!(mgr.state().dark.name, "Meu Tema");
+        // e o arquivo passou a se chamar pelo id, sem tocar no outro
+        assert!(!dir.join("Meu Tema.json").exists());
+        assert!(fs::read_to_string(dir.join("meu-tema-2.json"))
+            .unwrap()
+            .contains("Meu Tema"));
+        assert!(fs::read_to_string(dir.join("meu-tema.json"))
+            .unwrap()
+            .contains("Outro"));
+        let warnings = mgr.rename_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("Meu Tema.json") && warnings[0].contains("meu-tema-2.json"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn renamed_hand_placed_theme_keeps_its_id_when_another_file_arrives() {
+        let (mgr, dir) = manager();
+        fs::write(
+            dir.join("Meu Tema.json"),
+            r#"{ "name": "Meu Tema", "base": "dark" }"#,
+        )
+        .unwrap();
+        mgr.config.set(KEY_THEME_DARK, "meu-tema").unwrap();
+        assert_eq!(mgr.state().dark.name, "Meu Tema");
+        assert!(dir.join("meu-tema.json").is_file());
+
+        // chega, à mão, outro arquivo com o mesmo nome de antes
+        fs::write(
+            dir.join("Meu Tema.json"),
+            r#"{ "name": "Outro", "base": "dark" }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            mgr.state().dark.name,
+            "Meu Tema",
+            "o slot não troca de tema"
+        );
+        assert!(dir.join("meu-tema-2.json").is_file());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn invalid_hand_placed_file_is_not_renamed() {
+        let (mgr, dir) = manager();
+        fs::write(dir.join("Quebrado.json"), "{ nope").unwrap();
+        mgr.scan();
+        assert!(dir.join("Quebrado.json").is_file());
+        assert!(mgr.rename_warnings().is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rename_never_replaces_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.json");
+        let b = dir.path().join("b.json");
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+        assert!(rename_no_replace(&a, &b).is_err());
+        assert_eq!(fs::read_to_string(&a).unwrap(), "a");
+        assert_eq!(fs::read_to_string(&b).unwrap(), "b");
+        let c = dir.path().join("c.json");
+        rename_no_replace(&a, &c).unwrap();
+        assert!(!a.exists() && fs::read_to_string(&c).unwrap() == "a");
+    }
+
+    #[test]
+    fn unannounced_renames_are_handed_out_once() {
+        let (mgr, dir) = manager();
+        fs::write(dir.join("X Y.json"), r#"{ "name": "X Y", "base": "dark" }"#).unwrap();
+        mgr.scan();
+        assert_eq!(mgr.take_unannounced_renames().len(), 1);
+        assert!(mgr.take_unannounced_renames().is_empty());
+        assert_eq!(mgr.rename_warnings().len(), 1);
         let _ = fs::remove_dir_all(dir);
     }
 
