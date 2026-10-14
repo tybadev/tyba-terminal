@@ -7,6 +7,7 @@ import { openExternalUrl, writeClipboardText } from "../lib/clipboard";
 import { requestConfirm } from "../lib/confirm";
 import { translateError } from "../lib/errors";
 import { hasRunningWork, jobTone, runTone, sortRuns, type CheckTone } from "../lib/forge";
+import { pageVisible } from "../lib/prs";
 import {
   forgeRunLog,
   forgeRunRerun,
@@ -90,7 +91,11 @@ export function CiView({
   useEffect(() => load(true), [load]);
   useEffect(() => {
     if (!runs || !hasRunningWork(runs)) return;
-    const timer = window.setInterval(() => load(true), REFRESH_MS);
+    // GET condicional no core: run que não mudou não gasta limite. Janela
+    // escondida não pergunta nada.
+    const timer = window.setInterval(() => {
+      if (pageVisible()) load(true);
+    }, REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [runs, load]);
 

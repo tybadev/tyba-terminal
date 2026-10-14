@@ -67,6 +67,8 @@ interface Props {
   onSave: () => void;
   /** Linha/coluna do cursor (1-based), para a linha de status. */
   onCursor?: (line: number, col: number) => void;
+  /** Só leitura (arquivo fora do worktree): nada se digita, nada se salva. */
+  readOnly?: boolean;
 }
 
 class DiffGutterMarker extends CMGutterMarker {
@@ -121,7 +123,7 @@ const diffGutter = gutter({
 });
 
 export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
-  { doc, filename, dark, markers, lsp, diagnostics, onDirtyChange, onSave, onCursor },
+  { doc, filename, dark, markers, lsp, diagnostics, onDirtyChange, onSave, onCursor, readOnly },
   ref,
 ) {
   const cursorRef = useRef(onCursor);
@@ -210,6 +212,8 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
       doc,
       extensions: [
         lineNumbers(),
+        EditorState.readOnly.of(!!readOnly),
+        EditorView.editable.of(!readOnly),
         highlightActiveLineGutter(),
         history(),
         drawSelection(),

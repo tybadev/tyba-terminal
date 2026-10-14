@@ -15,6 +15,7 @@ use crate::session::SessionId;
 use crate::worktree::diff::{FileStatus, SessionDiff};
 
 pub mod backend;
+pub mod grep;
 pub mod gutter;
 pub mod remote;
 pub mod search;

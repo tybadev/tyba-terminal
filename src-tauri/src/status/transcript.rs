@@ -19,13 +19,19 @@ pub fn last_assistant_text(path: &Path, max_chars: usize) -> Option<String> {
         .rev()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .find_map(|entry| assistant_text(&entry).or_else(|| codex_agent_text(&entry)))
-        .map(|text| truncate_chars(&collapse_whitespace(&text), max_chars))
+        .map(|text| truncate_chars(&redacted_collapsed(&text), max_chars))
         .filter(|text| !text.is_empty())
 }
 
 pub fn clean_summary(text: &str, max_chars: usize) -> Option<String> {
-    let collapsed = collapse_whitespace(text);
+    let collapsed = redacted_collapsed(text);
     (!collapsed.is_empty()).then(|| truncate_chars(&collapsed, max_chars))
+}
+
+/// Mascara ANTES de cortar: o corte pode partir um segredo ao meio, e a
+/// metade que sobra já não casa com o padrão da redação.
+fn redacted_collapsed(text: &str) -> String {
+    crate::session::redact::redact(&collapse_whitespace(text)).into_owned()
 }
 
 fn codex_agent_text(entry: &serde_json::Value) -> Option<String> {
@@ -88,6 +94,37 @@ mod tests {
             std::env::temp_dir().join(format!("tyba-transcript-{}-{n}.jsonl", std::process::id()));
         std::fs::write(&path, lines.join("\n")).unwrap();
         path
+    }
+
+    /// Um token que cruza o corte de 140: cortado antes de mascarar, a metade
+    /// `ghp_` + 19 caracteres passaria.
+    fn summary_with_token_at_the_cut() -> String {
+        format!(
+            "{} ghp_{}",
+            "x".repeat(115),
+            "A1b2C3d4E5".repeat(4).get(..36).unwrap()
+        )
+    }
+
+    #[test]
+    fn clean_summary_masks_before_cutting() {
+        let text = summary_with_token_at_the_cut();
+        let out = clean_summary(&text, 140).unwrap();
+        assert!(!out.contains("ghp_"), "meio token vazou: {out}");
+        assert!(out.contains(crate::session::redact::REDACTION_MARK));
+    }
+
+    #[test]
+    fn last_assistant_text_masks_before_cutting() {
+        let line = serde_json::json!({
+            "type": "assistant",
+            "message": {"content": summary_with_token_at_the_cut()},
+        })
+        .to_string();
+        let path = write_transcript(&[&line]);
+        let out = last_assistant_text(&path, 140).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(!out.contains("ghp_"), "meio token vazou: {out}");
     }
 
     #[test]

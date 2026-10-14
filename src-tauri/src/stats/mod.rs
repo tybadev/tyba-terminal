@@ -192,6 +192,8 @@ mod tests {
             opened_by_gate: false,
             did_work: false,
             agent_usage: None,
+            shell_resume_offer: false,
+            agent_conversation_cwd: None,
         };
         store.upsert_session(&session).unwrap();
         id
@@ -508,6 +510,8 @@ mod tests {
                 opened_by_gate: false,
                 did_work: false,
                 agent_usage: None,
+                shell_resume_offer: false,
+                agent_conversation_cwd: None,
             })
             .unwrap();
         block(&store, shell, 1_000, 100);

@@ -37,6 +37,9 @@ interface Props {
   host?: string | null;
   /** Depois de reiniciar: a aba de logs religa o seguidor. */
   onRestarted?: () => void;
+  /** Dentro da tela de Docker: Logs/Shell/Arquivos são seções dela, aqui
+   *  sobram Reiniciar e Parar. */
+  inScreen?: boolean;
 }
 
 const DETAIL_EVERY_MS = 10_000;
@@ -50,7 +53,7 @@ const COMPACT_BELOW_PX = 760;
  * que estado, portas e consumo — e as ações (a outra aba, arquivos,
  * reiniciar, parar).
  */
-export function ContainerStrip({ containerId, current, host, onRestarted }: Props) {
+export function ContainerStrip({ containerId, current, host, onRestarted, inScreen = false }: Props) {
   const { t } = useTranslation();
   const [detail, setDetail] = useState<ContainerDetail | null>(null);
   const [stats, setStats] = useState<ContainerStats | null>(null);
@@ -143,34 +146,32 @@ export function ContainerStrip({ containerId, current, host, onRestarted }: Prop
   const chip =
     "shrink-0 whitespace-nowrap rounded-[5px] border border-tyba-border-field bg-transparent px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:bg-tyba-text/[.06] hover:text-tyba-text disabled:opacity-50";
 
-  const secondary: { key: string; label: string; run: () => void; disabled?: boolean }[] = [
-    {
-      key: "switch",
-      label: current === "logs" ? t("stripShell") : t("stripLogs"),
-      run: () =>
-        void openContainerTab(current === "logs" ? "shell" : "logs", containerId, {
-          host,
-        }).catch((e) => toastError(t("containerOpenError"), e)),
-    },
-    ...(host
-      ? []
-      : [
-          {
-            key: "files",
-            label: t("containerFiles"),
-            run: () =>
-              void openContainerTab("files", containerId).catch((e) =>
-                toastError(t("containerOpenError"), e),
-              ),
-          },
-        ]),
-    {
-      key: "restart",
-      label: busy === "restart" ? t("containerRestarting") : t("containerRestart"),
-      run: () => void act("restart"),
-      disabled: busy !== null,
-    },
-  ];
+  const restart = {
+    key: "restart",
+    label: busy === "restart" ? t("containerRestarting") : t("containerRestart"),
+    run: () => void act("restart"),
+    disabled: busy !== null,
+  };
+  type Action = { key: string; label: string; run: () => void; disabled?: boolean };
+  const switchTab: Action = {
+    key: "switch",
+    label: current === "logs" ? t("stripShell") : t("stripLogs"),
+    run: () =>
+      void openContainerTab(current === "logs" ? "shell" : "logs", containerId, {
+        host,
+      }).catch((e) => toastError(t("containerOpenError"), e)),
+  };
+  const files: Action = {
+    key: "files",
+    label: t("containerFiles"),
+    run: () =>
+      void openContainerTab("files", containerId).catch((e) =>
+        toastError(t("containerOpenError"), e),
+      ),
+  };
+  const secondary: Action[] = inScreen
+    ? [restart]
+    : [switchTab, ...(host ? [] : [files]), restart];
 
   return (
     <div

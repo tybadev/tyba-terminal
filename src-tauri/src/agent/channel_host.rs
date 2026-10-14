@@ -265,7 +265,7 @@ fn userns_usable() -> bool {
 /// componente do caminho relativo começa com `.` (dot-dir/dot-file no
 /// caminho). Pura — nenhuma chamada a disco, opera só sobre os dois `Path`
 /// já canonicalizados por quem chama.
-fn visible_strict_descendant(candidate: &Path, home: &Path) -> bool {
+pub(crate) fn visible_strict_descendant(candidate: &Path, home: &Path) -> bool {
     let Ok(rel) = candidate.strip_prefix(home) else {
         return false;
     };
