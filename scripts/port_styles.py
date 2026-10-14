@@ -87,11 +87,13 @@ tail = '''
   --color-tyba-sunken: var(--tyba-sunken);
   --color-tyba-border: var(--tyba-border);
   --color-tyba-border-strong: var(--tyba-border-strong);
+  --color-tyba-border-field: var(--tyba-border-field);
   --color-tyba-block-border: var(--tyba-block-border);
 
   --color-tyba-text: var(--tyba-text);
   --color-tyba-text-muted: var(--tyba-text-muted);
   --color-tyba-text-faint: var(--tyba-text-faint);
+  --color-tyba-text-ghost: var(--tyba-text-ghost);
   --color-tyba-text-inverse: var(--tyba-text-inverse);
 
   --color-tyba-green: var(--tyba-green);
@@ -102,6 +104,13 @@ tail = '''
   --color-tyba-blue: var(--tyba-blue);
   --color-tyba-cyan: var(--tyba-cyan);
   --color-tyba-red: var(--tyba-red);
+  --color-tyba-green-fill: var(--tyba-green-fill);
+  --color-tyba-amber-fill: var(--tyba-amber-fill);
+  --color-tyba-red-fill: var(--tyba-red-fill);
+  --color-tyba-diff-add-bg: var(--tyba-diff-add-bg);
+  --color-tyba-diff-del-bg: var(--tyba-diff-del-bg);
+  --color-tyba-diff-add-text: var(--tyba-diff-add-text);
+  --color-tyba-diff-del-text: var(--tyba-diff-del-text);
 
   --color-tyba-green-tint: var(--tyba-green-tint);
   --color-tyba-amber-tint: var(--tyba-amber-tint);
@@ -437,6 +446,12 @@ samp {
   line-height: 1.5;
 }
 
+/* O corpo do editor (mockup Editor: 13px). Pelo mesmo motivo da entrelinha:
+   numa folha real, já aplicada antes de o CodeMirror medir. */
+.cm-editor {
+  font-size: 13px;
+}
+
 /* Vidro sobre o void (sidebar, painéis flutuantes) */
 .tyba-glass {
   background: var(--tyba-glass-bg);
@@ -453,7 +468,7 @@ samp {
 }
 .tyba-flow-line--live {
   background-size: 200% 100%;
-  animation: tyba-flow 3s linear infinite;
+  animation: tyba-flow 2.4s linear infinite; /* mockup: .flow-live */
 }
 /* Modificador de espessura, e não uma utilitária do Tailwind: `.tyba-flow-line`
    fixa `height` fora de camada, e utilitária de mesma especificidade em @layer
@@ -464,10 +479,19 @@ samp {
 }
 @keyframes tyba-flow {
   from { background-position: 0% 0; }
-  to { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+/* O ponto vivo do mockup (.pulse): 1 → .45 em 1,6s. */
+@keyframes tyba-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.tyba-pulse {
+  animation: tyba-pulse 1.6s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .tyba-flow-line--live { animation: none; }
+  .tyba-flow-line--live,
+  .tyba-pulse { animation: none; }
 }
 
 @keyframes tyba-pop-in {

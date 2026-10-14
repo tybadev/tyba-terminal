@@ -385,6 +385,27 @@
   --tyba-lift-cast: rgba(0, 0, 0, 0);
 }
 
+/* Só o escuro do TYBA (sem data-theme): diff com os literais do mockup. */
+:root:not([data-theme]) {
+  --tyba-diff-add-text: #c9ecaa;
+  --tyba-diff-del-text: #f3b2a8;
+}
+
+/* Só o claro do TYBA (os outros claros herdam o bloco de cima e têm acentos
+   próprios): tons vivos de ponto e filete do mockup PropostaClaro, literais. */
+[data-theme='light'] {
+  --tyba-green-fill: #3d8a17;
+  --tyba-diff-add-bg: rgba(56, 126, 21, 0.08);
+  --tyba-diff-del-bg: rgba(201, 60, 43, 0.08);
+  --tyba-diff-add-text: #1f4d0a;
+  --tyba-diff-del-text: #7a2215;
+  --tyba-amber-fill: #c47c14;
+  --tyba-red-fill: #d6402e;
+  --tyba-filament: linear-gradient(90deg, #3d8a17, #0f9d8c, #7a4ce8);
+  --tyba-filament-v: linear-gradient(180deg, #3d8a17, #0f9d8c, #7a4ce8);
+  --tyba-flow-gradient: linear-gradient(90deg, transparent, #3d8a17 15%, #0f9d8c 45%, #7a4ce8 75%, transparent);
+}
+
 /* ============================================================
    TYBA — Temas alternativos
    Solarized · Dracula · Gruvbox · GitHub · Monokai (família)
@@ -413,27 +434,6 @@
    ============================================================ */
 
 /* ---------- Solarized Dark (Ethan Schoonover) ---------- */
-/* Só o escuro do TYBA (sem data-theme): diff com os literais do mockup. */
-:root:not([data-theme]) {
-  --tyba-diff-add-text: #c9ecaa;
-  --tyba-diff-del-text: #f3b2a8;
-}
-
-/* Só o claro do TYBA (os outros claros herdam o bloco de cima e têm acentos
-   próprios): tons vivos de ponto e filete do mockup PropostaClaro, literais. */
-[data-theme='light'] {
-  --tyba-green-fill: #3d8a17;
-  --tyba-diff-add-bg: rgba(56, 126, 21, 0.08);
-  --tyba-diff-del-bg: rgba(201, 60, 43, 0.08);
-  --tyba-diff-add-text: #1f4d0a;
-  --tyba-diff-del-text: #7a2215;
-  --tyba-amber-fill: #c47c14;
-  --tyba-red-fill: #d6402e;
-  --tyba-filament: linear-gradient(90deg, #3d8a17, #0f9d8c, #7a4ce8);
-  --tyba-filament-v: linear-gradient(180deg, #3d8a17, #0f9d8c, #7a4ce8);
-  --tyba-flow-gradient: linear-gradient(90deg, transparent, #3d8a17 15%, #0f9d8c 45%, #7a4ce8 75%, transparent);
-}
-
 [data-theme='solarized-dark'] {
   color-scheme: dark;
 
@@ -1272,6 +1272,7 @@ samp {
 .cm-gutters {
   line-height: 1.5;
 }
+
 /* O corpo do editor (mockup Editor: 13px). Pelo mesmo motivo da entrelinha:
    numa folha real, já aplicada antes de o CodeMirror medir. */
 .cm-editor {
