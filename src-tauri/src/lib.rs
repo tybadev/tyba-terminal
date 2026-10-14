@@ -4903,7 +4903,7 @@ fn new_window(app: AppHandle) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let window = builder.build().map_err(|e| e.to_string())?;
-        let icon = app_icon::current(&*app.state::<AppState>().store);
+        let icon = app_icon::current(&app.state::<AppState>().config);
         app_icon::apply_to_window(&app, &window, icon);
     }
     Ok(())
@@ -4912,15 +4912,25 @@ fn new_window(app: AppHandle) -> Result<(), String> {
 /// O id do ícone do app em vigor (Configurações → Aparência).
 #[tauri::command]
 fn get_app_icon(state: State<'_, AppState>) -> &'static str {
-    app_icon::current(&*state.store).id()
+    state.config.app_icon()
 }
 
-/// Troca o ícone do app: só um id da lista embutida, nunca um caminho.
+/// Troca o ícone do app: só um id da lista embutida, nunca um caminho. Grava
+/// no `config.toml`; quem aplica é o ouvinte do `config::EVENT_APP_ICON`
+/// ([`app_icon::follow_config`]), o mesmo da edição na mão.
 #[tauri::command]
 fn set_app_icon(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let icon = app_icon::choose(&app, &*state.store, &id)?;
-    let _ = app.emit(app_icon::EVENT_CHANGED, icon.id());
-    Ok(())
+    let icon = app_icon::AppIcon::from_id(&id).ok_or("ícone desconhecido")?;
+    match state.config.set_app_icon(icon.id()) {
+        Ok(changes) => {
+            emit_config_changes(&app, &state.config, &state.themes, changes);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = app.emit(config::EVENT_WARNINGS, vec![e.clone()]);
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -8014,7 +8024,11 @@ pub fn run() {
 
             // O ícone do Dock trocado em tempo de execução morre com o processo:
             // a escolha salva volta a cada abertura.
-            app_icon::apply_at_startup(app.handle(), &*store);
+            {
+                let state = app.state::<AppState>();
+                app_icon::follow_config(app.handle());
+                app_icon::apply_at_startup(app.handle(), &state.config);
+            }
 
             // Único passo caro que fica: montar o NSMenu é operação de main
             // thread, não há para onde mover.

@@ -2128,7 +2128,7 @@ export const setAppIcon = (id: string) => invoke<void>("set_app_icon", { id });
 export const onAppIconChanged = (
   handler: (id: string) => void,
 ): Promise<UnlistenFn> =>
-  listen<string>("app-icon://changed", (e) => handler(e.payload));
+  listen<string>("config://app-icon", (e) => handler(e.payload));
 
 export const setAppMenu = (spec: MenuSpec) =>
   invoke<void>("set_app_menu", { spec });

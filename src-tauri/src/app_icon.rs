@@ -15,15 +15,11 @@
 //! sistema em vez de pôr um PNG por cima — no macOS 26 o do bundle acompanha
 //! claro/escuro, coisa que um PNG fixo não faz.
 
-use tauri::AppHandle;
 #[cfg(not(target_os = "macos"))]
 use tauri::Manager;
+use tauri::{AppHandle, Listener};
 
-/// Payload: o id do ícone em vigor, para as outras janelas acompanharem.
-pub const EVENT_CHANGED: &str = "app-icon://changed";
-
-/// Chave provisória no SQLite — ver [`IconPref`].
-const STORE_KEY: &str = "appearance.app_icon";
+use crate::config::{self, ConfigManager};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppIcon {
@@ -100,25 +96,6 @@ pub fn startup_icon(stored: Option<&str>) -> Option<AppIcon> {
     Some(resolve(stored)).filter(|icon| *icon != AppIcon::DEFAULT)
 }
 
-/// Onde a escolha mora. **Provisório:** o destino é `[appearance] app_icon` no
-/// `~/.tyba/config.toml`, cuja API (`config`) ainda não expõe a chave; até lá
-/// vale o SQLite. Trocar a origem é trocar o `impl` — os comandos não mudam.
-pub trait IconPref {
-    fn load_icon(&self) -> Option<String>;
-    fn save_icon(&self, icon: AppIcon) -> Result<(), String>;
-}
-
-impl IconPref for crate::session::store::Store {
-    fn load_icon(&self) -> Option<String> {
-        self.get_setting(STORE_KEY).ok().flatten()
-    }
-
-    fn save_icon(&self, icon: AppIcon) -> Result<(), String> {
-        self.set_setting(STORE_KEY, icon.id())
-            .map_err(|e| e.to_string())
-    }
-}
-
 /// Põe o ícone em vigor. Falha é silenciosa e só no log: um ícone que não
 /// trocou não pode atrapalhar o app.
 pub fn apply(app: &AppHandle, icon: AppIcon) {
@@ -179,31 +156,35 @@ fn set_dock_icon(png: Option<&'static [u8]>) {
     unsafe { ns_app.setApplicationIconImage(image.as_deref()) };
 }
 
-/// Ícone salvo agora, resolvido para o id que a UI marca.
-pub fn current(pref: &dyn IconPref) -> AppIcon {
-    resolve(pref.load_icon().as_deref())
+/// O ícone salvo no `config.toml` (`[appearance] app_icon`).
+pub fn current(config: &ConfigManager) -> AppIcon {
+    resolve(Some(config.app_icon()))
 }
 
 /// O arranque: reaplica a escolha que não é o padrão.
-pub fn apply_at_startup(app: &AppHandle, pref: &dyn IconPref) {
-    if let Some(icon) = startup_icon(pref.load_icon().as_deref()) {
+pub fn apply_at_startup(app: &AppHandle, config: &ConfigManager) {
+    if let Some(icon) = startup_icon(Some(config.app_icon())) {
         apply(app, icon);
     }
 }
 
-/// O comando da UI: valida, salva, aplica e avisa as janelas. Id fora da lista
-/// é recusado antes de qualquer efeito.
-pub fn choose(app: &AppHandle, pref: &dyn IconPref, id: &str) -> Result<AppIcon, String> {
-    let icon = AppIcon::from_id(id).ok_or("ícone desconhecido")?;
-    pref.save_icon(icon)?;
-    apply(app, icon);
-    Ok(icon)
+/// Payload do [`config::EVENT_APP_ICON`] (o id, em JSON) → ícone.
+fn icon_from_event(payload: &str) -> AppIcon {
+    resolve(serde_json::from_str::<String>(payload).ok().as_deref())
+}
+
+/// Aplica toda mudança publicada pelo `config`: a da UI (`set_app_icon`) e a
+/// edição na mão do arquivo passam pelo mesmo evento.
+pub fn follow_config(app: &AppHandle) {
+    let handle = app.clone();
+    app.listen_any(config::EVENT_APP_ICON, move |event| {
+        apply(&handle, icon_from_event(event.payload()));
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
 
     #[test]
     fn every_id_round_trips_and_is_unique() {
@@ -276,32 +257,28 @@ mod tests {
         assert_eq!(front, core);
     }
 
-    #[derive(Default)]
-    struct Mem(RefCell<Option<String>>);
-
-    impl IconPref for Mem {
-        fn load_icon(&self) -> Option<String> {
-            self.0.borrow().clone()
-        }
-        fn save_icon(&self, icon: AppIcon) -> Result<(), String> {
-            *self.0.borrow_mut() = Some(icon.id().to_string());
-            Ok(())
-        }
+    #[test]
+    fn ids_match_the_config_schema() {
+        let core: Vec<&str> = AppIcon::ALL.iter().map(|i| i.id()).collect();
+        assert_eq!(config::schema::APP_ICONS, core.as_slice());
+        assert_eq!(config::schema::DEFAULT_APP_ICON, AppIcon::DEFAULT.id());
     }
 
     #[test]
-    fn current_reads_through_the_pref() {
-        let pref = Mem::default();
-        assert_eq!(current(&pref), AppIcon::Blackout);
-        pref.save_icon(AppIcon::Fosforo).unwrap();
-        assert_eq!(current(&pref), AppIcon::Fosforo);
+    fn event_payload_resolves_to_an_icon() {
+        assert_eq!(icon_from_event("\"papel\""), AppIcon::Papel);
+        assert_eq!(icon_from_event("\"blackout\""), AppIcon::Blackout);
+        assert_eq!(icon_from_event("\"neon\""), AppIcon::Blackout);
+        assert_eq!(icon_from_event("papel"), AppIcon::Blackout);
     }
 
     #[test]
-    fn store_pref_round_trips() {
+    fn current_reads_the_config_file() {
+        let dir = tempfile::tempdir().unwrap();
         let store = crate::session::store::Store::open_in_memory().unwrap();
-        assert_eq!(store.load_icon(), None);
-        store.save_icon(AppIcon::Grafite).unwrap();
-        assert_eq!(current(&store), AppIcon::Grafite);
+        let cfg = ConfigManager::open(dir.path().join(".tyba"), &store);
+        assert_eq!(current(&cfg), AppIcon::Blackout);
+        cfg.set_app_icon("fosforo").unwrap();
+        assert_eq!(current(&cfg), AppIcon::Fosforo);
     }
 }
