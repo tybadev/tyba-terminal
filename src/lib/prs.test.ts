@@ -32,6 +32,7 @@ const item = (over: Partial<PrListItem> = {}): PrListItem => ({
   comments: 0,
   additions: 1,
   deletions: 0,
+  cross_repo: false,
   session: null,
   ...over,
 });

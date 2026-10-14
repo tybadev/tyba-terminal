@@ -535,6 +535,8 @@ export interface PrListItem {
   comments: number;
   additions: number;
   deletions: number;
+  /** PR vindo de fork (`isCrossRepository`): nunca ligado a sessão. */
+  cross_repo: boolean;
   session: PrSessionLink | null;
 }
 
@@ -544,6 +546,9 @@ export interface PrPage {
   /** Mesclados recentemente (até 5); só vem no filtro "open". */
   recent_merged: PrListItem[];
   counts: { open: number; mine: number; review: number; draft: number };
+  /** A lista bateu no `limit` pedido: há mais PRs (a UI oferece "carregar mais"
+   *  e mostra as contagens como "N+"). */
+  capped: boolean;
   /** `owner/repo`. */
   repo: string;
   forge: ForgeKind;
@@ -628,8 +633,9 @@ export interface PrDetail {
 }
 
 /** `null` = a forja da sessão não tem lista rica (GitLab por enquanto). */
-export const forgePrPage = (id: SessionId, filter: PrFilter, fresh: boolean) =>
-  invoke<PrPage | null>("forge_pr_page", { id, filter, fresh });
+/** `limit`: 100 por padrão; "carregar mais" pede 200, 300… (teto 1000). */
+export const forgePrPage = (id: SessionId, filter: PrFilter, fresh: boolean, limit?: number) =>
+  invoke<PrPage | null>("forge_pr_page", { id, filter, fresh, limit: limit ?? null });
 
 export const forgePrDetail = (id: SessionId, number: number, fresh: boolean) =>
   invoke<PrDetail | null>("forge_pr_detail", { id, number, fresh });
@@ -701,6 +707,8 @@ export interface RunLog {
   truncated: boolean;
   /** Nome do primeiro passo que falhou, quando o job falhou. */
   failed_step: string | null;
+  /** Índice (0-based, em `text` já cortado) da primeira linha `##[error]`. */
+  error_line: number | null;
 }
 
 /** Log de um job (`gh run view --job <id> --log`, com teto e redação). */
