@@ -315,10 +315,27 @@ fn parse_bindings(item: &Item, warnings: &mut Vec<String>) -> Option<String> {
     serde_json::to_string(&out).ok()
 }
 
+/// Erro de TOML só com a linha: a mensagem da biblioteca cita o trecho do
+/// arquivo, e ele pode ser um token colado no lugar errado.
+pub fn toml_error(text: &str, span: Option<std::ops::Range<usize>>) -> String {
+    match span {
+        Some(span) => {
+            let start = span.start.min(text.len());
+            let line = text.as_bytes()[..start]
+                .iter()
+                .filter(|b| **b == b'\n')
+                .count()
+                + 1;
+            format!("TOML inválido na linha {line}")
+        }
+        None => "TOML inválido".to_string(),
+    }
+}
+
 pub fn parse(text: &str) -> Result<Parsed, String> {
     let doc: Document = text
         .parse()
-        .map_err(|e: toml_edit::TomlError| format!("TOML inválido: {}", e.to_string().trim()))?;
+        .map_err(|e: toml_edit::TomlError| toml_error(text, e.span()))?;
     let mut parsed = Parsed::default();
     let warnings = &mut parsed.warnings;
 
@@ -378,6 +395,12 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
                     expected(field.kind)
                 )),
             }
+        }
+    }
+    // Caminho de chave também é texto do arquivo: `"sk-…" = 1` não volta.
+    for w in &mut parsed.warnings {
+        if let std::borrow::Cow::Owned(r) = crate::session::redact::redact(w) {
+            *w = r;
         }
     }
     parsed.warnings.dedup();
@@ -527,6 +550,26 @@ mod tests {
     fn broken_toml_is_an_error_not_a_panic() {
         assert!(parse("[theme\nmode = ").is_err());
         assert!(parse("[theme]\nmode = \"a\"\nmode = \"b\"\n").is_err());
+    }
+
+    #[test]
+    fn broken_toml_error_gives_the_line_but_never_the_text() {
+        let e =
+            parse("[theme]\nmode = \"dark\"\ndark = sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA\n")
+                .unwrap_err();
+        assert!(!e.contains("sk-ant"), "{e}");
+        assert_eq!(e, "TOML inválido na linha 3");
+    }
+
+    #[test]
+    fn secret_looking_key_name_is_not_echoed() {
+        let p = ok("\"sk-abcdefghijklmnopqrstuvwx\" = 1\n");
+        assert_eq!(p.warnings.len(), 1, "{:?}", p.warnings);
+        assert!(
+            p.warnings.iter().all(|w| !w.contains("sk-abc")),
+            "{:?}",
+            p.warnings
+        );
     }
 
     #[test]

@@ -38,8 +38,13 @@ fn expand(entry: &str, home: &Path) -> Result<PathBuf, String> {
 }
 
 pub fn parse(content: &str, home: &Path) -> Result<UserConfig, String> {
-    let raw: RawUserConfig =
-        toml::from_str(content).map_err(|e| format!("~/.tyba/config.toml inválido: {e}"))?;
+    // Só a linha: a mensagem do `toml` cita o trecho, que pode ser um segredo.
+    let raw: RawUserConfig = toml::from_str(content).map_err(|e: toml::de::Error| {
+        format!(
+            "~/.tyba/config.toml: {}",
+            crate::config::schema::toml_error(content, e.span())
+        )
+    })?;
     let mut sandbox_read_allow = Vec::new();
     for entry in &raw.sandbox.read_allow {
         sandbox_read_allow.push(expand(entry, home)?);
