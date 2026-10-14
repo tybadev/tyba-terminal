@@ -1331,6 +1331,45 @@ samp {
   .tyba-pulse { animation: none; }
 }
 
+/* Esqueleto de carregamento (feature carregamento): a forma final do que vai
+   chegar, num véu do texto do tema — derivado, vale nos 18 temas, claro e
+   escuro. O brilho corre devagar; parado em reduzir movimento. */
+.tyba-skeleton {
+  display: inline-block;
+  flex: none;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--tyba-text) 6%, transparent) 0%,
+    color-mix(in srgb, var(--tyba-text) 11%, transparent) 50%,
+    color-mix(in srgb, var(--tyba-text) 6%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: tyba-skeleton 1.6s ease-in-out infinite;
+}
+@keyframes tyba-skeleton {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+/* Progresso numérico (só quando o core sabe o total): trilho no véu, o
+   filamento enchendo. Contorno nenhum, barra inteira — nunca um lado só. */
+.tyba-load-bar {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--tyba-text) 6%, transparent);
+}
+.tyba-load-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--tyba-filament);
+  transition: width 200ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tyba-skeleton { animation: none; }
+  .tyba-load-bar > span { transition: none; }
+}
+
 @keyframes tyba-pop-in {
   from {
     opacity: 0;
