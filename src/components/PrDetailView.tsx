@@ -22,6 +22,7 @@ import {
   forgePrDetail,
   forgePrMerge,
   forgePrReview,
+  onForgeChanged,
   type PrMergeStrategy,
   type PrReviewEvent,
   type PrCheck,
@@ -36,8 +37,11 @@ import {
   buildTimeline,
   checkDuration,
   checksSummary,
+  forgeChangeHits,
   forwardPrompt,
   initials,
+  pageVisible,
+  rateLimitNotice,
   reviewerStates,
   timelineEventId,
   type TimelineEvent,
@@ -120,7 +124,7 @@ export function PrDetailView({
   /** Manda o prompt para a sessão de agente ligada ao PR (`pr.session`). */
   onForward: (session: SessionId, prompt: string) => Promise<void>;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const relative = useRelative();
   const [pr, setPr] = useState<PrDetail | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -151,11 +155,24 @@ export function PrDetailView({
     [session.id, number, t],
   );
 
+  // Mesmo esquema da lista: o poll lê o cache, o core revalida em segundo
+  // plano e avisa por `forge://changed` quando este PR mudou.
   useEffect(() => {
     load(false);
-    const timer = window.setInterval(() => load(true), 60_000);
+    const timer = window.setInterval(() => {
+      if (pageVisible()) load(false);
+    }, 60_000);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    const unlisten = onForgeChanged((change) => {
+      if (forgeChangeHits(change, null, number)) load(false);
+    });
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [number, load]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
@@ -178,6 +195,7 @@ export function PrDetailView({
     );
   }
 
+  const rateNotice = pr.rate_limit ? rateLimitNotice(pr.rate_limit, i18n.language) : null;
   const mergeReady =
     pr.state === "open" && pr.mergeable !== "conflicting" && checks.tone !== "red";
 
@@ -546,9 +564,15 @@ export function PrDetailView({
             <span className="text-tyba-green">+{pr.additions}</span>{" "}
             <span className="text-tyba-red">−{pr.deletions}</span> ·{" "}
             {t("diffFilesSummary", { count: pr.changed_files })} ·{" "}
-            {t("prCommitsCount", { count: pr.commits.length })}
+            {t("prCommitsCount", { count: pr.commits_total })}
           </span>
         </div>
+        {pr.truncated && <p className="text-[11px] text-tyba-amber">{t("prTruncated")}</p>}
+        {rateNotice && (
+          <p role="status" className="text-[11px] text-tyba-amber">
+            {t(rateNotice.key, rateNotice.params)}
+          </p>
+        )}
         {/* A atualização falhou mas há dado na tela: avisa sem esconder o PR. */}
         {error && (
           <p role="status" className="text-[11px] text-tyba-amber" title={error}>

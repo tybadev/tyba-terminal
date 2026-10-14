@@ -14,6 +14,7 @@ pub mod launch_config;
 pub mod layout;
 pub mod lsp;
 pub mod menu;
+pub mod notifications;
 pub mod pty;
 pub mod repo;
 pub mod repo_config;
@@ -1132,6 +1133,7 @@ fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
     let _ = state
         .store
         .deny_pending_inferred_for_session(&id.to_string(), approvals::now_ms());
+    notifications::record(app, |n| n.native_prompts_denied(id));
 }
 
 /// Reabre no boot as sessões que morreram com o app anterior, conforme a pref de
@@ -3245,10 +3247,21 @@ fn pr_session_link(
     })
 }
 
+/// Mudou algo na forja depois de uma revalidação em segundo plano (SWR): a UI
+/// relê pelo cache. Payload: [`forge::prs::ForgeChange`].
+const EVENT_FORGE_CHANGED: &str = "forge://changed";
+
+fn forge_notify(app: AppHandle) -> forge::prs::Notify {
+    std::sync::Arc::new(move |change| {
+        let _ = app.emit(EVENT_FORGE_CHANGED, change);
+    })
+}
+
 /// Lista rica de PRs. `None` = a forja não tem lista rica (GitLab, sem `gh`).
 /// O vínculo com sessão é preenchido aqui, fora do cache da forja.
 #[tauri::command]
 async fn forge_pr_page(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     filter: forge::prs::PrFilter,
@@ -3259,7 +3272,9 @@ async fn forge_pr_page(
     let repo_root = state.sessions.get(id).and_then(|s| s.repo_root);
     let sessions = state.sessions.list();
     let path = ctx.path;
-    let mut page = forge_blocking(move || forge::prs::page(&path, filter, limit, fresh)).await?;
+    let notify = forge_notify(app);
+    let mut page =
+        forge_blocking(move || forge::prs::page(&path, filter, limit, fresh, notify)).await?;
     if let Some(page) = page.as_mut() {
         for item in page.items.iter_mut().chain(page.recent_merged.iter_mut()) {
             item.session =
@@ -3271,6 +3286,7 @@ async fn forge_pr_page(
 
 #[tauri::command]
 async fn forge_pr_detail(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     number: u64,
@@ -3280,7 +3296,9 @@ async fn forge_pr_detail(
     let repo_root = state.sessions.get(id).and_then(|s| s.repo_root);
     let sessions = state.sessions.list();
     let path = ctx.path;
-    let mut detail = forge_blocking(move || forge::prs::detail(&path, number, fresh)).await?;
+    let notify = forge_notify(app);
+    let mut detail =
+        forge_blocking(move || forge::prs::detail(&path, number, fresh, notify)).await?;
     if let Some(detail) = detail.as_mut() {
         detail.session = pr_session_link(
             &sessions,
@@ -7403,6 +7421,35 @@ fn delete_snippet(state: State<'_, AppState>, id: String) -> Result<(), String> 
     state.store.delete_snippet(&id).map_err(|e| e.to_string())
 }
 
+/// Histórico de notificações: mais nova primeiro, até 500, dos últimos 7 dias.
+#[tauri::command]
+async fn notifications_list(
+    app: AppHandle,
+) -> Result<Vec<notifications::NotificationEntry>, String> {
+    off_main(app, |app, _| {
+        app.state::<notifications::Notifications>()
+            .list()
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+/// `ids` = essas; `None` = todas. Avisa `notifications://changed` se mudou algo.
+#[tauri::command]
+async fn notifications_mark_read(app: AppHandle, ids: Option<Vec<u64>>) -> Result<(), String> {
+    off_main(app, move |app, _| {
+        let changed = app
+            .state::<notifications::Notifications>()
+            .mark_read(ids.as_deref())
+            .map_err(|e| e.to_string())?;
+        if changed {
+            notifications::emit_changed(app);
+        }
+        Ok(())
+    })
+    .await?
+}
+
 #[tauri::command]
 fn snippet_placeholders(command: String) -> Vec<snippet::Placeholder> {
     snippet::placeholders(&command)
@@ -7820,6 +7867,12 @@ pub fn run() {
             // canal por Host precisa ser avisado de lá, não de cada um dos
             // pontos que fecham sessão.
             sessions.attach_host_queries(Arc::clone(&host_queries));
+            // Antes de qualquer sessão ou pedido poder gravar no histórico; o
+            // `new` encerra os pedidos pendentes do processo anterior.
+            app.manage(notifications::Notifications::new(
+                Arc::clone(&store),
+                Arc::clone(&sessions),
+            ));
             let layout: layout::SharedLayout =
                 Arc::new(layout::LayoutManager::new(Arc::clone(&store)));
 
@@ -8214,6 +8267,8 @@ pub fn run() {
             save_snippet,
             delete_snippet,
             snippet_placeholders,
+            notifications_list,
+            notifications_mark_read,
             render_snippet,
             list_themes,
             get_theme_state,

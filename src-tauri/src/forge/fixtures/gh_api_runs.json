@@ -1,0 +1,38 @@
+{
+  "total_count": 3,
+  "workflow_runs": [
+    {
+      "id": 111111111,
+      "name": "Release",
+      "display_title": "release v9.9.9",
+      "status": "in_progress",
+      "conclusion": null,
+      "html_url": "https://github.com/acme/widget/actions/runs/111111111",
+      "head_branch": "v9.9.9",
+      "event": "push",
+      "created_at": "2026-07-14T05:25:00Z"
+    },
+    {
+      "id": 222222222,
+      "name": "CI",
+      "display_title": "feat: knob",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/acme/widget/actions/runs/222222222",
+      "head_branch": "main",
+      "event": "push",
+      "created_at": "2026-07-14T05:24:46Z"
+    },
+    {
+      "id": 333333333,
+      "name": "CI",
+      "display_title": "feat: knob",
+      "status": "completed",
+      "conclusion": "failure",
+      "html_url": "https://github.com/acme/widget/actions/runs/333333333",
+      "head_branch": "feat/knob",
+      "event": "pull_request",
+      "created_at": "2026-07-14T04:03:00Z"
+    }
+  ]
+}
