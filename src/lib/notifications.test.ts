@@ -13,7 +13,6 @@ import {
   groupBySession,
   historyEntries,
   isDoneGroup,
-  nativePending,
   resetParts,
   unreadCount,
 } from "./notifications";
@@ -224,14 +223,13 @@ describe("histórico de notificações", () => {
     expect(historyEntries(list).map((e) => e.id)).toEqual([2, 3]);
   });
 
-  test("prompt nativo pendente vai para Precisa de você, não para o histórico", () => {
+  test("prompt nativo fica no histórico mesmo pendente (estado deduzido não vai ao vivo)", () => {
     const list = [
       entry({ id: 1, kind: "native_approval", pending: true, category: "request", risk: "yellow" }),
       entry({ id: 2, kind: "native_approval", pending: false, category: "done", decision: "denied" }),
       entry({ id: 3, kind: "approval", pending: true, category: "request" }),
     ];
-    expect(historyEntries(list).map((e) => e.id)).toEqual([2]);
-    expect(nativePending(list).map((e) => e.id)).toEqual([1]);
+    expect(historyEntries(list).map((e) => e.id)).toEqual([1, 2]);
   });
 
   test("grupo concluído: só quando tudo nele concluiu", () => {
@@ -304,8 +302,9 @@ describe("histórico de notificações", () => {
     ];
     expect(attentionCount(2, list)).toBe(3);
     expect(unreadCount(list)).toBe(2);
-    // O amarelo esperando no prompt nativo também pede você.
-    const withNative = [...list, entry({ id: 4, kind: "native_approval", pending: true, category: "request", read: true })];
-    expect(attentionCount(2, withNative)).toBe(4);
+    // O amarelo do prompt nativo não entra no badge: o pendente é deduzido e
+    // pode ficar pendurado depois de negado no terminal.
+    const withNative = [...list, entry({ id: 4, kind: "native_approval", pending: true, category: "request" })];
+    expect(attentionCount(2, withNative)).toBe(3);
   });
 });

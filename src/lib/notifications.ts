@@ -148,17 +148,16 @@ export function isRequestKind(e: NotificationEntry): boolean {
   return e.kind === "approval" || e.kind === "native_approval";
 }
 
-/** Pedido pendente aparece ao vivo em "Precisa de você" (o do TYBA vem de
- *  `approvals`; o do prompt nativo, de `nativePending`), não no histórico —
- *  senão aparece duas vezes. */
+/** Pedido do TYBA pendente aparece ao vivo em "Precisa de você" (vem de
+ *  `approvals`), não no histórico — senão aparece duas vezes.
+ *
+ *  O amarelo do prompt nativo do Claude fica no histórico mesmo pendente: o
+ *  estado dele é DEDUZIDO dos hooks e erra para os dois lados (negar no
+ *  terminal não dispara hook nenhum; um `PreToolUse` paralelo fecha como
+ *  negado um prompt ainda aberto). Na superfície ao vivo e no badge isso
+ *  viraria alarme falso que não apaga, ou pedido real que some. */
 export function historyEntries(entries: NotificationEntry[]): NotificationEntry[] {
-  return entries.filter((e) => !(isRequestKind(e) && e.pending));
-}
-
-/** Amarelo do Claude esperando no prompt nativo. Só se decide no terminal:
- *  no painel ele só tem "Abrir na sessão". */
-export function nativePending(entries: NotificationEntry[]): NotificationEntry[] {
-  return entries.filter((e) => e.kind === "native_approval" && e.pending);
+  return entries.filter((e) => !(e.kind === "approval" && e.pending));
 }
 
 /** Grupo atenuado (mockup Notificacoes, `.done`): tudo nele já concluiu. */
@@ -223,14 +222,11 @@ export function groupBySession<T extends { session_id: SessionId }>(
   return [...groups.values()];
 }
 
-/** Badge do ícone: pedidos pendentes (do TYBA e do prompt nativo) + erros
- *  não lidos ("pedem você"). */
+/** Badge do ícone: pedidos pendentes do TYBA + erros não lidos ("pedem
+ *  você"). O pedido do prompt nativo não entra: o estado dele é deduzido
+ *  (ver `historyEntries`). */
 export function attentionCount(pendingApprovals: number, entries: NotificationEntry[]): number {
-  return (
-    pendingApprovals +
-    nativePending(entries).length +
-    entries.filter((e) => !e.read && e.category === "error").length
-  );
+  return pendingApprovals + entries.filter((e) => !e.read && e.category === "error").length;
 }
 
 export function unreadCount(entries: NotificationEntry[]): number {

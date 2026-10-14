@@ -890,7 +890,6 @@ const resources = {
       notifResetsOn: "volta {{date}} às {{time}}",
       notifOpenInSession: "Abrir na sessão",
       notifNativeTitle: "{{who}} pede permissão no terminal",
-      notifNativeAsks: "decide-se no terminal",
       notifNativeApproved: "{{who}}: aprovado no terminal",
       notifNativeDenied: "{{who}}: negado no terminal",
       notifNativeExpired: "{{who}}: pedido no terminal encerrado sem decisão",
@@ -900,7 +899,7 @@ const resources = {
       notifGlyphDone: "concluído",
       notifHowItWorks: "Como funciona",
       notifHowItWorksBody:
-        "Aqui fica, por 7 dias, o que pediu sua atenção: pedidos de aprovação, erros, agentes que terminaram e avisos de limite. Ação vermelha só se aprova na sessão. O pedido amarelo do Claude se decide no próprio terminal e entra aqui com a decisão deduzida: aprovado quando o comando rodou, negado quando o turno seguiu sem ele.",
+        "Aqui fica, por 7 dias, o que pediu sua atenção: pedidos de aprovação, erros, agentes que terminaram e avisos de limite. Ação vermelha só se aprova na sessão. O pedido amarelo do Claude se decide no próprio terminal e entra aqui com a decisão deduzida: aprovado quando o comando rodou, negado quando o turno seguiu sem ele. Por ser deduzido, ele não conta no sino.",
       gitLogCreateBranch: "Criar branch aqui",
       gitLogCreateBranchTitle: "Nova branch em {{sha}}",
       gitLogCreateBranchPlaceholder: "nome-da-branch",
@@ -2632,7 +2631,6 @@ const resources = {
       notifResetsOn: "back {{date}} at {{time}}",
       notifOpenInSession: "Open in session",
       notifNativeTitle: "{{who}} asks permission in the terminal",
-      notifNativeAsks: "decided in the terminal",
       notifNativeApproved: "{{who}}: approved in the terminal",
       notifNativeDenied: "{{who}}: denied in the terminal",
       notifNativeExpired: "{{who}}: terminal request closed without a decision",
@@ -2642,7 +2640,7 @@ const resources = {
       notifGlyphDone: "done",
       notifHowItWorks: "How it works",
       notifHowItWorksBody:
-        "What needed your attention stays here for 7 days: approval requests, errors, agents that finished and usage limit warnings. A red action is only approved in its session. Claude's yellow requests are decided in the terminal itself and show up here with an inferred decision: approved when the command ran, denied when the turn moved on without it.",
+        "What needed your attention stays here for 7 days: approval requests, errors, agents that finished and usage limit warnings. A red action is only approved in its session. Claude's yellow requests are decided in the terminal itself and show up here with an inferred decision: approved when the command ran, denied when the turn moved on without it. Since it is inferred, it does not count on the bell.",
       gitLogCreateBranch: "Create branch here",
       gitLogCreateBranchTitle: "New branch at {{sha}}",
       gitLogCreateBranchPlaceholder: "branch-name",

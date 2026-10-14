@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowRight, CaretDown, CaretRight, Check, Diamond, Info, Tray, Warning, X, XCircle } from "@phosphor-icons/react";
+import { ArrowRight, Bell, CaretDown, CaretRight, Check, Diamond, Info, Warning, X, XCircle } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -16,7 +16,6 @@ import {
   historyEntries,
   isDoneGroup,
   isRequestKind,
-  nativePending,
   resetParts,
   unreadCount,
   type DayBucket,
@@ -160,7 +159,6 @@ export function NotificationsInbox({
   };
 
   const history = useMemo(() => historyEntries(entries), [entries]);
-  const native = useMemo(() => nativePending(entries), [entries]);
   const shown = useMemo(() => filterEntries(history, filter), [history, filter]);
   const badge = attentionCount(approvals.length, entries);
   // Só o histórico: os pedidos pendentes têm a contagem própria em "Precisa de você".
@@ -169,7 +167,7 @@ export function NotificationsInbox({
 
   const counts: Record<NotificationFilter, number> = {
     all: 0,
-    requests: approvals.length + native.length,
+    requests: approvals.length,
     errors: history.filter((e) => e.category === "error" && !e.read).length,
     done: 0,
   };
@@ -342,31 +340,6 @@ export function NotificationsInbox({
     );
   };
 
-  // Amarelo do Claude esperando no prompt nativo: só registro e "Abrir na
-  // sessão". A decisão é do terminal (decisão 2026-09-23), nunca daqui.
-  const nativeCard = (e: NotificationEntry) => (
-    <div key={`native:${e.id}`} className={`motion-safe:animate-tyba-pop-in ${ROW}`}>
-      <RiskGlyph risk={e.risk} label={t(RISK_LABEL[e.risk ?? "yellow"])} />
-      <div className="min-w-0">
-        <div className="text-[13px] font-bold leading-[1.45] text-tyba-text">
-          {t("notifNativeTitle", { who: e.agent ?? e.session_title })}
-        </div>
-        <div className={META}>
-          <span className="text-tyba-text-muted">{t("notifNativeAsks")}</span>
-          {" · "}
-          {e.session_title} · {clock(e.at_ms)}
-        </div>
-        {e.command && (
-          <code className={CMD} title={e.command}>
-            {e.command}
-          </code>
-        )}
-        <div className={ACTS}>{openInSessionBtn(e.session_id)}</div>
-      </div>
-      <span />
-    </div>
-  );
-
   const entryTitle = (e: NotificationEntry): string => {
     const who = e.agent ?? e.session_title;
     switch (e.kind) {
@@ -381,7 +354,9 @@ export function NotificationsInbox({
           ? t("notifNativeDenied", { who })
           : e.decision
             ? t("notifNativeApproved", { who })
-            : t("notifNativeExpired", { who });
+            : e.pending
+              ? t("notifNativeTitle", { who })
+              : t("notifNativeExpired", { who });
       case "agent_finished":
         return t("notifFinished", { who, session: e.session_title });
       case "agent_failed":
@@ -395,6 +370,7 @@ export function NotificationsInbox({
 
   /** Ícone por item (mockup): losango = pedido, ⊗ = erro, △ = aviso, ✓ = concluído. */
   const entryGlyph = (e: NotificationEntry) => {
+    if (isRequestKind(e) && e.pending) return <RiskGlyph risk={e.risk} label={t(RISK_LABEL[e.risk ?? "yellow"])} />;
     if (isRequestKind(e)) return <Diamond role="img" aria-label={t("notifGlyphRequest")} size={14} weight="bold" className="mt-0.5 text-tyba-text-faint" />;
     if (e.category === "error") return <XCircle role="img" aria-label={t("notifGlyphError")} size={14} weight="bold" className="mt-0.5 text-tyba-red-fill" />;
     if (e.category === "info") return <Warning role="img" aria-label={t("notifGlyphWarning")} size={14} weight="bold" className="mt-0.5 text-tyba-amber-fill" />;
@@ -434,6 +410,8 @@ export function NotificationsInbox({
               {e.command}
             </code>
           )}
+          {/* Amarelo esperando no prompt nativo: decide-se no terminal, nunca daqui. */}
+          {e.kind === "native_approval" && e.pending && <div className={ACTS}>{openInSessionBtn(e.session_id)}</div>}
           {(e.kind === "agent_finished" || e.kind === "agent_failed" || e.kind === "usage_limit") && (
             <div className={ACTS}>
               {e.kind === "agent_finished" && (
@@ -477,8 +455,7 @@ export function NotificationsInbox({
     title: sessionTitle(a.session_id),
     agent: sessionAgent(a.session_id),
   }));
-  const nativeGroups = groupBySession(native, (e) => ({ title: e.session_title, agent: e.agent }));
-  const liveCount = approvals.length + native.length;
+  const liveCount = approvals.length;
   const firstBucket = BUCKETS.find((b) => shown.some((e) => dayBucket(e.at_ms, now) === b));
 
   return (
@@ -495,7 +472,7 @@ export function NotificationsInbox({
               open ? "bg-[var(--tyba-lit-bg)] text-tyba-blue shadow-[var(--tyba-lit-glow)]" : "text-tyba-text-faint hover:text-tyba-text"
             }`}
           >
-            <Tray size={16} weight={badge > 0 ? "fill" : "regular"} />
+            <Bell size={16} weight={badge > 0 ? "fill" : "regular"} />
             {badge > 0 && (
               <span className="absolute right-[3px] top-[3px] flex h-3 min-w-3 items-center justify-center rounded-[6px] bg-tyba-red-fill px-[3px] text-[9px] leading-none text-tyba-text-inverse">
                 {badge > 9 ? "9+" : badge}
@@ -513,7 +490,7 @@ export function NotificationsInbox({
           className="motion-safe:animate-tyba-panel-in fixed bottom-[26px] right-0 top-[38px] z-50 flex w-[380px] flex-col tyba-divide-l bg-[var(--tyba-panel-bg)] tyba-glass shadow-[-24px_0_48px_rgba(0,0,0,0.35)]"
         >
           <div className={PANEL_HEADER}>
-            <Tray size={16} className="shrink-0 text-tyba-blue" />
+            <Bell size={16} className="shrink-0 text-tyba-blue" />
             <span className="min-w-0 flex-1 truncate text-[13px] text-tyba-text">{t("notifications")}</span>
             {unread > 0 && <span className="text-[11px] text-tyba-text-faint">{t("notifUnreadCount", { count: unread })}</span>}
             <Tooltip>
@@ -583,12 +560,6 @@ export function NotificationsInbox({
                   <section key={`req:${g.session}`} aria-label={g.title}>
                     {requestGroupHeader(g.title, g.agent, g.items.length)}
                     {g.items.map(approvalCard)}
-                  </section>
-                ))}
-                {nativeGroups.map((g) => (
-                  <section key={`native:${g.session}`} aria-label={g.title}>
-                    {requestGroupHeader(g.title, g.agent, g.items.length)}
-                    {g.items.map(nativeCard)}
                   </section>
                 ))}
               </>
