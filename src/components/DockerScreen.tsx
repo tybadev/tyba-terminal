@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   Cube,
   HardDrives,
+  Image as ImageIcon,
   MagnifyingGlass,
   Stack,
   X,
@@ -13,6 +14,7 @@ import "./gitScreen.css";
 import { ContainerFilesPanel } from "./ContainerFilesPanel";
 import { ContainerLogsView } from "./ContainerLogsView";
 import { ContainerShellBanner, ContainerStrip } from "./ContainerStrip";
+import { DockerComposeSection } from "./DockerComposeSection";
 import { PanelIcon } from "./SidePanelBar";
 import { TerminalView } from "./TerminalView";
 import { requestConfirm } from "../lib/confirm";
@@ -32,6 +34,7 @@ import {
   shortImage,
   uptimeMs,
 } from "../lib/dockerPanel";
+import { composeProjects, visibleProjects } from "../lib/dockerCompose";
 import { translateError } from "../lib/errors";
 import {
   dockerAvailable,
@@ -45,6 +48,7 @@ import {
   dockerRemoveContainer,
   dockerScreenLogs,
   dockerScreenPane,
+  dockerScreenHideStopped,
   dockerScreenSection,
   dockerScreenSelect,
   dockerScreenShell,
@@ -72,7 +76,8 @@ const FILTER_THRESHOLD = 8;
 
 const RAIL: Record<DockerSection, { icon: Icon; label: string }> = {
   containers: { icon: Cube, label: "dockerScreenContainers" },
-  images: { icon: Stack, label: "dockerScreenImages" },
+  compose: { icon: Stack, label: "dockerScreenComposeTitle" },
+  images: { icon: ImageIcon, label: "dockerScreenImages" },
   volumes: { icon: HardDrives, label: "dockerScreenVolumes" },
 };
 
@@ -316,7 +321,7 @@ function ReadOnlyList({ section, host }: { section: "images" | "volumes"; host: 
 
 /**
  * Tela cheia de Docker (mockup DockerTela): trilho à direita (Containers,
- * Imagens, Volumes), coluna de 300px com os containers do alvo da sessão (a
+ * Compose, Imagens, Volumes), coluna de 300px com os containers do alvo da sessão (a
  * máquina local, ou o servidor numa sessão SSH) e o container escolhido com
  * Logs | Shell | Arquivos | Detalhes. Seção e container escolhido são do core.
  */
@@ -330,7 +335,6 @@ export function DockerScreen({
   exitedOf,
   onSessionsChanged,
   onClose,
-  onOpenDashboard,
 }: {
   session: Session;
   workspaceId: WorkspaceId;
@@ -342,8 +346,6 @@ export function DockerScreen({
   exitedOf: (id: SessionId) => boolean;
   onSessionsChanged: () => void;
   onClose: () => void;
-  /** O workspace Docker antigo (projetos compose: subir/derrubar). */
-  onOpenDashboard: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const [available, setAvailable] = useState<boolean | null>(null);
@@ -423,6 +425,7 @@ export function DockerScreen({
     [list, repoProject],
   );
   const selected = (list ?? []).find((c) => c.id === state.container) ?? null;
+  const projects = useMemo(() => composeProjects(list ?? []), [list]);
 
   // Sem escolha (ou o escolhido sumiu): o primeiro da lista.
   useEffect(() => {
@@ -637,53 +640,84 @@ export function DockerScreen({
       </nav>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex h-[46px] shrink-0 items-center gap-3 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12px]">
-          <PanelIcon kind="docker" size={16} className="shrink-0 text-tyba-blue" />
-          <span className="shrink-0 text-[14px] font-medium text-tyba-text">
-            {t("sidePanelDocker")}
-          </span>
-          <span className="min-w-0 flex-1 truncate text-tyba-text-faint" title={session.title}>
-            {titleSub}
-          </span>
-          {error && (
-            <span role="alert" className="min-w-0 max-w-[40%] truncate text-tyba-red" title={error}>
-              {error}
+        {state.section === "compose" ? (
+          <div className="flex h-[46px] shrink-0 items-center gap-3 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12px]">
+            <Stack size={16} className="shrink-0 text-tyba-blue" />
+            <span className="shrink-0 text-[14px] font-medium text-tyba-text">
+              {t("dockerScreenComposeTitle")}
             </span>
-          )}
-          {available !== false && (
-            <span className="shrink-0">
-              <span className="text-tyba-green">
-                {t("dockerPanelRunning", { count: counts.running })}
+            <span className="min-w-0 flex-1 truncate text-tyba-text-faint" title={session.title}>
+              {t("dockerScreenComposeSub", {
+                target: host ?? t("dockerPanelLocal"),
+                count: visibleProjects(projects, state.hide_stopped).length,
+              })}
+            </span>
+            {error && (
+              <span role="alert" className="min-w-0 max-w-[40%] truncate text-tyba-red" title={error}>
+                {error}
               </span>
-              {counts.stopped > 0 && (
-                <span className="text-tyba-text-faint">
-                  {" · "}
-                  {t("dockerPanelStopped", { count: counts.stopped })}
-                </span>
-              )}
+            )}
+            <label className="flex shrink-0 items-center gap-1.5 text-tyba-text-muted">
+              <input
+                type="checkbox"
+                checked={state.hide_stopped}
+                onChange={(e) =>
+                  void dockerScreenHideStopped(workspaceId, e.target.checked).catch(() => {})
+                }
+                className="accent-tyba-blue"
+              />
+              {t("dockerScreenHideStopped")}
+            </label>
+          </div>
+        ) : (
+          <div className="flex h-[46px] shrink-0 items-center gap-3 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12px]">
+            <PanelIcon kind="docker" size={16} className="shrink-0 text-tyba-blue" />
+            <span className="shrink-0 text-[14px] font-medium text-tyba-text">
+              {t("sidePanelDocker")}
             </span>
-          )}
-          {repoProject && (
-            <>
-              <button
-                type="button"
-                className={BTN}
-                disabled={busy || !repoContainers.some((c) => c.state !== "running")}
-                onClick={() => void bulk("start")}
-              >
-                {t("dockerScreenStartAll")}
-              </button>
-              <button
-                type="button"
-                className={BTN}
-                disabled={busy || !repoContainers.some((c) => c.state === "running")}
-                onClick={() => void bulk("stop")}
-              >
-                {t("dockerScreenStopAll")}
-              </button>
-            </>
-          )}
-        </div>
+            <span className="min-w-0 flex-1 truncate text-tyba-text-faint" title={session.title}>
+              {titleSub}
+            </span>
+            {error && (
+              <span role="alert" className="min-w-0 max-w-[40%] truncate text-tyba-red" title={error}>
+                {error}
+              </span>
+            )}
+            {available !== false && (
+              <span className="shrink-0">
+                <span className="text-tyba-green">
+                  {t("dockerPanelRunning", { count: counts.running })}
+                </span>
+                {counts.stopped > 0 && (
+                  <span className="text-tyba-text-faint">
+                    {" · "}
+                    {t("dockerPanelStopped", { count: counts.stopped })}
+                  </span>
+                )}
+              </span>
+            )}
+            {repoProject && (
+              <>
+                <button
+                  type="button"
+                  className={BTN}
+                  disabled={busy || !repoContainers.some((c) => c.state !== "running")}
+                  onClick={() => void bulk("start")}
+                >
+                  {t("dockerScreenStartAll")}
+                </button>
+                <button
+                  type="button"
+                  className={BTN}
+                  disabled={busy || !repoContainers.some((c) => c.state === "running")}
+                  onClick={() => void bulk("stop")}
+                >
+                  {t("dockerScreenStopAll")}
+                </button>
+              </>
+            )}
+          </div>
+        )}
 
         {available === false ? (
           <div className="flex flex-1 flex-col items-start gap-2 px-[18px] py-4 text-[12px] text-tyba-text-muted">
@@ -698,6 +732,18 @@ export function DockerScreen({
               </button>
             )}
           </div>
+        ) : state.section === "compose" ? (
+          <DockerComposeSection
+            projects={projects}
+            loaded={list !== null}
+            selected={state.project}
+            hideStopped={state.hide_stopped}
+            host={host}
+            session={session.id}
+            workspaceId={workspaceId}
+            onError={setError}
+            onChanged={refresh}
+          />
         ) : state.section !== "containers" ? (
           <ReadOnlyList section={state.section} host={host} />
         ) : (
@@ -752,15 +798,6 @@ export function DockerScreen({
                 <p className="min-w-0 flex-1">
                   {host ? t("dockerPanelNoteRemote", { host }) : t("dockerScreenNoteLocal")}
                 </p>
-                {!host && (
-                  <button
-                    type="button"
-                    onClick={onOpenDashboard}
-                    className="shrink-0 hover:text-tyba-text"
-                  >
-                    {t("dockerScreenComposeProjects")}
-                  </button>
-                )}
               </div>
             </div>
 

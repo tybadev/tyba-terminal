@@ -1463,13 +1463,17 @@ export interface FilesScreenState {
   recent: string[];
 }
 
-export type DockerSection = "containers" | "images" | "volumes";
+export type DockerSection = "containers" | "compose" | "images" | "volumes";
 export type ContainerPane = "logs" | "shell" | "files" | "details";
 
 export interface DockerScreenState {
   section: DockerSection;
   container: string | null;
   pane: ContainerPane;
+  /** Projeto escolhido na seção Compose. */
+  project: string | null;
+  /** "Ocultar parados" da seção Compose. */
+  hide_stopped: boolean;
 }
 
 export interface Screens {
@@ -1514,6 +1518,16 @@ export const dockerScreenSelect = (workspace: WorkspaceId, container: string | n
 
 export const dockerScreenPane = (workspace: WorkspaceId, pane: ContainerPane) =>
   invoke<void>("docker_screen_pane", { workspace, pane });
+
+export const dockerScreenProject = (workspace: WorkspaceId, project: string | null) =>
+  invoke<void>("docker_screen_project", { workspace, project });
+
+export const dockerScreenHideStopped = (workspace: WorkspaceId, hide: boolean) =>
+  invoke<void>("docker_screen_hide_stopped", { workspace, hide });
+
+/** Logs/Shell de um serviço do Compose: o container na seção Containers. */
+export const dockerScreenShow = (workspace: WorkspaceId, container: string, pane: ContainerPane) =>
+  invoke<void>("docker_screen_show", { workspace, container, pane });
 
 /** O shell (`docker exec`) que mora na tela de Docker: devolve a sessão dele. */
 export const dockerScreenShell = (containerId: string, host?: string | null) =>
@@ -1768,9 +1782,6 @@ export const createWorkspace = (
     sessionId,
     tag: tag ?? null,
   });
-
-export const tagWorkspace = (id: WorkspaceId, name: string, tag: WorkspaceTag) =>
-  invoke<void>("tag_workspace", { id, name, tag });
 
 export const closeWorkspace = (id: WorkspaceId) =>
   invoke<void>("close_workspace", { id });
@@ -2059,12 +2070,6 @@ export const dockerListContainers = (
     host: host ?? null,
   });
 
-export const dockerOpenShell = (containerId: string, host?: string | null) =>
-  invoke<void>("docker_open_shell", { containerId, host: host ?? null });
-
-export const dockerOpenDashboard = () =>
-  invoke<void>("docker_open_dashboard");
-
 export const openViewTab = (view: string) =>
   invoke<void>("open_view_tab", { view });
 
@@ -2151,14 +2156,16 @@ export const dockerContainerOp = (
 export const dockerOpenDesktop = () =>
   invoke<void>("docker_open_desktop");
 
+/** Roda o compose sem terminal e resolve quando ele termina. */
 export const dockerComposeOp = (project: string, op: ComposeOp) =>
   invoke<void>("docker_compose_op", { project, op });
 
 export const dockerOpenProject = (project: string) =>
   invoke<void>("docker_open_project", { project });
 
-export const dockerOpenComposeFile = (project: string) =>
-  invoke<void>("docker_open_compose_file", { project });
+/** Abre o compose do projeto na tela de Arquivos da sessão. */
+export const dockerOpenComposeFile = (session: SessionId, project: string) =>
+  invoke<void>("docker_open_compose_file", { session, project });
 
 export type ThemeMode = "dark" | "light" | "system";
 export type ThemeBase = "dark" | "light";

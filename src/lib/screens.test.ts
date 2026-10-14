@@ -74,7 +74,7 @@ test("editores de todos os workspaces ficam montados, sem repetir", () => {
   const ws = (id: string, tabs: FilesScreenState["tabs"]) =>
     ({
       id,
-      screens: { files: files({ tabs }), docker: { section: "containers", container: null, pane: "logs" } },
+      screens: { files: files({ tabs }), docker: { section: "containers", container: null, pane: "logs", project: null, hide_stopped: false } },
     }) as unknown as Workspace;
   const out = allScreenEditors([
     ws("w1", [{ view: ed(A, "a.ts"), preview: true }, { view: "lixo", preview: false }]),

@@ -19,7 +19,7 @@ export type ScreenKind = "git" | "files" | "docker";
 
 /** Ordem do trilho, de cima para baixo. */
 export const FILES_SECTIONS: readonly FilesSection[] = ["files", "search", "recent"];
-export const DOCKER_SECTIONS: readonly DockerSection[] = ["containers", "images", "volumes"];
+export const DOCKER_SECTIONS: readonly DockerSection[] = ["containers", "compose", "images", "volumes"];
 export const CONTAINER_PANES: readonly ContainerPane[] = ["logs", "shell", "files", "details"];
 
 /** O `side_view` é uma tela cheia (cobre abas e shell), não painel lateral? */

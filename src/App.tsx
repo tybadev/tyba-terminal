@@ -108,7 +108,6 @@ import {
   type LaunchConfigDraftState,
 } from "./components/LaunchConfigDialog";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
-import { ContainersView } from "./components/ContainersView";
 import { ConnectionsView } from "./components/ConnectionsView";
 import {
   HostFormDialog,
@@ -209,7 +208,6 @@ import {
   disposeSession,
   dockerAvailable,
   dockerListContainers,
-  dockerOpenDashboard,
   ackDriftWarning,
   bootGate,
   bootSnapshot,
@@ -316,7 +314,6 @@ import {
   listHosts,
   listHostGroups,
   onHostsChanged,
-  tagWorkspace,
   appVersion,
   updateCheck,
   setAppMenu,
@@ -3064,50 +3061,6 @@ export default function App() {
     [layout],
   );
 
-  // O painel Docker segue a conexão vigente. Abrir o painel troca o workspace
-  // ativo (ele tem o seu), então o alvo é lembrado do último workspace de
-  // trabalho — as views (docker/settings/conexões) não mexem no contexto.
-  const [dockerSshHost, setDockerSshHost] = useState<string | null>(null);
-  useEffect(() => {
-    if (!activeWorkspace) return;
-    if (
-      activeWorkspace.kind === "docker" ||
-      isConfigWorkspace(activeWorkspace) ||
-      isConnectionsWorkspace(activeWorkspace) ||
-      isWorktreesWorkspace(activeWorkspace) ||
-      isStatsWorkspace(activeWorkspace) ||
-      isAgentBoardWorkspace(activeWorkspace)
-    ) {
-      return;
-    }
-    const id = workspaceSshHostId(activeWorkspace);
-    setDockerSshHost(
-      id ? (sshHosts.find((h) => h.id === id)?.alias ?? null) : null,
-    );
-  }, [activeWorkspace, workspaceSshHostId, sshHosts]);
-
-  // O painel de containers é um só e o alvo dele muda: o workspace do Docker
-  // segue o que está na tela, senão a sidebar diz "Docker" enquanto a lista
-  // mostra a VPS — e um `sh` na máquina errada é caro.
-  const tagDockerWorkspace = useCallback(
-    (alias: string | null) => {
-      const ws = layout.workspaces.find((w) => w.kind === "docker");
-      if (!ws) return;
-      const host = alias ? sshHosts.find((h) => h.alias === alias) : undefined;
-      const group = host?.group_id
-        ? (hostGroups.find((g) => g.id === host.group_id)?.name ?? null)
-        : null;
-      const name = host ? `${host.alias} · Docker` : "Docker";
-      if (ws.name === name && ws.color === (host?.color ?? null)) return;
-      void tagWorkspace(ws.id, name, {
-        lock_name: true,
-        color: host?.color ?? null,
-        group,
-      }).catch(() => {});
-    },
-    [layout.workspaces, sshHosts, hostGroups],
-  );
-
   const connectGroup = useCallback(
     async (group: HostGroup | null, hosts: Host[]) => {
       if (hosts.length === 0) return;
@@ -5796,7 +5749,6 @@ export default function App() {
                     }}
                     onSessionsChanged={() => void refreshSessions()}
                     onClose={() => void closeSideView(activeWorkspace.id).catch(() => {})}
-                    onOpenDashboard={() => void dockerOpenDashboard().catch(() => {})}
                   />
                 )}
                 {(filesScreenSession || screenEditors.length > 0) && (
@@ -5911,16 +5863,6 @@ export default function App() {
                       sessionId={activeId}
                       onClose={() => setSearchOpen(false)}
                     />
-                  )}
-                  {activeTab?.view === "containers" && (
-                    <div className="absolute inset-0 flex">
-                      <ContainersView
-                        sshHost={dockerSshHost}
-                        onTargetChange={tagDockerWorkspace}
-                        onAvailableChange={setDockerUp}
-                        onRunningChange={setDockerRunning}
-                      />
-                    </div>
                   )}
                   {activeContent?.kind === "container-logs" && (
                     <ContainerLogsView
