@@ -417,9 +417,10 @@ export function FilesScreen({
           </div>
         )}
 
-        <div className="flex min-h-0 flex-1">
+        {/* Árvore à direita, junto do trilho (pedido do dono, 2026-10-14). */}
+        <div className="flex min-h-0 flex-1 flex-row-reverse">
           {visible && session && (
-            <div className="flex w-[280px] shrink-0 flex-col border-r border-[var(--tyba-border-soft)] bg-[var(--tyba-panel-bg)]">
+            <div className="flex w-[280px] shrink-0 flex-col border-l border-[var(--tyba-border-soft)] bg-[var(--tyba-panel-bg)]">
               {section === "files" && (
                 <FilesTree
                   key={session.id}
