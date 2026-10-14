@@ -38,8 +38,13 @@ fn expand(entry: &str, home: &Path) -> Result<PathBuf, String> {
 }
 
 pub fn parse(content: &str, home: &Path) -> Result<UserConfig, String> {
-    let raw: RawUserConfig =
-        toml::from_str(content).map_err(|e| format!("~/.tyba/config.toml inválido: {e}"))?;
+    // Só a linha: a mensagem do `toml` cita o trecho, que pode ser um segredo.
+    let raw: RawUserConfig = toml::from_str(content).map_err(|e: toml::de::Error| {
+        format!(
+            "~/.tyba/config.toml: {}",
+            crate::config::schema::toml_error(content, e.span())
+        )
+    })?;
     let mut sandbox_read_allow = Vec::new();
     for entry in &raw.sandbox.read_allow {
         sandbox_read_allow.push(expand(entry, home)?);
@@ -53,6 +58,10 @@ pub fn load(home: &Path) -> Result<UserConfig, String> {
     if !root.exists() {
         return Ok(UserConfig::default());
     }
+    // Raiz recusada (de outro usuário, gravável por outros) não vale nem para
+    // o arquivo dentro dela.
+    crate::config::fsguard::check_root(&root)
+        .map_err(|e| format!("leitura de ~/.tyba/config.toml: {e}"))?;
     // Mesma leitura guardada do resto do arquivo (teto, symlink, dono): o
     // `read_allow` abre a jaula, e é o último lugar para aceitar arquivo alheio.
     match crate::config::fsguard::read_capped(&root, &path, crate::config::MAX_BYTES) {
@@ -99,6 +108,40 @@ mod tests {
     #[test]
     fn rejects_malformed_toml() {
         assert!(parse("[sandbox", Path::new("/h")).is_err());
+    }
+
+    #[test]
+    fn malformed_toml_error_never_echoes_the_text() {
+        let err = parse(
+            "[sandbox]\nread_allow = sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+            Path::new("/h"),
+        )
+        .unwrap_err();
+        assert!(!err.contains("sk-ant"), "{err}");
+        assert!(err.contains("linha 2"), "{err}");
+        let err = parse(
+            "[sandbox]\nread_allow = \"sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\n",
+            Path::new("/h"),
+        )
+        .unwrap_err();
+        assert!(!err.contains("sk-ant"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refused_root_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".tyba");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("config.toml"),
+            "[sandbox]\nread_allow = [\"/x\"]\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(load(dir.path()).is_err());
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]

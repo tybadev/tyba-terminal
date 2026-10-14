@@ -56,7 +56,9 @@ async function init() {
     if (remote === "mono" || remote === "grotesk") {
       if (remote !== font) commit(remote);
     } else if (font !== "mono") {
-      void setPref(PREF_KEY, font).catch(() => {});
+      // O config.toml é a fonte da verdade: sem valor lá, vale o padrão — o
+      // cache local não reescreve o arquivo.
+      commit("mono");
     }
   } catch {
     apply();

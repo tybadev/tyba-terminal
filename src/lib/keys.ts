@@ -452,6 +452,19 @@ export function ptyNewlineFor(
   return modified ? PTY_NEWLINE : null;
 }
 
+/** Só os atalhos que fogem do padrão: é isso que vai para o config.toml, que
+ * guarda apenas os ajustes e assim serve em Mac e PC. */
+export function bindingOverrides(
+  bindings: Bindings,
+  defaults: Bindings = DEFAULT_BINDINGS,
+): Partial<Bindings> {
+  const out: Partial<Bindings> = {};
+  for (const action of KEY_ACTIONS) {
+    if (bindings[action] !== defaults[action]) out[action] = bindings[action];
+  }
+  return out;
+}
+
 export function parseBindings(raw: string | null): Bindings {
   if (!raw) return { ...DEFAULT_BINDINGS };
   try {

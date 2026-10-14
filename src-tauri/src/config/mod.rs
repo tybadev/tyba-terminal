@@ -31,6 +31,8 @@ pub const THEMES_DIR: &str = "themes";
 pub const EVENT_PREFS: &str = "config://prefs";
 /// Payload: lista de avisos em pt-BR para o toast.
 pub const EVENT_WARNINGS: &str = "config://warnings";
+/// Payload: o id do ícone do app (um de [`schema::APP_ICONS`]).
+pub const EVENT_APP_ICON: &str = "config://app-icon";
 pub const MAX_BYTES: u64 = 64 * 1024;
 /// Só em build de desenvolvimento: aponta a configuração para outra pasta, para
 /// rodar o app sem tocar no `~/.tyba/` de verdade.
@@ -50,9 +52,9 @@ const TEMPLATE: &str = r#"# Configuração do TYBA.
 [theme]
 # "dark", "light" ou "system" (segue o sistema operacional)
 mode = "dark"
-# Tema de cada modo. Embutidos: tyba-dark, tyba-light, dracula, nord,
-# solarized-dark, solarized-light… Temas importados ficam em
-# ~/.tyba/themes/<id>.json.
+# Tema de cada modo. Embutidos: tyba-dark, tyba-light, dracula, gruvbox-dark,
+# github-light, solarized-dark, solarized-light, monokai… Temas importados
+# ficam em ~/.tyba/themes/<id>.json.
 dark = "tyba-dark"
 light = "tyba-light"
 
@@ -61,6 +63,11 @@ light = "tyba-light"
 ui = "mono"
 # Tamanho da fonte do terminal, de 10 a 20
 terminal_size = 13
+
+[appearance]
+# Ícone do app: blackout, aurora, filamento, assinatura, fosforo, violeta,
+# grafite ou papel
+app_icon = "blackout"
 
 # Atalhos: ação = "modificadores+tecla", com meta, ctrl, alt e shift.
 # Ex.: paletteActions = "meta+p". O que não estiver aqui usa o padrão.
@@ -89,6 +96,7 @@ pub fn root_dir(home: Option<&Path>) -> Option<PathBuf> {
 pub struct Changes {
     pub theme: bool,
     pub prefs: bool,
+    pub app_icon: bool,
     /// `Some` só quando a lista de avisos mudou: salvar de novo o mesmo arquivo
     /// com o mesmo erro não vira outro toast.
     pub warnings: Option<Vec<String>>,
@@ -106,22 +114,29 @@ struct State {
 pub struct ConfigManager {
     root: PathBuf,
     path: PathBuf,
+    /// Raiz recusada (de outro usuário, gravável por outros…): nada se lê nem
+    /// se grava nela, e os valores caem no SQLite (se não migrou) ou no padrão.
+    root_error: Option<String>,
     state: Mutex<State>,
 }
 
-fn diff(old: &Values, new: &Values) -> (bool, bool) {
+/// (tema, prefs, ícone) — cada grupo tem o seu evento.
+fn diff(old: &Values, new: &Values) -> (bool, bool, bool) {
     let mut theme = false;
     let mut prefs = false;
+    let mut app_icon = false;
     for key in schema::FILE_KEYS {
         if old.get(key) != new.get(key) {
             if key.starts_with("pref.") {
                 prefs = true;
+            } else if *key == schema::KEY_APP_ICON {
+                app_icon = true;
             } else {
                 theme = true;
             }
         }
     }
-    (theme, prefs)
+    (theme, prefs, app_icon)
 }
 
 /// Só as entradas que o arquivo aceita: um atalho antigo estranho no SQLite não
@@ -186,10 +201,19 @@ pub fn migrate_themes(old: &Path, new: &Path) -> usize {
             continue;
         }
         let dst = new.join(entry.file_name());
-        if dst.exists() {
+        // Qualquer entrada ocupa o nome — inclusive symlink quebrado, que o
+        // `exists()` daria como livre e a cópia seguiria.
+        if fs::symlink_metadata(&dst).is_ok() {
             continue;
         }
-        if fs::copy(&src, &dst).is_ok() {
+        let Ok(content) = fs::read_to_string(&src) else {
+            continue;
+        };
+        if content.len() as u64 > MAX_THEME_BYTES {
+            continue;
+        }
+        // `0600` como todo arquivo de `~/.tyba/`; o antigo só sai depois.
+        if fsguard::write_atomic(new, &dst, &content).is_ok() {
             let _ = fs::remove_file(&src);
             moved += 1;
         }
@@ -202,20 +226,20 @@ impl ConfigManager {
     /// falha: o que der errado vira aviso e o app segue com o padrão.
     pub fn open(root: PathBuf, store: &Store) -> Self {
         let path = root.join(FILE_NAME);
+        let root_error = fsguard::ensure_root(&root).err();
         let mgr = Self {
-            root: root.clone(),
+            root,
             path,
+            root_error,
             state: Mutex::new(State::default()),
         };
         let mut warnings = Vec::new();
-        match fsguard::ensure_root(&root) {
-            Ok(_) => {
-                if let Err(e) = mgr.migrate(store) {
-                    warnings.push(e);
-                }
+        if mgr.usable() {
+            if let Err(e) = mgr.migrate(store) {
+                warnings.push(e);
             }
-            Err(e) => warnings.push(e),
         }
+        // Com a raiz recusada, o load avisa o motivo (o `read` devolve o erro).
         mgr.load();
         // Arquivo ilegível falha na migração e de novo no load, com a mesma
         // causa: um aviso basta, e o do load diz o que o app fez.
@@ -248,7 +272,15 @@ impl ConfigManager {
         self.root.join(THEMES_DIR)
     }
 
+    /// `false` quando a raiz foi recusada: nem watcher nem migração de temas.
+    pub fn usable(&self) -> bool {
+        self.root_error.is_none()
+    }
+
     fn read(&self) -> Result<Option<String>, String> {
+        if let Some(e) = &self.root_error {
+            return Err(e.clone());
+        }
         fsguard::read_capped(&self.root, &self.path, MAX_BYTES)
     }
 
@@ -275,7 +307,7 @@ impl ConfigManager {
     ) -> Changes {
         let mut changes = Changes::default();
         if let Some(values) = values {
-            (changes.theme, changes.prefs) = diff(&state.values, &values);
+            (changes.theme, changes.prefs, changes.app_icon) = diff(&state.values, &values);
             state.values = values;
         }
         if text.is_some() {
@@ -334,6 +366,24 @@ impl ConfigManager {
             .collect()
     }
 
+    /// Ícone do app (`[appearance] app_icon`). Ausente ou inválido no arquivo:
+    /// [`schema::DEFAULT_APP_ICON`] — o inválido já virou aviso no parse.
+    pub fn app_icon(&self) -> &'static str {
+        let current = self.get(schema::KEY_APP_ICON);
+        schema::APP_ICONS
+            .iter()
+            .copied()
+            .find(|id| current.as_deref() == Some(*id))
+            .unwrap_or(schema::DEFAULT_APP_ICON)
+    }
+
+    /// Grava o ícone no arquivo. Id fora de [`schema::APP_ICONS`] é recusado
+    /// sem tocar no disco. Quem chama publica o `Changes` (em `lib.rs`,
+    /// `emit_config_changes`, que emite [`EVENT_APP_ICON`]).
+    pub fn set_app_icon(&self, icon: &str) -> Result<Changes, String> {
+        self.set(schema::KEY_APP_ICON, icon)
+    }
+
     pub fn warnings(&self) -> Vec<String> {
         self.state.lock().warnings.clone()
     }
@@ -343,7 +393,8 @@ impl ConfigManager {
     /// quebrado: erro, e o disco fica como estava.
     pub fn set(&self, key: &str, value: &str) -> Result<Changes, String> {
         let mut state = self.state.lock();
-        let text = self.read()?.unwrap_or_default();
+        // Arquivo apagado renasce do modelo comentado, não vazio.
+        let text = self.read()?.unwrap_or_else(|| TEMPLATE.to_string());
         let out = edit::set(&text, key, value)?;
         let parsed = schema::parse(&out)?;
         if out != text {
@@ -468,6 +519,28 @@ mod tests {
     }
 
     #[test]
+    fn app_icon_defaults_reads_writes_and_reports_its_own_change() {
+        let (_d, root, store) = setup();
+        let cfg = ConfigManager::open(root.clone(), &store);
+        assert_eq!(cfg.app_icon(), "blackout");
+        let ch = cfg.set_app_icon("papel").unwrap();
+        assert!(ch.app_icon && !ch.theme && !ch.prefs);
+        assert_eq!(cfg.app_icon(), "papel");
+        let text = fs::read_to_string(root.join(FILE_NAME)).unwrap();
+        assert!(text.contains("app_icon = \"papel\""), "{text}");
+        assert!(text.contains("# Ícone do app"), "comentário preservado");
+        assert!(cfg.set_app_icon("neon").is_err());
+        assert_eq!(cfg.app_icon(), "papel");
+
+        // edição na mão com valor inválido: aviso e padrão
+        fs::write(root.join(FILE_NAME), text.replace("\"papel\"", "\"neon\"")).unwrap();
+        let ch = cfg.load();
+        assert!(ch.app_icon);
+        assert_eq!(ch.warnings.map(|w| w.len()), Some(1));
+        assert_eq!(cfg.app_icon(), "blackout");
+    }
+
+    #[test]
     fn set_writes_the_file_and_reports_what_changed() {
         let (_d, root, store) = setup();
         let cfg = ConfigManager::open(root.clone(), &store);
@@ -477,6 +550,7 @@ mod tests {
             Changes {
                 theme: true,
                 prefs: false,
+                app_icon: false,
                 warnings: None
             }
         );
@@ -486,6 +560,7 @@ mod tests {
             Changes {
                 theme: false,
                 prefs: true,
+                app_icon: false,
                 warnings: None
             }
         );
@@ -568,7 +643,32 @@ mod tests {
         assert!(ch.theme && ch.prefs);
         assert_eq!(cfg.get(KEY_THEME_MODE), None);
         cfg.set(KEY_THEME_MODE, "light").unwrap();
-        assert!(root.join(FILE_NAME).is_file());
+        let text = fs::read_to_string(root.join(FILE_NAME)).unwrap();
+        assert!(text.starts_with("# Configuração do TYBA."), "{text}");
+        assert!(text.contains("mode = \"light\""), "{text}");
+        assert!(text.contains("# Tamanho da fonte do terminal"), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refused_root_is_neither_read_nor_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, root, store) = setup();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(FILE_NAME), "[theme]\nmode = \"light\"\n").unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
+
+        let cfg = ConfigManager::open(root.clone(), &store);
+        assert!(!cfg.usable());
+        assert_eq!(cfg.get(KEY_THEME_MODE), None);
+        assert_eq!(cfg.warnings().len(), 1, "{:?}", cfg.warnings());
+        assert!(cfg.warnings()[0].contains("outros usuários"));
+        assert!(cfg.set(KEY_THEME_MODE, "dark").is_err());
+        assert_eq!(
+            fs::read_to_string(root.join(FILE_NAME)).unwrap(),
+            "[theme]\nmode = \"light\"\n"
+        );
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]
@@ -589,6 +689,32 @@ mod tests {
         assert_eq!(fs::read_to_string(new.join("taken.json")).unwrap(), "new");
         assert!(old.join("notes.txt").exists());
         assert_eq!(migrate_themes(&dir.path().join("nada"), &new), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migrated_theme_is_private_and_a_planted_link_is_not_followed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(&new).unwrap();
+        fs::write(old.join("nord.json"), "{}").unwrap();
+        fs::set_permissions(old.join("nord.json"), fs::Permissions::from_mode(0o664)).unwrap();
+        fs::write(old.join("evil.json"), "{}").unwrap();
+        let outside = dir.path().join("fora.json");
+        std::os::unix::fs::symlink(&outside, new.join("evil.json")).unwrap();
+
+        assert_eq!(migrate_themes(&old, &new), 1);
+        let mode = fs::metadata(new.join("nord.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(!outside.exists(), "a cópia seguiu o link quebrado");
+        assert!(old.join("evil.json").exists());
     }
 
     #[test]

@@ -71,12 +71,17 @@ fn set_bindings(doc: &mut Document, json: &str) -> Result<(), String> {
         clean.insert(action.as_str(), combo);
     }
     let table = section(doc, SECTION_BINDINGS)?;
-    // Some só o que é ação conhecida e saiu do mapa; chave escrita à mão que
-    // o app não conhece fica onde está.
+    // Some só o que é ação conhecida, com atalho válido, e saiu do mapa
+    // (voltou ao padrão). Chave que o app não conhece, ou linha inválida escrita
+    // à mão (já avisada), fica onde está — o usuário corrige ou a UI sobrescreve.
     let stale: Vec<String> = table
         .iter()
+        .filter(|(k, v)| {
+            KEY_ACTIONS.contains(k)
+                && !clean.contains_key(k)
+                && v.as_str().and_then(schema::normalize_combo).is_some()
+        })
         .map(|(k, _)| k.to_string())
-        .filter(|k| KEY_ACTIONS.contains(&k.as_str()) && !clean.contains_key(k.as_str()))
         .collect();
     for k in stale {
         table.remove(&k);
@@ -213,6 +218,18 @@ x = 1
         assert!(!out.contains("newTab"), "{out}");
         assert!(out.contains("meuAtalho = \"meta+j\""), "{out}");
         assert!(out.contains("copy = \"meta+c\""), "{out}");
+    }
+
+    #[test]
+    fn bindings_leave_a_hand_written_invalid_line_alone() {
+        let text = "[keybindings]\nnewTab = \"t\"\ncopy = \"meta+meta+c\"\npaste = \"meta+v\"\n";
+        // a UI manda só os ajustes: newTab inválido fica, paste válido voltou ao padrão
+        let out = set(text, KEY_BINDINGS, r#"{"copy":"ctrl+c"}"#).unwrap();
+        assert!(out.contains("newTab = \"t\""), "{out}");
+        assert!(!out.contains("paste"), "{out}");
+        // a mesma ação mexida pela UI sobrescreve a linha inválida
+        assert!(out.contains("copy = \"ctrl+c\""), "{out}");
+        assert!(!out.contains("meta+meta"), "{out}");
     }
 
     #[test]

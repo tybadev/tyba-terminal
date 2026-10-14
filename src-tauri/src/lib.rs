@@ -4981,7 +4981,9 @@ async fn set_pref(
 /// `config://warnings`, que no arranque sai antes de o front ouvir.
 #[tauri::command]
 fn config_warnings(state: State<'_, AppState>) -> Vec<String> {
-    state.config.warnings()
+    let mut warnings = state.config.warnings();
+    warnings.extend(state.themes.slot_warnings());
+    warnings
 }
 
 /// Publica o que um reload ou uma gravação do `config.toml` mudou: o tema pelo
@@ -4998,8 +5000,39 @@ fn emit_config_changes(
     if changes.prefs {
         let _ = app.emit(config::EVENT_PREFS, config.prefs());
     }
+    if changes.app_icon {
+        let _ = app.emit(config::EVENT_APP_ICON, config.app_icon());
+    }
     if let Some(warnings) = changes.warnings {
         let _ = app.emit(config::EVENT_WARNINGS, warnings);
+    }
+    if changes.theme {
+        let slots = themes.slot_warnings();
+        if !slots.is_empty() {
+            let _ = app.emit(config::EVENT_WARNINGS, slots);
+        }
+    }
+}
+
+/// Fim de `set_theme_mode`/`set_theme_slot`: o tema já foi emitido pelo
+/// [`theme::ThemeManager`]; aqui sai o resto do que a gravação mudou, e a falha
+/// vira aviso — o front engole o erro do comando.
+fn finish_theme_set(
+    app: &AppHandle,
+    state: &AppState,
+    result: Result<config::Changes, theme::ThemeError>,
+) -> Result<(), String> {
+    match result {
+        Ok(mut changes) => {
+            changes.theme = false;
+            emit_config_changes(app, &state.config, &state.themes, changes);
+            Ok(())
+        }
+        Err(e) => {
+            let e = e.to_string();
+            let _ = app.emit(config::EVENT_WARNINGS, vec![e.clone()]);
+            Err(e)
+        }
     }
 }
 
@@ -7381,7 +7414,8 @@ fn set_theme_mode(
     state: State<'_, AppState>,
     mode: theme::ThemeMode,
 ) -> Result<(), String> {
-    state.themes.set_mode(&app, mode).map_err(|e| e.to_string())
+    let result = state.themes.set_mode(&app, mode);
+    finish_theme_set(&app, &state, result)
 }
 
 #[tauri::command]
@@ -7391,10 +7425,8 @@ fn set_theme_slot(
     base: theme::ThemeBase,
     id: String,
 ) -> Result<(), String> {
-    state
-        .themes
-        .set_slot(&app, base, &id)
-        .map_err(|e| e.to_string())
+    let result = state.themes.set_slot(&app, base, &id);
+    finish_theme_set(&app, &state, result)
 }
 
 #[tauri::command]
@@ -7778,7 +7810,10 @@ pub fn run() {
                     .unwrap_or_else(|| config_dir.join("user")),
                 &store,
             ));
-            config::migrate_themes(&config_dir.join("themes"), &user_config.themes_dir());
+            // Raiz recusada: nada se grava nela, e não há o que vigiar.
+            if user_config.usable() {
+                config::migrate_themes(&config_dir.join("themes"), &user_config.themes_dir());
+            }
             let themes: theme::SharedThemes = Arc::new(theme::ThemeManager::new(
                 Arc::clone(&user_config),
                 user_config.themes_dir(),
@@ -7786,7 +7821,7 @@ pub fn run() {
             // O splash nasce aqui, e não no `tauri.conf.json`: precisa do tema
             // salvo, que só existe depois de o banco abrir.
             splash::open(app.handle(), &theme::splash_boot_json(&themes.state()));
-            {
+            if user_config.usable() {
                 let app = app.handle().clone();
                 let cfg = Arc::clone(&user_config);
                 let themes = Arc::clone(&themes);

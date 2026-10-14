@@ -19,6 +19,20 @@ pub const KEY_THEME_LIGHT: &str = "theme.slot.light";
 pub const KEY_UI_FONT: &str = "pref.ui_font";
 pub const KEY_FONT_SIZE: &str = "pref.code.font_size";
 pub const KEY_BINDINGS: &str = "pref.keybindings";
+/// Não tem par no SQLite: nasceu no arquivo. Lida por
+/// [`super::ConfigManager::app_icon`].
+pub const KEY_APP_ICON: &str = "appearance.app_icon";
+pub const APP_ICONS: &[&str] = &[
+    "blackout",
+    "aurora",
+    "filamento",
+    "assinatura",
+    "fosforo",
+    "violeta",
+    "grafite",
+    "papel",
+];
+pub const DEFAULT_APP_ICON: &str = "blackout";
 
 /// Chave de `settings` → valor, no formato que ela tinha no SQLite.
 pub type Values = BTreeMap<&'static str, String>;
@@ -68,6 +82,12 @@ pub const FIELDS: &[Field] = &[
         key: KEY_FONT_SIZE,
         kind: Kind::Int(10, 20),
     },
+    Field {
+        section: "appearance",
+        name: "app_icon",
+        key: KEY_APP_ICON,
+        kind: Kind::Enum(APP_ICONS),
+    },
 ];
 
 pub const SECTION_BINDINGS: &str = "keybindings";
@@ -83,6 +103,7 @@ pub const FILE_KEYS: &[&str] = &[
     KEY_UI_FONT,
     KEY_FONT_SIZE,
     KEY_BINDINGS,
+    KEY_APP_ICON,
 ];
 
 /// Espelho de `KEY_ACTIONS` em `src/lib/keys.ts` — o teste
@@ -126,7 +147,7 @@ pub const KEY_ACTIONS: &[&str] = &[
 
 /// Ordem em que o front monta o combo (`comboOf` em `src/lib/keys.ts`).
 const MODIFIERS: &[&str] = &["meta", "ctrl", "alt", "shift"];
-const MAX_KEY_LEN: usize = 16;
+const MAX_KEY_LEN: usize = 32;
 const MAX_THEME_ID_LEN: usize = 64;
 
 /// Palavras que, numa chave desconhecida, soam como tentar afrouxar uma ação
@@ -169,7 +190,9 @@ pub fn is_theme_id(s: &str) -> bool {
 /// escreve à mão `shift+meta+p` recebe `meta+shift+p`, senão o atalho nunca
 /// casaria com o `comboOf` do teclado.
 pub fn normalize_combo(raw: &str) -> Option<String> {
-    let lower = raw.trim().to_lowercase();
+    // Só o espaço da frente sai: o de trás pode ser a tecla Espaço, que o
+    // `comboOf` grava como `"ctrl+ "`.
+    let lower = raw.trim_start().to_lowercase();
     let (mods, key) = match lower.rsplit_once('+') {
         Some((mods, key)) => (mods, key),
         None => return None,
@@ -179,6 +202,13 @@ pub fn normalize_combo(raw: &str) -> Option<String> {
         (&mods[..mods.len() - 1], "+")
     } else {
         (mods, key)
+    };
+    // `space` é o jeito legível de escrever à mão; espaço sobrando em volta de
+    // outra tecla é só digitação.
+    let key = match key.trim() {
+        "space" => " ",
+        "" if !key.is_empty() => " ",
+        k => k,
     };
     if key.is_empty() || key.chars().count() > MAX_KEY_LEN || key.chars().any(char::is_control) {
         return None;
@@ -315,10 +345,27 @@ fn parse_bindings(item: &Item, warnings: &mut Vec<String>) -> Option<String> {
     serde_json::to_string(&out).ok()
 }
 
+/// Erro de TOML só com a linha: a mensagem da biblioteca cita o trecho do
+/// arquivo, e ele pode ser um token colado no lugar errado.
+pub fn toml_error(text: &str, span: Option<std::ops::Range<usize>>) -> String {
+    match span {
+        Some(span) => {
+            let start = span.start.min(text.len());
+            let line = text.as_bytes()[..start]
+                .iter()
+                .filter(|b| **b == b'\n')
+                .count()
+                + 1;
+            format!("TOML inválido na linha {line}")
+        }
+        None => "TOML inválido".to_string(),
+    }
+}
+
 pub fn parse(text: &str) -> Result<Parsed, String> {
     let doc: Document = text
         .parse()
-        .map_err(|e: toml_edit::TomlError| format!("TOML inválido: {}", e.to_string().trim()))?;
+        .map_err(|e: toml_edit::TomlError| toml_error(text, e.span()))?;
     let mut parsed = Parsed::default();
     let warnings = &mut parsed.warnings;
 
@@ -378,6 +425,12 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
                     expected(field.kind)
                 )),
             }
+        }
+    }
+    // Caminho de chave também é texto do arquivo: `"sk-…" = 1` não volta.
+    for w in &mut parsed.warnings {
+        if let std::borrow::Cow::Owned(r) = crate::session::redact::redact(w) {
+            *w = r;
         }
     }
     parsed.warnings.dedup();
@@ -530,6 +583,26 @@ mod tests {
     }
 
     #[test]
+    fn broken_toml_error_gives_the_line_but_never_the_text() {
+        let e =
+            parse("[theme]\nmode = \"dark\"\ndark = sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA\n")
+                .unwrap_err();
+        assert!(!e.contains("sk-ant"), "{e}");
+        assert_eq!(e, "TOML inválido na linha 3");
+    }
+
+    #[test]
+    fn secret_looking_key_name_is_not_echoed() {
+        let p = ok("\"sk-abcdefghijklmnopqrstuvwx\" = 1\n");
+        assert_eq!(p.warnings.len(), 1, "{:?}", p.warnings);
+        assert!(
+            p.warnings.iter().all(|w| !w.contains("sk-abc")),
+            "{:?}",
+            p.warnings
+        );
+    }
+
+    #[test]
     fn keybindings_become_the_json_the_front_reads() {
         let p = ok(r#"
             [keybindings]
@@ -557,6 +630,20 @@ mod tests {
     }
 
     #[test]
+    fn app_icon_is_validated_strictly() {
+        let p = ok("[appearance]\napp_icon = \"aurora\"\n");
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert_eq!(p.values[KEY_APP_ICON], "aurora");
+        for bad in ["\"Aurora\"", "\"neon\"", "1"] {
+            let p = ok(&format!("[appearance]\napp_icon = {bad}\n"));
+            assert!(p.values.is_empty());
+            assert_eq!(p.warnings.len(), 1);
+            assert!(p.warnings[0].starts_with("appearance.app_icon: valor inválido"));
+        }
+        assert!(APP_ICONS.contains(&DEFAULT_APP_ICON));
+    }
+
+    #[test]
     fn empty_keybindings_table_means_defaults() {
         assert!(ok("[keybindings]\n").values.is_empty());
     }
@@ -573,7 +660,26 @@ mod tests {
         assert_eq!(normalize_combo("hyper+p"), None);
         assert_eq!(normalize_combo("meta+shift"), None);
         assert_eq!(normalize_combo("meta+\u{7}"), None);
-        assert_eq!(normalize_combo(&format!("meta+{}", "x".repeat(17))), None);
+        assert_eq!(normalize_combo(&format!("meta+{}", "x".repeat(33))), None);
+    }
+
+    #[test]
+    fn space_key_matches_combo_of() {
+        assert_eq!(normalize_combo("ctrl+ ").as_deref(), Some("ctrl+ "));
+        assert_eq!(normalize_combo("Ctrl+Space").as_deref(), Some("ctrl+ "));
+        assert_eq!(
+            normalize_combo("meta+shift+ ").as_deref(),
+            Some("meta+shift+ ")
+        );
+        assert_eq!(normalize_combo(" meta+p ").as_deref(), Some("meta+p"));
+        assert_eq!(
+            normalize_combo("ctrl+LaunchApplication1").as_deref(),
+            Some("ctrl+launchapplication1")
+        );
+        assert_eq!(
+            normalize_combo("alt+MediaTrackPrevious").as_deref(),
+            Some("alt+mediatrackprevious")
+        );
     }
 
     #[test]
