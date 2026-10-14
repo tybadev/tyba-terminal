@@ -1487,8 +1487,14 @@ fn cached_integration_path(
     }
 }
 
+/// `tyba-…` no app instalado, `tyba-dev-…` no build de dev: os dois rodam ao
+/// mesmo tempo e cada um grava a sua versão dos scripts.
+fn integration_dir_name(name: &str) -> String {
+    format!("{}-{name}-{}", crate::profile::CHANNEL_TAG, current_uid())
+}
+
 fn integration_dir(name: &str) -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("tyba-{name}-{}", current_uid()));
+    let dir = std::env::temp_dir().join(integration_dir_name(name));
     create_private_dir(&dir)?;
     verify_private_dir(&dir)?;
     Ok(dir)
@@ -2020,6 +2026,17 @@ mod hook_zsh_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integration_dir_is_per_profile() {
+        let name = integration_dir_name("zsh");
+        assert_eq!(
+            name,
+            format!("{}-zsh-{}", crate::profile::CHANNEL_TAG, current_uid())
+        );
+        // perfil de release nos testes: o nome de sempre
+        assert!(name.starts_with("tyba-zsh-"), "{name}");
+    }
 
     fn make(kind: SessionKind, status: SessionStatus) -> Session {
         Session {

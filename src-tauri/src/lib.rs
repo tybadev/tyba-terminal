@@ -16,6 +16,7 @@ pub mod launch_config;
 pub mod layout;
 pub mod lsp;
 pub mod menu;
+pub mod profile;
 pub mod pty;
 pub mod repo;
 pub mod repo_config;
@@ -4889,7 +4890,7 @@ fn set_workspace_group(
 fn new_window(app: AppHandle) -> Result<(), String> {
     let label = format!("tyba-{}", uuid::Uuid::new_v4().simple());
     let builder = tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
-        .title("Tyba")
+        .title(profile::product_name(app.config()))
         .inner_size(1100.0, 720.0);
     #[cfg(target_os = "macos")]
     let builder = builder
@@ -7780,6 +7781,14 @@ pub fn run() {
         })
         .setup(|app| {
             let setup_span = boot::Span::start("setup.total");
+            // Antes de abrir qualquer banco: build de dev com o identificador
+            // de release abriria os dados do app instalado.
+            profile::check_identifier(&app.config().identifier)?;
+            // O título da `main` no tauri.conf.json é o de release; o nome
+            // vem do `productName` da config com que o app subiu.
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.set_title(&profile::product_name(app.config()));
+            }
             app.manage(splash::SplashLatch::default());
             splash::arm_ceiling(app.handle().clone());
             let (opened_store, store_degraded) = open_store(app.handle());
@@ -7835,7 +7844,7 @@ pub fn run() {
                 let app = app.handle().clone();
                 let cfg = Arc::clone(&user_config);
                 let themes = Arc::clone(&themes);
-                config::watch::spawn(user_config.root(), config::FILE_NAME, move || {
+                config::watch::spawn(user_config.watch_files(), move || {
                     let changes = cfg.load();
                     emit_config_changes(&app, &cfg, &themes, changes);
                 });
@@ -7860,7 +7869,7 @@ pub fn run() {
             lsp::spawn_reaper(Arc::clone(&lsp));
 
             let managed_data_dir = lsp::resolve_data_dir()
-                .unwrap_or_else(|| std::env::temp_dir().join("dev.tyba.app"));
+                .unwrap_or_else(|| std::env::temp_dir().join(profile::IDENTIFIER));
             let managed_lsp: lsp::managed::SharedManaged = Arc::new(
                 lsp::managed::ManagedManager::new(Arc::clone(&store), managed_data_dir),
             );

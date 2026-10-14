@@ -165,7 +165,9 @@ pub fn managed_root() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .ok_or("HOME indisponível")?;
-    Ok(PathBuf::from(home).join(".tyba").join("worktrees"))
+    Ok(PathBuf::from(home)
+        .join(crate::profile::HOME_DIR)
+        .join("worktrees"))
 }
 
 pub fn slugify(title: &str) -> String {

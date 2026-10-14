@@ -50,8 +50,6 @@ pub enum ThemeError {
     Io(#[from] std::io::Error),
     #[error("nome de tema inválido (1 a {MAX_NAME_LEN} caracteres)")]
     InvalidName,
-    #[error("nome reservado: {0}")]
-    ReservedName(String),
     #[error("cor inválida em '{0}': {1}")]
     InvalidColor(String, String),
     #[error("chave de UI desconhecida: {0}")]
@@ -268,6 +266,25 @@ fn validate(t: &ThemeFile) -> Result<(), ThemeError> {
     Ok(())
 }
 
+/// Id livre a partir de `base`: ele mesmo, ou `base-2`, `base-3`… O id cabe
+/// no formato do config.toml (`[a-z0-9-]{1,64}`) mesmo com o sufixo — a base
+/// só é encurtada quando o sufixo é preciso.
+pub fn free_id(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    let cut = |len: usize| -> String {
+        let s: String = base.chars().take(len).collect();
+        s.trim_end_matches('-').to_string()
+    };
+    let whole = cut(MAX_NAME_LEN);
+    if !taken(&whole) {
+        return whole;
+    }
+    let base = cut(MAX_NAME_LEN - 4);
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|id| !taken(id))
+        .expect("sempre há um sufixo livre")
+}
+
 pub fn slugify(name: &str) -> String {
     let mut slug = String::new();
     let mut last_dash = true;
@@ -370,6 +387,38 @@ fn resolve(id: String, file: ThemeFile) -> Theme {
 
 /// Modo e slots moram no `~/.tyba/config.toml` (ver [`crate::config`]); os
 /// temas importados, em `~/.tyba/themes/`.
+/// Id de cada arquivo da pasta de temas. Nome de arquivo que já é um id
+/// válido e livre fica como está; o resto (`Meu Tema.json`, um `dracula.json`
+/// que colide com o embutido) é normalizado e ganha sufixo se preciso. A ordem
+/// é a do nome do arquivo, para o mesmo arquivo ter sempre o mesmo id.
+fn assign_ids(mut paths: Vec<PathBuf>) -> Vec<(String, PathBuf)> {
+    paths.sort();
+    let stem = |p: &PathBuf| p.file_stem().and_then(|s| s.to_str()).map(str::to_owned);
+    let mut taken: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    let mut pending = Vec::new();
+    for path in paths {
+        match stem(&path) {
+            Some(s) if crate::config::schema::is_theme_id(&s) && !is_reserved(&s) => {
+                taken.push(s.clone());
+                out.push((s, path));
+            }
+            Some(_) => pending.push(path),
+            None => {}
+        }
+    }
+    for path in pending {
+        let base = slugify(&stem(&path).unwrap_or_default());
+        if base.is_empty() {
+            continue;
+        }
+        let id = free_id(&base, |id| is_reserved(id) || taken.iter().any(|t| t == id));
+        taken.push(id.clone());
+        out.push((id, path));
+    }
+    out
+}
+
 pub struct ThemeManager {
     config: SharedConfig,
     themes_dir: PathBuf,
@@ -380,7 +429,7 @@ pub type SharedThemes = Arc<ThemeManager>;
 impl ThemeManager {
     pub fn new(config: SharedConfig, themes_dir: PathBuf) -> Self {
         if config.usable() {
-            let _ = fs::create_dir_all(&themes_dir);
+            let _ = crate::config::fsguard::create_dir_private(&themes_dir);
         }
         Self { config, themes_dir }
     }
@@ -405,40 +454,38 @@ impl ThemeManager {
         let Ok(entries) = fs::read_dir(&self.themes_dir) else {
             return Vec::new();
         };
-        let mut themes: Vec<Theme> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        let mut themes: Vec<Theme> = assign_ids(
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
+                .collect(),
+        )
+        .into_iter()
+        .filter_map(|(id, path)| {
+            // Pasta editável à mão: mesma leitura guardada do config.toml
+            // (teto de tamanho, sem symlink para fora, dono).
+            let json = match crate::config::fsguard::read_capped(
+                &self.themes_dir,
+                &path,
+                MAX_THEME_FILE_BYTES,
+            ) {
+                Ok(Some(json)) => json,
+                Ok(None) => return None,
+                Err(err) => {
+                    eprintln!("tyba: tema ignorado: {err}");
                     return None;
                 }
-                let id = path.file_stem()?.to_str()?.to_string();
-                if is_reserved(&id) {
-                    return None;
+            };
+            match parse_theme(&json) {
+                Ok(file) => Some(resolve(id, file)),
+                Err(err) => {
+                    eprintln!("tyba: tema ignorado ({}): {err}", path.display());
+                    None
                 }
-                // Pasta editável à mão: mesma leitura guardada do config.toml
-                // (teto de tamanho, sem symlink para fora, dono).
-                let json = match crate::config::fsguard::read_capped(
-                    &self.themes_dir,
-                    &path,
-                    MAX_THEME_FILE_BYTES,
-                ) {
-                    Ok(Some(json)) => json,
-                    Ok(None) => return None,
-                    Err(err) => {
-                        eprintln!("tyba: tema ignorado: {err}");
-                        return None;
-                    }
-                };
-                match parse_theme(&json) {
-                    Ok(file) => Some(resolve(id, file)),
-                    Err(err) => {
-                        eprintln!("tyba: tema ignorado ({}): {err}", path.display());
-                        None
-                    }
-                }
-            })
-            .collect();
+            }
+        })
+        .collect();
         themes.sort_by(|a, b| a.name.cmp(&b.name));
         themes
     }
@@ -544,15 +591,20 @@ impl ThemeManager {
         }
         let json = fs::read_to_string(src)?;
         let file = parse_theme(&json)?;
-        let id = slugify(&file.name);
-        if id.is_empty() {
+        let base = slugify(&file.name);
+        if base.is_empty() {
             return Err(ThemeError::InvalidName);
         }
-        if is_reserved(&id) {
-            return Err(ThemeError::ReservedName(id));
-        }
+        // Id que já existe ganha `-2`, `-3`… sempre — inclusive o mesmo tema
+        // reimportado: importar nunca sobrescreve um arquivo.
+        let existing = self.scan();
+        let id = free_id(&base, |id| {
+            is_reserved(id)
+                || existing.iter().any(|t| t.id == id)
+                || self.themes_dir.join(format!("{id}.json")).exists()
+        });
         let canonical = serde_json::to_string_pretty(&file)?;
-        fs::create_dir_all(&self.themes_dir)?;
+        crate::config::fsguard::create_dir_private(&self.themes_dir)?;
         // `0600` e sem seguir symlink para fora da pasta: o mesmo arquivo passa
         // depois pela leitura guardada do `scan`.
         crate::config::fsguard::write_atomic(
@@ -789,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_skips_files_shadowing_scheme_ids() {
+    fn file_shadowing_a_scheme_id_gets_a_suffix() {
         let (mgr, dir) = manager();
         fs::write(dir.join("dracula.json"), VALID).unwrap();
 
@@ -797,17 +849,81 @@ mod tests {
         let draculas: Vec<_> = themes.iter().filter(|t| t.id == "dracula").collect();
         assert_eq!(draculas.len(), 1);
         assert!(draculas[0].builtin);
+        let mine = themes.iter().find(|t| t.id == "dracula-2").unwrap();
+        assert!(!mine.builtin);
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn import_rejects_classic_scheme_slug() {
+    fn hand_placed_file_with_invalid_id_is_normalized() {
+        let (mgr, dir) = manager();
+        fs::write(
+            dir.join("Meu Tema.json"),
+            r#"{ "name": "Meu Tema", "base": "dark" }"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("meu-tema.json"),
+            r#"{ "name": "Outro", "base": "dark" }"#,
+        )
+        .unwrap();
+
+        let ids: Vec<_> = mgr.scan().into_iter().map(|t| (t.id, t.name)).collect();
+        assert!(
+            ids.contains(&("meu-tema".into(), "Outro".into())),
+            "{ids:?}"
+        );
+        assert!(
+            ids.contains(&("meu-tema-2".into(), "Meu Tema".into())),
+            "{ids:?}"
+        );
+        // o id normalizado é o que o config.toml aceita e o slot encontra
+        mgr.config.set(KEY_THEME_DARK, "meu-tema-2").unwrap();
+        assert_eq!(mgr.state().dark.name, "Meu Tema");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn free_id_appends_the_first_free_suffix() {
+        let taken = ["nord", "nord-2"];
+        assert_eq!(free_id("nord", |id| taken.contains(&id)), "nord-3");
+        assert_eq!(free_id("dracula", |_| false), "dracula");
+        // livre, a base de até 64 volta inteira
+        let long = "a".repeat(64);
+        assert_eq!(free_id(&long, |_| false), long);
+        // ocupada, encurta para caber o sufixo
+        let id = free_id(&long, |id| id == long);
+        assert_eq!(id, format!("{}-2", "a".repeat(60)));
+        assert!(crate::config::schema::is_theme_id(&id));
+    }
+
+    #[test]
+    fn import_of_a_different_theme_with_the_same_slug_gets_a_suffix() {
+        let (mgr, dir) = manager();
+        fs::write(
+            dir.join("nord.json"),
+            r#"{ "name": "Nord", "base": "dark" }"#,
+        )
+        .unwrap();
+        let src = temp_source("nord-other");
+        fs::write(&src, r#"{ "name": "NORD!", "base": "dark" }"#).unwrap();
+
+        let (id, _) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, "nord-2");
+        assert!(dir.join("nord.json").is_file() && dir.join("nord-2.json").is_file());
+
+        let _ = fs::remove_file(&src);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_colliding_with_a_classic_scheme_gets_a_suffix() {
         let (mgr, dir) = manager();
         let src = temp_source("scheme-slug");
         fs::write(&src, r#"{ "name": "Dracula", "base": "dark" }"#).unwrap();
 
-        let err = mgr.import_validated(src.to_str().unwrap()).unwrap_err();
-        assert!(matches!(err, ThemeError::ReservedName(id) if id == "dracula"));
+        let (id, _) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, "dracula-2");
 
         let _ = fs::remove_file(&src);
         let _ = fs::remove_dir_all(dir);
@@ -862,13 +978,13 @@ mod tests {
     }
 
     #[test]
-    fn import_rejects_reserved_name() {
+    fn import_colliding_with_a_builtin_gets_a_suffix() {
         let (mgr, dir) = manager();
         let src = temp_source("reserved");
         fs::write(&src, r#"{ "name": "TYBA Dark", "base": "dark" }"#).unwrap();
 
-        let err = mgr.import_validated(src.to_str().unwrap()).unwrap_err();
-        assert!(matches!(err, ThemeError::ReservedName(id) if id == BUILTIN_DARK));
+        let (id, _) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, format!("{BUILTIN_DARK}-2"));
 
         let _ = fs::remove_file(&src);
         let _ = fs::remove_dir_all(dir);
@@ -958,21 +1074,25 @@ mod tests {
     }
 
     #[test]
-    fn import_overwrites_existing_file_with_same_slug() {
+    fn reimport_of_the_same_theme_gets_a_suffix_and_keeps_the_first() {
         let (mgr, dir) = manager();
         let src = temp_source("nord-variant");
+        fs::write(&src, r#"{ "name": "Nord", "base": "dark" }"#).unwrap();
+        let (id, _) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, "nord");
+        let first = fs::read_to_string(dir.join("nord.json")).unwrap();
+
         fs::write(
             &src,
             r##"{ "name": "Nord", "base": "dark", "ui": { "bg": "#000000" } }"##,
         )
         .unwrap();
-
-        mgr.import_validated(src.to_str().unwrap()).unwrap();
-        let on_disk = fs::read_to_string(dir.join("nord.json")).unwrap();
-        assert!(on_disk.contains("#000000"));
-
-        let ids: Vec<_> = mgr.list().into_iter().map(|t| t.id).collect();
-        assert_eq!(ids.iter().filter(|id| id.as_str() == "nord").count(), 1);
+        let (id, _) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, "nord-2");
+        assert_eq!(fs::read_to_string(dir.join("nord.json")).unwrap(), first);
+        assert!(fs::read_to_string(dir.join("nord-2.json"))
+            .unwrap()
+            .contains("#000000"));
 
         let _ = fs::remove_file(&src);
         let _ = fs::remove_dir_all(dir);

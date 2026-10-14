@@ -1537,7 +1537,8 @@ fn default_data_dir(env: &HashMap<String, String>, home: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         let _ = env;
-        home.join("Library/Application Support/dev.tyba.app")
+        home.join("Library/Application Support")
+            .join(crate::profile::IDENTIFIER)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1545,7 +1546,7 @@ fn default_data_dir(env: &HashMap<String, String>, home: &Path) -> PathBuf {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .unwrap_or_else(|| home.join(".local/share"))
-            .join("dev.tyba.app")
+            .join(crate::profile::IDENTIFIER)
     }
 }
 
@@ -1636,7 +1637,7 @@ pub(crate) fn sandbox_spec(
     let read_allow_extra = match crate::user_config::load(&home) {
         Ok(c) => c.sandbox_read_allow,
         Err(e) => {
-            eprintln!("[tyba] sandbox: read_allow ignorado: {e}");
+            eprintln!("[tyba] sandbox: sessão sem o read_allow do usuário ({e})");
             Vec::new()
         }
     };

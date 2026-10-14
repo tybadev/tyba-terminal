@@ -80,7 +80,8 @@ pub fn is_file_key(key: &str) -> bool {
     schema::FILE_KEYS.contains(&key)
 }
 
-/// `~/.tyba/` em todo SO — inclusive Linux, sem XDG (decisão do dono).
+/// `~/.tyba/` em todo SO — inclusive Linux, sem XDG (decisão do dono). O build
+/// de desenvolvimento usa `~/.tyba-dev/` (ver [`crate::profile`]).
 pub fn root_dir(home: Option<&Path>) -> Option<PathBuf> {
     #[cfg(debug_assertions)]
     if let Some(dir) = std::env::var_os(ENV_DIR).map(PathBuf::from) {
@@ -88,7 +89,7 @@ pub fn root_dir(home: Option<&Path>) -> Option<PathBuf> {
             return Some(dir);
         }
     }
-    home.map(|h| h.join(".tyba"))
+    home.map(|h| h.join(crate::profile::HOME_DIR))
 }
 
 /// O que mudou num reload — quem emite olha isto para não emitir à toa.
@@ -141,12 +142,17 @@ fn diff(old: &Values, new: &Values) -> (bool, bool, bool) {
 
 /// Só as entradas que o arquivo aceita: um atalho antigo estranho no SQLite não
 /// pode derrubar a migração dos outros.
+///
+/// O que é igual ao padrão da plataforma também fica de fora: o SQLite guardava
+/// o mapa inteiro, e um arquivo com os 34 atalhos do Mac imporia `meta+…` no
+/// Linux.
 fn sanitize_bindings(json: &str) -> Option<String> {
     let map: BTreeMap<String, String> = serde_json::from_str(json).ok()?;
     let clean: BTreeMap<String, String> = map
         .into_iter()
         .filter(|(a, _)| schema::KEY_ACTIONS.contains(&a.as_str()))
         .filter_map(|(a, c)| schema::normalize_combo(&c).map(|c| (a, c)))
+        .filter(|(a, c)| schema::default_combo(a) != Some(c.as_str()))
         .collect();
     (!clean.is_empty()).then(|| serde_json::to_string(&clean).ok())?
 }
@@ -187,7 +193,7 @@ pub fn migrate_themes(old: &Path, new: &Path) -> usize {
     let Ok(entries) = fs::read_dir(old) else {
         return 0;
     };
-    let _ = fs::create_dir_all(new);
+    let _ = fsguard::create_dir_private(new);
     let mut moved = 0;
     for entry in entries.flatten() {
         let src = entry.path();
@@ -264,8 +270,21 @@ impl ConfigManager {
         mgr
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
+    /// O que o watcher vigia: `config.toml` na raiz e, se ele for symlink
+    /// (dotfiles), o alvo — o editor salva lá, e o evento chega com o nome dele.
+    pub fn watch_files(&self) -> Vec<PathBuf> {
+        let mut files = vec![self.path.clone()];
+        if let Ok(Some(target)) =
+            fsguard::target(&self.root, &self.path, fsguard::Links::OwnedTarget)
+        {
+            let canonical_here = fs::canonicalize(&self.root)
+                .map(|r| r.join(FILE_NAME))
+                .unwrap_or_else(|_| self.path.clone());
+            if target != canonical_here {
+                files.push(target);
+            }
+        }
+        files
     }
 
     pub fn themes_dir(&self) -> PathBuf {
@@ -277,26 +296,40 @@ impl ConfigManager {
         self.root_error.is_none()
     }
 
-    fn read(&self) -> Result<Option<String>, String> {
+    /// O texto e o que a gravação seguinte deve encontrar no lugar dele.
+    fn read(&self) -> Result<(Option<String>, fsguard::Expect), String> {
         if let Some(e) = &self.root_error {
             return Err(e.clone());
         }
-        fsguard::read_capped(&self.root, &self.path, MAX_BYTES)
+        Ok(
+            match fsguard::read_linked_with_id(&self.root, &self.path, MAX_BYTES)? {
+                Some((text, id)) => (Some(text), fsguard::Expect::Same(id)),
+                None => (None, fsguard::Expect::Absent),
+            },
+        )
     }
 
     fn migrate(&self, store: &Store) -> Result<(), String> {
         if store.get_setting(MIGRATED_KEY).ok().flatten().is_some() {
             return Ok(());
         }
-        let existing = self.read()?;
+        let (existing, expect) = self.read()?;
         let out = migrate_text(existing.as_deref(), store)
             .map_err(|e| format!("config.toml: {e}. A migração espera o arquivo ser corrigido."))?;
         if existing.as_deref() != Some(out.as_str()) {
-            fsguard::write_atomic(&self.root, &self.path, &out)?;
+            fsguard::write_linked(&self.root, &self.path, &out, expect)?;
         }
         store
             .set_setting(MIGRATED_KEY, "1")
             .map_err(|e| e.to_string())
+    }
+
+    /// `read_allow` num arquivo ligado para fora da raiz não vale (ver
+    /// [`crate::user_config::load`]); o aviso diz por quê.
+    fn link_warnings(&self, text: &str, warnings: &mut Vec<String>) {
+        if schema::has_read_allow(text) && fsguard::linked_out_of_root(&self.root, &self.path) {
+            warnings.push(crate::user_config::linked_read_allow_warning());
+        }
     }
 
     fn apply(
@@ -324,13 +357,14 @@ impl ConfigManager {
     /// quebrado mantém o último estado bom e avisa.
     pub fn load(&self) -> Changes {
         let mut state = self.state.lock();
-        match self.read() {
+        match self.read().map(|(text, _)| text) {
             Ok(Some(text)) => {
                 if state.last_text.as_deref() == Some(text.as_str()) {
                     return Changes::default();
                 }
                 match schema::parse(&text) {
-                    Ok(parsed) => {
+                    Ok(mut parsed) => {
+                        self.link_warnings(&text, &mut parsed.warnings);
                         Self::apply(&mut state, Some(text), parsed.warnings, Some(parsed.values))
                     }
                     Err(e) => {
@@ -394,11 +428,13 @@ impl ConfigManager {
     pub fn set(&self, key: &str, value: &str) -> Result<Changes, String> {
         let mut state = self.state.lock();
         // Arquivo apagado renasce do modelo comentado, não vazio.
-        let text = self.read()?.unwrap_or_else(|| TEMPLATE.to_string());
+        let (text, expect) = self.read()?;
+        let text = text.unwrap_or_else(|| TEMPLATE.to_string());
         let out = edit::set(&text, key, value)?;
-        let parsed = schema::parse(&out)?;
+        let mut parsed = schema::parse(&out)?;
+        self.link_warnings(&out, &mut parsed.warnings);
         if out != text {
-            fsguard::write_atomic(&self.root, &self.path, &out)?;
+            fsguard::write_linked(&self.root, &self.path, &out, expect)?;
         }
         Ok(Self::apply(
             &mut state,
@@ -430,7 +466,10 @@ mod tests {
         store
             .set_setting(
                 KEY_BINDINGS,
-                r#"{"copy":"meta+c","bogus":"meta+x","paste":"v"}"#,
+                &format!(
+                    r#"{{"copy":"alt+shift+c","bogus":"meta+x","paste":"v","search":"{}"}}"#,
+                    schema::default_combo("search").unwrap()
+                ),
             )
             .unwrap();
         store.set_setting("pref.toolbar", "{}").unwrap();
@@ -441,7 +480,9 @@ mod tests {
         assert!(text.contains("mode = \"light\""), "{text}");
         assert!(text.contains("dark = \"dracula\""), "{text}");
         assert!(text.contains("terminal_size = 15"), "{text}");
-        assert!(text.contains("copy = \"meta+c\""), "{text}");
+        assert!(text.contains("copy = \"alt+shift+c\""), "{text}");
+        // igual ao padrão da plataforma: não vai para o arquivo
+        assert!(!text.contains("search ="), "{text}");
         assert!(
             !text.contains("bogus") && !text.contains("toolbar"),
             "{text}"
@@ -669,6 +710,52 @@ mod tests {
             "[theme]\nmode = \"light\"\n"
         );
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dotfiles_symlinked_config_is_read_written_and_watched() {
+        let (d, root, store) = setup();
+        fs::create_dir_all(&root).unwrap();
+        let dotfiles = d.path().join("dotfiles");
+        fs::create_dir(&dotfiles).unwrap();
+        let real = dotfiles.join("tyba.toml");
+        fs::write(&real, "# meu dotfile\n[theme]\nmode = \"light\"\n").unwrap();
+        std::os::unix::fs::symlink(&real, root.join(FILE_NAME)).unwrap();
+
+        let cfg = ConfigManager::open(root.clone(), &store);
+        assert!(cfg.warnings().is_empty(), "{:?}", cfg.warnings());
+        assert_eq!(cfg.get(KEY_THEME_MODE).as_deref(), Some("light"));
+        cfg.set(KEY_THEME_MODE, "system").unwrap();
+        assert!(fs::symlink_metadata(root.join(FILE_NAME))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let text = fs::read_to_string(&real).unwrap();
+        assert!(text.starts_with("# meu dotfile\n") && text.contains("mode = \"system\""));
+        let files = cfg.watch_files();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[1], fs::canonicalize(&real).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_allow_in_a_dotfiles_config_is_warned_as_ignored() {
+        let (d, root, store) = setup();
+        fs::create_dir_all(&root).unwrap();
+        let real = d.path().join("tyba.toml");
+        fs::write(&real, "[sandbox]\nread_allow = [\"/x\"]\n").unwrap();
+        std::os::unix::fs::symlink(&real, root.join(FILE_NAME)).unwrap();
+        let cfg = ConfigManager::open(root.clone(), &store);
+        let warned = |cfg: &ConfigManager| {
+            cfg.warnings()
+                .iter()
+                .any(|w| w.contains("não relaxa a jaula"))
+        };
+        assert!(warned(&cfg), "{:?}", cfg.warnings());
+        // e continua avisado depois de uma mudança pela UI
+        cfg.set(KEY_THEME_MODE, "light").unwrap();
+        assert!(warned(&cfg), "{:?}", cfg.warnings());
     }
 
     #[test]
