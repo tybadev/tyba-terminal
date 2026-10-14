@@ -31,6 +31,7 @@ import {
   type Session,
   type SessionId,
 } from "../lib/ipc";
+import { PANEL_HEADER } from "./SidePanelBar";
 
 const FILTERS: { key: NotificationFilter; label: string }[] = [
   { key: "all", label: "notifFilterAll" },
@@ -407,7 +408,7 @@ export function NotificationsInbox({
           aria-label={t("notifications")}
           className="motion-safe:animate-tyba-panel-in fixed bottom-[26px] right-0 top-[38px] z-50 flex w-[380px] flex-col tyba-divide-l bg-[var(--tyba-panel-bg)] tyba-glass shadow-[-24px_0_48px_rgba(0,0,0,0.35)]"
         >
-          <div className="flex shrink-0 items-center gap-2.5 tyba-divide-b px-4 py-3">
+          <div className={PANEL_HEADER}>
             <span className="text-[13px] text-tyba-text">{t("notifications")}</span>
             {unread > 0 && <span className="text-[11px] text-tyba-text-faint">{t("notifUnreadCount", { count: unread })}</span>}
             <span className="flex-1" />

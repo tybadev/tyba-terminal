@@ -22,6 +22,7 @@ import { containerName, rememberContainerName } from "@/lib/contentTabs";
 import { writeClipboardText } from "@/lib/clipboard";
 import { formatSize, pathCrumbs } from "@/lib/containerFs";
 import { pushToast, toastError } from "@/lib/toast";
+import { PANEL_HEADER } from "./SidePanelBar";
 
 interface Props {
   containerId: string;
@@ -180,7 +181,7 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Fundo do painel lateral que o contém; cabeçalho como o dos mockups
           Painel*: `padding: 12px 16px`, ícone 16, título 13px. */}
-      <header className="flex shrink-0 items-center gap-2.5 tyba-divide-b px-4 py-3">
+      <header className={PANEL_HEADER}>
         <FolderSimple size={16} className="shrink-0 text-tyba-blue" />
         <span className="min-w-0 truncate text-[13px] text-tyba-text">
           {t("containerFilesTitle")}
