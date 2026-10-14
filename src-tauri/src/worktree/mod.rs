@@ -239,14 +239,37 @@ pub fn create(repo_root: &Path, title: &str) -> Result<Worktree, String> {
     create_in(&managed_root()?, repo_root, title, None)
 }
 
-/// Namespace das branches de PR aberto no TYBA (`tyba/pr/<n>-<sufixo>`). Uma
-/// task nunca cai aqui: [`slugify`] nunca emite `/`, então `tyba/<slug>-…`
-/// nunca começa com `tyba/pr/`.
+/// Namespace das branches de PR aberto no TYBA (`tyba/pr/<n>-<sufixo>`). O
+/// namespace **não** é exclusivo: um launch config chamado "PR" gera
+/// `tyba/pr/<slot>` (`launch_config::slot_branch`), e o usuário pode criar o que
+/// quiser à mão. Por isso o prefixo nunca basta: o GC só trata como PR a branch
+/// com a base gravada na criação ([`PR_BASE_KEY`]), e o reuso de sessão exige o
+/// formato exato ([`is_pr_branch`]).
 pub const PR_BRANCH_NS: &str = "tyba/pr/";
+
+/// Chave de config (`branch.<branch>.tybaPrBase`) com o head do PR em que a
+/// branch nasceu. Gravada por [`create_in`]; é a base do "não mergeado" no GC.
+const PR_BASE_KEY: &str = "tybaPrBase";
 
 /// Prefixo das branches do PR `number`: `tyba/pr/<n>-`.
 pub fn pr_branch_prefix(number: u64) -> String {
     format!("{PR_BRANCH_NS}{number}-")
+}
+
+/// `branch` é exatamente `tyba/pr/<number>-<8 hex>`, o formato de [`create_at`].
+pub fn is_pr_branch(branch: &str, number: u64) -> bool {
+    branch
+        .strip_prefix(&pr_branch_prefix(number))
+        .is_some_and(|suffix| {
+            suffix.len() == 8
+                && suffix
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+}
+
+fn is_full_sha(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Worktree para o PR `number`, nascido em `head` (sha de commit já presente
@@ -273,7 +296,7 @@ fn create_in(
     let repo_root = crate::repo::canonicalize_or(repo_root);
     let base_ref = match pr {
         Some((_, sha)) => {
-            if !(sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit())) {
+            if !is_full_sha(sha) {
                 return Err(format!("sha de base inválido: {sha}"));
             }
             sha.to_ascii_lowercase()
@@ -307,6 +330,16 @@ fn create_in(
         .arg(&branch)
         .arg(&base_ref);
     run_git(cmd, "git worktree add")?;
+    if pr.is_some() {
+        // A base do PR fica gravada no config, não deduzida do reflog: o
+        // `reflog expire` (90 dias por padrão) apaga a entrada de criação, e
+        // sem ela o GC contaria os commits do usuário como já mergeados.
+        let mut cmd = git_in_rw_within(&repo_root, &[managed.to_path_buf()]);
+        cmd.args(["config", "--local"])
+            .arg(format!("branch.{branch}.{PR_BASE_KEY}"))
+            .arg(&base_ref);
+        run_git(cmd, "git config tybaPrBase")?;
+    }
 
     Ok(Worktree {
         path,
@@ -455,8 +488,13 @@ fn remove_managed_by(
         "git rev-parse --abbrev-ref",
     )?;
     let main = main_repo_of(worktree)?;
+    let pr_base = recorded_pr_base(&main, &branch);
     if !force {
-        let unmerged = ahead_count(worktree, &unmerged_base(&main, Some(&branch))?)?;
+        let base = match &pr_base {
+            Some(sha) => sha.clone(),
+            None => head_sha(&main)?,
+        };
+        let unmerged = ahead_count(worktree, &base)?;
         if unmerged > 0 {
             return Err(format!(
                 "worktree tem {unmerged} commit(s) não mergeado(s) (use force para descartar)"
@@ -479,8 +517,9 @@ fn remove_managed_by(
     if delete_branch && branch != "HEAD" {
         let mut cmd = git_in_rw(&main);
         // Branch de PR nunca está mergeada na HEAD do repo (`-d` recusaria);
-        // sem `force`, a conferência acima já mostrou que nada nasceu nela.
-        let force_delete = force || branch.starts_with(PR_BRANCH_NS);
+        // sem `force`, a conferência acima já mostrou que nada nasceu nela
+        // desde a base gravada. Sem base gravada, `-d`: o git confere sozinho.
+        let force_delete = force || pr_base.is_some();
         cmd.arg("branch")
             .arg(if force_delete { "-D" } else { "-d" })
             .arg(&branch);
@@ -489,38 +528,36 @@ fn remove_managed_by(
     Ok(())
 }
 
-/// Contra o que contar os commits "não mergeados" de um worktree: a HEAD do
-/// repo principal, exceto numa branch de PR (`tyba/pr/…`). O head de um PR
-/// está sempre à frente da HEAD do repo, então ali conta o que nasceu desde a
-/// criação da branch (a entrada mais antiga do reflog dela). Sem reflog, volta
-/// à HEAD do repo — conservador: o worktree fica.
-fn unmerged_base(main: &Path, branch: Option<&str>) -> Result<String, String> {
-    if let Some(start) = branch
-        .filter(|b| b.starts_with(PR_BRANCH_NS))
-        .and_then(|b| branch_creation_point(main, b))
-    {
-        return Ok(start);
+/// Base gravada por [`create_in`] para uma branch `tyba/pr/…`: o head do PR
+/// em que ela nasceu. `None` — sem chave, ilegível, não é sha de 40 hex ou o
+/// commit não existe — volta ao comportamento conservador (HEAD do repo como
+/// base e `branch -d`). O prefixo sozinho não basta: o namespace não é
+/// exclusivo (ver [`PR_BRANCH_NS`]).
+fn recorded_pr_base(main: &Path, branch: &str) -> Option<String> {
+    if !branch.starts_with(PR_BRANCH_NS) {
+        return None;
     }
-    head_sha(main)
-}
-
-/// Sha em que a branch nasceu: a última linha (a mais antiga) do reflog dela.
-fn branch_creation_point(main: &Path, branch: &str) -> Option<String> {
-    let out = git_text(
+    let sha = git_text(
         {
             let mut c = git_in(main);
-            c.args(["reflog", "show", "--format=%H"])
-                .arg(format!("refs/heads/{branch}"))
-                .arg("--");
+            c.args(["config", "--local", "--get"])
+                .arg(format!("branch.{branch}.{PR_BASE_KEY}"));
             c
         },
-        "git reflog show",
+        "git config tybaPrBase",
+    )
+    .ok()
+    .filter(|s| is_full_sha(s))?;
+    run_git(
+        {
+            let mut c = git_in(main);
+            c.args(["cat-file", "-e", &format!("{sha}^{{commit}}")]);
+            c
+        },
+        "git cat-file",
     )
     .ok()?;
-    out.lines()
-        .map(str::trim)
-        .rfind(|l| !l.is_empty())
-        .map(str::to_string)
+    Some(sha.to_ascii_lowercase())
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -635,7 +672,8 @@ fn gc_one(path: &Path, report: &mut GcReport) {
         keep(report, branch, true, 0, "mudanças não commitadas");
         return;
     }
-    let base = match unmerged_base(&main, branch.as_deref()) {
+    let pr_base = branch.as_deref().and_then(|b| recorded_pr_base(&main, b));
+    let base = match pr_base.map_or_else(|| head_sha(&main), Ok) {
         Ok(h) => h,
         Err(_) => {
             keep(report, branch, false, 0, "HEAD do repo principal ilegível");
@@ -1163,6 +1201,132 @@ mod lifecycle_tests {
             .output()
             .unwrap();
         assert!(branches.stdout.is_empty(), "branch do PR apagada");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    fn pr_head_ahead_of(repo: &Path) -> String {
+        git(repo, &["switch", "-q", "-c", "contribuicao"]);
+        std::fs::write(repo.join("pr.txt"), "pr\n").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-qm", "pr"]);
+        let head = head_sha(repo).unwrap();
+        git(repo, &["switch", "-q", "-"]);
+        git(repo, &["branch", "-qD", "contribuicao"]);
+        head
+    }
+
+    fn commit_in(dir: &Path, file: &str) {
+        std::fs::write(dir.join(file), "x\n").unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-qm", file]);
+    }
+
+    fn branch_exists(repo: &Path, branch: &str) -> bool {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["branch", "--list", branch])
+            .output()
+            .unwrap();
+        !out.stdout.is_empty()
+    }
+
+    #[test]
+    fn gc_keeps_pr_worktree_with_user_commits_after_reflog_expires() {
+        let base = temp_base("gc-pr-reflog");
+        let repo = temp_repo(&base);
+        let pr_head = pr_head_ahead_of(&repo);
+        let managed = base.join("managed");
+
+        let worked = create_in(&managed, &repo, "pr-7", Some((7, &pr_head))).unwrap();
+        let untouched = create_in(&managed, &repo, "pr-8", Some((8, &pr_head))).unwrap();
+        commit_in(&worked.path, "um.txt");
+        // `reflog expire` (o do `gc` depois de 90 dias) apaga a entrada de
+        // criação; o commit seguinte deixa só ele mesmo no reflog da branch.
+        git(&repo, &["reflog", "expire", "--expire=now", "--all"]);
+        commit_in(&worked.path, "dois.txt");
+        let worked_head = head_sha(&worked.path).unwrap();
+        for wt in [&worked.path, &untouched.path] {
+            backdate(wt);
+        }
+
+        let untouched_canon = crate::repo::canonicalize_or(&untouched.path);
+
+        let report = gc_orphans_in(&managed, &HashSet::new());
+
+        assert_eq!(
+            report.removed,
+            vec![untouched_canon],
+            "kept: {:?}",
+            report.kept
+        );
+        assert!(!branch_exists(&repo, &untouched.branch));
+        assert!(worked.path.exists());
+        assert_eq!(report.kept.len(), 1, "{:?}", report.kept);
+        assert_eq!(report.kept[0].unmerged_commits, 2);
+        assert!(branch_exists(&repo, &worked.branch));
+        assert_eq!(head_sha(&worked.path).unwrap(), worked_head);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn pr_namespace_branch_without_recorded_base_keeps_the_old_rule() {
+        let base = temp_base("gc-pr-sem-base");
+        let repo = temp_repo(&base);
+        let managed = base.join("managed");
+        // Launch config chamado "PR": `tyba/pr/<slot>`, sem a chave de base.
+        let review = create_named_in(&managed, &repo, "tyba/pr/review").unwrap();
+        commit_in(&review.path, "trabalho.txt");
+        git(&repo, &["reflog", "expire", "--expire=now", "--all"]);
+        commit_in(&review.path, "mais.txt");
+        let clean = create_named_in(&managed, &repo, "tyba/pr/limpo").unwrap();
+        for wt in [&review.path, &clean.path] {
+            backdate(wt);
+        }
+
+        let clean_canon = crate::repo::canonicalize_or(&clean.path);
+
+        let report = gc_orphans_in(&managed, &HashSet::new());
+
+        assert_eq!(report.removed, vec![clean_canon], "kept: {:?}", report.kept);
+        assert!(review.path.exists());
+        assert!(branch_exists(&repo, "tyba/pr/review"));
+        assert_eq!(report.kept[0].unmerged_commits, 2);
+        // Sem base gravada é `-d`: a branch com commits não sai sem `force`.
+        let err = remove_managed_by(&review.path, true, false, true).unwrap_err();
+        assert!(err.contains("não mergeado"), "{err}");
+        assert!(branch_exists(&repo, "tyba/pr/review"));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn recorded_pr_base_rejects_garbage_and_missing_commits() {
+        let base = temp_base("pr-base");
+        let repo = temp_repo(&base);
+        let pr_head = pr_head_ahead_of(&repo);
+        let wt = create_in(&base.join("managed"), &repo, "pr-7", Some((7, &pr_head))).unwrap();
+        let key = format!("branch.{}.tybaPrBase", wt.branch);
+        assert_eq!(recorded_pr_base(&repo, &wt.branch), Some(pr_head));
+        // Fora do namespace, nem lê.
+        git(
+            &repo,
+            &[
+                "config",
+                "branch.tyba/x.tybaPrBase",
+                &head_sha(&repo).unwrap(),
+            ],
+        );
+        assert_eq!(recorded_pr_base(&repo, "tyba/x"), None);
+
+        for bad in ["HEAD", "abc", &"g".repeat(40), &"0".repeat(40)] {
+            git(&repo, &["config", &key, bad]);
+            assert_eq!(recorded_pr_base(&repo, &wt.branch), None, "{bad}");
+        }
+        git(&repo, &["config", "--unset", &key]);
+        assert_eq!(recorded_pr_base(&repo, &wt.branch), None);
 
         std::fs::remove_dir_all(&base).ok();
     }

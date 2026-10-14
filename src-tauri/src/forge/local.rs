@@ -24,12 +24,6 @@ use super::prs::{action_remote, check_target, ensure_head};
 use crate::error::AppError;
 use crate::worktree::{self, Worktree};
 
-/// Prefixo das branches criadas por "Abrir no TYBA" para o PR `number`. É ele
-/// que acha a sessão que já abriu este PR (`tyba/pr/<n>-<sufixo>`).
-pub fn branch_prefix(number: u64) -> String {
-    worktree::pr_branch_prefix(number)
-}
-
 /// argv do fetch do head do PR: ref fixo montado de um `u64`, sem tags, sem
 /// escrever ref nenhuma além do `FETCH_HEAD`.
 pub fn fetch_args(number: u64) -> Vec<String> {
@@ -155,12 +149,16 @@ mod tests {
     }
 
     #[test]
-    fn branch_prefix_is_the_tyba_namespace() {
-        assert_eq!(branch_prefix(7), "tyba/pr/7-");
-        assert!(!"tyba/pr/70-abcd1234".starts_with(&branch_prefix(7)));
+    fn pr_branch_is_the_exact_tyba_format() {
+        assert_eq!(worktree::pr_branch_prefix(7), "tyba/pr/7-");
+        assert!(worktree::is_pr_branch("tyba/pr/7-abcd1234", 7));
+        assert!(!worktree::is_pr_branch("tyba/pr/70-abcd1234", 7));
         // Uma task chamada "PR 7" vira `tyba/pr-7-…`: fora do namespace.
         let task = format!("tyba/{}-abcd1234", worktree::slugify("PR 7 conserta"));
-        assert!(!task.starts_with(&branch_prefix(7)), "{task}");
+        assert!(!worktree::is_pr_branch(&task, 7), "{task}");
+        // Launch config "PR", slot "7 review": `tyba/pr/7-review`.
+        let slot = crate::launch_config::slot_branch("PR", "7 review");
+        assert!(!worktree::is_pr_branch(&slot, 7), "{slot}");
     }
 
     fn repo_with_origin(origin: &str) -> tempfile::TempDir {
