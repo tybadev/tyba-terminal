@@ -1392,6 +1392,61 @@ export const onApprovalRequested = (
 ): Promise<UnlistenFn> =>
   listen<ApprovalRequest>("approvals://requested", (e) => handler(e.payload));
 
+// --- histórico de notificações (painel Notificações) -----------------------
+// O core grava cada evento que merece atenção (pedido, erro, conclusão, limite)
+// no SQLite, com segredos mascarados ANTES de gravar, e guarda o lido/não lido.
+// A UI monta o texto a partir de `kind` + campos (i18n); nada de frase pronta.
+
+export type NotificationKind =
+  /** Pedido de aprovação; `pending` diz se ainda espera decisão. */
+  | "approval"
+  /** Agente parou de trabalhar e voltou ao prompt (running → idle). */
+  | "agent_finished"
+  /** Turno falhou (`StopFailure`), sessão `failed` ou saiu com código ≠ 0. */
+  | "agent_failed"
+  /** Limite de uso ≥ 85% (`pct` < 100) ou atingido (`pct` ≥ 100). */
+  | "usage_limit";
+
+export type NotificationCategory = "request" | "error" | "done" | "info";
+
+export interface NotificationEntry {
+  id: number;
+  at_ms: number;
+  session_id: SessionId;
+  /** Título da sessão quando o evento aconteceu (a sessão pode ter morrido). */
+  session_title: string;
+  /** "claude" | "codex" | nome do agente custom; `null` em shell. */
+  agent: string | null;
+  kind: NotificationKind;
+  /** request = approval pendente; error = agent_failed ou limite atingido;
+   *  done = agent_finished ou approval resolvida; info = aviso de limite. */
+  category: NotificationCategory;
+  /** approval: id do pedido. */
+  approval_id: number | null;
+  /** approval: ainda sem decisão. */
+  pending: boolean;
+  /** approval: decisão tomada ("approved" | "denied" | "approved_always"). */
+  decision: ApprovalDecision | null;
+  risk: RiskLevel | null;
+  /** approval: o comando pedido (mascarado, até 2 KiB). */
+  command: string | null;
+  /** agent_finished: resumo do status idle; agent_failed: motivo (mascarado). */
+  detail: string | null;
+  usage: { window: "five_hour" | "seven_day"; pct: number; resets_at: number | null } | null;
+  read: boolean;
+}
+
+/** Mais nova primeiro; até 500, dos últimos 7 dias. */
+export const notificationsList = () => invoke<NotificationEntry[]>("notifications_list");
+
+/** `ids` = esses; `null` = todas. */
+export const notificationsMarkRead = (ids: number[] | null) =>
+  invoke<void>("notifications_mark_read", { ids });
+
+/** Mudou algo no histórico (entrou, resolveu, leu): a UI relê a lista. */
+export const onNotificationsChanged = (handler: () => void): Promise<UnlistenFn> =>
+  listen<null>("notifications://changed", () => handler());
+
 export const onApprovalResolved = (
   handler: (resolved: { id: number; decision: ApprovalDecision }) => void,
 ): Promise<UnlistenFn> =>
