@@ -45,6 +45,7 @@ import { requestConfirm } from "@/lib/confirm";
 import { isSensitivePath } from "@/lib/sensitivePaths";
 import { toastError } from "@/lib/toast";
 import { LspStatusChip, useLspStatus } from "./LspStatusUi";
+import { PANEL_HEADER } from "./SidePanelBar";
 
 interface Props {
   session: Session;
@@ -485,7 +486,7 @@ export function FilesPanel({
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Fundo do painel lateral que o contém; cabeçalho como o dos mockups
           Painel*: `padding: 12px 16px`, ícone 16, título 13px. */}
-      <header className="flex shrink-0 items-center gap-2.5 tyba-divide-b px-4 py-3">
+      <header className={PANEL_HEADER}>
         <FolderOpen size={16} className="shrink-0 text-tyba-cyan" />
         <span className="shrink-0 text-[13px] text-tyba-text">
           {t("filesTitle")}
