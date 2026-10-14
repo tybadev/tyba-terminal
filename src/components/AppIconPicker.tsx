@@ -40,10 +40,16 @@ export function AppIconPicker() {
   const { t } = useTranslation();
   const [current, setCurrent] = useState<AppIconId | null>(null);
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  // Último pedido ainda sem confirmação. `choose` compara com ele, não com o
+  // confirmado: quem volta atrás antes de o core responder precisa que a
+  // volta também seja enviada. Toda confirmação do core zera.
+  const requested = useRef<AppIconId | null>(null);
 
   useEffect(() => {
     const accept = (id: string) => {
-      if (isAppIconId(id)) setCurrent(id);
+      if (!isAppIconId(id)) return;
+      requested.current = null;
+      setCurrent(id);
     };
     void getAppIcon().then(accept).catch(() => {});
     const off = onAppIconChanged(accept);
@@ -51,10 +57,16 @@ export function AppIconPicker() {
   }, []);
 
   const choose = (id: AppIconId) => {
-    if (id === current) return;
+    if (id === (requested.current ?? current)) return;
+    requested.current = id;
     void setAppIcon(id)
-      .then(() => setCurrent(id))
-      .catch(() => {});
+      .then(() => {
+        if (requested.current === id) requested.current = null;
+        setCurrent(id);
+      })
+      .catch(() => {
+        if (requested.current === id) requested.current = null;
+      });
   };
 
   const onKeyDown = (e: React.KeyboardEvent, index: number) => {

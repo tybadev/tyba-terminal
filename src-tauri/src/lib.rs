@@ -8026,7 +8026,7 @@ pub fn run() {
             // a escolha salva volta a cada abertura.
             {
                 let state = app.state::<AppState>();
-                app_icon::follow_config(app.handle());
+                app_icon::follow_config(app.handle(), Arc::clone(&state.config));
                 app_icon::apply_at_startup(app.handle(), &state.config);
             }
 

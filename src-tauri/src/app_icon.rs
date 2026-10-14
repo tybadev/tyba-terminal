@@ -168,17 +168,14 @@ pub fn apply_at_startup(app: &AppHandle, config: &ConfigManager) {
     }
 }
 
-/// Payload do [`config::EVENT_APP_ICON`] (o id, em JSON) → ícone.
-fn icon_from_event(payload: &str) -> AppIcon {
-    resolve(serde_json::from_str::<String>(payload).ok().as_deref())
-}
-
 /// Aplica toda mudança publicada pelo `config`: a da UI (`set_app_icon`) e a
-/// edição na mão do arquivo passam pelo mesmo evento.
-pub fn follow_config(app: &AppHandle) {
+/// edição na mão do arquivo passam pelo mesmo evento. O ícone vem do
+/// `ConfigManager`, nunca do payload: a webview também pode emitir este
+/// evento, e assim um emit forjado só reaplica o que está salvo.
+pub fn follow_config(app: &AppHandle, config: config::SharedConfig) {
     let handle = app.clone();
-    app.listen_any(config::EVENT_APP_ICON, move |event| {
-        apply(&handle, icon_from_event(event.payload()));
+    app.listen_any(config::EVENT_APP_ICON, move |_| {
+        apply(&handle, current(&config));
     });
 }
 
@@ -262,14 +259,6 @@ mod tests {
         let core: Vec<&str> = AppIcon::ALL.iter().map(|i| i.id()).collect();
         assert_eq!(config::schema::APP_ICONS, core.as_slice());
         assert_eq!(config::schema::DEFAULT_APP_ICON, AppIcon::DEFAULT.id());
-    }
-
-    #[test]
-    fn event_payload_resolves_to_an_icon() {
-        assert_eq!(icon_from_event("\"papel\""), AppIcon::Papel);
-        assert_eq!(icon_from_event("\"blackout\""), AppIcon::Blackout);
-        assert_eq!(icon_from_event("\"neon\""), AppIcon::Blackout);
-        assert_eq!(icon_from_event("papel"), AppIcon::Blackout);
     }
 
     #[test]
