@@ -643,7 +643,8 @@ const SIDEBAR_WIDTH: Record<SidebarMode, number> = {
 const DEV_HEADER_STYLE: React.CSSProperties | undefined = import.meta.env.DEV
   ? {
       backgroundImage:
-        "repeating-linear-gradient(-45deg, color-mix(in srgb, var(--tyba-text) 6%, transparent) 0 12px, transparent 12px 24px)",
+        // Borda em degradê (desfocada), não corte seco: presente sem pesar.
+        "repeating-linear-gradient(-45deg, transparent 0, color-mix(in srgb, var(--tyba-text) 5%, transparent) 7px, transparent 14px, transparent 26px)",
     }
   : undefined;
 
