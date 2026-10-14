@@ -12,6 +12,7 @@ import {
   filterEntries,
   groupBySession,
   historyEntries,
+  resetParts,
   unreadCount,
 } from "./notifications";
 import type { ApprovalRequest, NotificationEntry } from "./ipc";
@@ -239,6 +240,28 @@ describe("histórico de notificações", () => {
     expect(dayBucket(new Date(2026, 9, 13, 0, 5).getTime(), now)).toBe("today");
     expect(dayBucket(new Date(2026, 9, 12, 23, 59).getTime(), now)).toBe("yesterday");
     expect(dayBucket(new Date(2026, 9, 10).getTime(), now)).toBe("earlier");
+  });
+
+  test("dayBucket: ontem é o dia anterior por data, não 24h (dia de 25h no fim do horário de verão)", () => {
+    const tz = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      // 1º/11/2026 tem 25h em Nova York (volta do horário de verão).
+      const now = new Date(2026, 10, 2, 10, 0).getTime();
+      expect(dayBucket(new Date(2026, 10, 1, 0, 30).getTime(), now)).toBe("yesterday");
+      expect(dayBucket(new Date(2026, 9, 31, 23, 59).getTime(), now)).toBe("earlier");
+    } finally {
+      process.env.TZ = tz;
+    }
+  });
+
+  test("resetParts: só a hora nas próximas 24h, data + hora depois", () => {
+    const now = new Date(2026, 9, 13, 15, 0).getTime();
+    const secs = (d: Date) => d.getTime() / 1000;
+    expect(resetParts(secs(new Date(2026, 9, 13, 18, 0)), now)).toEqual({ time: "18:00", date: null });
+    expect(resetParts(secs(new Date(2026, 9, 14, 14, 59)), now)).toEqual({ time: "14:59", date: null });
+    expect(resetParts(secs(new Date(2026, 9, 14, 15, 0)), now)).toEqual({ time: "15:00", date: "14/10" });
+    expect(resetParts(secs(new Date(2026, 9, 20, 8, 5)), now)).toEqual({ time: "08:05", date: "20/10" });
   });
 
   test("groupBySession mantém a ordem do item mais recente", () => {

@@ -161,13 +161,25 @@ export function filterEntries(
 
 export type DayBucket = "today" | "yesterday" | "earlier";
 
+/** Por data local, não por 24h fixas: o dia da troca de horário tem 23h ou 25h. */
 export function dayBucket(atMs: number, now: number): DayBucket {
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
-  const today = start.getTime();
-  if (atMs >= today) return "today";
-  if (atMs >= today - 24 * 60 * 60 * 1000) return "yesterday";
+  if (atMs >= start.getTime()) return "today";
+  start.setDate(start.getDate() - 1);
+  if (atMs >= start.getTime()) return "yesterday";
   return "earlier";
+}
+
+/** Quando o limite volta, no fuso local: só a hora se for nas próximas 24h,
+ *  data + hora se depois — como `format_reset` no core (agent/usage.rs).
+ *  `resetsAt` em segundos. */
+export function resetParts(resetsAt: number, nowMs: number): { time: string; date: string | null } {
+  const at = new Date(resetsAt * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const time = `${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  if (resetsAt * 1000 - nowMs < 24 * 60 * 60 * 1000) return { time, date: null };
+  return { time, date: `${pad(at.getDate())}/${pad(at.getMonth() + 1)}` };
 }
 
 export interface SessionGroup<T> {

@@ -1402,7 +1402,8 @@ export type NotificationKind =
   | "approval"
   /** Agente parou de trabalhar e voltou ao prompt (running → idle). */
   | "agent_finished"
-  /** Turno falhou (`StopFailure`), sessão `failed` ou saiu com código ≠ 0. */
+  /** Turno falhou (`StopFailure`) ou sessão `failed`. Não vem de `exited`:
+   *  o core ignora o código de saída (-1 quando foi morto). */
   | "agent_failed"
   /** Limite de uso ≥ 85% (`pct` < 100) ou atingido (`pct` ≥ 100). */
   | "usage_limit";
@@ -1423,9 +1424,11 @@ export interface NotificationEntry {
   category: NotificationCategory;
   /** approval: id do pedido. */
   approval_id: number | null;
-  /** approval: ainda sem decisão. */
+  /** approval: ainda sem decisão. Pedido encerrado sem decisão (o app
+   *  reiniciou com ele aberto) fica `pending=false, decision=null`. */
   pending: boolean;
-  /** approval: decisão tomada ("approved" | "denied" | "approved_always"). */
+  /** approval: decisão tomada ("approved" | "denied" | "approved_always");
+   *  `null` se pendente ou encerrado sem decisão. */
   decision: ApprovalDecision | null;
   risk: RiskLevel | null;
   /** approval: o comando pedido (mascarado, até 2 KiB). */
@@ -1433,6 +1436,7 @@ export interface NotificationEntry {
   /** agent_finished: resumo do status idle; agent_failed: motivo (mascarado). */
   detail: string | null;
   usage: { window: "five_hour" | "seven_day"; pct: number; resets_at: number | null } | null;
+  /** Resolver um pedido grava `read=true` (quem decidiu já viu). */
   read: boolean;
 }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CaretDown, CaretRight, Tray, Warning, X } from "@phosphor-icons/react";
 
@@ -15,6 +15,7 @@ import {
   filterEntries,
   groupBySession,
   historyEntries,
+  resetParts,
   unreadCount,
   type DayBucket,
   type NotificationFilter,
@@ -73,12 +74,12 @@ export function NotificationsInbox({
   onGoToSession: (sessionId: SessionId) => void;
 }) {
   const { t } = useTranslation();
-  const [confirming, setConfirming] = useState<number | null>(null);
   const [feedbackFor, setFeedbackFor] = useState<number | null>(null);
   const [feedback, setFeedback] = useState("");
   const [entries, setEntries] = useState<NotificationEntry[]>([]);
   const [filter, setFilter] = useState<NotificationFilter>("all");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const panelRef = useRef<HTMLElement>(null);
 
   const load = useCallback(() => {
     notificationsList()
@@ -103,21 +104,23 @@ export function NotificationsInbox({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onOpenChange(false);
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      // Mesmo critério do DiffView: Esc só fecha com o foco no painel (ou em
+      // lugar nenhum) — um Esc digitado no terminal não derruba o painel.
+      const active = document.activeElement;
+      if (active && active !== document.body && !panelRef.current?.contains(active)) return;
+      onOpenChange(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onOpenChange]);
 
-  // Mesmo caminho de decisão do toast (lib/notifications#decideApproval):
-  // o gate do vermelho e o resolveApproval chamado são os mesmos.
+  // Mesmo caminho de decisão do toast (lib/notifications#decideApproval).
+  // Vermelho não se aprova daqui (R4): o card só oferece "Abrir na sessão",
+  // e se um approve vermelho chegasse, o gate pede confirmação e paramos.
   const decide = (request: ApprovalRequest, decision: ApprovalDecision, withFeedback?: string) => {
-    const effect = decideApproval({ request, decision, confirmingId: confirming, feedback: withFeedback });
-    if (effect.type === "armRedConfirm") {
-      setConfirming(effect.requestId);
-      return;
-    }
-    setConfirming(null);
+    const effect = decideApproval({ request, decision, confirmingId: null, feedback: withFeedback });
+    if (effect.type === "armRedConfirm") return;
     setFeedbackFor(null);
     setFeedback("");
     resolveApproval(effect.requestId, effect.decision, effect.feedback).catch(() => {});
@@ -135,8 +138,8 @@ export function NotificationsInbox({
   const history = useMemo(() => historyEntries(entries), [entries]);
   const shown = useMemo(() => filterEntries(history, filter), [history, filter]);
   const badge = attentionCount(approvals.length, entries);
-  const unread = unreadCount(history) + approvals.length;
-  const showRequests = filter === "all" || filter === "requests";
+  // Só o histórico: os pedidos pendentes têm a contagem própria em "Precisa de você".
+  const unread = unreadCount(history);
   const now = Date.now();
 
   const counts: Record<NotificationFilter, number> = {
@@ -154,6 +157,11 @@ export function NotificationsInbox({
       return next;
     });
 
+  const agentChip = (agent: string | null) =>
+    agent && (
+      <span className="shrink-0 rounded-[4px] bg-tyba-amber/[.12] px-1.5 text-[10px] text-tyba-amber">{agent}</span>
+    );
+
   const groupHeader = (key: string, title: string, agent: string | null, count: number) => {
     const isOpen = !collapsed.has(key);
     return (
@@ -166,15 +174,32 @@ export function NotificationsInbox({
         >
           {isOpen ? <CaretDown size={10} /> : <CaretRight size={10} />}
           <span className="truncate">{title}</span>
-          {agent && (
-            <span className="shrink-0 rounded-[4px] bg-tyba-amber/[.12] px-1.5 text-[10px] text-tyba-amber">
-              {agent}
-            </span>
-          )}
+          {agentChip(agent)}
         </button>
         <span className="text-[11px] text-tyba-text-faint">{count}</span>
       </div>
     );
+  };
+
+  // Grupo de pedidos não recolhe: nenhum pedido pode sumir de todas as telas
+  // (com o painel aberto, o toast os esconde — hiddenApprovalIds).
+  const requestGroupHeader = (title: string, agent: string | null, count: number) => (
+    <div className="flex items-center justify-between px-1 pb-1 pt-2">
+      <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-tyba-text">
+        <span className="truncate">{title}</span>
+        {agentChip(agent)}
+      </span>
+      <span className="text-[11px] text-tyba-text-faint">{count}</span>
+    </div>
+  );
+
+  const goToSession = (sessionId: SessionId) => {
+    onGoToSession(sessionId);
+    onOpenChange(false);
+  };
+
+  const markRead = (e: NotificationEntry) => {
+    if (!e.read) void notificationsMarkRead([e.id]).catch(() => {});
   };
 
   const approvalCard = (request: ApprovalRequest) => (
@@ -206,45 +231,54 @@ export function NotificationsInbox({
         </code>
         {request.context && <div className="mt-1 text-[11px] text-tyba-text-muted">{request.context}</div>}
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {approvalActions(request.risk).map((action) => {
-            const isConfirmApprove = action.id === "approve" && request.risk === "red" && confirming === request.id;
-            const label = isConfirmApprove ? t("confirmApprove") : t(action.labelKey);
-            const onClick = () => {
-              if (action.id === "denyWithReason") {
-                setFeedbackFor(request.id);
-                return;
-              }
-              const decision: ApprovalDecision =
-                action.id === "alwaysAllow" ? "approved_always" : action.id === "deny" ? "denied" : "approved";
-              decide(request, decision);
-            };
-            const button = (
-              <Button
-                key={action.id}
-                size="sm"
-                variant={action.id === "approve" ? "default" : "outline"}
-                onClick={onClick}
-                className={`h-6 gap-1.5 rounded-[5px] px-2.5 text-[11px] ${action.id === "approve" ? "" : "text-tyba-text-muted"} ${
-                  isConfirmApprove ? "bg-tyba-red text-white hover:bg-tyba-red/90" : ""
-                }`}
-              >
-                {label}
-              </Button>
-            );
-            return action.id === "alwaysAllow" ? (
-              <Tooltip key={action.id}>
-                <TooltipTrigger asChild>{button}</TooltipTrigger>
-                <TooltipContent side="bottom">{t("alwaysAllowHint")}</TooltipContent>
-              </Tooltip>
-            ) : (
-              button
-            );
-          })}
-          <button type="button" className={SMALL_BTN} onClick={() => onGoToSession(request.session_id)}>
-            {t("notifOpenSession")}
-          </button>
+          {/* R4: vermelho não se aprova de fora da sessão — só abrir nela. */}
+          {request.risk === "red" ? (
+            <Button
+              size="sm"
+              onClick={() => goToSession(request.session_id)}
+              className="h-6 rounded-[5px] px-2.5 text-[11px]"
+            >
+              {t("notifOpenInSession")}
+            </Button>
+          ) : (
+            <>
+              {approvalActions(request.risk).map((action) => {
+                const onClick = () => {
+                  if (action.id === "denyWithReason") {
+                    setFeedbackFor(request.id);
+                    return;
+                  }
+                  const decision: ApprovalDecision =
+                    action.id === "alwaysAllow" ? "approved_always" : action.id === "deny" ? "denied" : "approved";
+                  decide(request, decision);
+                };
+                const button = (
+                  <Button
+                    key={action.id}
+                    size="sm"
+                    variant={action.id === "approve" ? "default" : "outline"}
+                    onClick={onClick}
+                    className={`h-6 gap-1.5 rounded-[5px] px-2.5 text-[11px] ${action.id === "approve" ? "" : "text-tyba-text-muted"}`}
+                  >
+                    {t(action.labelKey)}
+                  </Button>
+                );
+                return action.id === "alwaysAllow" ? (
+                  <Tooltip key={action.id}>
+                    <TooltipTrigger asChild>{button}</TooltipTrigger>
+                    <TooltipContent side="bottom">{t("alwaysAllowHint")}</TooltipContent>
+                  </Tooltip>
+                ) : (
+                  button
+                );
+              })}
+              <button type="button" className={SMALL_BTN} onClick={() => onGoToSession(request.session_id)}>
+                {t("notifOpenSession")}
+              </button>
+            </>
+          )}
         </div>
-        {feedbackFor === request.id && (
+        {feedbackFor === request.id && request.risk !== "red" && (
           <div className="motion-safe:animate-tyba-pop-in mt-2 space-y-1.5">
             <Textarea
               autoFocus
@@ -285,7 +319,6 @@ export function NotificationsInbox({
           </div>
         )}
       </div>
-      <span role="img" aria-label={t("notifUnread")} className="mt-1.5 size-1.5 shrink-0 rounded-full bg-tyba-blue" />
     </div>
   );
 
@@ -305,20 +338,21 @@ export function NotificationsInbox({
       case "usage_limit":
         return e.usage && e.usage.pct >= 100
           ? t("notifLimitHit", { who, window: t(`notifWindow_${e.usage.window}`) })
-          : t("notifLimitWarn", { pct: e.usage?.pct ?? 0, window: t(`notifWindow_${e.usage?.window ?? "five_hour"}`) });
+          : t("notifLimitWarn", { pct: Math.round(e.usage?.pct ?? 0), window: t(`notifWindow_${e.usage?.window ?? "five_hour"}`) });
     }
   };
 
   const entryRow = (e: NotificationEntry) => {
-    const resets = e.usage?.resets_at ? clock(e.usage.resets_at * 1000) : null;
+    const reset = e.usage?.resets_at ? resetParts(e.usage.resets_at, Date.now()) : null;
+    const resets = reset && (reset.date ? t("notifResetsOn", reset) : t("notifResetsAt", reset));
     return (
       <div
         key={e.id}
         role="button"
         tabIndex={0}
-        onClick={() => !e.read && void notificationsMarkRead([e.id]).catch(() => {})}
+        onClick={() => markRead(e)}
         onKeyDown={(ev) => {
-          if (ev.key === "Enter" && !e.read) void notificationsMarkRead([e.id]).catch(() => {});
+          if (ev.key === "Enter") markRead(e);
         }}
         className="flex cursor-default gap-2 rounded-[8px] px-2.5 py-2 outline-none hover:bg-tyba-raised/60 focus-visible:bg-tyba-raised/60"
       >
@@ -326,7 +360,7 @@ export function NotificationsInbox({
           <div className={`text-[12.5px] ${e.category === "error" ? "text-tyba-red" : "text-tyba-text"}`}>{entryTitle(e)}</div>
           <div className="mt-0.5 truncate text-[11px] text-tyba-text-faint">
             {e.session_title} · {clock(e.at_ms)}
-            {resets && ` · ${t("notifResetsAt", { time: resets })}`}
+            {resets && ` · ${resets}`}
             {e.detail && ` · ${e.detail}`}
           </div>
           {e.command && (
@@ -342,6 +376,7 @@ export function NotificationsInbox({
                   className={SMALL_BTN}
                   onClick={(ev) => {
                     ev.stopPropagation();
+                    markRead(e);
                     void openGitScreen(e.session_id, "review").catch(() => {});
                     onOpenChange(false);
                   }}
@@ -354,8 +389,8 @@ export function NotificationsInbox({
                 className={SMALL_BTN}
                 onClick={(ev) => {
                   ev.stopPropagation();
-                  onGoToSession(e.session_id);
-                  onOpenChange(false);
+                  markRead(e);
+                  goToSession(e.session_id);
                 }}
               >
                 {t("notifOpenSession")}
@@ -384,10 +419,7 @@ export function NotificationsInbox({
             size="icon"
             aria-label={badge > 0 ? t("notifAria", { count: badge }) : t("notifications")}
             aria-pressed={open}
-            onClick={() => {
-              setConfirming(null);
-              onOpenChange(!open);
-            }}
+            onClick={() => onOpenChange(!open)}
             className={`relative h-7 w-[30px] rounded-[6px] ${
               open ? "bg-[var(--tyba-lit-bg)] text-tyba-blue shadow-[var(--tyba-lit-glow)]" : "text-tyba-text-faint hover:text-tyba-text"
             }`}
@@ -405,6 +437,7 @@ export function NotificationsInbox({
 
       {open && (
         <aside
+          ref={panelRef}
           aria-label={t("notifications")}
           className="motion-safe:animate-tyba-panel-in fixed bottom-[26px] right-0 top-[38px] z-50 flex w-[380px] flex-col tyba-divide-l bg-[var(--tyba-panel-bg)] tyba-glass shadow-[-24px_0_48px_rgba(0,0,0,0.35)]"
         >
@@ -445,7 +478,7 @@ export function NotificationsInbox({
             <span className="flex-1" />
             <button
               type="button"
-              disabled={unreadCount(history) === 0}
+              disabled={unread === 0}
               onClick={() => void notificationsMarkRead(null).catch(() => {})}
               className="whitespace-nowrap text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-40"
             >
@@ -454,7 +487,9 @@ export function NotificationsInbox({
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
-            {showRequests && approvals.length > 0 && (
+            {/* "Precisa de você" aparece em qualquer filtro: com o painel aberto
+                o toast esconde os pedidos, então nenhum pode sumir daqui. */}
+            {approvals.length > 0 && (
               <>
                 <div className="flex items-center justify-between px-1 pb-1 pt-3 text-[11px] text-tyba-amber">
                   <span className="tyba-label !text-tyba-amber">{t("notifNeedsYou")}</span>
@@ -462,8 +497,8 @@ export function NotificationsInbox({
                 </div>
                 {requestGroups.map((g) => (
                   <section key={`req:${g.session}`} aria-label={g.title} className="flex flex-col gap-1.5">
-                    {groupHeader(`req:${g.session}`, g.title, g.agent, g.items.length)}
-                    {!collapsed.has(`req:${g.session}`) && g.items.map(approvalCard)}
+                    {requestGroupHeader(g.title, g.agent, g.items.length)}
+                    {g.items.map(approvalCard)}
                   </section>
                 ))}
               </>
