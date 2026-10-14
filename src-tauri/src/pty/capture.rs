@@ -18,6 +18,11 @@ use crate::status::{OscParser, ShellEvent};
 
 use super::{SessionCommandPayload, SessionCwdPayload};
 
+/// O fim do PS1 (`133;B`), sem o terminador: é a partir dele que uma quebra
+/// de linha desarma o "pronto no prompt" — ver
+/// [`CaptureMachine::ready_at_prompt`].
+const PROMPT_MARK: &[u8] = b"\x1b]133;B";
+
 fn marker_at(chunk: &[u8], mark: &[u8]) -> Option<usize> {
     chunk.windows(mark.len()).position(|w| w == mark)
 }
@@ -205,6 +210,10 @@ pub(super) struct CaptureMachine {
     /// O shell pintou o prompt primário (`133;B`) e nada foi submetido desde
     /// então (`633;E`/`133;C`). Ver [`CaptureMachine::ready_at_prompt`].
     prompt_drawn: bool,
+    /// O último keymap que o shell reportou é de digitação (`tyba-keymap`).
+    /// Volta a `false` a cada linha submetida: o shell reporta de novo no
+    /// prompt seguinte, e um rc antigo que nunca reporta falha fechado.
+    insert_keymap: bool,
 }
 
 impl CaptureMachine {
@@ -223,20 +232,26 @@ impl CaptureMachine {
             cwd: None,
             canonical_cwd: None,
             prompt_drawn: false,
+            insert_keymap: false,
         }
     }
 
     /// O shell está no prompt primário, pronto para comando novo: pintou o
     /// `133;B` e desde então nenhuma linha foi submetida, nenhum comando está
-    /// rodando e não há `PS2` pendente. É o que autoriza o core a digitar no
-    /// shell em nome do dono.
+    /// rodando, não há `PS2` pendente, nenhuma quebra de linha saiu depois do
+    /// prompt e o editor de linha está num keymap de digitação (nunca no modo
+    /// de comando do vi, onde o texto viraria comando). É o que autoriza o core
+    /// a digitar no shell em nome do dono.
     ///
     /// Shell sem integração (nenhum `133;B` jamais) fica `false` para sempre:
     /// falha fechado. E um `exec ssh`/`exec nvim` derruba isto no `133;C` do
     /// preexec e nada o religa, porque o shell que pintaria o próximo prompt
     /// deixou de existir.
     pub(super) fn ready_at_prompt(&self) -> bool {
-        self.prompt_drawn && !self.command.running && self.submission == Submission::Idle
+        self.prompt_drawn
+            && self.insert_keymap
+            && !self.command.running
+            && self.submission == Submission::Idle
     }
 
     pub(super) fn on_chunk(&mut self, chunk: &[u8], now_ms: i64, alt_screen: bool) -> Vec<Action> {
@@ -329,6 +344,7 @@ impl CaptureMachine {
                     self.agent_match = crate::rich_input::agent_matcher().matches(cmd.trim_start());
                     self.tracker.on_command_line(cmd);
                     self.prompt_drawn = false;
+                    self.insert_keymap = false;
                     // O `633;E` sai do preexec: se ele veio, o shell ACEITOU a
                     // linha e não está em continuação. Zerar aqui, e não só no
                     // `133;C`, evita anunciar continuação no intervalo entre os
@@ -337,6 +353,7 @@ impl CaptureMachine {
                 }
                 ShellEvent::CommandStart => {
                     self.prompt_drawn = false;
+                    self.insert_keymap = false;
                     self.tracker.on_start(now_ms);
                     // Bloco só existe com o modo prompt: sem ele o prompt é
                     // desenhado (e repintado) dentro da região, e o recorte
@@ -414,6 +431,7 @@ impl CaptureMachine {
                     self.submission = Submission::Idle;
                     self.prompt_drawn = true;
                 }
+                ShellEvent::LineKeymap(insert) => self.insert_keymap = insert,
                 ShellEvent::PromptMode(on) => {
                     self.prompt_mode = Some(on);
                     actions.push(Action::PromptMode(on));
@@ -439,6 +457,22 @@ impl CaptureMachine {
                         actions.push(Action::Cwd(payload));
                     }
                 }
+            }
+        }
+
+        // Prompt pintado e, depois dele, uma quebra de linha na saída: o dono
+        // deu Enter e o shell não marcou nada — é o `PS2` de uma aspa aberta
+        // FORA do modo prompt (lá a régua de baixo não roda, porque o eco não é
+        // engolido), ou saída de algo que tomou a linha. Digitar ali juntaria o
+        // texto ao comando pendente. Só o próximo `133;B` religa. Partir
+        // demais aqui custa uma recusa; partir de menos, um comando errado.
+        if self.prompt_drawn {
+            let from = chunk
+                .windows(PROMPT_MARK.len())
+                .rposition(|w| w == PROMPT_MARK)
+                .map_or(0, |at| at + PROMPT_MARK.len());
+            if chunk[from..].contains(&b'\n') {
+                self.prompt_drawn = false;
             }
         }
 
@@ -635,6 +669,8 @@ mod tests {
         .into_bytes()
     }
 
+    const MAIN: &[u8] = b"\x1b]633;P;tyba-keymap=main\x07";
+
     #[test]
     fn ready_at_prompt_follows_the_prompt_and_the_command_cycle() {
         let mut machine = CaptureMachine::new("s1".into());
@@ -643,6 +679,16 @@ mod tests {
         assert!(!machine.ready_at_prompt());
 
         machine.on_chunk(b"\x1b]133;A\x07~ \x1b]133;B\x07", 1_000, false);
+        assert!(
+            !machine.ready_at_prompt(),
+            "sem keymap reportado, falha fechado"
+        );
+        machine.on_chunk(MAIN, 1_010, false);
+        assert!(machine.ready_at_prompt());
+        // ESC no zsh em modo vi: modo de comando. O texto viraria comando vi.
+        machine.on_chunk(b"\x1b]633;P;tyba-keymap=vicmd\x07", 1_020, false);
+        assert!(!machine.ready_at_prompt());
+        machine.on_chunk(b"\x1b]633;P;tyba-keymap=viins\x07", 1_030, false);
         assert!(machine.ready_at_prompt());
 
         // `exec nvim`: o preexec marca a linha e o início, e o prompt nunca
@@ -655,6 +701,22 @@ mod tests {
         machine.on_chunk(b"\x1b]133;D;0\x07", 3_000, false);
         assert!(!machine.ready_at_prompt(), "fim de comando sem prompt novo");
         machine.on_chunk(b"\x1b]133;A\x07~ \x1b]133;B\x07", 3_100, false);
+        assert!(
+            !machine.ready_at_prompt(),
+            "o keymap é reportado de novo a cada linha"
+        );
+        machine.on_chunk(MAIN, 3_110, false);
+        assert!(machine.ready_at_prompt());
+
+        // Fora do modo prompt, Enter com aspa aberta: o shell ecoa a quebra e
+        // pinta o `PS2` sem marcador nenhum. Não está mais no prompt.
+        machine.on_chunk(b"echo 'abc\r\nquote> ", 4_000, false);
+        assert!(!machine.ready_at_prompt());
+        // Ctrl+C: prompt novo, pronto de novo — mesmo com a quebra ANTES dele.
+        machine.on_chunk(b"\r\n\x1b]133;A\x07~ \x1b]133;B\x07", 5_000, false);
+        assert!(machine.ready_at_prompt());
+        // Digitar na linha (eco sem quebra) não desarma.
+        machine.on_chunk(b"git sta", 5_100, false);
         assert!(machine.ready_at_prompt());
     }
 

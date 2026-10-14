@@ -6213,8 +6213,17 @@ async fn resume_shell_conversation(
     // A integração do shell (OSC 133) tem de dizer "prompt pintado, nada
     // rodando". Sem ela — `exec ssh`, um `read` do rc, shell sem integração —
     // não se digita nada: o convite fica e o dono tenta de novo no prompt.
+    if state.pty_pool.hook_expected(id) != Some(true) {
+        return Err(
+            "este terminal não tem a integração do TYBA (só bash e zsh): rode o claude --resume você mesmo"
+                .into(),
+        );
+    }
     if state.pty_pool.shell_at_prompt(id) != Some(true) {
-        return Err("o terminal não está no prompt: espere o prompt voltar".into());
+        return Err(
+            "o terminal não está pronto no prompt (comando rodando ou modo de comando do vi): volte ao prompt e tente de novo"
+                .into(),
+        );
     }
     // A pasta gravada com a conversa, validada; senão a pasta de AGORA (não a
     // do boot): depois de um `cd` o `--resume` procuraria em outro slug.

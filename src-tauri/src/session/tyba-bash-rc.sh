@@ -161,6 +161,12 @@ if [ -z "${TYBA_BASH_HOOKS:-}" ] && case "$-" in *i*) true ;; *) false ;; esac; 
   # ULTIMO no PROMPT_COMMAND: arma o disparo do preexec.
   __tyba_prompt_ready() {
     __tyba_at_prompt=1
+    # O keymap vai para o core: em modo vi o readline nao conta o submodo, e
+    # o core nao digita nada no shell (retomar conversa recusa).
+    case ":${SHELLOPTS}:" in
+      *:vi:*) __tyba_esc "633;P;tyba-keymap=vi" ;;
+      *) __tyba_esc "633;P;tyba-keymap=emacs" ;;
+    esac
     return 0
   }
 

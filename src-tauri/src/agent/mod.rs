@@ -159,8 +159,11 @@ pub enum ResumeDir {
 /// fato rodava — é o que cobre o `cd` feito antes de rodar o claude. Ela é
 /// dado não confiável (payload de hook, cwd de processo) e só vale se:
 /// - existe e é pasta;
-/// - está dentro da home (a própria home inclusive), depois de resolver
-///   symlink — nunca `/etc` nem outro usuário;
+/// - é descendente estrito e visível da home, depois de resolver symlink — a
+///   mesma régua da jaula (M7). Nunca `/etc`, nunca outro usuário, e nunca a
+///   própria home nem um dot-dir: lá o `claude` sobe sem jaula, e a pasta
+///   gravada pode ter vindo de um payload de hook forjado por quem estava
+///   jaulado;
 /// - o transcript da conversa está no slug dela;
 /// - o caminho não tem caractere de controle (vira texto digitado no shell).
 ///
@@ -180,7 +183,7 @@ pub fn claude_resume_dir(
         .filter(|dir| dir.is_dir())
         .filter(|dir| {
             std::fs::canonicalize(home)
-                .map(|home| dir.starts_with(home))
+                .map(|home| jail_eligible(dir, &home))
                 .unwrap_or(false)
         })
         .filter(|dir| {
@@ -197,6 +200,18 @@ pub fn claude_resume_dir(
     }
     here.filter(|h| claude_conversation_on_disk(projects, h, id))
         .map(|_| ResumeDir::Here)
+}
+
+/// A régua da jaula (M7): descendente estrito e visível da home. Sem shim no
+/// Windows, sem pasta gravada que sirva de `cd`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn jail_eligible(dir: &Path, home: &Path) -> bool {
+    channel_host::visible_strict_descendant(dir, home)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn jail_eligible(_dir: &Path, _home: &Path) -> bool {
+    false
 }
 
 /// `path` entre aspas simples para sh/bash/zsh: nada dentro é interpretado, e
@@ -957,6 +972,24 @@ mod tests {
         std::fs::create_dir_all(&other).unwrap();
         assert_eq!(
             claude_resume_dir(&root, &projects, Some(&other), Some(&other), CONV),
+            None
+        );
+    }
+
+    #[test]
+    fn resume_dir_never_cds_into_the_home_itself_or_a_dot_dir() {
+        // Lá o claude subiria sem jaula: a pasta gravada não serve de `cd`.
+        let (_home, root, projects) = home_with_conversation(".config/x", CONV);
+        let hidden = root.join(".config/x");
+        assert_eq!(
+            claude_resume_dir(&root, &projects, Some(&hidden), None, CONV),
+            None
+        );
+        let slug = projects.join(claude_project_dir_name(&root));
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join(format!("{CONV}.jsonl")), "").unwrap();
+        assert_eq!(
+            claude_resume_dir(&root, &projects, Some(&root), None, CONV),
             None
         );
     }
