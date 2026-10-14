@@ -353,12 +353,31 @@ struct GhCommitRef {
 }
 
 /// Usuário (`login`) ou time (`name`; o `gh` não traz `login` para time).
+/// `slug` do time: `org/slug` no `gh pr list`, só `slug` na GraphQL crua.
 #[derive(Debug, Deserialize)]
 struct GhReviewRequest {
     #[serde(default)]
     login: Option<String>,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    slug: Option<String>,
+}
+
+/// O pedido de revisão é para o usuário: direto (login) ou para um time de
+/// que ele faz parte. `teams` vem de [`parse_teams`] (`org/slug`, minúsculo).
+fn requested_to_me(request: &GhReviewRequest, me: &str, teams: &[String]) -> bool {
+    let direct = !me.is_empty()
+        && request
+            .login
+            .as_deref()
+            .is_some_and(|l| l.eq_ignore_ascii_case(me));
+    let team = request
+        .slug
+        .as_deref()
+        .filter(|s| s.contains('/'))
+        .is_some_and(|s| teams.iter().any(|t| t.eq_ignore_ascii_case(s)));
+    direct || team
 }
 
 #[derive(Debug, Deserialize)]
@@ -831,7 +850,7 @@ fn own_head(cross_repo: bool, head_owner: Option<&GhActor>, repo_owner: &str) ->
         && head_owner.is_some_and(|o| o.login.eq_ignore_ascii_case(repo_owner))
 }
 
-fn list_item(pr: GhListPr, me: &str, repo_owner: &str) -> PrListItem {
+fn list_item(pr: GhListPr, me: &str, teams: &[String], repo_owner: &str) -> PrListItem {
     let own_head = own_head(
         pr.is_cross_repository,
         pr.head_repository_owner.as_ref(),
@@ -844,12 +863,11 @@ fn list_item(pr: GhListPr, me: &str, repo_owner: &str) -> PrListItem {
         .iter()
         .filter(|r| review_state(&r.state) == PrReviewState::Approved)
         .count() as u32;
-    let review_requested = !me.is_empty()
-        && pr
-            .review_requests
-            .unwrap_or_default()
-            .iter()
-            .any(|r| r.login.as_deref() == Some(me));
+    let review_requested = pr
+        .review_requests
+        .unwrap_or_default()
+        .iter()
+        .any(|r| requested_to_me(r, me, teams));
     let (author, author_name) = match pr.author {
         Some(a) => (a.login, non_empty(a.name)),
         None => (String::new(), None),
@@ -879,14 +897,47 @@ fn list_item(pr: GhListPr, me: &str, repo_owner: &str) -> PrListItem {
     }
 }
 
-/// `me` é o login do usuário no `gh`: decide `review_requested`. `repo_owner`
-/// é o owner do repo consultado: decide `own_head`.
-pub fn parse_list(stdout: &[u8], me: &str, repo_owner: &str) -> Result<Vec<PrListItem>, String> {
+/// `me` é o login do usuário no `gh` e `teams` os times dele (`org/slug`):
+/// decidem `review_requested`. `repo_owner` é o owner do repo consultado:
+/// decide `own_head`.
+pub fn parse_list(
+    stdout: &[u8],
+    me: &str,
+    teams: &[String],
+    repo_owner: &str,
+) -> Result<Vec<PrListItem>, String> {
     let prs: Vec<GhListPr> = serde_json::from_slice(stdout)
         .map_err(|e| format!("resposta inesperada de `gh pr list`: {e}"))?;
     Ok(prs
         .into_iter()
-        .map(|pr| list_item(pr, me, repo_owner))
+        .map(|pr| list_item(pr, me, teams, repo_owner))
+        .collect())
+}
+
+/// Corpo de `GET /user/teams`: os times do usuário como `org/slug`, em
+/// minúsculas (o mesmo formato do `slug` de time no `gh pr list`).
+pub fn parse_teams(body: &[u8]) -> Result<Vec<String>, String> {
+    #[derive(Deserialize)]
+    struct Org {
+        #[serde(default)]
+        login: String,
+    }
+    #[derive(Deserialize)]
+    struct Team {
+        #[serde(default)]
+        slug: String,
+        #[serde(default)]
+        organization: Option<Org>,
+    }
+    let teams: Vec<Team> = serde_json::from_slice(body)
+        .map_err(|e| format!("resposta inesperada de `user/teams`: {e}"))?;
+    Ok(teams
+        .into_iter()
+        .filter_map(|t| {
+            let org = t.organization?.login;
+            (!org.is_empty() && !t.slug.is_empty())
+                .then(|| format!("{org}/{}", t.slug).to_ascii_lowercase())
+        })
         .collect())
 }
 
@@ -1153,6 +1204,45 @@ fn viewer_login(repo_root: &Path, remote: &Remote) -> Result<String, AppError> {
     Ok(login)
 }
 
+fn teams_cache() -> &'static Cache<String, Vec<String>> {
+    static CACHE: std::sync::OnceLock<Cache<String, Vec<String>>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn fetch_teams(repo_root: &Path, host: &str) -> Result<Vec<String>, AppError> {
+    let body = super::conditional::get(repo_root, host, "user/teams?per_page=100")?;
+    parse_teams(&body).map_err(cli_failed)
+}
+
+/// Times do usuário (para "Para revisar" contar pedido a time), com o mesmo
+/// SWR da lista e GET condicional: time quase nunca muda, e o 304 não gasta
+/// limite. Sem permissão (`read:org`) ou com erro, a lista é vazia: a contagem
+/// cai para só os pedidos diretos, como era antes, em vez de quebrar a página.
+fn viewer_teams(repo_root: &Path, remote: &Remote) -> Vec<String> {
+    let key = remote.host.to_ascii_lowercase();
+    match lookup(teams_cache(), &key) {
+        Lookup::Fresh(teams) => teams,
+        Lookup::Stale(teams) => {
+            let root = repo_root.to_path_buf();
+            let host = remote.host.clone();
+            revalidate_in_background(format!("teams:{key}"), move || {
+                match fetch_teams(&root, &host) {
+                    Ok(teams) => {
+                        store(teams_cache(), key, teams, PartialEq::eq);
+                    }
+                    Err(_) => touch(teams_cache(), &key),
+                }
+            });
+            teams
+        }
+        Lookup::Miss => {
+            let teams = fetch_teams(repo_root, &remote.host).unwrap_or_default();
+            store(teams_cache(), key, teams.clone(), PartialEq::eq);
+            teams
+        }
+    }
+}
+
 /// `limit` do pedido, no intervalo aceito (padrão [`LIST_LIMIT`]).
 pub fn clamp_limit(limit: Option<u32>) -> u32 {
     limit.unwrap_or(LIST_LIMIT).clamp(1, LIST_LIMIT_MAX)
@@ -1178,13 +1268,13 @@ pub fn is_capped(items: usize, open: usize, limit: u32) -> bool {
 fn list(
     repo_root: &Path,
     remote: &Remote,
-    me: &str,
+    (me, teams): (&str, &[String]),
     filter: &[&str],
     limit: u32,
 ) -> Result<Vec<PrListItem>, AppError> {
     let args = list_args(&repo_flag(remote), filter, limit);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    parse_list(&gh(repo_root, &args)?, me, &remote.owner).map_err(cli_failed)
+    parse_list(&gh(repo_root, &args)?, me, teams, &remote.owner).map_err(cli_failed)
 }
 
 fn fetch_page(
@@ -1193,40 +1283,42 @@ fn fetch_page(
     filter: PrFilter,
     limit: u32,
 ) -> Result<PrPage, AppError> {
-    let me = viewer_login(repo_root, remote)?;
-    let open = list(repo_root, remote, &me, &["--state", "open"], limit)?;
+    let login = viewer_login(repo_root, remote)?;
+    let teams = viewer_teams(repo_root, remote);
+    let me = (login.as_str(), teams.as_slice());
+    let open = list(repo_root, remote, me, &["--state", "open"], limit)?;
     let (items, recent_merged) = match filter {
         PrFilter::Open => {
             let merged = list(
                 repo_root,
                 remote,
-                &me,
+                me,
                 &["--state", "merged"],
                 RECENT_MERGED_LIMIT,
             )?;
             (open.clone(), merged)
         }
         PrFilter::Mine => (
-            list(repo_root, remote, &me, &["--author", "@me"], limit)?,
+            list(repo_root, remote, me, &["--author", "@me"], limit)?,
             Vec::new(),
         ),
         PrFilter::Review => (
             list(
                 repo_root,
                 remote,
-                &me,
+                me,
                 &["--search", "review-requested:@me"],
                 limit,
             )?,
             Vec::new(),
         ),
         PrFilter::Closed => (
-            list(repo_root, remote, &me, &["--state", "closed"], limit)?,
+            list(repo_root, remote, me, &["--state", "closed"], limit)?,
             Vec::new(),
         ),
     };
     Ok(PrPage {
-        counts: counts(&open, &me),
+        counts: counts(&open, &login),
         capped: is_capped(items.len(), open.len(), limit),
         items,
         recent_merged,
@@ -1702,7 +1794,7 @@ fn is_full_sha(value: &str) -> bool {
     value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-fn check_target(number: u64, head_sha: &str) -> Result<(), AppError> {
+pub(super) fn check_target(number: u64, head_sha: &str) -> Result<(), AppError> {
     if number == 0 {
         return Err(invalid_number());
     }
@@ -1902,7 +1994,7 @@ mod tests {
 
     #[test]
     fn list_maps_state_draft_and_merged() {
-        let items = parse_list(LIST.as_bytes(), "eu-mesmo", "exemplo").unwrap();
+        let items = parse_list(LIST.as_bytes(), "eu-mesmo", &[], "exemplo").unwrap();
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].state, PrState::Open);
         assert_eq!(items[1].state, PrState::Draft);
@@ -1920,7 +2012,7 @@ mod tests {
 
     #[test]
     fn list_aggregates_ci_from_the_rollup() {
-        let items = parse_list(LIST.as_bytes(), "eu-mesmo", "exemplo").unwrap();
+        let items = parse_list(LIST.as_bytes(), "eu-mesmo", &[], "exemplo").unwrap();
         // build ✓, skipped conta como passou; lint ✗; e2e e o StatusContext pendentes.
         assert_eq!(
             items[0].ci,
@@ -1938,7 +2030,7 @@ mod tests {
 
     #[test]
     fn list_counts_approvals_review_and_comments() {
-        let items = parse_list(LIST.as_bytes(), "eu-mesmo", "exemplo").unwrap();
+        let items = parse_list(LIST.as_bytes(), "eu-mesmo", &[], "exemplo").unwrap();
         assert_eq!(items[0].approvals, 1);
         assert_eq!(items[0].review, Some(PrReviewDecision::Approved));
         assert_eq!(items[1].review, None, "reviewDecision vazio vira null");
@@ -1954,7 +2046,7 @@ mod tests {
 
     #[test]
     fn counts_come_from_the_open_list() {
-        let items = parse_list(LIST.as_bytes(), "eu-mesmo", "exemplo").unwrap();
+        let items = parse_list(LIST.as_bytes(), "eu-mesmo", &[], "exemplo").unwrap();
         let open: Vec<_> = items.into_iter().take(2).collect();
         assert_eq!(
             counts(&open, "eu-mesmo"),
@@ -1971,7 +2063,7 @@ mod tests {
 
     #[test]
     fn list_serializes_with_the_ts_contract_names() {
-        let items = parse_list(LIST.as_bytes(), "eu-mesmo", "exemplo").unwrap();
+        let items = parse_list(LIST.as_bytes(), "eu-mesmo", &[], "exemplo").unwrap();
         let v = serde_json::to_value(&items[1]).unwrap();
         assert_eq!(v["state"], "draft");
         assert_eq!(v["review"], serde_json::Value::Null);
@@ -2106,7 +2198,7 @@ mod tests {
 
     #[test]
     fn parsers_reject_garbage() {
-        assert!(parse_list(b"nao sou json", "", "").is_err());
+        assert!(parse_list(b"nao sou json", "", &[], "").is_err());
         assert!(parse_detail(b"[]", "").is_err());
     }
 
@@ -2160,7 +2252,7 @@ mod tests {
            "headRepositoryOwner": {"id": "U_1", "login": "exemplo"}},
           {"number": 5, "headRefName": "tyba/x-ab12"}
         ]"#;
-        let items = parse_list(json, "", "exemplo").unwrap();
+        let items = parse_list(json, "", &[], "exemplo").unwrap();
         let own: Vec<bool> = items.iter().map(|i| i.own_head).collect();
         assert_eq!(own, [true, false, false, false, false]);
         let cross: Vec<bool> = items.iter().map(|i| i.cross_repo).collect();
@@ -2670,5 +2762,57 @@ mod tests {
         assert_eq!(v, serde_json::json!({"repo": "exemplo/app", "number": 7}));
         let v = serde_json::to_value(empty_page("")).unwrap();
         assert_eq!(v["rate_limit"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn team_review_request_counts_when_the_user_is_in_the_team() {
+        let teams = vec!["exemplo/time-core".to_string()];
+        let items = parse_list(LIST.as_bytes(), "eu-mesmo", &teams, "exemplo").unwrap();
+        assert!(items[0].review_requested, "pedido direto continua");
+        assert!(items[1].review_requested, "pedido ao time do usuário");
+        let open: Vec<_> = items.into_iter().take(2).collect();
+        assert_eq!(counts(&open, "eu-mesmo").review, 2);
+
+        let other = vec!["exemplo/outro-time".to_string()];
+        let items = parse_list(LIST.as_bytes(), "eu-mesmo", &other, "exemplo").unwrap();
+        assert!(
+            !items[1].review_requested,
+            "time de que o usuário não faz parte"
+        );
+    }
+
+    #[test]
+    fn team_match_needs_the_org_and_ignores_case() {
+        let teams = vec!["exemplo/time-core".to_string()];
+        let req = |login: Option<&str>, slug: Option<&str>| GhReviewRequest {
+            login: login.map(String::from),
+            name: None,
+            slug: slug.map(String::from),
+        };
+        assert!(requested_to_me(
+            &req(None, Some("Exemplo/Time-Core")),
+            "",
+            &teams
+        ));
+        // Slug sem org (GraphQL crua) não decide: outro org pode ter o mesmo slug.
+        assert!(!requested_to_me(&req(None, Some("time-core")), "", &teams));
+        assert!(requested_to_me(
+            &req(Some("EU-MESMO"), None),
+            "eu-mesmo",
+            &[]
+        ));
+        assert!(!requested_to_me(&req(Some("eu-mesmo"), None), "", &[]));
+    }
+
+    #[test]
+    fn parses_user_teams_as_org_slug() {
+        let body = br#"[
+          {"id": 1, "slug": "time-core", "name": "Time Core", "organization": {"login": "Exemplo"}},
+          {"id": 2, "slug": "sem-org"},
+          {"id": 3, "slug": "", "organization": {"login": "exemplo"}}
+        ]"#;
+        assert_eq!(parse_teams(body).unwrap(), vec!["exemplo/time-core"]);
+        assert_eq!(parse_teams(b"[]").unwrap(), Vec::<String>::new());
+        assert!(parse_teams(b"{\"message\": \"Not Found\"}").is_err());
     }
 }

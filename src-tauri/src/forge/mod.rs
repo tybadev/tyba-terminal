@@ -3,6 +3,7 @@ pub mod conditional;
 pub mod exec;
 pub mod github;
 pub mod gitlab;
+pub mod local;
 pub mod prs;
 pub mod rate;
 pub mod remote;

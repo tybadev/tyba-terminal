@@ -236,15 +236,37 @@ pub fn ahead_count(worktree: &Path, upstream: &str) -> Result<u32, String> {
 const UNBORN_HEAD_MSG: &str = "Este repositório ainda não tem nenhum commit. O worktree precisa de um commit base para congelar o diff — faça um commit inicial e tente de novo.";
 
 pub fn create(repo_root: &Path, title: &str) -> Result<Worktree, String> {
-    create_in(&managed_root()?, repo_root, title)
+    create_in(&managed_root()?, repo_root, title, None)
 }
 
-fn create_in(managed: &Path, repo_root: &Path, title: &str) -> Result<Worktree, String> {
+/// Como [`create`], mas nasce em `base` (sha de commit já presente no repo, ex.
+/// o head de um PR buscado) em vez do HEAD do repo. `base` vira o `base_ref`
+/// congelado do diff: o diff da sessão mostra só o que mudar dali em diante.
+pub fn create_at(repo_root: &Path, title: &str, base: &str) -> Result<Worktree, String> {
+    create_in(&managed_root()?, repo_root, title, Some(base))
+}
+
+fn create_in(
+    managed: &Path,
+    repo_root: &Path,
+    title: &str,
+    base: Option<&str>,
+) -> Result<Worktree, String> {
     let repo_root = crate::repo::canonicalize_or(repo_root);
-    if diff::head_is_unborn(&repo_root) {
-        return Err(UNBORN_HEAD_MSG.into());
-    }
-    let base_ref = head_sha(&repo_root)?;
+    let base_ref = match base {
+        Some(sha) => {
+            if !(sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit())) {
+                return Err(format!("sha de base inválido: {sha}"));
+            }
+            sha.to_ascii_lowercase()
+        }
+        None => {
+            if diff::head_is_unborn(&repo_root) {
+                return Err(UNBORN_HEAD_MSG.into());
+            }
+            head_sha(&repo_root)?
+        }
+    };
     let slug = slugify(title);
     let suffix = short_suffix();
     let branch = format!("tyba/{slug}-{suffix}");
@@ -850,7 +872,7 @@ mod lifecycle_tests {
         let base = temp_base("gitdirs");
         let repo = temp_repo(&base);
         let managed = base.join("managed");
-        let wt = create_in(&managed, &repo, "gitdirs").expect("create");
+        let wt = create_in(&managed, &repo, "gitdirs", None).expect("create");
 
         let dirs = resolved_git_dirs(&wt.path).unwrap();
         let repo_canon = crate::repo::canonicalize_or(&repo);
@@ -903,7 +925,7 @@ mod lifecycle_tests {
         let repo = temp_repo(&base);
         let managed = base.join("managed");
 
-        let wt = create_in(&managed, &repo, "Minha Task").expect("create");
+        let wt = create_in(&managed, &repo, "Minha Task", None).expect("create");
 
         assert!(wt.path.starts_with(&managed));
         assert!(wt.branch.starts_with("tyba/minha-task-"));
@@ -916,6 +938,26 @@ mod lifecycle_tests {
         );
 
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn create_at_starts_from_the_given_commit_not_head() {
+        let base = temp_base("create-at");
+        let repo = temp_repo(&base);
+        let first = head_sha(&repo).unwrap();
+        std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-qm", "segundo"]);
+        let managed = base.join("managed");
+
+        let wt = create_in(&managed, &repo, "pr-7", Some(&first)).expect("create");
+        assert!(wt.branch.starts_with("tyba/pr-7-"));
+        assert_eq!(wt.base_ref, first);
+        assert_eq!(head_sha(&wt.path).unwrap(), first);
+        assert!(!wt.path.join("b.txt").exists());
+
+        assert!(create_in(&managed, &repo, "x", Some("HEAD")).is_err());
+        assert!(create_in(&managed, &repo, "x", Some("--orphan")).is_err());
     }
 
     fn temp_repo_unborn(base: &Path) -> PathBuf {
@@ -933,14 +975,15 @@ mod lifecycle_tests {
         let repo = temp_repo_unborn(&base);
         let managed = base.join("managed");
 
-        let err = create_in(&managed, &repo, "Minha Task").unwrap_err();
+        let err = create_in(&managed, &repo, "Minha Task", None).unwrap_err();
 
         assert_eq!(err, UNBORN_HEAD_MSG);
         assert!(!err.contains("fatal"), "{err}");
         assert!(!err.contains("ambiguous"), "{err}");
         assert!(!err.contains("HEAD"), "{err}");
 
-        let ok = create_in(&managed, &temp_repo(&base.join("with-commit")), "ok").expect("create");
+        let ok =
+            create_in(&managed, &temp_repo(&base.join("with-commit")), "ok", None).expect("create");
         assert!(ok.path.starts_with(&managed));
 
         std::fs::remove_dir_all(&base).ok();
@@ -950,7 +993,7 @@ mod lifecycle_tests {
     fn dirty_worktree_refuses_removal_without_force() {
         let base = temp_base("dirty");
         let repo = temp_repo(&base);
-        let wt = create_in(&base.join("managed"), &repo, "t").unwrap();
+        let wt = create_in(&base.join("managed"), &repo, "t", None).unwrap();
         std::fs::write(wt.path.join("novo.txt"), "x").unwrap();
 
         let err = remove_managed_by(&wt.path, false, false, true).unwrap_err();
@@ -977,14 +1020,14 @@ mod lifecycle_tests {
         let repo = temp_repo(&base);
         let managed = base.join("managed");
 
-        let disposable = create_in(&managed, &repo, "descartavel").unwrap();
-        let dirty = create_in(&managed, &repo, "sujo").unwrap();
+        let disposable = create_in(&managed, &repo, "descartavel", None).unwrap();
+        let dirty = create_in(&managed, &repo, "sujo", None).unwrap();
         std::fs::write(dirty.path.join("wip.txt"), "x").unwrap();
-        let ahead = create_in(&managed, &repo, "com-commit").unwrap();
+        let ahead = create_in(&managed, &repo, "com-commit", None).unwrap();
         std::fs::write(ahead.path.join("b.txt"), "b\n").unwrap();
         git(&ahead.path, &["add", "-A"]);
         git(&ahead.path, &["commit", "-qm", "trabalho"]);
-        let known = create_in(&managed, &repo, "conhecido").unwrap();
+        let known = create_in(&managed, &repo, "conhecido", None).unwrap();
         for wt in [&disposable.path, &dirty.path, &ahead.path] {
             backdate(wt);
         }
@@ -1071,7 +1114,7 @@ mod lifecycle_tests {
         .unwrap();
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-qm", "setup"]);
-        let wt = create_in(&base.join("managed"), &repo, "env").unwrap();
+        let wt = create_in(&base.join("managed"), &repo, "env", None).unwrap();
 
         let script = setup_script(&wt.path).expect("script");
         std::fs::write(
@@ -1100,8 +1143,8 @@ mod lifecycle_tests {
         let repo = temp_repo(&base);
         let managed = base.join("managed");
 
-        let fresh = create_in(&managed, &repo, "fresquinho").unwrap();
-        let outside = create_in(&base.join("fora"), &repo, "de-fora").unwrap();
+        let fresh = create_in(&managed, &repo, "fresquinho", None).unwrap();
+        let outside = create_in(&base.join("fora"), &repo, "de-fora", None).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside.path, managed.join("repo").join("link")).unwrap();
 
@@ -1124,7 +1167,7 @@ mod lifecycle_tests {
     fn clean_worktree_with_unmerged_commits_refuses_removal_without_force() {
         let base = temp_base("unmerged");
         let repo = temp_repo(&base);
-        let wt = create_in(&base.join("managed"), &repo, "t").unwrap();
+        let wt = create_in(&base.join("managed"), &repo, "t", None).unwrap();
         std::fs::write(wt.path.join("b.txt"), "b\n").unwrap();
         git(&wt.path, &["add", "-A"]);
         git(&wt.path, &["commit", "-qm", "trabalho"]);
@@ -1146,7 +1189,7 @@ mod lifecycle_tests {
         std::fs::write(repo.join(SETUP_SCRIPT_REL), "echo quebrou >&2; exit 3\n").unwrap();
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-qm", "setup"]);
-        let wt = create_in(&base.join("managed"), &repo, "fail").unwrap();
+        let wt = create_in(&base.join("managed"), &repo, "fail", None).unwrap();
         let script = setup_script(&wt.path).expect("script");
 
         let err = run_setup(&wt.path, &script, &[]).unwrap_err();

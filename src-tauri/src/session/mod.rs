@@ -267,6 +267,11 @@ pub struct CreateSessionOpts {
     /// Só vale para `attach_existing`.
     #[serde(default)]
     pub resume_conversation: Option<String>,
+    /// Worktree já criado pelo core (PR aberto no TYBA) e o repo dele. Nunca
+    /// vem do webview (`skip`): um caminho vindo de lá viraria cwd e base do
+    /// diff sem nenhuma validação.
+    #[serde(skip)]
+    pub prepared_worktree: Option<(crate::worktree::Worktree, PathBuf)>,
 }
 
 /// O que a sessão nova herda de `previous` (a que ocupava o mesmo `SessionId`
@@ -431,12 +436,17 @@ impl SessionManager {
         &self,
         app: AppHandle,
         pty_pool: &SharedPtyPool,
-        opts: CreateSessionOpts,
+        mut opts: CreateSessionOpts,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
 
+        let prepared = opts.prepared_worktree.take();
         let (worktree, repo_root) = match opts.worktree_task.as_deref() {
+            _ if prepared.is_some() => {
+                let (wt, root) = prepared.expect("checado acima");
+                (Some(wt), Some(root))
+            }
             Some(task) => {
                 let base = resolve_cwd(opts.cwd.as_deref());
                 let root = crate::repo::toplevel(&base).ok_or_else(|| {

@@ -1447,6 +1447,7 @@ pub fn resume_agent_session(
         // é quem herda de `previous`. Ver `Session::opened_by_gate`.
         opened_by_gate: false,
         resume_conversation: None,
+        prepared_worktree: None,
     };
     spawn_prepared(
         ctx,

@@ -1242,6 +1242,7 @@ fn resume_startup(
             initial_prompt: None,
             opened_by_gate: false,
             resume_conversation: None,
+            prepared_worktree: None,
         };
         match sessions.create_shell_session(app.clone(), pty_pool, opts, move |id| {
             session_exited(&handle, id)
@@ -3296,6 +3297,101 @@ async fn forge_pr_merge(
     forge_blocking(move || forge::prs::merge(&path, number, strategy, &head_sha)).await
 }
 
+/// "Checkout" de um PR no checkout do próprio usuário, em HEAD destacado.
+/// Só a UI chama, depois da confirmação. Recusa árvore suja e o worktree de
+/// uma sessão (lá o caminho é [`forge_pr_open_session`]). Ver `forge::local`.
+#[tauri::command]
+async fn forge_pr_checkout(
+    state: State<'_, AppState>,
+    id: SessionId,
+    number: u64,
+    head_sha: String,
+) -> Result<(), AppError> {
+    let has_worktree = state
+        .sessions
+        .get(id)
+        .ok_or_else(|| session_setup_error(format!("sessão não encontrada: {id}")))?
+        .worktree
+        .is_some();
+    if has_worktree {
+        return Err(AppError::new("forge.pr_checkout_in_worktree"));
+    }
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    forge_blocking(move || forge::local::checkout(&path, number, &head_sha)).await
+}
+
+/// Sessão do TYBA que já abriu o PR `number` no repo `main` (branch
+/// `tyba/pr-<n>-…` criada por [`forge_pr_open_session`]).
+fn pr_open_session(
+    sessions: &[session::Session],
+    main: &std::path::Path,
+    number: u64,
+) -> Option<session::Session> {
+    let prefix = forge::local::branch_prefix(number);
+    sessions
+        .iter()
+        .find(|s| {
+            s.repo_root.as_deref() == Some(main)
+                && s.worktree
+                    .as_ref()
+                    .is_some_and(|wt| wt.branch.starts_with(&prefix))
+        })
+        .cloned()
+}
+
+/// "Abrir no TYBA" para um PR sem sessão: busca o head do PR e abre uma sessão
+/// de shell num worktree NOVO e isolado, sem tocar no checkout do usuário. Se
+/// uma sessão já abriu este PR, devolve ela. Só a UI chama, depois da
+/// confirmação. Ver `forge::local`.
+#[tauri::command]
+async fn forge_pr_open_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    number: u64,
+    head_sha: String,
+    cols: u16,
+    rows: u16,
+) -> Result<Session, AppError> {
+    let _ = wait_for_boot(Arc::clone(&state.boot)).await;
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    if let Ok(main) = worktree::main_repo_of(&path) {
+        let main = repo::canonicalize_or(&main);
+        if let Some(existing) = pr_open_session(&state.sessions.list(), &main, number) {
+            return Ok(existing);
+        }
+    }
+    let prepared =
+        forge_blocking(move || forge::local::open_worktree(&path, number, &head_sha)).await?;
+    let handle = app.clone();
+    // Sem `run_setup_if_consented`: o script de setup veio com o PR, não é o
+    // que o usuário consentiu.
+    state
+        .sessions
+        .create_shell_session(
+            app.clone(),
+            &state.pty_pool,
+            CreateSessionOpts {
+                kind: SessionKind::Shell,
+                title: Some(format!("PR #{number}")),
+                cwd: None,
+                cols,
+                rows,
+                worktree_task: None,
+                attach_existing: false,
+                shell: None,
+                initial_prompt: None,
+                opened_by_gate: false,
+                resume_conversation: None,
+                prepared_worktree: Some(prepared),
+            },
+            move |sid| session_exited(&handle, sid),
+        )
+        .map_err(|e| session_setup_error(e.to_string()))
+}
+
 /// Abre um arquivo do worktree como TEXTO — nunca "executa" o arquivo.
 /// `open <arquivo>`/`xdg-open` rodariam um script/app deixado por um
 /// agente no worktree com um clique; aqui só editor configurado ou
@@ -4432,6 +4528,7 @@ async fn spawn_slot(
                 initial_prompt: slot.initial_prompt.clone(),
                 opened_by_gate: false,
                 resume_conversation: None,
+                prepared_worktree: None,
             },
         )
         .await;
@@ -4480,6 +4577,7 @@ async fn spawn_slot(
             initial_prompt: slot.initial_prompt.clone(),
             opened_by_gate: false,
             resume_conversation: None,
+            prepared_worktree: None,
         },
     )
     .await
@@ -5809,6 +5907,7 @@ fn docker_open_project(
                 initial_prompt: None,
                 opened_by_gate: false,
                 resume_conversation: None,
+                prepared_worktree: None,
             },
             move |id| session_exited(&handle, id),
         )
@@ -8036,6 +8135,8 @@ pub fn run() {
             forge_pr_detail,
             forge_pr_review,
             forge_pr_merge,
+            forge_pr_checkout,
+            forge_pr_open_session,
             forge_workflow_jobs,
             forge_run_log,
             forge_run_rerun,
