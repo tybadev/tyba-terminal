@@ -6077,6 +6077,14 @@ async fn docker_compose_op(
     docker_blocking(move || docker.compose_op(&project, op).map_err(|e| e.to_string())).await?
 }
 
+/// Compose em andamento e última falha por projeto: a tela pede junto do refresh.
+#[tauri::command]
+fn docker_compose_runs(
+    state: State<'_, AppState>,
+) -> std::collections::HashMap<String, docker::ComposeRun> {
+    state.docker.compose_runs()
+}
+
 #[tauri::command]
 fn docker_open_project(
     app: AppHandle,
@@ -8468,6 +8476,7 @@ pub fn run() {
             docker_panel_usage,
             docker_open_desktop,
             docker_compose_op,
+            docker_compose_runs,
             docker_open_project,
             docker_open_compose_file,
             open_view_tab,

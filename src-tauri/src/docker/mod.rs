@@ -57,6 +57,8 @@ pub enum DockerError {
     UnknownContainer(String),
     #[error("projeto compose desconhecido: {0}")]
     UnknownProject(String),
+    #[error("já tem um compose rodando neste projeto: {0}")]
+    ComposeBusy(String),
     #[error("caminho inválido: {0}")]
     InvalidPath(String),
     #[error("este caminho não existe nesta máquina: {0} — o container reporta o caminho do ambiente onde subiu, não do host")]
@@ -158,7 +160,7 @@ impl ContainerTab {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ComposeOp {
     Up,
@@ -174,6 +176,57 @@ impl ComposeOp {
             ComposeOp::Down => &["down"],
             ComposeOp::Restart => &["restart"],
         }
+    }
+}
+
+/// Estado de compose de um projeto, do core (a tela some e volta; o estado
+/// não): o que está rodando agora e o motivo da última falha.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ComposeRun {
+    pub op: Option<ComposeOp>,
+    pub error: Option<String>,
+}
+
+/// Compose por projeto: um de cada vez. Só guarda projeto com op rodando ou
+/// com falha pendente.
+#[derive(Debug, Default)]
+pub struct ComposeRuns(HashMap<String, ComposeRun>);
+
+impl ComposeRuns {
+    /// Marca `op` rodando; recusa se o projeto já tem um compose em andamento.
+    /// Limpa a falha anterior.
+    pub fn begin(&mut self, project: &str, op: ComposeOp) -> Result<(), DockerError> {
+        let run = self.0.entry(project.to_string()).or_default();
+        if run.op.is_some() {
+            return Err(DockerError::ComposeBusy(project.to_string()));
+        }
+        *run = ComposeRun {
+            op: Some(op),
+            error: None,
+        };
+        Ok(())
+    }
+
+    /// Desmarca; sucesso some do mapa, falha fica com o motivo.
+    pub fn finish(&mut self, project: &str, result: &Result<(), DockerError>) {
+        match result {
+            Ok(()) => {
+                self.0.remove(project);
+            }
+            Err(e) => {
+                self.0.insert(
+                    project.to_string(),
+                    ComposeRun {
+                        op: None,
+                        error: Some(e.to_string()),
+                    },
+                );
+            }
+        }
+    }
+
+    pub fn snapshot(&self) -> HashMap<String, ComposeRun> {
+        self.0.clone()
     }
 }
 
@@ -573,7 +626,7 @@ fn run_docker(args: &[&str], timeout: Duration, host: Option<&str>) -> Result<St
         crate::ssh::command::apply_env(&mut cmd);
         cmd.env("DOCKER_HOST", target);
     }
-    wait_output(cmd, timeout, |stderr| {
+    wait_output(cmd, timeout, false, |stderr| {
         stderr
             .lines()
             .next()
@@ -583,10 +636,12 @@ fn run_docker(args: &[&str], timeout: Duration, host: Option<&str>) -> Result<St
 }
 
 /// Roda até o fim (ou o teto) com stdout/stderr em pipe. Falha vira
-/// `Failed(reason(stderr))`.
+/// `Failed(reason(stderr))`. `group`: o processo já nasceu no próprio grupo
+/// (`process_group(0)`) e o teto mata o grupo inteiro, não só o pai.
 fn wait_output(
     mut cmd: Command,
     timeout: Duration,
+    group: bool,
     reason: impl Fn(&str) -> String,
 ) -> Result<String, DockerError> {
     cmd.stdin(Stdio::null())
@@ -610,6 +665,13 @@ fn wait_output(
             }
             None => {
                 if start.elapsed() >= timeout {
+                    #[cfg(unix)]
+                    if group {
+                        // pgid == pid do líder (`process_group(0)`).
+                        unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+                    }
+                    #[cfg(not(unix))]
+                    let _ = group;
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(DockerError::Timeout);
@@ -884,6 +946,7 @@ pub struct DockerManager {
     /// Última leitura de CPU/RAM e motivo de saída, por alvo — o painel pede a
     /// cada refresh, mas o `docker stats` só roda de novo depois do intervalo.
     usage: Mutex<HashMap<Option<String>, (Instant, PanelUsage)>>,
+    compose_runs: Mutex<ComposeRuns>,
 }
 
 /// CPU e memória de um container rodando (`docker stats --no-stream`).
@@ -1219,12 +1282,25 @@ impl DockerManager {
     /// `docker compose up -d|restart|down` de um projeto que o último `list`
     /// local viu, na pasta dele e sem terminal: o resultado volta para a tela.
     /// Só local — o caminho do compose é desta máquina.
+    /// Um compose por projeto: o segundo é recusado enquanto o primeiro roda.
     pub fn compose_op(&self, project: &str, op: ComposeOp) -> Result<(), DockerError> {
         if !is_valid_project_name(project) {
             return Err(DockerError::UnknownProject(
                 project.chars().take(64).collect(),
             ));
         }
+        self.compose_runs.lock().begin(project, op)?;
+        let result = self.run_compose(project, op);
+        self.compose_runs.lock().finish(project, &result);
+        result
+    }
+
+    /// Compose rodando e última falha, por projeto (só os que têm algum).
+    pub fn compose_runs(&self) -> HashMap<String, ComposeRun> {
+        self.compose_runs.lock().snapshot()
+    }
+
+    fn run_compose(&self, project: &str, op: ComposeOp) -> Result<(), DockerError> {
         let info = self.project_info(project)?;
         validate_working_dir(&info.working_dir)?;
         for file in &info.config_files {
@@ -1237,7 +1313,10 @@ impl DockerManager {
             // Credential helper (`docker-credential-desktop`) e plugins moram no
             // PATH do login: sem ele, o pull do `up` falha no app aberto pelo Dock.
             .env("PATH", crate::shell_path::agent_path());
-        wait_output(cmd, COMPOSE_TIMEOUT, compose_failure)?;
+        // Grupo próprio: o teto mata o compose e o que ele abriu (build, pull).
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        wait_output(cmd, COMPOSE_TIMEOUT, cfg!(unix), compose_failure)?;
         Ok(())
     }
 
@@ -1387,6 +1466,33 @@ impl DockerManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_runs_refuse_second_op_and_keep_last_error() {
+        let mut runs = ComposeRuns::default();
+        assert!(runs.snapshot().is_empty());
+
+        runs.begin("poc", ComposeOp::Up).unwrap();
+        assert_eq!(runs.snapshot()["poc"].op, Some(ComposeOp::Up));
+        assert!(matches!(
+            runs.begin("poc", ComposeOp::Down),
+            Err(DockerError::ComposeBusy(_))
+        ));
+        // Outro projeto não espera.
+        runs.begin("api", ComposeOp::Restart).unwrap();
+
+        runs.finish("poc", &Err(DockerError::Failed("pull falhou".into())));
+        let poc = &runs.snapshot()["poc"];
+        assert_eq!(poc.op, None);
+        assert_eq!(poc.error.as_deref(), Some("docker falhou: pull falhou"));
+
+        // Nova op limpa a falha; sucesso some do retrato.
+        runs.begin("poc", ComposeOp::Up).unwrap();
+        assert_eq!(runs.snapshot()["poc"].error, None);
+        runs.finish("poc", &Ok(()));
+        runs.finish("api", &Ok(()));
+        assert!(runs.snapshot().is_empty());
+    }
 
     #[test]
     fn compose_failure_is_last_meaningful_line() {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 
 import { requestConfirm } from "../lib/confirm";
@@ -23,6 +23,7 @@ import {
   dockerScreenProject,
   dockerScreenShow,
   type ComposeOp,
+  type ComposeRun,
   type ContainerInfo,
   type PathStatus,
   type SessionId,
@@ -74,6 +75,7 @@ export function DockerComposeSection({
   host,
   session,
   workspaceId,
+  runs,
   onError,
   onChanged,
 }: {
@@ -86,12 +88,13 @@ export function DockerComposeSection({
   host: string | null;
   session: SessionId;
   workspaceId: WorkspaceId;
+  /** Compose rodando e última falha por projeto — estado do core. */
+  runs: Record<string, ComposeRun>;
   onError: (message: string | null) => void;
-  /** Depois de um compose: relista. */
+  /** Relista (containers e compose em andamento). */
   onChanged: () => Promise<void> | void;
 }) {
   const { t } = useTranslation();
-  const [running, setRunning] = useState<ComposeOp | null>(null);
 
   const visible = visibleProjects(projects, hideStopped);
   const currentName = pickProject(visible, selected);
@@ -106,8 +109,10 @@ export function DockerComposeSection({
   const pick = (name: string) => void dockerScreenProject(workspaceId, name).catch(() => {});
   const fail = (e: unknown) => onError(translateError(e, t));
 
+  // O core recusa um segundo compose no mesmo projeto e guarda a falha; a
+  // tela só mostra o que ele diz.
   const compose = async (p: ComposeProject, op: ComposeOp) => {
-    if (running) return;
+    if (runs[p.name]?.op) return;
     if (op === "down") {
       const ok = await requestConfirm({
         title: t("dockerScreenComposeDownTitle", { project: p.name }),
@@ -117,16 +122,10 @@ export function DockerComposeSection({
       });
       if (!ok) return;
     }
-    setRunning(op);
-    onError(null);
-    try {
-      await dockerComposeOp(p.name, op);
-    } catch (e) {
-      fail(e);
-    } finally {
-      setRunning(null);
-      await onChanged();
-    }
+    const done = dockerComposeOp(p.name, op).catch(() => {});
+    void onChanged();
+    await done;
+    await onChanged();
   };
 
   const card = (p: ComposeProject) => {
@@ -252,6 +251,8 @@ export function DockerComposeSection({
           ? t("dockerScreenComposeOutside")
           : null);
     const file = p.composeFile ?? "compose.yml";
+    const running = runs[p.name]?.op ?? null;
+    const lastError = runs[p.name]?.error ?? null;
     const opChip = (op: ComposeOp, label: string, tone = "") => (
       <button
         type="button"
@@ -297,6 +298,11 @@ export function DockerComposeSection({
           {opChip("restart", t("composeRestart"))}
           {opChip("down", t("composeDown"), "text-tyba-red")}
         </div>
+        {lastError && (
+          <p className="shrink-0 border-b border-[var(--tyba-border-soft)] px-[18px] py-2 text-[11px] text-tyba-red">
+            {lastError}
+          </p>
+        )}
         {unreachable && (
           <p className="shrink-0 border-b border-[var(--tyba-border-soft)] px-[18px] py-2 text-[11px] text-tyba-text-faint">
             {t(UNREACHABLE[unreachable])}
@@ -313,6 +319,10 @@ export function DockerComposeSection({
           <span />
         </div>
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">{p.services.map(row)}</div>
+        <div className="mx-[18px] my-4 flex shrink-0 flex-col gap-1 rounded-[8px] border border-tyba-border-strong px-3.5 py-3 text-[12px] text-tyba-text-muted">
+          <span className="text-tyba-text">{t("dockerScreenComposeDownCardTitle")}</span>
+          <span>{t("dockerScreenComposeDownCardBody")}</span>
+        </div>
         <div className="flex h-[26px] shrink-0 items-center gap-4 border-t border-[var(--tyba-border-soft)] bg-[var(--tyba-panel-bg)] px-[18px] text-[11px] text-tyba-text-faint">
           <span>{t("dockerScreenComposeFooter", { file, count: p.services.length })}</span>
           <span className="flex-1" />

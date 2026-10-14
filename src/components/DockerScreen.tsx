@@ -38,6 +38,7 @@ import { composeProjects, visibleProjects } from "../lib/dockerCompose";
 import { translateError } from "../lib/errors";
 import {
   dockerAvailable,
+  dockerComposeRuns,
   dockerContainerDetail,
   dockerContainerOp,
   dockerListContainers,
@@ -52,6 +53,7 @@ import {
   dockerScreenSection,
   dockerScreenSelect,
   dockerScreenShell,
+  type ComposeRun,
   type ContainerDetail,
   type ContainerInfo,
   type ContainerPane,
@@ -355,6 +357,7 @@ export function DockerScreen({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [logsRestart, setLogsRestart] = useState(0);
+  const [composeRuns, setComposeRuns] = useState<Record<string, ComposeRun>>({});
 
   const sectionRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -362,6 +365,9 @@ export function DockerScreen({
   }, []);
 
   const refresh = useCallback(async () => {
+    // Compose em andamento mora no core (só local): sobrevive à tela fechar.
+    if (host) setComposeRuns({});
+    else await dockerComposeRuns().then(setComposeRuns, () => {});
     try {
       const ok = await dockerAvailable(host);
       setAvailable(ok);
@@ -741,6 +747,7 @@ export function DockerScreen({
             host={host}
             session={session.id}
             workspaceId={workspaceId}
+            runs={composeRuns}
             onError={setError}
             onChanged={refresh}
           />

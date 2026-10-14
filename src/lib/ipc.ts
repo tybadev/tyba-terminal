@@ -2160,6 +2160,13 @@ export const dockerOpenDesktop = () =>
 export const dockerComposeOp = (project: string, op: ComposeOp) =>
   invoke<void>("docker_compose_op", { project, op });
 
+/** Compose de um projeto, no core: op rodando agora e motivo da última falha. */
+export type ComposeRun = { op: ComposeOp | null; error: string | null };
+
+/** Só projetos com compose rodando ou falha pendente (só local). */
+export const dockerComposeRuns = () =>
+  invoke<Record<string, ComposeRun>>("docker_compose_runs");
+
 export const dockerOpenProject = (project: string) =>
   invoke<void>("docker_open_project", { project });
 
