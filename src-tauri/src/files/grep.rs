@@ -81,21 +81,42 @@ pub fn grep(root: &Path, query: &str, limit: usize) -> Result<GrepOutcome, Strin
     let stdout = child.stdout.take().ok_or("git grep sem saída")?;
     let mut hits = Vec::new();
     let mut truncated = false;
+    let mut read_all = true;
     for line in BufReader::new(stdout).split(b'\n') {
-        let Ok(line) = line else { break };
+        let Ok(line) = line else {
+            read_all = false;
+            break;
+        };
         let Some(hit) = parse_line(&String::from_utf8_lossy(&line)) else {
             continue;
         };
         if hits.len() == limit {
             truncated = true;
+            read_all = false;
             break;
         }
         hits.push(hit);
     }
-    // Saiu antes do fim: não espera o resto do repo.
-    let _ = child.kill();
-    let _ = child.wait();
+    if !read_all {
+        // Saiu antes do fim: não espera o resto do repo.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(GrepOutcome { hits, truncated });
+    }
+    let status = child.wait().map_err(|e| format!("git grep: {e}"))?;
+    exit_outcome(status.code())?;
     Ok(GrepOutcome { hits, truncated })
+}
+
+/// Status de saída do `git grep` lido até o fim: 0 achou, 1 não casou nada;
+/// 128 é "não é repositório git"; o resto é falha.
+fn exit_outcome(code: Option<i32>) -> Result<(), String> {
+    match code {
+        Some(0 | 1) => Ok(()),
+        Some(128) => Err("a busca no projeto exige um repositório git".into()),
+        Some(c) => Err(format!("git grep falhou (status {c})")),
+        None => Err("git grep interrompido".into()),
+    }
 }
 
 #[cfg(test)]
@@ -149,6 +170,44 @@ mod tests {
     #[test]
     fn short_query_returns_nothing_without_running_git() {
         let out = grep(Path::new("/nonexistent"), "a", 10).unwrap();
+        assert!(out.hits.is_empty());
+    }
+
+    #[test]
+    fn exit_status_maps_to_outcome() {
+        assert!(exit_outcome(Some(0)).is_ok());
+        assert!(exit_outcome(Some(1)).is_ok());
+        assert!(exit_outcome(Some(128))
+            .unwrap_err()
+            .contains("repositório git"));
+        assert!(exit_outcome(Some(2)).is_err());
+        assert!(exit_outcome(None).is_err());
+    }
+
+    #[test]
+    fn outside_a_git_repo_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "alfa\n").unwrap();
+        let err = grep(dir.path(), "alfa", 10).unwrap_err();
+        assert!(err.contains("repositório git"), "{err}");
+    }
+
+    #[test]
+    fn no_match_in_repo_is_empty_not_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.join("a.txt"), "beta\n").unwrap();
+        git(&["add", "a.txt"]);
+        let out = grep(root, "alfa", 10).unwrap();
         assert!(out.hits.is_empty());
     }
 

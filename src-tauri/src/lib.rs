@@ -600,6 +600,8 @@ fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
     state
         .docker_logs
         .retain(&layout::open_log_containers(&snapshot));
+    // E o shell/logs da tela de Docker, se a tela fechou por qualquer caminho.
+    release_docker_screen_sessions(state, &snapshot);
     let _ = app.emit(layout::EVENT_CHANGED, snapshot);
     let _ = state.repo_reconcile.send(());
 }
@@ -2199,7 +2201,6 @@ fn session_side_view(state: &AppState, session: SessionId) -> Option<String> {
 }
 
 fn close_orphaned_files_panel(state: &AppState, previous: Option<String>, keep: Option<&str>) {
-    release_docker_screen_shells(state);
     let Some(prev) = previous else {
         return;
     };
@@ -2217,21 +2218,26 @@ fn close_orphaned_files_panel(state: &AppState, previous: Option<String>, keep: 
     }
 }
 
-/// O shell da tela de Docker mora nela: sem tela de Docker aberta em
-/// workspace nenhum, os `docker exec` dela morrem (process group inteiro).
-fn release_docker_screen_shells(state: &AppState) {
-    let open = state.layout.state().workspaces.iter().any(|w| {
+fn docker_screen_open(snapshot: &layout::LayoutState) -> bool {
+    snapshot.workspaces.iter().any(|w| {
         w.side_view
             .as_deref()
             .is_some_and(|v| v.starts_with(layout::VIEW_DOCKER_PREFIX))
-    });
-    if open {
+    })
+}
+
+/// O shell e os logs remotos da tela de Docker moram nela: sem tela de Docker
+/// aberta em workspace nenhum, os `docker exec`/`logs -f` dela morrem
+/// (process group inteiro). Chamado de `emit_layout`, por onde passa toda
+/// mudança de layout.
+fn release_docker_screen_sessions(state: &AppState, snapshot: &layout::LayoutState) {
+    if docker_screen_open(snapshot) {
         return;
     }
-    for id in state.docker.screen_shells() {
+    for id in state.docker.screen_sessions() {
         state.sessions.dispose(&state.pty_pool, id);
     }
-    state.docker.forget_screen_shells();
+    state.docker.forget_screen_sessions();
 }
 
 /// Uma aba de conteúdo fechou: solta o que só ela segurava — o `docker logs
@@ -5284,7 +5290,7 @@ fn container_command(
     host: Option<&str>,
 ) -> (Vec<String>, String) {
     let (args, title) = match tab {
-        docker::ContainerTab::Logs => (
+        docker::ContainerTab::Logs | docker::ContainerTab::ScreenLogs => (
             vec![
                 "logs".to_string(),
                 "-f".to_string(),
@@ -5631,18 +5637,48 @@ async fn docker_screen_shell(
     host: Option<String>,
 ) -> Result<SessionId, String> {
     off_main(app, move |app, state| {
-        screen_container_shell(app, &state, &container_id, host.as_deref())
+        screen_container_session(
+            app,
+            &state,
+            &container_id,
+            host.as_deref(),
+            docker::ContainerTab::ScreenShell,
+        )
     })
     .await?
 }
 
-fn screen_container_shell(
+/// Os logs (`docker logs -f`) de container REMOTO dentro da tela de Docker:
+/// mesmo esquema do shell da tela — sem aba, reaproveitado enquanto vivo,
+/// morre quando a tela fecha. O local usa o visor estruturado.
+#[tauri::command]
+async fn docker_screen_logs(
+    app: AppHandle,
+    container_id: String,
+    host: Option<String>,
+) -> Result<SessionId, String> {
+    off_main(app, move |app, state| {
+        screen_container_session(
+            app,
+            &state,
+            &container_id,
+            host.as_deref(),
+            docker::ContainerTab::ScreenLogs,
+        )
+    })
+    .await?
+}
+
+/// Sessão de terminal sem aba que mora na tela de Docker (`ScreenShell` ou
+/// `ScreenLogs`).
+fn screen_container_session(
     app: &AppHandle,
     state: &State<'_, AppState>,
     container_id: &str,
     host: Option<&str>,
+    tab: docker::ContainerTab,
 ) -> Result<SessionId, String> {
-    let tab = docker::ContainerTab::ScreenShell;
+    debug_assert!(tab.is_screen());
     let name = state
         .docker
         .ensure_known(container_id, host)
@@ -5697,6 +5733,14 @@ fn screen_container_shell(
         )
         .map_err(|e| e.to_string())?;
     state.docker.remember_tab(container_id, tab, session.id);
+    // Corrida: a tela pode ter fechado durante o spawn, com o `emit_layout`
+    // do fechamento passando antes do registro acima — ninguém soltaria esta
+    // sessão depois. A entrada que sobra aponta para sessão morta e é
+    // recriada/esquecida pelos caminhos de sempre.
+    if !docker_screen_open(&state.layout.state()) {
+        state.sessions.dispose(&state.pty_pool, session.id);
+        return Err("a tela de Docker foi fechada".into());
+    }
     Ok(session.id)
 }
 
@@ -8297,6 +8341,7 @@ pub fn run() {
             docker_screen_select,
             docker_screen_pane,
             docker_screen_shell,
+            docker_screen_logs,
             docker_list_images,
             docker_list_volumes,
             set_side_view_expanded,

@@ -3,7 +3,9 @@
 //! Qual tela está aberta é o `side_view` do workspace (`files:<sessão>`,
 //! `docker:<sessão>`), como a de Git. Daqui sai o resto do estado da tela —
 //! seção do trilho, arquivos abertos nas abas internas, container escolhido —
-//! que também é do core (princípio #1). Memória de uso: não persiste no SQLite.
+//! que também é do core (princípio #1). A tela de Arquivos (abas, ativa,
+//! recentes) persiste num setting do Store (ver `LayoutManager::persist`); a
+//! de Docker é memória de uso e não persiste.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +22,7 @@ pub enum FilesSection {
 }
 
 /// Uma aba interna da tela de Arquivos: `view` é `editor:<sessão>:<rel>`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileTab {
     pub view: String,
     /// Pré-visualização (itálico): o próximo arquivo aberto do mesmo jeito
@@ -28,7 +30,8 @@ pub struct FileTab {
     pub preview: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FilesScreen {
     pub section: FilesSection,
     pub tabs: Vec<FileTab>,
@@ -52,8 +55,13 @@ impl FilesScreen {
                     view: view.to_string(),
                     preview,
                 };
+                // Só a pré-visualização da mesma sessão: a de outra sessão
+                // (outro worktree) não some por causa desta.
+                let session = view_session(view);
                 let replace = if preview {
-                    self.tabs.iter().position(|t| t.preview)
+                    self.tabs
+                        .iter()
+                        .position(|t| t.preview && view_session(&t.view) == session)
                 } else {
                     None
                 };
@@ -129,6 +137,45 @@ impl FilesScreen {
     pub fn has(&self, keep: impl Fn(&str) -> bool) -> bool {
         self.tabs.iter().any(|t| keep(&t.view))
     }
+
+    /// Reescreve cada view (sessão reaberta com outro id).
+    pub fn map_views(&mut self, f: impl Fn(&str) -> String) {
+        for tab in self.tabs.iter_mut() {
+            tab.view = f(&tab.view);
+        }
+        if let Some(active) = self.active.as_mut() {
+            *active = f(active);
+        }
+        for view in self.recent.iter_mut() {
+            *view = f(view);
+        }
+    }
+
+    /// Junta `other` depois do que já está aqui: abas e recentes que faltam
+    /// vão para o fim; a ativa daqui prevalece.
+    pub fn absorb(&mut self, other: FilesScreen) {
+        for tab in other.tabs {
+            if !self.tabs.iter().any(|t| t.view == tab.view) {
+                self.tabs.push(tab);
+            }
+        }
+        if self.active.is_none() {
+            self.active = other.active;
+        }
+        for view in other.recent {
+            if !self.recent.contains(&view) {
+                self.recent.push(view);
+            }
+        }
+        self.recent.truncate(RECENT_CAP);
+    }
+}
+
+/// A sessão de um view `editor:<sessão>:<rel>`: o trecho até o segundo `:`.
+fn view_session(view: &str) -> Option<&str> {
+    let mut parts = view.splitn(3, ':');
+    parts.next()?;
+    parts.next()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,7 +228,10 @@ mod tests {
     use super::*;
 
     fn views(s: &FilesScreen) -> Vec<(&str, bool)> {
-        s.tabs.iter().map(|t| (t.view.as_str(), t.preview)).collect()
+        s.tabs
+            .iter()
+            .map(|t| (t.view.as_str(), t.preview))
+            .collect()
     }
 
     #[test]
@@ -191,6 +241,22 @@ mod tests {
         s.open("b", true);
         assert_eq!(views(&s), vec![("b", true)]);
         assert_eq!(s.active.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn preview_replaces_only_same_session_preview() {
+        let mut s = FilesScreen::default();
+        s.open("editor:s1:a.rs", true);
+        s.open("editor:s2:b.rs", true);
+        assert_eq!(
+            views(&s),
+            vec![("editor:s1:a.rs", true), ("editor:s2:b.rs", true)]
+        );
+        s.open("editor:s1:c.rs", true);
+        assert_eq!(
+            views(&s),
+            vec![("editor:s1:c.rs", true), ("editor:s2:b.rs", true)]
+        );
     }
 
     #[test]
@@ -281,6 +347,46 @@ mod tests {
     }
 
     #[test]
+    fn map_views_rewrites_tabs_active_and_recent() {
+        let mut s = FilesScreen::default();
+        s.open("old:a", false);
+        s.map_views(|v| v.replace("old", "new"));
+        assert_eq!(views(&s), vec![("new:a", false)]);
+        assert_eq!(s.active.as_deref(), Some("new:a"));
+        assert_eq!(s.recent, vec!["new:a"]);
+    }
+
+    #[test]
+    fn absorb_appends_missing_and_keeps_active() {
+        let mut s = FilesScreen::default();
+        s.open("a", true);
+        let mut other = FilesScreen::default();
+        other.open("a", false);
+        other.open("b", false);
+        s.absorb(other);
+        assert_eq!(views(&s), vec![("a", true), ("b", false)]);
+        assert_eq!(s.active.as_deref(), Some("a"));
+        assert_eq!(s.recent, vec!["a", "b"]);
+
+        let mut empty = FilesScreen::default();
+        let mut other = FilesScreen::default();
+        other.open("c", false);
+        empty.absorb(other);
+        assert_eq!(empty.active.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn files_screen_round_trips_through_json() {
+        let mut s = FilesScreen::default();
+        s.open("a", true);
+        let back: FilesScreen = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        // Campo que falta não derruba a carga.
+        let partial: FilesScreen = serde_json::from_str("{\"active\":\"x\"}").unwrap();
+        assert_eq!(partial.active.as_deref(), Some("x"));
+    }
+
+    #[test]
     fn docker_follows_only_selected_logs() {
         let mut d = DockerScreen::default();
         assert_eq!(d.following(), None);
@@ -295,8 +401,14 @@ mod tests {
 
     #[test]
     fn sections_serialize_lowercase() {
-        assert_eq!(serde_json::to_string(&FilesSection::Recent).unwrap(), "\"recent\"");
-        assert_eq!(serde_json::to_string(&ContainerPane::Details).unwrap(), "\"details\"");
+        assert_eq!(
+            serde_json::to_string(&FilesSection::Recent).unwrap(),
+            "\"recent\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ContainerPane::Details).unwrap(),
+            "\"details\""
+        );
         assert_eq!(
             serde_json::from_str::<DockerSection>("\"volumes\"").unwrap(),
             DockerSection::Volumes

@@ -146,6 +146,16 @@ pub enum ContainerTab {
     /// O shell da tela de Docker: mesmo `docker exec`, mas sem aba — mora
     /// dentro da tela e morre quando ela fecha.
     ScreenShell,
+    /// Os logs da tela de Docker para container remoto: mesmo `docker logs
+    /// -f` da aba, também sem aba e com a vida da tela.
+    ScreenLogs,
+}
+
+impl ContainerTab {
+    /// Mora dentro da tela de Docker (não numa aba).
+    pub fn is_screen(self) -> bool {
+        matches!(self, ContainerTab::ScreenShell | ContainerTab::ScreenLogs)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1269,24 +1279,26 @@ impl DockerManager {
 
     /// `docker volume ls` do alvo — leitura, nenhuma ação.
     pub fn volumes(&self, host: Option<&str>) -> Result<Vec<VolumeInfo>, DockerError> {
-        let raw = run_docker(&["volume", "ls", "--format", "{{json .}}"], PS_TIMEOUT, host)?;
+        let raw = run_docker(
+            &["volume", "ls", "--format", "{{json .}}"],
+            PS_TIMEOUT,
+            host,
+        )?;
         Ok(parse_volumes(&raw))
     }
 
-    /// Shells que moram na tela de Docker (fora de qualquer aba).
-    pub fn screen_shells(&self) -> Vec<SessionId> {
+    /// Sessões (shell e logs) que moram na tela de Docker, fora de qualquer aba.
+    pub fn screen_sessions(&self) -> Vec<SessionId> {
         self.tabs
             .lock()
             .iter()
-            .filter(|((_, tab), _)| *tab == ContainerTab::ScreenShell)
+            .filter(|((_, tab), _)| tab.is_screen())
             .map(|(_, s)| *s)
             .collect()
     }
 
-    pub fn forget_screen_shells(&self) {
-        self.tabs
-            .lock()
-            .retain(|(_, tab), _| *tab != ContainerTab::ScreenShell);
+    pub fn forget_screen_sessions(&self) {
+        self.tabs.lock().retain(|(_, tab), _| !tab.is_screen());
     }
 
     pub fn tab_session(&self, id: &str, tab: ContainerTab) -> Option<SessionId> {
@@ -1341,16 +1353,25 @@ não é json
     }
 
     #[test]
-    fn screen_shells_are_tracked_apart_from_tabs() {
+    fn screen_sessions_are_tracked_apart_from_tabs() {
         let mgr = DockerManager::new();
-        let tab = SessionId::new_v4();
-        let screen = SessionId::new_v4();
-        mgr.remember_tab("c1", ContainerTab::Shell, tab);
-        mgr.remember_tab("c1", ContainerTab::ScreenShell, screen);
-        assert_eq!(mgr.screen_shells(), vec![screen]);
-        mgr.forget_screen_shells();
-        assert!(mgr.screen_shells().is_empty());
-        assert_eq!(mgr.tab_session("c1", ContainerTab::Shell), Some(tab));
+        let shell_tab = SessionId::new_v4();
+        let logs_tab = SessionId::new_v4();
+        let screen_shell = SessionId::new_v4();
+        let screen_logs = SessionId::new_v4();
+        mgr.remember_tab("c1", ContainerTab::Shell, shell_tab);
+        mgr.remember_tab("c1", ContainerTab::Logs, logs_tab);
+        mgr.remember_tab("c1", ContainerTab::ScreenShell, screen_shell);
+        mgr.remember_tab("c1", ContainerTab::ScreenLogs, screen_logs);
+        let mut screen = mgr.screen_sessions();
+        screen.sort();
+        let mut expected = vec![screen_shell, screen_logs];
+        expected.sort();
+        assert_eq!(screen, expected);
+        mgr.forget_screen_sessions();
+        assert!(mgr.screen_sessions().is_empty());
+        assert_eq!(mgr.tab_session("c1", ContainerTab::Shell), Some(shell_tab));
+        assert_eq!(mgr.tab_session("c1", ContainerTab::Logs), Some(logs_tab));
     }
 
     #[test]

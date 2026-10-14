@@ -15,6 +15,9 @@ pub mod screens;
 pub const EVENT_CHANGED: &str = "layout://changed";
 
 const KEY_ACTIVE_WORKSPACE: &str = "layout.active_workspace";
+/// JSON `{ <workspace id>: FilesScreen }` — a tela de Arquivos de cada
+/// workspace, que não cabe nas linhas de layout.
+const KEY_FILE_SCREENS: &str = "layout.file_screens";
 const MIN_RATIO: f64 = 0.1;
 const MAX_RATIO: f64 = 0.9;
 
@@ -562,9 +565,9 @@ pub struct Workspace {
     /// persiste (ver [`history`]).
     #[serde(skip)]
     pub history: Vec<TabId>,
-    /// Telas cheias de Arquivos e Docker: abas internas, seleção. Memória de
-    /// uso como `history`, mas o webview precisa dela — vai no evento, não no
-    /// SQLite.
+    /// Telas cheias de Arquivos e Docker: abas internas, seleção. Vai no
+    /// evento; a de Arquivos persiste à parte (`KEY_FILE_SCREENS`), a de
+    /// Docker não.
     pub screens: screens::Screens,
     pub created_at: DateTime<Utc>,
 }
@@ -743,7 +746,27 @@ impl LayoutManager {
                 }
             }
         }
-        let workspaces = rows_to_workspaces(&rows, valid_sessions);
+        let mut workspaces = rows_to_workspaces(&rows, valid_sessions);
+        let saved_files: std::collections::HashMap<String, screens::FilesScreen> = self
+            .store
+            .get_setting(KEY_FILE_SCREENS)
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        for ws in workspaces.iter_mut() {
+            let Some(mut files) = saved_files.get(&ws.id.to_string()).cloned() else {
+                continue;
+            };
+            files.map_views(|view| remap_editor_view(view, remap));
+            files.retain(|view| {
+                editor_view_session(view).is_some_and(|s| valid_sessions.contains(&s))
+            });
+            // As abas de editor de layout antigo (migradas em
+            // `rows_to_workspaces`) entram depois das salvas.
+            let migrated = std::mem::replace(&mut ws.screens.files, files);
+            ws.screens.files.absorb(migrated);
+        }
 
         let saved_active = self
             .store
@@ -1470,7 +1493,9 @@ impl LayoutManager {
         let of_session = |view: &str| editor_view_session(view) == Some(session);
         self.inner.read().workspaces.iter().any(|w| {
             w.screens.files.has(of_session)
-                || w.tabs.iter().any(|t| t.view.as_deref().is_some_and(of_session))
+                || w.tabs
+                    .iter()
+                    .any(|t| t.view.as_deref().is_some_and(of_session))
         })
     }
 
@@ -1487,8 +1512,8 @@ impl LayoutManager {
         Ok(ws)
     }
 
-    /// Muda o estado das telas cheias do workspace. Não persiste: é memória de
-    /// uso (ver [`screens`]).
+    /// Muda o estado das telas cheias do workspace. Grava a tela de Arquivos
+    /// (a de Docker não persiste, ver [`screens`]).
     pub fn with_screens<R>(
         &self,
         workspace: WorkspaceId,
@@ -1496,7 +1521,10 @@ impl LayoutManager {
     ) -> Result<R, LayoutError> {
         let mut inner = self.inner.write();
         let idx = ws_index(&inner.workspaces, workspace)?;
-        Ok(f(&mut inner.workspaces[idx].screens))
+        let out = f(&mut inner.workspaces[idx].screens);
+        drop(inner);
+        self.persist_file_screens()?;
+        Ok(out)
     }
 
     /// Painel lateral sem sessão dona (ex.: arquivos de um container) no
@@ -1638,7 +1666,32 @@ impl LayoutManager {
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
         )?;
+        self.persist_file_screens()
+    }
+
+    fn persist_file_screens(&self) -> Result<(), LayoutError> {
+        let json = {
+            let inner = self.inner.read();
+            let saved: std::collections::HashMap<String, &screens::FilesScreen> = inner
+                .workspaces
+                .iter()
+                .map(|w| (w.id.to_string(), &w.screens.files))
+                .collect();
+            serde_json::to_string(&saved).unwrap_or_default()
+        };
+        self.store.set_setting(KEY_FILE_SCREENS, &json)?;
         Ok(())
+    }
+}
+
+/// `editor:<antiga>:<rel>` → `editor:<nova>:<rel>` quando a sessão reabriu.
+fn remap_editor_view(
+    view: &str,
+    remap: &std::collections::HashMap<SessionId, SessionId>,
+) -> String {
+    match editor_view_session(view).and_then(|old| remap.get(&old).map(|new| (old, new))) {
+        Some((old, new)) => view.replacen(&old.to_string(), &new.to_string(), 1),
+        None => view.to_string(),
     }
 }
 
@@ -3256,6 +3309,63 @@ mod tests {
     }
 
     #[test]
+    fn file_screen_survives_reload_remapped_and_drops_dead_sessions() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let s = sid();
+        let other = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("api", None, s).unwrap();
+            mgr.create_tab(other, None).unwrap();
+            mgr.open_file_screen(s, &editor_view(s, "a.rs"), true)
+                .unwrap();
+            mgr.open_file_screen(other, &editor_view(other, "b.rs"), false)
+                .unwrap();
+        }
+        let files_of = |mgr: &LayoutManager| {
+            let state = mgr.state();
+            let f = state.workspaces[0].screens.files.clone();
+            (
+                f.tabs
+                    .iter()
+                    .map(|t| (t.view.clone(), t.preview))
+                    .collect::<Vec<_>>(),
+                f.active,
+            )
+        };
+
+        // Mesma sessão viva: volta igual, e de novo no reinício seguinte.
+        for _ in 0..2 {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.load(&HashSet::from([s, other]));
+            let (tabs, active) = files_of(&mgr);
+            assert_eq!(
+                tabs,
+                vec![
+                    (editor_view(s, "a.rs"), true),
+                    (editor_view(other, "b.rs"), false)
+                ]
+            );
+            assert_eq!(active, Some(editor_view(other, "b.rs")));
+        }
+
+        // Sessão reaberta com outro id: volta remapeada; a morta some.
+        let reborn = sid();
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load_remapped(
+            &HashSet::from([reborn]),
+            &std::collections::HashMap::from([(s, reborn)]),
+        );
+        let (tabs, active) = files_of(&mgr);
+        assert_eq!(tabs, vec![(editor_view(reborn, "a.rs"), true)]);
+        assert_eq!(active, Some(editor_view(reborn, "a.rs")));
+        assert_eq!(
+            mgr.state().workspaces[0].screens.files.recent,
+            vec![editor_view(reborn, "a.rs")]
+        );
+    }
+
+    #[test]
     fn session_diff_tab_belongs_to_its_session() {
         let mgr = manager();
         let s = sid();
@@ -3370,7 +3480,11 @@ mod tests {
         let state = mgr.state();
         let w = &state.workspaces[0];
         assert_eq!(w.id, ws);
-        assert_eq!(w.tabs.len(), 1, "abrir arquivo não cria aba ao lado do terminal");
+        assert_eq!(
+            w.tabs.len(),
+            1,
+            "abrir arquivo não cria aba ao lado do terminal"
+        );
         assert_eq!(w.side_view.as_deref(), Some(files_view(s).as_str()));
         assert_eq!(w.screens.files.active.as_deref(), Some(view.as_str()));
         assert!(w.screens.files.tabs[0].preview);
@@ -3384,7 +3498,8 @@ mod tests {
         mgr.create_workspace("api", None, s).unwrap();
         let other = sid();
         mgr.create_tab(other, None).unwrap();
-        mgr.open_file_screen(s, &editor_view(s, "a.rs"), false).unwrap();
+        mgr.open_file_screen(s, &editor_view(s, "a.rs"), false)
+            .unwrap();
         mgr.open_file_screen(other, &editor_view(other, "b.rs"), false)
             .unwrap();
         mgr.session_disposed(s).unwrap();
