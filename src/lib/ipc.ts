@@ -2161,16 +2161,35 @@ export const dockerComposeOp = (project: string, op: ComposeOp) =>
   invoke<void>("docker_compose_op", { project, op });
 
 /** Compose de um projeto, no core: op rodando agora e motivo da última falha. */
-export type ComposeRun = { op: ComposeOp | null; error: string | null };
+export type ComposeRun = {
+  op: ComposeOp | null;
+  /** A op da última execução (rodando ou terminada). */
+  last_op: ComposeOp | null;
+  error: string | null;
+  /** Últimas linhas da saída (já redigidas pelo core). */
+  output: string[];
+  /** Linhas recebidas na execução, inclusive as cortadas do começo. */
+  total: number;
+};
 
-/** Só projetos com compose rodando ou falha pendente (só local). */
+/** Lote de saída do compose: `start` é a posição da primeira linha em `total`. */
+export type ComposeOutput = { project: string; start: number; lines: string[] };
+
+export const onComposeOutput = (handler: (batch: ComposeOutput) => void): Promise<UnlistenFn> =>
+  listen<ComposeOutput>("docker-compose-output", (e) => handler(e.payload));
+
+/** Um arquivo compose, só leitura (`index` em `config_files`). */
+export const dockerComposeFile = (project: string, index: number) =>
+  invoke<{ path: string; text: string }>("docker_compose_file", { project, index });
+
+/** Projetos que já rodaram compose nesta execução do app (só local). */
 export const dockerComposeRuns = () =>
   invoke<Record<string, ComposeRun>>("docker_compose_runs");
 
 export const dockerOpenProject = (project: string) =>
   invoke<void>("docker_open_project", { project });
 
-/** Abre o compose do projeto na tela de Arquivos da sessão. */
+/** Abre o compose do projeto, só leitura, na tela de Arquivos da sessão. */
 export const dockerOpenComposeFile = (session: SessionId, project: string) =>
   invoke<void>("docker_open_compose_file", { session, project });
 

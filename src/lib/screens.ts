@@ -44,14 +44,45 @@ export type ScreenFile = {
   session: SessionId;
   rel: string;
   preview: boolean;
+  /** Aba só leitura com um arquivo compose (de qualquer projeto). */
+  compose?: { project: string; index: number };
 };
+
+const COMPOSE_FILE_PREFIX = "compose-file:";
+const UUID_LEN = 36;
+
+/** `compose-file:<sessão>:<projeto>:<índice>:<nome>` → partes. */
+export function parseComposeFileView(
+  view: string,
+): { session: SessionId; project: string; index: number; name: string } | null {
+  if (!view.startsWith(COMPOSE_FILE_PREFIX)) return null;
+  const rest = view.slice(COMPOSE_FILE_PREFIX.length);
+  const session = rest.slice(0, UUID_LEN);
+  if (session.length !== UUID_LEN || rest.charAt(UUID_LEN) !== ":") return null;
+  const [project, index, ...name] = rest.slice(UUID_LEN + 1).split(":");
+  const n = Number(index);
+  if (!project || !Number.isInteger(n) || n < 0 || name.join(":") === "") return null;
+  return { session, project, index: n, name: name.join(":") };
+}
 
 /** Abas internas da tela que pertencem à sessão dela, na ordem do core. */
 export function sessionFiles(files: FilesScreenState, session: SessionId): ScreenFile[] {
   return files.tabs.flatMap((tab) => {
     const parsed = parseContentView(tab.view);
-    return parsed?.kind === "editor" && parsed.session === session
-      ? [{ view: tab.view, session, rel: parsed.rel, preview: tab.preview }]
+    if (parsed?.kind === "editor" && parsed.session === session) {
+      return [{ view: tab.view, session, rel: parsed.rel, preview: tab.preview }];
+    }
+    const compose = parseComposeFileView(tab.view);
+    return compose?.session === session
+      ? [
+          {
+            view: tab.view,
+            session,
+            rel: `${compose.project}/${compose.name}`,
+            preview: tab.preview,
+            compose: { project: compose.project, index: compose.index },
+          },
+        ]
       : [];
   });
 }

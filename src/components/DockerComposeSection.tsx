@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
 import { requestConfirm } from "../lib/confirm";
@@ -60,6 +60,54 @@ const CHIP =
   "shrink-0 whitespace-nowrap rounded-[5px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-40 disabled:hover:text-tyba-text-muted";
 
 const GRID = "grid grid-cols-[150px_180px_minmax(0,1fr)_190px_150px_120px] gap-3";
+
+const OP_LABEL: Record<ComposeOp, string> = {
+  up: "composeUp",
+  restart: "composeRestart",
+  down: "composeDown",
+};
+
+/**
+ * Saída do último compose do projeto, ao vivo enquanto roda e guardada até o
+ * próximo (estado do core). Segue o fim, a menos que a pessoa tenha rolado
+ * para cima.
+ */
+function ComposeOutputPanel({ run }: { run: ComposeRun }) {
+  const { t } = useTranslation();
+  const boxRef = useRef<HTMLPreElement>(null);
+  const stick = useRef(true);
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (box && stick.current) box.scrollTop = box.scrollHeight;
+  }, [run.total]);
+  if (!run.last_op) return null;
+  const status = run.op
+    ? { text: t("dockerScreenComposeRunning"), tone: "text-tyba-amber" }
+    : run.error
+      ? { text: t("dockerScreenComposeFailed"), tone: "text-tyba-red" }
+      : { text: t("dockerScreenComposeDone"), tone: "text-tyba-green" };
+  return (
+    <div className="flex h-[200px] shrink-0 flex-col border-t border-[var(--tyba-border-soft)]">
+      <div className="flex shrink-0 items-center gap-2.5 bg-[var(--tyba-panel-bg)] px-[18px] py-1.5 text-[11px] text-tyba-text-faint">
+        <span className="text-tyba-text-muted">
+          {t("dockerScreenComposeOutput", { op: t(OP_LABEL[run.last_op]) })}
+        </span>
+        <span className={status.tone}>{status.text}</span>
+      </div>
+      <pre
+        ref={boxRef}
+        aria-live="polite"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        }}
+        className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all px-[18px] py-2 font-mono text-[11.5px] leading-[18px] text-tyba-text-muted"
+      >
+        {run.output.length > 0 ? run.output.join("\n") : t("dockerScreenComposeNoOutput")}
+      </pre>
+    </div>
+  );
+}
 
 /**
  * Seção Compose da tela de Docker (mockup DockerCompose): coluna de 300px à
@@ -247,9 +295,7 @@ export function DockerComposeSection({
       blocked ??
       (p.fileStatus !== "ok"
         ? t(UNREACHABLE[(p.fileStatus ?? "missing") as Exclude<PathStatus, "ok">])
-        : !p.inRepo
-          ? t("dockerScreenComposeOutside")
-          : null);
+        : null);
     const file = p.composeFile ?? "compose.yml";
     const running = runs[p.name]?.op ?? null;
     const lastError = runs[p.name]?.error ?? null;
@@ -319,6 +365,7 @@ export function DockerComposeSection({
           <span />
         </div>
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">{p.services.map(row)}</div>
+        {runs[p.name] && <ComposeOutputPanel key={p.name} run={runs[p.name]} />}
         <div className="mx-[18px] my-4 flex shrink-0 flex-col gap-1 rounded-[8px] border border-tyba-border-strong px-3.5 py-3 text-[12px] text-tyba-text-muted">
           <span className="text-tyba-text">{t("dockerScreenComposeDownCardTitle")}</span>
           <span>{t("dockerScreenComposeDownCardBody")}</span>

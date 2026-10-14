@@ -34,11 +34,12 @@ import {
   shortImage,
   uptimeMs,
 } from "../lib/dockerPanel";
-import { composeProjects, visibleProjects } from "../lib/dockerCompose";
+import { composeProjects, mergeComposeOutput, visibleProjects } from "../lib/dockerCompose";
 import { translateError } from "../lib/errors";
 import {
   dockerAvailable,
   dockerComposeRuns,
+  onComposeOutput,
   dockerContainerDetail,
   dockerContainerOp,
   dockerListContainers,
@@ -382,6 +383,23 @@ export function DockerScreen({
       setError(translateError(e, t));
     }
   }, [host, repoRoot, t]);
+
+  // Saída ao vivo do compose: lotes do core juntados ao retrato por posição.
+  useEffect(() => {
+    if (host) return;
+    let off: (() => void) | null = null;
+    let alive = true;
+    void onComposeOutput((batch) => setComposeRuns((runs) => mergeComposeOutput(runs, batch))).then(
+      (unlisten) => {
+        if (alive) off = unlisten;
+        else unlisten();
+      },
+    );
+    return () => {
+      alive = false;
+      off?.();
+    };
+  }, [host]);
 
   useEffect(() => {
     void refresh();

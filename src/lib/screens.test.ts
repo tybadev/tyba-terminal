@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { FilesScreenState, Workspace } from "./ipc";
 import {
   activeFile,
+  parseComposeFileView,
   allScreenEditors,
   closeTarget,
   escClosesScreen,
@@ -124,5 +125,37 @@ describe("closeTarget", () => {
   test("Git e Docker fecham a tela, nunca o pane escondido", () => {
     expect(closeTarget("git", null)).toBe("screen");
     expect(closeTarget("docker", ed(A, "a.ts"))).toBe("screen");
+  });
+});
+
+describe("aba compose só leitura", () => {
+  const cf = (s: string, rest: string) => `compose-file:${s}:${rest}`;
+
+  test("parse: projeto, índice e nome (com dois-pontos)", () => {
+    expect(parseComposeFileView(cf(A, "poc:1:compose.override.yml"))).toEqual({
+      session: A,
+      project: "poc",
+      index: 1,
+      name: "compose.override.yml",
+    });
+    expect(parseComposeFileView(cf(A, "poc:0:a:b.yml"))?.name).toBe("a:b.yml");
+    expect(parseComposeFileView(cf(A, "poc:x:compose.yml"))).toBeNull();
+    expect(parseComposeFileView(cf(A, "poc:0:"))).toBeNull();
+    expect(parseComposeFileView(ed(A, "a.ts"))).toBeNull();
+  });
+
+  test("entra nas abas da sessão dela, com o projeto no caminho", () => {
+    const state = files({
+      tabs: [
+        { view: ed(A, "a.ts"), preview: false },
+        { view: cf(A, "poc:0:compose.yml"), preview: false },
+        { view: cf(B, "poc:0:compose.yml"), preview: false },
+      ],
+      active: cf(A, "poc:0:compose.yml"),
+    });
+    const own = sessionFiles(state, A);
+    expect(own.map((f) => f.rel)).toEqual(["a.ts", "poc/compose.yml"]);
+    expect(own[1].compose).toEqual({ project: "poc", index: 0 });
+    expect(activeFile(state, A)).toBe(cf(A, "poc:0:compose.yml"));
   });
 });

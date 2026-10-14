@@ -3,7 +3,32 @@
 // seção Containers usa. Só leitura e formatação — agir é do core.
 
 import { exitCode, exitedAgoMs, healthOf, uptimeMs } from "./dockerPanel";
-import type { ContainerInfo, PathStatus } from "./ipc";
+import type { ComposeOutput, ComposeRun, ContainerInfo, PathStatus } from "./ipc";
+
+/** Mesmo teto do core (`COMPOSE_OUTPUT_CAP`). */
+export const COMPOSE_OUTPUT_CAP = 2000;
+
+/**
+ * Junta um lote de saída ao retrato do core pela posição: o que o retrato já
+ * trouxe não repete; lote depois de um buraco espera o próximo retrato.
+ */
+export function mergeComposeOutput(
+  runs: Record<string, ComposeRun>,
+  batch: ComposeOutput,
+): Record<string, ComposeRun> {
+  const run = runs[batch.project];
+  if (!run || batch.start > run.total) return runs;
+  const fresh = batch.lines.slice(run.total - batch.start);
+  if (fresh.length === 0) return runs;
+  return {
+    ...runs,
+    [batch.project]: {
+      ...run,
+      output: [...run.output, ...fresh].slice(-COMPOSE_OUTPUT_CAP),
+      total: run.total + fresh.length,
+    },
+  };
+}
 
 export type ComposeProject = {
   name: string;

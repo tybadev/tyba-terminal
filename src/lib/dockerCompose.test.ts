@@ -1,14 +1,16 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  COMPOSE_OUTPUT_CAP,
   composeProjects,
+  mergeComposeOutput,
   pickProject,
   portMappings,
   projectRun,
   serviceState,
   visibleProjects,
 } from "./dockerCompose";
-import type { ContainerInfo } from "./ipc";
+import type { ComposeRun, ContainerInfo } from "./ipc";
 
 // Lista sintética: nomes e caminhos inventados.
 const c = (over: Partial<ContainerInfo>): ContainerInfo => ({
@@ -148,5 +150,44 @@ describe("serviceState", () => {
       code: null,
       span: null,
     });
+  });
+});
+
+describe("mergeComposeOutput", () => {
+  const run = (output: string[], total = output.length): ComposeRun => ({
+    op: "up",
+    last_op: "up",
+    error: null,
+    output,
+    total,
+  });
+
+  test("lote na posição certa entra; repetido não duplica", () => {
+    const runs = { poc: run(["a", "b"]) };
+    const next = mergeComposeOutput(runs, { project: "poc", start: 2, lines: ["c"] });
+    expect(next.poc.output).toEqual(["a", "b", "c"]);
+    expect(next.poc.total).toBe(3);
+    // O retrato já tinha "b" e "c": só "d" é novo.
+    const again = mergeComposeOutput(next, { project: "poc", start: 1, lines: ["b", "c", "d"] });
+    expect(again.poc.output).toEqual(["a", "b", "c", "d"]);
+    expect(mergeComposeOutput(again, { project: "poc", start: 0, lines: ["a"] })).toBe(again);
+  });
+
+  test("buraco ou projeto desconhecido esperam o retrato", () => {
+    const runs = { poc: run(["a"]) };
+    expect(mergeComposeOutput(runs, { project: "poc", start: 5, lines: ["x"] })).toBe(runs);
+    expect(mergeComposeOutput(runs, { project: "outro", start: 0, lines: ["x"] })).toBe(runs);
+  });
+
+  test("guarda só as últimas linhas", () => {
+    const full = Array.from({ length: COMPOSE_OUTPUT_CAP }, (_, i) => String(i));
+    const next = mergeComposeOutput({ poc: run(full) }, {
+      project: "poc",
+      start: COMPOSE_OUTPUT_CAP,
+      lines: ["fim"],
+    });
+    expect(next.poc.output).toHaveLength(COMPOSE_OUTPUT_CAP);
+    expect(next.poc.output.at(-1)).toBe("fim");
+    expect(next.poc.output[0]).toBe("1");
   });
 });

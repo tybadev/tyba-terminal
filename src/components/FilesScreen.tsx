@@ -13,6 +13,7 @@ import {
 
 import "./gitScreen.css";
 import i18n from "../i18n";
+import { ComposeFileTab } from "./ComposeFileTab";
 import { EditorTab } from "./EditorTab";
 import { FilesTree } from "./FilesTree";
 import { requestConfirm } from "../lib/confirm";
@@ -273,7 +274,9 @@ export function FilesScreen({
   const section = files?.section ?? "files";
   const tabs = files && session ? sessionFiles(files, session.id) : [];
   const activeView = files && session ? activeFile(files, session.id) : null;
-  const activeRel = tabs.find((f) => f.view === activeView)?.rel ?? null;
+  const activeTab = tabs.find((f) => f.view === activeView) ?? null;
+  // A aba compose não é da árvore: nada a destacar nela.
+  const activeRel = activeTab && !activeTab.compose ? activeTab.rel : null;
   const [info, setInfo] = useState<FilesPanelInfo | null>(null);
   const [createRequest, setCreateRequest] = useState<{ isDir: boolean } | null>(null);
 
@@ -463,7 +466,13 @@ export function FilesScreen({
                       role="tab"
                       aria-selected={on}
                       tabIndex={0}
-                      title={f.preview ? `${f.rel}\n${t("filesScreenPreviewHint")}` : f.rel}
+                      title={
+                        f.compose
+                          ? `${f.rel} · ${t("composeFileReadOnly")}`
+                          : f.preview
+                            ? `${f.rel}\n${t("filesScreenPreviewHint")}`
+                            : f.rel
+                      }
                       onClick={() =>
                         workspace && void filesScreenActivate(workspace.id, f.view).catch(() => {})
                       }
@@ -525,6 +534,13 @@ export function FilesScreen({
                     ? t("filesScreenEmpty", { shortcut: finderShortcut })
                     : t("filesScreenEmptyNoShortcut")}
                 </div>
+              )}
+              {visible && activeTab?.compose && (
+                <ComposeFileTab
+                  key={activeTab.view}
+                  project={activeTab.compose.project}
+                  index={activeTab.compose.index}
+                />
               )}
               {editors.map((e) => {
                 const owner = findSession(e.session);
