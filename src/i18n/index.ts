@@ -964,6 +964,8 @@ const resources = {
       prFetchedAgo: "atualizado {{ago}}",
       prRateLimited:
         "Limite da API do GitHub baixo ({{remaining}} de {{limit}}). A atualização automática volta às {{time}}.",
+      prRateLimitedUnknown: "Limite da API do GitHub atingido. A atualização automática volta às {{time}}.",
+      prTruncated: "Este PR é grande: o TYBA mostra até 100 itens por seção. Veja o resto no GitHub.",
       prListUnsupported: "A lista de PRs funciona com GitHub por enquanto.",
       prListSummary_one: "{{count}} aberto · {{drafts}} rascunho(s)",
       prListSummary_other: "{{count}} abertos · {{drafts}} rascunho(s)",
@@ -2665,6 +2667,8 @@ const resources = {
       prFetchedAgo: "updated {{ago}}",
       prRateLimited:
         "GitHub API limit is low ({{remaining}} of {{limit}}). Automatic refresh resumes at {{time}}.",
+      prRateLimitedUnknown: "GitHub API limit reached. Automatic refresh resumes at {{time}}.",
+      prTruncated: "This PR is large: TYBA shows up to 100 items per section. See the rest on GitHub.",
       prListUnsupported: "The PR list works with GitHub for now.",
       prListSummary_one: "{{count}} open · {{drafts}} draft(s)",
       prListSummary_other: "{{count}} open · {{drafts}} draft(s)",

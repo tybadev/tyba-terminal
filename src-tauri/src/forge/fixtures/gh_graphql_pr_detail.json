@@ -22,7 +22,7 @@
         "reviewDecision": "CHANGES_REQUESTED",
         "mergeable": "CONFLICTING",
         "mergeStateStatus": "DIRTY",
-        "commits": { "nodes": [
+        "commits": { "totalCount": 2, "nodes": [
           { "commit": { "oid": "1111111111111111111111111111111111111111", "messageHeadline": "feat: primeiro passo", "authoredDate": "2026-01-01T08:00:00Z",
             "authors": { "nodes": [ { "name": "Ana Exemplo", "user": { "login": "ana-dev" } } ] } } },
           { "commit": { "oid": "2222222222222222222222222222222222222222", "messageHeadline": "fix: ajuste", "authoredDate": "2026-01-01T09:00:00Z",
@@ -32,7 +32,7 @@
           { "path": "src/tela.ts", "additions": 100, "deletions": 8 },
           { "path": "src/tela.test.ts", "additions": 20, "deletions": 0 }
         ] },
-        "headCommit": { "nodes": [ { "commit": { "statusCheckRollup": { "contexts": { "nodes": [
+        "headCommit": { "nodes": [ { "commit": { "statusCheckRollup": { "contexts": { "totalCount": 4, "nodes": [
           { "__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-01-02T09:00:00Z", "completedAt": "2026-01-02T09:05:00Z", "detailsUrl": "https://github.com/exemplo/app/actions/runs/1/job/1",
             "checkSuite": { "workflowRun": { "workflow": { "name": "CI" } } } },
           { "__typename": "CheckRun", "name": "e2e", "status": "QUEUED", "conclusion": null, "startedAt": null, "completedAt": null, "detailsUrl": null,
@@ -41,7 +41,7 @@
             "checkSuite": { "workflowRun": { "workflow": { "name": "Deploy" } } } },
           { "__typename": "StatusContext", "context": "ci/externo", "state": "ERROR", "targetUrl": "https://ci.exemplo.invalid/1", "createdAt": "2026-01-02T09:00:00Z" }
         ] } } } } ] },
-        "reviews": { "nodes": [
+        "reviews": { "totalCount": 2, "nodes": [
           { "author": { "login": "carla-dev" }, "state": "CHANGES_REQUESTED", "body": "faltou teste", "submittedAt": "2026-01-02T10:00:00Z", "commit": { "oid": "1111111111111111111111111111111111111111" } },
           { "author": { "login": "beto-dev" }, "state": "APPROVED", "body": "", "submittedAt": "2026-01-02T11:00:00Z", "commit": { "oid": "2222222222222222222222222222222222222222" } }
         ] },
@@ -50,10 +50,10 @@
           { "requestedReviewer": { "__typename": "Team", "name": "time-core", "slug": "time-core" } },
           { "requestedReviewer": null }
         ] },
-        "comments": { "nodes": [
+        "comments": { "totalCount": 1, "nodes": [
           { "author": { "login": "beto-dev" }, "body": "boa", "createdAt": "2026-01-02T11:00:00Z" }
         ] },
-        "reviewThreads": { "nodes": [
+        "reviewThreads": { "totalCount": 3, "nodes": [
           { "path": "src/tela.ts", "line": 10, "originalLine": 10, "comments": { "nodes": [
             { "author": { "login": "carla-dev" }, "body": "por que isso?", "createdAt": "2026-01-02T10:00:00Z", "diffHunk": "@@ -1,3 +1,10 @@\n+linha" },
             { "author": { "login": "ana-dev" }, "body": "explico abaixo", "createdAt": "2026-01-02T10:10:00Z", "diffHunk": "@@ -1,3 +1,10 @@\n+linha" },

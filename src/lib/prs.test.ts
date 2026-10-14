@@ -15,6 +15,7 @@ import {
   pageVisible,
   PR_PAGE_LIMIT,
   prCountLabel,
+  rateLimitNotice,
   rateResetTime,
   reviewChips,
   reviewerStates,
@@ -59,6 +60,7 @@ const detail = (over: Partial<PrDetail> = {}): PrDetail => ({
   additions: 42,
   deletions: 7,
   changed_files: 3,
+  commits_total: 0,
   commits: [],
   files: [],
   checks: [],
@@ -70,6 +72,7 @@ const detail = (over: Partial<PrDetail> = {}): PrDetail => ({
   mergeable: "mergeable",
   merge_state: "clean",
   session: null,
+  truncated: false,
   rate_limit: null,
   ...over,
 });
@@ -252,6 +255,29 @@ describe("revalidação da forja", () => {
   test("hora do reset do limite", () => {
     const rate = { resource: "graphql", limit: 5000, remaining: 10, reset_at: "2030-03-17T17:46:40Z" };
     expect(rateResetTime(rate, "pt-BR")).toMatch(/^\d{2}:\d{2}$/);
-    expect(rateResetTime({ ...rate, reset_at: "amanhã" })).toBe("");
+    expect(rateResetTime({ ...rate, reset_at: "amanhã" }, "pt-BR")).toBe("");
+  });
+
+  test("hora do reset segue o idioma da UI, não o do sistema", () => {
+    const rate = { resource: "graphql", limit: 5000, remaining: 10, reset_at: "2030-03-17T17:46:40Z" };
+    expect(rateResetTime(rate, "en")).toBe(
+      new Date(rate.reset_at).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" }),
+    );
+    expect(rateResetTime(rate, "en")).toMatch(/AM|PM/);
+  });
+
+  test("aviso de limite: com limite conhecido mostra N de M", () => {
+    const rate = { resource: "graphql", limit: 5000, remaining: 10, reset_at: "2030-03-17T17:46:40Z" };
+    const notice = rateLimitNotice(rate, "pt-BR");
+    expect(notice.key).toBe("prRateLimited");
+    expect(notice.params).toMatchObject({ remaining: 10, limit: 5000 });
+    expect(notice.params.time).toMatch(/^\d{2}:\d{2}$/);
+  });
+
+  test("aviso de limite: limit 0 é limite desconhecido, sem N de M", () => {
+    const rate = { resource: "core", limit: 0, remaining: 0, reset_at: "2030-03-17T17:46:40Z" };
+    const notice = rateLimitNotice(rate, "pt-BR");
+    expect(notice.key).toBe("prRateLimitedUnknown");
+    expect(notice.params).toEqual({ time: rateResetTime(rate, "pt-BR") });
   });
 });

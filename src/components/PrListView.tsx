@@ -37,7 +37,7 @@ import {
   pageVisible,
   PR_PAGE_LIMIT,
   prCountLabel,
-  rateResetTime,
+  rateLimitNotice,
   reviewChips,
   type ReviewChip,
   type Tone,
@@ -104,7 +104,7 @@ export function PrListView({
   onFocusSession: (id: SessionId) => void;
   onOpenPr: (number: number) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const relative = useRelative();
   const [filter, setFilter] = useState<ListFilter>("open");
   const [page, setPage] = useState<PrPage | null | undefined>(undefined);
@@ -138,7 +138,8 @@ export function PrListView({
 
   // O poll pede o cache (`fresh: false`): o core responde na hora e, se o
   // dado venceu, revalida em segundo plano e avisa por `forge://changed`.
-  // Só existe com esta tela montada (tela de Git aberta) e a janela visível.
+  // Só roda com esta tela montada (tela de Git, ou aba antiga `pr-list`
+  // restaurada do layout salvo) e com a janela visível.
   useEffect(() => {
     load(false);
     const timer = window.setInterval(() => {
@@ -178,6 +179,7 @@ export function PrListView({
     () => (page?.recent_merged ?? []).filter((item) => matchesPr(item, query)),
     [page, query],
   );
+  const rateNotice = page?.rate_limit ? rateLimitNotice(page.rate_limit, i18n.language) : null;
   const drafts = items.filter((i) => i.state === "draft").length;
 
   const row = (item: PrListItem, dim = false) => {
@@ -347,13 +349,9 @@ export function PrListView({
         )}
       </header>
 
-      {page?.rate_limit && (
+      {rateNotice && (
         <p role="status" className="shrink-0 tyba-divide-b px-4 py-1.5 text-[11px] text-tyba-amber">
-          {t("prRateLimited", {
-            remaining: page.rate_limit.remaining,
-            limit: page.rate_limit.limit,
-            time: rateResetTime(page.rate_limit),
-          })}
+          {t(rateNotice.key, rateNotice.params)}
         </p>
       )}
 

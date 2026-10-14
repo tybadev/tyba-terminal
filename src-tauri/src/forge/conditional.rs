@@ -104,7 +104,7 @@ pub fn settle(
     let key = (host.to_ascii_lowercase(), endpoint.to_string());
     let Some(response) = response else {
         if rate::is_rate_limit_error(stderr) {
-            rate::record_exhausted(host, "core");
+            rate::record_exhausted(host, "core", None);
             return Err(AppError::new("forge.rate_limited"));
         }
         return Err(cli_failed(stderr.to_string()));
@@ -132,9 +132,13 @@ pub fn settle(
             if response.header("x-ratelimit-remaining") == Some("0")
                 || rate::is_rate_limit_error(&String::from_utf8_lossy(&response.body)) =>
         {
-            if rate::from_headers(&response.headers).is_none() {
-                rate::record_exhausted(host, "core");
-            }
+            // Sempre marca: no limite secundário os cabeçalhos vêm com sobra
+            // (`remaining` 4000) e só o erro diz que é para parar.
+            let resource = response.header("x-ratelimit-resource").unwrap_or("core");
+            let retry_after = response
+                .header("retry-after")
+                .and_then(|v| v.trim().parse().ok());
+            rate::record_exhausted(host, resource, retry_after);
             Err(AppError::new("forge.rate_limited"))
         }
         _ => Err(cli_failed(if stderr.trim().is_empty() {
@@ -160,7 +164,8 @@ pub fn get(repo_root: &Path, host: &str, endpoint: &str) -> Result<Vec<u8>, AppE
 }
 
 /// Atualiza o estado de limite por `GET /rate_limit`, que não conta contra o
-/// limite. Erro aqui é silencioso: sem leitura, nada muda.
+/// limite. Erro aqui é silencioso: sem leitura, nada muda. Só os baldes que a
+/// forja usa (`core`, `graphql`): `search` & cia. não decidem nada aqui.
 pub fn refresh_rate_limit(repo_root: &Path, host: &str) {
     let Ok(out) = exec::run(
         github::CLI,
@@ -175,7 +180,10 @@ pub fn refresh_rate_limit(repo_root: &Path, host: &str) {
         return;
     }
     if let Ok(buckets) = rate::parse_rate_limit_body(&out.stdout) {
-        for b in buckets {
+        for b in buckets
+            .into_iter()
+            .filter(|b| b.resource == "core" || b.resource == "graphql")
+        {
             rate::record(host, b);
         }
     }
@@ -273,6 +281,23 @@ mod tests {
         let err = settle(host, "x", parse_include(LIMITED), "gh: HTTP 403").expect_err("403");
         assert_eq!(err.code, "forge.rate_limited");
         assert!(rate::exhausted(host, "core").is_some());
+        rate::reset_for_tests(host);
+    }
+
+    #[test]
+    fn secondary_limit_with_headers_still_marks_the_bucket() {
+        let host = "cond-secondary.example";
+        rate::reset_for_tests(host);
+        let secondary: &[u8] = b"HTTP/2.0 403 Forbidden\r\nRetry-After: 90\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 4000\r\nX-Ratelimit-Reset: 4102444800\r\nX-Ratelimit-Resource: core\r\n\r\n{\"message\":\"You have exceeded a secondary rate limit.\"}";
+        let before = chrono::Utc::now().timestamp();
+        let err = settle(host, "x", parse_include(secondary), "gh: HTTP 403").expect_err("403");
+        assert_eq!(err.code, "forge.rate_limited");
+        let r = rate::exhausted(host, "core").expect("marcado como zerado");
+        assert_eq!(r.limit, 5000, "limite da leitura dos cabeçalhos");
+        assert!(
+            r.reset >= before + 90 && r.reset < before + 120,
+            "Retry-After"
+        );
         rate::reset_for_tests(host);
     }
 

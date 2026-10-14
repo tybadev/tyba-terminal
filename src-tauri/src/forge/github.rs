@@ -415,9 +415,19 @@ pub fn pr_for_branch(worktree: &Path, branch: &str) -> Result<Option<PullRequest
 }
 
 /// Runs pela REST com GET condicional: o poll da CI só gasta limite quando
-/// algum run mudou. Sem remote GitHub válido, cai no `gh run list`.
+/// algum run mudou. Sem remote GitHub válido, cai no `gh run list`. Com o
+/// balde `core` zerado, recusa sem chamar o `gh` (cada 403 a mais alonga o
+/// bloqueio secundário).
+fn core_available(host: &str) -> Result<(), AppError> {
+    match super::rate::exhausted(host, "core") {
+        Some(_) => Err(AppError::new("forge.rate_limited")),
+        None => Ok(()),
+    }
+}
+
 pub fn run_list(repo: &Path, limit: u32) -> Result<Vec<WorkflowRun>, AppError> {
     if let Some(remote) = super::prs::github_remote(repo) {
+        core_available(&remote.host)?;
         let endpoint = format!(
             "repos/{}/{}/actions/runs?per_page={}",
             remote.owner,
@@ -442,16 +452,25 @@ pub fn run_list(repo: &Path, limit: u32) -> Result<Vec<WorkflowRun>, AppError> {
     parse_runs(&out.stdout).map_err(cli_failed)
 }
 
+/// argv do `gh run view`: com `--repo` do `origin` quando há remote GitHub
+/// válido — o mesmo repo do `run_list` (num clone de fork, o `gh` sozinho
+/// pode escolher o upstream).
+fn run_jobs_args(run_id: u64, repo_flag: Option<String>) -> Vec<String> {
+    let mut args: Vec<String> = vec!["run".into(), "view".into(), run_id.to_string()];
+    if let Some(repo) = repo_flag {
+        args.extend(["--repo".into(), repo]);
+    }
+    args.extend(["--json".into(), "jobs".into()]);
+    args
+}
+
 pub fn run_jobs(repo: &Path, run_id: u64) -> Result<Vec<WorkflowJob>, AppError> {
-    let id = run_id.to_string();
-    let out = exec::run(
-        CLI,
-        &["run", "view", &id, "--json", "jobs"],
-        repo,
-        None,
-        NETWORK_TIMEOUT,
-    )
-    .map_err(cli_failed)?;
+    let args = run_jobs_args(
+        run_id,
+        super::prs::github_remote(repo).map(|r| super::prs::repo_flag(&r)),
+    );
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = exec::run(CLI, &args, repo, None, NETWORK_TIMEOUT).map_err(cli_failed)?;
     if !out.ok {
         return Err(cli_failed(out.stderr_message()));
     }
@@ -734,6 +753,40 @@ mod tests {
         for r in &runs {
             assert_eq!(r.status, r.status.to_lowercase());
         }
+    }
+
+    #[test]
+    fn run_list_nao_chama_o_gh_com_core_zerado() {
+        let host = "runs-precheck.example";
+        crate::forge::rate::reset_for_tests(host);
+        assert!(core_available(host).is_ok());
+        crate::forge::rate::record_exhausted(host, "core", None);
+        assert_eq!(core_available(host).unwrap_err().code, "forge.rate_limited");
+        // Só o `core` (REST) barra: o balde GraphQL é outro.
+        crate::forge::rate::reset_for_tests(host);
+        crate::forge::rate::record_exhausted(host, "graphql", None);
+        assert!(core_available(host).is_ok());
+        crate::forge::rate::reset_for_tests(host);
+    }
+
+    #[test]
+    fn run_jobs_usa_o_mesmo_repo_do_run_list() {
+        assert_eq!(
+            run_jobs_args(7, Some("github.com/exemplo/app".into())),
+            [
+                "run",
+                "view",
+                "7",
+                "--repo",
+                "github.com/exemplo/app",
+                "--json",
+                "jobs"
+            ]
+        );
+        assert_eq!(
+            run_jobs_args(7, None),
+            ["run", "view", "7", "--json", "jobs"]
+        );
     }
 
     #[test]

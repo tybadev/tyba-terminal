@@ -35,9 +35,11 @@ updatedAt,mergedAt,mergedBy,statusCheckRollup,reviewDecision,latestReviews,revie
 comments,additions,deletions,isCrossRepository,headRepositoryOwner";
 
 /// Detalhe do PR numa chamada só (antes: `gh pr view --json` mais a REST de
-/// comentários em linha, paginada). Conexões com teto de 100 itens: commits e
-/// revisões trazem os ÚLTIMOS 100, arquivos e threads os primeiros 100 (o total
-/// de arquivos segue em `changedFiles`). `rateLimit` vem junto, de graça.
+/// comentários em linha, paginada). Conexões com teto de 100 itens: commits,
+/// revisões e comentários trazem os ÚLTIMOS 100, arquivos, threads e checks os
+/// primeiros 100. O `totalCount` de cada uma (de arquivos, `changedFiles`) diz
+/// se ficou algo de fora: vira [`PrDetail::truncated`]. `rateLimit` vem junto,
+/// de graça.
 pub const DETAIL_QUERY: &str = "query($owner: String!, $name: String!, $number: Int!) {
   rateLimit { limit remaining resetAt }
   repository(owner: $owner, name: $name) {
@@ -49,17 +51,17 @@ pub const DETAIL_QUERY: &str = "query($owner: String!, $name: String!, $number: 
       isCrossRepository
       headRepositoryOwner { login }
       reviewDecision mergeable mergeStateStatus
-      commits(last: 100) { nodes { commit {
+      commits(last: 100) { totalCount nodes { commit {
         oid messageHeadline authoredDate
         authors(first: 1) { nodes { name user { login } } }
       } } }
       files(first: 100) { nodes { path additions deletions } }
-      headCommit: commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+      headCommit: commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes {
         __typename
         ... on CheckRun { name status conclusion startedAt completedAt detailsUrl checkSuite { workflowRun { workflow { name } } } }
         ... on StatusContext { context state createdAt targetUrl }
       } } } } } }
-      reviews(last: 100) { nodes { author { login } state body submittedAt commit { oid } } }
+      reviews(last: 100) { totalCount nodes { author { login } state body submittedAt commit { oid } } }
       reviewRequests(first: 100) { nodes { requestedReviewer {
         __typename
         ... on User { login }
@@ -67,8 +69,8 @@ pub const DETAIL_QUERY: &str = "query($owner: String!, $name: String!, $number: 
         ... on Mannequin { login }
         ... on Team { name slug }
       } } }
-      comments(last: 100) { nodes { author { login } body createdAt } }
-      reviewThreads(first: 100) { nodes { path line originalLine
+      comments(last: 100) { totalCount nodes { author { login } body createdAt } }
+      reviewThreads(first: 100) { totalCount nodes { path line originalLine
         comments(first: 100) { nodes { author { login } body createdAt diffHunk } } } }
     }
   }
@@ -260,6 +262,11 @@ pub struct PrDetail {
     pub additions: u64,
     pub deletions: u64,
     pub changed_files: u64,
+    /// Total de commits do PR; `commits` traz no máximo os últimos 100.
+    pub commits_total: u64,
+    /// Alguma lista (commits, checks, threads, comentários, revisões,
+    /// arquivos) veio cortada no teto de 100.
+    pub truncated: bool,
     pub commits: Vec<PrCommit>,
     pub files: Vec<PrFile>,
     pub checks: Vec<PrCheck>,
@@ -426,6 +433,14 @@ struct GhFile {
 struct Nodes<T> {
     #[serde(default = "Vec::new")]
     nodes: Vec<Option<T>>,
+    #[serde(default, rename = "totalCount")]
+    total_count: Option<u64>,
+}
+
+/// A conexão tem mais itens do que vieram. `null` em `nodes` conta como vindo:
+/// é item que existe e não dá para ver, não item cortado.
+fn cut<T>(conn: Option<&Nodes<T>>) -> bool {
+    conn.is_some_and(|c| c.total_count.is_some_and(|t| t > c.nodes.len() as u64))
 }
 
 fn nodes<T>(conn: Option<Nodes<T>>) -> Vec<T> {
@@ -991,18 +1006,28 @@ pub fn parse_detail_graphql(
     let Some(pr) = data.and_then(|d| d.repository).and_then(|r| r.pull_request) else {
         return Err(gql_errors(&response.errors));
     };
-    let checks = pr
+    let contexts = pr
         .head_commit
         .map(|c| c.nodes.into_iter().flatten().collect::<Vec<_>>())
         .unwrap_or_default()
         .into_iter()
         .next_back()
         .and_then(|c| c.commit.status_check_rollup)
-        .map(|r| nodes(r.contexts))
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(gql_check)
-        .collect();
+        .and_then(|r| r.contexts);
+    let files_brought = pr.files.as_ref().map_or(0, |f| f.nodes.len() as u64);
+    let truncated = cut(pr.commits.as_ref())
+        || cut(contexts.as_ref())
+        || cut(pr.review_threads.as_ref())
+        || cut(pr.comments.as_ref())
+        || cut(pr.reviews.as_ref())
+        || pr.changed_files > files_brought;
+    let commits_brought = pr.commits.as_ref().map_or(0, |c| c.nodes.len() as u64);
+    let commits_total = pr
+        .commits
+        .as_ref()
+        .and_then(|c| c.total_count)
+        .unwrap_or(commits_brought);
+    let checks = nodes(contexts).into_iter().filter_map(gql_check).collect();
     let detail = PrDetail {
         cross_repo: pr.is_cross_repository,
         own_head: own_head(
@@ -1023,6 +1048,8 @@ pub fn parse_detail_graphql(
         additions: pr.additions,
         deletions: pr.deletions,
         changed_files: pr.changed_files,
+        commits_total,
+        truncated,
         commits: nodes(pr.commits)
             .into_iter()
             .map(|n| PrCommit {
@@ -1221,9 +1248,7 @@ fn rate_aware(host: &str, resource: &str, err: AppError) -> AppError {
     if !limited {
         return err;
     }
-    if rate::exhausted(host, resource).is_none() {
-        rate::record_exhausted(host, resource);
-    }
+    rate::record_exhausted(host, resource, None);
     AppError::new("forge.rate_limited")
 }
 
@@ -1244,22 +1269,55 @@ pub fn detail_args(remote: &Remote, number: u64) -> Vec<String> {
     ]
 }
 
-/// Uma chamada GraphQL. O `gh api graphql` sai com 1 quando a resposta tem
-/// `errors` (PR inexistente), mas o JSON vem no stdout: decide-se por ele.
+/// Saída do `gh api graphql` do detalhe, já decidida. O `gh` sai com 1 em
+/// dois casos que põem JSON no stdout: resposta GraphQL com `errors` (PR
+/// inexistente) — vale a mensagem dela — e falha HTTP (401, 403 do limite
+/// secundário, 5xx), cujo corpo é só `{"message": …}`. Nessa, quem diz o que
+/// houve é o stderr ("gh: Bad credentials (HTTP 401)"): é ele que
+/// `cli_failed` e `rate_aware` classificam.
+pub fn detail_outcome(
+    ok: bool,
+    stdout: &[u8],
+    stderr: &str,
+    repo_owner: &str,
+) -> Result<(PrDetail, Option<RateLimit>), String> {
+    if stdout.trim_ascii().is_empty() {
+        return Err(stderr.to_string());
+    }
+    let parsed = parse_detail_graphql(stdout, repo_owner);
+    if ok || parsed.is_ok() {
+        return parsed;
+    }
+    let graphql_errors =
+        serde_json::from_slice::<GqlResponse>(stdout).is_ok_and(|r| !r.errors.is_empty());
+    if graphql_errors {
+        return parsed;
+    }
+    #[derive(Deserialize)]
+    struct HttpBody {
+        #[serde(default)]
+        message: String,
+    }
+    let message = serde_json::from_slice::<HttpBody>(stdout)
+        .map(|b| b.message.trim().to_string())
+        .unwrap_or_default();
+    if message.is_empty() || stderr.contains(&message) {
+        Err(stderr.to_string())
+    } else {
+        let message = crate::session::redact::redact(&message).into_owned();
+        Err(format!("{stderr} / {message}"))
+    }
+}
+
+/// Uma chamada GraphQL (ver [`detail_outcome`]).
 fn fetch_detail(repo_root: &Path, remote: &Remote, number: u64) -> Result<PrDetail, AppError> {
     let args = detail_args(remote, number);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = exec::run(github::CLI, &args, repo_root, None, NETWORK_TIMEOUT)
         .map_err(|e| rate_aware(&remote.host, "graphql", cli_failed(e)))?;
-    if out.stdout.trim_ascii().is_empty() {
-        return Err(rate_aware(
-            &remote.host,
-            "graphql",
-            cli_failed(out.stderr_message()),
-        ));
-    }
-    let (detail, reading) = parse_detail_graphql(&out.stdout, &remote.owner)
-        .map_err(|e| rate_aware(&remote.host, "graphql", cli_failed(e)))?;
+    let (detail, reading) =
+        detail_outcome(out.ok, &out.stdout, &out.stderr_message(), &remote.owner)
+            .map_err(|e| rate_aware(&remote.host, "graphql", cli_failed(e)))?;
     if let Some(reading) = reading {
         rate::record(&remote.host, reading);
     }
@@ -1275,7 +1333,8 @@ fn now_iso() -> String {
 // Até 30s o cache responde sozinho. Depois disso, ele ainda responde na hora
 // (a tela não espera a rede), e uma revalidação vai para segundo plano — no
 // máximo uma por chave. Se o dado mudou, `notify` avisa a UI, que relê o cache.
-// Com o limite da API baixo, a revalidação não sai até o reset. Nada disso
+// Com o limite da API baixo, a revalidação não sai até o reset. Revalidação
+// que falha também avisa: o próximo pedido devolve o erro, uma vez. Nada disso
 // roda sozinho: só um pedido da UI (tela de Git aberta) dispara revalidação.
 
 type Cache<K, V> = Mutex<HashMap<K, (Instant, V)>>;
@@ -1339,6 +1398,57 @@ fn touch<K: std::hash::Hash + Eq, V>(cache: &Cache<K, V>, key: &K) {
     if let Some(entry) = cache.lock().get_mut(key) {
         entry.0 = Instant::now();
     }
+}
+
+/// Sobe a cada [`invalidate`] (merge, review). Revalidação em segundo plano
+/// que começou antes pode terminar depois, com o PR de antes da ação: ela
+/// anota a geração ao começar e, se mudou, descarta o que buscou.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// [`store`] de revalidação em segundo plano que começou na geração
+/// `started`. Checa sob o lock do cache, e `invalidate` sobe a geração antes
+/// de limpar: ou guarda antes da limpeza (e ela apaga), ou vê a geração nova.
+/// `None`: descartado.
+fn store_if_current<K: std::hash::Hash + Eq, V>(
+    cache: &Cache<K, V>,
+    key: K,
+    value: V,
+    same: impl Fn(&V, &V) -> bool,
+    started: u64,
+) -> Option<bool> {
+    let mut cache = cache.lock();
+    if generation() != started {
+        return None;
+    }
+    let changed = cache.get(&key).is_none_or(|(_, old)| !same(old, &value));
+    cache.insert(key, (Instant::now(), value));
+    Some(changed)
+}
+
+/// Falha da última revalidação em segundo plano, por tag da chave. O próximo
+/// pedido sem `fresh` a devolve (uma vez), e a UI mostra "atualização falhou"
+/// sobre o dado antigo; uma busca que dá certo apaga. Limite baixo que adiou
+/// a revalidação não é falha.
+fn failures() -> &'static Mutex<HashMap<String, AppError>> {
+    static FAILURES: std::sync::OnceLock<Mutex<HashMap<String, AppError>>> =
+        std::sync::OnceLock::new();
+    FAILURES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn record_failure(tag: &str, err: AppError) {
+    failures().lock().insert(tag.to_string(), err);
+}
+
+fn take_failure(tag: &str) -> Option<AppError> {
+    failures().lock().remove(tag)
+}
+
+fn clear_failure(tag: &str) {
+    failures().lock().remove(tag);
 }
 
 /// A página nova é igual à velha? `fetched_at` não conta.
@@ -1409,25 +1519,50 @@ pub fn page(
     };
     let limit = clamp_limit(limit);
     let key = (repo_flag(&remote), filter, limit);
+    let tag = format!("page:{key:?}");
+    if !fresh {
+        if let Some(err) = take_failure(&tag) {
+            return Err(err);
+        }
+    }
     let served = match lookup(page_cache(), &key) {
         Lookup::Fresh(v) if !fresh => v,
         Lookup::Stale(v) if !fresh => {
             let root = repo_root.to_path_buf();
             let remote = remote.clone();
             let key = key.clone();
-            revalidate_in_background(format!("page:{key:?}"), move || {
+            let job_tag = tag.clone();
+            revalidate_in_background(tag, move || {
+                let started = generation();
                 if !may_revalidate(&root, &remote.host) {
                     touch(page_cache(), &key);
                     return;
                 }
-                match fetch_page(&root, &remote, filter, limit) {
+                let change = ForgeChange {
+                    repo: remote.project(),
+                    number: None,
+                };
+                match fetch_page(&root, &remote, filter, limit)
+                    .map_err(|e| rate_aware(&remote.host, "graphql", e))
+                {
                     Ok(new) => {
-                        let repo = new.repo.clone();
-                        if store(page_cache(), key, new, same_page) {
-                            notify(ForgeChange { repo, number: None });
+                        if let Some(changed) =
+                            store_if_current(page_cache(), key, new, same_page, started)
+                        {
+                            clear_failure(&job_tag);
+                            if changed {
+                                notify(change);
+                            }
                         }
                     }
-                    Err(_) => touch(page_cache(), &key),
+                    Err(err) => {
+                        // Adia a próxima (não martela), mas avisa a UI.
+                        touch(page_cache(), &key);
+                        if generation() == started {
+                            record_failure(&job_tag, err);
+                            notify(change);
+                        }
+                    }
                 }
             });
             v
@@ -1442,12 +1577,13 @@ pub fn page(
                 let v = fetch_page(repo_root, &remote, filter, limit)
                     .map_err(|e| rate_aware(&remote.host, "graphql", e))?;
                 store(page_cache(), key, v.clone(), same_page);
+                clear_failure(&tag);
                 v
             }
         }
     };
     Ok(Some(PrPage {
-        rate_limit: rate::low_for_ui(&remote.host),
+        rate_limit: rate::low_for_ui(&remote.host, "graphql"),
         ..served
     }))
 }
@@ -1465,27 +1601,48 @@ pub fn detail(
         return Ok(None);
     };
     let key = (repo_flag(&remote), number);
+    let tag = format!("detail:{key:?}");
+    if !fresh {
+        if let Some(err) = take_failure(&tag) {
+            return Err(err);
+        }
+    }
     let served = match lookup(detail_cache(), &key) {
         Lookup::Fresh(v) if !fresh => v,
         Lookup::Stale(v) if !fresh => {
             let root = repo_root.to_path_buf();
             let remote = remote.clone();
             let key = key.clone();
-            revalidate_in_background(format!("detail:{key:?}"), move || {
+            let job_tag = tag.clone();
+            revalidate_in_background(tag, move || {
+                let started = generation();
                 if !may_revalidate(&root, &remote.host) {
                     touch(detail_cache(), &key);
                     return;
                 }
+                let change = ForgeChange {
+                    repo: remote.project(),
+                    number: Some(number),
+                };
                 match fetch_detail(&root, &remote, number) {
                     Ok(new) => {
-                        if store(detail_cache(), key, new, PartialEq::eq) {
-                            notify(ForgeChange {
-                                repo: remote.project(),
-                                number: Some(number),
-                            });
+                        if let Some(changed) =
+                            store_if_current(detail_cache(), key, new, PartialEq::eq, started)
+                        {
+                            clear_failure(&job_tag);
+                            if changed {
+                                notify(change);
+                            }
                         }
                     }
-                    Err(_) => touch(detail_cache(), &key),
+                    Err(err) => {
+                        // Adia a próxima (não martela), mas avisa a UI.
+                        touch(detail_cache(), &key);
+                        if generation() == started {
+                            record_failure(&job_tag, err);
+                            notify(change);
+                        }
+                    }
                 }
             });
             v
@@ -1499,12 +1656,13 @@ pub fn detail(
             } else {
                 let v = fetch_detail(repo_root, &remote, number)?;
                 store(detail_cache(), key, v.clone(), PartialEq::eq);
+                clear_failure(&tag);
                 v
             }
         }
     };
     Ok(Some(PrDetail {
-        rate_limit: rate::low_for_ui(&remote.host),
+        rate_limit: rate::low_for_ui(&remote.host, "graphql"),
         ..served
     }))
 }
@@ -1647,7 +1805,8 @@ pub(super) fn action_remote(repo_root: &Path) -> Result<Remote, AppError> {
     github_remote(repo_root).ok_or_else(|| AppError::new("forge.pr_actions_unsupported"))
 }
 
-/// Head de agora, sem cache: o do cache pode ter 30s.
+/// Head de agora, sem cache: o do cache é stale-while-revalidate e pode ser
+/// bem mais velho que o TTL (a tela serve o que tem enquanto revalida).
 fn current_head(repo_root: &Path, repo: &str, number: u64) -> Result<String, AppError> {
     let n = number.to_string();
     let out = gh(
@@ -1681,6 +1840,8 @@ pub(super) fn gh_write(
 }
 
 fn invalidate(repo: &str, number: u64) {
+    // Antes de limpar: ver [`store_if_current`].
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     detail_cache()
         .lock()
         .retain(|(r, n), _| !(r == repo && *n == number));
@@ -2342,6 +2503,161 @@ mod tests {
         let other = rate_aware(host, "graphql", cli_failed("HTTP 404"));
         assert_eq!(other.code, "forge.cli_failed");
         rate::reset_for_tests(host);
+    }
+
+    #[test]
+    fn detail_reports_lists_cut_at_the_cap() {
+        let d = parse_detail(DETAIL.as_bytes(), "exemplo").unwrap();
+        assert_eq!(d.commits_total, 2);
+        assert!(!d.truncated, "totalCount igual ao que veio");
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["commits_total"], 2);
+        assert_eq!(v["truncated"], false);
+
+        let commits = gql_pr(
+            r#""commits":{"totalCount":250,"nodes":[{"commit":{"oid":"a","messageHeadline":"x"}}]}"#,
+        );
+        let d = parse_detail(&commits, "").unwrap();
+        assert_eq!(d.commits.len(), 1);
+        assert_eq!(d.commits_total, 250);
+        assert!(d.truncated);
+        for fields in [
+            r#""headCommit":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":101,"nodes":[]}}}}]}"#,
+            r#""reviewThreads":{"totalCount":3,"nodes":[null]}"#,
+            r#""comments":{"totalCount":120,"nodes":[]}"#,
+            r#""reviews":{"totalCount":2,"nodes":[]}"#,
+            r#""changedFiles":300,"files":{"nodes":[{"path":"a"}]}"#,
+        ] {
+            assert!(
+                parse_detail(&gql_pr(fields), "").unwrap().truncated,
+                "{fields}"
+            );
+        }
+        // Sem `totalCount` (resposta antiga) nada é dado como cortado.
+        let d = parse_detail(&gql_pr(r#""commits":{"nodes":[null]}"#), "").unwrap();
+        assert_eq!((d.commits_total, d.truncated), (1, false));
+        // `null` em `nodes` é item que veio (sem acesso), não item cortado.
+        let nulls = gql_pr(r#""reviews":{"totalCount":1,"nodes":[null]}"#);
+        assert!(!parse_detail(&nulls, "").unwrap().truncated);
+        for conn in [
+            "commits",
+            "contexts",
+            "reviews",
+            "comments",
+            "reviewThreads",
+        ] {
+            let asks = DETAIL_QUERY
+                .split_once(&format!("{conn}("))
+                .is_some_and(|(_, rest)| {
+                    rest.split_once('{')
+                        .unwrap()
+                        .1
+                        .trim_start()
+                        .starts_with("totalCount")
+                });
+            assert!(asks, "{conn} pede totalCount");
+        }
+    }
+
+    /// Classifica como o `fetch_detail` faz, sem rede.
+    fn detail_error(ok: bool, stdout: &[u8], stderr: &str, host: &str) -> AppError {
+        let detail = detail_outcome(ok, stdout, stderr, "exemplo").unwrap_err();
+        rate_aware(host, "graphql", cli_failed(detail))
+    }
+
+    #[test]
+    fn graphql_http_failures_keep_their_classification() {
+        let host = "prs-http.example";
+        rate::reset_for_tests(host);
+        let e = detail_error(
+            false,
+            br#"{"message":"Bad credentials","documentation_url":"https://docs.github.com/graphql","status":"401"}"#,
+            "gh: Bad credentials (HTTP 401)",
+            host,
+        );
+        assert_eq!(e.code, "forge.not_authenticated");
+        assert!(rate::exhausted(host, "graphql").is_none());
+
+        let e = detail_error(
+            false,
+            br#"{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","status":"403"}"#,
+            "gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)",
+            host,
+        );
+        assert_eq!(e.code, "forge.rate_limited");
+        assert!(rate::exhausted(host, "graphql").is_some());
+        rate::reset_for_tests(host);
+
+        let e = detail_error(
+            false,
+            b"<html><body>502 Bad Gateway</body></html>",
+            "gh: HTTP 502: Bad Gateway",
+            host,
+        );
+        assert_eq!(e.code, "forge.cli_failed");
+        assert!(e.params["detail"].contains("HTTP 502"), "{:?}", e.params);
+
+        // Mensagem do corpo que o stderr não traz vai junto.
+        let e = detail_error(
+            false,
+            br#"{"message":"Server Error"}"#,
+            "gh: HTTP 500",
+            host,
+        );
+        assert_eq!(e.params["detail"], "gh: HTTP 500 / Server Error");
+
+        // PR inexistente: a mensagem GraphQL continua legível.
+        let e = detail_error(
+            false,
+            br#"{"data":{"repository":{"pullRequest":null}},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a PullRequest with the number of 7."}]}"#,
+            "gh: Could not resolve to a PullRequest with the number of 7.",
+            host,
+        );
+        assert_eq!(e.code, "forge.cli_failed");
+        assert!(e.params["detail"].contains("NOT_FOUND"), "{:?}", e.params);
+
+        // Saída boa com código 1 ainda vale (o JSON decide).
+        assert!(detail_outcome(false, DETAIL.as_bytes(), "gh: algo", "exemplo").is_ok());
+        assert_eq!(
+            detail_outcome(false, b"  ", "gh: sem rede", "").unwrap_err(),
+            "gh: sem rede"
+        );
+        rate::reset_for_tests(host);
+    }
+
+    #[test]
+    fn background_result_older_than_an_action_is_dropped() {
+        let cache: Cache<&str, u32> = Mutex::new(HashMap::new());
+        let started = generation();
+        invalidate("github.com/geracao/teste", 1);
+        assert_eq!(
+            store_if_current(&cache, "k", 1, PartialEq::eq, started),
+            None,
+            "começou antes do merge: descarta"
+        );
+        assert_eq!(lookup(&cache, &"k"), Lookup::Miss);
+        // Sem ação no meio, guarda (outro teste pode invalidar em paralelo).
+        let started = generation();
+        let stored = store_if_current(&cache, "k", 2, PartialEq::eq, started);
+        assert!(
+            stored == Some(true) || generation() != started,
+            "{stored:?}"
+        );
+    }
+
+    #[test]
+    fn background_failure_is_returned_once() {
+        let tag = "page:teste-falha";
+        assert!(take_failure(tag).is_none());
+        record_failure(tag, AppError::new("forge.not_authenticated"));
+        assert_eq!(
+            take_failure(tag).map(|e| e.code),
+            Some("forge.not_authenticated".to_string())
+        );
+        assert!(take_failure(tag).is_none(), "uma vez só");
+        record_failure(tag, cli_failed("HTTP 502"));
+        clear_failure(tag);
+        assert!(take_failure(tag).is_none(), "busca que deu certo apaga");
     }
 
     #[test]

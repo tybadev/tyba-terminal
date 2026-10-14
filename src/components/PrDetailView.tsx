@@ -41,7 +41,7 @@ import {
   forwardPrompt,
   initials,
   pageVisible,
-  rateResetTime,
+  rateLimitNotice,
   reviewerStates,
   timelineEventId,
   type TimelineEvent,
@@ -124,7 +124,7 @@ export function PrDetailView({
   /** Manda o prompt para a sessão de agente ligada ao PR (`pr.session`). */
   onForward: (session: SessionId, prompt: string) => Promise<void>;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const relative = useRelative();
   const [pr, setPr] = useState<PrDetail | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -195,6 +195,7 @@ export function PrDetailView({
     );
   }
 
+  const rateNotice = pr.rate_limit ? rateLimitNotice(pr.rate_limit, i18n.language) : null;
   const mergeReady =
     pr.state === "open" && pr.mergeable !== "conflicting" && checks.tone !== "red";
 
@@ -563,16 +564,13 @@ export function PrDetailView({
             <span className="text-tyba-green">+{pr.additions}</span>{" "}
             <span className="text-tyba-red">−{pr.deletions}</span> ·{" "}
             {t("diffFilesSummary", { count: pr.changed_files })} ·{" "}
-            {t("prCommitsCount", { count: pr.commits.length })}
+            {t("prCommitsCount", { count: pr.commits_total })}
           </span>
         </div>
-        {pr.rate_limit && (
+        {pr.truncated && <p className="text-[11px] text-tyba-amber">{t("prTruncated")}</p>}
+        {rateNotice && (
           <p role="status" className="text-[11px] text-tyba-amber">
-            {t("prRateLimited", {
-              remaining: pr.rate_limit.remaining,
-              limit: pr.rate_limit.limit,
-              time: rateResetTime(pr.rate_limit),
-            })}
+            {t(rateNotice.key, rateNotice.params)}
           </p>
         )}
         {/* A atualização falhou mas há dado na tela: avisa sem esconder o PR. */}

@@ -287,9 +287,25 @@ export function pageVisible(doc: Pick<Document, "visibilityState"> = document): 
   return doc.visibilityState === "visible";
 }
 
-/** "14:32": quando a revalidação automática volta. */
-export function rateResetTime(rate: ForgeRateLimit, locale?: string): string {
+/** "14:32": quando a revalidação automática volta, no idioma da UI. */
+export function rateResetTime(rate: ForgeRateLimit, locale: string): string {
   const at = new Date(rate.reset_at);
   if (Number.isNaN(at.getTime())) return "";
   return at.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * Aviso de limite da API: `limit` 0 é limite desconhecido (o core bateu no
+ * erro de limite sem os cabeçalhos), então não há "N de M" para mostrar.
+ */
+export function rateLimitNotice(
+  rate: ForgeRateLimit,
+  locale: string,
+): {
+  key: "prRateLimited" | "prRateLimitedUnknown";
+  params: { time: string; remaining?: number; limit?: number };
+} {
+  const time = rateResetTime(rate, locale);
+  if (rate.limit === 0) return { key: "prRateLimitedUnknown", params: { time } };
+  return { key: "prRateLimited", params: { time, remaining: rate.remaining, limit: rate.limit } };
 }

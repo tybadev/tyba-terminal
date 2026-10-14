@@ -561,6 +561,7 @@ export interface PrPage {
 /** Balde de limite da API do GitHub (`core` = REST, `graphql`). */
 export interface ForgeRateLimit {
   resource: string;
+  /** `0` = limite desconhecido (erro de limite sem os cabeçalhos). */
   limit: number;
   remaining: number;
   /** ISO (UTC). */
@@ -642,6 +643,8 @@ export interface PrDetail {
   additions: number;
   deletions: number;
   changed_files: number;
+  /** Total de commits do PR; `commits` pode trazer só os 100 últimos. */
+  commits_total: number;
   commits: PrCommit[];
   files: PrFile[];
   checks: PrCheck[];
@@ -656,6 +659,11 @@ export interface PrDetail {
   /** `mergeStateStatus` do GitHub em minúsculas: clean, behind, blocked, dirty… */
   merge_state: string;
   session: PrSessionLink | null;
+  /**
+   * O core trouxe no máximo 100 commits/checks/threads/comentários/revisões/
+   * arquivos e o PR tem mais.
+   */
+  truncated: boolean;
   /** Ver `PrPage.rate_limit`. */
   rate_limit: ForgeRateLimit | null;
 }

@@ -33,12 +33,15 @@ pub struct RateLimit {
 }
 
 impl RateLimit {
+    /// Zerado é baixo mesmo com `limit` 0 (limite desconhecido, ver
+    /// [`record_exhausted`]).
     pub fn low(&self) -> bool {
-        self.limit > 0 && self.remaining * LOW_FRACTION < self.limit
+        self.remaining == 0 || (self.limit > 0 && self.remaining * LOW_FRACTION < self.limit)
     }
 }
 
-/// O que a UI mostra: "limite da API baixo, volta às HH:MM".
+/// O que a UI mostra: "limite da API baixo, volta às HH:MM". `limit` 0 quer
+/// dizer limite desconhecido (bloqueio vindo de erro, sem leitura anterior).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ForgeRateLimit {
     pub resource: String,
@@ -69,15 +72,29 @@ pub fn record(host: &str, rate: RateLimit) {
     );
 }
 
-/// Bloqueio vindo de erro (mensagem de "rate limit exceeded" sem cabeçalho).
-pub fn record_exhausted(host: &str, resource: &str) {
+/// Bloqueio vindo de erro (limite primário sem cabeçalho, limite secundário).
+/// `retry_after` em segundos, quando o GitHub mandou; senão, 60s. Leitura viva
+/// já zerada fica como está (o `reset` dela é o exato). O `limit` é o da
+/// leitura viva do balde, se houver; senão 0 (desconhecido) — inventar um
+/// número chegaria na UI como "0 de 1".
+pub fn record_exhausted(host: &str, resource: &str, retry_after: Option<u64>) {
+    let now = now_epoch();
+    let previous = current(host, resource)
+        .map(|(_, r)| r)
+        .filter(|r| live(r, now));
+    if previous.as_ref().is_some_and(|r| r.remaining == 0) {
+        return;
+    }
+    let wait = retry_after
+        .filter(|s| *s > 0)
+        .map_or(UNKNOWN_RESET_SECS, |s| s.min(3600) as i64);
     record(
         host,
         RateLimit {
             resource: resource.into(),
-            limit: 1,
+            limit: previous.map_or(0, |r| r.limit),
             remaining: 0,
-            reset: now_epoch() + UNKNOWN_RESET_SECS,
+            reset: now + wait,
         },
     );
 }
@@ -130,16 +147,13 @@ fn to_ui(rate: &RateLimit) -> ForgeRateLimit {
     }
 }
 
-/// O balde baixo de `host` que a UI deve mostrar (o mais apertado), ou `None`.
-pub fn low_for_ui(host: &str) -> Option<ForgeRateLimit> {
-    let host = host.to_ascii_lowercase();
-    let now = now_epoch();
-    state()
-        .lock()
-        .iter()
-        .filter(|((h, _), (_, r))| *h == host && live(r, now) && r.low())
-        .map(|(_, (_, r))| r)
-        .min_by_key(|r| r.remaining)
+/// O balde `resource` de `host`, se estiver baixo — o mesmo que decide o
+/// [`back_off`]: a UI só diz "atualização automática pausada" quando está.
+pub fn low_for_ui(host: &str, resource: &str) -> Option<ForgeRateLimit> {
+    current(host, resource)
+        .map(|(_, r)| r)
+        .filter(|r| live(r, now_epoch()) && r.low())
+        .as_ref()
         .map(to_ui)
 }
 
@@ -267,6 +281,13 @@ mod tests {
         assert!(!r(500).low());
         assert!(r(499).low());
         assert!(r(0).low());
+        let unknown_limit = RateLimit { limit: 0, ..r(0) };
+        assert!(unknown_limit.low(), "zerado com limite desconhecido");
+        assert!(!RateLimit {
+            remaining: 5,
+            ..unknown_limit
+        }
+        .low());
     }
 
     #[test]
@@ -325,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn ui_shows_the_tightest_low_bucket_of_the_host() {
+    fn ui_shows_only_the_bucket_that_backs_off() {
         let host = "rate-test.example";
         reset_for_tests(host);
         let future = now_epoch() + 600;
@@ -334,11 +355,13 @@ mod tests {
             RateLimit {
                 resource: "core".into(),
                 limit: 5000,
-                remaining: 4000,
+                remaining: 42,
                 reset: future,
             },
         );
-        assert_eq!(low_for_ui(host), None);
+        // `core` baixo não pausa a revalidação da lista/detalhe (GraphQL).
+        assert_eq!(low_for_ui(host, "graphql"), None);
+        assert!(!back_off(host, "graphql"));
         record(
             host,
             RateLimit {
@@ -348,15 +371,40 @@ mod tests {
                 reset: future,
             },
         );
-        let ui = low_for_ui(host).expect("baixo");
+        let ui = low_for_ui(host, "graphql").expect("baixo");
         assert_eq!(ui.resource, "graphql");
         assert_eq!(ui.remaining, 42);
         assert!(ui.reset_at.ends_with('Z'));
         assert!(back_off(host, "graphql"));
-        assert!(!back_off(host, "core"));
         assert!(exhausted(host, "graphql").is_none());
-        record_exhausted(host, "graphql");
-        assert!(exhausted(host, "graphql").is_some());
+        record_exhausted(host, "graphql", None);
+        let r = exhausted(host, "graphql").expect("zerado");
+        assert_eq!(r.limit, 5000, "mantém o limite da leitura viva");
+        assert_eq!(low_for_ui(host, "graphql").map(|u| u.limit), Some(5000));
+        reset_for_tests(host);
+    }
+
+    #[test]
+    fn exhausted_without_a_reading_has_unknown_limit_and_honors_retry_after() {
+        let host = "rate-exhausted.example";
+        reset_for_tests(host);
+        let before = now_epoch();
+        record_exhausted(host, "core", Some(120));
+        let r = exhausted(host, "core").expect("zerado");
+        assert_eq!(r.limit, 0, "sem leitura: limite desconhecido, não 1");
+        assert!(r.reset >= before + 120 && r.reset <= now_epoch() + 120);
+        let ui = low_for_ui(host, "core").expect("zerado aparece");
+        assert_eq!((ui.limit, ui.remaining), (0, 0));
+        // Leitura zerada viva (primário, com o reset exato) não é sobrescrita.
+        let exact = RateLimit {
+            resource: "graphql".into(),
+            limit: 5000,
+            remaining: 0,
+            reset: before + 1800,
+        };
+        record(host, exact.clone());
+        record_exhausted(host, "graphql", None);
+        assert_eq!(exhausted(host, "graphql"), Some(exact));
         reset_for_tests(host);
     }
 }
