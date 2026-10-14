@@ -56,6 +56,12 @@ pub enum ShellEvent {
     /// atacante-controlável como qualquer OSC; quem valida cada nome é
     /// `completion::binary::parse_batch`, e o resultado é display-only.
     ShellCommands(String),
+    /// `OSC 633 ; P ; tyba-keymap=<nome>` — o keymap do editor de linha.
+    /// `true` só para os keymaps em que tecla vira texto na linha (`main`,
+    /// `emacs`, `viins`); modo de comando do vi, visual e o bash em modo vi
+    /// inteiro (o readline não conta o submodo) são `false`. Desconhecido é
+    /// `false`: quem lê isto decide se pode DIGITAR no shell.
+    LineKeymap(bool),
     /// `OSC 133 ; D [ ; <code> ]` — comando terminou (exit code).
     CommandEnd(i32),
     /// `OSC 7 ; file://<host><path>` — diretório de trabalho.
@@ -207,6 +213,12 @@ fn parse_osc(payload: &[u8]) -> Option<ShellEvent> {
                     return (!batch.is_empty())
                         .then(|| ShellEvent::ShellCommands(batch.to_string()));
                 }
+                if let Some(keymap) = value.strip_prefix("tyba-keymap=") {
+                    return Some(ShellEvent::LineKeymap(matches!(
+                        keymap,
+                        "main" | "emacs" | "viins"
+                    )));
+                }
                 let value = value.strip_prefix("tyba-prompt=")?;
                 return match value {
                     "1" => Some(ShellEvent::PromptMode(true)),
@@ -301,6 +313,27 @@ mod tests {
             p.feed(b"\x1b]633;P;tyba-prompt=0\x07"),
             vec![ShellEvent::PromptMode(false)]
         );
+    }
+
+    #[test]
+    fn keymap_report_is_insert_only_for_typing_keymaps() {
+        let mut p = OscParser::new();
+        for (name, insert) in [
+            ("main", true),
+            ("emacs", true),
+            ("viins", true),
+            ("vicmd", false),
+            ("visual", false),
+            ("vi", false),
+            ("", false),
+        ] {
+            let seq = format!("\x1b]633;P;tyba-keymap={name}\x07");
+            assert_eq!(
+                p.feed(seq.as_bytes()),
+                vec![ShellEvent::LineKeymap(insert)],
+                "{name}"
+            );
+        }
     }
 
     #[test]

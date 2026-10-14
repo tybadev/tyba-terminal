@@ -174,16 +174,18 @@ export function openContainerTab(
 }
 
 /**
- * Abre (ou foca) a aba de editor. `path` absoluto (link de log já mapeado para
- * o host) ou relativo à raiz/repo da sessão; sem `session`, o core tenta as do
- * workspace ativo. `line` é 1-based.
+ * Abre (ou foca) o arquivo na tela de Arquivos — todo "abrir arquivo" do app
+ * passa aqui. `path` absoluto (link de log já mapeado para o host) ou relativo
+ * à raiz/repo da sessão; sem `session`, o core tenta as do workspace ativo.
+ * `line` é 1-based. `preview`: clique simples na árvore — aba em
+ * pré-visualização no core e Markdown abrindo em "Visualizar".
  */
 export async function openEditorTab(
   path: string,
   line?: number,
   opts?: { session?: SessionId; preview?: boolean },
 ): Promise<EditorTabOpened> {
-  const opened = await openEditorTabCmd(opts?.session ?? null, path);
+  const opened = await openEditorTabCmd(opts?.session ?? null, path, opts?.preview ?? false);
   if (opts?.preview) previews.add(opened.view);
   if (line && line > 0) requestReveal(opened.view, line);
   return opened;

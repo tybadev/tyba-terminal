@@ -869,7 +869,10 @@ mod tests {
 
         let synced = super::snapshot(&clone, &mut super::UntrackedCache::default());
         assert_eq!((synced.ahead, synced.behind), (Some(0), Some(0)));
-        assert!(synced.upstream.as_deref().is_some_and(|u| u.starts_with("origin/")));
+        assert!(synced
+            .upstream
+            .as_deref()
+            .is_some_and(|u| u.starts_with("origin/")));
 
         std::fs::write(clone.join("c.txt"), "c\n").unwrap();
         git(&clone, &["add", "-A"]);

@@ -16,6 +16,7 @@ pub mod launch_config;
 pub mod layout;
 pub mod lsp;
 pub mod menu;
+pub mod notifications;
 pub mod profile;
 pub mod pty;
 pub mod repo;
@@ -390,6 +391,11 @@ fn poll_agent_probers(app: &AppHandle) {
         shells.iter().copied().collect();
     let changed: std::collections::HashSet<SessionId> = changes.iter().map(|(id, _)| *id).collect();
     for (session_id, detected) in &changes {
+        // Um agente subiu no shell: o convite de retomar a conversa de antes
+        // do restart perdeu o sentido (ou acabou de ser aceito).
+        if detected.is_some() {
+            state.sessions.clear_shell_resume_offer(app, *session_id);
+        }
         // O binário mudou: a outra entrada da identidade de tela acabou de
         // mudar sem que a tela tenha mexido. Sem esta cutucada, a thread
         // emissora segue bloqueada no `recv` e o agente que subiu numa tela
@@ -575,22 +581,37 @@ fn drive_disk_observer(
                     .and_then(|pid| repo::process_cwd(*pid))
             });
             if let Some(cwd) = cwd {
+                // O registro do próprio Claude (`~/.claude/sessions/<pid>.json`)
+                // é o vínculo exato; sem ele, a heurística de sempre.
+                let exact = agent::disk_observer::claude_sessions_dir().and_then(|dir| {
+                    agent::disk_observer::pid_file_conversation(&dir, agent.pid, agent.start_ms)
+                });
                 let rebound = state.disk_observer.observe(
                     app,
                     &state.subagents,
                     session_id,
                     &cwd,
+                    exact.as_deref(),
                     agent.start_ms,
                 );
+                // Com o registro, a conversa gravada é a dele, já — mesmo antes
+                // do transcript existir. Senão um palpite provisório do
+                // primeiro tick (registro ainda não escrito) ficaria gravado e
+                // viraria convite de retomar a conversa de OUTRO pane.
+                if let Some(id) = &exact {
+                    state
+                        .sessions
+                        .set_agent_conversation_id(app, session_id, id, Some(&cwd));
+                }
                 // A sessão de shell também guarda a conversa que está rodando
                 // nela (vai pro SQLite pelo mesmo `set_agent_conversation_id`
                 // do caminho com hook): é o que deixa um restart saber qual
                 // conversa retomar.
-                if rebound {
+                if rebound && exact.is_none() {
                     if let Some(id) = state.disk_observer.bound_conversation(session_id) {
                         state
                             .sessions
-                            .set_agent_conversation_id(app, session_id, &id);
+                            .set_agent_conversation_id(app, session_id, &id, Some(&cwd));
                     }
                 }
             }
@@ -605,6 +626,8 @@ fn emit_layout(app: &AppHandle, state: &State<'_, AppState>) {
     state
         .docker_logs
         .retain(&layout::open_log_containers(&snapshot));
+    // E o shell/logs da tela de Docker, se a tela fechou por qualquer caminho.
+    release_docker_screen_sessions(state, &snapshot);
     let _ = app.emit(layout::EVENT_CHANGED, snapshot);
     let _ = state.repo_reconcile.send(());
 }
@@ -1117,6 +1140,7 @@ fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
     let _ = state
         .store
         .deny_pending_inferred_for_session(&id.to_string(), approvals::now_ms());
+    notifications::record(app, |n| n.native_prompts_denied(id));
 }
 
 /// Reabre no boot as sessões que morreram com o app anterior, conforme a pref de
@@ -1235,6 +1259,7 @@ fn resume_startup(
             _ => {}
         }
         let handle = app.clone();
+        let reopened_in = cwd.clone();
         let opts = CreateSessionOpts {
             kind: SessionKind::Shell,
             title: Some(old.title.clone()),
@@ -1247,6 +1272,7 @@ fn resume_startup(
             initial_prompt: None,
             opened_by_gate: false,
             resume_conversation: None,
+            prepared_worktree: None,
         };
         match sessions.create_shell_session(app.clone(), pty_pool, opts, move |id| {
             session_exited(&handle, id)
@@ -1255,7 +1281,29 @@ fn resume_startup(
                 // A conversa do claude que rodava neste shell atravessa o
                 // restart junto com o cwd — `forget` apaga a linha antiga.
                 if let Some(conversation) = &old.agent_conversation_id {
-                    sessions.set_agent_conversation_id(app, fresh.id, conversation);
+                    sessions.set_agent_conversation_id(
+                        app,
+                        fresh.id,
+                        conversation,
+                        old.agent_conversation_cwd.as_deref(),
+                    );
+                    // E o pane oferece retomá-la, se o `claude --resume` a
+                    // acharia — na pasta em que ela rodava ou na que o shell
+                    // reabriu (item 3 do claude-monitor). Só oferece: nada
+                    // roda sem clique.
+                    let on_disk = home.as_deref().is_some_and(|home| {
+                        agent::claude_resume_dir(
+                            home,
+                            &home.join(".claude").join("projects"),
+                            old.agent_conversation_cwd.as_deref(),
+                            Some(&reopened_in),
+                            conversation,
+                        )
+                        .is_some()
+                    });
+                    if cfg!(unix) && on_disk {
+                        sessions.offer_shell_resume(app, fresh.id);
+                    }
                 }
                 remap.insert(old.id, fresh.id);
                 sessions.forget(old.id);
@@ -1975,8 +2023,7 @@ async fn open_git_panel(app: AppHandle, id: SessionId) -> Result<(), String> {
     .await?
 }
 
-/// Painel Docker da sessão no slot lateral único (o painel completo segue
-/// sendo o workspace Docker, `docker_open_dashboard`).
+/// Tela de Docker da sessão (o `side_view` `docker:<sessão>`).
 #[tauri::command]
 fn open_docker_panel(
     app: AppHandle,
@@ -2219,6 +2266,28 @@ fn close_orphaned_files_panel(state: &AppState, previous: Option<String>, keep: 
             close_files_panel(state, id);
         }
     }
+}
+
+fn docker_screen_open(snapshot: &layout::LayoutState) -> bool {
+    snapshot.workspaces.iter().any(|w| {
+        w.side_view
+            .as_deref()
+            .is_some_and(|v| v.starts_with(layout::VIEW_DOCKER_PREFIX))
+    })
+}
+
+/// O shell e os logs remotos da tela de Docker moram nela: sem tela de Docker
+/// aberta em workspace nenhum, os `docker exec`/`logs -f` dela morrem
+/// (process group inteiro). Chamado de `emit_layout`, por onde passa toda
+/// mudança de layout.
+fn release_docker_screen_sessions(state: &AppState, snapshot: &layout::LayoutState) {
+    if docker_screen_open(snapshot) {
+        return;
+    }
+    for id in state.docker.screen_sessions() {
+        state.sessions.dispose(&state.pty_pool, id);
+    }
+    state.docker.forget_screen_sessions();
 }
 
 /// Uma aba de conteúdo fechou: solta o que só ela segurava — o `docker logs
@@ -3207,10 +3276,21 @@ fn pr_session_link(
     })
 }
 
+/// Mudou algo na forja depois de uma revalidação em segundo plano (SWR): a UI
+/// relê pelo cache. Payload: [`forge::prs::ForgeChange`].
+const EVENT_FORGE_CHANGED: &str = "forge://changed";
+
+fn forge_notify(app: AppHandle) -> forge::prs::Notify {
+    std::sync::Arc::new(move |change| {
+        let _ = app.emit(EVENT_FORGE_CHANGED, change);
+    })
+}
+
 /// Lista rica de PRs. `None` = a forja não tem lista rica (GitLab, sem `gh`).
 /// O vínculo com sessão é preenchido aqui, fora do cache da forja.
 #[tauri::command]
 async fn forge_pr_page(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     filter: forge::prs::PrFilter,
@@ -3221,7 +3301,9 @@ async fn forge_pr_page(
     let repo_root = state.sessions.get(id).and_then(|s| s.repo_root);
     let sessions = state.sessions.list();
     let path = ctx.path;
-    let mut page = forge_blocking(move || forge::prs::page(&path, filter, limit, fresh)).await?;
+    let notify = forge_notify(app);
+    let mut page =
+        forge_blocking(move || forge::prs::page(&path, filter, limit, fresh, notify)).await?;
     if let Some(page) = page.as_mut() {
         for item in page.items.iter_mut().chain(page.recent_merged.iter_mut()) {
             item.session =
@@ -3233,6 +3315,7 @@ async fn forge_pr_page(
 
 #[tauri::command]
 async fn forge_pr_detail(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: SessionId,
     number: u64,
@@ -3242,7 +3325,9 @@ async fn forge_pr_detail(
     let repo_root = state.sessions.get(id).and_then(|s| s.repo_root);
     let sessions = state.sessions.list();
     let path = ctx.path;
-    let mut detail = forge_blocking(move || forge::prs::detail(&path, number, fresh)).await?;
+    let notify = forge_notify(app);
+    let mut detail =
+        forge_blocking(move || forge::prs::detail(&path, number, fresh, notify)).await?;
     if let Some(detail) = detail.as_mut() {
         detail.session = pr_session_link(
             &sessions,
@@ -3283,6 +3368,135 @@ async fn forge_pr_merge(
     let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
     let path = ctx.path;
     forge_blocking(move || forge::prs::merge(&path, number, strategy, &head_sha)).await
+}
+
+/// "Checkout" de um PR no checkout do próprio usuário, em HEAD destacado.
+/// Só a UI chama, depois da confirmação. Recusa árvore suja, o worktree de
+/// uma sessão e a pasta de outra sessão viva (lá o caminho é
+/// [`forge_pr_open_session`]). Ver `forge::local`.
+#[tauri::command]
+async fn forge_pr_checkout(
+    state: State<'_, AppState>,
+    id: SessionId,
+    number: u64,
+    head_sha: String,
+) -> Result<(), AppError> {
+    let session = state
+        .sessions
+        .get(id)
+        .ok_or_else(|| session_setup_error(format!("sessão não encontrada: {id}")))?;
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    if pr_checkout_in_worktree(&session, &path, &state.sessions.list()) {
+        return Err(AppError::new("forge.pr_checkout_in_worktree"));
+    }
+    forge_blocking(move || forge::local::checkout(&path, number, &head_sha)).await
+}
+
+/// O checkout cairia num worktree do TYBA: o da própria sessão ou, para um
+/// shell comum que entrou (`cd`) num worktree gerido — ou um shell de PR
+/// retomado depois de reiniciar, que perde o `worktree` —, o caminho do repo.
+/// Ou cairia debaixo de outra sessão viva: um agente in-place
+/// (`attach_agent_session`/`resume_agent_session`) trabalha na pasta do próprio
+/// usuário, que não é gerida, e trocar o checkout ali muda os arquivos sob ele.
+fn pr_checkout_in_worktree(
+    session: &Session,
+    repo_path: &std::path::Path,
+    sessions: &[Session],
+) -> bool {
+    if session.worktree.is_some() || worktree::is_managed(repo_path) {
+        return true;
+    }
+    let repo_path = repo::canonicalize_or(repo_path);
+    sessions.iter().any(|s| {
+        s.id != session.id
+            && !matches!(
+                s.status,
+                SessionStatus::Exited { .. } | SessionStatus::Failed { .. }
+            )
+            && s.worktree
+                .as_ref()
+                .is_some_and(|wt| repo::canonicalize_or(&wt.path).starts_with(&repo_path))
+    })
+}
+
+/// Sessão do TYBA que já abriu o PR `number` no repo `main` NESTE head: shell
+/// viva num worktree `tyba/pr/<n>-<8 hex>` (criado por [`forge_pr_open_session`])
+/// cujo `base_ref` é `head_sha`. Um PR que recebeu force-push depois ganha
+/// worktree novo, em vez de cair no antigo.
+fn pr_open_session(
+    sessions: &[session::Session],
+    main: &std::path::Path,
+    number: u64,
+    head_sha: &str,
+) -> Option<session::Session> {
+    sessions
+        .iter()
+        .find(|s| {
+            s.repo_root.as_deref() == Some(main)
+                && matches!(s.kind, SessionKind::Shell)
+                && !matches!(
+                    s.status,
+                    SessionStatus::Exited { .. } | SessionStatus::Failed { .. }
+                )
+                && s.worktree.as_ref().is_some_and(|wt| {
+                    worktree::is_pr_branch(&wt.branch, number)
+                        && wt.base_ref.eq_ignore_ascii_case(head_sha)
+                })
+        })
+        .cloned()
+}
+
+/// "Abrir no TYBA" para um PR sem sessão: busca o head do PR e abre uma sessão
+/// de shell num worktree NOVO e isolado, sem tocar no checkout do usuário. Se
+/// uma sessão já abriu este PR, devolve ela. Só a UI chama, depois da
+/// confirmação. Ver `forge::local`.
+#[tauri::command]
+async fn forge_pr_open_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    number: u64,
+    head_sha: String,
+    cols: u16,
+    rows: u16,
+) -> Result<Session, AppError> {
+    let _ = wait_for_boot(Arc::clone(&state.boot)).await;
+    let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    let path = ctx.path;
+    if let Ok(main) = worktree::main_repo_of(&path) {
+        let main = repo::canonicalize_or(&main);
+        if let Some(existing) = pr_open_session(&state.sessions.list(), &main, number, &head_sha) {
+            return Ok(existing);
+        }
+    }
+    let prepared =
+        forge_blocking(move || forge::local::open_worktree(&path, number, &head_sha)).await?;
+    let handle = app.clone();
+    // Sem `run_setup_if_consented`: o script de setup veio com o PR, não é o
+    // que o usuário consentiu.
+    state
+        .sessions
+        .create_shell_session(
+            app.clone(),
+            &state.pty_pool,
+            CreateSessionOpts {
+                kind: SessionKind::Shell,
+                title: Some(format!("PR #{number}")),
+                cwd: None,
+                cols,
+                rows,
+                worktree_task: None,
+                attach_existing: false,
+                shell: None,
+                initial_prompt: None,
+                opened_by_gate: false,
+                resume_conversation: None,
+                prepared_worktree: Some(prepared),
+            },
+            move |sid| session_exited(&handle, sid),
+        )
+        .map_err(|e| session_setup_error(e.to_string()))
 }
 
 /// Abre um arquivo do worktree como TEXTO — nunca "executa" o arquivo.
@@ -4428,6 +4642,7 @@ async fn spawn_slot(
                 initial_prompt: slot.initial_prompt.clone(),
                 opened_by_gate: false,
                 resume_conversation: None,
+                prepared_worktree: None,
             },
         )
         .await;
@@ -4476,6 +4691,7 @@ async fn spawn_slot(
             initial_prompt: slot.initial_prompt.clone(),
             opened_by_gate: false,
             resume_conversation: None,
+            prepared_worktree: None,
         },
     )
     .await
@@ -4719,25 +4935,6 @@ fn create_workspace(
         .map_err(|e| e.to_string())?;
     emit_layout(&app, &state);
     Ok(id)
-}
-
-/// O painel de containers é singleton e o alvo dele muda: o workspace segue o
-/// que está na tela (nome, cor e grupo do host, ou "Docker" quando é local).
-/// Numa chamada só — nome/cor/grupo em três round-trips fazem a sidebar piscar.
-#[tauri::command]
-fn tag_workspace(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: layout::WorkspaceId,
-    name: String,
-    tag: WorkspaceTag,
-) -> Result<(), String> {
-    state
-        .layout
-        .tag_workspace(id, &name, tag.into())
-        .map_err(|e| e.to_string())?;
-    emit_layout(&app, &state);
-    Ok(())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -5268,7 +5465,6 @@ fn open_container_tab(
     container_id: &str,
     tab: docker::ContainerTab,
     host: Option<&str>,
-    in_active_workspace: bool,
 ) -> Result<(), String> {
     let name = state
         .docker
@@ -5298,62 +5494,20 @@ fn open_container_tab(
             .find(|h| h.alias == alias)?;
         Some(host)
     });
-    // Pelo painel lateral (aba de conteúdo), a aba nasce ao lado das do
-    // workspace em uso; pelo painel de containers, no workspace do Docker.
+    // A aba nasce ao lado das do workspace em uso; sem workspace ativo, no
+    // workspace do Docker.
     let active = state.layout.state().active_workspace;
-    let workspace_id = match (&remote, in_active_workspace, active) {
-        (Some(_), _, _) => None,
-        (None, true, Some(ws)) => Some(ws),
-        (None, _, _) => Some(state.layout.docker_workspace().map_err(|e| e.to_string())?),
+    let workspace_id = match (&remote, active) {
+        (Some(_), _) => None,
+        (None, Some(ws)) => Some(ws),
+        (None, None) => Some(state.layout.docker_workspace().map_err(|e| e.to_string())?),
     };
 
     if let Some(alias) = host {
         crate::ssh::command::require_session_if_password(alias).map_err(|e| e.to_string())?;
     }
     let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
-    let (args, title) = match tab {
-        docker::ContainerTab::Logs => (
-            vec![
-                "logs".to_string(),
-                "-f".to_string(),
-                "--tail".to_string(),
-                "200".to_string(),
-                container_id.to_string(),
-            ],
-            format!("logs: {name}"),
-        ),
-        docker::ContainerTab::Shell => (
-            vec![
-                "exec".to_string(),
-                "-it".to_string(),
-                // O nome vai por env, nunca interpolado no script: o prompt
-                // azul diz "isto é o container" sem abrir porta para injeção.
-                "-e".to_string(),
-                format!(
-                    "TYBA_CTR={}",
-                    name.chars()
-                        .filter(|c| c.is_ascii_alphanumeric() || "_.-".contains(*c))
-                        .collect::<String>()
-                ),
-                container_id.to_string(),
-                "sh".to_string(),
-                "-c".to_string(),
-                CONTAINER_SHELL_SCRIPT.to_string(),
-            ],
-            format!("sh: {name}"),
-        ),
-    };
-
-    // `-H` é flag global do docker e vem antes do subcomando: evita carregar
-    // env pelo spawn e deixa o alvo explícito na própria linha de comando.
-    let args = match docker::docker_host_env(host) {
-        Some(target) => {
-            let mut with_host = vec!["-H".to_string(), target];
-            with_host.extend(args);
-            with_host
-        }
-        None => args,
-    };
+    let (args, title) = container_command(container_id, tab, &name, host);
 
     let session = match &remote {
         // Container do host tem workspace próprio: `create_tab` sem alvo cai no
@@ -5424,6 +5578,60 @@ fn open_container_tab(
     Ok(())
 }
 
+/// Linha de comando do `docker` para a aba/tela de container: `logs -f` ou o
+/// `exec -it … sh` do shell, já com `-H` do host remoto. Devolve (args, título).
+fn container_command(
+    container_id: &str,
+    tab: docker::ContainerTab,
+    name: &str,
+    host: Option<&str>,
+) -> (Vec<String>, String) {
+    let (args, title) = match tab {
+        docker::ContainerTab::Logs | docker::ContainerTab::ScreenLogs => (
+            vec![
+                "logs".to_string(),
+                "-f".to_string(),
+                "--tail".to_string(),
+                "200".to_string(),
+                container_id.to_string(),
+            ],
+            format!("logs: {name}"),
+        ),
+        docker::ContainerTab::Shell | docker::ContainerTab::ScreenShell => (
+            vec![
+                "exec".to_string(),
+                "-it".to_string(),
+                // O nome vai por env, nunca interpolado no script: o prompt
+                // azul diz "isto é o container" sem abrir porta para injeção.
+                "-e".to_string(),
+                format!(
+                    "TYBA_CTR={}",
+                    name.chars()
+                        .filter(|c| c.is_ascii_alphanumeric() || "_.-".contains(*c))
+                        .collect::<String>()
+                ),
+                container_id.to_string(),
+                "sh".to_string(),
+                "-c".to_string(),
+                CONTAINER_SHELL_SCRIPT.to_string(),
+            ],
+            format!("sh: {name}"),
+        ),
+    };
+
+    // `-H` é flag global do docker e vem antes do subcomando: evita carregar
+    // env pelo spawn e deixa o alvo explícito na própria linha de comando.
+    let args = match docker::docker_host_env(host) {
+        Some(target) => {
+            let mut with_host = vec!["-H".to_string(), target];
+            with_host.extend(args);
+            with_host
+        }
+        None => args,
+    };
+    (args, title)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_tab_session(
     app: &AppHandle,
@@ -5467,25 +5675,6 @@ fn spawn_tab_session(
     Ok(session.id)
 }
 
-#[tauri::command]
-async fn docker_open_shell(
-    app: AppHandle,
-    container_id: String,
-    host: Option<String>,
-) -> Result<(), String> {
-    off_main(app, move |app, state| {
-        open_container_tab(
-            app,
-            &state,
-            &container_id,
-            docker::ContainerTab::Shell,
-            host.as_deref(),
-            false,
-        )
-    })
-    .await?
-}
-
 #[derive(serde::Serialize)]
 struct EditorTabOpened {
     session: SessionId,
@@ -5493,23 +5682,38 @@ struct EditorTabOpened {
     view: String,
 }
 
-/// Abre (ou foca) a aba de editor de um arquivo. `path` pode ser absoluto (link
-/// de log já mapeado para o host) ou relativo à raiz/repo da sessão. Sem
+/// Abre (ou foca) um arquivo na tela de Arquivos da sessão — todo "abrir
+/// arquivo" do app cai aqui (telas-cheias). `path` pode ser absoluto (link de
+/// log já mapeado para o host) ou relativo à raiz/repo da sessão. Sem
 /// `session`, tenta as sessões do workspace ativo, da em foco para as demais.
+/// `preview`: aba em pré-visualização (clique simples na árvore).
 #[tauri::command]
 async fn open_editor_tab(
     app: AppHandle,
     state: State<'_, AppState>,
     session: Option<SessionId>,
     path: String,
+    preview: Option<bool>,
 ) -> Result<EditorTabOpened, String> {
     let candidates = match session {
         Some(s) => vec![s],
         None => state.layout.active_sessions(),
     };
+    open_in_files_screen(&app, &state, candidates, &path, preview.unwrap_or(false)).await
+}
+
+/// O corpo de `open_editor_tab`: a primeira sessão de `candidates` cuja raiz
+/// contém `path` recebe o arquivo na tela de Arquivos.
+async fn open_in_files_screen(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    candidates: Vec<SessionId>,
+    path: &str,
+    preview: bool,
+) -> Result<EditorTabOpened, String> {
     let mut last_err = "nenhuma sessão para abrir o arquivo".to_string();
     for sid in candidates {
-        let (root, remote) = match remote_target(&state, sid) {
+        let (root, remote) = match remote_target(state, sid) {
             Some(t) => {
                 let (rf, alias, tmux) = t?;
                 let root = open_remote_panel(rf, sid, alias, tmux).await?.info().root;
@@ -5517,7 +5721,7 @@ async fn open_editor_tab(
             }
             None => match state
                 .files
-                .ensure(&app, sid, || resolve_files_root(&state, sid))
+                .ensure(app, sid, || resolve_files_root(state, sid))
             {
                 Ok((root, _)) => (root, false),
                 Err(e) => {
@@ -5531,17 +5735,17 @@ async fn open_editor_tab(
         } else {
             files::find_repo_root(&root)
         };
-        match files::editor_rel_path(&root, repo_root.as_deref(), &path, |p| {
-            remote || p.is_file()
-        }) {
+        match files::editor_rel_path(&root, repo_root.as_deref(), path, |p| remote || p.is_file()) {
             Ok(rel) => {
                 let view = layout::editor_view(sid, &rel);
-                let ws = state.layout.workspace_of_session(sid);
+                let files_view = layout::files_view(sid);
+                let previous = session_side_view(state, sid);
                 state
                     .layout
-                    .open_content_tab(ws, &view)
+                    .open_file_screen(sid, &view, preview)
                     .map_err(|e| e.to_string())?;
-                emit_layout(&app, &state);
+                close_orphaned_files_panel(state, previous, Some(&files_view));
+                emit_layout(app, state);
                 return Ok(EditorTabOpened {
                     session: sid,
                     rel,
@@ -5552,6 +5756,359 @@ async fn open_editor_tab(
         }
     }
     Err(last_err)
+}
+
+/// Foca uma aba interna da tela de Arquivos.
+#[tauri::command]
+fn files_screen_activate(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    view: String,
+) -> Result<(), String> {
+    let changed = state
+        .layout
+        .with_screens(workspace, |s| s.files.activate(&view))
+        .map_err(|e| e.to_string())?;
+    if changed {
+        emit_layout(&app, &state);
+    }
+    Ok(())
+}
+
+/// Tira a aba da pré-visualização (o buffer ficou sujo, duplo clique).
+#[tauri::command]
+fn files_screen_pin(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    view: String,
+) -> Result<(), String> {
+    let changed = state
+        .layout
+        .with_screens(workspace, |s| s.files.pin(&view))
+        .map_err(|e| e.to_string())?;
+    if changed {
+        emit_layout(&app, &state);
+    }
+    Ok(())
+}
+
+/// Fecha uma aba interna da tela de Arquivos. Sem aba nem tela da sessão, o
+/// watcher e o LSP dela são soltos.
+#[tauri::command]
+fn files_screen_close(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    view: String,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.files.close(&view))
+        .map_err(|e| e.to_string())?;
+    if let Some(session) = layout::editor_view_session(&view) {
+        let screen_open = state
+            .layout
+            .state()
+            .workspaces
+            .iter()
+            .any(|w| w.side_view.as_deref() == Some(layout::files_view(session).as_str()));
+        if !screen_open && !state.layout.has_editor_tabs(session) {
+            close_files_panel(&state, session);
+        }
+    }
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn files_screen_section(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    section: layout::screens::FilesSection,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.files.section = section)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// "Buscar no projeto": texto nos arquivos rastreados da sessão (`git grep`).
+/// Sessão remota ainda não tem.
+#[tauri::command]
+async fn files_grep(
+    app: AppHandle,
+    id: SessionId,
+    query: String,
+    limit: Option<usize>,
+) -> Result<files::grep::GrepOutcome, crate::error::AppError> {
+    let cap = limit.unwrap_or(200).min(1000);
+    off_main(app, move |app, state| {
+        if remote_target(&state, id).is_some() {
+            return Err(crate::error::AppError::new("files.grep_remote"));
+        }
+        let (root, _) = state
+            .files
+            .ensure(app, id, || resolve_files_root(&state, id))
+            .map_err(|e| crate::error::AppError::new("files.grep_failed").with("detail", e))?;
+        files::grep::grep(&root, &query, cap)
+            .map_err(|e| crate::error::AppError::new("files.grep_failed").with("detail", e))
+    })
+    .await
+    .map_err(|e| crate::error::AppError::new("files.grep_failed").with("detail", e))?
+}
+
+/// Seção do trilho da tela de Docker.
+#[tauri::command]
+fn docker_screen_section(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    section: layout::screens::DockerSection,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.docker.section = section)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// Container escolhido na tela de Docker. Id fora do formato é recusado.
+#[tauri::command]
+fn docker_screen_select(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    container: Option<String>,
+) -> Result<(), String> {
+    if let Some(id) = container.as_deref() {
+        if !docker::is_valid_container_id(id) {
+            return Err("container inválido".into());
+        }
+    }
+    state
+        .layout
+        .with_screens(workspace, |s| s.docker.container = container)
+        .map_err(|e| e.to_string())?;
+    // `emit_layout` também solta/segura o `docker logs -f`.
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// Logs | Shell | Arquivos | Detalhes do container escolhido.
+#[tauri::command]
+fn docker_screen_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    pane: layout::screens::ContainerPane,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.docker.pane = pane)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// Projeto escolhido na seção Compose. Nome fora do formato é recusado.
+#[tauri::command]
+fn docker_screen_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    project: Option<String>,
+) -> Result<(), String> {
+    if project
+        .as_deref()
+        .is_some_and(|p| !docker::is_valid_project_name(p))
+    {
+        return Err("projeto inválido".into());
+    }
+    state
+        .layout
+        .with_screens(workspace, |s| s.docker.project = project)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// "Ocultar parados" da seção Compose.
+#[tauri::command]
+fn docker_screen_hide_stopped(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    hide: bool,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.docker.hide_stopped = hide)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// Logs/Shell de um serviço na seção Compose: o container em Containers, de
+/// uma vez (seção, container e painel).
+#[tauri::command]
+fn docker_screen_show(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    container: String,
+    pane: layout::screens::ContainerPane,
+) -> Result<(), String> {
+    if !docker::is_valid_container_id(&container) {
+        return Err("container inválido".into());
+    }
+    state
+        .layout
+        .with_screens(workspace, |s| s.docker.show_container(container, pane))
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// O shell (PTY de `docker exec`) que mora DENTRO da tela de Docker: sem aba,
+/// um por container, reaproveitado enquanto vivo. Morre quando a tela fecha.
+#[tauri::command]
+async fn docker_screen_shell(
+    app: AppHandle,
+    container_id: String,
+    host: Option<String>,
+) -> Result<SessionId, String> {
+    off_main(app, move |app, state| {
+        screen_container_session(
+            app,
+            &state,
+            &container_id,
+            host.as_deref(),
+            docker::ContainerTab::ScreenShell,
+        )
+    })
+    .await?
+}
+
+/// Os logs (`docker logs -f`) de container REMOTO dentro da tela de Docker:
+/// mesmo esquema do shell da tela — sem aba, reaproveitado enquanto vivo,
+/// morre quando a tela fecha. O local usa o visor estruturado.
+#[tauri::command]
+async fn docker_screen_logs(
+    app: AppHandle,
+    container_id: String,
+    host: Option<String>,
+) -> Result<SessionId, String> {
+    off_main(app, move |app, state| {
+        screen_container_session(
+            app,
+            &state,
+            &container_id,
+            host.as_deref(),
+            docker::ContainerTab::ScreenLogs,
+        )
+    })
+    .await?
+}
+
+/// Sessão de terminal sem aba que mora na tela de Docker (`ScreenShell` ou
+/// `ScreenLogs`).
+fn screen_container_session(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    container_id: &str,
+    host: Option<&str>,
+    tab: docker::ContainerTab,
+) -> Result<SessionId, String> {
+    debug_assert!(tab.is_screen());
+    let name = state
+        .docker
+        .ensure_known(container_id, host)
+        .map_err(|e| e.to_string())?;
+    if let Some(existing) = state.docker.tab_session(container_id, tab) {
+        match state.sessions.get(existing).map(|s| s.status) {
+            Some(SessionStatus::Exited { .. } | SessionStatus::Failed { .. }) => {
+                state.sessions.dispose(&state.pty_pool, existing);
+            }
+            Some(_) => return Ok(existing),
+            None => {}
+        }
+    }
+    if let Some(alias) = host {
+        crate::ssh::command::require_session_if_password(alias).map_err(|e| e.to_string())?;
+    }
+    let host_id = match host {
+        Some(alias) => Some(
+            state
+                .store
+                .load_hosts()
+                .ok()
+                .and_then(|hosts| hosts.into_iter().find(|h| h.alias == alias))
+                .map(|h| h.id)
+                .ok_or("host não encontrado")?,
+        ),
+        None => None,
+    };
+    let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
+    let (args, title) = container_command(container_id, tab, &name, host);
+    let title = match host {
+        Some(alias) => format!("{alias} · {title}"),
+        None => title,
+    };
+    let handle = app.clone();
+    let session = state
+        .sessions
+        .create_command_session(
+            app.clone(),
+            &state.pty_pool,
+            bin.as_path(),
+            &args,
+            title,
+            None,
+            100,
+            30,
+            SessionKind::Container {
+                host_id,
+                container_id: container_id.to_string(),
+            },
+            move |id| session_exited(&handle, id),
+        )
+        .map_err(|e| e.to_string())?;
+    state.docker.remember_tab(container_id, tab, session.id);
+    // Corrida: a tela pode ter fechado durante o spawn, com o `emit_layout`
+    // do fechamento passando antes do registro acima — ninguém soltaria esta
+    // sessão depois. A entrada que sobra aponta para sessão morta e é
+    // recriada/esquecida pelos caminhos de sempre.
+    if !docker_screen_open(&state.layout.state()) {
+        state.sessions.dispose(&state.pty_pool, session.id);
+        return Err("a tela de Docker foi fechada".into());
+    }
+    Ok(session.id)
+}
+
+/// Imagens do alvo (seção Imagens da tela de Docker, só leitura).
+#[tauri::command]
+async fn docker_list_images(
+    state: State<'_, AppState>,
+    host: Option<String>,
+) -> Result<Vec<docker::ImageInfo>, String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || docker.images(host.as_deref()).map_err(|e| e.to_string())).await?
+}
+
+/// Volumes do alvo (seção Volumes da tela de Docker, só leitura).
+#[tauri::command]
+async fn docker_list_volumes(
+    state: State<'_, AppState>,
+    host: Option<String>,
+) -> Result<Vec<docker::VolumeInfo>, String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || docker.volumes(host.as_deref()).map_err(|e| e.to_string())).await?
 }
 
 /// Diff da sessão como ABA (ao lado das de terminal), com o mesmo conteúdo do
@@ -5605,7 +6162,6 @@ async fn container_open_tab(
             &container_id,
             docker::ContainerTab::Shell,
             host.as_deref(),
-            true,
         ),
         // Logs e arquivos estruturados leem o docker local; o do host remoto
         // continua no terminal de `docker logs -f`.
@@ -5615,7 +6171,6 @@ async fn container_open_tab(
             &container_id,
             docker::ContainerTab::Logs,
             host.as_deref(),
-            true,
         ),
         ("logs", None) => {
             let view = format!("{}{container_id}", layout::VIEW_CONTAINER_LOGS_PREFIX);
@@ -5827,49 +6382,35 @@ fn open_view_tab(app: AppHandle, state: State<'_, AppState>, view: String) -> Re
     Ok(())
 }
 
+/// `docker compose up -d|restart|down` de um projeto local, sem terminal: a
+/// tela de Docker espera o fim e mostra o erro, se houver. `down` só chega
+/// aqui depois da confirmação da tela.
 #[tauri::command]
-fn docker_open_dashboard(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .layout
-        .open_docker_dashboard()
-        .map_err(|e| e.to_string())?;
-    emit_layout(&app, &state);
-    Ok(())
-}
-
-#[tauri::command]
-fn docker_compose_op(
+async fn docker_compose_op(
     app: AppHandle,
     state: State<'_, AppState>,
     project: String,
     op: docker::ComposeOp,
 ) -> Result<(), String> {
-    let info = state
-        .docker
-        .project_info(&project)
-        .map_err(|e| e.to_string())?;
-    docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
-    let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
-    let workspace_id = Some(state.layout.docker_workspace().map_err(|e| e.to_string())?);
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || {
+        // Saída em lotes (o core junta ~16 ms), nunca um evento por pedaço.
+        docker
+            .compose_op(&project, op, |batch| {
+                let _ = app.emit("docker-compose-output", batch);
+            })
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
 
-    let script = format!(
-        "'{}' {}; ec=$?; if [ $ec -ne 0 ]; then printf '\\n[falhou — enter para fechar]\\n'; read _; fi",
-        bin.display(),
-        op.compose_args(),
-    );
-    let title = format!("compose {}: {}", op.label(), project);
-    spawn_tab_session(
-        &app,
-        &state,
-        std::path::Path::new("/bin/sh"),
-        &["-c".to_string(), script],
-        title,
-        Some(std::path::Path::new(&info.working_dir)),
-        &project,
-        workspace_id,
-        SessionKind::Shell,
-    )?;
-    Ok(())
+/// Compose em andamento, última falha e saída por projeto: a tela pede junto
+/// do refresh e junta os lotes de `docker-compose-output` por posição.
+#[tauri::command]
+fn docker_compose_runs(
+    state: State<'_, AppState>,
+) -> std::collections::HashMap<String, docker::ComposeRun> {
+    state.docker.compose_runs()
 }
 
 #[tauri::command]
@@ -5918,6 +6459,7 @@ fn docker_open_project(
                 initial_prompt: None,
                 opened_by_gate: false,
                 resume_conversation: None,
+                prepared_worktree: None,
             },
             move |id| session_exited(&handle, id),
         )
@@ -5930,46 +6472,75 @@ fn docker_open_project(
     Ok(())
 }
 
+/// Abre o(s) arquivo(s) compose do projeto na tela de Arquivos da sessão,
+/// **só leitura** (view `compose-file:`): vale para projeto de qualquer pasta,
+/// porque nada é gravado fora do worktree. Só sessão local (o caminho é desta
+/// máquina); o primeiro arquivo fica em foco.
 #[tauri::command]
 fn docker_open_compose_file(
     app: AppHandle,
     state: State<'_, AppState>,
+    session: SessionId,
     project: String,
 ) -> Result<(), String> {
+    if state.sessions.get(session).is_none() {
+        return Err(format!("sessão não encontrada: {session}"));
+    }
+    if remote_target(&state, session).is_some() {
+        return Err("compose só na máquina local".into());
+    }
+    if !docker::is_valid_project_name(&project) {
+        return Err("projeto inválido".into());
+    }
     let info = state
         .docker
         .project_info(&project)
         .map_err(|e| e.to_string())?;
-    let files = info.config_files;
-    if files.is_empty() {
+    if info.config_files.is_empty() {
         return Err("projeto sem arquivo compose".into());
     }
-    for file in &files {
-        docker::validate_compose_file(file).map_err(|e| e.to_string())?;
-    }
-    docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
-    let workspace_id = Some(state.layout.docker_workspace().map_err(|e| e.to_string())?);
-
-    let shell = session::default_shell();
-    let quoted = files
+    let views: Vec<String> = info
+        .config_files
         .iter()
-        .map(|file| format!("'{file}'"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let script = format!("exec \"${{EDITOR:-vi}}\" {quoted}");
-    let title = format!("compose: {project}");
-    spawn_tab_session(
-        &app,
-        &state,
-        std::path::Path::new(&shell),
-        &["-lc".to_string(), script],
-        title,
-        Some(std::path::Path::new(&info.working_dir)),
-        &project,
-        workspace_id,
-        SessionKind::Shell,
-    )?;
+        .enumerate()
+        .map(|(index, file)| {
+            docker::validate_compose_file(file).map_err(|e| e.to_string())?;
+            let name = std::path::Path::new(file)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "compose.yml".into());
+            Ok(layout::compose_file_view(session, &project, index, &name))
+        })
+        .collect::<Result<_, String>>()?;
+    let previous = session_side_view(&state, session);
+    for view in views
+        .iter()
+        .chain(views.first().filter(|_| views.len() > 1))
+    {
+        state
+            .layout
+            .open_file_screen(session, view, false)
+            .map_err(|e| e.to_string())?;
+    }
+    close_orphaned_files_panel(&state, previous, Some(&layout::files_view(session)));
+    emit_layout(&app, &state);
     Ok(())
+}
+
+/// O texto de um arquivo compose (só leitura) para a aba `compose-file:`.
+#[tauri::command]
+async fn docker_compose_file(
+    state: State<'_, AppState>,
+    project: String,
+    index: usize,
+) -> Result<docker::ComposeFile, String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || {
+        docker
+            .compose_file(&project, index)
+            .map_err(|e| e.to_string())
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -6266,6 +6837,101 @@ async fn resume_agent_session(
     agent::session::resume_agent_session(&ctx, &dead, cols, rows, move |id| {
         session_exited(&handle, id)
     })
+}
+
+/// Retoma, no shell restaurado, a conversa do Claude que rodava nele antes do
+/// restart (item 3 do claude-monitor). Só por clique no convite do pane.
+///
+/// O core digita `claude --resume <id>` no próprio shell: o comando passa pelo
+/// shim e pelo `_jail` como qualquer `claude` digitado, então gate, jaula e a
+/// validação do id do lado do canal (M4/M6-A) valem iguais — este caminho não
+/// sobe processo nenhum por conta própria. O id sai de
+/// [`session::SessionManager::shell_resume_target`], já validado por
+/// `conversation::is_plausible`: só `[A-Za-z0-9_-]`, nada que o shell
+/// interprete.
+///
+/// Nunca digita por cima de um programa rodando nem de um agente vivo, e o
+/// `^U` da frente limpa o que o dono tiver deixado pela metade na linha.
+#[tauri::command]
+async fn resume_shell_conversation(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), String> {
+    let _ = wait_for_boot(Arc::clone(&state.boot)).await;
+    let (conversation, recorded) = state.sessions.shell_resume_target(id)?;
+    if state.agent_prober.detected(id).is_some() {
+        return Err("já há um agente rodando neste terminal".into());
+    }
+    // A integração do shell (OSC 133) tem de dizer "prompt pintado, nada
+    // rodando". Sem ela — `exec ssh`, um `read` do rc, shell sem integração —
+    // não se digita nada: o convite fica e o dono tenta de novo no prompt.
+    if state.pty_pool.hook_expected(id) != Some(true) {
+        return Err(
+            "este terminal não tem a integração do TYBA (só bash e zsh): rode o claude --resume você mesmo"
+                .into(),
+        );
+    }
+    if state.pty_pool.shell_at_prompt(id) != Some(true) {
+        return Err(
+            "o terminal não está pronto no prompt (comando rodando ou modo de comando do vi): volte ao prompt e tente de novo"
+                .into(),
+        );
+    }
+    // A pasta gravada com a conversa, validada; senão a pasta de AGORA (não a
+    // do boot): depois de um `cd` o `--resume` procuraria em outro slug.
+    let here = state.pty_pool.leader_pid(id).and_then(repo::process_cwd);
+    let home = crate::ssh::home_dir().ok_or("HOME indisponível")?;
+    let dir = agent::claude_resume_dir(
+        &home,
+        &home.join(".claude").join("projects"),
+        recorded.as_deref(),
+        here.as_deref(),
+        &conversation,
+    )
+    .ok_or("a conversa não está mais no disco nem na pasta deste terminal")?;
+    let line = shell_resume_line(&conversation, &dir)
+        .ok_or("o caminho da conversa não dá para digitar no terminal")?;
+    {
+        let _submitting = state.rich_input_submit.lock();
+        state.pty_pool.write(id, &line).map_err(|e| e.to_string())?;
+    }
+    // Outro shell restaurado com a mesma conversa perde o convite: aceitar os
+    // dois subiria dois `claude` escrevendo no mesmo transcript.
+    state
+        .sessions
+        .clear_shell_resume_offers_for(&app, &conversation);
+    Ok(())
+}
+
+/// A linha que o [`resume_shell_conversation`] digita. Limpa a linha inteira
+/// antes: o [`KILL_LINE`] do rc do TYBA (em todo keymap, inclusive o modo de
+/// comando do vi) e, de reserva, `^E^U` (fim da linha e apaga tudo para trás).
+/// Só `^U` não basta no bash: ele apaga do cursor para trás, e o que sobrasse
+/// depois do cursor iria junto no Enter.
+///
+/// Com [`agent::ResumeDir::Cd`], entra antes na pasta da conversa, entre aspas
+/// simples e com `builtin` (um `cd` redefinido pelo dono, como o do zoxide,
+/// não decide para onde vai). `None` se o caminho não dá para digitar.
+fn shell_resume_line(conversation: &str, dir: &agent::ResumeDir) -> Option<Vec<u8>> {
+    let command = match dir {
+        agent::ResumeDir::Here => format!("claude --resume {conversation}"),
+        agent::ResumeDir::Cd(path) => format!(
+            "builtin cd -- {} && claude --resume {conversation}",
+            agent::shell_single_quote(path)?
+        ),
+    };
+    let mut bytes = KILL_LINE.to_vec();
+    bytes.extend_from_slice(b"\x05\x15");
+    bytes.extend_from_slice(command.as_bytes());
+    bytes.push(b'\r');
+    Some(bytes)
+}
+
+/// O dono dispensou o convite de retomar a conversa no shell restaurado.
+#[tauri::command]
+fn dismiss_shell_resume_offer(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
+    state.sessions.clear_shell_resume_offer(&app, id);
 }
 
 /// Abre ou fecha a fila de agentes no workspace ativo.
@@ -7390,6 +8056,35 @@ fn delete_snippet(state: State<'_, AppState>, id: String) -> Result<(), String> 
     state.store.delete_snippet(&id).map_err(|e| e.to_string())
 }
 
+/// Histórico de notificações: mais nova primeiro, até 500, dos últimos 7 dias.
+#[tauri::command]
+async fn notifications_list(
+    app: AppHandle,
+) -> Result<Vec<notifications::NotificationEntry>, String> {
+    off_main(app, |app, _| {
+        app.state::<notifications::Notifications>()
+            .list()
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+/// `ids` = essas; `None` = todas. Avisa `notifications://changed` se mudou algo.
+#[tauri::command]
+async fn notifications_mark_read(app: AppHandle, ids: Option<Vec<u64>>) -> Result<(), String> {
+    off_main(app, move |app, _| {
+        let changed = app
+            .state::<notifications::Notifications>()
+            .mark_read(ids.as_deref())
+            .map_err(|e| e.to_string())?;
+        if changed {
+            notifications::emit_changed(app);
+        }
+        Ok(())
+    })
+    .await?
+}
+
 #[tauri::command]
 fn snippet_placeholders(command: String) -> Vec<snippet::Placeholder> {
     snippet::placeholders(&command)
@@ -7814,6 +8509,12 @@ pub fn run() {
             // canal por Host precisa ser avisado de lá, não de cada um dos
             // pontos que fecham sessão.
             sessions.attach_host_queries(Arc::clone(&host_queries));
+            // Antes de qualquer sessão ou pedido poder gravar no histórico; o
+            // `new` encerra os pedidos pendentes do processo anterior.
+            app.manage(notifications::Notifications::new(
+                Arc::clone(&store),
+                Arc::clone(&sessions),
+            ));
             let layout: layout::SharedLayout =
                 Arc::new(layout::LayoutManager::new(Arc::clone(&store)));
 
@@ -8161,6 +8862,21 @@ pub fn run() {
             lsp_signature,
             lsp_open_external,
             close_side_view,
+            files_screen_activate,
+            files_screen_pin,
+            files_screen_close,
+            files_screen_section,
+            files_grep,
+            docker_screen_section,
+            docker_screen_project,
+            docker_screen_hide_stopped,
+            docker_screen_show,
+            docker_screen_select,
+            docker_screen_pane,
+            docker_screen_shell,
+            docker_screen_logs,
+            docker_list_images,
+            docker_list_volumes,
             set_side_view_expanded,
             set_side_view_ratio,
             worktree_stage,
@@ -8184,6 +8900,8 @@ pub fn run() {
             forge_pr_detail,
             forge_pr_review,
             forge_pr_merge,
+            forge_pr_checkout,
+            forge_pr_open_session,
             forge_workflow_jobs,
             forge_run_log,
             forge_run_rerun,
@@ -8212,6 +8930,8 @@ pub fn run() {
             uninstall_claude_plugin,
             can_resume_agent_session,
             resume_agent_session,
+            resume_shell_conversation,
+            dismiss_shell_resume_offer,
             open_subagent_viewer,
             close_agent_viewers,
             agent_repo_config,
@@ -8238,6 +8958,8 @@ pub fn run() {
             save_snippet,
             delete_snippet,
             snippet_placeholders,
+            notifications_list,
+            notifications_mark_read,
             render_snippet,
             list_themes,
             get_theme_state,
@@ -8251,7 +8973,6 @@ pub fn run() {
             save_launch_config,
             delete_launch_config,
             launch_config_seed,
-            tag_workspace,
             close_workspace,
             activate_workspace,
             rename_workspace,
@@ -8278,7 +8999,6 @@ pub fn run() {
             list_shells,
             docker_available,
             docker_list_containers,
-            docker_open_shell,
             open_editor_tab,
             open_diff_content_tab,
             back_tab,
@@ -8298,9 +9018,10 @@ pub fn run() {
             docker_panel_usage,
             docker_open_desktop,
             docker_compose_op,
+            docker_compose_runs,
+            docker_compose_file,
             docker_open_project,
             docker_open_compose_file,
-            docker_open_dashboard,
             open_view_tab,
             splash::splash_done,
         ])
@@ -8976,7 +9697,123 @@ mod tests {
             opened_by_gate: false,
             did_work: false,
             agent_usage: None,
+            shell_resume_offer: false,
+            agent_conversation_cwd: None,
         }
+    }
+
+    #[test]
+    fn pr_open_session_reuses_only_a_live_shell_on_the_same_pr_head() {
+        let main = std::path::PathBuf::from("/repos/app");
+        let head = "ab".repeat(20);
+        let pr_shell = |branch: &str, base_ref: &str| {
+            let mut s = agent_session(uuid::Uuid::new_v4(), Some("/wt/pr".into()));
+            s.kind = SessionKind::Shell;
+            s.status = SessionStatus::Running;
+            s.repo_root = Some(main.clone());
+            let wt = s.worktree.as_mut().unwrap();
+            wt.branch = branch.into();
+            wt.base_ref = base_ref.into();
+            s
+        };
+        let good = pr_shell("tyba/pr/7-abcd1234", &head);
+        let found = |sessions: &[Session], sha: &str| {
+            pr_open_session(sessions, &main, 7, sha).map(|s| s.id)
+        };
+
+        assert_eq!(found(std::slice::from_ref(&good), &head), Some(good.id));
+        // sha em maiúsculas é o mesmo commit.
+        assert_eq!(
+            found(std::slice::from_ref(&good), &head.to_ascii_uppercase()),
+            Some(good.id)
+        );
+        // O PR andou (force-push): worktree novo, não o antigo.
+        assert_eq!(found(std::slice::from_ref(&good), &"cd".repeat(20)), None);
+        // Task do usuário chamada "PR 7 …" (`tyba/pr-7-…`): não é do PR.
+        assert_eq!(
+            found(&[pr_shell("tyba/pr-7-conserta-abcd1234", &head)], &head),
+            None
+        );
+        // Outro PR com prefixo parecido.
+        assert_eq!(
+            found(&[pr_shell("tyba/pr/70-abcd1234", &head)], &head),
+            None
+        );
+        // Launch config chamado "PR" (`tyba/pr/<slot>`) e sufixos fora do
+        // formato `<8 hex>`: o namespace não é exclusivo, o prefixo não basta.
+        for branch in [
+            "tyba/pr/7-review",
+            "tyba/pr/7-abcd12345",
+            "tyba/pr/7-abcd123",
+            "tyba/pr/7-ABCD1234",
+            "tyba/pr/7-abcd123g",
+        ] {
+            assert_eq!(found(&[pr_shell(branch, &head)], &head), None, "{branch}");
+        }
+        // Sessão encerrada.
+        let mut exited = good.clone();
+        exited.status = SessionStatus::Exited { code: 0 };
+        assert_eq!(found(&[exited], &head), None);
+        let mut failed = good.clone();
+        failed.status = SessionStatus::Failed {
+            reason: "pty".into(),
+        };
+        assert_eq!(found(&[failed], &head), None);
+        // Sessão de agente no mesmo worktree.
+        let mut agent = good.clone();
+        agent.kind = SessionKind::Agent {
+            runner: session::AgentRunnerKind::ClaudeCode,
+        };
+        assert_eq!(found(&[agent], &head), None);
+        // Outro repo.
+        let mut other = good.clone();
+        other.repo_root = Some("/repos/outro".into());
+        assert_eq!(found(&[other], &head), None);
+    }
+
+    #[test]
+    fn pr_checkout_is_refused_in_any_tyba_worktree() {
+        let plain = agent_session(uuid::Uuid::new_v4(), None);
+        let user_repo = std::env::temp_dir().join("tyba-repo-do-usuario");
+        assert!(!pr_checkout_in_worktree(&plain, &user_repo, &[]));
+        // Shell comum que entrou num worktree gerido (ou shell de PR retomado
+        // sem o `worktree`).
+        let managed = worktree::managed_root().unwrap().join("app").join("pr-7-x");
+        assert!(pr_checkout_in_worktree(&plain, &managed, &[]));
+        // A sessão tem worktree.
+        let with_wt = agent_session(uuid::Uuid::new_v4(), Some("/wt/x".into()));
+        assert!(pr_checkout_in_worktree(&with_wt, &user_repo, &[]));
+    }
+
+    #[test]
+    fn pr_checkout_is_refused_under_a_live_in_place_agent() {
+        let user_repo = std::env::temp_dir().join("tyba-repo-do-usuario");
+        let plain = agent_session(uuid::Uuid::new_v4(), None);
+        // Agente in-place (`worktree::existing`) na pasta do usuário.
+        let mut agent = agent_session(uuid::Uuid::new_v4(), Some(user_repo.clone()));
+        agent.status = SessionStatus::Running;
+        let refused = |others: &[Session]| pr_checkout_in_worktree(&plain, &user_repo, others);
+
+        assert!(refused(std::slice::from_ref(&agent)));
+        // Numa subpasta do repo também é o mesmo checkout.
+        let mut in_subdir = agent.clone();
+        in_subdir.worktree.as_mut().unwrap().path = user_repo.join("src");
+        assert!(refused(&[in_subdir]));
+        // Encerrada ou falha: não segura nada.
+        let mut exited = agent.clone();
+        exited.status = SessionStatus::Exited { code: 0 };
+        let mut failed = agent.clone();
+        failed.status = SessionStatus::Failed {
+            reason: "pty".into(),
+        };
+        assert!(!refused(&[exited, failed]));
+        // Outra pasta, com prefixo de nome parecido.
+        let mut elsewhere = agent.clone();
+        elsewhere.worktree.as_mut().unwrap().path =
+            std::env::temp_dir().join("tyba-repo-do-usuario-2");
+        assert!(!refused(&[elsewhere]));
+        // A própria sessão na lista não conta contra ela.
+        assert!(!refused(std::slice::from_ref(&plain)));
     }
 
     #[test]
@@ -9046,6 +9883,7 @@ mod tests {
                 side_ratio: 0.5,
                 side_expanded: false,
                 history: Vec::new(),
+                screens: Default::default(),
                 created_at: chrono::Utc::now(),
             }],
             active_workspace: None,
@@ -9283,6 +10121,8 @@ mod tests {
             opened_by_gate: true,
             did_work: false,
             agent_usage: None,
+            shell_resume_offer: false,
+            agent_conversation_cwd: None,
             ..agent_session(uuid::Uuid::new_v4(), None)
         };
         assert!(!should_auto_close_gate_tab(&s));
@@ -9321,6 +10161,25 @@ mod tests {
     // o "agente iniciado duas vezes" que o dono viu no painel. A própria doc
     // de `drive_disk_observer` já dizia "Claude cru num shell ganha captura
     // por disco": o corte por `hosted` só nunca tinha sido escrito.
+
+    #[test]
+    fn shell_resume_line_clears_the_prompt_and_submits_the_resume() {
+        let id = "5f2a1c40-0000-4000-8000-00000000abcd";
+        assert_eq!(
+            shell_resume_line(id, &agent::ResumeDir::Here),
+            Some(b"\x1b=\x05\x15claude --resume 5f2a1c40-0000-4000-8000-00000000abcd\r".to_vec())
+        );
+        let cd = agent::ResumeDir::Cd(std::path::PathBuf::from("/home/u/o 'repo'"));
+        assert_eq!(
+            shell_resume_line(id, &cd),
+            Some(
+                b"\x1b=\x05\x15builtin cd -- '/home/u/o '\\''repo'\\''' && claude --resume 5f2a1c40-0000-4000-8000-00000000abcd\r"
+                    .to_vec()
+            )
+        );
+        let newline = agent::ResumeDir::Cd(std::path::PathBuf::from("/home/u/a\nb"));
+        assert_eq!(shell_resume_line(id, &newline), None);
+    }
 
     #[test]
     fn wants_disk_observer_is_true_for_a_bare_claude_code_without_hosting() {

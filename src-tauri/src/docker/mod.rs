@@ -57,6 +57,8 @@ pub enum DockerError {
     UnknownContainer(String),
     #[error("projeto compose desconhecido: {0}")]
     UnknownProject(String),
+    #[error("já tem um compose rodando neste projeto: {0}")]
+    ComposeBusy(String),
     #[error("caminho inválido: {0}")]
     InvalidPath(String),
     #[error("este caminho não existe nesta máquina: {0} — o container reporta o caminho do ambiente onde subiu, não do host")]
@@ -143,9 +145,22 @@ struct PsRow {
 pub enum ContainerTab {
     Logs,
     Shell,
+    /// O shell da tela de Docker: mesmo `docker exec`, mas sem aba — mora
+    /// dentro da tela e morre quando ela fecha.
+    ScreenShell,
+    /// Os logs da tela de Docker para container remoto: mesmo `docker logs
+    /// -f` da aba, também sem aba e com a vida da tela.
+    ScreenLogs,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+impl ContainerTab {
+    /// Mora dentro da tela de Docker (não numa aba).
+    pub fn is_screen(self) -> bool {
+        matches!(self, ContainerTab::ScreenShell | ContainerTab::ScreenLogs)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ComposeOp {
     Up,
@@ -154,21 +169,180 @@ pub enum ComposeOp {
 }
 
 impl ComposeOp {
-    pub fn label(self) -> &'static str {
+    /// O verbo do compose (depois de `compose -p … -f …`).
+    pub fn verb(self) -> &'static [&'static str] {
         match self {
-            ComposeOp::Up => "up",
-            ComposeOp::Down => "down",
-            ComposeOp::Restart => "restart",
+            ComposeOp::Up => &["up", "-d"],
+            ComposeOp::Down => &["down"],
+            ComposeOp::Restart => &["restart"],
+        }
+    }
+}
+
+/// Arquivo compose maior que isso não abre (não é compose de verdade).
+const COMPOSE_FILE_CAP: u64 = 1024 * 1024;
+
+/// Um arquivo compose para a tela de Arquivos (só leitura).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ComposeFile {
+    pub path: String,
+    pub text: String,
+}
+
+/// Lê um arquivo regular com teto, sem travar nem estourar: abre sem bloquear
+/// (FIFO não prende a thread), confere pelo descritor que é arquivo regular
+/// (link para `/dev/zero` não passa) e lê no máximo `cap` bytes.
+fn read_regular_capped(path: &Path, cap: u64) -> Result<String, DockerError> {
+    use std::io::Read as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
+    let shown = path.to_string_lossy().into_owned();
+    if !meta.is_file() || meta.len() > cap {
+        return Err(DockerError::InvalidPath(shown));
+    }
+    let mut buf = Vec::new();
+    file.take(cap + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > cap {
+        return Err(DockerError::InvalidPath(shown));
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Linhas da saída do compose que a tela guarda por projeto (as últimas).
+pub const COMPOSE_OUTPUT_CAP: usize = 2000;
+
+/// Estado de compose de um projeto, do core (a tela some e volta; o estado
+/// não): o que está rodando agora, o motivo da última falha e a saída da
+/// última execução (já redigida), que fica até a próxima.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ComposeRun {
+    /// Identidade da execução (cresce a cada `begin`): a tela não mistura a
+    /// saída de uma execução com a da anterior.
+    pub run: u64,
+    /// Pasta do projeto, para a tela mostrar o projeto mesmo depois que o
+    /// `down` tirou os containers dele.
+    pub working_dir: Option<String>,
+    pub op: Option<ComposeOp>,
+    /// A op da última execução (rodando ou terminada), para o título da saída.
+    pub last_op: Option<ComposeOp>,
+    pub error: Option<String>,
+    /// As últimas `COMPOSE_OUTPUT_CAP` linhas.
+    pub output: Vec<String>,
+    /// Linhas já recebidas nesta execução (inclusive as cortadas do começo):
+    /// a tela junta o retrato com os eventos por esta posição.
+    pub total: usize,
+}
+
+/// Lote de saída que vai para a tela: `start` é a posição (em `total`) da
+/// primeira linha.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ComposeOutput {
+    pub project: String,
+    pub run: u64,
+    pub op: ComposeOp,
+    pub start: usize,
+    pub lines: Vec<String>,
+}
+
+/// Compose por projeto: um de cada vez.
+#[derive(Debug, Default)]
+pub struct ComposeRuns {
+    runs: HashMap<String, ComposeRun>,
+    next: u64,
+}
+
+impl ComposeRuns {
+    /// Marca `op` rodando; recusa se o projeto já tem um compose em andamento.
+    /// Limpa a falha e a saída anteriores.
+    pub fn begin(&mut self, project: &str, op: ComposeOp) -> Result<(), DockerError> {
+        let run = self.runs.entry(project.to_string()).or_default();
+        if run.op.is_some() {
+            return Err(DockerError::ComposeBusy(project.to_string()));
+        }
+        self.next += 1;
+        *run = ComposeRun {
+            run: self.next,
+            working_dir: run.working_dir.take(),
+            op: Some(op),
+            last_op: Some(op),
+            ..Default::default()
+        };
+        Ok(())
+    }
+
+    /// A pasta do projeto, quando o core a resolve.
+    pub fn set_dir(&mut self, project: &str, dir: &str) {
+        if let Some(run) = self.runs.get_mut(project) {
+            run.working_dir = Some(dir.to_string());
         }
     }
 
-    pub fn compose_args(self) -> &'static str {
-        match self {
-            ComposeOp::Up => "compose up -d",
-            ComposeOp::Down => "compose down",
-            ComposeOp::Restart => "compose restart",
-        }
+    /// Projetos com execução registrada (o retrato de projetos os guarda
+    /// mesmo depois do `down`, para subir de novo e abrir o compose).
+    pub fn has(&self, project: &str) -> bool {
+        self.runs.contains_key(project)
     }
+
+    /// Junta linhas à saída do projeto (cortando o começo além do teto) e
+    /// devolve o lote para a tela.
+    pub fn append(&mut self, project: &str, lines: Vec<String>) -> Option<ComposeOutput> {
+        if lines.is_empty() {
+            return None;
+        }
+        let run = self.runs.get_mut(project)?;
+        let op = run.op?;
+        let start = run.total;
+        run.total += lines.len();
+        run.output.extend(lines.iter().cloned());
+        let over = run.output.len().saturating_sub(COMPOSE_OUTPUT_CAP);
+        run.output.drain(..over);
+        Some(ComposeOutput {
+            project: project.to_string(),
+            run: run.run,
+            op,
+            start,
+            lines,
+        })
+    }
+
+    /// Desmarca; a saída fica, e a falha fica com o motivo.
+    pub fn finish(&mut self, project: &str, result: &Result<(), DockerError>) {
+        let run = self.runs.entry(project.to_string()).or_default();
+        run.op = None;
+        // O motivo vem do stderr: redigido como a saída (princípio #10).
+        run.error = result
+            .as_ref()
+            .err()
+            .map(|e| crate::session::redact::redact(&e.to_string()).into_owned());
+    }
+
+    pub fn snapshot(&self) -> HashMap<String, ComposeRun> {
+        self.runs.clone()
+    }
+}
+
+/// `docker compose up -d` pode puxar imagem e construir: o teto é longo, mas
+/// existe — um compose pendurado não segura a tela para sempre.
+const COMPOSE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Argumentos de `docker compose` para o projeto: nome e arquivos explícitos,
+/// para agir no projeto que subiu (e não no compose padrão da pasta, que pode
+/// ser outro). Nome e arquivos já validados por quem chama.
+pub fn compose_args(project: &str, files: &[String], op: ComposeOp) -> Vec<String> {
+    let mut args = vec![
+        "compose".to_string(),
+        "--ansi=never".to_string(),
+        format!("--project-name={project}"),
+    ];
+    for file in files {
+        args.push(format!("--file={file}"));
+    }
+    args.extend(op.verb().iter().map(|a| a.to_string()));
+    args
 }
 
 /// Ação de um container só (o painel lateral Docker). O compose inteiro segue
@@ -261,6 +435,16 @@ pub fn resolve_compose_files(working_dir: &str, config_files: &str) -> Vec<Strin
         .collect()
 }
 
+/// Nome de projeto compose como o compose aceita (letras, dígitos, `-`, `_`;
+/// `.` de versões antigas), começando por letra ou dígito — nunca parece flag.
+pub fn is_valid_project_name(name: &str) -> bool {
+    name.len() <= 128
+        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 pub fn is_valid_container_id(id: &str) -> bool {
     (12..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -337,6 +521,55 @@ pub fn parse_ps_output(raw: &str) -> Vec<ContainerInfo> {
         .collect()
 }
 
+/// Imagem do alvo, para a seção Imagens da tela de Docker (só leitura).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImageInfo {
+    #[serde(rename(deserialize = "ID"), default)]
+    pub id: String,
+    #[serde(rename(deserialize = "Repository"), default)]
+    pub repository: String,
+    #[serde(rename(deserialize = "Tag"), default)]
+    pub tag: String,
+    #[serde(rename(deserialize = "Size"), default)]
+    pub size: String,
+    #[serde(rename(deserialize = "CreatedSince"), default)]
+    pub created_since: String,
+}
+
+/// Volume do alvo, para a seção Volumes da tela de Docker (só leitura).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VolumeInfo {
+    #[serde(rename(deserialize = "Name"), default)]
+    pub name: String,
+    #[serde(rename(deserialize = "Driver"), default)]
+    pub driver: String,
+    #[serde(rename(deserialize = "Mountpoint"), default)]
+    pub mountpoint: String,
+}
+
+/// Uma linha JSON por item (`--format '{{json .}}'`); linha ilegível some.
+fn parse_json_lines<T: serde::de::DeserializeOwned>(raw: &str) -> Vec<T> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+pub fn parse_images(raw: &str) -> Vec<ImageInfo> {
+    parse_json_lines::<ImageInfo>(raw)
+        .into_iter()
+        .filter(|i| !i.id.is_empty())
+        .collect()
+}
+
+pub fn parse_volumes(raw: &str) -> Vec<VolumeInfo> {
+    parse_json_lines::<VolumeInfo>(raw)
+        .into_iter()
+        .filter(|v| !v.name.is_empty())
+        .collect()
+}
+
 pub fn annotate_host_paths(containers: &mut [ContainerInfo]) {
     let mut dirs: HashMap<String, PathStatus> = HashMap::new();
     let mut files: HashMap<String, Option<PathStatus>> = HashMap::new();
@@ -359,10 +592,30 @@ pub fn annotate_host_paths(containers: &mut [ContainerInfo]) {
     }
 }
 
-/// Marca `in_repo` nos containers do projeto do repo (regra do `filter_project`).
-pub fn mark_repo_project(containers: &mut [ContainerInfo], repo_root: &str) {
-    let ours: std::collections::HashSet<String> = filter_project(containers, repo_root)
-        .into_iter()
+/// As raízes que contam como "este repo": a pedida e, se ela for um worktree
+/// (sessão de agente), o checkout principal — é de lá que o compose do repo
+/// costuma ter subido.
+pub fn repo_roots(repo_root: &str) -> Vec<String> {
+    let mut roots = vec![repo_root.to_string()];
+    let main = crate::repo::git_path(Path::new(repo_root), "--git-common-dir")
+        .map(|common| crate::repo::canonicalize_or(&common))
+        .filter(|common| common.file_name().is_some_and(|n| n == ".git"))
+        .and_then(|common| common.parent().map(Path::to_path_buf));
+    if let Some(main) = main {
+        let own = crate::repo::canonicalize_or(Path::new(repo_root));
+        if main != own {
+            roots.push(main.to_string_lossy().into_owned());
+        }
+    }
+    roots
+}
+
+/// Marca `in_repo` nos containers do projeto do repo (regra do `filter_project`,
+/// em qualquer uma das `roots`).
+pub fn mark_repo_project(containers: &mut [ContainerInfo], roots: &[String]) {
+    let ours: std::collections::HashSet<String> = roots
+        .iter()
+        .flat_map(|root| filter_project(containers, root))
         .map(|c| c.id)
         .collect();
     for c in containers.iter_mut() {
@@ -470,10 +723,7 @@ fn run_docker(args: &[&str], timeout: Duration, host: Option<&str>) -> Result<St
     let timeout = timeout_for(timeout, host);
     let bin = docker_bin().ok_or(DockerError::NotInstalled)?;
     let mut cmd = Command::new(bin);
-    cmd.args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args(args);
     // O helper do docker chama o `ssh` com stdin nulo: host de senha só
     // conecta pelo master de uma sessão aberta. Sem master, falha na hora
     // (`ssh.password_needs_session`) em vez de esperar o timeout.
@@ -484,6 +734,25 @@ fn run_docker(args: &[&str], timeout: Duration, host: Option<&str>) -> Result<St
         crate::ssh::command::apply_env(&mut cmd);
         cmd.env("DOCKER_HOST", target);
     }
+    wait_output(cmd, timeout, |stderr| {
+        stderr
+            .lines()
+            .next()
+            .unwrap_or("erro desconhecido")
+            .to_string()
+    })
+}
+
+/// Roda até o fim (ou o teto) com stdout/stderr em pipe. Falha vira
+/// `Failed(reason(stderr))`.
+fn wait_output(
+    mut cmd: Command,
+    timeout: Duration,
+    reason: impl Fn(&str) -> String,
+) -> Result<String, DockerError> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     crate::repo::no_console_window(&mut cmd);
     let mut child = cmd.spawn()?;
     let (out, err) = drain(&mut child);
@@ -496,9 +765,9 @@ fn run_docker(args: &[&str], timeout: Duration, host: Option<&str>) -> Result<St
                 if status.success() {
                     return Ok(String::from_utf8_lossy(&stdout).into_owned());
                 }
-                let reason = String::from_utf8_lossy(&stderr);
-                let reason = reason.lines().next().unwrap_or("erro desconhecido");
-                return Err(DockerError::Failed(reason.to_string()));
+                return Err(DockerError::Failed(reason(&String::from_utf8_lossy(
+                    &stderr,
+                ))));
             }
             None => {
                 if start.elapsed() >= timeout {
@@ -510,6 +779,110 @@ fn run_docker(args: &[&str], timeout: Duration, host: Option<&str>) -> Result<St
             }
         }
     }
+}
+
+/// Intervalo do lote de saída do compose para a tela (princípio #3: nunca um
+/// evento por pedaço).
+const COMPOSE_FLUSH: Duration = Duration::from_millis(16);
+
+/// Linhas de um fluxo (stdout ou stderr) em `pending`; `\r` também quebra
+/// (barra de progresso reescrita na mesma linha).
+fn pump_lines(
+    stream: impl Read + Send + 'static,
+    pending: Arc<Mutex<Vec<String>>>,
+    last: Option<Arc<Mutex<String>>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stream);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match std::io::BufRead::read_until(&mut reader, b'\n', &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let text = String::from_utf8_lossy(&buf);
+                    for piece in text.split(['\n', '\r']) {
+                        let line = piece.trim_end();
+                        if line.is_empty() {
+                            continue;
+                        }
+                        if let Some(last) = &last {
+                            *last.lock() = line.to_string();
+                        }
+                        pending.lock().push(line.to_string());
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Roda o compose até o fim (ou o teto) mandando a saída em lotes para
+/// `on_lines` a cada `COMPOSE_FLUSH`. Falha vira `Failed(última linha do
+/// stderr)`; o teto mata o process group inteiro.
+fn stream_compose(
+    mut cmd: Command,
+    timeout: Duration,
+    mut on_lines: impl FnMut(Vec<String>),
+) -> Result<(), DockerError> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    crate::repo::no_console_window(&mut cmd);
+    let mut child = cmd.spawn()?;
+    let pending = Arc::new(Mutex::new(Vec::new()));
+    let last_err = Arc::new(Mutex::new(String::new()));
+    let out = pump_lines(
+        child.stdout.take().expect("stdout piped"),
+        Arc::clone(&pending),
+        None,
+    );
+    let err = pump_lines(
+        child.stderr.take().expect("stderr piped"),
+        Arc::clone(&pending),
+        Some(Arc::clone(&last_err)),
+    );
+    let flush = |on_lines: &mut dyn FnMut(Vec<String>)| {
+        let batch = std::mem::take(&mut *pending.lock());
+        if !batch.is_empty() {
+            on_lines(batch);
+        }
+    };
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if start.elapsed() >= timeout {
+            #[cfg(unix)]
+            // pgid == pid do líder (`process_group(0)`).
+            unsafe {
+                libc::killpg(child.id() as libc::pid_t, libc::SIGKILL)
+            };
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = out.join();
+            let _ = err.join();
+            flush(&mut on_lines);
+            return Err(DockerError::Timeout);
+        }
+        flush(&mut on_lines);
+        std::thread::sleep(COMPOSE_FLUSH);
+    };
+    let _ = out.join();
+    let _ = err.join();
+    flush(&mut on_lines);
+    if status.success() {
+        return Ok(());
+    }
+    let reason = crate::session::redact::redact(last_err.lock().trim()).into_owned();
+    Err(DockerError::Failed(if reason.is_empty() {
+        "erro desconhecido".into()
+    } else {
+        reason
+    }))
 }
 
 /// Prepara um `docker …` com o alvo (local ou host SSH) — a mesma montagem do
@@ -776,6 +1149,7 @@ pub struct DockerManager {
     /// Última leitura de CPU/RAM e motivo de saída, por alvo — o painel pede a
     /// cada refresh, mas o `docker stats` só roda de novo depois do intervalo.
     usage: Mutex<HashMap<Option<String>, (Instant, PanelUsage)>>,
+    compose_runs: Mutex<ComposeRuns>,
 }
 
 /// CPU e memória de um container rodando (`docker stats --no-stream`).
@@ -972,28 +1346,36 @@ impl DockerManager {
             }
         }
         self.prune_tabs();
-        {
+        // O retrato dos projetos é o que `compose_op` executa: só da máquina
+        // local. A lista de um host SSH traz caminhos de lá, que aqui podem
+        // existir por acaso e virar `compose down` na pasta errada.
+        if host.is_none() {
             let mut projects = self.projects.lock();
-            projects.clear();
+            // Projeto que já rodou compose fica mesmo sem container (depois
+            // do `down`): dá para subir de novo e o compose.yml continua abrindo.
+            let runs = self.compose_runs.lock();
+            projects.retain(|name, _| runs.has(name));
+            drop(runs);
             for c in &containers {
                 if let (Some(project), Some(wd)) =
                     (c.compose_project.as_ref(), c.compose_working_dir.as_ref())
                 {
-                    projects
-                        .entry(project.clone())
-                        .or_insert_with(|| ProjectInfo {
+                    projects.insert(
+                        project.clone(),
+                        ProjectInfo {
                             working_dir: wd.clone(),
                             config_files: c
                                 .config_files
                                 .as_deref()
                                 .map(|raw| resolve_compose_files(wd, raw))
                                 .unwrap_or_default(),
-                        });
+                        },
+                    );
                 }
             }
         }
         if let Some(root) = repo_root {
-            mark_repo_project(&mut containers, root);
+            mark_repo_project(&mut containers, &repo_roots(root));
         }
         let mut result = match (all, repo_root) {
             (false, Some(_)) => containers.into_iter().filter(|c| c.in_repo).collect(),
@@ -1105,6 +1487,85 @@ impl DockerManager {
             .ok_or_else(|| DockerError::UnknownProject(name.to_string()))
     }
 
+    /// `docker compose up -d|restart|down` de um projeto que o último `list`
+    /// local viu, na pasta dele e sem terminal: o resultado volta para a tela.
+    /// Só local — o caminho do compose é desta máquina.
+    /// Um compose por projeto: o segundo é recusado enquanto o primeiro roda.
+    pub fn compose_op(
+        &self,
+        project: &str,
+        op: ComposeOp,
+        emit: impl Fn(ComposeOutput),
+    ) -> Result<(), DockerError> {
+        if !is_valid_project_name(project) {
+            return Err(DockerError::UnknownProject(
+                project.chars().take(64).collect(),
+            ));
+        }
+        self.compose_runs.lock().begin(project, op)?;
+        let result = self.run_compose(project, op, &emit);
+        self.compose_runs.lock().finish(project, &result);
+        result
+    }
+
+    /// Compose rodando, última falha e saída, por projeto (só os que já
+    /// rodaram nesta execução do app).
+    pub fn compose_runs(&self) -> HashMap<String, ComposeRun> {
+        self.compose_runs.lock().snapshot()
+    }
+
+    fn run_compose(
+        &self,
+        project: &str,
+        op: ComposeOp,
+        emit: &impl Fn(ComposeOutput),
+    ) -> Result<(), DockerError> {
+        let info = self.project_info(project)?;
+        self.compose_runs.lock().set_dir(project, &info.working_dir);
+        validate_working_dir(&info.working_dir)?;
+        for file in &info.config_files {
+            validate_compose_file(file)?;
+        }
+        let bin = docker_bin().ok_or(DockerError::NotInstalled)?;
+        let mut cmd = Command::new(bin);
+        cmd.args(compose_args(project, &info.config_files, op))
+            .current_dir(&info.working_dir)
+            // Credential helper (`docker-credential-desktop`) e plugins moram no
+            // PATH do login: sem ele, o pull do `up` falha no app aberto pelo Dock.
+            .env("PATH", crate::shell_path::agent_path());
+        stream_compose(cmd, COMPOSE_TIMEOUT, |lines| {
+            // Segredo nunca sai do core em claro (princípio #10), nem para a
+            // memória da tela.
+            let lines = lines
+                .iter()
+                .map(|l| crate::session::redact::redact(l).into_owned())
+                .collect();
+            if let Some(batch) = self.compose_runs.lock().append(project, lines) {
+                emit(batch);
+            }
+        })
+    }
+
+    /// Conteúdo de um arquivo compose de um projeto local, só leitura: o
+    /// `index` é a posição em `config_files`. Mesmo crivo do compose (arquivo
+    /// `.yml/.yaml` que existe) e teto de tamanho.
+    pub fn compose_file(&self, project: &str, index: usize) -> Result<ComposeFile, DockerError> {
+        if !is_valid_project_name(project) {
+            return Err(DockerError::UnknownProject(
+                project.chars().take(64).collect(),
+            ));
+        }
+        let info = self.project_info(project)?;
+        let path = info
+            .config_files
+            .get(index)
+            .ok_or_else(|| DockerError::UnknownProject(project.to_string()))?
+            .clone();
+        validate_compose_file(&path)?;
+        let text = read_regular_capped(Path::new(&path), COMPOSE_FILE_CAP)?;
+        Ok(ComposeFile { path, text })
+    }
+
     /// Nome do container, relistando uma vez se ele ainda não está no retrato
     /// (a aba foi aberta antes do primeiro `ps` desta execução, ou por um
     /// painel que listou outro alvo).
@@ -1209,6 +1670,36 @@ impl DockerManager {
         })
     }
 
+    /// `docker image ls` do alvo — leitura, nenhuma ação.
+    pub fn images(&self, host: Option<&str>) -> Result<Vec<ImageInfo>, DockerError> {
+        let raw = run_docker(&["image", "ls", "--format", "{{json .}}"], PS_TIMEOUT, host)?;
+        Ok(parse_images(&raw))
+    }
+
+    /// `docker volume ls` do alvo — leitura, nenhuma ação.
+    pub fn volumes(&self, host: Option<&str>) -> Result<Vec<VolumeInfo>, DockerError> {
+        let raw = run_docker(
+            &["volume", "ls", "--format", "{{json .}}"],
+            PS_TIMEOUT,
+            host,
+        )?;
+        Ok(parse_volumes(&raw))
+    }
+
+    /// Sessões (shell e logs) que moram na tela de Docker, fora de qualquer aba.
+    pub fn screen_sessions(&self) -> Vec<SessionId> {
+        self.tabs
+            .lock()
+            .iter()
+            .filter(|((_, tab), _)| tab.is_screen())
+            .map(|(_, s)| *s)
+            .collect()
+    }
+
+    pub fn forget_screen_sessions(&self) {
+        self.tabs.lock().retain(|(_, tab), _| !tab.is_screen());
+    }
+
     pub fn tab_session(&self, id: &str, tab: ContainerTab) -> Option<SessionId> {
         self.tabs.lock().get(&(id.to_string(), tab)).copied()
     }
@@ -1221,6 +1712,210 @@ impl DockerManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_runs_refuse_second_op_and_keep_last_error_and_output() {
+        let mut runs = ComposeRuns::default();
+        assert!(runs.snapshot().is_empty());
+
+        runs.begin("poc", ComposeOp::Up).unwrap();
+        assert_eq!(runs.snapshot()["poc"].op, Some(ComposeOp::Up));
+        assert!(matches!(
+            runs.begin("poc", ComposeOp::Down),
+            Err(DockerError::ComposeBusy(_))
+        ));
+        // Outro projeto não espera.
+        runs.begin("api", ComposeOp::Restart).unwrap();
+
+        let first_run = runs.snapshot()["poc"].run;
+        let batch = runs
+            .append("poc", vec!["Pulling".into(), "Pulled".into()])
+            .unwrap();
+        assert_eq!(
+            (batch.start, batch.run, batch.op),
+            (0, first_run, ComposeOp::Up)
+        );
+        let batch = runs.append("poc", vec!["Started".into()]).unwrap();
+        assert_eq!((batch.start, batch.lines.len()), (2, 1));
+        assert!(runs.append("poc", Vec::new()).is_none());
+        assert!(runs.append("ninguem", vec!["x".into()]).is_none());
+
+        runs.finish("poc", &Err(DockerError::Failed("pull falhou".into())));
+        let poc = &runs.snapshot()["poc"];
+        assert_eq!(poc.op, None);
+        assert_eq!(poc.last_op, Some(ComposeOp::Up));
+        assert_eq!(poc.error.as_deref(), Some("docker falhou: pull falhou"));
+        // A saída fica depois do fim.
+        assert_eq!(poc.output, vec!["Pulling", "Pulled", "Started"]);
+        assert_eq!(poc.total, 3);
+
+        // Nova op limpa falha e saída; sucesso mantém a saída.
+        runs.set_dir("poc", "/u/poc");
+        runs.begin("poc", ComposeOp::Down).unwrap();
+        assert_eq!(runs.snapshot()["poc"].error, None);
+        assert!(runs.snapshot()["poc"].run > first_run);
+        assert_eq!(
+            runs.snapshot()["poc"].working_dir.as_deref(),
+            Some("/u/poc")
+        );
+        assert!(runs.has("poc") && !runs.has("ninguem"));
+        assert!(runs.snapshot()["poc"].output.is_empty());
+        runs.append("poc", vec!["Removed".into()]);
+        runs.finish("poc", &Ok(()));
+        let poc = &runs.snapshot()["poc"];
+        assert_eq!((poc.op, poc.error.as_ref()), (None, None));
+        assert_eq!(poc.output, vec!["Removed"]);
+    }
+
+    #[test]
+    fn compose_failure_reason_is_redacted() {
+        let mut runs = ComposeRuns::default();
+        runs.begin("poc", ComposeOp::Up).unwrap();
+        // Token sintético.
+        let secret = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
+        runs.finish(
+            "poc",
+            &Err(DockerError::Failed(format!("auth failed with {secret}"))),
+        );
+        let error = runs.snapshot()["poc"].error.clone().unwrap();
+        assert!(!error.contains(secret), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compose_file_read_refuses_devices_fifos_and_big_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = dir.path().join("compose.yml");
+        std::fs::write(&ok, "services: {}\n").unwrap();
+        assert_eq!(read_regular_capped(&ok, 1024).unwrap(), "services: {}\n");
+        assert!(read_regular_capped(&ok, 4).is_err());
+
+        let zero = dir.path().join("zero.yml");
+        std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
+        assert!(read_regular_capped(&zero, 1024).is_err());
+
+        let fifo = dir.path().join("fifo.yml");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        // Não pode prender: abre sem bloquear e recusa por não ser arquivo.
+        assert!(read_regular_capped(&fifo, 1024).is_err());
+    }
+
+    #[test]
+    fn compose_output_keeps_only_the_last_lines() {
+        let mut runs = ComposeRuns::default();
+        runs.begin("poc", ComposeOp::Up).unwrap();
+        let lines: Vec<String> = (0..COMPOSE_OUTPUT_CAP + 5).map(|i| i.to_string()).collect();
+        runs.append("poc", lines);
+        let poc = &runs.snapshot()["poc"];
+        assert_eq!(poc.output.len(), COMPOSE_OUTPUT_CAP);
+        assert_eq!(poc.output[0], "5");
+        assert_eq!(poc.total, COMPOSE_OUTPUT_CAP + 5);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stream_compose_batches_lines_and_reports_last_stderr() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "printf 'a\\nb\\r' ; printf 'warn\\nboom\\n' >&2 ; exit 3",
+        ]);
+        let mut got = Vec::new();
+        let result = stream_compose(cmd, Duration::from_secs(10), |lines| got.extend(lines));
+        assert!(matches!(result, Err(DockerError::Failed(ref r)) if r == "boom"));
+        got.sort();
+        assert_eq!(got, vec!["a", "b", "boom", "warn"]);
+
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "echo ok"]);
+        assert!(stream_compose(cmd, Duration::from_secs(10), |_| {}).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stream_compose_timeout_kills_the_group() {
+        let mut cmd = Command::new("/bin/sh");
+        // O filho em segundo plano mantém o pipe aberto: sem killpg o
+        // join dos leitores esperaria os 30s dele.
+        cmd.args(["-c", "sleep 30 & sleep 30"]);
+        let t = Instant::now();
+        let result = stream_compose(cmd, Duration::from_millis(200), |_| {});
+        assert!(matches!(result, Err(DockerError::Timeout)));
+        assert!(t.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn project_names_are_validated() {
+        assert!(is_valid_project_name("poc-git"));
+        assert!(is_valid_project_name("muriki_api.v2"));
+        assert!(!is_valid_project_name(""));
+        assert!(!is_valid_project_name("a b"));
+        assert!(!is_valid_project_name("../x"));
+        assert!(!is_valid_project_name("x;rm"));
+        assert!(!is_valid_project_name("-p"));
+        assert!(!is_valid_project_name(&"a".repeat(129)));
+    }
+
+    #[test]
+    fn images_parse_json_lines_and_skip_garbage() {
+        let raw = r#"{"ID":"sha256:abc","Repository":"node","Tag":"22-alpine","Size":"180MB","CreatedSince":"2 weeks ago"}
+não é json
+{"ID":"","Repository":"<none>"}
+"#;
+        let images = parse_images(raw);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].repository, "node");
+        assert_eq!(images[0].tag, "22-alpine");
+        assert_eq!(images[0].size, "180MB");
+        assert_eq!(images[0].created_since, "2 weeks ago");
+    }
+
+    #[test]
+    fn volumes_parse_json_lines() {
+        let raw = r#"{"Driver":"local","Mountpoint":"/var/lib/docker/volumes/pg/_data","Name":"pg","Scope":"local"}
+{"Driver":"local","Name":""}
+"#;
+        let volumes = parse_volumes(raw);
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].name, "pg");
+        assert_eq!(volumes[0].driver, "local");
+    }
+
+    #[test]
+    fn image_serializes_snake_case_for_webview() {
+        let img = ImageInfo {
+            id: "x".into(),
+            repository: "r".into(),
+            tag: "t".into(),
+            size: "1MB".into(),
+            created_since: "now".into(),
+        };
+        let json = serde_json::to_string(&img).unwrap();
+        assert!(json.contains("\"created_since\":\"now\""), "{json}");
+    }
+
+    #[test]
+    fn screen_sessions_are_tracked_apart_from_tabs() {
+        let mgr = DockerManager::new();
+        let shell_tab = SessionId::new_v4();
+        let logs_tab = SessionId::new_v4();
+        let screen_shell = SessionId::new_v4();
+        let screen_logs = SessionId::new_v4();
+        mgr.remember_tab("c1", ContainerTab::Shell, shell_tab);
+        mgr.remember_tab("c1", ContainerTab::Logs, logs_tab);
+        mgr.remember_tab("c1", ContainerTab::ScreenShell, screen_shell);
+        mgr.remember_tab("c1", ContainerTab::ScreenLogs, screen_logs);
+        let mut screen = mgr.screen_sessions();
+        screen.sort();
+        let mut expected = vec![screen_shell, screen_logs];
+        expected.sort();
+        assert_eq!(screen, expected);
+        mgr.forget_screen_sessions();
+        assert!(mgr.screen_sessions().is_empty());
+        assert_eq!(mgr.tab_session("c1", ContainerTab::Shell), Some(shell_tab));
+        assert_eq!(mgr.tab_session("c1", ContainerTab::Logs), Some(logs_tab));
+    }
 
     #[test]
     fn local_target_has_no_docker_host() {
@@ -1302,10 +1997,31 @@ not-json-line
 
     #[test]
     fn compose_op_maps_args_and_labels() {
-        assert_eq!(ComposeOp::Up.compose_args(), "compose up -d");
-        assert_eq!(ComposeOp::Down.compose_args(), "compose down");
-        assert_eq!(ComposeOp::Restart.compose_args(), "compose restart");
-        assert_eq!(ComposeOp::Down.label(), "down");
+        assert_eq!(
+            compose_args("poc", &[], ComposeOp::Up),
+            vec!["compose", "--ansi=never", "--project-name=poc", "up", "-d"]
+        );
+        assert_eq!(
+            compose_args(
+                "poc",
+                &["/r/compose.yml".into(), "/r/compose.override.yml".into()],
+                ComposeOp::Down
+            ),
+            vec![
+                "compose",
+                "--ansi=never",
+                "--project-name=poc",
+                "--file=/r/compose.yml",
+                "--file=/r/compose.override.yml",
+                "down"
+            ]
+        );
+        assert_eq!(
+            compose_args("poc", &[], ComposeOp::Restart)
+                .last()
+                .map(String::as_str),
+            Some("restart")
+        );
         assert!(matches!(
             serde_json::from_str::<ComposeOp>("\"down\"").unwrap(),
             ComposeOp::Down
@@ -1557,9 +2273,71 @@ not-json-line
                 ..container(Some("/u/outro"), None)
             },
         ];
-        mark_repo_project(&mut list, "/u/repo/");
+        mark_repo_project(&mut list, &["/u/repo/".to_string()]);
         assert!(list[0].in_repo);
         assert!(!list[1].in_repo);
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git")
+            .status
+            .success();
+        assert!(ok, "git {args:?} falhou");
+    }
+
+    #[test]
+    fn worktree_session_marks_the_main_checkout_compose_as_this_repo() {
+        let base = tempfile::tempdir().unwrap();
+        let main = base.path().join("poc-git");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q"]);
+        git(&main, &["config", "user.email", "t@t.com"]);
+        git(&main, &["config", "user.name", "t"]);
+        git(&main, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(main.join("compose.yml"), "services: {}\n").unwrap();
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-qm", "init"]);
+        let wt = base.path().join("wt-agente-x");
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "agente",
+                wt.to_str().unwrap(),
+            ],
+        );
+        let main = crate::repo::canonicalize_or(&main);
+        let wt = crate::repo::canonicalize_or(&wt);
+
+        // O compose subiu do checkout principal; a sessão está no worktree.
+        let main_dir = main.to_string_lossy().into_owned();
+        let mut list = vec![
+            ContainerInfo {
+                id: "1".repeat(12),
+                compose_project: Some("poc-git".into()),
+                ..container(Some(&main_dir), None)
+            },
+            ContainerInfo {
+                id: "2".repeat(12),
+                compose_project: Some("outro".into()),
+                ..container(Some("/u/outro"), None)
+            },
+        ];
+        let roots = repo_roots(&wt.to_string_lossy());
+        assert_eq!(roots.len(), 2, "{roots:?}");
+        mark_repo_project(&mut list, &roots);
+        assert!(list[0].in_repo);
+        assert!(!list[1].in_repo);
+
+        // Fora de worktree, a raiz é só ela.
+        assert_eq!(repo_roots(&main_dir), vec![main_dir.clone()]);
     }
 
     #[test]

@@ -3,8 +3,8 @@ import { useTranslation } from "react-i18next";
 import {
   ArrowsLeftRight,
   ClockCounterClockwise,
+  FolderOpen,
   GitDiff,
-  TreeView,
   X,
 } from "@phosphor-icons/react";
 
@@ -56,7 +56,7 @@ export function PanelIcon({
     case "tunnels":
       return <ArrowsLeftRight size={size} className={className} />;
     case "files":
-      return <TreeView size={size} className={className} />;
+      return <FolderOpen size={size} className={className} />;
     case "git":
       return <GitIcon size={size - 1} className={className} />;
     case "diff":
@@ -160,9 +160,13 @@ export function SidePanelBar({
   );
 }
 
+/** Altura e linha da faixa de abas (34px, `TabBar`): o cabeçalho de todo
+ *  painel lateral fecha na mesma linha que as abas, sem degrau. */
+export const PANEL_HEADER = "flex h-[34px] shrink-0 items-center gap-2.5 tyba-divide-b px-4";
+
 /**
- * Cabeçalho comum dos painéis (mockup): ícone da área, título, extras e ✕.
- * `padding: 12px 16px`, linha fina embaixo.
+ * Cabeçalho comum dos painéis (mockup): ícone da área, título, extras e ✕,
+ * alinhado com a faixa de abas.
  */
 export function SidePanelHeader({
   kind,
@@ -177,7 +181,7 @@ export function SidePanelHeader({
 }) {
   const { t } = useTranslation();
   return (
-    <header className="flex shrink-0 items-center gap-2.5 border-b border-tyba-border px-4 py-3">
+    <header className={PANEL_HEADER}>
       <PanelIcon kind={kind} size={16} className={`shrink-0 ${areaText(kind)}`} />
       <span className="min-w-0 flex-1 truncate text-[13px] text-tyba-text">
         {title}

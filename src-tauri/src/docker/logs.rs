@@ -675,6 +675,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    // /bin/sh (e libc::kill) só no Unix.
+    #[cfg(unix)]
     #[test]
     fn retain_kills_followers_without_an_open_tab() {
         use std::process::{Command, Stdio};
@@ -706,6 +708,8 @@ mod tests {
         assert!(!mgr.is_following("keep"));
     }
 
+    // /bin/sh (e libc::kill) só no Unix.
+    #[cfg(unix)]
     #[test]
     fn follower_batches_lines_and_reports_end() {
         use std::process::{Command, Stdio};
