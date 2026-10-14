@@ -126,7 +126,7 @@ pub const KEY_ACTIONS: &[&str] = &[
 
 /// Ordem em que o front monta o combo (`comboOf` em `src/lib/keys.ts`).
 const MODIFIERS: &[&str] = &["meta", "ctrl", "alt", "shift"];
-const MAX_KEY_LEN: usize = 16;
+const MAX_KEY_LEN: usize = 32;
 const MAX_THEME_ID_LEN: usize = 64;
 
 /// Palavras que, numa chave desconhecida, soam como tentar afrouxar uma ação
@@ -169,7 +169,9 @@ pub fn is_theme_id(s: &str) -> bool {
 /// escreve à mão `shift+meta+p` recebe `meta+shift+p`, senão o atalho nunca
 /// casaria com o `comboOf` do teclado.
 pub fn normalize_combo(raw: &str) -> Option<String> {
-    let lower = raw.trim().to_lowercase();
+    // Só o espaço da frente sai: o de trás pode ser a tecla Espaço, que o
+    // `comboOf` grava como `"ctrl+ "`.
+    let lower = raw.trim_start().to_lowercase();
     let (mods, key) = match lower.rsplit_once('+') {
         Some((mods, key)) => (mods, key),
         None => return None,
@@ -179,6 +181,13 @@ pub fn normalize_combo(raw: &str) -> Option<String> {
         (&mods[..mods.len() - 1], "+")
     } else {
         (mods, key)
+    };
+    // `space` é o jeito legível de escrever à mão; espaço sobrando em volta de
+    // outra tecla é só digitação.
+    let key = match key.trim() {
+        "space" => " ",
+        "" if !key.is_empty() => " ",
+        k => k,
     };
     if key.is_empty() || key.chars().count() > MAX_KEY_LEN || key.chars().any(char::is_control) {
         return None;
@@ -616,7 +625,26 @@ mod tests {
         assert_eq!(normalize_combo("hyper+p"), None);
         assert_eq!(normalize_combo("meta+shift"), None);
         assert_eq!(normalize_combo("meta+\u{7}"), None);
-        assert_eq!(normalize_combo(&format!("meta+{}", "x".repeat(17))), None);
+        assert_eq!(normalize_combo(&format!("meta+{}", "x".repeat(33))), None);
+    }
+
+    #[test]
+    fn space_key_matches_combo_of() {
+        assert_eq!(normalize_combo("ctrl+ ").as_deref(), Some("ctrl+ "));
+        assert_eq!(normalize_combo("Ctrl+Space").as_deref(), Some("ctrl+ "));
+        assert_eq!(
+            normalize_combo("meta+shift+ ").as_deref(),
+            Some("meta+shift+ ")
+        );
+        assert_eq!(normalize_combo(" meta+p ").as_deref(), Some("meta+p"));
+        assert_eq!(
+            normalize_combo("ctrl+LaunchApplication1").as_deref(),
+            Some("ctrl+launchapplication1")
+        );
+        assert_eq!(
+            normalize_combo("alt+MediaTrackPrevious").as_deref(),
+            Some("alt+mediatrackprevious")
+        );
     }
 
     #[test]
