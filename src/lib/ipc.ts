@@ -2162,6 +2162,10 @@ export const dockerComposeOp = (project: string, op: ComposeOp) =>
 
 /** Compose de um projeto, no core: op rodando agora e motivo da última falha. */
 export type ComposeRun = {
+  /** Identidade da execução (cresce a cada compose). */
+  run: number;
+  /** Pasta do projeto (resolvida pelo core). */
+  working_dir: string | null;
   op: ComposeOp | null;
   /** A op da última execução (rodando ou terminada). */
   last_op: ComposeOp | null;
@@ -2173,7 +2177,13 @@ export type ComposeRun = {
 };
 
 /** Lote de saída do compose: `start` é a posição da primeira linha em `total`. */
-export type ComposeOutput = { project: string; start: number; lines: string[] };
+export type ComposeOutput = {
+  project: string;
+  run: number;
+  op: ComposeOp;
+  start: number;
+  lines: string[];
+};
 
 export const onComposeOutput = (handler: (batch: ComposeOutput) => void): Promise<UnlistenFn> =>
   listen<ComposeOutput>("docker-compose-output", (e) => handler(e.payload));

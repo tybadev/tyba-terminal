@@ -34,7 +34,12 @@ import {
   shortImage,
   uptimeMs,
 } from "../lib/dockerPanel";
-import { composeProjects, mergeComposeOutput, visibleProjects } from "../lib/dockerCompose";
+import {
+  composeProjects,
+  mergeComposeOutput,
+  mergeComposeSnapshot,
+  visibleProjects,
+} from "../lib/dockerCompose";
 import { translateError } from "../lib/errors";
 import {
   dockerAvailable,
@@ -368,7 +373,11 @@ export function DockerScreen({
   const refresh = useCallback(async () => {
     // Compose em andamento mora no core (só local): sobrevive à tela fechar.
     if (host) setComposeRuns({});
-    else await dockerComposeRuns().then(setComposeRuns, () => {});
+    else
+      await dockerComposeRuns().then(
+        (snap) => setComposeRuns((cur) => mergeComposeSnapshot(cur, snap)),
+        () => {},
+      );
     try {
       const ok = await dockerAvailable(host);
       setAvailable(ok);
@@ -449,7 +458,7 @@ export function DockerScreen({
     [list, repoProject],
   );
   const selected = (list ?? []).find((c) => c.id === state.container) ?? null;
-  const projects = useMemo(() => composeProjects(list ?? []), [list]);
+  const projects = useMemo(() => composeProjects(list ?? [], composeRuns), [list, composeRuns]);
 
   // Sem escolha (ou o escolhido sumiu): o primeiro da lista.
   useEffect(() => {

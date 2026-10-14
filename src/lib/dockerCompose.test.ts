@@ -4,6 +4,7 @@ import {
   COMPOSE_OUTPUT_CAP,
   composeProjects,
   mergeComposeOutput,
+  mergeComposeSnapshot,
   pickProject,
   portMappings,
   projectRun,
@@ -154,7 +155,9 @@ describe("serviceState", () => {
 });
 
 describe("mergeComposeOutput", () => {
-  const run = (output: string[], total = output.length): ComposeRun => ({
+  const run = (output: string[], total = output.length, id = 1): ComposeRun => ({
+    run: id,
+    working_dir: "/home/dev/poc",
     op: "up",
     last_op: "up",
     error: null,
@@ -164,25 +167,44 @@ describe("mergeComposeOutput", () => {
 
   test("lote na posição certa entra; repetido não duplica", () => {
     const runs = { poc: run(["a", "b"]) };
-    const next = mergeComposeOutput(runs, { project: "poc", start: 2, lines: ["c"] });
+    const next = mergeComposeOutput(runs, { project: "poc", run: 1, op: "up", start: 2, lines: ["c"] });
     expect(next.poc.output).toEqual(["a", "b", "c"]);
     expect(next.poc.total).toBe(3);
     // O retrato já tinha "b" e "c": só "d" é novo.
-    const again = mergeComposeOutput(next, { project: "poc", start: 1, lines: ["b", "c", "d"] });
+    const again = mergeComposeOutput(next, {
+      project: "poc",
+      run: 1,
+      op: "up",
+      start: 1,
+      lines: ["b", "c", "d"],
+    });
     expect(again.poc.output).toEqual(["a", "b", "c", "d"]);
-    expect(mergeComposeOutput(again, { project: "poc", start: 0, lines: ["a"] })).toBe(again);
+    expect(
+      mergeComposeOutput(again, { project: "poc", run: 1, op: "up", start: 0, lines: ["a"] }),
+    ).toBe(again);
   });
 
   test("buraco ou projeto desconhecido esperam o retrato", () => {
     const runs = { poc: run(["a"]) };
-    expect(mergeComposeOutput(runs, { project: "poc", start: 5, lines: ["x"] })).toBe(runs);
-    expect(mergeComposeOutput(runs, { project: "outro", start: 0, lines: ["x"] })).toBe(runs);
+    expect(mergeComposeOutput(runs, { project: "poc", run: 1, op: "up", start: 5, lines: ["x"] })).toBe(
+      runs,
+    );
+    expect(
+      mergeComposeOutput(runs, { project: "outro", run: 1, op: "up", start: 3, lines: ["x"] }),
+    ).toBe(runs);
+    // Lote de execução antiga não entra.
+    expect(
+      mergeComposeOutput({ poc: run(["a"], 1, 2) }, { project: "poc", run: 1, op: "up", start: 1, lines: ["x"] }).poc
+        .output,
+    ).toEqual(["a"]);
   });
 
   test("guarda só as últimas linhas", () => {
     const full = Array.from({ length: COMPOSE_OUTPUT_CAP }, (_, i) => String(i));
     const next = mergeComposeOutput({ poc: run(full) }, {
       project: "poc",
+      run: 1,
+      op: "up",
       start: COMPOSE_OUTPUT_CAP,
       lines: ["fim"],
     });
@@ -190,4 +212,64 @@ describe("mergeComposeOutput", () => {
     expect(next.poc.output.at(-1)).toBe("fim");
     expect(next.poc.output[0]).toBe("1");
   });
+});
+
+describe("execução nova e retrato atrasado", () => {
+  const run = (id: number, output: string[], op: ComposeRun["op"] = null): ComposeRun => ({
+    run: id,
+    working_dir: "/home/dev/poc",
+    op,
+    last_op: "up",
+    error: null,
+    output,
+    total: output.length,
+  });
+
+  test("execução nova não se mistura à anterior", () => {
+    const old = { poc: run(1, ["velha 1", "velha 2", "velha 3"]) };
+    const next = mergeComposeOutput(old, {
+      project: "poc",
+      run: 2,
+      op: "restart",
+      start: 0,
+      lines: ["nova 1"],
+    });
+    expect(next.poc.output).toEqual(["nova 1"]);
+    expect(next.poc.op).toBe("restart");
+    expect(next.poc.run).toBe(2);
+    // Primeira execução do projeto também aparece já no primeiro lote.
+    expect(
+      mergeComposeOutput({}, { project: "api", run: 3, op: "up", start: 0, lines: ["x"] }).api.output,
+    ).toEqual(["x"]);
+  });
+
+  test("retrato lido antes de eventos não apaga linhas nem volta execução", () => {
+    const tela = { poc: run(2, ["a", "b", "c"], "up") };
+    const atrasado = { poc: run(2, ["a"], "up") };
+    expect(mergeComposeSnapshot(tela, atrasado).poc.output).toEqual(["a", "b", "c"]);
+    const antigo = { poc: run(1, ["velha"]) };
+    expect(mergeComposeSnapshot(tela, antigo).poc.run).toBe(2);
+    // Retrato à frente manda.
+    const novo = { poc: { ...run(2, ["a", "b", "c", "d"]), error: "falhou" } };
+    expect(mergeComposeSnapshot(tela, novo).poc).toEqual(novo.poc);
+  });
+});
+
+test("projeto sem container mas com compose registrado continua na coluna", () => {
+  const runs = {
+    sumido: {
+      run: 1,
+      working_dir: "/home/dev/sumido",
+      op: null,
+      last_op: "down" as const,
+      error: null,
+      output: ["Removed"],
+      total: 1,
+    },
+  };
+  const projects = composeProjects(list, runs);
+  const ghost = projects.find((p) => p.name === "sumido");
+  expect(ghost?.services).toEqual([]);
+  expect(ghost?.workingDir).toBe("/home/dev/sumido");
+  expect(visibleProjects(projects, true).map((p) => p.name)).toContain("sumido");
 });

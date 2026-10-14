@@ -103,7 +103,9 @@ function ComposeOutputPanel({ run }: { run: ComposeRun }) {
         }}
         className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all px-[18px] py-2 font-mono text-[11.5px] leading-[18px] text-tyba-text-muted"
       >
-        {run.output.length > 0 ? run.output.join("\n") : t("dockerScreenComposeNoOutput")}
+        {run.output.length > 0
+          ? run.output.join("\n")
+          : t(run.op ? "dockerScreenComposeNoOutput" : "dockerScreenComposeNoOutputDone")}
       </pre>
     </div>
   );
@@ -293,9 +295,7 @@ export function DockerComposeSection({
           : null;
     const fileBlocked =
       blocked ??
-      (p.fileStatus !== "ok"
-        ? t(UNREACHABLE[(p.fileStatus ?? "missing") as Exclude<PathStatus, "ok">])
-        : null);
+      (p.fileStatus && p.fileStatus !== "ok" ? t(UNREACHABLE[p.fileStatus]) : null);
     const file = p.composeFile ?? "compose.yml";
     const running = runs[p.name]?.op ?? null;
     const lastError = runs[p.name]?.error ?? null;

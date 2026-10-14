@@ -81,9 +81,12 @@ impl FilesScreen {
             }
         }
         self.active = Some(view.to_string());
-        self.recent.retain(|v| v != view);
-        self.recent.insert(0, view.to_string());
-        self.recent.truncate(RECENT_CAP);
+        // Recentes são arquivos da sessão: o compose só leitura não entra.
+        if !view.starts_with(super::VIEW_COMPOSE_FILE_PREFIX) {
+            self.recent.retain(|v| v != view);
+            self.recent.insert(0, view.to_string());
+            self.recent.truncate(RECENT_CAP);
+        }
     }
 
     /// Foca uma aba que já existe. `false` se não existe.
@@ -345,6 +348,18 @@ mod tests {
             s.open(&format!("f{i}"), true);
         }
         assert_eq!(s.recent.len(), RECENT_CAP);
+    }
+
+    #[test]
+    fn compose_file_tab_does_not_take_a_recent_slot() {
+        let mut s = FilesScreen::default();
+        s.open("editor:s1:a.rs", false);
+        s.open("compose-file:s1:poc:0:compose.yml", false);
+        assert_eq!(s.recent, vec!["editor:s1:a.rs"]);
+        assert_eq!(
+            s.active.as_deref(),
+            Some("compose-file:s1:poc:0:compose.yml")
+        );
     }
 
     #[test]

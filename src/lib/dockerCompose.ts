@@ -9,15 +9,31 @@ import type { ComposeOutput, ComposeRun, ContainerInfo, PathStatus } from "./ipc
 export const COMPOSE_OUTPUT_CAP = 2000;
 
 /**
- * Junta um lote de saída ao retrato do core pela posição: o que o retrato já
- * trouxe não repete; lote depois de um buraco espera o próximo retrato.
+ * Junta um lote de saída ao que a tela tem, pela execução e pela posição: o
+ * que já chegou não repete; execução nova começa do zero (o lote de abertura
+ * já basta para mostrar); lote depois de um buraco espera o próximo retrato.
  */
 export function mergeComposeOutput(
   runs: Record<string, ComposeRun>,
   batch: ComposeOutput,
 ): Record<string, ComposeRun> {
   const run = runs[batch.project];
-  if (!run || batch.start > run.total) return runs;
+  if (!run || batch.run > run.run) {
+    if (batch.start !== 0) return runs;
+    return {
+      ...runs,
+      [batch.project]: {
+        run: batch.run,
+        working_dir: run?.working_dir ?? null,
+        op: batch.op,
+        last_op: batch.op,
+        error: null,
+        output: batch.lines.slice(-COMPOSE_OUTPUT_CAP),
+        total: batch.lines.length,
+      },
+    };
+  }
+  if (batch.run < run.run || batch.start > run.total) return runs;
   const fresh = batch.lines.slice(run.total - batch.start);
   if (fresh.length === 0) return runs;
   return {
@@ -28,6 +44,29 @@ export function mergeComposeOutput(
       total: run.total + fresh.length,
     },
   };
+}
+
+/**
+ * O retrato periódico do core manda, menos onde a tela já está à frente: na
+ * mesma execução, linhas que chegaram por evento depois do retrato ser lido
+ * não somem; execução mais nova vista por evento não volta para a antiga.
+ */
+export function mergeComposeSnapshot(
+  current: Record<string, ComposeRun>,
+  snapshot: Record<string, ComposeRun>,
+): Record<string, ComposeRun> {
+  const out: Record<string, ComposeRun> = { ...snapshot };
+  for (const [name, mine] of Object.entries(current)) {
+    const snap = snapshot[name];
+    if (!snap || mine.run > snap.run) {
+      if (snap || mine.op) out[name] = mine;
+      continue;
+    }
+    if (mine.run === snap.run && mine.total > snap.total) {
+      out[name] = { ...snap, output: mine.output, total: mine.total };
+    }
+  }
+  return out;
 }
 
 export type ComposeProject = {
@@ -41,6 +80,8 @@ export type ComposeProject = {
   inRepo: boolean;
   services: ContainerInfo[];
   running: number;
+  /** Já rodou compose nesta execução do app (a saída fica na tela). */
+  hasRun: boolean;
 };
 
 /** Todos rodando, alguns, ou nenhum: a cor do ponto do projeto. */
@@ -62,7 +103,10 @@ function firstFile(raw: string | null): string | null {
  * Containers). Ordem: o projeto do repo primeiro, depois por nome. Serviços
  * por nome.
  */
-export function composeProjects(list: readonly ContainerInfo[]): ComposeProject[] {
+export function composeProjects(
+  list: readonly ContainerInfo[],
+  runs: Readonly<Record<string, ComposeRun>> = {},
+): ComposeProject[] {
   const byName = new Map<string, ContainerInfo[]>();
   for (const c of list) {
     if (!c.compose_project) continue;
@@ -82,19 +126,36 @@ export function composeProjects(list: readonly ContainerInfo[]): ComposeProject[
       inRepo: items.some((c) => c.in_repo),
       services,
       running: items.filter((c) => c.state === "running").length,
+      hasRun: name in runs,
     };
   });
+  // Projeto que rodou compose e ficou sem container (depois do `down`):
+  // continua na coluna, com a saída e as ações.
+  for (const [name, run] of Object.entries(runs)) {
+    if (byName.has(name)) continue;
+    out.push({
+      name,
+      workingDir: run.working_dir,
+      dirStatus: null,
+      fileStatus: null,
+      composeFile: null,
+      inRepo: false,
+      services: [],
+      running: 0,
+      hasRun: true,
+    });
+  }
   return out.sort((a, b) =>
     a.inRepo !== b.inRepo ? (a.inRepo ? -1 : 1) : a.name.localeCompare(b.name),
   );
 }
 
-/** "Ocultar parados": some o projeto sem nada rodando. */
+/** "Ocultar parados": some o projeto sem nada rodando (menos o que tem saída de compose). */
 export function visibleProjects(
   projects: readonly ComposeProject[],
   hideStopped: boolean,
 ): ComposeProject[] {
-  return hideStopped ? projects.filter((p) => p.running > 0) : [...projects];
+  return hideStopped ? projects.filter((p) => p.running > 0 || p.hasRun) : [...projects];
 }
 
 /**

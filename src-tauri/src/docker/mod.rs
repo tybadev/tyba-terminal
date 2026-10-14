@@ -189,6 +189,29 @@ pub struct ComposeFile {
     pub text: String,
 }
 
+/// Lê um arquivo regular com teto, sem travar nem estourar: abre sem bloquear
+/// (FIFO não prende a thread), confere pelo descritor que é arquivo regular
+/// (link para `/dev/zero` não passa) e lê no máximo `cap` bytes.
+fn read_regular_capped(path: &Path, cap: u64) -> Result<String, DockerError> {
+    use std::io::Read as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
+    let shown = path.to_string_lossy().into_owned();
+    if !meta.is_file() || meta.len() > cap {
+        return Err(DockerError::InvalidPath(shown));
+    }
+    let mut buf = Vec::new();
+    file.take(cap + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > cap {
+        return Err(DockerError::InvalidPath(shown));
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// Linhas da saída do compose que a tela guarda por projeto (as últimas).
 pub const COMPOSE_OUTPUT_CAP: usize = 2000;
 
@@ -197,6 +220,12 @@ pub const COMPOSE_OUTPUT_CAP: usize = 2000;
 /// última execução (já redigida), que fica até a próxima.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ComposeRun {
+    /// Identidade da execução (cresce a cada `begin`): a tela não mistura a
+    /// saída de uma execução com a da anterior.
+    pub run: u64,
+    /// Pasta do projeto, para a tela mostrar o projeto mesmo depois que o
+    /// `down` tirou os containers dele.
+    pub working_dir: Option<String>,
     pub op: Option<ComposeOp>,
     /// A op da última execução (rodando ou terminada), para o título da saída.
     pub last_op: Option<ComposeOp>,
@@ -213,28 +242,49 @@ pub struct ComposeRun {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ComposeOutput {
     pub project: String,
+    pub run: u64,
+    pub op: ComposeOp,
     pub start: usize,
     pub lines: Vec<String>,
 }
 
 /// Compose por projeto: um de cada vez.
 #[derive(Debug, Default)]
-pub struct ComposeRuns(HashMap<String, ComposeRun>);
+pub struct ComposeRuns {
+    runs: HashMap<String, ComposeRun>,
+    next: u64,
+}
 
 impl ComposeRuns {
     /// Marca `op` rodando; recusa se o projeto já tem um compose em andamento.
     /// Limpa a falha e a saída anteriores.
     pub fn begin(&mut self, project: &str, op: ComposeOp) -> Result<(), DockerError> {
-        let run = self.0.entry(project.to_string()).or_default();
+        let run = self.runs.entry(project.to_string()).or_default();
         if run.op.is_some() {
             return Err(DockerError::ComposeBusy(project.to_string()));
         }
+        self.next += 1;
         *run = ComposeRun {
+            run: self.next,
+            working_dir: run.working_dir.take(),
             op: Some(op),
             last_op: Some(op),
             ..Default::default()
         };
         Ok(())
+    }
+
+    /// A pasta do projeto, quando o core a resolve.
+    pub fn set_dir(&mut self, project: &str, dir: &str) {
+        if let Some(run) = self.runs.get_mut(project) {
+            run.working_dir = Some(dir.to_string());
+        }
+    }
+
+    /// Projetos com execução registrada (o retrato de projetos os guarda
+    /// mesmo depois do `down`, para subir de novo e abrir o compose).
+    pub fn has(&self, project: &str) -> bool {
+        self.runs.contains_key(project)
     }
 
     /// Junta linhas à saída do projeto (cortando o começo além do teto) e
@@ -243,7 +293,8 @@ impl ComposeRuns {
         if lines.is_empty() {
             return None;
         }
-        let run = self.0.get_mut(project)?;
+        let run = self.runs.get_mut(project)?;
+        let op = run.op?;
         let start = run.total;
         run.total += lines.len();
         run.output.extend(lines.iter().cloned());
@@ -251,6 +302,8 @@ impl ComposeRuns {
         run.output.drain(..over);
         Some(ComposeOutput {
             project: project.to_string(),
+            run: run.run,
+            op,
             start,
             lines,
         })
@@ -258,13 +311,17 @@ impl ComposeRuns {
 
     /// Desmarca; a saída fica, e a falha fica com o motivo.
     pub fn finish(&mut self, project: &str, result: &Result<(), DockerError>) {
-        let run = self.0.entry(project.to_string()).or_default();
+        let run = self.runs.entry(project.to_string()).or_default();
         run.op = None;
-        run.error = result.as_ref().err().map(|e| e.to_string());
+        // O motivo vem do stderr: redigido como a saída (princípio #10).
+        run.error = result
+            .as_ref()
+            .err()
+            .map(|e| crate::session::redact::redact(&e.to_string()).into_owned());
     }
 
     pub fn snapshot(&self) -> HashMap<String, ComposeRun> {
-        self.0.clone()
+        self.runs.clone()
     }
 }
 
@@ -820,7 +877,7 @@ fn stream_compose(
     if status.success() {
         return Ok(());
     }
-    let reason = last_err.lock().trim().to_string();
+    let reason = crate::session::redact::redact(last_err.lock().trim()).into_owned();
     Err(DockerError::Failed(if reason.is_empty() {
         "erro desconhecido".into()
     } else {
@@ -1294,21 +1351,26 @@ impl DockerManager {
         // existir por acaso e virar `compose down` na pasta errada.
         if host.is_none() {
             let mut projects = self.projects.lock();
-            projects.clear();
+            // Projeto que já rodou compose fica mesmo sem container (depois
+            // do `down`): dá para subir de novo e o compose.yml continua abrindo.
+            let runs = self.compose_runs.lock();
+            projects.retain(|name, _| runs.has(name));
+            drop(runs);
             for c in &containers {
                 if let (Some(project), Some(wd)) =
                     (c.compose_project.as_ref(), c.compose_working_dir.as_ref())
                 {
-                    projects
-                        .entry(project.clone())
-                        .or_insert_with(|| ProjectInfo {
+                    projects.insert(
+                        project.clone(),
+                        ProjectInfo {
                             working_dir: wd.clone(),
                             config_files: c
                                 .config_files
                                 .as_deref()
                                 .map(|raw| resolve_compose_files(wd, raw))
                                 .unwrap_or_default(),
-                        });
+                        },
+                    );
                 }
             }
         }
@@ -1459,6 +1521,7 @@ impl DockerManager {
         emit: &impl Fn(ComposeOutput),
     ) -> Result<(), DockerError> {
         let info = self.project_info(project)?;
+        self.compose_runs.lock().set_dir(project, &info.working_dir);
         validate_working_dir(&info.working_dir)?;
         for file in &info.config_files {
             validate_compose_file(file)?;
@@ -1499,11 +1562,7 @@ impl DockerManager {
             .ok_or_else(|| DockerError::UnknownProject(project.to_string()))?
             .clone();
         validate_compose_file(&path)?;
-        let len = std::fs::metadata(&path)?.len();
-        if len > COMPOSE_FILE_CAP {
-            return Err(DockerError::InvalidPath(path));
-        }
-        let text = std::fs::read_to_string(&path)?;
+        let text = read_regular_capped(Path::new(&path), COMPOSE_FILE_CAP)?;
         Ok(ComposeFile { path, text })
     }
 
@@ -1668,8 +1727,14 @@ mod tests {
         // Outro projeto não espera.
         runs.begin("api", ComposeOp::Restart).unwrap();
 
-        let batch = runs.append("poc", vec!["Pulling".into(), "Pulled".into()]);
-        assert_eq!(batch.map(|b| b.start), Some(0));
+        let first_run = runs.snapshot()["poc"].run;
+        let batch = runs
+            .append("poc", vec!["Pulling".into(), "Pulled".into()])
+            .unwrap();
+        assert_eq!(
+            (batch.start, batch.run, batch.op),
+            (0, first_run, ComposeOp::Up)
+        );
         let batch = runs.append("poc", vec!["Started".into()]).unwrap();
         assert_eq!((batch.start, batch.lines.len()), (2, 1));
         assert!(runs.append("poc", Vec::new()).is_none());
@@ -1685,14 +1750,55 @@ mod tests {
         assert_eq!(poc.total, 3);
 
         // Nova op limpa falha e saída; sucesso mantém a saída.
+        runs.set_dir("poc", "/u/poc");
         runs.begin("poc", ComposeOp::Down).unwrap();
         assert_eq!(runs.snapshot()["poc"].error, None);
+        assert!(runs.snapshot()["poc"].run > first_run);
+        assert_eq!(
+            runs.snapshot()["poc"].working_dir.as_deref(),
+            Some("/u/poc")
+        );
+        assert!(runs.has("poc") && !runs.has("ninguem"));
         assert!(runs.snapshot()["poc"].output.is_empty());
         runs.append("poc", vec!["Removed".into()]);
         runs.finish("poc", &Ok(()));
         let poc = &runs.snapshot()["poc"];
         assert_eq!((poc.op, poc.error.as_ref()), (None, None));
         assert_eq!(poc.output, vec!["Removed"]);
+    }
+
+    #[test]
+    fn compose_failure_reason_is_redacted() {
+        let mut runs = ComposeRuns::default();
+        runs.begin("poc", ComposeOp::Up).unwrap();
+        // Token sintético.
+        let secret = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
+        runs.finish(
+            "poc",
+            &Err(DockerError::Failed(format!("auth failed with {secret}"))),
+        );
+        let error = runs.snapshot()["poc"].error.clone().unwrap();
+        assert!(!error.contains(secret), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compose_file_read_refuses_devices_fifos_and_big_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = dir.path().join("compose.yml");
+        std::fs::write(&ok, "services: {}\n").unwrap();
+        assert_eq!(read_regular_capped(&ok, 1024).unwrap(), "services: {}\n");
+        assert!(read_regular_capped(&ok, 4).is_err());
+
+        let zero = dir.path().join("zero.yml");
+        std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
+        assert!(read_regular_capped(&zero, 1024).is_err());
+
+        let fifo = dir.path().join("fifo.yml");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        // Não pode prender: abre sem bloquear e recusa por não ser arquivo.
+        assert!(read_regular_capped(&fifo, 1024).is_err());
     }
 
     #[test]
