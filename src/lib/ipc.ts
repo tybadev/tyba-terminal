@@ -101,6 +101,9 @@ export interface Session {
   status_note?: string | null;
   /** O que o `statusLine` do Claude reportou. Só memória no core. */
   agent_usage?: AgentUsage | null;
+  /** Shell restaurado com uma conversa do Claude que ainda dá para retomar.
+   * Decidido pelo core no boot; só em memória. */
+  shell_resume_offer?: boolean;
 }
 
 export interface RateWindow {
@@ -554,7 +557,34 @@ export interface PrPage {
   forge: ForgeKind;
   /** ISO; quando o core buscou (o cache pode devolver algo de antes). */
   fetched_at: string;
+  /** Limite da API baixo: a revalidação automática parou até `reset_at`. */
+  rate_limit: ForgeRateLimit | null;
 }
+
+/** Balde de limite da API do GitHub (`core` = REST, `graphql`). */
+export interface ForgeRateLimit {
+  resource: string;
+  /** `0` = limite desconhecido (erro de limite sem os cabeçalhos). */
+  limit: number;
+  remaining: number;
+  /** ISO (UTC). */
+  reset_at: string;
+}
+
+/**
+ * Revalidação em segundo plano (stale-while-revalidate) achou dado novo:
+ * quem mostra `repo` relê pelo cache (`fresh: false`). `number` nulo é a
+ * lista; com número, o detalhe daquele PR.
+ */
+export interface ForgeChange {
+  repo: string;
+  number: number | null;
+}
+
+export const EVENT_FORGE_CHANGED = "forge://changed";
+
+export const onForgeChanged = (handler: (change: ForgeChange) => void): Promise<UnlistenFn> =>
+  listen<ForgeChange>(EVENT_FORGE_CHANGED, (e) => handler(e.payload));
 
 export interface PrCommit {
   sha: string;
@@ -616,6 +646,8 @@ export interface PrDetail {
   additions: number;
   deletions: number;
   changed_files: number;
+  /** Total de commits do PR; `commits` pode trazer só os 100 últimos. */
+  commits_total: number;
   commits: PrCommit[];
   files: PrFile[];
   checks: PrCheck[];
@@ -629,7 +661,16 @@ export interface PrDetail {
   mergeable: "mergeable" | "conflicting" | "unknown";
   /** `mergeStateStatus` do GitHub em minúsculas: clean, behind, blocked, dirty… */
   merge_state: string;
+  /** PR vindo de fork (`isCrossRepository`): código de terceiros. */
+  cross_repo: boolean;
   session: PrSessionLink | null;
+  /**
+   * O core trouxe no máximo 100 commits/checks/threads/comentários/revisões/
+   * arquivos e o PR tem mais.
+   */
+  truncated: boolean;
+  /** Ver `PrPage.rate_limit`. */
+  rate_limit: ForgeRateLimit | null;
 }
 
 /** `null` = a forja da sessão não tem lista rica (GitLab por enquanto). */
@@ -662,6 +703,25 @@ export const forgePrMerge = (
   strategy: PrMergeStrategy,
   headSha: string,
 ) => invoke<void>("forge_pr_merge", { id, number, strategy, headSha });
+
+// --- PR sem sessão: "Abrir no TYBA" e "Checkout" ---------------------------
+// Só pela UI, sempre depois de confirmação. O core busca `refs/pull/<n>/head`,
+// confere contra `headSha` (o que o usuário viu) e nunca empurra nada.
+
+/** Sessão de shell num worktree NOVO no head do PR (branch `tyba/pr/<n>-…`);
+ *  o checkout do usuário não muda. Se uma sessão já abriu o PR, devolve ela. */
+export const forgePrOpenSession = (
+  id: SessionId,
+  number: number,
+  headSha: string,
+  cols: number,
+  rows: number,
+) => invoke<Session>("forge_pr_open_session", { id, number, headSha, cols, rows });
+
+/** Checkout do head do PR no repo da sessão, em HEAD destacado. Recusa árvore
+ *  suja e sessão com worktree. */
+export const forgePrCheckout = (id: SessionId, number: number, headSha: string) =>
+  invoke<void>("forge_pr_checkout", { id, number, headSha });
 
 /** Aba "git · pull requests" do repo da sessão. */
 export const openPrListTab = (id: SessionId) =>
@@ -936,6 +996,15 @@ export const canResumeAgentSession = (id: SessionId) =>
  * resume da CLI dele. Só por clique do usuário — nunca no boot. */
 export const resumeAgentSession = (id: SessionId, cols = 100, rows = 30) =>
   invoke<Session>("resume_agent_session", { id, cols, rows });
+
+/** Retoma, no shell restaurado, a conversa do Claude de antes do restart: o
+ * core digita `claude --resume <id>` no próprio shell, que passa pelo gate
+ * como qualquer `claude` digitado. Só por clique. */
+export const resumeShellConversation = (id: SessionId) =>
+  invoke<void>("resume_shell_conversation", { id });
+
+export const dismissShellResumeOffer = (id: SessionId) =>
+  invoke<void>("dismiss_shell_resume_offer", { id });
 
 export const onAgentDetected = (
   handler: (p: AgentDetectedPayload) => void,
@@ -1392,6 +1461,70 @@ export const onApprovalRequested = (
 ): Promise<UnlistenFn> =>
   listen<ApprovalRequest>("approvals://requested", (e) => handler(e.payload));
 
+// --- histórico de notificações (painel Notificações) -----------------------
+// O core grava cada evento que merece atenção (pedido, erro, conclusão, limite)
+// no SQLite, com segredos mascarados ANTES de gravar, e guarda o lido/não lido.
+// A UI monta o texto a partir de `kind` + campos (i18n); nada de frase pronta.
+
+export type NotificationKind =
+  /** Pedido de aprovação; `pending` diz se ainda espera decisão. */
+  | "approval"
+  /** Amarelo do Claude decidido no prompt NATIVO (fora do TYBA). O core só
+   *  observa os hooks; a decisão é deduzida (a chamada rodou = aprovado; o
+   *  turno seguiu sem ela = negado). Nunca se decide pelo painel. */
+  | "native_approval"
+  /** Agente parou de trabalhar e voltou ao prompt (running → idle). */
+  | "agent_finished"
+  /** Turno falhou (`StopFailure`) ou sessão `failed`. Não vem de `exited`:
+   *  o core ignora o código de saída (-1 quando foi morto). */
+  | "agent_failed"
+  /** Limite de uso ≥ 85% (`pct` < 100) ou atingido (`pct` ≥ 100). */
+  | "usage_limit";
+
+export type NotificationCategory = "request" | "error" | "done" | "info";
+
+export interface NotificationEntry {
+  id: number;
+  at_ms: number;
+  session_id: SessionId;
+  /** Título da sessão quando o evento aconteceu (a sessão pode ter morrido). */
+  session_title: string;
+  /** "claude" | "codex" | nome do agente custom; `null` em shell. */
+  agent: string | null;
+  kind: NotificationKind;
+  /** request = approval pendente; error = agent_failed ou limite atingido;
+   *  done = agent_finished ou approval resolvida; info = aviso de limite. */
+  category: NotificationCategory;
+  /** approval: id do pedido no ApprovalsManager. native_approval: id da
+   *  linha deduzida em `approval_history` (outro espaço de ids). */
+  approval_id: number | null;
+  /** approval: ainda sem decisão. Pedido encerrado sem decisão (o app
+   *  reiniciou com ele aberto) fica `pending=false, decision=null`. */
+  pending: boolean;
+  /** approval: decisão tomada ("approved" | "denied" | "approved_always");
+   *  `null` se pendente ou encerrado sem decisão. */
+  decision: ApprovalDecision | null;
+  risk: RiskLevel | null;
+  /** approval: o comando pedido (mascarado, até 2 KiB). */
+  command: string | null;
+  /** agent_finished: resumo do status idle; agent_failed: motivo (mascarado). */
+  detail: string | null;
+  usage: { window: "five_hour" | "seven_day"; pct: number; resets_at: number | null } | null;
+  /** Resolver um pedido grava `read=true` (quem decidiu já viu). */
+  read: boolean;
+}
+
+/** Mais nova primeiro; até 500, dos últimos 7 dias. */
+export const notificationsList = () => invoke<NotificationEntry[]>("notifications_list");
+
+/** `ids` = esses; `null` = todas. */
+export const notificationsMarkRead = (ids: number[] | null) =>
+  invoke<void>("notifications_mark_read", { ids });
+
+/** Mudou algo no histórico (entrou, resolveu, leu): a UI relê a lista. */
+export const onNotificationsChanged = (handler: () => void): Promise<UnlistenFn> =>
+  listen<null>("notifications://changed", () => handler());
+
 export const onApprovalResolved = (
   handler: (resolved: { id: number; decision: ApprovalDecision }) => void,
 ): Promise<UnlistenFn> =>
@@ -1442,8 +1575,120 @@ export interface Workspace {
   side_view: string | null;
   side_ratio: number;
   side_expanded: boolean;
+  /** Telas cheias de Arquivos e Docker (estado do core, não persiste). */
+  screens: Screens;
   created_at: string;
 }
+
+export type FilesSection = "files" | "search" | "recent";
+
+export interface FileScreenTab {
+  /** `editor:<sessão>:<rel>` */
+  view: string;
+  /** Pré-visualização (itálico): o próximo arquivo aberto assim a substitui. */
+  preview: boolean;
+}
+
+export interface FilesScreenState {
+  section: FilesSection;
+  tabs: FileScreenTab[];
+  active: string | null;
+  recent: string[];
+}
+
+export type DockerSection = "containers" | "compose" | "images" | "volumes";
+export type ContainerPane = "logs" | "shell" | "files" | "details";
+
+export interface DockerScreenState {
+  section: DockerSection;
+  container: string | null;
+  pane: ContainerPane;
+  /** Projeto escolhido na seção Compose. */
+  project: string | null;
+  /** "Ocultar parados" da seção Compose. */
+  hide_stopped: boolean;
+}
+
+export interface Screens {
+  files: FilesScreenState;
+  docker: DockerScreenState;
+}
+
+export const filesScreenActivate = (workspace: WorkspaceId, view: string) =>
+  invoke<void>("files_screen_activate", { workspace, view });
+
+export const filesScreenPin = (workspace: WorkspaceId, view: string) =>
+  invoke<void>("files_screen_pin", { workspace, view });
+
+export const filesScreenClose = (workspace: WorkspaceId, view: string) =>
+  invoke<void>("files_screen_close", { workspace, view });
+
+export const filesScreenSection = (workspace: WorkspaceId, section: FilesSection) =>
+  invoke<void>("files_screen_section", { workspace, section });
+
+export interface GrepHit {
+  path: string;
+  /** 1-based */
+  line: number;
+  /** Já redigido no core. */
+  text: string;
+}
+
+export interface GrepOutcome {
+  hits: GrepHit[];
+  truncated: boolean;
+}
+
+/** "Buscar no projeto": texto nos arquivos rastreados (`git grep`), só local. */
+export const filesGrep = (id: SessionId, query: string, limit?: number) =>
+  invoke<GrepOutcome>("files_grep", { id, query, limit: limit ?? null });
+
+export const dockerScreenSection = (workspace: WorkspaceId, section: DockerSection) =>
+  invoke<void>("docker_screen_section", { workspace, section });
+
+export const dockerScreenSelect = (workspace: WorkspaceId, container: string | null) =>
+  invoke<void>("docker_screen_select", { workspace, container });
+
+export const dockerScreenPane = (workspace: WorkspaceId, pane: ContainerPane) =>
+  invoke<void>("docker_screen_pane", { workspace, pane });
+
+export const dockerScreenProject = (workspace: WorkspaceId, project: string | null) =>
+  invoke<void>("docker_screen_project", { workspace, project });
+
+export const dockerScreenHideStopped = (workspace: WorkspaceId, hide: boolean) =>
+  invoke<void>("docker_screen_hide_stopped", { workspace, hide });
+
+/** Logs/Shell de um serviço do Compose: o container na seção Containers. */
+export const dockerScreenShow = (workspace: WorkspaceId, container: string, pane: ContainerPane) =>
+  invoke<void>("docker_screen_show", { workspace, container, pane });
+
+/** O shell (`docker exec`) que mora na tela de Docker: devolve a sessão dele. */
+export const dockerScreenShell = (containerId: string, host?: string | null) =>
+  invoke<SessionId>("docker_screen_shell", { containerId, host: host ?? null });
+
+/** Os logs (`docker logs -f`) da tela de Docker em sessão SSH: sessão de terminal sem aba. */
+export const dockerScreenLogs = (containerId: string, host?: string | null) =>
+  invoke<SessionId>("docker_screen_logs", { containerId, host: host ?? null });
+
+export interface ImageInfo {
+  id: string;
+  repository: string;
+  tag: string;
+  size: string;
+  created_since: string;
+}
+
+export interface VolumeInfo {
+  name: string;
+  driver: string;
+  mountpoint: string;
+}
+
+export const dockerListImages = (host?: string | null) =>
+  invoke<ImageInfo[]>("docker_list_images", { host: host ?? null });
+
+export const dockerListVolumes = (host?: string | null) =>
+  invoke<VolumeInfo[]>("docker_list_volumes", { host: host ?? null });
 
 export interface LayoutState {
   workspaces: Workspace[];
@@ -1670,9 +1915,6 @@ export const createWorkspace = (
     sessionId,
     tag: tag ?? null,
   });
-
-export const tagWorkspace = (id: WorkspaceId, name: string, tag: WorkspaceTag) =>
-  invoke<void>("tag_workspace", { id, name, tag });
 
 export const closeWorkspace = (id: WorkspaceId) =>
   invoke<void>("close_workspace", { id });
@@ -1961,12 +2203,6 @@ export const dockerListContainers = (
     host: host ?? null,
   });
 
-export const dockerOpenShell = (containerId: string, host?: string | null) =>
-  invoke<void>("docker_open_shell", { containerId, host: host ?? null });
-
-export const dockerOpenDashboard = () =>
-  invoke<void>("docker_open_dashboard");
-
 export const openViewTab = (view: string) =>
   invoke<void>("open_view_tab", { view });
 
@@ -2053,14 +2289,52 @@ export const dockerContainerOp = (
 export const dockerOpenDesktop = () =>
   invoke<void>("docker_open_desktop");
 
+/** Roda o compose sem terminal e resolve quando ele termina. */
 export const dockerComposeOp = (project: string, op: ComposeOp) =>
   invoke<void>("docker_compose_op", { project, op });
+
+/** Compose de um projeto, no core: op rodando agora e motivo da última falha. */
+export type ComposeRun = {
+  /** Identidade da execução (cresce a cada compose). */
+  run: number;
+  /** Pasta do projeto (resolvida pelo core). */
+  working_dir: string | null;
+  op: ComposeOp | null;
+  /** A op da última execução (rodando ou terminada). */
+  last_op: ComposeOp | null;
+  error: string | null;
+  /** Últimas linhas da saída (já redigidas pelo core). */
+  output: string[];
+  /** Linhas recebidas na execução, inclusive as cortadas do começo. */
+  total: number;
+};
+
+/** Lote de saída do compose: `start` é a posição da primeira linha em `total`. */
+export type ComposeOutput = {
+  project: string;
+  run: number;
+  op: ComposeOp;
+  start: number;
+  lines: string[];
+};
+
+export const onComposeOutput = (handler: (batch: ComposeOutput) => void): Promise<UnlistenFn> =>
+  listen<ComposeOutput>("docker-compose-output", (e) => handler(e.payload));
+
+/** Um arquivo compose, só leitura (`index` em `config_files`). */
+export const dockerComposeFile = (project: string, index: number) =>
+  invoke<{ path: string; text: string }>("docker_compose_file", { project, index });
+
+/** Projetos que já rodaram compose nesta execução do app (só local). */
+export const dockerComposeRuns = () =>
+  invoke<Record<string, ComposeRun>>("docker_compose_runs");
 
 export const dockerOpenProject = (project: string) =>
   invoke<void>("docker_open_project", { project });
 
-export const dockerOpenComposeFile = (project: string) =>
-  invoke<void>("docker_open_compose_file", { project });
+/** Abre o compose do projeto, só leitura, na tela de Arquivos da sessão. */
+export const dockerOpenComposeFile = (session: SessionId, project: string) =>
+  invoke<void>("docker_open_compose_file", { session, project });
 
 export type ThemeMode = "dark" | "light" | "system";
 export type ThemeBase = "dark" | "light";
@@ -2950,8 +3224,11 @@ export interface EditorTabOpened {
   view: string;
 }
 
-export const openEditorTabCmd = (session: SessionId | null, path: string) =>
-  invoke<EditorTabOpened>("open_editor_tab", { session, path });
+export const openEditorTabCmd = (
+  session: SessionId | null,
+  path: string,
+  preview = false,
+) => invoke<EditorTabOpened>("open_editor_tab", { session, path, preview });
 
 /** Diff da sessão como aba de conteúdo (não o painel lateral). */
 export const openDiffContentTab = (id: SessionId) =>

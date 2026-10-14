@@ -10,10 +10,14 @@ use crate::session::store::Store;
 use crate::session::SessionId;
 
 pub mod history;
+pub mod screens;
 
 pub const EVENT_CHANGED: &str = "layout://changed";
 
 const KEY_ACTIVE_WORKSPACE: &str = "layout.active_workspace";
+/// JSON `{ <workspace id>: FilesScreen }` — a tela de Arquivos de cada
+/// workspace, que não cabe nas linhas de layout.
+const KEY_FILE_SCREENS: &str = "layout.file_screens";
 const MIN_RATIO: f64 = 0.1;
 const MAX_RATIO: f64 = 0.9;
 
@@ -316,7 +320,10 @@ pub struct Tag {
     pub group: Option<String>,
 }
 
-pub const VIEW_CONTAINERS: &str = "containers";
+/// Aba do workspace Docker antigo (projetos compose), aposentada pela seção
+/// Compose da tela de Docker. Só existe para migrar layout salvo: ao carregar,
+/// a aba some e quem estava nela cai na seção Compose.
+const RETIRED_VIEW_CONTAINERS: &str = "containers";
 pub const VIEW_SETTINGS: &str = "settings";
 pub const VIEW_WORKSPACE: &str = "workspace";
 pub const VIEW_CONNECTIONS: &str = "connections";
@@ -395,6 +402,15 @@ pub fn history_view(session: SessionId) -> String {
     format!("{VIEW_HISTORY_PREFIX}{session}")
 }
 
+/// Aba só leitura da tela de Arquivos com um arquivo compose de qualquer
+/// projeto: `compose-file:<sessão>:<projeto>:<índice>:<nome>`. Não volta no
+/// reinício (o projeto é do retrato de containers desta execução).
+pub const VIEW_COMPOSE_FILE_PREFIX: &str = "compose-file:";
+
+pub fn compose_file_view(session: SessionId, project: &str, index: usize, name: &str) -> String {
+    format!("{VIEW_COMPOSE_FILE_PREFIX}{session}:{project}:{index}:{name}")
+}
+
 pub fn editor_view(session: SessionId, rel: &str) -> String {
     format!("{VIEW_EDITOR_PREFIX}{session}:{rel}")
 }
@@ -406,16 +422,34 @@ pub fn editor_view_session(view: &str) -> Option<SessionId> {
     Uuid::parse_str(sid).ok()
 }
 
+/// Sessão dona de uma aba da tela de Arquivos: editor ou compose só leitura.
+pub fn screen_file_session(view: &str) -> Option<SessionId> {
+    editor_view_session(view).or_else(|| {
+        let rest = view.strip_prefix(VIEW_COMPOSE_FILE_PREFIX)?;
+        let (sid, _) = rest.split_once(':')?;
+        Uuid::parse_str(sid).ok()
+    })
+}
+
 /// Containers com aba de logs aberta em algum workspace — o que pode ter um
 /// `docker logs -f` vivo.
 pub fn open_log_containers(state: &LayoutState) -> HashSet<String> {
-    state
+    let tabs = state
         .workspaces
         .iter()
         .flat_map(|w| w.tabs.iter())
-        .filter_map(|t| t.view.as_deref()?.strip_prefix(VIEW_CONTAINER_LOGS_PREFIX))
-        .map(str::to_string)
-        .collect()
+        .filter_map(|t| t.view.as_deref()?.strip_prefix(VIEW_CONTAINER_LOGS_PREFIX));
+    // A tela de Docker aberta na seção Logs também segura o seguidor.
+    let screens = state
+        .workspaces
+        .iter()
+        .filter(|w| {
+            w.side_view
+                .as_deref()
+                .is_some_and(|v| v.starts_with(VIEW_DOCKER_PREFIX))
+        })
+        .filter_map(|w| w.screens.docker.following());
+    tabs.chain(screens).map(str::to_string).collect()
 }
 
 pub fn session_diff_view(session: SessionId) -> String {
@@ -552,6 +586,10 @@ pub struct Workspace {
     /// persiste (ver [`history`]).
     #[serde(skip)]
     pub history: Vec<TabId>,
+    /// Telas cheias de Arquivos e Docker: abas internas, seleção. Vai no
+    /// evento; a de Arquivos persiste à parte (`KEY_FILE_SCREENS`), a de
+    /// Docker não.
+    pub screens: screens::Screens,
     pub created_at: DateTime<Utc>,
 }
 
@@ -729,7 +767,27 @@ impl LayoutManager {
                 }
             }
         }
-        let workspaces = rows_to_workspaces(&rows, valid_sessions);
+        let mut workspaces = rows_to_workspaces(&rows, valid_sessions);
+        let saved_files: std::collections::HashMap<String, screens::FilesScreen> = self
+            .store
+            .get_setting(KEY_FILE_SCREENS)
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        for ws in workspaces.iter_mut() {
+            let Some(mut files) = saved_files.get(&ws.id.to_string()).cloned() else {
+                continue;
+            };
+            files.map_views(|view| remap_editor_view(view, remap));
+            files.retain(|view| {
+                editor_view_session(view).is_some_and(|s| valid_sessions.contains(&s))
+            });
+            // As abas de editor de layout antigo (migradas em
+            // `rows_to_workspaces`) entram depois das salvas.
+            let migrated = std::mem::replace(&mut ws.screens.files, files);
+            ws.screens.files.absorb(migrated);
+        }
 
         let saved_active = self
             .store
@@ -740,6 +798,13 @@ impl LayoutManager {
         let active = saved_active
             .filter(|id| workspaces.iter().any(|w| w.id == *id))
             .or_else(|| workspaces.first().map(|w| w.id));
+        // Quem fechou o app no painel antigo de containers volta para a
+        // seção Compose da tela de Docker, onde os projetos moram agora.
+        if on_retired_dashboard(&rows, saved_active) {
+            if let Some(ws) = workspaces.iter_mut().find(|w| Some(w.id) == active) {
+                ws.screens.docker.section = screens::DockerSection::Compose;
+            }
+        }
 
         let mut inner = self.inner.write();
         inner.workspaces = workspaces;
@@ -795,6 +860,7 @@ impl LayoutManager {
             side_ratio: DEFAULT_SIDE_RATIO,
             side_expanded: false,
             history: Vec::new(),
+            screens: Default::default(),
             created_at: Utc::now(),
         };
         let id = workspace.id;
@@ -848,25 +914,11 @@ impl LayoutManager {
             side_ratio: DEFAULT_SIDE_RATIO,
             side_expanded: false,
             history: Vec::new(),
+            screens: Default::default(),
             created_at: Utc::now(),
         };
         let ws_id = workspace.id;
         inner.workspaces.push(workspace);
-        inner.active = Some(ws_id);
-        drop(inner);
-        self.persist()
-    }
-
-    pub fn open_docker_dashboard(&self) -> Result<(), LayoutError> {
-        let mut inner = self.inner.write();
-        let ws_id = ensure_docker_workspace(&mut inner);
-        let idx = ws_index(&inner.workspaces, ws_id)?;
-        let view_tab = inner.workspaces[idx]
-            .tabs
-            .iter()
-            .find(|t| t.view.as_deref() == Some(VIEW_CONTAINERS))
-            .map(|t| t.id);
-        inner.workspaces[idx].active_tab = view_tab.or(inner.workspaces[idx].active_tab);
         inner.active = Some(ws_id);
         drop(inner);
         self.persist()
@@ -1011,22 +1063,6 @@ impl LayoutManager {
         let moved = ws.tabs.remove(t_idx);
         let to = to.min(ws.tabs.len());
         ws.tabs.insert(to, moved);
-        drop(inner);
-        self.persist()
-    }
-
-    /// Nome + cor + grupo de uma vez (ver [`Tag`]).
-    pub fn tag_workspace(&self, id: WorkspaceId, name: &str, tag: Tag) -> Result<(), LayoutError> {
-        let mut inner = self.inner.write();
-        let idx = ws_index(&inner.workspaces, id)?;
-        let ws = &mut inner.workspaces[idx];
-        let trimmed = name.trim();
-        if !trimmed.is_empty() {
-            ws.name = trimmed.to_string();
-            ws.name_locked = tag.lock_name;
-        }
-        ws.color = tag.color;
-        ws.group = tag.group;
         drop(inner);
         self.persist()
     }
@@ -1318,6 +1354,11 @@ impl LayoutManager {
             }
         }
         // Abas de editor da sessão: a raiz de arquivos e o LSP eram dela.
+        for ws in inner.workspaces.iter_mut() {
+            ws.screens
+                .files
+                .retain(|view| screen_file_session(view) != Some(session));
+        }
         let mut wi = 0;
         while wi < inner.workspaces.len() {
             while let Some(ti) = inner.workspaces[wi]
@@ -1446,11 +1487,41 @@ impl LayoutManager {
     /// Há aba de editor aberta para a sessão em algum workspace? O painel de
     /// arquivos da sessão (watcher, LSP) não pode morrer enquanto houver.
     pub fn has_editor_tabs(&self, session: SessionId) -> bool {
+        let of_session = |view: &str| editor_view_session(view) == Some(session);
         self.inner.read().workspaces.iter().any(|w| {
-            w.tabs
-                .iter()
-                .any(|t| t.view.as_deref().and_then(editor_view_session) == Some(session))
+            w.screens.files.has(of_session)
+                || w.tabs
+                    .iter()
+                    .any(|t| t.view.as_deref().is_some_and(of_session))
         })
+    }
+
+    /// Abre a tela de Arquivos da sessão com o arquivo `view` (`editor:…`) na
+    /// aba interna. Devolve o workspace dela.
+    pub fn open_file_screen(
+        &self,
+        session: SessionId,
+        view: &str,
+        preview: bool,
+    ) -> Result<WorkspaceId, LayoutError> {
+        let ws = self.open_workspace_side_view(session, &files_view(session))?;
+        self.with_screens(ws, |s| s.files.open(view, preview))?;
+        Ok(ws)
+    }
+
+    /// Muda o estado das telas cheias do workspace. Grava a tela de Arquivos
+    /// (a de Docker não persiste, ver [`screens`]).
+    pub fn with_screens<R>(
+        &self,
+        workspace: WorkspaceId,
+        f: impl FnOnce(&mut screens::Screens) -> R,
+    ) -> Result<R, LayoutError> {
+        let mut inner = self.inner.write();
+        let idx = ws_index(&inner.workspaces, workspace)?;
+        let out = f(&mut inner.workspaces[idx].screens);
+        drop(inner);
+        self.persist_file_screens()?;
+        Ok(out)
     }
 
     /// Painel lateral sem sessão dona (ex.: arquivos de um container) no
@@ -1592,7 +1663,32 @@ impl LayoutManager {
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
         )?;
+        self.persist_file_screens()
+    }
+
+    fn persist_file_screens(&self) -> Result<(), LayoutError> {
+        let json = {
+            let inner = self.inner.read();
+            let saved: std::collections::HashMap<String, &screens::FilesScreen> = inner
+                .workspaces
+                .iter()
+                .map(|w| (w.id.to_string(), &w.screens.files))
+                .collect();
+            serde_json::to_string(&saved).unwrap_or_default()
+        };
+        self.store.set_setting(KEY_FILE_SCREENS, &json)?;
         Ok(())
+    }
+}
+
+/// `editor:<antiga>:<rel>` → `editor:<nova>:<rel>` quando a sessão reabriu.
+fn remap_editor_view(
+    view: &str,
+    remap: &std::collections::HashMap<SessionId, SessionId>,
+) -> String {
+    match editor_view_session(view).and_then(|old| remap.get(&old).map(|new| (old, new))) {
+        Some((old, new)) => view.replacen(&old.to_string(), &new.to_string(), 1),
+        None => view.to_string(),
     }
 }
 
@@ -1726,28 +1822,16 @@ fn split_leaf_with_viewer(
     }
 }
 
+/// O workspace Docker: onde cai a aba de container sem workspace ativo. Nasce
+/// vazio — quem pede cria a aba em seguida — e some quando a última fecha.
 fn ensure_docker_workspace(inner: &mut Inner) -> WorkspaceId {
-    if let Some(idx) = inner
+    if let Some(ws) = inner
         .workspaces
         .iter()
-        .position(|w| w.kind == WorkspaceKind::Docker)
+        .find(|w| w.kind == WorkspaceKind::Docker)
     {
-        let ws = &mut inner.workspaces[idx];
-        if !ws
-            .tabs
-            .iter()
-            .any(|t| t.view.as_deref() == Some(VIEW_CONTAINERS))
-        {
-            let tab = Tab::from_view(VIEW_CONTAINERS);
-            let tab_id = tab.id;
-            ws.tabs.insert(0, tab);
-            if ws.active_tab.is_none() {
-                ws.active_tab = Some(tab_id);
-            }
-        }
-        return inner.workspaces[idx].id;
+        return ws.id;
     }
-    let tab = Tab::from_view(VIEW_CONTAINERS);
     let workspace = Workspace {
         id: Uuid::new_v4(),
         name: DOCKER_WORKSPACE_NAME.to_string(),
@@ -1757,12 +1841,13 @@ fn ensure_docker_workspace(inner: &mut Inner) -> WorkspaceId {
         group: None,
         kind: WorkspaceKind::Docker,
         launch_config_id: None,
-        active_tab: Some(tab.id),
-        tabs: vec![tab],
+        active_tab: None,
+        tabs: Vec::new(),
         side_view: None,
         side_ratio: DEFAULT_SIDE_RATIO,
         side_expanded: false,
         history: Vec::new(),
+        screens: Default::default(),
         created_at: Utc::now(),
     };
     let id = workspace.id;
@@ -1916,6 +2001,11 @@ fn build_tab(row: &TabRow, panes: &[PaneRow], valid: &HashSet<SessionId>) -> Opt
         if view.starts_with(VIEW_DIFF_PREFIX) {
             return None;
         }
+        // O painel antigo de containers virou a seção Compose da tela de
+        // Docker (ver `load_remapped`).
+        if view == RETIRED_VIEW_CONTAINERS {
+            return None;
+        }
         // Editor de sessão que não voltou: sem a raiz dela, o arquivo não abre.
         if content_view_session(view).is_some_and(|s| !valid.contains(&s)) {
             return None;
@@ -1949,6 +2039,22 @@ fn build_tab(row: &TabRow, panes: &[PaneRow], valid: &HashSet<SessionId>) -> Opt
     })
 }
 
+/// O workspace ativo salvo estava com a aba aposentada de containers em foco?
+fn on_retired_dashboard(rows: &LayoutRows, active: Option<WorkspaceId>) -> bool {
+    let Some(active) = active.map(|id| id.to_string()) else {
+        return false;
+    };
+    rows.workspaces
+        .iter()
+        .filter(|w| w.id == active)
+        .filter_map(|w| w.active_tab.as_deref())
+        .any(|tab| {
+            rows.tabs
+                .iter()
+                .any(|t| t.id == tab && t.view.as_deref() == Some(RETIRED_VIEW_CONTAINERS))
+        })
+}
+
 pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<Workspace> {
     let mut ws_rows: Vec<&WorkspaceRow> = rows.workspaces.iter().collect();
     ws_rows.sort_by_key(|w| w.position);
@@ -1962,16 +2068,29 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
                 .filter(|t| t.workspace_id.as_deref() == Some(w.id.as_str()))
                 .collect();
             tab_rows.sort_by_key(|t| t.position);
-            let tabs: Vec<Tab> = tab_rows
+            let (editor_tabs, tabs): (Vec<Tab>, Vec<Tab>) = tab_rows
                 .into_iter()
                 .filter_map(|t| build_tab(t, &rows.panes, valid))
-                .collect();
+                .partition(|t| t.view.as_deref().and_then(editor_view_session).is_some());
+            // Aba de editor de layout antigo: o arquivo volta, mas dentro da
+            // tela de Arquivos — a barra de cima é só de terminal e agente.
+            let mut screens = screens::Screens::default();
+            for tab in &editor_tabs {
+                if let Some(view) = tab.view.as_deref() {
+                    screens.files.open(view, false);
+                }
+            }
             let active_tab = w
                 .active_tab
                 .as_deref()
                 .and_then(|s| Uuid::parse_str(s).ok())
                 .filter(|id| tabs.iter().any(|t| t.id == *id))
                 .or_else(|| tabs.first().map(|t| t.id));
+            let kind = WorkspaceKind::parse(w.kind.as_deref());
+            // Workspace Docker sem aba (era só o painel de containers): some.
+            if kind == WorkspaceKind::Docker && tabs.is_empty() {
+                return None;
+            }
             let created_at = DateTime::parse_from_rfc3339(&w.created_at)
                 .ok()?
                 .with_timezone(&Utc);
@@ -1986,7 +2105,7 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
                 repo_root: w.repo_root.clone(),
                 color: w.color.clone(),
                 group: w.group_name.clone(),
-                kind: WorkspaceKind::parse(w.kind.as_deref()),
+                kind,
                 launch_config_id: w
                     .launch_config_id
                     .as_deref()
@@ -2000,6 +2119,7 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
                     .clamp(MIN_RATIO, MAX_RATIO),
                 side_expanded: w.side_expanded.unwrap_or(0) != 0,
                 history: Vec::new(),
+                screens,
                 created_at,
             })
         })
@@ -2355,7 +2475,7 @@ mod tests {
     }
 
     #[test]
-    fn docker_workspace_is_created_once_with_view_tab() {
+    fn docker_workspace_is_created_once_and_empty() {
         let mgr = manager();
         let first = mgr.docker_workspace().unwrap();
         let second = mgr.docker_workspace().unwrap();
@@ -2364,62 +2484,101 @@ mod tests {
         let ws = state.workspaces.iter().find(|w| w.id == first).unwrap();
         assert_eq!(ws.kind, WorkspaceKind::Docker);
         assert_eq!(ws.name, DOCKER_WORKSPACE_NAME);
-        assert_eq!(ws.tabs.len(), 1);
-        assert_eq!(ws.tabs[0].view.as_deref(), Some(VIEW_CONTAINERS));
-        assert!(ws.tabs[0].root.is_none());
+        assert!(ws.tabs.is_empty());
     }
 
     #[test]
-    fn open_dashboard_activates_docker_workspace_and_view_tab() {
-        let mgr = manager();
-        ws(&mgr);
-        let docker_id = mgr.docker_workspace().unwrap();
-        let session = sid();
-        let logs_tab = mgr.create_tab(session, Some(docker_id)).unwrap();
-        mgr.open_docker_dashboard().unwrap();
-        let state = mgr.state();
-        assert_eq!(state.active_workspace, Some(docker_id));
-        let ws = state.workspaces.iter().find(|w| w.id == docker_id).unwrap();
-        assert_ne!(ws.active_tab, Some(logs_tab));
-        let active = ws
-            .tabs
-            .iter()
-            .find(|t| Some(t.id) == ws.active_tab)
-            .unwrap();
-        assert_eq!(active.view.as_deref(), Some(VIEW_CONTAINERS));
-    }
-
-    #[test]
-    fn closing_view_tab_closes_docker_workspace_and_ensure_recreates_it() {
+    fn closing_last_container_tab_closes_docker_workspace() {
         let mgr = manager();
         let docker_id = mgr.docker_workspace().unwrap();
-        let tab = mgr.state().workspaces[0].tabs[0].id;
-        let bound = mgr.close_tab(tab).unwrap();
-        assert!(bound.is_empty());
+        let tab = mgr.create_tab(sid(), Some(docker_id)).unwrap();
+        mgr.close_tab(tab).unwrap();
         assert!(mgr.state().workspaces.is_empty());
-        let recreated = mgr.docker_workspace().unwrap();
-        assert_ne!(recreated, docker_id);
-        assert_eq!(mgr.state().workspaces[0].tabs.len(), 1);
+        assert_ne!(mgr.docker_workspace().unwrap(), docker_id);
+    }
+
+    /// Layout salvo com o workspace Docker antigo (aba `containers`).
+    fn retired_dashboard(extra_tab: Option<SessionId>) -> Workspace {
+        let view = Tab::from_view(RETIRED_VIEW_CONTAINERS);
+        let mut tabs = vec![view.clone()];
+        if let Some(s) = extra_tab {
+            tabs.push(Tab::from_session(s));
+        }
+        Workspace {
+            id: Uuid::new_v4(),
+            name: DOCKER_WORKSPACE_NAME.to_string(),
+            name_locked: true,
+            repo_root: None,
+            color: None,
+            group: None,
+            kind: WorkspaceKind::Docker,
+            launch_config_id: None,
+            active_tab: Some(view.id),
+            tabs,
+            side_view: None,
+            side_ratio: DEFAULT_SIDE_RATIO,
+            side_expanded: false,
+            history: Vec::new(),
+            screens: Default::default(),
+            created_at: Utc::now(),
+        }
     }
 
     #[test]
-    fn view_tab_and_kind_round_trip_through_store() {
+    fn retired_dashboard_workspace_is_dropped_and_lands_on_compose() {
         let store = Arc::new(Store::open_in_memory().unwrap());
-        {
+        let s = sid();
+        let user = {
             let mgr = LayoutManager::new(Arc::clone(&store));
-            mgr.docker_workspace().unwrap();
-        }
+            let user = mgr.create_workspace("api", None, s).unwrap();
+            // Inserir ativa o Docker: o app fechou no painel antigo.
+            mgr.insert_workspace(retired_dashboard(None)).unwrap();
+            user
+        };
         let mgr = LayoutManager::new(Arc::clone(&store));
-        mgr.load(&HashSet::new());
+        mgr.load(&HashSet::from([s]));
         let state = mgr.state();
         assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].kind, WorkspaceKind::Docker);
-        assert_eq!(state.workspaces[0].tabs.len(), 1);
+        assert_eq!(state.active_workspace, Some(user));
         assert_eq!(
-            state.workspaces[0].tabs[0].view.as_deref(),
-            Some(VIEW_CONTAINERS)
+            state.workspaces[0].screens.docker.section,
+            screens::DockerSection::Compose
         );
-        assert!(state.workspaces[0].tabs[0].root.is_none());
+    }
+
+    #[test]
+    fn retired_view_tab_goes_but_container_tabs_stay() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let s = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.insert_workspace(retired_dashboard(Some(s))).unwrap();
+        }
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load(&HashSet::from([s]));
+        let state = mgr.state();
+        assert_eq!(state.workspaces.len(), 1);
+        let ws = &state.workspaces[0];
+        assert_eq!(ws.kind, WorkspaceKind::Docker);
+        assert_eq!(ws.tabs.len(), 1);
+        assert!(ws.tabs[0].view.is_none());
+        assert_eq!(ws.active_tab, Some(ws.tabs[0].id));
+    }
+
+    #[test]
+    fn untouched_layout_keeps_containers_section() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let s = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("api", None, s).unwrap();
+        }
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load(&HashSet::from([s]));
+        assert_eq!(
+            mgr.state().workspaces[0].screens.docker.section,
+            screens::DockerSection::Containers
+        );
     }
 
     #[test]
@@ -3156,6 +3315,11 @@ mod tests {
         assert_eq!(editor_view_session(&v), Some(s));
         assert_eq!(editor_view_session("container-logs:abc"), None);
         assert_eq!(editor_view_session("editor:not-a-uuid:x"), None);
+        let c = compose_file_view(s, "poc", 0, "compose.yml");
+        assert_eq!(c, format!("compose-file:{s}:poc:0:compose.yml"));
+        assert_eq!(screen_file_session(&c), Some(s));
+        assert_eq!(editor_view_session(&c), None);
+        assert_eq!(screen_file_session(&v), Some(s));
     }
 
     #[test]
@@ -3188,12 +3352,72 @@ mod tests {
             &HashSet::from([reborn]),
             &std::collections::HashMap::from([(s, reborn)]),
         );
+        // Volta remapeado, agora dentro da tela de Arquivos.
         let views: Vec<_> = mgr.state().workspaces[0]
+            .screens
+            .files
             .tabs
             .iter()
-            .filter_map(|t| t.view.clone())
+            .map(|t| t.view.clone())
             .collect();
         assert_eq!(views, vec![editor_view(reborn, "a.rs")]);
+    }
+
+    #[test]
+    fn file_screen_survives_reload_remapped_and_drops_dead_sessions() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let s = sid();
+        let other = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("api", None, s).unwrap();
+            mgr.create_tab(other, None).unwrap();
+            mgr.open_file_screen(s, &editor_view(s, "a.rs"), true)
+                .unwrap();
+            mgr.open_file_screen(other, &editor_view(other, "b.rs"), false)
+                .unwrap();
+        }
+        let files_of = |mgr: &LayoutManager| {
+            let state = mgr.state();
+            let f = state.workspaces[0].screens.files.clone();
+            (
+                f.tabs
+                    .iter()
+                    .map(|t| (t.view.clone(), t.preview))
+                    .collect::<Vec<_>>(),
+                f.active,
+            )
+        };
+
+        // Mesma sessão viva: volta igual, e de novo no reinício seguinte.
+        for _ in 0..2 {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.load(&HashSet::from([s, other]));
+            let (tabs, active) = files_of(&mgr);
+            assert_eq!(
+                tabs,
+                vec![
+                    (editor_view(s, "a.rs"), true),
+                    (editor_view(other, "b.rs"), false)
+                ]
+            );
+            assert_eq!(active, Some(editor_view(other, "b.rs")));
+        }
+
+        // Sessão reaberta com outro id: volta remapeada; a morta some.
+        let reborn = sid();
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load_remapped(
+            &HashSet::from([reborn]),
+            &std::collections::HashMap::from([(s, reborn)]),
+        );
+        let (tabs, active) = files_of(&mgr);
+        assert_eq!(tabs, vec![(editor_view(reborn, "a.rs"), true)]);
+        assert_eq!(active, Some(editor_view(reborn, "a.rs")));
+        assert_eq!(
+            mgr.state().workspaces[0].screens.files.recent,
+            vec![editor_view(reborn, "a.rs")]
+        );
     }
 
     #[test]
@@ -3299,5 +3523,82 @@ mod tests {
         logs.retain(&open_log_containers(&mgr.state()));
         assert!(!logs.is_following("abc"));
         let _ = tab;
+    }
+
+    #[test]
+    fn open_file_screen_opens_files_view_without_creating_tabs() {
+        let mgr = manager();
+        let s = sid();
+        let ws = mgr.create_workspace("api", None, s).unwrap();
+        let view = editor_view(s, "src/main.rs");
+        mgr.open_file_screen(s, &view, true).unwrap();
+        let state = mgr.state();
+        let w = &state.workspaces[0];
+        assert_eq!(w.id, ws);
+        assert_eq!(
+            w.tabs.len(),
+            1,
+            "abrir arquivo não cria aba ao lado do terminal"
+        );
+        assert_eq!(w.side_view.as_deref(), Some(files_view(s).as_str()));
+        assert_eq!(w.screens.files.active.as_deref(), Some(view.as_str()));
+        assert!(w.screens.files.tabs[0].preview);
+        assert!(mgr.has_editor_tabs(s));
+    }
+
+    #[test]
+    fn disposed_session_drops_its_screen_files() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let other = sid();
+        mgr.create_tab(other, None).unwrap();
+        mgr.open_file_screen(s, &editor_view(s, "a.rs"), false)
+            .unwrap();
+        mgr.open_file_screen(other, &editor_view(other, "b.rs"), false)
+            .unwrap();
+        mgr.session_disposed(s).unwrap();
+        let w = &mgr.state().workspaces[0];
+        assert_eq!(w.screens.files.tabs.len(), 1);
+        assert!(!mgr.has_editor_tabs(s));
+        assert!(mgr.has_editor_tabs(other));
+    }
+
+    #[test]
+    fn legacy_editor_tabs_load_into_files_screen() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let s = sid();
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.create_workspace("api", None, s).unwrap();
+        let view = editor_view(s, "src/lib.rs");
+        mgr.open_content_tab(None, &view).unwrap();
+        assert_eq!(mgr.state().workspaces[0].tabs.len(), 2);
+
+        let reloaded = LayoutManager::new(store);
+        reloaded.load(&HashSet::from([s]));
+        let w = &reloaded.state().workspaces[0];
+        assert_eq!(w.tabs.len(), 1, "a aba de editor sai da barra de cima");
+        assert!(w.tabs[0].view.is_none());
+        assert_eq!(w.screens.files.tabs.len(), 1);
+        assert_eq!(w.screens.files.tabs[0].view, view);
+        assert!(!w.screens.files.tabs[0].preview);
+    }
+
+    #[test]
+    fn docker_screen_holds_log_follower_only_while_open_on_logs() {
+        let mgr = manager();
+        let s = sid();
+        let ws = mgr.create_workspace("api", None, s).unwrap();
+        mgr.with_screens(ws, |sc| sc.docker.container = Some("abc".into()))
+            .unwrap();
+        assert!(
+            open_log_containers(&mgr.state()).is_empty(),
+            "tela fechada não segura seguidor"
+        );
+        mgr.open_workspace_side_view(s, &docker_view(s)).unwrap();
+        assert!(open_log_containers(&mgr.state()).contains("abc"));
+        mgr.with_screens(ws, |sc| sc.docker.pane = screens::ContainerPane::Details)
+            .unwrap();
+        assert!(open_log_containers(&mgr.state()).is_empty());
     }
 }

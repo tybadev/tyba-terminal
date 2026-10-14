@@ -171,16 +171,15 @@ describe("visiblePanels", () => {
       "history",
       "docker",
       "tunnels",
-      "files",
       "git",
       "agents",
     ]);
   });
 
-  test("túneis só em SSH; git só com repo (Diff é seção da tela de Git); docker pela preferência", () => {
+  test("túneis só em SSH; arquivos fora do header (menu, paleta e atalho); git só com repo (Diff é seção da tela de Git); docker pela preferência", () => {
     expect(
       visiblePanels({ ...all, isSsh: false, hasRepo: false, showDocker: false, agentsAvailable: false }),
-    ).toEqual(["history", "files"]);
+    ).toEqual(["history"]);
   });
 
   test("sem sessão, sem abas", () => {

@@ -22,10 +22,12 @@ import { containerName, rememberContainerName } from "@/lib/contentTabs";
 import { writeClipboardText } from "@/lib/clipboard";
 import { formatSize, pathCrumbs } from "@/lib/containerFs";
 import { pushToast, toastError } from "@/lib/toast";
+import { PANEL_HEADER } from "./SidePanelBar";
 
 interface Props {
   containerId: string;
-  onClose: () => void;
+  /** Sem ele (dentro da tela de Docker) não há botão de fechar. */
+  onClose?: () => void;
 }
 
 function join(dir: string, name: string): string {
@@ -180,7 +182,7 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Fundo do painel lateral que o contém; cabeçalho como o dos mockups
           Painel*: `padding: 12px 16px`, ícone 16, título 13px. */}
-      <header className="flex shrink-0 items-center gap-2.5 tyba-divide-b px-4 py-3">
+      <header className={PANEL_HEADER}>
         <FolderSimple size={16} className="shrink-0 text-tyba-blue" />
         <span className="min-w-0 truncate text-[13px] text-tyba-text">
           {t("containerFilesTitle")}
@@ -192,14 +194,16 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
           {t("containerFilesReadOnlyChip")}
         </span>
         <span className="flex-1" />
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={t("tunnelsClose")}
-          className="text-tyba-text-faint hover:text-tyba-text"
-        >
-          <X size={14} />
-        </button>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={t("tunnelsClose")}
+            className="text-tyba-text-faint hover:text-tyba-text"
+          >
+            <X size={14} />
+          </button>
+        )}
       </header>
       <div className="flex shrink-0 items-center gap-2 border-b border-[var(--tyba-border-soft)] px-4 py-2.5 font-mono text-[11px] text-tyba-text-faint">
         <nav

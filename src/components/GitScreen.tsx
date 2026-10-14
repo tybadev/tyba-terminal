@@ -68,6 +68,7 @@ export function GitScreen({
   findSession,
   onSendToAgent,
   onResolveConflicts,
+  onOpenSession,
 }: {
   session: Session;
   repoRoot: string | null;
@@ -80,6 +81,8 @@ export function GitScreen({
   findSession: (id: SessionId) => Session | undefined;
   onSendToAgent: (target: Session, prompt: string) => Promise<void>;
   onResolveConflicts: (target: Session, state: ConflictState) => Promise<void>;
+  /** "Abrir no TYBA" de um PR sem sessão: põe a sessão numa aba e foca. */
+  onOpenSession: (opened: Session) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const hasWorktree = Boolean(session.worktree);
@@ -316,6 +319,7 @@ export function GitScreen({
                 const target = findSession(sid);
                 if (target) await onSendToAgent(target, prompt);
               }}
+              onOpenSession={onOpenSession}
             />
           )}
           {place.section === "ci" && (
